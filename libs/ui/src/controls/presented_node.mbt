@@ -31,6 +31,38 @@ fn pick_menu_of(choices : Array[Choice], search : Bool) -> Bool {
 }
 
 ///|
+/// A short pick's choices as a menu's items: the one `chosen` checked where one is, else each its icon; chosen, `choose`
+/// told its key.
+fn pick_menu_items(choices : Array[Choice], chosen : String, choose : (String) -> Unit) -> Array[MenuItem?] {
+  let one_chosen = choices.iter().any(fn(x) { x.key == chosen })
+  choices.map(fn(x) {
+    Some({
+      label: x.label,
+      icon: if one_chosen { "" } else { x.icon },
+      danger: false,
+      disabled: x.disabled,
+      chosen: if one_chosen { Some(x.key == chosen) } else { None },
+      checkbox: false,
+      heading: false,
+      further: false,
+      select: fn() { choose(x.key) },
+    })
+  })
+}
+
+///|
+/// What each of a short pick's choices has besides its item, as a menu's row (pick_menu_items'): what it is under its
+/// words, its value at its row's end, its own mark.
+fn pick_menu_extras(choices : Array[Choice]) -> (Int) -> MenuExtra {
+  fn(i) {
+    match choices.get(i) {
+      Some(x) => { note: x.note, value: x.value, mark: x.mark, end: None }
+      None => menu_no_extra
+    }
+  }
+}
+
+///|
 /// What of the presented the window's tree draws, in `root` (over all of it the root holds: each at its place in the
 /// window's stack of layers), made as one is presented and let go once it has gone; and under them the reader's
 /// layout's panel while one is open (reader_layout_nodes).
@@ -218,6 +250,12 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             false,
             sub_levels=fn() { p.menu_more.get().map(fn(lv) { (lv.n, lv.title, menu_clean_items(lv.items)) }) },
             level_back=fn() { menu_pop(p) },
+            sub_extras=fn() {
+              match p.menu_more.untracked().last() {
+                Some(lv) => lv.extras
+                None => fn(_) { menu_no_extra }
+              }
+            },
           )
         }
         Panel(x) if x.stage =>
@@ -299,20 +337,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
           // (a menu of its choices, a short pick's: the one chosen checked where one is, else each its icon;
           // what each is under its words, its value at its row's end, its own mark after its check)
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
-          let one_chosen = choices.iter().any(fn(x) { x.key == chosen })
-          let items : Array[MenuItem?] = choices.map(fn(x) {
-            Some({
-              label: x.label,
-              icon: if one_chosen { "" } else { x.icon },
-              danger: false,
-              disabled: x.disabled,
-              chosen: if one_chosen { Some(x.key == chosen) } else { None },
-              checkbox: false,
-              heading: false,
-              further: false,
-              select: fn() { choose(x.key) },
-            })
-          })
+          let items = pick_menu_items(choices, chosen, choose)
           menu_node(
             row,
             open,
@@ -328,12 +353,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             side~,
             shown~,
             gone~,
-            extras=fn(i) {
-              match choices.get(i) {
-                Some(x) => { note: x.note, value: x.value, mark: x.mark, end: None }
-                None => menu_no_extra
-              }
-            },
+            extras=pick_menu_extras(choices),
             min_w=chooser_menu_w,
           )
         }

@@ -18,6 +18,7 @@ fn level_size_tester(
   levels : @signals.Signal[Array[(Int, String, Array[MenuItem?])]],
   panel : Ref[@view.View?],
   first : Array[MenuItem?],
+  extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
 ) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0)
   set_dark(Some(false))
@@ -53,6 +54,7 @@ fn level_size_tester(
         fn() {  },
         false,
         sub_levels=fn() { levels.get() },
+        extras~,
         level_back=fn() {
           let now = levels.untracked()
           if now.is_empty() {
@@ -100,6 +102,16 @@ fn level_size_run(wide : Bool) -> Array[(Double, Double)] raise {
   let levels : @signals.Signal[Array[(Int, String, Array[MenuItem?])]] = @signals.signal_ref([])
   let panel : Ref[@view.View?] = Ref(None)
   let t = level_size_tester(levels, panel, level_size_first(wide))
+  level_size_steps(t, levels, panel)
+}
+
+///|
+/// The share level pushed (`levels`, the menu's), its panel's sizes as level_size_run says them.
+fn level_size_steps(
+  t : @ui.Tester,
+  levels : @signals.Signal[Array[(Int, String, Array[MenuItem?])]],
+  panel : Ref[@view.View?],
+) -> Array[(Double, Double)] raise {
   t.run_for(level_size_rest_ms)
   let size = fn() {
     let (_, _, w, h) = panel.val.unwrap().placed_window_now()
@@ -171,4 +183,43 @@ test "menu panel goes its width and height both ways through a wider submenu lev
   assert_true(w1 > w0 && h1 < h0, msg="the pushed level wider and shorter: \{level_size_text(s)}")
   assert_true(level_size_between(s[1].0, w0, w1) && level_size_between(s[1].1, h0, h1), msg="on its way in, between: \{level_size_text(s)}")
   assert_true(level_size_between(s[3].0, w1, w0) && level_size_between(s[3].1, h1, h0), msg="on its way back, between: \{level_size_text(s)}")
+}
+
+///|
+/// A level as it comes back mid-slide: what the first level's rows have besides their items (a value at a row's end,
+/// a note under its words) drawn by the picture that sizes the panel as by the rows, so the panel comes to rest as wide
+/// as they make it without a snap at the end (sizes_steady); going in again and back while that slides, the level
+/// that leaves drawn as itself.
+test "menu panel comes back to a first level with values and notes, and goes back mid-slide, without a snap" {
+  defer {
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let levels : @signals.Signal[Array[(Int, String, Array[MenuItem?])]] = @signals.signal_ref([])
+  let panel : Ref[@view.View?] = Ref(None)
+  let first = level_size_first(false)
+  let t = level_size_tester(levels, panel, first, extras=fn(i) {
+    if i == 0 {
+      { note: "", value: "12 GB", mark: None, end: None }
+    } else if i == 1 {
+      { note: "正在迁入另一个会话", value: "", mark: None, end: None }
+    } else {
+      menu_no_extra
+    }
+  })
+  let s = level_size_steps(t, levels, panel)
+  assert_true(level_size_between(s[3].0, s[2].0, s[0].0) || s[3].0 == s[0].0, msg="on its way back: \{level_size_text(s)}")
+  // (in again, and back before it is there: the level that leaves the one it went in to; in again after)
+  @view.transition(fn() { levels.set([(2, "Share", [Some(menu_item_of("Copy chat link", fn() {  }))])]) })
+  t.run_for(level_size_mid_ms)
+  t.back()
+  t.run_for(level_size_settle_ms)
+  @view.transition(fn() { levels.set([(3, "Share", [Some(menu_item_of("Copy chat link", fn() {  }))])]) })
+  t.run_for(level_size_settle_ms)
+  t.back()
+  t.run_for(level_size_settle_ms)
+  let (_, _, w, h) = panel.val.unwrap().placed_window_now()
+  assert_eq((w, h), s[0], msg="back at rest on the first level as it stood")
+  assert_true(t.find("12 GB") is Some(_) && t.find("正在迁入另一个会话") is Some(_))
 }

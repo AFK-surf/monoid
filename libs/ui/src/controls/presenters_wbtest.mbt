@@ -835,6 +835,90 @@ test "a menu's item that opens a menu, with a mouse at Large: submenu pushes in 
 }
 
 ///|
+/// A menu one of whose items (迁移) opens a short pick of where to, each with what it has besides its words: chosen,
+/// said; the pick let go of, said.
+fn menu_with_pick(said : Array[String]) -> (Anchor) -> Unit {
+  fn(from) {
+    let beside = beside_of(from)
+    menu(
+      [
+        Some(menu_item_of("重命名", fn() { said.push("rename") })),
+        Some(menu_item_of("归档", fn() { said.push("archive") })),
+        Some(
+          menu_item_of("迁移", fn() {
+            pick(
+              "迁移到",
+              [
+                choice("tokyo", "东京", value="12 GB"),
+                choice("pvg", "上海", note="正在迁入另一个会话", disabled=true),
+              ],
+              "",
+              fn(k) { said.push("to " + k) },
+              from=beside,
+              search=false,
+            )
+          }, further=true),
+        ),
+      ],
+      from=beside,
+      gone=fn() { said.push("gone") },
+    )
+  }
+}
+
+///|
+test "a menu's item that opens a short pick, with a mouse at Large: a level of the same popover with its values and notes; back is back to the menu" {
+  let said : Array[String] = []
+  let t = presenting_tester(desk, menu_with_pick(said))
+  open_it(t)
+  t.tap_text("迁移")
+  t.run_for(@ui.move_most_ms)
+  // (one popover, the pick a level of it: its choices with their values and notes, the menu's rows gone)
+  assert_eq(presented_how, [AsPopover])
+  assert_true(t.find("东京") is Some(_) && t.find("12 GB") is Some(_) && t.find("正在迁入另一个会话") is Some(_))
+  assert_true(t.find("重命名") is None)
+  // back: the menu again, the same popover
+  t.back()
+  assert_true(presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重命名") is Some(_) && t.find("东京") is None)
+  // gone in again, one chosen: said, all of it closed
+  t.tap_text("迁移")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("东京")
+  assert_true(!presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_eq(said, ["to tokyo"])
+}
+
+///|
+test "a menu's item that opens a short pick, with a finger at Small: a page of the same sheet; back is back to the menu" {
+  let said : Array[String] = []
+  let t = presenting_tester(phone, menu_with_pick(said), button_at=JEnd)
+  open_it(t)
+  one_sheet(t) |> ignore
+  let dim = scrim_alpha(t, phone)
+  t.tap_text("迁移")
+  for _ in 0..<way_frames {
+    t.run_for(@ui.frame_period_default)
+    one_sheet(t) |> ignore
+    assert_eq(scrim_alpha(t, phone), dim)
+  }
+  assert_eq(presented_how, [AsSheet])
+  assert_true(t.find("东京") is Some(_) && t.find("重命名") is None)
+  t.back()
+  assert_true(presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重命名") is Some(_) && t.find("东京") is None)
+  t.tap_text("迁移")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("东京")
+  assert_true(!presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_eq(said, ["to tokyo"])
+}
+
+///|
 test "what a sheet's item opens with a finger at Small: a sheet in its place, from as tall as that one stood, the scrim as it was, never two" {
   let said : Array[String] = []
   let t = presenting_tester(phone, fn(from) {
