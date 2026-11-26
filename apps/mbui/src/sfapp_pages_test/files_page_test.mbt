@@ -1115,10 +1115,10 @@ test "folder picker error panel shows Retry button and recovers after permission
   assert_eq(t.first_line_faults(), [], msg="picker error first_line_faults")
   assert_eq(t.line_start_faults(), [], msg="picker error line_start_faults")
   let retry_x = t.get(Button, label=@sf.t("web-pages.drive.retry")).rect.0
-  let filter_x = t.get(TextField).rect.0
+  let sub_x = t.words().iter().find_first(fn(w) { w.0.contains("从 station 的主目录") }).unwrap().1
   assert_true(
-    (retry_x - filter_x).abs() <= 2.0,
-    msg="picker error left aligns with dialog content (no double panel inset): retry=\{retry_x} filter=\{filter_x}",
+    (retry_x - sub_x).abs() <= 2.0,
+    msg="picker error left aligns with dialog content (no double panel inset): retry=\{retry_x} subtitle=\{sub_x}",
   )
   t.click(Button, label=@sf.t("web-pages.drive.retry"))
   t.frame()
