@@ -57,8 +57,13 @@ fn sub_of_chain(chain : Array[form::Json]) -> Option[String] {
   }
 }
 
-fn fold_one_person(genesis : String, chain : Array[form::Json], sub : String) -> Option[FoldedPerson] {
-  let p = match station_rules_bridge::person_fold(chain, sub) {
+fn fold_one_person(
+  genesis : String,
+  chain : Array[form::Json],
+  sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[FoldedPerson] {
+  let p = match station_rules_bridge::person_fold(chain, sub, verify_fn=verify_fn) {
     Ok(v) => v
     Err(_) => return None
   }
@@ -247,14 +252,18 @@ fn choose_person_log(
   best
 }
 
-fn select_person_logs(ws : String, sources : PersonalLockSources) -> form::OrderedMap[FoldedPerson] {
+fn select_person_logs(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> form::OrderedMap[FoldedPerson] {
   let by_sub : form::OrderedMap[Array[FoldedPerson]] = form::OrderedMap::new()
   let mut i = 0
   while i < sources.chains.length() {
     let (gen, chain) = sources.chains[i]
     match sub_of_chain(chain) {
       Some(sub) => {
-        match fold_one_person(gen, chain, sub) {
+        match fold_one_person(gen, chain, sub, verify_fn) {
           Some(f) => {
             match by_sub.get(sub) {
               Some(arr) => arr.push(f)
@@ -316,8 +325,12 @@ fn merge_unique_strings(prev : Array[String], next : Array[String]) -> Array[Str
 }
 
 /// Build the workspace's personal-lock vault `LockState` (`genesis: ""`), 1:1 with `vault-lock.ts`.
-pub fn personal_vault_lock(ws : String, sources : PersonalLockSources) -> lock::LockState {
-  let picked = select_person_logs(ws, sources)
+pub fn personal_vault_lock(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> lock::LockState {
+  let picked = select_person_logs(ws, sources, verify_fn)
   let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
   let ensure_member = fn(sub : String) -> Unit {
     if !members.contains(sub) {
@@ -384,8 +397,12 @@ pub fn personal_vault_lock(ws : String, sources : PersonalLockSources) -> lock::
 }
 
 /// Selected personal chain per member `sub` outside security mode.
-pub fn personal_vault_chains(ws : String, sources : PersonalLockSources) -> Map[String, Array[form::Json]] {
-  let picked = select_person_logs(ws, sources)
+pub fn personal_vault_chains(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Map[String, Array[form::Json]] {
+  let picked = select_person_logs(ws, sources, verify_fn)
   let out : Map[String, Array[form::Json]] = Map::new()
   let entries = picked.entries()
   let mut i = 0

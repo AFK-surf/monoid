@@ -1535,3 +1535,206 @@ test "R3 #6: LockBodies::take / take_bodies writes disk before mutating memory (
   assert_true(store.bodies(ws=None).has(bh))
   assert_true((base_fs.exists)(bodies_path("/d", "ws_bod")))
 }
+
+// ── R4 Final 3-Item Regression Tests ──
+
+test "R4 #1: person-chains.json round-trip preserves TS heard and aside fields losslessly" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let owner_id = "ed25519:" + test_owner_pub
+  let pgen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(test_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+  ])
+  let g = hash_of_entry(pgen)
+  let aside_entry = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(g)),
+    ("at", form::Json::Num(1700000010.0)),
+    ("kind", form::Json::Str("ws")),
+    ("body", form::Json::Obj([
+      ("t", form::Json::Str(station_rules_bridge::ws_tag("ws_1", g))),
+      ("h", form::Json::Str(test_station_pub)),
+    ])),
+  ])
+  let ts_doc = form::Json::Obj([
+    ("chains", form::Json::Obj([(g, form::Json::Arr([pgen]))])),
+    ("heard", form::Json::Obj([(g, form::Json::Arr([form::Json::Str("ws_1"), form::Json::Str("ws_2")]))])),
+    ("aside", form::Json::Obj([(g, form::Json::Arr([aside_entry]))])),
+  ])
+  let _ = (fs.write_private_text)(person_chains_path("/d"), form::json_stringify(ts_doc))
+
+  // open -> save_person_chains -> reload preserves chains, heard, AND aside!
+  let store = CloudStore::open("/d", fs)
+  assert_true(store.person_chains.length() == 1)
+  match store.save_person_chains() {
+    Ok(_) => ()
+    Err(_) => assert_true(false)
+  }
+  let reloaded = read_person_chains_doc("/d", fs)
+  assert_true(reloaded.chains.length() == 1)
+  assert_true(reloaded.chains[0].0 == g)
+  match reloaded.heard {
+    Some(h) => {
+      let s = form::json_stringify(h)
+      assert_true(s.contains("\"ws_1\""))
+      assert_true(s.contains("\"ws_2\""))
+    }
+    None => assert_true(false)
+  }
+  match reloaded.aside {
+    Some(a) => {
+      let s = form::json_stringify(a)
+      assert_true(s.contains(test_station_pub))
+    }
+    None => assert_true(false)
+  }
+}
+
+test "R4 #2: verify_fn threaded through join_workspace/name_joined_lock and personal_vault_lock/chains" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_home"), fs)
+  // Pre-seed a joined lock on disk so join_workspace -> name_joined_lock -> read_lock verifies it!
+  let j_gen = make_genesis_entry("ws_j_vf")
+  let j_gen_h = hash_of_entry(j_gen)
+  let _ = (fs.write_private_text)(
+    joined_lock_path("/d", "ws_j_vf"),
+    form::json_stringify(form::Json::Obj([("entries", form::Json::Arr([j_gen]))])),
+  )
+  let mut join_vf_calls = 0
+  let join_vf = fn(alg : String, key : Bytes, sig : Bytes, msg : Bytes) -> Bool {
+    join_vf_calls = join_vf_calls + 1
+    if alg == "Ed25519" { crypto::ed25519_verify(key, msg, sig) } else { false }
+  }
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => StationKey::{ seed: Bytes::new(0), id: "" }
+  }
+  match join_workspace(
+    "/d",
+    fs,
+    key,
+    "tok_jvf",
+    "0.1.0",
+    1700000100.to_int64(),
+    fn(_u : String, _b : String) -> Result[(Int, String), String] {
+      Ok((200, "{\"workspace\":\"ws_j_vf\",\"workspace_name\":\"JVF\",\"name\":\"st-jvf\"}"))
+    },
+    lock_hash=Some(j_gen_h),
+    verify_fn=Some(join_vf),
+  ) {
+    Ok(r) => assert_true(r.workspace == "ws_j_vf")
+    Err(_) => assert_true(false)
+  }
+  assert_true(join_vf_calls >= 1)
+
+  // personal_vault_lock & personal_vault_chains thread verify_fn into person_fold!
+  let owner_id = "ed25519:" + test_owner_pub
+  let pgen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(test_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+  ])
+  let pg_h = hash_of_entry(pgen)
+  let sources = PersonalLockSources::{
+    chains: [(pg_h, [pgen])],
+    member_emails: Map::new(),
+    member_roles: Map::new(),
+    vaults: [],
+    boxes: [],
+    cert_ok: fn(_s : lock::LockState, _c : BoxCertSummary) -> Bool { false },
+  }
+  let mut vault_vf_calls = 0
+  let vault_vf = fn(alg : String, key : Bytes, sig : Bytes, msg : Bytes) -> Bool {
+    vault_vf_calls = vault_vf_calls + 1
+    if alg == "Ed25519" { crypto::ed25519_verify(key, msg, sig) } else { false }
+  }
+  let vlock = personal_vault_lock("ws_home", sources, verify_fn=Some(vault_vf))
+  assert_true(vlock.persons.contains("u1"))
+  assert_true(vault_vf_calls >= 1)
+  let before_chains = vault_vf_calls
+  let vchains = personal_vault_chains("ws_home", sources, verify_fn=Some(vault_vf))
+  assert_true(vchains.contains("u1"))
+  assert_true(vault_vf_calls > before_chains)
+}
+
+test "R4 #3: fs.bytes null + fs.lstat non-null fails closed on read_lock and load_key" {
+  // classify_read_none: Null lstat -> Ok(None) (ENOENT); non-null lstat -> Err("cannot read existing file")
+  match classify_read_none("/d/mesh/lock.json", Ok(base_codec::json_null())) {
+    Ok(None) => ()
+    _ => assert_true(false)
+  }
+  let stat_obj = base_codec::json_obj([("kind", base_codec::json_str("file")), ("size", base_codec::json_int(128))])
+  match classify_read_none("/d/mesh/lock.json", Ok(stat_obj)) {
+    Err(msg) => assert_true(msg.contains("cannot read existing file"))
+    _ => assert_true(false)
+  }
+
+  // Simulated shell fs where fs.bytes returns null on EACCES but fs.lstat returns non-null
+  let eacces_cloud_fs = CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match classify_read_none(p, Ok(stat_obj)) {
+        Ok(None) => Ok(None)
+        Ok(Some(_)) => Ok(Some(""))
+        Err(e) => Err(e)
+      }
+    },
+    write_private_text: fn(_p : String, _t : String) -> Result[Unit, String] { Ok(()) },
+    remove_file: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    rename_file: fn(_a : String, _b : String) -> Result[Unit, String] { Ok(()) },
+    mkdir_p: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    exists: fn(_p : String) -> Bool { true },
+  }
+  match read_lock("/d", eacces_cloud_fs) {
+    Some(kl) => match kl.state {
+      None => ()
+      Some(_) => assert_true(false)
+    }
+    None => assert_true(false)
+  }
+
+  let mut overwrote_key = false
+  let eacces_key_fs = KeyFs::{
+    read_bytes: fn(p : String) -> Result[Option[Bytes], String] {
+      classify_read_none(p, Ok(stat_obj))
+    },
+    write_private: fn(_p : String, _b : Bytes) -> Result[Unit, String] {
+      overwrote_key = true
+      Ok(())
+    },
+    random_bytes: fn(_n : Int) -> Result[Bytes, String] { Ok(must_hex(test_station_seed)) },
+  }
+  match load_key("/d", eacces_key_fs) {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("cannot read existing file"))
+  }
+  assert_true(!overwrote_key)
+}

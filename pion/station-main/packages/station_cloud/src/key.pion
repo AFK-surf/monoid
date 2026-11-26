@@ -57,13 +57,45 @@ pub struct KeyFs {
   pub random_bytes : (Int) -> Result[Bytes, String]
 }
 
+/// Classify a `None` result from `client/shell` `fs.bytes` using `fs.lstat`:
+/// `client/shell`'s `fs.bytes` returns `null` for both ENOENT and open/read errors (e.g. EACCES).
+/// If `fs.lstat` returns non-null (the file exists), fail closed with `Err("cannot read existing file")`
+/// so callers never treat an unreadable `lock.json` as unlocked or overwrite an unreadable `secret.key`.
+pub fn classify_read_none(
+  path : String,
+  lstat_res : Result[base_codec::Json, String],
+) -> Result[Option[Bytes], String] {
+  match lstat_res {
+    Ok(base_codec::Json::Null) => Ok(None)
+    Ok(_) => Err("cannot read existing file: " + path)
+    Err(e) => Err(e)
+  }
+}
+
+/// Read raw bytes from `client/shell` with fail-closed `fs.lstat` disambiguation on `null`.
+pub fn shell_read_bytes_strict(
+  client : builders_core::ShellClient,
+  path : String,
+) -> Result[Option[Bytes], String] {
+  match client.read_bytes(path) {
+    Ok(Some(b)) => Ok(Some(b))
+    Ok(None) => {
+      let args = base_codec::json_obj([("path", base_codec::json_str(path))])
+      // sync: distinguish ENOENT from EACCES/IO error when fs.bytes returns null
+      let lstat_res = match client.shell_sync_json("fs.lstat", args) {
+        Ok(v) => Ok(v)
+        Err(e) => Err(e.message)
+      }
+      classify_read_none(path, lstat_res)
+    }
+    Err(e) => Err(e.message)
+  }
+}
+
 pub fn KeyFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> KeyFs {
   KeyFs::{
     read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
-      match client.read_bytes(path) {
-        Ok(b) => Ok(b)
-        Err(e) => Err(e.message)
-      }
+      shell_read_bytes_strict(client, path)
     },
     write_private: fn(path : String, data : Bytes) -> Result[Unit, String] {
       match client.write_atomic(path, data, mode=PRIVATE_FILE_MODE, sync=true, mkdir=true, sep=sep) {

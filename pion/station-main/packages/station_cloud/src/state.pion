@@ -286,10 +286,10 @@ fn bytes_to_utf8_str(b : Bytes) -> String {
 pub fn CloudFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> CloudFs {
   CloudFs::{
     read_text: fn(p : String) -> Result[Option[String], String] {
-      match client.read_bytes(p) {
+      match shell_read_bytes_strict(client, p) {
         Ok(Some(b)) => Ok(Some(bytes_to_utf8_str(b)))
         Ok(None) => Ok(None)
-        Err(e) => Err(e.message)
+        Err(e) => Err(e)
       }
     },
     write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
@@ -1054,29 +1054,42 @@ pub fn read_lock(
   }
 }
 
-/// Read persisted personal lock chains from `<data>/mesh/person-chains.json` (1:1 with `PersonChains` constructor).
-/// Supports both `{ "chains": { "<genesis>": [...] } }` and legacy `{ "<genesis>": [...] }`.
-pub fn read_person_chains(
+/// Persisted `person-chains.json` document preserving `chains`, `heard`, and `aside` losslessly
+/// (1:1 with `station/src/mesh/person-chains.ts`).
+pub struct PersonChainsDoc {
+  pub chains : Array[(String, Array[form::Json])]
+  pub heard : Option[form::Json]
+  pub aside : Option[form::Json]
+}
+
+/// Read persisted personal lock chains + `heard` + `aside` from `<data>/mesh/person-chains.json`.
+/// Supports both `{ "chains": { "<genesis>": [...] }, "heard": {...}, "aside": {...} }` and legacy `{ "<genesis>": [...] }`.
+pub fn read_person_chains_doc(
   data : String,
   fs : CloudFs,
   sep : String = "/",
-) -> Array[(String, Array[form::Json])] {
-  let out : Array[(String, Array[form::Json])] = []
+) -> PersonChainsDoc {
+  let empty = PersonChainsDoc::{ chains: [], heard: None, aside: None }
   let text = match (fs.read_text)(person_chains_path(data, sep=sep)) {
     Ok(Some(t)) => t
-    _ => return out
+    _ => return empty
   }
   let parsed = match form::parse_json(text) {
     Ok(j) => j
-    Err(_) => return out
+    Err(_) => return empty
+  }
+  let has_chains_wrapper = match form::json_field(Some(parsed), "chains") {
+    Some(form::Json::Obj(_)) => true
+    _ => false
   }
   let chains_obj = match form::json_field(Some(parsed), "chains") {
     Some(form::Json::Obj(m)) => m
     _ => match parsed {
       form::Json::Obj(m) => m
-      _ => return out
+      _ => return empty
     }
   }
+  let out : Array[(String, Array[form::Json])] = []
   let mut i = 0
   while i < chains_obj.length() {
     let (genesis, val_json) = chains_obj[i]
@@ -1086,13 +1099,38 @@ pub fn read_person_chains(
     }
     i = i + 1
   }
-  out
+  let heard : Option[form::Json] = if has_chains_wrapper {
+    match form::json_field(Some(parsed), "heard") {
+      Some(form::Json::Obj(m)) => Some(form::Json::Obj(m))
+      _ => None
+    }
+  } else {
+    None
+  }
+  let aside : Option[form::Json] = if has_chains_wrapper {
+    match form::json_field(Some(parsed), "aside") {
+      Some(form::Json::Obj(m)) => Some(form::Json::Obj(m))
+      _ => None
+    }
+  } else {
+    None
+  }
+  PersonChainsDoc::{ chains: out, heard: heard, aside: aside }
 }
 
-/// Persist personal lock chains to `<data>/mesh/person-chains.json`.
-pub fn write_person_chains(
+/// Read persisted personal lock chains from `<data>/mesh/person-chains.json`.
+pub fn read_person_chains(
   data : String,
-  chains : Array[(String, Array[form::Json])],
+  fs : CloudFs,
+  sep : String = "/",
+) -> Array[(String, Array[form::Json])] {
+  read_person_chains_doc(data, fs, sep=sep).chains
+}
+
+/// Persist personal lock chains along with preserved `heard` and `aside` metadata to `<data>/mesh/person-chains.json`.
+pub fn write_person_chains_doc(
+  data : String,
+  doc : PersonChainsDoc,
   fs : CloudFs,
   sep : String = "/",
 ) -> Result[Unit, String] {
@@ -1103,13 +1141,32 @@ pub fn write_person_chains(
   }
   let fields : Array[(String, form::Json)] = []
   let mut i = 0
-  while i < chains.length() {
-    let (g, es) = chains[i]
+  while i < doc.chains.length() {
+    let (g, es) = doc.chains[i]
     fields.push((g, form::Json::Arr(es)))
     i = i + 1
   }
-  let body = form::json_stringify(form::Json::Obj([("chains", form::Json::Obj(fields))]))
+  let root_fields : Array[(String, form::Json)] = [("chains", form::Json::Obj(fields))]
+  match doc.heard {
+    Some(h) => root_fields.push(("heard", h))
+    None => ()
+  }
+  match doc.aside {
+    Some(a) => root_fields.push(("aside", a))
+    None => ()
+  }
+  let body = form::json_stringify(form::Json::Obj(root_fields))
   (fs.write_private_text)(path, body)
+}
+
+/// Persist personal lock chains to `<data>/mesh/person-chains.json`.
+pub fn write_person_chains(
+  data : String,
+  chains : Array[(String, Array[form::Json])],
+  fs : CloudFs,
+  sep : String = "/",
+) -> Result[Unit, String] {
+  write_person_chains_doc(data, PersonChainsDoc::{ chains: chains, heard: None, aside: None }, fs, sep=sep)
 }
 
 pub fn read_off(path : String, fs : CloudFs) -> OffRecord {
@@ -1243,6 +1300,8 @@ pub struct CloudStore {
   mut plane_gateways : Option[Array[String]]
   pub mut moved_offered : Map[String, Array[form::Json]]
   pub mut person_chains : Array[(String, Array[form::Json])]
+  pub mut person_chains_heard : Option[form::Json]
+  pub mut person_chains_aside : Option[form::Json]
   mut lock_bodies : Map[String, LockBodies]
   pub mut skipped_rig_ws : Array[String]
   pub mut skipped_rig_frame : Option[base_codec::Json]
@@ -1283,7 +1342,7 @@ pub fn CloudStore::open(
     None => false
   }
   let lock = read_lock(data, fs, ws=None, sep=sep, verify_fn=verify_fn)
-  let person_chains = read_person_chains(data, fs, sep=sep)
+  let pdoc = read_person_chains_doc(data, fs, sep=sep)
   CloudStore::{
     data: data,
     sep: sep,
@@ -1302,7 +1361,9 @@ pub fn CloudStore::open(
     plane_peers: None,
     plane_gateways: None,
     moved_offered: Map::new(),
-    person_chains: person_chains,
+    person_chains: pdoc.chains,
+    person_chains_heard: pdoc.heard,
+    person_chains_aside: pdoc.aside,
     lock_bodies: Map::new(),
     skipped_rig_ws: [],
     skipped_rig_frame: None,
@@ -1412,7 +1473,16 @@ pub fn CloudStore::set_person_chains(self : CloudStore, chains : Array[(String, 
 }
 
 pub fn CloudStore::save_person_chains(self : CloudStore) -> Result[Unit, String] {
-  write_person_chains(self.data, self.person_chains, self.fs, sep=self.sep)
+  write_person_chains_doc(
+    self.data,
+    PersonChainsDoc::{
+      chains: self.person_chains,
+      heard: self.person_chains_heard,
+      aside: self.person_chains_aside,
+    },
+    self.fs,
+    sep=self.sep,
+  )
 }
 
 pub fn CloudStore::bodies(self : CloudStore, ws : Option[String] = None) -> LockBodies {
@@ -2444,8 +2514,9 @@ pub fn name_joined_lock(
   at_machine : Bool,
   now_secs : Int64,
   sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[String, String] {
-  let kept = read_lock(data, fs, ws=Some(ws), sep=sep)
+  let kept = read_lock(data, fs, ws=Some(ws), sep=sep, verify_fn=verify_fn)
   match kept {
     Some(kl) => {
       let mut i = 0
@@ -2503,8 +2574,16 @@ pub fn join_workspace(
   rig_person_hash : Option[String] = None,
   expected_workspace : Option[String] = None,
   store : Option[CloudStore] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
   sep : String = "/",
 ) -> Result[JoinWorkspaceResult, String] {
+  let eff_vf = match verify_fn {
+    Some(_) => verify_fn
+    None => match store {
+      Some(cs) => cs.verify_fn
+      None => None
+    }
+  }
   let state = match read_state(data, fs, sep=sep) {
     Ok(Some(s)) => s
     Ok(None) => return Err("this station is in no workspace: enroll it first")
@@ -2522,7 +2601,7 @@ pub fn join_workspace(
   let now_f = now_secs.to_double()
   let cs = match store {
     Some(s) => s
-    None => CloudStore::open(data, fs, sep=sep)
+    None => CloudStore::open(data, fs, sep=sep, verify_fn=eff_vf)
   }
   let mut any_on = match cs.locked(now_f, ws=None) {
     Some(_) => true
@@ -2781,7 +2860,7 @@ pub fn join_workspace(
   let named = match lock_hash {
     Some(h) => {
       if joined_ws != state.workspace {
-        match name_joined_lock(data, fs, joined_ws, h, at_machine, now_secs, sep=sep) {
+        match name_joined_lock(data, fs, joined_ws, h, at_machine, now_secs, sep=sep, verify_fn=eff_vf) {
           Ok(v) => v
           Err(e) => return Err(e)
         }
