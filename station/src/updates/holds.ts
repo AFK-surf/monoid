@@ -1,7 +1,8 @@
 // What keeps the station from updating itself for now (updates.ts `toUpdateTo`): work an update would cut off and that
 // is not handed over to the next station process, as running turns are. A command run with a vault grant
 // (vault/secrets.ts `run`) is one: its proxy or ssh-agent lives in this process, so the command, which goes on, would
-// be left without it. Once the last hold is let go, an update that waited goes ahead (`onLetGo`).
+// be left without it. A login under way (logins/index.ts) is another: its command and the person's step in the browser
+// would end with this process. Once the last hold is let go, an update that waited goes ahead (`onLetGo`).
 const holds = new Set<symbol>();
 const told = new Set<() => void>();
 

@@ -22,6 +22,7 @@ import { WINDOWS, platform } from "../src/platform/index.ts";
 import { approval, fakeBrowser, script, temp, upon } from "./accounts-fakes.ts";
 import type { LoginPages } from "../src/logins/pages.ts";
 import { given, settle, testClock } from "./hub-fakes.ts";
+import { holding } from "../src/updates/holds.ts";
 
 type Json = any;
 
@@ -963,6 +964,35 @@ test("a login not finished in time ends, its command with it; one that cannot ru
   } finally {
     await m.logins.close();
   }
+});
+
+test("a login under way keeps the station from updating itself until it ends: done, cancelled or out of time", { skip: skipped }, async () => {
+  const m = machine();
+  script(join(m.bin, "fakeslow"), `#!/bin/sh\necho "Visit https://example.com/activate"\nread forever\n`);
+  script(join(m.bin, "fakequick"), `#!/bin/sh\necho "Logged in as octocat"\n`);
+  const before = holding();
+  try {
+    const slow = await m.logins.start(["fakeslow"], m.by);
+    await m.until(slow.id, (l) => l.step === "open", "open");
+    assert.equal(holding(), before + 1, "held while the person signs in");
+    m.logins.cancel(slow.id);
+    await m.until(slow.id, (l) => l.state === "cancelled", "cancelled");
+    assert.equal(holding(), before, "let go once cancelled");
+    const late = await m.logins.start(["fakeslow"], m.by);
+    await m.until(late.id, (l) => l.step === "open", "open again");
+    assert.equal(holding(), before + 1);
+    await m.time.adjust(TIMEOUT_MS);
+    await m.until(late.id, (l) => l.state === "failed", "timed out");
+    assert.equal(holding(), before, "let go once out of time");
+    const quick = await m.logins.start(["fakequick"], m.by);
+    await m.until(quick.id, (l) => l.endedAt !== undefined, "ended");
+    assert.equal(holding(), before, "let go once done");
+    await m.logins.start(["fakeslow"], m.by);
+    assert.equal(holding(), before + 1);
+  } finally {
+    await m.logins.close();
+  }
+  assert.equal(holding(), before, "let go as the station stops");
 });
 
 test("a login out of time started again from its card: the same command for the same chat, its agent told, the card following the new one; once, and only one that did not log in", { skip: skipped }, async () => {

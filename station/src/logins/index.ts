@@ -21,6 +21,7 @@ import { type Answered, type Callback, Refused, relay } from "./relay.ts";
 import type { LoginPages } from "./pages.ts";
 import { type Key, KEYS, LoginRun, type Screen } from "./run.ts";
 import { type InWorkspace, sees } from "../store/rows.ts";
+import { hold as holdUpdates } from "../updates/holds.ts";
 
 export { Refused };
 
@@ -80,7 +81,9 @@ export type Login = {
 /// A login started again by a person from its card: the one it was, the new one, whom it is for, who started it again.
 export type Again = { from: Login; login: Login; starter: Starter; by: Person };
 
-type Entry = { run: LoginRun; starter: Starter; doneBy?: Person; again?: string; from?: string; screens: Set<(screen: Screen) => void> };
+/// `letGo`: what keeps the station from updating itself while the login is under way (updates/holds.ts), let go as it
+/// ends: its command and the person's step in the browser do not go on in the next station process.
+type Entry = { run: LoginRun; starter: Starter; doneBy?: Person; again?: string; from?: string; screens: Set<(screen: Screen) => void>; letGo: () => void };
 
 export type LoginsOptions = {
   data: string;
@@ -266,7 +269,7 @@ export class Logins {
     // (one started meanwhile for the same command is given rather than another)
     const meanwhile = [...this.#entries.values()].find((e) => e.run.active && e.run.command.join("\0") === words.join("\0"));
     if (meanwhile) return this.#shown(meanwhile);
-    const entry: Entry = { starter, screens: new Set(), run: undefined as unknown as LoginRun };
+    const entry: Entry = { starter, screens: new Set(), run: undefined as unknown as LoginRun, letGo: holdUpdates() };
     entry.run = new LoginRun({
       id,
       command: words,
@@ -286,7 +289,13 @@ export class Logins {
       },
     });
     this.#entries.set(id, entry);
-    await entry.run.start();
+    try {
+      await entry.run.start();
+    } catch (e) {
+      // (not started: nothing of it to wait for)
+      entry.letGo();
+      throw e;
+    }
     return this.#shown(entry);
   }
 
@@ -294,6 +303,7 @@ export class Logins {
     const id = entry.run.id;
     if (this.#endedOnce.has(id)) return;
     this.#endedOnce.add(id);
+    entry.letGo();
     this.#pages?.close(pageKey(id));
     const shown = this.#shown(entry);
     try {
@@ -560,7 +570,10 @@ export class Logins {
 
   /// Every login ended (the station stopping: they end with it).
   async close(): Promise<void> {
-    for (const e of this.#entries.values()) e.run.close();
+    for (const e of this.#entries.values()) {
+      e.letGo();
+      e.run.close();
+    }
     this.#entries.clear();
     await this.#fibers.close();
     await this.written();
