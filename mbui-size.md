@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [c76f57771](https://github.com/AFK-surf/monoid/commit/c76f5777167157b08f93aae71073e90428e54cd4) feat(shell): add image.thumb operation for station | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
 | [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 2.62 | 3.54 | 14.64 | 37.45 | 57.19 | 32.78 | 66.76 | 101.14 | 120.89 |
 | [276814db2](https://github.com/AFK-surf/monoid/commit/276814db2cd81bfdc2d14adc1aa475a285ef4d06) fix(station): retry failed cross-station Comma syn | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
-| [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
 | [c76f57771](https://github.com/AFK-surf/monoid/commit/c76f5777167157b08f93aae71073e90428e54cd4) feat(shell): add image.thumb operation for station | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.57 |
 | [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.61 |
 | [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.74 |
 | [276814db2](https://github.com/AFK-surf/monoid/commit/276814db2cd81bfdc2d14adc1aa475a285ef4d06) fix(station): retry failed cross-station Comma syn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.87 |
-| [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
