@@ -1,0 +1,444 @@
+// Comprehensive deterministic tests for Wave 17B-4 Native AirPlay & Android TV parity:
+// - Capabilities, error HTTP status mapping, device lookup & `device_control` validation
+// - AirPlay worker NDJSON RPC, scan candidate parsing, pairing cancel/TTL/rebind, HTTP control routes
+// - Android TV X.509 DER build & RSA modulus/exponent extraction, mDNS merge & host probe
+// - Android TV Remote v2 state machine & control frames, ADB validators/parsers/command builders
+// - Streaming 4-byte `AndroidTvDemuxer`, `commit_any_device_add` rollback & `commit_device_rebind` merge
+
+import "base_codec"
+
+fn w17_assert(cond : Bool, msg : String) -> Unit {
+  debug_assert(cond, msg)
+}
+
+fn w17_make_mem_creds(
+  store : Map[String, String],
+  fail_set : Bool = false,
+) -> DeviceCredentialPort {
+  DeviceCredentialPort::{
+    get: fn(ws : String, id : String) -> Result[Option[String], String] {
+      Ok(store.get(ws + "\u{00}" + id))
+    },
+    set: fn(ws : String, id : String, payload : String) -> Result[Unit, String] {
+      if fail_set {
+        return Err("simulated disk full")
+      }
+      store.set(ws + "\u{00}" + id, payload)
+      Ok(())
+    },
+    delete: fn(ws : String, id : String) -> Result[Unit, String] {
+      store.remove(ws + "\u{00}" + id)
+      Ok(())
+    },
+  }
+}
+
+test "w17b4 capabilities, error status mapping, lookup, and device_control validation" {
+  let ap_caps = airplay_capabilities(["companion", "airplay", "raop"])
+  w17_assert(array_contains_str(ap_caps, "remote"), "ap remote")
+  w17_assert(array_contains_str(ap_caps, "apps"), "ap apps")
+  w17_assert(array_contains_str(ap_caps, "play_url"), "ap play_url")
+  w17_assert(array_contains_str(ap_caps, "stream_audio"), "ap stream_audio")
+  w17_assert(ap_caps.length() == 8, "ap cap count == 8")
+
+  let atv_remote_caps = android_tv_capabilities(["atv_remote"])
+  w17_assert(array_contains_str(atv_remote_caps, "remote"), "atv remote")
+  w17_assert(!array_contains_str(atv_remote_caps, "screenshot"), "atv remote no screenshot")
+  let atv_both_caps = android_tv_capabilities(["atv_remote", "adb"])
+  w17_assert(array_contains_str(atv_both_caps, "screenshot"), "atv adb screenshot")
+  w17_assert(array_contains_str(atv_both_caps, "adb"), "atv adb cap")
+  w17_assert(atv_both_caps.length() == 9, "atv deduped cap count == 9")
+
+  w17_assert(device_error_http_status("invalid_pin") == 422, "422")
+  w17_assert(device_error_http_status("adb_unauthorized") == 401, "401")
+  w17_assert(device_error_http_status("device_not_found") == 404, "404")
+  w17_assert(device_error_http_status("pyatv_missing") == 503, "503")
+  w17_assert(device_error_http_status("adb_missing") == 503, "503 adb")
+  w17_assert(device_error_http_status("connect_failed") == 502, "502")
+
+  let reg = DeviceRegistry::new()
+  let tv = DeviceSpec::{
+    id: "1111222233334444",
+    name: "Living Room TV",
+    kind: DeviceKind::AndroidTv,
+    target: "192.168.1.52",
+    baud: None,
+    model: Some("Shield TV"),
+    protocols: Some(["atv_remote", "adb"]),
+    paired: Some(true),
+  }
+  w17_assert(reg.add("ws1", "u1", "a@b.com", "A", tv, 100L) is Ok(_), "add tv")
+  w17_assert(reg.find_by_name_or_id("ws1", "living room tv") is Ok(_), "find ci name")
+  w17_assert(reg.find_by_name_or_id("ws1", "1111222233334444") is Ok(_), "find id")
+  w17_assert(reg.find_by_name_or_id("ws2", "Living Room TV") is Err(_), "cross-ws isolated")
+
+  // device_control validation
+  w17_assert(validate_device_control_request(tv, "screenshot", false) is Ok(_), "atv screenshot ok")
+  w17_assert(validate_device_control_request(tv, "remote", false) is Ok(_), "atv remote ok")
+  w17_assert(validate_device_control_request(tv, "bogus", false) is Err(_), "atv bogus err")
+
+  let ap = DeviceSpec::{
+    id: "aaaa1111bbbb2222",
+    name: "Apple TV",
+    kind: DeviceKind::AirPlay,
+    target: "AA:BB:CC:DD",
+    baud: None,
+    model: None,
+    protocols: Some(["airplay", "raop"]),
+    paired: Some(true),
+  }
+  w17_assert(validate_device_control_request(ap, "stream_audio", false) is Err(_), "stream_audio needs path")
+  w17_assert(validate_device_control_request(ap, "stream_audio", true) is Ok(_), "stream_audio with path ok")
+
+  let tcp = DeviceSpec::{
+    id: "cccc1111dddd2222",
+    name: "Router",
+    kind: DeviceKind::Tcp,
+    target: "10.0.0.1:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  w17_assert(validate_device_control_request(tcp, "status", false) is Err(_), "tcp rejected on device_control")
+}
+
+test "w17b4 AirPlay worker NDJSON RPC, scan candidates, cancel/TTL, and HTTP control routes" {
+  let req_line = encode_airplay_worker_rpc(7, "scan", base_codec::json_obj([("timeoutMs", base_codec::json_int(4000))]))
+  w17_assert(req_line.contains("\"id\":7") && req_line.contains("\"method\":\"scan\""), "rpc line")
+
+  match decode_airplay_worker_reply("{\"id\":7,\"ok\":true,\"result\":{\"online\":true}}\n") {
+    Some(AirPlayWorkerReply::Ok(id, _)) => w17_assert(id == 7, "ok id")
+    _ => w17_assert(false, "expected Ok reply")
+  }
+  match decode_airplay_worker_reply("{\"id\":8,\"ok\":false,\"error\":{\"code\":\"auth_failed\",\"message\":\"bad pin\"}}") {
+    Some(AirPlayWorkerReply::Err(id, e)) => w17_assert(id == 8 && e.code == "auth_failed", "err reply")
+    _ => w17_assert(false, "expected Err reply")
+  }
+
+  let scan_json = match base_codec::json_parse(
+    "[{\"identifier\":\"AA:BB:CC\",\"name\":\"Bedroom\",\"address\":\"192.168.1.30\",\"model\":\"AppleTV\",\"protocols\":[{\"protocol\":\"airplay\",\"pairing\":\"mandatory\"},{\"protocol\":\"invalid\",\"pairing\":\"optional\"}]}]",
+  ) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+  let cands = parse_airplay_scan_candidates(scan_json, ["192.168.1.30"])
+  w17_assert(cands.length() == 1, "1 candidate")
+  w17_assert(cands[0].already_added == true, "marked alreadyAdded by address")
+  w17_assert(cands[0].protocols.length() == 1 && cands[0].protocols[0].protocol == "airplay", "filtered protocols")
+
+  // Cancel & workspace isolation
+  let mgr = AirPlayPairingManager::new(30000L)
+  let st = match mgr.start("ws1", "AA:BB", Some("192.168.1.30"), Some("ATV"), Some("AppleTV"), ["airplay"], Some("tok-1"), true, 1000L) {
+    Ok(s) => s
+    Err(_) => {
+      w17_assert(false, "start failed")
+      return
+    }
+  }
+  // Wrong workspace cannot cancel
+  w17_assert(mgr.cancel("ws2", st.pair_id) is None, "cross-ws cancel ignored")
+  w17_assert(mgr.active_token("ws1", st.pair_id) is Some(_), "still active")
+  match mgr.cancel("ws1", st.pair_id) {
+    Some(tok) => w17_assert(tok == "tok-1", "cancelled token returned")
+    None => w17_assert(false, "expected token")
+  }
+
+  // HTTP control route dispatch
+  let ok_status = dispatch_airplay_http_route(
+    "GET",
+    "/status",
+    Bytes::new(0),
+    None,
+    fn(act : String, _args : Option[base_codec::Json]) -> Result[base_codec::Json, AirPlayError] {
+      w17_assert(act == "status", "status action")
+      Ok(base_codec::json_obj([("online", base_codec::json_bool(true))]))
+    },
+    fn(_b : Bytes, _ext : String) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+  )
+  w17_assert(ok_status.status == 200, "GET /status 200")
+
+  let reject_stream_on_action = dispatch_airplay_http_route(
+    "POST",
+    "/action",
+    "{\"action\":\"stream_audio\"}".to_bytes(),
+    None,
+    fn(_act : String, _args : Option[base_codec::Json]) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+    fn(_b : Bytes, _ext : String) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+  )
+  w17_assert(reject_stream_on_action.status == 400, "stream_audio rejected on /action with 400")
+
+  let ok_audio = dispatch_airplay_http_route(
+    "POST",
+    "/stream-audio",
+    "RIFFaudio".to_bytes(),
+    Some("dir/track.WAV"),
+    fn(_act : String, _args : Option[base_codec::Json]) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+    fn(b : Bytes, ext : String) -> Result[base_codec::Json, AirPlayError] {
+      w17_assert(b.length() == 9 && ext == ".wav", "audio bytes and safe ext")
+      Ok(base_codec::json_obj([("streamed", base_codec::json_bool(true))]))
+    },
+  )
+  w17_assert(ok_audio.status == 200, "POST /stream-audio 200")
+
+  let not_found = dispatch_airplay_http_route(
+    "GET",
+    "/unknown",
+    Bytes::new(0),
+    None,
+    fn(_a : String, _args : Option[base_codec::Json]) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+    fn(_b : Bytes, _ext : String) -> Result[base_codec::Json, AirPlayError] { Ok(base_codec::json_null()) },
+  )
+  w17_assert(not_found.status == 404, "unknown route 404")
+}
+
+test "w17b4 Android TV X.509 DER build, PEM roundtrip, RSA modulus/exponent parse, and mDNS merge" {
+  // Build a synthetic RSA SPKI DER: SEQUENCE { AlgorithmIdentifier, BIT STRING { RSAPublicKey { n, e } } }
+  let n_bytes = Bytes::new(4)
+  n_bytes[0] = 0xC1.to_byte()
+  n_bytes[1] = 0x23.to_byte()
+  n_bytes[2] = 0x45.to_byte()
+  n_bytes[3] = 0x67.to_byte()
+  let e_bytes = Bytes::new(3)
+  e_bytes[0] = 0x01.to_byte()
+  e_bytes[1] = 0x00.to_byte()
+  e_bytes[2] = 0x01.to_byte() // 65537
+  let rsa_pub = der_sequence([der_integer(n_bytes), der_integer(e_bytes)])
+  let spki = der_sequence([der_sequence([der_oid([1, 2, 840, 113549, 1, 1, 1]), der_null()]), der_bit_string(rsa_pub)])
+  let serial = Bytes::new(4)
+  serial[0] = 0x01.to_byte()
+  serial[3] = 0x2A.to_byte()
+  let tbs = build_atv_tbs_certificate("still.fail", spki, serial, 1767225600000L)
+  let sig = Bytes::new(16)
+  let pem = assemble_signed_x509_cert_pem(tbs, sig)
+  w17_assert(pem.contains("-----BEGIN CERTIFICATE-----"), "PEM header")
+  let decoded_der = match pem_to_der(pem) {
+    Some(d) => d
+    None => {
+      w17_assert(false, "pem_to_der failed")
+      return
+    }
+  }
+  w17_assert(cert_sha256_hex(decoded_der).length() == 64, "sha256 hex 64 chars")
+  match extract_rsa_modulus_exponent_from_cert_der(decoded_der) {
+    Ok((mod_out, exp_out)) => {
+      w17_assert(mod_out.length() == 4 && (mod_out[0].to_int() & 0xFF) == 0xC1 && (mod_out[3].to_int() & 0xFF) == 0x67, "modulus extracted")
+      w17_assert(exp_out.length() == 3 && (exp_out[0].to_int() & 0xFF) == 0x01 && (exp_out[2].to_int() & 0xFF) == 0x01, "exponent extracted")
+    }
+    Err(e) => w17_assert(false, "RSA extract failed: " + e)
+  }
+
+  // mDNS merge across remote + adb-tls-connect + adb-tls-pairing
+  let pkt1 = ParsedMdnsRecords::{
+    ptrs: [(MDNS_SVC_REMOTE, "Shield._androidtvremote2._tcp.local")],
+    srvs: [("Shield._androidtvremote2._tcp.local", "shield.local", 6466)],
+    txts: [("Shield._androidtvremote2._tcp.local", [("fn", "Living Shield"), ("md", "SHIELD Android TV")])],
+    as_recs: [("shield.local", "192.168.1.52")],
+  }
+  let pkt2 = ParsedMdnsRecords::{
+    ptrs: [(MDNS_SVC_ADB_CONNECT, "adb-1._adb-tls-connect._tcp.local"), (MDNS_SVC_ADB_PAIR, "adb-p._adb-tls-pairing._tcp.local")],
+    srvs: [("adb-1._adb-tls-connect._tcp.local", "shield.local", 37411), ("adb-p._adb-tls-pairing._tcp.local", "shield.local", 41234)],
+    txts: [],
+    as_recs: [],
+  }
+  let merged = merge_mdns_records([pkt1, pkt2])
+  w17_assert(merged.length() == 1, "merged into 1 candidate by IP")
+  w17_assert(merged[0].name == "Living Shield", "name from remote TXT")
+  w17_assert(merged[0].model == "SHIELD Android TV", "model from remote TXT")
+  w17_assert(merged[0].protocols.length() == 2, "both atv_remote and adb")
+  let marked = mark_atv_candidates_already_added(merged, ["192.168.1.52"])
+  w17_assert(marked[0].already_added == true, "marked alreadyAdded")
+
+  // Host probe candidate builder
+  match build_probed_atv_candidate("192.168.1.60:5555", true, true) {
+    Some(c) => {
+      w17_assert(c.identifier == "192.168.1.60:5555", "explicit port preserved in identifier")
+      w17_assert(c.protocols.length() == 2, "probed 2 protocols")
+    }
+    None => w17_assert(false, "expected probed candidate")
+  }
+}
+
+test "w17b4 Android TV Remote v2 state machine, ADB parsers/commands, and HTTP routes" {
+  let state = AtvRemoteState::new()
+  // Ping auto-reply
+  match apply_atv_remote_server_msg(state, DecodedRemoteMessage::RemotePingRequest(42)) {
+    Some(reply_frame) => {
+      let fr = AtvFrameReader::new()
+      match fr.push(reply_frame) {
+        Ok(fs) => {
+          w17_assert(fs.length() == 1, "1 ping response frame")
+          match decode_remote_message(fs[0]) {
+            Ok(DecodedRemoteMessage::RemotePingResponse(v)) => w17_assert(v == 42, "ping echo 42")
+            _ => w17_assert(false, "expected RemotePingResponse")
+          }
+        }
+        Err(_) => w17_assert(false, "frame decode failed")
+      }
+    }
+    None => w17_assert(false, "expected ping response")
+  }
+  let _ = apply_atv_remote_server_msg(state, DecodedRemoteMessage::RemoteConfigure(Some(622), Some("Chromecast"), Some("Google")))
+  let _ = apply_atv_remote_server_msg(state, DecodedRemoteMessage::RemoteStart(true))
+  let _ = apply_atv_remote_server_msg(state, DecodedRemoteMessage::RemoteSetVolumeLevel(5, 20, false, None))
+  let _ = apply_atv_remote_server_msg(state, DecodedRemoteMessage::RemoteImeShowRequest(3, None))
+
+  // Remote hold generates START_LONG + END_LONG
+  match build_atv_remote_control_frames(
+    state,
+    "remote",
+    base_codec::json_obj([("key", base_codec::json_str("select")), ("press", base_codec::json_str("hold"))]),
+  ) {
+    Ok((frames, _)) => w17_assert(frames.length() == 2, "hold sends 2 frames")
+    Err(e) => w17_assert(false, "remote hold err: " + e.message)
+  }
+  // Volume level 50% of max 20 = 10 -> +5 steps from 5
+  match build_atv_remote_control_frames(
+    state,
+    "volume",
+    base_codec::json_obj([("level", base_codec::json_int(50))]),
+  ) {
+    Ok((frames, _)) => w17_assert(frames.length() == 5, "volume 5->10 sends 5 up frames")
+    Err(e) => w17_assert(false, "volume level err: " + e.message)
+  }
+  // Unsupported action on Remote v2 returns not_supported
+  match build_atv_remote_control_frames(state, "apps", base_codec::json_obj([])) {
+    Err(e) => w17_assert(e.code == "not_supported", "apps not_supported on remote")
+    Ok(_) => w17_assert(false, "expected err")
+  }
+
+  // ADB validation & parsers
+  w17_assert(validate_wireless_adb_pin("123456") is Ok(_), "6-digit pin ok")
+  w17_assert(validate_wireless_adb_pin("12345a") is Err(_), "non-digit pin rejected")
+  w17_assert(check_adb_connect_output("1.2.3.4:5555", 0, "connected to 1.2.3.4:5555", "") is Ok(_), "connect ok")
+  w17_assert(check_adb_connect_output("1.2.3.4:5555", 0, "unable to connect to 1.2.3.4:5555", "") is Err(_), "unable to connect rejected")
+  match check_adb_state_output("1.2.3.4:5555", 1, "", "error: device unauthorized.") {
+    Err(e) => w17_assert(e.code == "adb_unauthorized", "unauthorized mapped")
+    Ok(_) => w17_assert(false, "expected adb_unauthorized")
+  }
+
+  let status_j = parse_adb_status_dumps(
+    "192.168.1.52:5555",
+    "SHIELD",
+    "NVIDIA",
+    "11",
+    "mWakefulness=Awake",
+    "mCurrentFocus=Window{abc u0 com.google.android.youtube.tv/MainActivity}",
+    "volume is 8 in range [0..15]",
+  )
+  let status_s = base_codec::json_stringify(status_j)
+  w17_assert(status_s.contains("\"power\":\"on\""), "power on")
+  w17_assert(status_s.contains("\"foregroundApp\":\"com.google.android.youtube.tv\""), "foregroundApp")
+  w17_assert(status_s.contains("\"volume\":8") && status_s.contains("\"volumeMax\":15"), "volume parsed")
+
+  let pkgs_j = parse_adb_packages_output("package:com.netflix.ninja\npackage:org.videolan.vlc\n")
+  w17_assert(base_codec::json_stringify(pkgs_j).contains("com.netflix.ninja"), "packages parsed")
+
+  let play_j = parse_adb_playing_dump("state=PlaybackState {state=3, position=100}\ndescription=Episode 1, Show\n")
+  w17_assert(base_codec::json_stringify(play_j).contains("\"playbackState\":3"), "playing parsed")
+
+  // ADB command builders reject bad package names
+  w17_assert(build_adb_control_commands("launch", base_codec::json_obj([("app", base_codec::json_str("com.bad;rm -rf /"))])) is Err(_), "bad pkg rejected")
+  w17_assert(build_adb_control_commands("launch", base_codec::json_obj([("app", base_codec::json_str("com.netflix.ninja"))])) is Ok(_), "valid pkg ok")
+  w17_assert(build_adb_control_commands("launch", base_codec::json_obj([("app", base_codec::json_str("https://youtube.com/watch?v=1"))])) is Ok(_), "valid url ok")
+
+  // Android TV HTTP route dispatch
+  let ss_resp = dispatch_android_tv_http_route(
+    "POST",
+    "/screenshot",
+    Bytes::new(0),
+    fn(_a : String, _args : Option[base_codec::Json]) -> Result[base_codec::Json, AndroidTvError] { Ok(base_codec::json_null()) },
+    fn() -> Result[(Bytes, PngDimensions), AndroidTvError] {
+      Ok(("PNGDATA".to_bytes(), PngDimensions::{ width: 1920, height: 1080 }))
+    },
+  )
+  w17_assert(ss_resp.status == 200 && ss_resp.content_type == "image/png", "POST /screenshot 200 image/png")
+}
+
+test "w17b4 streaming AndroidTvDemuxer, commit_any_device_add rollback, and commit_device_rebind merge" {
+  // Split-chunk 4-byte ADB demuxer
+  let d_adb = AndroidTvDemuxer::new(true)
+  w17_assert(d_adb.push("00".to_bytes()) is None, "need 4 bytes")
+  match d_adb.push("0chost:version".to_bytes()) {
+    Some((AndroidTvRoute::AdbRaw, all)) => w17_assert(bytes_to_str(all) == "000chost:version", "replayed full ADB head")
+    _ => w17_assert(false, "expected AdbRaw")
+  }
+  let d_http = AndroidTvDemuxer::new(true)
+  w17_assert(d_http.push("GE".to_bytes()) is None, "wait for 4 bytes")
+  match d_http.push("T /status HTTP/1.1\r\n\r\n".to_bytes()) {
+    Some((AndroidTvRoute::HttpControl, all)) => w17_assert(bytes_to_str(all).starts_with("GET /status"), "replayed HTTP head")
+    _ => w17_assert(false, "expected HttpControl")
+  }
+
+  // commit_any_device_add: preserves pairId on duplicate-name error; rolls back on cred write error; merges on Android TV rebind
+  let reg = DeviceRegistry::new()
+  let ap_mgr = AirPlayPairingManager::new(60000L)
+  let atv_mgr = AndroidTvPairingManager::new(60000L)
+  let mem_store : Map[String, String] = Map::new()
+  let creds_ok = w17_make_mem_creds(mem_store, fail_set=false)
+  let creds_fail = w17_make_mem_creds(mem_store, fail_set=true)
+
+  // Pair Android TV atv_remote first
+  let s1 = match atv_mgr.start_with_meta("ws1", "192.168.1.52", Some("192.168.1.52"), Some("Shield"), None, ["atv_remote"], Some(6467), None, None, Some("atv_rem_1"), true, 1000L) {
+    Ok(s) => s
+    Err(_) => {
+      w17_assert(false, "start_with_meta failed")
+      return
+    }
+  }
+  w17_assert(atv_mgr.record_step_credentials("ws1", s1.pair_id, "atv_remote", "{\"host\":\"192.168.1.52\",\"remotePort\":6466}"), "record remote cred")
+  w17_assert(atv_mgr.finish_step("ws1", s1.pair_id, false, Some("SHIELD"), None, 1100L) is Ok(_), "finish remote")
+
+  let spec = DeviceSpec::{
+    id: "abcdef0123456789",
+    name: "Living TV",
+    kind: DeviceKind::AndroidTv,
+    target: "192.168.1.52",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  // Failure writing credentials rolls back registry entry AND preserves pairId!
+  match commit_any_device_add(reg, ap_mgr, atv_mgr, creds_fail, "ws1", "u1", "a@b.com", "A", spec, Some(s1.pair_id), 100L) {
+    DeviceCommitResult::Err(500, _) => ()
+    _ => w17_assert(false, "expected 500 on cred write failure")
+  }
+  w17_assert(reg.get("ws1", "abcdef0123456789") is None, "registry rolled back")
+  w17_assert(atv_mgr.peek_credentials("ws1", s1.pair_id) is Some(_), "pairId preserved after failure")
+
+  // Succeed with working credential store
+  match commit_any_device_add(reg, ap_mgr, atv_mgr, creds_ok, "ws1", "u1", "a@b.com", "A", spec, Some(s1.pair_id), 100L) {
+    DeviceCommitResult::Ok(kept) => {
+      w17_assert(match kept.device.paired { Some(true) => true _ => false }, "paired=true")
+      w17_assert(match kept.device.model { Some(m) => m == "SHIELD" None => false }, "model inherited from pairing")
+    }
+    DeviceCommitResult::Err(_, msg) => w17_assert(false, "commit add failed: " + msg)
+  }
+  w17_assert(atv_mgr.peek_credentials("ws1", s1.pair_id) is None, "pairId consumed after success")
+
+  // Now re-pair / add ADB protocol to the same Android TV (even with :5555 port in identifier!)
+  let s2 = match atv_mgr.start_with_meta("ws1", "192.168.1.52:5555", Some("192.168.1.52"), None, None, ["adb"], None, Some(5555), Some("legacy_tcp"), Some("atv_adb_1"), false, 2000L) {
+    Ok(s) => s
+    Err(_) => {
+      w17_assert(false, "start adb rebind failed")
+      return
+    }
+  }
+  w17_assert(atv_mgr.record_step_credentials("ws1", s2.pair_id, "adb", "{\"host\":\"192.168.1.52\",\"port\":5555,\"mode\":\"legacy_tcp\",\"serial\":\"192.168.1.52:5555\"}"), "record adb cred")
+  w17_assert(atv_mgr.finish_step("ws1", s2.pair_id, false, None, None, 2100L) is Ok(_), "finish adb")
+
+  match commit_device_rebind(reg, ap_mgr, atv_mgr, creds_ok, "ws1", "abcdef0123456789", s2.pair_id) {
+    DeviceCommitResult::Ok(updated) => {
+      match updated.device.protocols {
+        Some(ps) => w17_assert(array_contains_str(ps, "atv_remote") && array_contains_str(ps, "adb"), "protocols unioned")
+        None => w17_assert(false, "expected protocols")
+      }
+      match mem_store.get("ws1\u{00}abcdef0123456789") {
+        Some(merged_json) => w17_assert(merged_json.contains("\"atv_remote\"") && merged_json.contains("\"adb\""), "credentials merged")
+        None => w17_assert(false, "missing merged creds")
+      }
+    }
+    DeviceCommitResult::Err(_, msg) => w17_assert(false, "rebind failed: " + msg)
+  }
+}

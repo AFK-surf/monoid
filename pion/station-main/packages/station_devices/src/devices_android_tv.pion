@@ -1374,13 +1374,31 @@ struct AtvPairSession {
   pair_id : String
   ws : String
   identifier : String
+  address : Option[String]
+  name : Option[String]
   protocols : Array[String]
+  pair_port : Option[Int]
+  adb_port : Option[Int]
+  adb_mode : Option[String]
   mut index : Int
   mut pair_token : Option[String]
+  mut device_provides_pin : Bool
   mut paired_protocols : Array[String]
   mut model : Option[String]
+  mut remote_cred_json : Option[String]
+  mut adb_cred_json : Option[String]
   mut completed : Bool
   mut expires_at_ms : Int64
+}
+
+pub struct CompletedAndroidTvPairing {
+  pub identifier : String
+  pub address : Option[String]
+  pub name : Option[String]
+  pub model : Option[String]
+  pub protocols : Array[String]
+  pub credentials_json : String
+  pub has_credentials : Bool
 }
 
 pub struct AndroidTvPairingManager {
@@ -1405,6 +1423,37 @@ pub fn AndroidTvPairingManager::start(
   first_token : Option[String],
   now_ms : Int64,
 ) -> Result[AtvPairStep, AndroidTvError] {
+  self.start_with_meta(
+    ws,
+    identifier,
+    None,
+    None,
+    None,
+    raw_protocols,
+    None,
+    None,
+    None,
+    first_token,
+    true,
+    now_ms,
+  )
+}
+
+pub fn AndroidTvPairingManager::start_with_meta(
+  self : AndroidTvPairingManager,
+  ws : String,
+  identifier : String,
+  address : Option[String],
+  name : Option[String],
+  model : Option[String],
+  raw_protocols : Array[String],
+  pair_port : Option[Int],
+  adb_port : Option[Int],
+  adb_mode : Option[String],
+  first_token : Option[String],
+  device_provides_pin : Bool,
+  now_ms : Int64,
+) -> Result[AtvPairStep, AndroidTvError] {
   let id_trim = trim_ascii(identifier)
   if id_trim == "" {
     return Err(AndroidTvError::{ code: "invalid_params", message: "identifier is required" })
@@ -1425,11 +1474,19 @@ pub fn AndroidTvPairingManager::start(
       pair_id,
       ws,
       identifier: id_trim,
+      address,
+      name,
       protocols: [],
+      pair_port,
+      adb_port,
+      adb_mode,
       index: 0,
       pair_token: None,
+      device_provides_pin: false,
       paired_protocols: [],
-      model: None,
+      model,
+      remote_cred_json: None,
+      adb_cred_json: None,
       completed: true,
       expires_at_ms: now_ms + self.ttl_ms,
     })
@@ -1440,7 +1497,7 @@ pub fn AndroidTvPairingManager::start(
       total: 0,
       protocol: None,
       paired_protocols: [],
-      model: None,
+      model,
     })
   }
   let first = protocols[0]
@@ -1448,11 +1505,19 @@ pub fn AndroidTvPairingManager::start(
     pair_id,
     ws,
     identifier: id_trim,
+    address,
+    name,
     protocols,
+    pair_port,
+    adb_port,
+    adb_mode,
     index: 0,
     pair_token: first_token,
+    device_provides_pin,
     paired_protocols: [],
-    model: None,
+    model,
+    remote_cred_json: None,
+    adb_cred_json: None,
     completed: false,
     expires_at_ms: now_ms + self.ttl_ms,
   })
@@ -1463,8 +1528,216 @@ pub fn AndroidTvPairingManager::start(
     total: protocols.length(),
     protocol: Some(first),
     paired_protocols: [],
-    model: None,
+    model,
   })
+}
+
+/// Record credentials JSON (`atv_remote` or `adb` sub-object) for the active protocol step.
+pub fn AndroidTvPairingManager::record_step_credentials(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+  protocol : String,
+  cred_json : String,
+) -> Bool {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      if protocol == "atv_remote" {
+        s.remote_cred_json = Some(cred_json)
+        return true
+      } else if protocol == "adb" {
+        s.adb_cred_json = Some(cred_json)
+        return true
+      }
+      return false
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn atv_session_credentials_json(s : AtvPairSession) -> (String, Bool) {
+  let fields : Array[(String, base_codec::Json)] = []
+  match s.remote_cred_json {
+    Some(rj) => {
+      match base_codec::json_parse(rj) {
+        base_codec::JsonParseResult::Ok(v) => fields.push(("atv_remote", v))
+        base_codec::JsonParseResult::Err(_) => fields.push(("atv_remote", base_codec::json_str(rj)))
+      }
+    }
+    None => ()
+  }
+  match s.adb_cred_json {
+    Some(aj) => {
+      match base_codec::json_parse(aj) {
+        base_codec::JsonParseResult::Ok(v) => fields.push(("adb", v))
+        base_codec::JsonParseResult::Err(_) => fields.push(("adb", base_codec::json_str(aj)))
+      }
+    }
+    None => ()
+  }
+  (base_codec::json_stringify(base_codec::json_obj(fields)), fields.length() > 0)
+}
+
+pub fn AndroidTvPairingManager::peek_credentials(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[CompletedAndroidTvPairing] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws && s.completed {
+      let (cj, has_c) = atv_session_credentials_json(s)
+      return Some(CompletedAndroidTvPairing::{
+        identifier: s.identifier,
+        address: s.address,
+        name: s.name,
+        model: s.model,
+        protocols: s.paired_protocols,
+        credentials_json: cj,
+        has_credentials: has_c,
+      })
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn AndroidTvPairingManager::consume_credentials(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Bool {
+  let kept : Array[AtvPairSession] = []
+  let mut removed = false
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws && s.completed {
+      removed = true
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  removed
+}
+
+pub fn AndroidTvPairingManager::cancel(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[String] {
+  let kept : Array[AtvPairSession] = []
+  let mut cancelled_token : Option[String] = None
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      cancelled_token = s.pair_token
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  cancelled_token
+}
+
+pub fn AndroidTvPairingManager::expire_due(self : AndroidTvPairingManager, now_ms : Int64) -> Array[String] {
+  let expired_tokens : Array[String] = []
+  let kept : Array[AtvPairSession] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if now_ms >= s.expires_at_ms {
+      match s.pair_token {
+        Some(tok) => expired_tokens.push(tok)
+        None => ()
+      }
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  expired_tokens
+}
+
+pub fn AndroidTvPairingManager::close_all(self : AndroidTvPairingManager) -> Array[String] {
+  let tokens : Array[String] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    match self.sessions[i].pair_token {
+      Some(tok) => tokens.push(tok)
+      None => ()
+    }
+    i = i + 1
+  }
+  self.sessions = []
+  tokens
+}
+
+pub fn AndroidTvPairingManager::active_token(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[String] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      return s.pair_token
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Merge newly paired Android TV credentials JSON over existing credentials JSON (preserving other protocol).
+pub fn merge_atv_credentials_json(existing_json : Option[String], new_json : String) -> String {
+  let merged : Array[(String, base_codec::Json)] = []
+  let new_obj = match base_codec::json_parse(new_json) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => m
+    _ => []
+  }
+  match existing_json {
+    Some(ej) => {
+      match base_codec::json_parse(ej) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(old_m)) => {
+          let mut i = 0
+          while i < old_m.length() {
+            let (k, v) = old_m[i]
+            let mut overridden = false
+            let mut j = 0
+            while j < new_obj.length() {
+              if new_obj[j].0 == k {
+                overridden = true
+                break
+              }
+              j = j + 1
+            }
+            if !overridden {
+              merged.push((k, v))
+            }
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let mut k = 0
+  while k < new_obj.length() {
+    merged.push(new_obj[k])
+    k = k + 1
+  }
+  base_codec::json_stringify(base_codec::json_obj(merged))
 }
 
 /// Record a failed finish attempt; keeps `pair_token` alive on retryable `invalid_pin` or `adb_unauthorized`.
@@ -1556,4 +1829,1410 @@ pub fn AndroidTvPairingManager::finish_step(
     paired_protocols: s.paired_protocols,
     model: s.model,
   })
+}
+
+// ── X.509 DER Builders, PEM Codec & RSA Public Key Extractor (`cert.ts`) ──
+
+pub fn der_sequence(items : Array[Bytes]) -> Bytes {
+  der_tag(0x30, concat_bytes(items))
+}
+
+pub fn der_set(items : Array[Bytes]) -> Bytes {
+  der_tag(0x31, concat_bytes(items))
+}
+
+pub fn der_integer(buf : Bytes) -> Bytes {
+  let trimmed = strip_leading_zeros(buf)
+  if trimmed.length() > 0 && (trimmed[0].to_int() & 0x80) != 0 {
+    let z = Bytes::new(1)
+    der_tag(0x02, concat_bytes([z, trimmed]))
+  } else {
+    der_tag(0x02, trimmed)
+  }
+}
+
+pub fn der_bit_string(buf : Bytes) -> Bytes {
+  let z = Bytes::new(1)
+  der_tag(0x03, concat_bytes([z, buf]))
+}
+
+pub fn der_oid(oid : Array[Int]) -> Bytes {
+  if oid.length() < 2 {
+    return der_tag(0x06, Bytes::new(0))
+  }
+  let out : Array[Byte] = []
+  out.push(((oid[0] * 40 + oid[1]) & 0xFF).to_byte())
+  let mut i = 2
+  while i < oid.length() {
+    let mut v = oid[i]
+    if v == 0 {
+      out.push(0x00.to_byte())
+    } else {
+      let stack : Array[Int] = []
+      while v > 0 {
+        stack.push(v & 0x7F)
+        v = v >> 7
+      }
+      let mut j = stack.length() - 1
+      while j >= 0 {
+        let byte_val = if j == 0 { stack[j] } else { stack[j] | 0x80 }
+        out.push((byte_val & 0xFF).to_byte())
+        j = j - 1
+      }
+    }
+    i = i + 1
+  }
+  der_tag(0x06, bytes_from_array(out))
+}
+
+pub fn der_utf8(s : String) -> Bytes {
+  der_tag(0x0C, s.to_bytes())
+}
+
+pub fn der_null() -> Bytes {
+  let b = Bytes::new(2)
+  b[0] = 0x05.to_byte()
+  b[1] = 0x00.to_byte()
+  b
+}
+
+pub fn der_to_pem(der : Bytes, label : String) -> String {
+  let b64 = base_codec::base64_encode(der)
+  let raw = b64.to_bytes()
+  let sb = StringBuilder::new()
+  sb.write_string("-----BEGIN ")
+  sb.write_string(label)
+  sb.write_string("-----\n")
+  let mut i = 0
+  while i < raw.length() {
+    let end = if i + 64 < raw.length() { i + 64 } else { raw.length() }
+    sb.write_string(slice_bytes_str(raw, i, end))
+    sb.write_char('\n')
+    i = end
+  }
+  sb.write_string("-----END ")
+  sb.write_string(label)
+  sb.write_string("-----\n")
+  sb.to_string()
+}
+
+pub fn pem_to_der(pem : String) -> Option[Bytes] {
+  let lines = split_by_byte(pem, 0x0A)
+  let sb = StringBuilder::new()
+  let mut in_body = false
+  let mut i = 0
+  while i < lines.length() {
+    let line = trim_ascii(lines[i])
+    if str_starts_with_ci(line, "-----begin ") {
+      in_body = true
+    } else if str_starts_with_ci(line, "-----end ") {
+      break
+    } else if in_body && line != "" {
+      sb.write_string(line)
+    }
+    i = i + 1
+  }
+  let body = sb.to_string()
+  if body == "" {
+    None
+  } else {
+    base_codec::base64_decode(body)
+  }
+}
+
+/// Build RFC 5280 v3 TBSCertificate DER (`CN=still.fail`, 10-year validity, SHA256withRSA, BasicConstraints CA:FALSE).
+pub fn build_atv_tbs_certificate(
+  common_name : String,
+  spki_der : Bytes,
+  serial : Bytes,
+  now_ms : Int64,
+) -> Bytes {
+  let oid_sha256_rsa = [1, 2, 840, 113549, 1, 1, 11]
+  let oid_cn = [2, 5, 4, 3]
+  let oid_basic_constraints = [2, 5, 29, 19]
+  let alg_id = der_sequence([der_oid(oid_sha256_rsa), der_null()])
+  let name = der_sequence([der_set([der_sequence([der_oid(oid_cn), der_utf8(common_name)])])])
+  let one_day_ms : Int64 = 86400000.to_int64()
+  let ten_years_ms : Int64 = 3650.to_int64() * one_day_ms
+  let validity = der_sequence([der_x509_time(now_ms - one_day_ms), der_x509_time(now_ms + ten_years_ms)])
+  let basic_ext = der_sequence([der_oid(oid_basic_constraints), der_tag(0x04, der_sequence([]))])
+  let extensions = der_tag(0xA3, der_sequence([basic_ext]))
+  let v3_byte = Bytes::new(1)
+  v3_byte[0] = 0x02.to_byte()
+  let version = der_tag(0xA0, der_integer(v3_byte))
+  der_sequence([version, der_integer(serial), alg_id, name, validity, name, spki_der, extensions])
+}
+
+/// Assemble a signed X.509 v3 PEM certificate from `tbs_der` and SHA256withRSA `signature`.
+pub fn assemble_signed_x509_cert_pem(tbs_der : Bytes, signature : Bytes) -> String {
+  let alg_id = der_sequence([der_oid([1, 2, 840, 113549, 1, 1, 11]), der_null()])
+  let cert_der = der_sequence([tbs_der, alg_id, der_bit_string(signature)])
+  der_to_pem(cert_der, "CERTIFICATE")
+}
+
+/// Lowercase hex SHA-256 fingerprint of a DER X.509 certificate.
+pub fn cert_sha256_hex(cert_der : Bytes) -> String {
+  crypto::sha256_hex(cert_der)
+}
+
+struct DerTlv {
+  tag : Int
+  content : Bytes
+  next : Int
+}
+
+fn read_der_tlv(buf : Bytes, offset : Int) -> Result[DerTlv, String] {
+  if offset < 0 || offset + 2 > buf.length() {
+    return Err("truncated DER TLV")
+  }
+  let tag = buf[offset].to_int() & 0xFF
+  let b1 = buf[offset + 1].to_int() & 0xFF
+  let mut pos = offset + 2
+  let mut len = 0
+  if b1 < 0x80 {
+    len = b1
+  } else {
+    let n_bytes = b1 & 0x7F
+    if n_bytes == 0 || n_bytes > 4 || pos + n_bytes > buf.length() {
+      return Err("invalid DER length")
+    }
+    let mut i = 0
+    while i < n_bytes {
+      len = (len << 8) | (buf[pos + i].to_int() & 0xFF)
+      i = i + 1
+    }
+    pos = pos + n_bytes
+  }
+  if pos + len > buf.length() {
+    return Err("DER content exceeds buffer")
+  }
+  Ok(DerTlv::{ tag, content: sub_bytes(buf, pos, pos + len), next: pos + len })
+}
+
+/// Extract unsigned big-endian RSA `(modulus, exponent)` bytes directly from a DER X.509 certificate.
+pub fn extract_rsa_modulus_exponent_from_cert_der(cert_der : Bytes) -> Result[(Bytes, Bytes), String] {
+  let outer = match read_der_tlv(cert_der, 0) {
+    Ok(t) => if t.tag == 0x30 { t } else { return Err("certificate is not a DER SEQUENCE") }
+    Err(e) => return Err(e)
+  }
+  let tbs = match read_der_tlv(outer.content, 0) {
+    Ok(t) => if t.tag == 0x30 { t } else { return Err("TBSCertificate is not a DER SEQUENCE") }
+    Err(e) => return Err(e)
+  }
+  // Walk TBSCertificate: [0] version (optional), serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo
+  let mut pos = 0
+  let first = match read_der_tlv(tbs.content, pos) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  if first.tag == 0xA0 {
+    pos = first.next
+  }
+  // Skip serialNumber, signature, issuer, validity, subject (5 elements)
+  let mut skip = 0
+  while skip < 5 {
+    let el = match read_der_tlv(tbs.content, pos) {
+      Ok(t) => t
+      Err(e) => return Err(e)
+    }
+    pos = el.next
+    skip = skip + 1
+  }
+  let spki = match read_der_tlv(tbs.content, pos) {
+    Ok(t) => if t.tag == 0x30 { t } else { return Err("SubjectPublicKeyInfo is not a DER SEQUENCE") }
+    Err(e) => return Err(e)
+  }
+  // SPKI: algorithm SEQUENCE, subjectPublicKey BIT STRING
+  let alg = match read_der_tlv(spki.content, 0) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let pub_bits = match read_der_tlv(spki.content, alg.next) {
+    Ok(t) => if t.tag == 0x03 && t.content.length() > 1 { t } else { return Err("invalid SubjectPublicKey BIT STRING") }
+    Err(e) => return Err(e)
+  }
+  // Strip unused-bits leading byte (0x00)
+  let rsa_der = sub_bytes(pub_bits.content, 1, pub_bits.content.length())
+  let rsa_seq = match read_der_tlv(rsa_der, 0) {
+    Ok(t) => if t.tag == 0x30 { t } else { return Err("RSAPublicKey is not a DER SEQUENCE") }
+    Err(e) => return Err(e)
+  }
+  let n_tlv = match read_der_tlv(rsa_seq.content, 0) {
+    Ok(t) => if t.tag == 0x02 { t } else { return Err("RSA modulus is not a DER INTEGER") }
+    Err(e) => return Err(e)
+  }
+  let e_tlv = match read_der_tlv(rsa_seq.content, n_tlv.next) {
+    Ok(t) => if t.tag == 0x02 { t } else { return Err("RSA exponent is not a DER INTEGER") }
+    Err(e) => return Err(e)
+  }
+  Ok((strip_leading_zeros(n_tlv.content), strip_leading_zeros(e_tlv.content)))
+}
+
+// ── mDNS Record Merger & Host Probe Candidate Builder (`discovery.ts`) ──
+
+pub struct AndroidTvCandidateProtocol {
+  pub protocol : String
+  pub pairing : String
+  pub port : Option[Int]
+  pub pair_port : Option[Int]
+  pub adb_mode : Option[String]
+}
+
+pub struct AndroidTvCandidate {
+  pub identifier : String
+  pub name : String
+  pub address : String
+  pub model : String
+  pub remote_port : Option[Int]
+  pub adb_port : Option[Int]
+  pub adb_pair_port : Option[Int]
+  pub protocols : Array[AndroidTvCandidateProtocol]
+  pub already_added : Bool
+}
+
+pub struct AndroidTvEnvStatus {
+  pub ready : Bool
+  pub adb_available : Bool
+}
+
+pub fn infer_mdns_service(instance : String) -> Option[String] {
+  let low = to_ascii_lower(instance)
+  let svcs = [MDNS_SVC_REMOTE, MDNS_SVC_ADB_CONNECT, MDNS_SVC_ADB_PAIR]
+  let mut i = 0
+  while i < svcs.length() {
+    let suffix = "." + svcs[i]
+    let lb = low.to_bytes()
+    let sb = suffix.to_bytes()
+    if lb.length() >= sb.length() && slice_bytes_str(lb, lb.length() - sb.length(), lb.length()) == suffix {
+      return Some(svcs[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn instance_display_name(instance : String) -> String {
+  let dot = find_substr(instance, "._", 0)
+  if dot > 0 {
+    slice_bytes_str(instance.to_bytes(), 0, dot)
+  } else {
+    instance
+  }
+}
+
+fn txt_kv_get(kvs : Array[(String, String)], key : String) -> Option[String] {
+  let mut i = 0
+  while i < kvs.length() {
+    if kvs[i].0 == key {
+      return Some(kvs[i].1)
+    }
+    i = i + 1
+  }
+  None
+}
+
+struct MergedMdnsHost {
+  ip : String
+  mut name : Option[String]
+  mut model : Option[String]
+  mut remote_port : Option[Int]
+  mut adb_port : Option[Int]
+  mut adb_pair_port : Option[Int]
+}
+
+/// Merge accumulated mDNS DNS-SD packets across `_androidtvremote2`, `_adb-tls-connect`,
+/// and `_adb-tls-pairing` into unified per-IP `AndroidTvCandidate` entries (`discovery.ts:157-238`).
+pub fn merge_mdns_records(packets : Array[ParsedMdnsRecords]) -> Array[AndroidTvCandidate] {
+  let ptr_map : Map[String, String] = Map::new()
+  let srv_map : Map[String, (String, Int)] = Map::new()
+  let txt_map : Map[String, Array[(String, String)]] = Map::new()
+  let a_map : Map[String, String] = Map::new()
+  let srv_order : Array[String] = []
+
+  let mut p_idx = 0
+  while p_idx < packets.length() {
+    let pkt = packets[p_idx]
+    let mut i = 0
+    while i < pkt.ptrs.length() {
+      let (svc, inst) = pkt.ptrs[i]
+      ptr_map.set(inst, svc)
+      i = i + 1
+    }
+    let mut j = 0
+    while j < pkt.srvs.length() {
+      let (inst, host, port) = pkt.srvs[j]
+      if srv_map.get(inst) is None {
+        srv_order.push(inst)
+      }
+      srv_map.set(inst, (host, port))
+      j = j + 1
+    }
+    let mut k = 0
+    while k < pkt.txts.length() {
+      let (inst, kvs) = pkt.txts[k]
+      let merged_kv : Array[(String, String)] = match txt_map.get(inst) {
+        Some(prev) => prev
+        None => []
+      }
+      let mut m = 0
+      while m < kvs.length() {
+        merged_kv.push(kvs[m])
+        m = m + 1
+      }
+      txt_map.set(inst, merged_kv)
+      k = k + 1
+    }
+    let mut a = 0
+    while a < pkt.as_recs.length() {
+      let (host, ip) = pkt.as_recs[a]
+      a_map.set(host, ip)
+      a = a + 1
+    }
+    p_idx = p_idx + 1
+  }
+
+  let by_ip : Map[String, MergedMdnsHost] = Map::new()
+  let ip_order : Array[String] = []
+  let mut s_idx = 0
+  while s_idx < srv_order.length() {
+    let inst = srv_order[s_idx]
+    match srv_map.get(inst) {
+      Some((host, port)) => {
+        match a_map.get(host) {
+          Some(ip) => {
+            let svc_opt = match ptr_map.get(inst) {
+              Some(svc) => Some(svc)
+              None => infer_mdns_service(inst)
+            }
+            match svc_opt {
+              Some(svc) => {
+                let entry = match by_ip.get(ip) {
+                  Some(e) => e
+                  None => {
+                    let ne = MergedMdnsHost::{
+                      ip,
+                      name: None,
+                      model: None,
+                      remote_port: None,
+                      adb_port: None,
+                      adb_pair_port: None,
+                    }
+                    by_ip.set(ip, ne)
+                    ip_order.push(ip)
+                    ne
+                  }
+                }
+                let txt = match txt_map.get(inst) {
+                  Some(kv) => kv
+                  None => []
+                }
+                let label = match txt_kv_get(txt, "name") {
+                  Some(v) => if v != "" { v } else { instance_display_name(inst) }
+                  None => {
+                    match txt_kv_get(txt, "fn") {
+                      Some(v) => if v != "" { v } else { instance_display_name(inst) }
+                      None => instance_display_name(inst)
+                    }
+                  }
+                }
+                if svc == MDNS_SVC_REMOTE {
+                  entry.remote_port = Some(port)
+                  if label != "" {
+                    entry.name = Some(label)
+                  }
+                  match txt_kv_get(txt, "md") {
+                    Some(v) => if v != "" { entry.model = Some(v) }
+                    None => {
+                      match txt_kv_get(txt, "model") {
+                        Some(v) => if v != "" { entry.model = Some(v) }
+                        None => ()
+                      }
+                    }
+                  }
+                } else if svc == MDNS_SVC_ADB_CONNECT {
+                  entry.adb_port = Some(port)
+                  if entry.name is None && label != "" {
+                    entry.name = Some(label)
+                  }
+                  match txt_kv_get(txt, "name") {
+                    Some(v) => if entry.model is None && v != "" { entry.model = Some(v) }
+                    None => ()
+                  }
+                } else if svc == MDNS_SVC_ADB_PAIR {
+                  entry.adb_pair_port = Some(port)
+                  if entry.name is None && label != "" {
+                    entry.name = Some(label)
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    s_idx = s_idx + 1
+  }
+
+  let out : Array[AndroidTvCandidate] = []
+  let mut idx = 0
+  while idx < ip_order.length() {
+    match by_ip.get(ip_order[idx]) {
+      Some(m) => {
+        let protos : Array[AndroidTvCandidateProtocol] = []
+        match m.remote_port {
+          Some(rp) => {
+            protos.push(AndroidTvCandidateProtocol::{
+              protocol: "atv_remote",
+              pairing: "mandatory",
+              port: Some(rp),
+              pair_port: Some(6467),
+              adb_mode: None,
+            })
+          }
+          None => ()
+        }
+        if m.adb_port is Some(_) || m.adb_pair_port is Some(_) {
+          protos.push(AndroidTvCandidateProtocol::{
+            protocol: "adb",
+            pairing: if m.adb_pair_port is Some(_) { "mandatory" } else { "optional" },
+            port: m.adb_port,
+            pair_port: m.adb_pair_port,
+            adb_mode: Some("tls_wireless"),
+          })
+        }
+        if protos.length() > 0 {
+          let cname = match m.name {
+            Some(n) => n
+            None => "Android TV (" + m.ip + ")"
+          }
+          let cmodel = match m.model {
+            Some(md) => md
+            None => "Android TV"
+          }
+          out.push(AndroidTvCandidate::{
+            identifier: m.ip,
+            name: cname,
+            address: m.ip,
+            model: cmodel,
+            remote_port: m.remote_port,
+            adb_port: m.adb_port,
+            adb_pair_port: m.adb_pair_port,
+            protocols: protos,
+            already_added: false,
+          })
+        }
+      }
+      None => ()
+    }
+    idx = idx + 1
+  }
+  out
+}
+
+/// Build an `AndroidTvCandidate` from active manual IP port probe results (`discovery.ts:285-325`).
+pub fn build_probed_atv_candidate(
+  host_spec : String,
+  has_remote : Bool,
+  has_adb : Bool,
+  remote_port : Int = 6466,
+  remote_pair_port : Int = 6467,
+  default_adb_port : Int = 5555,
+) -> Option[AndroidTvCandidate] {
+  let spec = parse_host_spec(host_spec)
+  if spec.host == "" {
+    return None
+  }
+  let adb_port = match spec.explicit_port {
+    Some(p) => p
+    None => default_adb_port
+  }
+  let protos : Array[AndroidTvCandidateProtocol] = []
+  if has_remote {
+    protos.push(AndroidTvCandidateProtocol::{
+      protocol: "atv_remote",
+      pairing: "mandatory",
+      port: Some(remote_port),
+      pair_port: Some(remote_pair_port),
+      adb_mode: None,
+    })
+  }
+  if has_adb {
+    protos.push(AndroidTvCandidateProtocol::{
+      protocol: "adb",
+      pairing: "optional",
+      port: Some(adb_port),
+      pair_port: None,
+      adb_mode: Some(if adb_port == 5555 { "legacy_tcp" } else { "tls_wireless" }),
+    })
+  }
+  if protos.length() == 0 {
+    return None
+  }
+  let identifier = match spec.explicit_port {
+    Some(p) => spec.host + ":" + p.to_string()
+    None => spec.host
+  }
+  Some(AndroidTvCandidate::{
+    identifier,
+    name: "Android TV (" + spec.host + ")",
+    address: spec.host,
+    model: "Android TV",
+    remote_port: if has_remote { Some(remote_port) } else { None },
+    adb_port: if has_adb { Some(adb_port) } else { None },
+    adb_pair_port: None,
+    protocols: protos,
+    already_added: false,
+  })
+}
+
+pub fn mark_atv_candidates_already_added(
+  candidates : Array[AndroidTvCandidate],
+  existing_targets : Array[String],
+) -> Array[AndroidTvCandidate] {
+  let low : Array[String] = []
+  let mut t = 0
+  while t < existing_targets.length() {
+    low.push(to_ascii_lower(existing_targets[t]))
+    t = t + 1
+  }
+  let out : Array[AndroidTvCandidate] = []
+  let mut i = 0
+  while i < candidates.length() {
+    let c = candidates[i]
+    let added = array_contains_str(low, to_ascii_lower(c.identifier)) ||
+    (c.address != "" && array_contains_str(low, to_ascii_lower(c.address)))
+    out.push(AndroidTvCandidate::{
+      identifier: c.identifier,
+      name: c.name,
+      address: c.address,
+      model: c.model,
+      remote_port: c.remote_port,
+      adb_port: c.adb_port,
+      adb_pair_port: c.adb_pair_port,
+      protocols: c.protocols,
+      already_added: added,
+    })
+    i = i + 1
+  }
+  out
+}
+
+// ── Remote v2 State Machine & Control Frame Builder (`remote-client.ts`) ──
+
+pub fn assert_atv_pairing_ok(
+  msg : DecodedPairingMessage,
+  expected : PairingMsgKind,
+) -> Result[Unit, AndroidTvError] {
+  if msg.status != 200 {
+    let code = if msg.status == 402 { "invalid_pin" } else { "pair_failed" }
+    return Err(AndroidTvError::{ code, message: "TV rejected pairing step with status " + msg.status.to_string() })
+  }
+  if msg.kind != expected {
+    return Err(AndroidTvError::{ code: "pair_failed", message: "unexpected pairing message kind" })
+  }
+  Ok(())
+}
+
+pub struct AtvRemoteState {
+  pub mut model : Option[String]
+  pub mut vendor : Option[String]
+  pub mut powered : Option[Bool]
+  pub mut volume_level : Option[Int]
+  pub mut volume_max : Option[Int]
+  pub mut volume_muted : Option[Bool]
+  pub mut ime_field_counter : Int
+}
+
+pub fn AtvRemoteState::new() -> AtvRemoteState {
+  AtvRemoteState::{
+    model: None,
+    vendor: None,
+    powered: None,
+    volume_level: None,
+    volume_max: None,
+    volume_muted: None,
+    ime_field_counter: 0,
+  }
+}
+
+/// Apply an inbound Remote v2 server message to `state`; returns an optional framed reply
+/// (e.g., `RemotePingResponse` for `RemotePingRequest`).
+pub fn apply_atv_remote_server_msg(state : AtvRemoteState, msg : DecodedRemoteMessage) -> Option[Bytes] {
+  match msg {
+    DecodedRemoteMessage::RemotePingRequest(val1) => Some(atv_frame_message(encode_remote_ping_response(val1)))
+    DecodedRemoteMessage::RemoteConfigure(_, model, vendor) => {
+      if model is Some(_) {
+        state.model = model
+      }
+      if vendor is Some(_) {
+        state.vendor = vendor
+      }
+      None
+    }
+    DecodedRemoteMessage::RemoteStart(started) => {
+      state.powered = Some(started)
+      None
+    }
+    DecodedRemoteMessage::RemoteSetVolumeLevel(lvl, vmax, muted, pm) => {
+      state.volume_level = Some(lvl)
+      state.volume_max = Some(vmax)
+      state.volume_muted = Some(muted)
+      if state.model is None && pm is Some(_) {
+        state.model = pm
+      }
+      None
+    }
+    DecodedRemoteMessage::RemoteImeShowRequest(fc, _) => {
+      state.ime_field_counter = fc
+      None
+    }
+    _ => None
+  }
+}
+
+/// Build framed Remote v2 outbound protobuf packets and JSON control result (`remote-client.ts:387-501`).
+pub fn build_atv_remote_control_frames(
+  state : AtvRemoteState,
+  action : String,
+  args : base_codec::Json,
+) -> Result[(Array[Bytes], base_codec::Json), AndroidTvError] {
+  let frames : Array[Bytes] = []
+  if action == "status" {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("online", base_codec::json_bool(true)),
+      ("protocol", base_codec::json_str("atv_remote")),
+    ]
+    match state.model {
+      Some(m) => fields.push(("model", base_codec::json_str(m)))
+      None => ()
+    }
+    match state.vendor {
+      Some(v) => fields.push(("vendor", base_codec::json_str(v)))
+      None => ()
+    }
+    match state.powered {
+      Some(p) => fields.push(("power", base_codec::json_str(if p { "on" } else { "off" })))
+      None => ()
+    }
+    match state.volume_level {
+      Some(lvl) => {
+        fields.push(("volume", base_codec::json_int(lvl)))
+        match state.volume_max {
+          Some(mx) => fields.push(("volumeMax", base_codec::json_int(mx)))
+          None => ()
+        }
+        let muted = match state.volume_muted {
+          Some(b) => b
+          None => false
+        }
+        fields.push(("muted", base_codec::json_bool(muted)))
+      }
+      None => ()
+    }
+    return Ok((frames, base_codec::json_obj(fields)))
+  }
+  if action == "power" {
+    let desired = match json_str_opt(args, "state") {
+      Some(s) => to_ascii_lower(trim_ascii(s))
+      None => "toggle"
+    }
+    if desired == "get" {
+      let ps = match state.powered {
+        Some(true) => "on"
+        Some(false) => "off"
+        None => "unknown"
+      }
+      return Ok((frames, base_codec::json_obj([("power", base_codec::json_str(ps))])))
+    }
+    let key_code = if desired == "on" { 224 } else if desired == "off" { 223 } else { 26 }
+    frames.push(atv_frame_message(encode_remote_key_inject(key_code, REMOTE_DIRECTION_SHORT)))
+    return Ok((
+      frames,
+      base_codec::json_obj([
+        ("ok", base_codec::json_bool(true)),
+        ("action", base_codec::json_str("power")),
+        ("state", base_codec::json_str(desired)),
+      ]),
+    ))
+  }
+  if action == "remote" {
+    let key = match json_str_opt(args, "key") {
+      Some(s) => trim_ascii(s)
+      None => ""
+    }
+    let code = match resolve_android_key_code(key) {
+      Some(c) => c
+      None => return Err(AndroidTvError::{ code: "invalid_params", message: "unsupported remote key: " + key })
+    }
+    let press = match json_str_opt(args, "press") {
+      Some(s) => to_ascii_lower(trim_ascii(s))
+      None => "single"
+    }
+    let rep_raw = match json_int_opt(args, "repeat") {
+      Some(n) => n
+      None => 1
+    }
+    let repeat = if rep_raw < 1 { 1 } else if rep_raw > 20 { 20 } else { rep_raw }
+    let mut i = 0
+    while i < repeat {
+      if press == "hold" {
+        frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_START_LONG)))
+        frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_END_LONG)))
+      } else if press == "double" {
+        frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_SHORT)))
+        frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_SHORT)))
+      } else {
+        frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_SHORT)))
+      }
+      i = i + 1
+    }
+    return Ok((
+      frames,
+      base_codec::json_obj([
+        ("ok", base_codec::json_bool(true)),
+        ("key", base_codec::json_str(key)),
+        ("keyCode", base_codec::json_int(code)),
+        ("press", base_codec::json_str(press)),
+        ("repeat", base_codec::json_int(repeat)),
+      ]),
+    ))
+  }
+  if action == "launch" {
+    let app = match json_str_opt(args, "app") {
+      Some(s) => trim_ascii(s)
+      None => {
+        match json_str_opt(args, "url") {
+          Some(u) => trim_ascii(u)
+          None => ""
+        }
+      }
+    }
+    if app == "" {
+      return Err(AndroidTvError::{ code: "invalid_params", message: "launch requires args.app (URL or deep link)" })
+    }
+    frames.push(atv_frame_message(encode_remote_app_link_launch(app)))
+    return Ok((
+      frames,
+      base_codec::json_obj([("ok", base_codec::json_bool(true)), ("launched", base_codec::json_str(app))]),
+    ))
+  }
+  if action == "play_url" {
+    let u = match json_str_opt(args, "url") {
+      Some(s) => trim_ascii(s)
+      None => ""
+    }
+    if u == "" {
+      return Err(AndroidTvError::{ code: "invalid_params", message: "play_url requires args.url" })
+    }
+    frames.push(atv_frame_message(encode_remote_app_link_launch(u)))
+    return Ok((
+      frames,
+      base_codec::json_obj([("ok", base_codec::json_bool(true)), ("url", base_codec::json_str(u))]),
+    ))
+  }
+  if action == "volume" {
+    let is_mute = match json_bool_opt(args, "mute") {
+      Some(true) => true
+      _ => {
+        match json_str_opt(args, "action") {
+          Some(a) => a == "mute"
+          None => false
+        }
+      }
+    }
+    if is_mute {
+      frames.push(atv_frame_message(encode_remote_key_inject(164, REMOTE_DIRECTION_SHORT)))
+      return Ok((
+        frames,
+        base_codec::json_obj([("ok", base_codec::json_bool(true)), ("muted", base_codec::json_bool(true))]),
+      ))
+    }
+    match json_str_opt(args, "action") {
+      Some("up") => {
+        frames.push(atv_frame_message(encode_remote_key_inject(24, REMOTE_DIRECTION_SHORT)))
+        return Ok((
+          frames,
+          base_codec::json_obj([("ok", base_codec::json_bool(true)), ("direction", base_codec::json_str("up"))]),
+        ))
+      }
+      Some("down") => {
+        frames.push(atv_frame_message(encode_remote_key_inject(25, REMOTE_DIRECTION_SHORT)))
+        return Ok((
+          frames,
+          base_codec::json_obj([("ok", base_codec::json_bool(true)), ("direction", base_codec::json_str("down"))]),
+        ))
+      }
+      _ => ()
+    }
+    match json_int_opt(args, "level") {
+      Some(raw_lvl) => {
+        let target = if raw_lvl < 0 { 0 } else if raw_lvl > 100 { 100 } else { raw_lvl }
+        match (state.volume_level, state.volume_max) {
+          (Some(cur), Some(vmax)) => {
+            if vmax > 0 {
+              let target_steps = (target * vmax + 50) / 100
+              let diff = target_steps - cur
+              let code = if diff >= 0 { 24 } else { 25 }
+              let abs_d = if diff >= 0 { diff } else { 0 - diff }
+              let steps = if abs_d > 30 { 30 } else { abs_d }
+              let mut s = 0
+              while s < steps {
+                frames.push(atv_frame_message(encode_remote_key_inject(code, REMOTE_DIRECTION_SHORT)))
+                s = s + 1
+              }
+              return Ok((
+                frames,
+                base_codec::json_obj([
+                  ("ok", base_codec::json_bool(true)),
+                  ("level", base_codec::json_int(target)),
+                  ("stepsSent", base_codec::json_int(steps)),
+                ]),
+              ))
+            }
+          }
+          _ => ()
+        }
+        return Err(AndroidTvError::{
+          code: "not_supported",
+          message: "setting exact volume level requires ADB protocol or TV volume state; use args.action='up'|'down'|'mute'",
+        })
+      }
+      None => ()
+    }
+    match state.volume_level {
+      Some(lvl) => {
+        let fields : Array[(String, base_codec::Json)] = [("volume", base_codec::json_int(lvl))]
+        match state.volume_max {
+          Some(mx) => fields.push(("volumeMax", base_codec::json_int(mx)))
+          None => ()
+        }
+        let muted = match state.volume_muted {
+          Some(b) => b
+          None => false
+        }
+        fields.push(("muted", base_codec::json_bool(muted)))
+        return Ok((frames, base_codec::json_obj(fields)))
+      }
+      None => return Ok((frames, base_codec::json_obj([("volume", base_codec::json_null())])))
+    }
+  }
+  if action == "keyboard" {
+    let text = match json_str_opt(args, "text") {
+      Some(s) => s
+      None => ""
+    }
+    frames.push(atv_frame_message(encode_remote_ime_batch_edit(text, 0, state.ime_field_counter)))
+    return Ok((
+      frames,
+      base_codec::json_obj([("ok", base_codec::json_bool(true)), ("text", base_codec::json_str(text))]),
+    ))
+  }
+  Err(AndroidTvError::{
+    code: "not_supported",
+    message: "action '" + action + "' requires ADB protocol on Android TV",
+  })
+}
+
+// ── ADB Validation, Output Parsers & Command Builders (`adb-client.ts`) ──
+
+pub fn validate_wireless_adb_pin(pin : String) -> Result[String, AndroidTvError] {
+  let clean = trim_ascii(pin)
+  let raw = clean.to_bytes()
+  if raw.length() != 6 {
+    return Err(AndroidTvError::{ code: "invalid_pin", message: "Android wireless debugging pairing code must be 6 digits" })
+  }
+  let mut i = 0
+  while i < 6 {
+    if !is_ascii_digit(raw[i].to_int() & 0xFF) {
+      return Err(AndroidTvError::{ code: "invalid_pin", message: "Android wireless debugging pairing code must be 6 digits" })
+    }
+    i = i + 1
+  }
+  Ok(clean)
+}
+
+pub fn check_adb_connect_output(
+  serial : String,
+  exit_code : Int,
+  stdout : String,
+  stderr : String,
+) -> Result[Unit, AndroidTvError] {
+  let combined = trim_ascii(stdout + "\n" + stderr)
+  let low = to_ascii_lower(combined)
+  if exit_code != 0 ||
+  find_substr(low, "unable to connect", 0) >= 0 ||
+  find_substr(low, "failed to connect", 0) >= 0 ||
+  find_substr(low, "refused", 0) >= 0 ||
+  find_substr(low, "cannot connect", 0) >= 0 {
+    let detail = if combined != "" { combined } else { "exit " + exit_code.to_string() }
+    return Err(AndroidTvError::{ code: "connect_failed", message: "adb connect " + serial + " failed: " + detail })
+  }
+  Ok(())
+}
+
+pub fn check_adb_state_output(
+  serial : String,
+  exit_code : Int,
+  stdout : String,
+  stderr : String,
+) -> Result[Unit, AndroidTvError] {
+  let combined = trim_ascii(stdout + "\n" + stderr)
+  if find_substr(combined, "unauthorized", 0) >= 0 {
+    return Err(AndroidTvError::{
+      code: "adb_unauthorized",
+      message: "TV has not authorized USB/network debugging yet; click 'Always allow' on the TV screen and retry",
+    })
+  }
+  if exit_code != 0 || find_substr(combined, "device", 0) < 0 {
+    let detail = if combined != "" { combined } else { "exit " + exit_code.to_string() }
+    return Err(AndroidTvError::{ code: "connect_failed", message: "adb device " + serial + " not ready (" + detail + ")" })
+  }
+  Ok(())
+}
+
+fn is_valid_android_pkg_name(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !(is_ascii_alnum(b) || b == 0x2E || b == 0x5F) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_uri_with_scheme(s : String) -> Bool {
+  let idx = find_substr(s, "://", 0)
+  if idx <= 0 {
+    return false
+  }
+  let raw = s.to_bytes()
+  let b0 = raw[0].to_int() & 0xFF
+  if !((b0 >= 0x41 && b0 <= 0x5A) || (b0 >= 0x61 && b0 <= 0x7A)) {
+    return false
+  }
+  let mut i = 1
+  while i < idx {
+    let b = raw[i].to_int() & 0xFF
+    if !(is_ascii_alnum(b) || b == 0x2B || b == 0x2D || b == 0x2E) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn parse_uint_from(s : String, start : Int) -> Option[(Int, Int)] {
+  let raw = s.to_bytes()
+  let mut i = start
+  let mut acc = 0
+  let mut digits = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !is_ascii_digit(b) {
+      break
+    }
+    acc = acc * 10 + (b - 0x30)
+    digits = digits + 1
+    i = i + 1
+  }
+  if digits == 0 {
+    None
+  } else {
+    Some((acc, i))
+  }
+}
+
+/// Parse `cmd media_session volume --stream 3 --get` output -> `(volume, min, max)`.
+pub fn parse_adb_volume_dump(dump : String) -> Option[(Int, Int, Int)] {
+  let vi = find_substr(dump, "volume is ", 0)
+  if vi < 0 {
+    return None
+  }
+  let (vol, next1) = match parse_uint_from(dump, vi + 10) {
+    Some(p) => p
+    None => return None
+  }
+  let ri = find_substr(dump, "in range [", next1)
+  if ri < 0 {
+    return None
+  }
+  let (vmin, next2) = match parse_uint_from(dump, ri + 10) {
+    Some(p) => p
+    None => return None
+  }
+  let di = find_substr(dump, "..", next2)
+  if di != next2 {
+    return None
+  }
+  let (vmax, _) = match parse_uint_from(dump, di + 2) {
+    Some(p) => p
+    None => return None
+  }
+  Some((vol, vmin, vmax))
+}
+
+/// Parse `pm list packages -3` output into `{ "apps": [ { "id": ..., "name": ... } ] }`.
+pub fn parse_adb_packages_output(raw : String) -> base_codec::Json {
+  let lines = split_by_byte(raw, 0x0A)
+  let apps : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < lines.length() {
+    let mut line = trim_ascii(lines[i])
+    if str_starts_with_ci(line, "package:") {
+      let lb = line.to_bytes()
+      line = trim_ascii(slice_bytes_str(lb, 8, lb.length()))
+    }
+    if line != "" {
+      apps.push(base_codec::json_obj([("id", base_codec::json_str(line)), ("name", base_codec::json_str(line))]))
+    }
+    i = i + 1
+  }
+  base_codec::json_obj([("apps", base_codec::json_arr(apps))])
+}
+
+/// Parse `dumpsys media_session` into `{ playbackState?, description? }`.
+pub fn parse_adb_playing_dump(dump : String) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  let si = find_substr(dump, "state=PlaybackState {state=", 0)
+  if si >= 0 {
+    match parse_uint_from(dump, si + 27) {
+      Some((st, _)) => fields.push(("playbackState", base_codec::json_int(st)))
+      None => ()
+    }
+  }
+  let di = find_substr(dump, "description=", 0)
+  if di >= 0 {
+    let rest_start = di + 12
+    let nl = find_substr(dump, "\n", rest_start)
+    let raw = dump.to_bytes()
+    let end = if nl >= 0 { nl } else { raw.length() }
+    let desc = trim_ascii(slice_bytes_str(raw, rest_start, end))
+    if desc != "" {
+      fields.push(("description", base_codec::json_str(desc)))
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Parse combined ADB status shell dumps into `{ online, protocol, serial, model?, manufacturer?, androidVersion?, power, foregroundApp?, volume?, volumeMin?, volumeMax? }`.
+pub fn parse_adb_status_dumps(
+  serial : String,
+  model : String,
+  manufacturer : String,
+  release : String,
+  power_dump : String,
+  focus_dump : String,
+  vol_dump : String,
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("online", base_codec::json_bool(true)),
+    ("protocol", base_codec::json_str("adb")),
+    ("serial", base_codec::json_str(serial)),
+  ]
+  if trim_ascii(model) != "" {
+    fields.push(("model", base_codec::json_str(trim_ascii(model))))
+  }
+  if trim_ascii(manufacturer) != "" {
+    fields.push(("manufacturer", base_codec::json_str(trim_ascii(manufacturer))))
+  }
+  if trim_ascii(release) != "" {
+    fields.push(("androidVersion", base_codec::json_str(trim_ascii(release))))
+  }
+  let wake_idx = find_substr(power_dump, "mWakefulness=", 0)
+  let screen_on = if wake_idx >= 0 {
+    find_substr(power_dump, "mWakefulness=Awake", wake_idx) == wake_idx
+  } else {
+    find_substr(power_dump, "Display Power: state=ON", 0) >= 0
+  }
+  fields.push(("power", base_codec::json_str(if screen_on { "on" } else { "off" })))
+  let fi = find_substr(focus_dump, "mCurrentFocus=Window{", 0)
+  if fi >= 0 {
+    let slash = find_substr(focus_dump, "/", fi)
+    if slash > fi {
+      let fb = focus_dump.to_bytes()
+      let mut sp = slash - 1
+      while sp > fi && (fb[sp].to_int() & 0xFF) != 0x20 {
+        sp = sp - 1
+      }
+      if sp + 1 < slash {
+        let pkg = slice_bytes_str(fb, sp + 1, slash)
+        if is_valid_android_pkg_name(pkg) {
+          fields.push(("foregroundApp", base_codec::json_str(pkg)))
+        }
+      }
+    }
+  }
+  match parse_adb_volume_dump(vol_dump) {
+    Some((vol, vmin, vmax)) => {
+      fields.push(("volume", base_codec::json_int(vol)))
+      fields.push(("volumeMin", base_codec::json_int(vmin)))
+      fields.push(("volumeMax", base_codec::json_int(vmax)))
+    }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Build validated ADB shell command arg lists for an Android TV control action (`adb-client.ts:395-512`).
+pub fn build_adb_control_commands(
+  action : String,
+  args : base_codec::Json,
+) -> Result[Array[Array[String]], AndroidTvError] {
+  if action == "power" {
+    let desired = match json_str_opt(args, "state") {
+      Some(s) => to_ascii_lower(trim_ascii(s))
+      None => "toggle"
+    }
+    if desired == "get" {
+      return Ok([["dumpsys", "power"]])
+    }
+    let kc = if desired == "on" { "224" } else if desired == "off" { "223" } else { "26" }
+    return Ok([["input", "keyevent", kc]])
+  }
+  if action == "remote" {
+    let key = match json_str_opt(args, "key") {
+      Some(s) => trim_ascii(s)
+      None => ""
+    }
+    let code = match resolve_android_key_code(key) {
+      Some(c) => c
+      None => return Err(AndroidTvError::{ code: "invalid_params", message: "unsupported remote key: " + key })
+    }
+    let press = match json_str_opt(args, "press") {
+      Some(s) => to_ascii_lower(trim_ascii(s))
+      None => "single"
+    }
+    let rep_raw = match json_int_opt(args, "repeat") {
+      Some(n) => n
+      None => 1
+    }
+    let repeat = if rep_raw < 1 { 1 } else if rep_raw > 20 { 20 } else { rep_raw }
+    let cmds : Array[Array[String]] = []
+    let mut i = 0
+    while i < repeat {
+      if press == "hold" {
+        cmds.push(["input", "keyevent", "--longpress", code.to_string()])
+      } else if press == "double" {
+        cmds.push(["input", "keyevent", code.to_string()])
+        cmds.push(["input", "keyevent", code.to_string()])
+      } else {
+        cmds.push(["input", "keyevent", code.to_string()])
+      }
+      i = i + 1
+    }
+    return Ok(cmds)
+  }
+  if action == "apps" {
+    return Ok([["pm", "list", "packages", "-3"]])
+  }
+  if action == "launch" {
+    let app = match json_str_opt(args, "app") {
+      Some(s) => trim_ascii(s)
+      None => {
+        match json_str_opt(args, "url") {
+          Some(u) => trim_ascii(u)
+          None => ""
+        }
+      }
+    }
+    if app == "" {
+      return Err(AndroidTvError::{ code: "invalid_params", message: "launch requires args.app (package name or URL)" })
+    }
+    if is_uri_with_scheme(app) {
+      let quoted = match quote_android_shell_arg(app) {
+        Ok(q) => q
+        Err(e) => return Err(AndroidTvError::{ code: "invalid_params", message: e })
+      }
+      return Ok([["am", "start", "-a", "android.intent.action.VIEW", "-d", quoted]])
+    }
+    if !is_valid_android_pkg_name(app) {
+      return Err(AndroidTvError::{ code: "invalid_params", message: "invalid Android package name: " + app })
+    }
+    return Ok([["monkey", "-p", app, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"]])
+  }
+  if action == "playing" {
+    return Ok([["dumpsys", "media_session"]])
+  }
+  if action == "keyboard" {
+    let text = match json_str_opt(args, "text") {
+      Some(s) => s
+      None => ""
+    }
+    if text == "" {
+      return Ok([])
+    }
+    let escaped = match escape_adb_input_text(text) {
+      Ok(e) => e
+      Err(e) => return Err(AndroidTvError::{ code: "invalid_params", message: e })
+    }
+    return Ok([["input", "text", escaped]])
+  }
+  if action == "play_url" {
+    let u = match json_str_opt(args, "url") {
+      Some(s) => trim_ascii(s)
+      None => ""
+    }
+    if u == "" {
+      return Err(AndroidTvError::{ code: "invalid_params", message: "play_url requires args.url" })
+    }
+    let quoted = match quote_android_shell_arg(u) {
+      Ok(q) => q
+      Err(e) => return Err(AndroidTvError::{ code: "invalid_params", message: e })
+    }
+    return Ok([["am", "start", "-a", "android.intent.action.VIEW", "-d", quoted]])
+  }
+  if action == "screenshot" {
+    return Err(AndroidTvError::{ code: "invalid_params", message: "screenshot must be called via POST /screenshot" })
+  }
+  Err(AndroidTvError::{ code: "unknown_action", message: "unsupported action: " + action })
+}
+
+// ── Android TV In-Process HTTP Control Route Dispatcher (`android-tv/server.ts`) ──
+
+pub let ATV_MAX_JSON_BYTES : Int = 1048576
+pub let ATV_MAX_SCREENSHOT_BYTES : Int = 33554432 // 32 MB
+
+pub fn parse_android_tv_tunnel_reply(status : Int, raw : String) -> Result[base_codec::Json, AndroidTvError] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      if status >= 200 && status < 300 {
+        match json_bool_opt(j, "ok") {
+          Some(true) => {
+            match base_codec::json_get(j, "result") {
+              Some(res) => return Ok(res)
+              None => return Ok(base_codec::json_null())
+            }
+          }
+          _ => ()
+        }
+      }
+      match base_codec::json_get(j, "error") {
+        Some(err_obj) => {
+          let code = match json_str_opt(err_obj, "code") {
+            Some(c) => c
+            None => "http_" + status.to_string()
+          }
+          let msg = match json_str_opt(err_obj, "message") {
+            Some(m) => m
+            None => "Android TV request failed (HTTP " + status.to_string() + ")"
+          }
+          return Err(AndroidTvError::{ code, message: msg })
+        }
+        None => ()
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => ()
+  }
+  let trimmed = trim_ascii(raw)
+  let msg = if trimmed != "" { trimmed } else { "Android TV request failed (HTTP " + status.to_string() + ")" }
+  Err(AndroidTvError::{ code: "http_" + status.to_string(), message: msg })
+}
+
+fn atv_http_err(err : AndroidTvError) -> DeviceHttpResponse {
+  device_http_json(
+    android_tv_error_http_status(err.code),
+    base_codec::json_obj([
+      ("ok", base_codec::json_bool(false)),
+      (
+        "error",
+        base_codec::json_obj([
+          ("code", base_codec::json_str(err.code)),
+          ("message", base_codec::json_str(err.message)),
+        ]),
+      ),
+    ]),
+  )
+}
+
+/// Dispatch an Android TV HTTP control request (`GET /status`, `POST /action`, `POST /screenshot`)
+/// (1:1 with `station/src/devices/android-tv/server.ts`).
+pub fn dispatch_android_tv_http_route(
+  method : String,
+  path : String,
+  body : Bytes,
+  on_action : (String, Option[base_codec::Json]) -> Result[base_codec::Json, AndroidTvError],
+  on_screenshot : () -> Result[(Bytes, PngDimensions), AndroidTvError],
+) -> DeviceHttpResponse {
+  if method == "GET" && path == "/status" {
+    match on_action("status", None) {
+      Ok(res) => device_http_json(200, base_codec::json_obj([("ok", base_codec::json_bool(true)), ("result", res)]))
+      Err(e) => atv_http_err(e)
+    }
+  } else if method == "POST" && path == "/action" {
+    if body.length() > ATV_MAX_JSON_BYTES {
+      return atv_http_err(AndroidTvError::{ code: "payload_too_large", message: "request body exceeds 1 MB" })
+    }
+    let text = trim_ascii(bytes_to_str(body))
+    let parsed = if text == "" {
+      base_codec::json_obj([])
+    } else {
+      match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
+        base_codec::JsonParseResult::Ok(_) => {
+          return atv_http_err(AndroidTvError::{ code: "invalid_params", message: "JSON body must be an object" })
+        }
+        base_codec::JsonParseResult::Err(_) => {
+          return atv_http_err(AndroidTvError::{ code: "invalid_params", message: "invalid JSON body" })
+        }
+      }
+    }
+    let raw_action = match json_str_opt(parsed, "action") {
+      Some(s) => s
+      None => ""
+    }
+    let action = match validate_android_tv_action(raw_action) {
+      Ok(a) => a
+      Err(e) => return atv_http_err(e)
+    }
+    let args : Option[base_codec::Json] = match base_codec::json_get(parsed, "args") {
+      Some(base_codec::Json::Obj(m)) => Some(base_codec::Json::Obj(m))
+      _ => None
+    }
+    match on_action(action, args) {
+      Ok(res) => device_http_json(200, base_codec::json_obj([("ok", base_codec::json_bool(true)), ("result", res)]))
+      Err(e) => atv_http_err(e)
+    }
+  } else if method == "POST" && path == "/screenshot" {
+    match on_screenshot() {
+      Ok((png, dim)) => {
+        if png.length() > ATV_MAX_SCREENSHOT_BYTES {
+          return atv_http_err(AndroidTvError::{ code: "payload_too_large", message: "screenshot exceeds 32 MB limit" })
+        }
+        DeviceHttpResponse::{
+          status: 200,
+          content_type: "image/png",
+          headers: [
+            ("x-image-width", dim.width.to_string()),
+            ("x-image-height", dim.height.to_string()),
+            ("connection", "close"),
+          ],
+          body: png,
+        }
+      }
+      Err(e) => atv_http_err(e)
+    }
+  } else {
+    device_http_json(
+      404,
+      base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        (
+          "error",
+          base_codec::json_obj([
+            ("code", base_codec::json_str("not_found")),
+            ("message", base_codec::json_str(method + " " + path + " not found")),
+          ]),
+        ),
+      ]),
+    )
+  }
 }

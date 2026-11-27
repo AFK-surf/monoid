@@ -846,3 +846,616 @@ pub fn is_protected_path(asked : String, real_asked : String, protected_roots : 
   }
   false
 }
+
+// ── Capabilities, Admin Error Mapping & Lookup (`station/src/devices/module.ts`) ──
+
+fn push_unique_str(arr : Array[String], v : String) -> Unit {
+  if !array_contains_str(arr, v) {
+    arr.push(v)
+  }
+}
+
+/// Desensitized capability summary derived from an AirPlay device's paired/supported protocols.
+pub fn airplay_capabilities(protocols : Array[String]) -> Array[String] {
+  let caps : Array[String] = []
+  if array_contains_str(protocols, "companion") {
+    push_unique_str(caps, "remote")
+    push_unique_str(caps, "apps")
+    push_unique_str(caps, "power")
+    push_unique_str(caps, "keyboard")
+  }
+  if array_contains_str(protocols, "airplay") {
+    push_unique_str(caps, "play_url")
+    push_unique_str(caps, "playing")
+  }
+  if array_contains_str(protocols, "raop") {
+    push_unique_str(caps, "stream_audio")
+    push_unique_str(caps, "volume")
+  }
+  caps
+}
+
+/// Desensitized capability summary derived from an Android TV device's paired/supported protocols.
+pub fn android_tv_capabilities(protocols : Array[String]) -> Array[String] {
+  let caps : Array[String] = []
+  if array_contains_str(protocols, "atv_remote") {
+    push_unique_str(caps, "remote")
+    push_unique_str(caps, "power")
+    push_unique_str(caps, "launch")
+    push_unique_str(caps, "volume")
+    push_unique_str(caps, "keyboard")
+  }
+  if array_contains_str(protocols, "adb") {
+    push_unique_str(caps, "remote")
+    push_unique_str(caps, "power")
+    push_unique_str(caps, "apps")
+    push_unique_str(caps, "launch")
+    push_unique_str(caps, "volume")
+    push_unique_str(caps, "keyboard")
+    push_unique_str(caps, "play_url")
+    push_unique_str(caps, "screenshot")
+    push_unique_str(caps, "adb")
+  }
+  caps
+}
+
+/// Map AirPlay/Android TV error codes to Admin API HTTP statuses (`module.ts` `deviceErrorAnswer`).
+pub fn device_error_http_status(code : String) -> Int {
+  if code == "invalid_params" || code == "invalid_pin" || code == "invalid_pair_id" || code == "invalid_pair_token" {
+    422
+  } else if code == "adb_unauthorized" || code == "auth_failed" {
+    401
+  } else if code == "device_not_found" {
+    404
+  } else if code == "pyatv_missing" || code == "adb_missing" {
+    503
+  } else {
+    502
+  }
+}
+
+/// Resolve a device by exact ID or case-insensitive name within a workspace (`module.ts` `named`).
+pub fn DeviceRegistry::find_by_name_or_id(
+  self : DeviceRegistry,
+  ws : String,
+  given : String,
+) -> Result[KeptDevice, String] {
+  let list = self.of(ws)
+  let trimmed = trim_ascii(given)
+  let by_id : Array[KeptDevice] = []
+  let mut i = 0
+  while i < list.length() {
+    if list[i].device.id == trimmed {
+      by_id.push(list[i])
+    }
+    i = i + 1
+  }
+  let found = if by_id.length() > 0 {
+    by_id
+  } else {
+    let lower = to_ascii_lower(trimmed)
+    let by_name : Array[KeptDevice] = []
+    let mut j = 0
+    while j < list.length() {
+      if to_ascii_lower(list[j].device.name) == lower {
+        by_name.push(list[j])
+      }
+      j = j + 1
+    }
+    by_name
+  }
+  if found.length() > 1 {
+    return Err(found.length().to_string() + " devices are named " + trimmed + ": give the id device_list shows for the one meant")
+  }
+  if found.length() == 0 {
+    if list.length() > 0 {
+      let names : Array[String] = []
+      let mut k = 0
+      while k < list.length() {
+        names.push(list[k].device.name)
+        k = k + 1
+      }
+      return Err("no device " + trimmed + " in this workspace; those it has: " + join_strings(names, ", "))
+    }
+    return Err("no device " + trimmed + " in this workspace")
+  }
+  Ok(found[0])
+}
+
+pub enum DeviceControlDispatch {
+  AirPlayAction(String)
+  AirPlayStreamAudio
+  AndroidTvAction(String)
+  AndroidTvScreenshot
+}
+
+/// Validate a `device_control` tool invocation against a device spec (`module.ts:321-359`).
+pub fn validate_device_control_request(
+  spec : DeviceSpec,
+  action : String,
+  has_audio_path : Bool,
+) -> Result[DeviceControlDispatch, String] {
+  let act = trim_ascii(action)
+  if act == "" {
+    return Err("action is required.")
+  }
+  match spec.kind {
+    DeviceKind::AirPlay => {
+      if act == "stream_audio" {
+        if !has_audio_path {
+          return Err("stream_audio requires audio_path (a local audio file path on this station)")
+        }
+        return Ok(DeviceControlDispatch::AirPlayStreamAudio)
+      }
+      if !is_airplay_control_action(act) {
+        return Err("unsupported action: " + act)
+      }
+      Ok(DeviceControlDispatch::AirPlayAction(act))
+    }
+    DeviceKind::AndroidTv => {
+      if act == "screenshot" {
+        return Ok(DeviceControlDispatch::AndroidTvScreenshot)
+      }
+      if !is_android_tv_control_action(act) {
+        return Err("unsupported action: " + act)
+      }
+      Ok(DeviceControlDispatch::AndroidTvAction(act))
+    }
+    _ => Err(spec.name + " is a " + spec.kind.as_str() + " device, not an airplay or android_tv device: use device_use instead.")
+  }
+}
+
+// ── Streaming 4-byte Android TV Demuxer (`station/src/devices/connect.ts:92-219`) ──
+
+/// Incremental 4-byte transparent stream demuxer for `android_tv` tunnels:
+/// buffers up to 4 initial bytes, classifies `AdbRaw` (`^[0-9a-f]{4}$` when `has_adb`) vs
+/// `HttpControl`, and flushes all buffered bytes on decision or EOF.
+pub struct AndroidTvDemuxer {
+  has_adb : Bool
+  mut decided : Option[AndroidTvRoute]
+  mut head_buf : Bytes
+}
+
+pub fn AndroidTvDemuxer::new(has_adb : Bool) -> AndroidTvDemuxer {
+  AndroidTvDemuxer::{ has_adb, decided: None, head_buf: Bytes::new(0) }
+}
+
+pub fn AndroidTvDemuxer::route(self : AndroidTvDemuxer) -> Option[AndroidTvRoute] {
+  self.decided
+}
+
+pub fn AndroidTvDemuxer::push(self : AndroidTvDemuxer, chunk : Bytes) -> Option[(AndroidTvRoute, Bytes)] {
+  match self.decided {
+    Some(r) => Some((r, chunk))
+    None => {
+      let combined = if self.head_buf.length() == 0 {
+        chunk
+      } else {
+        concat_bytes([self.head_buf, chunk])
+      }
+      if combined.length() >= 4 {
+        let r = classify_android_tv_stream(combined, self.has_adb)
+        self.decided = Some(r)
+        self.head_buf = Bytes::new(0)
+        Some((r, combined))
+      } else {
+        self.head_buf = combined
+        None
+      }
+    }
+  }
+}
+
+pub fn AndroidTvDemuxer::finish(self : AndroidTvDemuxer) -> Option[(AndroidTvRoute, Bytes)] {
+  match self.decided {
+    Some(_) => None
+    None => {
+      if self.head_buf.length() > 0 {
+        let r = classify_android_tv_stream(self.head_buf, self.has_adb)
+        let data = self.head_buf
+        self.decided = Some(r)
+        self.head_buf = Bytes::new(0)
+        Some((r, data))
+      } else {
+        None
+      }
+    }
+  }
+}
+
+// ── In-Process HTTP Control Response & Minimal HTTP/1.1 Parser (`memory-socket.ts`) ──
+
+pub struct DeviceHttpResponse {
+  pub status : Int
+  pub content_type : String
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+}
+
+pub fn device_http_json(status : Int, body : base_codec::Json) -> DeviceHttpResponse {
+  let payload = base_codec::json_stringify(body).to_bytes()
+  DeviceHttpResponse::{
+    status,
+    content_type: "application/json; charset=utf-8",
+    headers: [("connection", "close")],
+    body: payload,
+  }
+}
+
+pub fn device_http_reason(status : Int) -> String {
+  if status == 200 {
+    "OK"
+  } else if status == 400 {
+    "Bad Request"
+  } else if status == 401 {
+    "Unauthorized"
+  } else if status == 403 {
+    "Forbidden"
+  } else if status == 404 {
+    "Not Found"
+  } else if status == 413 {
+    "Payload Too Large"
+  } else if status == 422 {
+    "Unprocessable Entity"
+  } else if status == 501 {
+    "Not Implemented"
+  } else if status == 502 {
+    "Bad Gateway"
+  } else if status == 503 {
+    "Service Unavailable"
+  } else {
+    "Internal Server Error"
+  }
+}
+
+/// Serialize a `DeviceHttpResponse` into an HTTP/1.1 wire response (`Connection: close`).
+pub fn encode_device_http_response(resp : DeviceHttpResponse) -> Bytes {
+  let sb = StringBuilder::new()
+  sb.write_string("HTTP/1.1 ")
+  sb.write_string(resp.status.to_string())
+  sb.write_string(" ")
+  sb.write_string(device_http_reason(resp.status))
+  sb.write_string("\r\ncontent-type: ")
+  sb.write_string(resp.content_type)
+  sb.write_string("\r\ncontent-length: ")
+  sb.write_string(resp.body.length().to_string())
+  let mut i = 0
+  while i < resp.headers.length() {
+    let (k, v) = resp.headers[i]
+    sb.write_string("\r\n")
+    sb.write_string(k)
+    sb.write_string(": ")
+    sb.write_string(v)
+    i = i + 1
+  }
+  sb.write_string("\r\n\r\n")
+  concat_bytes([sb.to_string().to_bytes(), resp.body])
+}
+
+pub struct ParsedDeviceHttpRequest {
+  pub method : String
+  pub path : String
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+}
+
+/// Parse a complete single HTTP/1.1 request buffer (`METHOD /path HTTP/1.1\r\n...\r\n\r\n<body>`).
+pub fn parse_device_http_request(raw : Bytes) -> Result[ParsedDeviceHttpRequest, String] {
+  let n = raw.length()
+  let mut header_end = -1
+  let mut i = 0
+  while i + 3 < n {
+    if (raw[i].to_int() & 0xFF) == 0x0D &&
+    (raw[i + 1].to_int() & 0xFF) == 0x0A &&
+    (raw[i + 2].to_int() & 0xFF) == 0x0D &&
+    (raw[i + 3].to_int() & 0xFF) == 0x0A {
+      header_end = i
+      break
+    }
+    i = i + 1
+  }
+  if header_end < 0 {
+    return Err("incomplete HTTP/1.1 request headers")
+  }
+  let head_str = slice_bytes_str(raw, 0, header_end)
+  let lines = split_by_byte(head_str, 0x0A)
+  if lines.length() == 0 {
+    return Err("empty HTTP request line")
+  }
+  let req_line = trim_ascii(lines[0])
+  let sp1 = find_substr(req_line, " ", 0)
+  if sp1 <= 0 {
+    return Err("malformed HTTP request line")
+  }
+  let sp2 = find_substr(req_line, " ", sp1 + 1)
+  let rlb = req_line.to_bytes()
+  let method = slice_bytes_str(rlb, 0, sp1)
+  let raw_target = if sp2 > sp1 {
+    slice_bytes_str(rlb, sp1 + 1, sp2)
+  } else {
+    slice_bytes_str(rlb, sp1 + 1, rlb.length())
+  }
+  let q_idx = find_substr(raw_target, "?", 0)
+  let path = if q_idx >= 0 {
+    slice_bytes_str(raw_target.to_bytes(), 0, q_idx)
+  } else {
+    raw_target
+  }
+  let headers : Array[(String, String)] = []
+  let mut k = 1
+  while k < lines.length() {
+    let line = trim_ascii(lines[k])
+    if line != "" {
+      let colon = find_substr(line, ":", 0)
+      if colon > 0 {
+        let lb = line.to_bytes()
+        let hk = to_ascii_lower(trim_ascii(slice_bytes_str(lb, 0, colon)))
+        let hv = trim_ascii(slice_bytes_str(lb, colon + 1, lb.length()))
+        headers.push((hk, hv))
+      }
+    }
+    k = k + 1
+  }
+  let body = sub_bytes(raw, header_end + 4, n)
+  Ok(ParsedDeviceHttpRequest::{ method, path, headers, body })
+}
+
+pub fn device_http_header_get(headers : Array[(String, String)], name_lower : String) -> Option[String] {
+  let mut i = 0
+  while i < headers.length() {
+    let (k, v) = headers[i]
+    if to_ascii_lower(k) == name_lower {
+      return Some(v)
+    }
+    i = i + 1
+  }
+  None
+}
+
+// ── Unified Device Add / Rebind Commit Helpers (`android-tv/pairing.ts:340-459`) ──
+
+pub struct DeviceCredentialPort {
+  pub get : (String, String) -> Result[Option[String], String]
+  pub set : (String, String, String) -> Result[Unit, String]
+  pub delete : (String, String) -> Result[Unit, String]
+}
+
+pub enum DeviceCommitResult {
+  Ok(KeptDevice)
+  Err(Int, String)
+}
+
+pub fn normalize_host_target(t : String) -> String {
+  let lower = to_ascii_lower(trim_ascii(t))
+  let first = find_substr(lower, ":", 0)
+  if first > 0 {
+    let second = find_substr(lower, ":", first + 1)
+    if second < 0 {
+      return slice_bytes_str(lower.to_bytes(), 0, first)
+    }
+  }
+  lower
+}
+
+/// Unified commit helper for adding any device (AirPlay, Android TV, or tcp/adb/serial).
+/// Preserves `pair_id` on registry validation failure; rolls back registry entry on credential write error.
+pub fn commit_any_device_add(
+  registry : DeviceRegistry,
+  airplay : AirPlayPairingManager,
+  android_tv : AndroidTvPairingManager,
+  credentials : DeviceCredentialPort,
+  ws : String,
+  owner_sub : String,
+  owner_email : String,
+  owner_name : String,
+  spec : DeviceSpec,
+  pair_id : Option[String],
+  at_secs : Int64,
+) -> DeviceCommitResult {
+  let pid = match pair_id {
+    Some(s) => {
+      let t = trim_ascii(s)
+      if t == "" { None } else { Some(t) }
+    }
+    None => None
+  }
+  let mut peeked_model : Option[String] = None
+  let mut peeked_protocols : Option[Array[String]] = None
+  let mut peeked_creds_json : Option[String] = None
+  let mut peeked_kind = 0 // 1 = airplay, 2 = android_tv
+
+  match (spec.kind, pid) {
+    (DeviceKind::AirPlay, Some(id)) => {
+      match airplay.peek_credentials(ws, id) {
+        None => return DeviceCommitResult::Err(422, "invalid or incomplete pairing session (pairId)")
+        Some(p) => {
+          peeked_model = p.model
+          peeked_protocols = Some(p.protocols)
+          if p.credentials.length() > 0 {
+            peeked_creds_json = Some(airplay_credentials_to_json(p.credentials))
+          }
+          peeked_kind = 1
+        }
+      }
+    }
+    (DeviceKind::AndroidTv, Some(id)) => {
+      match android_tv.peek_credentials(ws, id) {
+        None => return DeviceCommitResult::Err(422, "invalid or incomplete pairing session (pairId)")
+        Some(p) => {
+          peeked_model = p.model
+          peeked_protocols = Some(p.protocols)
+          if p.has_credentials {
+            peeked_creds_json = Some(p.credentials_json)
+          }
+          peeked_kind = 2
+        }
+      }
+    }
+    _ => ()
+  }
+
+  let effective_spec = if peeked_kind == 0 {
+    spec
+  } else {
+    let eff_model = match spec.model {
+      Some(m) => if trim_ascii(m) != "" { Some(m) } else { peeked_model }
+      None => peeked_model
+    }
+    let eff_protocols = match peeked_protocols {
+      Some(ps) => if ps.length() > 0 { Some(ps) } else { spec.protocols }
+      None => spec.protocols
+    }
+    DeviceSpec::{
+      id: spec.id,
+      name: spec.name,
+      kind: spec.kind,
+      target: spec.target,
+      baud: spec.baud,
+      model: eff_model,
+      protocols: eff_protocols,
+      paired: Some(peeked_creds_json is Some(_)),
+    }
+  }
+
+  let made = match registry.add(ws, owner_sub, owner_email, owner_name, effective_spec, at_secs) {
+    Ok(k) => k
+    Err(msg) => return DeviceCommitResult::Err(422, msg)
+  }
+
+  match peeked_creds_json {
+    Some(cj) => {
+      match (credentials.set)(ws, made.device.id, cj) {
+        Ok(_) => ()
+        Err(err) => {
+          let _ = registry.remove(ws, made.device.id)
+          return DeviceCommitResult::Err(500, err)
+        }
+      }
+    }
+    None => ()
+  }
+
+  match pid {
+    Some(id) => {
+      if peeked_kind == 1 {
+        let _ = airplay.consume_credentials(ws, id)
+      } else if peeked_kind == 2 {
+        let _ = android_tv.consume_credentials(ws, id)
+      }
+    }
+    None => ()
+  }
+
+  DeviceCommitResult::Ok(made)
+}
+
+/// Unified re-pair / add-protocol commit helper for AirPlay and Android TV devices.
+/// Validates target match and non-empty credentials; merges existing credentials & protocols for Android TV.
+pub fn commit_device_rebind(
+  registry : DeviceRegistry,
+  airplay : AirPlayPairingManager,
+  android_tv : AndroidTvPairingManager,
+  credentials : DeviceCredentialPort,
+  ws : String,
+  device_id : String,
+  pair_id : String,
+) -> DeviceCommitResult {
+  let d = match registry.get(ws, device_id) {
+    Some(k) => k
+    None => return DeviceCommitResult::Err(404, "no such device on this station")
+  }
+  let is_airplay = match d.device.kind {
+    DeviceKind::AirPlay => true
+    DeviceKind::AndroidTv => false
+    _ => return DeviceCommitResult::Err(422, "only airplay and android_tv devices can be re-paired")
+  }
+  let target_low = to_ascii_lower(d.device.target)
+  let target_host = normalize_host_target(d.device.target)
+
+  if is_airplay {
+    let peeked = match airplay.peek_credentials(ws, pair_id) {
+      Some(p) => p
+      None => return DeviceCommitResult::Err(422, "invalid or incomplete pairing session (pairId)")
+    }
+    let id_match = to_ascii_lower(peeked.identifier) == target_low
+    let addr_match = match peeked.address {
+      Some(a) => a != "" && to_ascii_lower(a) == target_low
+      None => false
+    }
+    if !id_match && !addr_match {
+      return DeviceCommitResult::Err(
+        422,
+        "pairing session target (" + peeked.identifier + ") does not match device target (" + d.device.target + ")",
+      )
+    }
+    if peeked.credentials.length() == 0 {
+      return DeviceCommitResult::Err(422, "re-pairing produced no credentials; existing device credentials were kept")
+    }
+    let next_creds_json = airplay_credentials_to_json(peeked.credentials)
+    match (credentials.set)(ws, device_id, next_creds_json) {
+      Ok(_) => ()
+      Err(e) => return DeviceCommitResult::Err(500, e)
+    }
+    match registry.update_meta(ws, device_id, peeked.model, Some(peeked.protocols), Some(true)) {
+      Ok(Some(updated)) => {
+        let _ = airplay.consume_credentials(ws, pair_id)
+        DeviceCommitResult::Ok(updated)
+      }
+      Ok(None) => DeviceCommitResult::Err(404, "no such device on this station")
+      Err(e) => DeviceCommitResult::Err(422, e)
+    }
+  } else {
+    let peeked = match android_tv.peek_credentials(ws, pair_id) {
+      Some(p) => p
+      None => return DeviceCommitResult::Err(422, "invalid or incomplete pairing session (pairId)")
+    }
+    let id_match = to_ascii_lower(peeked.identifier) == target_low ||
+    normalize_host_target(peeked.identifier) == target_host
+    let addr_match = match peeked.address {
+      Some(a) => a != "" && (to_ascii_lower(a) == target_low || normalize_host_target(a) == target_host)
+      None => false
+    }
+    if !id_match && !addr_match {
+      return DeviceCommitResult::Err(
+        422,
+        "pairing session target (" + peeked.identifier + ") does not match device target (" + d.device.target + ")",
+      )
+    }
+    if !peeked.has_credentials {
+      return DeviceCommitResult::Err(422, "re-pairing produced no credentials; existing device credentials were kept")
+    }
+    let existing_json = match (credentials.get)(ws, device_id) {
+      Ok(opt) => opt
+      Err(_) => None
+    }
+    let merged_creds = merge_atv_credentials_json(existing_json, peeked.credentials_json)
+    let merged_protos : Array[String] = []
+    match d.device.protocols {
+      Some(ps) => {
+        let mut i = 0
+        while i < ps.length() {
+          push_unique_str(merged_protos, ps[i])
+          i = i + 1
+        }
+      }
+      None => ()
+    }
+    let mut j = 0
+    while j < peeked.protocols.length() {
+      push_unique_str(merged_protos, peeked.protocols[j])
+      j = j + 1
+    }
+    match (credentials.set)(ws, device_id, merged_creds) {
+      Ok(_) => ()
+      Err(e) => return DeviceCommitResult::Err(500, e)
+    }
+    match registry.update_meta(ws, device_id, peeked.model, Some(merged_protos), Some(true)) {
+      Ok(Some(updated)) => {
+        let _ = android_tv.consume_credentials(ws, pair_id)
+        DeviceCommitResult::Ok(updated)
+      }
+      Ok(None) => DeviceCommitResult::Err(404, "no such device on this station")
+      Err(e) => DeviceCommitResult::Err(422, e)
+    }
+  }
+}

@@ -1075,3 +1075,234 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   }
   rt.stop()
 }
+
+test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
+  let mock_now = fn() -> Int64 { 50000L }
+  let devs = DevicesOsRuntime::new(pairing_ttl_ms=30000L, now_fn=mock_now)
+  let tmp_root = "/mem/w17b4-data"
+  let seed = "0123456789abcdef0123456789abcdef".to_bytes()
+  let salt = "saltsaltsaltsalt".to_bytes()
+  let iv = "iviviviviviv".to_bytes()
+  let enc_files : Map[String, String] = Map::new()
+  let cred_port = station_devices::DeviceCredentialPort::{
+    get: fn(ws : String, id : String) -> Result[Option[String], String] {
+      match enc_files.get(id) {
+        None => Ok(None)
+        Some(env) => {
+          match station_devices::open_device_credentials(seed, ws, id, env) {
+            Ok(plain) => Ok(Some(plain))
+            Err(e) => Err(e)
+          }
+        }
+      }
+    },
+    set: fn(ws : String, id : String, payload : String) -> Result[Unit, String] {
+      match station_devices::seal_device_credentials(seed, ws, id, salt, iv, payload) {
+        Ok(env) => {
+          enc_files.set(id, env)
+          Ok(())
+        }
+        Err(e) => Err(e)
+      }
+    },
+    delete: fn(_ws : String, id : String) -> Result[Unit, String] {
+      enc_files.remove(id)
+      Ok(())
+    },
+  }
+  devs.set_credential_port(tmp_root, cred_port)
+
+  // 1. Encrypted AES-256-GCM + HKDF-SHA256 credential store roundtrip + cross-workspace AAD rejection
+  edge_assert((cred_port.set)("ws-a", "0123456789abcdef", "{\"airplay\":\"cred-123\"}") is Ok(_))
+  match (cred_port.get)("ws-a", "0123456789abcdef") {
+    Ok(Some(plain)) => edge_assert(plain == "{\"airplay\":\"cred-123\"}")
+    _ => panic("expected decrypted credentials")
+  }
+  edge_assert((cred_port.get)("ws-b", "0123456789abcdef") is Err(_))
+  edge_assert((cred_port.delete)("ws-a", "0123456789abcdef") is Ok(_))
+  match (cred_port.get)("ws-a", "0123456789abcdef") {
+    Ok(None) => ()
+    _ => panic("expected None after delete")
+  }
+
+  // 2. Register all 5 device kinds and verify reach_device_os dispatches every kind (zero 501s) with workspace isolation
+  let d_tcp = station_devices::DeviceSpec::{
+    id: "1000000000000001",
+    name: "Lab SSH",
+    kind: station_devices::DeviceKind::Tcp,
+    target: "10.0.0.5:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  let d_adb = station_devices::DeviceSpec::{
+    id: "1000000000000002",
+    name: "USB Pixel",
+    kind: station_devices::DeviceKind::Adb,
+    target: "emulator-5554",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  let d_ser = station_devices::DeviceSpec::{
+    id: "1000000000000003",
+    name: "ESP32",
+    kind: station_devices::DeviceKind::Serial,
+    target: "/dev/ttyUSB0",
+    baud: Some(115200),
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  let d_ap = station_devices::DeviceSpec::{
+    id: "1000000000000004",
+    name: "Apple TV",
+    kind: station_devices::DeviceKind::AirPlay,
+    target: "AA:BB:CC:DD",
+    baud: None,
+    model: Some("AppleTV"),
+    protocols: Some(["airplay", "companion", "raop"]),
+    paired: Some(true),
+  }
+  let d_atv = station_devices::DeviceSpec::{
+    id: "1000000000000005",
+    name: "Living Shield",
+    kind: station_devices::DeviceKind::AndroidTv,
+    target: "192.168.1.52",
+    baud: None,
+    model: Some("SHIELD"),
+    protocols: Some(["atv_remote", "adb"]),
+    paired: Some(true),
+  }
+  edge_assert(devs.registry.add("ws-a", "u1", "a@b.com", "A", d_tcp, 100L) is Ok(_))
+  edge_assert(devs.registry.add("ws-a", "u1", "a@b.com", "A", d_adb, 100L) is Ok(_))
+  edge_assert(devs.registry.add("ws-a", "u1", "a@b.com", "A", d_ser, 100L) is Ok(_))
+  edge_assert(devs.registry.add("ws-a", "u1", "a@b.com", "A", d_ap, 100L) is Ok(_))
+  edge_assert(devs.registry.add("ws-a", "u1", "a@b.com", "A", d_atv, 100L) is Ok(_))
+
+  match devs.reach_device_os("ws-a", "1000000000000001") {
+    Ok(DeviceTunnelTarget::TcpDial(h, p)) => edge_assert(h == "10.0.0.5" && p == 22)
+    _ => panic("expected TcpDial")
+  }
+  match devs.reach_device_os("ws-a", "1000000000000002") {
+    Ok(DeviceTunnelTarget::TcpDial(h, p)) => edge_assert(h == "127.0.0.1" && p == 5037)
+    _ => panic("expected Adb TcpDial")
+  }
+  match devs.reach_device_os("ws-a", "1000000000000003") {
+    Ok(DeviceTunnelTarget::SerialPort(path, baud)) => edge_assert(path == "/dev/ttyUSB0" && baud == 115200)
+    _ => panic("expected SerialPort")
+  }
+  match devs.reach_device_os("ws-a", "1000000000000004") {
+    Ok(DeviceTunnelTarget::AirPlayHttp(r)) => edge_assert(r.id == "1000000000000004" && r.ws == "ws-a")
+    _ => panic("expected AirPlayHttp")
+  }
+  // Cross-workspace reach_device_os returns 404
+  match devs.reach_device_os("ws-b", "1000000000000005") {
+    Err((404, _)) => ()
+    _ => panic("expected 404 for cross-ws device")
+  }
+
+  // 3. Wire deterministic AirPlay & Android TV handlers and exercise 4-byte demux + control_device_with_fs + PNG screenshot
+  let png_24 = Bytes::new(24)
+  png_24[0] = 0x89.to_byte()
+  png_24[1] = 0x50.to_byte()
+  png_24[2] = 0x4E.to_byte()
+  png_24[3] = 0x47.to_byte()
+  png_24[4] = 0x0D.to_byte()
+  png_24[5] = 0x0A.to_byte()
+  png_24[6] = 0x1A.to_byte()
+  png_24[7] = 0x0A.to_byte()
+  png_24[12] = 0x49.to_byte()
+  png_24[13] = 0x48.to_byte()
+  png_24[14] = 0x44.to_byte()
+  png_24[15] = 0x52.to_byte()
+  png_24[18] = 0x05.to_byte() // 1280 = 0x0500
+  png_24[19] = 0x00.to_byte()
+  png_24[22] = 0x02.to_byte() // 720 = 0x02D0
+  png_24[23] = 0xD0.to_byte()
+
+  devs.set_airplay_handlers(
+    fn(r : AirPlayDeviceRefOs, act : String, _args : Option[base_codec::Json], _creds : Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError] {
+      Ok(base_codec::json_obj([("device", base_codec::json_str(r.name)), ("action", base_codec::json_str(act))]))
+    },
+    fn(_r : AirPlayDeviceRefOs, b : Bytes, ext : String, _creds : Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError] {
+      Ok(base_codec::json_obj([("bytes", base_codec::json_int(b.length())), ("ext", base_codec::json_str(ext))]))
+    },
+  )
+  devs.set_android_tv_handlers(
+    fn(r : AndroidTvDeviceRefOs, act : String, _args : Option[base_codec::Json], _creds : Option[String]) -> Result[base_codec::Json, station_devices::AndroidTvError] {
+      Ok(base_codec::json_obj([("device", base_codec::json_str(r.name)), ("action", base_codec::json_str(act))]))
+    },
+    fn(_r : AndroidTvDeviceRefOs, _creds : Option[String]) -> Result[(Bytes, station_devices::PngDimensions), station_devices::AndroidTvError] {
+      Ok((png_24, station_devices::PngDimensions::{ width: 1280, height: 720 }))
+    },
+  )
+
+  // Android TV 4-byte demux: ADB stream routes to isolated android-tv-adb.sock
+  match devs.reach_device_os("ws-a", "1000000000000005") {
+    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux)) => {
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, "000chost:version".to_bytes()) {
+        AndroidTvTunnelStep::AdbForward(sock, payload) => {
+          edge_assert(sock.ends_with("/run/android-tv-adb.sock"))
+          edge_assert(dev_bytes_to_str(payload) == "000chost:version")
+        }
+        _ => panic("expected AdbForward")
+      }
+    }
+    _ => panic("expected AndroidTvDemux")
+  }
+  // Android TV 4-byte demux: HTTP request routes to AndroidTvControlServer
+  match devs.reach_device_os("ws-a", "1000000000000005") {
+    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux)) => {
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()) {
+        AndroidTvTunnelStep::HttpReply(resp) => {
+          edge_assert(resp.status == 200)
+          edge_assert(dev_bytes_to_str(resp.body).contains("\"action\":\"status\""))
+        }
+        _ => panic("expected HttpReply")
+      }
+    }
+    _ => panic("expected AndroidTvDemux")
+  }
+
+  // device_control_with_fs for AirPlay action, AirPlay stream_audio, & Android TV screenshot
+  let mem_files : Map[String, Bytes] = Map::new()
+  mem_files.set("/mem/song.mp3", "ID3audio".to_bytes())
+  let mem_fs = DeviceFsPort::{
+    read_file: fn(p : String) -> Result[Bytes, String] {
+      match mem_files.get(p) {
+        Some(b) => Ok(b)
+        None => Err("not found: " + p)
+      }
+    },
+    write_file: fn(p : String, b : Bytes) -> Result[Unit, String] {
+      mem_files.set(p, b)
+      Ok(())
+    },
+    tmpdir: fn() -> String { "/mem/tmp" },
+  }
+  match devs.control_device_with_fs(mem_fs, "ws-a", tmp_root, "Apple TV", "remote", Some(base_codec::json_obj([("key", base_codec::json_str("home"))])), None) {
+    Ok(out) => edge_assert(out.contains("\"action\":\"remote\""))
+    Err(e) => panic("airplay control failed: " + e)
+  }
+  match devs.control_device_with_fs(mem_fs, "ws-a", tmp_root, "Apple TV", "stream_audio", None, Some("/mem/song.mp3")) {
+    Ok(out) => edge_assert(out.contains("\"bytes\":8") && out.contains("\"ext\":\".mp3\""))
+    Err(e) => panic("airplay stream_audio failed: " + e)
+  }
+  match devs.control_device_with_fs(mem_fs, "ws-a", tmp_root, "Living Shield", "screenshot", None, None) {
+    Ok(out) => {
+      edge_assert(out.contains("\"width\":1280") && out.contains("\"height\":720"))
+      let shot_path = tmp_root + "/android-tv-1000000000000005-50000.png"
+      edge_assert(mem_files.get(shot_path) is Some(_))
+    }
+    Err(e) => panic("atv screenshot failed: " + e)
+  }
+
+  // 4. tick_expiry_with expires BOTH AirPlay and Android TV pairing sessions
+  edge_assert(devs.airplay_pairing.start("ws-a", "AA:BB", None, None, None, ["airplay"], Some("ap_t"), true, 1000L) is Ok(_))
+  edge_assert(devs.android_tv_pairing.start("ws-a", "192.168.1.52", ["atv_remote"], Some("atv_t"), 1000L) is Ok(_))
+  let (expired_pairs, _) = devs.tick_expiry_with(1000L, 40000L, fn(_pk : PendingProcKill) -> Unit {})
+  edge_assert(expired_pairs == 2)
+}

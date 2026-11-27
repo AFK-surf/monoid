@@ -410,3 +410,353 @@ pub fn parse_airplay_tunnel_reply(status : Int, raw : String) -> Result[base_cod
   let msg = if trimmed != "" { trimmed } else { "AirPlay device request failed (HTTP " + status.to_string() + ")" }
   Err(AirPlayError::{ code: "http_" + status.to_string(), message: msg })
 }
+
+pub fn AirPlayPairingManager::cancel(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[String] {
+  let kept : Array[AirPlayPairSession] = []
+  let mut cancelled_token : Option[String] = None
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      cancelled_token = s.pair_token
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  cancelled_token
+}
+
+pub fn AirPlayPairingManager::take_credentials(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[CompletedAirPlayPairing] {
+  match self.peek_credentials(ws, pair_id) {
+    Some(p) => {
+      let _ = self.consume_credentials(ws, pair_id)
+      Some(p)
+    }
+    None => None
+  }
+}
+
+pub fn AirPlayPairingManager::active_token(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[String] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      return s.pair_token
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn AirPlayPairingManager::current_protocol(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[String] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      if !s.completed && s.index < s.protocols.length() {
+        return Some(s.protocols[s.index])
+      }
+      return None
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn AirPlayPairingManager::close_all(self : AirPlayPairingManager) -> Array[String] {
+  let tokens : Array[String] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    match self.sessions[i].pair_token {
+      Some(tok) => tokens.push(tok)
+      None => ()
+    }
+    i = i + 1
+  }
+  self.sessions = []
+  tokens
+}
+
+pub fn airplay_credentials_to_json(creds : Array[(String, String)]) -> String {
+  let pairs : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < creds.length() {
+    let (proto, cred) = creds[i]
+    pairs.push((proto, base_codec::json_str(cred)))
+    i = i + 1
+  }
+  base_codec::json_stringify(base_codec::json_obj(pairs))
+}
+
+// ── AirPlay Candidate Discovery & Worker NDJSON RPC (`types.ts`, `worker.ts`) ──
+
+pub struct AirPlayCandidateProtocol {
+  pub protocol : String
+  pub pairing : String
+}
+
+pub struct AirPlayCandidate {
+  pub identifier : String
+  pub name : String
+  pub address : String
+  pub model : String
+  pub os : Option[String]
+  pub protocols : Array[AirPlayCandidateProtocol]
+  pub already_added : Bool
+}
+
+pub struct AirPlayEnvStatus {
+  pub ready : Bool
+  pub python : Option[String]
+  pub pyatv_version : Option[String]
+  pub error : Option[String]
+}
+
+/// Encode a single NDJSON JSON-RPC request line for `airplay-worker.py`.
+pub fn encode_airplay_worker_rpc(id : Int, method : String, params : base_codec::Json) -> String {
+  let msg = base_codec::json_obj([
+    ("id", base_codec::json_int(id)),
+    ("method", base_codec::json_str(method)),
+    ("params", params),
+  ])
+  base_codec::json_stringify(msg) + "\n"
+}
+
+pub enum AirPlayWorkerReply {
+  Ok(Int, base_codec::Json)
+  Err(Int, AirPlayError)
+}
+
+/// Decode a single NDJSON line from `airplay-worker.py` stdout.
+pub fn decode_airplay_worker_reply(line : String) -> Option[AirPlayWorkerReply] {
+  let trimmed = trim_ascii(line)
+  if trimmed == "" {
+    return None
+  }
+  let j = match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let id = match json_int_opt(j, "id") {
+    Some(n) => n
+    None => return None
+  }
+  match json_bool_opt(j, "ok") {
+    Some(true) => {
+      let res = match base_codec::json_get(j, "result") {
+        Some(r) => r
+        None => base_codec::json_null()
+      }
+      Some(AirPlayWorkerReply::Ok(id, res))
+    }
+    _ => {
+      let (code, msg) = match base_codec::json_get(j, "error") {
+        Some(err_obj) => {
+          let c = match json_str_opt(err_obj, "code") {
+            Some(s) => s
+            None => "worker_error"
+          }
+          let m = match json_str_opt(err_obj, "message") {
+            Some(s) => s
+            None => "airplay worker error"
+          }
+          (c, m)
+        }
+        None => ("worker_error", "airplay worker error")
+      }
+      Some(AirPlayWorkerReply::Err(id, AirPlayError::{ code, message: msg }))
+    }
+  }
+}
+
+/// Parse scan candidates returned by `airplay-worker.py` and mark `already_added`.
+pub fn parse_airplay_scan_candidates(
+  j : base_codec::Json,
+  existing_targets : Array[String],
+) -> Array[AirPlayCandidate] {
+  let low_targets : Array[String] = []
+  let mut t = 0
+  while t < existing_targets.length() {
+    low_targets.push(to_ascii_lower(existing_targets[t]))
+    t = t + 1
+  }
+  let out : Array[AirPlayCandidate] = []
+  match j {
+    base_codec::Json::Arr(items) => {
+      let mut i = 0
+      while i < items.length() {
+        let item = items[i]
+        let identifier = match json_str_opt(item, "identifier") {
+          Some(s) => s
+          None => ""
+        }
+        if identifier != "" {
+          let name = match json_str_opt(item, "name") {
+            Some(s) => s
+            None => identifier
+          }
+          let address = match json_str_opt(item, "address") {
+            Some(s) => s
+            None => ""
+          }
+          let model = match json_str_opt(item, "model") {
+            Some(s) => s
+            None => "AirPlay"
+          }
+          let os = json_str_opt(item, "os")
+          let protos : Array[AirPlayCandidateProtocol] = []
+          match base_codec::json_get(item, "protocols") {
+            Some(base_codec::Json::Arr(parr)) => {
+              let mut k = 0
+              while k < parr.length() {
+                let po = parr[k]
+                match json_str_opt(po, "protocol") {
+                  Some(p) => {
+                    if is_airplay_protocol(p) {
+                      let pairing = match json_str_opt(po, "pairing") {
+                        Some(pr) => pr
+                        None => "optional"
+                      }
+                      protos.push(AirPlayCandidateProtocol::{ protocol: p, pairing })
+                    }
+                  }
+                  None => ()
+                }
+                k = k + 1
+              }
+            }
+            _ => ()
+          }
+          let added = array_contains_str(low_targets, to_ascii_lower(identifier)) ||
+          (address != "" && array_contains_str(low_targets, to_ascii_lower(address)))
+          out.push(AirPlayCandidate::{
+            identifier,
+            name,
+            address,
+            model,
+            os,
+            protocols: protos,
+            already_added: added,
+          })
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+// ── AirPlay In-Process HTTP Control Route Dispatcher (`airplay/server.ts`) ──
+
+fn airplay_http_err(err : AirPlayError) -> DeviceHttpResponse {
+  device_http_json(
+    airplay_error_http_status(err.code),
+    base_codec::json_obj([
+      ("ok", base_codec::json_bool(false)),
+      (
+        "error",
+        base_codec::json_obj([
+          ("code", base_codec::json_str(err.code)),
+          ("message", base_codec::json_str(err.message)),
+        ]),
+      ),
+    ]),
+  )
+}
+
+/// Dispatch an HTTP control request (`GET /status`, `POST /action`, `POST /stream-audio`)
+/// against a pure control callback (1:1 with `station/src/devices/airplay/server.ts`).
+pub fn dispatch_airplay_http_route(
+  method : String,
+  path : String,
+  body : Bytes,
+  x_filename : Option[String],
+  on_action : (String, Option[base_codec::Json]) -> Result[base_codec::Json, AirPlayError],
+  on_stream_audio : (Bytes, String) -> Result[base_codec::Json, AirPlayError],
+) -> DeviceHttpResponse {
+  if method == "GET" && path == "/status" {
+    match on_action("status", None) {
+      Ok(res) => device_http_json(200, base_codec::json_obj([("ok", base_codec::json_bool(true)), ("result", res)]))
+      Err(e) => airplay_http_err(e)
+    }
+  } else if method == "POST" && path == "/action" {
+    if body.length() > AIRPLAY_MAX_JSON_BYTES {
+      return airplay_http_err(AirPlayError::{ code: "payload_too_large", message: "request body exceeds 1 MB" })
+    }
+    let text = trim_ascii(bytes_to_str(body))
+    let parsed = if text == "" {
+      base_codec::json_obj([])
+    } else {
+      match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
+        base_codec::JsonParseResult::Ok(_) => {
+          return airplay_http_err(AirPlayError::{ code: "invalid_params", message: "JSON body must be an object" })
+        }
+        base_codec::JsonParseResult::Err(_) => {
+          return airplay_http_err(AirPlayError::{ code: "invalid_params", message: "invalid JSON body" })
+        }
+      }
+    }
+    let raw_action = match json_str_opt(parsed, "action") {
+      Some(s) => s
+      None => ""
+    }
+    let action = match validate_airplay_action(raw_action) {
+      Ok(a) => a
+      Err(e) => return airplay_http_err(e)
+    }
+    let args : Option[base_codec::Json] = match base_codec::json_get(parsed, "args") {
+      Some(base_codec::Json::Obj(m)) => Some(base_codec::Json::Obj(m))
+      _ => None
+    }
+    match on_action(action, args) {
+      Ok(res) => device_http_json(200, base_codec::json_obj([("ok", base_codec::json_bool(true)), ("result", res)]))
+      Err(e) => airplay_http_err(e)
+    }
+  } else if method == "POST" && path == "/stream-audio" {
+    if body.length() > AIRPLAY_MAX_AUDIO_BYTES {
+      return airplay_http_err(AirPlayError::{ code: "payload_too_large", message: "audio file exceeds 100 MB limit" })
+    }
+    let ext = match x_filename {
+      Some(name) => safe_audio_ext(name)
+      None => ".audio"
+    }
+    match on_stream_audio(body, ext) {
+      Ok(res) => device_http_json(200, base_codec::json_obj([("ok", base_codec::json_bool(true)), ("result", res)]))
+      Err(e) => airplay_http_err(e)
+    }
+  } else {
+    device_http_json(
+      404,
+      base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        (
+          "error",
+          base_codec::json_obj([
+            ("code", base_codec::json_str("not_found")),
+            ("message", base_codec::json_str(method + " " + path + " not found")),
+          ]),
+        ),
+      ]),
+    )
+  }
+}

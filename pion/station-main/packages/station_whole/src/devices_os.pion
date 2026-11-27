@@ -14,6 +14,7 @@
 //   non-blocking handle-bound `pending_grant_kills` and unconditional pgid `SIGKILL`), AirPlay &
 //   Android TV pairing/control, and aggregated `DeviceSources`.
 
+import "base_codec"
 import "host_shim"
 import "station_devices"
 import "station_sys"
@@ -860,6 +861,7 @@ pub fn AdbOsRunner::start_cmd(
   now_ms : Int64,
   timeout_ms : Int64 = DEVICES_DEFAULT_ADB_TIMEOUT_MS,
   max_output_bytes : Int = DEVICES_DEFAULT_ADB_MAX_BYTES,
+  env : Option[Array[String]] = None,
 ) -> Result[Int64, String] {
   let ev_id = self.next_event_id
   self.next_event_id = self.next_event_id + 1L
@@ -868,7 +870,7 @@ pub fn AdbOsRunner::start_cmd(
   let opts = station_sys::SpawnOptions::{
     program: program,
     args: args,
-    env: None,
+    env: env,
     cwd: cwd,
     new_pgid: true,
     strip_malloc_space_efficient: true,
@@ -1035,6 +1037,7 @@ pub fn run_adb_command_os(
   timeout_ms : Int64 = DEVICES_DEFAULT_ADB_TIMEOUT_MS,
   max_output_bytes : Int = DEVICES_DEFAULT_ADB_MAX_BYTES,
   runner : Option[AdbOsRunner] = None,
+  env : Option[Array[String]] = None,
 ) -> Result[AdbExecResult, String] {
   let r = match runner {
     Some(existing) => existing
@@ -1047,6 +1050,7 @@ pub fn run_adb_command_os(
     (hub.now_fn)(),
     timeout_ms=timeout_ms,
     max_output_bytes=max_output_bytes,
+    env=env,
   ) {
     Ok(id) => id
     Err(e) => return Err(e)
@@ -1111,6 +1115,180 @@ pub struct AggregatedDeviceView {
   pub active_grant_id : Option[String]
 }
 
+pub struct DeviceCredentialStoreOs {
+  pub dir : String
+  seed : Bytes
+}
+
+pub fn DeviceCredentialStoreOs::new(data_dir : String, seed : Bytes) -> DeviceCredentialStoreOs {
+  DeviceCredentialStoreOs::{
+    dir: data_dir + "/devices/credentials",
+    seed: seed,
+  }
+}
+
+fn DeviceCredentialStoreOs::file_for(self : DeviceCredentialStoreOs, device_id : String) -> Result[String, String] {
+  if !station_devices::is_valid_device_id(device_id) {
+    return Err("invalid device id")
+  }
+  Ok(self.dir + "/" + device_id + ".enc")
+}
+
+pub fn DeviceCredentialStoreOs::get(
+  self : DeviceCredentialStoreOs,
+  ws : String,
+  device_id : String,
+) -> Result[Option[String], String] {
+  let file = match self.file_for(device_id) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  match station_sys::read_file_strict(file) {
+    Ok(raw) => {
+      match station_devices::open_device_credentials(self.seed, ws, device_id, dev_bytes_to_str(raw)) {
+        Ok(plain) => Ok(Some(plain))
+        Err(e) => Err(e)
+      }
+    }
+    Err(station_sys::StrictReadErr::NotFound) => Ok(None)
+    Err(_) => Err("failed to read device credentials file")
+  }
+}
+
+pub fn DeviceCredentialStoreOs::set(
+  self : DeviceCredentialStoreOs,
+  ws : String,
+  device_id : String,
+  payload_json : String,
+) -> Result[Unit, String] {
+  let file = match self.file_for(device_id) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let _ = station_sys::mkdir_p(self.dir)
+  if station_sys::os_name() != "win32" {
+    let _ = station_sys::chmod(self.dir, 448) // 0o700
+  }
+  let salt = match station_sys::random_bytes(16) {
+    Ok(b) => b
+    Err(e) => return Err("csprng salt failed: " + e)
+  }
+  let iv = match station_sys::random_bytes(12) {
+    Ok(b) => b
+    Err(e) => return Err("csprng iv failed: " + e)
+  }
+  let env_json = match station_devices::seal_device_credentials(self.seed, ws, device_id, salt, iv, payload_json) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if !station_sys::write_file_atomic(file, env_json.to_bytes(), mode=384) {
+    return Err("failed to atomically write device credentials")
+  }
+  if station_sys::os_name() != "win32" {
+    let _ = station_sys::chmod(file, 384) // 0o600
+  }
+  Ok(())
+}
+
+pub fn DeviceCredentialStoreOs::delete(
+  self : DeviceCredentialStoreOs,
+  _ws : String,
+  device_id : String,
+) -> Result[Unit, String] {
+  let file = match self.file_for(device_id) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let _ = station_sys::unlink(file)
+  Ok(())
+}
+
+pub fn DeviceCredentialStoreOs::as_port(self : DeviceCredentialStoreOs) -> station_devices::DeviceCredentialPort {
+  station_devices::DeviceCredentialPort::{
+    get: fn(ws : String, id : String) -> Result[Option[String], String] { self.get(ws, id) },
+    set: fn(ws : String, id : String, payload : String) -> Result[Unit, String] { self.set(ws, id, payload) },
+    delete: fn(ws : String, id : String) -> Result[Unit, String] { self.delete(ws, id) },
+  }
+}
+
+pub struct AirPlayDeviceRefOs {
+  pub id : String
+  pub ws : String
+  pub target : String
+  pub name : String
+}
+
+pub struct AndroidTvDeviceRefOs {
+  pub id : String
+  pub ws : String
+  pub target : String
+  pub name : String
+  pub protocols : Array[String]
+}
+
+pub enum DeviceTunnelTarget {
+  TcpDial(String, Int)
+  SerialPort(String, Int)
+  AirPlayHttp(AirPlayDeviceRefOs)
+  AndroidTvDemux(AndroidTvDeviceRefOs, station_devices::AndroidTvDemuxer)
+}
+
+pub enum AndroidTvTunnelStep {
+  NeedMoreBytes
+  AdbForward(String, Bytes)
+  HttpReply(station_devices::DeviceHttpResponse)
+}
+
+/// Configure a serial port raw at `baud` via `stty` (`-f` on macOS, `-F` on Linux; rejects Windows).
+pub fn configure_serial_raw_os(
+  hub : EdgeMuxHub,
+  path : String,
+  baud : Int,
+  cwd : String = "/tmp",
+) -> Result[Unit, String] {
+  let os = station_sys::os_name()
+  if os == "win32" {
+    return Err("serial ports are not reached on Windows stations yet")
+  }
+  let flag = if os == "darwin" { "-f" } else { "-F" }
+  match run_adb_command_os(hub, "stty", [flag, path, "raw", "-echo", baud.to_string()], cwd, timeout_ms=5000L) {
+    Ok(res) => {
+      if res.exit_code == 0 {
+        Ok(())
+      } else {
+        let msg = dev_bytes_to_str(res.stderr).trim()
+        Err("stty " + path + ": " + (if msg != "" { msg } else { "exit " + res.exit_code.to_string() }))
+      }
+    }
+    Err(e) => Err("stty " + path + ": " + e)
+  }
+}
+
+pub struct DeviceFsPort {
+  pub read_file : (String) -> Result[Bytes, String]
+  pub write_file : (String, Bytes) -> Result[Unit, String]
+  pub tmpdir : () -> String
+}
+
+pub fn device_fs_os() -> DeviceFsPort {
+  DeviceFsPort::{
+    read_file: fn(path : String) -> Result[Bytes, String] {
+      match station_sys::read_file_strict(path) {
+        Ok(b) => Ok(b)
+        Err(_) => Err("not a regular file: " + path)
+      }
+    },
+    write_file: fn(path : String, data : Bytes) -> Result[Unit, String] {
+      if station_sys::write_file_atomic(path, data, mode=384) {
+        Ok(())
+      } else {
+        Err("failed to write file: " + path)
+      }
+    },
+    tmpdir: station_sys::tmpdir,
+  }
+}
+
 pub struct DevicesOsRuntime {
   pub registry : station_devices::DeviceRegistry
   pub phone_grants : station_devices::PhoneGrants
@@ -1120,6 +1298,12 @@ pub struct DevicesOsRuntime {
   pub android_tv_pairing : station_devices::AndroidTvPairingManager
   pub adb_runner : AdbOsRunner
   pub now_fn : () -> Int64
+  mut data_dir : String
+  mut cred_port : Option[station_devices::DeviceCredentialPort]
+  mut airplay_action_fn : Option[(AirPlayDeviceRefOs, String, Option[base_codec::Json], Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError]]
+  mut airplay_audio_fn : Option[(AirPlayDeviceRefOs, Bytes, String, Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError]]
+  mut android_tv_action_fn : Option[(AndroidTvDeviceRefOs, String, Option[base_codec::Json], Option[String]) -> Result[base_codec::Json, station_devices::AndroidTvError]]
+  mut android_tv_screenshot_fn : Option[(AndroidTvDeviceRefOs, Option[String]) -> Result[(Bytes, station_devices::PngDimensions), station_devices::AndroidTvError]]
   grant_procs : Map[String, (station_sys::ChildProcess, Int64)]
   pending_grant_kills : Map[Int64, PendingProcKill]
   rig_devices : Map[String, Array[station_devices::KeptDevice]]
@@ -1139,10 +1323,538 @@ pub fn DevicesOsRuntime::new(
     android_tv_pairing: station_devices::AndroidTvPairingManager::new(pairing_ttl_ms),
     adb_runner: AdbOsRunner::new(),
     now_fn: now_fn,
+    data_dir: "",
+    cred_port: None,
+    airplay_action_fn: None,
+    airplay_audio_fn: None,
+    android_tv_action_fn: None,
+    android_tv_screenshot_fn: None,
     grant_procs: Map::new(),
     pending_grant_kills: Map::new(),
     rig_devices: Map::new(),
   }
+}
+
+pub fn DevicesOsRuntime::configure_storage(
+  self : DevicesOsRuntime,
+  data_dir : String,
+  station_seed : Bytes,
+) -> Unit {
+  self.data_dir = data_dir
+  self.cred_port = Some(DeviceCredentialStoreOs::new(data_dir, station_seed).as_port())
+}
+
+pub fn DevicesOsRuntime::set_credential_port(
+  self : DevicesOsRuntime,
+  data_dir : String,
+  port : station_devices::DeviceCredentialPort,
+) -> Unit {
+  self.data_dir = data_dir
+  self.cred_port = Some(port)
+}
+
+pub fn DevicesOsRuntime::android_tv_adb_socket_path(self : DevicesOsRuntime) -> String {
+  if self.data_dir != "" {
+    self.data_dir + "/run/android-tv-adb.sock"
+  } else {
+    "/tmp/stillfail-android-tv-adb.sock"
+  }
+}
+
+pub fn DevicesOsRuntime::android_tv_adb_key_dir(self : DevicesOsRuntime) -> String {
+  if self.data_dir != "" {
+    self.data_dir + "/devices/adb-keys"
+  } else {
+    "/tmp/stillfail-android-tv-adb-keys"
+  }
+}
+
+/// Environment variables isolating Android TV ADB from the host's `:5037` server and `~/.android/adbkey`.
+pub fn DevicesOsRuntime::isolated_android_tv_adb_env(self : DevicesOsRuntime) -> Array[String] {
+  let base_env = station_sys::env_all()
+  let out : Array[String] = []
+  for i in 0..<base_env.length() {
+    let e = base_env[i]
+    if !e.starts_with("ADB_VENDOR_KEYS=") && !e.starts_with("ADB_SERVER_SOCKET=") {
+      out.push(e)
+    }
+  }
+  out.push("ADB_VENDOR_KEYS=" + self.android_tv_adb_key_dir())
+  if station_sys::os_name() != "win32" {
+    out.push("ADB_SERVER_SOCKET=localfilesystem:" + self.android_tv_adb_socket_path())
+  }
+  out
+}
+
+pub fn DevicesOsRuntime::set_airplay_handlers(
+  self : DevicesOsRuntime,
+  on_action : (AirPlayDeviceRefOs, String, Option[base_codec::Json], Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError],
+  on_audio : (AirPlayDeviceRefOs, Bytes, String, Option[String]) -> Result[base_codec::Json, station_devices::AirPlayError],
+) -> Unit {
+  self.airplay_action_fn = Some(on_action)
+  self.airplay_audio_fn = Some(on_audio)
+}
+
+pub fn DevicesOsRuntime::set_android_tv_handlers(
+  self : DevicesOsRuntime,
+  on_action : (AndroidTvDeviceRefOs, String, Option[base_codec::Json], Option[String]) -> Result[base_codec::Json, station_devices::AndroidTvError],
+  on_screenshot : (AndroidTvDeviceRefOs, Option[String]) -> Result[(Bytes, station_devices::PngDimensions), station_devices::AndroidTvError],
+) -> Unit {
+  self.android_tv_action_fn = Some(on_action)
+  self.android_tv_screenshot_fn = Some(on_screenshot)
+}
+
+fn DevicesOsRuntime::load_device_creds(self : DevicesOsRuntime, ws : String, device_id : String) -> Option[String] {
+  match self.cred_port {
+    Some(port) => {
+      match (port.get)(ws, device_id) {
+        Ok(opt) => opt
+        Err(_) => None
+      }
+    }
+    None => None
+  }
+}
+
+/// Unified `reachDevice` dispatch across all 5 device kinds (`tcp`, `adb`, `serial`, `airplay`, `android_tv`)
+/// with strict workspace isolation (zero 501 placeholders).
+pub fn DevicesOsRuntime::reach_device_os(
+  self : DevicesOsRuntime,
+  ws : String,
+  device_id : String,
+) -> Result[DeviceTunnelTarget, (Int, String)] {
+  let kept = match self.registry.get(ws, device_id) {
+    Some(k) => k
+    None => return Err((404, "no such device on this station"))
+  }
+  let d = kept.device
+  match d.kind {
+    station_devices::DeviceKind::Tcp => {
+      match station_devices::host_port(d.target) {
+        Some(hp) => Ok(DeviceTunnelTarget::TcpDial(hp.host, hp.port))
+        None => Err((422, "invalid tcp device target: " + d.target))
+      }
+    }
+    station_devices::DeviceKind::Adb => Ok(DeviceTunnelTarget::TcpDial("127.0.0.1", station_devices::DEVICE_ADB_PORT))
+    station_devices::DeviceKind::Serial => {
+      let baud = match d.baud {
+        Some(b) => b
+        None => station_devices::DEVICE_BAUD_DEFAULT
+      }
+      Ok(DeviceTunnelTarget::SerialPort(d.target, baud))
+    }
+    station_devices::DeviceKind::AirPlay => {
+      Ok(
+        DeviceTunnelTarget::AirPlayHttp(
+          AirPlayDeviceRefOs::{ id: d.id, ws: kept.ws, target: d.target, name: d.name },
+        ),
+      )
+    }
+    station_devices::DeviceKind::AndroidTv => {
+      let protos : Array[String] = []
+      match d.protocols {
+        Some(ps) => {
+          for i in 0..<ps.length() {
+            if station_devices::is_android_tv_protocol(ps[i]) {
+              protos.push(ps[i])
+            }
+          }
+        }
+        None => ()
+      }
+      let has_adb = {
+        let mut found = false
+        for i in 0..<protos.length() {
+          if protos[i] == "adb" {
+            found = true
+          }
+        }
+        found
+      }
+      Ok(
+        DeviceTunnelTarget::AndroidTvDemux(
+          AndroidTvDeviceRefOs::{ id: d.id, ws: kept.ws, target: d.target, name: d.name, protocols: protos },
+          station_devices::AndroidTvDemuxer::new(has_adb),
+        ),
+      )
+    }
+  }
+}
+
+/// Handle an HTTP control request arriving on an AirPlay local tunnel (`GET /status`, `POST /action`, `POST /stream-audio`).
+pub fn DevicesOsRuntime::handle_airplay_http(
+  self : DevicesOsRuntime,
+  dev_ref : AirPlayDeviceRefOs,
+  method : String,
+  path : String,
+  headers : Array[(String, String)],
+  body : Bytes,
+) -> station_devices::DeviceHttpResponse {
+  let creds = self.load_device_creds(dev_ref.ws, dev_ref.id)
+  let x_filename = station_devices::device_http_header_get(headers, "x-filename")
+  station_devices::dispatch_airplay_http_route(
+    method,
+    path,
+    body,
+    x_filename,
+    fn(action : String, args : Option[base_codec::Json]) -> Result[base_codec::Json, station_devices::AirPlayError] {
+      match self.airplay_action_fn {
+        Some(f) => f(dev_ref, action, args, creds)
+        None => Err(station_devices::AirPlayError::{ code: "pyatv_missing", message: "AirPlay worker adapter is not configured on this station" })
+      }
+    },
+    fn(audio_bytes : Bytes, ext : String) -> Result[base_codec::Json, station_devices::AirPlayError] {
+      match self.airplay_audio_fn {
+        Some(f) => f(dev_ref, audio_bytes, ext, creds)
+        None => Err(station_devices::AirPlayError::{ code: "pyatv_missing", message: "AirPlay worker adapter is not configured on this station" })
+      }
+    },
+  )
+}
+
+/// Handle an HTTP control request arriving on an Android TV local tunnel (`GET /status`, `POST /action`, `POST /screenshot`).
+pub fn DevicesOsRuntime::handle_android_tv_http(
+  self : DevicesOsRuntime,
+  dev_ref : AndroidTvDeviceRefOs,
+  method : String,
+  path : String,
+  body : Bytes,
+) -> station_devices::DeviceHttpResponse {
+  let creds = self.load_device_creds(dev_ref.ws, dev_ref.id)
+  station_devices::dispatch_android_tv_http_route(
+    method,
+    path,
+    body,
+    fn(action : String, args : Option[base_codec::Json]) -> Result[base_codec::Json, station_devices::AndroidTvError] {
+      match self.android_tv_action_fn {
+        Some(f) => f(dev_ref, action, args, creds)
+        None => Err(station_devices::AndroidTvError::{ code: "auth_failed", message: "Android TV control adapter is not configured on this station" })
+      }
+    },
+    fn() -> Result[(Bytes, station_devices::PngDimensions), station_devices::AndroidTvError] {
+      match self.android_tv_screenshot_fn {
+        Some(f) => f(dev_ref, creds)
+        None => Err(station_devices::AndroidTvError::{ code: "adb_missing", message: "Android TV screenshot adapter is not configured on this station" })
+      }
+    },
+  )
+}
+
+/// Feed bytes into a 4-byte transparent `android_tv` tunnel demuxer:
+/// routes `^[0-9a-f]{4}$` (when `adb` protocol is paired) to the isolated ADB server socket,
+/// and all HTTP requests to `handle_android_tv_http`.
+pub fn DevicesOsRuntime::handle_android_tv_tunnel_bytes(
+  self : DevicesOsRuntime,
+  dev_ref : AndroidTvDeviceRefOs,
+  demux : station_devices::AndroidTvDemuxer,
+  chunk : Bytes,
+  is_eof : Bool = false,
+) -> AndroidTvTunnelStep {
+  let decided = match demux.push(chunk) {
+    Some(res) => Some(res)
+    None => if is_eof { demux.finish() } else { None }
+  }
+  match decided {
+    None => AndroidTvTunnelStep::NeedMoreBytes
+    Some((station_devices::AndroidTvRoute::AdbRaw, payload)) => {
+      AndroidTvTunnelStep::AdbForward(self.android_tv_adb_socket_path(), payload)
+    }
+    Some((station_devices::AndroidTvRoute::HttpControl, payload)) => {
+      match station_devices::parse_device_http_request(payload) {
+        Ok(req) => AndroidTvTunnelStep::HttpReply(self.handle_android_tv_http(dev_ref, req.method, req.path, req.body))
+        Err(msg) => {
+          AndroidTvTunnelStep::HttpReply(
+            station_devices::device_http_json(
+              400,
+              base_codec::json_obj([
+                ("ok", base_codec::json_bool(false)),
+                (
+                  "error",
+                  base_codec::json_obj([
+                    ("code", base_codec::json_str("invalid_params")),
+                    ("message", base_codec::json_str(msg)),
+                  ]),
+                ),
+              ]),
+            ),
+          )
+        }
+      }
+    }
+  }
+}
+
+/// Execute `device_control` with an injected `DeviceFsPort` (deterministic in unit tests).
+pub fn DevicesOsRuntime::control_device_with_fs(
+  self : DevicesOsRuntime,
+  fs : DeviceFsPort,
+  ws : String,
+  session_workspace : String,
+  device_query : String,
+  action : String,
+  args : Option[base_codec::Json],
+  audio_path : Option[String],
+) -> Result[String, String] {
+  if device_query.trim() == "" {
+    return Err("device is required: call device_list first.")
+  }
+  if action.trim() == "" {
+    return Err("action is required.")
+  }
+  let kept = match self.registry.find_by_name_or_id(ws, device_query) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  let has_audio = match audio_path {
+    Some(p) => p.trim() != ""
+    None => false
+  }
+  let dispatch = match station_devices::validate_device_control_request(kept.device, action, has_audio) {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  match dispatch {
+    station_devices::DeviceControlDispatch::AirPlayAction(act) => {
+      let ref_ap = AirPlayDeviceRefOs::{ id: kept.device.id, ws: kept.ws, target: kept.device.target, name: kept.device.name }
+      let req_fields : Array[(String, base_codec::Json)] = [("action", base_codec::json_str(act))]
+      match args {
+        Some(a) => req_fields.push(("args", a))
+        None => ()
+      }
+      let resp = self.handle_airplay_http(
+        ref_ap,
+        "POST",
+        "/action",
+        [],
+        base_codec::json_stringify(base_codec::json_obj(req_fields)).to_bytes(),
+      )
+      match station_devices::parse_airplay_tunnel_reply(resp.status, dev_bytes_to_str(resp.body)) {
+        Ok(res) => Ok(base_codec::json_stringify(res))
+        Err(e) => Err(e.message)
+      }
+    }
+    station_devices::DeviceControlDispatch::AirPlayStreamAudio => {
+      let apath = match audio_path {
+        Some(p) => p.trim()
+        None => return Err("stream_audio requires audio_path (a local audio file path on this station)")
+      }
+      let audio_bytes = match (fs.read_file)(apath) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if audio_bytes.length() > station_devices::AIRPLAY_MAX_AUDIO_BYTES {
+        return Err("audio file exceeds 100 MB limit")
+      }
+      let ref_ap = AirPlayDeviceRefOs::{ id: kept.device.id, ws: kept.ws, target: kept.device.target, name: kept.device.name }
+      let resp = self.handle_airplay_http(
+        ref_ap,
+        "POST",
+        "/stream-audio",
+        [("x-filename", apath)],
+        audio_bytes,
+      )
+      match station_devices::parse_airplay_tunnel_reply(resp.status, dev_bytes_to_str(resp.body)) {
+        Ok(res) => Ok(base_codec::json_stringify(res))
+        Err(e) => Err(e.message)
+      }
+    }
+    station_devices::DeviceControlDispatch::AndroidTvAction(act) => {
+      let protos = match kept.device.protocols {
+        Some(ps) => ps
+        None => []
+      }
+      let ref_atv = AndroidTvDeviceRefOs::{
+        id: kept.device.id,
+        ws: kept.ws,
+        target: kept.device.target,
+        name: kept.device.name,
+        protocols: protos,
+      }
+      let req_fields : Array[(String, base_codec::Json)] = [("action", base_codec::json_str(act))]
+      match args {
+        Some(a) => req_fields.push(("args", a))
+        None => ()
+      }
+      let resp = self.handle_android_tv_http(
+        ref_atv,
+        "POST",
+        "/action",
+        base_codec::json_stringify(base_codec::json_obj(req_fields)).to_bytes(),
+      )
+      match station_devices::parse_android_tv_tunnel_reply(resp.status, dev_bytes_to_str(resp.body)) {
+        Ok(res) => Ok(base_codec::json_stringify(res))
+        Err(e) => Err(e.message)
+      }
+    }
+    station_devices::DeviceControlDispatch::AndroidTvScreenshot => {
+      let protos = match kept.device.protocols {
+        Some(ps) => ps
+        None => []
+      }
+      let ref_atv = AndroidTvDeviceRefOs::{
+        id: kept.device.id,
+        ws: kept.ws,
+        target: kept.device.target,
+        name: kept.device.name,
+        protocols: protos,
+      }
+      let resp = self.handle_android_tv_http(ref_atv, "POST", "/screenshot", Bytes::new(0))
+      if resp.status < 200 || resp.status >= 300 || !resp.content_type.starts_with("image/png") {
+        match station_devices::parse_android_tv_tunnel_reply(resp.status, dev_bytes_to_str(resp.body)) {
+          Ok(_) => return Err("unexpected screenshot response (HTTP " + resp.status.to_string() + ")")
+          Err(e) => return Err(e.message)
+        }
+      }
+      let dim = match station_devices::parse_png_dimensions(resp.body) {
+        Ok(d) => d
+        Err(e) => return Err(e)
+      }
+      let dir = if session_workspace.trim() != "" { session_workspace.trim() } else { (fs.tmpdir)() }
+      let dest_path = dir + "/android-tv-" + kept.device.id + "-" + (self.now_fn)().to_string() + ".png"
+      match (fs.write_file)(dest_path, resp.body) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      Ok(
+        base_codec::json_stringify(
+          base_codec::json_obj([
+            ("ok", base_codec::json_bool(true)),
+            ("path", base_codec::json_str(dest_path)),
+            ("bytes", base_codec::json_int(resp.body.length())),
+            ("width", base_codec::json_int(dim.width)),
+            ("height", base_codec::json_int(dim.height)),
+          ]),
+        ),
+      )
+    }
+  }
+}
+
+/// Execute `device_control` directly for an AirPlay or Android TV device attached to this station
+/// (1:1 with `station/src/devices/module.ts:321-359`, including PNG screenshot saved to `session_workspace`).
+pub fn DevicesOsRuntime::control_device_os(
+  self : DevicesOsRuntime,
+  ws : String,
+  session_workspace : String,
+  device_query : String,
+  action : String,
+  args : Option[base_codec::Json],
+  audio_path : Option[String],
+) -> Result[String, String] {
+  if session_workspace.trim() != "" {
+    let _ = station_sys::mkdir_p(session_workspace.trim())
+  }
+  self.control_device_with_fs(device_fs_os(), ws, session_workspace, device_query, action, args, audio_path)
+}
+
+/// Commit adding a device with encrypted `DeviceCredentialStoreOs` persistence (atomic rollback on write error).
+pub fn DevicesOsRuntime::commit_add_device_os(
+  self : DevicesOsRuntime,
+  ws : String,
+  owner_sub : String,
+  owner_email : String,
+  owner_name : String,
+  spec : station_devices::DeviceSpec,
+  pair_id : Option[String],
+  at_secs : Int64,
+) -> station_devices::DeviceCommitResult {
+  let port = match self.cred_port {
+    Some(p) => p
+    None =>
+    station_devices::DeviceCredentialPort::{
+      get: fn(_w : String, _id : String) -> Result[Option[String], String] { Ok(None) },
+      set: fn(_w : String, _id : String, _p : String) -> Result[Unit, String] { Err("device credential store not configured") },
+      delete: fn(_w : String, _id : String) -> Result[Unit, String] { Ok(()) },
+    }
+  }
+  station_devices::commit_any_device_add(
+    self.registry,
+    self.airplay_pairing,
+    self.android_tv_pairing,
+    port,
+    ws,
+    owner_sub,
+    owner_email,
+    owner_name,
+    spec,
+    pair_id,
+    at_secs,
+  )
+}
+
+/// Commit re-pairing an existing AirPlay or Android TV device (merges credentials for Android TV).
+pub fn DevicesOsRuntime::commit_rebind_device_os(
+  self : DevicesOsRuntime,
+  ws : String,
+  device_id : String,
+  pair_id : String,
+) -> station_devices::DeviceCommitResult {
+  let port = match self.cred_port {
+    Some(p) => p
+    None =>
+    station_devices::DeviceCredentialPort::{
+      get: fn(_w : String, _id : String) -> Result[Option[String], String] { Ok(None) },
+      set: fn(_w : String, _id : String, _p : String) -> Result[Unit, String] { Err("device credential store not configured") },
+      delete: fn(_w : String, _id : String) -> Result[Unit, String] { Ok(()) },
+    }
+  }
+  station_devices::commit_device_rebind(
+    self.registry,
+    self.airplay_pairing,
+    self.android_tv_pairing,
+    port,
+    ws,
+    device_id,
+    pair_id,
+  )
+}
+
+/// Send an ephemeral UDP mDNS query for Android TV services on port 0 (`224.0.0.251:5353`)
+/// bound locally to `"127.0.0.1"` and collect parsed records until `timeout_ms`.
+pub fn scan_android_tv_mdns_os(
+  hub : EdgeMuxHub,
+  timeout_ms : Int64 = 1500L,
+) -> Array[station_devices::AndroidTvCandidate] {
+  let ev_id = 25769803776L + ((hub.now_fn)() & 0xFFFFL)
+  let sock = match station_sys::udp_bind(ev_id, "127.0.0.1", 0) {
+    Some(s) => s
+    None => return []
+  }
+  let query = station_devices::build_mdns_query([
+    station_devices::MDNS_SVC_REMOTE,
+    station_devices::MDNS_SVC_ADB_CONNECT,
+    station_devices::MDNS_SVC_ADB_PAIR,
+  ])
+  let _ = sock.send_to("224.0.0.251", 5353, query)
+  let packets : Array[station_devices::ParsedMdnsRecords] = []
+  let prev_sys = hub.get_sys_router()
+  hub.set_sys_router(
+    fn(id : Int64, payload : Bytes) -> Bool {
+      if id == ev_id {
+        match station_sys::decode_sys_event(payload) {
+          Some(station_sys::SysEvent::UdpRecv(dg)) => {
+            packets.push(station_devices::parse_mdns_packet(dg.data))
+          }
+          _ => ()
+        }
+        return true
+      }
+      match prev_sys {
+        Some(f) => f(id, payload)
+        None => false
+      }
+    },
+  )
+  let eff_ms = if timeout_ms < 100L { 100L } else if timeout_ms > 10000L { 10000L } else { timeout_ms }
+  let deadline = (hub.now_fn)() + eff_ms
+  while (hub.now_fn)() < deadline {
+    let rem = deadline - (hub.now_fn)()
+    let step = if rem > 50L { 50L } else { rem }
+    let _ = hub.pump_one(step)
+  }
+  hub.restore_sys_router(prev_sys)
+  let _ = sock.close()
+  station_devices::merge_mdns_records(packets)
 }
 
 pub fn DevicesOsRuntime::pending_kill_count(self : DevicesOsRuntime) -> Int {
@@ -1324,8 +2036,9 @@ pub fn DevicesOsRuntime::tick_expiry_with(
     }
   }
   let ap_expired = self.airplay_pairing.expire_due(wall_ms)
+  let atv_expired = self.android_tv_pairing.expire_due(wall_ms)
   let disp_expired = self.phone_displays.sweep_idle(wall_ms, [])
-  (ap_expired.length(), disp_expired.length())
+  (ap_expired.length() + atv_expired.length(), disp_expired.length())
 }
 
 pub fn DevicesOsRuntime::tick_expiry(
