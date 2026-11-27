@@ -755,6 +755,7 @@ fn emit_thread_sse_event(
   let ev_target = station_api::EventTarget::{
     lang: None,
     viewer: None,
+    device: None,
     email: None,
     workspace: Some(ws),
     subs: None,
