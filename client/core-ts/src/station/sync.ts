@@ -2482,11 +2482,14 @@ export class StationsSync {
         const l = this.#links.get(address);
         if (!current || !l || !this.reachable(address)) { this.#restoreVersions.delete(key); return; }
         const version = this.#restoreVersions.get(key);
+        const ws = ofAddress(address);
+        const readGen = this.#core.store.authGen.workspaceAuthGen(ws);
         const query = `session=${encode(current.session)}${current.thread === null ? "" : `&thread=${current.thread}`}`;
         const answer = yield* Effect.result(this.requests.call(l.addr, "GET", `/chats?shared=1&${query}`, null, { quiet: true }));
         if (this.#restoreVersions.get(key) !== version) return;
         if (this.#links.get(address) !== l) { this.#restoreVersions.delete(key); return; }
         this.#restoreVersions.delete(key);
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== readGen) return;
         if (answer._tag === "Failure") {
           if ((answer.failure.status === undefined || answer.failure.status >= 500) && attempt < READ_RETRIES) {
             // timer: retry after a failed read, bounded and cancelled with the link.
@@ -2512,7 +2515,7 @@ export class StationsSync {
           return;
         }
         // A full shared-list read may have started before this scoped answer: replay this removal over its result.
-        this.#retold.told(address, "chat-shared-removed", { id: rowId });
+        this.#retold.told(address, "chat-shared-removed", { id: rowId }, readGen);
         if (l.sharedRows?.has(rowId) || l.sidecarIds.has(rowId)) this.#sharedPut(l, rowId, undefined);
         l.rows.rows.delete(rowId);
         this.#core.data.dropChat(address, rowId);

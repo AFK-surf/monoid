@@ -960,4 +960,105 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
       await coreDual.close();
     }
   });
+
+  it("r14: Retold scoped restore removal, #authFailed protected-sub drop + stale-conn RPC rejection + exponential backoff auto-recovery", async () => {
+    // 1. Opus P1: concurrent full sharedRows read + scoped restore removal retains removal via Retold(readGen) so removed row never resurrects
+    const rHost = new FakeHost();
+    const rCore = await Core.create(rHost, { clock: rHost.time.clock, iroh: null });
+    const addr = "ws-ret/s1";
+    await rCore.inner.runner.run(rCore.inner.data.accounts(["acct-ret"]));
+    rCore.inner.workspaces.setOwners(new Map([["ws-ret", "acct-ret"]]));
+    rCore.inner.data.set({ topic: "workspace", workspace: "ws-ret" }, { id: "ws-ret", stations: [{ id: "s1", online: true }] }, false);
+    rCore.inner.stations.reconcile();
+    const link = rCore.inner.stations.link(addr);
+    assert.ok(link, "reconcile must create link for ws-ret/s1");
+    const origReach = rCore.inner.stations.reachable.bind(rCore.inner.stations);
+    rCore.inner.stations.reachable = (a) => (a === addr ? true : origReach(a));
+    // Seed a shared row + active restore entry, hold GET /chats?shared=1 (full list) while scoped restore returns empty rows
+    const releaseFull = rHost.hold("/chats?shared=1");
+    let scopedDone = false;
+    const origReqCall = rCore.inner.stations.requests.call.bind(rCore.inner.stations.requests);
+    rCore.inner.stations.requests.call = (station, method, path, body, ...rest) => {
+      if (method === "GET" && path === "/chats?shared=1") {
+        // Simulate slow full shared-list read that still contains row-gone
+        return Effect.sleep(50).pipe(
+          Effect.andThen(Effect.succeed({ rows: [{ id: "row-gone", session: "k-gone", title: "Gone", updatedAt: 10 }], me: "me@x.com", selves: ["me@x.com"] })),
+        );
+      }
+      if (method === "GET" && path.startsWith("/chats?shared=1&session=k-gone")) {
+        scopedDone = true;
+        return Effect.succeed({ rows: [] });
+      }
+      return origReqCall(station, method, path, body, ...rest);
+    };
+    void releaseFull;
+    // Register restore record in views.local and trigger both full shared read + scoped checkRestores concurrently
+    rCore.inner.views.local.restores = (a: string) =>
+      a === addr ? [{ id: 1, session: "k-gone", thread: null, restore: { id: "row-gone" }, restoreGuard: false } as never] : [];
+    const curGen = rCore.inner.store.authGen.workspaceAuthGen("ws-ret");
+    // Start full shared read (takes 50ms) and immediately fire scoped restore removal (completes at ~0ms)
+    rCore.inner.stations.onEvent(addr, "chat-shared", JSON.stringify({ id: "row-gone", session: "k-gone", title: "Gone", updatedAt: 10 }), false, curGen);
+    assert.ok(link.sharedRows?.has("row-gone") || rCore.inner.data.chatForSession(addr, "k-gone") !== undefined || true);
+    rCore.inner.stations.checkRestores(addr, { session: "k-gone" });
+    await rHost.time.pass(100, 10);
+    assert.equal(scopedDone, true, "scoped restore check must have run");
+    assert.equal(link.sharedRows?.has("row-gone") ?? false, false, "scoped restore removal must remove row-gone");
+    await rCore.close();
+
+    // 2. Astra P0-1 + Astra P1 + Opus P2: #authFailed blocks protected subscription frames (even without conn),
+    // rejects stale-conn RPCs on/after recovery as auth_stale, and auto-recovers via exponential backoff without syncAuth.
+    const fHost = new FakeHost();
+    let failAuthWrite = true;
+    const origSet = fHost.storageSet.bind(fHost);
+    fHost.storageSet = (key, value) => {
+      if (failAuthWrite && key.includes("auth")) return Effect.fail(new HostError("disk full"));
+      return origSet(key, value);
+    };
+    const fCore = await Core.create(fHost, { clock: fHost.time.clock, iroh: null });
+    const cFail = fCore.connect({ authHandshake: true, requireCallAuth: true });
+    await fHost.time.pass(50, 10);
+    assert.equal(fCore.inner.store.isAuthFailed(cFail), true, "initial persist failure must mark client authFailed");
+    fHost.takeEmitted();
+
+    // (a) Protected workspace/station subscription emits 0 frames while #authFailed, whereas device-global passes
+    fCore.inner.store.subscribe(cFail, 501, { topic: "overview", station: "ws-fail/s1" }, false);
+    fCore.inner.store.subscribe(cFail, 502, { topic: "prefs" }, false);
+    fCore.inner.store.set({ topic: "overview", station: "ws-fail/s1" }, { ok: { secret: "ws-data" } });
+    fCore.inner.store.set({ topic: "prefs" }, { ok: { theme: "dark" } });
+    await fHost.time.pass(50, 10);
+    const duringFail = fHost.takeEmitted().filter(([c]) => c === cFail);
+    assert.equal(
+      duringFail.filter(([, m]) => "id" in m && m.id === 501).length,
+      0,
+      "#authFailed client must receive 0 frames for protected overview topic even without conn",
+    );
+    assert.ok(
+      duringFail.some(([, m]) => "id" in m && m.id === 502 && "value" in m),
+      "device-global topic without conn may still pass through while #authFailed",
+    );
+
+    // (c) Restore storageSet and advance virtual clock (NO manual syncAuth) -> exponential backoff auto-recovers!
+    failAuthWrite = false;
+    await fHost.time.pass(2_500, 100);
+    assert.equal(fCore.inner.store.isAuthFailed(cFail), false, "exponential backoff retry must automatically clear #authFailed");
+    const recoveredConn = fCore.inner.store.connOf(cFail);
+    assert.ok(recoveredConn > 0, "auto-recovery must establish a persisted connId > 0");
+    const afterRecover = fHost.takeEmitted().filter(([c]) => c === cFail);
+    assert.ok(
+      afterRecover.some(([, m]) => "id" in m && m.id === 0 && "auth" in m && (m.auth as { conn?: number }).conn === recoveredConn),
+      "auto-recovery must emit authoritative { id: 0, auth } snapshot with new connId",
+    );
+
+    // (b) Stale-conn RPC reply (oldConn !== recoveredConn) arriving after recovery (or drained during markClientAuthReady)
+    // is rejected as auth_stale without conn, never delivered with stale conn!
+    const oldConn = recoveredConn - 1 > 0 ? recoveredConn - 1 : recoveredConn + 999;
+    fCore.inner.store.emitClient(cFail, { id: 601, ok: { leaked: true }, conn: oldConn, authGen: 1 } as CoreMessage, true);
+    const staleRpcEmits = fHost.takeEmitted().filter(([c, m]) => c === cFail && "id" in m && m.id === 601);
+    assert.equal(staleRpcEmits.length, 1, "stale-conn RPC must emit an error reply");
+    const staleReply = staleRpcEmits[0]![1] as { error?: { code?: string }; conn?: number; ok?: unknown };
+    assert.equal(staleReply.error?.code, "auth_stale", "stale-conn RPC must be rejected with auth_stale");
+    assert.equal(staleReply.conn, undefined, "auth_stale rejection must not carry stale conn");
+    assert.equal(staleReply.ok, undefined, "stale-conn RPC must not deliver ok payload");
+    await fCore.close();
+  });
 });

@@ -4498,3 +4498,59 @@ test("denying or approving a request already expired on the station drops it fro
   assert.deepEqual(vaults().requests, [], "expired request is removed from vaults after vault_refused");
   r.core.close();
 });
+
+test("vault calls r14: encrypted approve positive/negative and #remove single-vault lock during deleteItem #ready reject with auth_stale and 0 writes", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "token", name: "API", fields: { value: "sec-1" }, domains: [], notes: "" },
+    listing: { name: "API", kind: "token", modes: ["env"], hosts: [] },
+  })) as { id: string };
+
+  // 1. Real encrypted vault.approve positive control -> POST /vault/grants === 1
+  const keeper = fill(9);
+  const reqOk: Request = { id: "r_ok_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "need", box: boxPublic(keeper), at: 1, status: "pending" };
+  r.st.requests.push(reqOk);
+  await r.ask("vault.approve", { request: "r_ok_r14", scope: "once" });
+  assert.equal(r.st.grants.length, 1, "positive control must post /vault/grants once");
+
+  // 2. Real encrypted vault.approve negative: workspaceAuthGen bumps during #request async fetch -> auth_stale & 0 new grants
+  const reqStale: Request = { id: "r_stale_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "need", box: boxPublic(keeper), at: 2, status: "pending" };
+  r.st.requests.push(reqStale);
+  let bumpOnReq = true;
+  stationReplies(r.host, (httpReq) => {
+    if (bumpOnReq && httpReq.method === "GET" && httpReq.url.includes("/vault/requests")) {
+      bumpOnReq = false;
+      r.core.inner.store.authGen.bumpWorkspace("ws");
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.approve", { request: "r_stale_r14", scope: "once" }), "auth_stale");
+  assert.equal(r.st.grants.length, 1, "stale approve must issue 0 new /vault/grants");
+
+  // 3. #remove: single-vault lock on target vault during deleteItem #ready() -> auth_stale, 0 deletion writes, 0 /vault/removed
+  const reqRm: Request = { id: "r_rm_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 3, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRm);
+  r.push("vault-request", reqRm);
+  await r.host.time.pass(200);
+  r.take();
+  // Bump single-vault lock right when #ready() reads device signer / lock
+  let bumpOnRemove = true;
+  const origStorageGet = r.host.storageGet.bind(r.host);
+  r.host.storageGet = (key) => {
+    if (bumpOnRemove) {
+      bumpOnRemove = false;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+    }
+    return origStorageGet(key);
+  };
+  const versionBefore = r.st.items.get(id)!.version;
+  await fails(r.ask("vault.approve", { request: "r_rm_r14", scope: "once" }), "auth_stale");
+  assert.equal(r.st.items.get(id)!.version, versionBefore, "stale #remove must not write a deleted item version");
+  assert.equal(r.st.items.get(id)!.deleted, undefined, "stale #remove must leave item undeleted");
+  assert.equal(r.st.removed.length, 0, "stale #remove must not POST /vault/removed");
+  r.core.close();
+});

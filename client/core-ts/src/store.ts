@@ -24,7 +24,7 @@ import { t } from "./i18n.ts";
 import * as present from "./present.ts";
 import { topicDebug, topicKey, type ClientId, type CoreMessage, type RequestId, type Topic, type WireGen } from "./protocol.ts";
 import { AuthGenTracker, topicScopeOf, type AuthBoundaryEvent } from "./auth-gen.ts";
-import { evaluateTopicPolicy, isKnownTopic, KEPT_PER_CLIENT, sanitizeKeptValue, topicsWhere } from "./topic-policy.ts";
+import { DEVICE_GLOBAL_TOPIC_SET, evaluateTopicPolicy, isKnownTopic, KEPT_PER_CLIENT, sanitizeKeptValue, topicsWhere } from "./topic-policy.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { Kind, type Span, type Tracer } from "./trace.ts";
 import { readAfresh } from "./markdown.ts";
@@ -260,29 +260,43 @@ export class Store {
     this.#connIds.set(client, connId);
   }
 
-  /// Marks `client`'s `connId` as durably persisted, emits the authoritative `{ id: 0, auth }` snapshot, and drains any deferred emissions.
+  /// Marks `client`'s `connId` as durably persisted, emits the authoritative `{ id: 0, auth }` snapshot, and drains any
+  /// deferred emissions. Any deferred message tagged with a stale `conn !== activeConn` is rejected as `auth_stale`
+  /// (for RPCs, without `conn`) or dropped (for non-RPCs).
   markClientAuthReady(client: ClientId): void {
-    if (!this.#connIds.has(client)) return;
+    const activeConn = this.#connIds.get(client);
+    if (activeConn === undefined) return;
     this.#authNotReady.delete(client);
     this.#authFailed.delete(client);
     this.#flushAuthSnapshot(client);
     const queued = this.#deferredEmits.get(client);
     if (queued) {
       this.#deferredEmits.delete(client);
-      for (const entry of queued) this.host.emit(client, entry.msg);
+      for (const entry of queued) {
+        const msgConn =
+          "conn" in entry.msg && typeof (entry.msg as { conn?: unknown }).conn === "number"
+            ? (entry.msg as { conn: number }).conn
+            : undefined;
+        if (msgConn !== undefined && msgConn !== activeConn) {
+          if (entry.isRpc && "id" in entry.msg && typeof entry.msg.id === "number" && entry.msg.id > 0) {
+            this.host.emit(client, { id: entry.msg.id, error: new CoreError("auth_stale", t("core-misc.auth.stale")) });
+          }
+          continue;
+        }
+        this.host.emit(client, entry.msg);
+      }
     }
   }
 
-  /// Whether `client`'s handshake `device/auth` persistence failed (and has not yet recovered via `syncAuth`).
+  /// Whether `client`'s handshake `device/auth` persistence failed (and has not yet recovered via `syncAuth` or auto-retry).
   isAuthFailed(client: ClientId): boolean {
     return this.#authFailed.has(client);
   }
 
   /// Aborts an unpersisted handshake for `client`: marks `#authFailed` (preserving `#authEnforced`), never emits the
   /// unpersisted `connId`, fails only queued RPCs (`isRpc === true`) explicitly without `conn` (never misreporting
-  /// subscription values as RPC errors), and clears handshake state so a subsequent `syncAuth` can recover.
-  failClientAuth(client: ClientId, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
+  /// subscription values as RPC errors), and clears handshake state so recovery can establish a fresh `connId`.
+  failClientAuth(client: ClientId, _err: unknown): void {
     const queued = this.#deferredEmits.get(client);
     this.#authFailed.add(client);
     this.#deferredEmits.delete(client);
@@ -294,7 +308,7 @@ export class Store {
       for (const { msg, isRpc } of queued) {
         if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0 && !seenRpc.has(msg.id)) {
           seenRpc.add(msg.id);
-          this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", message) });
+          this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", t("core-logic.status.db.full")) });
         }
       }
     }
@@ -314,9 +328,10 @@ export class Store {
   }
 
   /// Emits `msg` to `client`, deferring until `device/auth` persistence completes if `client` is awaiting handshake
-  /// persistence. If persistence failed (`#authFailed`), RPCs receive an explicit `storage_failed` error without `conn`
-  /// and any conn-tagged non-RPC message is dropped.
-  emitClient(client: ClientId, msg: CoreMessage, isRpc = false): void {
+  /// persistence. If persistence failed (`#authFailed`), RPCs receive an explicit `storage_failed` error without `conn`,
+  /// only conn-free device-global frames pass through, and all protected subscription frames are dropped. Once ready,
+  /// any late message tagged with a stale `conn !== activeConn` is rejected as `auth_stale` (RPC) or dropped.
+  emitClient(client: ClientId, msg: CoreMessage, isRpc = false, deviceGlobal = false): void {
     if (this.#authNotReady.has(client)) {
       let q = this.#deferredEmits.get(client);
       if (!q) this.#deferredEmits.set(client, (q = []));
@@ -327,10 +342,21 @@ export class Store {
       if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0) {
         this.host.emit(client, {
           id: msg.id,
-          error: new CoreError("storage_failed", "Device storage is unavailable; free space and retry."),
+          error: new CoreError("storage_failed", t("core-logic.status.db.full")),
         });
-      } else if (!("conn" in msg && typeof (msg as { conn?: unknown }).conn === "number")) {
+      } else if (deviceGlobal && !("conn" in msg && typeof (msg as { conn?: unknown }).conn === "number")) {
         this.host.emit(client, msg);
+      }
+      return;
+    }
+    const activeConn = this.#connIds.get(client);
+    const msgConn =
+      "conn" in msg && typeof (msg as { conn?: unknown }).conn === "number"
+        ? (msg as { conn: number }).conn
+        : undefined;
+    if (activeConn !== undefined && msgConn !== undefined && msgConn !== activeConn) {
+      if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0) {
+        this.host.emit(client, { id: msg.id, error: new CoreError("auth_stale", t("core-misc.auth.stale")) });
       }
       return;
     }
@@ -582,13 +608,14 @@ export class Store {
       this.#firstPending.set(key, entry);
       this.#wakePending(true);
     }
+    const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
     if (cached !== undefined) {
       const gen = this.#wireGen(client, topic);
-      this.emitClient(client, this.#first(client, id, topic, keyed, cached, gen) ?? to(whole(cached), id, gen));
+      this.emitClient(client, this.#first(client, id, topic, keyed, cached, gen) ?? to(whole(cached), id, gen), false, deviceGlobal);
     } else {
       if (entry.waiting === true) {
         const gen = this.#wireGen(client, topic);
-        this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
+        this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true }, false, deviceGlobal);
       }
       if (entry.opening === undefined && this.#tracer !== null && OPENED.has(topic.topic)) {
         const span = this.#tracer.root(`${topic.topic}.open`, Kind.Internal);
@@ -695,9 +722,10 @@ export class Store {
       const known = isKnownTopic(topic.topic);
       const policy = known ? evaluateTopicPolicy(topic.topic, topic) : null;
       const gen = this.#wireGen(client, topic);
+      const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
       if ((policy !== null && (policy.sensitive || policy.retention === "live" || policy.keep <= 0)) || !this.#isAuthorized(topic)) {
         // Unconditional security ceiling: sensitive/live topics never retain kept values; still complete unsubscribe.
-        this.emitClient(client, gen ? { id, v: null, ...gen } : { id, v: null });
+        this.emitClient(client, gen ? { id, v: null, ...gen } : { id, v: null }, false, deviceGlobal);
       } else {
         // (what went to it last: the value it holds, every message to it going out in order; none, where none went)
         const curAuthGen = this.authGen.authGenOf(topic);
@@ -710,7 +738,7 @@ export class Store {
           this.#keep(client, topicKey(topic), topic, sanitized, v, curAuthGen, curVaultGen);
           this.#recordTokenScope(client, topic, v, curAuthGen, curVaultGen);
         }
-        this.emitClient(client, gen ? { id, v, ...gen } : { id, v });
+        this.emitClient(client, gen ? { id, v, ...gen } : { id, v }, false, deviceGlobal);
       }
     }
     if (!entry) return;
@@ -1238,9 +1266,10 @@ export class Store {
       // then shows what is to come at once, and otherwise waits for what the device holds).
       if (now.waiting !== true && now.subscribers.length > 0 && this.#source?.waits?.(topic) === true) {
         now.waiting = true;
+        const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
         for (const [client, id] of now.subscribers) {
           const gen = this.#wireGen(client, topic);
-          this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
+          this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true }, false, deviceGlobal);
         }
         now.opening?.span.set("stillfail.waiting", true);
       }
@@ -1309,13 +1338,14 @@ export class Store {
       now.opening = undefined;
     }
     for (const w of changed) w();
+    const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
     for (const [client, id, keyed] of subscribers) {
       const o = keyed ? keyedOut : out;
       const gen = this.#wireGen(client, topic);
       // (its first value: `same`, or what changed from what the client holds, where it says so)
       const first = sent === undefined ? this.#first(client, id, topic, keyed, value, gen) : null;
-      if (first) this.emitClient(client, first);
-      else if (o) this.emitClient(client, to(o, id, gen));
+      if (first) this.emitClient(client, first, false, deviceGlobal);
+      else if (o) this.emitClient(client, to(o, id, gen), false, deviceGlobal);
     }
     if (topic.topic === "chats" && !("err" in value) && this.onFirstChats !== null && subscribers.length > 0) {
       if (this.onFirstChats(String(topic.scope ?? ""))) this.onFirstChats = null;

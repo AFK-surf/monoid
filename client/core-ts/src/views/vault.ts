@@ -69,7 +69,8 @@ import { OTHERS_MS, answersOf, askPerson, baseOf, tookOrRefused, deviceText, dev
 import { checkChain, crypto as personCrypto } from "../personal-lock.ts";
 import * as prefs from "../prefs.ts";
 import { workspaceIds } from "./marks.ts";
-import type { Topic } from "../protocol.ts";
+import { snapVaultGen, snapWsAuthGen } from "../auth-gen.ts";
+import type { AuthBoundary, Topic } from "../protocol.ts";
 import { StationAddr } from "../station/addr.ts";
 import { Priority } from "../sync/scheduler.ts";
 import type { SpanContext } from "../trace.ts";
@@ -3687,7 +3688,13 @@ class Vaults {
   }
 
   /// An item written: encrypted under the vault's key, the version after the one held (a new one's 0), signed.
-  putItem(vault: string, id: string | null, plain: unknown, listing: unknown): Effect.Effect<unknown, CoreError> {
+  putItem(
+    vault: string,
+    id: string | null,
+    plain: unknown,
+    listing: unknown,
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
@@ -3695,7 +3702,15 @@ class Vaults {
       const { lock, signer, self: who } = yield* self.#ready();
       const v = yield* self.#writable(lock, vault, who);
       if (!v.members.includes(who.sub)) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
-      const key = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }));
+      const key = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }), false, undefined, expected);
+      if (
+        expected !== undefined &&
+        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+          inner.store.authGen.vaultGen(self.ws, vault) !== expected.vaultGen ||
+          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen)
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       const item = id ?? `i_${ulid(inner.host)}`;
       const prev = items(inner, self.ws, vault)[item];
       const version = prev ? prev.version + 1 : 0;
@@ -3707,14 +3722,27 @@ class Vaults {
     });
   }
 
-  deleteItem(vault: string, id: string): Effect.Effect<unknown, CoreError> {
+  deleteItem(
+    vault: string,
+    id: string,
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
+      const inner = self.#inner;
       const { lock, signer, self: who } = yield* self.#ready();
       const v = yield* self.#writable(lock, vault, who);
-      const prev = items(self.#inner, self.ws, vault)[id];
+      if (
+        expected !== undefined &&
+        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+          inner.store.authGen.vaultGen(self.ws, vault) !== expected.vaultGen ||
+          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen)
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
+      const prev = items(inner, self.ws, vault)[id];
       if (!prev || prev.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
-      const next = sign({ v: 1 as const, ws: self.ws, vault, id, version: prev.version + 1, epoch: v.epoch, deleted: true as const, ct: "", at: nowS(self.#inner) }, TAG.item, signer);
+      const next = sign({ v: 1 as const, ws: self.ws, vault, id, version: prev.version + 1, epoch: v.epoch, deleted: true as const, ct: "", at: nowS(inner) }, TAG.item, signer);
       return yield* self.#putItem(next, v);
     });
   }
@@ -3917,30 +3945,9 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startGlobalAuthGen = inner.store.authGen.globalGen;
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
-      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
-      const initialReq = held(inner, self.ws).requests[id];
-      const initialVaultId = targetVault ?? initialReq?.vault;
-      const initialVaultGen = initialVaultId && initialVaultId !== PLAIN ? inner.store.authGen.vaultGen(self.ws, initialVaultId) : undefined;
-      const crossSrcWs = initialReq?.cross?.workspace;
-      const entryGens = {
-        startWsAuthGen,
-        startGlobalAuthGen,
-        startVaultGlobalGen,
-        startWsVaultGen,
-        ...(initialVaultId !== undefined ? { initialVaultId } : {}),
-        ...(initialVaultGen !== undefined ? { initialVaultGen } : {}),
-        ...(crossSrcWs !== undefined
-          ? {
-              crossSrcWs,
-              startCrossSrcWsAuthGen: inner.store.authGen.workspaceAuthGen(crossSrcWs),
-              startCrossSrcWsVaultGen: inner.store.authGen.vaultWorkspaceGen(crossSrcWs),
-              startCrossSrcVaultGen: initialReq?.vault && initialReq.vault !== PLAIN ? inner.store.authGen.vaultGen(crossSrcWs, initialReq.vault) : undefined,
-            }
-          : {}),
-      };
+      const startSnap = inner.store.authGen.snapshot(0);
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
       const asked = yield* self.#request(id);
       if (
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
@@ -3948,16 +3955,16 @@ class Vaults {
       ) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
-      if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems, entryGens);
+      if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems, startSnap);
       if (!["once", "hour", "chat"].includes(scope)) return yield* Effect.fail(CoreError.invalid("scope: once, hour or chat"));
       const timeout = timeoutValue as { kind?: unknown; seconds?: unknown } | undefined;
       if (timeout !== undefined && (timeout === null || typeof timeout !== "object" || (timeout.kind !== "idle" && timeout.kind !== "fixed") || !Number.isSafeInteger(timeout.seconds) || (timeout.seconds as number) < 1 || (timeout.seconds as number) > 30 * 86400 || scope === "once" || (timeout.seconds as number) > GRANT_SECS[scope])) return yield* Effect.fail(CoreError.invalid("invalid timeout"));
       // The plain library's: its owner says so, nothing to open or sign (the station holds the value).
-      if (asked.r.save) return yield* self.#keepSaved(asked.r, asked.station, typed, targetVault, entryGens);
-      if (asked.r.describe) return yield* self.#describe(asked.r, asked.station, entryGens);
-      if (asked.r.remove) return yield* self.#remove(asked.r, asked.station, entryGens);
+      if (asked.r.save) return yield* self.#keepSaved(asked.r, asked.station, typed, targetVault, startSnap);
+      if (asked.r.describe) return yield* self.#describe(asked.r, asked.station, startSnap);
+      if (asked.r.remove) return yield* self.#remove(asked.r, asked.station, startSnap);
       if (asked.r.timeout && scope !== "once" && !timeout) return yield* Effect.fail(CoreError.invalid("this request needs an approval with its timeout; update the app"));
-      if (asked.r.cross !== undefined) return yield* self.#approveCross(asked.r, asked.station, scope, timeout as { kind: "idle" | "fixed"; seconds: number } | undefined, entryGens);
+      if (asked.r.cross !== undefined) return yield* self.#approveCross(asked.r, asked.station, scope, timeout as { kind: "idle" | "fixed"; seconds: number } | undefined, startSnap);
       if (asked.r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
@@ -3984,15 +3991,7 @@ class Vaults {
       let item: Item = found;
       if (!allows(item.listing?.lasts ?? v.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       // (this device's box key, as it was unsealed for it: a sign-in's newer cookies the request carries are opened with it)
-      let startVaultGen: number;
-      if (initialVaultId === v.id && initialVaultGen !== undefined) {
-        startVaultGen = initialVaultGen;
-      } else {
-        if (inner.store.authGen.vaultWorkspaceGen(self.ws) !== startWsVaultGen) {
-          return yield* fail("auth_stale", t("core-misc.auth.stale"));
-        }
-        startVaultGen = inner.store.authGen.vaultGen(self.ws, v.id);
-      }
+      const startVaultGen = snapVaultGen(startSnap, self.ws, v.id);
       const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
       const approveStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
@@ -4071,7 +4070,7 @@ class Vaults {
     r: Request,
     station: string,
     selected: { workspace: string; vault: string; item: string }[] | undefined,
-    entryGens: { startWsAuthGen: number; startVaultGlobalGen: number },
+    startSnap: AuthBoundary,
   ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -4133,10 +4132,24 @@ class Vaults {
         TAG.browse,
         signer,
       );
-      if (
-        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
-        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen
-      ) {
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
+      const browseStale = () => {
+        if (
+          inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+        ) {
+          return true;
+        }
+        for (const srcWs of sourceWorkspaces) {
+          if (inner.store.authGen.workspaceAuthGen(srcWs) !== snapWsAuthGen(startSnap, srcWs)) return true;
+        }
+        for (const l of listings) {
+          if (inner.store.authGen.vaultGen(l.sourceWs, l.vault) !== snapVaultGen(startSnap, l.sourceWs, l.vault)) return true;
+        }
+        return false;
+      };
+      if (browseStale()) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
       yield* self.#postDecision(station, "/vault/browses", answer, r.id);
@@ -4153,15 +4166,7 @@ class Vaults {
     station: string,
     scope: Scope,
     timeout: { kind: "idle" | "fixed"; seconds: number } | undefined,
-    entryGens: {
-      startWsAuthGen: number;
-      startGlobalAuthGen: number;
-      startVaultGlobalGen: number;
-      crossSrcWs?: string;
-      startCrossSrcWsAuthGen?: number;
-      startCrossSrcWsVaultGen?: number;
-      startCrossSrcVaultGen?: number;
-    },
+    startSnap: AuthBoundary,
   ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -4205,23 +4210,10 @@ class Vaults {
       if (!allows(itemA.listing.lasts ?? vA.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       const mineA = keyVault.keys.find((k) => k.cert.device === whoA.device);
       if (!mineA) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
-      const startDstWsAuthGen = entryGens.startWsAuthGen;
-      const startVaultGlobalGen = entryGens.startVaultGlobalGen;
-      let startSrcWsAuthGen: number;
-      let startSrcVaultGen: number;
-      if (entryGens.crossSrcWs === wsA && entryGens.startCrossSrcWsAuthGen !== undefined && entryGens.startCrossSrcVaultGen !== undefined) {
-        startSrcWsAuthGen = entryGens.startCrossSrcWsAuthGen;
-        startSrcVaultGen = entryGens.startCrossSrcVaultGen;
-      } else {
-        if (
-          inner.store.authGen.globalGen !== entryGens.startGlobalAuthGen ||
-          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
-        ) {
-          return yield* fail("auth_stale", t("core-misc.auth.stale"));
-        }
-        startSrcWsAuthGen = inner.store.authGen.workspaceAuthGen(wsA);
-        startSrcVaultGen = inner.store.authGen.vaultGen(wsA, vA.id);
-      }
+      const startDstWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
+      const startSrcWsAuthGen = snapWsAuthGen(startSnap, wsA);
+      const startSrcVaultGen = snapVaultGen(startSnap, wsA, vA.id);
       const crossStale = () =>
         inner.store.authGen.workspaceAuthGen(wsA) !== startSrcWsAuthGen ||
         inner.store.authGen.workspaceAuthGen(self.ws) !== startDstWsAuthGen ||
@@ -4277,11 +4269,13 @@ class Vaults {
     station: string,
     typed: unknown,
     targetVault: string | undefined,
-    entryGens: { startWsAuthGen: number; startVaultGlobalGen: number },
+    startSnap: AuthBoundary,
   ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
       const s = r.save!;
       const given = s.typed ? typedFields(s, typed) : null;
       if (given === undefined) return yield* fail("vault_typed_empty", t("core-misc.vault.typedEmpty"));
@@ -4289,8 +4283,8 @@ class Vaults {
       if (r.vault === PLAIN) {
         if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         if (
-          inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
-          inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen
+          inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
         ) {
           return yield* fail("auth_stale", t("core-misc.auth.stale"));
         }
@@ -4357,16 +4351,20 @@ class Vaults {
           }
         }
       }
-      const startWsAuthGen = entryGens.startWsAuthGen;
-      const startVaultGlobalGen = entryGens.startVaultGlobalGen;
       if (
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
         inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
       ) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
-      const startRekeyVaultGen = rekeyCandidate ? inner.store.authGen.vaultGen(self.ws, rekeyCandidate.id) : 0;
-      const startChosenVaultGen = chosen ? inner.store.authGen.vaultGen(self.ws, chosen.id) : 0;
+      const startRekeyVaultGen = rekeyCandidate ? snapVaultGen(startSnap, self.ws, rekeyCandidate.id) : 0;
+      const startChosenVaultGen = chosen ? snapVaultGen(startSnap, self.ws, chosen.id) : 0;
+      if (
+        (rekeyCandidate !== undefined && inner.store.authGen.vaultGen(self.ws, rekeyCandidate.id) !== startRekeyVaultGen) ||
+        (chosen !== undefined && inner.store.authGen.vaultGen(self.ws, chosen.id) !== startChosenVaultGen)
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.save", { name: s.name }));
       if (boxPublic(priv) !== box) return yield* fail("vault_no_key", t(given ? "core-misc.vault.noKey" : "core-misc.vault.notSealedHere"));
       const body = yield* Effect.try({
@@ -4399,7 +4397,7 @@ class Vaults {
       const kept = mem(inner).keys.get(keyOf(vault));
       const wrapped = vault.keys.find((k) => k.cert.device === who.device)!.wrapped;
       const key = kept && kept.until > inner.host.nowMs() ? kept.key : yield* Effect.try({ try: () => openSeal(priv, wrapped, keyContext(self.ws, vault.id, vault.epoch)), catch: asCoreError });
-      const targetVaultGen = chosen && vault.id === chosen.id ? startChosenVaultGen : inner.store.authGen.vaultGen(self.ws, vault.id);
+      const targetVaultGen = chosen && vault.id === chosen.id ? startChosenVaultGen : snapVaultGen(startSnap, self.ws, vault.id);
       const saveStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
         inner.store.authGen.vaultGen(self.ws, vault.id) !== targetVaultGen ||
@@ -4446,15 +4444,18 @@ class Vaults {
   /// An agent's request to rename an item or change its about, approved: the plain library's written by its station; a
   /// vault's item opened here and written as its next version saying so (its listing too, what agents read), its copy
   /// brought to the station that asked, which is then told. It grants nothing.
-  #describe(r: Request, station: string, entryGens: { startWsAuthGen: number; startVaultGlobalGen: number }): Effect.Effect<unknown, CoreError> {
+  #describe(r: Request, station: string, startSnap: AuthBoundary): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       const d = r.describe!;
       if (typeof d.name !== "string" || d.name.trim() === "" || typeof d.about !== "string") return yield* Effect.fail(CoreError.invalid("describe: {name, about}"));
-      const describeStale = () =>
-        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
-        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen;
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
+      const describeStale = (vaultId?: string) =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen ||
+        (vaultId !== undefined && inner.store.authGen.vaultGen(self.ws, vaultId) !== snapVaultGen(startSnap, self.ws, vaultId));
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
@@ -4463,15 +4464,16 @@ class Vaults {
         return { request: r.id, item: r.item };
       }
       const opened = (yield* self.open(r.item)) as { vault: string; plain: Plain };
-      if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      if (describeStale(opened.vault)) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const item = items(inner, self.ws, opened.vault)[r.item];
       if (!item || item.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const { about: _, ...listing } = item.listing ?? { name: d.name, kind: opened.plain.kind, modes: [], hosts: [] };
+      const expected = { wsAuthGen: startWsAuthGen, vaultGen: snapVaultGen(startSnap, self.ws, opened.vault), vaultGlobalGen: startVaultGlobalGen };
       // (one agents may not ask for keeps no listing: its name and notes alone change)
-      yield* self.putItem(opened.vault, r.item, { ...opened.plain, name: d.name, notes: d.about }, item.listing ? { ...listing, name: d.name, ...(d.about ? { about: d.about } : {}) } : null);
+      yield* self.putItem(opened.vault, r.item, { ...opened.plain, name: d.name, notes: d.about }, item.listing ? { ...listing, name: d.name, ...(d.about ? { about: d.about } : {}) } : null, expected);
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
-      if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      if (describeStale(opened.vault)) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       yield* self.#postDecision(station, "/vault/described", { request: r.id }, r.id);
       self.#settled(r.id, { status: "granted" });
       return { request: r.id, item: r.item };
@@ -4481,13 +4483,17 @@ class Vaults {
   /// An agent's request to delete an item, approved: the plain library's deleted by its station; a vault's item deleted
   /// here (its deleted version signed by this device), its copy brought to the station that asked, which is then told.
   /// It grants nothing.
-  #remove(r: Request, station: string, entryGens: { startWsAuthGen: number; startVaultGlobalGen: number }): Effect.Effect<unknown, CoreError> {
+  #remove(r: Request, station: string, startSnap: AuthBoundary): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
+      const startVaultGen = r.vault !== PLAIN ? snapVaultGen(startSnap, self.ws, r.vault) : startVaultGlobalGen;
       const removeStale = () =>
-        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
-        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen;
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen ||
+        (r.vault !== PLAIN && inner.store.authGen.vaultGen(self.ws, r.vault) !== startVaultGen);
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
@@ -4498,7 +4504,9 @@ class Vaults {
       if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const item = items(inner, self.ws, r.vault)[r.item];
       // (gone already, by another device or from its page: what is left is to say so)
-      if (item && !item.deleted) yield* self.deleteItem(r.vault, r.item);
+      if (item && !item.deleted) {
+        yield* self.deleteItem(r.vault, r.item, { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen });
+      }
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
       if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));

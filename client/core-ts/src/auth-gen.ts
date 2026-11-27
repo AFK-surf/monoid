@@ -71,6 +71,16 @@ export type AuthBoundaryEvent =
     }
   | { readonly kind: "vaultAll"; readonly vaultGen: number };
 
+/// Reconstructs the exact `workspaceAuthGen(ws)` at the time `snap` was captured.
+export function snapWsAuthGen(snap: AuthBoundary, ws: string): number {
+  return Math.max(snap.global ?? 1, snap.scopes?.[ws] ?? 0);
+}
+
+/// Reconstructs the exact `vaultGen(ws, vaultId)` at the time `snap` was captured.
+export function snapVaultGen(snap: AuthBoundary, ws: string, vaultId: string): number {
+  return Math.max(snap.vaultGlobal ?? 1, snap.vaults?.[`${ws}/${vaultId}`] ?? 0);
+}
+
 /// Monotonic generation tracker for `(account, workspace)` authorization and per-vault lock boundaries.
 export class AuthGenTracker {
   #globalGen = 1;

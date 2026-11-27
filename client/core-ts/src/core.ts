@@ -290,6 +290,8 @@ let nextConnSeq = 0;
 export class Core {
   readonly inner: Inner;
   #nextClient = 1;
+  readonly #connectedClients = new Set<ClientId>();
+  readonly #authRetryFibers = new Map<ClientId, ReturnType<Runner["fork"]>>();
 
   private constructor(inner: Inner) {
     this.inner = inner;
@@ -880,19 +882,76 @@ export class Core {
     this.inner.store.setClock();
   }
 
+  #cancelAuthRetry(client: ClientId): void {
+    const fiber = this.#authRetryFibers.get(client);
+    if (fiber !== undefined) {
+      this.#authRetryFibers.delete(client);
+      this.inner.runner.interrupt(fiber);
+    }
+  }
+
+  #scheduleAuthPersistRetry(client: ClientId): void {
+    if (!this.#connectedClients.has(client) || this.#authRetryFibers.has(client)) return;
+    const DELAYS_MS = [2_000, 5_000, 10_000, 30_000];
+    let fiber!: ReturnType<Runner["fork"]>;
+    const retry = Effect.gen({ self: this }, function* () {
+      for (let attempt = 0; ; attempt++) {
+        const delay = DELAYS_MS[Math.min(attempt, DELAYS_MS.length - 1)]!;
+        // timer: bounded exponential backoff retry for device/auth persistence after storage failure.
+        yield* Effect.sleep(delay);
+        if (!this.#connectedClients.has(client) || !this.inner.store.isAuthFailed(client)) return;
+        const attemptRes = yield* Effect.result(
+          Effect.gen({ self: this }, function* () {
+            const device = this.inner.data.device;
+            if (device.isUnloaded("auth")) {
+              const loaded = yield* device.reload("auth");
+              if (!loaded) return yield* Effect.fail(new HostError("device/auth has not been read"));
+            }
+            let finalConnId = ++nextConnSeq;
+            const diskSeq = Number(device.get("auth", "connSeq") ?? 0);
+            if (Number.isFinite(diskSeq) && diskSeq >= finalConnId) {
+              nextConnSeq = Math.max(nextConnSeq, Math.floor(diskSeq) + 1);
+              finalConnId = nextConnSeq;
+            }
+            device.put("auth", "connSeq", finalConnId);
+            yield* device.flushTable("auth");
+            return finalConnId;
+          }),
+        );
+        if (attemptRes._tag === "Success") {
+          if (!this.#connectedClients.has(client) || !this.inner.store.isAuthFailed(client)) return;
+          this.inner.store.registerClient(client, attemptRes.success, false, false);
+          this.inner.store.markClientAuthReady(client);
+          return;
+        }
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (this.#authRetryFibers.get(client) === fiber) this.#authRetryFibers.delete(client);
+        }),
+      ),
+    );
+    fiber = this.inner.runner.fork(retry);
+    this.#authRetryFibers.set(client, fiber);
+  }
+
   /// Persists a monotonic `connId` in `device/auth` before allowing any `{ id: 0, auth }` snapshot or conn-tagged
   /// message to be emitted to `client`. Recovers from cold-start `#unloaded` `device/auth` via `reload("auth")` and
-  /// fails explicitly (without leaking unpersisted `connId` or hanging callers) if persistence fails.
+  /// fails explicitly (without leaking unpersisted `connId` or hanging callers) if persistence fails, then schedules
+  /// bounded exponential-backoff background recovery.
   #persistClientAuth(client: ClientId, initialConnId: number): void {
+    this.#cancelAuthRetry(client);
     this.inner.store.registerClient(client, initialConnId, false, false);
     const failPersist = (err: unknown) => {
       this.inner.store.failClientAuth(client, err);
       // Do NOT call `runner.onDefect` (all production hosts treat `onDefect` as fatal and crash-loop on disk full);
-      // record a non-fatal warning on the tracer instead.
+      // record a non-fatal warning on the tracer instead, and schedule bounded backoff recovery.
       const span = this.inner.tracer.root("core.auth_persist_failed", Kind.Internal);
       span.set("stillfail.error", err instanceof Error ? err.message : String(err));
       span.fail();
       span.end();
+      this.#scheduleAuthPersistRetry(client);
     };
     try {
       this.inner.runner.fork(
@@ -924,6 +983,7 @@ export class Core {
   /// monotonic cross-restart `connId` and schedules the initial `{ id: 0, auth }` snapshot.
   connect(options?: { authHandshake?: boolean; requireCallAuth?: boolean }): ClientId {
     const client = this.#nextClient++;
+    this.#connectedClients.add(client);
     if (options?.authHandshake === true) {
       const connId = ++nextConnSeq;
       if (options?.requireCallAuth === true) {
@@ -948,6 +1008,8 @@ export class Core {
 
   /// A UI went away: its subscriptions end, its calls that hold something open for it stop.
   disconnect(client: ClientId): void {
+    this.#connectedClients.delete(client);
+    this.#cancelAuthRetry(client);
     this.inner.store.dropClient(client);
     this.inner.attention.attend.gone(client);
     this.inner.forms.disconnect(this.inner, client);
@@ -1028,7 +1090,7 @@ export class Core {
     const conn = inner.store.connOf(client);
     if (auth !== undefined) inner.store.setAuthEnforced(client);
     if (inner.store.isAuthFailed(client) && (target.protectedWrite || auth !== undefined || inner.store.isAuthEnforced(client))) {
-      inner.host.emit(client, answer(id, { err: new CoreError("storage_failed", "Device storage is unavailable; free space and retry.") }));
+      inner.host.emit(client, answer(id, { err: new CoreError("storage_failed", t("core-logic.status.db.full")) }));
       return;
     }
     const enforced = conn > 0 && inner.store.isAuthEnforced(client);

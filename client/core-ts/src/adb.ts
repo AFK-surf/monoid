@@ -20,6 +20,7 @@ import { LANG_HEADER } from "./station/requests.ts";
 import type { RequestHead } from "./station/wire.ts";
 import type { Store } from "./store.ts";
 import { fromUtf8, parseJson, utf8 } from "./util.ts";
+import { ofAddress } from "./workspace.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -945,7 +946,8 @@ export class Adb {
   /// A station said how a grant or request of this person's stands (its `adb-grant` event, or a decision's answer).
   heard(station: string, d: J): void {
     if (typeof d?.id !== "string") return;
-    this.#retold.told(station, "adb-grant", d);
+    const readGen = this.#env.store.authGen.workspaceAuthGen(ofAddress(station));
+    this.#retold.told(station, "adb-grant", d, readGen);
     this.#putGrant(station, d);
     this.#keep();
     this.#sync();
