@@ -784,9 +784,10 @@ fn preset_others_content(
   let has_search = fn() { cur_others().length() >= 5 }
   let query_field = @ui.Field::new()
   let search_at : @signals.Signal[Int] = @signals.signal(0)
-  let searching = fn() { query_field.text().trim().to_owned() != "" }
+  let active_query = fn() { if has_search() { query_field.text().trim().to_owned() } else { "" } }
+  let searching = fn() { active_query() != "" }
   let visible = fn() -> Array[Json] {
-    let q = query_field.text()
+    let q = active_query()
     let out : Array[Json] = []
     for p in cur_others() {
       let po = Some(p)
@@ -893,7 +894,7 @@ fn preset_others_content(
         text(po, "station") + "\n" + text(po, "id")
       }
       let matched_rows = fn() -> Array[Json] {
-        let q = query_field.text().trim().to_owned()
+        let q = active_query()
         let out : Array[Json] = []
         for p in cur_others() {
           let po = Some(p)

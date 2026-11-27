@@ -71,13 +71,43 @@ pub fn open_remote_browser(src : Source, station : String, listed_ids : Array[St
 }
 
 ///|
+/// Whether `sr` is confirmed+known by the station and lists `id` as a real (non-optimistic) screen.
+fn live_screen_confirmed(sr : TopicState, id : String) -> Bool {
+  sr.is_confirmed_known() &&
+  items(sr.value, "screens").iter().any(fn(sc) {
+    let sv = Some(sc)
+    text(sv, "id") == id && !flag(sv, "opening")
+  })
+}
+
+///|
 /// The first of the chat's screens, its station's own display where it has one, else a chat-workspace terminal when
 /// terminals are offered (`can_terminal`: its keys, ⌘K, the menu bar: chat.screen).
-pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal : Bool) -> Unit {
+pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal : Bool, src? : Source? = None) -> Unit {
   match screens {
-    [s, ..] => open_screen(r.station, s.id, Some(s.title))
+    [s, ..] => {
+      match src {
+        Some(source) => {
+          let sr = @signals.untracked(fn() { source.topic("screens", { "station": Json::string(r.station) }).get() })
+          if !live_screen_confirmed(sr, s.id) {
+            return
+          }
+        }
+        None => ()
+      }
+      open_screen(r.station, s.id, Some(s.title))
+    }
     [] =>
       if can_terminal && (terminals_capable_fn.val)() {
+        match src {
+          Some(source) => {
+            let tr = @signals.untracked(fn() { source.topic("terminals", { "station": Json::string(r.station) }).get() })
+            if !tr.is_confirmed_known() || !flag(tr.value, "open") {
+              return
+            }
+          }
+          None => ()
+        }
         open_terminal(r.station, "new", "", r.session)
       }
   }
@@ -122,8 +152,14 @@ fn chat_remote_menu_show(
         return
       }
       [s] => {
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
         release_once()
-        open_screen(r.station, s.id, Some(s.title))
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
         return
       }
       _ => ()
@@ -156,8 +192,14 @@ fn chat_remote_menu_show(
     }
     for s in other_screens {
       items_out.push(Some(@sf.menu_item_of(chat_screen_label(s), icon=chat_screen_icon(s), fn() {
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
         release_once()
-        open_screen(r.station, s.id, Some(s.title))
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
       })))
     }
   }
@@ -168,8 +210,14 @@ fn chat_remote_menu_show(
     }
     for s in agent_tabs {
       items_out.push(Some(@sf.menu_item_of(chat_screen_label(s), icon=chat_screen_icon(s), fn() {
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
         release_once()
-        open_screen(r.station, s.id, Some(s.title))
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
       })))
     }
   }
@@ -184,7 +232,10 @@ fn chat_remote_menu_show(
             return
           }
           let cur_listed = items(sr.value, "screens")
-            .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
             .map(fn(sc) { text(Some(sc), "id") })
           match @settings.browser_tab_to_open(r.station, cur_listed) {
             Some(to) => open_screen(r.station, to, None)
@@ -288,22 +339,41 @@ pub fn chat_remote_open(
   along? : @ui.Along = Start,
 ) -> Unit {
   let term_ok = v.can_terminal() && (terminals_capable_fn.val)() && @signals.untracked(fn() { (src.asks_terminals)() })
-  if !term_ok {
-    chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), false, None, from, along)
-    return
-  }
   let scope = "chat-remote/" + r.station
   let ask_params : Map[String, Json] = { "station": Json::string(r.station) }
-  let sub = hold(src, scope, "terminals", ask_params)
-  let ssub = if v.can_browser() || v.screens.iter().any(chat_screen_user_tab) {
-    Some(hold(src, scope, "screens", ask_params))
-  } else {
-    None
+  let ssub = hold(src, scope, "screens", ask_params)
+  if !term_ok {
+    press_wait(
+      fn() {
+        let ss = ssub.get()
+        opens_answered(ss) && !ss.is_retained()
+      },
+      fn() {
+        chat_remote_menu_show(
+          Some(src),
+          r,
+          v.screens,
+          v.can_browser(),
+          false,
+          None,
+          from,
+          along,
+          screens_sig=Some(ssub),
+          on_gone=fn() { let_go(src, scope) },
+        )
+      },
+      let_go=fn() { let_go(src, scope) },
+      most=@sf.open_hold_ms,
+    )
+    |> ignore
+    return
   }
+  let sub = hold(src, scope, "terminals", ask_params)
   press_wait(
     fn() {
       let st = sub.get()
-      opens_answered(st) && !st.is_retained()
+      let ss = ssub.get()
+      opens_answered(st) && !st.is_retained() && opens_answered(ss) && !ss.is_retained()
     },
     fn() {
       let st = @signals.untracked(fn() { sub.get() })
@@ -317,7 +387,7 @@ pub fn chat_remote_open(
         from,
         along,
         terms_sig=Some(sub),
-        screens_sig=ssub,
+        screens_sig=Some(ssub),
         on_gone=fn() { let_go(src, scope) },
       )
     },

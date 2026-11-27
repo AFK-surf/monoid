@@ -376,10 +376,13 @@ export class StationsSync {
     core.data.onLogChange((table, station, id) => {
       if (table === "entry") this.#caughtUp(station, Number(id));
     });
-    // Drop cached station presets and job logs synchronously on auth boundary (including offline links and same-owner downgrades).
+    // Drop cached protected memory synchronously on any auth boundary (including offline links and non-downgrade transitions)
+    // and immediately re-fetch active protected topics on reachable stations so the UI never stays empty.
     core.store.authGen.onBoundary((event) => {
-      if (event.kind === "global") this.clearProtectedMemory(null);
-      else if (event.kind === "workspace") this.clearProtectedMemory(event.workspace);
+      const ws = event.kind === "global" ? null : event.kind === "workspace" ? event.workspace : undefined;
+      if (ws === undefined) return;
+      this.clearProtectedMemory(ws);
+      this.#refetchProtectedInUse(ws);
     });
     // Nothing left to bring of a station: what is still behind is not coming now (read again later, as the sync goes).
     core.scheduler.onIdle = (lane) => this.#lull(lane);
@@ -778,8 +781,8 @@ export class StationsSync {
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/screens", null, { quiet: true, ctx, noHedge }));
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
-      if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) });
-      else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true });
+      if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) }, startGen);
+      else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true }, startGen);
       else return yield* Effect.fail(answer.failure);
     });
   }
@@ -803,10 +806,11 @@ export class StationsSync {
     if (changed) this.#heldScreens(address, { ...held, screens });
   }
 
-  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }): void {
+  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }, confirmedGen?: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    link.memory.set("screens", held);
+    if (confirmedGen !== undefined) link.memory.setConfirmed("screens", held, confirmedGen);
+    else link.memory.set("screens", held);
     this.onChange(address, "screens");
   }
 
@@ -820,17 +824,25 @@ export class StationsSync {
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/terminals", null, { quiet: true, ctx, noHedge }));
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
-      if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false });
-      else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true });
+      if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false }, startGen);
+      else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true }, startGen);
       else return yield* Effect.fail(answer.failure);
     });
   }
 
-  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean }): void {
+  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean }, confirmedGen?: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    link.memory.set("terminals", held);
+    if (confirmedGen !== undefined) link.memory.setConfirmed("terminals", held, confirmedGen);
+    else link.memory.set("terminals", held);
     this.onChange(address, "terminals");
+  }
+
+  /// Whether `key` (e.g. `"screens"`, `"terminals"`) was confirmed by station `address` in the current auth generation.
+  isConfirmed(key: string, address: string): boolean {
+    const link = this.#links.get(address);
+    if (!link) return false;
+    return link.memory.confirmedIn(key, this.#core.store.authGen.workspaceAuthGen(ofAddress(address)));
   }
 
   /// What is held of the station's terminals; undefined while it has not said.
@@ -883,9 +895,12 @@ export class StationsSync {
   /// The workspace's presets on the station (GET /presets, the `presets` topic), read as a page shows them (with the
   /// directories offered for a new one, which change as its chats work), and as one is made, changed or removed; what
   /// was read last shows meanwhile.
+  #presetsQueueKey(address: string): string {
+    return `presets/${this.#core.store.authGen.workspaceAuthGen(ofAddress(address))}`;
+  }
+
   presetsShown(address: string): void {
-    const startGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
-    this.#enqueue(address, `presets/${startGen}`, Priority.shown, this.#presets(address));
+    this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
   }
 
   /// What moving the station's things to another stands at (GET /move, the `stationMove` topic: move.ts), read as its
@@ -2240,13 +2255,21 @@ export class StationsSync {
         return;
       }
       // Its screens came or went, or who is on them changed.
-      case "screens":
-        this.#heldScreens(address, { screens: Array.isArray(get(data, "screens")) ? (get(data, "screens") as unknown[]) : [], outdated: false, ...(get(data, "browser") === true ? { browser: true } : {}) });
+      case "screens": {
+        const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+        if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#heldScreens(address, { screens: Array.isArray(get(data, "screens")) ? (get(data, "screens") as unknown[]) : [], outdated: false, ...(get(data, "browser") === true ? { browser: true } : {}) }, gen);
+        }
         return;
+      }
       // Its terminals came, went, or who is on them changed.
-      case "terminals":
-        this.#heldTerminals(address, { terminals: Array.isArray(get(data, "terminals")) ? (get(data, "terminals") as unknown[]) : [], outdated: false });
+      case "terminals": {
+        const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+        if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#heldTerminals(address, { terminals: Array.isArray(get(data, "terminals")) ? (get(data, "terminals") as unknown[]) : [], outdated: false }, gen);
+        }
         return;
+      }
       // A login of the station's.
       case "machine-logins": {
         const link = this.#links.get(address);
@@ -3271,21 +3294,60 @@ export class StationsSync {
     });
   }
 
-  /// Clears cached `presets` and `jobLog` entries from `link.memory` for stations matching `ws` (or all stations when `ws === null`).
+  /// Clears cached protected memory (`presets`, `jobLog`, `screens`, `terminals`) and optimistic `#openingTabs`
+  /// for stations matching `ws` (or all stations when `ws === null`).
   clearProtectedMemory(ws: string | null): void {
-    // Wipe & block persisted PRESETS, jobLog, screens, and terminals entries across all stations of `ws`
-    // (including offline/unlinked stations and read-only/lazily-opened DBs) so pre-boundary data cannot resurrect.
     const protectedPrefixes = [PRESETS, LOG_KEY, "screens", "terminals"] as const;
+    // Best-effort persisted cleanup for writable DBs (ephemeral keys never read/write keeper; screens/terminals require current-gen confirmation).
     this.#core.data.clearStationMemory(ws, protectedPrefixes);
+    for (const addr of [...this.#openingTabs.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#openingTabs.delete(addr);
+    }
+    for (const addr of [...this.#screensWithOpening.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#screensWithOpening.delete(addr);
+    }
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ws !== null && ofAddress(address) !== ws) continue;
       const presetsKey = topicKey({ topic: "presets", station: address });
-      for (const p of protectedPrefixes) link.memory.blockPersisted(p);
+      for (const p of protectedPrefixes) link.memory.deletePrefix(p);
       link.errors.delete(presetsKey);
       for (const k of [...link.errors.keys()]) {
         const parsed = parseJson(k);
         if (isObject(parsed) && parsed.topic === "jobLog") link.errors.delete(k);
+      }
+      this.onChange(address, "screens");
+      this.onChange(address, "terminals");
+    }
+  }
+
+  /// Re-enqueues currently in-use protected topics (`screens`, `terminals`, `presets`, `jobLog`) on reachable stations
+  /// of `ws` (or all workspaces when `ws === null`) after any auth boundary so non-downgrade transitions recover immediately.
+  #refetchProtectedInUse(ws: string | null): void {
+    for (const link of this.#links.values()) {
+      const address = link.addr.toString();
+      const linkWs = ofAddress(address);
+      if (ws !== null && linkWs !== ws) continue;
+      if (!this.reachable(address)) continue;
+      const gen = this.#core.store.authGen.workspaceAuthGen(linkWs);
+      for (const t of this.#core.store.liveTopics()) {
+        if (t.station !== address || !this.#core.store.inUse(t)) continue;
+        switch (t.topic) {
+          case "screens":
+            this.#enqueue(address, `screens/${gen}`, Priority.shown, this.#screens(address));
+            break;
+          case "terminals":
+            this.#enqueue(address, `terminals/${gen}`, Priority.shown, this.#terminals(address));
+            break;
+          case "presets":
+            this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
+            break;
+          case "jobLog":
+            if (typeof t.job === "string" && typeof t.lines === "number") {
+              this.readLog(address, t.job, t.lines);
+            }
+            break;
+        }
       }
     }
   }
@@ -3345,8 +3407,7 @@ export class StationsSync {
             }
             break;
           case "presets": {
-            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
-            this.#enqueue(address, `presets/${gen}`, Priority.shown, this.#presets(address));
+            this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
             break;
           }
           case "jobLog":
@@ -3441,7 +3502,7 @@ export class StationsSync {
           if (this.#core.store.inUse({ topic: "memory", station: address }) || this.#links.get(address)?.memory.has(MEMORY)) reads.push(["memory", this.#memory(address)]);
           break;
         case "presets":
-          reads.push(["presets", this.#presets(address)]);
+          reads.push([this.#presetsQueueKey(address), this.#presets(address)]);
           break;
         // A move or a move back asked: what it stands at read again where shown (its station tells the rest as it goes).
         case "move":

@@ -1670,40 +1670,12 @@ export class Data {
 
   // ── what a station said beyond the tables (station/memory.ts), among its documents ──
 
-  /// Prefixes blocked from persisted stationMemory reload after an auth boundary, keyed by workspace (`"*"` for global).
-  readonly #blockedMemory = new Map<string, Set<string>>();
-  /// `<station>\u0000<key>` entries freshly confirmed via `keepStationMemory` after the latest boundary.
-  readonly #confirmedMemory = new Set<string>();
-
-  blockedMemoryPrefixes(ws: string): string[] {
-    const out = new Set<string>();
-    const g = this.#blockedMemory.get("*");
-    if (g) for (const p of g) out.add(p);
-    const w = this.#blockedMemory.get(ws);
-    if (w) for (const p of w) out.add(p);
-    return [...out];
-  }
-
-  #isMemoryBlocked(station: string, key: string): boolean {
-    if (this.#confirmedMemory.has(`${station}\u0000${key}`)) return false;
-    const g = this.#blockedMemory.get("*");
-    if (g) for (const p of g) if (key.startsWith(p)) return true;
-    const ws = ofAddress(station);
-    const w = this.#blockedMemory.get(ws);
-    if (w) for (const p of w) if (key.startsWith(p)) return true;
-    return false;
-  }
-
   stationMemory(station: string, key: string): unknown {
-    if (this.#isMemoryBlocked(station, key)) return undefined;
     return this.of(station)?.stationDoc(station, `${MEMORY}${key}`);
   }
 
   /// `undefined`: none any more.
   keepStationMemory(station: string, key: string, value: unknown): void {
-    const confirmedKey = `${station}\u0000${key}`;
-    if (value !== undefined) this.#confirmedMemory.add(confirmedKey);
-    else this.#confirmedMemory.delete(confirmedKey);
     const db = this.of(station);
     if (!db) return;
     if (value !== undefined) db.putStationDoc(station, `${MEMORY}${key}`, value, this.#host.nowMs(), null, false);
@@ -1714,24 +1686,8 @@ export class Data {
     this.of(station)?.boundStationDocs(station, `${MEMORY}${prefix}`, most);
   }
 
-  /// Drops persisted station memory entries matching any of `prefixes` across `ws` (or all workspaces when `ws === null`),
-  /// and records read-side blocks so read-only or lazily-opened DBs cannot resurrect pre-boundary entries.
+  /// Best-effort cleanup of persisted station memory entries matching any of `prefixes` across `ws` (or all workspaces when `ws === null`).
   clearStationMemory(ws: string | null, prefixes: readonly string[]): void {
-    const bucketKey = ws ?? "*";
-    let bucket = this.#blockedMemory.get(bucketKey);
-    if (!bucket) {
-      bucket = new Set();
-      this.#blockedMemory.set(bucketKey, bucket);
-    }
-    for (const prefix of prefixes) bucket.add(prefix);
-    for (const ck of [...this.#confirmedMemory]) {
-      const sep = ck.indexOf("\u0000");
-      if (sep < 0) continue;
-      const st = ck.slice(0, sep);
-      const k = ck.slice(sep + 1);
-      if (ws !== null && ofAddress(st) !== ws) continue;
-      if (prefixes.some((p) => k.startsWith(p))) this.#confirmedMemory.delete(ck);
-    }
     for (const db of this.#dbs.values()) {
       for (const prefix of prefixes) {
         db.dropWorkspaceStationDocs(ws, `${MEMORY}${prefix}`);

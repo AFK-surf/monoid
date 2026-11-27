@@ -1432,8 +1432,8 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let user_ids = scs
         .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
         .map(fn(sc) { text(Some(sc), "id") })
-      let can_term = t_confirmed && flag(tval, "open")
-      let can_browse = s_confirmed && flag(sval, "browser") && flag(sval, "control")
+      let can_term = if t_confirmed { flag(tval, "open") } else { @signals.untracked(fn() { (s.src.asks_terminals)() }) }
+      let can_browse = if s_confirmed { flag(sval, "browser") && flag(sval, "control") } else { true }
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
         let sid = text(Some(sc), "id")
@@ -1443,7 +1443,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         menu_items.push(Some(@sf.menu_item_of(title, icon~, fn() {
           let cur_s = sub_s.untracked()
           release_once()
-          if here || !cur_s.is_confirmed_known() || !items(cur_s.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
+          if here || !cur_s.is_confirmed_known() || !items(cur_s.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid && !flag(Some(x), "opening") }) {
             return
           }
           go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
@@ -1458,7 +1458,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
             return
           }
           let cur_user_ids = items(cur_s.value, "screens")
-            .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
             .map(fn(sc) { text(Some(sc), "id") })
           let target = match @settings.browser_tab_to_open(s.station, cur_user_ids) {
             Some(tid) => tid
@@ -1510,7 +1513,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
             return
           }
           let cur_user_ids = items(cur_s.value, "screens")
-            .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
             .map(fn(sc) { text(Some(sc), "id") })
           let target = @settings.new_browser_tab(
             s.src.call,
@@ -1524,6 +1530,8 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
         if can_term && can_browse {
           menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, fn() {
+            // Submenu omits `gone=release_once`: popping back to the parent keeps `scope` alive,
+            // while closing the entire menu stack calls the parent's `gone=release_once` (`gone_all`).
             @sf.menu(
               [
                 Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", open_new_terminal)),
@@ -1532,7 +1540,6 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
               from=@sf.Beside::Node(from),
               title=@sf.t("web-pages.remote.newSession"),
               along=End,
-              gone=release_once,
             )
           })))
         } else if can_term {

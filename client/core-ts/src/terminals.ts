@@ -209,13 +209,14 @@ function folderName(cwd: string): string {
 
 /// The `terminals` topic: the station's terminals as it said them last (kept: there as the app opens again while it is
 /// reached anew), and whether the viewer may open one and type.
-export function terminalsView(inner: Inner, station: string, held: { terminals: unknown[]; outdated: boolean } | undefined): J {
+/// `confirmed`: whether the station itself replied in the current auth generation (cold-start keeper cache is `false`).
+export function terminalsView(inner: Inner, station: string, held: { terminals: unknown[]; outdated: boolean } | undefined, confirmed = held !== undefined): J {
   const terminals = (held?.terminals ?? []).flatMap((v) => {
     if (!isObject(v) || typeof v.id !== "string" || typeof v.by !== "string" || typeof v.cwd !== "string") return [];
     const looking = Array.isArray(v.looking) ? v.looking.filter((n: unknown): n is string => typeof n === "string") : [];
     return [{ id: v.id, by: v.by, ...(typeof v.byEmail === "string" ? { byEmail: v.byEmail } : {}), at: typeof v.at === "number" ? v.at : 0, cwd: v.cwd, ...(typeof v.chat === "string" ? { chat: v.chat } : {}), ...(typeof v.typing === "string" ? { typing: v.typing } : {}), looking, ...("ended" in v ? { ended: true } : {}) }];
   });
-  return { terminals, outdated: held?.outdated === true, open: mayDrive(inner, station), known: held !== undefined };
+  return { terminals, outdated: held?.outdated === true, open: mayDrive(inner, station), known: held !== undefined && confirmed };
 }
 
 /// What a link to one of a station's terminals shows in a message (the `terminalCard` topic).

@@ -820,4 +820,4 @@ pub let answer_unread : (Result[Json, Json]) -> Unit = fn(_) { () }
 /// it makes its cores (sfbase's settings_core), not a field of `Core`, whose shape every unit that reads one is
 /// compiled by.
 // kept across runs: the app's, said once as it starts
-pub let open_terminal_of : Ref[(String, String, String) -> Unit] = Ref(fn(_, _, _) {  })
+pub let open_terminal_of : Ref[(String, String, String, Bool) -> Unit] = Ref(fn(_, _, _, _) {  })

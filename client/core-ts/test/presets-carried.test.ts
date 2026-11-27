@@ -879,3 +879,32 @@ test("otherPresets_prunes_removed_station_and_drops_late_response", async () => 
   assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "removed station's late response must be dropped");
   assert.ok(!others().presets.some((p) => p.id === onB.id));
 });
+
+test("otherPresets_and_othersFound_filter_removed_station_immediately_without_readOthers", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id).sort(), [onA.id, onB.id].sort());
+  assert.ok(d.views.othersFound(WS, onB.id) !== undefined);
+
+  // Remove station b from workspace membership WITHOUT calling readOthers:
+  // #othersView and othersFound must filter out b immediately.
+  const origShared = d.inner.data.shared.bind(d.inner.data);
+  d.inner.data.shared = ((topic: { workspace?: string }) => {
+    if (topic.workspace === WS) return { name: "W", stations: [{ id: a.id, name: "A" }], members: [ME, YOU].map((m) => ({ ...m, role: "member" })) };
+    return origShared(topic as never);
+  }) as typeof d.inner.data.shared;
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "removed station's presets must disappear immediately without readOthers");
+  assert.equal(d.views.othersFound(WS, onB.id), undefined, "othersFound must ignore removed station's cached presets");
+});

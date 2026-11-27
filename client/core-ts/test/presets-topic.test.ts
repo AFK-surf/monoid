@@ -501,43 +501,82 @@ test("unloaded_persisted_jobLog_is_wiped_from_disk_on_same_owner_downgrade_and_s
   core.close();
 });
 
-test("readonly_and_lazily_opened_db_cannot_resurrect_blocked_persisted_jobLog_or_presets", async () => {
-  // 1. Read-only keeper (write/bound are no-ops, simulating read-only account DB):
-  // blockPersisted must prevent lazy Memory.get() reload until fresh set().
+test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_restart_or_readonly_db", async () => {
+  // 1. Ephemeral prefixes ([PRESETS, LOG_KEY]) never read from or write to keeper,
+  //    so read-only DBs, lazily-opened DBs, or legacy rows surviving a restart can never resurrect old data.
   const disk = new Map<string, unknown>([
     [PRESETS, { presets: [preset("ro-old", "RO Old")], candidates: [] }],
     [logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-secret" }] }], outputAt: 1 }],
   ]);
+  let writes = 0;
   const readOnlyKeeper: Keeper = {
     read: (k) => disk.get(k),
-    write: () => { /* read-only DB ignores writes */ },
-    bound: () => { /* read-only DB ignores bounds */ },
+    write: () => { writes++; },
+    bound: () => {},
     now: () => 1000,
     later: () => {},
   };
-  const mem = new Memory(readOnlyKeeper);
-  mem.blockPersisted(PRESETS);
-  mem.blockPersisted("jobLog\n");
-  assert.equal(mem.get(PRESETS), undefined, "read-only keeper must not resurrect blocked presets");
-  assert.equal(mem.get(logKey("j-ro", 200)), undefined, "read-only keeper must not resurrect blocked jobLog");
+  const mem = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
+  assert.equal(mem.get(PRESETS), undefined, "ephemeral presets must never lazy-load from keeper");
+  assert.equal(mem.get(logKey("j-ro", 200)), undefined, "ephemeral jobLog must never lazy-load from keeper");
 
-  // Once a fresh current-gen value is written via set(), get() returns the new value.
   mem.set(PRESETS, { presets: [preset("ro-new", "RO New")], candidates: [] });
+  mem.set(logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-new-log" }] }], outputAt: 2 });
+  assert.equal(writes, 0, "ephemeral keys must never write to keeper");
   assert.deepEqual((mem.get(PRESETS) as { presets: { id: string }[] }).presets.map((p) => p.id), ["ro-new"]);
 
-  // 2. Data.clearStationMemory blocks stationMemory() even when underlying DB retains old doc (e.g. lazily opened after boundary).
+  // Simulated restart with a brand new Memory over the same read-only DB still never resurrects old rows.
+  const restarted = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
+  assert.equal(restarted.get(PRESETS), undefined);
+  assert.equal(restarted.get(logKey("j-ro", 200)), undefined);
+
+  // 2. Cold-start keeper-cached screens/terminals have known: false until confirmed in current authGen;
+  //    non-downgrade boundary (e.g. unlock) clears #openingTabs and immediately re-fetches active screens/terminals/presets.
   const said: Record<string, unknown> = {
     ...base(),
     "GET /overview": { ...overview, profiles: [profile] },
     "GET /presets": { presets: [preset("app", "App")], candidates: [candidate] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [{ id: "t-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] },
   };
-  const { core } = await started(said as never);
-  const lazyKey = logKey("j-lazy", 200);
-  // Simulate boundary before a station doc becomes visible on a lazily-opened DB.
-  core.inner.data.clearStationMemory("ws", [PRESETS, "jobLog\n"]);
-  // Put directly into underlying DB bypassing keepStationMemory (simulates pre-existing disk row in a lazily-opened DB).
-  core.inner.data.of(S)?.putStationDoc(S, `memory\n${lazyKey}`, { lines: [{ n: 0, runs: [{ text: "lazy-old" }] }] }, 1, null, false);
-  assert.equal(core.inner.data.stationMemory(S, lazyKey), undefined, "Data.stationMemory must stay blocked for pre-boundary rows in lazily-opened DB");
-  assert.ok(core.inner.data.blockedMemoryPrefixes("ws").includes("jobLog\n"), "new links in ws inherit blocked prefixes");
+  const { host, core } = await started(said as never);
+  const link = core.inner.stations.link(S);
+  assert.ok(link);
+
+  // Cold-start keeper cache (without setConfirmed) -> confirmedIn is false -> known is false.
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  link.memory.deletePrefix("screens");
+  link.memory.deletePrefix("terminals");
+  // Restore into DB bypassing deletePrefix bound to simulate cold-start keeper row.
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  assert.equal(core.inner.stations.isConfirmed("screens", S), false, "keeper-only screens must not be confirmed");
+  assert.equal(core.inner.stations.isConfirmed("terminals", S), false, "keeper-only terminals must not be confirmed");
+
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(core, ui, 1, { topic: "screens", station: S });
+  subscribe(core, ui, 2, { topic: "terminals", station: S });
+  subscribe(core, ui, 3, { topic: "presets", station: S });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).known, false, "cold-start keeper screens stay known: false before station reply");
+  assert.equal(v(values, 2).known, false, "cold-start keeper terminals stay known: false before station reply");
+  assert.equal(v(values, 3).presets[0].id, "app");
+
+  // Non-downgrade auth boundary (e.g. lock trusted flip / unlock): must immediately re-fetch active screens/terminals/presets
+  // so UI recovers known: true instead of getting stuck empty.
+  const beforeReqs = host.requests.length;
+  core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:trusted:1");
+  await host.settle();
+  apply(host, values);
+  const afterUrls = host.requests.slice(beforeReqs).map((r) => `${r.method} ${r.url}`);
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/screens")), "onBoundary must re-fetch active screens");
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/terminals")), "onBoundary must re-fetch active terminals");
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/presets")), "onBoundary must re-fetch active presets");
+  assert.equal(v(values, 1).known, true, "screens recovers known: true after non-downgrade boundary");
+  assert.equal(v(values, 2).known, true, "terminals recovers known: true after non-downgrade boundary");
+  assert.equal(v(values, 3).presets[0].id, "app", "presets recovers after non-downgrade boundary");
   core.close();
 });

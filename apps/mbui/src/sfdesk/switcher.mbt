@@ -274,7 +274,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
       match view {
         Some(v) => {
           if chat_has_remote(v) {
-            offer(action_offered("chat.screen", "monitor", fn() { chat_remote_first(r, v.screens, v.can_terminal()) }))
+            offer(action_offered("chat.screen", "monitor", fn() { chat_remote_first(r, v.screens, v.can_terminal(), src=Some(src)) }))
           }
           if v.can_terminal() && @sfpages.terminals_here() && (src.asks_terminals)() {
             all.push({

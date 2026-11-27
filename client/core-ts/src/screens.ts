@@ -486,10 +486,11 @@ export function screenPath(station: string, id: string): string {
 }
 
 /// The `screens` topic's value: what is held (none while the station is down: `online` false).
-export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean): J {
+/// `confirmed`: whether the station itself replied in the current auth generation (cold-start keeper cache is `false`).
+export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean, confirmed = held !== undefined): J {
   const control = mayDrive(inner, station);
-  if (held?.outdated) return { screens: [], outdated: true, control, known: true, note: t("core-views.screen.outdated") };
-  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined };
+  if (held?.outdated) return { screens: [], outdated: true, control, known: confirmed, note: t("core-views.screen.outdated") };
+  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined && confirmed };
   const screens = held.screens.flatMap((s) => {
     const id = get(s, "id");
     if (typeof id !== "string" || id === "") return [];
@@ -508,6 +509,8 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
       id, kind, title, ...(model !== null ? { model } : {}), width, height, viewers: names(get(s, "viewers")), controlledBy, ...(views.length > 0 ? { views } : {}), ...(get(s, "peek") === true ? { peek: true } : {}),
       // A page a person opened in the station's persistent browser profile (`screen.openBrowser`), put to sleep while idle.
       ...(get(s, "userTab") === true ? { userTab: true } : {}),
+      // Optimistic browser tab currently being opened on the station (not yet confirmed in station's list).
+      ...(get(s, "opening") === true ? { opening: true } : {}),
       // A Farview tab: the app draws it itself in Farview's own protocol (`farview.view`), not as pictures.
       ...(get(s, "farview") === true ? { farview: true } : {}),
       ...(get(s, "sleeping") === true ? { sleeping: true } : {}),
@@ -539,7 +542,7 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
   });
   // The machine's own display (`desktop`) first: what a chat's screen button opens, at the head of every list of them.
   screens.sort((a, b) => Number(b.id === DESKTOP) - Number(a.id === DESKTOP));
-  return { screens, outdated: false, control, known: true, ...(held.browser === true ? { browser: true } : {}) };
+  return { screens, outdated: false, control, known: confirmed, ...(held.browser === true ? { browser: true } : {}) };
 }
 
 /// What a link to one of a station's screens shows in a message (the `screenCard` topic): the screen as its station's

@@ -455,7 +455,7 @@ fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) ->
   } else {
     let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
     guard sr.is_confirmed_known() else { return }
-    let live = items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id })
+    let live = items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") })
     guard live is Some(sc) else { return }
     let live_title = text(Some(sc), "title")
     match at {
@@ -485,7 +485,7 @@ fn remote_row_close(src : Source, ws : String, r : RemoteRow) -> Unit {
     guard sr.is_confirmed_known() && flag(sr.value, "control") else { return }
     let closable_now = items(sr.value, "screens").iter().any(fn(sc) {
       let sv = Some(sc)
-      text(sv, "id") == r.id && flag(sv, "closable")
+      text(sv, "id") == r.id && flag(sv, "closable") && !flag(sv, "opening")
     })
     guard closable_now else { return }
     on["screen"] = Json::string(r.id)
@@ -537,7 +537,7 @@ fn remote_row_menu_items(src : Source, ws : String, r : RemoteRow) -> Array[@sf.
             if !sr.is_confirmed_known() {
               None
             } else {
-              match items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id }) {
+              match items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") }) {
                 Some(sc) =>
                   Some(Screen({ station: r.station, screen: r.id, title: text(Some(sc), "title"), until_gone: false }))
                 None => None

@@ -293,6 +293,8 @@ test "chat_remote_open press_wait waits while terminals is retained (-2) and ope
     topic_read: fn(name, _params) {
       if name == "terminals" {
         { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else if name == "screens" {
+        { value: Some({ "known": true, "outdated": false, "screens": [] }), error: None, version: 1 }
       } else {
         { value: None, error: None, version: 0 }
       }

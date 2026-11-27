@@ -594,8 +594,10 @@ export class PresetViews implements Owner {
 
   /// Someone else's preset `id` as last read of `ws`'s stations (the newer of each station's): undefined for none.
   othersFound(ws: string, id: string): PresetRecord | undefined {
+    const valid = new Set(stationsOf(this.#inner, ws).map((s) => s.address));
     let out: PresetRecord | undefined;
-    for (const list of this.#others.get(ws)?.at.values() ?? []) {
+    for (const [addr, list] of this.#others.get(ws)?.at.entries() ?? []) {
+      if (!valid.has(addr)) continue;
       for (const r of list) if (r.id === id) out = out === undefined ? r : newerRecord(out, r);
     }
     return out;
@@ -606,8 +608,11 @@ export class PresetViews implements Owner {
     const inner = this.#inner;
     const read = this.#others.get(ws);
     const held = heldOf(inner.data, ws);
+    const stations = stationsOf(inner, ws);
+    const valid = new Set(stations.map((s) => s.address));
     const all = new Map<string, PresetRecord>();
-    for (const list of read?.at.values() ?? []) {
+    for (const [addr, list] of read?.at.entries() ?? []) {
+      if (!valid.has(addr)) continue;
       for (const r of list) {
         if (held.records[r.id] !== undefined) continue;
         const was = all.get(r.id);
@@ -615,7 +620,7 @@ export class PresetViews implements Owner {
       }
     }
     const names = new Map<string, string>();
-    for (const s of stationsOf(inner, ws)) {
+    for (const s of stations) {
       names.set(s.id, s.name);
       names.set(s.address, s.name);
     }

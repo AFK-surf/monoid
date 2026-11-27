@@ -369,11 +369,11 @@ export class StationTopics implements Owner {
       case "screens":
         seen.read(station, "screens");
         // As the station said them last (kept: there as the app opens again, while it is reached anew); none while it
-        // is down.
-        return { ok: screensView(this.#core, station, this.#sync.screens(station), link !== undefined && !down(link.state)) };
+        // is down. `known` is true only once the station confirmed in the current auth generation.
+        return { ok: screensView(this.#core, station, this.#sync.screens(station), link !== undefined && !down(link.state), this.#sync.isConfirmed("screens", station)) };
       case "terminals":
         seen.read(station, "terminals");
-        return { ok: terminalsView(this.#core, station, this.#sync.terminals(station)) };
+        return { ok: terminalsView(this.#core, station, this.#sync.terminals(station), this.#sync.isConfirmed("terminals", station)) };
       case "screenCard": {
         seen.read(station, "screens");
         if (typeof topic.screen !== "string" || topic.screen === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "screen" })) };
