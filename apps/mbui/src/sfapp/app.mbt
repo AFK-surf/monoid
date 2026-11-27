@@ -1383,6 +1383,10 @@ pub let first_page_ms : Double = splash_label_ms
 /// (all it opens on: home_opens, what a workspace switched waits for too); where what opens waits for what it shows
 /// (gates_opens, MBUI_OPEN_WHOLE) every other page what it reads as it is first drawn (sfbase's page_reads), else none.
 fn page_ready(src : Source, w : Workspace, p : Page) -> Bool {
+  // When the splash reaches its deadline, let the page it waited for show its loading state.
+  if first_expired.get() && first_top.val == Some((p, app.nav.top_stay())) {
+    return true
+  }
   page_opens_by(src, w, p, @sfbase.read_now(src))
 }
 
@@ -1460,7 +1464,11 @@ fn first_page_ready_by(
       p => @sfdesk.frame_opens_on(src, w.id, Some(p), ask)
     }
   } else {
-    page_opens_by(src, w, first_top.val.unwrap_or(app.nav.top()), ask)
+    let page = match first_top.val {
+      Some((p, _)) => p
+      None => app.nav.top()
+    }
+    page_opens_by(src, w, page, ask)
   }
 }
 
@@ -1510,7 +1518,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(ws) {
     if ws is Some(_) && !first_shown.get() && first_from.val < 0.0 {
       first_from.val = v.cause_at()
-      first_top.val = Some(app.nav.top())
+      first_top.val = Some((app.nav.top(), app.nav.top_stay()))
       let at = first_from.val + first_page_ms
       let due = if splash_from.val >= 0.0 && !@signals.untracked(fn() { splash_waited.get() }) {
         let floor = first_from.val + @sf.local_ms * 3.0
@@ -1607,7 +1615,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       // a chat or a new chat put over Home (sfdesk's land): that is the first page, waited for as ever)
       // (once gone, gone: back to the chats after is no first page shown again)
       if wide &&
-        (match first_top.val { Some(p) => p != app.nav.top(); None => false }) &&
+        (match first_top.val { Some((p, _)) => p != app.nav.top(); None => false }) &&
         !(app.nav.top() is (Home | Chat(_) | NewChat)) {
         first_left.val = true
       }
@@ -1652,10 +1660,10 @@ fn first_splash_node(v : @view.View) -> Unit {
 let first_from : Ref[Double] = Ref(-1.0)
 
 ///|
-/// The page on top as the first page's wait began (first_page_node), laid out Small: the first page, what its wait
-/// waits for (first_page_ready_by), whatever is opened over it meanwhile.
+/// The page on top as the first wait began and its stay on the stack. Opening
+/// the same page again gets a new stay and waits for its own data.
 // kept across runs: put back as a run begins (new_run)
-let first_top : Ref[Page?] = Ref(None)
+let first_top : Ref[(Page, (Int, Int))?] = Ref(None)
 
 ///|
 /// Whether a place of the rail's was gone to in the wide frame before the first page was shown (first_page_node): its
