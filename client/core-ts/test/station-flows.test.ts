@@ -1495,12 +1495,12 @@ test("a_jobs_log_is_read_once_and_then_kept_current_by_the_stations_events", asy
   await host.settle();
   apply(host, values);
   assert.deepEqual(raw(v(values, 1)), { text: "a\nb", outputAt: 5 });
-  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&job=j1&lines=400"]);
+  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&job=j1&lines=400"]);
   // As it grows the station says so, each topic its own lines; nothing is read again, and nothing waits to.
   subscribe(core, ui, 2, log(1));
   await host.settle();
   await host.settle();
-  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&job=j1&lines=1&job=j1&lines=400"]);
+  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&job=j1&lines=1&job=j1&lines=400"]);
   host.time.sleeps.length = 0;
   push("job-log", { id: "j1", lines: 400, text: "a\nb\nc", outputAt: 9 });
   push("job-log", { id: "j1", lines: 1, text: "c", outputAt: 9 });
@@ -1515,7 +1515,7 @@ test("a_jobs_log_is_read_once_and_then_kept_current_by_the_stations_events", asy
   // Given up: the stream no longer asks for it (once its grace is over).
   core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
   await host.time.pass(EVICT_AFTER_MS + 500, 500);
-  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&job=j1&lines=1"]);
+  assert.deepEqual(openStreams(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&job=j1&lines=1"]);
   core.close();
 });
 
@@ -1546,7 +1546,7 @@ test("requests_carry_the_trace_they_are_made_in", async () => {
   for (const [url, parent] of parents) {
     assert.ok(parent.startsWith("00-") && parent.endsWith("-01") && parent.length === 55, `${url}: ${parent}`);
   }
-  const snapshot = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
+  const snapshot = ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
   assert.ok(snapshot.every((p) => p.slice(3, 35) === trace), JSON.stringify(snapshot));
   // Each request is a span of its own.
   assert.equal(new Set(snapshot.map((p) => p.slice(36, 52))).size, snapshot.length);
@@ -1571,7 +1571,7 @@ test("topics_are_read_once_and_nothing_runs_on_a_timer", async () => {
   topics.forEach((t, i) => subscribe(core, ui, i + 1, t));
   await host.settle();
   await host.settle();
-  assert.deepEqual(streams.filter((s) => !s.closed).map((s) => s.path), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+  assert.deepEqual(streams.filter((s) => !s.closed).map((s) => s.path), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1"]);
   // Subscribing reads nothing: what is held shows (the stream opened anew for the host).
   assert.equal(reads(), before, JSON.stringify(host.requests.filter(counted).slice(before).map((r) => r.url)));
   const requests = reqs(host);
@@ -2102,7 +2102,7 @@ test("overview_and_host_come_from_events", async () => {
   const ui = core.connect();
   const values = new Map();
   const open = () => streams.filter((s) => !s.closed).map((s) => s.path);
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   push("overview", { connects: [1] });
   await host.settle();
   assert.deepEqual(core.inner.data.get({ topic: "overview", station: ST }), { connects: [1] });
@@ -2111,7 +2111,7 @@ test("overview_and_host_come_from_events", async () => {
   subscribe(core, ui, 1, { topic: "host", station: ST });
   await host.settle();
   await host.settle();
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1"]);
   const sample = { hostname: "studio", os: "macOS 26", arch: "arm64", cpus: 8, cpuModel: "M4", load: 0.2, uptimeSec: 100, memory: { totalBytes: 1024, usedBytes: 512, swapUsedBytes: null }, disk: { path: "/", totalBytes: 1024, freeBytes: 512 }, stationRssBytes: 10, checkedAt: 1 };
   push("host", sample);
   await host.settle();
@@ -2120,7 +2120,7 @@ test("overview_and_host_come_from_events", async () => {
   assert.equal(gets(host, "/admin/api/overview"), 1, "a handover is no reconnect: nothing is read again");
   core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
   await host.time.pass(EVICT_AFTER_MS + 500, 500);
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   assert.equal(gets(host, "/admin/api/host"), 0);
   core.close();
 });
@@ -2307,7 +2307,7 @@ test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_vi
     subscribe(core, ui, 1, { topic: "stations", scope: "ws" });
     await host.settle();
     await host.settle();
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1"]);
 
     // Once the first readable host sample arrives and is cached, the stream hands over back to ?host=0 (no overview refetch).
     push("host", sample(0.2));
@@ -2315,14 +2315,14 @@ test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_vi
     await host.settle();
     apply(host, values);
     assert.equal(station()?.host?.os, "macOS 26");
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
     assert.equal(gets(host, "/admin/api/overview"), 1);
 
     // Opening `stationNet` (Station tab / picker / peek) hands over to ?host=1 for live meter updates.
     subscribe(core, ui, 2, { topic: "stationNet", station: ST });
     await host.settle();
     await host.settle();
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1"]);
     push("host", sample(0.8));
     await host.settle();
     apply(host, values);
@@ -2331,17 +2331,17 @@ test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_vi
     // Closing `stationNet` hands back to ?host=0 after grace while `stations` keeps its cached host reading.
     core.receive(ui, { kind: "unsubscribe", id: 2, unsubscribe: true });
     await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
     assert.equal(station()?.host?.os, "macOS 26");
 
     // Opening single-station detail (`station`) also turns on live ?host=1.
     subscribe(core, ui, 3, { topic: "station", scope: "ws", station: ST });
     await host.settle();
     await host.settle();
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1"]);
     core.receive(ui, { kind: "unsubscribe", id: 3, unsubscribe: true });
     await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
 
     // Re-subscribing `stations` when host is already cached never reopens ?host=1.
     core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
@@ -2349,7 +2349,7 @@ test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_vi
     subscribe(core, ui, 4, { topic: "stations", scope: "ws" });
     await host.settle();
     await host.settle();
-    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   } finally {
     core.close();
   }
@@ -2359,7 +2359,7 @@ test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecess
   const { host, core, streams } = await started();
   const ui = core.connect();
   const open = () => streams.filter((s) => !s.closed).map((s) => s.path);
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   // Events with ids (a station of this run, numbered); one from before ids had a run says nothing.
   const said = (id: string, name: string, data: unknown) =>
     Queue.offerUnsafe(streams.at(-1)!.queue, new TextEncoder().encode(`id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -2372,7 +2372,7 @@ test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecess
   subscribe(core, ui, 1, { topic: "host", station: ST });
   await host.settle();
   await host.settle();
-  assert.deepEqual(open(), [`/events?running=1&views=1&rows=1&shared=1&host=1&since=${encodeURIComponent("1f2e3d4c.9")}`]);
+  assert.deepEqual(open(), [`/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&host=1&since=${encodeURIComponent("1f2e3d4c.9")}`]);
   assert.equal(gets(host, "/admin/api/overview"), 1, "a handover reads nothing again");
   core.close();
 });
@@ -2391,7 +2391,7 @@ test("a_stream_coming_back_after_its_link_went_is_told_what_it_missed_and_reads_
   gate.resumes = true;
   end();
   await host.time.pass(RECONNECT_MS + 50, 50);
-  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&since=${encodeURIComponent("1f2e3d4c.9")}`);
+  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&since=${encodeURIComponent("1f2e3d4c.9")}`);
   said("1f2e3d4c.10", "overview", { connects: [2] });
   await host.settle();
   assert.deepEqual(reads(), first, "told what it missed: nothing read again");
@@ -2402,7 +2402,7 @@ test("a_stream_coming_back_after_its_link_went_is_told_what_it_missed_and_reads_
   end();
   // The second in a row that ended at once: it waits twice as long.
   await host.time.pass(2 * RECONNECT_MS + 50, 50);
-  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&since=${encodeURIComponent("1f2e3d4c.10")}`);
+  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&since=${encodeURIComponent("1f2e3d4c.10")}`);
   push("missed", {});
   await host.settle();
   assert.deepEqual(reads(), first.map((n) => n + 1));
@@ -2470,7 +2470,7 @@ test("a_chat_open_is_asked_what_was_said_since_though_its_stream_came_back_told_
   end();
   await host.time.pass(RECONNECT_MS + 50, 50);
   await read();
-  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&since=${encodeURIComponent("1f2e3d4c.9")}`);
+  assert.equal(streams.at(-1)!.path, `/events?running=1&views=1&rows=1&shared=1&overviewPatch=1&since=${encodeURIComponent("1f2e3d4c.9")}`);
   assert.deepEqual(nums(values), [1, 2, 3, 4, 5]);
   // Its screens are the exception: held in memory only and changing as people come and go, they are asked again
   // whenever the stream was away (a small list; screens.ts).
@@ -3182,7 +3182,7 @@ test("chat_rows_come_from_the_station_and_follow_what_is_read_and_written", asyn
   const answers: J = { ...base(), ...chatsOf([row("k1", 7, 12, true, 2), row("k", null, 0, false, 1)]), "PUT /threads/7/read": { n: 12 } };
   const { host, core, push, streams } = await started(answers);
   await host.settle();
-  assert.deepEqual(streams.filter((s) => !s.closed).map((s) => s.path), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(streams.filter((s) => !s.closed).map((s) => s.path), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   const rows = () => core.inner.data.get({ topic: "chatRows", station: ST }) as J[];
   const ids = () => rows().map((r) => r.id);
   assert.deepEqual(ids(), ["k1", "k"]);
@@ -3696,7 +3696,7 @@ test("a_stream_silent_past_its_keepalive_is_read_again", async () => {
   subscribe(core, ui, 1, liveK);
   await host.settle();
   await host.settle();
-  const path = "/admin/api/events?running=1&views=1&rows=1&shared=1";
+  const path = "/admin/api/events?running=1&views=1&rows=1&shared=1&overviewPatch=1";
   assert.equal(gets(host, path), 1);
   // The keepalive keeps it open.
   await host.time.pass(STREAM_IDLE_MS / 2, 500);
@@ -3716,7 +3716,7 @@ test("a_stream_silent_past_its_keepalive_takes_its_way_for_gone_and_one_never_an
   subscribe(core, ui, 1, liveK);
   await host.settle();
   await host.settle();
-  const path = "/admin/api/events?running=1&views=1&rows=1&shared=1";
+  const path = "/admin/api/events?running=1&views=1&rows=1&shared=1&overviewPatch=1";
   const resets: string[] = [];
   const wire = core.inner.stations.requests.wire;
   const reset = wire.reset?.bind(wire);
@@ -4063,7 +4063,7 @@ test("a_station_not_reached_for_long_is_tried_seldom_though_the_cloud_says_it_is
 test("a_station_that_follows_the_agents_at_work_itself_names_none_and_one_starting_opens_no_stream", async () => {
   const { host, core, push, streams } = await started(base());
   const open = () => streams.filter((s) => !s.closed).map((s) => s.path);
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   const opened = streams.length;
   // Agents starting and ending their turns: the stream goes on as it is.
   for (const process of ["running", "warm", "running"]) {
@@ -4072,7 +4072,7 @@ test("a_station_that_follows_the_agents_at_work_itself_names_none_and_one_starti
     await host.settle();
   }
   assert.equal(streams.length, opened);
-  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&overviewPatch=1"]);
   // A page showing an agent's history: no stream for it either.
   const id = core.connect();
   core.receive(id, { kind: "subscribe", id: 1, subscribe: { topic: "live", station: ST, key: "k" } });

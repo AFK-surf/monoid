@@ -205,8 +205,15 @@ const JOBS = "/jobs?chats=0";
 const SEARCHED = new Set(["session", "session-removed", "thread", "thread-removed", "job", "job-removed"]);
 /// The station's events that say what its reads bring too: told again on top of what a read asked before them brought
 /// (retold.ts).
-const RETOLD = new Set(["session", "session-pending", "session-removed", "thread-removed", "read", "chat-shared", "chat-shared-removed", "job", "job-removed", "overview", "pin", "dismiss", "kept", "hidden", "muted"]);
+const RETOLD = new Set(["session", "session-pending", "session-removed", "thread-removed", "read", "chat-shared", "chat-shared-removed", "job", "job-removed", "overview", "overview-patch", "pin", "dismiss", "kept", "hidden", "muted"]);
 const SHARED_RETOLD = new Set(["chat-shared", "chat-shared-removed"]);
+
+function overviewPatchTouches(data: unknown, key: string): boolean {
+  const set = get(data, "set");
+  if (isObject(set) && Object.prototype.hasOwnProperty.call(set, key)) return true;
+  const del = get(data, "del");
+  return Array.isArray(del) && del.includes(key);
+}
 
 /// Which rows of a list its station makes for everyone a change makes again (#remake): those of their ids (a row's id
 /// is its agent's session key), of their threads, or all of them.
@@ -2067,7 +2074,8 @@ export class StationsSync {
     if (streamReadGen !== undefined && curGen !== streamReadGen) return;
     const effectiveReadGen = streamReadGen ?? curGen;
     if (SEARCHED.has(name)) this.#searchStale(address);
-    if ((name === "overview" || name === "usage") && core.store.inUse({ topic: "profilePace", station: address })) this.paceShown(address);
+    const paceRelevant = name === "overview" || name === "usage" || (name === "overview-patch" && overviewPatchTouches(data, "profiles"));
+    if (paceRelevant && core.store.inUse({ topic: "profilePace", station: address })) this.paceShown(address);
     // An archive and restore can be coalesced: there may be no second removal in the shared-row stream.
     if (name === "session" || name === "session-removed") {
       const session = str(get(data, "key"));
@@ -2425,6 +2433,21 @@ export class StationsSync {
         if (streamReadGen === undefined || curGen !== streamReadGen) return;
         core.data.set(t, data);
         core.confirmWorkspaceAuth?.(ws, t, streamReadGen);
+        return;
+      }
+      case "overview-patch": {
+        const t: Topic = { topic: "overview", station: address };
+        const ws = ofAddress(address);
+        const curGen = core.store.authGen.workspaceAuthGen(ws);
+        if (streamReadGen === undefined || curGen !== streamReadGen) return;
+        const set = isObject(get(data, "set")) ? (get(data, "set") as Record<string, unknown>) : null;
+        const rawDel = get(data, "del");
+        const del = Array.isArray(rawDel) ? rawDel.filter((k): k is string => typeof k === "string") : null;
+        if (core.data.patchOverview(address, set, del)) {
+          core.confirmWorkspaceAuth?.(ws, t, streamReadGen);
+        } else if (!this.#core.scheduler.queued(address, `${address} overview`)) {
+          this.#enqueue(address, "overview", Priority.shown, this.#read(address, t, "/overview"));
+        }
         return;
       }
     }
