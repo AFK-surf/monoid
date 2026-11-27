@@ -495,6 +495,14 @@ let workspace_revoked : Map[String, Bool] = Map([])
 let workspace_pending_ws : Map[String, Bool] = Map([])
 
 ///|
+/// Workspaces that entered `workspace_pending_ws` specifically because a previous confirmed owner explicitly
+/// lost access (or was blocked) while a candidate fallback account was still `loaded=false`. Distinguished
+/// from cold-start Core unallocated pending so offline DB recovery can immediately promote `Owned(B)` while
+/// explicit-loss pending stays idempotently `Pending` until B confirms with `loaded=true`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_pending_explicit_loss : Map[String, Bool] = Map([])
+
+///|
 /// Accounts whose latest `workspaces` snapshot entry has `loaded=false`.
 // kept across runs: put back as a run begins (last_reset)
 let workspace_pending_owners : Map[String, Bool] = Map([])
@@ -616,73 +624,156 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 /// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
-  let mut earlier_unloaded_empty = false
   let seen : Map[String, String] = Map([])
   let pending_owners : Map[String, Bool] = Map([])
   let pending_ws : Map[String, Bool] = Map([])
   let loaded_owners : Map[String, Bool] = Map([])
   let loaded_members : Map[String, Map[String, Bool]] = Map([])
+  let next_explicit_loss : Map[String, Bool] = Map([])
+  let mut has_core_owned = false
   for a in accounts {
-    let s = Some(a)
-    let acc = field(s, "account")
-    let sub = text(acc, "sub")
-    let owner = if sub != "" { sub } else { text(acc, "email") }
-    if owner == "" {
-      continue
+    if field(Some(a), "ownedWorkspaces") is Some(Array(_)) {
+      has_core_owned = true
+      break
     }
-    let is_blocked = match field(s, "blocked") {
-      Some(String(b)) => b != ""
-      Some(True) => true
-      _ => false
-    }
-    if is_blocked {
-      loaded_owners[owner] = true
-      continue
-    }
-    let acc_loaded = match field(s, "loaded") {
-      Some(False) => false
-      _ => true
-    }
-    let ws_list = items(s, "workspaces")
-    if !acc_loaded {
-      pending_owners[owner] = true
-      if ws_list.is_empty() {
-        earlier_unloaded_empty = true
+  }
+  if has_core_owned {
+    let listed_unowned : Map[String, Bool] = Map([])
+    for a in accounts {
+      let s = Some(a)
+      let acc = field(s, "account")
+      let sub = text(acc, "sub")
+      let owner = if sub != "" { sub } else { text(acc, "email") }
+      if owner == "" {
+        continue
       }
-      for w in ws_list {
-        let id = text(Some(w), "id")
-        if id != "" && !seen.contains(id) {
-          if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
-            pending_ws[id] = true
-          } else if workspace_pending_ws.contains(id) {
-            pending_ws[id] = true
-          } else {
-            match workspace_owners.get(id) {
-              Some(p) if p != owner && loaded_owners.contains(p) => pending_ws[id] = true
-              _ => seen[id] = owner
+      let is_blocked = match field(s, "blocked") {
+        Some(String(b)) => b != ""
+        Some(True) => true
+        _ => false
+      }
+      if is_blocked {
+        loaded_owners[owner] = true
+        continue
+      }
+      let acc_loaded = match field(s, "loaded") {
+        Some(False) => false
+        _ => true
+      }
+      let ws_list = items(s, "workspaces")
+      if !acc_loaded {
+        pending_owners[owner] = true
+      } else {
+        loaded_owners[owner] = true
+        for w in ws_list {
+          let id = text(Some(w), "id")
+          if id != "" {
+            match loaded_members.get(id) {
+              Some(m) => m[owner] = true
+              None => {
+                let m : Map[String, Bool] = Map([])
+                m[owner] = true
+                loaded_members[id] = m
+              }
             }
           }
         }
       }
-      continue
-    }
-    loaded_owners[owner] = true
-    for w in ws_list {
-      let id = text(Some(w), "id")
-      if id != "" {
-        match loaded_members.get(id) {
-          Some(m) => m[owner] = true
-          None => {
-            let m : Map[String, Bool] = Map([])
-            m[owner] = true
-            loaded_members[id] = m
-          }
-        }
-        if !seen.contains(id) && !pending_ws.contains(id) {
-          if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+      for ow in items(s, "ownedWorkspaces") {
+        guard ow is String(id) && id != "" else { continue }
+        if !seen.contains(id) {
+          let explicit_loss = !acc_loaded &&
+            (
+              workspace_pending_explicit_loss.contains(id) ||
+              (match workspace_owners.get(id) {
+                Some(p) if p != owner && loaded_owners.contains(p) => true
+                _ => false
+              })
+            )
+          if explicit_loss {
             pending_ws[id] = true
+            next_explicit_loss[id] = true
           } else {
             seen[id] = owner
+          }
+        }
+      }
+      for w in ws_list {
+        let id = text(Some(w), "id")
+        if id != "" && !seen.contains(id) && !pending_ws.contains(id) {
+          listed_unowned[id] = true
+        }
+      }
+    }
+    for id, _ in listed_unowned {
+      if !seen.contains(id) && !pending_ws.contains(id) {
+        pending_ws[id] = true
+      }
+    }
+  } else {
+    let mut earlier_unloaded_empty = false
+    for a in accounts {
+      let s = Some(a)
+      let acc = field(s, "account")
+      let sub = text(acc, "sub")
+      let owner = if sub != "" { sub } else { text(acc, "email") }
+      if owner == "" {
+        continue
+      }
+      let is_blocked = match field(s, "blocked") {
+        Some(String(b)) => b != ""
+        Some(True) => true
+        _ => false
+      }
+      if is_blocked {
+        loaded_owners[owner] = true
+        continue
+      }
+      let acc_loaded = match field(s, "loaded") {
+        Some(False) => false
+        _ => true
+      }
+      let ws_list = items(s, "workspaces")
+      if !acc_loaded {
+        pending_owners[owner] = true
+        if ws_list.is_empty() {
+          earlier_unloaded_empty = true
+        }
+        for w in ws_list {
+          let id = text(Some(w), "id")
+          if id != "" && !seen.contains(id) {
+            if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+              pending_ws[id] = true
+            } else if workspace_pending_ws.contains(id) {
+              pending_ws[id] = true
+            } else {
+              match workspace_owners.get(id) {
+                Some(p) if p != owner && loaded_owners.contains(p) => pending_ws[id] = true
+                _ => seen[id] = owner
+              }
+            }
+          }
+        }
+        continue
+      }
+      loaded_owners[owner] = true
+      for w in ws_list {
+        let id = text(Some(w), "id")
+        if id != "" {
+          match loaded_members.get(id) {
+            Some(m) => m[owner] = true
+            None => {
+              let m : Map[String, Bool] = Map([])
+              m[owner] = true
+              loaded_members[id] = m
+            }
+          }
+          if !seen.contains(id) && !pending_ws.contains(id) {
+            if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+              pending_ws[id] = true
+            } else {
+              seen[id] = owner
+            }
           }
         }
       }
@@ -695,6 +786,12 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
     if !seen.contains(id) {
       workspace_pending_ws[id] = true
       workspace_revoked.remove(id)
+    }
+  }
+  workspace_pending_explicit_loss.clear()
+  for id, _ in next_explicit_loss {
+    if workspace_pending_ws.contains(id) {
+      workspace_pending_explicit_loss[id] = true
     }
   }
   workspace_pending_owners.clear()
@@ -827,6 +924,7 @@ fn last_reset() -> Unit {
   workspace_owners_version.set(0)
   workspace_revoked.clear()
   workspace_pending_ws.clear()
+  workspace_pending_explicit_loss.clear()
   workspace_pending_owners.clear()
   workspace_loaded_owners.clear()
   workspace_loaded_members.clear()

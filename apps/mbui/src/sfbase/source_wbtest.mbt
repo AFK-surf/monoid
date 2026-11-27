@@ -454,5 +454,76 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   while workspace_owner_change_listeners.length() > base_listeners {
     workspace_owner_change_listeners.pop() |> ignore
   }
+  // r13 Core authoritative ownedWorkspaces: identical account snapshots split cleanly by ownedWorkspaces!
+  // (a) Multi-account [A(loaded=false, []), B(loaded=false, [ws-1])] with ownedWorkspaces=[] -> Pending/Waiting!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  set_startup_window_owner(Some("acct-b"))
+  let core_multi_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(core_multi_unowned))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="Core ownedWorkspaces=[] must keep ws-1 unowned")
+  assert_true(workspace_is_pending("ws-1"), msg="Core ownedWorkspaces=[] must keep ws-1 Pending")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="B must Wait when Core ownedWorkspaces=[]")
+  // (b) Exact same offline accounts, Core confirms B.ownedWorkspaces=["ws-1"] (still loaded=false!) -> immediately Owned(B)/Matched!
+  let core_multi_owned_b : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(core_multi_owned_b))
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"), msg="Core B.ownedWorkspaces=[ws-1] must promote Owned(B) even while offline")
+  assert_false(workspace_is_pending("ws-1"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="B must Match offline once Core confirms ownedWorkspaces")
+  // (c) Single-account [B(loaded=false, [ws-1])] with ownedWorkspaces=[] -> STILL Pending/Waiting even as first account!
+  reset()
+  accounts_subs_sync(["acct-b"])
+  set_startup_window_owner(Some("acct-b"))
+  let core_single_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(core_single_unowned))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="single account with Core ownedWorkspaces=[] must stay unowned")
+  assert_true(workspace_is_pending("ws-1"), msg="single account with Core ownedWorkspaces=[] must stay Pending")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="single account B must Wait when Core ownedWorkspaces=[]")
+  // (d) Same single account, Core recovers ownedWorkspaces=["ws-1"] (still loaded=false) -> immediately Owned(B)/Matched!
+  let core_single_owned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(core_single_owned))
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_false(workspace_is_pending("ws-1"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="single account B must Match offline once Core confirms ownedWorkspaces")
   reset()
 }

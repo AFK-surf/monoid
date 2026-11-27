@@ -4399,3 +4399,132 @@ test "Pending stays idempotent across repeated snapshots while B is loaded=false
   assert_eq(opens.val, 1, msg="screen_node must open screen.view once A and B finish loading")
   @ui.run_let_go()
 }
+
+///|
+test "Core ownedWorkspaces dual-branch offline acceptance: ownedWorkspaces=[] stays Pending/0 RPC even for first account; ownedWorkspaces=[ws-1] opens mesh offline" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:core-owned-1", title: "CoreOwned", until_gone: false }
+  let core_multi_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let core_multi_owned_b : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  // Branch 1: Core ownedWorkspaces=[] -> Pending/Waiting, 0 screen.view RPCs
+  @sfbase.workspace_owners_sync_json(Some(core_multi_unowned))
+  let t1 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t1.draw()
+  t1.draw()
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="Core ownedWorkspaces=[] must emit 0 screen.view RPCs")
+  // Branch 2: Same offline accounts, Core confirms B.ownedWorkspaces=["ws-1"] (loaded=false!) -> immediately opens mesh!
+  @sfbase.workspace_owners_sync_json(Some(core_multi_owned_b))
+  t1.draw()
+  t1.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="Core B.ownedWorkspaces=[ws-1] must immediately open mesh offline without waiting for /v1/me")
+  @ui.run_let_go()
+  // Single-account [B(loaded=false, [ws-1])]: ownedWorkspaces=[] -> 0 RPC even as first account; ownedWorkspaces=[ws-1] -> 1 RPC offline!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  opens.val = 0
+  let core_single_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let core_single_owned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(core_single_unowned))
+  let t2 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="single-account Core ownedWorkspaces=[] must emit 0 screen.view RPCs")
+  @sfbase.workspace_owners_sync_json(Some(core_single_owned))
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="single-account Core ownedWorkspaces=[ws-1] must immediately open mesh offline")
+  @ui.run_let_go()
+}
