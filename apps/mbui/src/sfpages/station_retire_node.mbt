@@ -309,14 +309,15 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
 
 ///|
 /// A kind of thing retiring a station takes along or leaves, in its panel (station_retire_panel's) in `parent`: `title`
-/// and how many (`value`) on its line, which they are (`note`) under it, quiet, as wide as the row; on the line the ways
-/// panel's rows are (ws_way_row_node's).
+/// and how many (`value`) at opposite ends of its line (wrapping `value` onto the next line at large text scales when
+/// they cannot share a line), and which they are (`note`) under it, quiet, as wide as the row.
 fn retire_kind_node(parent : @view.View, title : String, value : String, note : String) -> Unit {
   parent.box(fn(r) {
     @sf.style_node(r, fn() { @sf.panel_words_in_node(r).then(retire_kind_box) })
     r.box(fn(line) {
       @sf.style_node(line, fn() { retire_kind_line })
-      @sf.words_node(line, fn() { title }, fn() { ws_way_title }).grow(Is(1.0)).shrink(Is(1.0)) |> ignore
+      line.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
+      @sf.words_node(line, fn() { title }, fn() { ws_way_title }).shrink(Is(1.0)) |> ignore
       @sf.words_node(line, fn() { value }, fn() { @sf.meta }) |> ignore
     })
     |> ignore
@@ -333,4 +334,4 @@ let retire_kind_box : @ui.Style = @ui.css("w=Full gap=S0_5 py=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let retire_kind_line : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
+let retire_kind_line : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter justify=JBetween")

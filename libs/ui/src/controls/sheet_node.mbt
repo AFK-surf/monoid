@@ -67,6 +67,34 @@ let sheet_drag_h : Double = 64.0
 let sheet_float_inset : Double = window_in
 
 ///|
+/// Height share at or above which a resting sheet docks full-width to the bottom edge.
+let sheet_dock_share : Double = 0.75
+
+///|
+/// Height share below which an already-docked resting sheet returns to a floating island (hysteresis below
+/// `sheet_dock_share` so slight height jitter around 0.75 does not oscillate).
+let sheet_undock_share : Double = 0.72
+
+///|
+/// Lower and upper height-share bounds of the continuous interactive floating-to-docked morph band.
+let sheet_morph_lo : Double = 0.66
+
+///|
+let sheet_morph_hi : Double = 0.80
+
+///|
+/// Resting `float_t` (`0.0` docked full-width, `1.0` floating island) for a height share: never rests half-floating.
+fn sheet_rest_float_t(share : Double, docked? : Bool = false) -> Double {
+  if docked {
+    if share < sheet_undock_share { 1.0 } else { 0.0 }
+  } else if share >= sheet_dock_share {
+    0.0
+  } else {
+    1.0
+  }
+}
+
+///|
 /// A page of a sheet (sheet_node's `pages`): its number in its sheet (the first, the sheet's own, 0), its panel (what it
 /// holds and its foot its nodes), what what it holds is given to close the sheet, what opened it.
 priv struct SheetPage {
@@ -236,6 +264,15 @@ fn sheet_node(
         if in_ime { 0.0 } else { kb }
       }
       let win_h = fn() { layer.window_h() + ime_under() }
+      // (keyboard-invariant full window height for resting floating-vs-docked share, so IME open/close never flips it;
+      // while the sheet itself holds an active IME, its max_height is compressed above the keyboard, so freeze floating
+      // vs docked transitions until the keyboard closes)
+      let full_win_h = fn() { layer.window_h() + layer.keyboard_inset() }
+      let in_sheet_ime = fn() {
+        @signals.untracked(fn() {
+          layer.keyboard_inset() > 0.0 && (@ui.focused_editor_in_node(layer) || had_ime.val)
+        })
+      }
       let body_win_h = fn() {
         let wh = win_h()
         if live() {
@@ -442,6 +479,101 @@ fn sheet_node(
         placed.set(None)
         (dx, dv)
       }
+      // (initial resting float_t before `rise` measures actual height: declared `tall` when given, `0.0` for auto-height
+      // `grows` sheets that typically expand tall, and `1.0` floating for plain auto-height sheets so short sheets and
+      // build-time `dialog_rows_node` callers stay floating without re-measuring)
+      let sheet_declared_float_t = fn(pg : SheetPage) -> Double {
+        if pg.x.tall > 0.0 {
+          sheet_rest_float_t(pg.x.tall)
+        } else if pg.x.grows {
+          0.0
+        } else {
+          1.0
+        }
+      }
+      // (whether a page's resting floating-vs-docked state depends on measured layout height rather than its declared
+      // `tall` alone: auto-height/form pages, or `hugs` pages whose cap can reach `sheet_dock_share`)
+      let sheet_measures_float = fn(pg : SheetPage) -> Bool {
+        !capped_of(pg.x) || (hugs_of(pg) && pg.x.tall >= sheet_dock_share)
+      }
+      let page_floats : Map[Int, Double] = Map([])
+      let page_resolved : Map[Int, Bool] = Map([])
+      let drag_band : Ref[(Double, Double)] = Ref((sheet_morph_lo, sheet_morph_hi))
+      let sheet_drag_float_t = fn(h : Double, wh : Double) -> Double {
+        let share = if wh > 0.0 { h / wh } else { 0.0 }
+        let (lo, hi) = drag_band.val
+        if hi > lo {
+          dclamp((hi - share) / (hi - lo), 0.0, 1.0)
+        } else if share >= hi {
+          0.0
+        } else {
+          1.0
+        }
+      }
+      let float_way = @motion.NodeWay::new(
+        match in_place {
+          Some(stood) => {
+            let wh = @signals.untracked(full_win_h)
+            if wh > 0.0 {
+              sheet_rest_float_t(stood / wh)
+            } else {
+              @signals.untracked(fn() { sheet_declared_float_t(top()) })
+            }
+          }
+          None => @signals.untracked(fn() { sheet_declared_float_t(top()) })
+        },
+      )
+      let rest_own_now = fn() -> (Double, Double) {
+        match sheet_box.val {
+          Some(b) if b.alive() => {
+            let (h, end) = b.rest_height_now()
+            (dmax(h - reach.untracked(), 0.0), end)
+          }
+          _ => (0.0, -1.0)
+        }
+      }
+      let sync_float_from_layout = fn(animate_ms : Double, measured_own : Double?) -> Unit {
+        guard @signals.untracked(live) && @signals.untracked(open) else { return }
+        guard @signals.untracked(fn() { tall_held.get() is None && !sized.get() }) else { return }
+        guard !in_sheet_ime() else { return }
+        let pg = @signals.untracked(top)
+        let target = if !sheet_measures_float(pg) {
+          sheet_rest_float_t(pg.x.tall)
+        } else {
+          let wh = @signals.untracked(full_win_h)
+          let own = match measured_own {
+            Some(h) => h
+            None => rest_own_now().0
+          }
+          if wh > 0.0 && own > 0.0 {
+            let docked = page_resolved.contains(pg.n) && page_floats.get(pg.n).unwrap_or(1.0) <= 0.001
+            sheet_rest_float_t(own / wh, docked~)
+          } else {
+            page_floats.get(pg.n).unwrap_or(sheet_declared_float_t(pg))
+          }
+        }
+        page_resolved[pg.n] = true
+        page_floats[pg.n] = target
+        let cur = float_way.value_at(layer.cause_at())
+        if animate_ms > 0.0 && (cur - target).abs() > 0.001 {
+          float_way.go_ms(layer, target, animate_ms)
+        } else if (cur - target).abs() > 0.001 || float_way.target() != target {
+          float_way.put(target)
+        }
+      }
+      let schedule_float_sync = fn(min_dur : Double) -> Unit {
+        @signals.after_flush(fn() {
+          guard @signals.untracked(live) && @signals.untracked(open) else { return }
+          let (rest_own, come_end) = rest_own_now()
+          let at_now = layer.cause_at()
+          let come_dur = if come_end > at_now { come_end - at_now } else { 0.0 }
+          let placed_dur = match placed.untracked() {
+            Some((st, _, lt, vel)) => placed_end(own_now(), st, vel, lt)
+            None => 0.0
+          }
+          sync_float_from_layout(dmax(min_dur, dmax(come_dur, placed_dur)), Some(rest_own))
+        })
+      }
       let reshaped = fn() {
         // (closed: it sinks away as tall as it was; what it holds let go of meanwhile is no height to go to)
         guard @signals.untracked(live) && @signals.untracked(open) else { return }
@@ -451,6 +583,9 @@ fn sheet_node(
         step_placed.val = false
         placed.set(Some((stood, at, left, v)))
         reach.set(dmax(reach.untracked(), sheet_under + stood))
+        if sheet_measures_float(@signals.untracked(top)) {
+          schedule_float_sync(0.0)
+        }
       }
       // (what it holds made first, what it reads then waited for before it rises: OpenGate; one in another's place,
       // seen there from the first, waits for nothing)
@@ -467,6 +602,10 @@ fn sheet_node(
           let_go_speed.val = None
         } else {
           let rise = fn() {
+            // (resolve auto-height / hugs floating vs full-width docked layout before rising into view)
+            if in_place is None && sheet_box.val is Some(_) && sheet_measures_float(@signals.untracked(top)) {
+              sync_float_from_layout(0.0, None)
+            }
             // (how tall it rises, for a sheet under it to step back out of its way: covered_by's there)
             rises(own_now())
             dim.go_ms(layer, 1.0, @motion.sheet_scrim_ms, ease=Out)
@@ -474,11 +613,18 @@ fn sheet_node(
           }
           if in_place is Some(_) {
             rise()
+            schedule_float_sync(@ui.move_ms(layer.window_w()))
           } else {
             gate.go(layer, rise)
           }
         }
       })
+      layer.reacts(at_start=false, fn() { (full_win_h(), layer.keyboard_inset() > 0.0) }, fn(_) {
+        if !in_sheet_ime() && sheet_measures_float(@signals.untracked(top)) {
+          schedule_float_sync(@ui.move_ms(layer.window_w()))
+        }
+      })
+      |> ignore
       // (a sheet over it: it steps back, as far up as that one's height makes it (push_of), its veil over it as far as
       // it has gone, on a Move as far as it goes; that one gone, back down from there, as the host's (present_sheet))
       let recede = @motion.NodeWay::new(0.0)
@@ -550,14 +696,6 @@ fn sheet_node(
           dues[n] = layer.at_moment(w.2 + w.3, fn() { a.set(true) })
         }
       }
-      let sheet_target_float_t = fn(pg : SheetPage) -> Double {
-        if capped_of(pg.x) && !hugs_of(pg) {
-          dclamp((0.80 - pg.x.tall) / 0.14, 0.0, 1.0)
-        } else {
-          1.0
-        }
-      }
-      let float_way = @motion.NodeWay::new(@signals.untracked(fn() { sheet_target_float_t(top()) }))
       let made_with : Ref[Bool] = Ref(true)
       let shown_was : Ref[Array[Int]] = Ref(@signals.untracked(fn() { pages().map(fn(pg) { pg.n }) }))
       layer.reacts(at_start=false, fn() { pages().map(fn(pg) { pg.n }) }, fn(ids) {
@@ -566,7 +704,6 @@ fn sheet_node(
         guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
         let at = layer.cause_at()
         let dur = @ui.move_ms(layer.window_w())
-        float_way.go_ms(layer, sheet_target_float_t(top()), dur)
         // (as tall as it stood as its page was put on or taken off (`stood`, said where that was done, before
         // anything of it is laid out anew): where the page that shows from now sets out from)
         let stood = stood()
@@ -589,6 +726,16 @@ fn sheet_node(
           _ => ()
         }
         reach.set(dmax(reach.untracked(), sheet_under + stood))
+        if sized.untracked() || tall_held.untracked() is Some(_) {
+          let wh = @signals.untracked(win_h)
+          let cur_h = match tall_held.untracked() {
+            Some(h) => h
+            None => tall.value_at(at)
+          }
+          float_way.put(sheet_drag_float_t(cur_h, wh))
+        }
+        page_floats[showed] = float_way.value_at(at)
+        drag_band.val = (sheet_morph_lo, sheet_morph_hi)
         sized.set(false)
         tall_held.set(None)
         let go = fn(n : Int, to : Double) {
@@ -631,6 +778,8 @@ fn sheet_node(
         placed_plan.val = own_now()
         step_placed.val = true
         placed.set(Some((stood, at, dur, stood_at_v)))
+        // (stack.each creates a newly pushed page after this reaction finishes, so measure after the flush)
+        schedule_float_sync(dur)
       })
       // (where it stands as what is drawn is drawn, as tall as it was laid out when last drawn, for what is lifted over
       // the scrim to keep clear of: tree_sheet_place, asked as the scrim is drawn, before the sheet; not where another
@@ -788,10 +937,10 @@ fn sheet_node(
         let sheet_float_t = fn(v : @view.View) -> Double {
           let wh = win_h()
           match tall_held.get() {
-            Some(h) => dclamp((0.80 - (if wh > 0.0 { h / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
+            Some(h) => sheet_drag_float_t(h, wh)
             None =>
               if sized.get() {
-                dclamp((0.80 - (if wh > 0.0 { tall.shown(v) / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
+                sheet_drag_float_t(tall.shown(v), wh)
               } else {
                 float_way.shown(v)
               }
@@ -887,6 +1036,26 @@ fn sheet_node(
               // taken off)
               from_y.val = d.wy
               from_h.val = dmax(0.0, sheet.placed_window_now().3 - reach.untracked())
+              let total_now = @signals.untracked(win_h)
+              let cur_ft = @signals.untracked(fn() { sheet_float_t(sheet) })
+              let start_share = if total_now > 0.0 { from_h.val / total_now } else { 0.0 }
+              let band_w = sheet_morph_hi - sheet_morph_lo
+              drag_band.val = if cur_ft <= 0.001 {
+                if start_share < sheet_morph_hi {
+                  (start_share - band_w, start_share)
+                } else {
+                  (sheet_morph_lo, sheet_morph_hi)
+                }
+              } else if cur_ft >= 0.999 {
+                if start_share > sheet_morph_lo {
+                  (start_share, start_share + band_w)
+                } else {
+                  (sheet_morph_lo, sheet_morph_hi)
+                }
+              } else {
+                let hi = start_share + cur_ft * band_w
+                (hi - band_w, hi)
+              }
             }
             guard from_y.val >= 0.0 else { return }
             let dy = d.wy - from_y.val
@@ -1074,12 +1243,17 @@ fn sheet_node(
                   )
                   ways[k] = way
                   aways[k] = @signals.signal(way.untracked().1 != 0.0)
+                  if page_floats.get(k) is None {
+                    page_floats[k] = sheet_declared_float_t(pg)
+                  }
                   let stood_h : @signals.Signal[Double?] = @signals.signal(None)
                   page_views[k] = page
                   page_stood[k] = stood_h
                   page.owns(fn() {
                     ways.remove(k)
                     aways.remove(k)
+                    page_floats.remove(k)
+                    page_resolved.remove(k)
                     page_views.remove(k)
                     page_stood.remove(k)
                     match dues.get(k) {
@@ -1099,10 +1273,10 @@ fn sheet_node(
                   page
                   .over(By(fn() { !shows() }), from_top=true)
                   .padding(By(fn() {
-                    let ft = if tall_held.get() is Some(_) || sized.get() {
+                    let ft = if shows() {
                       sheet_float_t(page)
                     } else {
-                      sheet_target_float_t(pg)
+                      page_floats.get(k).unwrap_or(sheet_declared_float_t(pg))
                     }
                     let inset = sheet_float_inset * ft
                     (inset, sheet_stack_over, inset, 0.0)
@@ -1334,18 +1508,17 @@ fn sheet_node(
                       page.box(fn(row) {
                         style_node(row, fn() {
                           let base = if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at }
-                          let ft_x = if tall_held.get() is Some(_) || sized.get() {
+                          let ft = if shows() {
                             sheet_float_t(row)
                           } else {
-                            sheet_target_float_t(pg)
+                            page_floats.get(k).unwrap_or(sheet_declared_float_t(pg))
                           }
-                          let ft_y = sheet_float_t(row)
-                          if ft_x > 0.001 || ft_y > 0.001 {
+                          if ft > 0.001 {
                             let at = @ui.capsule_in(dialog_r, button_height())
                             let base_px = 20.0
                             let base_pb = if x.ruled { 16.0 } else { 24.0 }
-                            let px = base_px + (at - base_px) * ft_x
-                            let pb = base_pb + (at - base_pb) * ft_y
+                            let px = base_px + (at - base_px) * ft
+                            let pb = base_pb + (at - base_pb) * ft
                             base.then(@ui.style(px=room(px), pb=room(pb)))
                           } else {
                             base

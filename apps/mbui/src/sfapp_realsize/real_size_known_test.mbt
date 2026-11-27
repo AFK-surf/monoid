@@ -5,6 +5,11 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-27: tall auto-height phone sheets (`>= 75%` of window height) now dock full-width on open
+// (`libs/ui/src/controls/sheet_node.mbt`); the stepped connect wizard (`settings-new-connect-group`) opens directly on
+// its tall step-3 form, measuring once at floating width (`348pt`) before docking to full width (`360pt`, +14 measured,
+// made/laid unchanged).
+
 // Raised once, 2026-11-27: the workspace of real size's `vaults` topic now weighs a shared workspace vault with a
 // pending join request and a discoverable workspace vault card (client/core-ts/test/real-size.ts `WORKSPACE_VAULT`
 // and `DISC_VAULT`): wide `settings-vault*` screens make, lay out and measure those two new cards once on open
@@ -451,7 +456,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-connect-comma": (610, 436, 126),
   "phone settings-connect-feishu": (610, 436, 126),
   "phone settings-new-connect-platform-group": (954, 661, 120),
-  "phone settings-new-connect-group": (921, 629, 123),
+  "phone settings-new-connect-group": (921, 629, 137),
   "phone settings-connect-group": (611, 436, 126),
   "phone settings-slack-app": (610, 436, 126),
   "phone settings-memory": (477, 343, 95),

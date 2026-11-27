@@ -23,6 +23,7 @@ pub fn keys_dialog_node(v : @view.View, src : Source, open : @signals.Signal[Boo
       @sf.t("web-main.shortcuts.title"),
       fn(b, _) { keys_sheet_node(b, prefs) },
       from=Unanchored,
+      grows=true,
       // (the shortcuts' own page in its place: where this app can change them)
       foot?=if @settings.keys_changeable(@signals.untracked(prefs)) {
         Some(fn(f : @view.View, close : () -> Unit) {

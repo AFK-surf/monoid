@@ -36,30 +36,14 @@ pub fn View::grows_now(self : View) -> (Double, Double) {
   // it stands)
   let coming : Array[(Int, Double)] = []
   tree.coming_under(self.at, coming)
-  let laid_at = fn(t : Double, back : Bool) {
-    tree.bound_at(t)
-    for c in coming {
-      let (k, was) = c
-      let m = tree.nodes[k]
-      m.flex.style.come_now = if back { was } else { t }
-      let mut j = k
-      while j >= 0 {
-        tree.nodes[j].flex.dirty = true
-        j = tree.nodes[j].parent
-      }
-    }
-    tree.laids = tree.laids + 1
-    @flex.compute(tree.nodes[0].flex, width=tree.last_w, height=tree.last_h, round=false, reuse=true)
-    n.flex.height
-  }
   let first = @flex.computes() + 1
   let was_standing = tree.standing
   tree.standing = true
   let (h0, h1) = @signals.untracked(fn() {
-    let h0 = laid_at(at, false)
-    let h1 = laid_at(at + grows_step, false)
+    let h0 = tree.laid_with_comes_at(n.flex, coming, at, false, true)
+    let h1 = tree.laid_with_comes_at(n.flex, coming, at + grows_step, false, true)
     // (as the frame had it: what is placed next is that)
-    laid_at(shown, true) |> ignore
+    tree.laid_with_comes_at(n.flex, coming, shown, true, true) |> ignore
     (h0, h1)
   })
   tree.standing = was_standing
@@ -68,6 +52,67 @@ pub fn View::grows_now(self : View) -> (Double, Double) {
     tree.walk_from = first
   }
   (h0, (h1 - h0) / grows_step)
+}
+
+///|
+/// How tall `self` will be laid out once any active `View::comes` inside it settle, together with the latest active
+/// `come_ends` moment (`-1.0` when nothing inside is currently coming or going). Leaves the live layout untouched.
+pub fn View::rest_height_now(self : View) -> (Double, Double) {
+  let tree = self.tree
+  tree.grows_read_in_binding()
+  guard self.live() is Some(n) else { return (0.0, -1.0) }
+  tree.measured_now()
+  let at = tree.logic_said()
+  let end = tree.comes_end_in(self.at)
+  guard tree.last_w > 0.0 && !tree.measuring && end > at else { return (n.flex.height, -1.0) }
+  let coming : Array[(Int, Double)] = []
+  tree.coming_under(self.at, coming)
+  guard coming.length() > 0 else { return (n.flex.height, end) }
+  let first = @flex.computes() + 1
+  let was_standing = tree.standing
+  tree.standing = true
+  let h = @signals.untracked(fn() {
+    let h = tree.laid_with_comes_at(n.flex, coming, end + 1.0, false, false)
+    tree.laid_with_comes_at(n.flex, coming, 0.0, true, false) |> ignore
+    h
+  })
+  tree.standing = was_standing
+  tree.measured_gen = @flex.computes()
+  if tree.walk_from < 0 || first < tree.walk_from {
+    tree.walk_from = first
+  }
+  (h, end)
+}
+
+///|
+/// Recomputes layout with every node in `coming` set to `t` (or restored to its saved `come_now` when `back` is true),
+/// optionally advancing clock-bound properties via `bound_at`, and returns `target.height`.
+fn Tree::laid_with_comes_at(
+  self : Tree,
+  target : @flex.Node,
+  coming : Array[(Int, Double)],
+  t : Double,
+  back : Bool,
+  bind : Bool,
+) -> Double {
+  if bind {
+    self.bound_at(t)
+  }
+  for c in coming {
+    let (k, was) = c
+    let m = self.nodes[k]
+    m.flex.style.come_now = if back { was } else { t }
+    let mut j = k
+    while j >= 0 {
+      self.nodes[j].flex.dirty = true
+      j = self.nodes[j].parent
+    }
+  }
+  self.measuring = true
+  self.laids = self.laids + 1
+  @flex.compute(self.nodes[0].flex, width=self.last_w, height=self.last_h, round=false, reuse=true)
+  self.measuring = false
+  target.height
 }
 
 ///|

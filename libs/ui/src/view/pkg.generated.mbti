@@ -2096,6 +2096,7 @@ pub fn View::rect(Self) -> (Double, Double, Double, Double)
 pub fn View::rects(Self, Live[Array[@paint.Rect]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool, uncut? : Bool, open_top? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::rest_height_now(Self) -> (Double, Double)
 pub fn View::reused_bool(Self, default? : Bool) -> @signals.Signal[Bool]
 pub fn View::reused_kind(Self) -> Int32?
 #callsite(autofill(loc))

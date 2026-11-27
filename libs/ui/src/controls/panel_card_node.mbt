@@ -24,11 +24,7 @@ pub fn panel_card_last_node(v : @view.View) -> @ui.Style {
   match v.lent(panel_in_lent) {
     Some(p) if !p.small => {
       let k = if p.centred { 1.0 } else { (p.round_foot)() }
-      if k > 0.001 {
-        @ui.style(mb=room(-(dialog_pad - panel_card_in) * k))
-      } else {
-        no_card_out
-      }
+      @ui.style(mb=room(-(dialog_pad - panel_card_in) * k))
     }
     _ => no_card_out
   }

@@ -177,10 +177,14 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     at_start=false,
     fn() {
       let h = holds.get()
+      let (projects, opener) = match view() {
+        Some(cv) => (cv.projects, cv.opener is Some(_))
+        None => (false, false)
+      }
       (
         agents().length(),
         opened_any(),
-        (finds(), outlines(), remote()),
+        (projects, opener, finds(), outlines(), remote()),
         (h.pulls.length(), h.said, h.files, h.letters, bg_count()),
       )
     },
