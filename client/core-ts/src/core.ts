@@ -1451,7 +1451,7 @@ function roleRank(role: unknown): number {
   }
 }
 
-function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+function isCloudAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
   if (prevDigest === undefined) return false;
   let prev: unknown;
   try {
@@ -1460,11 +1460,26 @@ function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, u
     return true;
   }
   if (!Array.isArray(prev) || prev.length < 5) return true;
-  const [prevOwner, prevRole, prevMember, prevSafe, prevTrusted] = prev;
-  const [nextOwner, nextRole, nextMember, nextSafe, nextTrusted] = next;
+  const [prevOwner, prevRole, prevMember] = prev;
+  const [nextOwner, nextRole, nextMember] = next;
   if (prevOwner !== nextOwner) return true;
   if (prevMember === true && !nextMember) return true;
   if (roleRank(nextRole) < roleRank(prevRole)) return true;
+  return false;
+}
+
+function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+  if (isCloudAuthDowngrade(prevDigest, next)) return true;
+  if (prevDigest === undefined) return false;
+  let prev: unknown;
+  try {
+    prev = JSON.parse(prevDigest);
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(prev) || prev.length < 5) return true;
+  const [, , , prevSafe, prevTrusted] = prev;
+  const [, , , nextSafe, nextTrusted] = next;
   if (prevTrusted === true && !nextTrusted) return true;
   if (prevSafe === false && nextSafe === true) return true;
   return false;
@@ -1512,7 +1527,13 @@ export function syncWorkspaceAuth(inner: Inner, ws: string): void {
   const changed = inner.store.authGen.syncWorkspace(ws, digest, deps);
   if (changed) {
     if (isAuthDowngrade(prevDigest, nextTuple)) {
-      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set() });
+      const cloudDowngrade = isCloudAuthDowngrade(prevDigest, nextTuple);
+      // Lock-only downgrades (`safe: false -> true`, `trusted: true -> false`) keep cloud membership/role
+      // unchanged; pre-confirm `{ topic: "workspace" }` so `station`/`stations`/`lock` views immediately surface
+      // blocked/safe-mode states (including while cloud is offline/frozen) while keeping all station held data gated.
+      const confirmedKeys = cloudDowngrade ? new Set<string>() : new Set<string>([topicKey({ topic: "workspace", workspace: ws })]);
+      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys });
+      if (cloudDowngrade) inner.cloudSync?.refreshWorkspace(ws);
       inner.stations?.refreshWorkspace(ws);
     } else {
       inner.pendingAuthConfirm.delete(ws);

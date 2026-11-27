@@ -42,7 +42,10 @@ async function run(name: string, start: Start): Promise<Recorded> {
   const auth = new ClientAuthTracker();
   const core = start(dir, ORIGIN, (_client, json) => {
     const parsed = JSON.parse(json);
-    auth.takeMessage(parsed);
+    if (auth.takeMessage(parsed)) {
+      last = Date.now();
+      return;
+    }
     inbox.push(parsed);
     last = Date.now();
   });

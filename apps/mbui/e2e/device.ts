@@ -284,12 +284,14 @@ if (process.argv[2] === "device") {
     core.receive(client, JSON.stringify(msg));
   };
   const core = start(join(data, "core"), origin, (_c: number, json: string) => {
-    try {
-      const parsed = JSON.parse(json);
-      if (auth.takeMessage(parsed) && auth.ready && pendingCalls.length > 0) {
-        for (const queued of pendingCalls.splice(0)) sendCall(queued);
-      }
-    } catch {}
+    if (json.startsWith('{"id":0,"auth":')) {
+      try {
+        const parsed = JSON.parse(json);
+        if (auth.takeMessage(parsed) && auth.ready && pendingCalls.length > 0) {
+          for (const queued of pendingCalls.splice(0)) sendCall(queued);
+        }
+      } catch {}
+    }
     process.send!(json);
   }, undefined, options);
   const client = core.connect();

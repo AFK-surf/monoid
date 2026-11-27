@@ -126,13 +126,16 @@ export class ClientAuthTracker {
     const p = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : null;
     let ws: string | undefined;
     if (p) {
-      if (typeof p.workspace === "string" && p.workspace !== "") ws = p.workspace;
-      else if (typeof p.scope === "string" && p.scope !== "") ws = p.scope;
-      else if (typeof p.station === "string" && p.station.includes("/")) {
-        ws = p.station.slice(0, p.station.indexOf("/"));
-      } else if (name.startsWith("composer.") && typeof p.key === "string") {
+      if (name.startsWith("composer.") && typeof p.key === "string") {
         if (p.key.startsWith("new:") && p.key.length > 4) ws = p.key.slice(4);
         else if (p.key.includes("/")) ws = p.key.slice(0, p.key.indexOf("/"));
+      }
+      if (ws === undefined) {
+        if (typeof p.workspace === "string" && p.workspace !== "") ws = p.workspace;
+        else if (typeof p.scope === "string" && p.scope !== "") ws = p.scope;
+        else if (typeof p.station === "string" && p.station.includes("/")) {
+          ws = p.station.slice(0, p.station.indexOf("/"));
+        }
       }
     }
     const authGen = ws !== undefined ? Math.max(this.#global, this.#scopes.get(ws) ?? 0) : this.#global;

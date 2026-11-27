@@ -1091,4 +1091,67 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     assert.equal(staleReply.ok, undefined, "stale-conn RPC must not deliver ok payload");
     await fCore.close();
   });
+
+  it("lock-only downgrade keeps workspace readable for blocked station views while gating station held data, and cloud fullRead role downgrade confirms workspace without deadlocking", async () => {
+    const host = new FakeHost();
+    host.store(STORAGE_KEY, [account("acct-lock", "a@x.test", "A", "tok-lock", "ref-lock", nowS(host) + 3600)]);
+    let role = "owner";
+    let locked = false;
+    host.onFetch((req) => {
+      const path = req.url.replace("https://stillfail.test", "");
+      if (path === "/v1/me") {
+        return jsonResponse(200, { workspaces: [{ id: "ws-lock", name: "Dev", role }], invitations: [], relay_url: "https://relay.test" });
+      }
+      if (path === "/v1/workspaces/ws-lock") {
+        return jsonResponse(200, { id: "ws-lock", name: "Dev", role, ...(locked ? { locked: true } : {}), stations: [{ id: "st-1", name: "willow", online: true }] });
+      }
+      if (path === "/v1/me/personal-lock") {
+        return jsonResponse(200, { head: null, entries: [] });
+      }
+      return jsonResponse(404, { error: "not_found" });
+    });
+    const core = await Core.create(host, { clock: host.time.clock, iroh: null });
+    await host.time.pass(500, 50);
+
+    const wsTopic: Topic = { topic: "workspace", workspace: "ws-lock" };
+    const overviewTopic: Topic = { topic: "overview", station: "ws-lock/st-1" };
+    const chatRowsTopic: Topic = { topic: "chatRows", station: "ws-lock/st-1" };
+    (core.inner.adb.personal() as unknown as { isLoaded: () => boolean }).isLoaded = () => true;
+    syncWorkspaceAuth(core.inner, "ws-lock");
+
+    // Seed station held records under initial gen.
+    core.inner.data.set(overviewTopic, { counts: { running: 1 } }, false);
+    core.inner.data.set(chatRowsTopic, [{ id: "c1" }], false);
+    assert.equal(core.inner.pendingAuthConfirm.has("ws-lock"), false);
+    assert.ok(core.inner.store.value(wsTopic) !== undefined);
+    assert.ok(core.inner.store.value(overviewTopic) !== undefined);
+
+    // 1. Lock-only downgrade (`safe: false -> true`, e.g. untrusted device discovering safe mode while cloud role/owner is unchanged):
+    const genBeforeLock = core.inner.store.authGen.workspaceAuthGen("ws-lock");
+    locked = true;
+    core.inner.data.set(wsTopic, { id: "ws-lock", name: "Dev", role: "owner", locked: true, stations: [{ id: "st-1", name: "willow", online: true }] });
+    await host.time.pass(50, 10);
+    assert.ok(core.inner.store.authGen.workspaceAuthGen("ws-lock") > genBeforeLock, "lock-only downgrade must advance authGen");
+    assert.equal(core.inner.pendingAuthConfirm.has("ws-lock"), true, "lock-only downgrade must still set pendingAuthConfirm");
+    assert.equal(core.inner.store.value(overviewTopic), undefined, "station overview must remain gated on lock-only downgrade");
+    assert.equal(core.inner.store.value(chatRowsTopic), undefined, "station chatRows must remain gated on lock-only downgrade");
+    assert.ok(
+      core.inner.store.value(wsTopic) !== undefined,
+      "workspace metadata must stay readable on lock-only downgrade so station/lock views surface blocked state even when cloud is offline",
+    );
+
+    // 2. Cloud role downgrade (`owner -> member`) via authoritative fullRead `#workspace("ws-lock")`:
+    // Must bump authGen, keep station held data gated, and immediately confirm `{ topic: "workspace" }` with the new role.
+    const genBeforeRole = core.inner.store.authGen.workspaceAuthGen("ws-lock");
+    role = "member";
+    core.inner.cloudSync.refreshWorkspace("ws-lock");
+    await host.time.pass(200, 20);
+    assert.ok(core.inner.store.authGen.workspaceAuthGen("ws-lock") > genBeforeRole, "cloud role downgrade must advance authGen");
+    assert.equal(core.inner.pendingAuthConfirm.has("ws-lock"), true, "cloud role downgrade must keep pendingAuthConfirm active for station data");
+    assert.equal(core.inner.store.value(overviewTopic), undefined, "station overview must remain gated after cloud role downgrade");
+    const wsAfterRole = core.inner.store.value(wsTopic) as { ok?: { role?: string } } | undefined;
+    assert.equal(wsAfterRole?.ok?.role, "member", "authoritative fullRead workspace view must recover with downgraded role without deadlocking");
+
+    await core.close();
+  });
 });

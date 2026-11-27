@@ -153,13 +153,13 @@ describe("ClientAuthTracker", () => {
       authGen: 4,
     });
 
-    // composer.* extracts workspace from params.key; non-composer calls do not misparse params.key.
+    // composer.* extracts workspace from params.key (preferring key over station); non-composer calls do not misparse params.key.
     assert.deepEqual(tracker.callAuth("composer.text", { key: "new:wsA", text: "hi" }), {
       conn: 5,
       workspace: "wsA",
       authGen: 4,
     });
-    assert.deepEqual(tracker.callAuth("composer.text", { key: "wsB/st1/s1", text: "hi" }), {
+    assert.deepEqual(tracker.callAuth("composer.add", { key: "wsB/st1/s1", station: "wsA/st2" }), {
       conn: 5,
       workspace: "wsB",
       authGen: 5,
@@ -240,6 +240,30 @@ describe("ClientAuthTracker", () => {
     await host.time.pass(10, 1);
     const okPut = drain().find(([, m]) => (m as { id?: number }).id === 3)?.[1] as { ok?: unknown; error?: unknown } | undefined;
     assert.equal(okPut?.error, undefined, `expected draft.put ok, got ${JSON.stringify(okPut)}`);
+
+    // Workspace-scoped authGen bump: stale pre-bump CallAuth is rejected, updated tracker CallAuth succeeds.
+    const staleAuth = tracker.callAuth("draft.put", { station: "ws-1/st-1", chat: "new" });
+    core.inner.store.authGen.bumpWorkspace("ws-1");
+    await host.time.pass(10, 1);
+    drain();
+    core.receiveRaw(client, {
+      id: 31,
+      call: "draft.put",
+      params: { station: "ws-1/st-1", chat: "new", text: "stale", quotes: [], files: [] },
+      auth: staleAuth,
+    });
+    core.receiveRaw(client, {
+      id: 32,
+      call: "draft.put",
+      params: { station: "ws-1/st-1", chat: "new", text: "fresh", quotes: [], files: [] },
+      auth: tracker.callAuth("draft.put", { station: "ws-1/st-1", chat: "new" }),
+    });
+    await host.time.pass(10, 1);
+    const afterBump = drain();
+    const staleRes = afterBump.find(([, m]) => (m as { id?: number }).id === 31)?.[1] as { error?: { code?: string } } | undefined;
+    const freshRes = afterBump.find(([, m]) => (m as { id?: number }).id === 32)?.[1] as { error?: unknown } | undefined;
+    assert.equal(staleRes?.error?.code, "auth_stale", "pre-bump CallAuth must be rejected");
+    assert.equal(freshRes?.error, undefined, `post-bump CallAuth must succeed, got ${JSON.stringify(freshRes)}`);
 
     core.receiveRaw(client, {
       id: 4,
