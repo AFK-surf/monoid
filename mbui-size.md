@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 | [a5422d092](https://github.com/AFK-surf/monoid/commit/a5422d092dc3e44a286b4e40ccc4638601073af1) refactor(ui): make ui/headless and ui/motion idiom | 2.7 | 3.66 | 15.19 | 38.24 | 58.92 | 33.5 | 68.55 | 103.94 | 134.47 |
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.49 | 68.52 | 103.09 | 125.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
 | [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 2.67 | 3.61 | 14.99 | 38.03 | 58.24 | 33.32 | 67.99 | 103.02 | 131.83 |
 | [23f501c02](https://github.com/AFK-surf/monoid/commit/23f501c02c24abddf9b9a9f2a98c2146fc7a11fd) fix(ui): fix adaptive glass ink, dark contour on b | 2.67 | 3.61 | 14.98 | 38.03 | 58.19 | 33.32 | 67.97 | 102.89 | 135.39 |
-| [dcc7a90e0](https://github.com/AFK-surf/monoid/commit/dcc7a90e062b622c4da63040bb111b5c58428678) fix(mbui): relocate small-screen group pill above  | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 103.09 | 131.45 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 0.59 | 0.78 | 3.02 | 4.05 | 7.52 | 2.23 | 6.31 | 57.69 |
 | [a5422d092](https://github.com/AFK-surf/monoid/commit/a5422d092dc3e44a286b4e40ccc4638601073af1) refactor(ui): make ui/headless and ui/motion idiom | 0.59 | 0.78 | 3.02 | 4.05 | 7.52 | 2.23 | 6.31 | 57.92 |
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.23 | 6.28 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.44 |
 | [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [23f501c02](https://github.com/AFK-surf/monoid/commit/23f501c02c24abddf9b9a9f2a98c2146fc7a11fd) fix(ui): fix adaptive glass ink, dark contour on b | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.67 |
-| [dcc7a90e0](https://github.com/AFK-surf/monoid/commit/dcc7a90e062b622c4da63040bb111b5c58428678) fix(mbui): relocate small-screen group pill above  | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.75 |
