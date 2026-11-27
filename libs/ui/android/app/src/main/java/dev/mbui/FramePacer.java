@@ -26,6 +26,15 @@ final class FramePacer {
         /** The next vsync asked for (main thread): {@link #vsyncCame} told at it. */
         void postVsync();
 
+        /**
+         * The next vsync asked for (main thread), tagged with generation {@code gen}:
+         * {@link #vsyncCame(long, long, long)} told with the same {@code gen} when it arrives so each posted callback
+         * clears only its own in-flight slot.
+         */
+        default void postVsync(long gen) {
+            postVsync();
+        }
+
         /** {@code r} run on the drawing thread once the next vsync has come (asked on the main thread). */
         void atNextVsyncOnDrawing(Runnable r);
 
@@ -169,11 +178,10 @@ final class FramePacer {
      * appWanted/externalWanted demand, or leaving wanted stuck true when a deferred Choreographer callback was cleared.
      */
     void resetContinuity(long nowNs) {
-        boolean postNext = false;
+        long postGen = 0L;
         synchronized (dispatchLock) {
-            boolean hadDeferredFromVsync = deferredVsync && deferredFromVsync;
+            boolean hadActiveVsync = activeVsyncGen != 0L || wanted.get();
             boolean hadDeferredWake = deferredWakeApp;
-            long deferredT = deferredVsyncT;
             if (deferredWakeApp) {
                 if (deferredWakeExternal) externalWanted.set(true);
                 appWanted.set(true);
@@ -183,20 +191,20 @@ final class FramePacer {
             appDispatched = false;
             deferredVsync = false;
             deferredFromVsync = false;
+            deferredVsyncGen = 0L;
             deferredWakeApp = false;
             deferredWakeExternal = false;
-            if (hadDeferredFromVsync) {
-                clearWantedForLocked(deferredT);
-            }
+            activeVsyncGen = 0L;
+            wanted.set(false);
             continuityGen++;
             if (nowNs > 0 && nowNs > minValidVsyncNs) {
                 minValidVsyncNs = nowNs;
             }
-            if ((hadDeferredFromVsync || hadDeferredWake) && (appWanted.get() || picturesOnly.get())) {
-                postNext = claimPostVsyncLocked();
+            if ((hadActiveVsync || hadDeferredWake) && (appWanted.get() || picturesOnly.get())) {
+                postGen = claimPostVsyncLocked();
             }
         }
-        if (postNext) postVsyncOutOfLock();
+        if (postGen != 0L) postVsyncOutOfLock(postGen);
     }
 
     /** Atomically consumes pending frame flags, reads vsyncAt, and claims vsyncAt[0] when building an app frame. */
@@ -242,6 +250,7 @@ final class FramePacer {
                     deferredVsyncShows = shows;
                     deferredVsync = true;
                     deferredFromVsync = false;
+                    deferredVsyncGen = 0L;
                     needFlushPost = true;
                 } else if (deferredVsyncShows == 0 && shows != 0) {
                     deferredVsyncShows = shows;
@@ -255,12 +264,14 @@ final class FramePacer {
                 lastFrameNowAt = vsyncNs;
                 if (deferredVsync) {
                     boolean fromVsync = deferredFromVsync;
+                    long defGen = deferredVsyncGen;
                     deferredVsync = false;
                     deferredFromVsync = false;
+                    deferredVsyncGen = 0L;
                     deferredWakeApp = false;
                     deferredWakeExternal = false;
                     vsyncAt = new long[] {deferredVsyncT, deferredVsyncShows};
-                    if (fromVsync) clearWantedForLocked(deferredVsyncT);
+                    if (fromVsync) clearWantedForLocked(deferredVsyncT, defGen);
                 } else {
                     long s = shows != 0 ? shows : (vsyncAt[0] == vsyncNs ? vsyncAt[1] : 0);
                     vsyncAt = new long[] {vsyncNs, s};
@@ -307,46 +318,63 @@ final class FramePacer {
     private boolean deferredWakeApp;
     private boolean deferredWakeExternal;
     private long deferredVsyncT, deferredVsyncShows;
+    private long deferredVsyncGen;
     private long lastFrameNowAt;
     private long wantedAfterVsyncNs;
+    private long nextVsyncGen;
+    private long activeVsyncGen;
     private final AtomicLong lastAppDispatchedVsyncNs = new AtomicLong(0L);
+
+    private static final long ACT_NONE = 0L;
+    private static final long ACT_RENDER = -1L;
 
     private boolean nonPacedActive() {
         return p.glSettling() || p.pictureActive();
     }
 
-    private boolean claimPostVsyncLocked() {
-        if (!wanted.compareAndSet(false, true)) return false;
+    private long claimPostVsyncLocked() {
+        if (!wanted.compareAndSet(false, true)) return 0L;
+        long gen = ++nextVsyncGen;
+        activeVsyncGen = gen;
         wantedAfterVsyncNs = lastAppDispatchedVsyncNs.get();
-        return true;
+        return gen;
     }
 
-    private void postVsyncOutOfLock() {
-        if (p.onMain()) p.postVsync();
-        else p.postMain(p::postVsync);
+    private void postVsyncOutOfLock(long gen) {
+        if (gen == 0L) return;
+        if (p.onMain()) p.postVsync(gen);
+        else p.postMain(() -> p.postVsync(gen));
     }
 
-    private void clearWantedForLocked(long t) {
+    private void clearWantedForLocked(long t, long gen) {
+        if (gen != 0L) {
+            if (gen == activeVsyncGen) {
+                activeVsyncGen = 0L;
+                wanted.set(false);
+            }
+            return;
+        }
         if (!(wanted.get() && t != 0 && wantedAfterVsyncNs >= t)) {
+            activeVsyncGen = 0L;
             wanted.set(false);
         }
     }
 
-    /** Handles a duplicate vsync callback for an already-dispatched vsync t (inside dispatchLock). Returns 2 to postVsync. */
-    private int handleDuplicateVsyncLocked(long t) {
-        clearWantedForLocked(t);
-        if (appWanted.get() && !appDispatched) {
-            return claimPostVsyncLocked() ? 2 : 0;
+    /** Handles a duplicate vsync callback for an already-dispatched vsync t (inside dispatchLock). Returns >0 gen to postVsync. */
+    private long handleDuplicateVsyncLocked(long t, long gen) {
+        clearWantedForLocked(t, gen);
+        if ((appWanted.get() && !appDispatched) || (gen != 0L && imeMoving && !picturesOnly.get())) {
+            return claimPostVsyncLocked();
         }
-        return 0;
+        return ACT_NONE;
     }
 
     private void armImeVsync() {
-        boolean postNext = false;
+        long postGen = 0L;
         synchronized (dispatchLock) {
-            if (imeMoving) postNext = claimPostVsyncLocked();
+            if (imeMoving) postGen = claimPostVsyncLocked();
         }
-        if (postNext) postVsyncOutOfLock();
+        if (postGen != 0L) postVsyncOutOfLock(postGen);
     }
 
     /** Whether the soft keyboard's inset animation is under way (main thread). */
@@ -361,28 +389,28 @@ final class FramePacer {
         return vsyncAt;
     }
 
-    /** Returns 0 = no-op, 1 = requestRender, 2 = postVsync for T+1. */
-    private int dispatchVsyncLocked(long t, long shows, boolean fromVsync) {
+    /** Returns ACT_NONE (0), ACT_RENDER (-1), or >0 vsync generation to postVsync for T+1. */
+    private long dispatchVsyncLocked(long t, long shows, boolean fromVsync, long gen) {
         vsyncAt = new long[] {t, shows};
         boolean app = appWanted.get();
         if (t != 0 && lastAppDispatchedVsyncNs.get() == t) {
             if (fromVsync) {
-                int dup = handleDuplicateVsyncLocked(t);
-                if (dup != 0) return dup;
+                long dup = handleDuplicateVsyncLocked(t, gen);
+                if (dup != ACT_NONE) return dup;
             }
-            return (!app && picturesOnly.get()) ? 1 : 0;
+            return (!app && picturesOnly.get()) ? ACT_RENDER : ACT_NONE;
         }
         if (app || picturesOnly.get()) {
             ahead.set(false);
-            if (fromVsync) clearWantedForLocked(t);
+            if (fromVsync) clearWantedForLocked(t, gen);
             if (app) {
                 if (t != 0) lastAppDispatchedVsyncNs.set(t);
                 appDispatched = true;
             }
-            return 1;
+            return ACT_RENDER;
         }
         ahead.set(true);
-        if (fromVsync) clearWantedForLocked(t);
+        if (fromVsync) clearWantedForLocked(t, gen);
         // (a frame wanted as this was kept: the one asking saw it not yet kept, and asked for another vsync, or none)
         boolean app2 = appWanted.get();
         if ((app2 || picturesOnly.get()) && ahead.getAndSet(false)) {
@@ -390,31 +418,25 @@ final class FramePacer {
                 if (t != 0) lastAppDispatchedVsyncNs.set(t);
                 appDispatched = true;
             }
-            return 1;
+            return ACT_RENDER;
         }
-        return 0;
+        return ACT_NONE;
     }
 
-    private void finishDispatch(int act) {
-        if (act == 1) p.requestRender();
-        else if (act == 2) postVsyncOutOfLock();
-    }
-
-    private void dispatchVsync(long t, long shows) {
-        int act;
-        synchronized (dispatchLock) {
-            act = dispatchVsyncLocked(t, shows, true);
-        }
-        finishDispatch(act);
+    private void finishDispatch(long act) {
+        if (act == ACT_RENDER) p.requestRender();
+        else if (act > 0L) postVsyncOutOfLock(act);
     }
 
     private void flushDeferredVsync() {
-        int act;
+        long act;
         synchronized (dispatchLock) {
             if (!deferredVsync) return;
             boolean fromVsync = deferredFromVsync;
+            long defGen = deferredVsyncGen;
             deferredVsync = false;
             deferredFromVsync = false;
+            deferredVsyncGen = 0L;
             long t = deferredVsyncT, shows = deferredVsyncShows;
             vsyncAt = new long[] {t, shows};
             if (deferredWakeApp) {
@@ -423,7 +445,7 @@ final class FramePacer {
                 deferredWakeApp = false;
                 deferredWakeExternal = false;
             }
-            act = dispatchVsyncLocked(t, shows, fromVsync);
+            act = dispatchVsyncLocked(t, shows, fromVsync, defGen);
         }
         finishDispatch(act);
     }
@@ -434,22 +456,31 @@ final class FramePacer {
      * ends (ask), should it want one.
      */
     void vsyncCame(long t, long shows) {
+        vsyncCame(t, shows, 0L);
+    }
+
+    /** Generation-tagged {@link #vsyncCame(long, long)} paired with {@link Platform#postVsync(long)}. */
+    void vsyncCame(long t, long shows, long gen) {
         boolean needFlushPost = false;
-        int act = 0;
+        long act = ACT_NONE;
         synchronized (dispatchLock) {
+            if (gen != 0L && gen != activeVsyncGen) {
+                return;
+            }
             if (shows != 0 && vsyncAt[0] == t && vsyncAt[1] == 0) {
                 vsyncAt = new long[] {t, shows};
             }
             if (lastFrameNowAt != 0 && t <= lastFrameNowAt && lastFrameNowAt - t < framePeriod / 2) {
-                act = handleDuplicateVsyncLocked(t);
+                act = handleDuplicateVsyncLocked(t, gen);
             } else if (imeMoving) {
                 deferredVsyncT = t;
                 deferredVsyncShows = shows;
                 deferredVsync = true;
                 deferredFromVsync = true;
+                deferredVsyncGen = gen;
                 needFlushPost = true;
             } else {
-                act = dispatchVsyncLocked(t, shows, true);
+                act = dispatchVsyncLocked(t, shows, true, gen);
             }
         }
         if (needFlushPost) p.postMain(this::flushDeferredVsync);
@@ -466,18 +497,18 @@ final class FramePacer {
      * costs nothing where the next is lighter.
      */
     private void askAhead() {
-        boolean postNext;
+        long postGen;
         synchronized (dispatchLock) {
             ahead.set(false);
-            postNext = claimPostVsyncLocked();
+            postGen = claimPostVsyncLocked();
         }
-        if (postNext) p.postMain(p::postVsync);
+        if (postGen != 0L) p.postMain(() -> p.postVsync(postGen));
     }
 
     /** A frame wanted (atomically sets flags under dispatchLock, from any thread): drawn for the vsync kept, or the next. */
     private void ask(boolean forApp, boolean isExternal, boolean fromPaced) {
         boolean renderNow = false;
-        boolean postNext = false;
+        long postGen = 0L;
         synchronized (dispatchLock) {
             if (forApp) {
                 if (isExternal) externalWanted.set(true);
@@ -497,11 +528,11 @@ final class FramePacer {
                 }
             }
             if (!alreadyPendingForT && !renderNow) {
-                postNext = claimPostVsyncLocked();
+                postGen = claimPostVsyncLocked();
             }
         }
         if (renderNow) p.requestRender();
-        else if (postNext) postVsyncOutOfLock();
+        else if (postGen != 0L) postVsyncOutOfLock(postGen);
     }
 
     /** A frame at the next vsync (from any thread). */
@@ -541,12 +572,14 @@ final class FramePacer {
             if (dt != 0) lastAppDispatchedVsyncNs.set(dt);
             if (deferredVsync) {
                 boolean fromVsync = deferredFromVsync;
+                long defGen = deferredVsyncGen;
                 deferredVsync = false;
                 deferredFromVsync = false;
+                deferredVsyncGen = 0L;
                 deferredWakeApp = false;
                 deferredWakeExternal = false;
                 vsyncAt = new long[] {deferredVsyncT, deferredVsyncShows};
-                if (fromVsync) clearWantedForLocked(deferredVsyncT);
+                if (fromVsync) clearWantedForLocked(deferredVsyncT, defGen);
             } else {
                 vsyncAt = new long[] {now, 0};
             }
