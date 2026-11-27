@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
 | [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.61 | 115.48 |
 | [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
-| [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
 | [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.46 |
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.82 |
 | [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.59 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.49 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.26 |
-| [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.75 |
