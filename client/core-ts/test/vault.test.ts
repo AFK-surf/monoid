@@ -5616,3 +5616,53 @@ test("Direction 2A R5b: unsealOwn() post-#ready() capability check intercepts re
     r.core.close();
   }
 });
+
+test("vault.setup reads the station that accepted PUT /vault/boxes even while its SSE link is in offline backoff, avoiding duplicate personal vaults", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  const first = await d1.ask("vault.setup", {});
+  assert.ok(typeof first.made === "string" && first.made.length > 0, "first device creates personal vault");
+  assert.equal(d1.st.vaults.size, 1);
+
+  // Simulate a newly admitted second device whose SSE link just disconnected into backoff (`reachable === false`)
+  // before background vault sync ran, while direct mesh RPCs to the station still succeed (`200 OK`).
+  const d2 = await rig(false, false, {}, undefined, { twin: d1, seed: fill(2) });
+  d2.putLock();
+  // Ensure d2 has not cached the existing vault yet and its link is momentarily marked offline (backoff).
+  d2.core.inner.data.forgetRecord("vault", "ws");
+  const origReachable = d2.core.inner.stations.reachable.bind(d2.core.inner.stations);
+  d2.core.inner.stations.reachable = (addr: string) => (addr === "ws/st" ? false : origReachable(addr));
+
+  // Background readStation without force still respects offline link state.
+  let vaultGets = 0;
+  stationReplies(d2.host, (req) => {
+    if (req.method === "GET" && req.url.includes("/vault/vaults")) vaultGets++;
+    return d2.st.reply(req);
+  });
+  await Effect.runPromise(readStation(d2.core.inner, "ws/st"));
+  assert.equal(vaultGets, 0, "default readStation must still skip offline stations");
+
+  // Explicit vault.setup publishes BoxCert to "st" (`200 OK`) and MUST force-read "st" to discover `first.made`.
+  const setup2 = await d2.ask("vault.setup", {});
+  assert.ok(vaultGets >= 1, "vault.setup must force-read the station that accepted PUT /vault/boxes");
+  assert.equal(setup2.made, null, "vault.setup must NOT create a duplicate personal vault when the station already holds one");
+  assert.equal(d1.st.vaults.size, 1, "station must still hold only the single original personal vault");
+  const h2 = d2.core.inner.data.record("vault", "ws") as { vaults?: Record<string, Vault> } | undefined;
+  assert.ok(h2?.vaults?.[first.made] !== undefined, "d2 must hold the existing vault discovered from the station");
+
+  // Also verify unlinked workspaces (link === undefined, e.g. non-focused workspace on a phone):
+  // default readStation skips, while vault.setup still force-reads the station that accepted PUT /vault/boxes.
+  d2.core.inner.data.forgetRecord("vault", "ws");
+  const origLink = d2.core.inner.stations.link.bind(d2.core.inner.stations);
+  d2.core.inner.stations.link = (addr: string) => (addr === "ws/st" ? undefined : origLink(addr));
+  const beforeUnlinked = vaultGets;
+  await Effect.runPromise(readStation(d2.core.inner, "ws/st"));
+  assert.equal(vaultGets, beforeUnlinked, "default readStation must still skip unlinked stations");
+  const setup3 = await d2.ask("vault.setup", {});
+  assert.ok(vaultGets > beforeUnlinked, "vault.setup must force-read even when no SSE link is open for that workspace");
+  assert.equal(setup3.made, null, "vault.setup must NOT create a duplicate personal vault when unlinked");
+  assert.equal(d1.st.vaults.size, 1, "station must still hold only the single original personal vault");
+
+  d1.core.close();
+  d2.core.close();
+});

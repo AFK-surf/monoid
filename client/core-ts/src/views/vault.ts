@@ -849,9 +849,12 @@ const ask = (inner: Inner, address: string, method: string, path: string, body: 
 
 /// What a station holds of the vault, read again: its vaults (and their items), the box certificates, the requests.
 /// One that holds none says why (no lock pinned; a station from before).
-export function readStation(inner: Inner, address: string): Effect.Effect<void, CoreError> {
+/// `opts.force`: bypass the SSE link/reachability gate when a direct RPC to `address` just succeeded or answered
+/// (for example `Vaults.setup` after `PUT /vault/boxes`, or conflict/refusal recovery), while background sync callers
+/// still skip offline or unlinked stations.
+export function readStation(inner: Inner, address: string, opts?: { force?: boolean }): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
-    if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
+    if (!opts?.force && (!inner.stations.link(address) || !inner.stations.reachable(address))) return;
     const ws = ofAddress(address);
     const station = address.slice(ws.length + 1);
     // The plain library (a station from before keeps none: 404), whether security mode is on or not.
@@ -986,7 +989,7 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
         if (!boxes.some((c) => c.device === self.device && c.at >= mine.at)) {
           yield* Effect.ignore(ask(inner, address, "PUT", "/vault/boxes", mine), { log: "Unhandled", message: "vault box brought" });
         }
-        yield* backfillAsks(inner, address, keyAsks);
+        yield* backfillAsks(inner, address, keyAsks, opts);
       }
     }
     if (list !== null) spreadAll(inner, ws);
@@ -1002,9 +1005,9 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
 
 /// Backfill this device's already-accepted explicit `KeyAsk` records to `address` on full read or short-disconnect
 /// SSE stream resume, skipping asks `knownAsks` already shows on that station at an equal or newer `at`.
-function backfillAsks(inner: Inner, address: string, knownAsks?: KeyAsk[]): Effect.Effect<void, CoreError> {
+function backfillAsks(inner: Inner, address: string, knownAsks?: KeyAsk[], opts?: { force?: boolean }): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
-    if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
+    if (!opts?.force && (!inner.stations.link(address) || !inner.stations.reachable(address))) return;
     const ws = ofAddress(address);
     const lock = lockOf(inner, ws);
     if (lock instanceof CoreError) return;
@@ -3299,7 +3302,7 @@ class Vaults {
           // chain moved, one the device this one just took out wrote, checked by the state just before that removal
           // (`takeBefore`), as a chain's prefix checks it. Either is keyed anew from as the lock comes. One that checks
           // against neither is not taken, and the vault waits, as on a chain not moved.
-          yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station read" });
+          yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`, { force: true }), { log: "Unhandled", message: "vault station read" });
           const now = held(inner, self.ws).vaults[id];
           if ((now !== undefined && now.seq !== v.seq) || takeBefore(inner, self.ws, id)) {
             inner.runner.fork(Effect.ignore(self.rekeyGone(), { log: "Unhandled", message: "vaults keyed anew" }));
@@ -3547,7 +3550,7 @@ class Vaults {
         recovery = recoveryPair(entropy).pub;
       }
       const stations = yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, recovery, at: nowS(inner) }, TAG.box, signer));
-      for (const s of stations) yield* Effect.ignore(readStation(inner, `${self.ws}/${s}`), { log: "Unhandled", message: "vault station read" });
+      for (const s of stations) yield* Effect.ignore(readStation(inner, `${self.ws}/${s}`, { force: true }), { log: "Unhandled", message: "vault station read" });
       // (not made, it is offered on the page as when there is none; one waiting to be keyed anew is one; workspace vaults do not count as a personal vault)
       const own = Object.values(held(inner, self.ws).vaults).some((v) => !v.deleted && v.scope !== "workspace" && (trusted(lock, v) || waitingAs(inner, self.ws, lock, v) !== null) && v.owner === who.sub);
       const made = own ? null : yield* Effect.orElseSucceed(Effect.map(self.create(t("core-misc.vault.personal"), null), (m) => (m as { id: string }).id), () => null);
@@ -4358,7 +4361,7 @@ class Vaults {
       if (sent._tag === "Failure") {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
         if (requestGone(sent.failure)) cap.commit(() => self.#dropRequest(r.id));
-        yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" });
         yield* cap.assertValid();
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
@@ -4531,7 +4534,7 @@ class Vaults {
       if (sent._tag === "Failure") {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
         if (requestGone(sent.failure)) crossCap.commit(() => self.#dropRequest(r.id));
-        yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" });
         yield* crossCap.assertValid();
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
@@ -4576,7 +4579,7 @@ class Vaults {
         const hasReq = r.vault !== "" && r.vault !== PLAIN && h0.vaults[r.vault] !== undefined;
         const hasOwnPersonal = Object.values(h0.vaults).some((v) => !v.deleted && v.scope !== "workspace" && v.owner === who.sub);
         if (station !== "" && ((r.vault !== "" && r.vault !== PLAIN && !hasReq) || !hasOwnPersonal)) {
-          yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+          yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" });
         }
       }
       const lockNow = lockOf(inner, self.ws);
@@ -4836,7 +4839,7 @@ class Vaults {
         ? self.#stationGuarded(cap, station, "PUT", "/vault/plain", next)
         : self.#station(station, "PUT", "/vault/plain", next);
       const said = yield* Effect.tapError(req, (e) =>
-        e.code === "vault_conflict" ? Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" }) : Effect.void,
+        e.code === "vault_conflict" ? Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" }) : Effect.void,
       );
       const item = (get(said, "item") as PlainRow | undefined) ?? (({ fields: _, ...rest }) => rest)(next);
       if (cap) {
@@ -4981,7 +4984,7 @@ class Vaults {
         if (cap) cap.commit(() => self.#dropRequest(requestId));
         else self.#dropRequest(requestId);
       }
-      return Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+      return Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" });
     });
   }
 
