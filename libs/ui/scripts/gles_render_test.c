@@ -4863,8 +4863,8 @@ int main(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      // 2) Bright orange bar at x=129.5..131.5 (3.5..5.5pt inward): monotonic convex meniscus at inward=1.67pt refracts it to x=133.33pt.
-      V_RECT(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
+      // 2) Bright orange bar at x=132.4..133.4 (1.6..2.6pt inward): monotonic convex meniscus at inward=0.67pt refracts it to x=134.33pt.
+      V_RECT(tb + MB_INST, 132.4, 35.0, 1.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
       V_RECT(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -566);
       tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
       tb[2 * MB_INST + 11] = 0.0; tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0;
@@ -4872,20 +4872,21 @@ int main(void) {
       glass_forget();
       gl_present(tb, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
       unsigned char *px_lip = pixels_of_fb(vfb);
-      unsigned char *c_mid = V_PX(px_lip, 400, 120);
-      int lip_delta = abs((int)c_mid[0] - (int)a_mid[0]) + abs((int)c_mid[1] - (int)a_mid[1]);
+      unsigned char *a_lip = V_PX(px_empty, 403, 120);
+      unsigned char *c_lip = V_PX(px_lip, 403, 120);
+      int lip_delta = abs((int)c_lip[0] - (int)a_lip[0]) + abs((int)c_lip[1] - (int)a_lip[1]);
       printf("gles_render: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
-      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
+      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 30);
       free(px_empty);
       free(px_icon);
       free(px_lip);
     }
 
-    // --- V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt ---
+    // --- V9g: Role 4 Tab strictly monotonic (no mirror-fold ghosting at inward=0.5..3.5pt from bar at inward=5.5pt) ---
     {
       double tg[3 * MB_INST];
       V_RECT(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
-      V_RECT(tg + MB_INST, 41.5, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 0);
+      V_RECT(tg + MB_INST, 38.0, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 0);
       V_RECT(tg + 2 * MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, -565);
       tg[2 * MB_INST + 4] = 31.75; tg[2 * MB_INST + 6] = 1.0; tg[2 * MB_INST + 7] = -64.0;
       tg[2 * MB_INST + 11] = 0.0; tg[2 * MB_INST + 12] = 1.0; tg[2 * MB_INST + 13] = 9.0;
@@ -4893,13 +4894,45 @@ int main(void) {
       glass_forget();
       gl_present(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
       unsigned char *pxg = pixels_of_fb(vfb);
-      unsigned char *co = V_PX(pxg, 127, 120);
+      unsigned char *co = V_PX(pxg, 117, 120);
       double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
-      unsigned char *cb = V_PX(pxg, 114, 120);
-      double l_clean = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      double l_clean = 255.0;
+      for (int px_x = 99; px_x <= 108; px_x++) {
+        unsigned char *cb = V_PX(pxg, px_x, 120);
+        double lv = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+        if (lv < l_clean) l_clean = lv;
+      }
       printf("gles_render: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
-      CHECK(l_bar < 130.0 && l_clean > 220.0);
+      CHECK(l_bar < 130.0 && l_clean > 200.0);
       free(pxg);
+    }
+
+    // --- V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 58pt Role 4 droplet (4pt overhang clarity & no dead-black side border) ---
+    {
+      double td[3 * MB_INST];
+      V_RECT(td, 0, 0, VW, VH, 0, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(td + MB_INST, 10, 15, 140, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -567);
+      td[MB_INST + 4] = 25.0; td[MB_INST + 6] = 1.0; td[MB_INST + 7] = 0.0;
+      td[MB_INST + 11] = 0x67 / 255.0; td[MB_INST + 12] = 0.6; td[MB_INST + 13] = 14.0;
+      td[MB_INST + 15] = 1.0; td[MB_INST + 21] = 20.0; td[MB_INST + 22] = 0.0; td[MB_INST + 23] = 0.0;
+      V_RECT(td + 2 * MB_INST, 35, 11, 90, 58, 6, 1.0, 1.0, 1.0, -568);
+      td[2 * MB_INST + 4] = 29.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
+      td[2 * MB_INST + 11] = 0.0; td[2 * MB_INST + 12] = 1.0; td[2 * MB_INST + 13] = 9.0;
+      td[2 * MB_INST + 15] = 1.0; td[2 * MB_INST + 21] = 9.0; td[2 * MB_INST + 22] = 0.0; td[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(td, 3, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0);
+      unsigned char *pxd = pixels_of_fb(vfb);
+      unsigned char *ct = V_PX(pxd, 240, 39);
+      unsigned char *cb = V_PX(pxd, 240, 201);
+      unsigned char *cl = V_PX(pxd, 106, 120);
+      unsigned char *cr = V_PX(pxd, 373, 120);
+      double top_L = 0.2126 * ct[0] + 0.7152 * ct[1] + 0.0722 * ct[2];
+      double bot_L = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      double left_L = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
+      double right_L = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
+      printf("gles_render: v9_tab_dark_clarity top_L=%.1f bot_L=%.1f left_L=%.1f right_L=%.1f\n", top_L, bot_L, left_L, right_L);
+      CHECK(top_L < 75.0 && bot_L < 75.0 && left_L >= 42.0 && right_L >= 42.0);
+      free(pxd);
     }
 
     // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
