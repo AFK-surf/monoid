@@ -1,16 +1,17 @@
 // Production OS adapter for `station_devices`:
 // - `TerminalsOsRuntime`: real OS PTY via `station_sys::pty_spawn` / `PtyHandle::write` /
-//   `PtyHandle::resize` / `PtyHandle::kill` / `PtyHandle::close`, strict `scroll_max_bytes`
-//   bounding, natural-exit removal from `by_id` (`live_count() == 0`), and `SIGTERM` grace
-//   before `SIGKILL`.
+//   `PtyHandle::resize` / `PtyHandle::kill` / `PtyHandle::close`, exact `out_offset` byte
+//   accounting with bounded `scroll_max_bytes` ring eviction, natural-exit removal from `by_id`
+//   (`live_count() == 0`), and purely non-blocking `SIGTERM` -> `pending_kills` -> unconditional
+//   `SIGKILL` + `close()` (ZERO nested `host_shim::wait`).
 // - `LoginsOsRuntime`: real CLI login execution via `station_sys::proc_spawn` with immediate
-//   `write_stdin` (does not wait for output first), `keychain_out_of_git`, URL extraction,
-//   callback validation, deadline timeout kill, and `SIGTERM` grace before `SIGKILL`.
-// - Event-driven `AdbOsRunner` (globally monotonic `event_id`, independent stdout & stderr byte
-//   caps with immediate process-group kill on overflow, zero swallowed host events) plus
-//   non-swallowing sync helper `run_adb_command_os`.
+//   `write_stdin`, `keychain_out_of_git`, URL extraction, callback validation, deadline timeout
+//   kill, and non-blocking `pending_kills` with unconditional pgid `SIGKILL` before `close()`.
+// - Event-driven `AdbOsRunner` (monotonic `event_id`, independent stdout/stderr byte caps with
+//   immediate pgid kill on overflow) plus shared-`EdgeMuxHub` helper `run_adb_command_os` (zero
+//   raw `host_shim::wait`).
 // - `DevicesOsRuntime`: `DeviceRegistry`, `PhoneGrants`, `PhoneDisplays`, `GrantServers` (with
-//   managed `ChildProcess` handle-bound teardown instead of bare `proc_kill(pid)`), AirPlay &
+//   non-blocking handle-bound `pending_grant_kills` and unconditional pgid `SIGKILL`), AirPlay &
 //   Android TV pairing/control, and aggregated `DeviceSources`.
 
 import "host_shim"
@@ -57,74 +58,30 @@ fn dev_encode_env(pairs : Array[(String, String)]) -> Array[String] {
   out
 }
 
-fn dev_kill_proc_with_grace(
-  child : station_sys::ChildProcess,
-  event_id : Int64,
-  grace_ms : Int64,
-  now_fn : () -> Int64,
-  on_other_event : (host_shim::HostEvent) -> Unit,
-) -> Unit {
-  let _ = child.kill(station_sys::SIG_TERM, true)
-  let mut exited = false
-  if grace_ms > 0L {
-    let deadline = now_fn() + grace_ms
-    while !exited && now_fn() < deadline {
-      let rem = deadline - now_fn()
-      let slice = if rem > 25L { 25L } else { rem }
-      match host_shim::wait(slice) {
-        Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
-          if ev_id == event_id {
-            match station_sys::decode_sys_event(payload) {
-              Some(station_sys::SysEvent::ProcExit(_)) => exited = true
-              _ => ()
-            }
-          } else {
-            on_other_event(host_shim::HostEvent::Sys(ev_id, payload))
-          }
-        }
-        Some(other) => on_other_event(other)
-        None => ()
-      }
-    }
-  }
-  if !exited {
-    let _ = child.kill(station_sys::SIG_KILL, true)
+struct PendingPtyKill {
+  pty : station_sys::PtyHandle
+  event_id : Int64
+  deadline_ms : Int64
+}
+
+struct PendingProcKill {
+  child : station_sys::ChildProcess
+  event_id : Int64
+  deadline_ms : Int64
+}
+
+fn dev_force_kill_proc_pgid_and_close(child : station_sys::ChildProcess) -> Unit {
+  let _ = child.kill(station_sys::SIG_KILL, true)
+  if child.pid > 0 {
+    let _ = station_sys::proc_kill(child.pid, station_sys::SIG_KILL, true)
   }
   let _ = child.close()
 }
 
-fn dev_kill_pty_with_grace(
-  pty : station_sys::PtyHandle,
-  event_id : Int64,
-  grace_ms : Int64,
-  now_fn : () -> Int64,
-  on_other_event : (host_shim::HostEvent) -> Unit,
-) -> Unit {
-  let _ = pty.kill(station_sys::SIG_TERM)
-  let mut exited = false
-  if grace_ms > 0L {
-    let deadline = now_fn() + grace_ms
-    while !exited && now_fn() < deadline {
-      let rem = deadline - now_fn()
-      let slice = if rem > 25L { 25L } else { rem }
-      match host_shim::wait(slice) {
-        Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
-          if ev_id == event_id {
-            match station_sys::decode_sys_event(payload) {
-              Some(station_sys::SysEvent::PtyExit(_)) => exited = true
-              _ => ()
-            }
-          } else {
-            on_other_event(host_shim::HostEvent::Sys(ev_id, payload))
-          }
-        }
-        Some(other) => on_other_event(other)
-        None => ()
-      }
-    }
-  }
-  if !exited {
-    let _ = pty.kill(station_sys::SIG_KILL)
+fn dev_force_kill_pty_pgid_and_close(pty : station_sys::PtyHandle) -> Unit {
+  let _ = pty.kill(station_sys::SIG_KILL)
+  if pty.pid > 0 {
+    let _ = station_sys::proc_kill(pty.pid, station_sys::SIG_KILL, true)
   }
   let _ = pty.close()
 }
@@ -150,6 +107,7 @@ pub struct TerminalsOsRuntime {
   pub now_fn : () -> Int64
   by_id : Map[String, LiveTerminalProc]
   by_event : Map[Int64, String]
+  pending_kills : Map[Int64, PendingPtyKill]
   ended_screens : Map[String, station_devices::VtScreen]
   mut next_event_id : Int64
 }
@@ -168,6 +126,7 @@ pub fn TerminalsOsRuntime::new(
     now_fn: now_fn,
     by_id: Map::new(),
     by_event: Map::new(),
+    pending_kills: Map::new(),
     ended_screens: Map::new(),
     next_event_id: 800001L,
   }
@@ -177,8 +136,10 @@ pub fn TerminalsOsRuntime::live_count(self : TerminalsOsRuntime) -> Int {
   self.by_id.length()
 }
 
-/// Open a terminal session in `TerminalsRegistry` and spawn a real OS PTY via
-/// `station_sys::pty_spawn`.
+pub fn TerminalsOsRuntime::pending_kill_count(self : TerminalsOsRuntime) -> Int {
+  self.pending_kills.length()
+}
+
 pub fn TerminalsOsRuntime::spawn_terminal(
   self : TerminalsOsRuntime,
   asked : station_devices::TerminalAsked,
@@ -250,7 +211,6 @@ pub fn TerminalsOsRuntime::write_stdin(
   }
 }
 
-/// Resize both the live OS PTY (`PtyHandle::resize` -> `SIGWINCH`) and the `VtTerminal`.
 pub fn TerminalsOsRuntime::resize(
   self : TerminalsOsRuntime,
   term_id : String,
@@ -286,8 +246,9 @@ pub fn TerminalsOsRuntime::screen(
   }
 }
 
-/// Feed output bytes into `TerminalSession::on_output` in slices bounded by `scroll_max_bytes`
-/// so a single large PTY read can never exceed `scroll_max_bytes`.
+/// Feed EVERY output byte from `pos = 0` into `TerminalSession::on_output` in `<= 512`-byte
+/// slices so `s.out_offset` accurately accounts for 100% of bytes emitted while
+/// `TerminalSession::on_output` evicts oldest chunks to keep `scrollback_bytes() <= scroll_max_bytes`.
 fn TerminalsOsRuntime::feed_bounded_scrollback(
   self : TerminalsOsRuntime,
   s : station_devices::TerminalSession,
@@ -299,9 +260,8 @@ fn TerminalsOsRuntime::feed_bounded_scrollback(
   if n == 0 {
     return
   }
-  let start = if n > cap { n - cap } else { 0 }
   let step = if cap > 512 { 512 } else { cap }
-  let mut pos = start
+  let mut pos = 0
   while pos < n {
     let end = if pos + step < n { pos + step } else { n }
     let _ = s.on_output(bytes.slice(pos, end), now_ms)
@@ -310,14 +270,27 @@ fn TerminalsOsRuntime::feed_bounded_scrollback(
 }
 
 /// Process a `station_sys::SysEvent` (`PtyData`/`PtyEof`/`PtyExit`).
-/// On natural exit + EOF, marks ended, snapshots final screen, closes PTY handle, and removes
-/// the entry from `by_id` and `by_event` so `live_count()` drops to 0 and VT memory is freed.
+/// Handles both live terminals and `pending_kills`, always issuing unconditional `SIGKILL`
+/// before `pty.close()` so orphaned descendants in the PTY process group cannot survive.
 pub fn TerminalsOsRuntime::handle_sys_event(
   self : TerminalsOsRuntime,
   event_id : Int64,
   ev : station_sys::SysEvent,
   now_ms : Int64,
 ) -> Bool {
+  match self.pending_kills.get(event_id) {
+    Some(pk) => {
+      match ev {
+        station_sys::SysEvent::PtyExit(_) => {
+          self.pending_kills.remove(event_id)
+          dev_force_kill_pty_pgid_and_close(pk.pty)
+        }
+        _ => ()
+      }
+      return true
+    }
+    None => ()
+  }
   let term_id = match self.by_event.get(event_id) {
     Some(id) => id
     None => return false
@@ -360,33 +333,62 @@ pub fn TerminalsOsRuntime::handle_sys_event(
   if p.exited && p.pty_eof {
     self.ended_screens.set(term_id, p.vt.screen())
     self.registry.mark_ended(term_id, p.exit_status)
-    let _ = p.pty.close()
+    dev_force_kill_pty_pgid_and_close(p.pty)
     self.by_event.remove(event_id)
     self.by_id.remove(term_id)
   }
   true
 }
 
+/// Purely non-blocking graceful terminal kill (zero `host_shim::wait`).
 pub fn TerminalsOsRuntime::kill_terminal(
   self : TerminalsOsRuntime,
   term_id : String,
   grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
-  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
 ) -> Bool {
   match self.by_id.get(term_id) {
     None => false
     Some(p) => {
       self.by_id.remove(term_id)
       self.by_event.remove(p.event_id)
-      if !p.exited {
-        dev_kill_pty_with_grace(p.pty, p.event_id, grace_ms, self.now_fn, on_other_event)
+      let _ = p.pty.kill(station_sys::SIG_TERM)
+      if p.exited || grace_ms <= 0L {
+        dev_force_kill_pty_pgid_and_close(p.pty)
       } else {
-        let _ = p.pty.close()
+        self.pending_kills.set(
+          p.event_id,
+          PendingPtyKill::{
+            pty: p.pty,
+            event_id: p.event_id,
+            deadline_ms: (self.now_fn)() + grace_ms,
+          },
+        )
       }
       let _ = self.registry.end_terminal(term_id, p.workspace)
       true
     }
   }
+}
+
+/// Non-blocking tick: escalates expired `pending_kills` with unconditional `SIGKILL` + `close()`.
+pub fn TerminalsOsRuntime::tick(self : TerminalsOsRuntime, now_ms : Int64) -> Int {
+  let mut finalized = 0
+  let ids = self.pending_kills.keys()
+  for i in 0..<ids.length() {
+    let ev_id = ids[i]
+    match self.pending_kills.get(ev_id) {
+      Some(pk) => {
+        if now_ms >= pk.deadline_ms {
+          self.pending_kills.remove(ev_id)
+          let _ = pk.pty.kill(station_sys::SIG_KILL)
+          let _ = pk.pty.close()
+          finalized = finalized + 1
+        }
+      }
+      None => ()
+    }
+  }
+  finalized
 }
 
 pub fn TerminalsOsRuntime::stop_all(
@@ -397,6 +399,32 @@ pub fn TerminalsOsRuntime::stop_all(
   for i in 0..<ids.length() {
     let _ = self.kill_terminal(ids[i], grace_ms=grace_ms)
   }
+}
+
+pub fn TerminalsOsRuntime::drain_kills_with_hub(
+  self : TerminalsOsRuntime,
+  hub : EdgeMuxHub,
+  max_ms : Int64 = 1000L,
+) -> Int {
+  let mut finalized = 0
+  let start = (self.now_fn)()
+  let limit = start + (if max_ms > 0L { max_ms } else { 1L })
+  while self.pending_kills.length() > 0 && (self.now_fn)() < limit {
+    let _ = hub.pump_one(20L)
+    finalized = finalized + self.tick((self.now_fn)())
+  }
+  let rem = self.pending_kills.keys()
+  for i in 0..<rem.length() {
+    match self.pending_kills.get(rem[i]) {
+      Some(pk) => {
+        self.pending_kills.remove(rem[i])
+        dev_force_kill_pty_pgid_and_close(pk.pty)
+        finalized = finalized + 1
+      }
+      None => ()
+    }
+  }
+  finalized
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +447,7 @@ pub struct LoginsOsRuntime {
   pub now_fn : () -> Int64
   by_id : Map[String, LiveLoginProc]
   by_event : Map[Int64, String]
+  pending_kills : Map[Int64, PendingProcKill]
   mut next_event_id : Int64
 }
 
@@ -431,12 +460,17 @@ pub fn LoginsOsRuntime::new(
     now_fn: now_fn,
     by_id: Map::new(),
     by_event: Map::new(),
+    pending_kills: Map::new(),
     next_event_id: 850001L,
   }
 }
 
 pub fn LoginsOsRuntime::live_count(self : LoginsOsRuntime) -> Int {
   self.by_id.length()
+}
+
+pub fn LoginsOsRuntime::pending_kill_count(self : LoginsOsRuntime) -> Int {
+  self.pending_kills.length()
 }
 
 pub fn LoginsOsRuntime::start_login(
@@ -502,8 +536,6 @@ pub fn LoginsOsRuntime::start_login(
   Ok(view)
 }
 
-/// Write directly to a live login child's stdin immediately after spawn (does not require
-/// waiting for prior stdout from the child).
 pub fn LoginsOsRuntime::write_stdin(
   self : LoginsOsRuntime,
   login_id : String,
@@ -524,8 +556,6 @@ pub fn LoginsOsRuntime::write_stdin(
   }
 }
 
-/// Forward interactive input (text or key) through `LoginsManager` AND immediately flush it to
-/// the live child's stdin without waiting for output first.
 pub fn LoginsOsRuntime::send_input(
   self : LoginsOsRuntime,
   login_id : String,
@@ -567,6 +597,19 @@ pub fn LoginsOsRuntime::handle_sys_event(
   ev : station_sys::SysEvent,
   now_ms : Int64,
 ) -> Bool {
+  match self.pending_kills.get(event_id) {
+    Some(pk) => {
+      match ev {
+        station_sys::SysEvent::ProcExit(_) => {
+          self.pending_kills.remove(event_id)
+          dev_force_kill_proc_pgid_and_close(pk.child)
+        }
+        _ => ()
+      }
+      return true
+    }
+    None => ()
+  }
   let login_id = match self.by_event.get(event_id) {
     Some(id) => id
     None => return false
@@ -604,6 +647,7 @@ pub fn LoginsOsRuntime::handle_sys_event(
   if proc.exited && proc.stdout_eof && proc.stderr_eof {
     let _ = run.on_settled(None)
     run.on_exit(proc.exit_code, proc.exit_sig, now_ms)
+    let _ = proc.child.kill(station_sys::SIG_KILL, true)
     let _ = proc.child.close()
     self.by_event.remove(event_id)
     self.by_id.remove(login_id)
@@ -629,22 +673,31 @@ pub fn LoginsOsRuntime::handle_callback(
   }
 }
 
+/// Purely non-blocking login cancel (zero `host_shim::wait`).
 pub fn LoginsOsRuntime::cancel_login(
   self : LoginsOsRuntime,
   login_id : String,
   by : Option[station_devices::LoginPerson],
   now_ms : Int64,
   grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
-  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
 ) -> Result[station_devices::LoginView, String] {
   match self.by_id.get(login_id) {
     Some(p) => {
       self.by_id.remove(login_id)
       self.by_event.remove(p.event_id)
-      if !p.exited {
-        dev_kill_proc_with_grace(p.child, p.event_id, grace_ms, self.now_fn, on_other_event)
-      } else {
+      let _ = p.child.kill(station_sys::SIG_TERM, true)
+      if p.exited || grace_ms <= 0L {
+        let _ = p.child.kill(station_sys::SIG_KILL, true)
         let _ = p.child.close()
+      } else {
+        self.pending_kills.set(
+          p.event_id,
+          PendingProcKill::{
+            child: p.child,
+            event_id: p.event_id,
+            deadline_ms: (self.now_fn)() + grace_ms,
+          },
+        )
       }
     }
     None => ()
@@ -656,6 +709,21 @@ pub fn LoginsOsRuntime::cancel_login(
 }
 
 pub fn LoginsOsRuntime::tick(self : LoginsOsRuntime, now_ms : Int64) -> Array[String] {
+  // Escalate expired pending_kills first.
+  let pk_ids = self.pending_kills.keys()
+  for i in 0..<pk_ids.length() {
+    let ev_id = pk_ids[i]
+    match self.pending_kills.get(ev_id) {
+      Some(pk) => {
+        if now_ms >= pk.deadline_ms {
+          self.pending_kills.remove(ev_id)
+          let _ = pk.child.kill(station_sys::SIG_KILL, true)
+          let _ = pk.child.close()
+        }
+      }
+      None => ()
+    }
+  }
   let expired : Array[String] = []
   let ids = self.by_id.keys()
   for i in 0..<ids.length() {
@@ -668,11 +736,9 @@ pub fn LoginsOsRuntime::tick(self : LoginsOsRuntime, now_ms : Int64) -> Array[St
             Some(p) => {
               self.by_id.remove(lid)
               self.by_event.remove(p.event_id)
-              if !p.exited {
-                let _ = p.child.kill(station_sys::SIG_TERM, true)
-                let _ = p.child.kill(station_sys::SIG_KILL, true)
-                let _ = p.child.close()
-              }
+              let _ = p.child.kill(station_sys::SIG_TERM, true)
+              let _ = p.child.kill(station_sys::SIG_KILL, true)
+              let _ = p.child.close()
             }
             None => ()
           }
@@ -685,15 +751,51 @@ pub fn LoginsOsRuntime::tick(self : LoginsOsRuntime, now_ms : Int64) -> Array[St
   expired
 }
 
-pub fn LoginsOsRuntime::stop_all(self : LoginsOsRuntime, now_ms : Int64) -> Unit {
+pub fn LoginsOsRuntime::stop_all(
+  self : LoginsOsRuntime,
+  now_ms : Int64,
+  grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
+) -> Unit {
   let ids = self.by_id.keys()
   for i in 0..<ids.length() {
-    let _ = self.cancel_login(ids[i], None, now_ms)
+    let _ = self.cancel_login(ids[i], None, now_ms, grace_ms=grace_ms)
   }
 }
 
+pub fn LoginsOsRuntime::drain_kills_with_hub(
+  self : LoginsOsRuntime,
+  hub : EdgeMuxHub,
+  max_ms : Int64 = 1000L,
+) -> Int {
+  let mut finalized = 0
+  let start = (self.now_fn)()
+  let limit = start + (if max_ms > 0L { max_ms } else { 1L })
+  while self.pending_kills.length() > 0 && (self.now_fn)() < limit {
+    let _ = hub.pump_one(20L)
+    let before = self.pending_kills.length()
+    let _ = self.tick((self.now_fn)())
+    let after = self.pending_kills.length()
+    if before > after {
+      finalized = finalized + (before - after)
+    }
+  }
+  let rem = self.pending_kills.keys()
+  for i in 0..<rem.length() {
+    match self.pending_kills.get(rem[i]) {
+      Some(pk) => {
+        self.pending_kills.remove(rem[i])
+        let _ = pk.child.kill(station_sys::SIG_KILL, true)
+        let _ = pk.child.close()
+        finalized = finalized + 1
+      }
+      None => ()
+    }
+  }
+  finalized
+}
+
 // ---------------------------------------------------------------------------
-// 3. Event-Driven `AdbOsRunner` (Monotonic IDs, Bounded Output Caps, Zero Swallowed Events)
+// 3. Event-Driven `AdbOsRunner` (Monotonic IDs, Bounded Output Caps, Shared Hub)
 // ---------------------------------------------------------------------------
 
 pub struct AdbExecResult {
@@ -722,8 +824,6 @@ struct LiveAdbProc {
   mut error : Option[String]
 }
 
-/// Non-blocking, event-driven ADB command runner with globally monotonic `event_id`s,
-/// independent stdout/stderr byte caps, and deadline timeout cleanup.
 pub struct AdbOsRunner {
   by_event : Map[Int64, LiveAdbProc]
   completed : Map[Int64, AdbExecResult]
@@ -793,7 +893,8 @@ pub fn AdbOsRunner::start_cmd(
 }
 
 fn AdbOsRunner::finalize_proc(self : AdbOsRunner, p : LiveAdbProc) -> Unit {
-  let _ = p.child.close()
+  let _ = p.child.kill(station_sys::SIG_TERM, true)
+  dev_force_kill_proc_pgid_and_close(p.child)
   self.by_event.remove(p.event_id)
   self.completed.set(
     p.event_id,
@@ -811,8 +912,6 @@ fn AdbOsRunner::finalize_proc(self : AdbOsRunner, p : LiveAdbProc) -> Unit {
   )
 }
 
-/// Feed a decoded `SysEvent` into `AdbOsRunner`. Enforces `max_output_bytes` on BOTH stdout and
-/// stderr, immediately killing the process group on overflow.
 pub fn AdbOsRunner::handle_sys_event(
   self : AdbOsRunner,
   event_id : Int64,
@@ -833,7 +932,6 @@ pub fn AdbOsRunner::handle_sys_event(
         p.truncated = true
         p.error = Some("adb stdout exceeded max_output_bytes (" + p.max_output_bytes.to_string() + ")")
         let _ = p.child.kill(station_sys::SIG_TERM, true)
-        let _ = p.child.kill(station_sys::SIG_KILL, true)
         self.finalize_proc(p)
         return true
       }
@@ -852,7 +950,6 @@ pub fn AdbOsRunner::handle_sys_event(
         p.truncated = true
         p.error = Some("adb stderr exceeded max_output_bytes (" + p.max_output_bytes.to_string() + ")")
         let _ = p.child.kill(station_sys::SIG_TERM, true)
-        let _ = p.child.kill(station_sys::SIG_KILL, true)
         self.finalize_proc(p)
         return true
       }
@@ -883,7 +980,6 @@ pub fn AdbOsRunner::tick(self : AdbOsRunner, now_ms : Int64) -> Array[Int64] {
           p.timed_out = true
           p.error = Some("adb command timed out")
           let _ = p.child.kill(station_sys::SIG_TERM, true)
-          let _ = p.child.kill(station_sys::SIG_KILL, true)
           self.finalize_proc(p)
           timed_out_ids.push(id)
         }
@@ -910,7 +1006,6 @@ pub fn AdbOsRunner::stop_all(self : AdbOsRunner) -> Unit {
     match self.by_event.get(ids[i]) {
       Some(p) => {
         let _ = p.child.kill(station_sys::SIG_TERM, true)
-        let _ = p.child.kill(station_sys::SIG_KILL, true)
         self.finalize_proc(p)
       }
       None => ()
@@ -918,62 +1013,72 @@ pub fn AdbOsRunner::stop_all(self : AdbOsRunner) -> Unit {
   }
 }
 
-/// Standalone synchronous ADB helper built on `AdbOsRunner`: enforces stdout/stderr byte caps,
-/// kills process group on overflow/timeout, and forwards EVERY unrelated `HostEvent` (`ShellDone`,
-/// other `Sys`, stdin) to `on_other_event` so zero host events are ever swallowed.
+/// Synchronous ADB helper pumped strictly through the shared `EdgeMuxHub` (ZERO raw
+/// `host_shim::wait`): routes `ev_id` to `AdbOsRunner` while forwarding EVERY unrelated
+/// `ShellDone`, `Sys`, and `Stdin` event through `hub` losslessly.
 pub fn run_adb_command_os(
+  hub : EdgeMuxHub,
   program : String,
   args : Array[String],
   cwd : String,
   timeout_ms : Int64 = DEVICES_DEFAULT_ADB_TIMEOUT_MS,
   max_output_bytes : Int = DEVICES_DEFAULT_ADB_MAX_BYTES,
   runner : Option[AdbOsRunner] = None,
-  now_fn : () -> Int64 = host_shim::now_ms,
-  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
 ) -> Result[AdbExecResult, String] {
   let r = match runner {
     Some(existing) => existing
-    None => AdbOsRunner::new(start_event_id=890001L + (now_fn() & 0xFFFFL))
+    None => AdbOsRunner::new(start_event_id=890001L + ((hub.now_fn)() & 0xFFFFL))
   }
   let ev_id = match r.start_cmd(
     program,
     args,
     cwd,
-    now_fn(),
+    (hub.now_fn)(),
     timeout_ms=timeout_ms,
     max_output_bytes=max_output_bytes,
   ) {
     Ok(id) => id
     Err(e) => return Err(e)
   }
+  let prev_sys = hub.get_sys_router()
+  hub.set_sys_router(
+    fn(id : Int64, payload : Bytes) -> Bool {
+      if id == ev_id {
+        match station_sys::decode_sys_event(payload) {
+          Some(sev) => {
+            let _ = r.handle_sys_event(id, sev)
+          }
+          None => ()
+        }
+        return true
+      }
+      match prev_sys {
+        Some(f) => f(id, payload)
+        None => false
+      }
+    },
+  )
+  let mut out : Result[AdbExecResult, String] = Err("adb command loop exited unexpectedly")
   while true {
     match r.take_result(ev_id) {
-      Some(res) => return Ok(res)
-      None => ()
-    }
-    let _ = r.tick(now_fn())
-    match r.take_result(ev_id) {
-      Some(res) => return Ok(res)
-      None => ()
-    }
-    match host_shim::wait(100L) {
-      Some(host_shim::HostEvent::Sys(id, payload)) => {
-        if id == ev_id {
-          match station_sys::decode_sys_event(payload) {
-            Some(sev) => {
-              let _ = r.handle_sys_event(id, sev)
-            }
-            None => ()
-          }
-        } else {
-          on_other_event(host_shim::HostEvent::Sys(id, payload))
-        }
+      Some(res) => {
+        out = Ok(res)
+        break
       }
-      Some(other) => on_other_event(other)
       None => ()
     }
+    let _ = r.tick((hub.now_fn)())
+    match r.take_result(ev_id) {
+      Some(res) => {
+        out = Ok(res)
+        break
+      }
+      None => ()
+    }
+    let _ = hub.pump_one(50L)
   }
-  Err("adb command loop exited unexpectedly")
+  hub.restore_sys_router(prev_sys)
+  out
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1110,7 @@ pub struct DevicesOsRuntime {
   pub adb_runner : AdbOsRunner
   pub now_fn : () -> Int64
   grant_procs : Map[String, (station_sys::ChildProcess, Int64)]
+  pending_grant_kills : Map[Int64, PendingProcKill]
   rig_devices : Map[String, Array[station_devices::KeptDevice]]
 }
 
@@ -1023,8 +1129,13 @@ pub fn DevicesOsRuntime::new(
     adb_runner: AdbOsRunner::new(),
     now_fn: now_fn,
     grant_procs: Map::new(),
+    pending_grant_kills: Map::new(),
     rig_devices: Map::new(),
   }
+}
+
+pub fn DevicesOsRuntime::pending_kill_count(self : DevicesOsRuntime) -> Int {
+  self.pending_grant_kills.length()
 }
 
 pub fn DevicesOsRuntime::set_rig_devices(
@@ -1035,8 +1146,6 @@ pub fn DevicesOsRuntime::set_rig_devices(
   self.rig_devices.set(rig_station, devices)
 }
 
-/// Register a managed `ChildProcess` handle for a `GrantServers` entry so teardown uses
-/// handle-bound process-group signaling (no PID-reuse window).
 pub fn DevicesOsRuntime::register_grant_process(
   self : DevicesOsRuntime,
   grant_id : String,
@@ -1044,6 +1153,27 @@ pub fn DevicesOsRuntime::register_grant_process(
   event_id : Int64,
 ) -> Unit {
   self.grant_procs.set(grant_id, (child, event_id))
+}
+
+pub fn DevicesOsRuntime::handle_sys_event(
+  self : DevicesOsRuntime,
+  event_id : Int64,
+  ev : station_sys::SysEvent,
+) -> Bool {
+  match self.pending_grant_kills.get(event_id) {
+    Some(pk) => {
+      match ev {
+        station_sys::SysEvent::ProcExit(_) => {
+          self.pending_grant_kills.remove(event_id)
+          dev_force_kill_proc_pgid_and_close(pk.child)
+        }
+        _ => ()
+      }
+      return true
+    }
+    None => ()
+  }
+  self.adb_runner.handle_sys_event(event_id, ev)
 }
 
 pub fn DevicesOsRuntime::aggregate_sources(
@@ -1131,19 +1261,32 @@ pub fn encode_android_tv_key_frame(key_name : String, direction : Int) -> Result
   }
 }
 
-/// Stop and terminate a `GrantServers` daemon via its managed `ChildProcess` handle and process
-/// group (`SIGTERM` grace -> `SIGKILL` -> `close()`), never signaling bare PIDs.
+/// Purely non-blocking graceful stop of a `GrantServers` daemon via its managed `ChildProcess`
+/// handle (zero `host_shim::wait`). Subsequent `handle_sys_event` or `tick_expiry` escalates
+/// with unconditional pgid `SIGKILL` + `close()`.
 pub fn DevicesOsRuntime::stop_grant_server_os(
   self : DevicesOsRuntime,
   grant_id : String,
   grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
-  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
 ) -> Bool {
   let stopped_rec = self.grant_servers.stop(grant_id) is Some(_)
   match self.grant_procs.get(grant_id) {
     Some((child, ev_id)) => {
       self.grant_procs.remove(grant_id)
-      dev_kill_proc_with_grace(child, ev_id, grace_ms, self.now_fn, on_other_event)
+      let _ = child.kill(station_sys::SIG_TERM, true)
+      if grace_ms <= 0L {
+        let _ = child.kill(station_sys::SIG_KILL, true)
+        let _ = child.close()
+      } else {
+        self.pending_grant_kills.set(
+          ev_id,
+          PendingProcKill::{
+            child: child,
+            event_id: ev_id,
+            deadline_ms: (self.now_fn)() + grace_ms,
+          },
+        )
+      }
       true
     }
     None => stopped_rec
@@ -1151,7 +1294,53 @@ pub fn DevicesOsRuntime::stop_grant_server_os(
 }
 
 pub fn DevicesOsRuntime::tick_expiry(self : DevicesOsRuntime, now_ms : Int64) -> (Int, Int) {
+  let pk_ids = self.pending_grant_kills.keys()
+  for i in 0..<pk_ids.length() {
+    let ev_id = pk_ids[i]
+    match self.pending_grant_kills.get(ev_id) {
+      Some(pk) => {
+        if now_ms >= pk.deadline_ms {
+          self.pending_grant_kills.remove(ev_id)
+          let _ = pk.child.kill(station_sys::SIG_KILL, true)
+          let _ = pk.child.close()
+        }
+      }
+      None => ()
+    }
+  }
   let ap_expired = self.airplay_pairing.expire_due(now_ms)
   let disp_expired = self.phone_displays.sweep_idle(now_ms, [])
   (ap_expired.length(), disp_expired.length())
+}
+
+pub fn DevicesOsRuntime::drain_kills_with_hub(
+  self : DevicesOsRuntime,
+  hub : EdgeMuxHub,
+  max_ms : Int64 = 1000L,
+) -> Int {
+  let mut finalized = 0
+  let start = (self.now_fn)()
+  let limit = start + (if max_ms > 0L { max_ms } else { 1L })
+  while self.pending_grant_kills.length() > 0 && (self.now_fn)() < limit {
+    let _ = hub.pump_one(20L)
+    let before = self.pending_grant_kills.length()
+    let _ = self.tick_expiry((self.now_fn)())
+    let after = self.pending_grant_kills.length()
+    if before > after {
+      finalized = finalized + (before - after)
+    }
+  }
+  let rem = self.pending_grant_kills.keys()
+  for i in 0..<rem.length() {
+    match self.pending_grant_kills.get(rem[i]) {
+      Some(pk) => {
+        self.pending_grant_kills.remove(rem[i])
+        let _ = pk.child.kill(station_sys::SIG_KILL, true)
+        let _ = pk.child.close()
+        finalized = finalized + 1
+      }
+      None => ()
+    }
+  }
+  finalized
 }

@@ -1,14 +1,13 @@
 // Production OS adapter for `station_connects`:
-// - Shared zero-event-loss `EdgeMuxHub` over `builders_core::ShellMux`: non-matching `ShellDone`
-//   completions are immediately routed to the registered async dispatcher or buffered in a
-//   deferred map (never dropped).
-// - True streaming HTTP body cap via `client/shell` `stream.open` + `stream.read` + `stream.close`
-//   so oversized responses (e.g. 160 MiB against a 1 MiB cap) abort early with bounded RSS.
-// - Per-handle `ws_next_inflight` tracking so un-cancellable `ws.next` never spawns duplicate
-//   readers after timeouts.
-// - `ConnectsOsRuntime` manages `SlackConnector`, `FeishuConnector`, `CommaConnector`, and
-//   `GroupConnector` (with real Group SSE HTTP streaming), pure async dispatch for pings/ACKs/
-//   token refreshes, and strict `running && !stopped` post-stop delivery guards.
+// - Single-owner `EdgeMuxHub` built directly over `builders_core::MuxTransport` (NEVER calls
+//   `ShellMux::step`, which discards `HostEvent::Sys`), with bounded `deferred_done` (1024) and
+//   `deferred_sys` (4096) buffers, `pump_one(timeout_ms)`, and `deliver_host_event(ev)` so zero
+//   `ShellDone`, `Sys`, or `Stdin` events are ever dropped.
+// - True streaming HTTP body cap via `client/shell` `stream.open` + `stream.read` + `stream.close`.
+// - Per-handle `ws_next_inflight` tracking so un-cancellable `ws.next` never duplicates.
+// - `ConnectsOsRuntime` managing Slack/Feishu/Comma/Group connectors with real Group SSE stream
+//   subscription, explicit `stream.close` + exponential-backoff reconnect on EOF/error,
+//   incremental multi-byte UTF-8 cross-chunk decoding, and strict `running && !stopped` guards.
 
 import "base_codec"
 import "builders_core"
@@ -21,6 +20,8 @@ import "station_ops"
 pub let CONNECTS_DEFAULT_TIMEOUT_MS : Int64 = 30000L
 pub let CONNECTS_DEFAULT_MAX_BODY_BYTES : Int = 16777216
 pub let CONNECTS_MAX_ATTACHMENT_BYTES : Int = 52428800
+pub let EDGE_MUX_MAX_DEFERRED_DONE : Int = 1024
+pub let EDGE_MUX_MAX_DEFERRED_SYS : Int = 4096
 
 pub let CONNECTS_TOK_FETCH : Int = 3101
 pub let CONNECTS_TOK_WS_OPEN : Int = 3102
@@ -112,31 +113,161 @@ fn conn_build_ws_open_json(req : station_connects::WsOpenRequest, timeout_ms : I
 }
 
 // ---------------------------------------------------------------------------
-// Shared Zero-Event-Loss `EdgeMuxHub` (used by connects_os, replica_os, browser_os)
+// Incremental UTF-8 Cross-Chunk Decoder (prevents splitting multi-byte UTF-8)
 // ---------------------------------------------------------------------------
 
-/// Shared dispatcher over `builders_core::ShellMux` guaranteeing zero lost `ShellDone` events
-/// when synchronous helper calls run concurrently with async WebSocket / SSE / HTTP operations.
-pub struct EdgeMuxHub {
-  pub mux : builders_core::ShellMux
-  pub now_fn : () -> Int64
-  deferred : Map[Int64, (builders_core::MuxToken, host_shim::ShellDone)]
-  deferred_order : Array[Int64]
-  mut router : Option[(builders_core::MuxToken, host_shim::ShellDone) -> Bool]
-  mut next_req_id : Int
+pub struct Utf8ChunkDecoder {
+  carry : Array[Byte]
 }
 
+pub fn Utf8ChunkDecoder::new() -> Utf8ChunkDecoder {
+  Utf8ChunkDecoder::{ carry: [] }
+}
+
+fn utf8_expected_len(lead : Int) -> Int {
+  if lead < 0x80 {
+    1
+  } else if (lead & 0xE0) == 0xC0 {
+    2
+  } else if (lead & 0xF0) == 0xE0 {
+    3
+  } else if (lead & 0xF8) == 0xF0 {
+    4
+  } else {
+    1
+  }
+}
+
+/// Push raw bytes into the decoder; retains any trailing 1–3 incomplete UTF-8 sequence bytes
+/// in `self.carry` and returns the complete UTF-8 string prefix.
+pub fn Utf8ChunkDecoder::push(self : Utf8ChunkDecoder, chunk : Bytes) -> String {
+  let clen = self.carry.length()
+  let total = clen + chunk.length()
+  if total == 0 {
+    return ""
+  }
+  let buf = Bytes::new(total)
+  for i in 0..<clen {
+    buf[i] = self.carry[i]
+  }
+  for i in 0..<chunk.length() {
+    buf[clen + i] = chunk[i]
+  }
+  self.carry.clear()
+
+  // Inspect up to the last 3 bytes for an incomplete leading UTF-8 multi-byte sequence.
+  let mut complete_end = total
+  let check_from = if total > 3 { total - 3 } else { 0 }
+  let mut i = total - 1
+  while i >= check_from {
+    let b = buf[i].to_int() & 0xFF
+    if (b & 0xC0) != 0x80 {
+      let need = utf8_expected_len(b)
+      let avail = total - i
+      if need > 1 && avail < need {
+        complete_end = i
+      }
+      break
+    }
+    i = i - 1
+  }
+  for k in complete_end..<total {
+    self.carry.push(buf[k])
+  }
+  if complete_end == 0 {
+    return ""
+  }
+  buf.slice(0, complete_end).to_string()
+}
+
+pub fn Utf8ChunkDecoder::flush(self : Utf8ChunkDecoder) -> String {
+  if self.carry.length() == 0 {
+    return ""
+  }
+  let out = Bytes::new(self.carry.length())
+  for i in 0..<self.carry.length() {
+    out[i] = self.carry[i]
+  }
+  self.carry.clear()
+  out.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Single-Owner Unified `EdgeMuxHub` (Directly over `MuxTransport`, Zero Sys Loss)
+// ---------------------------------------------------------------------------
+
+/// Single-owner event hub directly over `builders_core::MuxTransport` (never calls
+/// `ShellMux::step` which drops `HostEvent::Sys`). Losslessly routes `ShellDone`, `Sys`,
+/// and `Stdin` events with bounded FIFO deferred queues.
+pub struct EdgeMuxHub {
+  pub transport : builders_core::MuxTransport
+  pub now_fn : () -> Int64
+  pub max_deferred_done : Int
+  pub max_deferred_sys : Int
+  mut next_call_id : Int64
+  mut next_req_id : Int
+  pending_tokens : Map[Int64, builders_core::MuxToken]
+  deferred_done : Map[Int64, (builders_core::MuxToken, host_shim::ShellDone)]
+  deferred_done_order : Array[Int64]
+  deferred_sys : Array[(Int64, Bytes)]
+  mut shell_done_router : Option[(builders_core::MuxToken, host_shim::ShellDone) -> Bool]
+  mut sys_router : Option[(Int64, Bytes) -> Bool]
+  mut stdin_router : Option[(host_shim::HostEvent) -> Unit]
+}
+
+pub fn EdgeMuxHub::from_transport(
+  transport : builders_core::MuxTransport,
+  max_deferred_done : Int = EDGE_MUX_MAX_DEFERRED_DONE,
+  max_deferred_sys : Int = EDGE_MUX_MAX_DEFERRED_SYS,
+) -> EdgeMuxHub {
+  EdgeMuxHub::{
+    transport: transport,
+    now_fn: transport.now_ms,
+    max_deferred_done: if max_deferred_done > 0 { max_deferred_done } else { EDGE_MUX_MAX_DEFERRED_DONE },
+    max_deferred_sys: if max_deferred_sys > 0 { max_deferred_sys } else { EDGE_MUX_MAX_DEFERRED_SYS },
+    next_call_id: 1L,
+    next_req_id: 1,
+    pending_tokens: Map::new(),
+    deferred_done: Map::new(),
+    deferred_done_order: [],
+    deferred_sys: [],
+    shell_done_router: None,
+    sys_router: None,
+    stdin_router: None,
+  }
+}
+
+pub fn EdgeMuxHub::host(
+  max_deferred_done : Int = EDGE_MUX_MAX_DEFERRED_DONE,
+  max_deferred_sys : Int = EDGE_MUX_MAX_DEFERRED_SYS,
+) -> EdgeMuxHub {
+  EdgeMuxHub::from_transport(
+    builders_core::MuxTransport::host(),
+    max_deferred_done=max_deferred_done,
+    max_deferred_sys=max_deferred_sys,
+  )
+}
+
+/// Convenience wrapper adopting a `ShellMux`'s underlying `MuxTransport` directly.
 pub fn EdgeMuxHub::new(
   mux : builders_core::ShellMux,
   now_fn : () -> Int64 = host_shim::now_ms,
 ) -> EdgeMuxHub {
+  let hub = EdgeMuxHub::from_transport(mux.transport)
   EdgeMuxHub::{
-    mux: mux,
+    transport: hub.transport,
     now_fn: now_fn,
-    deferred: Map::new(),
-    deferred_order: [],
-    router: None,
-    next_req_id: 1,
+    max_deferred_done: hub.max_deferred_done,
+    max_deferred_sys: hub.max_deferred_sys,
+    next_call_id: hub.next_call_id,
+    next_req_id: hub.next_req_id,
+    pending_tokens: hub.pending_tokens,
+    deferred_done: hub.deferred_done,
+    deferred_done_order: hub.deferred_done_order,
+    deferred_sys: hub.deferred_sys,
+    shell_done_router: hub.shell_done_router,
+    sys_router: hub.sys_router,
+    stdin_router: hub.stdin_router,
   }
 }
 
@@ -144,15 +275,50 @@ pub fn EdgeMuxHub::set_router(
   self : EdgeMuxHub,
   router : (builders_core::MuxToken, host_shim::ShellDone) -> Bool,
 ) -> Unit {
-  self.router = Some(router)
+  self.shell_done_router = Some(router)
 }
 
 pub fn EdgeMuxHub::clear_router(self : EdgeMuxHub) -> Unit {
-  self.router = None
+  self.shell_done_router = None
 }
 
-pub fn EdgeMuxHub::deferred_count(self : EdgeMuxHub) -> Int {
-  self.deferred.length()
+pub fn EdgeMuxHub::set_sys_router(
+  self : EdgeMuxHub,
+  router : (Int64, Bytes) -> Bool,
+) -> Unit {
+  self.sys_router = Some(router)
+}
+
+pub fn EdgeMuxHub::get_sys_router(
+  self : EdgeMuxHub,
+) -> Option[(Int64, Bytes) -> Bool] {
+  self.sys_router
+}
+
+pub fn EdgeMuxHub::restore_sys_router(
+  self : EdgeMuxHub,
+  router : Option[(Int64, Bytes) -> Bool],
+) -> Unit {
+  self.sys_router = router
+}
+
+pub fn EdgeMuxHub::clear_sys_router(self : EdgeMuxHub) -> Unit {
+  self.sys_router = None
+}
+
+pub fn EdgeMuxHub::set_stdin_router(
+  self : EdgeMuxHub,
+  router : (host_shim::HostEvent) -> Unit,
+) -> Unit {
+  self.stdin_router = Some(router)
+}
+
+pub fn EdgeMuxHub::deferred_done_count(self : EdgeMuxHub) -> Int {
+  self.deferred_done.length()
+}
+
+pub fn EdgeMuxHub::deferred_sys_count(self : EdgeMuxHub) -> Int {
+  self.deferred_sys.length()
 }
 
 pub fn EdgeMuxHub::next_id(self : EdgeMuxHub) -> Int {
@@ -161,38 +327,135 @@ pub fn EdgeMuxHub::next_id(self : EdgeMuxHub) -> Int {
   id
 }
 
-fn EdgeMuxHub::dispatch_other(
+/// Issue an asynchronous `client/shell` call directly via `self.transport.call_async`.
+pub fn EdgeMuxHub::call_async_raw(
+  self : EdgeMuxHub,
+  token : builders_core::MuxToken,
+  op : String,
+  json_str : String,
+  payload : Option[Bytes],
+) -> Int64 {
+  let cid = self.next_call_id
+  self.next_call_id = self.next_call_id + 1L
+  self.pending_tokens.set(cid, token)
+  (self.transport.call_async)(cid, op, json_str, payload)
+  cid
+}
+
+/// Cancel an in-flight cancellable `client/shell` call (`fetch.cancel`).
+pub fn EdgeMuxHub::cancel(self : EdgeMuxHub, call_id : Int64) -> Unit {
+  let _ = (self.transport.call_sync)("fetch.cancel", "{\"id\":" + call_id.to_string() + "}")
+}
+
+fn EdgeMuxHub::buffer_deferred_done(
   self : EdgeMuxHub,
   tok : builders_core::MuxToken,
   done : host_shim::ShellDone,
 ) -> Unit {
-  match self.router {
-    Some(r) => {
-      if r(tok, done) {
-        return
+  if !self.deferred_done.contains(done.id) {
+    while self.deferred_done_order.length() >= self.max_deferred_done {
+      let oldest = self.deferred_done_order[0]
+      let rest : Array[Int64] = []
+      for i in 1..<self.deferred_done_order.length() {
+        rest.push(self.deferred_done_order[i])
       }
+      self.deferred_done_order.clear()
+      for i in 0..<rest.length() {
+        self.deferred_done_order.push(rest[i])
+      }
+      self.deferred_done.remove(oldest)
     }
-    None => ()
+    self.deferred_done_order.push(done.id)
   }
-  if !self.deferred.contains(done.id) {
-    self.deferred_order.push(done.id)
-  }
-  self.deferred.set(done.id, (tok, done))
+  self.deferred_done.set(done.id, (tok, done))
 }
 
-/// Replay any deferred `ShellDone` completions to `handler` (retaining unhandled ones).
-pub fn EdgeMuxHub::drain_deferred(
+fn EdgeMuxHub::buffer_deferred_sys(self : EdgeMuxHub, ev_id : Int64, payload : Bytes) -> Unit {
+  if self.deferred_sys.length() >= self.max_deferred_sys {
+    let rest : Array[(Int64, Bytes)] = []
+    for i in 1..<self.deferred_sys.length() {
+      rest.push(self.deferred_sys[i])
+    }
+    self.deferred_sys.clear()
+    for i in 0..<rest.length() {
+      self.deferred_sys.push(rest[i])
+    }
+  }
+  self.deferred_sys.push((ev_id, payload))
+}
+
+/// Deliver an externally pumped `HostEvent` into the hub without nested `wait` calls.
+pub fn EdgeMuxHub::deliver_host_event(self : EdgeMuxHub, ev : host_shim::HostEvent) -> Unit {
+  match ev {
+    host_shim::HostEvent::ShellDone(done) => {
+      let tok = match self.pending_tokens.get(done.id) {
+        Some(t) => {
+          self.pending_tokens.remove(done.id)
+          t
+        }
+        None => builders_core::MuxToken::Tagged(0, 0, done.id)
+      }
+      match self.shell_done_router {
+        Some(r) => {
+          if r(tok, done) {
+            return
+          }
+        }
+        None => ()
+      }
+      self.buffer_deferred_done(tok, done)
+    }
+    host_shim::HostEvent::Sys(ev_id, payload) => {
+      match self.sys_router {
+        Some(r) => {
+          if r(ev_id, payload) {
+            return
+          }
+        }
+        None => ()
+      }
+      self.buffer_deferred_sys(ev_id, payload)
+    }
+    host_shim::HostEvent::StdinData(_) => {
+      match self.stdin_router {
+        Some(r) => r(ev)
+        None => ()
+      }
+    }
+    host_shim::HostEvent::StdinEof => {
+      match self.stdin_router {
+        Some(r) => r(ev)
+        None => ()
+      }
+    }
+  }
+}
+
+/// Single unified event pump: waits up to `timeout_ms` on `self.transport.wait` and
+/// losslessly delivers `ShellDone`, `Sys`, or `Stdin` events.
+pub fn EdgeMuxHub::pump_one(self : EdgeMuxHub, timeout_ms : Int64) -> Bool {
+  match (self.transport.wait)(timeout_ms) {
+    Some(ev) => {
+      self.deliver_host_event(ev)
+      true
+    }
+    None => false
+  }
+}
+
+/// Replay deferred `ShellDone` completions to `handler`.
+pub fn EdgeMuxHub::drain_deferred_done(
   self : EdgeMuxHub,
   handler : (builders_core::MuxToken, host_shim::ShellDone) -> Bool,
 ) -> Int {
   let keep : Array[Int64] = []
   let mut delivered = 0
-  for i in 0..<self.deferred_order.length() {
-    let cid = self.deferred_order[i]
-    match self.deferred.get(cid) {
+  for i in 0..<self.deferred_done_order.length() {
+    let cid = self.deferred_done_order[i]
+    match self.deferred_done.get(cid) {
       Some((tok, done)) => {
         if handler(tok, done) {
-          self.deferred.remove(cid)
+          self.deferred_done.remove(cid)
           delivered = delivered + 1
         } else {
           keep.push(cid)
@@ -201,69 +464,88 @@ pub fn EdgeMuxHub::drain_deferred(
       None => ()
     }
   }
-  self.deferred_order.clear()
+  self.deferred_done_order.clear()
   for i in 0..<keep.length() {
-    self.deferred_order.push(keep[i])
+    self.deferred_done_order.push(keep[i])
   }
   delivered
 }
 
-/// Await a specific `call_id` without swallowing or dropping any other concurrent `ShellDone`.
-/// Any other completion is routed to `self.router` or buffered in `self.deferred` for later replay.
+/// Replay deferred `HostEvent::Sys` frames to `handler`.
+pub fn EdgeMuxHub::drain_deferred_sys(
+  self : EdgeMuxHub,
+  handler : (Int64, Bytes) -> Bool,
+) -> Int {
+  let keep : Array[(Int64, Bytes)] = []
+  let mut delivered = 0
+  for i in 0..<self.deferred_sys.length() {
+    let (ev_id, payload) = self.deferred_sys[i]
+    if handler(ev_id, payload) {
+      delivered = delivered + 1
+    } else {
+      keep.push((ev_id, payload))
+    }
+  }
+  self.deferred_sys.clear()
+  for i in 0..<keep.length() {
+    self.deferred_sys.push(keep[i])
+  }
+  delivered
+}
+
+/// Await a specific `call_id` via `self.transport.wait`, routing/buffering EVERY other
+/// `ShellDone`, `Sys`, and `Stdin` event losslessly (zero dropped `Sys` or `ShellDone`).
 pub fn EdgeMuxHub::await_call(
   self : EdgeMuxHub,
   call_id : Int64,
   timeout_ms : Int64,
   cancel_on_timeout : Bool = true,
 ) -> Result[host_shim::ShellDone, String] {
-  match self.deferred.get(call_id) {
+  match self.deferred_done.get(call_id) {
     Some((_, done)) => {
-      self.deferred.remove(call_id)
+      self.deferred_done.remove(call_id)
       return Ok(done)
     }
     None => ()
   }
   let eff_timeout = if timeout_ms > 0L { timeout_ms } else { CONNECTS_DEFAULT_TIMEOUT_MS }
   let deadline = (self.now_fn)() + eff_timeout
-  let mut result : Option[host_shim::ShellDone] = None
-  while result is None {
+  while true {
     let now = (self.now_fn)()
     let rem = deadline - now
     if rem <= 0L {
       if cancel_on_timeout {
-        let _ = self.mux.cancel(call_id)
+        self.cancel(call_id)
       }
       return Err("mux call timed out")
     }
     let slice = if rem > 200L { 200L } else { rem }
-    let progressed = self.mux.step(
-      slice,
-      fn(_line : String) -> Unit {},
-      fn() -> Unit {},
-      fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
-        if done.id == call_id {
-          result = Some(done)
-        } else {
-          self.dispatch_other(tok, done)
+    match (self.transport.wait)(slice) {
+      None => {
+        if (self.now_fn)() >= deadline {
+          if cancel_on_timeout {
+            self.cancel(call_id)
+          }
+          return Err("mux call timed out")
         }
-      },
-    )
-    if !progressed && (self.now_fn)() >= deadline {
-      if cancel_on_timeout {
-        let _ = self.mux.cancel(call_id)
       }
-      return Err("mux call timed out")
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == call_id {
+          self.pending_tokens.remove(call_id)
+          return Ok(done)
+        }
+        self.deliver_host_event(host_shim::HostEvent::ShellDone(done))
+      }
+      Some(other_ev) => {
+        self.deliver_host_event(other_ev)
+      }
     }
   }
-  match result {
-    Some(done) => Ok(done)
-    None => Err("mux call abandoned")
-  }
+  Err("mux call abandoned")
 }
 
 /// True streaming HTTP fetch over `client/shell` `stream.open` + `stream.read` + `stream.close`
-/// with strict `max_body_bytes` enforcement (aborts and closes stream immediately once cumulative
-/// bytes exceed `max_body_bytes`, never buffering an unbounded response in memory).
+/// with strict `max_body_bytes` enforcement and zero dropped `Sys`/`ShellDone` events.
 pub fn EdgeMuxHub::fetch_bounded_stream(
   self : EdgeMuxHub,
   method_name : String,
@@ -280,7 +562,7 @@ pub fn EdgeMuxHub::fetch_bounded_stream(
   let eff_max = if max_body_bytes > 0 { max_body_bytes } else { CONNECTS_DEFAULT_MAX_BODY_BYTES }
   let deadline = (self.now_fn)() + eff_timeout
   let rid = self.next_id()
-  let open_cid = self.mux.call_async_raw(
+  let open_cid = self.call_async_raw(
     builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_STREAM_OPEN, 0L),
     "stream.open",
     conn_build_http_args_json(method_name, url, headers, eff_timeout),
@@ -298,7 +580,7 @@ pub fn EdgeMuxHub::fetch_bounded_stream(
   let parts : Array[Bytes] = []
   let mut total = 0
   let close_stream = fn() -> Unit {
-    let _ = self.mux.call_async_raw(
+    let _ = self.call_async_raw(
       builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_STREAM_CLOSE, 0L),
       "stream.close",
       "{\"id\":" + stream_id.to_string() + "}",
@@ -318,7 +600,7 @@ pub fn EdgeMuxHub::fetch_bounded_stream(
         ("stallMs", base_codec::json_int(conn_clamp_i32(rem))),
       ]),
     )
-    let read_cid = self.mux.call_async_raw(
+    let read_cid = self.call_async_raw(
       builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_STREAM_READ, 0L),
       "stream.read",
       read_args,
@@ -373,7 +655,6 @@ pub fn EdgeMuxHub::fetch_bounded_stream(
 
 pub struct ConnectMuxBridge {
   pub hub : EdgeMuxHub
-  pub mux : builders_core::ShellMux
   pub fs : station_ops::OpsFs
   pub max_body_bytes : Int
   pub default_timeout_ms : Int64
@@ -393,7 +674,6 @@ pub fn ConnectMuxBridge::with_hub(
 ) -> ConnectMuxBridge {
   ConnectMuxBridge::{
     hub: hub,
-    mux: hub.mux,
     fs: fs,
     max_body_bytes: if max_body_bytes > 0 { max_body_bytes } else { CONNECTS_DEFAULT_MAX_BODY_BYTES },
     default_timeout_ms: if default_timeout_ms > 0L { default_timeout_ms } else { CONNECTS_DEFAULT_TIMEOUT_MS },
@@ -406,32 +686,16 @@ pub fn ConnectMuxBridge::with_hub(
   }
 }
 
-pub fn ConnectMuxBridge::new(
-  mux : builders_core::ShellMux,
-  fs : station_ops::OpsFs,
+pub fn ConnectMuxBridge::host(
+  hub : EdgeMuxHub,
   max_body_bytes : Int = CONNECTS_DEFAULT_MAX_BODY_BYTES,
   default_timeout_ms : Int64 = CONNECTS_DEFAULT_TIMEOUT_MS,
-  now_fn : () -> Int64 = host_shim::now_ms,
 ) -> ConnectMuxBridge {
   ConnectMuxBridge::with_hub(
-    EdgeMuxHub::new(mux, now_fn=now_fn),
-    fs,
-    max_body_bytes=max_body_bytes,
-    default_timeout_ms=default_timeout_ms,
-  )
-}
-
-pub fn ConnectMuxBridge::host(
-  mux : builders_core::ShellMux,
-  max_body_bytes : Int = CONNECTS_DEFAULT_MAX_BODY_BYTES,
-  default_timeout_ms : Int64 = CONNECTS_DEFAULT_TIMEOUT_MS,
-) -> ConnectMuxBridge {
-  ConnectMuxBridge::new(
-    mux,
+    hub,
     station_ops::shell_ops_fs(),
     max_body_bytes=max_body_bytes,
     default_timeout_ms=default_timeout_ms,
-    now_fn=host_shim::now_ms,
   )
 }
 
@@ -458,8 +722,6 @@ pub fn ConnectMuxBridge::push_ws_frame(
   }
 }
 
-/// Execute an HTTP request via streaming `stream.open`/`stream.read` with URL scheme guard,
-/// timeout, zero-event-loss shared mux dispatch, and strict `max_body_bytes` cap.
 pub fn ConnectMuxBridge::fetch(
   self : ConnectMuxBridge,
   req : station_connects::HttpRequest,
@@ -483,7 +745,6 @@ pub fn ConnectMuxBridge::fetch(
   }
 }
 
-/// Open a WebSocket over `ShellMux` `ws.open` (fail-closed to `ws://` / `wss://`).
 pub fn ConnectMuxBridge::ws_open(
   self : ConnectMuxBridge,
   req : station_connects::WsOpenRequest,
@@ -493,7 +754,7 @@ pub fn ConnectMuxBridge::ws_open(
   }
   let timeout_ms = if req.timeout_ms > 0L { req.timeout_ms } else { self.default_timeout_ms }
   let rid = self.hub.next_id()
-  let cid = self.mux.call_async_raw(
+  let cid = self.hub.call_async_raw(
     builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_WS_OPEN, 0L),
     "ws.open",
     conn_build_ws_open_json(req, timeout_ms),
@@ -531,9 +792,6 @@ fn conn_ws_event_to_frame(ev : station_http::WsClientEvent) -> station_connects:
   }
 }
 
-/// Receive next WebSocket frame from inbox or via `ShellMux` `ws.next`.
-/// Enforces at most one in-flight `ws.next` per handle (reusing the existing call_id after
-/// timeouts so un-cancellable `ws.next` calls never duplicate).
 pub fn ConnectMuxBridge::ws_next(
   self : ConnectMuxBridge,
   handle : Int64,
@@ -558,7 +816,7 @@ pub fn ConnectMuxBridge::ws_next(
   let cid = match self.ws_next_inflight.get(handle) {
     Some(existing_cid) => existing_cid
     None => {
-      let fresh = self.mux.call_async_raw(
+      let fresh = self.hub.call_async_raw(
         builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_NEXT, handle),
         "ws.next",
         "{\"id\":" + handle.to_string() + "}",
@@ -568,7 +826,6 @@ pub fn ConnectMuxBridge::ws_next(
       fresh
     }
   }
-  // `ws.next` is not cancellable via `fetch.cancel`; keep `ws_next_inflight` on timeout!
   match self.hub.await_call(cid, self.default_timeout_ms, cancel_on_timeout=false) {
     Err(e) => Err(e)
     Ok(done) => {
@@ -601,7 +858,6 @@ pub fn ConnectMuxBridge::ws_next(
   }
 }
 
-/// Non-blocking WebSocket send (queues `ws.send`/`ws.ping`/`ws.close` without blocking `mux.step`).
 pub fn ConnectMuxBridge::ws_send_async(
   self : ConnectMuxBridge,
   handle : Int64,
@@ -626,7 +882,7 @@ pub fn ConnectMuxBridge::ws_send_async(
       return Ok(0L)
     }
   }
-  let cid = self.mux.call_async_raw(
+  let cid = self.hub.call_async_raw(
     builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_SEND, handle),
     op,
     json_str,
@@ -635,7 +891,6 @@ pub fn ConnectMuxBridge::ws_send_async(
   Ok(cid)
 }
 
-/// Send a WebSocket frame (`Text`, `Binary`, `Ping`, `Close`) via `EdgeMuxHub`.
 pub fn ConnectMuxBridge::ws_send(
   self : ConnectMuxBridge,
   handle : Int64,
@@ -667,7 +922,7 @@ pub fn ConnectMuxBridge::ws_close(self : ConnectMuxBridge, handle : Int64) -> Un
   }
   self.ws_inbox.remove(handle)
   self.ws_next_inflight.remove(handle)
-  let _ = self.mux.call_async_raw(
+  let _ = self.hub.call_async_raw(
     builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_CLOSE, handle),
     "ws.close",
     "{\"id\":" + handle.to_string() + "}",
@@ -684,13 +939,10 @@ pub fn ConnectMuxBridge::close_all(self : ConnectMuxBridge) -> Unit {
   for i in 0..<call_ids.length() {
     let cid = call_ids[i]
     self.in_flight_calls.remove(cid)
-    let _ = self.mux.cancel(cid)
+    self.hub.cancel(cid)
   }
 }
 
-/// Build a `station_connects::ConnectTransport` backed by this `ConnectMuxBridge`.
-/// Uses non-blocking `ws_send_async` when `async_ws_writes` is true so `ConnectsOsRuntime`
-/// ACKs and heartbeats never block `mux.step`.
 pub fn ConnectMuxBridge::transport(
   self : ConnectMuxBridge,
   async_ws_writes : Bool = false,
@@ -787,6 +1039,7 @@ pub struct ConnectsOsRuntime {
   ws_to_connect : Map[Int64, String]
   group_sse_streams : Map[String, Int]
   sse_stream_to_connect : Map[Int, String]
+  group_utf8_decoders : Map[String, Utf8ChunkDecoder]
   pending_feishu_refresh : Map[Int64, String]
   pending_async_calls : Map[Int64, String]
   mut stopped : Bool
@@ -807,6 +1060,7 @@ pub fn ConnectsOsRuntime::new(
     ws_to_connect: Map::new(),
     group_sse_streams: Map::new(),
     sse_stream_to_connect: Map::new(),
+    group_utf8_decoders: Map::new(),
     pending_feishu_refresh: Map::new(),
     pending_async_calls: Map::new(),
     stopped: false,
@@ -836,6 +1090,13 @@ pub fn ConnectsOsRuntime::status_of(
   connect_id : String,
 ) -> Option[station_connects::ConnectStatus] {
   self.statuses.get(connect_id)
+}
+
+pub fn ConnectsOsRuntime::group_stream_id_of(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+) -> Option[Int] {
+  self.group_sse_streams.get(connect_id)
 }
 
 pub fn ConnectsOsRuntime::register_slack(
@@ -916,7 +1177,7 @@ fn ConnectsOsRuntime::arm_ws_next(self : ConnectsOsRuntime, handle : Int64) -> I
   match self.bridge.ws_next_inflight.get(handle) {
     Some(existing) => existing
     None => {
-      let cid = self.bridge.mux.call_async_raw(
+      let cid = self.bridge.hub.call_async_raw(
         builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_NEXT, handle),
         "ws.next",
         "{\"id\":" + handle.to_string() + "}",
@@ -929,7 +1190,7 @@ fn ConnectsOsRuntime::arm_ws_next(self : ConnectsOsRuntime, handle : Int64) -> I
 }
 
 fn ConnectsOsRuntime::arm_group_sse_read(self : ConnectsOsRuntime, stream_id : Int) -> Int64 {
-  let cid = self.bridge.mux.call_async_raw(
+  let cid = self.bridge.hub.call_async_raw(
     builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_GROUP_SSE_READ, stream_id.to_int64()),
     "stream.read",
     "{\"id\":" + stream_id.to_string() + "}",
@@ -939,8 +1200,15 @@ fn ConnectsOsRuntime::arm_group_sse_read(self : ConnectsOsRuntime, stream_id : I
   cid
 }
 
-/// Start a registered connector: opens WebSocket (Slack/Feishu/Comma) or real SSE HTTP stream
-/// (Group via `stream.open` + `stream.read`) and arms async readers.
+fn ConnectsOsRuntime::close_group_stream_handle(self : ConnectsOsRuntime, stream_id : Int) -> Unit {
+  let _ = self.bridge.hub.call_async_raw(
+    builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_STREAM_CLOSE, 0L),
+    "stream.close",
+    "{\"id\":" + stream_id.to_string() + "}",
+    None,
+  )
+}
+
 pub fn ConnectsOsRuntime::start_connect(
   self : ConnectsOsRuntime,
   connect_id : String,
@@ -999,13 +1267,24 @@ pub fn ConnectsOsRuntime::start_connect(
         self.statuses.set(connect_id, station_connects::ConnectStatus::Error("invalid anchor_url"))
         return Err("disallowed Group anchor URL scheme: " + g.anchor_url)
       }
+      // Close any prior stream handle before opening a new one.
+      match self.group_sse_streams.get(connect_id) {
+        Some(old_sid) => {
+          self.group_sse_streams.remove(connect_id)
+          self.sse_stream_to_connect.remove(old_sid)
+          self.close_group_stream_handle(old_sid)
+        }
+        None => ()
+      }
       let sse_url = if g.anchor_url.ends_with("/") {
         g.anchor_url + "events"
       } else {
         g.anchor_url + "/events"
       }
+      let now = (self.bridge.now_fn)()
+      g.machine.begin_connect(now)
       let rid = self.bridge.hub.next_id()
-      let open_cid = self.bridge.mux.call_async_raw(
+      let open_cid = self.bridge.hub.call_async_raw(
         builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_GROUP_SSE_OPEN, 0L),
         "stream.open",
         conn_build_http_args_json(
@@ -1018,29 +1297,28 @@ pub fn ConnectsOsRuntime::start_connect(
       )
       match self.bridge.hub.await_call(open_cid, self.bridge.default_timeout_ms, cancel_on_timeout=true) {
         Err(e) => {
+          g.machine.on_close((self.bridge.now_fn)(), Some(e))
           self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
           Err(e)
         }
         Ok(done) => match station_http::decode_stream_open_done(done) {
           Err(e) => {
+            g.machine.on_close((self.bridge.now_fn)(), Some(e.message))
             self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e.message))
             Err(e.message)
           }
           Ok(head) => {
             if head.status < 200 || head.status >= 300 {
-              let _ = self.bridge.mux.call_async_raw(
-                builders_core::MuxToken::Tagged(head.id, CONNECTS_TOK_STREAM_CLOSE, 0L),
-                "stream.close",
-                "{\"id\":" + head.id.to_string() + "}",
-                None,
-              )
+              self.close_group_stream_handle(head.id)
               let msg = "Group SSE HTTP " + head.status.to_string()
+              g.machine.on_close((self.bridge.now_fn)(), Some(msg))
               self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(msg))
               return Err(msg)
             }
             self.running_connects.set(connect_id, true)
             self.group_sse_streams.set(connect_id, head.id)
             self.sse_stream_to_connect.set(head.id, connect_id)
+            self.group_utf8_decoders.set(connect_id, Utf8ChunkDecoder::new())
             g.machine.on_open((self.bridge.now_fn)())
             self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
             let _ = self.arm_group_sse_read(head.id)
@@ -1052,19 +1330,14 @@ pub fn ConnectsOsRuntime::start_connect(
   }
 }
 
-/// Stop a single connector cleanly, closing its WebSocket or Group SSE stream handle.
 pub fn ConnectsOsRuntime::stop_connect(self : ConnectsOsRuntime, connect_id : String) -> Unit {
   self.running_connects.remove(connect_id)
+  self.group_utf8_decoders.remove(connect_id)
   match self.group_sse_streams.get(connect_id) {
     Some(sid) => {
       self.group_sse_streams.remove(connect_id)
       self.sse_stream_to_connect.remove(sid)
-      let _ = self.bridge.mux.call_async_raw(
-        builders_core::MuxToken::Tagged(sid, CONNECTS_TOK_STREAM_CLOSE, 0L),
-        "stream.close",
-        "{\"id\":" + sid.to_string() + "}",
-        None,
-      )
+      self.close_group_stream_handle(sid)
     }
     None => ()
   }
@@ -1113,7 +1386,6 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
     Some(e) => e
     None => return false
   }
-  // Use pure async WS writes so ACK never blocks `mux.step`.
   let tr = self.bridge.transport(async_ws_writes=true)
   match entry {
     ConnectorEntry::Slack(s) => match s.handle_frame(tr, frame) {
@@ -1241,8 +1513,27 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
   }
 }
 
-/// Handle an asynchronous `ShellMux` completion belonging to `ConnectsOsRuntime`.
-/// Returns `true` if the token belonged to this runtime and was handled.
+fn ConnectsOsRuntime::on_group_sse_closed(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  stream_id : Int,
+  reason : String,
+) -> Unit {
+  self.sse_stream_to_connect.remove(stream_id)
+  self.group_sse_streams.remove(connect_id)
+  self.group_utf8_decoders.remove(connect_id)
+  self.running_connects.remove(connect_id)
+  self.close_group_stream_handle(stream_id)
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Group(g)) => g.machine.on_close((self.bridge.now_fn)(), Some(reason))
+    _ => ()
+  }
+  self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+  if !self.stopped {
+    (self.callbacks.on_disconnect)(connect_id, reason)
+  }
+}
+
 pub fn ConnectsOsRuntime::handle_mux_reply(
   self : ConnectsOsRuntime,
   tok : builders_core::MuxToken,
@@ -1290,29 +1581,25 @@ pub fn ConnectsOsRuntime::handle_mux_reply(
         }
         if !self.is_connect_running(connect_id) {
           self.sse_stream_to_connect.remove(stream_id)
+          self.close_group_stream_handle(stream_id)
           return true
         }
         match station_http::decode_stream_read_done(done) {
-          Err(e) => {
-            self.sse_stream_to_connect.remove(stream_id)
-            self.group_sse_streams.remove(connect_id)
-            self.running_connects.remove(connect_id)
-            self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e.message))
-            if !self.stopped {
-              (self.callbacks.on_disconnect)(connect_id, e.message)
-            }
-          }
-          Ok(station_http::StreamChunk::End) => {
-            self.sse_stream_to_connect.remove(stream_id)
-            self.group_sse_streams.remove(connect_id)
-            self.running_connects.remove(connect_id)
-            self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting("sse_eof"))
-            if !self.stopped {
-              (self.callbacks.on_disconnect)(connect_id, "sse_eof")
-            }
-          }
+          Err(e) => self.on_group_sse_closed(connect_id, stream_id, e.message)
+          Ok(station_http::StreamChunk::End) => self.on_group_sse_closed(connect_id, stream_id, "sse_eof")
           Ok(station_http::StreamChunk::Data(chunk)) => {
-            let _ = self.feed_group_sse(connect_id, chunk.to_string(), (self.bridge.now_fn)())
+            let dec = match self.group_utf8_decoders.get(connect_id) {
+              Some(d) => d
+              None => {
+                let d = Utf8ChunkDecoder::new()
+                self.group_utf8_decoders.set(connect_id, d)
+                d
+              }
+            }
+            let text = dec.push(chunk)
+            if text.length() > 0 {
+              let _ = self.feed_group_sse(connect_id, text, (self.bridge.now_fn)())
+            }
             if self.is_connect_running(connect_id) {
               let _ = self.arm_group_sse_read(stream_id)
             }
@@ -1337,8 +1624,6 @@ pub fn ConnectsOsRuntime::handle_mux_reply(
   }
 }
 
-/// Feed a Group SSE text chunk into a registered `GroupConnector`.
-/// Enforces `running && !stopped` so `stop()` suppresses all post-stop callbacks.
 pub fn ConnectsOsRuntime::feed_group_sse(
   self : ConnectsOsRuntime,
   connect_id : String,
@@ -1373,7 +1658,6 @@ pub fn ConnectsOsRuntime::feed_group_sse(
   }
 }
 
-/// Downlink send a message through any registered connector (uses zero-event-loss shared hub).
 pub fn ConnectsOsRuntime::send_message(
   self : ConnectsOsRuntime,
   connect_id : String,
@@ -1404,8 +1688,6 @@ pub fn ConnectsOsRuntime::send_message(
   }
 }
 
-/// Pure non-blocking maintenance tick: drives pings via `ws_send_async`, exponential-backoff
-/// reconnects, stale detection, async Feishu token refresh dispatch, and dedupe pruning.
 pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Array[String] {
   let actions : Array[String] = []
   if self.stopped {
@@ -1457,7 +1739,7 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
             f.tokens.app_secret,
           )
           let rid = self.bridge.hub.next_id()
-          let call_id = self.bridge.mux.call_async_raw(
+          let call_id = self.bridge.hub.call_async_raw(
             builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_FEISHU_TOKEN, 0L),
             "fetch",
             conn_build_http_args_json(req.method, req.url, req.headers, req.timeout_ms),
@@ -1530,14 +1812,29 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
       }
       Some(ConnectorEntry::Group(g)) => {
         g.dedupe.prune(now_ms)
+        match g.machine.tick(now_ms) {
+          station_connects::SocketAction::ReconnectNow => {
+            let _ = self.start_connect(cid)
+            actions.push(cid + ":reconnect")
+          }
+          station_connects::SocketAction::FailStale(reason) => {
+            match self.group_sse_streams.get(cid) {
+              Some(sid) => self.on_group_sse_closed(cid, sid, reason)
+              None => {
+                g.machine.on_close(now_ms, Some(reason))
+                self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+              }
+            }
+            actions.push(cid + ":stale")
+          }
+          _ => ()
+        }
       }
     }
   }
   actions
 }
 
-/// Gracefully shut down every connector, closing all WebSockets & SSE streams and cancelling
-/// all in-flight calls. Suppresses every subsequent callback.
 pub fn ConnectsOsRuntime::stop(self : ConnectsOsRuntime) -> Unit {
   self.stopped = true
   self.running_connects.clear()
@@ -1547,13 +1844,14 @@ pub fn ConnectsOsRuntime::stop(self : ConnectsOsRuntime) -> Unit {
   }
   let pending = self.pending_async_calls.keys()
   for i in 0..<pending.length() {
-    let _ = self.bridge.mux.cancel(pending[i])
+    self.bridge.hub.cancel(pending[i])
   }
   self.pending_async_calls.clear()
   self.pending_feishu_refresh.clear()
   self.ws_to_connect.clear()
   self.group_sse_streams.clear()
   self.sse_stream_to_connect.clear()
+  self.group_utf8_decoders.clear()
   self.bridge.hub.clear_router()
   self.bridge.close_all()
 }

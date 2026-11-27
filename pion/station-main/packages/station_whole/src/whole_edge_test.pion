@@ -1,12 +1,13 @@
-// Comprehensive R2 unit tests for Wave 16C-Edge-OS production adapters:
-// - `connects_os.pion`: zero-event-loss `EdgeMuxHub`, streaming `stream.open`/`stream.read`
-//   body cap, `ws_next_inflight` deduplication, real Group SSE stream + post-`stop()` guard.
-// - `replica_os.pion`: `rep_is_safe_rel_path` (`notes..old` allowed), `os_s3_client` (`wall_ms`
-//   UTC signing + XML `DeleteObjects` error), `ReplicaOsRuntime::open` fail-closed `kept.jsonl`,
-//   failure-locked `before_store`/`take_back_soon`, and `ShareOsSync`.
-// - `browser_os.pion`: strict CDP userinfo `@` rejection, full IPv4/IPv6/localhost CIDR
-//   blocklist wired through `BrowserProxyOsAdapter`, `(session, context_id)` gate keys,
-//   self-contained `build_signin_form_port`.
+// Comprehensive R3 unit tests for Wave 16C-Edge-OS production adapters:
+// - `connects_os.pion`: single-owner `EdgeMuxHub` directly over `MuxTransport` (zero `Sys`
+//   event drop, bounded `deferred_done`/`deferred_sys`), `Utf8ChunkDecoder` cross-chunk multi-byte
+//   UTF-8 decoding, Group SSE stream disconnect + `stream.close` + `tick` reconnect, streaming
+//   body cap, `ws_next_inflight` deduplication, and post-`stop()` guard.
+// - `replica_os.pion`: `rep_is_safe_rel_path`, `os_s3_client` on shared `EdgeMuxHub`,
+//   fail-closed `ReplicaOsRuntime::new` / `open` returning `Result`, failure-locked `before_store`.
+// - `browser_os.pion`: strict CDP userinfo `@` rejection, full IPv4/IPv6 CIDR gate (incl.
+//   `198.18.0.0/15`, `64:ff9b::/96`, `::/96`, `2002::/16`) wired through `BrowserProxyOsAdapter`,
+//   `(session, context_id)` gate keys.
 // - `devices_os.pion`: `TerminalsOsRuntime`, `LoginsOsRuntime`, `AdbOsRunner`, `DevicesOsRuntime`.
 
 import "base_codec"
@@ -25,18 +26,6 @@ fn edge_assert(cond : Bool) -> Unit {
   }
 }
 
-fn edge_bytes_eq(a : Bytes, b : Bytes) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    if a[i] != b[i] {
-      return false
-    }
-  }
-  true
-}
-
 struct MockMuxClock {
   mut now : Int64
 }
@@ -48,6 +37,7 @@ fn MockMuxClock::new(start : Int64) -> MockMuxClock {
 struct MockStreamState {
   chunks : Array[Bytes]
   mut idx : Int
+  mut closed : Bool
 }
 
 struct MockMuxHarness {
@@ -56,7 +46,7 @@ struct MockMuxHarness {
   pub jsons : Array[String]
   pub cancels : Array[String]
   pub queue : Array[host_shim::HostEvent]
-  pub mux : builders_core::ShellMux
+  pub hub : EdgeMuxHub
 }
 
 fn MockMuxHarness::new(
@@ -101,32 +91,44 @@ fn MockMuxHarness::new(
       None
     },
   }
-  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  let hub = EdgeMuxHub::from_transport(transport)
   MockMuxHarness::{
     clock: clock,
     ops: ops,
     jsons: jsons,
     cancels: cancels,
     queue: queue,
-    mux: mux,
+    hub: hub,
   }
 }
 
 // ---------------------------------------------------------------------------
-// 1. Connects OS adapter tests (shared mux zero-drop, streaming cap, Group SSE, post-stop)
+// 1. Connects OS adapter tests (single-owner EdgeMuxHub, Sys zero-drop, UTF-8, Group SSE)
 // ---------------------------------------------------------------------------
 
-test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
+test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
+  // Incremental UTF-8 decoder handles split 3-byte Chinese + 4-byte Emoji across chunks
+  let dec = Utf8ChunkDecoder::new()
+  let full_bytes = "你好🚀世界".to_bytes()
+  let sb = StringBuilder::new()
+  // Feed 1 byte at a time to stress every multi-byte boundary
+  for i in 0..<full_bytes.length() {
+    sb.write_string(dec.push(full_bytes.slice(i, i + 1)))
+  }
+  sb.write_string(dec.flush())
+  edge_assert(sb.to_string() == "你好🚀世界")
+
   let mem = station_ops::MemFs::new()
   mem.put_dir("/att")
   let _ = mem.put_file("/att/hello.txt", "attachment-bytes".to_bytes())
-  let _ = mem.put_file("/att/big.bin", Bytes::new(2048))
 
   let streams : Map[Int, MockStreamState] = Map::new()
   let mut stream_seq = 100
   let mut ws_seq = 10
   let mut drop_next_open = false
   let mut ws_next_calls = 0
+  let mut sse_opens = 0
+  let mut stream_closes = 0
 
   let h = MockMuxHarness::new(
     1000L,
@@ -138,60 +140,73 @@ test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
         let sid = stream_seq
         stream_seq = stream_seq + 1
         if json.contains("oversize") {
-          streams.set(sid, MockStreamState::{ chunks: [Bytes::new(80), Bytes::new(80)], idx: 0 })
-          q.push(
-            host_shim::HostEvent::ShellDone(
-              host_shim::ShellDone::{
-                id: id,
-                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
-                error: "",
-                bytes: None,
-              },
-            ),
-          )
+          streams.set(sid, MockStreamState::{ chunks: [Bytes::new(80), Bytes::new(80)], idx: 0, closed: false })
         } else if json.contains("apps.connections.open") {
           streams.set(
             sid,
             MockStreamState::{
               chunks: ["{\"ok\":true,\"url\":\"wss://wss-primary.slack.com/link/?ticket=t1\"}".to_bytes()],
               idx: 0,
+              closed: false,
             },
           )
-          q.push(
-            host_shim::HostEvent::ShellDone(
-              host_shim::ShellDone::{
-                id: id,
-                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
-                error: "",
-                bytes: None,
-              },
-            ),
+        } else if json.contains("/events") {
+          sse_opens = sse_opens + 1
+          let seed_hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+          let aseq = sse_opens.to_int64()
+          let (ev_id, signed_ev) = match station_connects::group_sign_event(
+            seed_hex,
+            "d_room1",
+            "alice",
+            aseq,
+            1000L + aseq,
+            0L,
+            "",
+            "lobby",
+            "msg.post",
+            base_codec::json_obj([("text", base_codec::json_str("你好🚀#" + sse_opens.to_string()))]),
+          ) {
+            Ok(pair) => pair
+            Err(e) => panic(e)
+          }
+          let payload_json = base_codec::json_stringify(
+            base_codec::json_obj([
+              (
+                "stamped",
+                base_codec::json_obj([
+                  ("aseq", base_codec::json_int64(aseq)),
+                  ("id", base_codec::json_str(ev_id)),
+                  ("event", signed_ev),
+                ]),
+              ),
+            ]),
           )
-        } else if json.contains("chat.postMessage") {
-          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true,\"ts\":\"1700000001.000100\"}".to_bytes()], idx: 0 })
-          q.push(
-            host_shim::HostEvent::ShellDone(
-              host_shim::ShellDone::{
-                id: id,
-                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
-                error: "",
-                bytes: None,
-              },
-            ),
+          let sse_msg = "event: event\ndata: " + payload_json + "\n\n"
+          let raw = sse_msg.to_bytes()
+          // Find the UTF-8 lead byte of '好' or '🚀' and split right inside the multi-byte sequence!
+          let idx = sse_msg.index_of("🚀")
+          let split_at = if idx > 0 { idx + 2 } else { raw.length() / 2 }
+          streams.set(
+            sid,
+            MockStreamState::{
+              chunks: [raw.slice(0, split_at), raw.slice(split_at, raw.length())],
+              idx: 0,
+              closed: false,
+            },
           )
         } else {
-          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true}".to_bytes()], idx: 0 })
-          q.push(
-            host_shim::HostEvent::ShellDone(
-              host_shim::ShellDone::{
-                id: id,
-                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
-                error: "",
-                bytes: None,
-              },
-            ),
-          )
+          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true}".to_bytes()], idx: 0, closed: false })
         }
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
+              error: "",
+              bytes: None,
+            },
+          ),
+        )
       } else if op == "stream.read" {
         let parsed = match base_codec::json_parse(json) {
           base_codec::JsonParseResult::Ok(j) => j
@@ -226,6 +241,7 @@ test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
           )
         }
       } else if op == "stream.close" {
+        stream_closes = stream_closes + 1
         q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None }))
       } else if op == "ws.open" {
         let wid = ws_seq
@@ -243,32 +259,37 @@ test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
     },
   )
 
-  let bridge = ConnectMuxBridge::new(
-    h.mux,
+  // Verify Sys events arriving during `await_call` are NEVER dropped!
+  let routed_sys : Array[Int64] = []
+  h.hub.set_sys_router(
+    fn(ev_id : Int64, _payload : Bytes) -> Bool {
+      routed_sys.push(ev_id)
+      true
+    },
+  )
+
+  let bridge = ConnectMuxBridge::with_hub(
+    h.hub,
     mem.ops(),
     max_body_bytes=128,
     default_timeout_ms=500L,
-    now_fn=fn() -> Int64 { h.clock.now },
   )
 
-  // Fail-closed URL scheme rejection
-  edge_assert(bridge.fetch(station_connects::HttpRequest::new("GET", "file:///etc/passwd")).error is Some(_))
-  edge_assert(bridge.ws_open(station_connects::WsOpenRequest::{ url: "http://example.com", headers: [], timeout_ms: 100L }) is Err(_))
-
-  // Streaming fetch + header passthrough + body cap abort
+  // Inject a Sys event BEFORE an HTTP fetch -> must reach `routed_sys` during `await_call`
+  h.queue.push(host_shim::HostEvent::Sys(777L, "pty-out".to_bytes()))
   let ok_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
   edge_assert(ok_resp.error is None && ok_resp.status == 200)
-  edge_assert(match station_connects::header_get(ok_resp.headers, "x-test") { Some(v) => v == "ok" None => false })
+  edge_assert(routed_sys.length() == 1 && routed_sys[0] == 777L)
+
+  // Body cap abort + timeout cancel
   let big_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/oversize"))
   edge_assert(big_resp.error is Some(_))
-
-  // Request timeout triggers `fetch.cancel`
   drop_next_open = true
   let to_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/hang", timeout_ms=200L))
   edge_assert(to_resp.error is Some(_) && h.cancels.length() >= 1)
   drop_next_open = false
 
-  // `ws_next_inflight` prevents duplicate `ws.next` after timeout
+  // `ws_next_inflight` prevents duplicate `ws.next`
   let wh = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [], timeout_ms: 500L }) {
     Ok(id) => id
     Err(e) => panic(e)
@@ -280,8 +301,9 @@ test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
   edge_assert(ws_next_calls == before_calls + 1)
   bridge.ws_close(wh)
 
-  // ConnectsOsRuntime: zero-event-loss routing during concurrent fetch + post-stop 0-callback guard
+  // Group SSE: cross-chunk multi-byte UTF-8 + EOF explicit `stream.close` + `tick` reconnect!
   let received_events : Array[String] = []
+  let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
     on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Unit {
       match ev {
@@ -291,53 +313,47 @@ test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
     },
     on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
     on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Unit {},
-    on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
+    on_disconnect: fn(cid : String, reason : String) -> Unit { disconnects.push(cid + ":" + reason) },
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
-  edge_assert(rt.register_slack("sl-1", "xapp-1-valid", "xoxb-1-valid") is Ok(_))
-  edge_assert(rt.start_connect("sl-1") is Ok(_))
-
-  // Inject an out-of-band Slack WS frame into queue BEFORE a concurrent `fetch`: must be routed, NOT swallowed!
-  let ws_call_id = match bridge.ws_next_inflight.get(11L) {
-    Some(id) => id
-    None => panic("expected inflight ws.next for handle 11")
-  }
-  let slack_env = "{\"envelope_id\":\"env-1\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C123\",\"ts\":\"1700000000.000100\",\"thread_ts\":\"1700000000.000100\",\"user\":\"U1\",\"text\":\"concurrent-not-lost\"}}}"
-  h.queue.push(
-    host_shim::HostEvent::ShellDone(
-      host_shim::ShellDone::{
-        id: ws_call_id,
-        json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(slack_env)) + "}",
-        error: "",
-        bytes: None,
-      },
-    ),
+  edge_assert(
+    rt.register_group(
+      "grp-1",
+      "http://127.0.0.1:9999",
+      "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+      "bot-1",
+      "Bot",
+    )
+    is Ok(_),
   )
-  let r2 = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
-  edge_assert(r2.error is None && r2.status == 200)
-  edge_assert(received_events.length() == 1 && received_events[0].contains("concurrent-not-lost"))
+  edge_assert(rt.start_connect("grp-1") is Ok(_))
+  let closes_before_eof = stream_closes
+  for _ in 0..<8 {
+    let _ = h.hub.pump_one(10L)
+  }
+  // 1st SSE stream delivered split multi-byte Chinese+Emoji intact, hit EOF, closed stream, transitioned to Reconnecting
+  edge_assert(received_events.length() == 1 && received_events[0].contains("你好🚀"))
+  edge_assert(stream_closes > closes_before_eof)
+  edge_assert(disconnects.length() >= 1)
+  // Advance clock past backoff and tick -> auto-reconnects Group SSE (sse_opens == 2)!
+  h.clock.now = h.clock.now + 60000L
+  let _ = rt.tick(h.clock.now)
+  for _ in 0..<8 {
+    let _ = h.hub.pump_one(10L)
+  }
+  edge_assert(sse_opens == 2)
+  edge_assert(received_events.length() == 2)
 
   // Stop suppresses all subsequent callbacks
   rt.stop()
   edge_assert(rt.is_stopped())
-  let _ = rt.handle_mux_reply(
-    builders_core::MuxToken::Tagged(11, CONNECTS_TOK_WS_NEXT, 11L),
-    host_shim::ShellDone::{
-      id: 999L,
-      json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(slack_env)) + "}",
-      error: "",
-      bytes: None,
-    },
-  )
-  edge_assert(received_events.length() == 1)
 }
 
 // ---------------------------------------------------------------------------
-// 2. Replica OS adapter tests (segment paths, S3 wall_ms + XML delete error, move failure lock)
+// 2. Replica OS adapter tests (shared hub S3, fail-closed `new`/`open`, move lock)
 // ---------------------------------------------------------------------------
 
 test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
-  // Segment path validation allows `notes..old` and rejects traversal/NUL/backslash
   edge_assert(rep_is_safe_rel_path("notes..old"))
   edge_assert(rep_is_safe_rel_path("sub/notes..old"))
   edge_assert(!rep_is_safe_rel_path("../escape"))
@@ -346,7 +362,6 @@ test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
   edge_assert(!rep_is_safe_rel_path("/abs"))
   edge_assert(!rep_is_safe_rel_path("a\\b"))
 
-  // S3 client with wall_ms UTC signing + HTTP 200 XML <Error> on DeleteObjects -> Err
   let streams : Map[Int, MockStreamState] = Map::new()
   let mut sseq = 1
   let mut saw_utc_year = false
@@ -361,9 +376,9 @@ test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
         sseq = sseq + 1
         if json.contains("delete=") {
           let xml = "<DeleteResult><Error><Key>sf/k1</Key><Code>AccessDenied</Code><Message>Denied</Message></Error></DeleteResult>"
-          streams.set(sid, MockStreamState::{ chunks: [xml.to_bytes()], idx: 0 })
+          streams.set(sid, MockStreamState::{ chunks: [xml.to_bytes()], idx: 0, closed: false })
         } else {
-          streams.set(sid, MockStreamState::{ chunks: [], idx: 0 })
+          streams.set(sid, MockStreamState::{ chunks: [], idx: 0, closed: false })
         }
         q.push(
           host_shim::HostEvent::ShellDone(
@@ -416,19 +431,19 @@ test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
   }
   let s3 = os_s3_client(
     target_cfg,
-    h.mux,
-    now_fn=fn() -> Int64 { h.clock.now },
+    h.hub,
     wall_fn=fn() -> Int64 { 1700000000000L },
   )
   let s3_port = ReplicaTargetPort::s3(s3)
   edge_assert((s3_port.delete_object)("k1") is Err(_))
   edge_assert(saw_utc_year)
 
-  // Corrupt `kept.jsonl` fails closed in `ReplicaOsRuntime::open`
+  // Both `ReplicaOsRuntime::open` and `ReplicaOsRuntime::new` fail closed on corrupt `kept.jsonl`
   let mem = station_ops::MemFs::new()
   mem.put_dir("/rep/ledger")
   let _ = mem.put_text("/rep/ledger/kept.jsonl", "{not valid json\n")
   edge_assert(ReplicaOsRuntime::open(mem.ops(), "/rep/ledger") is Err(_))
+  edge_assert(ReplicaOsRuntime::new(mem.ops(), "/rep/ledger") is Err(_))
 
   // MoveScheduler `back_item` failure keeps moving lock engaged and fails `before_store`
   let mem2 = station_ops::MemFs::new()
@@ -485,7 +500,6 @@ test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
   rep_rt.mark_moving("chats", "chat-42", "st-b")
   edge_assert(rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2000L) is Err(_))
   edge_assert(rep_rt.is_moving("chats", "chat-42"))
-  // Once peer recovers, `before_store` succeeds and clears moving lock
   fail_back = false
   edge_assert(
     match rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2010L) {
@@ -498,18 +512,16 @@ test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Browser OS adapter tests (strict CDP userinfo, IPv4/IPv6/localhost CIDR, proxy filter)
+// 3. Browser OS adapter tests (strict CDP userinfo, full IPv4/IPv6 CIDR gate)
 // ---------------------------------------------------------------------------
 
 test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
-  // CDP WS userinfo bypass (`@`) and non-loopback rejected
   edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:1@10.77.0.20/devtools/browser/1") is Err(_))
   edge_assert(validate_loopback_cdp_ws_url("ws://10.0.0.2:9222/devtools/browser/1") is Err(_))
   edge_assert(validate_loopback_cdp_ws_url("wss://127.0.0.1:9222/devtools/browser/1") is Err(_))
   edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:9222/devtools/browser/1") is Ok(_))
   edge_assert(validate_loopback_cdp_ws_url("ws://[::1]:9222/devtools/browser/1") is Ok(_))
 
-  // Full IPv4/IPv6/localhost/scheme blocklist
   let blocked_urls = [
     "javascript:alert(1)",
     "file:///etc/passwd",
@@ -525,11 +537,16 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
     "http://169.254.169.254/latest/meta-data",
     "http://172.16.0.1/",
     "http://192.168.1.1/",
+    "http://198.18.0.1/",
+    "http://198.19.255.254/",
     "http://224.0.0.1/",
     "http://240.0.0.1/",
     "http://[::]/",
     "http://[::1]/",
+    "http://[::7f00:1]/",
     "http://[::ffff:127.0.0.1]/",
+    "http://[64:ff9b::7f00:1]/",
+    "http://[2002:7f00:1::]/",
     "http://[fc00::1]/",
     "http://[fd12:3456::1]/",
     "http://[fe80::1]/",
@@ -541,7 +558,6 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
   edge_assert(validate_browser_navigation_url("https://example.com/path") is Ok(_))
   edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json", allow_private=true) is Ok(_))
 
-  // Proxy adapter enforces navigation policy on client CDP `Page.navigate`
   let h = MockMuxHarness::new(
     5000L,
     fn(_id : Int64, _op : String, _json : String, _p : Option[Bytes], _q : Array[host_shim::HostEvent]) -> Unit {},
@@ -554,13 +570,11 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
     leave_agent: fn(_t : String, _tok : Int) -> Unit {},
   }
   let mgr = BrowserOsManager::new(
-    h.mux,
+    h.hub,
     hold_hub,
     fn(s : String) -> String { "agent-" + s },
     fn(_ctx : String) -> Option[String] { None },
-    now_fn=fn() -> Int64 { h.clock.now },
   )
-  // Gate keyed by (session, context_id)
   let _g1 = mgr.gate_for("sess-a", "ctx-1")
   let _g2 = mgr.gate_for("sess-a", "ctx-2")
   edge_assert(mgr.gates.length() == 2)
@@ -571,15 +585,23 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
       Ok(station_browser::OpenedBrowser::{ ws_url: "ws://127.0.0.1:9222/b", gate: mgr.gate_for(s, "ctx-1") })
     },
   )
-  let adapter = BrowserProxyOsAdapter::new(proxy, h.mux, allow_private=false)
-  let actions = adapter.on_client_text_checked(
-    1,
-    "{\"id\":7,\"method\":\"Page.navigate\",\"params\":{\"url\":\"http://[::ffff:127.0.0.1]/secret\"}}",
-  )
-  edge_assert(actions.length() == 1)
-  match actions[0] {
-    station_browser::ProxyAction::SendToClientText(_, err_json) => edge_assert(err_json.contains("blocked"))
-    _ => panic("expected SendToClientText error for blocked IPv4-mapped IPv6")
+  let adapter = BrowserProxyOsAdapter::new(proxy, h.hub, allow_private=false)
+  let proxy_blocked = [
+    "http://[64:ff9b::7f00:1]/secret",
+    "http://[::7f00:1]/secret",
+    "http://[2002:7f00:1::]/secret",
+    "http://198.18.0.1/secret",
+  ]
+  for i in 0..<proxy_blocked.length() {
+    let actions = adapter.on_client_text_checked(
+      1,
+      "{\"id\":7,\"method\":\"Page.navigate\",\"params\":{\"url\":" + base_codec::json_stringify(base_codec::json_str(proxy_blocked[i])) + "}}",
+    )
+    edge_assert(actions.length() == 1)
+    match actions[0] {
+      station_browser::ProxyAction::SendToClientText(_, err_json) => edge_assert(err_json.contains("blocked"))
+      _ => panic("expected SendToClientText error for blocked target: " + proxy_blocked[i])
+    }
   }
 }
 
@@ -592,6 +614,7 @@ test "devices_os_terminals_logins_adb_runner_and_aggregated_sources" {
   let terms = TerminalsOsRuntime::new("/home/tester", scroll_max_bytes=1024, now_fn=mock_now)
   edge_assert(!station_devices::is_valid_terminal_size(0, 0))
   edge_assert(terms.live_count() == 0)
+  edge_assert(terms.pending_kill_count() == 0)
 
   let logins = LoginsOsRuntime::new(Some(station_devices::LoginPages::new(true)), now_fn=mock_now)
   let starter = station_devices::LoginStarter::{

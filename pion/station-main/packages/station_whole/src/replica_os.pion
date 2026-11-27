@@ -1,21 +1,22 @@
 // Production OS adapter for `station_replica`:
-// - True chunked streaming SFB1 encryption/decryption (`sfb1_seal_file_streaming`,
-//   `sfb1_open_file_streaming`) using 256 KiB chunks via `station_sys::read_range_meta`,
-//   `station_sys::write_at`, `station_sys::sync_file`, and atomic `rename` (never buffers whole
-//   files in RAM; cleans up temp file on AEAD rejection).
-// - Raw binary `ReplicaTargetPort::local` over `station_sys` (never JSON-encoding binary data).
-// - Segment-validated relative paths (allowing `notes..old`, rejecting `.`/`..`/symlinks).
-// - SFB1 anti-rollback: AAD `logical_path` binds `gen` (`"head/" + gen`, `"index/" + gen`),
-//   validates `head.gen/workspace/origin` + exact `index`/`head.files` set equality, and stages
-//   all restored files into an exclusive temporary directory with symlink-free verification
-//   before atomic cutover into `dst` (zero partial plaintext on failure).
-// - Real SigV4 S3 client using `host_shim::wall_ms` for UTC signing and `EdgeMuxHub` streaming
-//   `stream.open`/`stream.read` body cap + XML `<Error>` rejection on `DeleteObjects`.
-// - `ReplicaOsRuntime` wiring `WriteGate`, `MoveScheduler`, failure-locked `before_store` /
-//   `take_back_soon`, and fail-closed `kept.jsonl` persistence, plus `ShareOsSync`.
+// - True chunked streaming SFB1 encryption/decryption (256 KiB chunks via `crypto::Sha256`
+//   incremental hashing + `station_sys::read_range_meta` / `write_at` / `sync_file` / `rename`).
+// - Raw binary `ReplicaTargetPort::local` over `station_sys` with symlink rejection on
+//   `put_object`, `get_object`, AND `delete_object`.
+// - SFB1 anti-rollback: gen-bound AAD (`"head/" + gen`, `"index/" + gen`), strict identity &
+//   `index`/`head.files` parity validation.
+// - True atomic / rollback-safe directory restore: if `dst` is absent/empty, single atomic
+//   `rename(stage_dir, dst)`; if `dst` is non-empty, pre-checks symlinks & dir collisions and
+//   backs up overwritten files into `<dst>.restore-bak.<pid>.<rand>`, rolling back every move
+//   in reverse order on any mid-cutover failure so `dst` remains byte-for-byte identical.
+// - Real SigV4 S3 client reusing the caller's shared `EdgeMuxHub` (never creates a temporary hub),
+//   `host_shim::wall_ms` UTC signing, streaming response cap, and XML `<Error>` rejection on
+//   `DeleteObjects`.
+// - Fail-closed `ReplicaOsRuntime::new` / `open` (returns `Result`, never falls back to an empty
+//   ledger on corrupt `kept.jsonl`), failure-locked `before_store` / `take_back_soon`, and
+//   `ShareOsSync`.
 
 import "base_codec"
-import "builders_core"
 import "crypto"
 import "host_shim"
 import "nodepath"
@@ -44,10 +45,8 @@ fn rep_concat_bytes(parts : Array[Bytes]) -> Bytes {
   out
 }
 
-/// Strictly validates a relative path segment-by-segment:
-/// - Rejects empty path, leading/trailing `/`, `\`, NUL, drive letters (`C:`), empty segments,
-///   `.` and `..`.
-/// - Allows valid filenames containing `..` such as `notes..old` or `a/notes..old`.
+/// Strictly validates a relative path segment-by-segment (allows `notes..old`, rejects `.`/`..`/
+/// empty segments/leading or trailing `/`/`\`/NUL/drive letters).
 pub fn rep_is_safe_rel_path(rel : String) -> Bool {
   let raw = rel.to_bytes()
   let n = raw.length()
@@ -103,8 +102,6 @@ fn rep_split_rel_segments(rel : String) -> Array[String] {
   out
 }
 
-/// Checks every path prefix under `root` for `rel` via `lstat_raw_err`, strictly rejecting any
-/// symlink component (prevents `a -> /outside` symlink escape).
 fn rep_reject_symlinks_along(root : String, rel : String) -> Result[Unit, String] {
   match station_sys::lstat_raw_err(root) {
     Ok(st) => if st.starts_with("link|") { return Err("symlink root rejected: " + root) }
@@ -123,7 +120,7 @@ fn rep_reject_symlinks_along(root : String, rel : String) -> Result[Unit, String
           return Err("non-directory parent component rejected: " + cur)
         }
       }
-      Err(-2) => () // ENOENT is fine for components not yet created
+      Err(-2) => ()
       Err(code) => return Err("lstat failed on " + cur + " (code=" + code.to_string() + ")")
     }
   }
@@ -209,7 +206,6 @@ pub fn rep_write_binary_atomic(dst_path : String, data : Bytes) -> Result[Unit, 
   Ok(())
 }
 
-/// Raw binary read over `station_sys::read_range_meta`.
 pub fn rep_read_binary_file(src_path : String) -> Result[Bytes, String] {
   let parts : Array[Bytes] = []
   let mut off = 0L
@@ -231,12 +227,34 @@ pub fn rep_read_binary_file(src_path : String) -> Result[Bytes, String] {
   Ok(rep_concat_bytes(parts))
 }
 
+/// Streaming SHA-256 hash + total byte size of a disk file in 256 KiB chunks (O(1) RAM).
+fn rep_hash_file_streaming(src_path : String) -> Result[(String, Int64), String] {
+  let hasher = crypto::Sha256::new()
+  let mut off = 0L
+  let mut total_sz = 0L
+  while true {
+    match station_sys::read_range_meta(src_path, off, REPLICA_STREAM_CHUNK_BYTES.to_int64()) {
+      Err(code) => return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+      Ok((chunk, sz, _)) => {
+        total_sz = sz
+        if chunk.length() == 0 {
+          break
+        }
+        hasher.update(chunk)
+        off = off + chunk.length().to_int64()
+        if off >= sz {
+          break
+        }
+      }
+    }
+  }
+  Ok((station_sys::hex_encode(hasher.finalize()), total_sz))
+}
+
 // ---------------------------------------------------------------------------
 // 1. True Chunked Streaming SFB1 Seal / Open (bounded RAM + atomic cutover)
 // ---------------------------------------------------------------------------
 
-/// Encrypts `src_path` to `dst_path` using bounded-memory 256 KiB chunked streaming via
-/// `Sfb1StreamSealer` + `station_sys::write_at` + `sync_file` + atomic `rename`.
 pub fn sfb1_seal_file_streaming(
   key : Bytes,
   ctx : station_replica::Sfb1Context,
@@ -332,10 +350,6 @@ pub fn sfb1_seal_file_streaming(
   Ok(total_plain)
 }
 
-/// Decrypts `src_path` to `dst_path` using bounded-memory chunked streaming via
-/// `Sfb1StreamOpener` + `station_sys::write_at` + `sync_file` + atomic `rename`.
-/// Strictly rejects any AEAD tag mismatch/truncation and unlinks the temp file so `dst_path`
-/// is never created or modified on failure.
 pub fn sfb1_open_file_streaming(
   key : Bytes,
   ctx : station_replica::Sfb1Context,
@@ -427,13 +441,12 @@ pub fn sfb1_open_file_streaming(
 }
 
 // ---------------------------------------------------------------------------
-// 2. Real SigV4 S3 Transport (`wall_ms` UTC signing + streaming cap) & `ReplicaTargetPort`
+// 2. Real SigV4 S3 Transport (Shared `EdgeMuxHub` ONLY + `wall_ms` UTC) & `ReplicaTargetPort`
 // ---------------------------------------------------------------------------
 
-/// Build a real `station_replica::S3Client` whose signed SigV4 HTTP requests use `wall_fn`
-/// (default `host_shim::wall_ms` for real UTC dates) and execute over `EdgeMuxHub` streaming
-/// `stream.open`/`stream.read` (zero event loss + bounded response body).
-pub fn os_s3_client_with_hub(
+/// Build a real `station_replica::S3Client` reusing the caller's shared `EdgeMuxHub` (never
+/// creates a temporary hub), signing with `wall_fn` (default `host_shim::wall_ms`).
+pub fn os_s3_client(
   target : station_replica::NormalizedS3Target,
   hub : EdgeMuxHub,
   wall_fn : () -> Int64 = host_shim::wall_ms,
@@ -476,32 +489,14 @@ pub fn os_s3_client_with_hub(
   )
 }
 
-pub fn os_s3_client(
-  target : station_replica::NormalizedS3Target,
-  mux : builders_core::ShellMux,
-  now_fn : () -> Int64 = host_shim::now_ms,
-  wall_fn : () -> Int64 = host_shim::wall_ms,
-  timeout_ms : Int64 = REPLICA_S3_TIMEOUT_MS,
-  max_body_bytes : Int = REPLICA_S3_MAX_BODY_BYTES,
-) -> station_replica::S3Client {
-  os_s3_client_with_hub(
-    target,
-    EdgeMuxHub::new(mux, now_fn=now_fn),
-    wall_fn=wall_fn,
-    timeout_ms=timeout_ms,
-    max_body_bytes=max_body_bytes,
-  )
-}
-
-/// Uniform object target port for local binary directory or S3 replica storage.
 pub struct ReplicaTargetPort {
   pub put_object : (String, Bytes) -> Result[Unit, String]
   pub get_object : (String) -> Result[Bytes, String]
   pub delete_object : (String) -> Result[Unit, String]
 }
 
-/// Production local disk target using raw binary `station_sys` I/O (atomic temp write + fsync +
-/// rename, symlink-free segment validation). Never uses JSON text-encoded `OpsFs.write_bytes`.
+/// Production local disk target using raw binary `station_sys` I/O with strict symlink rejection
+/// along every path component on `put_object`, `get_object`, AND `delete_object`.
 pub fn ReplicaTargetPort::local_disk(root_dir : String) -> ReplicaTargetPort {
   ReplicaTargetPort::{
     put_object: fn(key : String, data : Bytes) -> Result[Unit, String] {
@@ -530,6 +525,10 @@ pub fn ReplicaTargetPort::local_disk(root_dir : String) -> ReplicaTargetPort {
       if !rep_is_safe_rel_path(key) {
         return Err("unsafe replica object key: " + key)
       }
+      match rep_reject_symlinks_along(root_dir, key) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
       let full = nodepath::join("/", [root_dir, key])
       let _ = station_sys::unlink(full)
       Ok(())
@@ -537,7 +536,6 @@ pub fn ReplicaTargetPort::local_disk(root_dir : String) -> ReplicaTargetPort {
   }
 }
 
-/// Injectable `OpsFs`-backed local target for in-memory `MemFs` unit tests.
 pub fn ReplicaTargetPort::local_mem(root_dir : String, fs : station_ops::OpsFs) -> ReplicaTargetPort {
   ReplicaTargetPort::{
     put_object: fn(key : String, data : Bytes) -> Result[Unit, String] {
@@ -576,7 +574,6 @@ pub fn ReplicaTargetPort::local_mem(root_dir : String, fs : station_ops::OpsFs) 
   }
 }
 
-/// Default local disk target (`ReplicaTargetPort::local_disk`), preserving clean binary I/O.
 pub fn ReplicaTargetPort::local(root_dir : String) -> ReplicaTargetPort {
   ReplicaTargetPort::local_disk(root_dir)
 }
@@ -623,7 +620,7 @@ pub fn ReplicaTargetPort::s3(client : station_replica::S3Client) -> ReplicaTarge
 }
 
 // ---------------------------------------------------------------------------
-// 3. Directory-level SFB1 Backup & Staged Symlink-Free Atomic Restore
+// 3. Directory-level Streaming SFB1 Backup & Atomic/Rollback-Safe Restore
 // ---------------------------------------------------------------------------
 
 pub struct BackupBundleResult {
@@ -663,8 +660,8 @@ fn rep_collect_files(
   Ok(())
 }
 
-/// Pack a local directory into SFB1-encrypted content-addressed blobs + transcript manifest +
-/// gen-bound encrypted `index.json` and `head.json` and upload them to `target`.
+/// Stream-hash and stream-seal a directory's files in 256 KiB chunks (via `crypto::Sha256` and
+/// `sfb1_seal_file_streaming` into a scratch blob file) and upload them with gen-bound AAD.
 pub fn backup_dir_sfb1(
   src_dir : String,
   target : ReplicaTargetPort,
@@ -690,86 +687,77 @@ pub fn backup_dir_sfb1(
   let uploaded : Array[String] = []
   let mut total_bytes = 0L
 
+  let scratch_hex = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err("random_hex failed: " + e)
+  }
+  let scratch_dir = nodepath::join("/", [station_sys::tmpdir(), ".sf-backup-scratch-" + scratch_hex])
+  if !station_sys::mkdir_exclusive(scratch_dir) {
+    return Err("mkdir_exclusive failed for backup scratch dir")
+  }
+
   for i in 0..<sorted.length() {
     let rel = sorted[i]
     if !rep_is_safe_rel_path(rel) {
+      rep_remove_tree(scratch_dir)
       return Err("unsafe source path: " + rel)
     }
     let full = nodepath::join("/", [src_dir, rel])
-    let plain_parts : Array[Bytes] = []
-    let mut off = 0L
-    let mut fsize = 0L
-    while true {
-      match station_sys::read_range_meta(full, off, REPLICA_STREAM_CHUNK_BYTES.to_int64()) {
-        Err(code) => return Err("read_range_meta failed: " + full + " code=" + code.to_string())
-        Ok((chunk, total_sz, _)) => {
-          fsize = total_sz
-          if chunk.length() == 0 {
-            break
-          }
-          off = off + chunk.length().to_int64()
-          plain_parts.push(chunk)
-          if off >= total_sz {
-            break
-          }
-        }
+    let (content_hash, fsize) = match rep_hash_file_streaming(full) {
+      Ok(pair) => pair
+      Err(e) => {
+        rep_remove_tree(scratch_dir)
+        return Err(e)
       }
     }
-    let content_hash = station_sys::hex_encode(crypto::sha256(rep_concat_bytes(plain_parts)))
     let salt = match salt_fn() {
       Ok(s) => s
-      Err(e) => return Err("salt generation failed: " + e)
+      Err(e) => {
+        rep_remove_tree(scratch_dir)
+        return Err("salt generation failed: " + e)
+      }
     }
     let ctx = station_replica::Sfb1Context::{
       ws: ws,
       origin: origin,
       logical_path: "blobs/" + content_hash,
     }
-    let sealer = match station_replica::Sfb1StreamSealer::new(enc_key, ctx, salt) {
-      Ok(s) => s
-      Err(e) => return Err("sealer init failed: " + e)
-    }
-    let sealed_parts : Array[Bytes] = []
-    for p_idx in 0..<plain_parts.length() {
-      match sealer.push(plain_parts[p_idx]) {
-        Ok(out_chunks) => {
-          for j in 0..<out_chunks.length() {
-            sealed_parts.push(out_chunks[j])
-          }
-        }
-        Err(e) => return Err("sfb1 push failed: " + e)
+    let tmp_blob = nodepath::join("/", [scratch_dir, content_hash + ".sfb1"])
+    match sfb1_seal_file_streaming(enc_key, ctx, full, tmp_blob, salt) {
+      Ok(_) => ()
+      Err(e) => {
+        rep_remove_tree(scratch_dir)
+        return Err(e)
       }
     }
-    match sealer.finish() {
-      Ok(out_chunks) => {
-        for j in 0..<out_chunks.length() {
-          sealed_parts.push(out_chunks[j])
-        }
+    let cipher = match rep_read_binary_file(tmp_blob) {
+      Ok(b) => b
+      Err(e) => {
+        rep_remove_tree(scratch_dir)
+        return Err(e)
       }
-      Err(e) => return Err("sfb1 finish failed: " + e)
     }
+    let _ = station_sys::unlink(tmp_blob)
     let obj_key = "gen/" + gen + "/blobs/" + content_hash
-    let cipher = rep_concat_bytes(sealed_parts)
     match (target.put_object)(obj_key, cipher) {
       Ok(_) => ()
-      Err(e) => return Err("put_object failed for " + obj_key + ": " + e)
+      Err(e) => {
+        rep_remove_tree(scratch_dir)
+        return Err("put_object failed for " + obj_key + ": " + e)
+      }
     }
     uploaded.push(obj_key)
     files_map.set(content_hash, fsize)
     index_fields.push((rel, base_codec::json_str(content_hash)))
     total_bytes = total_bytes + fsize
   }
+  rep_remove_tree(scratch_dir)
 
-  // Seal and upload gen-bound index.json (AAD logical_path binds `gen` to prevent rollback).
   let index_salt = match salt_fn() {
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  let index_ctx = station_replica::Sfb1Context::{
-    ws: ws,
-    origin: origin,
-    logical_path: "index/" + gen,
-  }
+  let index_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "index/" + gen }
   let index_bytes = base_codec::json_stringify(base_codec::json_obj(index_fields)).to_bytes()
   let index_cipher = match station_replica::sfb1_seal(enc_key, index_ctx, index_bytes, index_salt) {
     Ok(c) => c
@@ -850,12 +838,7 @@ pub fn backup_dir_sfb1(
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  // Bind `head.json` AAD strictly to `gen` ("head/" + gen) to prevent cross-generation rollback.
-  let head_ctx = station_replica::Sfb1Context::{
-    ws: ws,
-    origin: origin,
-    logical_path: "head/" + gen,
-  }
+  let head_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "head/" + gen }
   let head_cipher = match station_replica::sfb1_seal(enc_key, head_ctx, station_replica::head_to_bytes(head), head_salt) {
     Ok(c) => c
     Err(e) => return Err(e)
@@ -869,9 +852,14 @@ pub fn backup_dir_sfb1(
   Ok(BackupBundleResult::{ head: head, manifest_root: encoded.root_hash, uploaded_keys: uploaded })
 }
 
-/// Restore an SFB1-encrypted backup generation into `dst_dir` with full anti-rollback,
-/// symlink-escape rejection, staging isolation, and atomic cutover (zero partial files in
-/// `dst_dir` if any blob fails AEAD or SHA-256 verification).
+/// True atomic / rollback-safe directory restore:
+/// - Stream-decrypts each blob in 256 KiB chunks straight into an exclusive staging directory
+///   while verifying incremental SHA-256 == `content_hash`.
+/// - If `dst_dir` does not exist or is an empty directory: single atomic `rename(stage_dir, dst_dir)`.
+/// - If `dst_dir` exists and is non-empty: pre-checks every target path for symlinks and
+///   directory collisions, moves overwritten files into `<dst_dir>.restore-bak.<pid>.<rand>`,
+///   and rolls back every move in reverse order if any step fails so `dst_dir` is preserved
+///   byte-for-byte.
 pub fn restore_dir_sfb1(
   target : ReplicaTargetPort,
   dst_dir : String,
@@ -888,11 +876,7 @@ pub fn restore_dir_sfb1(
     Ok(b) => b
     Err(e) => return Err("get head.json failed: " + e)
   }
-  let head_ctx = station_replica::Sfb1Context::{
-    ws: ws,
-    origin: origin,
-    logical_path: "head/" + gen,
-  }
+  let head_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "head/" + gen }
   let head_plain = match station_replica::sfb1_open(enc_key, head_ctx, head_cipher) {
     Ok(p) => p
     Err(e) => return Err("head.json AEAD reject: " + e)
@@ -905,7 +889,6 @@ pub fn restore_dir_sfb1(
     Some(h) => h
     None => return Err("head.json failed schema validation")
   }
-  // Strict anti-rollback & identity binding
   if head.gen != gen || head.workspace != ws || head.origin != origin {
     return Err("head.json identity mismatch (rollback or cross-origin substitution rejected)")
   }
@@ -918,11 +901,7 @@ pub fn restore_dir_sfb1(
           match (target.get_object)(mkey) {
             Err(e) => Err(e)
             Ok(cipher) => {
-              let mctx = station_replica::Sfb1Context::{
-                ws: ws,
-                origin: origin,
-                logical_path: "manifest/" + hash,
-              }
+              let mctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "manifest/" + hash }
               match station_replica::sfb1_open(enc_key, mctx, cipher) {
                 Ok(plain) => Ok(Some(plain))
                 Err(e) => Err("manifest AEAD reject: " + e)
@@ -944,11 +923,7 @@ pub fn restore_dir_sfb1(
     Ok(b) => b
     Err(e) => return Err("get index.json failed: " + e)
   }
-  let index_ctx = station_replica::Sfb1Context::{
-    ws: ws,
-    origin: origin,
-    logical_path: "index/" + gen,
-  }
+  let index_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "index/" + gen }
   let index_plain = match station_replica::sfb1_open(enc_key, index_ctx, index_cipher) {
     Ok(p) => p
     Err(e) => return Err("index.json AEAD reject: " + e)
@@ -958,7 +933,7 @@ pub fn restore_dir_sfb1(
     _ => return Err("invalid index.json format")
   }
 
-  // Validate exact path safety, symlink-free dst prefixes, and 100% index <-> head.files parity.
+  // Pre-flight validation: path safety, symlink rejection, dir collision rejection, and exact hash parity.
   let seen_hashes : Map[String, Bool] = Map::new()
   let verified_items : Array[(String, String)] = []
   for i in 0..<index_entries.length() {
@@ -969,6 +944,19 @@ pub fn restore_dir_sfb1(
     match rep_reject_symlinks_along(dst_dir, rel) {
       Ok(_) => ()
       Err(e) => return Err(e)
+    }
+    let target_file = nodepath::join("/", [dst_dir, rel])
+    match station_sys::lstat_raw_err(target_file) {
+      Ok(st) => {
+        if st.starts_with("dir|") {
+          return Err("restore target path occupied by existing directory: " + target_file)
+        }
+        if st.starts_with("link|") {
+          return Err("restore target path is a symlink: " + target_file)
+        }
+      }
+      Err(-2) => ()
+      Err(code) => return Err("lstat failed on target " + target_file + " (code=" + code.to_string() + ")")
     }
     let content_hash = match hv {
       base_codec::Json::Str(s) => s
@@ -987,7 +975,7 @@ pub fn restore_dir_sfb1(
     }
   }
 
-  // Stage all decrypted blobs in a private exclusive staging directory before touching `dst_dir`.
+  // Stage all decrypted blobs in an exclusive sibling staging directory (chunked streaming write).
   let stage_parent = nodepath::dirname("/", dst_dir)
   if !station_sys::mkdir_p(stage_parent) {
     return Err("mkdir_p failed for stage parent: " + stage_parent)
@@ -1011,11 +999,7 @@ pub fn restore_dir_sfb1(
         return Err("get_object failed for " + obj_key + ": " + e)
       }
     }
-    let ctx = station_replica::Sfb1Context::{
-      ws: ws,
-      origin: origin,
-      logical_path: "blobs/" + content_hash,
-    }
+    let ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "blobs/" + content_hash }
     let opener = match station_replica::Sfb1StreamOpener::new(enc_key, ctx) {
       Ok(o) => o
       Err(e) => {
@@ -1023,7 +1007,14 @@ pub fn restore_dir_sfb1(
         return Err(e)
       }
     }
-    let plain_parts : Array[Bytes] = []
+    let stage_file = nodepath::join("/", [stage_dir, rel])
+    let stage_fparent = nodepath::dirname("/", stage_file)
+    if !station_sys::mkdir_p(stage_fparent) {
+      rep_remove_tree(stage_dir)
+      return Err("mkdir_p failed for " + stage_fparent)
+    }
+    let hasher = crypto::Sha256::new()
+    let mut write_off = 0L
     let mut pos = 0
     while pos < cipher.length() {
       let end = if pos + REPLICA_STREAM_CHUNK_BYTES < cipher.length() {
@@ -1035,7 +1026,18 @@ pub fn restore_dir_sfb1(
       match opener.push(slice) {
         Ok(out_chunks) => {
           for j in 0..<out_chunks.length() {
-            plain_parts.push(out_chunks[j])
+            let c = out_chunks[j]
+            if c.length() == 0 {
+              continue
+            }
+            hasher.update(c)
+            match station_sys::write_at(stage_file, write_off, c, write_off == 0L, None, None, false) {
+              Ok(_) => write_off = write_off + c.length().to_int64()
+              Err(code) => {
+                rep_remove_tree(stage_dir)
+                return Err("stage write_at failed for " + rel + " (code=" + code.to_string() + ")")
+              }
+            }
           }
         }
         Err(e) => {
@@ -1052,33 +1054,100 @@ pub fn restore_dir_sfb1(
         return Err("sfb1 finish reject on " + rel + ": " + e)
       }
     }
-    let plain = rep_concat_bytes(plain_parts)
-    let actual_hash = station_sys::hex_encode(crypto::sha256(plain))
+    if write_off == 0L {
+      match station_sys::write_at(stage_file, 0L, Bytes::new(0), true, None, Some(0L), true) {
+        Ok(_) => ()
+        Err(code) => {
+          rep_remove_tree(stage_dir)
+          return Err("stage empty write failed for " + rel + " (code=" + code.to_string() + ")")
+        }
+      }
+    }
+    match station_sys::sync_file(stage_file) {
+      Ok(_) => ()
+      Err(code) => {
+        rep_remove_tree(stage_dir)
+        return Err("stage sync_file failed for " + rel + " (code=" + code.to_string() + ")")
+      }
+    }
+    let actual_hash = station_sys::hex_encode(hasher.finalize())
     if actual_hash != content_hash {
       rep_remove_tree(stage_dir)
       return Err("content sha256 mismatch for " + rel)
     }
-    let stage_file = nodepath::join("/", [stage_dir, rel])
-    match rep_write_binary_atomic(stage_file, plain) {
-      Ok(_) => ()
-      Err(e) => {
-        rep_remove_tree(stage_dir)
-        return Err("stage write failed for " + rel + ": " + e)
-      }
-    }
   }
 
-  // All blobs verified and staged cleanly: cut over into `dst_dir` with re-verified symlink guard.
-  if !station_sys::mkdir_p(dst_dir) {
-    rep_remove_tree(stage_dir)
-    return Err("mkdir_p failed for " + dst_dir)
+  // Case A: `dst_dir` does not exist or is an empty directory -> single atomic directory rename!
+  let mut dst_is_absent_or_empty = false
+  match station_sys::lstat_raw_err(dst_dir) {
+    Err(-2) => dst_is_absent_or_empty = true
+    Ok(st) => {
+      if st.starts_with("dir|") {
+        match station_sys::read_dir(dst_dir) {
+          Some(entries) => {
+            if entries.length() == 0 {
+              if station_sys::rmdir(dst_dir) {
+                dst_is_absent_or_empty = true
+              }
+            }
+          }
+          None => ()
+        }
+      } else {
+        rep_remove_tree(stage_dir)
+        return Err("restore destination is not a directory: " + dst_dir)
+      }
+    }
+    Err(code) => {
+      rep_remove_tree(stage_dir)
+      return Err("lstat failed on dst_dir (code=" + code.to_string() + ")")
+    }
   }
+  if dst_is_absent_or_empty {
+    if station_sys::rename(stage_dir, dst_dir) {
+      return Ok(head)
+    }
+    rep_remove_tree(stage_dir)
+    return Err("atomic directory rename failed for " + dst_dir)
+  }
+
+  // Case B: `dst_dir` exists and is non-empty -> transactional backup + reverse rollback on error!
+  let bak_hex = match station_sys::random_hex(6) {
+    Ok(h) => h
+    Err(e) => {
+      rep_remove_tree(stage_dir)
+      return Err(e)
+    }
+  }
+  let bak_dir = dst_dir + ".restore-bak." + host_shim::pid().to_string() + "." + bak_hex
+  if !station_sys::mkdir_exclusive(bak_dir) {
+    rep_remove_tree(stage_dir)
+    return Err("mkdir_exclusive failed for restore backup dir: " + bak_dir)
+  }
+  let moved_old : Array[(String, String)] = []
+  let moved_new : Array[String] = []
+  let rollback = fn() -> Unit {
+    let mut k = moved_new.length() - 1
+    while k >= 0 {
+      let _ = station_sys::unlink(moved_new[k])
+      k = k - 1
+    }
+    let mut m = moved_old.length() - 1
+    while m >= 0 {
+      let (bak_path, orig_path) = moved_old[m]
+      let _ = station_sys::rename(bak_path, orig_path)
+      m = m - 1
+    }
+    rep_remove_tree(stage_dir)
+    rep_remove_tree(bak_dir)
+  }
+
   for i in 0..<verified_items.length() {
     let (rel, _) = verified_items[i]
     match rep_reject_symlinks_along(dst_dir, rel) {
       Ok(_) => ()
       Err(e) => {
-        rep_remove_tree(stage_dir)
+        rollback()
         return Err(e)
       }
     }
@@ -1086,20 +1155,42 @@ pub fn restore_dir_sfb1(
     let dst_file = nodepath::join("/", [dst_dir, rel])
     let dst_parent = nodepath::dirname("/", dst_file)
     if !station_sys::mkdir_p(dst_parent) {
-      rep_remove_tree(stage_dir)
+      rollback()
       return Err("mkdir_p failed for " + dst_parent)
     }
+    match station_sys::lstat_raw_err(dst_file) {
+      Ok(st) => {
+        if st.starts_with("dir|") || st.starts_with("link|") {
+          rollback()
+          return Err("restore target occupied by dir/symlink: " + dst_file)
+        }
+        let bak_file = nodepath::join("/", [bak_dir, rel])
+        let bak_parent = nodepath::dirname("/", bak_file)
+        if !station_sys::mkdir_p(bak_parent) || !station_sys::rename(dst_file, bak_file) {
+          rollback()
+          return Err("failed to back up existing file before overwrite: " + dst_file)
+        }
+        moved_old.push((bak_file, dst_file))
+      }
+      Err(-2) => ()
+      Err(code) => {
+        rollback()
+        return Err("lstat failed on " + dst_file + " (code=" + code.to_string() + ")")
+      }
+    }
     if !station_sys::rename(src_staged, dst_file) {
-      rep_remove_tree(stage_dir)
+      rollback()
       return Err("atomic cutover rename failed for " + dst_file)
     }
+    moved_new.push(dst_file)
   }
   rep_remove_tree(stage_dir)
+  rep_remove_tree(bak_dir)
   Ok(head)
 }
 
 // ---------------------------------------------------------------------------
-// 4. `ReplicaOsRuntime` (`WriteGate` + `MoveScheduler` `before_store`/`take_back_soon`)
+// 4. `ReplicaOsRuntime` (Fail-Closed `new`/`open` + Failure-Locked `before_store`)
 // ---------------------------------------------------------------------------
 
 pub struct MoveWriteHookEvent {
@@ -1122,7 +1213,7 @@ pub struct ReplicaOsRuntime {
 }
 
 /// Fail-closed constructor: treats ONLY `FsErr::NotFound` as an empty ledger; any I/O or
-/// corrupt JSONL line returns `Err(...)` instead of silently overwriting `kept.jsonl`.
+/// corrupt JSONL entry returns `Err(...)` instead of silently overwriting `kept.jsonl`.
 pub fn ReplicaOsRuntime::open(
   fs : station_ops::OpsFs,
   ledger_dir : String,
@@ -1132,7 +1223,6 @@ pub fn ReplicaOsRuntime::open(
     Err(station_ops::FsErr::NotFound) => station_replica::KeptLog::new()
     Err(e) => return Err("failed to read kept.jsonl: " + station_ops::fs_err_msg(e))
     Ok(text) => {
-      // Validate every non-empty line is valid JSON with string `k` before accepting.
       let raw = text.to_bytes()
       let mut start = 0
       for i in 0..<(raw.length() + 1) {
@@ -1168,21 +1258,13 @@ pub fn ReplicaOsRuntime::open(
   )
 }
 
-pub fn ReplicaOsRuntime::new(fs : station_ops::OpsFs, ledger_dir : String) -> ReplicaOsRuntime {
-  match ReplicaOsRuntime::open(fs, ledger_dir) {
-    Ok(rt) => rt
-    Err(_) => ReplicaOsRuntime::{
-      fs: fs,
-      ledger_dir: ledger_dir,
-      write_gate: station_replica::WriteGate::new(),
-      handoff_cache: station_replica::HandoffCache::new(),
-      kept_log: station_replica::KeptLog::new(),
-      lent_log: station_replica::LentLog::new(),
-      scheduler: None,
-      hook_events: [],
-      in_flight_moves: Map::new(),
-    }
-  }
+/// Strict fail-closed alias for `ReplicaOsRuntime::open` (never silently falls back to an empty
+/// ledger).
+pub fn ReplicaOsRuntime::new(
+  fs : station_ops::OpsFs,
+  ledger_dir : String,
+) -> Result[ReplicaOsRuntime, String] {
+  ReplicaOsRuntime::open(fs, ledger_dir)
 }
 
 pub fn ReplicaOsRuntime::attach_scheduler(
@@ -1230,7 +1312,6 @@ pub fn ReplicaOsRuntime::persist_kept_log(self : ReplicaOsRuntime) -> Result[Uni
   }
 }
 
-/// Drive `MoveScheduler::move_forward` while wiring `WriteGate` and `in_flight_moves` tracking.
 pub fn ReplicaOsRuntime::move_forward_item(
   self : ReplicaOsRuntime,
   ws : String,
@@ -1271,9 +1352,6 @@ pub fn ReplicaOsRuntime::move_forward_item(
   }
 }
 
-/// Real `takeBackSoon` hook: invokes `MoveScheduler::move_back`, strictly checks
-/// `outcome.failures` (keeping the moving lock intact on any failure!), and propagates
-/// `persist_kept_log()` errors without swallowing.
 pub fn ReplicaOsRuntime::take_back_soon(
   self : ReplicaOsRuntime,
   ws : String,
@@ -1324,8 +1402,6 @@ pub fn ReplicaOsRuntime::take_back_soon(
   }
 }
 
-/// Real `beforeStore` hook: if `module_id:item_id` is currently moving, calls `take_back_soon`
-/// first; on any failure keeps the moving gate locked and returns `Err` so writes never proceed.
 pub fn ReplicaOsRuntime::before_store(
   self : ReplicaOsRuntime,
   ws : String,
