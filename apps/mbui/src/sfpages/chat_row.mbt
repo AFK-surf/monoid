@@ -119,7 +119,7 @@ pub fn opened_items(opened : Array[@sfbase.OpenedChat], then? : () -> Unit = fn(
     Some(
       @sf.menu_item_of(label, icon=opened_icon(o), fn() {
         then()
-        open_page(Chat(o.chat))
+        open_page(@sfbase.Page::Chat(o.chat))
       }),
     )
   })
@@ -423,7 +423,7 @@ fn chat_menu_items(
       items.push(
         Some(
           @sf.menu_item_of(@sf.t("web-main.chat.openOpener", args=[("title", o.chat.title)]), icon="spawned", fn() {
-            open_page(Chat(o.chat))
+            open_page(@sfbase.Page::Chat(o.chat))
           }),
         ),
       )
@@ -731,7 +731,7 @@ fn leave_archived(item : ChatItem) -> Unit {
     _ => None
   }
   match next {
-    Some(n) => open_page(Chat(row_ref(n)))
+    Some(n) => open_page(@sfbase.Page::Chat(row_ref(n)))
     None => (@sfbase.shell.val.home)()
   }
 }

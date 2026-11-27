@@ -15,7 +15,15 @@ pub fn no_workspace_node(parent : @view.View, src : Source, ws : () -> Json?, by
       _ => []
     }
   }
-  let blocked = fn() { entries().iter().find_first(fn(e) { text(Some(e), "blocked") != "" }) }
+  let blocked = fn() -> Json? {
+    let es = entries()
+    for i = 0; i < es.length(); i = i + 1 {
+      if text(Some(es[i]), "blocked") != "" {
+        return Some(es[i])
+      }
+    }
+    None
+  }
   parent.box(fn(v) {
     v.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
     v.show(fn() { blocked() is Some(_) }, fn(b) {

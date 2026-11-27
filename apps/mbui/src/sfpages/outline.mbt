@@ -437,7 +437,7 @@ fn outline_body(
     keys.filter(fn(k) {
       match rows.get(k) {
         Some(RowFound(_)) => true
-        Some(RowSaid(seq)) => held.contains(seq)
+        Some(OutlineRow::RowSaid(seq)) => held.contains(seq)
         _ => false
       }
     })
@@ -502,7 +502,7 @@ fn outline_body(
   }
   let go_key = fn(k : String) {
     match @signals.untracked(fn() { table.get().1.get(k) }) {
-      Some(RowSaid(seq)) if at.held.untracked().contains(seq) => go(seq)
+      Some(OutlineRow::RowSaid(seq)) if at.held.untracked().contains(seq) => go(seq)
       Some(RowFound(item)) => go(item.seq)
       _ => ()
     }
@@ -668,8 +668,8 @@ fn outline_body(
     fn() { table.get().0 },
     fn(row, k) {
       match @signals.untracked(fn() { table.get().1.get(k) }) {
-        Some(RowDay(day)) => @sf.panel_heading_node(row, fn() { day })
-        Some(RowSaid(seq)) => {
+        Some(OutlineRow::RowDay(day)) => @sf.panel_heading_node(row, fn() { day })
+        Some(OutlineRow::RowSaid(seq)) => {
           let lead = fn(face : (@view.View, Double) -> Unit) -> ((@view.View, Double) -> Unit)? {
             if @signals.untracked(others) {
               Some(face)

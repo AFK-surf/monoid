@@ -327,8 +327,8 @@ fn ndrag_when(ready : () -> Bool, go : () -> Unit) -> Unit {
 /// Files from the computer into `into` (browse.ts dropInto, putFolder): each folder made there first (one there already
 /// filled, as Finder merges), then each file up into its folder.
 fn ndrag_put_up(src : Source, into : DriveAt, files : Array[@hostapi.Picked]) -> Unit {
-  let root = into.root.unwrap_or("")
-  let folders = files.filter(fn(f) { f.name.has_suffix("/") }).map(fn(f) { f.name.exact_view(end=f.name.length() - 1).to_owned() })
+  let root : String = into.root.unwrap_or("")
+  let folders : Array[String] = files.filter(fn(f) { f.name.has_suffix("/") }).map(fn(f) { f.name.exact_view(end=f.name.length() - 1).to_owned() })
   let up = files.filter(fn(f) { !f.name.has_suffix("/") })
   let send = fn() {
     let ups = @sfbase.ups
@@ -512,7 +512,15 @@ fn ndrag_send(src : Source, item : Dragged, into : DriveAt, moves : Bool, into_n
       transfer(answer)
     }
   }
-  match entries.iter().find_first(fn(e) { e.name.to_lower() == item.name.to_lower() }) {
+  let item_lower = item.name.to_lower()
+  let mut matched_entry : DvEntry? = None
+  for i = 0; i < entries.length(); i = i + 1 {
+    if entries[i].name.to_lower() == item_lower {
+      matched_entry = Some(entries[i])
+      break
+    }
+  }
+  match matched_entry {
     Some(e) =>
       drag_ask({
         into,
@@ -608,11 +616,16 @@ pub fn drag_ask(a : Asking) -> Unit {
 fn clash_now() -> (Asking?, Clash?) {
   clash_told.get() |> ignore
   match ndrag.asking {
-    Some(a) =>
-      match a.clashes.iter().find_first(fn(x) { !a.answers.contains(x.name) }) {
-        Some(n) => (Some(a), Some(n))
-        None => (Some(a), None)
+    Some(a) => {
+      let mut next_clash = None
+      for i = 0; i < a.clashes.length(); i = i + 1 {
+        if !a.answers.contains(a.clashes[i].name) {
+          next_clash = Some(a.clashes[i])
+          break
+        }
       }
+      (Some(a), next_clash)
+    }
     None => (None, None)
   }
 }
@@ -630,7 +643,14 @@ fn clash_answer(a : Asking, n : Clash, said : String) -> Unit {
     a.answers[n.name] = said
   }
   clash_changed()
-  if a.clashes.iter().all(fn(x) { a.answers.contains(x.name) }) {
+  let mut all_answered = true
+  for i = 0; i < a.clashes.length(); i = i + 1 {
+    if !a.answers.contains(a.clashes[i].name) {
+      all_answered = false
+      break
+    }
+  }
+  if all_answered {
     ndrag.asking = None
     clash_changed()
     if clash_shown_serial.val > 0 {

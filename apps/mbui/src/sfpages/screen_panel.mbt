@@ -57,14 +57,16 @@ fn screen_os(src : Source, station : String) -> String {
     None => station
   }
   match @sfbase.station_rows(src, scope).value {
-    Some(Array(list)) =>
+    Some(Array(list)) => {
+      let mut os = ""
       for s in list {
         if text(Some(s), "station") == station {
-          break text(field(Some(s), "host"), "os")
+          os = text(field(Some(s), "host"), "os")
+          break
         }
-      } nobreak {
-        ""
       }
+      os
+    }
     _ => ""
   }
 }

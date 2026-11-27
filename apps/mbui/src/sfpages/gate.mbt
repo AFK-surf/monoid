@@ -20,7 +20,7 @@ pub fn sign_in_node(parent : @view.View, src : Source) -> @view.View {
         Opening => @sf.t("common.opening")
         Verifying => @sf.t("android-settings.signIn.signingIn")
         InBrowser => @sf.t("android-settings.signIn.reopen")
-        Idle | Failed(_) => @sf.t("android-settings.signIn.google")
+        Idle | @sfbase.SignInStep::Failed(_) => @sf.t("android-settings.signIn.google")
       }
     },
     fn() { @sf.t("android-settings.signIn.many") },
@@ -29,8 +29,8 @@ pub fn sign_in_node(parent : @view.View, src : Source) -> @view.View {
     said=fn() {
       match step() {
         InBrowser => (@sf.t("android-settings.signIn.waiting"), false)
-        Failed("") => (@sf.t("core-logic.accounts.login.failed"), true)
-        Failed(why) => (why, true)
+        @sfbase.SignInStep::Failed("") => (@sf.t("core-logic.accounts.login.failed"), true)
+        @sfbase.SignInStep::Failed(why) => (why, true)
         Idle | Opening | Verifying => ("", false)
       }
     },

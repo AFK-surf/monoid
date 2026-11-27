@@ -2337,7 +2337,7 @@ fn board_chat_card(
       if wide && own.beside_offered {
         @sfbase.board_set(src, false)
       }
-      open_page(Chat(r))
+      open_page(@sfbase.Page::Chat(r))
     }
   }
   // (archived from here: its chat no more beside the board)

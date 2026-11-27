@@ -509,7 +509,14 @@ fn ov_balance_keys(list : Array[Json]) -> Array[(Json, String)] {
         let bal = if cr != "" { cr } else { dt }
         if bal != "" {
           let nm = ov_account_name(ev)
-          if !out.iter().any(fn(x) { ov_account_name(Some(x.0)) == nm && x.1 == bal }) {
+          let mut exists = false
+          for i = 0; i < out.length(); i = i + 1 {
+            if ov_account_name(Some(out[i].0)) == nm && out[i].1 == bal {
+              exists = true
+              break
+            }
+          }
+          if !exists {
             out.push((e, bal))
           }
         }

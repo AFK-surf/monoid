@@ -769,7 +769,15 @@ fn settings_found(
         "workspace" => row.title + " " + @sf.t("android-settings.workspace.title") + " 工作区 workspace"
         _ => row.title
       }
-      let named = parent_matched && words.iter().all(fn(w) { own_names.to_lower().contains(w) })
+      let own_lower = own_names.to_lower()
+      let mut all_words = true
+      for i = 0; i < words.length(); i = i + 1 {
+        if !own_lower.contains(words[i]) {
+          all_words = false
+          break
+        }
+      }
+      let named = parent_matched && all_words
       for child in settings_search_children(row, core, here, wide) {
         if named && child.route == row.route {
           continue
@@ -1034,7 +1042,7 @@ fn settings_side_row_node(
       // (what it is by: a line icon in its mark's column, the account's a person's, the workspace's people's)
       let icon = match @signals.untracked(row).map(fn(x) { x.lead }) {
         Some(Icon(name)) => name
-        Some(Person) => "user"
+        Some(SettingsLead::Person) => "user"
         Some(Space(_, _)) => "users"
         None => ""
       }
@@ -1239,7 +1247,7 @@ fn settings_row_node(
   let shown = @signals.untracked(row)
   let lead : @sf.RowLead = match shown.map(fn(r) { r.lead }) {
     Some(Icon(name)) => LeadIcon(name)
-    Some(Person) =>
+    Some(SettingsLead::Person) =>
       LeadMade(fn(l) {
         @sf.avatar_node(l, fn() { here().email }, said(fn(r) { r.title }), fn() {
           let p = here().picture

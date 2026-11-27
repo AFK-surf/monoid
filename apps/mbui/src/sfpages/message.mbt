@@ -165,7 +165,12 @@ fn quote_file(q : Quote, files : Array[Attachment]) -> Attachment? {
   if q.file == "" {
     return None
   }
-  files.iter().find_first(fn(a) { a.name == q.file })
+  for i = 0; i < files.length(); i = i + 1 {
+    if files[i].name == q.file {
+      return Some(files[i])
+    }
+  }
+  None
 }
 
 ///|

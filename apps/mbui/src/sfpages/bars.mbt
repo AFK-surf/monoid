@@ -227,7 +227,7 @@ fn bar_card_node(
               }
               Moved =>
                 match held.get() {
-                  Some(h) => held.set(Some({ ..h, dy: d.wy - from.val }))
+                  Some(h) => held.set(Some(BarHeld::{ ..h, dy: d.wy - from.val }))
                   None => ()
                 }
               Up => {

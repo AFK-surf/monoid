@@ -31,8 +31,10 @@ fn decision_asks(m : Message) -> Asks {
   match m.card {
     Some({ kind: "login", login, .. }) if login != "" => Login
     None if m.options is None => if m.asked { Alone } else { Nothing }
-    Some({ ask: Some(_), .. }) | Some({ phone: Some(_), .. }) | Some({ signin: Some(_), .. }) | Some({ rig: Some(_), .. }) =>
-      Nothing
+    Some({ ask: Some(_), .. }) => Nothing
+    Some({ phone: Some(_), .. }) => Nothing
+    Some({ signin: Some(_), .. }) => Nothing
+    Some({ rig: Some(_), .. }) => Nothing
     Some({ kind: "text", vault: "", .. }) => Text
     _ => Options
   }
@@ -172,7 +174,7 @@ fn decision_rooms_node(
   // (how it went, once settled)
   let outcome = fn() {
     match m().decision {
-      Some({ text: Some(words), .. }) if settled() => Some(words)
+      Some({ text: Some(words), .. }) => if settled() { Some(words) } else { None }
       _ => None
     }
   }
@@ -313,7 +315,15 @@ fn decision_history(m : () -> Message, from : @view.View) -> Unit {
             Some(d) => d.chosen
             None => None
           }
-          list().search_by(fn(o) { Some(o.label) == chosen })
+          let opts = list()
+          let mut found : Int? = None
+          for i = 0; i < opts.length(); i = i + 1 {
+            if Some(opts[i].label) == chosen {
+              found = Some(i)
+              break
+            }
+          }
+          found
         },
         history=true,
       )
@@ -343,8 +353,24 @@ fn decision_options_node(v : @view.View, src : Source, here : MessageNodeHere, m
       let dv = Some(d)
       if text(dv, "call") == "decision.answer" && text(dv, "stage") != "failed" {
         let params = field(dv, "params")
-        if on.iter().all(fn(kv) { text(params, kv.0) == kv.1 }) {
-          busy = list().search_by(fn(o) { o.label == text(params, "option") })
+        let mut all_match = true
+        for i = 0; i < on.length(); i = i + 1 {
+          if text(params, on[i].0) != on[i].1 {
+            all_match = false
+            break
+          }
+        }
+        if all_match {
+          let opt_label = text(params, "option")
+          let opts = list()
+          let mut found : Int? = None
+          for i = 0; i < opts.length(); i = i + 1 {
+            if opts[i].label == opt_label {
+              found = Some(i)
+              break
+            }
+          }
+          busy = found
         }
       }
     }
@@ -353,7 +379,17 @@ fn decision_options_node(v : @view.View, src : Source, here : MessageNodeHere, m
   let chosen = fn() -> Int? {
     guard settled() else { return None }
     match m().decision {
-      Some({ chosen: Some(label), .. }) => list().search_by(fn(o) { o.label == label })
+      Some({ chosen: Some(label), .. }) => {
+        let opts = list()
+        let mut found : Int? = None
+        for i = 0; i < opts.length(); i = i + 1 {
+          if opts[i].label == label {
+            found = Some(i)
+            break
+          }
+        }
+        found
+      }
       _ => None
     }
   }
@@ -461,7 +497,12 @@ fn decision_reply_card_node(v : @view.View, src : Source, here : MessageNodeHere
         corner=@sf.top_reach_corner(@sf.button_height()),
         placeholder_by=fn() {
           match m().card {
-            Some({ placeholder, .. }) if placeholder.trim(chars=" \n\t") != "" => placeholder
+            Some({ placeholder, .. }) =>
+              if placeholder.trim(chars=" \n\t") != "" {
+                placeholder
+              } else {
+                @sf.t("web-main.decisions.replyPlaceholder")
+              }
             _ => @sf.t("web-main.decisions.replyPlaceholder")
           }
         },

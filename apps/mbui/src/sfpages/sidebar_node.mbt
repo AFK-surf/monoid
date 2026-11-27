@@ -1126,7 +1126,15 @@ fn chats_pane_node(
           |> ignore
         _ if k.has_prefix("gmore/") => {
           let gkey = k.exact_view(start=6).to_owned()
-          let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey }) }
+          let day_of = fn() {
+            let ds = days()
+            for i = 0; i < ds.length(); i = i + 1 {
+              if ds[i].key == gkey {
+                return Some(ds[i])
+              }
+            }
+            None
+          }
           @sf.action_box_node(line, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) {
             match @signals.untracked(day_of) {
               Some(d) =>
@@ -1164,9 +1172,11 @@ fn chats_pane_node(
           let part = k.exact_view(start=5).to_owned()
           let (view, _) = @signals.untracked(read)
           let parts = (frame.before)(filter, view) + (frame.after)(filter, view)
-          match parts.iter().find_first(fn(p) { p.key == part }) {
-            Some(p) => (p.make)(line)
-            None => ()
+          for i = 0; i < parts.length(); i = i + 1 {
+            if parts[i].key == part {
+              (parts[i].make)(line)
+              break
+            }
           }
         }
         _ if k.has_prefix("h/") =>
@@ -1432,7 +1442,8 @@ fn search_tucked(view : ChatsView?) -> Bool {
     return false
   }
   match view {
-    Some({ note: Some({ empty: true, .. }), .. }) | None => false
+    Some({ note: Some({ empty: true, .. }), .. }) => false
+    None => false
     Some(_) => true
   }
 }
@@ -1817,7 +1828,16 @@ fn list_day_or_group_heading_node(
   on_toggle_collapse : (String) -> Unit,
   push_alpha? : () -> Double,
 ) -> Unit {
-  let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey() }) }
+  let day_of = fn() {
+    let ds = days()
+    let gk = gkey()
+    for i = 0; i < ds.length(); i = i + 1 {
+      if ds[i].key == gk {
+        return Some(ds[i])
+      }
+    }
+    None
+  }
   line.switch_by(grouped, fn(p, is_grp) {
     if !is_grp {
       @sf.list_heading_node(p, fn() { day_of().map_or(gkey(), fn(d) { d.label }) }, at)

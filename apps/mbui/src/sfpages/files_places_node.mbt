@@ -60,9 +60,11 @@ fn files_place_lines(src : Source, ws : String) -> Array[PlaceLine] {
   let favs = favorites_in(src, ws, stations)
   let visible : Array[(Favorite, DvStation)] = []
   for f in favs {
-    match stations.iter().find_first(fn(s) { s.station == f.station }) {
-      Some(s) => visible.push((f, s))
-      None => ()
+    for i = 0; i < stations.length(); i = i + 1 {
+      if stations[i].station == f.station {
+        visible.push((f, stations[i]))
+        break
+      }
     }
   }
   let rows : Array[PlaceLine] = []
@@ -418,7 +420,7 @@ fn station_row_node(
           |> ignore
         })
         |> ignore
-        station_mark_of_node(r, s, Row)
+        station_mark_of_node(r, s, @sfbase.StationMarkAt::Row)
         r.box(fn(w) {
           w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           @sf.nav_words_node(w, fn() { s().name }, faint=fn() { !s().online })

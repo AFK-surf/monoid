@@ -507,7 +507,16 @@ fn custom_size(v : @view.View, p : ServicePage, key : String) -> Unit {
   })
   |> ignore
   // what it is, unless someone is typing there (as of each change of the size or of whether either field has the keys)
-  v.reacts(fn() { (p.viewport.get(), fields.iter().any(fn(f) { f.focused() })) }, fn(now) {
+  v.reacts(fn() {
+    let mut focused = false
+    for i = 0; i < fields.length(); i = i + 1 {
+      if fields[i].focused() {
+        focused = true
+        break
+      }
+    }
+    (p.viewport.get(), focused)
+  }, fn(now) {
     guard !now.1 else { return }
     let (w, h) = match now.0 {
       Some(x) => (x.width.to_string(), x.height.map(fn(n) { n.to_string() }).unwrap_or(""))

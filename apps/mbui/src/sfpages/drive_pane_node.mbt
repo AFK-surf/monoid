@@ -95,7 +95,7 @@ fn fpane_read(
   way : String,
   retry? : Bool = false,
 ) -> Unit {
-  let key = station + "\u{1}" + root + "\u{1}" + path + "\u{1}" + e.mtime.to_string()
+  let key : String = station + "\u{1}" + root + "\u{1}" + path + "\u{1}" + e.mtime.to_string()
   if !retry && fpane.key == key {
     return
   }
@@ -260,7 +260,7 @@ pub fn drive_pane_node(
                 // (its path, in the code's letters, on one line, cut where it does not fit)
                 values.box(fn(p) {
                   p
-                  .words_runs(By(fn() { [@ui.span(abs, mono=true)] }), look={ ..@view.words_plain, size: @sf.theme().t.caption, wrap: false, max_lines: 1 })
+                  .words_runs(By(fn() { [@ui.span(abs, mono=true)] }), look=@view.WordsLook::{ ..@view.words_plain, size: @sf.theme().t.caption, wrap: false, max_lines: 1 })
                   .ink(By(fn() { @sf.theme().p.text }))
                   |> ignore
                 })
@@ -392,7 +392,7 @@ fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> 
                     if @signals.untracked(i) < blocks.length() {
                       c.box(fn(w) {
                         w
-                        .words_runs(By(fn() { [@ui.span(blocks[i()], mono=true)] }), look={ ..@view.words_plain, size: @sf.theme().t.caption, wrap: true })
+                        .words_runs(By(fn() { [@ui.span(blocks[i()], mono=true)] }), look=@view.WordsLook::{ ..@view.words_plain, size: @sf.theme().t.caption, wrap: true })
                         .ink(By(fn() { @sf.theme().p.text }))
                         |> ignore
                       })

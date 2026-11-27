@@ -542,7 +542,7 @@ fn publish_node(n : @view.View, src : Source, look : () -> @ui.Look) -> Unit {
           (timeout.val)()
           timeout.val = n.at_moment(n.cause_at() + publish_viz_wait_ms, fn() {
             if publishing.walk.untracked() == Some(w) {
-              publishing.walk.set(Some({ ..w, at: w.at + 1, step: 0 }))
+              publishing.walk.set(Some(PublishWalk::{ ..w, at: w.at + 1, step: 0 }))
             }
           })
         }
@@ -1062,7 +1062,7 @@ fn picture_message(m : Message, taking : Bool) -> Message {
     ..m,
     attachments: kept,
     placed: m.placed.filter(fn(n) { kept.iter().any(fn(a) { a.name == n }) }),
-    time: m.time.map(fn(s) { { ..s, ago: s.full } }),
+    time: m.time.map(fn(s) { @sfbase.Stamp::{ ..s, ago: s.full } }),
   }
 }
 

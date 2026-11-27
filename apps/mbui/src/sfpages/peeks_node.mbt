@@ -183,7 +183,7 @@ fn link_card_node(
       "github_issue" => Change(false)
       "github_actions_run" => Run
       _ if v is None && read.get().error is None && peek() == "run" => RunSample
-      _ => if v is None && read.get().error is None && peek() != "" { Sample(peek() == "pull") } else { Page }
+      _ => if v is None && read.get().error is None && peek() != "" { PeekShows::Sample(peek() == "pull") } else { Page }
     }
   }
   parent.pick(shows, fn(b, s) {
@@ -286,7 +286,7 @@ fn change_card_node(
 fn peek_facts_of(v : Json?, pr : Bool, avatar : () -> String) -> Array[@sfbase.PeekFact] {
   let out : Array[@sfbase.PeekFact] = []
   match field(v, "author") {
-    Some(Object(_)) as a => out.push(Person(text(a, "login"), avatar()))
+    Some(Object(_)) as a => out.push(@sfbase.PeekFact::Person(text(a, "login"), avatar()))
     _ => ()
   }
   if pr {

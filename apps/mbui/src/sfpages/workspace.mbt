@@ -142,7 +142,15 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
     all.map(fn(x) { x.id })
   }
   let block = fn(b : @view.View, id : String) {
-    let find = fn() { in_view().1.iter().find_first(fn(x) { x.id == id }) }
+    let find = fn() -> Workspace? {
+      let xs = in_view().1
+      for i = 0; i < xs.length(); i = i + 1 {
+        if xs[i].id == id {
+          return Some(xs[i])
+        }
+      }
+      None
+    }
     // (listed no more, it closes its way down the list showing what it showed last, not a blank row: as the
     // transfers' list keeps its last as it goes (#5160's `last`), a row's own)
     let seen : Ref[Workspace] = Ref(
@@ -469,7 +477,15 @@ fn new_ws_owner(src : Source) -> (Array[Json], String) {
     Some(Array(a)) => a
     _ => []
   }
-  let owner = match accounts.iter().find_first(fn(a) { text(Some(a), "sub") == new_ws.owner.get() }) {
+  let cur_owner = new_ws.owner.get()
+  let mut matched_acc : Json? = None
+  for i = 0; i < accounts.length(); i = i + 1 {
+    if text(Some(accounts[i]), "sub") == cur_owner {
+      matched_acc = Some(accounts[i])
+      break
+    }
+  }
+  let owner = match matched_acc {
     Some(a) => text(Some(a), "sub")
     None =>
       match accounts.get(0) {

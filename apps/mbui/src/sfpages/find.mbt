@@ -313,7 +313,14 @@ fn find_ask(src : Source, station : String, thread : Double, key : String, list 
       }
       finding.found.set(Some(f))
       finding.bringing.set(false)
-      finding.at.set(f.hits.search_by(fn(h) { h.0 == was }).unwrap_or(-1))
+      let mut hit_at = -1
+      for i = 0; i < f.hits.length(); i = i + 1 {
+        if f.hits[i].0 == was {
+          hit_at = i
+          break
+        }
+      }
+      finding.at.set(hit_at)
       if finding.at.get() < 0 {
         finding.k.set(0)
       }

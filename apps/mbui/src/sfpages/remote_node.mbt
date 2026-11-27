@@ -752,7 +752,7 @@ pub fn remote_list_node(
               address,
               fn() {
                 match now.get() {
-                  Head(_, name) => name
+                  RemoteLine::Head(_, name) => name
                   _ => ""
                 }
               },
@@ -761,7 +761,7 @@ pub fn remote_list_node(
           Row(first) => {
             let item = fn() {
               match now.get() {
-                Row(r) => r
+                RemoteLine::Row(r) => r
                 _ => first
               }
             }
@@ -1177,7 +1177,7 @@ pub fn remote_workbench_node(
               src,
               @signals.untracked(ws),
               tab_key.val,
-              @sfbase.RemoteTab::Terminal({ ..at, terminal: real_id, cwd: if real_cwd != "" { real_cwd } else { at.cwd } }),
+              @sfbase.RemoteTab::Terminal(@sfbase.TerminalAt::{ ..at, terminal: real_id, cwd: if real_cwd != "" { real_cwd } else { at.cwd } }),
             )
           },
           on_switch_page=switch_in_workbench,

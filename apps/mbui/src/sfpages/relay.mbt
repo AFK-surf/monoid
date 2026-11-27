@@ -131,10 +131,10 @@ fn relay_picking(col : @view.View, src : Source, shown : () -> RelayShown) -> Un
         Some(_) => Thread
         None =>
           match s.read {
-            0 => Reading
-            2 => Failed
+            0 => RelayList::Reading
+            2 => RelayList::Failed
             _ if !s.connected => NoConnects
-            _ => if s.view is None { Reading } else { Places }
+            _ => if s.view is None { RelayList::Reading } else { Places }
           }
       }
     },
@@ -562,7 +562,15 @@ fn relay_still_at(at : Int, before : String, after : String) -> Bool {
 /// A person the note can mention, in row `r` (the composer's `@` menu's row: ref_item): their picture, their name, their
 /// full name at its end where it says more.
 fn relay_person(r : @view.View, src : Source, id : String, people : () -> Array[Json]) -> Unit {
-  let p = fn() { people().iter().find_first(fn(x) { text(Some(x), "id") == id }) }
+  let p = fn() -> Json? {
+    let ps = people()
+    for i = 0; i < ps.length(); i = i + 1 {
+      if text(Some(ps[i]), "id") == id {
+        return Some(ps[i])
+      }
+    }
+    None
+  }
   let name = fn() { text(p(), "name") }
   r.box(fn(l) {
     @sf.style_node(l, fn() { ref_logo })
