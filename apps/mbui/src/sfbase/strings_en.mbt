@@ -3570,4 +3570,5 @@ let en : Map[String, String] = {
   "web-main.projects.more_projects": "More projects",
   "web-main.projects.more_tags": "More tags",
   "web-main.projects.scope": "Scope",
+  "core-misc.auth.stale": "Authorization or lock state changed; please retry",
 }

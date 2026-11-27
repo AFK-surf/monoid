@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { harness } from "./harness.ts";
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -536,6 +537,347 @@ test("the chat's people answer in the app, or their agent answers for them: kept
     assert.equal((await answer(h, station, { number: 1, text: " " })).status, 400);
     const { station: other } = await workspace(h);
     assert.equal((await answer(h, other, { number: 1, text: "hi" })).status, 404, "another station's report");
+  } finally {
+    await h.close();
+  }
+});
+
+const later = (h: Harness, seconds: number) =>
+  h.fetch("/__test/later", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seconds }) });
+
+test("GET /v1/changelog caches responses in ServiceStatus per channel and isolates beta from stable", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "b", at: 2, text: ["beta 更新"], fixes: [], parts: ["web"] }]));
+    await bucket.put("changelog-stable.json", JSON.stringify([{ version: 1338, commit: "a", at: 1, text: ["stable 更新"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1340 }));
+    await bucket.put("web.json", JSON.stringify({ build: 1338 }));
+
+    // Cold beta request populates ServiceStatus cache.
+    const beta1 = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(beta1.status, 200);
+    assert.equal(beta1.headers.get("cache-control"), "public, max-age=300");
+    assert.equal(beta1.headers.get("content-type"), "application/json");
+    assert.equal(beta1.headers.get("referrer-policy"), "no-referrer");
+    const beta1Body = (await beta1.json()) as any;
+    assert.equal(beta1Body.entries[0].text[0], "beta 更新");
+    assert.equal(beta1Body.released.web, 1340);
+
+    // Even when R2 fails completely, cached beta response is served with 0 R2 gets.
+    await h.failBucket({ get: 12 });
+    const beta2 = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(beta2.status, 200);
+    assert.equal(beta2.headers.get("cache-control"), "public, max-age=300");
+    assert.equal(beta2.headers.get("content-type"), "application/json");
+    assert.equal(beta2.headers.get("referrer-policy"), "no-referrer");
+    assert.deepEqual(await beta2.json(), beta1Body);
+    assert.deepEqual(await h.failBucket(), []);
+
+    // Stable channel is cached separately and does not return beta data.
+    const stable1 = await h.fetch("/v1/changelog");
+    assert.equal(stable1.status, 200);
+    const stable1Body = (await stable1.json()) as any;
+    assert.equal(stable1Body.entries[0].text[0], "stable 更新");
+    assert.equal(stable1Body.released.web, 1338);
+
+    await h.failBucket({ get: 12 });
+    const stable2 = await h.fetch("/v1/changelog");
+    assert.equal(stable2.status, 200);
+    assert.deepEqual(await stable2.json(), stable1Body);
+    assert.deepEqual(await h.failBucket(), []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("POST /v1/feedback/fixed shares cached R2 files across stations in ServiceStatus", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const { station: s1 } = await workspace(h);
+    const { station: s2 } = await workspace(h);
+    await send(h, s1, report({ key: "s1-k1" }));
+    await send(h, s2, report({ key: "s2-k1" }));
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1330, commit: "a", at: 1, text: ["修复：chat_post 发不出去"], fixes: [1, 2], parts: ["station"] },
+    ]));
+    await bucket.put("station.json", JSON.stringify({ version: "0.1.1335", build: 1335 }));
+
+    // First station warms changelog.json and all 5 stable feed keys (including missing 404s).
+    const first = await fixed(h, s1);
+    assert.deepEqual(first.map((f) => [f.number, f.released.station, f.released.android]), [[1, 1335, null]]);
+
+    // Second station hits ServiceStatus cache with 0 R2 gets even if R2 is failing.
+    await h.failBucket({ get: 12 });
+    const second = await fixed(h, s2);
+    assert.deepEqual(second.map((f) => [f.number, f.released.station, f.released.android]), [[2, 1335, null]]);
+    assert.deepEqual(await h.failBucket(), []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("POST /v1/releases/out invalidates cached changelog and feeds immediately", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const { station } = await workspace(h);
+    await send(h, station, report({ key: "release-k1" }), { channel: "beta" });
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "a", at: 1, text: ["旧版本"], fixes: [], parts: ["station"] }]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1340 }));
+
+    // Warm both /v1/changelog and /v1/feedback/fixed caches.
+    const before = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(before.entries[0].text[0], "旧版本");
+    assert.equal(before.released.station, 1340);
+    assert.deepEqual(await fixed(h, station), []);
+
+    // Upload new release files while cache is still hot.
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1341, commit: "b", at: 2, text: ["新版本"], fixes: [1], parts: ["station"] },
+    ]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1341 }));
+
+    // Still cached before /v1/releases/out (both response cache and fixes cache).
+    const stillOld = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(stillOld.entries[0].text[0], "旧版本");
+    assert.deepEqual(await fixed(h, station), []);
+
+    // Release notification invalidates ServiceStatus cache before waking clients/stations.
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    const told = await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } });
+    assert.equal(told.status, 200);
+
+    // Immediately sees the new changelog and fixed release on both endpoints.
+    const after = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(after.entries[0].text[0], "新版本");
+    assert.equal(after.released.station, 1341);
+    const out = await fixed(h, station);
+    assert.deepEqual(out.map((f) => [f.number, f.version, f.released.station]), [[1, 1341, 1341]]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("concurrent GET /v1/changelog requests coalesce via single-flight to one R2 read round", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "b", at: 2, text: ["并发合并"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1340 }));
+
+    await h.failBucket({});
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, () => h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })),
+    );
+    const bodies = await Promise.all(
+      responses.map(async (r) => {
+        assert.equal(r.status, 200);
+        return r.json();
+      }),
+    );
+    for (const body of bodies) assert.deepEqual(body, bodies[0]);
+    const calls = await h.failBucket();
+    assert.equal(calls.length, 6, `expected 1 round of 6 R2 gets, got ${calls.length}: ${calls.join(", ")}`);
+  } finally {
+    await h.close();
+  }
+});
+
+test("response cache inherits the earliest underlying file expiry (no 2x TTL stacking)", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const { station } = await workspace(h);
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "a", at: 1, text: ["v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1340 }));
+
+    // t=0: fixedFor warms changelog.json (expires at t=30).
+    assert.deepEqual(await fixed(h, station), []);
+
+    // t=20: GET /v1/changelog warms response cache using changelog.json (expires at t=30) + feeds (expire at t=50).
+    assert.equal((await later(h, 20)).status, 200);
+    const at20 = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(at20.entries[0].text[0], "v1");
+
+    // Update R2, advance to t=35 (> 30, < 50): response cache must already be expired.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1341, commit: "b", at: 2, text: ["v2"], fixes: [], parts: ["web"] }]));
+    assert.equal((await later(h, 15)).status, 200);
+    const at35 = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(at35.entries[0].text[0], "v2");
+  } finally {
+    await h.close();
+  }
+});
+
+test("ServiceStatus cache never caches R2 failures or non-404 4xx, and caches 404 missing files as null", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "b", at: 2, text: ["新功能"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1340 }));
+
+    // All R2 reads fail -> 503 release_unavailable, never cached.
+    await h.failBucket({ get: 12 });
+    const failedResp = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(failedResp.status, 503);
+    assert.deepEqual(await failedResp.json(), { error: "release_unavailable" });
+
+    // Once R2 recovers, immediate retry succeeds with 200 and caches missing feeds as null.
+    await h.failBucket();
+    const okResp = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(okResp.status, 200);
+    const body = (await okResp.json()) as any;
+    assert.equal(body.entries.length, 1);
+    assert.deepEqual(body.released, { station: null, android: null, desktop: null, macos: null, windows: null, web: 1340 });
+
+    // Missing files cached during the 200 response are served as null with 0 R2 calls via fixedFor too.
+    const { station } = await workspace(h);
+    await send(h, station, report({ key: "beta-missing" }), { channel: "beta" });
+    await h.failBucket({ get: 12 });
+    assert.deepEqual(await fixed(h, station), []);
+    assert.deepEqual(await h.failBucket(), []);
+  } finally {
+    await h.close();
+  }
+
+  // Upstream non-404 4xx (e.g. 429) must NOT be negatively cached.
+  let upstreamCalls = 0;
+  const h429 = await harness({
+    changelogCacheSeconds: 30,
+    upstream: (file) => {
+      if (file === "station-beta.json") {
+        upstreamCalls++;
+        return upstreamCalls === 1 ? { status: 429, body: "" } : { status: 200, body: JSON.stringify({ build: 1350 }) };
+      }
+      return { status: 404 };
+    },
+  });
+  try {
+    const first = (await (await h429.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(first.released.station, null);
+    const second = (await (await h429.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(second.released.station, 1350);
+    assert.equal(upstreamCalls, 2);
+  } finally {
+    await h429.close();
+  }
+});
+
+test("ServiceStatus RPC errors fall back to direct R2 reads and never block /v1/releases/out broadcasts", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const { station, aliceTokens } = await workspace(h);
+    await send(h, station, report({ key: "fallback-k1" }), { channel: "beta" });
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1345, commit: "c", at: 3, text: ["回退直读"], fixes: [1], parts: ["station"] },
+    ]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1345 }));
+
+    const events = await listen(h, aliceTokens.access_token);
+    await events.take();
+
+    // Force ServiceStatus RPCs to throw (overloaded DO).
+    const armed = await h.fetch("/__test/lose-status", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ times: 10, overloaded: true }),
+    });
+    assert.equal(armed.status, 200);
+
+    // GET /v1/changelog falls back to direct R2 read -> 200.
+    const changelogResp = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(changelogResp.status, 200);
+    const changelogBody = (await changelogResp.json()) as any;
+    assert.equal(changelogBody.entries[0].text[0], "回退直读");
+    assert.equal(changelogBody.released.station, 1345);
+
+    // POST /v1/feedback/fixed falls back to direct R2 read -> returns fixed report.
+    const out = await fixed(h, station);
+    assert.deepEqual(out.map((f) => [f.number, f.version, f.released.station]), [[1, 1345, 1345]]);
+
+    // Admin feedback list (api.ts markFixed -> changelogFixes) also falls back to direct R2 read.
+    const admin = h.as(aliceTokens, "admin");
+    const listed = (await (await admin("GET", "/v1/admin/feedback")).json()) as any;
+    assert.deepEqual(listed.feedback.map((f: any) => [f.number, f.status, f.fixed_in]), [[1, "fixed", 1345]]);
+
+    // POST /v1/releases/out catches invalidateChangelog() error, still returns 200 and broadcasts release.
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    const told = await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } });
+    assert.equal(told.status, 200);
+    assert.deepEqual(await events.take(), [{ type: "release" }]);
+    events.ws.close(1000);
+  } finally {
+    await h.close();
+  }
+});
+
+test("concurrent POST /v1/feedback/fixed coalesces changelog.json read via single-flight and reuses cached fixes", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const stations = await Promise.all(Array.from({ length: 5 }, () => workspace(h)));
+    for (let i = 0; i < stations.length; i++) {
+      assert.equal((await send(h, stations[i]!.station, report({ key: `sf-${i}` }), { channel: "beta" })).status, 201);
+    }
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1350, commit: "d", at: 4, text: ["并发修复"], fixes: [1, 2, 3, 4, 5], parts: ["station"] },
+    ]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1350 }));
+
+    await h.failBucket({});
+    const results = await Promise.all(stations.map(({ station }) => fixed(h, station)));
+    for (let i = 0; i < results.length; i++) {
+      assert.deepEqual(results[i]!.map((f) => [f.number, f.version, f.released.station]), [[i + 1, 1350, 1350]]);
+    }
+    const calls = await h.failBucket();
+    assert.equal(
+      calls.filter((c) => c === "get changelog.json").length,
+      1,
+      `expected single-flight to read changelog.json once, got: ${calls.join(", ")}`,
+    );
+
+    // Subsequent calls (including acknowledging told ids in the batched Directory RPC) hit #fixesCache with 0 R2 gets.
+    await h.failBucket({ get: 12 });
+    const afterTold = await Promise.all(
+      stations.map(({ station }, i) => fixed(h, station, [results[i]![0].id])),
+    );
+    for (const list of afterTold) assert.deepEqual(list, []);
+    assert.deepEqual(await h.failBucket(), []);
   } finally {
     await h.close();
   }

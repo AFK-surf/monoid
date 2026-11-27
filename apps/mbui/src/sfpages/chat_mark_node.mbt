@@ -240,43 +240,76 @@ pub fn row_aside_node(
   }
   let faces = fn(a : @view.View) {
     a.show(with_people, fn(g) {
+      let l = @sf.theme().chat_list
       @sf.style_node(g, fn() { aside_faces })
       g.says(By(fn() { Some(@view.said(Image, label=item().people_text)) })) |> ignore
-      let shown = fn() {
-        let people = item().people
-        if people.length() > aside_most {
-          people[:aside_most].to_owned()
+      let shown_count = fn() {
+        let len = item().people.length()
+        if len > aside_most {
+          aside_most
         } else {
-          people
+          len
         }
       }
-      // (the first shown, by member: a change of it tells the two faces it concerns)
-      let first_is = g.selected(fn() { shown().get(0).map(fn(q) { q.id }) })
-      // (each face its own person, given it by the list: told only as that one changes)
-      g.each(shown, fn(q) { q.id }, fn(slot, person) {
-        let id = person.untracked().id
-        let p = fn() { person.get() }
-        let first = fn() { first_is(id) }
-        let starter = fn() { item().people.length() > 1 && p().id == item().creator }
-        // (its slot the room its face takes in the row: a face's, less what it lies over the one before, and a pixel more
-        // after who started it, past its face)
-        let face = slot
-        let l = @sf.theme().chat_list
-        face
-        .width(By(fn() {
-          Some((if first() { l.face_d } else { l.face_d - face_over }) + (if starter() { face_gap_w } else { 0.0 }))
-        }))
+      let faces_w = fn() {
+        let people = item().people
+        let n = if people.length() > aside_most { aside_most } else { people.length() }
+        if n == 0 {
+          0.0
+        } else {
+          let has_starter = people.length() > 1 && people[:n].iter().any(fn(p) { p.id == item().creator })
+          l.face_d + (n - 1).to_double() * (l.face_d - face_over) + (if has_starter { face_gap_w } else { 0.0 })
+        }
+      }
+      g.min_width(By(fn() { Some(aside_in + faces_w()) })).min_height(Is(Some(l.face_d))) |> ignore
+      // (each shown face with its x past aside_in and starter flag, ordered non-starters first then starter last so
+      // who started the chat — face, ground ring, and ink outer ring — draws wholly over the others)
+      let ordered = fn() {
+        let people = item().people
+        let n = if people.length() > aside_most { aside_most } else { people.length() }
+        let creator = item().creator
+        let multi = people.length() > 1
+        let out = []
+        let starters = []
+        let mut x = aside_in
+        for i in 0..<n {
+          let p = people[i]
+          let is_starter = multi && p.id == creator
+          if is_starter {
+            starters.push((p, x, true))
+          } else {
+            out.push((p, x, false))
+          }
+          x = x + (l.face_d - face_over) + (if is_starter { face_gap_w } else { 0.0 })
+        }
+        for s in starters {
+          out.push(s)
+        }
+        out
+      }
+      // (each face its own person, given it by the list: laid over g at its visual x, sized to face_d so its outer
+      // ring stays circular, starter last so it sits over the rest)
+      g.each(ordered, fn(e) { e.0.id }, at_once=true, fn(slot, entry) {
+        let p = fn() { entry.get().0 }
+        // (its slot held at face_d × face_d so the face's placed box stays hosted by a face-sized slot, matching the
+        // row corner rule when row_aside sits in a list row's second line)
+        slot
+        .over(Is(true), edges=(Some(0.0), None, None, None))
+        .width(Is(Some(l.face_d)))
         .height(Is(Some(l.face_d)))
         |> ignore
-        face.box(fn(at) {
-          // (where it lies over the face before it, and who started it ringed round its face and the ground round
-          // that: a ring of what holds the face, laid out nowhere of its own; the two set together, as either changes)
+        slot.box(fn(at) {
           at
           .over(Is(true))
+          .width(Is(Some(l.face_d)))
+          .height(Is(Some(l.face_d)))
           .radius(Is(1.0e6))
-          .sets_together(fn() { (first(), starter(), @sf.theme().p.text) }, fn(w) {
-            let (first, starter, ink) = w
-            at.offset(Is((if first { 0.0 } else { -face_over }, 0.0))) |> ignore
+          .sets_together(fn() {
+            let (_, x, starter) = entry.get()
+            (x, starter, @sf.theme().p.text)
+          }, fn(w) {
+            let (x, starter, ink) = w
+            at.offset(Is((x, 0.0))) |> ignore
             at.ring(Is(if starter { (face_ring_out - face_ring_in, face_ring_in, ink) } else { (0.0, 0.0, 0L) })) |> ignore
           })
           |> ignore
@@ -291,8 +324,9 @@ pub fn row_aside_node(
         })
         |> ignore
       })
-      g.show(fn() { item().people.length() > shown().length() }, fn(n) {
-        @sf.words_node(n, fn() { "+\{item().people.length() - shown().length()}" }, fn() { aside_more }) |> ignore
+      g.show(fn() { item().people.length() > shown_count() }, fn(n) {
+        n.margin(By(fn() { (faces_w(), 0.0, 0.0, 0.0) })) |> ignore
+        @sf.words_node(n, fn() { "+\{item().people.length() - shown_count()}" }, fn() { aside_more }) |> ignore
       })
       @sf.tip_node(tips, g, fn() { item().people_text }, within=true) |> ignore
     })

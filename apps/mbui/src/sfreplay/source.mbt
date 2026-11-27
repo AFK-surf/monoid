@@ -705,8 +705,26 @@ let started : Ref[Bool] = Ref(false)
 ///|
 fn init {
   @ui.on_reset(fn() { started.val = false })
+  @core.client.sensitive(@sfbase.topic_policy_sensitive)
+  @core.client.device_global(@sfbase.topic_policy_device_global)
+  @core.client.sanitize_kept(@sfbase.sanitize_kept_json)
+  @core.client.on_auth_boundary(fn(scope) {
+    match scope {
+      Global | VaultAll => (@sfbase.clear_vault_secrets.val)("", "")
+      Workspace(ws) => (@sfbase.clear_vault_secrets.val)(ws, "")
+      Vault(ws, v) => (@sfbase.clear_vault_secrets.val)(ws, v)
+      VaultWorkspace(_) => ()
+    }
+    @sfbase.invalidate_auth_scope(the_source, fn(name, params) {
+      @core.topic_matches_scope_params(name, params, scope)
+    })
+  })
+  |> ignore
+  @core.auth_stale_message.val = fn() { @sf.t("core-misc.auth.stale") }
+  @sfbase.mask_vault_all.val = fn() { @core.client.mask_scope(@core.AuthScope::VaultAll) }
+  @sfbase.mask_global.val = fn() { @core.client.mask_scope(@core.AuthScope::Global) }
   @core.client.keep(replay_kept, most=replay_kept_most)
-  @core.client.show_kept(replay_shown_kept)
+  @core.client.show_kept_params(replay_shown_kept_params)
   @core.client.tells_before(replay_tells)
 }
 
@@ -729,11 +747,15 @@ fn replay_tells(name : String, topic : Json) -> Array[(String, Json)] {
 /// MBUI_HOME_SAME, a chat with MBUI_KEEP_CHAT (its last 8 with MBUI_SWR_VIEWS, 4 before), a view's own with
 /// MBUI_SWR_VIEWS, each asked again as that run asked it.
 fn replay_kept(name : String, params : Json) -> Int {
+  // Unconditional security ceiling: sensitive topics never retain kept values regardless of trace switches.
+  if @sfbase.topic_policy_sensitive(name, params) {
+    return 0
+  }
   let on = if name == "chat" {
     @sfcore.trace_switch("MBUI_KEEP_CHAT")
   } else if @sfbase.home_lasting_of(name) {
     @sfcore.trace_switch("MBUI_HOME_SAME")
-  } else if @sfbase.topic_shown_kept(name) {
+  } else if @sfbase.topic_shown_kept_params(name, params) {
     @sfcore.trace_switch("MBUI_SWR_VIEWS")
   } else {
     @sfcore.trace_switch("MBUI_HAVE_SAME")
@@ -753,9 +775,9 @@ fn replay_kept_most() -> Int {
 
 ///|
 /// Which topics' values kept are shown at once as they are asked again, as the run's app did: none before
-/// MBUI_SWR_VIEWS (sfbase's topic_shown_kept).
-fn replay_shown_kept(name : String) -> Bool {
-  @sfcore.trace_switch("MBUI_SWR_VIEWS") && @sfbase.topic_shown_kept(name)
+/// MBUI_SWR_VIEWS (sfbase's topic_shown_kept_params), and never sensitive topics.
+fn replay_shown_kept_params(name : String, params : Json) -> Bool {
+  !@sfbase.topic_policy_sensitive(name, params) && @sfcore.trace_switch("MBUI_SWR_VIEWS") && @sfbase.topic_shown_kept_params(name, params)
 }
 
 ///|

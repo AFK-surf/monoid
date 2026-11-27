@@ -3541,4 +3541,5 @@ let zh : Map[String, String] = {
   "web-main.projects.more_projects": "更多项目",
   "web-main.projects.more_tags": "更多标签",
   "web-main.projects.scope": "范围",
+  "core-misc.auth.stale": "授权或锁定状态已变化，请重试",
 }

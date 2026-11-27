@@ -139,7 +139,7 @@ function covers(open: EventsFor, wants: EventsFor): boolean {
 
 /// A read of a station's history (sync.ts `#history`): its path, how much of a batch it takes, and what its answer
 /// does (and the read after it, as a channel has more to bring).
-export type HistoryRead = { path: string; cost: number; apply: (answer: { status: number; body: unknown }) => HistoryRead | null };
+export type HistoryRead = { path: string; cost: number; apply: (answer: { status: number; body: unknown }, readGen: number) => HistoryRead | null };
 
 /// Local link diagnostics recorded as `#follow` connects, disconnects and backs off (`Link.diag`).
 export type LinkDiag = {
@@ -280,7 +280,7 @@ export type Told = {
   goesOn(address: string, how: { away: boolean; restored: boolean }): void;
   /// An event of a stream. `again`: told again as the stream resumed (what came while the device was not on it), not
   /// as it happened.
-  event(address: string, name: string, raw: string, again: boolean): void;
+  event(address: string, name: string, raw: string, again: boolean, streamReadGen?: number): void;
   /// What a stream that went on was told first is in (the station tells what was missed as it joins, in the same turn).
   toldMissed(address: string): void;
   /// How a station's link is, or its host figures as last kept, changed.
@@ -605,7 +605,7 @@ export class Links {
   /// Opens the station's stream for what it is wanted for now, unless the one open gives that (or `anew`): the new one
   /// opens first, and the old one goes once it has. An agent starting or ending its turn opens none (the station follows
   /// the sessions at work itself): only what a page shows of the host, a job's log or a login does.
-  openEvents(address: string, anew: boolean): void {
+  openEvents(address: string, anew: boolean, keepHandover = false): void {
     const link = this.#links.get(address);
     if (!link || !this.reachable(address)) return;
     const wants = this.#wants(address);
@@ -613,7 +613,7 @@ export class Links {
     // Handed over from a stream that is open and heard lately (wanted for more or less now): it kept the records
     // current until the new one opens, so the new one reads nothing again. One quiet past a keepalive may have died
     // unnoticed (the device asleep): what it may have missed is read.
-    const handover = !anew && link.events !== null && link.heard !== null && this.#core.host.nowMs() - link.heard < STREAM_QUIET_MS;
+    const handover = (!anew || keepHandover) && link.events !== null && link.heard !== null && this.#core.host.nowMs() - link.heard < STREAM_QUIET_MS;
     if (link.events) {
       link.replaced?.pipe((f) => this.#core.runner.interrupt(f as Fiber.Fiber<unknown, unknown>));
       link.replaced = link.events.fiber;
@@ -627,9 +627,9 @@ export class Links {
   /// stream it takes over from gave (what was told after it comes first, else `missed`).
   #path(address: string, wants: EventsFor, since: string | null = null): string {
     // The sessions at work followed by the station itself (FOLLOWS); a thread's summary made here from what is said in
-    // it (thread-after.ts), not told; and the sidebar's rows (rows-made.ts). A station since #5187 needs none of it
-    // said; one from before then makes them for a stream that does not say so.
-    const query: string[] = ["running=1", "views=1", "rows=1", "shared=1"];
+    // it (thread-after.ts), not told; the sidebar's rows (rows-made.ts); and incremental top-level overview patches
+    // (`overviewPatch=1`, falling back cleanly to full `overview` on older stations).
+    const query: string[] = ["running=1", "views=1", "rows=1", "shared=1", "overviewPatch=1"];
     if (wants.host) query.push("host=1");
     for (const [job, lines] of wants.logs) query.push(`job=${encode(job)}&lines=${lines}`);
     // The logins' terminals shown.
@@ -715,6 +715,7 @@ export class Links {
             // Not answered at all within as long as a stream may stay silent: the way it went is taken for gone (a
             // station killed and started anew, its connection left open here: every open waited on it for good).
             const slow = Effect.sleep(STREAM_IDLE_MS).pipe(Effect.as({ slow: true } as const)); // timer: a timeout
+            const streamReadGen = core.store.authGen.workspaceAuthGen(ofAddress(address));
             const opened = yield* Effect.raceAllFirst([Effect.result(self.#requests.stream(link.addr, path, span.context)), dropped, slow]);
             if ("slow" in opened) {
               self.#requests.wire.reset?.(link.addr);
@@ -842,7 +843,12 @@ export class Links {
               link.back?.heard();
               read += chunk.length;
               if (link.state.state === "reconnecting") self.setLink(address, { state: "online" });
+              let authStale = false;
               for (const [name, data, id] of parser.feed(chunk)) {
+                if (core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) {
+                  authStale = true;
+                  break;
+                }
                 events++;
                 if (recording(core.host)) recordInbound(core.host, `${stationTag(address)} sse:${name || "ping"}`, data.length, 1);
                 // Where the station's log is: nothing to tell, the next stream goes on from it.
@@ -854,12 +860,16 @@ export class Links {
                 if (name === "missed") {
                   if (!snapshotted) self.#told.afresh(address, null);
                   snapshotted = true;
-                } else self.#told.event(address, name, data, head !== null && id !== undefined && upTo(id, head));
+                } else self.#told.event(address, name, data, head !== null && id !== undefined && upTo(id, head), streamReadGen);
                 if (id !== undefined) {
                   link.cursor.heard(id);
                   link.back?.end("event");
                   link.back = null;
                 }
+              }
+              if (authStale) {
+                why = "auth_gen_changed";
+                break;
               }
               if (!snapshotted && link.catching?.tallied === false) self.#told.toldMissed(address);
               // Written down in the same write as what the events changed: a core after this one takes up from it.

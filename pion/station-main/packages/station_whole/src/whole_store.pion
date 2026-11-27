@@ -1,0 +1,897 @@
+// Real SQLite primary store lifecycle, predecessor-exit write guard, job persistence,
+// workspace visibility queries, and handover snapshot persistence for `station_whole`.
+//
+// Invariant: SQLite primary write connection (`<data>/stillfail.db`) MUST NEVER be opened
+// until the caller confirms the predecessor process has exited (`predecessor_gone == true`),
+// and `before_store` (reserved for `station_replica` restore) has completed successfully.
+
+import "base_codec"
+import "http1"
+import "jscase"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_jobs"
+import "station_sessions"
+import "station_store"
+import "station_sys"
+import "station_vault"
+
+pub let HANDOVER_SNAPSHOT_VERSION : Int = 1
+
+pub enum StorePhase {
+  PreHandover
+  PrimaryOpen
+  Closed
+}
+
+pub fn store_phase_name(p : StorePhase) -> String {
+  match p {
+    StorePhase::PreHandover => "pre-handover"
+    StorePhase::PrimaryOpen => "primary-open"
+    StorePhase::Closed => "closed"
+  }
+}
+
+/// Serializable handover snapshot exported before shutdown/restart and restored after
+/// the predecessor exits and the new primary SQLite store is opened.
+pub struct WholeHandoverSnapshot {
+  pub version : Int
+  pub exported_at : Int64
+  pub kept_sends : Array[station_api::KeptSend]
+  pub session_snapshots : Array[station_sessions::HandoverSnapshot]
+  pub active_job_ids : Array[String]
+  pub active_vault_grant_ids : Array[String]
+  pub handed_station_ids : Array[String]
+}
+
+pub fn WholeHandoverSnapshot::empty(exported_at : Int64) -> WholeHandoverSnapshot {
+  WholeHandoverSnapshot::{
+    version: HANDOVER_SNAPSHOT_VERSION,
+    exported_at: exported_at,
+    kept_sends: [],
+    session_snapshots: [],
+    active_job_ids: [],
+    active_vault_grant_ids: [],
+    handed_station_ids: [],
+  }
+}
+
+fn json_str_array(items : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    out.push(base_codec::json_str(items[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn parse_str_array_field(obj : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn kept_send_to_json(ks : station_api::KeptSend) -> base_codec::Json {
+  let hdrs : Array[base_codec::Json] = []
+  for i in 0..<ks.headers.length() {
+    hdrs.push(
+      base_codec::json_arr([
+        base_codec::json_str(ks.headers[i].name),
+        base_codec::json_str(ks.headers[i].value),
+      ]),
+    )
+  }
+  base_codec::json_obj([
+    ("viewer", base_codec::json_str(ks.viewer)),
+    ("workspace", base_codec::json_str(ks.workspace)),
+    ("thread", base_codec::json_int(ks.thread)),
+    ("key", base_codec::json_str(ks.key)),
+    ("atMs", base_codec::json_int64(ks.at_ms)),
+    ("status", base_codec::json_int(ks.status)),
+    ("headers", base_codec::json_arr(hdrs)),
+    ("bodyB64", base_codec::json_str(ks.body_b64)),
+  ])
+}
+
+/// Read and parse `<data_dir>/projects-info.json` strictly:
+/// - Missing file -> `Ok(empty map)`
+/// - Existing file that is empty/whitespace-only, invalid JSON, or non-object root -> `Err(...)` (NEVER silently wipes).
+pub fn read_projects_info_map(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+) -> Result[Array[(String, base_codec::Json)], String] {
+  let info_path = nodepath::join(fs.sep, [data_dir, "projects-info.json"])
+  match (fs.read_file)(info_path) {
+    None => Ok([])
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
+          let out : Array[(String, base_codec::Json)] = []
+          for i in 0..<entries.length() {
+            out.push(entries[i])
+          }
+          Ok(out)
+        }
+        base_codec::JsonParseResult::Ok(_) => Err("corrupted projects-info.json: root must be a JSON object")
+        base_codec::JsonParseResult::Err(e) => Err("corrupted projects-info.json: " + e)
+      }
+    }
+  }
+}
+
+fn kept_send_from_json(v : base_codec::Json) -> Result[station_api::KeptSend, String] {
+  let viewer = match json_opt_str(v, "viewer") {
+    Some(s) => s
+    None => return Err("missing keptSend viewer")
+  }
+  let workspace = match json_opt_str(v, "workspace") {
+    Some(s) => s
+    None => ""
+  }
+  let thread = match json_opt_int(v, "thread") {
+    Some(t) => t
+    None => return Err("missing keptSend thread")
+  }
+  let key = match json_opt_str(v, "key") {
+    Some(s) => s
+    None => return Err("missing keptSend key")
+  }
+  let at_ms = match json_opt_i64(v, "atMs") {
+    Some(t) => t
+    None => 0L
+  }
+  let status = match json_opt_int(v, "status") {
+    Some(st) => st
+    None => 200
+  }
+  let body_b64 = match json_opt_str(v, "bodyB64") {
+    Some(s) => s
+    None => ""
+  }
+  let headers : Array[http1::Header] = []
+  match base_codec::json_get(v, "headers") {
+    None => ()
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() != 2 {
+              return Err("malformed keptSend header pair at index " + i.to_string())
+            }
+            match (pair[0], pair[1]) {
+              (base_codec::Json::Str(n), base_codec::Json::Str(hdr_val)) => {
+                headers.push(http1::Header::{ name: n, value: hdr_val })
+              }
+              _ => return Err("malformed non-string keptSend header at index " + i.to_string())
+            }
+          }
+          _ => return Err("malformed non-pair keptSend header at index " + i.to_string())
+        }
+      }
+    }
+    Some(_) => return Err("invalid non-array keptSend headers")
+  }
+  Ok(station_api::KeptSend::{
+    viewer: viewer,
+    workspace: workspace,
+    thread: thread,
+    key: key,
+    at_ms: at_ms,
+    status: status,
+    headers: headers,
+    body_b64: body_b64,
+  })
+}
+
+fn session_snap_to_json(s : station_sessions::HandoverSnapshot) -> base_codec::Json {
+  base_codec::json_obj([
+    ("key", base_codec::json_str(s.key)),
+    ("runtime", base_codec::json_str(s.runtime)),
+    ("hasAgent", base_codec::json_bool(s.has_agent)),
+    ("hasTurn", base_codec::json_bool(s.has_turn)),
+    ("notices", json_str_array(s.notices)),
+  ])
+}
+
+fn session_snap_from_json(v : base_codec::Json) -> Result[station_sessions::HandoverSnapshot, String] {
+  let key = match json_opt_str(v, "key") {
+    Some(s) => s
+    None => return Err("missing session snapshot key")
+  }
+  let runtime = match json_opt_str(v, "runtime") {
+    Some(s) => s
+    None => "claude"
+  }
+  let has_agent = match json_opt_bool(v, "hasAgent") {
+    Some(b) => b
+    None => false
+  }
+  let has_turn = match json_opt_bool(v, "hasTurn") {
+    Some(b) => b
+    None => false
+  }
+  let notices = match parse_str_array_field_strict(v, "notices") {
+    Ok(ns) => ns
+    Err(e) => return Err("session snapshot " + e)
+  }
+  Ok(station_sessions::HandoverSnapshot::{
+    key: key,
+    runtime: runtime,
+    has_agent: has_agent,
+    has_turn: has_turn,
+    notices: notices,
+  })
+}
+
+pub fn WholeHandoverSnapshot::to_json(self : WholeHandoverSnapshot) -> base_codec::Json {
+  let ks_arr : Array[base_codec::Json] = []
+  for i in 0..<self.kept_sends.length() {
+    ks_arr.push(kept_send_to_json(self.kept_sends[i]))
+  }
+  let sess_arr : Array[base_codec::Json] = []
+  for i in 0..<self.session_snapshots.length() {
+    sess_arr.push(session_snap_to_json(self.session_snapshots[i]))
+  }
+  base_codec::json_obj([
+    ("version", base_codec::json_int(self.version)),
+    ("exportedAt", base_codec::json_int64(self.exported_at)),
+    ("keptSends", base_codec::json_arr(ks_arr)),
+    ("sessions", base_codec::json_arr(sess_arr)),
+    ("activeJobIds", json_str_array(self.active_job_ids)),
+    ("activeVaultGrantIds", json_str_array(self.active_vault_grant_ids)),
+    ("handedStationIds", json_str_array(self.handed_station_ids)),
+  ])
+}
+
+/// Escape `%`, `_`, and `\` for SQL `LIKE ? ESCAPE '\'`, and lowercase ASCII letters.
+pub fn escape_sql_like(term : String) -> String {
+  let bytes = term.to_bytes()
+  let out : Array[Byte] = []
+  for i in 0..<bytes.length() {
+    let mut bi = bytes[i].to_int()
+    if bi >= 65 && bi <= 90 {
+      bi = bi + 32
+    }
+    if bi == 92 || bi == 37 || bi == 95 {
+      // '\', '%', '_'
+      out.push(92 as Byte)
+    }
+    out.push(bi as Byte)
+  }
+  let res = Bytes::new(out.length())
+  for i in 0..<out.length() {
+    res[i] = out[i]
+  }
+  res.to_string()
+}
+
+/// Return true iff every byte in `s` is 7-bit ASCII (`< 0x80`).
+pub fn is_ascii_only(s : String) -> Bool {
+  let bytes = s.to_bytes()
+  for i in 0..<bytes.length() {
+    if bytes[i].to_int() >= 128 {
+      return false
+    }
+  }
+  true
+}
+
+fn decode_utf8_points(s : String) -> Array[Int] {
+  let b = s.to_bytes()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < b.length() {
+    let b0 = b[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      out.push(b0)
+      i = i + 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < b.length() {
+      let b1 = b[i + 1].to_int() & 0x3F
+      out.push(((b0 & 0x1F) << 6) | b1)
+      i = i + 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < b.length() {
+      let b1 = b[i + 1].to_int() & 0x3F
+      let b2 = b[i + 2].to_int() & 0x3F
+      out.push(((b0 & 0x0F) << 12) | (b1 << 6) | b2)
+      i = i + 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < b.length() {
+      let b1 = b[i + 1].to_int() & 0x3F
+      let b2 = b[i + 2].to_int() & 0x3F
+      let b3 = b[i + 3].to_int() & 0x3F
+      out.push(((b0 & 0x07) << 18) | (b1 << 12) | (b2 << 6) | b3)
+      i = i + 4
+    } else {
+      out.push(b0)
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Build exact SQL `AND instr(js_lower(col_expr), ?k) > 0` clauses and bound `jscase::lower(t)`
+/// parameters (1:1 byte-for-byte equivalent to `jscase::lower`, zero escaping needed, zero decoy scan).
+pub fn build_like_clauses(
+  col_expr : String,
+  terms : Array[String],
+  start_param : Int,
+) -> (String, Array[base_codec::Json]) {
+  let mut sql = ""
+  let params : Array[base_codec::Json] = []
+  let max_terms = if terms.length() > 16 { 16 } else { terms.length() }
+  let mut idx = start_param
+  for i in 0..<max_terms {
+    let t = jscase::lower(terms[i])
+    if t.length() == 0 {
+      continue
+    }
+    sql = sql + " AND instr(js_lower(" + col_expr + "), ?" + idx.to_string() + ") > 0"
+    params.push(base_codec::json_str(t))
+    idx = idx + 1
+  }
+  (sql, params)
+}
+
+/// Build exact SQL clauses requiring the FIRST term to match `title_expr` via `instr(js_lower(...), ?k) > 0`
+/// and all remaining terms to match `all_expr` (1:1 aligned with `station_api::search_pick`'s `titled` ranking).
+pub fn build_first_title_like_clauses(
+  title_expr : String,
+  all_expr : String,
+  terms : Array[String],
+  start_param : Int,
+) -> (String, Array[base_codec::Json]) {
+  let mut sql = ""
+  let params : Array[base_codec::Json] = []
+  let max_terms = if terms.length() > 16 { 16 } else { terms.length() }
+  let mut idx = start_param
+  let mut is_first = true
+  for i in 0..<max_terms {
+    let t = jscase::lower(terms[i])
+    if t.length() == 0 {
+      continue
+    }
+    let target_expr = if is_first { title_expr } else { all_expr }
+    is_first = false
+    sql = sql + " AND instr(js_lower(" + target_expr + "), ?" + idx.to_string() + ") > 0"
+    params.push(base_codec::json_str(t))
+    idx = idx + 1
+  }
+  (sql, params)
+}
+
+fn json_strict_int(v : base_codec::Json, key : String) -> Result[Int, String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(n, raw)) => {
+      if raw.contains(".") || raw.contains("e") || raw.contains("E") {
+        return Err("non-integer " + key + ": " + raw)
+      }
+      Ok(n.to_int())
+    }
+    Some(_) => Err("invalid type for " + key)
+    None => Err("missing handover snapshot " + key)
+  }
+}
+
+fn parse_str_array_field_strict(
+  v : base_codec::Json,
+  key : String,
+) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  match base_codec::json_get(v, key) {
+    None => Ok(out)
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => return Err("malformed non-string item in handover snapshot " + key)
+        }
+      }
+      Ok(out)
+    }
+    Some(_) => Err("invalid non-array handover snapshot field " + key)
+  }
+}
+
+pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSnapshot, String] {
+  let j = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return Err("invalid handover snapshot JSON: " + e)
+  }
+  let version = match json_strict_int(j, "version") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if version != HANDOVER_SNAPSHOT_VERSION {
+    return Err("unsupported handover snapshot version: " + version.to_string())
+  }
+  let exported_at = match json_opt_i64(j, "exportedAt") {
+    Some(t) => t
+    None => 0L
+  }
+  let kept_sends : Array[station_api::KeptSend] = []
+  match base_codec::json_get(j, "keptSends") {
+    None => ()
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match kept_send_from_json(items[i]) {
+          Ok(ks) => kept_sends.push(ks)
+          Err(e) => return Err("malformed keptSends item at index " + i.to_string() + ": " + e)
+        }
+      }
+    }
+    Some(_) => return Err("invalid non-array keptSends in handover snapshot")
+  }
+  let session_snapshots : Array[station_sessions::HandoverSnapshot] = []
+  match base_codec::json_get(j, "sessions") {
+    None => ()
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match session_snap_from_json(items[i]) {
+          Ok(ss) => session_snapshots.push(ss)
+          Err(e) => return Err("malformed sessions item at index " + i.to_string() + ": " + e)
+        }
+      }
+    }
+    Some(_) => return Err("invalid non-array sessions in handover snapshot")
+  }
+  let active_job_ids = match parse_str_array_field_strict(j, "activeJobIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  let active_vault_grant_ids = match parse_str_array_field_strict(j, "activeVaultGrantIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  let handed_station_ids = match parse_str_array_field_strict(j, "handedStationIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  Ok(WholeHandoverSnapshot::{
+    version: version,
+    exported_at: exported_at,
+    kept_sends: kept_sends,
+    session_snapshots: session_snapshots,
+    active_job_ids: active_job_ids,
+    active_vault_grant_ids: active_vault_grant_ids,
+    handed_station_ids: handed_station_ids,
+  })
+}
+
+/// Primary SQLite + Vault + Handover state container for the full station.
+pub struct WholeStore {
+  pub data_dir : String
+  pub db_path : String
+  pub mut phase : StorePhase
+  mut store : Option[station_store::Store]
+  pub vault_grants : station_vault::GrantStore
+  pub vault_incoming : station_vault::IncomingRegistry
+  pub mut before_store_ran : Bool
+  pub mut last_restored_handover_at : Option[Int64]
+  pub mut active_vault_grant_ids : Array[String]
+}
+
+/// Construct `WholeStore` in `PreHandover` phase with an explicit path separator (no FFI calls).
+pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) -> WholeStore {
+  let db_path = nodepath::join(sep, [data_dir, "stillfail.db"])
+  WholeStore::{
+    data_dir: data_dir,
+    db_path: db_path,
+    phase: StorePhase::PreHandover,
+    store: None,
+    vault_grants: station_vault::GrantStore::new(),
+    vault_incoming: station_vault::IncomingRegistry::new(),
+    before_store_ran: false,
+    last_restored_handover_at: None,
+    active_vault_grant_ids: [],
+  }
+}
+
+/// Construct `WholeStore` in `PreHandover` phase without opening SQLite.
+pub fn WholeStore::new_pre_handover(data_dir : String) -> WholeStore {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  WholeStore::new_pre_handover_with_sep(data_dir, sep)
+}
+
+pub fn WholeStore::is_primary_open(self : WholeStore) -> Bool {
+  match self.phase {
+    StorePhase::PrimaryOpen => self.store.is_some()
+    _ => false
+  }
+}
+
+/// Returns the open primary `station_store::Store` or fails closed if still in `PreHandover` or `Closed`.
+pub fn WholeStore::require_open(self : WholeStore) -> Result[station_store::Store, String] {
+  match self.phase {
+    StorePhase::PrimaryOpen => match self.store {
+      Some(st) => Ok(st)
+      None => Err("primary SQLite store handle missing")
+    }
+    StorePhase::PreHandover => Err(
+      "primary SQLite store not open: predecessor exit must be confirmed before writing",
+    )
+    StorePhase::Closed => Err("primary SQLite store is closed")
+  }
+}
+
+/// Pure predecessor-exit guard and one-shot `before_store` runner (never re-runs `before_store`
+/// if it already succeeded on an earlier attempt).
+pub fn WholeStore::check_open_guard(
+  self : WholeStore,
+  predecessor_gone : Bool,
+  before_store : (String) -> Result[Unit, String],
+) -> Result[Bool, String] {
+  if !predecessor_gone {
+    return Err("refused to open primary SQLite store before predecessor process exit is confirmed")
+  }
+  match self.phase {
+    StorePhase::PrimaryOpen => return Ok(false)
+    StorePhase::Closed => return Err("cannot reopen a closed WholeStore")
+    StorePhase::PreHandover => ()
+  }
+  if !self.before_store_ran {
+    match before_store(self.data_dir) {
+      Ok(_) => self.before_store_ran = true
+      Err(e) => return Err("before_store hook failed: " + e)
+    }
+  }
+  Ok(true)
+}
+
+/// Idempotently register deterministic SQLite scalar function `js_lower(x)` before opening SQLite.
+pub fn WholeStore::ensure_sqlite_js_lower() -> Result[Unit, String] {
+  station_sys::register_sqlite_js_lower()
+}
+
+/// Strictly opens `<data_dir>/stillfail.db` ONLY after the caller confirms the predecessor process
+/// has exited (`predecessor_gone == true`), running `before_store(data_dir)` once (reserved for
+/// `station_replica` restore) and then `station_store::Store::open(...)` with schema migrations.
+pub fn WholeStore::open_primary_after_predecessor_gone(
+  self : WholeStore,
+  predecessor_gone : Bool,
+  before_store : (String) -> Result[Unit, String],
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0L,
+) -> Result[Unit, String] {
+  let should_open = match self.check_open_guard(predecessor_gone, before_store) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !should_open {
+    return Ok(())
+  }
+  match WholeStore::ensure_sqlite_js_lower() {
+    Ok(_) => ()
+    Err(e) => return Err("failed to register SQLite js_lower extension: " + e)
+  }
+  if !station_sys::mkdir_p(self.data_dir) {
+    return Err("failed to create station data directory: " + self.data_dir)
+  }
+  match station_store::Store::open(self.db_path, wait_ms=wait_ms, now_ms=now_ms) {
+    Ok(st) => {
+      self.store = Some(st)
+      self.phase = StorePhase::PrimaryOpen
+      Ok(())
+    }
+    Err(e) => Err("failed to open primary SQLite store: " + e.message)
+  }
+}
+
+/// Resolve a session's effective workspace in SQLite (`COALESCE(sessions.ws, home_ws)`).
+pub fn session_effective_ws(
+  st : station_store::Store,
+  session_key : String,
+  home_ws : String,
+) -> Result[Option[String], String] {
+  match st.get_session(session_key) {
+    Ok(Some(row)) => match row.ws {
+      Some(w) => if w.length() > 0 { Ok(Some(w)) } else { Ok(Some(home_ws)) }
+      None => Ok(Some(home_ws))
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err("session_effective_ws failed: " + e.message)
+  }
+}
+
+/// Check whether `thread_id` is visible inside workspace `ws` (aligned 1:1 with `store.pion`
+/// workspace scoping: `t.home` -> home session's `COALESCE(ws, home_ws)`, else member sessions,
+/// else `home_ws`).
+pub fn thread_visible_in_ws(
+  st : station_store::Store,
+  thread_id : Int64,
+  ws : String,
+  home_ws : String,
+) -> Result[Bool, String] {
+  match st.db.first(
+    "SELECT 1 FROM threads t LEFT JOIN sessions h ON h.key = t.home WHERE t.id = ?1 AND CASE" +
+    " WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?3" +
+    " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?3" +
+    " ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?3) END LIMIT 1",
+    [sql_db::int64_to_json(thread_id), base_codec::json_str(home_ws), base_codec::json_str(ws)],
+  ) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err("thread_visible_in_ws failed: " + e.message)
+  }
+}
+
+fn job_record_to_store(rec : station_jobs::JobRecord) -> station_store::JobRecord {
+  station_store::JobRecord::{
+    id: rec.id,
+    session_key: rec.session,
+    name: rec.name,
+    command: rec.command,
+    cwd: rec.cwd,
+    port: match rec.port {
+      Some(p) => Some(p.to_int64())
+      None => None
+    },
+    token: rec.token,
+    state: station_jobs::job_state_to_str(rec.state),
+    pgid: match rec.pgid {
+      Some(p) => Some(p.to_int64())
+      None => None
+    },
+    exit_code: match rec.exit_code {
+      Some(c) => Some(c.to_int64())
+      None => None
+    },
+    started_at: rec.started_at,
+    ended_at: rec.ended_at,
+    restarts: rec.restarts.to_int64(),
+    log: rec.log_path,
+    watch: rec.watch,
+    queued: if rec.queued { Some(1L) } else { None },
+    screen: if rec.screen { Some(1L) } else { None },
+    size: None,
+    small: if rec.small { Some(1L) } else { None },
+  }
+}
+
+fn job_record_from_store(rec : station_store::JobRecord) -> station_jobs::JobRecord {
+  station_jobs::JobRecord::{
+    id: rec.id,
+    session: rec.session_key,
+    name: rec.name,
+    command: rec.command,
+    cwd: rec.cwd,
+    port: match rec.port {
+      Some(p) => Some(p.to_int())
+      None => None
+    },
+    token: rec.token,
+    state: station_jobs::job_state_from_str(rec.state),
+    pgid: match rec.pgid {
+      Some(p) => Some(p.to_int())
+      None => None
+    },
+    start_time_ms: None,
+    exit_code: match rec.exit_code {
+      Some(c) => Some(c.to_int())
+      None => None
+    },
+    started_at: rec.started_at,
+    ended_at: rec.ended_at,
+    restarts: rec.restarts.to_int(),
+    log_path: rec.log,
+    watch: rec.watch,
+    queued: match rec.queued {
+      Some(v) => v != 0L
+      None => false
+    },
+    screen: match rec.screen {
+      Some(v) => v != 0L
+      None => false
+    },
+    small: match rec.small {
+      Some(v) => v != 0L
+      None => false
+    },
+    notices: [],
+  }
+}
+
+/// Persist a started job record into SQLite `jobs` so `job_seen` and restart adoption stay in sync.
+pub fn WholeStore::persist_job(
+  self : WholeStore,
+  rec : station_jobs::JobRecord,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::insert_job(st.db, job_record_to_store(rec)) {
+    Ok(_) => Ok(())
+    Err(e) => Err("persist_job failed: " + e.message)
+  }
+}
+
+/// Update an existing job's state in SQLite `jobs`.
+pub fn WholeStore::update_job_state(
+  self : WholeStore,
+  rec : station_jobs::JobRecord,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::update_job_state(
+    st.db,
+    rec.id,
+    station_jobs::job_state_to_str(rec.state),
+    match rec.exit_code {
+      Some(c) => Some(c.to_int64())
+      None => None
+    },
+    rec.ended_at,
+    Some(rec.restarts.to_int64()),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err("update_job_state failed: " + e.message)
+  }
+}
+
+/// Adopt all running jobs persisted in SQLite `jobs` into `JobManager` on startup/restart.
+pub fn WholeStore::adopt_active_jobs(
+  self : WholeStore,
+  jobs : station_jobs::JobManager,
+  now_ms : Int64,
+) -> Result[Int, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let running = match station_store::list_running_jobs(st.db) {
+    Ok(rows) => rows
+    Err(e) => return Err("list_running_jobs failed: " + e.message)
+  }
+  let mut count = 0
+  for i in 0..<running.length() {
+    if jobs.adopt_from_store(job_record_from_store(running[i]), now_ms) {
+      count = count + 1
+    }
+  }
+  Ok(count)
+}
+
+pub fn WholeStore::record_handover_in(
+  self : WholeStore,
+  id : String,
+  ctx_json : String,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::save_handover_in(st.db, id, ctx_json) {
+    Ok(_) => Ok(())
+    Err(e) => Err("save_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::load_handover_in(
+  self : WholeStore,
+  id : String,
+) -> Result[Option[String], String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::load_handover_in(st.db, id) {
+    Ok(v) => Ok(v)
+    Err(e) => Err("load_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::delete_handover_in(self : WholeStore, id : String) -> Result[Bool, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::delete_handover_in(st.db, id) {
+    Ok(b) => Ok(b)
+    Err(e) => Err("delete_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::handed_stations(self : WholeStore) -> Result[Array[String], String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::handed_stations(st.db) {
+    Ok(list) => Ok(list)
+    Err(e) => Err("handed_stations failed: " + e.message)
+  }
+}
+
+/// Register a vault grant and track its ID for handover export.
+pub fn WholeStore::register_vault_grant(
+  self : WholeStore,
+  grant : station_vault::GrantRecord,
+  now_sec : Int64,
+) -> Result[Unit, String] {
+  match self.vault_grants.register(grant, now_sec) {
+    Ok(_) => {
+      let mut found = false
+      for i in 0..<self.active_vault_grant_ids.length() {
+        if self.active_vault_grant_ids[i] == grant.id {
+          found = true
+          break
+        }
+      }
+      if !found {
+        self.active_vault_grant_ids.push(grant.id)
+      }
+      Ok(())
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Return currently active (unexpired, non-revoked) vault grant IDs at `now_sec`.
+pub fn WholeStore::active_vault_grant_ids_at(
+  self : WholeStore,
+  now_sec : Int64,
+) -> Array[String] {
+  let active : Array[String] = []
+  for i in 0..<self.active_vault_grant_ids.length() {
+    let id = self.active_vault_grant_ids[i]
+    if self.vault_grants.is_active(id, now_sec) {
+      active.push(id)
+    }
+  }
+  self.active_vault_grant_ids = active
+  active
+}
+
+/// Apply a handover snapshot: persists audit state into SQLite FIRST, and ONLY on SQLite commit
+/// updates in-memory `last_restored_handover_at` and `AdminApi::keep_sends`.
+pub fn WholeStore::apply_handover_restore(
+  self : WholeStore,
+  snap : WholeHandoverSnapshot,
+  admin_api : station_api::AdminApi,
+  ws_override : Option[String],
+) -> Result[Unit, String] {
+  if snap.version != HANDOVER_SNAPSHOT_VERSION {
+    return Err("unsupported handover snapshot version: " + snap.version.to_string())
+  }
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let snap_json = base_codec::json_stringify(snap.to_json())
+  match station_store::save_handover_in(st.db, "whole-core-last", snap_json) {
+    Ok(_) => ()
+    Err(e) => return Err("persist restored handover snapshot failed: " + e.message)
+  }
+  admin_api.keep_sends(snap.kept_sends, ws_override)
+  self.last_restored_handover_at = Some(snap.exported_at)
+  Ok(())
+}
+
+/// Mark `WholeStore` closed without invoking SQLite FFI (used when `store` was never opened).
+pub fn WholeStore::close_pre_handover(self : WholeStore) -> Unit {
+  self.store = None
+  self.phase = StorePhase::Closed
+}
+
+/// Cleanly flush and close the primary SQLite connection.
+pub fn WholeStore::close(self : WholeStore) -> Unit {
+  match self.store {
+    Some(st) => {
+      st.close()
+      self.store = None
+    }
+    None => ()
+  }
+  self.phase = StorePhase::Closed
+}

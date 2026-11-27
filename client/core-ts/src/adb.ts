@@ -18,8 +18,10 @@ import { StationAddr } from "./station/addr.ts";
 import { Retold } from "./station/retold.ts";
 import { LANG_HEADER } from "./station/requests.ts";
 import type { RequestHead } from "./station/wire.ts";
+import { snapWsAuthGen } from "./auth-gen.ts";
 import type { Store } from "./store.ts";
 import { fromUtf8, parseJson, utf8 } from "./util.ts";
+import { ofAddress } from "./workspace.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -570,8 +572,10 @@ export class Adb {
   readonly #legacy: Lend;
   readonly #lends = new Map<string, Lend>();
   #ports: Omit<Offer, "station" | "minutes"> | null = null;
-  /// This person's chats' grants of their phone (and requests waiting), by station address and id.
-  readonly #grants = new Map<string, Map<string, J>>();
+  /// This person's chats' grants of their phone (and requests waiting), by station address, bound to owner `sub` & workspace `authGen`.
+  readonly #grants = new Map<string, { sub: string; gen: number; grants: Map<string, J> }>();
+  /// Serialized coalescing refresh state per station so overlapping same-owner boundaries never drop the latest refresh.
+  readonly #refreshing = new Map<string, { sub: string; rerun: boolean }>();
   readonly #retold = new Retold();
   /// Whether the grants kept on the device were read (`adbShare` `known`): before, none known is not none granted.
   #known = false;
@@ -597,14 +601,78 @@ export class Adb {
       if (kept !== null && typeof kept === "object") for (const [id, until] of Object.entries(kept)) if (typeof until === "number") this.#revoked.set(id, until);
       this.#sync();
     }), { log: "Unhandled", message: "debugging grants taken back read" }));
+    env.store.authGen.onBoundary((event) => {
+      if (event.kind !== "global" && event.kind !== "workspace") return;
+      let pruned = false;
+      const toRefresh: [string, string][] = [];
+      const stations = new Set<string>([...this.#grants.keys(), ...this.#refreshing.keys()]);
+      for (const station of stations) {
+        const ws = ofAddress(station);
+        if (event.kind === "workspace" && ws !== event.workspace) continue;
+        const entry = this.#grants.get(station);
+        const ref = this.#refreshing.get(station);
+        const entrySub = entry?.sub ?? ref?.sub;
+        const curSub = this.#ownerAt(station);
+        const curGen = this.#env.store.authGen.workspaceAuthGen(ws);
+        if (curSub === null || (entrySub !== undefined && entrySub !== curSub)) {
+          if (entry !== undefined) {
+            this.#grants.delete(station);
+            pruned = true;
+          }
+          this.#refreshing.delete(station);
+        } else if ((entry !== undefined && entry.gen !== curGen) || ref !== undefined) {
+          if (entry !== undefined) {
+            this.#grants.delete(station);
+            pruned = true;
+          }
+          toRefresh.push([station, curSub]);
+        }
+      }
+      if (pruned) {
+        this.#keep();
+        this.#sync();
+      }
+      for (const [station, sub] of toRefresh) {
+        this.#scheduleRefresh(station, sub);
+      }
+    });
+    const loadSnap = env.store.authGen.snapshot(0);
     env.runner.fork(
       Effect.ensuring(
         Effect.map(Effect.all([Effect.orElseSucceed(env.host.storageGet(GRANTS_KEY), () => null), Effect.orElseSucceed(env.host.storageGet(ON_KEY), () => null)]), ([bytes, on]) => {
           const kept = bytes === null ? null : (parseJson(bytes) as J);
           if (kept !== null && typeof kept === "object")
-            // (what a station said since it started, read whole or heard, wins over what was kept)
-            for (const [station, list] of Object.entries(kept))
-              if (!this.#grants.has(station) && Array.isArray(list)) this.#grants.set(station, new Map((list as J[]).filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])));
+            // (what a station said since it started, read whole or heard, wins over what was kept;
+            // legacy unowned arrays without `sub` are ignored rather than claimed by the current account)
+            for (const [station, raw] of Object.entries(kept)) {
+              if (this.#grants.has(station)) continue;
+              if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+              const sub = typeof (raw as J).sub === "string" ? ((raw as J).sub as string) : null;
+              const list = Array.isArray((raw as J).grants) ? ((raw as J).grants as J[]) : null;
+              if (sub === null || list === null) continue;
+              const ws = ofAddress(station);
+              const startWsGen = snapWsAuthGen(loadSnap, ws);
+              const curWsGen = this.#env.store.authGen.workspaceAuthGen(ws);
+              const curSub = this.#ownerAt(station);
+              if (curWsGen !== startWsGen) {
+                // Auth boundary crossed while GRANTS_KEY was loading asynchronously: never stamp stale persisted
+                // grants with the new generation; trigger authoritative refresh if the same owner is still active.
+                if (curSub !== null && sub === curSub) {
+                  this.#scheduleRefresh(station, curSub);
+                }
+                continue;
+              }
+              // Keep owner-tagged persisted grants across cold start even before workspaces finish hydrating
+              // (`#grantsOf` / `#allGrants` still enforce `entry.sub === this.#ownerAt(station)` on every read);
+              // discard immediately if an authoritative owner is already known and differs.
+              if (curSub === null || sub === curSub) {
+                this.#grants.set(station, {
+                  sub,
+                  gen: curWsGen,
+                  grants: new Map(list.filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])),
+                });
+              }
+            }
           const said = on === null ? null : parseJson(on);
           // (switched before it was read: as switched)
           if (this.#switched) return;
@@ -623,10 +691,55 @@ export class Adb {
     );
   }
 
-  /// The grants as they stand kept on the device (the live ones and the requests waiting: those ended let go).
+  #scheduleRefresh(station: string, sub: string): void {
+    const existing = this.#refreshing.get(station);
+    if (existing !== undefined) {
+      existing.sub = sub;
+      existing.rerun = true;
+      return;
+    }
+    const state = { sub, rerun: false };
+    this.#refreshing.set(station, state);
+    this.#env.runner.fork(
+      Effect.gen({ self: this }, function* () {
+        for (;;) {
+          state.rerun = false;
+          if (this.#refreshing.get(station) !== state || this.#ownerAt(station) !== state.sub) {
+            if (this.#refreshing.get(station) === state) this.#refreshing.delete(station);
+            return;
+          }
+          yield* Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after boundary" });
+          const after = this.#refreshing.get(station);
+          if (after !== state) return;
+          if (!after.rerun) {
+            this.#refreshing.delete(station);
+            return;
+          }
+        }
+      }),
+    );
+  }
+
+  #grantsOf(station: string): Map<string, J> | undefined {
+    const entry = this.#grants.get(station);
+    if (entry === undefined) return undefined;
+    const curSub = this.#ownerAt(station);
+    const curGen = this.#env.store.authGen.workspaceAuthGen(ofAddress(station));
+    return curSub !== null && entry.sub === curSub && entry.gen === curGen ? entry.grants : undefined;
+  }
+
+  /// The grants as they stand kept on the device (the live ones and the requests waiting: those ended let go),
+  /// bound to each station's owner `sub`.
   #keep(): void {
-    const out: Record<string, J[]> = {};
-    for (const g of this.#allGrants()) (out[g.station as string] ??= []).push(Object.fromEntries(Object.entries(g).filter(([k]) => k !== "station")));
+    const out: Record<string, { sub: string; grants: J[] }> = {};
+    for (const g of this.#allGrants()) {
+      const station = g.station as string;
+      const entry = this.#grants.get(station);
+      if (entry === undefined) continue;
+      (out[station] ??= { sub: entry.sub, grants: [] }).grants.push(
+        Object.fromEntries(Object.entries(g).filter(([k]) => k !== "station")),
+      );
+    }
     this.#env.runner.fork(Effect.ignore(this.#env.host.storageSet(GRANTS_KEY, utf8(JSON.stringify(out))), { log: "Unhandled", message: "debugging grants kept" }));
   }
 
@@ -668,10 +781,17 @@ export class Adb {
       }
       case "decide":
         return Effect.gen({ self: this }, function* () {
+          const ws = ofAddress(call.station);
+          const startGen = this.#env.store.authGen.workspaceAuthGen(ws);
+          const startSub = this.#ownerAt(call.station);
+          if (startSub === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.personal.noAccount")));
           // Allowed on this device's own key, the person asked; refused needs none.
           const signed = call.scope === null ? undefined : yield* this.#signed(call.station, call.request, call.scope);
+          if (this.#env.store.authGen.workspaceAuthGen(ws) !== startGen || this.#ownerAt(call.station) !== startSub) {
+            return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
+          }
           const r = yield* this.#legacy.askAt(call.station, { op: "decide", request: call.request, scope: call.scope, ...(signed ? { signed } : {}) });
-          this.heard(call.station, (r as J)?.request);
+          this.heard(call.station, (r as J)?.request, startGen, startSub);
           return null;
         });
       case "personalOpen":
@@ -720,8 +840,12 @@ export class Adb {
   /// station of theirs (`adb-revoke`). Refused to sign (the person said no), nothing is taken back.
   #revoke(station: string, request: string): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
+      const ws = ofAddress(station);
+      const startGen = this.#env.store.authGen.workspaceAuthGen(ws);
+      const startSub = this.#ownerAt(station);
+      if (startSub === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.personal.noAccount")));
       // One list row represents the whole chat, including multiple agents' grants in that chat.
-      const selected = this.#grants.get(station)?.get(request);
+      const selected = this.#grantsOf(station)?.get(request);
       const matching = selected === undefined ? [] : this.#allGrants()
         .filter((g) => g.station === station && grantChat(g) === grantChat(selected))
         .map((g) => g.id as string);
@@ -731,35 +855,42 @@ export class Adb {
       // lasts at the least (a station's own word can only make it longer: one saying the grant ends in seconds would
       // have a taking back signed that ends long before the grant it holds does).
       const ends = (id: string) => {
-        const g = this.#grants.get(station)?.get(id);
+        const g = this.#grantsOf(station)?.get(id);
         const held = g === undefined ? null : this.#holds({ ...g, station });
         if (held !== null && held > now) return held;
         return Math.max(typeof g?.exp === "number" ? g.exp : 0, now + 30 * 86400);
       };
-      const sub = this.#subAt(station);
       // (a request waiting lends nothing: no signature for it; a station from before signatures drops it)
-      const live = ids.map((id) => this.#grants.get(station)?.get(id)).filter((g): g is J => g !== undefined && g.status === "granted");
-      const signs = live.length > 0 && sub !== null && this.#env.host.appKeys === true && this.#env.personal.standing(sub) === "member" && !this.#old.has(station);
+      const live = ids.map((id) => this.#grantsOf(station)?.get(id)).filter((g): g is J => g !== undefined && g.status === "granted");
+      const signs = live.length > 0 && this.#env.host.appKeys === true && this.#env.personal.standing(startSub) === "member" && !this.#old.has(station);
       const signed = new Map<string, SignedRevoke>();
       if (signs) {
-        const list = yield* this.#env.personal.signRevokes(sub!, live.map((g) => ({ station, request: g.id as string, exp: ends(g.id) })), t("core-misc.personal.reason.revoke"), station);
+        const list = yield* this.#env.personal.signRevokes(startSub, live.map((g) => ({ station, request: g.id as string, exp: ends(g.id) })), t("core-misc.personal.reason.revoke"), station);
         for (const s of list) signed.set(s.body.request, s);
+      }
+      const revokeStale = () =>
+        this.#env.store.authGen.workspaceAuthGen(ws) !== startGen || this.#ownerAt(station) !== startSub;
+      if (revokeStale()) {
+        return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
       }
       // Off this phone at once, whatever the station answers or goes on saying.
       for (const id of ids) this.#revoked.set(id, Math.max(this.#revoked.get(id) ?? 0, ends(id)));
       this.#keepRevoked();
       this.#sync();
       // Carried to the person's other stations meanwhile: what they keep, the phones read and are told.
-      const others = signed.size === 0 || sub === null ? [] : (this.#env.stationsOf?.(sub) ?? []).filter((s) => s !== station);
+      const others = signed.size === 0 ? [] : (this.#env.stationsOf?.(startSub) ?? []).filter((s) => s !== station);
       const carried = Deferred.makeUnsafe<boolean>();
       this.#env.runner.fork(Effect.andThen(
-        Effect.forEach(others, (other) => Effect.result(Effect.forEach([...signed.values()], (s) => this.#legacy.askAt(other, { op: "revoke", request: s.body.request, signed: s, relay: true }), { discard: true })), { concurrency: "unbounded" }),
+        Effect.forEach(others, (other) => Effect.result(Effect.forEach([...signed.values()], (s) => (
+          revokeStale() ? Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale"))) : this.#legacy.askAt(other, { op: "revoke", request: s.body.request, signed: s, relay: true })
+        ), { discard: true })), { concurrency: "unbounded" }),
         (results) => Deferred.succeed(carried, results.some((r) => r._tag === "Success")),
       ));
       const told = yield* Effect.result(Effect.forEach(ids, (id) => {
+        if (revokeStale()) return Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
         const s = signed.get(id);
         return Effect.map(this.#legacy.askAt(station, { op: "revoke", request: id, ...(s !== undefined ? { signed: s } : {}) }), (r) => {
-          this.heard(station, (r as J)?.request);
+          this.heard(station, (r as J)?.request, startGen, startSub);
         });
       }, { discard: true }));
       if (told._tag === "Success") return null;
@@ -773,7 +904,7 @@ export class Adb {
   /// A signed taking back a station told (`adb-revoke`) or gave with the grants (`revokes`): checked here against the
   /// lock pinned here, as a grant is, and only then the grant off this phone; one that does not check is dropped.
   heardRevoke(station: string, signed: unknown): void {
-    const sub = this.#subAt(station);
+    const sub = this.#ownerAt(station);
     if (sub === null) return;
     if (this.#applyRevokes(sub, [signed], station)) {
       this.#keepRevoked();
@@ -842,15 +973,15 @@ export class Adb {
     return this.#env.subs().some((a) => a.sub === sub) ? run(sub) : Effect.fail(CoreError.invalid(t("core-misc.personal.noAccount")));
   }
 
-  /// Whose a station's grants are: its workspace's account; not known yet (a phone just started), the only one here.
-  #subAt(station: string): string | null {
+  /// Authoritative workspace owner for `station`; never falls back to `subs()[0]`.
+  #ownerAt(station: string): string | null {
     let workspace: string;
     try {
       workspace = StationAddr.parse(station).workspace;
     } catch {
       return null;
     }
-    return this.#env.subOf(workspace) ?? this.#env.subs()[0]?.sub ?? null;
+    return this.#env.subOf(workspace);
   }
 
   /// The grants from before they were signed: each account's signed at one go, the person asked once for each, and told
@@ -858,17 +989,24 @@ export class Adb {
   #confirm(): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const waiting = this.#allGrants().filter((g) => this.#toConfirm(g));
-      const bySub = new Map<string, J[]>();
+      const bySub = new Map<string, { g: J; startGen: number }[]>();
       for (const g of waiting) {
-        const sub = this.#subAt(g.station);
-        if (sub !== null) bySub.set(sub, [...(bySub.get(sub) ?? []), g]);
+        const sub = this.#ownerAt(g.station);
+        if (sub !== null) {
+          const startGen = this.#env.store.authGen.workspaceAuthGen(ofAddress(g.station as string));
+          bySub.set(sub, [...(bySub.get(sub) ?? []), { g, startGen }]);
+        }
       }
-      for (const [sub, grants] of bySub) {
-        const bodies = grants.map((g) => ({ station: g.station as string, request: g.id as string, session: g.session as string, chat: g.chat as string, scope: g.scope as PhoneScope, exp: g.exp as number }));
+      for (const [sub, items] of bySub) {
+        const bodies = items.map(({ g }) => ({ station: g.station as string, request: g.id as string, session: g.session as string, chat: g.chat as string, scope: g.scope as PhoneScope, exp: g.exp as number }));
         const signed = yield* this.#env.personal.signGrants(sub, bodies, t("core-misc.personal.reason.confirm"));
-        for (const [i, g] of grants.entries()) {
-          const r = yield* this.#legacy.askAt(g.station, { op: "sign", request: g.id, signed: signed[i] });
-          this.heard(g.station, (r as J)?.request);
+        for (const [i, { g, startGen }] of items.entries()) {
+          const station = g.station as string;
+          if (this.#env.store.authGen.workspaceAuthGen(ofAddress(station)) !== startGen || this.#ownerAt(station) !== sub) {
+            continue;
+          }
+          const r = yield* this.#legacy.askAt(station, { op: "sign", request: g.id, signed: signed[i] });
+          this.heard(station, (r as J)?.request, startGen, sub);
         }
       }
       return null;
@@ -878,18 +1016,18 @@ export class Adb {
   /// A grant live but unsigned, on a station that can carry a signature, and an account whose lock this device is on.
   #toConfirm(g: J): boolean {
     if (g.status !== "granted" || g.signed != null || this.#revoked.has(g.id) || this.#old.has(g.station)) return false;
-    const sub = this.#subAt(g.station);
+    const sub = this.#ownerAt(g.station);
     return sub !== null && this.#env.personal.standing(sub) === "member";
   }
 
   /// What this device signs to allow a chat a phone.
   #signed(station: string, request: string, scope: PhoneScope): Effect.Effect<J, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      const sub = this.#subAt(station);
+      const sub = this.#ownerAt(station);
       if (sub === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.personal.noAccount")));
       if (this.#old.has(station)) return yield* Effect.fail(new CoreError("personal_old_station", t("core-misc.personal.oldStation")));
-      if (this.#grants.get(station)?.get(request) === undefined) yield* this.readGrants(station);
-      const g = this.#grants.get(station)?.get(request);
+      if (this.#grantsOf(station)?.get(request) === undefined) yield* this.readGrants(station);
+      const g = this.#grantsOf(station)?.get(request);
       if (g === undefined) return yield* Effect.fail(CoreError.invalid(t("core-misc.personal.noRequest")));
       const exp = Math.floor(this.#env.host.nowMs() / 1000) + SCOPE_SECONDS[scope];
       return yield* this.#env.personal.signGrant(sub, { station, request, session: g.session, chat: g.chat, scope, exp }, t("core-misc.personal.reason.grant"));
@@ -899,7 +1037,7 @@ export class Adb {
   /// Until when grant `g` holds on this phone (null: it lends nothing on it): signed by a device on the lock pinned here.
   #holds(g: J): number | null {
     if (g.status !== "granted" || this.#revoked.has(g.id)) return null;
-    const sub = this.#subAt(g.station);
+    const sub = this.#ownerAt(g.station);
     const chain = sub === null ? null : this.#env.personal.chain(sub);
     return sub === null || chain === null ? null : this.check(g, g.station, sub, chain.devices, Math.floor(this.#env.host.nowMs() / 1000));
   }
@@ -943,39 +1081,55 @@ export class Adb {
   }
 
   /// A station said how a grant or request of this person's stands (its `adb-grant` event, or a decision's answer).
-  heard(station: string, d: J): void {
+  heard(station: string, d: J, readGen?: number, expectedSub?: string): void {
     if (typeof d?.id !== "string") return;
-    this.#retold.told(station, "adb-grant", d);
-    this.#putGrant(station, d);
+    const ws = ofAddress(station);
+    const curSub = this.#ownerAt(station);
+    const curGen = this.#env.store.authGen.workspaceAuthGen(ws);
+    if (curSub === null) return;
+    if (readGen !== undefined && readGen !== curGen) return;
+    if (expectedSub !== undefined && curSub !== expectedSub) return;
+    this.#retold.told(station, "adb-grant", d, curGen);
+    this.#putGrant(station, curSub, curGen, d);
     this.#keep();
     this.#sync();
   }
 
-  #putGrant(station: string, d: J): void {
-    const at = this.#grants.get(station) ?? new Map<string, J>();
+  #putGrant(station: string, sub: string, gen: number, d: J): void {
+    const existing = this.#grants.get(station);
+    const at = existing !== undefined && existing.sub === sub && existing.gen === gen ? existing.grants : new Map<string, J>();
     if (d.status === "pending" || d.status === "granted") at.set(d.id, d);
     else at.delete(d.id);
-    this.#grants.set(station, at);
+    this.#grants.set(station, { sub, gen, grants: at });
   }
 
   /// A station's grants read whole, as it is reached (one from before grants answers with none).
   readGrants(station: string): Effect.Effect<void, CoreError> {
     return Effect.suspend(() => {
-      const sub = this.#subAt(station);
+      const ws = ofAddress(station);
+      const startGen = this.#env.store.authGen.workspaceAuthGen(ws);
+      const sub = this.#ownerAt(station);
       if (sub !== null) this.#readPersonal(sub, station);
       const read = this.#retold.asked();
       return Effect.map(Effect.orElseSucceed(this.#legacy.askAt(station, { op: "grants" }), () => null), (r) => {
+        if (sub === null || this.#env.store.authGen.workspaceAuthGen(ws) !== startGen || this.#ownerAt(station) !== sub) return;
         const list = Array.isArray((r as J)?.grants) ? ((r as J).grants as J[]) : null;
         if (list === null) return;
         // (one from before signatures drops them: said on its cards, nothing allowed there would lend)
         if ((r as J)?.signs === true) this.#old.delete(station);
         else this.#old.add(station);
-        this.#grants.set(station, new Map(list.filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])));
+        this.#grants.set(station, {
+          sub,
+          gen: startGen,
+          grants: new Map(list.filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])),
+        });
         // A change heard while the read was out is newer than the snapshot it brought.
-        for (const { data } of this.#retold.since(read, station)) this.#putGrant(station, data as J);
+        for (const { data, readGen } of this.#retold.since(read, station)) {
+          if (readGen === startGen) this.#putGrant(station, sub, startGen, data as J);
+        }
         // (what the person's devices signed to take grants back, any station's: a phone that was away hears of it here)
         const revokes = (r as J)?.revokes;
-        if (sub !== null && Array.isArray(revokes) && revokes.length > 0 && this.#applyRevokes(sub, revokes.slice(0, REVOKES_HELD), station)) this.#keepRevoked();
+        if (Array.isArray(revokes) && revokes.length > 0 && this.#applyRevokes(sub, revokes.slice(0, REVOKES_HELD), station)) this.#keepRevoked();
         this.#keep();
         this.#sync();
       }).pipe(Effect.ensuring(Effect.sync(() => this.#retold.over(read))));
@@ -986,8 +1140,12 @@ export class Adb {
   #allGrants(): J[] {
     const now = this.#env.host.nowMs() / 1000;
     const out: J[] = [];
-    for (const [station, at] of this.#grants)
-      for (const g of at.values()) if (!this.#revoked.has(g.id) && (g.status === "pending" || (g.status === "granted" && (g.exp ?? 0) > now))) out.push({ ...g, station });
+    for (const [station, entry] of this.#grants) {
+      const curSub = this.#ownerAt(station);
+      const curGen = this.#env.store.authGen.workspaceAuthGen(ofAddress(station));
+      if (curSub === null || entry.sub !== curSub || entry.gen !== curGen) continue;
+      for (const g of entry.grants.values()) if (!this.#revoked.has(g.id) && (g.status === "pending" || (g.status === "granted" && (g.exp ?? 0) > now))) out.push({ ...g, station });
+    }
     return out.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   }
 
@@ -996,7 +1154,7 @@ export class Adb {
     const out = new Map<string, J>();
     for (const whole of this.#allGrants()) {
       const { signed: _signed, ...shown } = whole;
-      const sub = this.#subAt(whole.station);
+      const sub = this.#ownerAt(whole.station);
       const standing = sub === null ? "member" : this.#env.personal.standing(sub);
       const g = {
         ...shown,

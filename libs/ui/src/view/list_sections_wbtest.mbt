@@ -1358,6 +1358,7 @@ test "late and replaced section chrome receives viewport box and yields hits to 
     (cy - ly).abs() <= 0.01 && (h - 240.0).abs() <= 0.01,
     msg="list y=\{ly}; chrome y=\{cy}, h=\{h}",
   )
+  assert_true(t.takes_points(ch.id()), msg="section chrome host must not disable takes_points for interactive children")
   // Foot overlaps bottom 40pt of viewport and must take hit priority over late-registered chrome
   assert_true(t.press(50.0, 220.0))
   assert_eq((foot_hits.val, chrome_hits.val), (1, 0), msg="foot must win hit over overlapping section chrome")

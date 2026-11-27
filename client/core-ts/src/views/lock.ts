@@ -526,7 +526,7 @@ export function inForceOf(inner: Inner, ws: string, entries: readonly Entry[] = 
   p.force = { entries, logs, bodies, own, listed, ...goodFor(chains.values(), at, entries), made };
   // (the vaults follow the state as it is made anew, whatever made it so: a person's log, a body, the clock; in a turn
   // of their own, never on the read that made it, views/vault.ts vaultCome)
-  if (entries === held(inner, ws)?.entries) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (keepSafe(inner, ws), vaultCome(inner, ws))))));
+  if (entries === held(inner, ws)?.entries) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (keepSafe(inner, ws), inner.syncWorkspaceAuth?.(ws), vaultCome(inner, ws))))));
   return made;
 }
 
@@ -1322,7 +1322,7 @@ function hold(inner: Inner, ws: string, sub: string, said: Head | null, entries:
     // brought now, the cloud's way (`Lock.deliver`).
     if (head !== null && fold(now.entries).stations.size === 0 && !fold(now.entries).disabled) deliver(inner, ws);
     // checked as it comes, in a turn of its own (views/vault.ts vaultCome), whether it is in safe mode kept (`keepSafe`)
-    inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (keepSafe(inner, ws), vaultCome(inner, ws))))));
+    inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (keepSafe(inner, ws), inner.syncWorkspaceAuth?.(ws), vaultCome(inner, ws))))));
     // (and handed over by itself where all of it is said: `movedBySelf`, in a turn of its own)
     inner.runner.fork(laterSleep(0).pipe(Effect.andThen(movedBySelf(inner, ws))));
     // (where the chain moved, what is in force changes with the logs and bodies too, its head as it was)

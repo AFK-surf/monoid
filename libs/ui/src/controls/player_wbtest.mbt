@@ -64,6 +64,7 @@ fn player_tester(
   subtitled? : Bool = false,
   keyed? : Bool = false,
   pin? : @player.MediaStatus,
+  dark? : Bool = false,
 ) -> @ui.Tester {
   let (w, h, platform) = window.unwrap_or(if narrow { (390.0, 844.0, 1) } else { (1280.0, 800.0, 0) })
   set_viewer_host(viewer_host_default())
@@ -73,7 +74,8 @@ fn player_tester(
   let siblings : Array[ViewerEntry] = list.map(fn(n) { { name: n, size: 1.0, mtime: 0.0, mime: "", kind, dir: false } })
   let file = film(name, kind~, facts~)
   let file = if subtitled { { ..file, beside: Some(fn(_, _) {  }) } } else { file }
-  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, dark~, platform~)
+  set_dark(Some(dark))
   // (how it stands pinned from its first frame, as a fixture's: what its nodes are made by)
   match pin {
     Some(s) => playing_for("k").media.pin(s)
@@ -346,22 +348,34 @@ test "a desktop's: a film on black, the bar on it in its words; its speeds a men
 }
 
 ///|
-test "a desktop's: the bar's way back under the pointer lit on the film's black as the controls' buttons are, not with the page's hover" {
-  let t = player_tester(false, "a.mp4", [], [], [])
-  // (a mouse's pointer: what lights under it)
+test "a desktop's: the bar's way back under the pointer uses theme hover in light mode and dark media hover in dark mode" {
+  defer { set_dark(None) }
+  // Light mode: floating bar follows theme-light hover.
+  let t = player_tester(false, "a.mp4", [], [], [], dark=false)
   t.host_says_finger(Some(false))
   t.draw()
   let (x, y) = t.find("影片").unwrap()
-  let under = fn(colour : Int64) {
-    t.drawn_rects().iter().any(fn(r) { r.4 == colour && r.0 <= x && x <= r.0 + r.2 && r.1 <= y && y <= r.1 + r.3 })
+  let under = fn(tester : @ui.Tester, colour : Int64) {
+    tester.drawn_rects().iter().any(fn(r) { r.4 == colour && r.0 <= x && x <= r.0 + r.2 && r.1 <= y && y <= r.1 + r.3 })
   }
-  let lit = alpha(media_dark_text, media_hot_share)
-  assert_false(under(lit))
+  let light_hover = theme().p.hover
+  assert_false(under(t, light_hover))
   t.move_to(x, y)
   t.frame()
-  assert_true(under(lit))
-  // (the page's: dark on the black)
-  assert_false(under(theme().p.hover))
+  assert_true(under(t, light_hover))
+  // Dark mode: floating bar uses dark media hover on the black stage.
+  let td = player_tester(false, "a.mp4", [], [], [], dark=true)
+  td.host_says_finger(Some(false))
+  td.draw()
+  let (dx, dy) = td.find("影片").unwrap()
+  let under_d = fn(colour : Int64) {
+    td.drawn_rects().iter().any(fn(r) { r.4 == colour && r.0 <= dx && dx <= r.0 + r.2 && r.1 <= dy && dy <= r.1 + r.3 })
+  }
+  let dark_lit = alpha(media_dark_text, media_hot_share)
+  assert_false(under_d(dark_lit))
+  td.move_to(dx, dy)
+  td.frame()
+  assert_true(under_d(dark_lit))
 }
 
 ///|

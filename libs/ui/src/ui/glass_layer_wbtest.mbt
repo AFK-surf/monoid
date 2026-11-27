@@ -387,3 +387,64 @@ test "bare adaptive text takes one box behind it for all its glyphs: its own, tw
     assert_true((hw - (ww / 2.0).floor()).abs() < 1.0 && hh >= 1.0, msg="\{w.0} half \{hw}x\{hh} of \{ww}x\{wh}")
   }
 }
+
+///|
+test "adaptive_ink solid rect inside adaptive liquid glass tags pad.w=-ink_r while plain solid button stays untagged" {
+  defer { set_glass_solid(None) }
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=120.0, dark=false, platform=0)
+  set_glass_solid(None)
+  set_view_app(fn(root) {
+    root.box(fn(pill) {
+      pill
+      .over(Is(true))
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(300.0)))
+      .height(Is(Some(48.0)))
+      .radius(Is(24.0))
+      .glass(Is(Some(Glass::liquid(blur=1.2, tint=0xFDFCFD67L, adaptive=true))))
+      |> ignore
+      // Solid fill with explicit adaptive_ink(true) and child text: own rect inherits capsule center (pad.w = -ink_r),
+      // while descendants beneath its opaque ground are shielded (child text stays kind == 1.0, never kind == 7.0).
+      pill.box(fn(fill) {
+        fill
+        .over(Is(true))
+        .offset(Is((10.0, 20.0)))
+        .width(Is(Some(120.0)))
+        .height(Is(Some(20.0)))
+        .adaptive_ink(Is(true))
+        .ground(Is(0x1C1C1EFFL))
+        |> ignore
+        fill.box(fn(lbl) { lbl.words(Is("Hi")) |> ignore }) |> ignore
+      })
+      |> ignore
+      // Plain solid button without adaptive_ink: must NOT be tagged (pad.w == 0.0).
+      pill.box(fn(btn) {
+        btn
+        .over(Is(true))
+        .offset(Is((160.0, 10.0)))
+        .width(Is(Some(80.0)))
+        .height(Is(Some(28.0)))
+        .ground(Is(0x2244CCFFL))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let fill_idx = gl_rect_indices_of_color(t, 0x1C1C1EFFL)
+  let btn_idx = gl_rect_indices_of_color(t, 0x2244CCFFL)
+  assert_eq(fill_idx.length(), 1, msg="adaptive_ink solid fill drawn")
+  assert_eq(btn_idx.length(), 1, msg="plain solid button drawn")
+  let insts = t.drawn_instances()
+  let fill_inst = insts[fill_idx[0]]
+  let btn_inst = insts[btn_idx[0]]
+  assert_true((fill_inst[21] - 170.0).abs() < 0.01, msg="fill ink_x=\{fill_inst[21]}")
+  assert_true((fill_inst[22] - 44.0).abs() < 0.01, msg="fill ink_y=\{fill_inst[22]}")
+  assert_true((fill_inst[23] + 24.0).abs() < 0.01, msg="fill pad.w=\{fill_inst[23]} expected -24.0")
+  assert_eq(btn_inst[23], 0.0, msg="plain solid button pad.w must stay 0.0, got \{btn_inst[23]}")
+  let plain_glyphs = insts.filter(fn(a) { a.length() > 5 && a[5] == 1.0 })
+  let adaptive_glyphs = insts.filter(fn(a) { a.length() > 5 && a[5] == 7.0 })
+  assert_true(plain_glyphs.length() >= 2, msg="child text under opaque adaptive_ink stays kind == 1.0")
+  assert_eq(adaptive_glyphs.length(), 0, msg="child text under opaque adaptive_ink must not become kind == 7.0")
+}

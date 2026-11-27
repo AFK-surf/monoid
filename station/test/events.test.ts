@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
-import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo } from "../src/api/events.ts";
+import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo, serializeRawOverview } from "../src/api/events.ts";
 import { log } from "../src/ops/log.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
@@ -1982,4 +1982,387 @@ test("the first overview a taken-up stream is told, changed, says its changed ke
   } finally {
     info.mock.restore();
   }
+});
+
+test("two devices of the same person track overview independently: reconnect order causes no push, and a lockDevice change pushes only to that device", async () => {
+  const { events } = setup(testClock().clock);
+  const locks = new Map<string, { base: string; proof: string }>([
+    ["dev-a", { base: "base-a1", proof: "proof-a1" }],
+    ["dev-b", { base: "base-b1", proof: "proof-b1" }],
+  ]);
+  const shared = { profiles: [{ id: "p1" }], counts: { running: 1 } };
+  let sharedBuilds = 0;
+  events.follow({
+    overview: async (v, _lang, round) => {
+      let body = round?.get("shared");
+      if (body === undefined) {
+        sharedBuilds++;
+        body = shared;
+        round?.set("shared", body);
+      }
+      return {
+        ...(body as object),
+        viewer: { via: "mesh", ...v, lockDevice: locks.get(v.device) },
+      };
+    },
+  });
+  const devAViewer = { ...viewer("a@x"), device: "dev-a", lockDevice: locks.get("dev-a") };
+  const devBViewer = { ...viewer("a@x"), device: "dev-b", lockDevice: locks.get("dev-b") };
+  const sA1 = reader((await events.open(devAViewer, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  const sB = reader((await events.open(devBViewer, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  events.overviewChanged();
+  await settle();
+  assert.equal(sharedBuilds, 1, "both devices share one round computation");
+  assert.equal(sA1.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(sB.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(sA1.got.find((e) => e.event === "overview")!.data.viewer.device, "dev-a");
+  assert.equal(sB.got.find((e) => e.event === "overview")!.data.viewer.device, "dev-b");
+
+  // Reconnect dev-a behind dev-b so client order flips (dev-b is now first): neither device gets a spurious push.
+  const heardA = sA1.got.findLast((e) => e.id)!.id!;
+  await sA1.close();
+  const sA2 = reader((await events.open(devAViewer, "zh", false, [], [], heardA)).body as AsyncIterable<Buffer>);
+  await settle();
+  assert.equal(sA2.got.filter((e) => e.event === "overview").length, 0, "reconnecting dev-a unchanged causes no push");
+  events.overviewChanged();
+  await settle();
+  assert.equal(sA2.got.filter((e) => e.event === "overview").length, 0, "broadcast after client reorder causes no push to dev-a");
+  assert.equal(sB.got.filter((e) => e.event === "overview").length, 1, "broadcast after client reorder causes no push to dev-b");
+
+  // Only dev-a's lockDevice changes (e.g. approved in safe mode): pushed to dev-a alone, not dev-b.
+  locks.set("dev-a", { base: "base-a2", proof: "proof-a2" });
+  events.overviewChanged();
+  await settle();
+  const aUpdates = sA2.got.filter((e) => e.event === "overview");
+  assert.equal(aUpdates.length, 1, "dev-a receives its lockDevice update");
+  assert.deepEqual(aUpdates[0]!.data.viewer.lockDevice, { base: "base-a2", proof: "proof-a2" });
+  assert.equal(sB.got.filter((e) => e.event === "overview").length, 1, "dev-b receives nothing when only dev-a's lockDevice changes");
+
+  await sA2.close();
+  await sB.close();
+});
+
+test("serializeRawOverview matches JSON.stringify byte for byte across edge cases", () => {
+  const samples: unknown[] = [
+    null, 0, "abc", true, [1, undefined, { a: 2 }], {},
+    { machine: { cpu: 1 }, disk: { freeBytes: 123, totalBytes: 456 }, processes: [{ pid: 1, rssMb: 99 }], copies: { to: 5, chats: 2 }, counts: { running: 1 }, skip: undefined, fn: () => 1, sym: Symbol("x"), neg: -0, nan: Number.NaN },
+    { counts: { running: 1 }, toJSON: () => ({ custom: true }) },
+  ];
+  for (const s of samples) {
+    assert.equal(serializeRawOverview(s), JSON.stringify(s));
+  }
+});
+
+test("large per-device overviews do not exhaust EventLog KEPT_BYTES and resuming across handover still catches missed overviews", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const big = "x".repeat(160_000);
+  let count = 1;
+  const before = setup(time.clock, { file, previous: previous() });
+  before.events.follow({
+    overview: async (v, _lang, round) => {
+      let payload = round?.get("payload");
+      if (payload === undefined) {
+        payload = { big, counts: { running: count } };
+        round?.set("payload", payload);
+      }
+      return { ...(payload as object), viewer: { via: "mesh", ...v } };
+    },
+  });
+  // Open 60 devices (> 9.6 MB of overviews if pinned in EventLog, exceeding the 8 MB KEPT_BYTES cap).
+  const streams: Awaited<ReturnType<typeof opened>>[] = [];
+  for (let i = 0; i < 60; i++) {
+    const v = { ...viewer(`u${i}@x`), device: `d${i}` };
+    const ans = await before.events.open(v, "zh", false, [], [], null);
+    streams.push({ resumed: false, ...reader(ans.body as AsyncIterable<Buffer>) });
+  }
+  before.change({ type: "session", key: "s1" });
+  before.events.overviewChanged();
+  await settle();
+  // Capture an earlier id on device 0 before a second overview push, then close device 0 and keep a sibling stream open.
+  const v0 = { ...viewer("u0@x"), device: "d0" };
+  const heardBefore = streams[0]!.got.findLast((e) => e.id)!.id!;
+  const sibling = reader((await before.events.open(v0, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  await streams[0]!.close();
+  count = 2;
+  before.events.overviewChanged();
+  await settle();
+  assert.equal(sibling.got.filter((e) => e.event === "overview").length, 1);
+  // Hand over to next process; device 0 resumes from heardBefore even though 60 x 160 KB overviews were sent.
+  await before.events.handOver();
+  const after = setup(time.clock, { file, previous: previous() }, before);
+  after.events.follow({
+    overview: async (v, _lang, round) => {
+      let payload = round?.get("payload");
+      if (payload === undefined) {
+        payload = { big, counts: { running: count } };
+        round?.set("payload", payload);
+      }
+      return { ...(payload as object), viewer: { via: "mesh", ...v } };
+    },
+  });
+  const ansBack = await after.events.open(v0, "zh", false, [], [], heardBefore);
+  assert.equal((ansBack.headers as Record<string, string>)["stillfail-resumed"], "1", "EventLog was not evicted by 60 x 160 KB overviews");
+  const back = reader(ansBack.body as AsyncIterable<Buffer>);
+  await settle();
+  const ovs = back.got.filter((e) => e.event === "overview");
+  assert.equal(ovs.length, 1, "resuming stream receives the missed overview after handover");
+  assert.equal(ovs[0]!.data.counts.running, 2);
+  await back.close();
+  await sibling.close();
+  for (let i = 1; i < streams.length; i++) await streams[i]!.close();
+});
+
+test("missed overview catch-up on resume emits a strictly increasing id and does not rewind Last-Event-ID", async () => {
+  const { events, overview, change } = setup(testClock().clock);
+  const v = { ...viewer("a@x"), device: "dev-mono" };
+  const s1 = reader((await events.open(v, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  change({ type: "session", key: "s1" });
+  await settle();
+  const heard1 = s1.got.findLast((e) => e.id)!.id!;
+  const sibling = reader((await events.open(v, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  await s1.close();
+
+  // While s1 is disconnected: overview updates first (older seq), then thread entries arrive (newer seq).
+  overview.running = 7;
+  events.overviewChanged();
+  await settle();
+  change({ type: "thread", id: 9, entries: [{ n: 1 } as any] });
+  await settle();
+  const siblingOvsBefore = sibling.got.filter((e) => e.event === "overview").length;
+  assert.equal(siblingOvsBefore, 1);
+
+  // s1 resumes from heard1: receives replayed thread, then catch-up overview with strictly larger id.
+  const s2 = reader((await events.open(v, "zh", false, [], [], heard1)).body as AsyncIterable<Buffer>);
+  await settle();
+  const seqs = s2.got.filter((e) => e.id).map((e) => Number(e.id!.split(".")[1]));
+  assert.ok(seqs.length >= 2, `expected thread + overview events, got ${JSON.stringify(seqs)}`);
+  for (let i = 1; i < seqs.length; i++) {
+    assert.ok(seqs[i]! > seqs[i - 1]!, `expected strictly increasing ids, got ${JSON.stringify(seqs)}`);
+  }
+  assert.equal(s2.got.filter((e) => e.event === "thread").length, 1);
+  assert.equal(s2.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(sibling.got.filter((e) => e.event === "overview").length, siblingOvsBefore, "sibling does not get a duplicate overview");
+
+  // Reconnecting again from s2's last id must not replay the thread event or push another overview.
+  const heard2 = s2.got.findLast((e) => e.id)!.id!;
+  await s2.close();
+  const s3 = reader((await events.open(v, "zh", false, [], [], heard2)).body as AsyncIterable<Buffer>);
+  await settle();
+  assert.equal(s3.got.filter((e) => e.event === "thread").length, 0, "no duplicate thread replay after catch-up");
+  assert.equal(s3.got.filter((e) => e.event === "overview").length, 0, "no duplicate overview after catch-up");
+
+  await s3.close();
+  await sibling.close();
+});
+
+test("legacy device-less handover keys are used on first compare and dropped on the next handover", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const before = setup(time.clock, { file, previous: previous() });
+  const s0 = await opened(before.events);
+  before.events.overviewChanged();
+  await settle();
+  const heard = s0.got.findLast((e) => e.id)!.id!;
+  await before.events.handOver();
+  // Rewrite handed-over overviews to legacy 3-part viewerKey (without device), plus an offline legacy key.
+  const legacy = JSON.parse(readFileSync(file, "utf8"));
+  legacy.overviews = [
+    ["a@x\0w\0zh", JSON.stringify({ running: 0 })],
+    ["ghost@x\0w\0zh", JSON.stringify({ running: 0 })],
+  ];
+  delete legacy.overviewSeqs;
+  writeFileSync(file, JSON.stringify(legacy));
+
+  const after = setup(time.clock, { file, previous: previous() }, before);
+  const back = await opened(after.events, heard);
+  await settle();
+  assert.equal(back.got.filter((e) => e.event === "overview").length, 0, "legacy key suppresses unchanged overview");
+  await after.events.handOver();
+
+  const nextHanded = JSON.parse(readFileSync(file, "utf8"));
+  assert.ok(nextHanded.overviews.every(([k]: [string, string]) => k.split("\0").length === 4), `no legacy keys carried over: ${JSON.stringify(nextHanded.overviews)}`);
+  assert.ok(nextHanded.overviews.some(([k]: [string, string]) => k === "a@x\0w\0zh\0d"));
+  await s0.close();
+  await back.close();
+});
+
+test("overviewPatch=1 emits full overview on baseline, then overview-patch with refreshed normalized fields, del, and null values", async () => {
+  const { events } = setup(testClock().clock);
+  const GiB = 1024 ** 3;
+  const state: Record<string, any> = {
+    counts: { sessions: 3, running: 1, warm: 2 },
+    profiles: [{ id: "p1", name: "alpha" }],
+    interrupted: { count: 2 },
+    machine: { cpu: 10 },
+    disk: { freeBytes: 50 * GiB, totalBytes: 100 * GiB },
+    processes: [{ pgid: 42, runtime: "claude", rssMb: 120 }],
+    copies: { to: 10, chats: 5, keepers: [{ id: "k1", to: 10, at: 60_000 }] },
+  };
+  events.follow({ overview: async () => structuredClone(state) });
+  const v = { ...viewer("a@x"), device: "dev-mix" };
+  const optedIn = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  const legacy = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+
+  // Initial push: both streams receive full `overview` to establish baseline.
+  events.overviewChanged();
+  await settle();
+  assert.equal(optedIn.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(optedIn.got.filter((e) => e.event === "overview-patch").length, 0);
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1);
+
+  // Only `counts` changes comparably, `interrupted` disappears, and normalized/stripped fields move within their buckets.
+  state.counts.running = 2;
+  delete state.interrupted;
+  state.machine.cpu = 77;
+  state.disk.freeBytes = 49 * GiB;
+  state.processes[0].rssMb = 345;
+  state.copies.to = 12;
+  state.copies.keepers[0].to = 12;
+  events.overviewChanged();
+  await settle();
+
+  const patches = optedIn.got.filter((e) => e.event === "overview-patch");
+  assert.equal(patches.length, 1, "opted-in stream gets overview-patch");
+  assert.equal(optedIn.got.filter((e) => e.event === "overview").length, 1, "opted-in stream does not get full overview");
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 2, "legacy stream still gets full overview");
+  assert.equal(legacy.got.filter((e) => e.event === "overview-patch").length, 0);
+  assert.deepEqual(patches[0]!.data.set.counts, { sessions: 3, running: 2, warm: 2 });
+  assert.equal(patches[0]!.data.set.profiles, undefined, "unchanged large keys omitted from patch");
+  assert.deepEqual(patches[0]!.data.del, ["interrupted"]);
+  assert.equal(patches[0]!.data.set.processes[0].rssMb, 345, "processes[].rssMb refreshed with latest raw value");
+  assert.equal(patches[0]!.data.set.disk.freeBytes, 49 * GiB, "disk.freeBytes refreshed with latest raw value");
+  assert.equal(patches[0]!.data.set.copies.to, 12, "copies progress refreshed with latest raw value");
+  assert.equal(patches[0]!.data.set.machine.cpu, 77, "machine refreshed with latest raw value");
+
+  // Legitimate top-level `null` value goes into `set`, never `del`.
+  state.disk = null;
+  events.overviewChanged();
+  await settle();
+  const patch2 = optedIn.got.filter((e) => e.event === "overview-patch")[1]!;
+  assert.equal(patch2.data.set.disk, null);
+  assert.equal(patch2.data.del, undefined);
+
+  await optedIn.close();
+  await legacy.close();
+});
+
+test("same-device afresh stream resets memo so opted-in sibling receives full overview before patches resume", async () => {
+  const { events } = setup(testClock().clock);
+  const state = { counts: { running: 1 }, profiles: [{ id: "p1" }] };
+  events.follow({ overview: async () => structuredClone(state) });
+  const v = { ...viewer("a@x"), device: "dev-tabs" };
+
+  const tab1 = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  events.overviewChanged();
+  await settle();
+  assert.equal(tab1.got.filter((e) => e.event === "overview").length, 1);
+
+  state.counts.running = 2;
+  events.overviewChanged();
+  await settle();
+  assert.equal(tab1.got.filter((e) => e.event === "overview-patch").length, 1);
+
+  // Second tab on the same device connects afresh (`since = null`), clearing the shared device memo.
+  const tab2 = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  state.counts.running = 3;
+  events.overviewChanged();
+  await settle();
+  assert.equal(tab1.got.filter((e) => e.event === "overview").length, 2, "tab1 receives full overview after afresh reset");
+  assert.equal(tab1.got.filter((e) => e.event === "overview-patch").length, 1, "tab1 does not receive a patch against stale memo");
+  assert.equal(tab2.got.filter((e) => e.event === "overview").length, 1, "tab2 receives full overview");
+  assert.equal(tab2.got.filter((e) => e.event === "overview-patch").length, 0);
+
+  // Subsequent change goes back to overview-patch for both tabs.
+  state.counts.running = 4;
+  events.overviewChanged();
+  await settle();
+  assert.equal(tab1.got.filter((e) => e.event === "overview-patch").length, 2);
+  assert.equal(tab2.got.filter((e) => e.event === "overview-patch").length, 1);
+
+  await tab1.close();
+  await tab2.close();
+});
+
+test("resuming overviewPatch stream gets full overview first (never replayed patches) with id above replayed events", async () => {
+  const { events, change } = setup(testClock().clock);
+  const state: Record<string, any> = { counts: { running: 1 }, profiles: [{ id: "p1" }] };
+  events.follow({ overview: async () => structuredClone(state) });
+  const v = { ...viewer("a@x"), device: "dev-resume-patch" };
+
+  const s1 = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  events.overviewChanged();
+  await settle();
+  const heard1 = s1.got.findLast((e) => e.id)!.id!;
+  const sibling = reader((await events.open(v, "zh", false, [], [], heard1, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  await s1.close();
+
+  // While s1 is disconnected: two overview-patches happen interleaved with two thread events.
+  state.profiles = [{ id: "p1" }, { id: "p2" }];
+  events.overviewChanged();
+  await settle();
+  change({ type: "thread", id: 9, entries: [{ n: 1 } as any] });
+  await settle();
+  state.counts.running = 5;
+  events.overviewChanged();
+  await settle();
+  change({ type: "thread", id: 9, entries: [{ n: 2 } as any] });
+  await settle();
+  assert.equal(sibling.got.filter((e) => e.event === "overview-patch").length, 2, "connected sibling received both patches");
+  const siblingFullBefore = sibling.got.filter((e) => e.event === "overview").length;
+
+  // s1 resumes from heard1: replays both thread events, 0 patches, then full overview with id > all replayed ids.
+  const s2 = reader((await events.open(v, "zh", false, [], [], heard1, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  await settle();
+  assert.equal(s2.got.filter((e) => e.event === "thread").length, 2);
+  assert.equal(s2.got.filter((e) => e.event === "overview-patch").length, 0, "missed patches are never replayed");
+  const ovEvents = s2.got.filter((e) => e.event === "overview" || e.event === "overview-patch");
+  assert.equal(ovEvents.length, 1);
+  assert.equal(ovEvents[0]!.event, "overview", "first overview-related event on resume is full overview");
+  assert.deepEqual(ovEvents[0]!.data, state, "catch-up overview includes all changes missed while offline");
+  const seqs = s2.got.filter((e) => e.id).map((e) => Number(e.id!.split(".")[1]));
+  for (let i = 1; i < seqs.length; i++) {
+    assert.ok(seqs[i]! > seqs[i - 1]!, `strictly increasing ids expected, got ${JSON.stringify(seqs)}`);
+  }
+  assert.equal(sibling.got.filter((e) => e.event === "overview").length, siblingFullBefore);
+
+  // Subsequent change sends overview-patch to both s2 and sibling.
+  state.counts.running = 6;
+  events.overviewChanged();
+  await settle();
+  assert.equal(s2.got.filter((e) => e.event === "overview-patch").length, 1);
+  assert.equal(sibling.got.filter((e) => e.event === "overview-patch").length, 3);
+
+  await s2.close();
+  await sibling.close();
+});
+
+test("GET /events route enables overviewPatch only for clients advertising full runtimes and profile services", async () => {
+  const { routes } = await import("../src/api/routes/events.ts");
+  const { RUNTIME_KINDS } = await import("../src/agents/runtime.ts");
+  const calls: boolean[] = [];
+  const fakeEvents = {
+    open: async (...args: any[]) => {
+      calls.push(Boolean(args[10]));
+      return { status: 200, headers: {}, body: Buffer.from("") };
+    },
+  } as any;
+  const route = routes({ events: fakeEvents, sessionExists: () => true } as any)[0]!;
+  const baseReq = {
+    method: "GET",
+    path: "/events",
+    query: [["overviewPatch", "1"]] as [string, string][],
+    viewer: viewer("a@x"),
+    lang: "zh" as const,
+    body: Buffer.from(""),
+  };
+  // Legacy core (no runtime/profile-services headers): stays full overview.
+  await route.handle({ ...baseReq, headers: {} }, []);
+  // Core missing profile-services header: stays full overview.
+  await route.handle({ ...baseReq, headers: { "stillfail-runtimes": RUNTIME_KINDS.join(",") } }, []);
+  // Full modern core without overviewPatch=1: stays full overview.
+  await route.handle({ ...baseReq, query: [], headers: { "stillfail-runtimes": RUNTIME_KINDS.join(","), "stillfail-profile-services": "1" } }, []);
+  // Full modern core with overviewPatch=1: enabled.
+  await route.handle({ ...baseReq, headers: { "stillfail-runtimes": RUNTIME_KINDS.join(","), "stillfail-profile-services": "1" } }, []);
+  assert.deepEqual(calls, [false, false, false, true]);
 });

@@ -103,6 +103,8 @@ export async function harness(
     oidcRoleClaim?: string;
     /** Cloudflare Access in front of the console's host (ACCESS_TEAM_DOMAIN, ACCESS_AUD): `accessToken` makes its tokens. */
     access?: true;
+    /** CHANGELOG_CACHE_SECONDS: in-memory cache TTL on ServiceStatus for changelog and release feeds (0 by default in tests). */
+    changelogCacheSeconds?: number;
     /** Another cloud's releases its own bucket lacks some of (RELEASES_UPSTREAM, https://upstream.test/releases): its answer to each file asked there. */
     upstream?: (file: string, request: OutboundRequest) => { status: number; body?: string; headers?: Record<string, string> };
     /** The other product's origins answered as that product (GUESTS, guests.ts), and the secret forwarded requests carry. */
@@ -209,6 +211,7 @@ export async function harness(
         ADMIN_EMAIL: options.adminEmail ?? "alice@example.test",
         ...(options.access ? { ACCESS_TEAM_DOMAIN: ACCESS_TEAM, ACCESS_AUD: "test-access-aud" } : {}),
         ...(options.upstream ? { RELEASES_UPSTREAM: "https://upstream.test/releases" } : {}),
+        CHANGELOG_CACHE_SECONDS: String(options.changelogCacheSeconds ?? 0),
         GRANT_SIGNING_JWK: JSON.stringify(grantJwk),
         ...(options.relayUrl ? { RELAY_URL: options.relayUrl } : {}),
         ...(options.statusPages ? { STATUS_PAGES: options.statusPages } : {}),

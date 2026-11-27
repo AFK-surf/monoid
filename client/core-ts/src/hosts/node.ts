@@ -425,7 +425,7 @@ export function start(dataDir: string, cloudOrigin: string, listener: Listener, 
     connect(): number {
       const id = next++;
       clients.add(id);
-      later((core) => core.connect());
+      later((core) => core.connect({ authHandshake: true, requireCallAuth: true }));
       return id;
     },
     receive(client: number, json: string): void {

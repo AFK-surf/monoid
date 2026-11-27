@@ -213,9 +213,16 @@ export class Moves {
   constructor(d: MovesDeps) {
     this.#d = d;
     this.#unusedOwed = new KeptSet(join(d.data, "move", "unused-owed.json"));
-    // (a borrowed login's last use here may end with any change of a session: looked at as one changes)
+    // (a borrowed login's last use here may end with any change of a session: tracked per changed session key via PK
+    // seek + witness key so routine message/turn/job updates never scan `sessions_live`)
     d.store.subscribe?.((c) => {
-      if (c.type === "session" || c.type === "sessionRemoved" || c.type === "moved") this.#usesMayEnd();
+      if (c.type === "session") {
+        // Only Store.markDelivered emits `pending` (updates deliveries/letter_deliveries only, never archived_at/profile/handed_over).
+        if (c.pending !== undefined) return;
+        this.#usesMayEnd(c.key);
+      } else if (c.type === "sessionRemoved" || c.type === "moved") {
+        this.#usesMayEnd(c.key);
+      }
     });
     this.sizes = new Sizes({ data: d.data, measure: (keys) => this.#sized(keys, { most: SIZE_MOST }), gone: (key) => d.store.handedTo(key) !== null });
     let known: Record<string, AccountOf> = {};
@@ -381,26 +388,91 @@ export class Moves {
   /// down: told as it is heard from), and those told since their last use ended (told once).
   readonly #unusedOwed: KeptSet;
   readonly #unusedTold = new Set<string>();
+  /// Per borrowed profile id, one known live (unarchived, non-handed-over) witness session key, or null when none.
+  /// Seeded once per borrowed profile via a single batched scan, then maintained in O(1) via `liveProfileOf(key)`;
+  /// only a profile whose witness session actually leaves triggers a re-query.
+  readonly #borrowedWitness = new Map<string, string | null>();
+  readonly #dirtyUseKeys = new Set<string>();
   #lookingUses = false;
 
+  #borrowedProfiles(): Map<string, { shareId: string; host: string; key: string }> {
+    const out = new Map<string, { shareId: string; host: string; key: string }>();
+    for (const p of this.#d.profiles()) {
+      const s = p?.share;
+      if (s?.borrowed !== true || typeof s.id !== "string" || typeof s.host !== "string" || typeof p.id !== "string") continue;
+      out.set(p.id, { shareId: s.id, host: s.host, key: `${s.id}\n${s.host}` });
+    }
+    return out;
+  }
+
   /// A session changed here: the borrowed logins looked at, once a turn of the loop, where there are any.
-  #usesMayEnd(): void {
+  #usesMayEnd(sessionKey: string): void {
+    const borrowedNow = this.#borrowedProfiles();
+    if (borrowedNow.size === 0) {
+      this.#borrowedWitness.clear();
+      return;
+    }
+    this.#dirtyUseKeys.add(sessionKey);
     if (this.#lookingUses) return;
     this.#lookingUses = true;
     setImmediate(() => {
       this.#lookingUses = false;
-      for (const p of this.#d.profiles()) {
-        const s = p?.share;
-        if (s?.borrowed !== true || typeof s.id !== "string" || typeof s.host !== "string" || typeof p.id !== "string") continue;
-        const key = `${s.id}\n${s.host}`;
-        if (this.#d.store.liveSessionsOn(p.id, 1).length > 0) {
+      const dirty = [...this.#dirtyUseKeys];
+      this.#dirtyUseKeys.clear();
+      const borrowed = this.#borrowedProfiles();
+      for (const pid of [...this.#borrowedWitness.keys()]) if (!borrowed.has(pid)) this.#borrowedWitness.delete(pid);
+      if (borrowed.size === 0) return;
+
+      const store = this.#d.store;
+      if (typeof store.liveProfileOf === "function" && typeof store.liveWitnessesOnProfiles === "function") {
+        const recheck = new Set<string>();
+        const checked = new Set<string>();
+        for (const pid of borrowed.keys()) if (!this.#borrowedWitness.has(pid)) recheck.add(pid);
+        for (const k of dirty) {
+          checked.add(k);
+          const nowPid = store.liveProfileOf(k);
+          if (nowPid !== null && borrowed.has(nowPid)) {
+            this.#borrowedWitness.set(nowPid, k);
+            recheck.delete(nowPid);
+          }
+          for (const [pid, witness] of this.#borrowedWitness) {
+            if (witness === k && nowPid !== pid) recheck.add(pid);
+          }
+        }
+        // Self-heal: verify each tracked witness via O(1) PK seek so a session archived/moved/deleted without emitting
+        // a store event (e.g. direct SQL, bulk archive, backfill, or future write path) still releases its borrowed login.
+        for (const [pid, witness] of this.#borrowedWitness) {
+          if (witness === null || recheck.has(pid) || checked.has(witness)) continue;
+          if (store.liveProfileOf(witness) !== pid) recheck.add(pid);
+        }
+        if (recheck.size > 0) {
+          const pids = [...recheck];
+          const found = store.liveWitnessesOnProfiles(pids);
+          for (const pid of pids) this.#borrowedWitness.set(pid, found.get(pid) ?? null);
+        }
+        for (const [pid, { host, key }] of borrowed) {
+          if (this.#borrowedWitness.get(pid) !== null) {
+            this.#unusedTold.delete(key);
+            if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key).catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
+            continue;
+          }
+          if (this.#unusedTold.has(key) || this.#unusedOwed.has(key)) continue;
+          void this.#unusedOwed.add(key)
+            .then(() => this.#tellUnused(host))
+            .catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
+        }
+        return;
+      }
+
+      for (const [pid, { host, key }] of borrowed) {
+        if (store.liveSessionsOn(pid, 1).length > 0) {
           this.#unusedTold.delete(key);
           if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key).catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
           continue;
         }
         if (this.#unusedTold.has(key) || this.#unusedOwed.has(key)) continue;
         void this.#unusedOwed.add(key)
-          .then(() => this.#tellUnused(s.host))
+          .then(() => this.#tellUnused(host))
           .catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
       }
     });
@@ -730,6 +802,8 @@ export class Moves {
           // (how many chats here run on a login another station lends this one: kept lent while any do)
           const share = typeof request.share === "string" ? request.share : "";
           const pids = this.#d.profiles().filter((p) => p?.share?.id === share && typeof p.id === "string").map((p) => p.id as string);
+          if (pids.length === 0) return { uses: 0 };
+          if (typeof this.#d.store.liveWitnessesOnProfiles === "function") return { uses: this.#d.store.liveWitnessesOnProfiles(pids).size };
           return { uses: pids.reduce((n, pid) => n + this.#d.store.liveSessionsOn(pid, 1).length, 0) };
         }
         case "move.sizes": {

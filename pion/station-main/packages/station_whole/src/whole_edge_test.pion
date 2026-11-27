@@ -1,0 +1,830 @@
+// Comprehensive R3 unit tests for Wave 16C-Edge-OS production adapters:
+// - `connects_os.pion`: single-owner `EdgeMuxHub` directly over `MuxTransport` (zero `Sys`
+//   event drop, bounded `deferred_done`/`deferred_sys`), `Utf8ChunkDecoder` cross-chunk multi-byte
+//   UTF-8 decoding, Group SSE stream disconnect + `stream.close` + `tick` reconnect, streaming
+//   body cap, `ws_next_inflight` deduplication, and post-`stop()` guard.
+// - `replica_os.pion`: `rep_is_safe_rel_path`, `os_s3_client` on shared `EdgeMuxHub`,
+//   fail-closed `ReplicaOsRuntime::new` / `open` returning `Result`, failure-locked `before_store`.
+// - `browser_os.pion`: strict CDP userinfo `@` rejection, full IPv4/IPv6 CIDR gate (incl.
+//   `198.18.0.0/15`, `64:ff9b::/96`, `::/96`, `2002::/16`) wired through `BrowserProxyOsAdapter`,
+//   `(session, context_id)` gate keys.
+// - `devices_os.pion`: `TerminalsOsRuntime`, `LoginsOsRuntime`, `AdbOsRunner`, `DevicesOsRuntime`.
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "station_browser"
+import "station_connects"
+import "station_devices"
+import "station_ops"
+import "station_replica"
+
+fn edge_assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("edge assertion failed")
+  }
+}
+
+struct MockMuxClock {
+  mut now : Int64
+}
+
+fn MockMuxClock::new(start : Int64) -> MockMuxClock {
+  MockMuxClock::{ now: start }
+}
+
+struct MockStreamState {
+  chunks : Array[Bytes]
+  mut idx : Int
+  mut closed : Bool
+}
+
+struct MockMuxHarness {
+  pub clock : MockMuxClock
+  pub ops : Array[String]
+  pub jsons : Array[String]
+  pub cancels : Array[String]
+  pub queue : Array[host_shim::HostEvent]
+  pub hub : EdgeMuxHub
+}
+
+fn MockMuxHarness::new(
+  start_ms : Int64,
+  handler : (Int64, String, String, Option[Bytes], Array[host_shim::HostEvent]) -> Unit,
+) -> MockMuxHarness {
+  let clock = MockMuxClock::new(start_ms)
+  let ops : Array[String] = []
+  let jsons : Array[String] = []
+  let cancels : Array[String] = []
+  let queue : Array[host_shim::HostEvent] = []
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, payload : Option[Bytes]) -> Unit {
+      ops.push(op)
+      jsons.push(json)
+      handler(id, op, json, payload, queue)
+    },
+    call_sync: fn(op : String, json : String) -> String {
+      if op == "fetch.cancel" {
+        cancels.push(json)
+      }
+      "{\"value\":true}"
+    },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_hdr : Array[(String, base_codec::Json)], _payload : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { clock.now },
+    wall_ms: fn() -> Int64 { clock.now },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      if queue.length() > 0 {
+        let first = queue[0]
+        let rest : Array[host_shim::HostEvent] = []
+        for i in 1..<queue.length() {
+          rest.push(queue[i])
+        }
+        queue.clear()
+        for i in 0..<rest.length() {
+          queue.push(rest[i])
+        }
+        return Some(first)
+      }
+      clock.now = clock.now + (if ms > 0L { ms } else { 10L })
+      None
+    },
+  }
+  let hub = EdgeMuxHub::from_transport(transport)
+  MockMuxHarness::{
+    clock: clock,
+    ops: ops,
+    jsons: jsons,
+    cancels: cancels,
+    queue: queue,
+    hub: hub,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Connects OS adapter tests (single-owner EdgeMuxHub, Sys zero-drop, UTF-8, Group SSE)
+// ---------------------------------------------------------------------------
+
+test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
+  // Incremental UTF-8 decoder handles split 3-byte Chinese + 4-byte Emoji across chunks
+  let dec = Utf8ChunkDecoder::new()
+  let full_bytes = "你好🚀世界".to_bytes()
+  let sb = StringBuilder::new()
+  // Feed 1 byte at a time to stress every multi-byte boundary
+  for i in 0..<full_bytes.length() {
+    sb.write_string(dec.push(full_bytes.slice(i, i + 1)))
+  }
+  sb.write_string(dec.flush())
+  edge_assert(sb.to_string() == "你好🚀世界")
+
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/att")
+  let _ = mem.put_file("/att/hello.txt", "attachment-bytes".to_bytes())
+
+  let streams : Map[Int, MockStreamState] = Map::new()
+  let mut stream_seq = 100
+  let mut ws_seq = 10
+  let mut drop_next_open = false
+  let mut ws_next_calls = 0
+  let mut sse_opens = 0
+  let mut stream_closes = 0
+
+  let h = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "stream.open" {
+        if drop_next_open {
+          return
+        }
+        let sid = stream_seq
+        stream_seq = stream_seq + 1
+        if json.contains("oversize") {
+          streams.set(sid, MockStreamState::{ chunks: [Bytes::new(80), Bytes::new(80)], idx: 0, closed: false })
+        } else if json.contains("apps.connections.open") {
+          streams.set(
+            sid,
+            MockStreamState::{
+              chunks: ["{\"ok\":true,\"url\":\"wss://wss-primary.slack.com/link/?ticket=t1\"}".to_bytes()],
+              idx: 0,
+              closed: false,
+            },
+          )
+        } else if json.contains("/events") {
+          sse_opens = sse_opens + 1
+          let seed_hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+          let aseq = sse_opens.to_int64()
+          let (ev_id, signed_ev) = match station_connects::group_sign_event(
+            seed_hex,
+            "d_room1",
+            "alice",
+            aseq,
+            1000L + aseq,
+            0L,
+            "",
+            "lobby",
+            "msg.post",
+            base_codec::json_obj([("text", base_codec::json_str("你好🚀#" + sse_opens.to_string()))]),
+          ) {
+            Ok(pair) => pair
+            Err(e) => panic(e)
+          }
+          let payload_json = base_codec::json_stringify(
+            base_codec::json_obj([
+              (
+                "stamped",
+                base_codec::json_obj([
+                  ("aseq", base_codec::json_int64(aseq)),
+                  ("id", base_codec::json_str(ev_id)),
+                  ("event", signed_ev),
+                ]),
+              ),
+            ]),
+          )
+          let sse_msg = "event: event\ndata: " + payload_json + "\n\n"
+          let raw = sse_msg.to_bytes()
+          // Find the UTF-8 lead byte of '好' or '🚀' and split right inside the multi-byte sequence!
+          let idx = sse_msg.index_of("🚀")
+          let split_at = if idx > 0 { idx + 2 } else { raw.length() / 2 }
+          streams.set(
+            sid,
+            MockStreamState::{
+              chunks: [raw.slice(0, split_at), raw.slice(split_at, raw.length())],
+              idx: 0,
+              closed: false,
+            },
+          )
+        } else {
+          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true}".to_bytes()], idx: 0, closed: false })
+        }
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
+              error: "",
+              bytes: None,
+            },
+          ),
+        )
+      } else if op == "stream.read" {
+        let parsed = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => base_codec::json_null()
+        }
+        let sid = match base_codec::json_get(parsed, "id") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => -1
+        }
+        match streams.get(sid) {
+          Some(st) => {
+            if st.idx < st.chunks.length() {
+              let c = st.chunks[st.idx]
+              st.idx = st.idx + 1
+              q.push(
+                host_shim::HostEvent::ShellDone(
+                  host_shim::ShellDone::{ id: id, json: "{\"end\":false}", error: "", bytes: Some(c) },
+                ),
+              )
+            } else {
+              q.push(
+                host_shim::HostEvent::ShellDone(
+                  host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None },
+                ),
+              )
+            }
+          }
+          None => q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None },
+            ),
+          )
+        }
+      } else if op == "stream.close" {
+        stream_closes = stream_closes + 1
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None }))
+      } else if op == "ws.open" {
+        let wid = ws_seq
+        ws_seq = ws_seq + 1
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":" + wid.to_string() + "}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.next" {
+        ws_next_calls = ws_next_calls + 1
+      } else if op == "ws.send" || op == "ws.ping" || op == "ws.close" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None }))
+      }
+    },
+  )
+
+  // Verify Sys events arriving during `await_call` are NEVER dropped!
+  let routed_sys : Array[Int64] = []
+  h.hub.set_sys_router(
+    fn(ev_id : Int64, _payload : Bytes) -> Bool {
+      routed_sys.push(ev_id)
+      true
+    },
+  )
+
+  let bridge = ConnectMuxBridge::with_hub(
+    h.hub,
+    mem.ops(),
+    max_body_bytes=128,
+    default_timeout_ms=500L,
+  )
+
+  // Inject a Sys event BEFORE an HTTP fetch -> must reach `routed_sys` during `await_call`
+  h.queue.push(host_shim::HostEvent::Sys(777L, "pty-out".to_bytes()))
+  let ok_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
+  edge_assert(ok_resp.error is None && ok_resp.status == 200)
+  edge_assert(routed_sys.length() == 1 && routed_sys[0] == 777L)
+
+  // Body cap abort + timeout cancel
+  let big_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/oversize"))
+  edge_assert(big_resp.error is Some(_))
+  drop_next_open = true
+  let to_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/hang", timeout_ms=200L))
+  edge_assert(to_resp.error is Some(_) && h.cancels.length() >= 1)
+  drop_next_open = false
+
+  // `ws_next_inflight` prevents duplicate `ws.next`
+  let wh = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [], timeout_ms: 500L }) {
+    Ok(id) => id
+    Err(e) => panic(e)
+  }
+  let before_calls = ws_next_calls
+  edge_assert(bridge.ws_next(wh) is Err(_))
+  edge_assert(bridge.has_ws_next_inflight(wh))
+  edge_assert(bridge.ws_next(wh) is Err(_))
+  edge_assert(ws_next_calls == before_calls + 1)
+  bridge.ws_close(wh)
+
+  // Group SSE: cross-chunk multi-byte UTF-8 + EOF explicit `stream.close` + `tick` reconnect!
+  let received_events : Array[String] = []
+  let disconnects : Array[String] = []
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => received_events.push(cid + ":" + m.text)
+        _ => received_events.push(cid + ":other")
+      }
+    },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Unit {},
+    on_disconnect: fn(cid : String, reason : String) -> Unit { disconnects.push(cid + ":" + reason) },
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
+  edge_assert(
+    rt.register_group(
+      "grp-1",
+      "http://127.0.0.1:9999",
+      "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+      "bot-1",
+      "Bot",
+    )
+    is Ok(_),
+  )
+  edge_assert(rt.start_connect("grp-1") is Ok(_))
+  let closes_before_eof = stream_closes
+  for _ in 0..<8 {
+    let _ = h.hub.pump_one(10L)
+  }
+  // 1st SSE stream delivered split multi-byte Chinese+Emoji intact, hit EOF, closed stream, transitioned to Reconnecting
+  edge_assert(received_events.length() == 1 && received_events[0].contains("你好🚀"))
+  edge_assert(stream_closes > closes_before_eof)
+  edge_assert(disconnects.length() >= 1)
+  // Advance clock past backoff and tick -> auto-reconnects Group SSE (sse_opens == 2)!
+  h.clock.now = h.clock.now + 60000L
+  let _ = rt.tick(h.clock.now)
+  for _ in 0..<8 {
+    let _ = h.hub.pump_one(10L)
+  }
+  edge_assert(sse_opens == 2)
+  edge_assert(received_events.length() == 2)
+
+  // Stop suppresses all subsequent callbacks
+  rt.stop()
+  edge_assert(rt.is_stopped())
+
+  // R4: Disjoint call-ID space (`1 << 44`) + non-silent overflow callback & `await_call` error
+  let ov_hub = EdgeMuxHub::from_transport(h.hub.transport, max_deferred_done=2, max_deferred_sys=2)
+  let c1 = ov_hub.call_async_raw(builders_core::MuxToken::Tagged(1, 1, 0L), "ws.close", "{\"id\":1}", None)
+  edge_assert(c1 >= EDGE_MUX_CALL_ID_BASE)
+  let overflows : Array[String] = []
+  ov_hub.set_overflow_handler(
+    fn(queue_name : String, dropped_id : Int64) -> Unit {
+      overflows.push(queue_name + ":" + dropped_id.to_string())
+    },
+  )
+  // Overflow deferred_sys (cap=2 -> 3rd item evicts 1st and invokes callback)
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(10L, "a".to_bytes()))
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(11L, "b".to_bytes()))
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(12L, "c".to_bytes()))
+  edge_assert(ov_hub.deferred_sys_dropped_count() == 1L)
+  edge_assert(overflows.length() == 1 && overflows[0] == "deferred_sys:10")
+  // Overflow deferred_done during `await_call` MUST return Err (never silently drop!)
+  let hi1 = EDGE_MUX_CALL_ID_BASE + 101L
+  let hi2 = EDGE_MUX_CALL_ID_BASE + 102L
+  let hi3 = EDGE_MUX_CALL_ID_BASE + 103L
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi1, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi2, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi3, json: "{}", error: "", bytes: None }))
+  let ov_res = ov_hub.await_call(EDGE_MUX_CALL_ID_BASE + 999L, 500L, cancel_on_timeout=false)
+  edge_assert(ov_res is Err(_))
+  edge_assert(ov_hub.deferred_done_dropped_count() == 1L)
+  edge_assert(overflows.length() == 2 && overflows[1] == "deferred_done:" + hi1.to_string())
+
+  // R5: `max_deferred_done = 1`, claim `hi1` (live count=0), then receive `hi2` while awaiting `hi3` -> 0 false overflow!
+  let cap1_hub = EdgeMuxHub::from_transport(h.hub.transport, max_deferred_done=1, max_deferred_sys=2)
+  let cap1_ov : Array[String] = []
+  cap1_hub.set_overflow_handler(fn(q : String, id : Int64) -> Unit { cap1_ov.push(q + ":" + id.to_string()) })
+  cap1_hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi1, json: "{\"v\":1}", error: "", bytes: None }))
+  edge_assert(cap1_hub.await_call(hi1, 100L, cancel_on_timeout=false) is Ok(_))
+  edge_assert(cap1_hub.deferred_done_count() == 0)
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi2, json: "{\"v\":2}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi3, json: "{\"v\":3}", error: "", bytes: None }))
+  edge_assert(cap1_hub.await_call(hi3, 100L, cancel_on_timeout=false) is Ok(_))
+  edge_assert(cap1_hub.deferred_done_dropped_count() == 0L && cap1_ov.length() == 0)
+
+  // R5: `as_mux_transport()` bridges `ShellMux` <-> `EdgeMuxHub` bidirectionally with 0 Sys loss
+  let bridged_mux = builders_core::ShellMux::new(cap1_hub.as_mux_transport(), start_stdin=false)
+  let mut bridged_sys = 0
+  cap1_hub.set_sys_router(fn(_id : Int64, _b : Bytes) -> Bool {
+    bridged_sys = bridged_sys + 1
+    true
+  })
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::Sys(555L, "sys".to_bytes()))
+  let low_cid = bridged_mux.call_async_raw(builders_core::MuxToken::Tagged(1, 1, 0L), "ws.close", "{\"id\":1}", None)
+  edge_assert(low_cid < EDGE_MUX_CALL_ID_BASE)
+  let mut saw_low = false
+  let _ = bridged_mux.step(
+    100L,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(_tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit { saw_low = true },
+  )
+  edge_assert(saw_low && bridged_sys == 1)
+
+  // R6: `as_mux_transport().wait(-1)` passes `-1` through to underlying wait and continues past internal `Sys`
+  let wait_args : Array[Int64] = []
+  let w_queue : Array[host_shim::HostEvent] = [
+    host_shim::HostEvent::Sys(888L, "internal-sys".to_bytes()),
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 42L, json: "{\"ext\":true}", error: "", bytes: None }),
+  ]
+  let w_transport = builders_core::MuxTransport::{
+    call_async: fn(_id : Int64, _op : String, _j : String, _p : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _j : String) -> String { "{}" },
+    write_stdout_line: fn(_l : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _p : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000L },
+    wall_ms: fn() -> Int64 { 1000L },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      wait_args.push(ms)
+      if w_queue.length() > 0 {
+        let first = w_queue[0]
+        let rest : Array[host_shim::HostEvent] = []
+        for i in 1..<w_queue.length() {
+          rest.push(w_queue[i])
+        }
+        w_queue.clear()
+        for i in 0..<rest.length() {
+          w_queue.push(rest[i])
+        }
+        return Some(first)
+      }
+      None
+    },
+  }
+  let w_hub = EdgeMuxHub::from_transport(w_transport, max_deferred_done=2, max_deferred_sys=4)
+  let mut w_sys_seen = 0
+  w_hub.set_sys_router(fn(id : Int64, _b : Bytes) -> Bool {
+    if id == 888L { w_sys_seen = w_sys_seen + 1 }
+    true
+  })
+  let w_tr = w_hub.as_mux_transport()
+  let got_ext = (w_tr.wait)(-1L)
+  edge_assert(w_sys_seen == 1)
+  edge_assert(wait_args.length() == 2 && wait_args[0] == -1L && wait_args[1] == -1L)
+  edge_assert(
+    match got_ext {
+      Some(host_shim::HostEvent::ShellDone(d)) => d.id == 42L
+      _ => false
+    },
+  )
+  // Subsequent wait(-1) returns None when underlying transport stops
+  edge_assert((w_tr.wait)(-1L) is None)
+  edge_assert(wait_args.length() == 3 && wait_args[2] == -1L)
+
+  // R6: `call_async_discard` replies NEVER enter `deferred_done` or trigger overflow
+  let disc_cid = w_hub.call_async_discard("stream.close", "{\"id\":9}", None)
+  w_hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: disc_cid, json: "{}", error: "", bytes: None }))
+  edge_assert(w_hub.deferred_done_count() == 0 && w_hub.deferred_done_dropped_count() == 0L)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Replica OS adapter tests (shared hub S3, fail-closed `new`/`open`, move lock)
+// ---------------------------------------------------------------------------
+
+test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
+  edge_assert(rep_is_safe_rel_path("notes..old"))
+  edge_assert(rep_is_safe_rel_path("sub/notes..old"))
+  edge_assert(!rep_is_safe_rel_path("../escape"))
+  edge_assert(!rep_is_safe_rel_path("a/../b"))
+  edge_assert(!rep_is_safe_rel_path("a/./b"))
+  edge_assert(!rep_is_safe_rel_path("/abs"))
+  edge_assert(!rep_is_safe_rel_path("a\\b"))
+
+  let streams : Map[Int, MockStreamState] = Map::new()
+  let mut sseq = 1
+  let mut saw_utc_year = false
+  let h = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "stream.open" {
+        if json.contains("20231114T") {
+          saw_utc_year = true
+        }
+        let sid = sseq
+        sseq = sseq + 1
+        if json.contains("delete=") {
+          let xml = "<DeleteResult><Error><Key>sf/k1</Key><Code>AccessDenied</Code><Message>Denied</Message></Error></DeleteResult>"
+          streams.set(sid, MockStreamState::{ chunks: [xml.to_bytes()], idx: 0, closed: false })
+        } else {
+          streams.set(sid, MockStreamState::{ chunks: [], idx: 0, closed: false })
+        }
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
+              error: "",
+              bytes: None,
+            },
+          ),
+        )
+      } else if op == "stream.read" {
+        let parsed = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => base_codec::json_null()
+        }
+        let sid = match base_codec::json_get(parsed, "id") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => -1
+        }
+        match streams.get(sid) {
+          Some(st) => {
+            if st.idx < st.chunks.length() {
+              let c = st.chunks[st.idx]
+              st.idx = st.idx + 1
+              q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":false}", error: "", bytes: Some(c) }))
+            } else {
+              q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None }))
+            }
+          }
+          None => q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None }))
+        }
+      } else if op == "stream.close" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None }))
+      }
+    },
+  )
+  let target_cfg = station_replica::NormalizedS3Target::{
+    id: "s3-test",
+    name: "Test S3",
+    endpoint: "http://127.0.0.1:19000",
+    region: "auto",
+    bucket: "backup-bucket",
+    prefix: "sf",
+    force_path_style: true,
+    access_key_id: "AKIA_TEST",
+    secret_access_key: "SECRET_TEST",
+    encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    include_transcripts: true,
+  }
+  let s3 = os_s3_client(
+    target_cfg,
+    h.hub,
+    wall_fn=fn() -> Int64 { 1700000000000L },
+  )
+  let s3_port = ReplicaTargetPort::s3(s3)
+  edge_assert((s3_port.delete_object)("k1") is Err(_))
+  edge_assert(saw_utc_year)
+
+  // Both `ReplicaOsRuntime::open` and `ReplicaOsRuntime::new` fail closed on corrupt `kept.jsonl`
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/rep/ledger")
+  let _ = mem.put_text("/rep/ledger/kept.jsonl", "{not valid json\n")
+  edge_assert(ReplicaOsRuntime::open(mem.ops(), "/rep/ledger") is Err(_))
+  edge_assert(ReplicaOsRuntime::new(mem.ops(), "/rep/ledger") is Err(_))
+
+  // MoveScheduler `back_item` failure keeps moving lock engaged and fails `before_store`
+  let mem2 = station_ops::MemFs::new()
+  mem2.put_dir("/rep2/ledger")
+  let mut fail_back = true
+  let mut item_there = true
+  let chat_item = station_replica::MoveItem::{
+    module_id: "chats",
+    id: "chat-42",
+    label: "Chat 42",
+    needs: [],
+    cannot: None,
+    again: false,
+    size: Some(1024L),
+    leaves: None,
+  }
+  let chat_mod = station_replica::MoveModule::{
+    id: "chats",
+    needs: [],
+    plan: fn(_ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] { Ok([chat_item]) },
+    move_item: fn(_it : station_replica::MoveItem, _to : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      item_there = true
+      Ok(())
+    },
+    back_item: fn(_it : station_replica::MoveItem, _from : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      if fail_back {
+        return Err("peer unreachable")
+      }
+      item_there = false
+      Ok(())
+    },
+    state: fn(_it : station_replica::MoveItem) -> station_replica::MoveItemStateKind {
+      if item_there { station_replica::MoveItemStateKind::There } else { station_replica::MoveItemStateKind::Here }
+    },
+    usable_here: fn(_it : station_replica::MoveItem) -> Bool { !item_there },
+    usable_there: fn(_it : station_replica::MoveItem) -> Bool { item_there },
+    can_lend: fn(_it : station_replica::MoveItem) -> Bool { false },
+    lend: fn(_it : station_replica::MoveItem, _to : String, _ns : Array[station_replica::MoveNeed]) -> Result[Unit, String] { Ok(()) },
+    left: fn(_ns : Array[station_replica::MoveNeed]) -> Result[Unit, String] { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_it : station_replica::MoveItem, _w : station_replica::MoveWaits) -> Result[Unit, String] { Ok(()) },
+    resume_item: fn(_it : station_replica::MoveItem) -> Result[Unit, String] { Ok(()) },
+    abandon: fn() -> Unit {},
+  }
+  let sched = match station_replica::MoveScheduler::new([chat_mod]) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let rep_rt = match ReplicaOsRuntime::open(mem2.ops(), "/rep2/ledger") {
+    Ok(r) => r
+    Err(e) => panic(e)
+  }
+  rep_rt.attach_scheduler(sched)
+  rep_rt.mark_moving("chats", "chat-42", "st-b")
+  edge_assert(rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2000L) is Err(_))
+  edge_assert(rep_rt.is_moving("chats", "chat-42"))
+  fail_back = false
+  edge_assert(
+    match rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2010L) {
+      Ok(seq) => seq == 1L
+      Err(_) => false
+    },
+  )
+  edge_assert(!rep_rt.is_moving("chats", "chat-42"))
+  rep_rt.after_store("ws-1", "st-a", 2020L)
+}
+
+// ---------------------------------------------------------------------------
+// 3. Browser OS adapter tests (strict CDP userinfo, full IPv4/IPv6 CIDR gate)
+// ---------------------------------------------------------------------------
+
+test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
+  edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:1@10.77.0.20/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://10.0.0.2:9222/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("wss://127.0.0.1:9222/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:9222/devtools/browser/1") is Ok(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://[::1]:9222/devtools/browser/1") is Ok(_))
+
+  let blocked_urls = [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,hi",
+    "ftp://example.com/a",
+    "http://localhost/a",
+    "http://localhost./a",
+    "http://foo.localhost/a",
+    "http://0.0.0.1/",
+    "http://10.0.0.5/admin",
+    "http://100.64.0.1/",
+    "http://127.0.0.1:9222/json",
+    "http://169.254.169.254/latest/meta-data",
+    "http://172.16.0.1/",
+    "http://192.0.0.1/",
+    "http://192.168.1.1/",
+    "http://198.18.0.1/",
+    "http://198.19.255.254/",
+    "http://224.0.0.1/",
+    "http://240.0.0.1/",
+    "http://[::]/",
+    "http://[::1]/",
+    "http://[::7f00:1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:0:7f00:1]/",
+    "http://[64:ff9b::7f00:1]/",
+    "http://[2001::1]/",
+    "http://[2001:db8::1]/",
+    "http://[2002:7f00:1::]/",
+    "http://[fc00::1]/",
+    "http://[fd12:3456::1]/",
+    "http://[fe80::1]/",
+    "http://[fec0::1]/",
+    "http://[ff02::1]/",
+  ]
+  for i in 0..<blocked_urls.length() {
+    edge_assert(validate_browser_navigation_url(blocked_urls[i]) is Err(_))
+  }
+  edge_assert(validate_browser_navigation_url("https://example.com/path") is Ok(_))
+  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json", allow_private=true) is Ok(_))
+
+  let h = MockMuxHarness::new(
+    5000L,
+    fn(_id : Int64, _op : String, _json : String, _p : Option[Bytes], _q : Array[host_shim::HostEvent]) -> Unit {},
+  )
+  let hold_hub = station_browser::AgentHoldHubPort::{
+    people_views: fn(_t : String) -> Array[station_browser::ScreenWatcherView] { [] },
+    has_taken_view: fn(_t : String) -> Bool { false },
+    yield_to_agent: fn(_t : String, _n : String) -> Int { 1 },
+    join_agent: fn(_t : String, _n : String) -> Int { 1 },
+    leave_agent: fn(_t : String, _tok : Int) -> Unit {},
+  }
+  let mgr = BrowserOsManager::new(
+    h.hub,
+    hold_hub,
+    fn(s : String) -> String { "agent-" + s },
+    fn(_ctx : String) -> Option[String] { None },
+  )
+  let _g1 = mgr.gate_for("sess-a", "ctx-1")
+  let _g2 = mgr.gate_for("sess-a", "ctx-2")
+  edge_assert(mgr.gates.length() == 2)
+
+  let proxy = station_browser::BrowserProxy::new(
+    fn(s : String) -> Bool { s == "sess-a" },
+    fn(s : String) -> Result[station_browser::OpenedBrowser, String] {
+      Ok(station_browser::OpenedBrowser::{ ws_url: "ws://127.0.0.1:9222/b", gate: mgr.gate_for(s, "ctx-1") })
+    },
+  )
+  let adapter = BrowserProxyOsAdapter::new(proxy, h.hub, allow_private=false)
+  let proxy_blocked = [
+    "http://[64:ff9b::7f00:1]/secret",
+    "http://[::7f00:1]/secret",
+    "http://[2002:7f00:1::]/secret",
+    "http://198.18.0.1/secret",
+  ]
+  for i in 0..<proxy_blocked.length() {
+    let actions = adapter.on_client_text_checked(
+      1,
+      "{\"id\":7,\"method\":\"Page.navigate\",\"params\":{\"url\":" + base_codec::json_stringify(base_codec::json_str(proxy_blocked[i])) + "}}",
+    )
+    edge_assert(actions.length() == 1)
+    match actions[0] {
+      station_browser::ProxyAction::SendToClientText(_, err_json) => edge_assert(err_json.contains("blocked"))
+      _ => panic("expected SendToClientText error for blocked target: " + proxy_blocked[i])
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Devices OS adapter tests
+// ---------------------------------------------------------------------------
+
+test "devices_os_terminals_logins_adb_runner_and_aggregated_sources" {
+  let mock_now = fn() -> Int64 { 1000L }
+  let terms = TerminalsOsRuntime::new("/home/tester", scroll_max_bytes=1024, now_fn=mock_now)
+  edge_assert(!station_devices::is_valid_terminal_size(0, 0))
+  edge_assert(terms.live_count() == 0)
+  edge_assert(terms.pending_kill_count() == 0)
+
+  let logins = LoginsOsRuntime::new(Some(station_devices::LoginPages::new(true)), now_fn=mock_now)
+  let starter = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "alice@example.com", name: "Alice" },
+    workspace: Some("ws-1"),
+    chat: Some("c-1"),
+    chat_title: Some("Login"),
+  }
+  let view = match logins.manager.start("gh auth login", starter, None, false, 1000L) {
+    Ok(v) => v
+    Err(r) => panic(r.message)
+  }
+  let run = match logins.manager.get_run(view.id) {
+    Some(r) => r
+    None => panic("missing LoginRun")
+  }
+  run.output("Open https://github.com/login/device and enter code ABCD-1234\n")
+  let _ = run.on_settled(None)
+  edge_assert(match run.url { Some(u) => u.contains("github.com") None => false })
+
+  let devs = DevicesOsRuntime::new(now_fn=mock_now)
+  let spec = station_devices::DeviceSpec::{
+    id: "0123456789abcdef",
+    name: "Pixel 9",
+    kind: station_devices::DeviceKind::Adb,
+    target: "127.0.0.1:5037",
+    baud: None,
+    model: Some("Pixel 9"),
+    protocols: None,
+    paired: None,
+  }
+  edge_assert(devs.registry.add("ws-1", "sub-1", "alice@example.com", "Alice", spec, 100L) is Ok(_))
+  let req = match devs.phone_grants.ask("sess-1", "c-1", "ws-1", "alice@example.com", "test", 10000L) {
+    Ok(r) => r
+    Err(e) => panic(e)
+  }
+  edge_assert(devs.phone_grants.decide("alice@example.com", req.id, Some(station_devices::PhoneScope::Hour), "ws-1", 10000L) is None)
+  edge_assert(devs.aggregate_sources("ws-1", "sess-1", 20000L).length() == 2)
+  edge_assert(devs.aggregate_sources("ws-1", "sess-1", 10000L + 7200000L).length() == 1)
+  edge_assert(encode_android_tv_key_frame("home", 3) is Ok(_))
+  edge_assert(encode_android_tv_key_frame("invalid_key_xyz", 3) is Err(_))
+}
+
+test "connects_os_ws_send_async_two_arg_default_awaitable" {
+  let mem = station_ops::MemFs::new()
+  let h = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, _json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "ws.open" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":42}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.send" || op == "ws.ping" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None },
+          ),
+        )
+      }
+    },
+  )
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let ws_h = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [] }) {
+    Ok(id) => id
+    Err(e) => panic("ws_open failed: " + e)
+  }
+  edge_assert(ws_h == 42L)
+
+  // Two-argument ws_send_async defaults to discard=false so callers can await its returned cid
+  // even after the shared event loop has already consumed the Done event into deferred_done.
+  let cid = match bridge.ws_send_async(ws_h, station_connects::WsFrame::Text("hello")) {
+    Ok(id) => id
+    Err(e) => panic("ws_send_async failed: " + e)
+  }
+  edge_assert(cid > 0L)
+  let _ = h.hub.pump_one(0L)
+  match h.hub.await_call(cid, 1000L, cancel_on_timeout=false) {
+    Ok(done) => {
+      edge_assert(done.id == cid)
+      edge_assert(done.error == "")
+    }
+    Err(e) => panic("expected 2-arg ws_send_async cid to resolve, got: " + e)
+  }
+
+  // Explicit discard=true fire-and-forget does not accumulate in deferred_done.
+  let _ = bridge.ws_send_async(ws_h, station_connects::WsFrame::Ping, discard=true)
+  let _ = h.hub.pump_one(0L)
+  edge_assert(h.hub.deferred_done_count() == 0)
+}

@@ -224,6 +224,8 @@ priv struct ScreenSess {
   mut route_seq : Double
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
+  /// consecutive `auth_stale` stream failures retried automatically since last heard state or manual open
+  mut auth_stale_retries : Int
 }
 
 ///|
@@ -386,6 +388,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_muted: false,
         route_seq: 0.0,
         child_screen: None,
+        auth_stale_retries: 0,
       }
       screens_open[key] = s
       s
@@ -1021,6 +1024,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   // again after it ended (重新打开): on its way, not still saying how the last one ended
   if self.finished.get() || self.failure.get() is Some(_) {
     self.state = None
+    self.auth_stale_retries = 0
   }
   self.failure.set(None)
   self.finished.set(false)
@@ -1084,6 +1088,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     None => ()
   }
   let me = self
+  let in_open = Ref(true)
   self.call = (src.stream)(
     "screen.view",
     Json::object(params),
@@ -1095,10 +1100,20 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
       match me.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () }
       match r {
         Ok(_) => me.finished.set(true)
-        Err(e) => me.failure.set(Some(text(Some(e), "message")))
+        Err(e) =>
+          if text(Some(e), "code") == "auth_stale" &&
+            !in_open.val &&
+            me.is_active_principal() &&
+            me.auth_stale_retries < 2 {
+            me.auth_stale_retries += 1
+            me.open(src)
+          } else {
+            me.failure.set(Some(text(Some(e), "message")))
+          }
       }
     },
   )
+  in_open.val = false
 }
 
 ///|
@@ -1458,6 +1473,7 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
         screen_tell(self.src, "screen.micOn", { "view": Json::string(self.view), "on": Json::boolean(true) })
       }
       self.heard = true
+      self.auth_stale_retries = 0
       // (where it says its pointer, or none; one said on its own kept where a state says nothing of it)
       match field(self.state, "cursor") {
         Some(c) => self.cursor_is(Some(c))

@@ -387,13 +387,40 @@ pub fn agent_waited_words(now : Double, a : Json?) -> String {
 pub fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, Double?)?) -> () -> Int {
   let tick : @signals.Signal[Int] = @signals.signal(0)
   let stop : Ref[() -> Unit] = Ref(fn() {  })
-  v.reacts(since, fn(k) {
+  let cur_since : Ref[(Double, Double?)?] = Ref(None)
+  let active = Ref(false)
+  let first_enter = Ref(true)
+  let restart = fn(k : (Double, Double?)?) {
     (stop.val)()
     stop.val = fn() {  }
-    match k {
-      Some((from, most)) => stop.val = steps_clock_start(v, src, from, most, true, tick)
-      None => ()
+    if active.val {
+      match k {
+        Some((from, most)) => stop.val = steps_clock_start(v, src, from, most, true, tick)
+        None => ()
+      }
     }
+  }
+  // Register a single when_active hook on `v` so repeated `since` transitions never accumulate dead hooks.
+  v.when_active(
+    while_covered=true,
+    fn() {
+      active.val = true
+      if !first_enter.val && cur_since.val is Some(_) {
+        tick.set(tick.untracked() + 1)
+      }
+      first_enter.val = false
+      restart(cur_since.val)
+      fn() {
+        active.val = false
+        (stop.val)()
+        stop.val = fn() {  }
+      }
+    },
+  )
+  |> ignore
+  v.reacts(since, fn(k) {
+    cur_since.val = k
+    restart(k)
   })
   fn() { tick.get() }
 }

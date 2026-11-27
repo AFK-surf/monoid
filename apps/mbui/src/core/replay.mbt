@@ -1477,6 +1477,63 @@ fn Replay::out(self : Replay, text : String) -> Unit {
       break
     }
   }
+  // Older tapes recorded before PR-B2s sent `keep: true` on topics that are now unconditionally `sensitive`
+  // (e.g. `vaults`). Restrict this compatibility fallback strictly to `sensitive` topics: match a non-keep
+  // unsubscribe against a recorded keep unsubscribe for the same sensitive subscription and mark the tape's
+  // corresponding `{"in":{"id":then,"v":...}}` ack as done so it is not left undelivered.
+  if found < 0 && kind == "unsubscribe" && !(m.get("keep") is Some(True)) && refers is Some(then_id) {
+    let mut is_sensitive_sub = false
+    for e in self.evs {
+      if e.out && e.msg is Object(sm) && kind_of(sm) == "subscribe" && id_of(sm) == Some(then_id) {
+        match sm.get("subscribe") {
+          Some(sub_topic) =>
+            is_sensitive_sub = (client.sensitive_policy)(topic_name(sub_topic), sub_topic)
+          None => ()
+        }
+        break
+      }
+    }
+    if is_sensitive_sub {
+      let with_keep : Map[String, Json] = m.copy()
+      with_keep["keep"] = Json::boolean(true)
+      let want_keep = sig(with_keep, refers)
+      for i in self.first_out..<self.evs.length() {
+        let e = self.evs[i]
+        if e.out && !e.done && e.msg is Object(r) && sig(r, ref_of(r)) == want_keep {
+          found = i
+          for j in (i + 1)..<self.evs.length() {
+            let ack = self.evs[j]
+            if !ack.out && !ack.done && ack.msg is Object(am) && id_of(am) == Some(then_id) && am.contains("v") {
+              ack.done = true
+              break
+            }
+          }
+          break
+        }
+      }
+    }
+  }
+  // Older tapes recorded before PR-B2s did not pass the optional `vault` parameter on `vault.open`.
+  // Restrict this compatibility fallback strictly to `vault.open` calls carrying `params.vault`.
+  if found < 0 && kind == "call" && m.get("call") == Some(Json::string("vault.open")) {
+    match m.get("params") {
+      Some(Object(p)) if p.contains("vault") => {
+        let p_without = p.copy()
+        p_without.remove("vault")
+        let without_vault : Map[String, Json] = m.copy()
+        without_vault["params"] = Json::object(p_without)
+        let want_old = sig(without_vault, refers)
+        for i in self.first_out..<self.evs.length() {
+          let e = self.evs[i]
+          if e.out && !e.done && e.msg is Object(r) && sig(r, ref_of(r)) == want_old {
+            found = i
+            break
+          }
+        }
+      }
+      _ => ()
+    }
+  }
   // A compact chat can be answered by the full chat in an older tape, and a jobs summary by the old full jobs view.
   // Prefer an exact ask above when a tape has both.
   if found < 0 && kind == "subscribe" && (name_of(m) == "chat" || name_of(m) == "chatJobs") {
@@ -1718,8 +1775,9 @@ fn sig(
 ) -> String {
   let copy : Map[String, Json] = Map([])
   for k, v in m {
-    // (asked as more of another of its subscriptions: answered whole as the tape's one is)
-    if k != "id" && !(k == "from" && ignore_part && twin_topic(name_of(m))) {
+    // (asked as more of another of its subscriptions: answered whole as the tape's one is;
+    // `auth` on calls and `conn`/`authGen`/`vaultGen` on subscribes are ignored against older tapes)
+    if k != "id" && k != "auth" && k != "conn" && k != "authGen" && k != "vaultGen" && !(k == "from" && ignore_part && twin_topic(name_of(m))) {
       match (k, v) {
         ("subscribe", Object(t)) if ignore_part && twin_topic(name_of(m)) => {
           let asked = t.copy()

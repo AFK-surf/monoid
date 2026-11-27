@@ -177,3 +177,31 @@ test("a full log lets go of one at a time, and goes on as before across where it
   assert.deepEqual(ids(log, "1f2e3d4c.37"), [38, 39, 40, 42]);
   assert.equal(log.state().bytes, log.kept().events.reduce((n, e) => n + e.text.length, 0));
 });
+
+test("appendSerialized matches append byte for byte and nextSeq/seqOf advance monotonically without pinning bytes", () => {
+  const a = new EventLog<string>("1f2e3d4c");
+  const b = new EventLog<string>("1f2e3d4c");
+  const samples = [
+    { event: "overview", data: { counts: { running: 2 }, nested: [1, "x", null] }, to: "v1", of: "overview\0v1" },
+    { event: "thread", data: { id: 9, text: "hello\nworld" }, to: "all", of: undefined },
+    { event: "overview", data: { counts: { running: 3 }, nested: [] }, to: "v1", of: "overview\0v1" },
+  ];
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]!;
+    const ea = a.append(s.event, s.data, s.to, i * 100, s.of);
+    const eb = b.appendSerialized(s.event, JSON.stringify(s.data), s.to, i * 100, s.of);
+    assert.deepEqual(eb, ea);
+  }
+  assert.deepEqual(b.kept(), a.kept());
+  assert.deepEqual(b.state(), a.state());
+
+  const beforeBytes = b.state().bytes;
+  const beforeKept = b.state().kept;
+  assert.equal(b.nextSeq(), 4);
+  assert.equal(b.at(), "1f2e3d4c.4");
+  assert.equal(b.seqOf("1f2e3d4c.4"), 4);
+  assert.equal(b.seqOf("1f2e3d4c.2"), 2);
+  assert.equal(b.seqOf("0a0a0a0a.2"), null);
+  assert.equal(b.state().bytes, beforeBytes);
+  assert.equal(b.state().kept, beforeKept);
+});

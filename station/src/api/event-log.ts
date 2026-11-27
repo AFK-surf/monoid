@@ -83,8 +83,13 @@ export class EventLog<To> {
   /// latest alone says how the thing is. Kept every time, a viewer's overview (some 20 KB at each change of a process)
   /// was most of what is kept: a busy station kept a few minutes of events, and told a phone coming back megabytes.
   append(event: string, data: unknown, to: To, now: number, of?: string): Logged<To> {
+    return this.appendSerialized(event, JSON.stringify(data), to, now, of);
+  }
+
+  /// Appends an event whose `data` is already JSON-serialized, avoiding a redundant `JSON.stringify`.
+  appendSerialized(event: string, dataJson: string, to: To, now: number, of?: string): Logged<To> {
     const n = ++this.#seq;
-    const logged: Logged<To> = { n, to, text: `id: ${this.run}.${n}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`, at: now, of };
+    const logged: Logged<To> = { n, to, text: `id: ${this.run}.${n}\nevent: ${event}\ndata: ${dataJson}\n\n`, at: now, of };
     if (of !== undefined) {
       const before = this.#latest.get(of);
       if (before !== undefined) {
@@ -97,6 +102,17 @@ export class EventLog<To> {
     this.#bytes += logged.text.length;
     this.#letGo(now);
     return logged;
+  }
+
+  /// Advances the log sequence for an event kept outside `#kept` (such as per-device overviews rebuilt on resume),
+  /// keeping event ids strictly monotonic without pinning megabytes of snapshots against `KEPT_BYTES`.
+  nextSeq(): number {
+    return ++this.#seq;
+  }
+
+  /// The sequence number of a resumable `since` id, or null when it cannot be resumed from.
+  seqOf(since: string): number | null {
+    return this.#from(since);
   }
 
   /// Lets go of the oldest kept, while it keeps more than it may or they are older than it keeps them at `now`.

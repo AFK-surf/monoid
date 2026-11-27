@@ -77,6 +77,7 @@ pub fn me_node(
       @sf.t("web-pages.settings.account.signOutConfirmBody"),
       @sf.t("web-pages.settings.account.signOutAction"),
       fn() {
+        let undo = (@sfbase.mask_global.val)()
         if sub == @signals.untracked(here).sub {
           (core.home)()
         }
@@ -86,6 +87,7 @@ pub fn me_node(
           "auth.signOut",
           obj([("account", str(sub))]),
           done=@sf.t("web-pages.settings.account.signedOut", args=[("email", email)]),
+          failed=undo,
         )
       },
     )
@@ -98,6 +100,7 @@ pub fn me_node(
       @sf.t("web-pages.settings.account.deleteAction"),
       danger=true,
       fn() {
+        let undo = (@sfbase.mask_global.val)()
         (core.home)()
         @settings.act(
           core,
@@ -105,6 +108,7 @@ pub fn me_node(
           "auth.deleteAccount",
           obj([("account", str(h.sub))]),
           done=@sf.t("web-pages.settings.account.deleted", args=[("email", h.email)]),
+          failed=undo,
         )
       },
     )

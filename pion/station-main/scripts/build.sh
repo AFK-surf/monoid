@@ -202,6 +202,8 @@ fi
   -c "$STATION_PION_DIR/packages/sqlite_ffi/native/station_sqlite.c" -o "$work/station_sqlite.o"
 "${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
   -c "$MAIN_DIR/packages/station_sys/native/station_sys.c" -o "$work/station_sys.o"
+"${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
+  -c "$MAIN_DIR/packages/station_sys/native/station_sqlite_ext.c" -o "$work/station_sqlite_ext.o"
 
 "${cc[@]}" -O2 "${cc_extra[@]}" -o "$out" \
   "$work/libstation_main.a" \
@@ -209,6 +211,7 @@ fi
   "$work/station_host.o" \
   "$work/station_sqlite.o" \
   "$work/station_sys.o" \
+  "$work/station_sqlite_ext.o" \
   "$shell_lib" \
   "${libs[@]}"
 

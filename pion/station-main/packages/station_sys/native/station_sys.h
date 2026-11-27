@@ -172,6 +172,9 @@ int32_t sts_write_at(
     int64_t *out_size,
     int32_t *out_short);
 int32_t sts_sync_file(const char *path);
+int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err);
+void *sts_file_pread(int64_t handle, int64_t offset, int64_t len, int64_t *out_len, int32_t *out_err);
+int32_t sts_file_close(int64_t handle);
 int32_t sts_getuid(void);
 int32_t sts_geteuid(void);
 int32_t sts_write_file_mode(
@@ -277,6 +280,19 @@ int32_t sts_write_under_nofollow(
     int64_t offset,
     int32_t mode,
     int32_t truncate_end);
+
+// Pure C11 V8 String.prototype.toLowerCase() (1:1 aligned with `jscase::lower`).
+// Returns 1 on success (exact byte length written to `*out_len`), 0 on invalid args / small cap / OOM.
+int32_t sts_js_lower_utf8(
+    const uint8_t *in,
+    size_t in_len,
+    uint8_t *out,
+    size_t out_cap,
+    size_t *out_len);
+
+// Idempotently register deterministic SQLite scalar function `js_lower(x)` via `sqlite3_auto_extension`.
+// Implemented in `station_sqlite_ext.c`; returns 0 (SQLITE_OK) on success, non-zero SQLite rc on error.
+int32_t sts_register_sqlite_js_lower(void);
 
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);

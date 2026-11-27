@@ -194,7 +194,11 @@ export const CopiesLive = Layer.effectDiscard(
       void copies.start().catch((e) => log.warn("copies", "the copies did not start", { error: (e as Error).message }));
       void retire.start().catch((e) => log.warn("retire", "the retirement did not go on", { error: (e as Error).message }));
     });
-    parts.overview("copies", (viewer) => ({ ...(copies.overview(viewer.workspace, managesStation(viewer)) as object), ...(retire.overview(viewer.workspace) as object) }));
+    parts.overview(
+      "copies",
+      (viewer) => ({ ...(copies.overview(viewer.workspace, managesStation(viewer)) as object), ...(retire.overview(viewer.workspace) as object) }),
+      (viewer) => `${viewer.workspace}\0${managesStation(viewer) ? "1" : "0"}`,
+    );
     // One chat of a station that does not answer gone on with here, from its copy (handoff.ts).
     const handoffs = new Handoffs({
       here: () => key.id,

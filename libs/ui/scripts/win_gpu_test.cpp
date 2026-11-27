@@ -970,7 +970,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     CHECK(areas[0] < areas[1] && areas[1] < areas[2] && areas[2] < areas[3] && areas[3] < areas[4]);
   }
 
-  // V9f: Role 4 Tab icon bevel gate (FIXED refract=9.0, Role 4 -64; icon at x_right-6.7pt vs empty; |y-cy|=0.42*h diff==0)
+  // V9f: Role 4 Tab monotonic outer meniscus (no fake badge copy from 6.7pt inward; continuous outer lip refraction)
   {
     double tb[4 * MB_INST];
     fill_p0_rect(tb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 1.0, 0);
@@ -984,11 +984,16 @@ static void test_v8_v9_droplet_roi_gates(void) {
     tb[3 * MB_INST + 4] = 22.5; tb[3 * MB_INST + 6] = 1.0; tb[3 * MB_INST + 7] = -64.0;
     tb[3 * MB_INST + 12] = 1.0; tb[3 * MB_INST + 13] = 9.0; tb[3 * MB_INST + 15] = 1.0; tb[3 * MB_INST + 21] = 9.0;
     uint8_t *px_icon = render_rgba_pixels_of(tb, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
-    CHECK(px_empty != NULL && px_icon != NULL);
-    if (px_empty && px_icon) {
+    fill_p0_rect(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
+    fill_p0_rect(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, 0.0, -566.0);
+    tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
+    tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0; tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0;
+    uint8_t *px_lip = render_rgba_pixels_of(tb, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(px_empty != NULL && px_icon != NULL && px_lip != NULL);
+    if (px_empty && px_icon && px_lip) {
       uint8_t *a_mid = W_PX(px_empty, AW3, 400, 120);
       uint8_t *b_mid = W_PX(px_icon, AW3, 400, 120);
-      int mid_delta = abs((int)b_mid[0] - (int)a_mid[0]) + abs((int)b_mid[1] - (int)a_mid[1]);
+      int ghost_delta = abs((int)b_mid[0] - (int)a_mid[0]) + abs((int)b_mid[1] - (int)a_mid[1]);
       uint8_t *a_out = W_PX(px_empty, AW3, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
       uint8_t *b_out = W_PX(px_icon, AW3, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
       int out_diff = 0;
@@ -996,14 +1001,17 @@ static void test_v8_v9_droplet_roi_gates(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      printf("win_gpu: v9_tab_icon_bevel mid_delta=%d out_diff=%d\n", mid_delta, out_diff);
-      CHECK(mid_delta >= 40 && out_diff == 0);
+      uint8_t *c_mid = W_PX(px_lip, AW3, 400, 120);
+      int lip_delta = abs((int)c_mid[0] - (int)a_mid[0]) + abs((int)c_mid[1] - (int)a_mid[1]);
+      printf("win_gpu: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
+      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
     }
     free(px_empty);
     free(px_icon);
+    free(px_lip);
   }
 
-  // V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt)
+  // V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt
   {
     double tg[3 * MB_INST];
     fill_p0_rect(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
@@ -1015,15 +1023,11 @@ static void test_v8_v9_droplet_roi_gates(void) {
     CHECK(pxg != NULL);
     if (pxg) {
       uint8_t *co = W_PX(pxg, AW3, 127, 120);
-      double l_orig = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
-      double min_l = 1e9;
-      for (int px_i = 132; px_i <= 136; px_i++) {
-        uint8_t *cr = W_PX(pxg, AW3, px_i, 120);
-        double lr = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
-        if (lr < min_l) min_l = lr;
-      }
-      printf("win_gpu: v9_tab_no_ghost orig_L=%.1f refr_min_L=%.1f\n", l_orig, min_l);
-      CHECK(l_orig > 220.0 && min_l < 170.0);
+      double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
+      uint8_t *cb = W_PX(pxg, AW3, 114, 120);
+      double l_clean = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      printf("win_gpu: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
+      CHECK(l_bar < 130.0 && l_clean > 220.0);
       free(pxg);
     }
   }
@@ -1140,6 +1144,27 @@ static void test_v8_v9_droplet_roi_gates(void) {
       CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
       CHECK(l_side_in >= l_mid - 6.0);
       free(pxd);
+    }
+    // V10-Dark-On-Bright: Dark Regular glass on #F2F3F0 bright backdrop has no dead-black contour (>= 120/255) and bright top rim.
+    double rgdb[2 * MB_INST];
+    fill_p0_rect(rgdb, 0, 0, VW, VH, 0, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0, 1.0, 0);
+    fill_p0_rect(rgdb + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0, -72.0);
+    rgdb[MB_INST + 4] = 24.0; rgdb[MB_INST + 6] = 1.0; rgdb[MB_INST + 7] = 0.0;
+    rgdb[MB_INST + 12] = 0.6; rgdb[MB_INST + 13] = 14.0; rgdb[MB_INST + 15] = 1.0; rgdb[MB_INST + 21] = 20.0;
+    uint8_t *pxdb = render_rgba_pixels_of(rgdb, 2, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0, 2.0, AW2, AH2);
+    CHECK(pxdb != NULL);
+    if (pxdb) {
+      uint8_t *db_mid = W_PX(pxdb, AW2, 80 * 2, 40 * 2);
+      uint8_t *db_top = W_PX(pxdb, AW2, 80 * 2, 10 * 2);
+      uint8_t *db_side_out = W_PX(pxdb, AW2, 140 * 2, 40 * 2);
+      int db_out_min = db_side_out[0] < db_side_out[1] ? db_side_out[0] : db_side_out[1];
+      if (db_side_out[2] < db_out_min) db_out_min = db_side_out[2];
+      double db_l_mid = 0.2126 * db_mid[0] + 0.7152 * db_mid[1] + 0.0722 * db_mid[2];
+      double db_l_top = 0.2126 * db_top[0] + 0.7152 * db_top[1] + 0.0722 * db_top[2];
+      printf("win_gpu: v10_reg_dark_on_bright_2x out_min=%d top=%.1f mid=%.1f\n", db_out_min, db_l_top, db_l_mid);
+      CHECK(db_out_min >= 120);
+      CHECK(db_l_top > db_l_mid + 20.0);
+      free(pxdb);
     }
     // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
     {

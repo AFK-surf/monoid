@@ -327,6 +327,18 @@ pub fn vault_lock_bump_all() -> Unit {
 }
 
 ///|
+/// Clears opened plaintext, fields, revealed flags, and instance dialogs for all active `VaultItem`
+/// instances matching `(ws, vault)`: `("", "")` clears all; `(ws, "")` clears workspace `ws`;
+/// `(ws, v)` clears only vault `v` in `ws` (leaving unrelated vaults like V2 intact).
+pub fn clear_opened_secrets(ws? : String = "", vault? : String = "") -> Unit {
+  if ws == "" && vault == "" {
+    vault_lock_bump_all()
+  } else {
+    vault_lock_bump(ws, vault~)
+  }
+}
+
+///|
 fn vault_instances_reset() -> Unit {
   // Keep next_id, next_pending, and all_lock_gen monotonic across resets so stale callbacks never collide.
   vault_instances.instances.clear()
@@ -366,7 +378,12 @@ pub fn open_item(
   } else {
     inst.reveal_field.set(None)
   }
-  (core.call)("vault.open", obj([("workspace", str(captured.workspace)), ("item", str(captured.item))]), fn(r) {
+  let params : Array[(String, Json)] = [
+    ("workspace", str(captured.workspace)),
+    ("item", str(captured.item)),
+    ..if captured.vault != "" { [("vault", str(captured.vault))] } else { [] },
+  ]
+  (core.call)("vault.open", obj(params), fn(r) {
     guard vault_instances.instances.get(instance_id) is Some(cur) else { return }
     guard cur.alive && @signals.untracked(active) else { return }
     guard cur.in_flight == Some(pid) && cur.pending_id == pid else { return }

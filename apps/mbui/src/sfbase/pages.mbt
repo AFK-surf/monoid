@@ -821,6 +821,12 @@ pub fn shown_read(at : String) -> Unit {
 }
 
 ///|
+/// Whether ahead-read leases handed over for `at` via `hand_over_shown` are still pending release.
+pub fn shown_handed(at : String) -> Bool {
+  handed_shown.contains(at)
+}
+
+///|
 /// What a profile's page is shown for (hand_over_shown, shown_read): its station and profile.
 pub fn profile_shown_at(station : String, id : String) -> String {
   "profile\u{1}" + station + "\u{1}" + id

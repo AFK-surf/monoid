@@ -283,7 +283,7 @@ fn accounts_told(list : Json) -> Unit {
   let who = if subs.is_empty() { list.stringify() } else { subs.join("\u{1}") }
   let changed = signed_in.val != Some(who)
   match signed_in.val {
-    Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
+    Some(was) if was != who => @core.client.forget_kept()
     _ => ()
   }
   signed_in.val = Some(who)

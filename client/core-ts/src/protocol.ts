@@ -9,17 +9,52 @@ export type { ClientId };
 /// Chosen by the UI; answers and subscription values carry it back.
 export type RequestId = number;
 
+/// Original authorization context attached by a UI to write calls so delayed calls arriving at Core
+/// are rejected if the account, workspace authorization, or vault lock generation changed in flight.
+export type CallAuth = {
+  conn?: number;
+  account?: string;
+  workspace?: string;
+  authGen?: number;
+  vault?: string;
+  vaultGen?: number;
+};
+
+/// Authoritative connection and scoped generation boundary pushed by Core to connected UIs.
+export type AuthBoundary = {
+  conn: number;
+  global: number;
+  aggregate?: number;
+  vaultGlobal?: number;
+  workspace?: string;
+  authGen?: number;
+  vault?: string;
+  vaultGen?: number;
+  vaultAll?: boolean;
+  dependentWorkspaces?: string[];
+  dependentVaultGens?: Record<string, number>;
+  scopes?: Record<string, number>;
+  vaults?: Record<string, number>;
+};
+
+/// Optional connection and generation identity carried on subscription messages.
+export type WireGen = {
+  conn?: number;
+  authGen?: number;
+  vaultGen?: number;
+};
+
 /// UI → core. `bytes`: a call may carry bytes beside its JSON (a file's part going up): the web and the desktop post
 /// them in the message, the native hosts hand them over as they are (never as base64 in the JSON).
 export type ClientMessage =
-  | { kind: "call"; id: RequestId; call: string; params: unknown; bytes?: Uint8Array }
+  | { kind: "call"; id: RequestId; call: string; params: unknown; bytes?: Uint8Array; auth?: CallAuth }
   /// `from`: another of its subscriptions to the same topic with other params (a list's first rows, more of them asked
   /// now), still held: this one's first value goes as a keyed delta to what that one has (store.ts `#firstFrom`).
   /// `have`: the token (digest.ts `token`) of the value it holds of this topic, kept from an unsubscribe's `v`:
   /// where the topic's value is that one still, its first message is `{id, same: true}`, not the value again; else,
   /// where the core remembers that value for this client, `{id, delta, kept: true}`, what changed from it (store.ts
   /// `#first`); else the value whole.
-  | { kind: "subscribe"; id: RequestId; subscribe: Topic; keyed?: boolean; from?: RequestId; have?: string }
+  | { kind: "subscribe"; id: RequestId; subscribe: Topic; keyed?: boolean; from?: RequestId; have?: string; conn?: number; authGen?: number; vaultGen?: number }
   /// `keep`: the client keeps what it holds of the topic, to ask with it again (`have`): answered `{id, v}`, the last
   /// message for this id, what it holds by then being the value `v` is the token of (opaque: a client only says it
   /// back). The core remembers that value for the client a while (store.ts `#kept`).
@@ -28,25 +63,26 @@ export type ClientMessage =
 
 /// core → UI, as it goes on the wire. An answer's `bytes` go as a value's do (a file read: its JSON says what it is).
 export type CoreMessage =
-  | { id: RequestId; ok: unknown; bytes?: Uint8Array }
-  | { id: RequestId; error: CoreError }
+  | { id: 0; auth: AuthBoundary }
+  | ({ id: RequestId; ok: unknown; bytes?: Uint8Array } & WireGen)
+  | ({ id: RequestId; error: CoreError } & WireGen)
   /// `bytes`: a call's value may carry bytes beside its JSON (a screen view's frames): the web transfers them, the
   /// native hosts hand them over as they are (never as base64 in the JSON).
-  | { id: RequestId; value: unknown; bytes?: Uint8Array }
-  | { id: RequestId; delta: AnyOp[] }
+  | ({ id: RequestId; value: unknown; bytes?: Uint8Array } & WireGen)
+  | ({ id: RequestId; delta: AnyOp[] } & WireGen)
   /// A subscription's first value as what changed from what its `from` has now (a subscribe's `from`).
-  | { id: RequestId; delta: AnyOp[]; from: RequestId }
+  | ({ id: RequestId; delta: AnyOp[]; from: RequestId } & WireGen)
   /// A topic with no value yet whose value waits on a station (or the cloud), not on the core reading what the device
   /// holds (store.ts `waits`): what shows it can show what is to come now, not what it holds a moment later.
-  | { id: RequestId; waiting: true }
+  | ({ id: RequestId; waiting: true } & WireGen)
   /// A subscription asked with `have`: the topic's value is the one it holds; nothing of it is sent.
-  | { id: RequestId; same: true }
+  | ({ id: RequestId; same: true } & WireGen)
   /// A subscription asked with `have`, its first message: what changed from the value of that token, which the client
   /// kept as it let go of the topic, to the topic's value now (keyed ops to a keyed subscriber, as `delta`).
-  | { id: RequestId; delta: AnyOp[]; kept: true }
+  | ({ id: RequestId; delta: AnyOp[]; kept: true } & WireGen)
   /// An unsubscribe with `keep` answered, its id's last message: the token of the value the client holds of it now
   /// (null: it had none).
-  | { id: RequestId; v: string | null };
+  | ({ id: RequestId; v: string | null } & WireGen);
 
 /// A call's answer with bytes beside its JSON (a file read), as a handler gives it: `{id, ok: value, bytes}`.
 export class Beside {
@@ -309,24 +345,45 @@ export function parseClientMessage(raw: unknown, bytes?: Uint8Array): ClientMess
   if (typeof raw.call === "string") {
     const beside = bytes ?? (raw.bytes instanceof Uint8Array ? raw.bytes : undefined);
     const params = raw.params === undefined ? null : raw.params;
-    return beside === undefined ? { kind: "call", id, call: raw.call, params } : { kind: "call", id, call: raw.call, params, bytes: beside };
+    const auth = parseCallAuth(raw.auth);
+    const base: Extract<ClientMessage, { kind: "call" }> = { kind: "call", id, call: raw.call, params };
+    if (beside !== undefined) base.bytes = beside;
+    if (auth !== undefined) base.auth = auth;
+    return base;
   }
   if ("subscribe" in raw) {
     const topic = parseTopic(raw.subscribe);
     // `keyed`: the UI applies keyed ops (collections.ts); the Rust core ignores it.
     if (topic) {
       const have = typeof raw.have === "string" ? { have: raw.have } : {};
-      if (raw.keyed !== true) return { kind: "subscribe", id, subscribe: topic, ...have };
+      const gen: { conn?: number; authGen?: number; vaultGen?: number } = {};
+      if (typeof raw.conn === "number" && Number.isInteger(raw.conn) && raw.conn >= 0) gen.conn = raw.conn;
+      if (typeof raw.authGen === "number" && Number.isInteger(raw.authGen) && raw.authGen >= 0) gen.authGen = raw.authGen;
+      if (typeof raw.vaultGen === "number" && Number.isInteger(raw.vaultGen) && raw.vaultGen >= 0) gen.vaultGen = raw.vaultGen;
+      if (raw.keyed !== true) return { kind: "subscribe", id, subscribe: topic, ...have, ...gen };
       const from = raw.from;
       return typeof from === "number" && Number.isInteger(from) && from >= 0 && from !== id
-        ? { kind: "subscribe", id, subscribe: topic, keyed: true, from, ...have }
-        : { kind: "subscribe", id, subscribe: topic, keyed: true, ...have };
+        ? { kind: "subscribe", id, subscribe: topic, keyed: true, from, ...have, ...gen }
+        : { kind: "subscribe", id, subscribe: topic, keyed: true, ...have, ...gen };
     }
   }
   if (typeof raw.unsubscribe === "boolean")
     return raw.keep === true ? { kind: "unsubscribe", id, unsubscribe: raw.unsubscribe, keep: true } : { kind: "unsubscribe", id, unsubscribe: raw.unsubscribe };
   if (typeof raw.cancel === "boolean") return { kind: "cancel", id, cancel: raw.cancel };
   return bad;
+}
+
+function parseCallAuth(raw: unknown): CallAuth | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: CallAuth = {};
+  let any = false;
+  if (typeof raw.conn === "number" && Number.isInteger(raw.conn) && raw.conn >= 0) { out.conn = raw.conn; any = true; }
+  if (typeof raw.account === "string" && raw.account.length > 0) { out.account = raw.account; any = true; }
+  if (typeof raw.workspace === "string" && raw.workspace.length > 0) { out.workspace = raw.workspace; any = true; }
+  if (typeof raw.authGen === "number" && Number.isInteger(raw.authGen) && raw.authGen >= 0) { out.authGen = raw.authGen; any = true; }
+  if (typeof raw.vault === "string" && raw.vault.length > 0) { out.vault = raw.vault; any = true; }
+  if (typeof raw.vaultGen === "number" && Number.isInteger(raw.vaultGen) && raw.vaultGen >= 0) { out.vaultGen = raw.vaultGen; any = true; }
+  return any ? out : undefined;
 }
 
 /// The Rust core's `{topic:?}` (for the words of a shape's error).

@@ -30,6 +30,7 @@ test("action adapters identify wrapped core calls without retaining secrets or m
     reply = onMessage;
     return { post: (message) => sent.push(message as { id: number }), close() {} };
   });
+  reply({ id: 0, auth: { conn: 1, global: 1, aggregate: 1, vaultGlobal: 1, scopes: {}, vaults: {} } });
   const ops = bindStationOperations((name, params) => client.call(name, { ...params, station: "w/s" }));
   const a = captureCall(() => ops.connectPut({ id: "a", input: { slack: { appToken: "secret" } } }).then(() => "done"));
   const b = captureCall(() => ops.connectDelete({ id: "b" }));

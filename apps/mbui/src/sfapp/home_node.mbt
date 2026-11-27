@@ -65,11 +65,14 @@ fn home_node(
     // (in view while it is the page on top: what changes under another page is as it is as it is come back to)
     watched,
     section_rows: fn() { (0, 0) },
+    section_chrome_bottom: fn() { bar_top_from_foot() + 10.0 },
     section_chrome_suppress: fn() {
       @sfpages.search_on_lists() ||
       @sf.presenter_visible() ||
       !watched() ||
-      @sfbase.board_on_now(src)
+      @sfbase.board_on_now(src) ||
+      bar_obstructs_above() ||
+      @sfbase.toast_words() != ""
     },
   }
   // (what is left up long asked with the lists from the start, not once they have come: Home opens on both,

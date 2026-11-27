@@ -43,12 +43,24 @@ export function parseFarview(name: string, params: unknown, bytes?: Uint8Array):
   }
 }
 
-const opened = new WeakMap<Inner, Map<string, (data: Uint8Array) => void>>();
+type OpenFarview = {
+  workspace: string;
+  authGen: number;
+  send(data: Uint8Array): void;
+};
+
+const opened = new WeakMap<Inner, Map<string, OpenFarview>>();
 const key = (client: ClientId, view: string) => `${client}\u0000${view}`;
-function openIn(inner: Inner): Map<string, (data: Uint8Array) => void> {
+function openIn(inner: Inner): Map<string, OpenFarview> {
   let views = opened.get(inner);
   if (!views) opened.set(inner, (views = new Map()));
   return views;
+}
+
+/// Returns the `(workspace, authGen)` captured when an open Farview `view` was opened for `client`, if any.
+export function farviewViewAuthOf(inner: Inner, client: ClientId, view: string): { workspace: string; authGen: number } | undefined {
+  const rec = openIn(inner).get(key(client, view));
+  return rec ? { workspace: rec.workspace, authGen: rec.authGen } : undefined;
 }
 
 /// What a failure to open says the view is now: done for good (a phase), or worth trying again (null).
@@ -63,9 +75,9 @@ export function install(): void {
   handlers.farview = (inner, call, progress, at, ctx) => {
     const c = (call as Extract<import("./core/calls.ts").Call, { kind: "farview" }>).call;
     if (c.kind === "view") return view(inner, c, progress, at, ctx);
-    const send = openIn(inner).get(key(at[0], c.view));
-    if (!send) return Effect.fail(new CoreError("not_found", t("core-misc.farview.closed")));
-    send(c.data);
+    const rec = openIn(inner).get(key(at[0], c.view));
+    if (!rec) return Effect.fail(new CoreError("not_found", t("core-misc.farview.closed")));
+    rec.send(c.data);
     return Effect.succeed(null);
   };
 }
@@ -78,8 +90,12 @@ function view(inner: Inner, c: Extract<FarviewCall, { kind: "view" }>, progress:
     const addr = yield* Effect.try({ try: () => StationAddr.parse(c.station), catch: asCoreError });
     let out: Queue.Queue<Uint8Array> | null = null;
     // What is said while no stream is open belongs to a conversation gone: the next open begins anew.
-    open.set(name, (data) => {
-      if (out !== null) Queue.offerUnsafe(out, data);
+    open.set(name, {
+      workspace: addr.workspace,
+      authGen: inner.store.authGen.workspaceAuthGen(addr.workspace),
+      send: (data) => {
+        if (out !== null) Queue.offerUnsafe(out, data);
+      },
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
     progress({ state: { phase: "connecting" } });

@@ -160,6 +160,8 @@ export function drainFrames(reader: FrameReader): { kind: number; payload: Uint8
 
 type Open = {
   station: string;
+  workspace: string;
+  authGen: number;
   input(data: Uint8Array): void;
   resize(cols: number, rows: number): void;
   take(control?: boolean): void;
@@ -171,6 +173,17 @@ function openIn(inner: Inner): Map<string, Open> {
   let views = opened.get(inner);
   if (!views) opened.set(inner, (views = new Map()));
   return views;
+}
+
+/// Returns the station address bound to an open terminal `view` for `client`, if any.
+export function terminalStationOf(inner: Inner, client: ClientId, view: string): string | undefined {
+  return openIn(inner).get(key(client, view))?.station;
+}
+
+/// Returns the `(workspace, authGen)` captured when an open terminal `view` was opened for `client`, if any.
+export function terminalViewAuthOf(inner: Inner, client: ClientId, view: string): { workspace: string; authGen: number } | undefined {
+  const rec = openIn(inner).get(key(client, view));
+  return rec ? { workspace: rec.workspace, authGen: rec.authGen } : undefined;
 }
 
 /// What a failure to open says the view is now: done for good (a phase), or worth trying again (null).
@@ -254,6 +267,8 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     };
     open.set(name, {
       station,
+      workspace: addr.workspace,
+      authGen: inner.store.authGen.workspaceAuthGen(addr.workspace),
       input: (data) => {
         if (!state.types) return;
         for (let i = 0; i < data.length; i += INPUT_MAX) write(frame(KIND.input, data.subarray(i, i + INPUT_MAX)));

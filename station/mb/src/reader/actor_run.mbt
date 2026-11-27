@@ -524,7 +524,7 @@ async fn Actors::stop(self : Actors, a : Actor, args : Array[Json]) -> Json rais
   a.deferred_end = None
   a.warm = false
   self.cancel_tools_retry(a)
-  self.cancel_mid_wait(a)
+  self.cancel_mid_wait_timer(a)
   a.tools_restarts = 0
   a.paused_cap = false
   a.cap_wait_notified = false
@@ -933,6 +933,9 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     if a.mid_waiting is Some(_) && a.mid_waiting_until <= self.now && a.turn is Some(t) {
       self.arm_mid_wait(a, t.id, a.mid_waiting_seconds, 0.0)
     }
+    if a.steer_silent is Some(_) && a.steer_silent_until <= self.now && a.turn is Some(t) {
+      self.arm_steer_silent(a, t.id, a.steer_silent_since, 0.0)
+    }
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
     }
@@ -1216,8 +1219,13 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
         "declared": match kind_of(t.declared) { Some(k) => jstr(k); None => Json::null() },
         "wait": if kind_of(t.declared) == Some("waiting") { t.declared.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() },
         "askedBefore": t.asked_before.unwrap_or(Json::null()),
+        "openTools": Json::array(t.open_tools.map(jstr)),
       } : Json)
     None => Json::null()
+  }
+  let steer_silent_ms = match a.turn {
+    Some(t) if a.steer_silent is Some(_) => jnum(self.steer_silent_left(t, a.steer_silent_since))
+    _ => Json::null()
   }
   let deferred_end = match a.deferred_end {
     Some(d) =>
@@ -1241,6 +1249,7 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
     "waitingSeconds": jnum(a.waiting_seconds),
     "midWaitingMs": if a.mid_waiting is Some(_) { jnum(max0(a.mid_waiting_until - self.now)) } else { Json::null() },
     "midWaitingSeconds": jnum(a.mid_waiting_seconds),
+    "steerSilentMs": steer_silent_ms,
     "silentWaitingMs": match a.silent_waiting_since { Some(s) => jnum(max0(self.now - s)); None => Json::null() },
     "progressRemindedMs": if a.progress_reminded_at > 0.0 { jnum(max0(self.now - a.progress_reminded_at)) } else { Json::null() },
     "nudges": jnum(a.nudges.to_double()),
@@ -1297,6 +1306,11 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
         tools_count: 0,
         last_tool_at: self.now,
         wait_watch: false,
+        last_live_at: self.now,
+        open_tools: match t.get("openTools") {
+          Some(Array(ids)) => ids.filter_map(i => str_of(Some(i)))
+          _ => []
+        },
       })
     _ => None
   }
@@ -1353,6 +1367,15 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
       }
       self.arm_mid_wait(a, t.id, secs, ms)
     }
+  }
+  if a.turn is Some(t) && t.declared is None && num_of(snap.value("steerSilentMs")) is Some(ms) {
+    // (silent as long before it was handed over: counted on from there, not from the handover; what was steered into
+    // it before it was handed over is the station's before: `steered` starts here empty)
+    let ms = steer_silent_clamp(ms)
+    let since = self.now - (steered_silent_ms - ms)
+    t.last_live_at = since
+    a.steer_silent_steered = 0
+    self.arm_steer_silent(a, t.id, since, ms)
   }
   if num_of(snap.value("refillMs")) is Some(ms) {
     self.await_refill(a, self.now + ms)
@@ -1811,9 +1834,15 @@ fn Actors::on_live(self : Actors, a : Actor, event : Json) -> Unit {
     if t.first_live_at is None {
       t.first_live_at = Some(self.now)
     }
+    t.last_live_at = self.now
     if kind == "start" && str_of(event.value("step")) == Some("tool") {
       t.tools_count += 1
       t.last_tool_at = self.now
+      if str_of(event.value("id")) is Some(id) && !t.open_tools.contains(id) {
+        t.open_tools.push(id)
+      }
+    } else if kind == "end" && str_of(event.value("id")) is Some(id) {
+      t.open_tools.retain(o => o != id)
     }
   }
   if a.working_for.length() == 0 {
@@ -2209,7 +2238,7 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, 
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
   let is_passive = passive || kind == "title" || kind == "nudge"
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before, started_at: self.now, first_live_at: None, tools_count: 0, last_tool_at: self.now, wait_watch: false })
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before, started_at: self.now, first_live_at: None, tools_count: 0, last_tool_at: self.now, wait_watch: false, last_live_at: self.now, open_tools: [] })
   a.deferred_end = None
   a.warm = false
   a.phase = "running"
@@ -2748,7 +2777,8 @@ fn Actors::hear_words(self : Actors, a : Actor, event : Json) -> Unit {
 }
 
 ///|
-/// actor.ts `onTurnEnded`.
+/// actor.ts `onTurnEnded`. An outcome with `hung` is the station's own, its runtime silent after a steer
+/// (`fire_steer_silent`): its process is ended before anything goes on in it.
 async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outcome : Json) -> Unit raise {
   if !self.is_current(a, generation) {
     return
@@ -2978,6 +3008,27 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     self.set_agent(a, None)
     self.log(a, "warn", "ending the process that lost the station's tools; the next one resumes it", fields={ "why": jstr(why) })
     self.end_process(a, agent)
+    self.notify_store(a)
+  }
+  if outcome.value("hung") is Some(True) && a.agent is Some(_) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    // (what a person said while it was silent was steered into the process ended: handed again to the next, `pump`)
+    let from = if a.steer_silent_steered > a.steered.length() { a.steered.length() } else { a.steer_silent_steered }
+    let lost : Array[Json] = []
+    for i in from..<a.steered.length() {
+      lost.push(a.steered[i])
+    }
+    a.steered = []
+    a.steered_for = []
+    a.unread = []
+    a.unread_preparing = 0
+    a.steer_silent_steered = 0
+    if lost.length() > 0 {
+      ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(lost)]))
+    }
+    self.mirror(a)
     self.notify_store(a)
   }
   if turn is Some({ declared: Some(_), .. }) {
@@ -3629,6 +3680,7 @@ fn Actors::on_declared(self : Actors, a : Actor, t : Turn, state : Json) -> Unit
   if kind_of(Some(state)) == Some("waiting") {
     let seconds = num_of(state.value("seconds")).unwrap_or(0.0)
     t.last_tool_at = self.now
+    self.cancel_steer_silent(a)
     self.arm_mid_wait(a, t.id, seconds, seconds * 1000.0)
     if !t.wait_watch {
       self.track_silent_wait(a, t)
@@ -3639,7 +3691,17 @@ fn Actors::on_declared(self : Actors, a : Actor, t : Turn, state : Json) -> Unit
 }
 
 ///|
+/// Cancels the mid-turn wait timer, and the deadline after its steer (`arm_steer_silent`) with it.
 fn Actors::cancel_mid_wait(self : Actors, a : Actor) -> Unit {
+  self.cancel_mid_wait_timer(a)
+  self.cancel_steer_silent(a)
+}
+
+///|
+/// The mid-turn wait timer alone: a stop keeps the deadline after a steer, for a runtime that ignores its abort too
+/// (its turn's end cancels it).
+fn Actors::cancel_mid_wait_timer(self : Actors, a : Actor) -> Unit {
+  ignore(self)
   a.mid_waiting = None
   a.mid_waiting_until = 0.0
   a.mid_waiting_seconds = 0.0
@@ -3647,6 +3709,129 @@ fn Actors::cancel_mid_wait(self : Actors, a : Actor) -> Unit {
     cancel()
     a.timers.remove("mid_wait")
   }
+}
+
+///|
+fn Actors::cancel_steer_silent(self : Actors, a : Actor) -> Unit {
+  ignore(self)
+  a.steer_silent = None
+  a.steer_silent_until = 0.0
+  a.steer_silent_since = 0.0
+  if a.timers.get("steer_silent") is Some(cancel) {
+    cancel()
+    a.timers.remove("steer_silent")
+  }
+}
+
+///|
+/// How long a turn steered to check its wait may stay silent (no live event, no tool call begun since open) before its
+/// runtime is taken as hung: Antigravity CLI that failed its model call after such a steer never answered the prompt,
+/// and the chat showed running for 3 hours (2026-11-27).
+let steered_silent_ms : Double = 900000.0
+
+///|
+/// `ms` within 0 and `steered_silent_ms` (a clock that went back, a station before that said more).
+fn steer_silent_clamp(ms : Double) -> Double {
+  if ms < 0.0 {
+    0.0
+  } else if ms > steered_silent_ms {
+    steered_silent_ms
+  } else {
+    ms
+  }
+}
+
+///|
+/// `since`: when its silence is counted from (the steer, or the station before a handover said).
+fn Actors::arm_steer_silent(self : Actors, a : Actor, turn_id : String, since : Double, ms : Double) -> Unit {
+  let ms = steer_silent_clamp(ms)
+  a.steer_silents += 1
+  let silent = a.steer_silents
+  a.steer_silent = Some(silent)
+  a.steer_silent_until = self.now + ms
+  a.steer_silent_since = since
+  // timer: a deadline for a runtime steered mid-turn, which may never answer its prompt again
+  self.timer(a, "steer_silent", ms, async fn() { self.fire_steer_silent(a, silent, turn_id) })
+}
+
+///|
+/// How long a steered turn has left before its silence ends it (`steered_silent_ms` from its last live event or
+/// `since`, whichever came later).
+fn Actors::steer_silent_left(self : Actors, t : Turn, since : Double) -> Double {
+  let from = if t.last_live_at > since { t.last_live_at } else { since }
+  steer_silent_clamp(steered_silent_ms - (self.now - from))
+}
+
+///|
+/// Ends a turn steered to check its wait whose runtime has said nothing since for `steered_silent_ms`, no tool call
+/// begun since open and no watch running: failed, its process ended, so the chat shows it and the next message opens
+/// a new one. What it awaits can stop, close, end or arm it again meanwhile: each await is followed by a look that it
+/// still stands (`a.steer_silent` still this one).
+async fn Actors::fire_steer_silent(self : Actors, a : Actor, silent : Int, turn_id : String) -> Unit raise {
+  if a.steer_silent != Some(silent) {
+    return
+  }
+  // (held: kept as it is, armed again on `release`)
+  if self.held(a) {
+    return
+  }
+  let since = a.steer_silent_since
+  let stands = () => !self.closed(a) &&
+    a.steer_silent == Some(silent) &&
+    (a.turn is Some(t) && t.id == turn_id && t.declared is None)
+  guard stands() else { return }
+  if self.archived(a) || a.compacting {
+    if a.steer_silent == Some(silent) {
+      self.cancel_steer_silent(a)
+    }
+    return
+  }
+  guard stands() else { return }
+  let last = self.last_turn(a)
+  guard stands() else { return }
+  if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
+    if stands() {
+      self.arm_steer_silent(a, turn_id, self.now, steered_silent_ms)
+    }
+    return
+  }
+  guard stands() && a.turn is Some(t) else { return }
+  if t.open_tools.length() > 0 {
+    return self.arm_steer_silent(a, turn_id, self.now, steered_silent_ms)
+  }
+  let left = self.steer_silent_left(t, since)
+  if left > 0.0 {
+    return self.arm_steer_silent(a, turn_id, since, left)
+  }
+  let was = a.agent
+  let busy = self.busy_of(a, was)
+  guard still(a, was) && stands() && a.turn is Some(t2) else { return }
+  if t2.open_tools.length() > 0 {
+    return self.arm_steer_silent(a, turn_id, self.now, steered_silent_ms)
+  }
+  let left = self.steer_silent_left(t2, since)
+  if left > 0.0 {
+    return self.arm_steer_silent(a, turn_id, since, left)
+  }
+  guard busy && was is Some(agent) else {
+    self.cancel_steer_silent(a)
+    return
+  }
+  self.cancel_steer_silent(a)
+  self.log(a, "warn", "a turn steered after its wait said nothing since; ending its process", fields={ "runtime": jstr(a.runtime), "silentMs": jnum(steered_silent_ms) })
+  self.done_working(a)
+  self.live_turn_ended(a)
+  guard self.is_current(a, agent.generation) && a.turn is Some(t3) && t3.id == turn_id else { return }
+  self.on_turn_ended(
+    a,
+    agent.generation,
+    {
+      "kind": "failed",
+      "reason": "other",
+      "message": "The runtime gave no sign of life for 15 minutes after it was asked to check its wait; its process was ended, and the next message starts a new one",
+      "hung": Json::boolean(true),
+    },
+  )
 }
 
 ///|
@@ -3712,6 +3897,11 @@ async fn Actors::fire_mid_wait(self : Actors, a : Actor, wait : Int, turn_id : S
     }
     if a.turn is Some(t3) && t3.id == turn_id && kind_of(t3.declared) == Some("waiting") {
       t3.declared = None
+      // (only tool calls begun after the steer hold its deadline: one moved to the background before it never ends,
+      // agy's `run_command`; and only messages steered in after it are handed again if it is ended)
+      t3.open_tools.clear()
+      a.steer_silent_steered = a.steered.length()
+      self.arm_steer_silent(a, turn_id, self.now, steered_silent_ms)
       self.declare_turn(a, t3.id, None)
     }
   } else {

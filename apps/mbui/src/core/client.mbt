@@ -55,6 +55,111 @@ pub struct Sub {
   /// What came for it while it is let go of (`ending`), not read yet (Client::later): read as what it holds is first
   /// read (Sub::catch_up), or, its value kept, as what is kept is (Client::kept_of). None: nothing waits so.
   priv mut later : Later?
+  /// Connection instance and scoped authorization/vault generations when this Sub was subscribed or last updated.
+  priv mut sub_conn : Int64
+  priv mut sub_auth_gen : Int
+  priv mut sub_vault_gen : Int
+  /// Set when an authorization or vault lock boundary invalidated this Sub; blocks late writes to value/later/kept.
+  priv mut gen_expired : Bool
+  /// Set by local `mask_scope` until a strictly newer generation arrives or a boundary clears it.
+  priv mut masked : Bool
+  priv mut masked_auth_gen : Int
+  priv mut masked_vault_gen : Int
+}
+
+///|
+/// Scope of an authorization or vault lock generation boundary.
+pub(all) enum AuthScope {
+  Global
+  Workspace(String)
+  Vault(String, String)
+  VaultWorkspace(String)
+  VaultAll
+}
+
+///|
+fn topic_workspace(topic : Json) -> String? {
+  match topic {
+    Object(m) =>
+      match m.get("workspace") {
+        Some(String(w)) if w.length() > 0 => Some(w)
+        _ =>
+          match m.get("scope") {
+            Some(String(s)) if s.length() > 0 => Some(s)
+            _ =>
+              match m.get("station") {
+                Some(String(st)) if st.length() > 0 =>
+                  match st.find("/") {
+                    Some(i) => Some(st[:i].to_owned())
+                    None => Some(st)
+                  }
+                _ => None
+              }
+          }
+      }
+    _ => None
+  }
+}
+
+///|
+fn topic_vault(topic : Json) -> String? {
+  match topic {
+    Object(m) =>
+      match m.get("vault") {
+        Some(String(v)) if v.length() > 0 => Some(v)
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+fn is_device_global_topic(name : String) -> Bool {
+  match name {
+    "releases" | "fonts" | "changelog" | "prefs" | "doing" | "adbShare" | "link" | "connection" | "way" | "net" => true
+    _ => false
+  }
+}
+
+///|
+/// Whether `topic` is affected by an authorization/vault boundary of `scope`.
+pub fn topic_matches_scope(topic : Json, scope : AuthScope) -> Bool {
+  topic_matches_scope_with(topic, scope, is_device_global_topic)
+}
+
+///|
+/// Parameter-map variant of `topic_matches_scope`, used by `@sfbase.invalidate_auth_scope`.
+pub fn topic_matches_scope_params(name : String, params : Map[String, Json], scope : AuthScope) -> Bool {
+  topic_matches_scope_with(topic_json(name, params), scope, client.device_global_policy)
+}
+
+///|
+fn topic_matches_scope_with(topic : Json, scope : AuthScope, is_device_global : (String) -> Bool) -> Bool {
+  let name = topic_name(topic)
+  match scope {
+    Global => !is_device_global(name)
+    Workspace(ws) =>
+      if is_device_global(name) {
+        false
+      } else if name == "workspaces" || name == "lockPrompts" || name == "downloads" {
+        true
+      } else {
+        match topic_workspace(topic) {
+          Some(w) => w == ws
+          None => false
+        }
+      }
+    Vault(ws, v) =>
+      if name == "vaultItems" || name == "vaultUses" {
+        topic_workspace(topic) == Some(ws) && topic_vault(topic) == Some(v)
+      } else if name == "vaults" {
+        topic_workspace(topic) == Some(ws)
+      } else {
+        false
+      }
+    VaultWorkspace(ws) => name == "vaults" && topic_workspace(topic) == Some(ws)
+    VaultAll => name == "vaults" || name == "vaultItems" || name == "vaultUses"
+  }
 }
 
 ///|
@@ -237,18 +342,56 @@ pub struct Client {
   /// Of a topic (its name, its JSON as asked), how many values of its name are kept at most as they are let go of, to
   /// be asked again with their version (Client::keep): 0, none
   priv mut keeps : (String, Json) -> Int
-  /// The values kept so, by their subscriptions' lookup key: the value, the version the core said it is (`{id, v}`) and
-  /// its topic's name, the oldest first (the last `kept_most`, and of each name as many as `keeps` says). One may be kept while its topic is subscribed again (the version of the
-  /// one let go of came after the new one's first value): a version is made of the value alone, and what is kept is
-  /// only ever taken where the core says the topic's value is that version, so it is never taken for another.
-  priv kept : Map[String, (Later, String, String)]
+  /// The values kept so, by their subscriptions' lookup key: the value, the version the core said it is (`{id, v}`),
+  /// its topic's name, and its topic JSON (for scoped auth/vault invalidation), the oldest first.
+  priv kept : Map[String, (Later, String, String, Json)]
   /// What the core is told before a topic is asked (its name, its JSON as asked), each time it is (Client::tells_before)
   priv mut tells : (String, Json) -> Array[(String, Json)]
   /// How many values are kept at most, of every name together (Client::keep's `most`)
   priv mut kept_most : () -> Int
-  /// Of the topics kept (by name), those whose value kept is shown at once as they are asked again, till the core
-  /// answers (Client::show_kept)
-  priv mut shows_kept : (String) -> Bool
+  /// Of the topics kept (by name and params), those whose value kept is shown at once as they are asked again, till
+  /// the core answers (Client::show_kept / Client::show_kept_params).
+  priv mut shows_kept_params : (String, Json) -> Bool
+  /// Unconditional `sensitive` topic predicate: never kept, never shown stale, never `have`/`same`/`from`.
+  priv mut sensitive_policy : (String, Json) -> Bool
+  /// Device-global / transport-only topic predicate (exempt from `authGen`), generated from `topic-policy.ts`.
+  priv mut device_global_policy : (String) -> Bool
+  /// Strips sensitive fields from kept values of aggregate topics (`profiles`, `station`, `stationPart`) before storing/showing.
+  priv mut kept_sanitizer : (String, Json) -> Json
+  /// Authoritative connection instance id from Core (`{ auth: { conn, ... } }`); 0L until synced.
+  priv mut conn_id : Int64
+  /// Previous connection id saved on `restarted()`; restart snapshot must satisfy `conn > min_restart_conn`.
+  priv mut min_restart_conn : Int64
+  /// Monotonic global/account authorization generation.
+  priv mut global_auth_gen : Int
+  /// Monotonic aggregate generation for account-level workspace aggregates (`workspaces`, `lockPrompts`, `downloads`).
+  priv mut aggregate_auth_gen : Int
+  /// Monotonic per-workspace authorization generations.
+  priv workspace_auth_gen : Map[String, Int]
+  /// Monotonic per-vault (`"ws/vault"`) and per-workspace vault aggregate (`"ws"`) generations.
+  priv vault_gen : Map[String, Int]
+  /// Monotonic global vault lock generation (bumped on explicit `vault.lock`).
+  priv mut vault_global_gen : Int
+  /// True after `restarted()` until the new Core delivers its authoritative `{ auth }` snapshot.
+  priv mut awaiting_auth_sync : Bool
+  /// Scope-level mask watermarks set by `mask_scope` (applies to existing subs, newly created subs, and calls).
+  priv mut masked_global_gen : Int
+  priv masked_ws_gen : Map[String, Int]
+  priv mut masked_ws_agg_gen : Int
+  priv masked_vault_gen : Map[String, Int]
+  priv mut masked_vault_global_gen : Int
+  /// Active undoable mask entries (`id -> (scope, auth_wm, vault_wm, agg_wm)`).
+  priv mask_entries : Map[Int, (AuthScope, Int, Int, Int)]
+  priv mut next_mask_id : Int
+  /// View-id -> `(workspace, owner_call_id)` mapping recorded on `terminal.view` / `screen.view` / `farview.view`.
+  priv view_workspaces : Map[String, (String, Int)]
+  /// Maps active view-opening stream call ids to their `view` id for cleanup on answer/cancel.
+  priv call_view : Map[Int, String]
+  /// Authorization context `(conn, name, ws, vault, auth_gen, vault_gen, is_read_or_stream)` recorded for each pending call.
+  priv call_auth_ctx : Map[Int, (Int64, String, String, String, Int, Int, Bool)]
+  /// Subscribers notified synchronously whenever an auth/vault boundary invalidates a scope.
+  priv auth_listeners : Array[(Int, (AuthScope) -> Unit)]
+  priv mut next_auth_listener : Int
 }
 
 ///|
@@ -294,7 +437,30 @@ pub fn Client::new(
     kept: {},
     tells: fn(_, _) { [] },
     kept_most: fn() { kept_most },
-    shows_kept: fn(_) { false },
+    shows_kept_params: fn(_, _) { false },
+    sensitive_policy: fn(_, _) { false },
+    device_global_policy: is_device_global_topic,
+    kept_sanitizer: fn(_, v) { v },
+    conn_id: 0L,
+    min_restart_conn: 0L,
+    global_auth_gen: 0,
+    aggregate_auth_gen: 1,
+    workspace_auth_gen: {},
+    vault_gen: {},
+    vault_global_gen: 0,
+    awaiting_auth_sync: false,
+    masked_global_gen: 0,
+    masked_ws_gen: {},
+    masked_ws_agg_gen: 0,
+    masked_vault_gen: {},
+    masked_vault_global_gen: 0,
+    mask_entries: {},
+    next_mask_id: 1,
+    view_workspaces: {},
+    call_view: {},
+    call_auth_ctx: {},
+    auth_listeners: [],
+    next_auth_listener: 1,
   }
 }
 
@@ -342,7 +508,447 @@ let kept_most : Int = 64
 /// places open on, shown again at once by the source that read them (sfbase's `last_said`), never to what names a
 /// station by them (sfbase's `station_marks`). Said once, as the app starts.
 pub fn Client::show_kept(self : Client, f : (String) -> Bool) -> Unit {
-  self.shows_kept = f
+  self.shows_kept_params = fn(name, _) { f(name) }
+}
+
+///|
+/// Parameter-aware version of `Client::show_kept`, used for `byParam` topics such as `stationPart`.
+pub fn Client::show_kept_params(self : Client, f : (String, Json) -> Bool) -> Unit {
+  self.shows_kept_params = f
+}
+
+///|
+/// Registers the unconditional `sensitive` topic predicate (from `topic_policy_sensitive`): sensitive topics
+/// never retain kept values, never show stale values, and never send `have` or `from`.
+pub fn Client::sensitive(self : Client, f : (String, Json) -> Bool) -> Unit {
+  self.sensitive_policy = f
+}
+
+///|
+/// Registers the device-global / transport-only topic predicate (from `topic_policy_device_global`).
+pub fn Client::device_global(self : Client, f : (String) -> Bool) -> Unit {
+  self.device_global_policy = f
+}
+
+///|
+/// Registers the kept-value sanitizer (strips sensitive fields from `profiles` / `station` before storing/showing).
+pub fn Client::sanitize_kept(self : Client, f : (String, Json) -> Json) -> Unit {
+  self.kept_sanitizer = f
+}
+
+///|
+/// Registers a listener invoked synchronously whenever an auth or vault boundary invalidates a scope.
+/// Returns a deregistration closure.
+pub fn Client::on_auth_boundary(self : Client, f : (AuthScope) -> Unit) -> () -> Unit {
+  let id = self.next_auth_listener
+  self.next_auth_listener += 1
+  self.auth_listeners.push((id, f))
+  fn() {
+    match self.auth_listeners.search_by(fn(e) { e.0 == id }) {
+      Some(i) => self.auth_listeners.remove(i) |> ignore
+      None => ()
+    }
+  }
+}
+
+///|
+/// Current authoritative `(conn_id, auth_gen, vault_gen)` for `topic`.
+fn Client::current_auth_gen(self : Client, topic : Json) -> Int {
+  let name = topic_name(topic)
+  if (self.device_global_policy)(name) {
+    return 0
+  }
+  if name == "workspaces" || name == "lockPrompts" || name == "downloads" {
+    return if self.aggregate_auth_gen > self.global_auth_gen { self.aggregate_auth_gen } else { self.global_auth_gen }
+  }
+  match topic_workspace(topic) {
+    Some(ws) => {
+      let w = self.workspace_auth_gen.get(ws).unwrap_or(0)
+      if w > self.global_auth_gen { w } else { self.global_auth_gen }
+    }
+    None => self.global_auth_gen
+  }
+}
+
+///|
+fn Client::current_vault_gen(self : Client, topic : Json) -> Int {
+  let name = topic_name(topic)
+  if name == "vaultItems" || name == "vaultUses" {
+    match (topic_workspace(topic), topic_vault(topic)) {
+      (Some(ws), Some(v)) => {
+        let g = self.vault_gen.get(ws + "/" + v).unwrap_or(0)
+        if g > self.vault_global_gen { g } else { self.vault_global_gen }
+      }
+      _ => self.vault_global_gen
+    }
+  } else if name == "vaults" {
+    match topic_workspace(topic) {
+      Some(ws) => {
+        let g = self.vault_gen.get(ws).unwrap_or(0)
+        if g > self.vault_global_gen { g } else { self.vault_global_gen }
+      }
+      None => self.vault_global_gen
+    }
+  } else {
+    0
+  }
+}
+
+///|
+/// Whether the client is awaiting an authoritative `{ auth }` snapshot after `restarted()`.
+pub fn Client::awaiting_auth_sync(self : Client) -> Bool {
+  self.awaiting_auth_sync
+}
+
+///|
+/// Returns the current connection instance id (`0L` before auth sync).
+pub fn Client::conn_id(self : Client) -> Int64 {
+  self.conn_id
+}
+
+///|
+/// Returns the current authoritative `authGen` for `workspace` (or global `authGen` when `workspace` is empty).
+pub fn Client::auth_gen_of(self : Client, workspace? : String = "") -> Int {
+  if workspace == "" {
+    self.global_auth_gen
+  } else {
+    let w = self.workspace_auth_gen.get(workspace).unwrap_or(0)
+    if w > self.global_auth_gen { w } else { self.global_auth_gen }
+  }
+}
+
+///|
+/// Returns the current authoritative `vaultGen` for `(workspace, vault)`.
+pub fn Client::vault_gen_of(self : Client, workspace : String, vault? : String = "") -> Int {
+  let key = if vault == "" { workspace } else { workspace + "/" + vault }
+  let g = self.vault_gen.get(key).unwrap_or(0)
+  if g > self.vault_global_gen { g } else { self.vault_global_gen }
+}
+
+///|
+/// Recomputes scope-level mask watermarks from active `mask_entries`.
+fn Client::recompute_mask_watermarks(self : Client) -> Unit {
+  self.masked_global_gen = 0
+  self.masked_ws_gen.clear()
+  self.masked_ws_agg_gen = 0
+  self.masked_vault_gen.clear()
+  self.masked_vault_global_gen = 0
+  for _, entry in self.mask_entries {
+    let (scope, auth_wm, vault_wm, agg_wm) = entry
+    match scope {
+      Global =>
+        if auth_wm > self.masked_global_gen {
+          self.masked_global_gen = auth_wm
+        }
+      Workspace(ws) => {
+        if auth_wm > self.masked_ws_gen.get(ws).unwrap_or(0) {
+          self.masked_ws_gen[ws] = auth_wm
+        }
+        if agg_wm > self.masked_ws_agg_gen {
+          self.masked_ws_agg_gen = agg_wm
+        }
+      }
+      Vault(ws, v) => {
+        let key = ws + "/" + v
+        if vault_wm > self.masked_vault_gen.get(key).unwrap_or(0) {
+          self.masked_vault_gen[key] = vault_wm
+        }
+        if vault_wm > self.masked_vault_gen.get(ws).unwrap_or(0) {
+          self.masked_vault_gen[ws] = vault_wm
+        }
+      }
+      VaultWorkspace(ws) =>
+        if vault_wm > self.masked_vault_gen.get(ws).unwrap_or(0) {
+          self.masked_vault_gen[ws] = vault_wm
+        }
+      VaultAll =>
+        if vault_wm > self.masked_vault_global_gen {
+          self.masked_vault_global_gen = vault_wm
+        }
+    }
+  }
+}
+
+///|
+/// Whether `topic` at `(auth_gen, vault_gen)` is currently masked by any active scope mask
+/// (Global and Workspace masks cover ALL non-device-global topics, including vault topics).
+fn Client::is_topic_masked(self : Client, topic : Json, auth_gen : Int, vault_gen : Int) -> Bool {
+  let name = topic_name(topic)
+  if (self.device_global_policy)(name) {
+    return false
+  }
+  if self.masked_global_gen > 0 && auth_gen <= self.masked_global_gen {
+    return true
+  }
+  if name == "workspaces" || name == "lockPrompts" || name == "downloads" {
+    if self.masked_ws_agg_gen > 0 && auth_gen <= self.masked_ws_agg_gen {
+      return true
+    }
+    for _, wm in self.masked_ws_gen {
+      if wm > 0 && auth_gen <= wm {
+        return true
+      }
+    }
+  }
+  match topic_workspace(topic) {
+    Some(ws) => {
+      let wm = self.masked_ws_gen.get(ws).unwrap_or(0)
+      if wm > 0 && auth_gen <= wm {
+        return true
+      }
+    }
+    None => ()
+  }
+  let is_vault = name == "vaults" || name == "vaultItems" || name == "vaultUses"
+  if is_vault {
+    if self.masked_vault_global_gen > 0 && vault_gen <= self.masked_vault_global_gen {
+      return true
+    }
+    match (topic_workspace(topic), topic_vault(topic)) {
+      (Some(ws), Some(v)) => {
+        let k = self.masked_vault_gen.get(ws + "/" + v).unwrap_or(0)
+        if k > 0 && vault_gen <= k {
+          return true
+        }
+      }
+      (Some(ws), None) => {
+        let k = self.masked_vault_gen.get(ws).unwrap_or(0)
+        if k > 0 && vault_gen <= k {
+          return true
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+/// Control calls that trigger or manage auth/vault transitions themselves and must never be self-blocked by masks.
+fn is_control_call(name : String) -> Bool {
+  name.has_prefix("client.") ||
+  name == "auth.signOut" ||
+  name == "auth.deleteAccount" ||
+  name == "vault.lock"
+}
+
+///|
+/// Protected sensitive-return read/setup calls whose late `ok` replies must be invalidated when their
+/// scope's generation advances (`vault.setup` returns recovery words). Committed ordinary writes and
+/// non-vaultGen reads (`vault.state`/`vault.prompts`) are NOT in this set.
+fn is_protected_read_call(name : String) -> Bool {
+  name == "vault.open" ||
+  name == "vault.openItem" ||
+  name == "vault.export" ||
+  name == "vault.setup"
+}
+
+///|
+/// Whether an outgoing call is blocked by an active scope mask.
+fn Client::is_call_masked(self : Client, name : String, ws : String, vault : String, auth_gen : Int, vault_gen : Int) -> Bool {
+  if is_control_call(name) {
+    return false
+  }
+  if self.masked_global_gen > 0 && auth_gen <= self.masked_global_gen {
+    return true
+  }
+  if ws != "" {
+    let wm = self.masked_ws_gen.get(ws).unwrap_or(0)
+    if wm > 0 && auth_gen <= wm {
+      return true
+    }
+  }
+  if name.has_prefix("vault.") {
+    if self.masked_vault_global_gen > 0 && vault_gen <= self.masked_vault_global_gen {
+      return true
+    }
+    if ws != "" {
+      let key = if vault == "" { ws } else { ws + "/" + vault }
+      let vm = self.masked_vault_gen.get(key).unwrap_or(0)
+      if vm > 0 && vault_gen <= vm {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
+/// Synchronously masks and invalidates all active subs, in-flight `o.keeping`, `self.kept`, and
+/// registered listeners for `scope` (used on local account switch / `vault.lock` before next paint/input).
+/// Active subs and newly created subs remain masked against packets from the masked generation until
+/// a newer generation arrives, a Core `{ auth }` boundary advances, or the returned undo handle is called
+/// (e.g. when `auth.deleteAccount` or `auth.signOut` fails offline).
+pub fn Client::mask_scope(self : Client, scope : AuthScope) -> () -> Unit {
+  let mask_id = self.next_mask_id
+  self.next_mask_id += 1
+  let (auth_wm, vault_wm) = match scope {
+    Global => {
+      let mut m = if self.global_auth_gen > 0 { self.global_auth_gen } else { 1 }
+      if self.aggregate_auth_gen > m { m = self.aggregate_auth_gen }
+      for _, g in self.workspace_auth_gen {
+        if g > m { m = g }
+      }
+      (m, 0)
+    }
+    Workspace(ws) => {
+      let g = self.auth_gen_of(workspace=ws)
+      (if g > 0 { g } else { 1 }, 0)
+    }
+    Vault(ws, v) => {
+      let g = self.vault_gen_of(ws, vault=v)
+      (0, if g > 0 { g } else { 1 })
+    }
+    VaultWorkspace(ws) => {
+      let g = self.vault_gen_of(ws)
+      (0, if g > 0 { g } else { 1 })
+    }
+    VaultAll => {
+      let mut m = if self.vault_global_gen > 0 { self.vault_global_gen } else { 1 }
+      for _, g in self.vault_gen {
+        if g > m { m = g }
+      }
+      (0, m)
+    }
+  }
+  let agg_wm = match scope {
+    Workspace(_) => if self.aggregate_auth_gen > self.global_auth_gen { self.aggregate_auth_gen } else { self.global_auth_gen }
+    _ => 0
+  }
+  self.mask_entries[mask_id] = (scope, auth_wm, vault_wm, agg_wm)
+  self.recompute_mask_watermarks()
+  self.invalidate_scope_inner(scope, true)
+  fn() {
+    if !self.mask_entries.contains(mask_id) {
+      return
+    }
+    self.mask_entries.remove(mask_id)
+    self.recompute_mask_watermarks()
+    let subs = self.subs.values().filter(fn(s) { !s.ending }).to_array()
+    subs.sort_by_key(fn(s) { s.id })
+    for s in subs {
+      if !topic_matches_scope_with(s.topic, scope, self.device_global_policy) {
+        continue
+      }
+      let cur_a = self.current_auth_gen(s.topic)
+      let cur_v = self.current_vault_gen(s.topic)
+      if !self.is_topic_masked(s.topic, cur_a, cur_v) {
+        s.masked = false
+        s.masked_auth_gen = 0
+        s.masked_vault_gen = 0
+        self.ask(s)
+      }
+    }
+  }
+}
+
+///|
+fn Client::invalidate_scope(self : Client, scope : AuthScope) -> Unit {
+  self.invalidate_scope_inner(scope, false)
+}
+
+///|
+/// Localized `auth_stale` message provider injected by the app host (`@sf.t("core-misc.auth.stale")`).
+/// Defaults to neutral English so `core` has no dependency on `sf`.
+// kept across runs: installed once by the app host as it starts
+pub let auth_stale_message : Ref[() -> String] = Ref(fn() {
+  "Authorization or lock state changed; please retry"
+})
+
+///|
+fn auth_stale_json() -> Json {
+  {
+    "code": Json::string("auth_stale"),
+    "message": Json::string((auth_stale_message.val)()),
+  }
+}
+
+///|
+fn call_matches_scope(name : String, ws : String, vault : String, scope : AuthScope) -> Bool {
+  if name.has_prefix("client.") {
+    return false
+  }
+  match scope {
+    Global => true
+    Workspace(w) => ws != "" && ws == w
+    Vault(w, v) =>
+      name.has_prefix("vault.") && ws == w && (vault == "" || vault == v)
+    VaultWorkspace(w) => name.has_prefix("vault.") && ws == w
+    VaultAll => name.has_prefix("vault.")
+  }
+}
+
+///|
+fn Client::invalidate_scope_inner(self : Client, scope : AuthScope, mask : Bool) -> Unit {
+  let kept_drop : Array[String] = []
+  for k, entry in self.kept {
+    if topic_matches_scope_with(entry.3, scope, self.device_global_policy) {
+      kept_drop.push(k)
+    }
+  }
+  for k in kept_drop {
+    self.kept.remove(k)
+  }
+  // Invalidate ONLY pending protected plaintext read calls and streams whose scope is affected
+  // (e.g. `vault.open` after lock). NEVER fail committed write calls (`vault.lock`, `auth.signOut`,
+  // `auth.deleteAccount`, `chat.send`) on boundary — Core validates writes before execution.
+  let stale_calls : Array[Int] = []
+  for id, ctx in self.call_auth_ctx {
+    if ctx.6 && call_matches_scope(ctx.1, ctx.2, ctx.3, scope) {
+      stale_calls.push(id)
+    }
+  }
+  @signals.start_batch()
+  for id in stale_calls {
+    let was_stream = self.progress.contains(id)
+    self.call_auth_ctx.remove(id)
+    self.answer(id, Err(auth_stale_json()))
+    if was_stream {
+      (self.send)(Json::object({ "id": Json::number(id.to_double()), "cancel": Json::boolean(true) }).stringify())
+    }
+  }
+  let subs = self.subs.values().to_array()
+  for s in subs {
+    if !topic_matches_scope_with(s.topic, scope, self.device_global_policy) {
+      continue
+    }
+    if s.ending {
+      // Seal in-flight `o.keeping` / `ending` subscriptions so late messages can never write back.
+      s.keeping = false
+      s.gen_expired = true
+      s.value = None
+      s.held = None
+      s.later = None
+      self.subs.remove(s.id)
+      self.let_go(s.id, "topic " + topic_name(s.topic))
+    } else {
+      s.value = None
+      s.held = None
+      s.error = None
+      s.later = None
+      s.told = None
+      s.from = None
+      s.waiting = false
+      s.version = 0
+      s.sub_conn = self.conn_id
+      s.sub_auth_gen = self.current_auth_gen(s.topic)
+      s.sub_vault_gen = self.current_vault_gen(s.topic)
+      if mask {
+        s.masked = true
+        s.masked_auth_gen = s.sub_auth_gen
+        s.masked_vault_gen = s.sub_vault_gen
+      } else {
+        s.masked = false
+        s.masked_auth_gen = 0
+        s.masked_vault_gen = 0
+      }
+      s.changed()
+    }
+  }
+  for listener in self.auth_listeners.copy() {
+    (listener.1)(scope)
+  }
+  @signals.end_batch()
 }
 
 ///|
@@ -495,7 +1101,38 @@ fn Client::subscribe_as(self : Client, topic : String, params : Map[String, Json
       let id = self.next_id
       self.next_id += 1
       let from = self.from_of(t)
-      let s = { id, topic: t, value: None, error: None, version: 0, waiting: false, key, look, changes: @signals.signal(0), manual: false, direct, retiring: false, value_generation: self.generation, from, ending: false, keeping: false, held: None, lists: {}, told: None, later: None }
+      let cur_a = self.current_auth_gen(t)
+      let cur_v = self.current_vault_gen(t)
+      let is_masked = self.is_topic_masked(t, cur_a, cur_v)
+      let s = {
+        id,
+        topic: t,
+        value: None,
+        error: None,
+        version: 0,
+        waiting: false,
+        key,
+        look,
+        changes: @signals.signal(0),
+        manual: false,
+        direct,
+        retiring: false,
+        value_generation: self.generation,
+        from,
+        ending: false,
+        keeping: false,
+        held: None,
+        lists: {},
+        told: None,
+        later: None,
+        sub_conn: self.conn_id,
+        sub_auth_gen: cur_a,
+        sub_vault_gen: cur_v,
+        gen_expired: false,
+        masked: is_masked,
+        masked_auth_gen: if is_masked { cur_a } else { 0 },
+        masked_vault_gen: if is_masked { cur_v } else { 0 },
+      }
       self.subs[id] = s
       self.by_key[look] = s
       self.show_kept_of(s)
@@ -513,22 +1150,28 @@ fn Client::subscribe_as(self : Client, topic : String, params : Map[String, Json
 /// A subscription just made shown at once as what is kept of it (Client::show_kept): the value kept, else one of its
 /// let go of whose version the core has not said yet; nothing where neither is, or its topic is not shown so.
 fn Client::show_kept_of(self : Client, s : Sub) -> Unit {
-  guard s.from is None && (self.shows_kept)(topic_name(s.topic)) else { return }
+  let name = topic_name(s.topic)
+  guard s.from is None && !(self.sensitive_policy)(name, s.topic) && (self.shows_kept_params)(name, s.topic) else { return }
+  let cur_auth = self.current_auth_gen(s.topic)
+  let cur_vault = self.current_vault_gen(s.topic)
   let shown = match self.kept_of(s.look) {
     Some((value, _, _)) => {
-      s.held = Some(value)
-      Some(value)
+      let clean = (self.kept_sanitizer)(name, value)
+      s.held = Some(clean)
+      Some(clean)
     }
     None => {
       let mut last : Sub? = None
       for _, o in self.subs {
-        if o.keeping && o.look == s.look && o.holds() && last.map_or(true, fn(l) { l.id < o.id }) {
+        if o.keeping && !o.gen_expired && o.look == s.look && o.holds() &&
+          o.sub_conn == self.conn_id && o.sub_auth_gen == cur_auth && o.sub_vault_gen == cur_vault &&
+          last.map_or(true, fn(l) { l.id < o.id }) {
           last = Some(o)
         }
       }
       last.bind(fn(o) {
         o.catch_up()
-        o.value
+        o.value.map(fn(v) { (self.kept_sanitizer)(name, v) })
       })
     }
   }
@@ -545,10 +1188,13 @@ fn Client::show_kept_of(self : Client, s : Sub) -> Unit {
 /// Of topic `t` with a `limit` (the first rows of a list, more of them asked now), a subscription to it that has a
 /// value with other params alike but its limit: what its first value comes as what changed from.
 fn Client::from_of(self : Client, t : Json) -> Int? {
+  guard !(self.sensitive_policy)(topic_name(t), t) else { return None }
   guard t is Object(want) && want.get("limit") is Some(_) else { return None }
+  let cur_auth = self.current_auth_gen(t)
+  let cur_vault = self.current_vault_gen(t)
   let mut best : Sub? = None
   for _, s in self.subs {
-    guard !s.ending && s.value is Some(_) && s.topic is Object(has) && has.length() == want.length() else { continue }
+    guard !s.ending && !s.gen_expired && s.sub_conn == self.conn_id && s.sub_auth_gen == cur_auth && s.sub_vault_gen == cur_vault && s.value is Some(_) && s.topic is Object(has) && has.length() == want.length() else { continue }
     let alike = want.iter().all(fn(kv) { kv.0 == "limit" || has.get(kv.0) == Some(kv.1) })
     if alike && has.get("limit") is Some(_) && (best is None || best.map_or(0, fn(b) { b.id }) < s.id) {
       best = Some(s)
@@ -611,9 +1257,19 @@ fn Client::ask(self : Client, s : Sub) -> Unit {
     None => ()
   }
   // (its value kept as it was let go of: the version of it, for the core to answer `same` where it is that still)
-  match self.kept.get(s.look) {
-    Some((_, v, _)) => m["have"] = Json::string(v)
-    None => ()
+  if !(self.sensitive_policy)(topic_name(s.topic), s.topic) {
+    match self.kept.get(s.look) {
+      Some((_, v, _, _)) => m["have"] = Json::string(v)
+      None => ()
+    }
+  }
+  if self.conn_id > 0L {
+    m["conn"] = Json::number(self.conn_id.to_double())
+    m["authGen"] = Json::number(self.current_auth_gen(s.topic).to_double())
+    let name = topic_name(s.topic)
+    if name == "vaults" || name == "vaultItems" || name == "vaultUses" {
+      m["vaultGen"] = Json::number(self.current_vault_gen(s.topic).to_double())
+    }
   }
   (self.send)(Json::object(m).stringify())
 }
@@ -696,7 +1352,8 @@ fn Client::end_subscription(self : Client, s : Sub) -> Unit {
     // yet or not: what the app sends is what it means to do with it, never which came first, the core's answer or its
     // leaving (a replay, a slow core). What comes before the core's word of it is applied to it as ever; none come, none
     // kept, and it is asked again as ever)
-    if s.error is None && (self.keeps)(topic_name(s.topic), s.topic) > 0 {
+    let name = topic_name(s.topic)
+    if s.error is None && !s.gen_expired && !(self.sensitive_policy)(name, s.topic) && (self.keeps)(name, s.topic) > 0 {
       s.ending = true
       s.keeping = true
       m["keep"] = Json::boolean(true)
@@ -770,6 +1427,106 @@ fn Client::retire_if_unused(self : Client, s : Sub) -> Unit {
 }
 
 ///|
+/// Extracts `(workspace, vault, account)` target hints from call `params` for `auth` binding.
+fn call_params_target(params : Json) -> (String, String, String) {
+  let ws = match params {
+    Object(p) =>
+      match p.get("workspace") {
+        Some(String(w)) if w.length() > 0 => w
+        _ =>
+          match p.get("scope") {
+            Some(String(s)) if s.length() > 0 => s
+            _ =>
+              match p.get("station") {
+                Some(String(st)) if st.length() > 0 =>
+                  match st.find("/") {
+                    Some(i) => st[:i].to_owned()
+                    None => st
+                  }
+                _ =>
+                  match p.get("key") {
+                    Some(String(k)) if k.has_prefix("new:") && k.length() > 4 => k[4:].to_owned()
+                    Some(String(k)) if k.contains("/") =>
+                      match k.find("/") {
+                        Some(i) => k[:i].to_owned()
+                        None => ""
+                      }
+                    _ => ""
+                  }
+              }
+          }
+      }
+    _ => ""
+  }
+  let vault = match params {
+    Object(p) =>
+      match p.get("vault") {
+        Some(String(v)) if v.length() > 0 => v
+        _ => ""
+      }
+    _ => ""
+  }
+  let account = match params {
+    Object(p) =>
+      match p.get("account") {
+        Some(String(a)) if a.length() > 0 => a
+        _ => ""
+      }
+    _ => ""
+  }
+  (ws, vault, account)
+}
+
+///|
+/// Attaches `{ conn, workspace?, account?, vault?, authGen, vaultGen? }` to every non-`client.*` RPC
+/// on a handshaked connection (`conn_id > 0`), eliminating any hardcoded write-RPC allowlist drift.
+fn Client::build_call_auth(self : Client, name : String, params : Json) -> (Json?, String, String, Int, Int) {
+  if self.conn_id <= 0L || name.has_prefix("client.") {
+    return (None, "", "", 0, 0)
+  }
+  let (raw_ws, vault, account) = call_params_target(params)
+  let ws = if raw_ws != "" {
+    raw_ws
+  } else {
+    match params {
+      Object(o) =>
+        match o.get("view") {
+          Some(String(v)) =>
+            match self.view_workspaces.get(v) {
+              Some((w, _)) => w
+              None => ""
+            }
+          _ => ""
+        }
+      _ => ""
+    }
+  }
+  let auth_gen = self.auth_gen_of(workspace=ws)
+  let vault_gen = if name.has_prefix("vault.") && name != "vault.lock" {
+    self.vault_gen_of(ws, vault~)
+  } else {
+    0
+  }
+  let auth : Map[String, Json] = {
+    "conn": Json::number(self.conn_id.to_double()),
+    "authGen": Json::number(auth_gen.to_double()),
+  }
+  if ws != "" {
+    auth["workspace"] = Json::string(ws)
+  }
+  if account != "" {
+    auth["account"] = Json::string(account)
+  }
+  if vault != "" {
+    auth["vault"] = Json::string(vault)
+  }
+  if name.has_prefix("vault.") && name != "vault.lock" {
+    auth["vaultGen"] = Json::number(vault_gen.to_double())
+  }
+  (Some(Json::object(auth)), ws, vault, auth_gen, vault_gen)
+}
+
+///|
 /// Calls `name` with `params`; `on_done` gets its answer (`ok`) or the core's error (`{code, message, status?}`).
 /// Returns the call's id. A value the call sends before its answer (how far it has got) is passed on only to a
 /// `stream`'s `on_value`.
@@ -834,6 +1591,53 @@ pub fn Client::call(
     "id": Json::number(id.to_double()),
     "call": Json::string(name),
     "params": params,
+  }
+  let (call_auth, call_ws, call_vault, call_auth_gen, call_vault_gen) = self.build_call_auth(name, params)
+  let (raw_ws, eff_vault, _) = call_params_target(params)
+  let eff_ws = if raw_ws != "" {
+    raw_ws
+  } else {
+    match params {
+      Object(o) =>
+        match o.get("view") {
+          Some(String(v)) =>
+            match self.view_workspaces.get(v) {
+              Some((w, _)) => w
+              None => ""
+            }
+          _ => ""
+        }
+      _ => ""
+    }
+  }
+  let eff_auth_gen = if call_auth is Some(_) && eff_ws != "" { call_auth_gen } else { self.auth_gen_of(workspace=eff_ws) }
+  let eff_vault_gen = if call_auth is Some(_) { call_vault_gen } else if name.has_prefix("vault.") { self.vault_gen_of(eff_ws, vault=eff_vault) } else { 0 }
+  if self.is_call_masked(name, eff_ws, eff_vault, eff_auth_gen, eff_vault_gen) {
+    self.answer(id, Err(auth_stale_json()))
+    return id
+  }
+  if name == "terminal.view" || name == "screen.view" || name == "farview.view" {
+    match params {
+      Object(o) =>
+        match (o.get("view"), eff_ws) {
+          (Some(String(v)), ws) if v != "" && ws != "" => {
+            self.view_workspaces[v] = (ws, id)
+            self.call_view[id] = v
+          }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  let is_read_or_stream = is_protected_read_call(name) || self.progress.contains(id)
+  match call_auth {
+    Some(auth) => {
+      m["auth"] = auth
+      if on_done is Some(_) || is_read_or_stream {
+        self.call_auth_ctx[id] = (self.conn_id, name, if call_ws != "" { call_ws } else { eff_ws }, call_vault, eff_auth_gen, call_vault_gen, is_read_or_stream)
+      }
+    }
+    None => ()
   }
   match bytes {
     Some(b) => (self.send_bytes)(Json::object(m).stringify(), b)
@@ -913,6 +1717,17 @@ pub fn Client::cancel(self : Client, id : Int) -> Unit {
     self.progress.remove(id)
     self.quiet_calls.remove(id)
     self.calls.remove(id)
+    self.call_auth_ctx.remove(id)
+    match self.call_view.get(id) {
+      Some(v) => {
+        self.call_view.remove(id)
+        match self.view_workspaces.get(v) {
+          Some((_, owner_id)) if owner_id == id => self.view_workspaces.remove(v)
+          _ => ()
+        }
+      }
+      None => ()
+    }
     self.let_go(id, "call " + self.perf_calls.get(id).unwrap_or("?"))
     self.perf_calls.remove(id)
     self.end_call_wait(id)
@@ -928,7 +1743,7 @@ pub fn Client::cancel(self : Client, id : Int) -> Unit {
 /// what it does (@ui.on_message_said). (A chat opened was built twice for its first values, taken by the frame: the
 /// frame it was opened in again, or the next whole, 2026-10-30.)
 pub fn Client::topic_said(self : Client, m : Map[String, Json]) -> Bool {
-  if m.contains("fatal") {
+  if m.contains("fatal") || m.contains("auth") {
     return false
   }
   let id = match m.get("id") {
@@ -996,7 +1811,7 @@ pub fn Client::said(self : Client, name : String) -> Unit {
 /// it) or of one whose answer changes only signals (Client::said),
 /// so it may be taken as it comes, before the frame decides what it does (@ui.on_message_said).
 pub fn Client::call_said(self : Client, m : Map[String, Json]) -> Bool {
-  if m.contains("fatal") {
+  if m.contains("fatal") || m.contains("auth") {
     return false
   }
   let id = match m.get("id") {
@@ -1125,6 +1940,16 @@ pub fn Client::later(self : Client, text : String) -> Bool {
 /// Client::later's, of a message whose head said its id and whether it is a whole value.
 fn Client::later_at(self : Client, id : Int, whole : Bool, text : String) -> Bool {
   guard self.subs.get(id) is Some(s) && s.ending else { return false }
+  if s.gen_expired || self.awaiting_auth_sync {
+    return true
+  }
+  if self.conn_id > 0L {
+    let parsed = @json.parse(text) catch { _ => Json::null() }
+    match parsed {
+      Object(m) => if self.msg_stale_for(m, s) { return true }
+      _ => ()
+    }
+  }
   if !s.keeping && !self.subs.values().any(fn(o) { o.from == Some(id) }) {
     return true
   }
@@ -1154,7 +1979,7 @@ fn Client::later_at(self : Client, id : Int, whole : Bool, text : String) -> Boo
 /// What is kept of the subscription looked up by `look` (Client::keep), its value read: None where none is, or what is
 /// kept read as nothing (forgotten then).
 fn Client::kept_of(self : Client, look : String) -> (Json, String, String)? {
-  guard self.kept.get(look) is Some((l, v, name)) else { return None }
+  guard self.kept.get(look) is Some((l, v, name, _)) else { return None }
   match l.now() {
     Some(value) => Some((value, v, name))
     None => {
@@ -1242,8 +2067,395 @@ pub fn Client::receive_json(
 }
 
 ///|
+fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
+  let conn = match auth.get("conn") {
+    Some(Number(d, ..)) => d.to_int64()
+    _ => return
+  }
+  let was_restarting = self.awaiting_auth_sync
+  if was_restarting {
+    // During restart, ignore incremental boundary messages or stale/same-conn snapshots from the old Core;
+    // only accept a strictly newer Core's complete `{ auth }` snapshot (`conn > min_restart_conn`, with
+    // `scopes` and `vaults`) and replace all generation state wholesale.
+    guard auth.contains("scopes") && auth.contains("vaults") && conn > self.min_restart_conn else { return }
+    let global = match auth.get("global") {
+      Some(Number(d, ..)) => d.to_int()
+      _ => 1
+    }
+    let agg = match auth.get("aggregate") {
+      Some(Number(d, ..)) => d.to_int()
+      _ => global
+    }
+    let vault_global = match auth.get("vaultGlobal") {
+      Some(Number(d, ..)) => d.to_int()
+      _ => 1
+    }
+    self.conn_id = conn
+    self.min_restart_conn = 0L
+    self.global_auth_gen = global
+    self.aggregate_auth_gen = if agg > global { agg } else { global }
+    self.vault_global_gen = vault_global
+    self.workspace_auth_gen.clear()
+    self.vault_gen.clear()
+    self.mask_entries.clear()
+    self.recompute_mask_watermarks()
+    match auth.get("scopes") {
+      Some(Object(scopes)) =>
+        for ws, val in scopes {
+          match val {
+            Number(d, ..) => self.workspace_auth_gen[ws] = d.to_int()
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+    match auth.get("vaults") {
+      Some(Object(vaults)) =>
+        for k, val in vaults {
+          match val {
+            Number(d, ..) => self.vault_gen[k] = d.to_int()
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+    self.awaiting_auth_sync = false
+    self.invalidate_scope(Global)
+    self.reask_after_restart()
+    return
+  }
+  // Monotonic non-regression guard: ignore late/reordered auth messages from older connections.
+  if conn < self.conn_id {
+    return
+  }
+  let first_handshake = self.conn_id == 0L
+  if conn > self.conn_id {
+    self.conn_id = conn
+  }
+  match auth.get("aggregate") {
+    Some(Number(d, ..)) => {
+      let ag = d.to_int()
+      if ag > self.aggregate_auth_gen {
+        self.aggregate_auth_gen = ag
+      }
+    }
+    _ => ()
+  }
+  let global = match auth.get("global") {
+    Some(Number(d, ..)) => d.to_int()
+    _ => 0
+  }
+  let mut global_bumped = false
+  if global > self.global_auth_gen {
+    self.global_auth_gen = global
+    global_bumped = true
+    if global > self.masked_global_gen {
+      self.masked_global_gen = 0
+    }
+    if !first_handshake {
+      self.invalidate_scope(Global)
+    }
+  }
+  match auth.get("vaultGlobal") {
+    Some(Number(d, ..)) => {
+      let vg = d.to_int()
+      if vg > self.vault_global_gen {
+        self.vault_global_gen = vg
+        if vg > self.masked_vault_global_gen {
+          self.masked_vault_global_gen = 0
+        }
+        if !first_handshake {
+          self.invalidate_scope(VaultAll)
+        }
+      }
+    }
+    _ => ()
+  }
+  match auth.get("vaultAll") {
+    Some(True) => {
+      let vg = match auth.get("vaultGen") {
+        Some(Number(d, ..)) => d.to_int()
+        _ => self.vault_global_gen + 1
+      }
+      if vg > self.vault_global_gen {
+        self.vault_global_gen = vg
+        if vg > self.masked_vault_global_gen {
+          self.masked_vault_global_gen = 0
+        }
+        self.masked_vault_gen.clear()
+        self.invalidate_scope(VaultAll)
+      }
+      return
+    }
+    _ => ()
+  }
+  match (auth.get("workspace"), auth.get("vault"), auth.get("vaultGen")) {
+    (Some(String(ws)), Some(String(v)), Some(Number(d, ..))) => {
+      let vg = d.to_int()
+      let key = ws + "/" + v
+      let prev = self.vault_gen.get(key).unwrap_or(0)
+      if vg > prev {
+        self.vault_gen[key] = vg
+        if vg > self.masked_vault_gen.get(key).unwrap_or(0) {
+          self.masked_vault_gen.remove(key)
+        }
+        let prev_ws = self.vault_gen.get(ws).unwrap_or(0)
+        if vg > prev_ws {
+          self.vault_gen[ws] = vg
+          if vg > self.masked_vault_gen.get(ws).unwrap_or(0) {
+            self.masked_vault_gen.remove(ws)
+          }
+        }
+        if !first_handshake {
+          self.invalidate_scope(Vault(ws, v))
+        }
+        match auth.get("dependentWorkspaces") {
+          Some(Array(deps)) =>
+            for dep in deps {
+              match dep {
+                String(dep_ws) => {
+                  let prev_dep = self.vault_gen.get(dep_ws).unwrap_or(0)
+                  if vg > prev_dep {
+                    self.vault_gen[dep_ws] = vg
+                    if vg > self.masked_vault_gen.get(dep_ws).unwrap_or(0) {
+                      self.masked_vault_gen.remove(dep_ws)
+                    }
+                  }
+                  if !first_handshake {
+                    self.invalidate_scope(VaultWorkspace(dep_ws))
+                  }
+                }
+                _ => ()
+              }
+            }
+          _ => ()
+        }
+      }
+      return
+    }
+    _ => ()
+  }
+  match (auth.get("workspace"), auth.get("authGen")) {
+    (Some(String(ws)), Some(Number(d, ..))) => {
+      let ag = d.to_int()
+      let prev = self.workspace_auth_gen.get(ws).unwrap_or(0)
+      let ws_advanced = ag > prev
+      if ws_advanced {
+        self.workspace_auth_gen[ws] = ag
+        if ag > self.masked_ws_gen.get(ws).unwrap_or(0) {
+          self.masked_ws_gen.remove(ws)
+        }
+        if !first_handshake {
+          self.invalidate_scope(Workspace(ws))
+        }
+      }
+      // Merge cross-workspace `dependentVaultGens` independently of `ag > prev` so out-of-order
+      // updates still advance each dependent workspace's own vault watermark.
+      match auth.get("dependentVaultGens") {
+        Some(Object(dep_vgs)) =>
+          for dep_ws, val in dep_vgs {
+            match val {
+              Number(dvg, ..) => {
+                let vg = dvg.to_int()
+                let prev_dep = self.vault_gen.get(dep_ws).unwrap_or(0)
+                if vg > prev_dep {
+                  self.vault_gen[dep_ws] = vg
+                  if !first_handshake {
+                    self.invalidate_scope(VaultWorkspace(dep_ws))
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+        _ =>
+          if ws_advanced && !first_handshake {
+            match auth.get("dependentWorkspaces") {
+              Some(Array(deps)) =>
+                for dep in deps {
+                  match dep {
+                    String(dep_ws) => self.invalidate_scope(VaultWorkspace(dep_ws))
+                    _ => ()
+                  }
+                }
+              _ => ()
+            }
+          }
+      }
+      return
+    }
+    _ => ()
+  }
+  match auth.get("scopes") {
+    Some(Object(scopes)) =>
+      for ws, val in scopes {
+        match val {
+          Number(d, ..) => {
+            let ag = d.to_int()
+            let prev = self.workspace_auth_gen.get(ws).unwrap_or(0)
+            if ag > prev {
+              self.workspace_auth_gen[ws] = ag
+              if ag > self.masked_ws_gen.get(ws).unwrap_or(0) {
+                self.masked_ws_gen.remove(ws)
+              }
+              if !first_handshake && !global_bumped {
+                self.invalidate_scope(Workspace(ws))
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    _ => ()
+  }
+  match auth.get("vaults") {
+    Some(Object(vaults)) =>
+      for k, val in vaults {
+        match val {
+          Number(d, ..) => {
+            let vg = d.to_int()
+            let prev = self.vault_gen.get(k).unwrap_or(0)
+            if vg > prev {
+              self.vault_gen[k] = vg
+              if vg > self.masked_vault_gen.get(k).unwrap_or(0) {
+                self.masked_vault_gen.remove(k)
+              }
+              if !first_handshake {
+                match k.find("/") {
+                  Some(i) => self.invalidate_scope(Vault(k[:i].to_owned(), k[i + 1:].to_owned()))
+                  None => self.invalidate_scope(VaultWorkspace(k))
+                }
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    _ => ()
+  }
+  if first_handshake {
+    // First handshake records baseline connection/generations; for any non-device-global sub that already
+    // holds a non-kept (`version != -2`) pre-handshake value, clear and re-ask it under the authoritative
+    // `conn_id` rather than silently stamping untrusted pre-handshake data as belonging to this connection.
+    for _, s in self.subs {
+      if !s.ending {
+        s.sub_conn = self.conn_id
+        s.sub_auth_gen = self.current_auth_gen(s.topic)
+        s.sub_vault_gen = self.current_vault_gen(s.topic)
+        let name = topic_name(s.topic)
+        if !(self.device_global_policy)(name) && s.value is Some(_) && !(name == "draft" && s.version == -2) {
+          s.value = None
+          s.held = None
+          s.told = None
+          s.later = None
+          s.version = 0
+          s.changed()
+          self.ask(s)
+        }
+      }
+    }
+    for entry in self.auth_listeners.copy() {
+      (entry.1)(Global)
+    }
+  }
+}
+
+///|
+fn Client::reask_after_restart(self : Client) -> Unit {
+  let subs = self.subs.values().filter(fn(s) { !s.ending }).to_array()
+  subs.sort_by_key(fn(s) { s.id })
+  for s in subs {
+    s.sub_conn = self.conn_id
+    s.sub_auth_gen = self.current_auth_gen(s.topic)
+    s.sub_vault_gen = self.current_vault_gen(s.topic)
+    self.ask(s)
+  }
+}
+
+///|
+fn Client::msg_stale_for(self : Client, m : Map[String, Json], s : Sub) -> Bool {
+  if s.gen_expired || self.awaiting_auth_sync {
+    return true
+  }
+  let name = topic_name(s.topic)
+  let is_device = (self.device_global_policy)(name)
+  let is_vault = name == "vaults" || name == "vaultItems" || name == "vaultUses"
+  if self.conn_id > 0L {
+    match m.get("conn") {
+      Some(Number(d, ..)) if d.to_int64() == self.conn_id => ()
+      _ => return true
+    }
+    let mut ag = 0
+    if !is_device {
+      let cur = self.current_auth_gen(s.topic)
+      match m.get("authGen") {
+        Some(Number(d, ..)) => {
+          ag = d.to_int()
+          if cur > 0 && ag < cur {
+            return true
+          }
+          if !is_vault && s.masked && ag <= s.masked_auth_gen {
+            return true
+          }
+        }
+        _ => return true
+      }
+    }
+    let mut vg = 0
+    if is_vault {
+      let cur = self.current_vault_gen(s.topic)
+      match m.get("vaultGen") {
+        Some(Number(d, ..)) => {
+          vg = d.to_int()
+          if cur > 0 && vg < cur {
+            return true
+          }
+          if s.masked && vg <= s.masked_vault_gen {
+            return true
+          }
+        }
+        _ => return true
+      }
+    }
+    if !is_device && self.is_topic_masked(s.topic, ag, vg) {
+      return true
+    }
+  } else {
+    if !is_device && self.is_topic_masked(s.topic, self.current_auth_gen(s.topic), self.current_vault_gen(s.topic)) {
+      return true
+    }
+    match m.get("authGen") {
+      Some(Number(d, ..)) => {
+        let cur = self.current_auth_gen(s.topic)
+        if cur > 0 && d.to_int() < cur {
+          return true
+        }
+      }
+      _ => ()
+    }
+    match m.get("vaultGen") {
+      Some(Number(d, ..)) => {
+        let cur = self.current_vault_gen(s.topic)
+        if cur > 0 && d.to_int() < cur {
+          return true
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 fn Client::take(self : Client, msg : Json) -> Unit {
   guard msg is Object(m) else { return }
+  match m.get("auth") {
+    Some(Object(auth)) => {
+      self.take_auth(auth)
+      return
+    }
+    _ => ()
+  }
   match m.get("fatal") {
     Some(reason) => {
       self.fatal = Some(
@@ -1286,6 +2498,14 @@ fn Client::take(self : Client, msg : Json) -> Unit {
   }
   match self.subs.get(id) {
     Some(s) if s.ending => {
+      // Drop any late/reordered message belonging to an expired or superseded generation.
+      if self.msg_stale_for(m, s) {
+        if m.contains("v") {
+          self.subs.remove(id)
+          self.let_go(id, "topic " + topic_name(s.topic))
+        }
+        return
+      }
       // (let go of keeping its value: the core's last word of it, the version of what it holds now, kept unread)
       if s.keeping && m.get("v") is Some(said) {
         self.subs.remove(id)
@@ -1312,6 +2532,22 @@ fn Client::take(self : Client, msg : Json) -> Unit {
       s.version = if s.version <= 0 { 1 } else { s.version + 1 }
     }
     Some(s) => {
+      if self.msg_stale_for(m, s) {
+        return
+      }
+      s.masked = false
+      match m.get("conn") {
+        Some(Number(d, ..)) => s.sub_conn = d.to_int64()
+        _ => ()
+      }
+      match m.get("authGen") {
+        Some(Number(d, ..)) => s.sub_auth_gen = d.to_int()
+        _ => ()
+      }
+      match m.get("vaultGen") {
+        Some(Number(d, ..)) => s.sub_vault_gen = d.to_int()
+        _ => ()
+      }
       // (taken whole unless it is a delta to the value it holds: what its keyed lists take)
       s.told = None
       if m.get("waiting") is Some(True) && s.value is None && s.error is None {
@@ -1432,13 +2668,120 @@ fn Client::take(self : Client, msg : Json) -> Unit {
     None =>
       // A call's answer; a value before it says how it goes (to a `stream`'s `on_value`)
       match (m.get("ok"), m.get("error"), m.get("value")) {
-        (Some(ok), _, _) => self.answer(id, Ok(ok))
+        (Some(ok), _, _) => {
+          let mut stale = false
+          match self.call_auth_ctx.get(id) {
+            Some((c_conn, c_name, c_ws, c_vault, c_auth_gen, c_vault_gen, is_read_or_stream)) if is_read_or_stream => {
+              // Enforce strict generation match (and reject missing wire gen fields) ONLY for protected
+              // plaintext reads & streams. Committed writes (`vault.lock`, `auth.signOut`, `chat.send`)
+              // are validated by Core before execution and must never be falsely turned into `auth_stale`.
+              if self.awaiting_auth_sync {
+                stale = true
+              }
+              if self.conn_id > 0L && c_conn != self.conn_id {
+                stale = true
+              }
+              let cur_auth = self.auth_gen_of(workspace=c_ws)
+              if cur_auth > 0 && c_auth_gen < cur_auth {
+                stale = true
+              }
+              let is_vault_read = c_name.has_prefix("vault.") && c_name != "vault.lock"
+              let cur_vault = if is_vault_read { self.vault_gen_of(c_ws, vault=c_vault) } else { 0 }
+              if is_vault_read && cur_vault > 0 && c_vault_gen < cur_vault {
+                stale = true
+              }
+              if self.conn_id > 0L {
+                match m.get("conn") {
+                  Some(Number(d, ..)) if d.to_int64() == self.conn_id => ()
+                  _ => stale = true
+                }
+                let mut wire_ag = c_auth_gen
+                match m.get("authGen") {
+                  Some(Number(d, ..)) => {
+                    wire_ag = d.to_int()
+                    if cur_auth > 0 && wire_ag < cur_auth {
+                      stale = true
+                    }
+                  }
+                  _ => stale = true
+                }
+                let mut wire_vg = c_vault_gen
+                if is_vault_read {
+                  match m.get("vaultGen") {
+                    Some(Number(d, ..)) => {
+                      wire_vg = d.to_int()
+                      if cur_vault > 0 && wire_vg < cur_vault {
+                        stale = true
+                      }
+                    }
+                    _ => stale = true
+                  }
+                }
+                if self.is_call_masked(c_name, c_ws, c_vault, wire_ag, wire_vg) {
+                  stale = true
+                }
+              }
+            }
+            _ => ()
+          }
+          if stale {
+            self.answer(id, Err(auth_stale_json()))
+          } else {
+            self.answer(id, Ok(ok))
+          }
+        }
         (None, Some(e), _) => self.answer(id, Err(e))
         (None, None, Some(v)) =>
           match self.progress.get(id) {
             Some(f) => {
-              self.version += 1
-              f(v, self.beside)
+              let mut stale = self.awaiting_auth_sync
+              match self.call_auth_ctx.get(id) {
+                Some((c_conn, c_name, c_ws, c_vault, c_auth_gen, c_vault_gen, _)) if self.conn_id > 0L => {
+                  if c_conn != self.conn_id {
+                    stale = true
+                  }
+                  let cur_auth = self.auth_gen_of(workspace=c_ws)
+                  match m.get("conn") {
+                    Some(Number(d, ..)) if d.to_int64() == self.conn_id => ()
+                    _ => stale = true
+                  }
+                  let mut wire_ag = c_auth_gen
+                  match m.get("authGen") {
+                    Some(Number(d, ..)) => {
+                      wire_ag = d.to_int()
+                      if cur_auth > 0 && wire_ag != cur_auth {
+                        stale = true
+                      }
+                    }
+                    _ => stale = true
+                  }
+                  let is_vault = c_name.has_prefix("vault.") && c_name != "vault.lock"
+                  let mut wire_vg = c_vault_gen
+                  if is_vault {
+                    let cur_vault = self.vault_gen_of(c_ws, vault=c_vault)
+                    match m.get("vaultGen") {
+                      Some(Number(d, ..)) => {
+                        wire_vg = d.to_int()
+                        if cur_vault > 0 && wire_vg != cur_vault {
+                          stale = true
+                        }
+                      }
+                      _ => stale = true
+                    }
+                  }
+                  if self.is_call_masked(c_name, c_ws, c_vault, wire_ag, wire_vg) {
+                    stale = true
+                  }
+                }
+                _ => ()
+              }
+              if stale {
+                self.answer(id, Err(auth_stale_json()))
+                (self.send)(Json::object({ "id": Json::number(id.to_double()), "cancel": Json::boolean(true) }).stringify())
+              } else {
+                self.version += 1
+                f(v, self.beside)
+              }
             }
             None => ()
           }
@@ -1497,6 +2840,20 @@ pub fn Client::perf_forget(self : Client) -> Unit {
 
 ///|
 fn Client::answer(self : Client, id : Int, r : Result[Json, Json]) -> Unit {
+  self.call_auth_ctx.remove(id)
+  match self.call_view.get(id) {
+    Some(v) => {
+      self.call_view.remove(id)
+      match self.view_workspaces.get(v) {
+        Some((ws, owner_id)) if owner_id == id =>
+          if self.masked_global_gen == 0 && self.masked_ws_gen.get(ws).unwrap_or(0) == 0 {
+            self.view_workspaces.remove(v)
+          }
+        _ => ()
+      }
+    }
+    None => ()
+  }
   self.unread_calls.remove(id)
   self.said_calls.remove(id)
   match self.echo_waits.get(id) {
@@ -1526,6 +2883,7 @@ pub fn Client::restarted(self : Client) -> Unit {
   let calls = self.calls.to_array()
   calls.sort_by_key(fn(c) { c.0 })
   self.calls.clear()
+  self.call_auth_ctx.clear()
   self.progress.clear()
   self.quiet_calls.clear()
   self.unread_calls.clear()
@@ -1540,15 +2898,48 @@ pub fn Client::restarted(self : Client) -> Unit {
     self.end_call_wait(c.0)
     (c.1)(Err(err))
   }
-  // (a new core has none of them: those let go of are gone, each asked whole)
+  // (a new core has none of them: those let go of are sealed and gone, each asked whole)
   for s in self.subs.values().filter(fn(s) { s.ending }).to_array() {
+    s.keeping = false
+    s.gen_expired = true
+    s.value = None
+    s.held = None
+    s.later = None
     self.subs.remove(s.id)
+  }
+  if self.conn_id > 0L {
+    self.min_restart_conn = self.conn_id
+    self.kept.clear()
+    self.mask_entries.clear()
+    self.recompute_mask_watermarks()
+    self.awaiting_auth_sync = true
+    for pair in self.auth_listeners.copy() {
+      (pair.1)(Global)
+    }
   }
   let subs = self.subs.values().to_array()
   subs.sort_by_key(fn(s) { s.id })
   for s in subs {
     s.from = None
-    self.ask(s)
+    s.held = None
+    let name = topic_name(s.topic)
+    // On an auth-synced restart, immediately clear ALL non-device-global active subs (not only sensitive/vault)
+    // so stale values never remain on screen while awaiting the new Core's full `{ auth }` snapshot.
+    if (self.awaiting_auth_sync && !(self.device_global_policy)(name)) ||
+      (self.sensitive_policy)(name, s.topic) ||
+      topic_matches_scope_with(s.topic, VaultAll, self.device_global_policy) {
+      s.value = None
+      s.error = None
+      s.later = None
+      s.told = None
+      s.version = 0
+      s.changed()
+    }
+    // When auth-synced, wait for the new Core's authoritative `{ auth }` snapshot before re-asking
+    // so cross-generation subs are reconciled and never blindly re-subscribed with stale values.
+    if !self.awaiting_auth_sync {
+      self.ask(s)
+    }
   }
   match self.reports {
     Some(p) => self.call("client.reports", params=p) |> ignore
@@ -1568,10 +2959,13 @@ pub fn Client::restarted(self : Client) -> Unit {
 /// answers. As the one signed in changes (sfcore's accounts_told): what one person was shown is never shown to another.
 pub fn Client::forget_kept(self : Client) -> Unit {
   self.kept.clear()
-  // (those let go of whose version the core has not said yet keep nothing either)
+  // (those let go of whose version the core has not said yet keep nothing either; seal o.keeping)
   for _, s in self.subs {
     if s.keeping {
+      s.keeping = false
+      s.gen_expired = true
       s.value = None
+      s.held = None
       s.later = None
     }
   }
@@ -1594,6 +2988,7 @@ pub fn Client::reset(self : Client) -> Unit {
   self.subs.clear()
   self.by_key.clear()
   self.calls.clear()
+  self.call_auth_ctx.clear()
   self.progress.clear()
   self.quiet_calls.clear()
   self.unread_calls.clear()
@@ -1605,6 +3000,20 @@ pub fn Client::reset(self : Client) -> Unit {
   self.focus_chat = None
   self.reports = None
   self.kept.clear()
+  self.conn_id = 0L
+  self.min_restart_conn = 0L
+  self.global_auth_gen = 0
+  self.aggregate_auth_gen = 1
+  self.workspace_auth_gen.clear()
+  self.vault_gen.clear()
+  self.vault_global_gen = 0
+  self.awaiting_auth_sync = false
+  self.mask_entries.clear()
+  self.next_mask_id = 1
+  self.view_workspaces.clear()
+  self.call_view.clear()
+  self.recompute_mask_watermarks()
+  self.call_auth_ctx.clear()
   self.next_id = 1
   self.beside = None
   self.version = 0
@@ -1663,8 +3072,19 @@ pub let restarted_text : Ref[String] = { val: "The core restarted; try again" }
 /// oldest of its topic's name forgotten past what `keeps` says of it, the oldest of all past `kept_most`.
 fn Client::keep_value(self : Client, s : Sub, value : Later, v : String) -> Unit {
   let name = topic_name(s.topic)
+  if s.gen_expired || (self.sensitive_policy)(name, s.topic) {
+    return
+  }
+  let stored : Later = if name == "profiles" || name == "station" || name == "stationPart" {
+    match value.now() {
+      Some(j) => { base: Some((self.kept_sanitizer)(name, j)), raw: [], whole: false }
+      None => return
+    }
+  } else {
+    value
+  }
   self.kept.remove(s.look)
-  self.kept[s.look] = (value, v, name)
+  self.kept[s.look] = (stored, v, name, s.topic)
   let most = (self.keeps)(name, s.topic)
   let of_name = self.kept.iter().filter(fn(kv) { kv.1.2 == name }).map(fn(kv) { kv.0 }).collect()
   for i in 0..<(of_name.length() - most) {
