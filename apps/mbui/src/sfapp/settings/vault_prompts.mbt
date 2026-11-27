@@ -39,7 +39,13 @@ pub fn vault_prompts(core : Core, free : Bool) -> Unit {
   if prompts is Some(_) {
     key_asks_closed.retain(fn(d) { asks.iter().any(fn(r) { key_ask_of(r) == d }) })
   }
-  let waiting = asks.iter().find_first(fn(r) { !key_asks_closed.contains(key_ask_of(r)) })
+  let mut waiting : Json? = None
+  for r in asks {
+    if !key_asks_closed.contains(key_ask_of(r)) {
+      waiting = Some(r)
+      break
+    }
+  }
   match waiting {
     Some(r) if free && !@sf.presenting() => key_ask_sheet(core, r)
     _ => ()

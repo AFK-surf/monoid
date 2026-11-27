@@ -984,7 +984,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     tb[3 * MB_INST + 4] = 22.5; tb[3 * MB_INST + 6] = 1.0; tb[3 * MB_INST + 7] = -64.0;
     tb[3 * MB_INST + 12] = 1.0; tb[3 * MB_INST + 13] = 9.0; tb[3 * MB_INST + 15] = 1.0; tb[3 * MB_INST + 21] = 9.0;
     uint8_t *px_icon = render_rgba_pixels_of(tb, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
-    fill_p0_rect(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
+    fill_p0_rect(tb + MB_INST, 132.4, 35.0, 1.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
     fill_p0_rect(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, 0.0, -566.0);
     tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
     tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0; tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0;
@@ -1001,34 +1001,76 @@ static void test_v8_v9_droplet_roi_gates(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      uint8_t *c_mid = W_PX(px_lip, AW3, 400, 120);
-      int lip_delta = abs((int)c_mid[0] - (int)a_mid[0]) + abs((int)c_mid[1] - (int)a_mid[1]);
+      uint8_t *a_lip = W_PX(px_empty, AW3, 403, 120);
+      uint8_t *c_lip = W_PX(px_lip, AW3, 403, 120);
+      int lip_delta = abs((int)c_lip[0] - (int)a_lip[0]) + abs((int)c_lip[1] - (int)a_lip[1]);
       printf("win_gpu: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
-      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
+      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 80);
     }
     free(px_empty);
     free(px_icon);
     free(px_lip);
   }
 
-  // V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt
+  // V9g: Role 4 Tab strictly monotonic (empty vs bar A/B diff across d=0..4.0pt, px_x=96..108)
   {
     double tg[3 * MB_INST];
     fill_p0_rect(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
-    fill_p0_rect(tg + MB_INST, 41.5, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 1.0, 0);
+    fill_p0_rect(tg + MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, 0.0, -5650.0);
+    tg[MB_INST + 4] = 31.75; tg[MB_INST + 6] = 1.0; tg[MB_INST + 7] = -64.0;
+    tg[MB_INST + 12] = 1.0; tg[MB_INST + 13] = 9.0; tg[MB_INST + 15] = 1.0; tg[MB_INST + 21] = 9.0;
+    uint8_t *pxg_empty = render_rgba_pixels_of(tg, 2, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    fill_p0_rect(tg + MB_INST, 37.5, 8.0, 1.5, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 1.0, 0);
     fill_p0_rect(tg + 2 * MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, 0.0, -565.0);
     tg[2 * MB_INST + 4] = 31.75; tg[2 * MB_INST + 6] = 1.0; tg[2 * MB_INST + 7] = -64.0;
     tg[2 * MB_INST + 12] = 1.0; tg[2 * MB_INST + 13] = 9.0; tg[2 * MB_INST + 15] = 1.0; tg[2 * MB_INST + 21] = 9.0;
-    uint8_t *pxg = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
-    CHECK(pxg != NULL);
-    if (pxg) {
-      uint8_t *co = W_PX(pxg, AW3, 127, 120);
+    uint8_t *pxg_bar = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(pxg_empty != NULL && pxg_bar != NULL);
+    if (pxg_empty && pxg_bar) {
+      uint8_t *co = W_PX(pxg_bar, AW3, 117, 120);
       double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
-      uint8_t *cb = W_PX(pxg, AW3, 114, 120);
-      double l_clean = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
-      printf("win_gpu: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
-      CHECK(l_bar < 130.0 && l_clean > 220.0);
-      free(pxg);
+      double ghost_diff = 0.0;
+      double l_clean = 255.0;
+      for (int px_x = 96; px_x <= 108; px_x++) {
+        uint8_t *ce = W_PX(pxg_empty, AW3, px_x, 120);
+        uint8_t *cb = W_PX(pxg_bar, AW3, px_x, 120);
+        double le = 0.2126 * ce[0] + 0.7152 * ce[1] + 0.0722 * ce[2];
+        double lb = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+        double gd = fabs(lb - le);
+        if (gd > ghost_diff) ghost_diff = gd;
+        if (px_x >= 99 && lb < l_clean) l_clean = lb;
+      }
+      printf("win_gpu: v9_tab_no_ghost bar_L=%.1f ghost_diff=%.1f clean_L=%.1f\n", l_bar, ghost_diff, l_clean);
+      CHECK(l_bar < 130.0 && ghost_diff <= 2.0 && l_clean > 220.0);
+    }
+    free(pxg_empty);
+    free(pxg_bar);
+  }
+
+  // V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 62pt Role 4 droplet (6pt overhang clarity & no dead-black side border)
+  {
+    double td[3 * MB_INST];
+    fill_p0_rect(td, 0, 0, VW, VH, 0, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 1.0, 0);
+    fill_p0_rect(td + MB_INST, 10, 15, 140, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0, -567.0);
+    td[MB_INST + 4] = 25.0; td[MB_INST + 6] = 1.0; td[MB_INST + 7] = 0.0;
+    td[MB_INST + 12] = 0.6; td[MB_INST + 13] = 14.0; td[MB_INST + 15] = 1.0; td[MB_INST + 21] = 20.0;
+    fill_p0_rect(td + 2 * MB_INST, 35, 9, 90, 62, 6, 1.0, 1.0, 1.0, 0.0, -568.0);
+    td[2 * MB_INST + 4] = 31.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
+    td[2 * MB_INST + 12] = 1.0; td[2 * MB_INST + 13] = 9.0; td[2 * MB_INST + 15] = 1.0; td[2 * MB_INST + 21] = 9.0;
+    uint8_t *pxd = render_rgba_pixels_of(td, 3, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(pxd != NULL);
+    if (pxd) {
+      uint8_t *ct = W_PX(pxd, AW3, 240, 36);
+      uint8_t *cb = W_PX(pxd, AW3, 240, 204);
+      uint8_t *cl = W_PX(pxd, AW3, 106, 120);
+      uint8_t *cr = W_PX(pxd, AW3, 373, 120);
+      double top_L = 0.2126 * ct[0] + 0.7152 * ct[1] + 0.0722 * ct[2];
+      double bot_L = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      double left_L = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
+      double right_L = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
+      printf("win_gpu: v9_tab_dark_clarity top_L=%.1f bot_L=%.1f left_L=%.1f right_L=%.1f\n", top_L, bot_L, left_L, right_L);
+      CHECK(top_L < 55.0 && bot_L < 55.0 && left_L >= 42.0 && right_L >= 42.0);
+      free(pxd);
     }
   }
 

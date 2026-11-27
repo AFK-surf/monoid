@@ -172,7 +172,7 @@ pub fn viewer_bar_node(
                   .allow_ellipsis(Is(true))
                   .min_width(Is(Some(0.0)))
                   .ink(By(fn() { ink().ink }))
-                  .says(By(fn() { Some(@view.said(Text, label=name())) }))
+                  .says(By(fn() { Some(@view.said(@view.Role::Text, label=name())) }))
                   |> ignore
                 })
                 |> ignore
@@ -184,7 +184,7 @@ pub fn viewer_bar_node(
                   .allow_ellipsis(Is(true))
                   .min_width(Is(Some(0.0)))
                   .ink(By(fn() { ink().muted }))
-                  .says(By(fn() { Some(@view.said(Text, label=meta())) }))
+                  .says(By(fn() { Some(@view.said(@view.Role::Text, label=meta())) }))
                   |> ignore
                 })
               })

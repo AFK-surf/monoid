@@ -710,8 +710,11 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       self.beside_widened(at, self.nodes[b.anchor.at].lw)
     }
     // (where its anchor is drawn and how big, where what holds it is: in the window's terms as the scene is composed,
-    // Tree::projected; it goes there as big as what holds it draws it, its own scale about where it went after)
-    guard self.window_place(b.anchor.at) is Some((ax, ay, ascale)) else { return stay(true) }
+    // Tree::projected; scales marked `moves_besides=false` (transient press feedback on the anchor or its pill) are
+    // skipped so popovers never drift their laid-out origin while a clicked trigger springs back)
+    guard self.window_place(b.anchor.at, for_beside=true) is Some((ax, ay, ascale)) else {
+      return stay(true)
+    }
     let a = self.nodes[b.anchor.at]
     let (hx, hy, hs) = match self.window_place(n.parent) {
       Some(p) => p
@@ -752,7 +755,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     }
     let rect = match (b.side, host_at) {
       (Left | Right, Some(hat)) =>
-        match self.window_place(hat) {
+        match self.window_place(hat, for_beside=true) {
           Some((host_x, _, host_scale)) => {
             let hw = self.nodes[hat].lw * host_scale
             let left_x = if rect.0 < host_x { rect.0 } else { host_x }
@@ -911,11 +914,11 @@ fn Tree::beside_narrowed(self : Tree, at : Int, own : Bool) -> Unit {
 ///|
 /// Where node `at` is drawn in the window as the tree is placed now and how big (Tree::projected), none where it is no
 /// live node.
-fn Tree::window_place(self : Tree, at : Int) -> (Double, Double, Double)? {
+fn Tree::window_place(self : Tree, at : Int, for_beside? : Bool = false) -> (Double, Double, Double)? {
   if at < 0 || at >= self.nodes.length() || !self.nodes[at].live {
     return None
   }
-  let (x, y, _, s) = self.projected(at)
+  let (x, y, _, s) = self.projected(at, for_beside~)
   Some((x, y, s))
 }
 

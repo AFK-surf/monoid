@@ -148,11 +148,15 @@ pub fn neighbour(src : Source, w : Workspace, way : Int) -> Unit {
     for day in items(archive_side.last, "days") {
       rows.append(items(Some(day), "items"))
     }
-    let at = rows.search_by(fn(item) {
+    let mut at : Int? = None
+    for i, item in rows {
       let row = Some(item)
-      text(row, "station") == open.station &&
-      (text(row, "session") == open.session || text(row, "id") == open.session)
-    })
+      if text(row, "station") == open.station &&
+        (text(row, "session") == open.session || text(row, "id") == open.session) {
+        at = Some(i)
+        break
+      }
+    }
     match at {
       Some(i) if i + way >= 0 && i + way < rows.length() => archive_open(rows[i + way])
       _ => ()
@@ -177,7 +181,14 @@ pub fn neighbour(src : Source, w : Workspace, way : Int) -> Unit {
       }
     }
   }
-  match rows.search_by(fn(item) { @sfbase.row_is(item, open) }) {
+  let mut found : Int? = None
+  for i, item in rows {
+    if @sfbase.row_is(item, open) {
+      found = Some(i)
+      break
+    }
+  }
+  match found {
     Some(i) if i + way >= 0 && i + way < rows.length() => {
       let item = rows[i + way]
       open_page(Chat({ station: item.station, session: item.session, title: item.title, station_name: item.station_name }))

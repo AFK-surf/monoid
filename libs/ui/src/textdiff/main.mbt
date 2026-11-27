@@ -330,6 +330,6 @@ fn main {
   @ui.run_legacy_ctx(
     "textdiff",
     fn(c) { view(c, rows, st) },
-    theme=fn() { { ..@ui.Theme::ios_light(), tabular: false } },
+    theme=fn() { @ui.Theme::{ ..@ui.Theme::ios_light(), tabular: false } },
   )
 }

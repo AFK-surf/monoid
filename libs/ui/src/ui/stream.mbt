@@ -526,7 +526,12 @@ pub fn Stream::direct_count(self : Stream) -> (Int, Int) {
 /// A route's "D TS N BYTES": the frames counted; the one shown, if any (`ts` ≥ 0), shown from now, as far as the app is
 /// concerned (the host showed it and said it shown to its sender).
 fn Stream::take_direct(self : Stream, w : Array[String]) -> Unit {
-  guard w is [_, t, n, b, ..] else { return }
+  if w.length() < 4 {
+    return
+  }
+  let t = w[1]
+  let n = w[2]
+  let b = w[3]
   match (stream_num(t), stream_num(n), stream_num(b)) {
     (Some(ts), Some(n), Some(b)) => {
       self.direct_frames += n.to_int()

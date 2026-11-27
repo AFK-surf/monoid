@@ -29,7 +29,13 @@ pub fn lock_prompts(core : Core, free : Bool) -> Unit {
   if prompts is Some(_) {
     prompts_closed.retain(fn(d) { pairing.iter().any(fn(r) { ask_of(r) == d }) })
   }
-  let waiting = pairing.iter().find_first(fn(r) { !prompts_closed.contains(ask_of(r)) })
+  let mut waiting : Json? = None
+  for r in pairing {
+    if !prompts_closed.contains(ask_of(r)) {
+      waiting = Some(r)
+      break
+    }
+  }
   match waiting {
     Some(r) if free && !@sf.presenting() => pair_sheet(core, r)
     _ => ()

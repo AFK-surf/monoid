@@ -345,8 +345,8 @@ fn notify_block_node(
 /// This device's system as the preview and the tiles draw it (the web's page draws macOS's on every system).
 fn notice_look() -> @sf.NoticeLook {
   match @ui.platform() {
-    1 => Phone(island=true)
-    2 => Phone(island=false)
+    1 => @sf.NoticeLook::Phone(island=true)
+    2 => @sf.NoticeLook::Phone(island=false)
     3 => Windows
     _ => MacOS
   }
@@ -369,7 +369,14 @@ fn notify_preview_node(
     if notify_kinds.contains(open) {
       open
     } else {
-      notify_kinds.iter().find_first(fn(k) { on() && kind_banner(notify(), k) }).unwrap_or("wait")
+      let mut found = "wait"
+      for i = 0; i < notify_kinds.length(); i = i + 1 {
+        if on() && kind_banner(notify(), notify_kinds[i]) {
+          found = notify_kinds[i]
+          break
+        }
+      }
+      found
     }
   }
   let latest = fn() {

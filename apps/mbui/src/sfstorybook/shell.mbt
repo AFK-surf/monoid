@@ -26,7 +26,8 @@ let widths : Array[(String, Double?)] = [("390", Some(390.0)), ("768", Some(768.
 ///|
 /// How wide the list at the side is: 248, wider as the words grow past 1.3× (at 2×, its title on one line still).
 fn side_width() -> Double {
-  248.0 * @sf.dmax(1.0, @ui.font_scale() / 1.3)
+  let fs : Double = @ui.font_scale()
+  248.0 * @sf.dmax(1.0, fs / 1.3)
 }
 
 ///|

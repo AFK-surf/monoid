@@ -375,7 +375,14 @@ fn connects_list_rows(shown : Array[Json]) -> Array[(String, Array[(String, Json
   let out : Array[(String, Array[(String, Json)])] = []
   for x in shown {
     let address = text(Some(x), "station")
-    let at = match out.search_by(fn(r) { r.0 == address }) {
+    let mut found : Int? = None
+    for i = 0; i < out.length(); i = i + 1 {
+      if out[i].0 == address {
+        found = Some(i)
+        break
+      }
+    }
+    let at = match found {
       Some(i) => i
       None => {
         out.push((address, []))

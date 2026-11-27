@@ -308,7 +308,7 @@ fn notice_words_node(
         .words_runs(By(runs))
         .words_look(By(fn() { @ui.style_words(style(open())) }))
         .runs_look(By(fn() {
-          { ..@view.runs_plain, link: if m().notice_failed { @sf.theme().p.red } else { @sf.theme().p.text } }
+          @view.RunsLook::{ ..@view.runs_plain, link: if m().notice_failed { @sf.theme().p.red } else { @sf.theme().p.text } }
         }))
         .ink(By(fn() { @ui.style_ink(style(open())) }))
         .allow_ellipsis(By(fn() { !open() }))

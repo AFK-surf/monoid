@@ -449,7 +449,8 @@ pub fn Anim::stop_at(self : Anim, c : @ui.Ctx, at : Double, points~ : Double, lo
   // now)
   let at = if at > c.moment() { c.moment() } else { at }
   let (x, v) = self.state_at(at)
-  let ahead = @ui.move_stop_points(v * points / 1000.0) / points
+  let stop_pts : Double = @ui.move_stop_points(v * points / 1000.0)
+  let ahead = stop_pts / points
   let to = if v >= 0.0 {
     dmin(x + ahead, dmax(self.target, x))
   } else {

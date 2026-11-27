@@ -10,7 +10,8 @@ fn e2e_bytes(hex : String) -> Bytes {
     if n >= '0'.to_int() && n <= '9'.to_int() { n - '0'.to_int() } else { n - 'a'.to_int() + 10 }
   }
   let cs = hex.to_array().filter(fn(c) { c != '\n' })
-  Bytes::makei(cs.length() / 2, fn(i) { ((digit(cs[2 * i]) << 4) | digit(cs[2 * i + 1])).to_byte() })
+  let cs_len : Int = cs.length()
+  Bytes::makei(cs_len / 2, fn(i) { ((digit(cs[2 * i]) << 4) | digit(cs[2 * i + 1])).to_byte() })
 }
 
 ///|

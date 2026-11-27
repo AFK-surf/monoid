@@ -228,17 +228,20 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
   ats.sort()
   let row_ks = self.rows_named.keys().to_array()
   row_ks.sort()
-  ats.filter_map(fn(at) {
+  let out : Array[TreeListSteady] = []
+  for ai = 0; ai < ats.length(); ai = ai + 1 {
+    let at = ats[ai]
+
     guard at >= 0 && at < self.nodes.length() && self.nodes[at].live && self.held_from_root(at) && !self.out_at(at) &&
       self.lists_scrolled.get(at) is Some(s) else {
-      return None
+      continue
     }
     let list_id : NodeId = { at, gen: self.nodes[at].gen }
     let (_, ly, la, ls) = self.projected(at, drawn=true)
     let lw = self.nodes[at].lw * ls
     let lh = self.nodes[at].lh * ls
     guard la > 0.05 && lw > 0.0 && lh > 0.0 else {
-      return None
+      continue
     }
     let held_at = self.nodes[at].scroll_held
     let at_once = match self.list_inner.get(held_at) {
@@ -252,9 +255,14 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
     let keys_at_once = at_once && keys_now
     // (an answer's step in it, nothing on its way in it: judged within the list, what carries the list whole (a page
     // sliding in) no way in it, Tree::on_way_at's `within`)
-    let answered_here = answered.iter().any(fn(ans) {
-      self.holds_node_at(at, ans) && !self.on_way_at(ans, now, within=at)
-    })
+    let mut answered_here = false
+    for ai = 0; ai < answered.length(); ai = ai + 1 {
+      let ans = answered[ai]
+      if self.holds_node_at(at, ans) && !self.on_way_at(ans, now, within=at) {
+        answered_here = true
+        break
+      }
+    }
     let mut set_out = s.keys_at
     let mut left = false
     let stack = [at]
@@ -419,7 +427,7 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
       }
       anc = self.nodes[anc].parent
     }
-    Some({
+    out.push({
       id: -(at + 1),
       gen: self.nodes[at].gen,
       named,
@@ -438,5 +446,6 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
       at_foot: @signals.untracked(fn() { s.x.get() == @double.infinity || s.at(self) >= s.most_now() - 0.5 }),
       scrolled: s.at(self),
     })
-  })
+  }
+  out
 }

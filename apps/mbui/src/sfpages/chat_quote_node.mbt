@@ -320,7 +320,7 @@ fn chat_quote_node(
               }
               let menu_items = @sfbase.message_items(link, words, s.go).map(fn(it) {
                 it.map(fn(mi) {
-                  {
+                  @sf.MenuItem::{
                     ..mi,
                     select: fn() {
                       clear_more()

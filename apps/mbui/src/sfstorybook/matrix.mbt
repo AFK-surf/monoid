@@ -50,8 +50,9 @@ priv struct Env {
 /// The workbench's settings as the page starts: as MBUI_FONT_SCALE (a number), MBUI_POINTING (mouse, finger) and
 /// MBUI_LANG (zh, en) say, each left as it is where unset.
 fn env_started() -> Env {
+  let raw_scale = @ui.env("MBUI_FONT_SCALE")
   let scale = try {
-    @string.parse_double(@ui.env("MBUI_FONT_SCALE"))
+    @string.parse_double(raw_scale)
   } catch {
     _ => 0.0
   }
@@ -66,7 +67,14 @@ fn env_started() -> Env {
   if hand > 0 {
     @ui.set_pointing(Some(if hand == 1 { Mouse } else { Finger }))
   }
-  let lang = env_langs.search_by(fn(l) { l.0 != "" && l.0 == @ui.env("MBUI_LANG") }).unwrap_or(0)
+  let env_lang = @ui.env("MBUI_LANG")
+  let mut lang = 0
+  for i in 0..<env_langs.length() {
+    if env_langs[i].0 != "" && env_langs[i].0 == env_lang {
+      lang = i
+      break
+    }
+  }
   if lang > 0 {
     @sf.set_language(Some(env_langs[lang].0))
   }

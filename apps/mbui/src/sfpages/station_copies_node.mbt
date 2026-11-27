@@ -170,7 +170,13 @@ fn copies_upload_choices(cur : Double) -> Array[(String, String)] {
 ///|
 /// The upload limit a chosen key names, of those offered beside `cur`.
 fn copies_upload_chosen(key : String, cur : Double) -> Double? {
-  copies_upload_values(cur).iter().find_first(fn(n) { copies_upload_key(n) == key })
+  let vals = copies_upload_values(cur)
+  for i = 0; i < vals.length(); i = i + 1 {
+    if copies_upload_key(vals[i]) == key {
+      return Some(vals[i])
+    }
+  }
+  None
 }
 
 ///|
@@ -276,8 +282,8 @@ pub fn backup_node(
       None => copies_upload_default
     },
   )
-  let applying = @signals.signal(false)
-  let s3_dirty = @signals.signal(false)
+  let applying : @signals.Signal[Bool] = @signals.signal(false)
+  let s3_dirty : @signals.Signal[Bool] = @signals.signal(false)
   let next_draft_seq = Ref(1)
   @sf.page_node(v, fn() { @sf.t("web-pages.backup.title") }, on_back~, frame~, said?, width?, fn() { ["about", "unified", "stations"] }, fn(b, key) {
     match key {
@@ -502,17 +508,17 @@ pub fn backup_node(
                   }
                 },
                 fn() {
-                  let targets = @signals.untracked(online_targets)
+                  let targets : Array[(String, String)] = @signals.untracked(online_targets)
                   let total = @signals.untracked(stations_list).length()
                   let skipped = if total > targets.length() { total - targets.length() } else { 0 }
                   if targets.is_empty() {
                     return
                   }
                   applying.set(true)
-                  let mode = draft_mode.untracked()
+                  let mode : String = draft_mode.untracked()
                   let sel = draft_stations.untracked()
-                  let send_s3 = s3_dirty.untracked()
-                  let upload = draft_upload.untracked()
+                  let send_s3 : Bool = s3_dirty.untracked()
+                  let upload : Double = draft_upload.untracked()
                   let current_s3 : Ref[Array[Json]] = Ref(draft_s3.untracked().map(copies_s3_draft_wire))
                   let generated_pairs : Array[(String, String)] = []
                   let generated_captured = Ref(false)

@@ -158,7 +158,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
       at_keys.insert(at + j, "o:" + l.row.id)
       if l.row.joined && at + j > 0 {
         match list[at + j - 1] {
-          Said(m) if !m.followed => list[at + j - 1] = Said({ ..m, followed: true })
+          Said(m) if !m.followed => list[at + j - 1] = Said(@sfbase.Message::{ ..m, followed: true })
           Out(o) if !o.followed => list[at + j - 1] = Out({ ..o, followed: true })
           _ => ()
         }
@@ -364,7 +364,7 @@ fn chat_body_rows_tail(kept : ChatBodyKept, w : ChatBodyMade, v : ChatView, all 
 /// from here or an agent's line the same one, read again only as it changed; the rest by what they say).
 fn chat_entry_same(a : Entry, b : Entry) -> Bool {
   match (a, b) {
-    (Top, Top) | (Empty, Empty) | (Line, Line) | (Newer, Newer) | (Archived, Archived) | (Feedback, Feedback) | (Foot, Foot) => true
+    (Top, Top) | (@sfbase.Entry::Empty, @sfbase.Entry::Empty) | (Line, Line) | (Newer, Newer) | (Archived, Archived) | (Feedback, Feedback) | (Foot, Foot) => true
     (Older(x), Older(y)) => x == y
     (Said(x), Said(y)) => physical_equal(x, y)
     (Sent(x), Sent(y)) => physical_equal(x, y)
@@ -560,7 +560,7 @@ fn chat_body_kind(e : Entry) -> ChatBodyKind {
     Top | Foot => KTop
     Older("") => KOlder
     Older(_) => KOlderFailed
-    Empty => KEmpty
+    @sfbase.Entry::Empty => KEmpty
     Line => KLine
     Newer => KNewer
     Said(m) =>
@@ -958,7 +958,7 @@ fn chat_body_node(
   let has_feedback = fn() -> Bool { !(here.view)().newer && feedback_report() is Some(_) }
   // Stage presentation through @motion.ListStage: barrier holds, co-moving activity rows, deferred trailer rows,
   // lingering agent-line placeholders, bridged joined-row pairs, and predecessor-change rekeying live in one scheduler.
-  let stage = @motion.ListStage::new(tail_window=chat_held_tail, is_rekey=chat_key_rekeys_on_prev_change)
+  let stage : @motion.ListStage = @motion.ListStage::new(tail_window=chat_held_tail, is_rekey=chat_key_rekeys_on_prev_change)
   // (what each held message comes out of and the line it ends, by its key: what is let in at once on flush or release)
   let held_by : Map[String, (AgentFace, Agent?)] = Map([])
   // (its agents' messages coming out one at a time, whoever says them)
@@ -970,7 +970,7 @@ fn chat_body_node(
   // (lingering activity keys replaced by their answering message at a given cause_at: suppresses empty foot_room)
   let answered_lingers : Map[String, Double] = Map([])
   // (counted on as a held message is let in or flushed: what the keys are worked out again by)
-  let held_told = @signals.signal(0)
+  let held_told : @signals.Signal[Int] = @signals.signal(0)
   let listed_was : Ref[Array[String]] = Ref([])
   let raw_ingested : Ref[Array[String]] = Ref([])
   let raw_cache : Ref[(Array[String], Array[String])?] = Ref(None)
@@ -1346,10 +1346,11 @@ fn chat_body_node(
               }
               // (kept in the core's outbox before the list took it over, its station not reached: the outbox's row by
               // its own key, one not there as it was sent)
-              Some({ entry: Out(o), .. }) if !o.id.has_prefix("local:") && !before.contains("o:" + o.id) => {
-                f = Some(lk[i])
-                break
-              }
+              Some({ entry: Out(o), .. }) =>
+                if !o.id.has_prefix("local:") && !before.contains("o:" + o.id) {
+                  f = Some(lk[i])
+                  break
+                }
               _ => ()
             }
             i = i - 1
@@ -1603,10 +1604,10 @@ fn chat_body_node(
           let (idx, _) = (list.keys_index)(ks)
           match (idx.get(first), idx.get(last)) {
             (Some(a), Some(b)) if a < b || (a == b && first_sl <= last_sl) =>
-              Window(ks, idx, a, first_sl, b, last_sl)
+              ChatSightWindow::Window(ks, idx, a, first_sl, b, last_sl)
             _ =>
               match was {
-                Some(Window(_, _, _, _, _, _) as prev) => prev
+                Some(ChatSightWindow::Window(_, _, _, _, _, _) as prev) => prev
                 _ => Unresolved
               }
           }
@@ -1617,7 +1618,7 @@ fn chat_body_node(
     same=fn(x, y) {
       match (x, y) {
         (Unknown, Unknown) | (Unresolved, Unresolved) => true
-        (Window(k1, _, a1, as1, b1, bs1), Window(k2, _, a2, as2, b2, bs2)) =>
+        (ChatSightWindow::Window(k1, _, a1, as1, b1, bs1), ChatSightWindow::Window(k2, _, a2, as2, b2, bs2)) =>
           physical_equal(k1, k2) && a1 == a2 && as1 == as2 && b1 == b2 && bs1 == bs2
         _ => false
       }
@@ -1632,7 +1633,7 @@ fn chat_body_node(
     slot.lends(@sfbase.page_shows_lent, fn() {
       guard shows() else { return false }
       match sight_window.get() {
-        Window(_, idx, a, a_sl, b, b_sl) => {
+        ChatSightWindow::Window(_, idx, a, a_sl, b, b_sl) => {
           let sl = slice()
           match idx.get(key()) {
             Some(i) => (i > a || (i == a && sl >= a_sl)) && (i < b || (i == b && sl <= b_sl))

@@ -307,7 +307,7 @@ fn sync_cjk_slot(
         }
         if !read {
           @ui.face_clear(host_face)
-          faces_had[now] = Asking
+          faces_had[now] = FaceHad::Asking
           face_files(src, now, files, 0, [], false, fn(h) { faces_had[now] = h })
           faces_in[host_face] = ""
           faces_tried[host_face] = ""
@@ -480,7 +480,7 @@ pub fn faces(src : Source, wide : Bool) -> Unit {
           // instead, the app's own standing in until then
           if !read {
             @ui.face_clear(host_face)
-            faces_had[now] = Asking
+            faces_had[now] = FaceHad::Asking
             face_files(src, now, files, 0, [], false, fn(h) { faces_had[now] = h })
             faces_in[host_face] = ""
             faces_tried[host_face] = ""
@@ -580,18 +580,26 @@ fn face_had(src : Source, id : String, files : Array[Json]) -> Array[(FaceFile, 
   match faces_had.get(id) {
     Some(Whole(b)) => Some(b)
     Some(_) => None
-    None if files.iter().all(fn(f) { text(Some(f), "path") != "" }) => {
-      let at = files.map(fn(f) { (At(text(Some(f), "path")), number(Some(f), "weight").to_int()) })
-      faces_had[id] = Whole(at)
-      Some(at)
-    }
     None => {
-      faces_had[id] = Asking
-      face_files(src, id, files, 0, [], false, fn(h) { faces_had[id] = h })
-      // (all here at once where the core had them so)
-      match faces_had.get(id) {
-        Some(Whole(b)) => Some(b)
-        _ => None
+      let mut all_paths = true
+      for f in files {
+        if text(Some(f), "path") == "" {
+          all_paths = false
+          break
+        }
+      }
+      if all_paths {
+        let at = files.map(fn(f) { (At(text(Some(f), "path")), number(Some(f), "weight").to_int()) })
+        faces_had[id] = Whole(at)
+        Some(at)
+      } else {
+        faces_had[id] = FaceHad::Asking
+        face_files(src, id, files, 0, [], false, fn(h) { faces_had[id] = h })
+        // (all here at once where the core had them so)
+        match faces_had.get(id) {
+          Some(Whole(b)) => Some(b)
+          _ => None
+        }
       }
     }
   }

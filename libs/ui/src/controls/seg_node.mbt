@@ -537,7 +537,16 @@ pub fn seg_icons_node(
 ) -> @view.View {
   let pad = segmented_bar_pad
   let high = icon_button_side - 2.0 * pad
-  let at = fn() { ways().search_by(fn(w) { w.0 == chosen() }).unwrap_or(0) }
+  let at = fn() {
+    let ws = ways()
+    let c = chosen()
+    for i = 0; i < ws.length(); i = i + 1 {
+      if ws[i].0 == c {
+        return i
+      }
+    }
+    0
+  }
   let g = @glass.liquid_segmented_node(
     parent,
     fn() { ways().map(fn(w) { w.2 }) },

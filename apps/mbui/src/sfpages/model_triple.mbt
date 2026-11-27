@@ -648,20 +648,26 @@ pub fn model_triple_node(
 ///|
 /// The model of `options` whose id is `id` (one of Devin's Fusion pairs, its lead's), None where none is.
 fn triple_model_of(options : Array[Json], id : String) -> Json? {
-  match options.search_by(fn(o) { text(Some(o), "model") == id }) {
-    Some(i) => Some(options[i])
-    None =>
-      if id.has_prefix("fusion-") {
-        match id.find("-sidekick-") {
-          Some(at) if at > 7 => {
-            let lead = id.exact_view(start=7, end=at).to_owned()
-            options.search_by(fn(o) { text(Some(o), "model") == lead }).map(fn(i) { options[i] })
+  for i = 0; i < options.length(); i = i + 1 {
+    if text(Some(options[i]), "model") == id {
+      return Some(options[i])
+    }
+  }
+  if id.has_prefix("fusion-") {
+    match id.find("-sidekick-") {
+      Some(at) if at > 7 => {
+        let lead = id.exact_view(start=7, end=at).to_owned()
+        for i = 0; i < options.length(); i = i + 1 {
+          if text(Some(options[i]), "model") == lead {
+            return Some(options[i])
           }
-          _ => None
         }
-      } else {
         None
       }
+      _ => None
+    }
+  } else {
+    None
   }
 }
 
@@ -751,22 +757,41 @@ fn triple_body_node(
       let maker_title = maker_titles.get(raw_maker).unwrap_or("")
       let ids = items(ov, "ids")
       let runtimes = items(ov, "runtimes")
-      tokens.iter().all(fn(tok) {
-        name.contains(tok) ||
-        model.contains(tok) ||
-        family.contains(tok) ||
-        maker_id.contains(tok) ||
-        maker_title.contains(tok) ||
-        ids.iter().any(fn(i) { i is String(s) && s.to_lower().contains(tok) }) ||
-        runtimes.iter().any(fn(r) {
-          r is String(s) &&
-          (
-            s.to_lower().contains(tok) ||
-            @settings.runtime_short(s).to_lower().contains(tok) ||
-            @settings.runtime_label(s).to_lower().contains(tok)
-          )
-        })
-      })
+      let mut all_ok = true
+      for ti = 0; ti < tokens.length(); ti = ti + 1 {
+        let tok = tokens[ti]
+        let mut hit = name.contains(tok) ||
+          model.contains(tok) ||
+          family.contains(tok) ||
+          maker_id.contains(tok) ||
+          maker_title.contains(tok)
+        if !hit {
+          for ii = 0; ii < ids.length(); ii = ii + 1 {
+            if ids[ii] is String(s) && s.to_lower().contains(tok) {
+              hit = true
+              break
+            }
+          }
+        }
+        if !hit {
+          for ri = 0; ri < runtimes.length(); ri = ri + 1 {
+            if runtimes[ri] is String(s) &&
+              (
+                s.to_lower().contains(tok) ||
+                @settings.runtime_short(s).to_lower().contains(tok) ||
+                @settings.runtime_label(s).to_lower().contains(tok)
+              ) {
+              hit = true
+              break
+            }
+          }
+        }
+        if !hit {
+          all_ok = false
+          break
+        }
+      }
+      all_ok
     })
   }
   let model_of = fn(id : String) { triple_model_of(options(), id) }
@@ -837,7 +862,14 @@ fn triple_body_node(
         "" => @sf.t("web-main.model.otherSeries")
         f => f
       }
-      match out.search_by(fn(x) { x.0 == who }) {
+      let mut found : Int? = None
+      for i = 0; i < out.length(); i = i + 1 {
+        if out[i].0 == who {
+          found = Some(i)
+          break
+        }
+      }
+      match found {
         Some(i) => out[i].1.push(o)
         None => out.push((who, [o]))
       }
@@ -900,7 +932,13 @@ fn triple_body_node(
   // them where the rest are a level further, so it is always in sight as a model; each stays where it was while the
   // panel is open, starred or not since (contents' `first`)
   let combo_selected = fn() -> Bool {
-    combos().iter().any(fn(x) { flag(Some(x), "selected") })
+    let cs = combos()
+    for i = 0; i < cs.length(); i = i + 1 {
+      if flag(Some(cs[i]), "selected") {
+        return true
+      }
+    }
+    false
   }
   let has_speed = fn() { flag(v(), "fastAvailable") }
   let all_speeds = fn() -> Array[(String, String)] {
@@ -1077,14 +1115,39 @@ fn triple_body_node(
     }
     let is_picked = fn(o : Json) { text(Some(o), "model") == p }
     // (at the first level the configuration it runs on exactly, where one is, else its model)
-    let combo_on = if all() { None } else { combos_now.search_by(fn(x) { flag(Some(x), "selected") }) }
+    let combo_on : Int? = if all() {
+      None
+    } else {
+      let mut found : Int? = None
+      for i = 0; i < combos_now.length(); i = i + 1 {
+        if flag(Some(combos_now[i]), "selected") {
+          found = Some(i)
+          break
+        }
+      }
+      found
+    }
+    let mut st_idx : Int? = None
+    for i = 0; i < st.length(); i = i + 1 {
+      if is_picked(st[i]) {
+        st_idx = Some(i)
+        break
+      }
+    }
+    let mut ot_idx : Int? = None
+    for i = 0; i < ot.length(); i = i + 1 {
+      if is_picked(ot[i]) {
+        ot_idx = Some(i)
+        break
+      }
+    }
     let (picked_key, from_foot) = match combo_on {
       Some(i) => (triple_combo_key(Some(combos_now[i])), i)
       None =>
         (
           "model/" + p,
           (if combos_now.is_empty() { 0 } else { 1 }) +
-          (match (st.search_by(is_picked), ot.search_by(is_picked)) {
+          (match (st_idx, ot_idx) {
             (Some(j), _) => combos_now.length() + st.length() - 1 - j
             (None, Some(k)) => combos_now.length() + st.length() + ot.length() - 1 - k
             _ => 0
@@ -2088,7 +2151,13 @@ fn triple_foot_node(
         let now = fn() { text(v(), "sidekickNow") }
         let picked = fn() {
           let sks = items(v(), "sidekicks")
-          sks.search_by(fn(sk) { text(Some(sk), "id") == now() }).map(fn(i) { sks[i] })
+          let cur = now()
+          for i = 0; i < sks.length(); i = i + 1 {
+            if text(Some(sks[i]), "id") == cur {
+              return Some(sks[i])
+            }
+          }
+          None
         }
         triple_chip_node(
           x,
@@ -2152,7 +2221,13 @@ fn triple_foot_node(
         }
         triple_chip_node(x, head, fn() {
           let cs = choices()
-          cs.search_by(fn(ch) { ch.key == now() }).map(fn(i) { cs[i].label }).unwrap_or("")
+          let cur = now()
+          for i = 0; i < cs.length(); i = i + 1 {
+            if cs[i].key == cur {
+              return cs[i].label
+            }
+          }
+          ""
         }, fn(c) {
           @sf.pick(head, @signals.untracked(choices), @signals.untracked(now), fn(k) {
             if k == "ultrafast" {
@@ -2190,7 +2265,13 @@ fn triple_foot_node(
         let now = fn() { text(v(), "contextNow") }
         triple_chip_node(x, head, fn() {
           let cs = choices()
-          cs.search_by(fn(ch) { ch.key == now() }).map(fn(i) { cs[i].label }).unwrap_or("")
+          let cur = now()
+          for i = 0; i < cs.length(); i = i + 1 {
+            if cs[i].key == cur {
+              return cs[i].label
+            }
+          }
+          ""
         }, fn(c) {
           @sf.pick(head, @signals.untracked(choices), @signals.untracked(now), fn(k) {
             pick_save(src, station, of, { "context": if k == "" { Json::null() } else { Json::string(k) } })
@@ -2255,13 +2336,32 @@ fn triple_sidekick_node(
   let active_group = fn() -> SidekickGroup {
     let gs = groups()
     let n = now()
-    let i = gs.search_by(fn(g) { g.efforts.iter().any(fn(w) { w.0 == n }) }).unwrap_or(0)
-    gs.get(i).unwrap_or({ id: "", name: "", maker: "", efforts: [] })
+    let mut found = 0
+    for gi = 0; gi < gs.length(); gi = gi + 1 {
+      let effs = gs[gi].efforts
+      let mut has = false
+      for ei = 0; ei < effs.length(); ei = ei + 1 {
+        if effs[ei].0 == n {
+          has = true
+          break
+        }
+      }
+      if has {
+        found = gi
+        break
+      }
+    }
+    gs.get(found).unwrap_or({ id: "", name: "", maker: "", efforts: [] })
   }
   let active_eff_lbl = fn() {
     let g = active_group()
     let n = now()
-    g.efforts.search_by(fn(w) { w.0 == n }).map(fn(i) { g.efforts[i].1 }).unwrap_or("")
+    for i = 0; i < g.efforts.length(); i = i + 1 {
+      if g.efforts[i].0 == n {
+        return g.efforts[i].1
+      }
+    }
+    ""
   }
   let h_sidekick = @sf.t("web-main.model.sidekick")
   let h_effort = @sf.t("web-main.model.effort")
@@ -2422,7 +2522,15 @@ fn triple_sidekick_groups(v : Json?) -> Array[SidekickGroup] {
         None => (label, default_eff)
       }
     }
-    match groups.search_by(fn(g) { g.name == name_part && (sid == "" || g.id != "") }) {
+    let mut found : Int? = None
+    for i = 0; i < groups.length(); i = i + 1 {
+      let g = groups[i]
+      if g.name == name_part && (sid == "" || g.id != "") {
+        found = Some(i)
+        break
+      }
+    }
+    match found {
       Some(i) => groups[i].efforts.push((sid, eff_part, target))
       None => groups.push({ id: sid, name: name_part, maker, efforts: [(sid, eff_part, target)] })
     }

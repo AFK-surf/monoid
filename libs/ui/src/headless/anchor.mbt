@@ -119,10 +119,10 @@ pub fn anchor_place(
   let asked = placement.side()
   // (the room on the side asked and on the other, and how much it needs there)
   let (here, there, need, other) = match asked {
-    Below => (below, above, ph, Above)
-    Above => (above, below, ph, Below)
-    Right => (after, before, pw, Left)
-    Left => (before, after, pw, Right)
+    Below => (below, above, ph, AnchorSide::Above)
+    Above => (above, below, ph, AnchorSide::Below)
+    Right => (after, before, pw, AnchorSide::Left)
+    Left => (before, after, pw, AnchorSide::Right)
   }
   let flipped = need > here && there > here
   let side = if flipped { other } else { asked }

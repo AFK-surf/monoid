@@ -37,8 +37,18 @@ pub fn can_select_row(r : Json, stations? : Array[Json] = []) -> Bool {
   }
   if !stations.is_empty() {
     let addr = text(rv, "station")
-    if addr != "" && !stations.iter().any(fn(st) { text(Some(st), "station") == addr && flag(Some(st), "online") }) {
-      return false
+    if addr != "" {
+      let mut online = false
+      for i = 0; i < stations.length(); i = i + 1 {
+        let st = Some(stations[i])
+        if text(st, "station") == addr && flag(st, "online") {
+          online = true
+          break
+        }
+      }
+      if !online {
+        return false
+      }
     }
   }
   true
@@ -170,10 +180,19 @@ pub fn profiles_batch_bar_node(
     if mv.is_empty() {
       return false
     }
-    stations().iter().any(fn(st) {
-      let sv = Some(st)
-      flag(sv, "online") && mv.iter().any(fn(r) { text(Some(r), "station") != text(sv, "station") })
-    })
+    let sts = stations()
+    for i = 0; i < sts.length(); i = i + 1 {
+      let sv = Some(sts[i])
+      if flag(sv, "online") {
+        let st_addr = text(sv, "station")
+        for j = 0; j < mv.length(); j = j + 1 {
+          if text(Some(mv[j]), "station") != st_addr {
+            return true
+          }
+        }
+      }
+    }
+    false
   }
   let finished = fn(failed : Array[String]) {
     let valid : Map[String, Bool] = Map([])

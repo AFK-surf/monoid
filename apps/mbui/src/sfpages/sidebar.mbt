@@ -256,7 +256,7 @@ fn board_scope_choice(
     }
     pressed.set(Some(scope))
     let wait = @sfbase.press_wait(fn() {
-      let query = { ..@sfbase.board_list_query(src, ws), filter: scope }
+      let query = @sfbase.ListQuery::{ ..@sfbase.board_list_query(src, ws), filter: scope }
       let list = src.topic("chats", @sfbase.chats_params_query(ws, query)).get()
       @sfbase.opens_answered(list) || ((src.gates_opens)() && list.waiting)
     }, fn() {

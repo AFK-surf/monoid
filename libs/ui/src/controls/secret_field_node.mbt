@@ -75,7 +75,7 @@ pub fn secret_value_row_node(
           .words_runs(By(fn() { [@ui.span(value(), mono=mono())] }), look=@signals.untracked(look))
           .words_look(By(look))
           .ink(By(fn() { @ui.style_ink(secret_value) }))
-          .says(By(fn() { Some(@view.said(Text, label=label(), value=value())) }))
+          .says(By(fn() { Some(@view.said(@view.Role::Text, label=label(), value=value())) }))
           |> ignore
         })
         |> ignore
@@ -93,7 +93,7 @@ pub fn secret_value_row_node(
           .ink(By(fn() { @ui.style_ink(secret_value) }))
           .says(By(fn() {
             let words = if shown() { value() } else { secret_mask(value()) }
-            Some(@view.said(Text, label=label(), value=words))
+            Some(@view.said(@view.Role::Text, label=label(), value=words))
           }))
           |> ignore
         })

@@ -552,7 +552,7 @@ pub fn window_here_owner_matches(wid : Int, station : String, screen? : String =
 ///|
 /// Whether a window of this run beside its first shows `terminal` on `station` now.
 pub fn window_has_terminal(station : String, terminal : String) -> Bool {
-  windows_here_show.values().any(fn(p) { p is Terminal(at) && at.station == station && at.terminal == terminal })
+  windows_here_show.values().any(fn(p) { p is Page::Terminal(at) && at.station == station && at.terminal == terminal })
 }
 
 ///|

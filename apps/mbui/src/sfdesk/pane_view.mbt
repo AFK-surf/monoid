@@ -47,6 +47,7 @@ priv struct FoldLook {
   fall : Double
   shade : Double
   corner : Double
+  glass : Double
   ground : Int64
   side_w : Double
   rail_w : Double
@@ -81,6 +82,7 @@ fn fold_mix(a : FoldLook, b : FoldLook, k : Double) -> FoldLook {
     fall: m(a.fall, b.fall),
     shade: m(a.shade, b.shade),
     corner: m(a.corner, b.corner),
+    glass: m(a.glass, b.glass),
     ground: if k >= 1.0 { b.ground } else if k <= 0.0 { a.ground } else { @sf.mix(b.ground, k, a.ground) },
     side_w: m(a.side_w, b.side_w),
     rail_w: m(a.rail_w, b.rail_w),
@@ -250,8 +252,6 @@ fn fold_look_of(r : PaneRoom, shift : Double) -> FoldLook {
   let above = if keys_left { closed_bar_top } else { bar_in_now() }
   let (blur, fall, shade) = if peek {
     closed_peek_shadow
-  } else if bar {
-    closed_shadow
   } else {
     open_shadow
   }
@@ -293,12 +293,13 @@ fn fold_look_of(r : PaneRoom, shift : Double) -> FoldLook {
       bar_gap_now()
     },
     mb: if bar { bar_in_now() } else { 0.0 },
-    line: if bar { 1.0 } else { 0.0 },
+    line: 0.0,
     showing: if !bar || peek { 1.0 } else { 0.0 },
     blur,
     fall,
     shade,
     corner: if bar { @sf.closed_bar_of(rail_closed_ground_in).radius(@ui.corner_roots()) } else { 0.0 },
+    glass: if bar && peek { 1.0 } else { 0.0 },
     ground: dock_ground(bar),
     side_w: if bar || @sf.native_on() { s } else { s + side_into_rail - rail_extra },
     rail_w: if bar { rail_closed_w } else { rail_shown_w + rail_extra },
@@ -336,6 +337,7 @@ fn fold_look_tape(s : Double, col : Double, top : Double, foot : Double, x? : Do
     blur: closed_shadow.0,
     fall: closed_shadow.1,
     shade: closed_shadow.2,
+    glass: 0.0,
     ground: apart_ground(),
   }
 }
@@ -469,7 +471,7 @@ fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
       }
     _ => (was_look.unwrap_or(to), None)
   }
-  if fold_far(from, to) <= 0.5 && from.ground == to.ground && from.corner == to.corner {
+  if fold_far(from, to) <= 0.5 && from.ground == to.ground && from.corner == to.corner && from.glass == to.glass {
     fold_put(to, at)
     return
   }
@@ -776,6 +778,7 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
         list_band: 0.0,
         bar: false,
         tape: false,
+        glass: false,
       }
   }
 }

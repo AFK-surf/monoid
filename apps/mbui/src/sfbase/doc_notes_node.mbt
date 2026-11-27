@@ -286,11 +286,16 @@ fn doc_note_card_node(holds : @view.View, of : DocNotes) -> Unit {
       t.padding(Is((10.0, 0.0, 10.0, 0.0))) |> ignore
       doc_note_line(t, fn() {
         let id = (of.current)()
-        match (of.notes)().search_by(fn(n) { n.id == id }) {
-          Some(k) => {
-            let n = (of.notes)()[k]
-            n.place + " · " + n.excerpt
+        let notes = (of.notes)()
+        let mut found : DocNote? = None
+        for n in notes {
+          if n.id == id {
+            found = Some(n)
+            break
           }
+        }
+        match found {
+          Some(n) => n.place + " · " + n.excerpt
           None => ""
         }
       }, 12.0, 400, 1, fn() { @sf.theme().p.muted })

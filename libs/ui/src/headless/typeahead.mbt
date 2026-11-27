@@ -69,7 +69,14 @@ pub fn Typeahead::match_next(
   }
   let first = small.get_char(0).unwrap_or(' ')
   let (find, from_next) = if typeahead_all(now, first) { (small, true) } else { (now, false) }
-  let start = match live.search_by(fn(v) { v.focused() }) {
+  let mut focused_idx : Int? = None
+  for idx = 0; idx < n; idx = idx + 1 {
+    if live[idx].focused() {
+      focused_idx = Some(idx)
+      break
+    }
+  }
+  let start = match focused_idx {
     Some(i) => if from_next { i + 1 } else { i }
     None => 0
   }

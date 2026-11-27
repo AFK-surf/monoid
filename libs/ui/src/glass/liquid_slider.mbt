@@ -258,7 +258,7 @@ fn liquid_slider_look_core(
             let shown = buf_shown()
             let dh = look.track_held_grow * dmax(0.0, pressed(buf))
             if dh.abs() < 0.001 {
-              { ..@view.ground_as_laid, dw: shown - along() }
+              @view.GroundShape::{ ..@view.ground_as_laid, dw: shown - along() }
             } else {
               let rr = (look.track_h + dh) / 2.0
               { dx: 0.0, dy: -dh / 2.0, dw: shown - along(), dh, corners: Some((rr, rr, rr, rr)) }
@@ -286,7 +286,7 @@ fn liquid_slider_look_core(
             let shown = filled(fill)
             let dh = look.track_held_grow * dmax(0.0, pressed(fill))
             if dh.abs() < 0.001 {
-              { ..@view.ground_as_laid, dw: shown - along() }
+              @view.GroundShape::{ ..@view.ground_as_laid, dw: shown - along() }
             } else {
               let rr = (look.track_h + dh) / 2.0
               { dx: 0.0, dy: -dh / 2.0, dw: shown - along(), dh, corners: Some((rr, rr, rr, rr)) }

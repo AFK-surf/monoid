@@ -615,7 +615,9 @@ fn Flow::take_step(self : Flow, line : String) -> Unit {
   }
   if !waiting_step(line) {
     self.at_step.clear()
-    self.at_step.push_iter(self.t.moving().iter())
+    for m in self.t.moving().copy() {
+      self.at_step.push(m)
+    }
   }
 }
 
@@ -767,7 +769,7 @@ fn Flow::until_at(self : Flow, site : String, so : () -> Bool) -> Unit {
   if keeping.val == 2 {
     match self.kept(site) {
       Some(Waited(at)) => self.wait_to(at)
-      Some(k) => self.fail("the strict pass kept \{Repr(k)} here, not a wait")
+      Some(k) => self.fail("the strict pass kept \{k.desc()} here, not a wait")
       None => ()
     }
     return
@@ -1153,8 +1155,9 @@ pub fn Flow::paste_n(self : Flow, n : Int, s : String) -> Unit {
   emit("pasten \{n} " + s)
   let words = StringBuilder()
   let chars = s.to_array()
+  let chars_len : Int = chars.length()
   for i in 0..<n {
-    words.write_char(chars[i % chars.length()])
+    words.write_char(chars[i % chars_len])
   }
   self.t.paste(words.to_string())
   self.input_framed()
@@ -1327,7 +1330,21 @@ pub fn Flow::end(self : Flow, unmade? : Array[String] = []) -> String {
     if r.fuzzy().length() > 0 {
       why.push("asked with other params: " + r.fuzzy().join(", "))
     }
-    let left = r.unmade().filter(fn(u) { !unmade.iter().any(fn(k) { u.contains(k) }) })
+    let unmade_list = r.unmade()
+    let left : Array[String] = []
+    for i in 0..<unmade_list.length() {
+      let u = unmade_list[i]
+      let mut matched = false
+      for j in 0..<unmade.length() {
+        if u.contains(unmade[j]) {
+          matched = true
+          break
+        }
+      }
+      if !matched {
+        left.push(u)
+      }
+    }
     if left.length() > 0 {
       why.push("did not ask what the run did: " + left.join(", "))
     }
@@ -1391,7 +1408,7 @@ pub let seeds : Array[UInt] = [1, 2, 3]
 ///|
 /// `flow` (a flow's test from Flow::start(seed=…) to its end's screen) run strictly as the run had it, then in the
 /// other passes (`seeds`): the same end each time.
-pub fn orders(flow : (UInt) -> String raise) -> Unit raise {
+pub fn orders(flow : (UInt) -> String) -> Unit {
   // the strict pass first: the run's steps at the run's moments on its frames, each wait an assertion of its moment
   // (strict_on); its first failure held to strict_known, the pass stopped there. Then the flow run through at the
   // default rate, its waits waited for: each of its own checks on it, as ever, and the passes after it held to it (the
@@ -1405,17 +1422,17 @@ pub fn orders(flow : (UInt) -> String raise) -> Unit raise {
   let failed = strict_failures.copy()
   match (failed.get(0), strict_known.get(pass_trace.val)) {
     (Some(said), None) =>
-      fail("flow \{pass_trace.val}: its strict pass fails, not known (strict_known, pace_known.mbt): " + said)
+      @halt.saying("flow \{pass_trace.val}: its strict pass fails, not known (strict_known, pace_known.mbt): " + said)
     (Some(said), Some((known, _))) if said != known =>
-      fail("flow \{pass_trace.val}: its strict pass fails otherwise than strict_known says (pace_known.mbt): " + said + " (known: " + known + ")")
+      @halt.saying("flow \{pass_trace.val}: its strict pass fails otherwise than strict_known says (pace_known.mbt): " + said + " (known: " + known + ")")
     (None, Some(_)) =>
-      fail("flow \{pass_trace.val}: its strict pass fails no more: take it out of strict_known (pace_known.mbt)")
+      @halt.saying("flow \{pass_trace.val}: its strict pass fails no more: take it out of strict_known (pace_known.mbt)")
     _ => ()
   }
   let first = flow(0)
   for k in judged_traced_known.get(pass_trace.val).unwrap_or([]) {
     if !traced_said.contains(k.0) {
-      fail("flow \{pass_trace.val}: no pass says what judged_traced_known has: take it out (pace_known.mbt): " + k.0)
+      @halt.saying("flow \{pass_trace.val}: no pass says what judged_traced_known has: take it out (pace_known.mbt): " + k.0)
     }
   }
   let strict = pass_outs.val
@@ -1448,13 +1465,13 @@ pub fn orders(flow : (UInt) -> String raise) -> Unit raise {
   let unknown = split_at.filter(fn(r) { !known.contains(r) })
   let healed = known.filter(fn(r) { !split_at.contains(r) })
   if unknown.length() > 0 {
-    fail(
+    @halt.saying(
       "flow \{pass_trace.val}: its pace pass splits from the strict pass at \{Repr(unknown)} a second, not known (pace_known.mbt): " +
       said.join(" || "),
     )
   }
   if healed.length() > 0 {
-    fail(
+    @halt.saying(
       "flow \{pass_trace.val}: its pace pass at \{Repr(healed)} a second no longer splits: take it out of pace_splits_known (pace_known.mbt)",
     )
   }
@@ -1492,7 +1509,7 @@ fn Flow::run_to_at(self : Flow, site : String, end_of : () -> Double) -> Unit {
   if keeping.val == 2 {
     match self.kept(site) {
       Some(Waited(at)) => self.wait_to(at)
-      Some(k) => self.fail("the strict pass kept \{Repr(k)} here, not where it ran to")
+      Some(k) => self.fail("the strict pass kept \{k.desc()} here, not where it ran to")
       None => ()
     }
     self.core()
@@ -1605,12 +1622,21 @@ pub fn Flow::open_page(self : Flow, page : @sfapp.Page, loc~ : SourceLoc) -> Uni
 ///|
 /// The lowest `what` (`top`: the highest) on screen, or the test fails.
 /// An input as the strict pass worked it out of the screen (Flow::start): a pace pass's own, the same.
-#derive(Debug)
 priv enum Kept {
   Point(Double, Double)
   NoPoint
   Waited(Double)
   Amount(Double)
+}
+
+///|
+fn Kept::desc(self : Kept) -> String {
+  match self {
+    Point(x, y) => "Point(\{x}, \{y})"
+    NoPoint => "NoPoint"
+    Waited(d) => "Waited(\{d})"
+    Amount(d) => "Amount(\{d})"
+  }
 }
 
 ///|
@@ -1748,7 +1774,7 @@ fn Flow::kept_point(self : Flow, site : String, find : () -> (Double, Double)?) 
         Some(Point(x, y)) => Some((x, y))
         Some(NoPoint) => None
         Some(k) => {
-          self.fail("the strict pass kept \{Repr(k)} here, not where an input went")
+          self.fail("the strict pass kept \{k.desc()} here, not where an input went")
           find()
         }
         None => find()
@@ -1785,7 +1811,7 @@ pub fn Flow::measured(self : Flow, x : Double, loc~ : SourceLoc) -> Double {
       match self.kept(site) {
         Some(Amount(d)) => d
         Some(k) => {
-          self.fail("the strict pass kept \{Repr(k)} here, not what it measured")
+          self.fail("the strict pass kept \{k.desc()} here, not what it measured")
           x
         }
         None => x
@@ -1896,7 +1922,7 @@ pub fn Flow::wheel_aligned(self : Flow, dy : Double, loc~ : SourceLoc) -> Unit {
       match self.kept(site) {
         Some(Amount(d)) => d
         Some(k) => {
-          self.fail("the strict pass kept \{Repr(k)} here, not how far it wheeled")
+          self.fail("the strict pass kept \{k.desc()} here, not how far it wheeled")
           dy
         }
         None => dy
@@ -2129,7 +2155,7 @@ pub fn Flow::shrinks(
 /// Files shared in from another app before anything else (macOS: MBUI_SHARE_FILES, the run's files dir's; Android:
 /// the first staged in the app's own provider and sent as ACTION_SEND), their bytes the run's (what it sent of each:
 /// Replay::sent_bytes), as Tester::share_in gives them.
-pub fn Flow::share_files(self : Flow, names : Array[String]) -> Unit raise {
+pub fn Flow::share_files(self : Flow, names : Array[String]) -> Unit {
   if pace_split.val != "" {
     return
   }
@@ -2148,7 +2174,7 @@ pub fn Flow::share_files(self : Flow, names : Array[String]) -> Unit raise {
     }
     match handed {
       Some(b) => files.push((n, b))
-      None => fail("flow: the trace has none of " + n + "'s bytes (over scripts/trace make's MAX_BYTES?)")
+      None => @halt.saying("flow: the trace has none of " + n + "'s bytes (over scripts/trace make's MAX_BYTES?)")
     }
   }
   self.t.share_in("", files~)

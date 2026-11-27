@@ -118,7 +118,7 @@ fn clocked(m : Map[String, Json]) -> Unit {
     Some(Number(d, ..)) => d
     _ => return
   }
-  let due = fn(k) {
+  let due = fn(k : String) {
     match m.get(k) {
       Some(Number(d, ..)) => Some(d)
       _ => None

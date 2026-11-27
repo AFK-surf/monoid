@@ -805,7 +805,7 @@ fn place_side_node(
             }
           },
           fn() { update_pressed(src) },
-          offered=fn() { update_now() is Offered(_, ..) },
+          offered=fn() { update_now() is Offered(_, waiting=_) },
         )
       })
     })

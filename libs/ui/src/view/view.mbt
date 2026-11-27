@@ -133,6 +133,9 @@ pub(all) struct Look {
   /// the widest it has swung from 1 under that binding: View::scale's max_shift (Node::scaled_at)
   mut scale_shift : Double
   mut scale_peak : Double
+  /// whether this node's scale moves popovers placed beside it or its descendants (View::scale's `moves_besides`: false
+  /// for transient press feedback so a clicked button's bounce never drifts an opening menu's laid-out origin)
+  mut scale_for_beside : Bool
   /// how far what it draws itself is turned (radians; not what it holds), and whether about the middle of what it draws
   /// (else its own): View::turn
   mut turn : Double
@@ -468,16 +471,16 @@ struct Node {
   mut stop : (() -> Unit)?
   /// what else goes with it (View::owns, its structure's binding), each by its key, run once as it is let go: a few,
   /// most of them none (an array: no map made for each node, nor its values copied as it goes)
-  drops : Array[(Int, () -> Unit)]
+  mut drops : Array[(Int, () -> Unit)]
   /// the key the next of them is kept by
   mut drop_next : Int
   /// what it said to do as it starts leaving (View::on_leaving) and as it comes back from leaving (View::on_back), and
   /// whether its starting to leave has been told (Tree::tell_leaving: once, told anew once it has come back)
-  leavings : Array[() -> Unit]
-  backs : Array[() -> Unit]
+  mut leavings : Array[() -> Unit]
+  mut backs : Array[() -> Unit]
   mut leave_told : Bool
   /// its properties' bindings, by property (Prop::ord): what stops each (Node::prop_set; a few, as `drops`)
-  props : Array[(Int, () -> Unit)]
+  mut props : Array[(Int, () -> Unit)]
   mut on_press : (() -> Unit)?
   /// what the second of two presses of it does in place of its press (View::on_double_press)
   mut on_double_press : (() -> Unit)?
@@ -921,8 +924,8 @@ pub struct Tree {
   mut measuring_origin_known : Bool
   /// whether each node keeps where in the source it was made and its properties said (source.mbt): a Tester's tree
   sources : Bool
-  nodes : Array[Node]
-  free : Array[Int]
+  mut nodes : Array[Node]
+  mut free : Array[Int]
   /// what a frame is to do: the nodes whose look changed, those whose place changed; whether any is to be laid out,
   /// whether the order is to be made again; whether any of it is (what hosts it told as it first is)
   looks_due : Array[Int]
@@ -1420,7 +1423,7 @@ pub struct Tree {
   /// true when a whole-tree @view.answering change (within is None) dirtied structure or bindings and awaits immediate layout settlement
   mut answer_unsettled : Bool
   /// evicted EachKept node slots (at, gen) retired immediately and awaiting slot recycling on next idle frame or dispose
-  parked_garbage : Array[(Int, Int)]
+  mut parked_garbage : Array[(Int, Int)]
   /// how many of its nodes alive have a modal layer's scrim for a ground (View::scrim_under)
   mut scrims : Int
   /// laying out where things stand before a change (Tree::stand_before_cause): not again inside it
@@ -2102,6 +2105,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.pivot = At(0.5, 0.5)
       n.look.scale_shift = 0.0
       n.look.scale_peak = 0.0
+      n.look.scale_for_beside = true
       n.look.drawn_as = ""
       n.look.clips = false
       n.look.words_center = false
@@ -2244,6 +2248,17 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.placed = false
       n.unwalked_from = -1
       n.out = false
+      n.lx = 0.0
+      n.ly = 0.0
+      n.la = 1.0
+      n.lw = 0.0
+      n.lh = 0.0
+      n.ls = 1.0
+      n.lpx = 0.0
+      n.lpy = 0.0
+      n.drawn_box = (0.0, 0.0, 0.0, 0.0)
+      n.drawn_words = 0
+      n.drawn_stale = true
       n.content = None
       self.draws_rev = self.draws_rev + 1
       self.draws_any_rev = self.draws_any_rev + 1
@@ -2291,7 +2306,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, scale_for_beside: true, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         offset_snap: false,
@@ -2629,7 +2644,7 @@ pub fn View::drawn_while(self : View, goes : (Double) -> Bool) -> Double {
 
 ///|
 // kept across runs: per-Tree side table + 1-slot MRU cache for `View::cycle` readers, cleared on `Tree::dispose`
-let tree_cycle_readers : Array[(Tree, Map[Int, (Int, Double)])] = []
+let tree_cycle_readers : Ref[Array[(Tree, Map[Int, (Int, Double)])]] = Ref([])
 
 ///|
 // kept across runs: 1-slot MRU cache for `Tree::cycle_readers_opt` / `cycle_readers_get`, cleared on `Tree::dispose`
@@ -2641,7 +2656,7 @@ fn Tree::cycle_readers_opt(self : Tree) -> Map[Int, (Int, Double)]? {
     Some((t, m)) if physical_equal(t, self) => return Some(m)
     _ => ()
   }
-  for entry in tree_cycle_readers {
+  for entry in tree_cycle_readers.val {
     if physical_equal(entry.0, self) {
       last_cycle_readers.val = Some(entry)
       return Some(entry.1)
@@ -2656,7 +2671,7 @@ fn Tree::cycle_readers_get(self : Tree) -> Map[Int, (Int, Double)] {
     Some((t, m)) if physical_equal(t, self) => return m
     _ => ()
   }
-  for entry in tree_cycle_readers {
+  for entry in tree_cycle_readers.val {
     if physical_equal(entry.0, self) {
       last_cycle_readers.val = Some(entry)
       return entry.1
@@ -2664,7 +2679,7 @@ fn Tree::cycle_readers_get(self : Tree) -> Map[Int, (Int, Double)] {
   }
   let m : Map[Int, (Int, Double)] = Map([])
   let pair = (self, m)
-  tree_cycle_readers.push(pair)
+  tree_cycle_readers.val.push(pair)
   last_cycle_readers.val = Some(pair)
   m
 }
@@ -2675,15 +2690,20 @@ fn Tree::cycle_readers_clear(self : Tree) -> Unit {
     Some((t, _)) if physical_equal(t, self) => last_cycle_readers.val = None
     _ => ()
   }
-  match tree_cycle_readers.search_by(fn(e) { physical_equal(e.0, self) }) {
-    Some(i) => {
-      let (_, m) = tree_cycle_readers.remove(i)
-      m.clear()
-      if tree_cycle_readers.is_empty() {
-        tree_cycle_readers.shrink_to_fit()
-      }
+  let arr = tree_cycle_readers.val
+  let mut found = -1
+  for i = 0; i < arr.length(); i = i + 1 {
+    if physical_equal(arr[i].0, self) {
+      found = i
+      break
     }
-    None => ()
+  }
+  if found >= 0 {
+    let (_, m) = arr.remove(found)
+    m.clear()
+    if arr.is_empty() {
+      tree_cycle_readers.val = []
+    }
   }
 }
 
@@ -3218,13 +3238,13 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   // (its nodes but the root and what they keep dropped, their room given back: the tree itself may never be let go of,
   // held by what its arrays were emptied of (moonc's native backend, moonbitlang/core#4611), each Tester's left with
   // all it held; its root kept, holding nothing and let go, for what is asked of it after: it answers none)
-  self.nodes.truncate(1)
-  self.nodes.shrink_to_fit()
+  if self.nodes.length() > 1 {
+    self.nodes = [self.nodes[0]]
+  }
   if self.nodes.length() > 0 {
     self.nodes[0].kids.clear()
   }
-  self.free.clear()
-  self.free.shrink_to_fit()
+  self.free = []
   self.scrolls_at.clear()
   self.reused_slots.clear()
   self.shows_due.clear()
@@ -5779,7 +5799,7 @@ pub fn Tree::input_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, 
       b = self.tucked_bound(t, b)
     }
     if n.bounds_input {
-      let (x, y, sc) = self.placed(i)
+      let (x, y, sc) = self.placed(i, drawn=true)
       let (x1, y1) = (x + n.flex.width * sc, y + n.flex.height * sc)
       b = (dmax(b.0, x), dmax(b.1, y), dmin(b.2, x1), dmin(b.3, y1))
     }
@@ -5815,7 +5835,7 @@ pub fn Tree::draw_clip_bounds(self : Tree, id : NodeId) -> (Double, Double, Doub
       b = self.tucked_bound(t, b)
     }
     if n.look.clips {
-      let (x, y, sc) = self.placed(i)
+      let (x, y, sc) = self.placed(i, drawn=true)
       let ch = dmax(0.0, n.flex.height + n.look.clips_past + self.fades_past_now(i)) * sc
       let (x1, y1) = (x + n.flex.width * sc, y + ch)
       b = if n.clips_down {
@@ -5853,7 +5873,7 @@ fn Tree::tucked_bound(
   b : (Double, Double, Double, Double),
 ) -> (Double, Double, Double, Double) {
   let (host, cover) = tucked
-  let (_, hy, _) = self.placed(host)
+  let (_, hy, _) = self.placed(host, drawn=true)
   (b.0, dmax(b.1, hy + @signals.untracked(cover)), b.2, b.3)
 }
 
@@ -6998,7 +7018,7 @@ fn Tree::drawn_box_of(
       // in its middle as its words stand)
       let (x0, x1) = match (lines, m.flex.measure) {
         (true, Some(f)) if words_alone(m) => {
-          let (lw, lh) = f(m.flex.width, AtMost, m.flex.height, Exactly)
+          let (lw, lh) = f(m.flex.width, @flex.MeasureMode::AtMost, m.flex.height, @flex.MeasureMode::Exactly)
           let lw = if lw < m.flex.width { lw } else { m.flex.width }
           let at = if m.look.words_center { (m.flex.width - lw) / 2.0 } else { 0.0 }
           // (the widest: how it is laid shows where it is on several lines, or on one shorter than its node by more than
@@ -7734,15 +7754,21 @@ pub fn View::scale(
   s : Live[Double],
   about? : Pivot = At(0.5, 0.5),
   max_shift? : Double = 0.0,
+  moves_besides? : Bool = true,
   loc~ : SourceLoc,
 ) -> View {
   if self.live() is Some(n) {
     n.look.scale_peak = 0.0
+    if n.look.scale_for_beside != moves_besides {
+      n.look.scale_for_beside = moves_besides
+      self.tree.places_rev = self.tree.places_rev + 1
+    }
   }
   self.bind(loc~, Scale, s, Place, fn(s) {
     let n = self.tree.nodes[self.at]
     n.look.scale = s
     n.look.scale_shift = max_shift
+    n.look.scale_for_beside = moves_besides
     let d = (s - 1.0).abs()
     if d > n.look.scale_peak {
       n.look.scale_peak = d
@@ -10146,7 +10172,7 @@ fn rest_bit_has(bits : Array[UInt], idx : Int) -> Bool {
 
 ///|
 // kept across runs: per-Tree side table + 1-slot MRU cache, cleared on `Tree::dispose`
-let tree_rest_books : Array[(Tree, RestBook)] = []
+let tree_rest_books : Ref[Array[(Tree, RestBook)]] = Ref([])
 
 ///|
 // kept across runs: 1-slot MRU cache for `Tree::rest_book` / `rest_book_opt`, cleared on `Tree::dispose`
@@ -10158,7 +10184,7 @@ fn Tree::rest_book_opt(self : Tree) -> RestBook? {
     Some((t, book)) if physical_equal(t, self) => return Some(book)
     _ => ()
   }
-  for entry in tree_rest_books {
+  for entry in tree_rest_books.val {
     if physical_equal(entry.0, self) {
       last_rest_book.val = Some(entry)
       return Some(entry.1)
@@ -10173,7 +10199,7 @@ fn Tree::rest_book(self : Tree) -> RestBook {
     Some((t, book)) if physical_equal(t, self) => return book
     _ => ()
   }
-  for entry in tree_rest_books {
+  for entry in tree_rest_books.val {
     if physical_equal(entry.0, self) {
       last_rest_book.val = Some(entry)
       return entry.1
@@ -10198,7 +10224,7 @@ fn Tree::rest_book(self : Tree) -> RestBook {
     pool_bits: [],
   }
   let pair = (self, book)
-  tree_rest_books.push(pair)
+  tree_rest_books.val.push(pair)
   last_rest_book.val = Some(pair)
   book
 }
@@ -10209,23 +10235,28 @@ fn Tree::rest_book_clear(self : Tree) -> Unit {
     Some((t, _)) if physical_equal(t, self) => last_rest_book.val = None
     _ => ()
   }
-  match tree_rest_books.search_by(fn(e) { physical_equal(e.0, self) }) {
-    Some(i) => {
-      let (_, book) = tree_rest_books.remove(i)
-      book.hooks.clear()
-      book.roots.clear()
-      book.signal_wakes.clear()
-      book.nested_pools.clear()
-      book.timeline_owners.clear()
-      book.hook_bits.clear()
-      book.root_bits.clear()
-      book.sig_bits.clear()
-      book.pool_bits.clear()
-      if tree_rest_books.is_empty() {
-        tree_rest_books.shrink_to_fit()
-      }
+  let arr = tree_rest_books.val
+  let mut found = -1
+  for i = 0; i < arr.length(); i = i + 1 {
+    if physical_equal(arr[i].0, self) {
+      found = i
+      break
     }
-    None => ()
+  }
+  if found >= 0 {
+    let (_, book) = arr.remove(found)
+    book.hooks.clear()
+    book.roots.clear()
+    book.signal_wakes.clear()
+    book.nested_pools.clear()
+    book.timeline_owners.clear()
+    book.hook_bits.clear()
+    book.root_bits.clear()
+    book.sig_bits.clear()
+    book.pool_bits.clear()
+    if arr.is_empty() {
+      tree_rest_books.val = []
+    }
   }
 }
 
@@ -10371,7 +10402,6 @@ fn View::on_rest_hook(
             i = i - 1
           }
           list.clear()
-          list.shrink_to_fit()
         }
         _ => ()
       }
@@ -10390,7 +10420,7 @@ fn View::on_rest_hook(
             list.remove(i) |> ignore
             if list.is_empty() {
               // Keep `(gen, list)` in `book.hooks` until node disposal so subsequent hooks reuse the single `owns`.
-              list.shrink_to_fit()
+              book.hooks[at] = (g, [])
             }
           }
           None => ()
@@ -10425,7 +10455,6 @@ fn View::register_nested_pool(self : View, on_outer_deep : () -> () -> Unit) -> 
             if list.is_empty() {
               book.nested_pools.remove(at)
               rest_bit_clear(book.pool_bits, at)
-              list.shrink_to_fit()
             }
           }
           None => ()
@@ -10685,29 +10714,25 @@ fn View::let_go(self : View) -> Unit {
   }
   // (each taken out before any is run: one may say another of it again, or let go of one)
   if !n.props.is_empty() {
-    let props = n.props.copy()
-    n.props.clear()
-    n.props.shrink_to_fit()
+    let props = n.props
+    n.props = []
     for p in props {
       (p.1)()
     }
   }
   if !n.drops.is_empty() {
-    let drops = n.drops.copy()
-    n.drops.clear()
-    n.drops.shrink_to_fit()
+    let drops = n.drops
+    n.drops = []
     for d in drops {
       (d.1)()
     }
   }
   // (a node let go is made another's (Tree's `free`): what these held let go of with it, not kept in their slots)
   if !n.leavings.is_empty() {
-    n.leavings.clear()
-    n.leavings.shrink_to_fit()
+    n.leavings = []
   }
   if !n.backs.is_empty() {
-    n.backs.clear()
-    n.backs.shrink_to_fit()
+    n.backs = []
   }
   n.leave_told = false
   n.on_press = None
@@ -11642,7 +11667,6 @@ fn Tree::rest_end(
                     w()
                   }
                   ws.clear()
-                  ws.shrink_to_fit()
                 }
                 _ => ()
               }
@@ -11744,7 +11768,6 @@ fn Tree::wake_subtree_preorder(self : Tree, book : RestBook, at : Int, parent_co
           w()
         }
         ws.clear()
-        ws.shrink_to_fit()
       }
       _ => ()
     }
@@ -12163,7 +12186,14 @@ fn View::pick_by(
             }
           }
           while non_pin_count > max_parked_non_pin {
-            match parked.search_by(fn(e) { !is_pinned(e.0) }) {
+            let mut found_idx = -1
+            for pi = 0; pi < parked.length(); pi = pi + 1 {
+              if !is_pinned(parked[pi].0) {
+                found_idx = pi
+                break
+              }
+            }
+            match (if found_idx >= 0 { Some(found_idx) } else { None }) {
               Some(idx) => {
                 let (_, evicted, _) = parked.remove(idx)
                 non_pin_count = non_pin_count - 1
@@ -12328,7 +12358,7 @@ fn[T : Eq, K : Hash + Eq] View::each_by(
     })
   }
   let kept : EachKept[K, T]? = keeps.map(fn(keys_of) { EachKept::new(slot, keys_of, keeps_holds) })
-  let change = fn(all) {
+  let change = fn(all : Array[T]) {
     slot.tree.holding_boxes(fn() { each_change(slot, all, rows, gone_rows, key, row, leave, ways, from, loc, kept, splits~, pop_leave~) })
   }
   let stop = match kept {
@@ -12535,11 +12565,17 @@ fn each_place(slot : View, sn : Node, order : Array[Int], made? : Array[Int] = [
       kids.push(v)
     }
     let h = tree.box_holder(made.get(0).unwrap_or(slot.at))
-    let one_by_one = few &&
-      made.iter().all(fn(v) {
+    let mut one_by_one = few
+    if one_by_one {
+      for mi = 0; mi < made.length(); mi = mi + 1 {
+        let v = made[mi]
         let m = tree.nodes[v]
-        !m.slot && tree.box_taken_out(h, m.flex) && tree.box_put_in(v)
-      })
+        if !(!m.slot && tree.box_taken_out(h, m.flex) && tree.box_put_in(v)) {
+          one_by_one = false
+          break
+        }
+      }
+    }
     if !one_by_one {
       slot.boxes_again()
     }
@@ -13181,10 +13217,16 @@ fn Tree::come_group_settle(
   // (what comes measured at the group's moment, how tall it goes to known: come_height's; in the middle of a layout,
   // none is, and the group waits for it)
   self.measured_now()
-  if !waited &&
-    live.iter().any(fn(w) {
-      w.live() is Some(m) && m.flex.style.come_to > 0.0 && m.flex.style.come_goal != m.flex.style.come_goal
-    }) {
+  let mut any_nan_goal = false
+  if !waited {
+    for li = 0; li < live.length(); li = li + 1 {
+      if live[li].live() is Some(m) && m.flex.style.come_to > 0.0 && m.flex.style.come_goal != m.flex.style.come_goal {
+        any_nan_goal = true
+        break
+      }
+    }
+  }
+  if any_nan_goal {
     self.once_laid_out(fn() { self.come_group_settle(col, g, views, waited=true) })
     return
   }
@@ -13214,7 +13256,14 @@ fn Tree::come_group_settle(
   // those of them let go or come to their way's end forgotten)
   let under_way = []
   let on_way = fn(k : Int) {
-    if live.iter().any(fn(w) { w.at == k }) || under_way.contains(k) {
+    let mut in_live = false
+    for li = 0; li < live.length(); li = li + 1 {
+      if live[li].at == k {
+        in_live = true
+        break
+      }
+    }
+    if in_live || under_way.contains(k) {
       return
     }
     let m = self.nodes[k]
@@ -13493,8 +13542,15 @@ fn Tree::holds_shared(self : Tree, at : Int, stays_ok? : Bool = false) -> Bool {
     return false
   }
   let n = self.nodes[at]
-  (n.share is Some(_) && !(stays_ok && n.share_stays)) ||
-  n.kids.iter().any(fn(k) { self.holds_shared(k, stays_ok~) })
+  if n.share is Some(_) && !(stays_ok && n.share_stays) {
+    return true
+  }
+  for ki = 0; ki < n.kids.length(); ki = ki + 1 {
+    if self.holds_shared(n.kids[ki], stays_ok~) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -13527,10 +13583,15 @@ fn Tree::swapped(self : Tree, v : View, going : Bool) -> Swap? {
   self.swaps.retain(fn(w) { w.at == now && w.node.alive() })
   let col = self.column_of(v.at)
   // (only one next to it: one with something laid out between them is in no place of its, each making its own way)
-  match
-    self.swaps.search_by(fn(w) {
-      w.going == going && w.column == col && self.next_in_column(col, w.node.at, v.at)
-    }) {
+  let mut found_i = -1
+  for si = 0; si < self.swaps.length(); si = si + 1 {
+    let w = self.swaps[si]
+    if w.going == going && w.column == col && self.next_in_column(col, w.node.at, v.at) {
+      found_i = si
+      break
+    }
+  }
+  match (if found_i >= 0 { Some(found_i) } else { None }) {
     Some(i) => Some(self.swaps.remove(i))
     None => None
   }
@@ -13574,7 +13635,12 @@ fn Tree::takes_room(self : Tree, at : Int) -> Bool {
   if !n.live {
     false
   } else if n.slot {
-    n.kids.iter().any(fn(k) { self.takes_room(k) })
+    for ki = 0; ki < n.kids.length(); ki = ki + 1 {
+      if self.takes_room(n.kids[ki]) {
+        return true
+      }
+    }
+    false
   } else {
     n.flex.style.position != @flex.PositionType::Absolute
   }
@@ -14220,9 +14286,8 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
   if self.parked_garbage.is_empty() {
     return
   }
-  let garbage = self.parked_garbage.copy()
-  self.parked_garbage.clear()
-  self.parked_garbage.shrink_to_fit()
+  let garbage = self.parked_garbage
+  self.parked_garbage = []
   for entry in garbage {
     let (at, gen) = entry
     if at < 0 || at >= self.nodes.length() {
@@ -14232,15 +14297,17 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     if n.gen != gen || n.live {
       continue
     }
-    n.props.shrink_to_fit()
-    n.drops.shrink_to_fit()
+    if n.props.is_empty() {
+      n.props = []
+    }
+    if n.drops.is_empty() {
+      n.drops = []
+    }
     if !n.leavings.is_empty() {
-      n.leavings.clear()
-      n.leavings.shrink_to_fit()
+      n.leavings = []
     }
     if !n.backs.is_empty() {
-      n.backs.clear()
-      n.backs.shrink_to_fit()
+      n.backs = []
     }
     n.leave_told = false
     n.on_press = None
@@ -15052,9 +15119,12 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     self.laid_passes = 0
   }
   self.laid_depth = self.laid_depth + 1
-  defer {
-    self.laid_depth = self.laid_depth - 1
-  }
+  self.laid_out_inner(upto)
+  self.laid_depth = self.laid_depth - 1
+}
+
+///|
+fn Tree::laid_out_inner(self : Tree, upto : Double) -> Unit {
   let w = self.last_w
   let h = self.last_h
   if !self.due {
@@ -17418,7 +17488,12 @@ pub fn Tree::drawn_place(self : Tree, id : NodeId) -> (Double, Double, Double, D
 /// Where node `at` is drawn in the window, how opaque and how big (its scale and its holders'), as it was last placed:
 /// composed from the window down as each_drawn_scaled composes it (a slot adds nothing of its own). The one way the
 /// window's terms and a node's are told apart: where it is drawn, where it takes a finger, where it is read out.
-fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Double, Double, Double) {
+fn Tree::projected(
+  self : Tree,
+  at : Int,
+  drawn? : Bool = false,
+  for_beside? : Bool = false,
+) -> (Double, Double, Double, Double) {
   let chain = []
   let mut i = at
   while i >= 0 {
@@ -17463,10 +17538,11 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
     // places an old view, takes a finger or is read out goes by where it is laid out, the old view moved where it is
     // drawn as it is painted, Ctx::moved_shift)
     let (ox, oy) = if drawn { m.look.drawn_off } else { (0.0, 0.0) }
-    x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
-    y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
+    let ms = if for_beside && !m.look.scale_for_beside { 1.0 } else { m.ls }
+    x = x + s * (m.lx + sx + ox + (1.0 - ms) * m.lpx)
+    y = y + s * (m.ly + sy + oy + (1.0 - ms) * m.lpy)
     a = a * m.la * (if k < chain.length() - 1 && self.flights.length() > 0 { self.held_a(chain[k + 1]) } else { 1.0 })
-    s = s * m.ls
+    s = s * ms
     // (on a flight's way: where the flight has it, shared.mbt)
     match m.lift {
       Some(l) => {
@@ -19337,7 +19413,12 @@ fn Tree::holds_hosted(self : Tree, at : Int) -> Bool {
   if n.hosted {
     return true
   }
-  n.kids.iter().any(fn(k) { self.holds_hosted(k) })
+  for ki = 0; ki < n.kids.length(); ki = ki + 1 {
+    if self.holds_hosted(n.kids[ki]) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -19351,7 +19432,12 @@ fn Tree::holds_unlaid_hosted(self : Tree, at : Int) -> Bool {
   if n.hosted && n.flex.style.height_kind() == @flex.LEN_AUTO {
     return true
   }
-  n.kids.iter().any(fn(k) { self.holds_unlaid_hosted(k) })
+  for ki = 0; ki < n.kids.length(); ki = ki + 1 {
+    if self.holds_unlaid_hosted(n.kids[ki]) {
+      return true
+    }
+  }
+  false
 }
 
 ///|

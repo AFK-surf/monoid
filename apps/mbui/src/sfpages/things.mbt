@@ -416,10 +416,19 @@ fn things_row_same(a : ThingsRow, b : ThingsRow) -> Bool {
   let json_same = fn(x : Json, y : Json) { physical_equal(x, y) || x == y }
   match (a, b) {
     (RowHead, RowHead) | (RowNoneFound, RowNoneFound) | (RowMore, RowMore) | (RowFoot, RowFoot) => true
-    (RowDay(x), RowDay(y)) => x == y
-    (RowSaid(x), RowSaid(y)) => json_same(x, y)
-    (RowTiles(x, hx), RowTiles(y, hy)) =>
-      hx == hy && x.length() == y.length() && x.iter().zip(y.iter()).all(fn(p) { json_same(p.0, p.1) })
+    (ThingsRow::RowDay(x), ThingsRow::RowDay(y)) => x == y
+    (ThingsRow::RowSaid(x), ThingsRow::RowSaid(y)) => json_same(x, y)
+    (RowTiles(x, hx), RowTiles(y, hy)) => {
+      if hx != hy || x.length() != y.length() {
+        return false
+      }
+      for i = 0; i < x.length(); i = i + 1 {
+        if !json_same(x[i], y[i]) {
+          return false
+        }
+      }
+      true
+    }
     (RowThing(kx, x), RowThing(ky, y)) => kx == ky && json_same(x, y)
     _ => false
   }
@@ -432,16 +441,20 @@ fn[R] rows_table_same(
   b : (Array[String], Map[String, R]),
   same : (R, R) -> Bool,
 ) -> Bool {
-  physical_equal(a, b) ||
-  (
-    a.0 == b.0 &&
-    a.0.iter().all(fn(k) {
-      match (a.1.get(k), b.1.get(k)) {
-        (Some(x), Some(y)) => same(x, y)
-        _ => false
-      }
-    })
-  )
+  if physical_equal(a, b) {
+    return true
+  }
+  if a.0 != b.0 {
+    return false
+  }
+  for i = 0; i < a.0.length(); i = i + 1 {
+    let k = a.0[i]
+    match (a.1.get(k), b.1.get(k)) {
+      (Some(x), Some(y)) => if !same(x, y) { return false }
+      _ => return false
+    }
+  }
+  true
 }
 
 ///|
@@ -589,8 +602,8 @@ fn things_list_node(
             @sf.style_node(row, fn() { things_found_none.then(side()) })
             @sf.words_node(row, fn() { @sf.t("web-main.find.none") }, fn() { things_none }) |> ignore
           }
-          Some(RowDay(day)) => things_day_node(row, side, fn() { day })
-          Some(RowSaid(group)) => {
+          Some(ThingsRow::RowDay(day)) => things_day_node(row, side, fn() { day })
+          Some(ThingsRow::RowSaid(group)) => {
             @sf.style_node(row, fn() { things_said_line.then(side()) })
             media_said_node(row, Some(group))
           }
@@ -631,7 +644,7 @@ fn things_list_node(
       reused=fn(name) {
         match table.untracked().1.get(name) {
           Some(RowThing(k, _)) => thing_kinds.search(k)
-          Some(RowDay(_)) => Some(thing_kinds.length())
+          Some(ThingsRow::RowDay(_)) => Some(thing_kinds.length())
           _ => None
         }
       },
@@ -651,7 +664,7 @@ fn things_list_node(
           Some(kind_idx) if kind_idx == thing_kinds.length() =>
             things_day_node(row, side, fn() {
               match now() {
-                Some(RowDay(day)) => day
+                Some(ThingsRow::RowDay(day)) => day
                 _ => ""
               }
             })

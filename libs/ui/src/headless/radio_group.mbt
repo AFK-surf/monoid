@@ -207,14 +207,15 @@ pub fn[K : Eq] radio_group(
       match rove.step(k.code) {
         Some(target_node) => {
           if !manual {
-            match items.iter().find_first(fn(e) { e.node.id() == target_node.id() }) {
-              Some(target) => {
+            for i = 0; i < items.length(); i = i + 1 {
+              let target = items[i]
+              if target.node.id() == target_node.id() {
                 let next_key = (target.key)()
                 if next_key != chosen() {
                   choose(next_key)
                 }
+                break
               }
-              None => ()
             }
           }
           true
@@ -240,7 +241,15 @@ fn[K : Eq] RadioGroup::hand_on(self : RadioGroup[K]) -> Unit {
   guard self.refocus.val is Some((gone, gone_key)) else { return }
   let cur = @signals.untracked(self.now)
   let live = self.items.filter(fn(e) { e.node.alive() && e.node.id() != gone.id() && !@signals.untracked(e.off) })
-  let to = match live.iter().find_first(fn(e) { @signals.untracked(e.key) == cur }) {
+  let mut matched : GroupEntry[K]? = None
+  for i = 0; i < live.length(); i = i + 1 {
+    let e = live[i]
+    if @signals.untracked(e.key) == cur {
+      matched = Some(e)
+      break
+    }
+  }
+  let to = match matched {
     Some(e) => Some(e)
     None => if cur != gone_key { live.get(0) } else { None }
   }
@@ -352,9 +361,12 @@ pub fn[K : Eq] RadioGroup::item(
                 Up if horizontal.val.unwrap_or(across(d)) => {
                   match preview(Some(d)) {
                     Some(k) =>
-                      match self.items.iter().find_first(fn(item) { item.node.alive() && !(item.off)() && (item.key)() == k }) {
-                        Some(item) => item.node.press() |> ignore
-                        None => ()
+                      for i = 0; i < self.items.length(); i = i + 1 {
+                        let item = self.items[i]
+                        if item.node.alive() && !(item.off)() && (item.key)() == k {
+                          item.node.press() |> ignore
+                          break
+                        }
                       }
                     None => if on_it(d) { v.press() |> ignore }
                   }

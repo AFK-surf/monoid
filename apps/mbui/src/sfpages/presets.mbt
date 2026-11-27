@@ -1050,7 +1050,13 @@ fn preset_copy_item(src : Source, w : Workspace, address : String, v : () -> Jso
 fn preset_menu_label(all : Array[Json], p : Json) -> String {
   let name = text(Some(p), "name")
   let at = text(Some(p), "station")
-  let twin = all.iter().any(fn(o) { text(Some(o), "name") == name && text(Some(o), "station") != at })
+  let mut twin = false
+  for i = 0; i < all.length(); i = i + 1 {
+    if text(Some(all[i]), "name") == name && text(Some(all[i]), "station") != at {
+      twin = true
+      break
+    }
+  }
   if twin {
     name + " · " + text(Some(p), "stationName")
   } else {
@@ -2431,10 +2437,16 @@ fn dir_station(d : Json?, address : String) -> String {
 ///|
 /// The workspace's current name for a station, or its saved name when it is offline.
 fn preset_station_name(address : String, saved : String, stations : Array[Json]) -> String {
-  match stations.iter().find_first(fn(s) { text(Some(s), "station") == address }) {
-    Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
-    _ => if saved != "" { saved } else { address }
+  for i = 0; i < stations.length(); i = i + 1 {
+    if text(Some(stations[i]), "station") == address {
+      let nm = text(Some(stations[i]), "name")
+      if nm != "" {
+        return nm
+      }
+      break
+    }
   }
+  if saved != "" { saved } else { address }
 }
 
 ///|
@@ -2635,7 +2647,13 @@ fn preset_capsules_node(
       None
     } else {
       let sid = e.station.get()
-      stations.iter().find_first(fn(s) { text(Some(s), "id") == sid || text(Some(s), "station") == sid })
+      for i = 0; i < stations.length(); i = i + 1 {
+        let s = stations[i]
+        if text(Some(s), "id") == sid || text(Some(s), "station") == sid {
+          return Some(s)
+        }
+      }
+      None
     }
   }
   let station_words = fn() {
@@ -2968,7 +2986,7 @@ fn preset_station_open(
           lead=fn(l) {
             l.gap(Is(8.0)) |> ignore
             @sf.check_mark_node(l, checked)
-            preset_station_mark_node(l, text(Some(s), "station"), emoji, icon, Row, fn() { @sf.theme().p.muted })
+            preset_station_mark_node(l, text(Some(s), "station"), emoji, icon, @sfbase.StationMarkAt::Row, fn() { @sf.theme().p.muted })
           },
           note=fn() { text(Some(s), "summary") },
           press=fn() {

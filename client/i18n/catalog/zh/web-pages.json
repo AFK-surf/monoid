@@ -489,6 +489,8 @@
   "web-pages.chat.lastActive": "最近活动 {time}",
   "web-pages.chat.openInSlack": "在 Slack 中打开",
   "web-pages.chat.openPanel": "打开侧栏",
+  "web-pages.chat.openPanelTab": "打开侧栏标签",
+  "web-pages.chat.tabOpen": "已打开",
   "web-pages.chat.pickSaved": "已更改，下一轮起生效",
   "web-pages.chat.profileDetails": "Profile 详情",
   "web-pages.chat.transcript": "Session 文件",

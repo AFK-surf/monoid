@@ -115,8 +115,10 @@ pub fn service_marked(p : ServicePage, said : Json) -> Unit {
       match (field(k, "n"), css_box(field(k, "rect"))) {
         (Some(Number(n, ..)), Some(rect)) => {
           let n = n.to_int()
-          if m.marks.iter().any(fn(x) { x.n == n }) {
-            return
+          for x in m.marks {
+            if x.n == n {
+              return
+            }
           }
           m.marks.push({
             n,
@@ -276,7 +278,7 @@ pub fn shot_next(p : ServicePage, site : @ui.NativeView) -> Unit {
     shot_done(p, site, s)
     return
   }
-  s.wait = Place(false)
+  s.wait = ShotWait::Place(false)
   let n = s.todo[s.i].n
   page_say(p, shot_ask(s.k, "place", "__stillfailMarks.place(\{n},false)"))
 }
@@ -297,7 +299,7 @@ pub fn shot_said(p : ServicePage, site : @ui.NativeView, said : Json) -> Unit {
       }
       shot_next(p, site)
     }
-    ("place", Place(center)) => {
+    ("place", ShotWait::Place(center)) => {
       let n = s.todo[s.i].n
       let place = match v {
         Some(String(j)) =>
@@ -327,7 +329,7 @@ pub fn shot_said(p : ServicePage, site : @ui.NativeView, said : Json) -> Unit {
             }
           } else {
             // out of sight: scrolled into the middle, and asked again once that is drawn
-            s.wait = Place(true)
+            s.wait = ShotWait::Place(true)
             page_say(p, shot_ask(s.k, "place", "__stillfailMarks.place(\{n},true)", drawn=true))
           }
         }

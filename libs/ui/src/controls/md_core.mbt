@@ -119,12 +119,19 @@ fn core_blocks(nodes : Array[Json], text : String) -> Array[MdBlock] {
         if math_field(a,"math") == Json::boolean(true) { out.push(MathBlock(source,math_field(a,"drawing"))) }
         else { out.push(CodeBlock(math_string(math_field(a,"lang")),source,Some(math_string(math_field(a,"ink"))))) }
       }
-      "quote" => out.push(Quote(core_blocks(kids,text)))
+      "quote" => out.push(MdBlock::Quote(core_blocks(kids,text)))
       "list" => {
         let mut tight = true
         let items = kids.map(fn(li) {
           let (_,k,a) = md_parts(li)
-          let loose = k.iter().any(fn(j) { let (n,_,_) = md_parts(j); n == "p" })
+          let mut loose = false
+          for i = 0; i < k.length(); i = i + 1 {
+            let (n,_,_) = md_parts(k[i])
+            if n == "p" {
+              loose = true
+              break
+            }
+          }
           if loose { tight = false }
           let checked = match math_field(a,"checked") { True => Some(true); False => Some(false); _ => None }
           { task:checked, blocks:core_item(k,text) }

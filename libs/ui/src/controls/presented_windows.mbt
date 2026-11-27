@@ -4,7 +4,7 @@
 
 ///|
 fn init {
-  @ui.window_kept_array(presented_now)
+  @ui.window_kept_ref(presented_now, fn() { [] })
   @ui.window_kept_ref(presented_said, presented_said_new)
   @ui.window_kept_map(presented_items_said)
   @ui.window_kept_map(took_place)

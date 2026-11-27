@@ -445,6 +445,7 @@ fn dock_side_at(
     list_band: f.band,
     bar,
     tape: false,
+    glass: !wide.tape.get() && f.glass > 0.01,
   }
 }
 
@@ -481,16 +482,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit, gro
       .width(By(fn() { Some(at().block.2) }))
       .height(By(fn() { Some(at().block.3) }))
       .margin(By(fn() { (at().block.0, at().block.1, 0.0, 0.0) }))
-      .ground(By(fn() {
-        match ground {
-          Some(gr) => gr()
-          None => at().ground
-        }
-      }))
-      .shadow(By(fn() { at().shadow }))
       .clips(Is(true))
       .row(Is(true))
       |> ignore
+      match ground {
+        Some(gr) => g.ground(By(gr)).shadow(By(fn() { at().shadow })) |> ignore
+        None => {
+          // (a signal of its own, so a window made shorter or wider, which moves `at`, wakes none of the glass's,
+          // edge's or shadow's bindings: only the block peeking or not does)
+          let glass_on = @signals.computed(fn(_) { at().glass }, same=fn(a, b) { a == b })
+          g.owns(fn() { glass_on.dispose() }) |> ignore
+          let peek_glass = fn() { if @signals.active_sub() is None { at().glass } else { glass_on.get() } }
+          g.ground(By(fn() { if peek_glass() { 0L } else { at().ground } })) |> ignore
+          @sf.drawer_surface_decorate(g, active=peek_glass, solid=closed_ground, clips=false) |> ignore
+        }
+      }
       dock_round_node(g, at)
       // its top row the window's title bar across all of it, under the rail's and the sidebar's own (between them too:
       // the sidebar reaching into the rail, side_into_rail); not in the closed bar (what is pressed there its places')
@@ -580,6 +586,7 @@ priv struct SideAt {
   list_band : Double
   bar : Bool
   tape : Bool
+  glass : Bool
 }
 
 ///|

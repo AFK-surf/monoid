@@ -745,7 +745,14 @@ fn laid_kept(c : Ctx, root : Int) -> Unit {
 fn tree_sig(c : Ctx) -> Int64 {
   let mut h = -3750763034362895579L
   // (folded in place, no closure over `h`: a node's dozen and more numbers, for every node of every build)
-  let moves = c.nodes.iter().take(c.count).any(fn(n) { n.moved_by is Some(_) })
+  let mut moves = false
+  let limit = if c.count < c.nodes.length() { c.count } else { c.nodes.length() }
+  for i = 0; i < limit; i = i + 1 {
+    if c.nodes[i].moved_by is Some(_) {
+      moves = true
+      break
+    }
+  }
   h = hash_mix(h, c.count.to_int64())
   for i in 0..<c.count {
     let n = c.nodes[i]

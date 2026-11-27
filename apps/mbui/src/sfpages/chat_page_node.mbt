@@ -306,7 +306,14 @@ pub fn chat_page_body_node(
         // it not, the window moved about it first (chat.around by its ts), said where the chat has it nowhere:
         // sfbase's go_to_quoted)
         jump: Some(fn(ts, passage) {
-          let shown = chat_said_all(src, r, view).iter().find_first(fn(m) { m.ts == ts }).map(fn(m) { m.seq })
+          let msgs = chat_said_all(src, r, view)
+          let mut shown : Double? = None
+          for i = 0; i < msgs.length(); i = i + 1 {
+            if msgs[i].ts == ts {
+              shown = Some(msgs[i].seq)
+              break
+            }
+          }
           @sfbase.go_to_quoted(src, r, @signals.untracked(view).thread, shown, ts, passage)
         }),
         picture: None,

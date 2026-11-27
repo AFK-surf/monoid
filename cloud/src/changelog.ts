@@ -122,6 +122,31 @@ function putEdgeChangelog(cacheKey: string, etag: string, body: string): void {
   }
 }
 
+/** Forgets what this isolate keeps (a test's cold isolate: test/worker.ts `/__test/cold-changelog`). */
+export function forgetEdgeChangelog(): void {
+  edgeChangelogCache.clear();
+}
+
+/**
+ * Where this place (the PoP) keeps a channel's changelog, for isolates that do not have it yet: the body is still
+ * served only once ServiceStatus says its ETag is the one out (so `/v1/releases/out` is seen at once), but it does not
+ * cross from the object again (~1.2 MB on the beta, 2026-11-27).
+ */
+function popChangelogKey(channel: Channel, upstream: string): string {
+  return `https://changelog-cache.internal/${encodeURIComponent(channel)}?upstream=${encodeURIComponent(upstream)}`;
+}
+
+/** The kept body's ETag as it was put (a cache may weaken its own `etag`). */
+const POP_ETAG = "x-stillfail-changelog-etag";
+
+function popCache(): Cache | undefined {
+  try {
+    return (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
+  } catch {
+    return undefined;
+  }
+}
+
 export type ReadReleaseFileResult =
   | { ok: true; value: string | null; cacheable: boolean }
   | { ok: false; error: unknown };
@@ -251,10 +276,34 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
     etag,
   });
   if (ttl > 0 && env.SERVICE_STATUS) {
+    const upstream = env.RELEASES_UPSTREAM ?? "";
+    const cacheKey = `${channel}\0${upstream}`;
+    const pop = popCache();
+    const popKey = popChangelogKey(channel, upstream);
+    // A body this place keeps, read only once ServiceStatus says its ETag is the one out; cancelled otherwise.
+    let popMatch: Response | undefined;
+    let popUsed = false;
+    const keep = async (etag: string, body: string) => {
+      putEdgeChangelog(cacheKey, etag, body);
+      if (!pop) return;
+      try {
+        await pop.put(popKey, new Response(body, { headers: { "content-type": "application/json", etag, [POP_ETAG]: etag, "cache-control": `public, max-age=${ttl}` } }));
+      } catch (error) {
+        console.error("changelog pop cache put failed:", error);
+      }
+    };
+    const full = (etag: string | undefined, body: string) => new Response(body, { status: 200, headers: etag ? { ...CHANGELOG_HEADERS, etag } : CHANGELOG_HEADERS });
     try {
-      const cacheKey = `${channel}\0${env.RELEASES_UPSTREAM ?? ""}`;
       const edgeCached = edgeChangelogCache.get(cacheKey);
-      const knownEtag = edgeCached?.etag ?? singleEtagToken(clientIfNoneMatch);
+      if (!edgeCached && pop) {
+        try {
+          popMatch = await pop.match(popKey);
+        } catch (error) {
+          console.error("changelog pop cache match failed:", error);
+        }
+      }
+      const popEtag = popMatch?.headers.get(POP_ETAG) ?? null;
+      const knownEtag = edgeCached?.etag ?? popEtag ?? singleEtagToken(clientIfNoneMatch);
       const status = env.SERVICE_STATUS.getByName("primary");
       const result = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, knownEtag);
       if (!result.ok) return unavailable(result.file, new Error(result.message));
@@ -265,24 +314,32 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
         if (edgeCached && edgeCached.etag === result.etag) {
           edgeChangelogCache.delete(cacheKey);
           edgeChangelogCache.set(cacheKey, edgeCached);
-          return new Response(edgeCached.body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag: result.etag } });
+          return full(result.etag, edgeCached.body);
+        }
+        if (popMatch && popEtag === result.etag) {
+          popUsed = true;
+          const body = await popMatch.text();
+          putEdgeChangelog(cacheKey, result.etag, body);
+          return full(result.etag, body);
         }
         // Defensive fallback: if DO returned notModified without a matching edge entry or client ETag match, fetch full body.
-        const full = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, null);
-        if (!full.ok) return unavailable(full.file, new Error(full.message));
-        if ("body" in full) {
-          if (full.etag) putEdgeChangelog(cacheKey, full.etag, full.body);
-          return new Response(full.body, { status: 200, headers: full.etag ? { ...CHANGELOG_HEADERS, etag: full.etag } : CHANGELOG_HEADERS });
+        const whole = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, null);
+        if (!whole.ok) return unavailable(whole.file, new Error(whole.message));
+        if ("body" in whole) {
+          if (whole.etag) await keep(whole.etag, whole.body);
+          return full(whole.etag, whole.body);
         }
       } else if ("body" in result) {
-        if (result.etag) putEdgeChangelog(cacheKey, result.etag, result.body);
+        if (result.etag) await keep(result.etag, result.body);
         if (result.etag && etagMatches(clientIfNoneMatch, result.etag)) {
           return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
         }
-        return new Response(result.body, { status: 200, headers: result.etag ? { ...CHANGELOG_HEADERS, etag: result.etag } : CHANGELOG_HEADERS });
+        return full(result.etag, result.body);
       }
     } catch (error) {
       console.error("changelog cache unavailable:", error);
+    } finally {
+      if (popMatch && !popUsed) await popMatch.body?.cancel().catch(() => {});
     }
   }
   let failure = null as { file: string; error: unknown } | null;

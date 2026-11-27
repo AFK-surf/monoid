@@ -706,7 +706,15 @@ fn sec_others(l : Json?) -> Array[Json] {
 ///|
 /// Whether the web's note shows under the viewer's devices (lock `l`): this device a web page, or one of theirs.
 fn sec_web_noted(l : Json?, mine : Array[Json]) -> Bool {
-  !flag(l, "canSign") || mine.iter().any(fn(d) { text(Some(d), "kind") == "web" })
+  if !flag(l, "canSign") {
+    return true
+  }
+  for i = 0; i < mine.length(); i = i + 1 {
+    if text(Some(mine[i]), "kind") == "web" {
+      return true
+    }
+  }
+  false
 }
 
 ///|

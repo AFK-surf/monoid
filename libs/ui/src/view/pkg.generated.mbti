@@ -2122,7 +2122,7 @@ pub fn View::said_moving(Self, String, String, (Double) -> Double) -> Unit
 #callsite(autofill(loc))
 pub fn View::says(Self, Live[Said?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::scale(Self, Live[Double], about? : Pivot, max_shift? : Double, loc~ : SourceLoc) -> Self
+pub fn View::scale(Self, Live[Double], about? : Pivot, max_shift? : Double, moves_besides? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::scrim_under(Self) -> Self
 #callsite(autofill(loc))
 pub fn View::scroll_column(Self, (Self) -> Unit, scroll? : Scroll, fill? : Bool, bar? : ScrollBar, loc~ : SourceLoc) -> Self

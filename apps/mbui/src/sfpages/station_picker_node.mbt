@@ -148,10 +148,12 @@ fn sp_meter_of(meters : Array[Json], kind : Int) -> Json? {
       _ => s == "磁盘" || s == "Disk"
     }
   }
-  match meters.iter().find_first(want) {
-    Some(m) => Some(m)
-    None => meters.get(kind)
+  for i = 0; i < meters.length(); i = i + 1 {
+    if want(meters[i]) {
+      return Some(meters[i])
+    }
   }
+  meters.get(kind)
 }
 
 ///|
@@ -260,7 +262,7 @@ fn sp_station_mark_box(parent : @view.View, st : Json?, single_line? : Bool = fa
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    @sfbase.station_mark_at_node(m, fn() { text(st, "station") }, fn() { text(st, "emoji") }, fn() { text(st, "icon") }, Row)
+    @sfbase.station_mark_at_node(m, fn() { text(st, "station") }, fn() { text(st, "emoji") }, fn() { text(st, "icon") }, @sfbase.StationMarkAt::Row)
   })
   |> ignore
 }
