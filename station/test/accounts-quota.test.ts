@@ -546,6 +546,13 @@ describe("allowances and renewing", { concurrency: true }, () => {
       const trulyBlockedQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(trulyBlockedQ.state, "blocked");
       assert.equal(trulyBlockedQ.detail, tr("zh", "station.quota.agyNoPlan"));
+      // Another eligibility refusal (not the location's): Google's words as they are, never "no plan".
+      const otherErr = "Eligibility check failed: Your current account is not eligible for Antigravity. Your administrator has turned it off.";
+      const otherQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: otherErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(otherQ.state, "unavailable");
+      assert.ok(otherQ.detail?.includes("Your administrator has turned it off"));
+      const otherOffQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: otherErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.ok(otherOffQ.detail?.includes("Your administrator has turned it off"));
       // Google's API not answering: no plan can be told, the CLI's refusal said as what it means.
       const unreadQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: "http://127.0.0.1:9" }, "zh");
       assert.equal(unreadQ.detail, tr("zh", "station.quota.agyLocation"));
