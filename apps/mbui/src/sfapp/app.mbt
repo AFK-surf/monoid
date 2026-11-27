@@ -1027,7 +1027,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
       @sfbase.workspace_owners_version.get() |> ignore
       match shown.get() {
         Some(Screen(at)) =>
-          match @sfbase.window_here_owner_state(wid, at.station) {
+          match @sfbase.window_here_owner_state(wid, at.station, screen=at.screen) {
             Matched => Some((@sfbase.Page::Screen(at), 0))
             Waiting => Some((@sfbase.Page::Screen(at), 1))
             Denied => Some((@sfbase.Page::Screen(at), 2))

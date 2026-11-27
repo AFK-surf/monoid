@@ -179,10 +179,11 @@ pub fn window_text(p : Page) -> String? {
 let startup_window_owner : Ref[String?] = Ref(None)
 
 ///|
-/// Transient `(station, owner)` held ONLY across the synchronous first-frame render inside `@ui.window_open_here(what)`
-/// for a `Page::Screen` before `windows_here_owner[wid]` is populated. Cleared immediately on return.
+/// Transient `(station, screen, owner)` held ONLY across the synchronous first-frame render inside
+/// `@ui.window_open_here(what)` for a `Page::Screen` before `windows_here_owner[wid]` is populated.
+/// Cleared immediately on return.
 // kept across runs: put back by pages.mbt's reset
-let windows_here_opening_owner : Ref[(String, String)?] = Ref(None)
+let windows_here_opening_owner : Ref[(String, String, String)?] = Ref(None)
 
 ///|
 /// Set the creation owner for a child-process standalone screen window (called only at real startup entrypoints).
@@ -278,7 +279,7 @@ pub fn open_window(p : Page) -> Bool {
         }
         let owner = window_page_owner(p)
         windows_here_opening_owner.val = match p {
-          Screen(at) => Some((at.station, owner))
+          Screen(at) => Some((at.station, at.screen, owner))
           _ => None
         }
         let wid = @ui.window_open_here(what)
@@ -488,8 +489,8 @@ pub(all) enum WindowOwnerState {
 }
 
 ///|
-/// Evaluate tri-state ownership for window `wid` showing a screen on `station`.
-pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState {
+/// Evaluate tri-state ownership for window `wid` showing `screen` on `station`.
+pub fn window_here_owner_state(wid : Int, station : String, screen? : String = "") -> WindowOwnerState {
   let ws = match station.find("/") {
     Some(i) => station.exact_view(end=i).to_owned()
     None => ""
@@ -498,21 +499,21 @@ pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState 
     let expected = match windows_here_owner.get(wid) {
       Some(o) => Some(o)
       None =>
-        match windows_here_opening_owner.val {
-          Some((st, o)) if st == station => Some(o)
-          _ => None
+        if !windows_here_show.contains(wid) {
+          match windows_here_opening_owner.val {
+            Some((st, sc, o)) if st == station && (screen == "" || sc == screen) => Some(o)
+            _ => None
+          }
+        } else {
+          None
         }
     }
     match expected {
       Some(owner) if owner != "" && !workspace_is_revoked(ws) =>
-        match workspace_explicit_owner_of(ws) {
-          Some(actual) => if actual == owner { Matched } else { Denied }
-          None =>
-            if !workspace_owners_synced() && workspace_owner_of(ws) == owner {
-              Matched
-            } else {
-              Denied
-            }
+        if workspace_explicit_owner_of(ws) == Some(owner) {
+          Matched
+        } else {
+          Denied
         }
       _ => Denied
     }
@@ -523,9 +524,12 @@ pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState 
         if expected == "" || workspace_is_revoked(ws) {
           return Denied
         }
+        if !workspace_owners_synced() {
+          return Waiting
+        }
         match workspace_explicit_owner_of(ws) {
           Some(actual) => if actual == expected { Matched } else { Denied }
-          None => if workspace_owners_synced() { Denied } else { Waiting }
+          None => Denied
         }
       }
     }
@@ -533,9 +537,9 @@ pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState 
 }
 
 ///|
-/// Convenience predicate returning `true` iff `window_here_owner_state(wid, station) == Matched`.
-pub fn window_here_owner_matches(wid : Int, station : String) -> Bool {
-  window_here_owner_state(wid, station) == Matched
+/// Convenience predicate returning `true` iff `window_here_owner_state(wid, station, screen~) == Matched`.
+pub fn window_here_owner_matches(wid : Int, station : String, screen? : String = "") -> Bool {
+  window_here_owner_state(wid, station, screen~) == Matched
 }
 
 ///|

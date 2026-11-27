@@ -570,6 +570,7 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   let mut all_loaded = true
   let seen : Map[String, String] = Map([])
   let pending_owners : Map[String, Bool] = Map([])
+  let pending_ws : Map[String, Bool] = Map([])
   for a in accounts {
     let s = Some(a)
     let acc = field(s, "account")
@@ -585,11 +586,17 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
     if !acc_loaded {
       all_loaded = false
       pending_owners[owner] = true
+      for w in items(s, "workspaces") {
+        let id = text(Some(w), "id")
+        if id != "" {
+          pending_ws[id] = true
+        }
+      }
       continue
     }
     for w in items(s, "workspaces") {
       let id = text(Some(w), "id")
-      if id != "" && !seen.contains(id) {
+      if id != "" && !pending_ws.contains(id) && !seen.contains(id) {
         seen[id] = owner
       }
     }
@@ -600,7 +607,7 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   for ws in workspace_owners.keys().collect() {
     if !seen.contains(ws) {
       let old_owner = workspace_owners.get(ws).unwrap_or("")
-      if pending_owners.contains(old_owner) {
+      if pending_owners.contains(old_owner) || pending_ws.contains(ws) {
         continue
       }
       workspace_owners.remove(ws)

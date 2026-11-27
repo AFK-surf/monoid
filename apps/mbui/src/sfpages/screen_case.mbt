@@ -227,10 +227,13 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   case_seq_next.val += 1
   let req_seq = case_seq_next.val
   case_asked_seq[id] = req_seq
-  let release_asked = fn() {
+  let release_asked = fn(wake : Bool) {
     if case_asked_seq.get(id) == Some(req_seq) {
       case_asked.remove(id)
       case_asked_seq.remove(id)
+      if wake {
+        case_told.set(case_told.untracked() + 1)
+      }
     }
   }
   let params = {
@@ -241,22 +244,25 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   }
   (src.call)("screen.chrome", Json::object(params), fn(r) {
     if @sfbase.workspace_is_revoked(ws) || screen_principal_for(station) != expected_principal {
-      release_asked()
+      release_asked(true)
       return
     }
     match (orig_sess, screens_open.get(expected_key)) {
       (Some(orig), Some(cur)) =>
         if !physical_equal(orig, cur) || !cur.is_active_principal() {
-          release_asked()
+          release_asked(true)
           return
         }
       (Some(_), None) => {
-        release_asked()
+        release_asked(true)
         return
       }
       (None, _) => ()
     }
-    guard r is Ok(v) else { return }
+    guard r is Ok(v) else {
+      release_asked(false)
+      return
+    }
     let got = Some(v)
     let take = fn(name : String, b64 : String) {
       match @codec.from_base64_exact(b64) {

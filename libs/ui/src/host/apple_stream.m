@@ -1475,6 +1475,11 @@ static void audio_packet(MBStream *s, NSData *data, NSUInteger expectedGen, BOOL
   }
   __weak MBStream *weak = s;
   dispatch_queue_t queue = s.audioQueue;
+  os_unfair_lock_lock(&audio_state_lock);
+  if (s.audioGeneration != generation) {
+    os_unfair_lock_unlock(&audio_state_lock);
+    return;
+  }
   [s.audioPlayer scheduleBuffer:buffer completionCallbackType:AVAudioPlayerNodeCompletionDataPlayedBack completionHandler:^(AVAudioPlayerNodeCompletionCallbackType type) {
     (void)type;
     dispatch_async(queue, ^{
@@ -1494,8 +1499,7 @@ static void audio_packet(MBStream *s, NSData *data, NSUInteger expectedGen, BOOL
       os_unfair_lock_unlock(&audio_state_lock);
     });
   }];
-  os_unfair_lock_lock(&audio_state_lock);
-  if (s.audioGeneration == generation && !s.audioPlayer.playing && s.audioQueued >= 3) [s.audioPlayer play];
+  if (!s.audioPlayer.playing && s.audioQueued >= 3) [s.audioPlayer play];
   os_unfair_lock_unlock(&audio_state_lock);
 }
 
