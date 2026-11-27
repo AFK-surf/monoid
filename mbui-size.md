@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 2.73 | 3.69 | 15.33 | 38.46 | 59.38 | 33.68 | 68.88 | 103.68 | 129.49 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
 | [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
 | [36e832ca1](https://github.com/AFK-surf/monoid/commit/36e832ca1da5f831119dcdaf2e551cff9e2f1343) perf(ui,mbui): snap sliding pane offsets, defer la | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.3 | 136.48 |
-| [f4121f666](https://github.com/AFK-surf/monoid/commit/f4121f66695c19b5891d7787469d542723fc762c) refactor(android,core): use monotonic dispatch tok | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.3 | 136.48 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.79 |
 | [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [36e832ca1](https://github.com/AFK-surf/monoid/commit/36e832ca1da5f831119dcdaf2e551cff9e2f1343) perf(ui,mbui): snap sliding pane offsets, defer la | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 65.37 |
-| [f4121f666](https://github.com/AFK-surf/monoid/commit/f4121f66695c19b5891d7787469d542723fc762c) refactor(android,core): use monotonic dispatch tok | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.48 |
