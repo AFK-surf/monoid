@@ -8,6 +8,7 @@ import { agyBaseModel } from "../agents/agy.ts";
 import { devinFusionBase, splitDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel, type Profile as RuntimeProfile } from "../agents/runtime.ts";
 import { profileRuntimes, profileService, type Runtime } from "../agents/profiles.ts";
+import { baseModelKey } from "../accounts/models.ts";
 import { modelKey } from "../read/usage.ts";
 import { tr, type Lang } from "../ops/i18n.ts";
 
@@ -116,14 +117,19 @@ const machineName = (name: string | undefined) => name?.replace(/（本机）$| 
 /// module refuses a config that does not pass them before anything reads it). `found`: the models a profile's last check
 /// found (accounts/index.ts), which it runs besides those config.json names; none for one that runs no runtime (a
 /// provider of the automatic decisions alone: its models are not chat models).
-export function hubConfig(raw: any, dataDir: string, found: (id: string) => readonly string[] | null = () => null): HubConfig {
+export function hubConfig(
+  raw: any,
+  dataDir: string,
+  found: (id: string) => readonly string[] | null = () => null,
+  allowed: (id: string) => readonly string[] | null = found,
+): HubConfig {
   const disabledRuntimes: Runtime[] = Array.isArray(raw?.disabledRuntimes)
     ? [...new Set<Runtime>(raw.disabledRuntimes.map((r: unknown) => runtimeKind(r)).filter((r: Runtime | undefined): r is Runtime => r !== undefined))]
     : [];
   const disabledSet = new Set<Runtime>(disabledRuntimes);
   const profiles: Profile[] = (Array.isArray(raw?.profiles) ? raw.profiles : []).map((p: any): Profile => {
     const seen = new Set<string>();
-    const models = (Array.isArray(p.models) ? p.models : [])
+    const models: string[] = (Array.isArray(p.models) ? p.models : [])
       .map((m: unknown) => String(m).trim())
       .filter((m: string) => m !== "" && !seen.has(m) && (seen.add(m), true));
     const base: RuntimeProfile = { ...p, home: under(dataDir, String(p.home ?? "")) };
@@ -136,10 +142,23 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     const runtimes = allRuntimes.filter((r) => !disabledSet.has(r));
     const service = profileService(base);
     if (allRuntimes[0] === undefined) delete base.runtime;
-    const runs = [...models];
+    const listed = allRuntimes.length > 0 ? found(String(p.id)) : null;
+    const permitted = allRuntimes.length > 0 ? allowed(String(p.id)) : null;
+    const subscription = p.access !== null && typeof p.access === "object" && p.access.kind === "subscription";
+    // For subscriptions, the provider's checked model list reflects the account's current tier (e.g. Free vs Pro):
+    // ignore stale legacy `p.models` entries the tier no longer offers so downgraded accounts are not picked for them.
+    // `allowed` includes opt-in catalog entries (such as Devin Fusion combinations) without auto-adding them to `runs`.
+    const namedModels =
+      subscription && listed !== null && listed.length > 0
+        ? (() => {
+            const offered = new Set((permitted ?? listed).map(baseModelKey));
+            return models.filter((m) => offered.has(baseModelKey(m)));
+          })()
+        : models;
+    const runs = [...namedModels];
     if (allRuntimes.length > 0) {
-      const has = new Set(models.map(modelKey));
-      for (const m of found(String(p.id)) ?? []) {
+      const has = new Set(namedModels.map(modelKey));
+      for (const m of listed ?? []) {
         if (m === "" || has.has(modelKey(m))) continue;
         has.add(modelKey(m));
         runs.push(m);
@@ -153,7 +172,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       ...(service !== undefined ? { service } : {}),
       runtimes,
       models: runs,
-      named: models,
+      named: namedModels,
       model: nonEmpty(p.model),
       backgroundOnMessage: p.backgroundOnMessage !== false,
       enabled: p.enabled !== false,

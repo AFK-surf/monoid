@@ -236,11 +236,15 @@ const NOT_FOR_IT = "that share is not for this station";
 const NOT_THERE = "that share is not for this station's workspaces";
 const STATIONS_UNKNOWN = "this station does not know its workspaces' stations yet";
 const NOT_SHARED = "this station does not share that";
+const HOST_DISABLED = "this profile is disabled on its host";
 /// Whether a host answered that its `allow` leaves this station out (NOT_FOR_IT): the copy it has is not its to keep, as
 /// the `gone` its host tells (share.changed) would have said had it got here. Only that, the host's own word: what the
 /// cloud's list says (NOT_THERE, STATIONS_UNKNOWN) it can hold back or lose a station of a while, a host that forgot a
 /// move answers NOT_SHARED till the new one says it, and a copy taken away loses what was set on it here (`paused`).
 const notOurs = (e: unknown) => e instanceof Error && e.message === NOT_FOR_IT;
+/// Whether a host answered that it disabled the shared profile (`HOST_DISABLED`): the borrower keeps its copy, stops
+/// using cached tokens or local fallback, and pulls the updated hostOff state.
+const hostDisabled = (e: unknown) => e instanceof Error && e.message === HOST_DISABLED;
 /// What a host answers `share.lend` when its own login of the profile is over (refused by its provider, none kept, run
 /// out and not renewed), followed by its words: the host answered, so it is not one that did not (`unreachable`), and
 /// nothing lent before is used (it is of the same login), FB-44.
@@ -1451,8 +1455,12 @@ export class Sharing {
         this.lastToldSlots.set(`${id}\0${peer}`, `${otherActive}:${hostCap ?? ""}`);
         return { version: at, profile: portable(now.profile), email, allow: now.allow, ...(now.allowAuto ? { allowAuto: true } : {}), workspaces: this.sharedIn(now.profile), quotaRevision: state.hosted[id]?.quotaRevision ?? 0, otherActive, hostCap, slotEpoch: this.slotEpoch };
       }
-      if (method === "share.slotClaim") return this.handleSlotClaim(peer, id, p, request);
+      if (method === "share.slotClaim") {
+        if (p.enabled === false) throw new Error(HOST_DISABLED);
+        return this.handleSlotClaim(peer, id, p, request);
+      }
       if (method === "share.lend") {
+        if (p.enabled === false) throw new Error(HOST_DISABLED);
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
         return this.lend(p, typeof request.rejected === "string" ? request.rejected : undefined);
       }
@@ -2129,7 +2137,7 @@ export class Sharing {
       this.setBorrowedHeldSlot(session, { host, shareId, profileId: String(profile.id) });
       return { ok: true };
     } catch (e) {
-      if (notOurs(e)) {
+      if (notOurs(e) || hostDisabled(e)) {
         this.askAgain(shareId);
         throw e;
       }
@@ -2222,9 +2230,9 @@ export class Sharing {
       return token;
     } catch (e) {
       if (loginOver(e)) throw this.overThere(profile, e, () => this.lentClaude.delete(profile.id));
-      // Left out by who may use it (notOurs): nothing lent before is used, and the copy is asked of again, which takes
-      // it away. Any other refusal is the host not answering, as before.
-      const ours = !notOurs(e);
+      // Left out by who may use it (notOurs) or disabled on its host (hostDisabled): nothing lent before is used, and
+      // the copy is asked of again. Any other refusal is the host not answering, as before.
+      const ours = !notOurs(e) && !hostDisabled(e);
       if (ours) {
         this.unreachable.set(host, this.time.now());
         this.scheduleRetry();
@@ -2255,8 +2263,8 @@ export class Sharing {
       this.unreachable.delete(host);
     } catch (e) {
       if (loginOver(e)) throw this.overThere(profile, e);
-      // Left out by who may use it (notOurs): as lendClaude.
-      const ours = !notOurs(e);
+      // Left out by who may use it (notOurs) or disabled on its host (hostDisabled): as lendClaude.
+      const ours = !notOurs(e) && !hostDisabled(e);
       if (ours) {
         this.unreachable.set(host, this.time.now());
         this.scheduleRetry();
@@ -2294,8 +2302,8 @@ export class Sharing {
       this.unreachable.delete(host);
     } catch (e) {
       if (loginOver(e)) throw this.overThere(profile, e);
-      // Left out by who may use it (notOurs): as lendClaude.
-      const ours = !notOurs(e);
+      // Left out by who may use it (notOurs) or disabled on its host (hostDisabled): as lendClaude.
+      const ours = !notOurs(e) && !hostDisabled(e);
       if (ours) {
         this.unreachable.set(host, this.time.now());
         this.scheduleRetry();
@@ -2899,7 +2907,15 @@ export class Sharing {
       // The allowance is the host's, naming the stations of each of its workspaces: only this one's and the viewer's.
       const host = String(p.share.host ?? "");
       const had = this.readState().borrowed[id];
-      return { id, role: "user", host, allow: had?.allow?.filter(seen) ?? null, ...(had?.allowAuto === true ? { allowAuto: true as const } : {}), reachable: !this.unreachable.has(host), pausable: true };
+      return {
+        id,
+        role: "user",
+        host,
+        allow: had?.allow?.filter(seen) ?? null,
+        ...(had?.allowAuto === true ? { allowAuto: true as const } : {}),
+        reachable: !this.unreachable.has(host),
+        ...(p.share.hostOff === true || (p.enabled === false && p.share.paused !== true) ? {} : { pausable: true as const }),
+      };
     }
     const told = this.readState().hosted[id]?.told ?? {};
     const users = Object.entries(told).filter(([k, v]) => v >= 0 && seen(k)).map(([k]) => k);

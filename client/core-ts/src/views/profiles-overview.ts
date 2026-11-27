@@ -458,6 +458,11 @@ const gatedTogether = (long: Win | null, gate: Win | null): boolean =>
 /// Each pool's accounts (`items`), and its slots made of them as asked, with their hours (`h`): a pool kept
 /// (`poolKept`) reads none of its accounts' hours.
 function poolSpecs(items: J[], now: number): PoolRows[] {
+  const active = items.filter((i) => {
+    const members = Array.isArray(i?.members) && i.members.length > 0 ? i.members : null;
+    const allDisabled = members !== null ? members.every((m: J) => m?.enabled === false) : i?.profile?.enabled === false;
+    return !(allDisabled && i?.usable !== true);
+  });
   const main = (i: J): [Win | null, Win | null] => {
     const ws = windowsOf(i);
     return [find(ws, "", "long"), find(ws, "", "short")];
@@ -467,7 +472,7 @@ function poolSpecs(items: J[], now: number): PoolRows[] {
   // (an Antigravity account's Claude / GPT serve no Claude Code or Codex session: the station's pool never runs one
   // of those on it, sessions/pool.ts, so it is none of their pools')
   const own = (group: string, title: string) => {
-    const mine = items.filter((i) => groupOf(i) === group);
+    const mine = active.filter((i) => groupOf(i) === group);
     specs.push({ title, items: mine, slots: (h) => mine.map((i) => {
       const [long, short] = main(i);
       return slot(i, h(i), now, "", long, short);
@@ -476,7 +481,7 @@ function poolSpecs(items: J[], now: number): PoolRows[] {
   own("claude", "Claude");
   // Fable: a model's own week, on accounts whose week of their own must have room too.
   const fableOf = (i: J): Win | null => windowsOf(i).find((w) => w.scope === "Fable") ?? null;
-  const fable = items.filter((i) => fableOf(i) !== null || (groupOf(i) === "claude" && needsFix(i)));
+  const fable = active.filter((i) => fableOf(i) !== null || (groupOf(i) === "claude" && needsFix(i)));
   specs.push({ title: "Fable", items: fable, slots: (h) => fable.map((i) => {
     const mine = fableOf(i);
     const [week, short] = main(i);
@@ -489,7 +494,7 @@ function poolSpecs(items: J[], now: number): PoolRows[] {
     const ws = windowsOf(i);
     return [find(ws, "gemini", "long"), find(ws, "gemini", "short")];
   };
-  const gemini = items.filter((i) => {
+  const gemini = active.filter((i) => {
     if (groupOf(i) !== "agy" || i?.profile?.access?.kind === "service") return false;
     const [long, short] = geminiOf(i);
     // (an allowance read that has no Gemini window: an account of none, not one to wait for)
@@ -500,7 +505,7 @@ function poolSpecs(items: J[], now: number): PoolRows[] {
     return slot(i, h(i), now, "gemini", long, short);
   }) });
   for (const [group, title] of [["grok", "SuperGrok"], ["kimi", "Kimi Code"], ["opencode", "OpenCode Go"], ["cursor", "Cursor"], ["devin", "Devin"], ["copilot", "GitHub Copilot"]] as const) {
-    const mine = items.filter((i) => groupOf(i) === group);
+    const mine = active.filter((i) => groupOf(i) === group);
     specs.push({ title, items: mine, slots: (h) => mine.map((i) => {
       const [long, short] = main(i);
       return slot(i, h(i), now, "", long, short, { weight: 1 });

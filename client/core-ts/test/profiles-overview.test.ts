@@ -431,3 +431,45 @@ test("normScope preserves Fable suffix fallback and merged simulateTotalUnmet ma
     assert.deepEqual([claude.traj[55], claude.traj[56], claude.traj[59]], [10, 10, 4]);
   }
 });
+
+test("disabled subscription accounts are excluded from overview pools", () => {
+  const active = account("pro", [{ label: "每周", scope: "", usedPercent: 20, resetsAt: NOW + 72 * H, minutes: 10_080, mark: "W" }], {
+    group: "chatgpt",
+    usable: true,
+    profile: {
+      id: "pro",
+      enabled: true,
+      planText: "Pro",
+      checkTone: "green",
+      quota: { state: "ok", checkedAt: NOW, windows: [{ label: "每周", scope: "", usedPercent: 20, resetsAt: NOW + 72 * H, minutes: 10_080, mark: "W" }] },
+    },
+  });
+  const disabled = account("free", [{ label: "每月", scope: "", usedPercent: 1, resetsAt: NOW + 500 * H, minutes: 43_200, mark: "M" }], {
+    group: "chatgpt",
+    usable: false,
+    members: [{ enabled: false }, { enabled: false }],
+    profile: {
+      id: "free",
+      enabled: false,
+      planText: "Free",
+      checkTone: "neutral",
+      quota: { state: "ok", checkedAt: NOW, windows: [{ label: "每月", scope: "", usedPercent: 1, resetsAt: NOW + 500 * H, minutes: 43_200, mark: "M" }] },
+    },
+  });
+  const mixedMembers = account("mixed", [{ label: "每周", scope: "", usedPercent: 100, resetsAt: NOW + 48 * H, minutes: 10_080, mark: "W" }], {
+    group: "chatgpt",
+    usable: false,
+    members: [{ enabled: false }, { enabled: true }],
+    profile: {
+      id: "mixed",
+      enabled: false,
+      planText: "Pro",
+      checkTone: "amber",
+      quota: { state: "ok", checkedAt: NOW, windows: [{ label: "每周", scope: "", usedPercent: 100, resetsAt: NOW + 48 * H, minutes: 10_080, mark: "W" }] },
+    },
+  });
+  const codex = profilesOverview([active, disabled, mixedMembers], () => undefined, NOW, 0, true).pools.find((p) => p.title === "Codex");
+  assert.ok(codex);
+  assert.equal(codex.total, 2);
+  assert.equal(codex.ready, 1);
+});

@@ -15,6 +15,9 @@ function split(model: string): [string, string] {
   return at >= 0 ? [k.slice(0, at), k.slice(at)] : [k, ""];
 }
 
+/// A model's base key without any context suffix (`claude-opus-5-5[1m]` -> `claude-opus-5-5`).
+export const baseModelKey = (model: string): string => split(model)[0];
+
 /// A model's line and its version in it, from its key: the words of its name without their numbers, and those numbers
 /// (claude-fable-5-1 is claude-fable 5.1, claude-3-5-sonnet claude-sonnet 3.5, gpt-6.1-sol gpt-sol 6.1, kimi-k3 kimi-k
 /// 3). A snapshot's stamp at its end (deepseek-v4-flash-0731; read/usage.ts modelKey takes off a full date) is neither,
@@ -83,10 +86,11 @@ const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof 
 /// Unchecks, in config.json as parsed (`raw`, changed in place), the models a profile names that are outdated there, each
 /// once: those its keys are not in `done` (unchecked here before: one checked again by hand stays). One a newer model of
 /// its line replaces (newerOf), among those the profile's check found (`found`) and those it names, gives its place to
-/// it; one a subscription's check found the account no longer runs is unchecked, unless the profile would be left with
-/// no model, serving no chat. A key's list (an API key's provider, capped by some) does not say that of what it leaves
-/// out. The profile's own default (`model`) and a connect's (`bind.model`) naming one unchecked follow it to what
-/// replaced it. Gives what changed and the keys unchecked. Copies of other stations' profiles are theirs to change.
+/// it; one a subscription's check found the account's current tier no longer runs is always dropped (deleting `models`
+/// when none remain so the profile falls back to `found`, without recording it in `done`). A key's list (an API key's
+/// provider, capped by some) does not say that of what it leaves out. The profile's own default (`model`) and a
+/// connect's (`bind.model`) naming one unchecked follow it to what replaced it. Gives what changed and the keys
+/// unchecked. Copies of other stations' profiles are theirs to change.
 export function uncheckOutdated(raw: Json, found: (id: string) => readonly string[] | null, done: ReadonlySet<string>): { changes: Unchecked[]; unchecked: Set<string> } {
   const changes: Unchecked[] = [];
   const unchecked = new Set<string>();
@@ -96,9 +100,10 @@ export function uncheckOutdated(raw: Json, found: (id: string) => readonly strin
     if (!isObject(p) || !Array.isArray(p.models) || (isObject(p.share) && p.share.borrowed === true)) continue;
     const models: string[] = p.models.filter((m: unknown): m is string => typeof m === "string");
     const listed = found(String(p.id));
-    const offered = [...(listed ?? []), ...models];
-    const listedKeys = new Set((listed ?? []).map((m) => split(m)[0]));
+    const hasListed = listed !== null && listed.length > 0;
     const subscription = isObject(p.access) && p.access.kind === "subscription";
+    const listedKeys = new Set((listed ?? []).map((m) => split(m)[0]));
+    const offered = subscription && hasListed ? [...listed] : [...(listed ?? []), ...models];
     let next = [...models];
     const removed: string[] = [];
     const added: string[] = [];
@@ -106,7 +111,8 @@ export function uncheckOutdated(raw: Json, found: (id: string) => readonly strin
     const swaps = new Map<string, string | null>();
     for (const m of models) {
       const key = split(m)[0];
-      if (done.has(key)) continue;
+      const unavailableOnSubscription = subscription && hasListed && !listedKeys.has(key);
+      if (!unavailableOnSubscription && done.has(key)) continue;
       const agyBase = p.runtime === "agy" ? agyBaseModel(m).model : null;
       const devinBase = p.runtime === "devin" ? devinFusionBase(m).model : null;
       const newer =
@@ -120,14 +126,15 @@ export function uncheckOutdated(raw: Json, found: (id: string) => readonly strin
           next.push(newer);
           added.push(newer);
         }
-      } else if (!(subscription && listed !== null && listed.length > 0 && !listedKeys.has(key))) continue;
+        keys.push(key);
+      } else if (!unavailableOnSubscription) continue;
       next = next.filter((o) => o !== m);
       removed.push(m);
-      keys.push(key);
       swaps.set(m, newer);
     }
-    if (removed.length === 0 || next.length === 0) continue;
-    p.models = next;
+    if (removed.length === 0 || (next.length === 0 && !hasListed)) continue;
+    if (next.length > 0) p.models = next;
+    else delete p.models;
     for (const k of keys) unchecked.add(k);
     for (const [m, newer] of swaps) replaced.set(m, newer);
     if (typeof p.model === "string" && swaps.has(p.model)) {

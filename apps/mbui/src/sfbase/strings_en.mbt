@@ -2581,6 +2581,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.disableCopyBody": "This station stops using this shared Profile; the station sharing it is not affected, and it can be enabled here again. Sessions using it move to another Profile, or stop if none is available.",
   "web-pages.profiles.disabled": "Disabled",
   "web-pages.profiles.disableKeyBody": "The key and its settings are kept, and can be enabled again. Sessions using it move to another Profile, or stop if none is available. Stations with shared copies sync the disabled state after they update.",
+  "web-pages.profiles.disableProfileBody": "The account and its settings are kept, and can be enabled again. Sessions using it move to another Profile, or stop if none is available. Stations with shared copies sync the disabled state after they update.",
   "web-pages.profiles.env": "Environment variables",
   "web-pages.profiles.envAdd": "Add variable",
   "web-pages.profiles.envLead": "The runtime starts with these variables to reach your model service. {route} in a value is replaced with the session's route ID.",

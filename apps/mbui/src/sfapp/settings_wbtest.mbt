@@ -1256,6 +1256,32 @@ test "an API key can be disabled and enabled again from its page" {
 }
 
 ///|
+test "a subscription profile can be disabled and enabled again from its page" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("settings")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  open_setting("profile:ws1/st1#cc")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let log = t.drive("tap icon:more\nuntil 停用\ntap =停用\nuntil 停用「Claude 主账号」？\nuntil 账号和配置会保留\ntap =停用\n")
+  assert_true(log.contains("EXIT 0"), msg=log.join("\n"))
+  t.draw()
+  assert_true(named(calls, "profile.put").iter().any(fn(c) { text(Some(c.params), "id") == "cc" && !flag(field(Some(c.params), "input"), "enabled") }))
+  assert_true(t.find("已停用") is Some(_))
+  let again = t.drive("tap icon:more\nuntil 启用\ntap =启用\n")
+  assert_true(again.contains("EXIT 0"), msg=again.join("\n"))
+  assert_true(named(calls, "profile.put").iter().any(fn(c) { text(Some(c.params), "id") == "cc" && flag(field(Some(c.params), "input"), "enabled") }))
+}
+
+///|
 test "a copy of another station's profile is paused here from its page and used again, nothing else of it offered" {
   new_run()
   @settings.fixture_page("settings-profile-copy") |> ignore
