@@ -7,7 +7,8 @@ test "a device waiting on this one for a vault's key: its panel over the page, w
   let t = settings_tester("home", mode="settings-vault-prompt", shows="settings-vault-prompt", platform=2)
   t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting(), msg="its sheet up over the page")
-  assert_true(t.find("Pixel 9 申请密钥库的钥匙") is Some(_))
+  assert_true(t.find("授权密钥库钥匙") is Some(_))
+  assert_true(t.find("Pixel 9") is Some(_))
   assert_true(t.find("星火工作室 · 林的库") is Some(_))
   // (the button: the last words with 授权 in them, the lead says it too)
   let (x, y) = t.find_last("授权").unwrap()
@@ -15,7 +16,7 @@ test "a device waiting on this one for a vault's key: its panel over the page, w
   t.run_for(@ui.move_most_ms)
   // given: gone, and not put up again
   assert_false(@sf.presenting())
-  assert_true(t.find("Pixel 9 申请密钥库的钥匙") is None)
+  assert_true(t.find("授权密钥库钥匙") is None)
   assert_eq(@settings.fixture_key_ask_ended(), "give")
 }
 
@@ -28,7 +29,7 @@ test "稍后: put away (shown again only once that device asks again)" {
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenting())
-  assert_true(t.find("Pixel 9 申请密钥库的钥匙") is None)
+  assert_true(t.find("授权密钥库钥匙") is None)
   assert_eq(@settings.fixture_key_ask_ended(), "hide")
 }
 
@@ -85,12 +86,12 @@ fn prompt_word(t : @ui.Tester, words : String) -> (Double, Double, Double, Doubl
 test "the key given or the ask put away on another device: its panel goes by itself, nothing asked of the core" {
   for screen in [(2, false), (0, false), (0, true)] {
     let t = key_asked(platform=screen.0, wide=screen.1)
-    assert_true(t.find("Pixel 9 申请密钥库的钥匙") is Some(_))
+    assert_true(t.find("授权密钥库钥匙") is Some(_))
     @settings.fixture_prompts_now(pairing=false, key_ask=false)
     t.draw()
     t.run_for(@ui.move_most_ms)
     assert_false(@sf.presenting(), msg="platform \{screen.0}, wide \{screen.1}")
-    assert_true(t.find("Pixel 9 申请密钥库的钥匙") is None)
+    assert_true(t.find("授权密钥库钥匙") is None)
     assert_eq(@settings.fixture_key_ask_ended(), "")
   }
 }
@@ -115,7 +116,7 @@ test "with keyboard and mouse on a small window: 授权 gives it the key, 稍后
 ///|
 test "on a wide window: a dialog in the middle; 授权 gives it the key; 稍后, Escape and a press outside put it away" {
   let t = key_asked(platform=0, wide=true)
-  let (x, y, _, _) = t.rect_of("Pixel 9 申请密钥库的钥匙").unwrap()
+  let (x, y, _, _) = t.rect_of("授权密钥库钥匙").unwrap()
   assert_true(x > 200.0 && x < 800.0 && y > 150.0 && y < 500.0, msg="its title at \{x},\{y}")
   let (x, y) = t.find_last("授权").unwrap()
   t.tap(x, y)
@@ -169,14 +170,18 @@ test "where its words stand on each screen: the title, what it asks, whose vault
   for screen in [(2, false), (0, false), (0, true)] {
     let t = key_asked(platform=screen.0, wide=screen.1)
     let about = "platform \{screen.0}, wide \{screen.1}"
-    let title = prompt_word(t, "Pixel 9 申请密钥库的钥匙")
+    let title = prompt_word(t, "授权密钥库钥匙")
+    let device = prompt_word(t, "Pixel 9")
     let body = prompt_word(t, "这台设备已在安全模式的锁里，3 分钟前申请「林的库」的钥匙。授权后它就能用这个库里的密钥。")
     let place = prompt_word(t, "星火工作室 · 林的库")
     let give = t.get(Button, label="授权").rect
     let later = t.get(Button, label="稍后").rect
-    // (one under another, in this order, at the same start; the foot's two buttons side by side under them, 稍后 first)
-    assert_true(title.1 + title.3 <= body.1 && body.1 + body.3 <= place.1 && place.1 + place.3 <= give.1, msg="\{about}: \{Repr(title)} \{Repr(body)} \{Repr(place)} \{Repr(give)}")
-    assert_true((title.0 - body.0).abs() < 1.0 && (body.0 - place.0).abs() < 1.0, msg="\{about}: \{Repr(title)} \{Repr(body)} \{Repr(place)}")
+    // (one under another, in this order: fixed short title, prominent device card, explanation, vault scope, then foot)
+    assert_true(title.1 + title.3 <= device.1 && device.1 + device.3 <= body.1 && body.1 + body.3 <= place.1 && place.1 + place.3 <= give.1, msg="\{about}: \{Repr(title)} \{Repr(device)} \{Repr(body)} \{Repr(place)} \{Repr(give)}")
+    assert_true((body.0 - place.0).abs() < 1.0, msg="\{about}: \{Repr(body)} \{Repr(place)}")
+    if screen.1 {
+      assert_true((title.0 - body.0).abs() < 1.0, msg="\{about}: \{Repr(title)} \{Repr(body)}")
+    }
     assert_true((give.1 - later.1).abs() < 1.0 && later.0 + later.2 <= give.0, msg="\{about}: \{Repr(later)} \{Repr(give)}")
     let middle = body.0 + body.2 / 2.0
     if screen.1 {

@@ -118,10 +118,10 @@ pub fn card_piece_node(
       style_node(k, fn() {
         panel_card_ground.then(@ui.style(px=room(corner_inset))).then(panel_card_out_node(k))
       })
-      k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false })
+      k.grow(Is(1.0)).min_height(By(fn() { least(dialog_card_corner) })).corners(By(fn() { corners(dialog_card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false })
       |> ignore
       // (what lies on it concentric with the card's corner, its rows the ladder's inset in)
-      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
+      corner_card_node(k, fn() { dialog_card_corner }, inset=fn() { corner_inset })
       held(k, fn() { if top() { corner_inset } else { 0.0 } }, fn() { if foot() { corner_inset } else { 0.0 } })
     })
     |> ignore

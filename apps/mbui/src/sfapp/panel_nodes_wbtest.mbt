@@ -220,8 +220,8 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
   })
   debug_inspect(body_and_foot(t, close=true), content=(
     #|(
-    #|  (404, 391.5, 40, 36),
-    #|  (814, 451.5, 60, 32),
+    #|  (404, 395, 40, 36),
+    #|  (818, 455, 60, 32),
     #|  [
     #|    "A (532, 18, 4, 8)",
     #|    "A (241, 438, 4, 8)",
@@ -236,12 +236,13 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "待处理 (66, 173, 36, 18)",
     #|    "星 (20.5, 683, 13, 20)",
     #|    "昨天 (66, 381, 212, 18)",
+    #|    "对话框 (404, 314, 66, 30)",
     #|    "新建对话 (90, 17, 152, 20)",
     #|    "星期三 (66, 585, 212, 18)",
     #|    "发消息 (402, 710, 772, 22)",
     #|    "忽略 (408, 241.6, 24, 18)",
     #|    "周报的模板 (82, 671, 174, 20)",
-    #|    "对话框 (404, 316.5, 66, 30)",
+    #|    "它说的话 (404, 357, 472, 20)",
     #|    "搜索全部内容 (90, 19, 188, 20)",
     #|    "整理发布清单 (408, 12, 96, 20)",
     #|    "整理发布清单 (82, 95, 174, 20)",
@@ -250,7 +251,6 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "先不换 (454, 127.6, 396, 20)",
     #|    "5 分钟前 (450, 529.7, 44, 18)",
     #|    "Claude (408, 35.5, 36, 18)",
-    #|    "它说的话 (404, 353.5, 472, 20)",
     #|    "等 林 决定 (408, 87.6, 60, 18)",
     #|    "Claude (408, 358.6, 36, 18)",
     #|    "Claude (408, 529.7, 36, 18)",
@@ -283,7 +283,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 554.7, 760, 23.1)",
     #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 60.5, 760, 23.1)",
     #|  ],
-    #|  "Some((842, 316.5, 32, 32))",
+    #|  "Some((844, 311, 36, 36))",
     #|)
 
 
@@ -300,8 +300,8 @@ test "大屏: an untitled form whose body and foot are nodes: each where it was 
   })
   debug_inspect(body_and_foot(t), content=(
     #|(
-    #|  (404, 370, 40, 36),
-    #|  (814, 430, 60, 32),
+    #|  (404, 371, 40, 36),
+    #|  (818, 431, 60, 32),
     #|  [
     #|    "A (532, 18, 4, 8)",
     #|    "A (241, 438, 4, 8)",
@@ -401,8 +401,8 @@ test "大屏: an untitled panel in the middle of the window whose body and foot 
   })
   debug_inspect(body_and_foot(t, close=true), content=(
     #|(
-    #|  (404, 370, 40, 36),
-    #|  (814, 430, 60, 32),
+    #|  (404, 371, 40, 36),
+    #|  (818, 431, 60, 32),
     #|  [
     #|    "A (532, 18, 4, 8)",
     #|    "A (241, 438, 4, 8)",
@@ -462,7 +462,7 @@ test "大屏: an untitled panel in the middle of the window whose body and foot 
     #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 554.7, 760, 23.1)",
     #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 60.5, 760, 23.1)",
     #|  ],
-    #|  "Some((842, 338, 32, 32))",
+    #|  "Some((844, 335, 36, 36))",
     #|)
 
 
@@ -496,8 +496,8 @@ test "a panel a share of the window caps whose body is nodes, as tall as what it
   let dialog = hugging(menu_tester(1280.0, 800.0, 0))
   debug_inspect((sheet, dialog), content=(
     #|(
-    #|  ((6, 696, 40, 36), (298, 780, 60, 32)),
-    #|  ((396, 378.5, 40, 36), (814, 438.5, 60, 32)),
+    #|  ((6, 700, 40, 36), (302, 784, 60, 32)),
+    #|  ((396, 382, 40, 36), (818, 442, 60, 32)),
     #|)
 
   ))
@@ -524,6 +524,7 @@ test "a panel whose body says its field is typed in as it opens: that field has 
     let name = @ui.Field::new()
     @sf.panel_nodes("面板", from~, fn(v, _) {
       v.box(fn(b) { @sf.panel_opens_in_node(@sf.input_node(b, name, placeholder="名字")) }) |> ignore
+      @sf.words_node(v, fn() { "说明" }, fn() { @sf.meta }) |> ignore
     })
     t.run_for(@ui.move_most_ms)
     assert_true(t.focus_said().has_prefix("TextField \"名字\""), msg="\{at}: \{t.focus_said()}")
@@ -547,6 +548,7 @@ test "a panel whose body says its search is at hand: that search has the keys as
     let query = @ui.Field::new()
     @sf.panel_nodes("面板", from~, fn(v, _) {
       v.box(fn(b) { @sf.panel_search_at_hand_node(@sf.input_node(b, query, placeholder="搜索")) }) |> ignore
+      @sf.words_node(v, fn() { "说明" }, fn() { @sf.meta }) |> ignore
     })
     t.run_for(@ui.move_most_ms)
     assert_true(@sf.presenter_visible(), msg="\{at}: up")

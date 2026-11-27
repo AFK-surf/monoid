@@ -16,7 +16,7 @@ pub fn panel_row_in_node(v : @view.View) -> @ui.Style {
   if at.small {
     small_panel_row_in_node
   } else if at.words == 0.0 && reach > 0.0 {
-    @ui.style(mx=room(-reach), px=room(reach), radius=rounded(row_corner))
+    @ui.style(mx=room(-reach), px=room(reach), radius=rounded(dialog_row_corner))
   } else if at.sides > 0.5 {
     panel_words_in_node(v).then(panel_row_round)
   } else {
@@ -30,4 +30,4 @@ let small_panel_row_in_node : @ui.Style = @ui.style(px=room(text_in), radius=rou
 
 ///|
 // kept across runs: a value (no field of it changes)
-let panel_row_round : @ui.Style = @ui.style(radius=rounded(row_corner))
+let panel_row_round : @ui.Style = @ui.style(radius=rounded(dialog_row_corner))

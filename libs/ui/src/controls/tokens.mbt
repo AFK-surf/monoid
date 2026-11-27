@@ -238,7 +238,7 @@ pub let small_corner : Double = @ui.concentric(row_corner, corner_inset)
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let corner_ladder : Array[Double] = [pane_corner, card_corner, r_menu, row_corner, small_corner]
+pub let corner_ladder : Array[Double] = [pane_corner, card_corner, dialog_r, r_menu, dialog_card_corner, row_corner, dialog_row_corner, small_corner, dialog_small_corner]
 
 ///|
 /// How far apart two things that light up under the hand stand at least (Theme::lit_apart, the spacing rules): the
@@ -2601,9 +2601,18 @@ pub let dialog_margin : Double = 32.0
 pub let dialog_close : Double = 32.0
 
 ///|
-/// A dialog's corner (DIALOG_PAD 24 and a pill's half height 18) and shadow (0 24px 64px: a blur's deviation half its
-/// CSS radius).
-pub let dialog_r : Double = pane_corner
+/// Dialog and bottom-sheet corner radius matching real iOS 27 (38pt; concentric with 44pt sheet `<` at 16pt inset and
+/// 36pt dialog `<`/`×` at 20pt inset), plus its concentric inner card (22pt) and card-row (14pt) corners.
+pub let dialog_r : Double = 38.0
+
+///|
+let dialog_card_corner : Double = @ui.concentric(dialog_r, panel_card_in)
+
+///|
+let dialog_row_corner : Double = @ui.concentric(dialog_card_corner, corner_inset)
+
+///|
+let dialog_small_corner : Double = @ui.concentric(dialog_row_corner, corner_inset)
 
 ///|
 pub let dialog_shadow : Double = 32.0

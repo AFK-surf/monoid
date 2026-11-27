@@ -142,10 +142,10 @@ let panel_row_face : @ui.Style = @ui.css("align=AStart justify=JCenter")
 // Pages (styles/pages.css.ts)
 
 ///|
-/// Round a sheet's grabber: 8 above and 4 under it, then 4 above and under it (Sheet.kt's two paddings, each a length
-/// of its own: on Android's whole pixels 21 + 11 above the grabber and 11 + 11 under it, not one 12 and one 8).
+/// Round a sheet's grabber: sits near the top edge (y = 6..11pt, matching iOS 27) while keeping the full 25pt
+/// `sheet_grab_h` band (2 + 4 + 5 + 4 + 10 = 25pt).
 // kept across runs: a value (no field of it changes)
-let sheet_grab_outer : @ui.Style = @ui.css("w=Full pt=S2 pb=S1")
+let sheet_grab_outer : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -492,8 +492,13 @@ let first_actions : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify
 let dialog_room : Double = 48.0
 
 ///|
-/// Its title's row (dialogHead: 25 under the top, 26 from the right): the close button at its end, each lined up at
-/// its top and let down onto its title's first line (head_line_drop), never centred on a title of several lines.
+/// Diameter of a desktop/wide dialog's circular Liquid Glass corner key (`×` / `‹`): 36pt (`radius = 18`), concentric
+/// in `dialog_r` (38pt) at `(20, 20)`.
+let dialog_corner_key_side : Double = 36.0
+
+///|
+/// Its title's row (dialogHead): the close button at its end, each lined up at its top and let down onto its title's
+/// first line (head_line_drop), never centred on a title of several lines.
 // kept across runs: a value (no field of it changes)
 let dialog_head : @ui.Style = @ui.style(
   row=true,
@@ -501,9 +506,7 @@ let dialog_head : @ui.Style = @ui.style(
   justify=JBetween,
   align=AStart,
   gap=S3,
-  min_h=Fixed(dialog_close),
-  pt=room(dialog_head_over),
-  pr=room(dialog_head_end),
+  min_h=Fixed(dialog_corner_key_side),
 )
 
 ///|
@@ -528,7 +531,7 @@ let dialog_head_end : Double = 2.0
 /// An untitled dialog's close button (dialog): in its top right corner as far in as makes it concentric with it
 /// (capsule_in), from its outer edges (a layer is laid over the whole of the box, its padding too).
 fn dialog_close_corner() -> @ui.Style {
-  let d = @ui.capsule_in(dialog_r, dialog_close)
+  let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
   @ui.style(mt=room(d), mr=room(d))
 }
 
@@ -538,45 +541,36 @@ fn dialog_close_corner() -> @ui.Style {
 let dialog_close_row : @ui.Style = @ui.css("row w=Full justify=JEnd")
 
 ///|
-/// How far from its padding's end the first row of an untitled dialog keeps clear of its close button (and 8 more).
+/// How far from its padding's end the first row of an untitled or stepped dialog keeps clear of its 36pt close button
+/// (and 8pt gap).
 fn dialog_close_clear() -> Double {
-  @ui.capsule_in(dialog_r, dialog_close) - dialog_pad + dialog_close + 8.0
+  @ui.capsule_in(dialog_r, dialog_corner_key_side) - dialog_pad + dialog_corner_key_side + 8.0
 }
 
 ///|
-/// An untitled dialog's body from under its close button (no title over it to stand 18 under): what it holds clear of
-/// the button in its corner, pressed where it is drawn (the user, 2026-11-04: 内容让开关闭按钮; the button 26 in to be
-/// concentric with the dialog's 42 stood over what a column 24 in holds).
+/// An untitled dialog's body from under its 36pt close button (no title over it to stand 18 under): what it holds
+/// clear of the button in its corner, pressed where it is drawn (the user, 2026-11-04: 内容让开关闭按钮).
 fn dialog_untitled_top() -> @ui.Style {
-  @ui.style(pt=room(@ui.capsule_in(dialog_r, dialog_close) + dialog_close - dialog_pad))
+  @ui.style(pt=room(@ui.capsule_in(dialog_r, dialog_corner_key_side) + dialog_corner_key_side - dialog_pad))
 }
 
 ///|
 /// Where its close button stands at its title's row's end: in its top right corner as far in as makes it concentric
-/// with it (capsule_in: a mouse's 32 18 in, the ladder's pane corner's own place for it as on the tape's line; a
-/// finger's 44, 12), the row as high as with a mouse's (its margins making up the rest, its middle no longer the
-/// title's; the user, 2026-10-25: 25 in, by the corner and not with it).
+/// with `dialog_r` (`capsule_in(38, 36) = 20`).
 /// `drop`: how far further down it stands to be on its title's first line (head_line_drop).
 fn dialog_close_at(drop? : Double = 0.0) -> @ui.Style {
-  let side = dialog_close
-  let d = @ui.capsule_in(dialog_r, side)
-  let up = d - (dialog_pad + dialog_head_over)
-  @ui.style(mt=room(up + drop), mr=room(d - (dialog_pad + dialog_head_end)), mb=room(dialog_close - side - up))
+  let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
+  @ui.style(mt=room(d - dialog_pad + drop), mr=room(d - dialog_pad))
 }
 
 ///|
-/// Where a stepped dialog's back key stands at its title's row's start: symmetric with `dialog_close_at` (32pt
-/// concentric in the 42pt top-left corner at 26×26, matching `dialog_close`'s height so both buttons in `dialog_head`
-/// share one height and the row grows no taller for it).
+/// Where a stepped dialog's back key stands at its title's row's start: symmetric with `dialog_close_at` (36pt
+/// Liquid Glass circle concentric in the 38pt top-left corner at 20×20, matching the 36pt close button height).
 fn dialog_back_at(drop? : Double = 0.0) -> @ui.Style {
-  let side = step_back_side
-  let d = @ui.capsule_in(dialog_r, side)
-  let up = d - (dialog_pad + dialog_head_over)
+  let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
   @ui.style(
-    ml=room(d - dialog_pad),
-    mt=room(up + drop),
-    mr=room(@ui.Space::px(S1) - @ui.Space::px(S3)),
-    mb=room(dialog_close - side - up),
+    ml=room(d - panel_words),
+    mt=room(d - dialog_pad + drop),
   )
 }
 

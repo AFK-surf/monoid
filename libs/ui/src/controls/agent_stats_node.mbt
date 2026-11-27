@@ -13,11 +13,11 @@
 pub let quiet_card_style : @ui.Style = @ui.css("w=Full bg=A(Fg,O5) clip").then(@ui.style(p=room_of(corner_inset)))
 
 ///|
-/// A quiet card's corner (a card of the ladder's), and its rows' (a row of the ladder's).
-pub let quiet_card_corner : Double = card_corner
+/// A quiet card's corner (concentric with `dialog_r` = 38pt at `panel_card_in` = 16pt: 22pt), and its rows' (14pt).
+pub let quiet_card_corner : Double = dialog_card_corner
 
 ///|
-pub let quiet_row_corner : Double = row_corner
+pub let quiet_row_corner : Double = dialog_row_corner
 
 ///|
 /// A row of a quiet card (Android InfoRow): 44 high at least, its words the ladder's inset in from its sides and 4 from

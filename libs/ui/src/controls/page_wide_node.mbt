@@ -971,7 +971,9 @@ fn head_in(col : @view.View) -> Double {
 /// A wide list card's rows' room in it and its corner (desk_list_card): a list card's, `list_pad` in; in a panel of its
 /// own a card of the panel's, the ladder's inset in, a card's corner.
 fn list_card_in(v : @view.View) -> (Double, Double) {
-  if in_pane_node(v) {
+  if v.lent(panel_in_lent) is Some(p) && !p.small {
+    (corner_inset, dialog_card_corner)
+  } else if in_pane_node(v) {
     (corner_inset, card_corner)
   } else {
     (list_pad, list_card_corner)

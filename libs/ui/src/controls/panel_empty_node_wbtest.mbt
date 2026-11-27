@@ -77,60 +77,60 @@ test "a panel's body holding nothing takes none of its room; holding something, 
     #|sheet opened by nothing, empty:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,667 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,684 32x24 a1
+    #|rect 176,665 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@180,45 30x22 a1
-    #|words 好@187.5,785 15x22 a1
-    #|words 它说的话@30,718 330x20 a1
+    #|words 一个@179,688 32x24 a1
+    #|words 好@187.5,789 15x22 a1
+    #|words 它说的话@30,722 330x20 a1
     #|sheet opened by nothing, holding words:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,625 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,642 32x24 a1
+    #|rect 176,623 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@180,45 30x22 a1
-    #|words 好@187.5,785 15x22 a1
-    #|words 它说的话@30,676 330x20 a1
-    #|words 它里面的话@30,714 330x18 a1
+    #|words 一个@179,646 32x24 a1
+    #|words 好@187.5,789 15x22 a1
+    #|words 它说的话@30,680 330x20 a1
+    #|words 它里面的话@30,718 330x18 a1
     #|sheet opened by a press, empty:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,667 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,684 32x24 a1
+    #|rect 176,665 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@180,45 30x22 a1
-    #|words 好@187.5,785 15x22 a1
-    #|words 它说的话@30,718 330x20 a1
+    #|words 一个@179,688 32x24 a1
+    #|words 好@187.5,789 15x22 a1
+    #|words 它说的话@30,722 330x20 a1
     #|sheet opened by a press, holding words:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,649 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,666 32x24 a1
+    #|rect 176,647 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@180,45 30x22 a1
-    #|words 好@187.5,785 15x22 a1
-    #|words 它说的话@30,700 330x20 a1
-    #|words 它里面的话@30,738 330x18 a1
+    #|words 一个@179,670 32x24 a1
+    #|words 好@187.5,789 15x22 a1
+    #|words 它说的话@30,704 330x20 a1
+    #|words 它里面的话@30,742 330x18 a1
     #|sheet opened by a press, with a mouse, empty:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,667 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,684 32x24 a1
+    #|rect 176,665 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@182,46 26x20 a1
-    #|words 好@188.5,786 13x20 a1
-    #|words 它说的话@30,718 330x20 a1
+    #|words 一个@179,688 32x24 a1
+    #|words 好@188.5,790 13x20 a1
+    #|words 它说的话@30,722 330x20 a1
     #|sheet opened by a press, with a mouse, holding words:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,649 38x5 841819172
-    #|rect 32,780 326x32 606546943
-    #|words 一个@30,666 32x24 a1
+    #|rect 176,647 38x5 841819172
+    #|rect 28,784 334x32 606546943
     #|words 打开@182,46 26x20 a1
-    #|words 好@188.5,786 13x20 a1
-    #|words 它说的话@30,700 330x20 a1
-    #|words 它里面的话@30,738 330x18 a1
+    #|words 一个@179,670 32x24 a1
+    #|words 好@188.5,790 13x20 a1
+    #|words 它说的话@30,704 330x20 a1
+    #|words 它里面的话@30,742 330x18 a1
     #|small panel, empty:
     #|rect 40,40 720x32 3907312895
     #|rect 287,122 41x32 606546943
@@ -147,20 +147,21 @@ test "a panel's body holding nothing takes none of its room; holding something, 
     #|dialog, empty:
     #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
-    #|rect 593,324.5 41x32 606546943
+    #|rect 597,328 41x32 606546943
+    #|words 好@611,334 13x20 a1
     #|words 打开@387,46 26x20 a1
-    #|words 好@607,330.5 13x20 a1
-    #|words 一个@164,243.5 44x30 a1
-    #|words 它说的话@164,280.5 472x20 a1
+    #|words 一个@164,241 44x30 a1
+    #|words 它说的话@164,284 472x20 a1
     #|dialog, holding words:
     #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
-    #|rect 593,342.5 41x32 606546943
+    #|rect 597,346 41x32 606546943
+    #|words 好@611,352 13x20 a1
     #|words 打开@387,46 26x20 a1
-    #|words 好@607,348.5 13x20 a1
-    #|words 一个@164,225.5 44x30 a1
-    #|words 它说的话@164,262.5 472x20 a1
-    #|words 它里面的话@164,300.5 472x18 a1
+    #|words 一个@164,223 44x30 a1
+    #|words 它说的话@164,266 472x20 a1
+    #|words 它里面的话@164,304 472x18 a1
+
 
 
   ))

@@ -1224,7 +1224,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
       k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
-      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
+      corner_card_node(k, fn() { dialog_card_corner }, inset=fn() { corner_inset })
       rows(k)
     })
     |> ignore
@@ -1585,13 +1585,15 @@ fn link_row_made(
   // ground is where it stands in from the panel's sides (panel_row_corner), a small panel's inner corner in one;
   // elsewhere a card's row, as ever)
   let at = panel_in_of(parent)
-  let in_panel = panel_row_at(at, own=card_pad - corner_inset, card=on_card_node(parent))
+  let card = on_card_node(parent)
+  let in_panel_card = card && parent.lent(panel_in_lent) is Some(p) && !p.small
+  let in_panel = panel_row_at(at, own=card_pad - corner_inset, card~)
   let (out, side) = match in_panel {
     Some(p) => (p.out, p.side)
     None => (0.0, text_in)
   }
   let corner = if in_panel is None {
-    @ui.concentric(group_corner, list_pad)
+    if in_panel_card { dialog_row_corner } else { @ui.concentric(group_corner, list_pad) }
   } else if at.small {
     small_panel_inner(r_menu)
   } else {
@@ -1614,7 +1616,7 @@ fn link_row_made(
       hover_ground_node(r, on=fn() { !off() })
       // (busy: pressed none)
       let pressed = pressed_by(r)
-      pressed_node(r, fn() { if !off() { pressed() } }, Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      pressed_node(r, fn() { if !off() { pressed() } }, Is(corner), Link, title)
       // (bound only where it can be busy: every other row's press as pressed_node's, nothing more bound)
       if busy is Some(_) {
         r.presses(By(fn() { !off() })).focusable(By(fn() { !off() })) |> ignore

@@ -54,11 +54,11 @@ let agent_title_head : @ui.Style = @ui.css("w=Full pt=S1").then(
 )
 
 ///|
-/// An agent's head Row 1: its mark on the left and its compact stop pill on the right (32 high, matching the
-/// dialog close key, right edge concentric with the 42pt sheet corner).
+/// An agent's head Row 1: its mark on the left and its compact stop pill on the right (32 high,
+/// right edge concentric with the sheet's `pane_corner`).
 // kept across runs: a value (no field of it changes)
 let agent_title_row1 : @ui.Style = @ui.css("row w=Full align=ACenter").then(
-  @ui.style(min_h=Fixed(agent_stop_h), pl=@sf.room_of(agent_words_in), pr=@sf.room_of(agent_stop_corner_in)),
+  @ui.style(min_h=Fixed(agent_stop_h), pl=@sf.room_of(agent_words_in), mr=@sf.room_of(agent_stop_corner_in)),
 )
 
 ///|
@@ -715,6 +715,7 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
           let t = @sf.theme()
           @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
         },
+        corner=@ui.concentric(@sf.quiet_row_corner, @sf.corner_inset),
       )
     }
     row.box(fn(w) {
@@ -1334,8 +1335,8 @@ let agent_stop : @ui.Style = @ui.css("row min_h=S8 px=S3_5 py=S1 gap=S1_5 radius
 let agent_stop_h : Double = 32.0
 
 ///|
-/// Extra right inset inside Row 1 so the 32pt stop capsule sits concentric with the 42pt sheet top-right corner.
-let agent_stop_corner_in : Double = @ui.capsule_in(@sf.pane_corner, agent_stop_h) - @sf.panel_words
+/// Extra right inset inside Row 1 so the 32pt stop capsule sits concentric with the 38pt sheet top-right corner (`dialog_r`).
+let agent_stop_corner_in : Double = @ui.capsule_in(@sf.dialog_r, agent_stop_h) - @sf.panel_words
 
 ///|
 let agent_stop_ink : Double = 0.14

@@ -115,7 +115,8 @@ fn preset_picker_mark_node(
               let repo = dir_repo()
               if repo != "" { repo } else { dir_name() }
             }
-            @sf.tile_avatar_node(slot, key, dir_name, fn() { "" }, 22.0, corner=@sf.small_corner)
+            let corner = if @sf.in_small_panel_node(slot) { @sf.small_corner } else { preset_tile_corner }
+            @sf.tile_avatar_node(slot, key, dir_name, fn() { "" }, 22.0, corner~)
           }
           1 =>
             slot.pick(fn() { (maker_id(), runtime()) }, at_once=true, fn(m, pair) {
@@ -161,17 +162,21 @@ fn preset_picker_row_node(
         Some(f) => f(btn)
         None => ()
       }
+      let split_corner = if @sf.in_small_panel_node(btn) { @sf.row_corner } else { @sf.quiet_row_corner }
       @sf.style_node(btn, fn() {
         let base = if action is Some(_) {
-          preset_picker_main_split.then(@ui.style(radius=@sf.panel_in))
+          preset_picker_main_split
         } else {
           preset_picker_main.then(@sf.panel_row_in_node(btn))
         }
         base.then(@ui.style(min_h=Fixed(@sf.theme().items.least)))
       }, in_row=true)
+      if action is Some(_) {
+        btn.radius(Is(split_corner)) |> ignore
+      }
       btn.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       @sf.hover_ground_node(btn, extra=highlighted)
-      @sf.rippled_node(btn, press, @sf.row_corner, name)
+      @sf.rippled_node(btn, press, split_corner, name)
       preset_picker_mark_node(btn, dir_name, dir_repo, maker_id, runtime, chosen)
       btn.box(fn(col) {
         col.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
@@ -734,14 +739,10 @@ fn preset_panel(
     // third button in the foot, which went to two lines on a phone)
     head_end=fn(h) {
       h.show(fn() { picked() != "" }, at_once=true, fn(slot) {
-        @sf.action_box_node(slot, fn() { @sf.t("web-main.preset.none") }, fn(_) {
+        @sf.button_node(slot, fn() { @sf.t("web-main.preset.none") }, fn() {
           preset_pick(src, w, "", "")()
           (closes.val)()
-        }, fn(btn) {
-          @sf.style_node(btn, fn() { preset_sheet_clear_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
-          @sf.hover_ground_node(btn)
-          @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_sheet_clear_words }) |> ignore
-        })
+        }, tone=Ghost)
         |> ignore
       })
     },
@@ -1685,7 +1686,7 @@ fn preset_clone_row(v : @view.View, src : Source, k : PresetClone, e : PresetEdi
   let failed = fn() { clone_failed(src, k) }
   preset_row(
     v,
-    fn(l) { @sf.tile_avatar_node(l, fn() { k.repo }, fn() { k.name }, fn() { "" }, preset_dir_mark, corner=@sf.small_corner) },
+    fn(l) { @sf.tile_avatar_node(l, fn() { k.repo }, fn() { k.name }, fn() { "" }, preset_dir_mark, corner=preset_tile_corner) },
     fn() { k.name },
     fn() {
       match failed() {
@@ -1718,7 +1719,7 @@ fn preset_dir_row(
 ) -> Unit {
   preset_row(
     v,
-    fn(l) { @sf.tile_avatar_node(l, fn() { if repo() != "" { repo() } else { name() } }, name, icon, preset_dir_mark, corner=@sf.small_corner) },
+    fn(l) { @sf.tile_avatar_node(l, fn() { if repo() != "" { repo() } else { name() } }, name, icon, preset_dir_mark, corner=preset_tile_corner) },
     name,
     note,
     press?,
@@ -1796,7 +1797,7 @@ fn preset_action_tile(v : @view.View, icon : String) -> Unit {
     t
     .width(Is(Some(preset_dir_mark)))
     .height(Is(Some(preset_dir_mark)))
-    .radius(Is(@sf.small_corner))
+    .radius(Is(preset_tile_corner))
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
@@ -2479,10 +2480,12 @@ fn dir_note(o : Json?, chats : Bool) -> String {
 }
 
 ///|
-/// A folder's mark in the preset's dialog: as high as its two lines, its corner the small block's (the ladder's 10), so
-/// with a row's 8 over and under it stands a corner's inset (8) in from the row's round ground on every side, concentric
-/// with its 18 (@sf.panel_row_in_node) whether the row has one line or two.
+/// A folder's mark in the preset's dialog: as high as its two lines, its corner concentric with the dialog row's
+/// `quiet_row_corner` (14) at `corner_inset` (8) -> 6pt, whether the row has one line or two.
 let preset_dir_mark : Double = 34.0
+
+///|
+let preset_tile_corner : Double = @ui.concentric(@sf.quiet_row_corner, @sf.corner_inset)
 
 ///|
 /// The icon in a neutral tile of a row that does something (浏览文件夹, 从 Git 克隆, 添加目录).
@@ -3014,14 +3017,6 @@ let preset_panel_clear_btn : @ui.Style = @ui.css("row min_h=S7 align=ACenter px=
 ///|
 // kept across runs: a value (no field of it changes)
 let preset_panel_clear_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_sheet_clear_btn : @ui.Style = @ui.css("row align=ACenter px=S2 radius=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_sheet_clear_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

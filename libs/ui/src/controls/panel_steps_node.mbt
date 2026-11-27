@@ -276,9 +276,7 @@ fn steps_centred_node(
             row.alpha(By(fn() { look().words })) |> ignore
             row.box(fn(at) {
               style_node(at, fn() { dialog_close_corner() })
-              icon_button_node(at, "close", fn() { t("common.close") }, cancel, size=dialog_close)
-              .tab_stop(Is(false))
-              |> ignore
+              dialog_close_key_node(at, cancel) |> ignore
             })
             |> ignore
           })
@@ -319,25 +317,31 @@ fn step_page_node(
     }
   }
   page.box(made_for=loc, fn(part) {
-    // (from under the close button over the dialog's corner, as an untitled dialog's body is: dialog_untitled_top)
-    style_node(part, fn() { centred_part_in(@ui.capsule_in(dialog_r, dialog_close) + dialog_close, 0.0) })
+    // (aligned on the dialog's 24pt padding with corner keys shifted to concentric (20,20) and right clearance for
+    // the stationary top-right 36pt close button)
+    style_node(part, fn() { centred_part_in(dialog_pad, 0.0) })
     part.alpha(By(fn() { look().words })) |> ignore
-    // (its head: as high as a titled dialog's, its back key past its first step before its title, the row no taller for
-    // it (step_head's), under the close button over the dialog's corner)
+    // (its head: top-left 36pt Liquid Glass back key past its first step concentric with the 38pt corner, then its
+    // title aligned on its first line, clearing the stationary close button on the right)
     part.box(fn(line) {
-      style_node(line, fn() { dialog_step_head.then(step_head_over(line)).then(step_head_gap).then(@ui.style(pl=room(words_in))) })
+      style_node(line, fn() {
+        dialog_step_head.then(@ui.style(pl=room(words_in), pr=room(dialog_close_clear())))
+      })
       if k != 0 || keyed.under is Some(_) {
         line.box(fn(key) {
-          // (out of the words' line by as far as its chevron stands in, the row no taller for it: step_head's)
           style_node(key, fn() {
-            in_line(step_back_side - node_sp(key, @ui.tree_theme().text_size(Heading).1)).then(@ui.style(ml=room(-step_back_in)))
+            dialog_back_at(drop=head_line_drop(key, Heading, h=dialog_corner_key_side, row=dialog_corner_key_side))
           }, in_row=true)
-          icon_button_node(key, "chevron-left", fn() { t("common.back") }, back, size=step_back_side) |> ignore
+          dialog_step_back_node(key, back) |> ignore
         })
         |> ignore
       }
       line.box(fn(l) {
-        style_node(l, fn() { dialog_title_line }, in_row=true)
+        style_node(l, fn() {
+          let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
+          let drop = head_line_drop(l, Heading, row=dialog_corner_key_side)
+          dialog_title_line.then(@ui.style(mt=room(d - dialog_pad + drop)))
+        }, in_row=true)
         l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         words_node(l, fn() { title_plain(now().0) }, fn() { if now().1 != "" { dialog_title_one } else { dialog_title } }) |> ignore
         words_node(l, fn() { now().1 }, fn() { dialog_step }) |> ignore

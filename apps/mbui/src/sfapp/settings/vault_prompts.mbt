@@ -77,7 +77,7 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
     )
     |> ignore
   }
-  @sf.panel_nodes(fill("web-pages.vault.promptTitle", [("device", text(rv, "deviceText"))]), from=Unanchored, gone=hide, foot~, fn(v, close) {
+  @sf.panel_nodes(tr("web-pages.vault.promptTitle"), from=Unanchored, gone=hide, foot~, fn(v, close) {
     // given the key elsewhere, or put away there: gone here too, as the core says so
     prompt_goes(v, fn() { prompt_now(core, "asks", fn(x) { key_ask_of(x) == ask }) }, close)
     let safe_mode = match field(rv, "safeMode") {
@@ -85,37 +85,45 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
       _ => true
     }
     let body_key = if safe_mode { "web-pages.vault.promptBody" } else { "web-pages.vault.promptBodyNoSafeMode" }
+    let device_text = text(rv, "deviceText")
     let dev_code = text(rv, "deviceCode")
     let owner_name = text(rv, "ownerName")
     let owner_email = text(rv, "ownerEmail")
     let is_own = flag(rv, "isOwnDevice")
     let at_text = text(rv, "atText")
-    let has_info = dev_code != "" || owner_name != "" || at_text != ""
+    let has_info = device_text != "" || dev_code != "" || owner_name != "" || at_text != ""
     let has_items = field(rv, "vaultItems") is Some(Number(_))
     let item_count = count(rv, "vaultItems")
     let is_ws_vault = text(rv, "vaultScope") == "workspace"
     v.box(fn(col) {
       @sf.style_node(col, fn() { key_ask_column })
-      @sf.words_node(col, fn() { fill(body_key, [("vault", text(rv, "vaultName")), ("at", at_text)]) }, fn() {
-        key_ask_body
-      })
-      |> ignore
+      // Prominent verification card at top of body: variable-length device name & verification code stand out clearly
+      // for careful human inspection rather than wrapping inside the header title.
       if has_info {
         col.box(fn(info) {
-          @sf.style_node(info, fn() { key_ask_info })
+          @sf.style_node(info, fn() { key_ask_info.then(@sf.panel_card_out_node(info)) })
+          info.radius(Is(@sf.quiet_card_corner)) |> ignore
+          if device_text != "" {
+            info.box(fn(block) {
+              @sf.style_node(block, fn() { key_ask_field })
+              @sf.words_node(block, fn() { tr("web-pages.vault.promptDevice") }, fn() { key_ask_label }) |> ignore
+              @sf.words_node(block, fn() { device_text }, fn() { key_ask_device }) |> ignore
+            })
+            |> ignore
+          }
           if dev_code != "" {
-            info.box(fn(line) {
-              @sf.style_node(line, fn() { key_ask_line })
-              line
-              .words_runs(
-                By(fn() {
-                  [
-                    @ui.span(tr("web-pages.vault.promptDeviceCode") + "  ", color=@sf.theme().p.muted),
-                    @ui.span(dev_code, mono=true, bold=true, color=@sf.theme().p.text),
-                  ]
-                }),
-                look=@ui.style_words(key_ask_body),
-              )
+            info.box(fn(block) {
+              @sf.style_node(block, fn() { key_ask_field })
+              @sf.words_node(block, fn() { tr("web-pages.vault.promptDeviceCode") }, fn() { key_ask_label }) |> ignore
+              block.box(fn(code_line) {
+                @sf.style_node(code_line, fn() { key_ask_line })
+                code_line
+                .words_runs(
+                  By(fn() { [@ui.span(dev_code, mono=true, bold=true, color=@sf.theme().p.text)] }),
+                  look=@ui.style_words(key_ask_code),
+                )
+                |> ignore
+              })
               |> ignore
             })
             |> ignore
@@ -169,6 +177,10 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
         })
         |> ignore
       }
+      @sf.words_node(col, fn() { fill(body_key, [("vault", text(rv, "vaultName")), ("at", at_text)]) }, fn() {
+        key_ask_body
+      })
+      |> ignore
       col.box(fn(scope) {
         @sf.style_node(scope, fn() { key_ask_scope })
         @sf.words_node(scope, fn() { text(rv, "workspaceName") + " · " + text(rv, "vaultName") }, fn() { key_ask_where }) |> ignore
@@ -198,9 +210,15 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
 let key_ask_column : @ui.Style = @ui.css("w=Full gap=S3")
 
 ///|
-/// Lightweight tinted block for device verification code, owner, and request time.
+/// Concentric quiet verification card (`bg=A(Fg,O5)`, `card_radius`, `panel_card_in` from panel edges)
+/// highlighting the requesting device, verification code, owner, and request time.
 // kept across runs: a value (no field of it changes)
-let key_ask_info : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1_5 radius=Md bg=Tint")
+let key_ask_info : @ui.Style = @ui.css("w=Full p=S4 gap=S2_5 bg=A(Fg,O5) clip")
+
+///|
+/// Stacked label + prominent value inside the verification block.
+// kept across runs: a value (no field of it changes)
+let key_ask_field : @ui.Style = @ui.css("w=Full gap=S0_5")
 
 ///|
 /// Full-width line holder inside the info block so inline runs wrap cleanly.
@@ -211,6 +229,21 @@ let key_ask_line : @ui.Style = @ui.css("w=Full")
 /// The vault name and its scope/item-count summary, 4 apart.
 // kept across runs: a value (no field of it changes)
 let key_ask_scope : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+/// Field caption label inside the verification block.
+// kept across runs: a value (no field of it changes)
+let key_ask_label : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)
+
+///|
+/// Requesting device name highlighted prominently in the body so users read it carefully.
+// kept across runs: a value (no field of it changes)
+let key_ask_device : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, w=Full)
+
+///|
+/// Verification code display style (large bold monospace with wide tracking).
+// kept across runs: a value (no field of it changes)
+let key_ask_code : @ui.TextStyle = @ui.text_style(size=Heading, weight=Bold, color=Fg, tracking=Wider, w=Full)
 
 ///|
 /// Which device asks what (14 in the muted).

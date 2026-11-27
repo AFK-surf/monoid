@@ -75,30 +75,30 @@ test "rows that go somewhere, with a mark before their words and with none, on a
     #|sheet opened by nothing:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,605 38x5 841819172
+    #|rect 176,599 38x5 841819172
     #|rect 22,698 346x124 606546701
-    #|words 一组@30,622 h24 a1
     #|words 打开@180,45 h22 a1
+    #|words 一组@179,622 h24 a1
     #|words 上传图片@78,722 h22 a1
     #|words 不带图标@46,776 h22 a1
     #|words 它说的话@30,656 h18 a1
     #|sheet opened by a press:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,615 38x5 841819172
+    #|rect 176,609 38x5 841819172
     #|rect 22,698 346x124 606546701
-    #|words 一组@30,632 h24 a1
     #|words 打开@180,45 h22 a1
+    #|words 一组@179,632 h24 a1
     #|words 上传图片@78,722 h22 a1
     #|words 不带图标@46,776 h22 a1
     #|words 它说的话@30,666 h18 a1
     #|sheet opened by a press, with a mouse:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,615 38x5 841819172
+    #|rect 176,609 38x5 841819172
     #|rect 22,698 346x124 606546701
-    #|words 一组@30,632 h24 a1
     #|words 打开@182,46 h20 a1
+    #|words 一组@179,632 h24 a1
     #|words 上传图片@78,722 h22 a1
     #|words 不带图标@46,776 h22 a1
     #|words 它说的话@30,666 h18 a1
@@ -113,12 +113,13 @@ test "rows that go somewhere, with a mark before their words and with none, on a
     #|dialog:
     #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
-    #|rect 156,305.5 488x96 606546701
+    #|rect 156,307 488x96 606546701
     #|words 打开@387,46 h20 a1
-    #|words 一组@164,208.5 h30 a1
-    #|words 上传图片@212,323.5 h20 a1
-    #|words 不带图标@180,363.5 h20 a1
-    #|words 它说的话@164,257.5 h18 a1
+    #|words 一组@164,204 h30 a1
+    #|words 上传图片@212,325 h20 a1
+    #|words 不带图标@180,365 h20 a1
+    #|words 它说的话@164,259 h18 a1
+
 
 
   ))

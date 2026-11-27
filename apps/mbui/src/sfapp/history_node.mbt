@@ -265,17 +265,22 @@ fn model_mark_big_node(
   state : () -> String,
   around? : () -> Int64 = fn() { @sf.theme().p.bg },
   plain? : Bool = false,
+  corner? : Double,
 ) -> Unit {
   let xs = size < 30.0
   let glyph = size * (if xs { 0.6 } else { 0.56 })
   // (no tile: as wide and tall as the mark alone, so it stands on a line as its words do without extra side padding)
   let wide = if plain { glyph } else { size }
   let tall = if plain { glyph } else { size }
+  let r = match corner {
+    Some(c) => c
+    None => if xs { 6.0 } else { @sf.small_corner }
+  }
   v.box(fn(m) {
     m
     .width(Is(Some(wide)))
     .height(Is(Some(tall)))
-    .radius(Is(if xs { 6.0 } else { @sf.small_corner }))
+    .radius(Is(r))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore

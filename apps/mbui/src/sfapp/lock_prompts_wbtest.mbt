@@ -9,7 +9,7 @@ test "a new device waiting on this one's code: its panel over the page, where it
   assert_true(@sf.presenting(), msg="its sheet up over the page")
   // (the screen kept on while the code is to be read off it: gone dark, the device could not ask as the code comes)
   assert_true(t.awake())
-  assert_true(t.find("林的新设备请求批准") is Some(_))
+  assert_true(t.find("新设备请求批准") is Some(_))
   assert_true(t.find("Pixel 9") is Some(_))
   // where it asks to be let in, each workspace by name
   assert_true(t.find("申请访问") is Some(_))
@@ -22,7 +22,7 @@ test "a new device waiting on this one's code: its panel over the page, where it
   t.run_for(@ui.move_most_ms)
   // turned away: gone, and not put up again
   assert_false(@sf.presenting())
-  assert_true(t.find("林的新设备请求批准") is None)
+  assert_true(t.find("新设备请求批准") is None)
   assert_eq(@settings.fixture_pair_ended(), "deny")
   assert_false(t.awake())
 }
@@ -37,7 +37,7 @@ test "the panel closed by hand once the code is read: put away, not turned away 
   t.tap(195.0, 60.0)
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenting())
-  assert_true(t.find("林的新设备请求批准") is None)
+  assert_true(t.find("新设备请求批准") is None)
   assert_eq(@settings.fixture_pair_ended(), "hide")
   assert_false(t.awake())
 }
@@ -105,14 +105,14 @@ test "on a narrow phone, its words as set and 1.3 times as large: the code's two
 test "done or turned away on another device: its panel goes by itself, nothing asked of the core" {
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
-    assert_true(t.find("林的新设备请求批准") is Some(_))
+    assert_true(t.find("新设备请求批准") is Some(_))
     assert_true(t.awake(), msg="platform \{screen.0}, wide \{screen.1}")
     @settings.fixture_prompts_now(pairing=false, key_ask=false)
     t.draw()
     t.run_for(@ui.move_most_ms)
     assert_false(t.awake(), msg="platform \{screen.0}, wide \{screen.1}")
     assert_false(@sf.presenting(), msg="platform \{screen.0}, wide \{screen.1}")
-    assert_true(t.find("林的新设备请求批准") is None)
+    assert_true(t.find("新设备请求批准") is None)
     assert_eq(@settings.fixture_pair_ended(), "")
   }
 }
@@ -125,7 +125,7 @@ test "asked into one more workspace meanwhile: named too, its mark before it; th
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting())
-  assert_true(t.find("林的新设备请求批准") is Some(_))
+  assert_true(t.find("新设备请求批准") is Some(_))
   let head = pair_word(t, "申请访问")
   let (open, star) = (pair_word(t, "开源", under=head.1), pair_word(t, "星火工作室", under=head.1))
   let emoji = pair_word(t, "🌲", under=head.1)
@@ -170,7 +170,7 @@ test "with keyboard and mouse on a small window, and on a wide one (a dialog in 
   for wide in [false, true] {
     let t = pair_asked(platform=0, wide~)
     if wide {
-      let (x, y, _, _) = t.rect_of("林的新设备请求批准").unwrap()
+      let (x, y, _, _) = t.rect_of("新设备请求批准").unwrap()
       assert_true(x > 200.0 && x < 800.0 && y > 150.0 && y < 500.0, msg="its title at \{x},\{y}")
     }
     let (x, y) = t.find_last("拒绝").unwrap()
@@ -204,7 +204,7 @@ test "where its words stand on each screen: whose and what, where it asks in, th
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
     let about = "platform \{screen.0}, wide \{screen.1}"
-    let body = pair_word(t, "Pixel 9。确认申请人和设备后，在新设备上输入下方安全码；无法确认请拒绝。")
+    let body = pair_word(t, "确认申请人和设备后，在新设备上输入下方安全码；无法确认请拒绝。")
     let head = pair_word(t, "申请访问")
     let (star, mine) = (pair_word(t, "星火工作室", under=head.1), pair_word(t, "个人", under=head.1))
     let code = pair_code(t)

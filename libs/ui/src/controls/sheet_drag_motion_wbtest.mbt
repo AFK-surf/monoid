@@ -189,9 +189,9 @@ test "小屏悬浮抽屉内 quiet_card_node 与抽屉玻璃四角严格同心（
   assert_true((left_gap - panel_card_in).abs() < 0.5, msg="left gap \{left_gap} vs \{panel_card_in}")
   assert_true((right_gap - panel_card_in).abs() < 0.5, msg="right gap \{right_gap} vs \{panel_card_in}")
   assert_true((bottom_gap - panel_card_in).abs() < 0.5, msg="bottom gap \{bottom_gap} vs \{panel_card_in}")
-  assert_true((cr.0 - card_corner).abs() < 0.5 && (cr.1 - card_corner).abs() < 0.5 && (cr.2 - card_corner).abs() < 0.5 && (cr.3 - card_corner).abs() < 0.5, msg="card corners \{Repr(cr)} vs \{card_corner}")
+  assert_true((cr.0 - quiet_card_corner).abs() < 0.5 && (cr.1 - quiet_card_corner).abs() < 0.5 && (cr.2 - quiet_card_corner).abs() < 0.5 && (cr.3 - quiet_card_corner).abs() < 0.5, msg="card corners \{Repr(cr)} vs \{quiet_card_corner}")
   let gcs = t.drawn_glass_corners()
-  assert_true(gcs.length() >= 1 && (gcs[gcs.length() - 1].4 - pane_corner).abs() < 0.5, msg="glass corner \{Repr(gcs)}")
+  assert_true(gcs.length() >= 1 && (gcs[gcs.length() - 1].4 - dialog_r).abs() < 0.5, msg="glass corner \{Repr(gcs)}")
   assert_eq(t.audit(), [])
 }
 

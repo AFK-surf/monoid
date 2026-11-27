@@ -210,7 +210,8 @@ fn recent_adding_node(
       if small { base } else { base.then(@sf.panel_card_out_node(row)).then(@sf.panel_card_last_node(row)) }
     })
     row.box(fn(b) {
-      @sf.style_node(b, fn() { recent_add.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
+      @sf.style_node(b, fn() { recent_add }, in_row=true)
+      b.radius(Is(attach_block_corner(small))) |> ignore
       @sf.words_node(b, words, fn() { recent_add_words }) |> ignore
       @sf.rippled_node(b, press, attach_block_corner(small), words)
     })
@@ -297,7 +298,8 @@ fn recent_tile_node(
   body : (@view.View) -> Unit,
 ) -> Unit {
   @sf.action_box_node(parent, label, fn(_) { press() }, fn(t) {
-    @sf.style_node(t, fn() { recent_tile_box.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
+    @sf.style_node(t, fn() { recent_tile_box }, in_row=true)
+    t.radius(Is(attach_block_corner(small))) |> ignore
     body(t)
   })
   |> ignore
@@ -397,34 +399,24 @@ fn attach_foot(_small : Bool) -> Double {
 
 ///|
 /// How far in the strip's tiles stand from the panel's sides and under its top: in a sheet aligned with the cards below
-/// (`panel_card_in`, 16) and below the 42pt top corner (`pane_corner - sheet_grab_h`); in a small panel (`small`), at
+/// (`panel_card_in`, 16) and below the 38pt top corner (`dialog_r - sheet_grab_h`); in a small panel (`small`), at
 /// its padding.
 fn recent_in(small : Bool) -> (Double, Double) {
   if small {
     (@sf.panel_pad, 0.0)
   } else {
-    (@sf.panel_card_in, @sf.pane_corner - @sf.sheet_grab_h)
+    (@sf.panel_card_in, @sf.dialog_r - @sf.sheet_grab_h)
   }
 }
 
 ///|
-/// How round ＋'s tiles are (the strip's, 照片 文件 Station 文件, 添加 n 个): `card_corner` (26) in a sheet so tiles inset
-/// 16pt from 42pt floating glass stay concentric (`26 + 16 = 42`); in a small panel (`small`), concentric with `r_menu`.
+/// How round ＋'s tiles are (the strip's, 照片 文件 Station 文件, 添加 n 个): `quiet_card_corner` (22) in a sheet so tiles inset
+/// 16pt from 38pt floating glass stay concentric (`22 + 16 = 38`); in a small panel (`small`), concentric with `r_menu`.
 fn attach_block_corner(small : Bool) -> Double {
   if small {
     @sf.small_panel_inner(@sf.r_menu)
   } else {
-    @sf.card_corner
-  }
-}
-
-///|
-/// attach_block_corner as a style's: a small panel's `panel_in`, else `card_radius`.
-fn attach_block_radius(small : Bool) -> @ui.Radius {
-  if small {
-    @sf.panel_in
-  } else {
-    @sf.card_radius
+    @sf.quiet_card_corner
   }
 }
 

@@ -54,7 +54,8 @@ fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Un
       let tile_node = fn(words : String, icon : String, press : () -> Unit) {
         let label = fn() { @sf.t(words) }
         row.box(fn(tile) {
-          @sf.style_node(tile, fn() { attach_tile.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
+          @sf.style_node(tile, fn() { attach_tile }, in_row=true)
+          tile.radius(Is(attach_block_corner(small))) |> ignore
           @sf.icon_node(tile, icon, attach_icon, By(fn() { @sf.theme().p.text })) |> ignore
           @sf.words_node(tile, label, fn() { attach_words }).words_centered(Is(true)) |> ignore
           // (Attach.kt: clip(Smooth(14)).clickable; the ladder's block corner here, or a small panel's)

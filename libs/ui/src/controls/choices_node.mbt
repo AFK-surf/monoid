@@ -50,7 +50,7 @@ pub fn choices_node(
         choice_card
       }
       if in_panel {
-        look.then(panel_card_out_node(card)).then(@ui.style(radius=rounded(card_corner)))
+        look.then(panel_card_out_node(card)).then(@ui.style(radius=rounded(dialog_card_corner)))
       } else {
         look
       }

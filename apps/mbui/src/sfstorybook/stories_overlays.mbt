@@ -578,7 +578,42 @@ fn stories_overlays(tips : @sf.TipLayer) -> Array[Story] {
           "标题长短不同的对话框",
           fn(card) {
             side_by_side(card, fn(r) {
-              for it in [("授权钥匙", "OPPO Find X9 Ultra · still.fail Android 申请密钥库的钥匙"), ("短标题", "申请钥匙")] {
+              @sf.button_node(r, fn() { "授权钥匙" }, fn() {
+                @sf.panel_nodes(
+                  "授权密钥库钥匙",
+                  fn(body, _) {
+                    body.box(fn(col) {
+                      @sf.style_node(col, fn() { story_prompt_col })
+                      story_prompt_info_card(col)
+                      @sf.words_node(col, fn() { "此设备已在你的受信任设备中，刚刚申请「Workspace 密钥库」的钥匙。请核对以上信息无误后再授权。" }, fn() { story_prompt_meta })
+                      |> ignore
+                    })
+                    |> ignore
+                  },
+                  from=@sf.Anchor::Unanchored,
+                  foot=fn(f, close) {
+                    @sf.button_node(f, fn() { "稍后" }, close) |> ignore
+                    @sf.button_node(f, fn() { "授权" }, close, tone=Primary) |> ignore
+                  },
+                )
+              })
+              |> ignore
+              @sf.button_node(r, fn() { "授权钥匙两步" }, fn() {
+                @sf.panel_nodes(
+                  "授权",
+                  fn(body, _) {
+                    @sf.panel_row_node(body, fn() { "核对设备" }, fn() {
+                      @sf.panel_go_nodes("授权密钥库钥匙", fn(next, _) {
+                        story_prompt_info_card(next, last=true)
+                      })
+                    }, end="chevron-right")
+                  },
+                  from=@sf.Anchor::Unanchored,
+                  steps=true,
+                )
+              })
+              |> ignore
+              for it in [("短标题", "申请钥匙")] {
                 let (label, title) = it
                 @sf.button_node(r, fn() { label }, fn() {
                   @sf.panel_nodes(
@@ -623,3 +658,60 @@ fn stories_overlays(tips : @sf.TipLayer) -> Array[Story] {
 /// A card's title in these stories (a hover card's name): the body's size, 600.
 // kept across runs: a value (no field of it changes)
 let story_card_title : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=Fg)
+
+///|
+fn story_prompt_info_card(parent : @view.View, last? : Bool = false) -> Unit {
+  parent.box(fn(info) {
+    @sf.style_node(info, fn() {
+      let s = story_prompt_info.then(@sf.panel_card_out_node(info))
+      if last { s.then(@sf.panel_card_last_node(info)) } else { s }
+    })
+    info.radius(Is(@sf.quiet_card_corner)) |> ignore
+    info.box(fn(f) {
+      @sf.style_node(f, fn() { story_prompt_field })
+      @sf.words_node(f, fn() { "申请设备" }, fn() { story_prompt_label }) |> ignore
+      @sf.words_node(f, fn() { "OPPO Find X9 Ultra · still.fail Android" }, fn() { story_prompt_device }) |> ignore
+    })
+    |> ignore
+    info.box(fn(f) {
+      @sf.style_node(f, fn() { story_prompt_field })
+      @sf.words_node(f, fn() { "设备核对码" }, fn() { story_prompt_label }) |> ignore
+      f.box(fn(cl) {
+        @sf.style_node(cl, fn() { story_prompt_line })
+        cl.words_runs(
+          By(fn() { [@ui.span("3CR-C5Q", mono=true, bold=true, color=@sf.theme().p.text)] }),
+          look=@ui.style_words(story_prompt_code),
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: style constants for the prompt story's verification card
+let story_prompt_col : @ui.Style = @ui.css("w=Full gap=S3")
+
+///|
+let story_prompt_info : @ui.Style = @ui.css("w=Full p=S4 gap=S2_5 bg=A(Fg,O5) clip")
+
+///|
+let story_prompt_field : @ui.Style = @ui.css("w=Full gap=S0_5")
+
+///|
+let story_prompt_line : @ui.Style = @ui.css("w=Full")
+
+///|
+let story_prompt_label : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)
+
+///|
+let story_prompt_device : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, w=Full)
+
+///|
+let story_prompt_code : @ui.TextStyle = @ui.text_style(size=Heading, weight=Bold, color=Fg, tracking=Wider, w=Full)
+
+///|
+let story_prompt_meta : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)

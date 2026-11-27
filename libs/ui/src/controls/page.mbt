@@ -531,7 +531,7 @@ pub let desk_mark : Double = 14.0
 /// A card of a panel's, on its ground as its other cards are (the ink at 5%: info_list's, a choice's): a card's own ground is
 /// the panel's, unseen on it.
 // kept across runs: a value (no field of it changes)
-let panel_card_group : @ui.Style = panel_card_ground.then(@ui.style(radius=rounded(card_corner)))
+let panel_card_group : @ui.Style = panel_card_ground.then(@ui.style(radius=rounded(dialog_card_corner)))
 
 ///|
 /// A card of a panel's, its ground alone (panel_card_group's, its corners left to what draws it: a card's piece,

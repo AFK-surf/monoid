@@ -52,21 +52,21 @@ fn both_sheets(
 ///|
 test "小屏: a panel opened by nothing whose body and foot are nodes: a sheet whose body, foot and scrim are where they were beside the host's; Escape closes it" {
   debug_inspect(both_sheets(Unanchored, fn(t) { t.key(@ui.key_escape) }), content=(
-    #|((30, 692, 40, 36), (298, 776, 60, 36), 1)
+    #|((30, 696, 40, 36), (302, 780, 60, 36), 1)
   ))
 }
 
 ///|
 test "小屏: a panel opened by a press whose body and foot are nodes, untitled: a sheet whose body, foot and scrim are where they were beside the host's; the back closes it" {
   debug_inspect(both_sheets(At(100.0, 300.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
-    #|((22, 716, 40, 36), (298, 776, 60, 36), 1)
+    #|((22, 720, 40, 36), (302, 780, 60, 36), 1)
   ))
 }
 
 ///|
 test "小屏: a sheet whose body is nodes, a press above it: closed, as the host's" {
   debug_inspect(both_sheets(Unanchored, fn(t) { t.tap(195.0, 40.0) }), content=(
-    #|((30, 692, 40, 36), (298, 776, 60, 36), 1)
+    #|((30, 696, 40, 36), (302, 780, 60, 36), 1)
   ))
 }
 
@@ -94,7 +94,7 @@ test "小屏: a sheet whose body is nodes, its top dragged down a little: back w
   let rest = painted_at(t, body_ink)
   // (at rest, then dragged a little: back)
   debug_inspect((rest, little(t)), content=(
-    #|((30, 692, 40, 36), (30, 692, 40, 36))
+    #|((30, 696, 40, 36), (30, 696, 40, 36))
   ))
   far(t)
 }
@@ -164,7 +164,7 @@ test "小屏: a sheet that grows whose body is nodes: dragged up, its grabber ta
   })
   debug_inspect(grows_trace(t), content=(
     #|[
-    #|  629,
+    #|  633,
     #|  50.6400000000001,
     #|  379.79999999999995,
     #|  169.79999999999995,
@@ -209,16 +209,16 @@ test "小屏: a sheet whose body is nodes rising and sinking away: over the time
   // (and let go as it has sunk away and its scrim faded: its layer held by its sinking, View::moved_by)
   debug_inspect(rise_trace(t), content=(
     #|[
-    #|  831.5,
-    #|  754.5,
-    #|  716,
-    #|  700,
-    #|  694,
-    #|  692,
-    #|  692,
-    #|  692,
-    #|  692,
-    #|  767.5,
+    #|  833,
+    #|  757.5,
+    #|  719.5,
+    #|  704,
+    #|  698,
+    #|  696,
+    #|  696,
+    #|  696,
+    #|  696,
+    #|  770,
     #|  -1,
     #|  -1,
     #|  -1,
@@ -299,7 +299,7 @@ test "小屏: a sheet whose title is as it is now (`live`) and whose body is nod
   debug_inspect(made, content=(
     #|[
     #|  ((0, 193.8, 40, 36), None),
-    #|  ((0, 231.8, 40, 36), Some((40, 209.79999999999995))),
+    #|  ((0, 231.8, 40, 36), Some((195, 209.79999999999995))),
     #|  ((0, 193.8, 40, 36), None),
     #|]
   ))

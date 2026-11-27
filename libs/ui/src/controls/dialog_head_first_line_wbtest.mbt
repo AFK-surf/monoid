@@ -121,11 +121,16 @@ test "a sheet's step's back key stands concentric with the sheet's top corner an
         @halt.saying("\{at}: missing back/sheet/body: \{key.length()} \{sheet.length()} \{body.length()}")
       }
       let (kx, ky, kw, kh) = key[0].rect
-      let (sx, sy, _, _) = sheet[0].rect
-      let (_, bx, _, _, _, _) = body[0]
-      assert_eq((kw.round(), kh.round()), (36.0, 36.0), msg=at)
-      assert_eq(((kx - sx).round(), (ky - sy).round()), (24.0, 24.0), msg=at)
-      assert_eq((kx - bx).round(), 0.0, msg=at)
+      let (sx, sy, sw, _) = sheet[0].rect
+      let title_w = tt.words().filter(fn(x) { x.0 == title })
+      guard title_w.length() == 1 else { @halt.saying("\{at}: missing title") }
+      let (_, tx, _, tw, _, _) = title_w[0]
+      assert_eq((kw.round(), kh.round()), (44.0, 44.0), msg=at)
+      assert_eq(((kx - sx).round(), (ky - sy).round()), (16.0, 16.0), msg=at)
+      // Single-line title stays horizontally centred under the sheet's grabber bar
+      if title == "申请钥匙" {
+        assert_true(((tx + tw / 2.0) - (sx + sw / 2.0)).abs() <= 1.0, msg="\{at}: title mid \{tx + tw / 2.0} vs sheet mid \{sx + sw / 2.0}")
+      }
       let cf = tt.corner_faults()
       // At 2.0x the old-view trigger button 「打开」 from presenting_view overflows its fixed 32pt test box by 1pt;
       // filter only that old-view trigger fault while auditing every node inside the presented sheet.
@@ -176,14 +181,53 @@ test "a sheet's step's back key stays concentric and unclipped in capped/full-bl
   }
   let (ckx, cky, ckw, ckh) = ck[0].rect
   let (csx, csy, _, _) = cs[0].rect
-  let (_, cbx, _, _, _, _) = cb[0]
-  assert_eq((ckw.round(), ckh.round()), (36.0, 36.0), msg="capped size")
-  assert_eq(((ckx - csx).round(), (cky - csy).round()), (24.0, 24.0), msg="capped concentric")
-  assert_eq((ckx - cbx).round(), 0.0, msg="capped flush")
+  let (_, _, _, _, _, _) = cb[0]
+  assert_eq((ckw.round(), ckh.round()), (44.0, 44.0), msg="capped size")
+  assert_eq(((ckx - csx).round(), (cky - csy).round()), (16.0, 16.0), msg="capped concentric")
   assert_eq(tc.corner_faults(), [], msg="capped corners")
   assert_eq(tc.audit(), [], msg="capped audit")
 
-  // 2) Extreme 3.0x font scale: title row clamps below the grabber bar (y=17pt) instead of colliding with it.
+  // 2) Full-bleed sheet (tall=0.9): back key stays at (16,16), 0 corner faults, 0 audit faults.
+  let open_full = fn(_ : Anchor) {
+    panel_nodes("第一步", from=Unanchored, steps=true, tall=0.9, fn(v, _) {
+      v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+    })
+    panel_go_nodes("申请钥匙", fn(v, _) {
+      v.box(fn(b) {
+        style_node(b, fn() { sheet_words_at })
+        words_node(b, fn() { "下一步的内容" }, fn() { dialog_lead }) |> ignore
+      })
+      |> ignore
+    })
+  }
+  presenters_reset()
+  let tf = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=presented_tree(presenting_view(open_full)),
+    w=390.0,
+    h=800.0,
+    platform=0,
+  )
+  tf.check_looks(false)
+  tf.draw()
+  tf.tap_text("打开")
+  tf.run_for(@ui.move_most_ms)
+  tf.leave()
+  tf.draw()
+  let fk = tf.all(Button, label=back)
+  let fs = tf.all(Dialog, label="申请钥匙")
+  let fb = tf.words().filter(fn(x) { x.0 == "下一步的内容" })
+  guard fk.length() == 1 && fs.length() == 1 && fb.length() == 1 else {
+    @halt.saying("full-bleed sheet missing back/sheet/body")
+  }
+  let (fkx, fky, fkw, fkh) = fk[0].rect
+  let (fsx, fsy, _, _) = fs[0].rect
+  assert_eq((fkw.round(), fkh.round()), (44.0, 44.0), msg="full-bleed size")
+  assert_eq(((fkx - fsx).round(), (fky - fsy).round()), (16.0, 16.0), msg="full-bleed concentric")
+  assert_eq(tf.corner_faults(), [], msg="full-bleed corners")
+  assert_eq(tf.audit(), [], msg="full-bleed audit")
+
+  // 3) Extreme 3.0x font scale: title row clamps below the grabber bar (y=11pt) instead of colliding with it.
   let open_3x = fn(_ : Anchor) {
     panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
       v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
@@ -218,31 +262,11 @@ test "a sheet's step's back key stays concentric and unclipped in capped/full-bl
   }
   let (_, s3y, _, _) = s3[0].rect
   let (_, _, w3y, _, _, _) = w3[0]
-  assert_true(w3y - s3y >= 20.5, msg="3x title top \{w3y - s3y} must stay clear below grabber bar (17pt)")
+  assert_true(w3y - s3y >= 13.5, msg="3x title top \{w3y - s3y} must stay clear below grabber bar (11pt)")
 }
 
 ///|
-test "sheet_step_back_ground stays strictly neutral translucent in light and dark themes" {
-  let check_neutral = fn(c : Int64) raise {
-    let r = (c >> 24) & 0xFFL
-    let g = (c >> 16) & 0xFFL
-    let b = (c >> 8) & 0xFFL
-    let a = c & 0xFFL
-    assert_eq((r, g, b), (r, r, r), msg="expected neutral grey/black/white RGB")
-    assert_true(a > 0L && a < 0xFFL, msg="expected translucent alpha")
-  }
-  let rest_l = sheet_step_back_ground(0.0, 0.0)
-  let hover_l = sheet_step_back_ground(1.0, 0.0)
-  let press_l = sheet_step_back_ground(1.0, 1.0)
-  check_neutral(rest_l)
-  check_neutral(hover_l)
-  check_neutral(press_l)
-  assert_true((hover_l & 0xFFL) > (rest_l & 0xFFL), msg="hover deeper than rest")
-  assert_true((press_l & 0xFFL) > (hover_l & 0xFFL), msg="press deeper than hover")
-}
-
-///|
-test "a stepped centred dialog's back key matches its close button's 32pt height, concentricity, and first-line alignment" {
+test "a stepped centred dialog's back key matches its close button's 36pt Liquid Glass disc, concentricity, and first-line alignment" {
   let back = t("common.back")
   let close = t("common.close")
   for scale in [0.85, 1.0, 1.3, 1.8, 2.0] {
@@ -268,6 +292,8 @@ test "a stepped centred dialog's back key matches its close button's 32pt height
         w=1200.0,
         h=800.0,
         platform=0,
+        // At 1.8x/2.0x Heading line height (43-48pt) exceeds the 36pt circle, so head_line_drop shifts both corner
+        // buttons down to stay centred on line 1 (matching the explicit design rule over top-corner concentricity).
         corners_held=scale <= 1.3,
       )
       tt.check_looks(false)
@@ -294,9 +320,9 @@ test "a stepped centred dialog's back key matches its close button's 32pt height
       let first_mid = wy + wh / lines.to_double() / 2.0
       let key_mid = ky + kh / 2.0
       let cls_mid = cy + ch / 2.0
-      // Back and close buttons in dialog_head share exact 32x32 height and vertical center
-      assert_eq((kw.round(), kh.round()), (32.0, 32.0), msg=at)
-      assert_eq((cw.round(), ch.round()), (32.0, 32.0), msg=at)
+      // Back and close buttons in dialog_head share exact 36x36 Liquid Glass height and vertical center
+      assert_eq((kw.round(), kh.round()), (36.0, 36.0), msg=at)
+      assert_eq((cw.round(), ch.round()), (36.0, 36.0), msg=at)
       assert_eq((key_mid - cls_mid).round(), 0.0, msg=at)
       if idx == 0 {
         one_off = (key_mid - first_mid).round()
@@ -304,10 +330,13 @@ test "a stepped centred dialog's back key matches its close button's 32pt height
         assert_eq((key_mid - first_mid).round(), one_off, msg=at)
       }
       if scale == 1.0 {
-        assert_eq(((kx - dx).round(), (ky - dy).round()), (26.0, 26.0), msg=at)
+        assert_eq(((kx - dx).round(), (ky - dy).round()), (20.0, 20.0), msg=at)
         let cf = tt.corner_faults()
         let cfs = cf.join("; ")
         assert_eq(cf, [], msg="\{at}: \{cfs}")
+        // Verify both 36x36 Liquid Glass corner pills are emitted over the Liquid Glass dialog surface
+        let pills = tt.drawn_glass().filter(fn(g) { g.4 == 6 && g.2.round() == 36.0 && g.3.round() == 36.0 })
+        assert_eq(pills.length(), 2, msg="\{at}: expected 2 36pt Liquid Glass corner pills")
       }
       let af = tt.audit().filter(fn(f) { !(scale >= 2.0 && f.contains("「打开」") && f.contains("(old view)")) })
       let afs = af.join("; ")

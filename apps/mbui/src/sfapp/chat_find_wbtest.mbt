@@ -828,8 +828,8 @@ test "对话目录: in the sheet its day headings on the title's line, the rows'
     outline_drawn(t, "glyphs").iter().find_first(fn(g) { g.5 == words }).map(fn(g) { g.0 }).unwrap_or(-1.0)
   }
   let title = glyph("对话目录")
-  assert_true(title > 0.0)
-  assert_eq(glyph("昨天"), title)
+  assert_true(title > 100.0, msg="sheet title centered: \{title}")
+  assert_eq(glyph("昨天"), 6.0 + @sf.panel_words)
   // (the reader's row, lit as the keys are at it: its ground panel_card_in from the sheet's sides, its words on after
   // the face's column)
   let hover = outline_hex(@sf.theme().p.hover)
