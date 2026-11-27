@@ -25,10 +25,14 @@ fn CardRowLit::add_top(self : CardRowLit, key : String, v : @view.View) -> Unit 
     return
   }
   match self.tops.get(key) {
-    Some(list) =>
-      if !list.iter().any(fn(w) { w.id() == v.id() }) {
-        list.push(v)
+    Some(list) => {
+      for i in 0..<list.length() {
+        if list[i].id() == v.id() {
+          return
+        }
       }
+      list.push(v)
+    }
     None => self.tops[key] = [v]
   }
 }
@@ -116,11 +120,22 @@ pub fn CardRowLit::bind_bot(self : CardRowLit, key : String, v : @view.View, act
 }
 
 ///|
+/// Whether any of `list` is lit (`lit_node`), asked in order until one is.
+fn any_lit(list : Array[@view.View]) -> Bool {
+  for i in 0..<list.length() {
+    if lit_node(list[i]) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Whether the main row of `key` is currently hovered, pressed, or focused.
 pub fn CardRowLit::lit_top(self : CardRowLit, key : String) -> Bool {
   self.made.get() |> ignore
   match self.tops.get(key) {
-    Some(list) => list.iter().any(lit_node)
+    Some(list) => any_lit(list)
     None => false
   }
 }
@@ -133,7 +148,7 @@ pub fn CardRowLit::lit_bot(self : CardRowLit, key : String) -> Bool {
     Some((v, active)) => active && lit_node(v)
     None =>
       match self.tops.get(key) {
-        Some(list) => list.iter().any(lit_node)
+        Some(list) => any_lit(list)
         None => false
       }
   }

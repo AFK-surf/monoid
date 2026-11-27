@@ -277,7 +277,10 @@ fn updating_node(parent : @view.View, size : Double, color : () -> Int64, loc~ :
         .lines(By(fn() {
           let ink = color()
           let lines = arrow(top, ink)
-          lines.push_iter(arrow(top + pitch, ink).iter())
+          let next = arrow(top + pitch, ink)
+          for i in 0..<next.length() {
+            lines.push(next[i])
+          }
           lines
         }))
         .offset(By(fn() {

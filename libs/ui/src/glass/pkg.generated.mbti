@@ -399,7 +399,7 @@ pub(all) struct PillTriggerScope {
   morph_shadow : @ref.Ref[(() -> (Double, Double, Int64))?]
   mut morph_owner : Int32
   mut morph_cancel : (() -> Unit)?
-  children : Array[@view.View]
+  mut children : Array[@view.View]
   height : Double
   pad : Double
   direction : PillDirection

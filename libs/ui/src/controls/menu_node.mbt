@@ -1539,9 +1539,9 @@ fn menu_rule_node(b : @view.View, reach : Double, loc~ : SourceLoc) -> Unit {
 /// The tree's Along for the library's.
 fn view_along(a : @ui.Along) -> @view.Along {
   match a {
-    Start => Start
-    Middle => Middle
-    End => End
+    @view.Along::Start => @view.Along::Start
+    @view.Along::Middle => @view.Along::Middle
+    @view.Along::End => @view.Along::End
   }
 }
 

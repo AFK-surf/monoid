@@ -1169,7 +1169,15 @@ pub fn words_links_node(
   shown? : ((Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
-  let has_links = @signals.computed(fn(_) { runs().iter().any(fn(r) { r.link != "" }) })
+  let has_links = @signals.computed(fn(_) {
+    let rs = runs()
+    for i in 0..<rs.length() {
+      if rs[i].link != "" {
+        return true
+      }
+    }
+    false
+  })
   let made = Ref(false)
   let make = fn() {
     guard !made.val else { return }
@@ -1249,7 +1257,17 @@ fn md_list_node(
   let marker_w = fn() { marker_w_now.get() }
   // (whether any of its items is a task, as nearly no list's is: what each item's box is shown by asks it first)
   let has_task = @signals.computed(fn(_) {
-    list().map(fn(l) { l.items.iter().any(fn(it) { it.task is Some(_) }) }).unwrap_or(false)
+    list()
+    .map(fn(l) {
+      let items = l.items
+      for i in 0..<items.length() {
+        if items[i].task is Some(_) {
+          return true
+        }
+      }
+      false
+    })
+    .unwrap_or(false)
   })
   // (all its items, or those of them its piece draws (`items`), each by its place among all)
   let count = fn() {

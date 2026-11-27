@@ -35,7 +35,8 @@ pub(all) struct PillTriggerScope {
   morph_shadow : Ref[(() -> (Double, Double, Int64))?]
   mut morph_owner : Int
   mut morph_cancel : (() -> Unit)?
-  children : Array[@view.View]
+  // (mut: emptied by a fresh array once the last child leaves, letting go of what its slots held)
+  mut children : Array[@view.View]
   height : Double
   pad : Double
   direction : PillDirection
@@ -123,7 +124,7 @@ pub fn bind_pill_press_by(child : @view.View, down : () -> Bool) -> Unit {
         if idx >= 0 {
           ignore(trig.children.remove(idx))
           if trig.children.is_empty() {
-            trig.children.shrink_to_fit()
+            trig.children = []
           }
         }
       }
