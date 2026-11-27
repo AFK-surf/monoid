@@ -12,7 +12,7 @@ import type { HttpRequest } from "../src/host.ts";
 import { hex, utf8 } from "../src/util.ts";
 import {
   type BoxCert, type Item, type JoinAsk, type JoinDismiss, type Vault,
-  TAG, boxPublic, joinAskOk, sign, signedOk,
+  TAG, boxPublic, joinAskOk, sign, signedOk, trySealWith, usableBoxKey,
 } from "../src/vault/crypto.ts";
 import { vaultAsks, vaultCome, vaultsView } from "../src/views/vault.ts";
 import { signerKnown } from "../src/views/lock.ts";
@@ -52,11 +52,11 @@ function makeWorkspaceLock(
   return [lockEntry(next(ws, null, 1000, "genesis", body), ownerKey)];
 }
 
-function joinStation(opts: { roles: Record<string, string> }) {
+function joinStation(opts: { roles: Record<string, string>; chains?: Record<string, Entry[]> }) {
   const vaults = new Map<string, Vault>();
   const items = new Map<string, Item>();
   const boxes = new Map<string, BoxCert>();
-  const joins = new Map<string, { ask: JoinAsk | null; dismissUpTo: number; dismiss: JoinDismiss | null }>();
+  const joins = new Map<string, { ask: JoinAsk | null; joinedUpTo: number; dismissUpTo: number; dismiss: JoinDismiss | null }>();
   let forceConflictOnce = false;
   let offline = false;
 
@@ -107,15 +107,15 @@ function joinStation(opts: { roles: Record<string, string> }) {
         const approveAt = qs.get("approveJoinAt");
         if (approveSub && approveAt !== null) {
           const row = joins.get(jk(body.id, approveSub));
-          if (!row || !row.ask || row.ask.state !== "pending" || row.ask.at !== Number(approveAt) || row.ask.at <= row.dismissUpTo) {
+          if (!row || !row.ask || row.ask.state !== "pending" || row.ask.at !== Number(approveAt) || row.ask.at <= row.joinedUpTo || row.ask.at <= row.dismissUpTo) {
             return status(409, { error: "join cancelled", code: "join_cancelled" });
           }
         }
         const added = (body.members as string[]).filter((m) => !(prev?.members ?? []).includes(m));
         for (const sub of added) {
           const row = joins.get(jk(body.id, sub));
-          if (row && row.ask && row.ask.at > row.dismissUpTo) {
-            row.dismissUpTo = row.ask.at;
+          if (row && row.ask && row.ask.at > row.joinedUpTo) {
+            row.joinedUpTo = row.ask.at;
           }
         }
         vaults.set(body.id, body);
@@ -135,7 +135,7 @@ function joinStation(opts: { roles: Record<string, string> }) {
         return { item: body };
       }
       case "GET /vault/boxes":
-        return { boxes: [...boxes.values()] };
+        return opts.chains ? { boxes: [...boxes.values()], chains: opts.chains, roles: opts.roles } : { boxes: [...boxes.values()] };
       case "PUT /vault/boxes":
         if (!signedOk(body, TAG.box)) return status(400, { error: "signature", code: "vault_invalid" });
         boxes.set(body.device, body);
@@ -143,27 +143,27 @@ function joinStation(opts: { roles: Record<string, string> }) {
       case "GET /vault/joins": {
         const outJoins: JoinAsk[] = [];
         const outDismisses: JoinDismiss[] = [];
-        const floors: Record<string, number> = {};
         for (const v of vaults.values()) {
           if (v.deleted || v.scope !== "workspace") continue;
           if (isAdmin && v.members.includes(viewerSub)) {
             for (const [key, row] of joins) {
               if (!key.startsWith(`${v.id}/`)) continue;
-              if (row.ask && row.ask.state === "pending" && !v.members.includes(row.ask.sub) && row.ask.at > row.dismissUpTo) {
-                outJoins.push(row.ask);
+              if (row.ask && !v.members.includes(row.ask.sub) && row.ask.at > row.joinedUpTo) {
+                if (row.ask.state === "cancelled" || row.ask.at > row.dismissUpTo) {
+                  outJoins.push(row.ask);
+                }
               }
               if (row.dismiss) outDismisses.push(row.dismiss);
             }
           } else if (!v.members.includes(viewerSub)) {
             const row = joins.get(jk(v.id, viewerSub));
             if (row) {
-              if (row.ask) outJoins.push(row.ask);
+              if (row.ask && row.ask.at > row.joinedUpTo) outJoins.push(row.ask);
               if (row.dismiss) outDismisses.push(row.dismiss);
-              if (row.dismissUpTo >= 0) floors[v.id] = row.dismissUpTo;
             }
           }
         }
-        return { joins: outJoins, dismisses: outDismisses, floors };
+        return { joins: outJoins, dismisses: outDismisses };
       }
       case "PUT /vault/joins": {
         const nextAsk = body as JoinAsk;
@@ -175,7 +175,7 @@ function joinStation(opts: { roles: Record<string, string> }) {
           if (!b || b.box !== nextAsk.box) return status(409, { error: "box missing", code: "vault_box_missing" });
         }
         const key = jk(nextAsk.vault, nextAsk.sub);
-        const cur = joins.get(key) ?? { ask: null, dismissUpTo: -1, dismiss: null };
+        const cur = joins.get(key) ?? { ask: null, joinedUpTo: -1, dismissUpTo: -1, dismiss: null };
         if (cur.ask && cur.ask.at >= nextAsk.at) return { join: cur.ask };
         cur.ask = nextAsk;
         joins.set(key, cur);
@@ -186,7 +186,7 @@ function joinStation(opts: { roles: Record<string, string> }) {
         const v = vaults.get(d.vault);
         if (!v || v.deleted || v.scope !== "workspace" || !v.members.includes(viewerSub)) return status(404, { error: "no vault", code: "vault_unknown" });
         const key = jk(d.vault, d.sub);
-        const cur = joins.get(key) ?? { ask: null, dismissUpTo: -1, dismiss: null };
+        const cur = joins.get(key) ?? { ask: null, joinedUpTo: -1, dismissUpTo: -1, dismiss: null };
         if (d.upTo > cur.dismissUpTo) {
           cur.dismissUpTo = d.upTo;
           cur.dismiss = d;
@@ -348,13 +348,26 @@ test("Stage 2 end-to-end: discovery, requestJoin (no global popup, recovery word
     assert.equal(aliceWs1.joinRequests[0].sub, "bob");
     const firstAskAt: number = aliceWs1.joinRequests[0].at;
 
-    // 5. Bob cancels join; Alice trying to approve the stale askAt fails atomically with 409 join_cancelled!
-    await bob.ask("vault.cancelJoin", { vault: wsVaultId });
+    // 5. Bob cancels join; Alice trying to approve while station is OFFLINE must fail without local fallback,
+    //    and once online, Alice trying to approve the stale askAt fails atomically with 409 join_cancelled AND clears her cached pending row!
+    const cancelRes = await bob.ask("vault.cancelJoin", { vault: wsVaultId });
+    assert.deepEqual(cancelRes, { cancelled: true, alreadyMember: false });
     const bobViewCancel = vaultsView(bob.core.inner, "ws") as any;
     assert.equal(bobViewCancel.availableWorkspaceVaults[0].requested, false);
+
+    st.setOffline(true);
+    const errOfflineApprove = await alice.askErr("vault.addMember", { vault: wsVaultId, sub: "bob", askAt: firstAskAt });
+    assert.equal(errOfflineApprove.code, "vault_station_offline", "explicit join approval must disable local fallback when station is offline");
+    assert.ok(!st.vaults.get(wsVaultId)!.members.includes("bob"));
+    assert.ok(!(vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId).members.some((m: any) => m.sub === "bob"), "offline approval must not commit locally");
+    st.setOffline(false);
+
     const errCancelled = await alice.askErr("vault.addMember", { vault: wsVaultId, sub: "bob", askAt: firstAskAt });
     assert.equal(errCancelled.code, "join_cancelled");
     assert.ok(!st.vaults.get(wsVaultId)!.members.includes("bob"));
+    // Because GET /vault/joins returns signed cancelled tombstones and join_cancelled triggers readJoins, Alice's stale pending row is cleared!
+    const aliceWsAfterCancel = (vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId);
+    assert.equal(aliceWsAfterCancel.joinRequests, undefined, "cancelled tombstone must clear admin's cached pending request");
 
     // 6. Bob requests join again; Alice dismisses it; Bob re-requests again with higher monotonic `at`.
     await bob.ask("vault.requestJoin", { vault: wsVaultId });
@@ -444,13 +457,111 @@ test("Stage 2 end-to-end: discovery, requestJoin (no global popup, recovery word
     assert.equal(bobAfterGone.availableWorkspaceVaults[0].id, wsVaultId);
     assert.equal(bobAfterGone.availableWorkspaceVaults[0].requested, false, "pre-join ask must NOT resurrect after remove");
 
-    // Verify full sync also keeps requested=false due to station dismiss_up_to floor!
+    // Verify full sync also keeps requested=false due to station joined_up_to suppression!
     await bob.sync();
     const bobAfterSync = vaultsView(bob.core.inner, "ws") as any;
     assert.equal(bobAfterSync.availableWorkspaceVaults?.length, 1);
     assert.equal(bobAfterSync.availableWorkspaceVaults[0].requested, false);
+
+    // 13. Non-canonical X25519 keys (high bit set and >= 2^255 - 19) are rejected by usableBoxKey & trySealWith!
+    const validPub = boxPublic(fill(7));
+    assert.equal(usableBoxKey(validPub), true);
+    const nonCanon = unhex(validPub.slice(7));
+    nonCanon[31]! |= 0x80;
+    const highBitPub = `x25519:${hex(nonCanon)}`;
+    assert.equal(usableBoxKey(highBitPub), false);
+    assert.equal(trySealWith(highBitPub, fill(1), "ctx", fill(2)), null);
+    const geP = new Uint8Array(32).fill(0xff);
+    geP[31] = 0x7f;
+    geP[0] = 0xed;
+    assert.equal(usableBoxKey(`x25519:${hex(geP)}`), false);
+
+    // 14. cancelJoin when already a member returns { cancelled: false, alreadyMember: true }.
+    const reAddBob = await alice.ask("vault.addMember", { vault: wsVaultId, sub: "bob" });
+    assert.equal(reAddBob.added, true);
+    const lateCancel = await bob.ask("vault.cancelJoin", { vault: wsVaultId });
+    assert.deepEqual(lateCancel, { cancelled: false, alreadyMember: true });
   } finally {
     alice.core.close();
     bob.core.close();
+  }
+});
+
+test("Stage 2 non-safe-mode: vault-joins-changed refreshes /vault/boxes chains so first join request surfaces immediately", async () => {
+  const aliceSeed = fill(211), bobSeed = fill(212);
+  const aliceDev = "e1".repeat(32), bobDev = "f2".repeat(32);
+  const aliceKey = edKey(aliceSeed), bobKey = edKey(bobSeed);
+  const makePersonalChain = (sub: string, devId: string, key: ReturnType<typeof edKey>): Entry[] => {
+    const body = { sub, device: { key: key.id, id: devId, label: `${sub} Mac`, sign_key: key.id } };
+    return [lockEntry(next(`person:${sub}`, null, 1000, "genesis", body), key)];
+  };
+  const aliceChain = makePersonalChain("alice", aliceDev, aliceKey);
+  const bobChain = makePersonalChain("bob", bobDev, bobKey);
+  const wsMembers = [
+    { sub: "alice", email: "alice@x.com", name: "Alice", role: "owner" },
+    { sub: "bob", email: "bob@x.com", name: "Bob", role: "member" },
+  ];
+  const chains: Record<string, Entry[]> = { alice: aliceChain };
+  const st = joinStation({ roles: { alice: "owner", bob: "member" }, chains });
+  const alice = await started(undefined, 0, undefined, (x) => {
+    x.host.appKeys = true;
+    x.host.store(STORAGE_KEY, [account("alice", "alice@x.com", "", "tok", "r0", Math.floor(x.host.nowMs() / 1000) + 3600)]);
+    x.host.secure.set("lock-signer", { value: aliceSeed, user: false });
+    x.host.secure.set(PERSONAL_KEY, { value: aliceSeed, user: false });
+    x.host.storage.set("personal-signer-id", utf8(aliceKey.id));
+    x.host.store(`personal-lock-${hex(utf8("alice"))}`, aliceChain);
+    x.cloud.role = "owner";
+    x.cloud.also = { locked: false, members: wsMembers };
+    stationReplies(x.host, (req) => {
+      if (req.url.includes("/v1/me/personal-lock")) return { entries: aliceChain };
+      return st.replyFor("alice")(req);
+    });
+  });
+  try {
+    alice.core.inner.mesh = () => withoutMesh(aliceDev);
+    signerKnown(alice.core.inner, aliceKey.id);
+    await alice.host.time.pass(1000);
+    alice.core.inner.runner.fork(Effect.ignore(alice.core.inner.adb.personal().refresh("alice")));
+    await alice.host.time.pass(200);
+    vaultCome(alice.core.inner, "ws");
+    const ui = alice.core.connect();
+    const askAlice = async (id: number, name: string, params: Record<string, unknown> = {}) => {
+      alice.host.takeEmitted();
+      call(alice.core, ui, id, name, { workspace: "ws", ...params });
+      for (let i = 0; i < 60; i++) {
+        await alice.host.time.pass(50);
+        for (const [, m] of alice.host.takeEmitted()) {
+          const r = m as any;
+          if (r.id === id && ("ok" in r || "error" in r)) return r;
+        }
+      }
+      throw new Error(`${name}: no answer`);
+    };
+    const rSetup = await askAlice(1, "vault.setup");
+    assert.equal(rSetup.error, undefined);
+    const rCreate = await askAlice(2, "vault.create", { name: "NonSafe Team", scope: "workspace", members: ["alice"] });
+    assert.equal(rCreate.error, undefined);
+    const wsVaultId = rCreate.ok.id as string;
+
+    // Now Bob opens his personal lock for the first time (station learns bobChain + bobBox + bobJoin) — Alice has NOT synced!
+    chains.bob = bobChain;
+    const bobPub = boxPublic(fill(42));
+    const bobBox: BoxCert = sign({ v: 1 as const, ws: "ws", device: bobDev, box: bobPub, at: 5000 }, TAG.box, bobKey);
+    st.boxes.set(bobDev, bobBox);
+    const bobJoin: JoinAsk = sign(
+      { v: 1 as const, ws: "ws", vault: wsVaultId, sub: "bob", device: bobDev, box: bobPub, state: "pending" as const, at: 5001 },
+      TAG.join,
+      bobKey,
+    );
+    st.joins.set(`${wsVaultId}/bob`, { ask: bobJoin, joinedUpTo: -1, dismissUpTo: -1, dismiss: null });
+
+    // Deliver ONLY vault-joins-changed (no full sync!): readJoins must detect unknown applicant chain, fetch /vault/boxes, and surface Bob immediately!
+    for (const a of alice.core.inner.stations.also) a.event("ws/st", "vault-joins-changed", { vault: wsVaultId });
+    await alice.host.time.pass(600);
+    const aliceWs = (vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId);
+    assert.equal(aliceWs?.joinRequests?.length, 1, "first non-safe-mode join request must appear immediately on vault-joins-changed");
+    assert.equal(aliceWs.joinRequests[0].sub, "bob");
+  } finally {
+    alice.core.close();
   }
 });

@@ -912,7 +912,27 @@ pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit
               }
               parts.join(" · ")
             }
+            let is_first = fn() { joined().get(0).map(fn(x) { text(Some(x), "sub") }) == Some(sub) }
             let busy = fn() { is_doing(core, ["vault.removeMember"], [("workspace", ws), ("vault", vault_id), ("sub", sub)]) }
+            let remove_press = fn() {
+              let who = @signals.untracked(title)
+              confirm(
+                @sf.t("web-pages.vault.members.removeTitle"),
+                @sf.t("web-pages.vault.members.removeBody", args=[("name", who)]),
+                @sf.t("web-pages.vault.members.remove"),
+                danger=true,
+                fn() {
+                  vault_act(
+                    core,
+                    ws,
+                    "removeMember",
+                    [("vault", str(vault_id)), ("sub", str(sub))],
+                    @sf.t("web-pages.vault.members.removeWhat"),
+                    done=@sf.t("web-pages.vault.members.removed"),
+                  )
+                },
+              )
+            }
             @sf.link_row_node(
               row,
               title,
@@ -922,32 +942,27 @@ pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit
               chevron=false,
               control=fn(c) {
                 c.show(fn() { can_give() && !is_me }, fn(btn) {
-                  @sf.button_node(
-                    btn,
-                    fn() { @sf.t("web-pages.vault.members.remove") },
-                    fn() {
-                      let who = @signals.untracked(title)
-                      confirm(
-                        @sf.t("web-pages.vault.members.removeTitle"),
-                        @sf.t("web-pages.vault.members.removeBody", args=[("name", who)]),
-                        @sf.t("web-pages.vault.members.remove"),
-                        danger=true,
-                        fn() {
-                          vault_act(
-                            core,
-                            ws,
-                            "removeMember",
-                            [("vault", str(vault_id)), ("sub", str(sub))],
-                            @sf.t("web-pages.vault.members.removeWhat"),
-                            done=@sf.t("web-pages.vault.members.removed"),
-                          )
-                        },
+                  btn.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.remove") },
+                        remove_press,
+                        tone=GhostDanger,
+                        busy~,
                       )
-                    },
-                    tone=GhostDanger,
-                    busy~,
-                  )
-                  |> ignore
+                      |> ignore
+                    } else {
+                      @sf.row_end_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.remove") },
+                        remove_press,
+                        tone=GhostDanger,
+                        busy~,
+                      )
+                      |> ignore
+                    }
+                  })
                 })
               },
             )

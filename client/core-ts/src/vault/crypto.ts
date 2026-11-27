@@ -80,11 +80,31 @@ function sigShapeOk(sig: unknown): sig is Sig {
   return false;
 }
 
-/// Whether `pub` is a usable X25519 box public key (rejecting malformed encodings and low-order/all-zero shared points).
+/// Whether a 32-byte little-endian X25519 u-coordinate is in canonical range `[0, 2^255 - 19)`.
+function isCanonicalX25519(raw: Uint8Array): boolean {
+  if (raw.length !== 32) return false;
+  if ((raw[31]! & 0x80) !== 0) return false;
+  if (raw[31] === 0x7f) {
+    let allFF = true;
+    for (let i = 1; i <= 30; i++) {
+      if (raw[i] !== 0xff) {
+        allFF = false;
+        break;
+      }
+    }
+    if (allFF && raw[0]! >= 0xed) return false;
+  }
+  return true;
+}
+
+/// Whether `pub` is a usable canonical X25519 box public key (rejecting malformed or non-canonical encodings and
+/// low-order/all-zero shared points so HKDF binds the exact public key bytes used by `openSeal`).
 export function usableBoxKey(pub: string): boolean {
   if (!BOX.test(pub)) return false;
+  const raw = unhex(pub.slice(7));
+  if (!isCanonicalX25519(raw)) return false;
   try {
-    const shared = x25519.getSharedSecret(new Uint8Array(32).fill(9), unhex(pub.slice(7)));
+    const shared = x25519.getSharedSecret(new Uint8Array(32).fill(9), raw);
     return shared.some((b) => b !== 0);
   } catch {
     return false;

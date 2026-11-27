@@ -141,6 +141,18 @@ test("GET /vault/asks scans only the viewer's vaults via vault_asks_vault_at ind
       [validUnderStale],
       "bounded keyset cursor must advance past 68 stale rotated-key rows to find valid ask",
     );
+
+    // Split cursor queries must both seek on vault_asks_vault_at with 0 TEMP B-TREE (no rescan of earlier pages).
+    const planSame = f.db.prepare(
+      "EXPLAIN QUERY PLAN SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT 64",
+    ).all(f.myAsk.ws, thirdVaultId, 9000, "e0") as { detail: string }[];
+    assert.ok(planSame.some((p) => p.detail.includes("USING INDEX vault_asks_vault_at") && p.detail.includes("at=?") && p.detail.includes("device>?")), `expected same-at index seek: ${JSON.stringify(planSame)}`);
+    assert.ok(!planSame.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planSame)}`);
+    const planOlder = f.db.prepare(
+      "EXPLAIN QUERY PLAN SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT 64",
+    ).all(f.myAsk.ws, thirdVaultId, 9000) as { detail: string }[];
+    assert.ok(planOlder.some((p) => p.detail.includes("USING INDEX vault_asks_vault_at") && p.detail.includes("at<?")), `expected older-at index seek: ${JSON.stringify(planOlder)}`);
+    assert.ok(!planOlder.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planOlder)}`);
   } finally {
     f.db.close();
   }

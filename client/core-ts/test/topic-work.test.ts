@@ -109,9 +109,10 @@ const OVER_READ: Record<string, number> = {
   "driveBrowse phone": 40,
   "driveBrowse columns": 40,
   // (the vault of the workspace with no safe mode its person's own, encrypted, its items' records read beside it; the
-  // plain library of before 184, 2026-11-19)
-  vaults: 220,
-  vaultItems: 220,
+  // plain library of before 184, 2026-11-19; +WORKSPACE_VAULT & DISC_VAULT in real-size.ts crossed 220 KB to 222.5 KB,
+  // 2026-11-27)
+  vaults: 224,
+  vaultItems: 224,
   chatThings: 48,
   "chatThings q": 48,
   "start 小屏/waited": 472,
@@ -119,8 +120,8 @@ const OVER_READ: Record<string, number> = {
   "start 大屏/waited": 472,
   "start 大屏/idle": 472,
   "switch 大屏 to 新对话/waited": 128,
-  "place vault/waited": 220,
-  "place vault/idle": 220,
+  "place vault/waited": 224,
+  "place vault/idle": 224,
   "place usage/waited": 304,
   "place usage/idle": 304,
 };
@@ -169,10 +170,11 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   chatRow: { people: 16 },
   archive: { people: 24 },
   "railCard usage": { stations: 696 },
-  vaults: { stations: 432 },
-  vaultItems: { stations: 432 },
-  "place vault/waited": { stations: 432 },
-  "place vault/idle": { stations: 432 },
+  // (+WORKSPACE_VAULT & DISC_VAULT in real-size.ts crossed 432 KB to 433.6 KB at stations × 3, 2026-11-27)
+  vaults: { stations: 440 },
+  vaultItems: { stations: 440 },
+  "place vault/waited": { stations: 440 },
+  "place vault/idle": { stations: 440 },
 };
 
 /// The changes reading more than `READ_PER_SENT` × what they write and send and `READ_FREE_KB` now, by `<cause> alone`

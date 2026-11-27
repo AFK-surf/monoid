@@ -149,8 +149,6 @@ type Held = {
   joins?: Record<string, Record<string, JoinAsk>>;
   /// Admin-signed join-request dismissals (`vaultId -> applicantSub -> JoinDismiss`) for monotonic cross-station sync.
   joinDismisses?: Record<string, Record<string, JoinDismiss>>;
-  /// Station-reported monotonic dismiss floor for the viewer's own join requests per vault (covers join -> remove cycles).
-  joinFloors?: Record<string, number>;
 };
 
 /// A vault's version a station holds, and its items' versions; the signatures of those (`sig`, `sigs`): which of two of
@@ -542,7 +540,7 @@ function joinDismissValid(lock: Checked, v: Vault | undefined, d: JoinDismiss): 
   return joinDismissOk(lock, { id: d.vault, scope: "workspace", members: [signer.sub] }, d, (s) => isWorkspaceAdmin(lock, s)) === null;
 }
 
-function joinDismissFloor(lock: Checked, h: Held, v: Vault | undefined, vaultId: string, applicantSub: string, isSelf: boolean): number {
+function joinDismissFloor(lock: Checked, h: Held, v: Vault | undefined, vaultId: string, applicantSub: string): number {
   let floor = -1;
   const byVault = h.joinDismisses;
   if (isObject(byVault) && Object.prototype.hasOwnProperty.call(byVault, vaultId)) {
@@ -551,10 +549,6 @@ function joinDismissFloor(lock: Checked, h: Held, v: Vault | undefined, vaultId:
       const d = map[applicantSub];
       if (d !== undefined && joinDismissValid(lock, v, d) && d.upTo > floor) floor = d.upTo;
     }
-  }
-  if (isSelf && isObject(h.joinFloors) && Object.prototype.hasOwnProperty.call(h.joinFloors, vaultId)) {
-    const f = h.joinFloors[vaultId];
-    if (typeof f === "number" && Number.isSafeInteger(f) && f > floor) floor = f;
   }
   return floor;
 }
@@ -979,7 +973,7 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
     let all: Item[] = [];
     let boxes: BoxCert[] = [];
     let keyAsks: KeyAsk[] = [];
-    let joinsRes: { joins: JoinAsk[]; dismisses: JoinDismiss[]; floors: Record<string, number> } | null = null;
+    let joinsRes: { joins: JoinAsk[]; dismisses: JoinDismiss[]; nextDismissCursor?: { vault: string; sub: string } } | null = null;
     const incomingChains: Record<string, Entry[]> = {};
     const incomingRoles: Record<string, string> = {};
     if (vaults._tag === "Failure") {
@@ -997,13 +991,32 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
       // Older stations without `/vault/asks` or `/vault/joins` answer 404: treat as none.
       keyAsks = yield* Effect.orElseSucceed(Effect.map(ask(inner, address, "GET", "/vault/asks"), (r) => arr(get(r, "asks")) as KeyAsk[]), () => [] as KeyAsk[]);
       joinsRes = yield* Effect.orElseSucceed(
-        Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => ({
-          joins: arr(get(r, "joins")) as JoinAsk[],
-          dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
-          floors: isObject(get(r, "floors")) ? (get(r, "floors") as Record<string, number>) : {},
-        })),
+        Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => {
+          const cur = get(r, "nextDismissCursor");
+          const nextDismissCursor = isObject(cur) && typeof cur.vault === "string" && typeof cur.sub === "string"
+            ? { vault: cur.vault, sub: cur.sub }
+            : undefined;
+          return {
+            joins: arr(get(r, "joins")) as JoinAsk[],
+            dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
+            ...(nextDismissCursor !== undefined ? { nextDismissCursor } : {}),
+          };
+        }),
         () => null,
       );
+      if (joinsRes !== null && joinsRes.nextDismissCursor !== undefined) {
+        let cursor: { vault: string; sub: string } | undefined = joinsRes.nextDismissCursor;
+        for (let page = 0; page < 7 && cursor !== undefined; page++) {
+          const nextPath = `/vault/joins?dismissAfterVault=${encodeURIComponent(cursor.vault)}&dismissAfterSub=${encodeURIComponent(cursor.sub)}`;
+          const more = yield* Effect.orElseSucceed(ask(inner, address, "GET", nextPath), () => null);
+          if (more === null) break;
+          joinsRes.dismisses.push(...(arr(get(more, "dismisses")) as JoinDismiss[]));
+          const nextCur = get(more, "nextDismissCursor");
+          cursor = isObject(nextCur) && typeof nextCur.vault === "string" && typeof nextCur.sub === "string"
+            ? { vault: nextCur.vault, sub: nextCur.sub }
+            : undefined;
+        }
+      }
       const ownerSub = inner.workspaces.owner(ws);
       const rawChains = get(boxesRes, "chains");
       if (isObject(rawChains)) {
@@ -1056,14 +1069,13 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
         for (const v of list) {
           holds(h, v, station, all.filter((i) => i.vault === v.id), fit);
         }
-        mergeDiscoverable(h, ws, station, rawDiscoverable, inner.workspaces.owner(ws));
+        mergeDiscoverable(h, ws, station, Array.isArray(rawDiscoverable) ? rawDiscoverable : [], inner.workspaces.owner(ws));
       }
       for (const c of boxes) if (heldOver(h.boxes[c.device], c, fit)) h.boxes[c.device] = c;
       for (const a of keyAsks) mergeAsk(h, a, fit);
       if (joinsRes !== null) {
         for (const j of joinsRes.joins) mergeJoin(h, j, fit);
         for (const d of joinsRes.dismisses) mergeJoinDismiss(h, d, fit);
-        for (const [vid, fl] of Object.entries(joinsRes.floors)) mergeJoinFloor(h, vid, fl);
       }
       for (const [id, at] of Object.entries(h.asked)) {
         if (at === station) {
@@ -1151,7 +1163,7 @@ function backfillAsks(inner: Inner, address: string, knownAsks?: KeyAsk[], opts?
 function backfillJoins(
   inner: Inner,
   address: string,
-  known?: { joins: JoinAsk[]; dismisses: JoinDismiss[]; floors: Record<string, number> } | null,
+  known?: { joins: JoinAsk[]; dismisses: JoinDismiss[] } | null,
   opts?: { force?: boolean },
 ): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
@@ -1171,10 +1183,7 @@ function backfillJoins(
         if (isObject(v) && (v.deleted || (Array.isArray(v.members) && v.members.includes(self.sub)))) continue;
         const myJoin = bySub[self.sub];
         if (myJoin === undefined || myJoin.device !== self.device || myJoin.box !== mine.box || joinAskOk(lock, myJoin) !== null) continue;
-        const floor = Math.max(
-          joinDismissFloor(lock, cur, v, vaultId, self.sub, true),
-          known?.floors?.[vaultId] ?? -1,
-        );
+        const floor = joinDismissFloor(lock, cur, v, vaultId, self.sub);
         if (myJoin.state === "pending" && myJoin.at <= floor) continue;
         if (known?.joins.some((j) => j.vault === vaultId && j.sub === self.sub && j.at >= myJoin.at)) continue;
         yield* Effect.ignore(ask(inner, address, "PUT", "/vault/joins", myJoin), { log: "Unhandled", message: "vault join brought" });
@@ -1195,27 +1204,67 @@ function backfillJoins(
 }
 
 /// Re-read `/vault/joins` from `address` under live auth & current role (triggered by zero-payload `vault-joins-changed`).
+/// Outside safe mode, if any returned join or dismissal fails verification against the currently cached personal chains
+/// (e.g. an applicant opened their personal lock for the first time), fetches `/vault/boxes` on `address` first to merge
+/// teammates' personal chains, roles, and box certificates before verifying and merging joins.
 function readJoins(inner: Inner, address: string): Effect.Effect<void> {
   const ws = ofAddress(address);
-  return Effect.flatMap(
-    Effect.orElseSucceed(
-      Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => ({
-        joins: arr(get(r, "joins")) as JoinAsk[],
-        dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
-        floors: isObject(get(r, "floors")) ? (get(r, "floors") as Record<string, number>) : {},
-      })),
-      () => null,
-    ),
-    (res) => Effect.sync(() => {
-      if (res === null) return;
-      const fit = fits(inner, ws);
-      change(inner, ws, (h) => {
-        for (const j of res.joins) mergeJoin(h, j, fit);
-        for (const d of res.dismisses) mergeJoinDismiss(h, d, fit);
-        for (const [vid, fl] of Object.entries(res.floors)) mergeJoinFloor(h, vid, fl);
-      });
-    }),
-  );
+  return Effect.gen(function* () {
+    const first = yield* Effect.orElseSucceed(ask(inner, address, "GET", "/vault/joins"), () => null);
+    if (first === null) return;
+    const joins = arr(get(first, "joins")) as JoinAsk[];
+    const dismisses = arr(get(first, "dismisses")) as JoinDismiss[];
+    const cur0 = get(first, "nextDismissCursor");
+    let cursor: { vault: string; sub: string } | undefined =
+      isObject(cur0) && typeof cur0.vault === "string" && typeof cur0.sub === "string"
+        ? { vault: cur0.vault, sub: cur0.sub }
+        : undefined;
+    for (let page = 0; page < 7 && cursor !== undefined; page++) {
+      const nextPath = `/vault/joins?dismissAfterVault=${encodeURIComponent(cursor.vault)}&dismissAfterSub=${encodeURIComponent(cursor.sub)}`;
+      const more = yield* Effect.orElseSucceed(ask(inner, address, "GET", nextPath), () => null);
+      if (more === null) break;
+      dismisses.push(...(arr(get(more, "dismisses")) as JoinDismiss[]));
+      const nextCur = get(more, "nextDismissCursor");
+      cursor = isObject(nextCur) && typeof nextCur.vault === "string" && typeof nextCur.sub === "string"
+        ? { vault: nextCur.vault, sub: nextCur.sub }
+        : undefined;
+    }
+    let fit = fits(inner, ws);
+    let refreshedBoxes: BoxCert[] = [];
+    if (!safeMode(inner, ws) && (joins.some((j) => !fit.join(j)) || dismisses.some((d) => !fit.joinDismiss(d)))) {
+      const boxesRes = yield* Effect.orElseSucceed(ask(inner, address, "GET", "/vault/boxes"), () => null);
+      if (boxesRes !== null) {
+        refreshedBoxes = arr(get(boxesRes, "boxes")) as BoxCert[];
+        const ownerSub = inner.workspaces.owner(ws);
+        const incomingChains: Record<string, Entry[]> = {};
+        const incomingRoles: Record<string, string> = {};
+        const rawChains = get(boxesRes, "chains");
+        if (isObject(rawChains)) {
+          for (const [mSub, mChain] of Object.entries(rawChains as Record<string, unknown>)) {
+            if (mSub !== ownerSub && Array.isArray(mChain) && mChain.length > 0) incomingChains[mSub] = mChain as Entry[];
+          }
+        }
+        const rawRoles = get(boxesRes, "roles");
+        if (isObject(rawRoles)) {
+          for (const [mSub, mRole] of Object.entries(rawRoles as Record<string, unknown>)) {
+            if (typeof mRole === "string" && mRole !== "") incomingRoles[mSub] = mRole;
+          }
+        }
+        if (Object.keys(incomingChains).length > 0 || Object.keys(incomingRoles).length > 0) {
+          change(inner, ws, (h) => {
+            if (Object.keys(incomingChains).length > 0) h.memberChains = { ...(h.memberChains ?? {}), ...incomingChains };
+            if (Object.keys(incomingRoles).length > 0) h.memberRoles = { ...(h.memberRoles ?? {}), ...incomingRoles };
+          });
+          fit = fits(inner, ws);
+        }
+      }
+    }
+    change(inner, ws, (h) => {
+      for (const c of refreshedBoxes) if (heldOver(h.boxes[c.device], c, fit)) h.boxes[c.device] = c;
+      for (const j of joins) mergeJoin(h, j, fit);
+      for (const d of dismisses) mergeJoinDismiss(h, d, fit);
+    });
+  });
 }
 
 function mergeDiscoverable(h: Held, ws: string, station: string, rawList: unknown, sub: string | null): void {
@@ -1291,12 +1340,6 @@ function mergeJoinDismiss(h: Held, d: JoinDismiss, fit: Fits): void {
   const had = byVault && Object.prototype.hasOwnProperty.call(byVault, d.sub) ? byVault[d.sub] : undefined;
   if (!heldJoinDismissOver(had, d, fit)) return;
   ((h.joinDismisses ??= {})[d.vault] ??= {})[d.sub] = d;
-}
-
-function mergeJoinFloor(h: Held, vaultId: string, floor: number): void {
-  if (typeof vaultId !== "string" || vaultId === "" || typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) return;
-  const prev = h.joinFloors?.[vaultId] ?? -1;
-  if (floor > prev) (h.joinFloors ??= {})[vaultId] = floor;
 }
 
 /// Whether item `i` is kept over `had` (none: it is): the later version, or of one version the one every station keeps
@@ -1399,7 +1442,6 @@ function take(h: Held, v: Vault, fit: Fits): void {
       delete h.discoverable?.[v.id];
       delete h.joins?.[v.id];
       delete h.joinDismisses?.[v.id];
-      delete h.joinFloors?.[v.id];
     } else {
       if (had !== undefined && v.epoch > had.epoch) {
         const before = (h.before ??= {});
@@ -1651,7 +1693,6 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
           delete h.discoverable?.[d.vault];
           delete h.joins?.[d.vault];
           delete h.joinDismisses?.[d.vault];
-          delete h.joinFloors?.[d.vault];
           if (h.discoverable && Object.keys(h.discoverable).length === 0) delete h.discoverable;
         });
         return;
@@ -2845,7 +2886,7 @@ export function vaultsView(inner: Inner, ws: string): J {
                 || !lock.members.has(j.sub)
                 || joinAskOk(lock, j) !== null
               ) continue;
-              const floor = joinDismissFloor(lock, h, v, v.id, j.sub, false);
+              const floor = joinDismissFloor(lock, h, v, v.id, j.sub);
               if (j.at <= floor) continue;
               const info = memberOf(j.sub);
               const dev = deviceLabelOf(inner, ws, j.device, j.sub);
@@ -2907,7 +2948,7 @@ export function vaultsView(inner: Inner, ws: string): J {
     .slice(0, MAX_DISCOVERABLE_SHOWN)
     .map(({ summary: d }) => {
       const ownJoin = sub !== null ? h.joins?.[d.id]?.[sub] : undefined;
-      const floor = sub !== null ? joinDismissFloor(lock, h, undefined, d.id, sub, true) : -1;
+      const floor = sub !== null ? joinDismissFloor(lock, h, undefined, d.id, sub) : -1;
       const requested = ownJoin !== undefined
         && ownJoin.ws === ws
         && ownJoin.vault === d.id
@@ -4334,20 +4375,23 @@ class Vaults {
   }
 
   /// Publish a standalone signed `JoinAsk` to the workspace's stations (`PUT /vault/joins`), prioritizing stations
-  /// known to hold `record.vault` (`preferred`). If a station rejects `state: "pending"` with `409 vault_box_missing`,
-  /// pushes `boxCert` (`PUT /vault/boxes`) to that station and retries once so admin approval has the applicant's key.
+  /// known to hold `record.vault` in deterministic id order (`sort()[0]` matches the vault's authoritative host).
+  /// When `requireHost` is set (used by `cancelJoin` so withdrawal serializes at the same authoritative station as
+  /// `addMember` approval), requires `requireHost` to confirm before succeeding.
   #publishJoin(
     record: JoinAsk,
     preferred: readonly string[],
     cap: WorkspaceCapability,
-    boxCert?: BoxCert,
-  ): Effect.Effect<{ stations: string[]; alreadyMember: boolean }, CoreError> {
+    opts?: { boxCert?: BoxCert; requireHost?: string },
+  ): Effect.Effect<{ stations: string[]; alreadyMember: boolean; finalState: "pending" | "cancelled"; maxReturnedAt: number; superseded: boolean }, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const allStations = stationsOf(inner, self.ws).map((s) => s.id);
-      const ordered = [...new Set([...preferred.filter((id) => allStations.includes(id)), ...allStations])];
+      const allStations = stationsOf(inner, self.ws).map((s) => s.id).sort();
+      const sortedPreferred = [...new Set(preferred)].filter((id) => allStations.includes(id)).sort();
+      const ordered = [...new Set([...sortedPreferred, ...allStations])];
       if (ordered.length === 0) return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      const boxCert = opts?.boxCert;
       const sendOne = (sid: string) =>
         self.#stationGuarded(cap, sid, "PUT", "/vault/joins", record).pipe(
           Effect.catch((err) => {
@@ -4362,12 +4406,13 @@ class Vaults {
             id: sid,
             join: (get(res, "join") as JoinAsk | undefined) ?? record,
             alreadyMember: get(res, "alreadyMember") === true,
+            superseded: get(res, "superseded") === true,
           })),
         );
       const published = yield* answersOf(inner, ordered.map(sendOne), tookOrRefused);
       const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
+      const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
       if (ok.length === 0) {
-        const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
         const stale = errs.find((e) => e.code === "auth_stale");
         if (stale !== undefined) return yield* Effect.fail(stale);
         if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
@@ -4381,17 +4426,27 @@ class Vaults {
       const already = ok.find((item) => item.alreadyMember);
       if (already !== undefined) {
         const addr = `${self.ws}/${already.id}`;
-        inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr));
-        return { stations: ok.map((item) => item.id), alreadyMember: true };
+        inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr, { force: true }));
+        return { stations: ok.map((item) => item.id), alreadyMember: true, finalState: record.state, maxReturnedAt: record.at, superseded: false };
       }
+      if (opts?.requireHost && ordered.includes(opts.requireHost) && !ok.some((item) => item.id === opts.requireHost)) {
+        const stale = errs.find((e) => e.code === "auth_stale");
+        if (stale !== undefined) return yield* Effect.fail(stale);
+        return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      }
+      const fit = fits(inner, self.ws);
+      let latest = record;
+      for (const item of ok) {
+        if (fit.join(item.join) && item.join.at > latest.at) latest = item.join;
+      }
+      const superseded = ok.some((item) => item.superseded);
       cap.commit(() => {
         change(inner, self.ws, (h) => {
-          const fit = fits(inner, self.ws);
           mergeJoin(h, record, fit);
           for (const item of ok) mergeJoin(h, item.join, fit);
         });
       });
-      return { stations: ok.map((item) => item.id), alreadyMember: false };
+      return { stations: ok.map((item) => item.id), alreadyMember: false, finalState: latest.state, maxReturnedAt: latest.at, superseded };
     });
   }
 
@@ -4480,19 +4535,32 @@ class Vaults {
       const cur = held(inner, self.ws);
       const boxCert = cur.boxes[who.device];
       const prevAt = verifiedJoinAt(lock, cur, vaultId, who.sub);
-      const floor = joinDismissFloor(lock, cur, undefined, vaultId, who.sub, true);
+      const floor = joinDismissFloor(lock, cur, undefined, vaultId, who.sub);
       const at = Math.max(nowS(inner), prevAt + 1, floor + 1);
       const record: JoinAsk = sign(
         { v: 1 as const, ws: self.ws, vault: vaultId, sub: who.sub, device: who.device, box: pub, state: "pending" as const, at },
         TAG.join,
         signer,
       );
-      const res = yield* self.#publishJoin(record, disc.from, wsCap, boxCert);
-      return { asked: res.alreadyMember ? 0 : res.stations.length, alreadyMember: res.alreadyMember };
+      const res0 = yield* self.#publishJoin(record, disc.from, wsCap, { boxCert });
+      if (!res0.alreadyMember && (res0.maxReturnedAt > at || res0.superseded) && res0.maxReturnedAt < Number.MAX_SAFE_INTEGER) {
+        // Station returned a verified higher-clock or admission-superseded own ask; bump strictly past it once so
+        // the new pending request supersedes the old watermark.
+        const record2: JoinAsk = sign(
+          { v: 1 as const, ws: self.ws, vault: vaultId, sub: who.sub, device: who.device, box: pub, state: "pending" as const, at: Math.max(at, res0.maxReturnedAt) + 1 },
+          TAG.join,
+          signer,
+        );
+        const res2 = yield* self.#publishJoin(record2, disc.from, wsCap, { boxCert });
+        return { asked: res2.alreadyMember ? 0 : res2.stations.length, alreadyMember: res2.alreadyMember };
+      }
+      return { asked: res0.alreadyMember ? 0 : res0.stations.length, alreadyMember: res0.alreadyMember };
     }));
   }
 
   /// Applicant withdrawing their own pending workspace-vault join request (`state: "cancelled"`).
+  /// Requires confirmation from the vault's authoritative host (`sort()[0]`) so approve-vs-cancel serializes at one
+  /// station, and reports `cancelled: true` only when the resulting state is confirmed `cancelled`.
   cancelJoin(vaultId: string): Effect.Effect<unknown, CoreError> {
     const self = this;
     if (vaultId === "") return Effect.fail(CoreError.invalid("vault"));
@@ -4511,9 +4579,11 @@ class Vaults {
         TAG.join,
         signer,
       );
-      const preferred = cur.discoverable?.[vaultId]?.from ?? [];
-      yield* self.#publishJoin(record, preferred, wsCap);
-      return { cancelled: true };
+      const preferred = [...(cur.discoverable?.[vaultId]?.from ?? [])].sort();
+      const requireHost = preferred[0];
+      const res = yield* self.#publishJoin(record, preferred, wsCap, requireHost ? { requireHost } : undefined);
+      if (res.alreadyMember) return { cancelled: false, alreadyMember: true };
+      return { cancelled: res.finalState === "cancelled", alreadyMember: false };
     }));
   }
 
@@ -4562,7 +4632,7 @@ class Vaults {
         let v = yield* self.#vault(lock, vaultId);
         if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
         if (!canManage(lock, v, who.sub)) return yield* fail("vault_not_admin", t("core-misc.vault.notOwner"));
-        if (!lock.members.has(memberSub)) return yield* Effect.fail(CoreError.invalid(`member ${memberSub} is not in workspace`));
+        if (!lock.members.has(memberSub)) return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
         if (v.members.includes(memberSub)) {
           const keyedDevices = v.keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
           return { id: v.id, members: v.members, added: false, keyedDevices };
@@ -4574,7 +4644,7 @@ class Vaults {
             ? allCerts0.some((c) => c.sub === memberSub && c.device === opts.askDevice && c.box === opts.askBox)
             : allCerts0.some((c) => c.sub === memberSub);
           if (!hasTargetCert) {
-            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station refresh before addMember" });
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`, { force: true }), { log: "Unhandled", message: "vault station refresh before addMember" });
             yield* cap.assertValid();
             ({ lock, signer, self: who } = yield* self.#ready());
             v = yield* self.#vault(lock, vaultId);
@@ -4609,14 +4679,16 @@ class Vaults {
         const query = opts?.askAt !== undefined
           ? `approveJoinSub=${encodeURIComponent(memberSub)}&approveJoinAt=${opts.askAt}`
           : undefined;
-        const put = yield* Effect.result(self.#putVault(next, host, cap, query ? { query } : undefined));
+        const put = yield* Effect.result(
+          self.#putVault(next, host, cap, query ? { query, allowLocalFallback: false } : undefined),
+        );
         if (put._tag === "Failure") {
           if (put.failure.code === "join_cancelled") {
             if (host !== "") yield* Effect.ignore(readJoins(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault joins read" });
             return yield* fail("join_cancelled", t("core-misc.vault.joinCancelled"));
           }
           if (put.failure.code === "vault_conflict" && attempt < 2 && host !== "") {
-            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station read" });
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`, { force: true }), { log: "Unhandled", message: "vault station read" });
             continue;
           }
           if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
@@ -4686,7 +4758,7 @@ class Vaults {
         const put = yield* Effect.result(self.#putVault(next, host, cap, { allowLocalFallback: false }));
         if (put._tag === "Failure") {
           if (put.failure.code === "vault_conflict" && attempt < 2 && host !== "") {
-            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station read" });
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`, { force: true }), { log: "Unhandled", message: "vault station read" });
             continue;
           }
           if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {

@@ -849,7 +849,7 @@ fn wide_link_row_node(
         row_control_node(first, control, under, by_side, false)
       })
       |> ignore
-      let note_base = if parent.lent(floating_host_lent) is Some(_) { panel_note_words } else { wide_list_note }
+      let note_base = if parent.lent(floating_host_lent) is Some(_) { wide_list_note.then(panel_note_words) } else { wide_list_note }
       words.show(fn() { note() != "" }, fn(n) {
         styled_words(n, note, fn() { note_look(if note_cut() { note_base.then(cut_words) } else { note_base }) }) |> ignore
       })
