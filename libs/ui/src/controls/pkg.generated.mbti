@@ -1473,6 +1473,9 @@ pub let markdown_read : @ref.Ref[((String, (@json.Json?) -> Unit) -> Unit)?]
 #callsite(autofill(loc))
 pub fn marks_actions_node(@view.View, () -> MarksActionsSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, () -> Unit, () -> Unit, tip? : TipLayer, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
+pub fn masked_words_box(@view.View, (() -> Bool)?, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub fn md_links_to(String, @json.Json?) -> Map[String, LinkTo]
 
 pub let md_lits : @view.Lent[() -> Array[(String, Int64, String?)]]

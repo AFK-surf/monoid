@@ -7,7 +7,7 @@
 /// Words made by `make` in a box of `parent`'s, dots in their place while `masked` says (none: the words alone, as
 /// ever); the box giving way in its row as the words do.
 #callsite(autofill(loc))
-fn masked_words_box(
+pub fn masked_words_box(
   parent : @view.View,
   masked : (() -> Bool)?,
   make : (@view.View) -> Unit,
