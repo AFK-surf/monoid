@@ -226,6 +226,40 @@ test "words sent with Markdown's marks are set as their message will be from the
 }
 
 ///|
+test "words written with Markdown's marks are set in the field as their message will be, the marks kept and lighter; an edit inside moves them with it till the core reads the words again" {
+  let calls : Array[Made] = []
+  let t = fake_core(calls)
+  t.tap_text("发消息")
+  t.type_text("这是**重点**和`code`")
+  t.draw()
+  t.draw()
+  assert_eq(named(calls, "ref.styles").filter(fn(m) { text(Some(m.params), "text") == "这是**重点**和`code`" }).length(), 1)
+  let subtle = @sf.alpha(@sf.theme().p.subtle, 0.55)
+  let sets = @sfbase.refs_sets_by("ws1/st1:s-c1", fn() { subtle })
+  let said = fn(words : String) { sets(words).map(fn(s : @ui.WordsSet) { (words.unsafe_substring(start=s.from, end=s.to), s.weight, s.style, s.color == subtle, s.ground != 0L) }) }
+  assert_eq(said("这是**重点**和`code`"), [
+    ("**", 0, 0, true, false),
+    ("重点", 700, 0, false, false),
+    ("**", 0, 0, true, false),
+    ("`", 0, 0, true, false),
+    ("code", 0, @hostapi.style_mono, false, true),
+    ("`", 0, 0, true, false),
+  ])
+  // (the marks still in the field, drawn: nothing of what is written taken out of it)
+  let (_, words, _, _) = t.ime()
+  assert_eq(words, "这是**重点**和`code`")
+  assert_true(t.drawn_glyphs().filter(fn(gl) { gl.2 == subtle }).length() >= 6)
+  // words that hold no mark ask nothing and are set all alike
+  let n = named(calls, "ref.styles").length()
+  t.clear()
+  t.type_text("没有标记")
+  t.draw()
+  t.draw()
+  assert_eq(named(calls, "ref.styles").length(), n)
+  assert_eq(sets("没有标记"), [])
+}
+
+///|
 test "the same words with a mark sent again are read again: their row draws the mark, not its brackets" {
   let calls : Array[Made] = []
   let t = fake_core(calls)

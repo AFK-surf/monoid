@@ -43,13 +43,18 @@ pub let kept_call : Ref[((String, Json, Bytes?) -> Result[(Json, Bytes?), Json]?
 
 ///|
 /// Whether a person's words may hold more than one run, or one set otherwise than plain, as the core reads them
-/// (refLinks.ts draftWords: an address, a composer's mark, a link to a chat; the few of Markdown's marks it reads: a
-/// pair of `*`, `_`, `~` or backticks, a line begun `- ` or `* `): words with none of these are their own one run,
-/// asked of none. Never false where the core would say more (it may be true where the core says one plain run).
+/// (refLinks.ts draftWords: an address, a composer's mark, a link to a chat; the few of Markdown's marks it reads,
+/// words_may_mark): words with none of these are their own one run, asked of none. Never false where the core would
+/// say more (it may be true where the core says one plain run).
 pub fn words_may_link(text : String) -> Bool {
-  if text.contains("://") || text.contains("@[") || text.contains("](") {
-    return true
-  }
+  text.contains("://") || text.contains("@[") || text.contains("](") || words_may_mark(text)
+}
+
+///|
+/// Whether a person's words may hold one of the few of Markdown's marks the core reads (refLinks.ts: a pair of `*`,
+/// `_`, `~` or backticks, a line begun `- ` or `* `): words with none are set all alike, asked of none
+/// (`ref.styles`). Never false where the core would find one.
+pub fn words_may_mark(text : String) -> Bool {
   let mut stars = 0
   let mut lows = 0
   let mut waves = 0
