@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 2.67 | 3.61 | 14.99 | 38.02 | 58.24 | 33.33 | 67.99 | 108.89 | 125.14 |
 | [dc6e4f996](https://github.com/AFK-surf/monoid/commit/dc6e4f9961facdb43561ff91f42454cb2071df38) fix(core-ts): memoize bridged conn.closed and forg | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 102.12 | 129.32 |
 | [38ba386fa](https://github.com/AFK-surf/monoid/commit/38ba386fa931ef37ed7734be8cc194ddc5e6de00) feat(station-whole): assemble transport-independen | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 101.96 | 130.04 |
 | [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 101.96 | 130.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.7 | 131.79 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.68 | 128.91 |
 | [663f65061](https://github.com/AFK-surf/monoid/commit/663f65061c4469b33bffa414095e4a0863b0fcb6) fix(ui): read a Markdown file in a document's colu | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.68 | 128.91 |
-| [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.94 | 131.62 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
 | [dc6e4f996](https://github.com/AFK-surf/monoid/commit/dc6e4f9961facdb43561ff91f42454cb2071df38) fix(core-ts): memoize bridged conn.closed and forg | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.54 |
 | [38ba386fa](https://github.com/AFK-surf/monoid/commit/38ba386fa931ef37ed7734be8cc194ddc5e6de00) feat(station-whole): assemble transport-independen | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.66 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.79 |
 | [663f65061](https://github.com/AFK-surf/monoid/commit/663f65061c4469b33bffa414095e4a0863b0fcb6) fix(ui): read a Markdown file in a document's colu | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.61 |
-| [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
