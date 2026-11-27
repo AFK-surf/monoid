@@ -1254,6 +1254,7 @@ export const AgentsLive = (control: Control) =>
         Effect.promise(async () => {
           if (handing) return;
           handing = true;
+          hub.hold("drain");
           stopArchiving();
           await postBlocks.close();
           await workspaceActivity.close();
@@ -1264,13 +1265,19 @@ export const AgentsLive = (control: Control) =>
           await xshare.close();
           unlistenRule();
           notifier.close();
-          await door?.close(30_000);
-          await managedMcp.close();
-          await forwards.close();
+          let doorClosed = false;
+          const closeDoor = async () => {
+            if (doorClosed) return;
+            doorClosed = true;
+            await door?.close(30_000);
+            await managedMcp.close();
+            await forwards.close();
+          };
           try {
-            await hub.handOver();
+            await hub.handOver(30_000, closeDoor);
           } catch (error) {
             log.warn("hub", "sessions not handed over; they resume the usual way", { error: (error as Error).message });
+            await closeDoor();
             await hub.shutdown();
           }
           await jobs.shutdown();
