@@ -2345,6 +2345,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         glass_paint.ink_r = dmax(dmin(gw, gh) / 2.0, 1.0)
         glass_paint.ink_bare = false
       }
+      _ if c.adaptive_ink && glass_paint.ink_r > 0.0 && !glass_paint.ink_bare && !glass_paint.solid && c.bones == 0L => ()
       _ if c.adaptive_ink && !glass_paint.solid && c.bones == 0L => {
         ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare))
         let gx = x + ground_drawn.dx * s
@@ -2422,6 +2423,15 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       -1
     } else {
       let r_at = self.view_drawn(tree, c, x, y, a, s, ux, uy, turn, ground_drawn)
+      if c.adaptive_ink &&
+        glass_paint.ink_r > 0.0 &&
+        !glass_paint.ink_bare &&
+        c.ground != 0L &&
+        (c.ground & 0xFFL) >= 0xC0L {
+        ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare))
+        glass_paint.ink_r = 0.0
+        glass_paint.ink_bare = false
+      }
       if particling.length() > 0 {
         let p_idx = particling.length() - 1
         let top = particling[p_idx]
@@ -2853,7 +2863,7 @@ fn Ctx::view_drawn(
   // (drawn bigger or smaller than laid out, what holds it with it: about where it is drawn, as a look's scale is; its
   // glyphs set on the pixels where they would be were nothing grown or shrunk, as an old view's are painted where they
   // are laid out and then its looks)
-  self.view_blit(c.id, block, x, y, a, ux, uy, ground=ground_drawn)
+  self.view_blit(c.id, block, x, y, a, ux, uy, ground=ground_drawn, adaptive_ink=c.adaptive_ink)
   if s != 1.0 {
     let (outer, outer_r, outer_s) = clip_at(clip_top())
     self.transform_insts(i0, self.ninst, x, y, s, s, 0.0, 0.0, outer, outer_r, outer_s)
@@ -3984,6 +3994,7 @@ fn Ctx::view_blit(
   lx : Double,
   ly : Double,
   ground? : @view.GroundShape = @view.ground_as_laid,
+  adaptive_ink? : Bool = false,
 ) -> Unit {
   let block = made.inst
   let n = block.length() / inst_size
@@ -4065,7 +4076,7 @@ fn Ctx::view_blit(
         s.unsafe_get(b + 6) <= 0.0 &&
         s.unsafe_get(b + 22) <= 0.0 &&
         s.unsafe_get(b + 11) > 0.0 &&
-        s.unsafe_get(b + 11) < 0.75 {
+        (s.unsafe_get(b + 11) < 0.75 || adaptive_ink) {
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
         s.unsafe_set(b + 23, -glass_paint.ink_r)

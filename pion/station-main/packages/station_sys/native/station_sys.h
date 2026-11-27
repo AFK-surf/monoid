@@ -172,6 +172,9 @@ int32_t sts_write_at(
     int64_t *out_size,
     int32_t *out_short);
 int32_t sts_sync_file(const char *path);
+int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err);
+void *sts_file_pread(int64_t handle, int64_t offset, int64_t len, int64_t *out_len, int32_t *out_err);
+int32_t sts_file_close(int64_t handle);
 int32_t sts_getuid(void);
 int32_t sts_geteuid(void);
 int32_t sts_write_file_mode(

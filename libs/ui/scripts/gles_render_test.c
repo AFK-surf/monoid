@@ -1477,36 +1477,35 @@ int main(void) {
         double oob_sub = (0.2126 * p_ob[0] + 0.7152 * p_ob[1] + 0.0722 * p_ob[2]) / 255.0;
         printf("gles_render: wave7 testC half_dark l_sub=%.3f l_txt=%.3f r_sub=%.3f r_txt=%.3f g_right=%.3f oob=%.3f chroma=%d,%d,%d\n",
                l_sub, l_txt, r_sub, r_txt, g_right, oob_sub, p_lc[0], p_lc[1], p_lc[2]);
-        CHECK(l_sub > 0.82);
-        CHECK(l_txt > 0.82);
+        CHECK(l_sub < 0.45);
+        CHECK(l_txt < 0.25);
         CHECK(r_sub < 0.45);
-        CHECK(r_txt < 0.45);
+        CHECK(r_txt < 0.25);
+        CHECK(fabs(l_sub - r_sub) < 0.05);
+        CHECK(fabs(l_txt - r_txt) < 0.05);
         CHECK(g_right > 0.75);
         CHECK(oob_sub < 0.45);
         CHECK((int)p_lc[0] > (int)p_lc[2] + 120);
         free(px_tc);
 
         // Expand dark backdrop from 45% to 100% across 20 frames + 10 settle frames:
-        double min_l_sub = 1.0, min_l_txt = 1.0, end_r_sub = 0.0, end_g_right = 1.0;
+        double end_l_txt = 0.0, end_r_sub = 0.0, end_g_right = 1.0;
         for (int s = 0; s < 30; s++) {
           double t = s < 20 ? (double)(s + 1) / 20.0 : 1.0;
           tc[MB_INST + 2] = 184.0 + (400.0 - 184.0) * t;
           gl_present(tc, 9, 1.0, 1.0, 1.0);
           px_tc = pixels_of_fb(big_fb);
-          p_ls = px_tc + ((fb_h - 1 - 150) * fb_w + 72) * 4;
           p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
           p_rs = px_tc + ((fb_h - 1 - 150) * fb_w + 232) * 4;
           p_rg = px_tc + ((fb_h - 1 - 150) * fb_w + 310) * 4;
-          double cs = (0.2126 * p_ls[0] + 0.7152 * p_ls[1] + 0.0722 * p_ls[2]) / 255.0;
-          double ct = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+          end_l_txt = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
           end_r_sub = (0.2126 * p_rs[0] + 0.7152 * p_rs[1] + 0.0722 * p_rs[2]) / 255.0;
           end_g_right = (0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0;
-          if (cs < min_l_sub) min_l_sub = cs;
-          if (ct < min_l_txt) min_l_txt = ct;
           free(px_tc);
         }
-        printf("gles_render: wave7 testC scroll_to_full min_l_sub=%.3f min_l_txt=%.3f end_r_sub=%.3f end_g_right=%.3f\n",
-               min_l_sub, min_l_txt, end_r_sub, end_g_right);
+        printf("gles_render: wave7 testC scroll_to_full end_l_txt=%.3f end_r_sub=%.3f end_g_right=%.3f\n",
+               end_l_txt, end_r_sub, end_g_right);
+        CHECK(end_l_txt > 0.75);
         CHECK(end_r_sub > 0.68);
         CHECK(end_g_right < 0.35);
 
@@ -1518,7 +1517,7 @@ int main(void) {
           gl_present(tc, 9, 1.0, 1.0, 1.0);
           px_tc = pixels_of_fb(big_fb);
           p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
-          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 > 0.82);
+          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 < 0.25);
           free(px_tc);
 
           const double frost_alphas[3] = {0.522, 0.752, 0.913};
@@ -1544,7 +1543,7 @@ int main(void) {
           gl_present(tc, 9, 1.0, 1.0, 1.0);
           px_tc = pixels_of_fb(big_fb);
           p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
-          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 > 0.82);
+          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 < 0.25);
           free(px_tc);
 
           tc[MB_INST + 2] = 400.0;
@@ -1667,7 +1666,7 @@ int main(void) {
         double l_o = (0.2126 * p_o[0] + 0.7152 * p_o[1] + 0.0722 * p_o[2]) / 255.0;
         double l_i = (0.2126 * p_i[0] + 0.7152 * p_i[1] + 0.0722 * p_i[2]) / 255.0;
         printf("gles_render: wave7 testE1 line_word_unified l_H=%.3f l_o=%.3f l_i=%.3f\n", l_H, l_o, l_i);
-        CHECK(l_H > 0.82 && l_o > 0.82 && l_i > 0.82 && fabs(l_H - l_o) < 0.05 && fabs(l_H - l_i) < 0.05);
+        CHECK(l_H < 0.25 && l_o < 0.25 && l_i < 0.25 && fabs(l_H - l_o) < 0.05 && fabs(l_H - l_i) < 0.05);
         free(px_e1);
       }
 
@@ -1711,9 +1710,8 @@ int main(void) {
         double l4 = (0.2126 * p4[0] + 0.7152 * p4[1] + 0.0722 * p4[2]) / 255.0;
         printf("gles_render: wave7 testE2 lowpass_anti_osc l1=%.3f l2=%.3f l3=%.3f l4=%.3f\n",
                l1, l2, l3, l4);
-        CHECK(l1 > 0.82 && l2 > 0.82 && l3 > 0.82);
-        CHECK(fabs(l1 - l2) < 0.05 && fabs(l2 - l3) < 0.05);
-        CHECK(l4 < 0.35);
+        CHECK(l1 < 0.25 && l2 < 0.25 && l3 < 0.25 && l4 < 0.25);
+        CHECK(fabs(l1 - l2) < 0.05 && fabs(l2 - l3) < 0.05 && fabs(l3 - l4) < 0.05);
         free(px_e2);
       }
 
@@ -1757,7 +1755,7 @@ int main(void) {
         double l_top = (0.2126 * p_top[0] + 0.7152 * p_top[1] + 0.0722 * p_top[2]) / 255.0;
         double l_bot = (0.2126 * p_bot[0] + 0.7152 * p_bot[1] + 0.0722 * p_bot[2]) / 255.0;
         printf("gles_render: wave7 testF icon_bands_unified l_top=%.3f l_bot=%.3f\n", l_top, l_bot);
-        CHECK(l_top > 0.82 && l_bot > 0.82 && fabs(l_top - l_bot) < 0.05);
+        CHECK(l_top < 0.25 && l_bot < 0.25 && fabs(l_top - l_bot) < 0.05);
         free(px_tf);
       }
 
@@ -4817,7 +4815,7 @@ int main(void) {
       CHECK(areas[0] < areas[1] && areas[1] < areas[2] && areas[2] < areas[3] && areas[3] < areas[4]);
     }
 
-    // --- V9f: Role 4 Tab icon bevel gate (FIXED refract=9.0, Role 4 -64; icon at x_right-6.7pt vs empty; |y-cy|=0.42*h diff==0) ---
+    // --- V9f: Role 4 Tab monotonic outer meniscus (no fake badge copy from 6.7pt inward; continuous outer lip refraction) ---
     {
       double tb[4 * MB_INST];
       V_RECT(tb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
@@ -4828,8 +4826,7 @@ int main(void) {
       glass_forget();
       gl_present(tb, 2, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
       unsigned char *px_empty = pixels_of_fb(vfb);
-      // Place bright orange icons strictly inside: (1) right cap mid-band at x_right-6.7 = 128.3 (only p+barCaDisp hits it),
-      // (2) bottom outer-band at (117.0, 56.0) where |y-cy|=0.42*h has barIconGate == 0.
+      // 1) Bright orange badge at x_right-6.7 = 128.3 (inward=6.7pt): must NOT be fake-copied to outer meniscus (400, 120).
       V_RECT(tb + MB_INST, 127.3, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
       V_RECT(tb + 2 * MB_INST, 117.0, 56.0, 2.0, 6.0, 0, 1.0, 0.55, 0.0, 0);
       V_RECT(tb + 3 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -564);
@@ -4841,8 +4838,7 @@ int main(void) {
       unsigned char *px_icon = pixels_of_fb(vfb);
       unsigned char *a_mid = V_PX(px_empty, 400, 120);
       unsigned char *b_mid = V_PX(px_icon, 400, 120);
-      int mid_delta = abs((int)b_mid[0] - (int)a_mid[0]) + abs((int)b_mid[1] - (int)a_mid[1]);
-      // Control at |y - cy| = 0.42 * 45 = 18.9 -> y = 58.9, x = 123.2 (inward = 1.5pt, barIconGate == 0)
+      int ghost_delta = abs((int)b_mid[0] - (int)a_mid[0]) + abs((int)b_mid[1] - (int)a_mid[1]);
       unsigned char *a_out = V_PX(px_empty, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
       unsigned char *b_out = V_PX(px_icon, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
       int out_diff = 0;
@@ -4850,13 +4846,25 @@ int main(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      printf("gles_render: v9_tab_icon_bevel mid_delta=%d out_diff=%d\n", mid_delta, out_diff);
-      CHECK(mid_delta >= 40 && out_diff == 0);
+      // 2) Bright orange bar at x=129.5..131.5 (3.5..5.5pt inward): monotonic convex meniscus at inward=1.67pt refracts it to x=133.33pt.
+      V_RECT(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
+      V_RECT(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -566);
+      tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
+      tb[2 * MB_INST + 11] = 0.0; tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0;
+      tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0; tb[2 * MB_INST + 22] = 0.0; tb[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(tb, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px_lip = pixels_of_fb(vfb);
+      unsigned char *c_mid = V_PX(px_lip, 400, 120);
+      int lip_delta = abs((int)c_mid[0] - (int)a_mid[0]) + abs((int)c_mid[1] - (int)a_mid[1]);
+      printf("gles_render: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
+      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
       free(px_empty);
       free(px_icon);
+      free(px_lip);
     }
 
-    // --- V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt) ---
+    // --- V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt ---
     {
       double tg[3 * MB_INST];
       V_RECT(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
@@ -4869,15 +4877,11 @@ int main(void) {
       gl_present(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
       unsigned char *pxg = pixels_of_fb(vfb);
       unsigned char *co = V_PX(pxg, 127, 120);
-      double l_orig = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
-      double min_l = 1e9;
-      for (int px_i = 132; px_i <= 136; px_i++) {
-        unsigned char *cr = V_PX(pxg, px_i, 120);
-        double lr = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
-        if (lr < min_l) min_l = lr;
-      }
-      printf("gles_render: v9_tab_no_ghost orig_L=%.1f refr_min_L=%.1f\n", l_orig, min_l);
-      CHECK(l_orig > 220.0 && min_l < 170.0);
+      double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
+      unsigned char *cb = V_PX(pxg, 114, 120);
+      double l_clean = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      printf("gles_render: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
+      CHECK(l_bar < 130.0 && l_clean > 220.0);
       free(pxg);
     }
 
@@ -4996,6 +5000,27 @@ int main(void) {
       CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
       CHECK(l_side_in >= l_mid - 6.0);
       free(pxd);
+      // V10-Dark-On-Bright: Dark Regular glass on #F2F3F0 bright backdrop has no dead-black contour (>= 120/255) and bright top rim.
+      double rgdb[2 * MB_INST];
+      V_RECT(rgdb, 0, 0, VW, VH, 0, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0, 0);
+      V_RECT(rgdb + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -72);
+      rgdb[MB_INST + 4] = 24.0; rgdb[MB_INST + 6] = 1.0; rgdb[MB_INST + 7] = 0.0;
+      rgdb[MB_INST + 11] = 0x67 / 255.0; rgdb[MB_INST + 12] = 0.6; rgdb[MB_INST + 13] = 14.0;
+      rgdb[MB_INST + 15] = 1.0; rgdb[MB_INST + 21] = 20.0; rgdb[MB_INST + 22] = 0.0; rgdb[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(rgdb, 2, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0);
+      unsigned char *pxdb = pixels_of_fb(vfb);
+      unsigned char *db_mid = V_PX(pxdb, 80 * 2, 40 * 2);
+      unsigned char *db_top = V_PX(pxdb, 80 * 2, 10 * 2);
+      unsigned char *db_side_out = V_PX(pxdb, 140 * 2, 40 * 2);
+      int db_out_min = db_side_out[0] < db_side_out[1] ? db_side_out[0] : db_side_out[1];
+      if (db_side_out[2] < db_out_min) db_out_min = db_side_out[2];
+      double db_l_mid = 0.2126 * db_mid[0] + 0.7152 * db_mid[1] + 0.0722 * db_mid[2];
+      double db_l_top = 0.2126 * db_top[0] + 0.7152 * db_top[1] + 0.0722 * db_top[2];
+      printf("gles_render: v10_reg_dark_on_bright_2x out_min=%d top=%.1f mid=%.1f\n", db_out_min, db_l_top, db_l_mid);
+      CHECK(db_out_min >= 120);
+      CHECK(db_l_top > db_l_mid + 20.0);
+      free(pxdb);
       // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
       V_SETUP(3);
       double sm[7 * MB_INST];

@@ -80,12 +80,21 @@ pub(all) struct MediaInk {
 }
 
 ///|
-/// Over a picture, whatever the theme: black under it (a film is watched on the dark, its frame no white round it), the
-/// words near white on a deep tint (the picture's glass; a native view under it cannot be blurred: solid). A song has
-/// no picture: the page's own colours (`picture` false).
+/// Dark media ink for controls floating over a pure-black stage (dark-mode video or failed video card).
+pub fn media_dark_ink() -> MediaInk {
+  { text: media_dark_text, muted: media_dark_muted, ground: media_dark_ground, stage: media_dark_stage }
+}
+
+///|
+/// Over a picture: black cinema stage under the frame; dark mode uses `media_dark_ink()` while light mode uses
+/// theme-light foregrounds and ground so floating adaptive liquid glass stays bright over light frames and flips
+/// smoothly to dark glass + white ink over dark frames. A song (`picture` false) uses the page's own colours.
 pub fn media_ink(picture : Bool) -> MediaInk {
-  if picture {
-    { text: media_dark_text, muted: media_dark_muted, ground: media_dark_ground, stage: media_dark_stage }
+  if picture && theme().dark {
+    media_dark_ink()
+  } else if picture {
+    let p = theme().p
+    { text: p.text, muted: p.muted, ground: media_ground(), stage: media_dark_stage }
   } else {
     let p = theme().p
     { text: p.text, muted: p.muted, ground: media_ground(), stage: p.canvas }

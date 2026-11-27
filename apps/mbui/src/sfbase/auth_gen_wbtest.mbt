@@ -122,3 +122,50 @@ test "PR-B2s sfbase: sanitize_kept_json strips active login flows across station
   assert_true(topic_policy_device_global("prefs"))
   assert_false(topic_policy_device_global("downloads"), msg="downloads must NOT be device-global")
 }
+
+///|
+test "PR-B2s sfbase: invalidate_auth_scope keeps watched topics and Derived reactive while clearing last_said and kept_from" {
+  let accounts_sig : @signals.Signal[Json?] = @signals.signal(None)
+  let chats_sig : @signals.Signal[Json?] = @signals.signal(Some({ "items": ["A_OLD"] }))
+  let base = made_source(topic=fn(name, params) {
+    if name == "accounts" {
+      accounts_sig.get()
+    } else if name == "chats" && params.get("scope") == Some(Json::string("wsA")) {
+      chats_sig.get()
+    } else {
+      None
+    }
+  })
+  let src : Source = { ..base, reads_ahead: fn() { true } }
+  let p_a : Map[String, Json] = { "scope": Json::string("wsA") }
+
+  // 1) Cold-start handshake: live reactive watcher on `accounts` starts at None,
+  // Global auth boundary fires, then `accounts` arrives -> watcher must wake up!
+  let seen_accounts : Ref[Json?] = Ref(None)
+  let stop_acc = @signals.effect(fn() {
+    seen_accounts.val = src.topic("accounts", {}).get().value
+  })
+  assert_true(seen_accounts.val is None)
+  invalidate_auth_scope(src, fn(name, _) { !topic_policy_device_global(name) })
+  accounts_sig.set(Some(Json::array([])))
+  assert_true(seen_accounts.val is Some(Array(_)), msg="watched accounts topic must remain reactive after auth boundary")
+  stop_acc()
+
+  // 2) Live watched Derived + last_said SWR: auth boundary must drop SWR immediately
+  // and clear kept_from, while keeping the watched Derived reactive for fresh data.
+  let d : Derived[String] = Derived::new("chats", fn(j, _) { j.stringify() })
+  let seen_chats : Ref[String?] = Ref(None)
+  let stop_chats = @signals.effect(fn() {
+    seen_chats.val = d.value(src, p_a)
+  })
+  assert_true(seen_chats.val.unwrap().contains("A_OLD"))
+  // Underlying topic goes None -> SWR from last_said still serves A_OLD until boundary
+  chats_sig.set(None)
+  assert_true(seen_chats.val.unwrap().contains("A_OLD"))
+  invalidate_auth_scope(src, fn(_, params) { params.get("scope") == Some(Json::string("wsA")) })
+  assert_true(d.kept_from(src, p_a) is None, msg="wsA Derived kept_from must be cleared on auth boundary")
+  assert_true(seen_chats.val is None, msg="watched Derived must drop last_said SWR immediately on auth boundary")
+  chats_sig.set(Some({ "items": ["A_NEW"] }))
+  assert_true(seen_chats.val.unwrap().contains("A_NEW"), msg="watched Derived must stay reactive and receive fresh post-boundary data")
+  stop_chats()
+}

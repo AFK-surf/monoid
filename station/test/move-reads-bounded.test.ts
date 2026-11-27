@@ -111,3 +111,52 @@ test("a workspace's sessions, a page at a time: the home one's whether they say 
     store.close();
   }
 });
+
+test("liveProfileOf uses a primary-key seek and liveWitnessesOnProfiles checks multiple profiles in one pass", () => {
+  const store = Store.open(":memory:");
+  const db = store.db;
+  try {
+    for (let i = 0; i < 100; i++) {
+      const key = `chat:c-${String(i).padStart(4, "0")}`;
+      const profile = i < 2 ? "borrowed-a" : i === 2 ? "borrowed-b" : i === 3 ? "borrowed-c" : "own";
+      store.insertSession({ key, connect: "ember", runtime: "claude", profile, workspace: `/d/sessions/${key}`, token: `t${i}`, createdAt: 1, lastActiveAt: 1, ws: null });
+    }
+    // Archive borrowed-b's only chat, and hand over borrowed-c's only chat.
+    store.setArchived("chat:c-0002", true, "p@x");
+    db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?, ?, NULL, 1, 1, 1)").run("chat:c-0003", "peer-st");
+
+    const seen = watch(store);
+    assert.equal(store.liveProfileOf("chat:c-0000"), "borrowed-a");
+    assert.equal(store.liveProfileOf("chat:c-0002"), null, "archived session has no live profile");
+    assert.equal(store.liveProfileOf("chat:c-0003"), null, "handed-over session has no live profile");
+    assert.equal(store.liveProfileOf("chat:missing"), null);
+    for (const s of seen) assert.deepEqual(scans(db, s.sql, s.args), [], `liveProfileOf must not scan: ${s.sql}`);
+
+    seen.length = 0;
+    const witnesses = store.liveWitnessesOnProfiles(["borrowed-a", "borrowed-b", "borrowed-c", "borrowed-empty"]);
+    assert.equal(seen.length, 1, "single SQL query checks all requested profiles at once");
+    for (const s of seen) {
+      assert.deepEqual(scans(db, s.sql, s.args), [], `liveWitnessesOnProfiles must not scan: ${s.sql}`);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${s.sql}`).all(...s.args) as { detail: string }[]).map((r) => String(r.detail)).join("\n");
+      assert.match(plan, /SEARCH s USING (?:COVERING )?INDEX sessions_live_profile \(profile=\?\)/, plan);
+    }
+    assert.equal(witnesses.size, 1);
+    assert.equal(witnesses.get("borrowed-a"), "chat:c-0000");
+    assert.equal(witnesses.has("borrowed-b"), false);
+    assert.equal(witnesses.has("borrowed-c"), false);
+    assert.equal(witnesses.has("borrowed-empty"), false);
+    assert.equal(store.liveWitnessesOnProfiles([]).size, 0);
+
+    seen.length = 0;
+    assert.deepEqual(store.liveSessionsOn("borrowed-a", 1), ["chat:c-0000"]);
+    assert.deepEqual(store.liveSessionsOn("borrowed-b", 1), []);
+    assert.deepEqual(store.liveSessionsOn("borrowed-c", 1), []);
+    for (const s of seen) {
+      assert.deepEqual(scans(db, s.sql, s.args), [], `liveSessionsOn must not scan: ${s.sql}`);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${s.sql}`).all(...s.args) as { detail: string }[]).map((r) => String(r.detail)).join("\n");
+      assert.match(plan, /SEARCH sessions USING (?:COVERING )?INDEX sessions_live_profile \(profile=\?\)/, plan);
+    }
+  } finally {
+    store.close();
+  }
+});

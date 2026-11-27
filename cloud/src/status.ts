@@ -7,7 +7,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { bearerToken, denied, nowSeconds, readJson, reply } from "./auth";
+import { bearerToken, clock, denied, nowSeconds, readJson, reply } from "./auth";
+import { changelogFixesOf, parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type ChangelogFix, type Channel, type PlatformReleases } from "./changelog";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
 import { unavailable } from "./releases";
@@ -65,13 +66,184 @@ export function incidentsOf(issues: unknown): Incident[] {
 
 const dayOf = (seconds: number) => Math.floor(seconds / 86_400);
 
-/** What was last found of each service and its days, in one object ("primary"). */
+type FileReadResult =
+  | { ok: true; value: string | null; expiresAt: number | null }
+  | { ok: false; error: unknown };
+
+export type ChangelogResponseResult =
+  | { ok: true; body: string }
+  | { ok: false; file: string; message: string };
+
+/** What was last found of each service and its days, in one object ("primary"). Also holds the in-memory single-flight cache for changelog and release feeds, invalidated globally on /v1/releases/out. */
 export class ServiceStatus extends DurableObject<Env> {
+  #changelogGen = 0;
+  #fileCache = new Map<string, { value: string | null; expiresAt: number }>();
+  #fileInFlight = new Map<string, Promise<FileReadResult>>();
+  #responseCache = new Map<string, { body: string; expiresAt: number }>();
+  #responseInFlight = new Map<string, Promise<ChangelogResponseResult>>();
+  #fixesCache: { fixes: ChangelogFix[]; expiresAt: number } | null = null;
+  #fixesInFlight: Promise<ChangelogFix[]> | null = null;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS last (service TEXT PRIMARY KEY, at INTEGER NOT NULL, found TEXT NOT NULL, fails INTEGER NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS kept (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS days (service TEXT NOT NULL, day INTEGER NOT NULL, ok INTEGER NOT NULL, total INTEGER NOT NULL, PRIMARY KEY (service, day))");
+  }
+
+  invalidateChangelog(): void {
+    this.#changelogGen++;
+    this.#fileCache.clear();
+    this.#fileInFlight.clear();
+    this.#responseCache.clear();
+    this.#responseInFlight.clear();
+    this.#fixesCache = null;
+    this.#fixesInFlight = null;
+  }
+
+  #readFile(key: string, upstream: string | null, ttlSeconds: number): Promise<FileReadResult> {
+    const cacheKey = `${key}\0${upstream ?? ""}`;
+    const now = clock.now();
+    const cached = this.#fileCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return Promise.resolve({ ok: true, value: cached.value, expiresAt: cached.expiresAt });
+    }
+    const existing = this.#fileInFlight.get(cacheKey);
+    if (existing) return existing;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<FileReadResult> => {
+      const result = await readReleaseFile(this.env.RELEASES, key, upstream ?? undefined);
+      if (!result.ok) return result;
+      if (result.cacheable && ttlSeconds > 0 && this.#changelogGen === gen) {
+        const expiresAt = clock.now() + ttlSeconds * 1000;
+        this.#fileCache.set(cacheKey, { value: result.value, expiresAt });
+        return { ok: true, value: result.value, expiresAt };
+      }
+      return { ok: true, value: result.value, expiresAt: null };
+    })();
+    this.#fileInFlight.set(cacheKey, promise);
+    const cleanup = () => {
+      if (this.#fileInFlight.get(cacheKey) === promise) this.#fileInFlight.delete(cacheKey);
+    };
+    this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    return promise;
+  }
+
+  async #readChangelog(channel: Channel, ttlSeconds: number, onFail: (file: string, error: unknown) => void): Promise<{ entries: ChangelogEntry[]; expiresAt: number | null }> {
+    let minExpires: number | null = Infinity;
+    const track = (exp: number | null) => {
+      if (exp === null) minExpires = null;
+      else if (minExpires !== null) minExpires = Math.min(minExpires, exp);
+    };
+    if (channel === "stable") {
+      const stable = await this.#readFile("changelog-stable.json", null, ttlSeconds);
+      if (!stable.ok) {
+        onFail("changelog-stable.json", stable.error);
+        return { entries: [], expiresAt: null };
+      }
+      track(stable.expiresAt);
+      const written = parseChangelog(stable.value);
+      if (written.length) return { entries: written, expiresAt: minExpires === Infinity ? null : minExpires };
+    }
+    const beta = await this.#readFile("changelog.json", null, ttlSeconds);
+    if (!beta.ok) {
+      onFail("changelog.json", beta.error);
+      return { entries: [], expiresAt: null };
+    }
+    track(beta.expiresAt);
+    return { entries: parseChangelog(beta.value), expiresAt: minExpires === Infinity ? null : minExpires };
+  }
+
+  async #readReleased(channel: Channel, upstream: string | null, ttlSeconds: number, onFail: (file: string, error: unknown) => void): Promise<{ released: PlatformReleases; expiresAt: number | null }> {
+    const beta = channel === "beta";
+    const keys = [
+      [beta ? "station-beta.json" : "station.json", upstream] as const,
+      [beta ? "android/beta/latest.json" : "android/latest.json", null] as const,
+      [beta ? "mac/beta/latest.json" : "mac/latest.json", null] as const,
+      [beta ? "win/beta/latest.json" : "win/latest.json", null] as const,
+      [beta ? "web-beta.json" : "web.json", null] as const,
+    ];
+    const results = await Promise.all(keys.map(([key, up]) => this.#readFile(key, up, ttlSeconds)));
+    let minExpires: number | null = Infinity;
+    const texts = results.map((r, i) => {
+      if (!r.ok) {
+        onFail(keys[i]![0], r.error);
+        minExpires = null;
+        return null;
+      }
+      if (r.expiresAt === null) minExpires = null;
+      else if (minExpires !== null) minExpires = Math.min(minExpires, r.expiresAt);
+      return r.value;
+    });
+    return {
+      released: parseReleased(texts[0]!, texts[1]!, texts[2]!, texts[3]!, texts[4]!),
+      expiresAt: minExpires === Infinity ? null : minExpires,
+    };
+  }
+
+  changelogResponse(channel: Channel, upstream: string | null, ttlSeconds: number): Promise<ChangelogResponseResult> {
+    const cacheKey = `${channel}\0${upstream ?? ""}`;
+    const now = clock.now();
+    const cached = this.#responseCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return Promise.resolve({ ok: true, body: cached.body });
+    }
+    const existing = this.#responseInFlight.get(cacheKey);
+    if (existing) return existing;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<ChangelogResponseResult> => {
+      let failure = null as { file: string; message: string } | null;
+      const onFail = (file: string, error: unknown) => {
+        failure ??= { file, message: error instanceof Error ? error.message : String(error) };
+      };
+      const [list, have] = await Promise.all([
+        this.#readChangelog(channel, ttlSeconds, onFail),
+        this.#readReleased(channel, upstream, ttlSeconds, onFail),
+      ]);
+      if (failure) return { ok: false, file: failure.file, message: failure.message };
+      const body = JSON.stringify({ entries: list.entries, released: have.released });
+      if (ttlSeconds > 0 && this.#changelogGen === gen && list.expiresAt !== null && have.expiresAt !== null) {
+        const expiresAt = Math.min(list.expiresAt, have.expiresAt);
+        if (expiresAt > clock.now()) {
+          this.#responseCache.set(cacheKey, { body, expiresAt });
+        }
+      }
+      return { ok: true, body };
+    })();
+    this.#responseInFlight.set(cacheKey, promise);
+    const cleanup = () => {
+      if (this.#responseInFlight.get(cacheKey) === promise) this.#responseInFlight.delete(cacheKey);
+    };
+    this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    return promise;
+  }
+
+  changelogFixes(ttlSeconds: number): Promise<ChangelogFix[]> {
+    const now = clock.now();
+    if (this.#fixesCache && this.#fixesCache.expiresAt > now) {
+      return Promise.resolve(this.#fixesCache.fixes);
+    }
+    if (this.#fixesInFlight) return this.#fixesInFlight;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<ChangelogFix[]> => {
+      const { entries, expiresAt } = await this.#readChangelog("beta", ttlSeconds, (file, error) => console.error(`changelog ${file} unavailable:`, error));
+      const fixes = changelogFixesOf(entries);
+      if (ttlSeconds > 0 && this.#changelogGen === gen && expiresAt !== null && expiresAt > clock.now()) {
+        this.#fixesCache = { fixes, expiresAt };
+      }
+      return fixes;
+    })();
+    this.#fixesInFlight = promise;
+    const cleanup = () => {
+      if (this.#fixesInFlight === promise) this.#fixesInFlight = null;
+    };
+    this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    return promise;
+  }
+
+  async releasedVersions(channel: Channel, upstream: string | null, ttlSeconds: number): Promise<PlatformReleases> {
+    const { released } = await this.#readReleased(channel, upstream, ttlSeconds, (file, error) => console.error(`changelog ${file} unavailable:`, error));
+    return released;
   }
 
   record(checks: Check[]): void {
@@ -239,6 +411,7 @@ export async function receiveReleased(request: Request, env: Env): Promise<Respo
   if (claims === undefined) return reply({ error: "not_found" }, 404);
   if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || !RELEASING.some((file) => claims.workflow_ref === `${claims.repository}/.github/workflows/${file}@refs/heads/main`)) return denied();
+  await env.SERVICE_STATUS.getByName("primary").invalidateChangelog().catch((error) => console.error("changelog cache invalidate failed:", error));
   await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" }, { ephemeral: true });
   return reply({ ok: true });
 }

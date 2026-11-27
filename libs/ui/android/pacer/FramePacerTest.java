@@ -209,9 +209,13 @@ public final class FramePacerTest {
         @Override public void postMain(Runnable r) { main(now, r); }
 
         @Override public void postVsync() {
+            postVsync(0L);
+        }
+
+        @Override public void postVsync(long gen) {
             vsyncPosts++;
             // Android 13's: told with its preferred timeline, shown two vsyncs on (the app's frame deadline)
-            nextVsync.add(() -> pacer.vsyncCame(vsyncTime(), vsyncTime() + 2 * currentPeriod()));
+            nextVsync.add(() -> pacer.vsyncCame(vsyncTime(), vsyncTime() + 2 * currentPeriod(), gen));
         }
 
         @Override public void atNextVsyncOnDrawing(Runnable r) {
@@ -2111,6 +2115,136 @@ public final class FramePacerTest {
                         + ", renders=" + (ph2.renderRequests - rendersBeforeB) + ")");
     }
 
+    /**
+     * Regression: frameNow() writes wall-clock nanoTime into lastAppDispatchedVsyncNs when deferredVsync==false.
+     * If the sole in-flight Choreographer callback then arrives with a latched vsync timestamp t <= now (both
+     * within framePeriod/2 via handleDuplicateVsyncLocked and >= framePeriod/2 via dispatchVsyncLocked), the active
+     * callback must still clear wanted so subsequent typing wantFrame() calls never deadlock permanently.
+     */
+    static void frameNowWallClockDoesNotDeadlockWantedCase() {
+        // (a) now - t < framePeriod / 2 (120 Hz: 1 ms late -> handleDuplicateVsyncLocked path):
+        // frameNow() runs with deferredVsync==false at t12+1ms (writing wall-clock t12+1ms into
+        // lastAppDispatchedVsyncNs while wanted==false), then setImeMoving(true) arms the sole postVsync with
+        // wantedAfterVsyncNs = t12+1ms, and Choreographer delivers that callback at latched t12 (delta 1ms < period/2).
+        Phone phA = new Phone(120, 3, true, 200_000);
+        phA.app = steady(1.0, 1.0, -1);
+        long t12 = 12 * phA.period;
+        phA.main(t12 + 1_000_000L, () -> {
+            phA.pacer.frameNow();
+            phA.pacer.setImeMoving(true);
+        });
+        phA.main(t12 + 1_500_000L, () -> {
+            phA.lastVsyncAt = t12;
+            List<Runnable> cbs = phA.nextVsync;
+            phA.nextVsync = new ArrayList<>();
+            for (Runnable r : cbs) r.run();
+            phA.pacer.setImeMoving(false);
+        });
+        phA.main(14 * phA.period, phA.pacer::wantFrame);
+        phA.main(16 * phA.period, phA.pacer::wantFrame);
+        phA.main(18 * phA.period, phA.pacer::wantFrame);
+        phA.runUntil(22 * phA.period);
+        boolean okA = phA.drawn.size() == 4;
+
+        // (b) now - t >= framePeriod / 2 (120 Hz: 5 ms late -> dispatchVsyncLocked path)
+        Phone phB = new Phone(120, 3, true, 200_000);
+        phB.app = steady(1.0, 1.0, -1);
+        phB.main(t12 + 5_000_000L, phB.pacer::frameNow); // lastAppDispatchedVsyncNs = t12 + 5ms
+        phB.main(t12 + 6_500_000L, phB.pacer::wantFrame); // arms sole postVsync with wantedAfterVsyncNs = t12 + 5ms
+        phB.main(t12 + 7_000_000L, () -> {
+            phB.lastVsyncAt = t12;
+            List<Runnable> cbs = phB.nextVsync;
+            phB.nextVsync = new ArrayList<>();
+            for (Runnable r : cbs) r.run();
+        });
+        phB.main(14 * phB.period, phB.pacer::wantFrame);
+        phB.main(16 * phB.period, phB.pacer::wantFrame);
+        phB.main(18 * phB.period, phB.pacer::wantFrame);
+        phB.runUntil(22 * phB.period);
+        boolean okB = phB.drawn.size() >= 4;
+
+        check("frameNow wall-clock timestamp + latched vsync t <= now does not permanently deadlock wanted",
+                okA && okB, "drawnA=" + phA.drawn.size() + "/4, drawnB=" + phB.drawn.size() + "/>=4");
+    }
+
+    /**
+     * Regression: wantFrame() called during CALLBACK_INPUT when lastAppDispatchedVsyncNs == T, followed by
+     * Choreographer delivering that sole posted callback in the same doFrame(T) (t == T), must clear wanted
+     * and re-post for T+1 instead of permanently deadlocking all future frames.
+     */
+    static void sameVsyncCallbackInputDoesNotDeadlockWantedCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.app = steady(0.5, 0.5, -1);
+        long t = 12 * ph.period;
+        // Frame 0 already dispatched for vsync T and completed before input arrives
+        ph.main(t, () -> ph.pacer.wakeFrameNow(t, t + 2 * ph.period, false));
+        // Input during same vsync T calls wantFrame() -> posts sole Choreographer callback
+        ph.main(t + 1_500_000L, ph.pacer::wantFrame);
+        // Choreographer delivers that posted callback at the same timestamp t == T
+        ph.main(t + 1_600_000L, () -> {
+            ph.lastVsyncAt = t;
+            List<Runnable> cbs = ph.nextVsync;
+            ph.nextVsync = new ArrayList<>();
+            for (Runnable r : cbs) r.run();
+        });
+        // Subsequent keystroke at T+3
+        ph.main(t + 3 * ph.period, ph.pacer::wantFrame);
+        ph.runUntil(t + 6 * ph.period);
+        check("same-vsync CALLBACK_INPUT->CALLBACK_ANIMATION delivery at t == T re-posts T+1 without deadlock",
+                ph.drawn.size() == 3, "drawn=" + ph.drawn.size() + "/3");
+    }
+
+    /**
+     * Regression: resetContinuity() with an in-flight non-deferred postVsync must clear wanted, re-post if demand
+     * exists, and ignore stale pre-reset callbacks so post-resume frames never deadlock.
+     */
+    static void resetContinuityClearsInFlightWantedCase() {
+        // (a) In-flight callback lost across resetContinuity: demand must still render and subsequent wantFrame works
+        Phone phA = new Phone(120, 3, true, 200_000);
+        phA.app = steady(1.0, 1.0, -1);
+        long t12 = 12 * phA.period;
+        phA.main(t12 + 1_000_000L, phA.pacer::wantFrame);
+        phA.main(t12 + 2_000_000L, () -> {
+            phA.nextVsync.clear(); // simulate pre-pause callback never delivered
+            phA.pacer.resetContinuity(0L);
+            phA.pacer.resetContinuity(13 * phA.period);
+        });
+        phA.main(16 * phA.period, phA.pacer::wantFrame);
+        phA.runUntil(20 * phA.period);
+        boolean okA = phA.drawn.size() >= 2;
+
+        // (b) Stale pre-reset callback arrives AFTER resetContinuity re-armed a new callback: must be ignored
+        //     without clearing the active callback's wanted slot or triggering a duplicate postVsync.
+        Phone phB = new Phone(120, 3, true, 200_000);
+        phB.app = steady(1.0, 1.0, -1);
+        final List<Runnable> stale = new ArrayList<>();
+        final int[] postsAfterStaleDelta = {-1};
+        phB.main(t12 + 1_000_000L, () -> {
+            phB.pacer.wantFrame();
+            stale.addAll(phB.nextVsync);
+            phB.nextVsync.clear();
+        });
+        phB.main(t12 + 2_000_000L, () -> {
+            phB.pacer.resetContinuity(0L);
+            phB.pacer.resetContinuity(13 * phB.period);
+        });
+        phB.main(t12 + 3_000_000L, () -> {
+            int before = phB.vsyncPosts;
+            phB.lastVsyncAt = t12;
+            for (Runnable r : stale) r.run();
+            phB.pacer.wantFrame(); // must see active callback still wanted -> 0 extra postVsync
+            postsAfterStaleDelta[0] = phB.vsyncPosts - before;
+        });
+        phB.main(16 * phB.period, phB.pacer::wantFrame);
+        phB.runUntil(20 * phB.period);
+        boolean okB = postsAfterStaleDelta[0] == 0 && phB.drawn.size() == 2
+                && phB.drawn.get(0)[0] >= (13 * phB.period) / 1e6 - 0.01;
+
+        check("resetContinuity clears in-flight wanted and ignores stale pre-reset vsync callbacks",
+                okA && okB, "drawnA=" + phA.drawn.size() + "/>=2, drawnB=" + phB.drawn.size()
+                        + "/2 (stalePostsDelta=" + postsAfterStaleDelta[0] + ")");
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -2155,6 +2289,9 @@ public final class FramePacerTest {
         fireWakeExactBoundaryCase();
         resumeContinuityBoundaryCase();
         imeDeferredResetContinuityNoDeadlockCase();
+        frameNowWallClockDoesNotDeadlockWantedCase();
+        sameVsyncCallbackInputDoesNotDeadlockWantedCase();
+        resetContinuityClearsInFlightWantedCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

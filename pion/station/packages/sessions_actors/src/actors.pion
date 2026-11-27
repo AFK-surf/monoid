@@ -33,6 +33,10 @@ pub struct Turn {
   pub mut tools_count : Int
   pub mut last_tool_at : Double
   pub mut wait_watch : Bool
+  // (when its runtime last said anything live, and the tool calls it has begun and not ended: what tells a turn still
+  // at work from one whose runtime hung after it was steered to check its wait, `fire_steer_silent_k`)
+  pub mut last_live_at : Double
+  pub mut open_tools : Array[String]
 }
 
 pub struct QueuedRetry {
@@ -81,6 +85,7 @@ pub enum ActorTimerAction {
   Named(String, base_codec::Json)
   FireWait(Int, Double)
   FireMidWait(Int, String, Double)
+  FireSteerSilent(Int, String)
   FireRefill(Int)
   FireToolsRetry(Int)
   OpenTimeout(Int)
@@ -182,6 +187,12 @@ pub struct Actor {
   pub mut mid_waits : Int
   pub mut mid_waiting_until : Double
   pub mut mid_waiting_seconds : Double
+  /// Deadline armed once the mid-turn wait timer steered its turn to check (`actor_run.mbt` `steer_silent`).
+  pub mut steer_silent : Option[Int]
+  pub mut steer_silents : Int
+  pub mut steer_silent_until : Double
+  pub mut steer_silent_since : Double
+  pub mut steer_silent_steered : Int
   pub mut last_post_at : Double
   pub mut silent_waiting_since : Option[Double]
   pub mut progress_reminded_at : Double
@@ -720,6 +731,11 @@ pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Act
         mid_waits: 0,
         mid_waiting_until: 0.0,
         mid_waiting_seconds: 0.0,
+        steer_silent: None,
+        steer_silents: 0,
+        steer_silent_until: 0.0,
+        steer_silent_since: 0.0,
+        steer_silent_steered: 0,
         last_post_at: 0.0,
         silent_waiting_since: None,
         progress_reminded_at: 0.0,
@@ -1067,12 +1083,27 @@ pub fn ActorsGen::cancel_tools_retry(self : ActorsGen, a : Actor) -> Unit {
   }
 }
 
-/// 1:1 `actor_run.mbt:3581-3589`: clears mid-wait state and cancels `mid_wait` timer.
+/// 1:1 `actor_run.mbt` `cancel_mid_wait`: the mid-turn wait timer, and the deadline after its steer (`steer_silent`)
+/// with it.
 pub fn ActorsGen::cancel_mid_wait(self : ActorsGen, a : Actor) -> Unit {
+  self.cancel_mid_wait_timer(a)
+  self.cancel_steer_silent(a)
+}
+
+/// 1:1 `actor_run.mbt` `cancel_mid_wait_timer`: the mid-turn wait timer alone (a stop keeps the deadline after a steer).
+pub fn ActorsGen::cancel_mid_wait_timer(self : ActorsGen, a : Actor) -> Unit {
   a.mid_waiting = None
   a.mid_waiting_until = 0.0
   a.mid_waiting_seconds = 0.0
   self.cancel_actor_timer(a, "mid_wait")
+}
+
+/// 1:1 `actor_run.mbt` `cancel_steer_silent`.
+pub fn ActorsGen::cancel_steer_silent(self : ActorsGen, a : Actor) -> Unit {
+  a.steer_silent = None
+  a.steer_silent_until = 0.0
+  a.steer_silent_since = 0.0
+  self.cancel_actor_timer(a, "steer_silent")
 }
 
 /// Close an actor for shutdown or handover (`actor_run.mbt:1331-1356`):

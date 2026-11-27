@@ -183,7 +183,7 @@ pub fn player_opened(n : @view.View, key : String, file : ViewerFile, siblings :
 /// What 选集 is drawn in: a film's on its dark (its own list ground), a song's on the page; its words, the quieter
 /// ones, the one playing's ground, the hand's.
 fn list_ink(picture : Bool) -> ViewerInk {
-  if picture {
+  if picture && theme().dark {
     {
       ground: player_list_dark,
       ink: media_dark_text,

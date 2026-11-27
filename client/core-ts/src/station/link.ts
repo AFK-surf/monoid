@@ -627,9 +627,9 @@ export class Links {
   /// stream it takes over from gave (what was told after it comes first, else `missed`).
   #path(address: string, wants: EventsFor, since: string | null = null): string {
     // The sessions at work followed by the station itself (FOLLOWS); a thread's summary made here from what is said in
-    // it (thread-after.ts), not told; and the sidebar's rows (rows-made.ts). A station since #5187 needs none of it
-    // said; one from before then makes them for a stream that does not say so.
-    const query: string[] = ["running=1", "views=1", "rows=1", "shared=1"];
+    // it (thread-after.ts), not told; the sidebar's rows (rows-made.ts); and incremental top-level overview patches
+    // (`overviewPatch=1`, falling back cleanly to full `overview` on older stations).
+    const query: string[] = ["running=1", "views=1", "rows=1", "shared=1", "overviewPatch=1"];
     if (wants.host) query.push("host=1");
     for (const [job, lines] of wants.logs) query.push(`job=${encode(job)}&lines=${lines}`);
     // The logins' terminals shown.

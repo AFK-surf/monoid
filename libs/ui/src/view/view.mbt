@@ -3177,6 +3177,10 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.unsettled_clean = false
   self.answer_unsettled = false
   self.rest_book_clear()
+  self.inputs_in.clear()
+  self.inputs_at.clear()
+  self.inputs_whole = false
+  self.inputs_aux_clear()
   self.cycle_readers_clear()
   self.drawn_marks.clear()
   self.looks_due.clear()
@@ -6370,10 +6374,12 @@ pub fn View::glass(self : View, g : Live[@paint.Glass?], loc~ : SourceLoc) -> Vi
 }
 
 ///|
-/// Whether bare text in this subtree adapts its ink luminance to the backdrop behind it without a glass capsule.
-/// Bare adaptive ink only adapts text (`kind == 7`); it does not adapt icons (`kind == 10/11`) or fills (`kind == 0`).
-/// Backdrop capture automatically expands for bare adaptive text emitted after `kind == 5` (frosted/progressive) or
-/// unmerged `kind == 6` glass, and does not span across `merged_liquid` groups.
+/// Opts a node into adaptive ink luminance:
+/// - Outside an adaptive liquid glass capsule: creates a bare adaptive ink scope for text (`kind == 7`) without a
+///   glass capsule (does not adapt icons `kind == 10/11` or fills `kind == 0`; backdrop capture expands after `kind == 5`
+///   or unmerged `kind == 6` glass and does not span across `merged_liquid` groups).
+/// - Inside an adaptive liquid glass capsule: allows an explicit opaque `kind == 0` fill (such as a scrubber progress
+///   fill) to inherit the enclosing capsule's adaptive state while shielding descendants beneath an opaque ground.
 #callsite(autofill(loc))
 pub fn View::adaptive_ink(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
   self.bind(loc~, AdaptiveInk, on, Paint, fn(on) { self.tree.nodes[self.at].look.adaptive_ink = on })
@@ -8054,8 +8060,8 @@ fn Tree::modals_told(self : Tree, within? : Int = -1) -> Unit {
 fn Tree::inputs_marked(self : Tree, within : Int) -> Unit {
   if within < 0 || !self.modals.is_empty() || self.held_under_now() != self.held_under {
     self.inputs_whole = true
-  } else if !self.inputs_whole && !self.inputs_in.contains(within) {
-    self.inputs_in.push(within)
+  } else if !self.inputs_whole {
+    self.inputs_mark_within(within)
   }
 }
 
@@ -10580,7 +10586,9 @@ fn Node::let_go_held(self : Node) -> Unit {
 /// cleanups run), what goes with it run, its callback and measure dropped, its index free.
 fn View::let_go(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
-  let in_subtree = self.tree.letting.contains(n.parent)
+  let letting_len = self.tree.letting.length()
+  let in_subtree = letting_len > 0 &&
+    (self.tree.letting[letting_len - 1] == n.parent || self.tree.letting.contains(n.parent))
   let pre = n.before_let_go
   n.before_let_go = None
   if !in_subtree {
@@ -10604,14 +10612,16 @@ fn View::let_go(self : View) -> Unit {
   }
   // (what it holds as this begins, each by its handle: one's going may take another out of it (View::lives_with, the
   // tip of a row held beside it in one layer), which is then let go already, its handle on nothing)
-  let kids = n.kids.map(fn(k) { self.tree.handle(k) })
-  n.kids.clear()
-  // (what it holds goes out of the order with it, its run whole: none of theirs taken out by itself)
-  self.tree.letting.push(self.at)
-  for k in kids {
-    k.let_go()
+  if !n.kids.is_empty() {
+    let kids = n.kids.map(fn(k) { self.tree.handle(k) })
+    n.kids.clear()
+    // (what it holds goes out of the order with it, its run whole: none of theirs taken out by itself)
+    self.tree.letting.push(self.at)
+    for k in kids {
+      k.let_go()
+    }
+    self.tree.letting.pop() |> ignore
   }
-  self.tree.letting.pop() |> ignore
   n.live = false
   if n.on_back is Some(_) || n.on_back_step is Some(_) {
     match self.tree.backs.search(self.at) {
@@ -10626,12 +10636,14 @@ fn View::let_go(self : View) -> Unit {
     }
   }
   // (a modal layer let go: what it kept from taking input, wherever it is held, told anew, as its being said off does)
-  match self.tree.modals.search(self.at) {
-    Some(i) => {
-      self.tree.modals.remove(i) |> ignore
-      self.tree.modals_told()
+  if !self.tree.modals.is_empty() {
+    match self.tree.modals.search(self.at) {
+      Some(i) => {
+        self.tree.modals.remove(i) |> ignore
+        self.tree.modals_told()
+      }
+      None => ()
     }
-    None => ()
   }
   match n.stop {
     Some(stop) => stop()
@@ -10641,8 +10653,10 @@ fn View::let_go(self : View) -> Unit {
   n.owner = None
   // (where it takes a finger let go of with it: what read it told at once, following what it read no more)
   n.takes = None
-  self.tree.takes_off(n)
-  n.takes_ver = None
+  if !n.takes_units.is_empty() || n.takes_ver is Some(_) {
+    self.tree.takes_off(n)
+    n.takes_ver = None
+  }
   // (each taken out before any is run: one may say another of it again, or let go of one)
   if !n.props.is_empty() {
     let props = n.props.copy()
@@ -10808,10 +10822,12 @@ fn View::let_go(self : View) -> Unit {
 fn View::retire_parked(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
   self.tree.share_let_go(self.at)
-  let kids = n.kids.map(fn(k) { self.tree.handle(k) })
-  n.kids.clear()
-  for k in kids {
-    k.retire_parked()
+  if !n.kids.is_empty() {
+    let kids = n.kids.map(fn(k) { self.tree.handle(k) })
+    n.kids.clear()
+    for k in kids {
+      k.retire_parked()
+    }
   }
   n.live = false
   if n.on_back is Some(_) || n.on_back_step is Some(_) {
@@ -10826,12 +10842,14 @@ fn View::retire_parked(self : View) -> Unit {
       None => ()
     }
   }
-  match self.tree.modals.search(self.at) {
-    Some(i) => {
-      self.tree.modals.remove(i) |> ignore
-      self.tree.modals_told()
+  if !self.tree.modals.is_empty() {
+    match self.tree.modals.search(self.at) {
+      Some(i) => {
+        self.tree.modals.remove(i) |> ignore
+        self.tree.modals_told()
+      }
+      None => ()
     }
-    None => ()
   }
   match n.stop {
     Some(stop) => stop()
@@ -10840,8 +10858,10 @@ fn View::retire_parked(self : View) -> Unit {
   n.stop = None
   n.owner = None
   n.takes = None
-  self.tree.takes_off(n)
-  n.takes_ver = None
+  if !n.takes_units.is_empty() || n.takes_ver is Some(_) {
+    self.tree.takes_off(n)
+    n.takes_ver = None
+  }
   if !n.props.is_empty() {
     let props = n.props.copy()
     n.props.clear()
@@ -15703,10 +15723,9 @@ fn Tree::soft_min_applied(self : Tree, at : Int) -> Unit {
     dmax(pbw, said_min)
   } else if n.flex.measure is None {
     if n.structure_synced {
-      let kids : Array[Int] = []
-      self.flex_kids(at, kids)
-      if kids.length() == 1 {
-        let c = self.nodes[kids[0]]
+      let ci = self.single_flex_kid(at)
+      if ci >= 0 {
+        let c = self.nodes[ci]
         if !c.cut && c.shorter.length() > 0 && c.look.runs.is_empty() && !c.look.words_look.wrap && c.min_w_said is None {
           st.padding_left_value() + st.padding_right_value() + st.border_left_value() + st.border_right_value()
         } else {
@@ -15771,9 +15790,7 @@ fn Tree::is_bare_single_structure(self : Tree, at : Int) -> Bool {
   if !n.live || !n.structure_box || n.structure_own || n.coming {
     return false
   }
-  let kids : Array[Int] = []
-  self.flex_kids(at, kids)
-  kids.length() == 1
+  self.single_flex_kid(at) >= 0
 }
 
 ///|
@@ -15789,13 +15806,16 @@ fn Tree::structure_row_sync_one(self : Tree, x : Int) -> Unit {
   while holder >= 0 && (self.nodes[holder].slot || self.is_bare_single_structure(holder)) {
     holder = self.nodes[holder].parent
   }
-  let kids_flex : Array[Int] = []
-  if !nx.structure_own && !nx.coming && holder >= 0 && (self.nodes[holder].flex.style.direction is (Row | RowReverse)) {
-    self.flex_kids(x, kids_flex)
+  let ci = if !nx.structure_own &&
+    !nx.coming &&
+    holder >= 0 &&
+    (self.nodes[holder].flex.style.direction is (Row | RowReverse)) {
+    self.single_flex_kid(x)
+  } else {
+    -1
   }
   let mut synced = false
-  if kids_flex.length() == 1 {
-    let ci = kids_flex[0]
+  if ci >= 0 {
     let c = self.nodes[ci]
     let cs = c.flex.style
     let is_shorter = !c.cut && c.shorter.length() > 0 && c.look.runs.is_empty() && !c.look.words_look.wrap

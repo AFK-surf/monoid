@@ -1372,6 +1372,19 @@ export class Data {
     return this.of(station)?.stationDoc(station, "overview");
   }
 
+  /// Applies a top-level `overview-patch` (`set` / `del`) onto the stored raw overview without baking temporary
+  /// optimistic overlays (`#modelEdits` / `#loginSteps`) into SQLite. Returns false when no base overview is held yet.
+  patchOverview(station: string, set: Record<string, unknown> | null, del: readonly string[] | null): boolean {
+    const topic: Topic = { topic: "overview", station };
+    const prev = this.#rawOverview(topic);
+    if (!isObject(prev)) return false;
+    const next: Record<string, unknown> = { ...prev };
+    if (set !== null) for (const [k, v] of Object.entries(set)) next[k] = v;
+    if (del !== null) for (const k of del) delete next[k];
+    this.set(topic, next);
+    return true;
+  }
+
   /// Whether a list topic's rows are loaded (a view reads them at once), or it holds none.
   loaded(topic: Topic): boolean {
     const kind = LIST_OF[topic.topic];

@@ -122,7 +122,8 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   // 18 each, 2 in, 3 over the one before; a pixel more after who started it
   assert_eq([lin[0].1, mo[0].1, kai[0].1], [2.0, 17.0, 33.0])
   assert_eq([lin[0].3, mo[0].3, kai[0].3], [18.0, 18.0, 18.0])
-  // (row_aside_node currently draws faces in g.each order; starter keeps its outer ring)
+  // Mo started it: drawn over Lin and Kai
+  assert_true(mo[0].0 > lin[0].0 && mo[0].0 > kai[0].0)
   // the row's ground a pixel round each face (drawn as a 1px ring on each 18px avatar => 20px ring instance)
   let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
   let rings = t.drawn_instances().filter(fn(a) {
@@ -131,6 +132,131 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   })
   assert_eq(rings.length(), 3)
   assert_true(rings.iter().all(fn(r) { r[2] == 20.0 }))
+}
+
+///|
+test "a row's starter outer ring is a circle concentric with their avatar and drawn over the rest in first, middle, and last position" {
+  let person = fn(id : String, name : String) -> Json {
+    { "id": ToJson::to_json(id), "shown": { "name": ToJson::to_json(name), "display": ToJson::to_json(name), "mine": ToJson::to_json(false) } }
+  }
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let rgba = fn(a : Array[Double]) {
+    (ch(a[12]) << 24) | (ch(a[13]) << 16) | (ch(a[14]) << 8) | ch(a[15])
+  }
+  let all_ids = ["lin", "mo", "kai"]
+  for platform in [0, 2] {
+    for creator_id in all_ids {
+      fresh_app()
+      let src = fixture("home")
+      let item = chat_item({
+        "id": "c1",
+        "people": [person("lin", "Lin"), person("mo", "Mo"), person("kai", "Kai")],
+        "creator": { "id": ToJson::to_json(creator_id) },
+      })
+      let ground = 0x123456FFL
+      let t = @ui.Tester::tree(
+        fn(root) {
+          @ui.set_tree_theme(@sf.ui_theme_now)
+          let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+          let tips = @sf.TipLayer::new(fn() { Some(popup) })
+          root.box(fn(b) {
+            @sfpages.row_aside_node(b, src, tips, fn() { item }, "people", fn() { ground }, fn() { 0 })
+          })
+          |> ignore
+        },
+        platform~,
+      )
+      let face_d = @sf.theme().chat_list.face_d
+      let ink = @sf.theme().p.text
+      let face = drawn_in(t, @sf.avatar_color(creator_id))
+      assert_eq(face.length(), 1, msg="platform \{platform}, creator \{creator_id}: starter avatar missing")
+      let (starter_z, ax, ay, aw) = face[0]
+      assert_eq(aw, face_d, msg="platform \{platform}, creator \{creator_id}: avatar width")
+      // starter avatar sits over every other shown avatar
+      for other_id in all_ids {
+        if other_id != creator_id {
+          let other = drawn_in(t, @sf.avatar_color(other_id))
+          assert_eq(other.length(), 1, msg="platform \{platform}, creator \{creator_id}: other \{other_id} missing")
+          assert_true(
+            starter_z > other[0].0,
+            msg="platform \{platform}, creator \{creator_id}: starter (\{starter_z}) must draw over \{other_id} (\{other[0].0})",
+          )
+        }
+      }
+      // find outer ink ring and its draw-order index among all instances
+      let instances = t.drawn_instances()
+      let outer_rings : Array[(Int, Array[Double])] = []
+      let mut max_other_inst = -1
+      for idx, a in instances {
+        let c = rgba(a)
+        if a[5] == 0.0 && a[6] > 0.0 && c == ink {
+          outer_rings.push((idx, a))
+        } else {
+          for other_id in all_ids {
+            if other_id != creator_id && c == @sf.avatar_color(other_id) && idx > max_other_inst {
+              max_other_inst = idx
+            }
+          }
+        }
+      }
+      assert_eq(outer_rings.length(), 1, msg="platform \{platform}, creator \{creator_id}: expected 1 outer ink ring")
+      let (ring_idx, r) = outer_rings[0]
+      assert_true(
+        ring_idx > max_other_inst,
+        msg="platform \{platform}, creator \{creator_id}: outer ring (\{ring_idx}) must draw after all other avatars (\{max_other_inst})",
+      )
+      // outer ring is 2 pt past the face_d × face_d avatar on all four sides (1 pt ground gap + 1 pt ink stroke)
+      let expected_d = face_d + 4.0
+      assert_eq((r[0], r[1], r[2], r[3]), (ax - 2.0, ay - 2.0, expected_d, expected_d), msg="platform \{platform}, creator \{creator_id}: outer ring off-center or stretched")
+      assert_eq(r[6], 1.0, msg="platform \{platform}, creator \{creator_id}: outer ring stroke width")
+    }
+  }
+  // dynamic creator change + overflow (+1) preserves positions, concentric ring, and starter-on-top order
+  fresh_app()
+  let src = fixture("home")
+  let make_four = fn(creator_id : String) {
+    chat_item({
+      "id": "c2",
+      "people": [person("lin", "Lin"), person("mo", "Mo"), person("kai", "Kai"), person("zhou", "Zhou")],
+      "creator": { "id": ToJson::to_json(creator_id) },
+    })
+  }
+  let current = @signals.signal(make_four("lin"))
+  let ground = 0x123456FFL
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      root.box(fn(b) {
+        @sfpages.row_aside_node(b, src, tips, fn() { current.get() }, "people", fn() { ground }, fn() { 0 })
+      })
+      |> ignore
+    },
+    platform=2,
+  )
+  let check_four = fn(creator_id : String, expected_xs : Array[Double]) raise {
+    let lin = drawn_in(t, @sf.avatar_color("lin"))
+    let mo = drawn_in(t, @sf.avatar_color("mo"))
+    let kai = drawn_in(t, @sf.avatar_color("kai"))
+    assert_eq([lin[0].1, mo[0].1, kai[0].1], expected_xs, msg="4-person xs for creator \{creator_id}")
+    let starter = drawn_in(t, @sf.avatar_color(creator_id))[0]
+    for other_id in all_ids {
+      if other_id != creator_id {
+        assert_true(starter.0 > drawn_in(t, @sf.avatar_color(other_id))[0].0, msg="4-person draw order for \{creator_id} over \{other_id}")
+      }
+    }
+    let more = t.text_runs().filter(fn(r) { r.text == "+1" })
+    assert_eq(more.length(), 1, msg="4-person overflow +1 shown for \{creator_id}")
+    assert_true(more[0].x0 >= 50.0, msg="4-person overflow +1 (\{more[0].x0}) must sit after the 3 faces for \{creator_id}")
+  }
+  check_four("lin", [2.0, 18.0, 33.0])
+  current.set(make_four("mo"))
+  t.frame()
+  check_four("mo", [2.0, 17.0, 33.0])
+  current.set(make_four("kai"))
+  t.frame()
+  check_four("kai", [2.0, 17.0, 32.0])
 }
 
 ///|

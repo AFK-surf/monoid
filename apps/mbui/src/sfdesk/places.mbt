@@ -188,14 +188,31 @@ fn stations_place_node(
       None => Reading
     }
   }
-  v.pick(shown, fn(p, at) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    match at {
-      Picked(a) => @sfpages.station_node(p, core, src, here, a, on_back=core.pop, frame~, said?, width~, tips?, stint~)
-      Reading => @sfpages.stations_reading_node(p, core, src, here, on_back=core.pop, frame~, said?, width~, tips?)
-      First => stations_first_node(p, core, here, frame, width, said?, tips?)
-    }
-  })
+  v.pick_kept(
+    shown,
+    fn(p, at) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      match at {
+        Picked(a) => {
+          // Release any ahead-read handed over by show_answered after the frame draws
+          // (idempotent with station_part_read's own shown_read).
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfpages.station_shown_at(a)) })
+          @sfpages.station_node(p, core, src, here, a, on_back=core.pop, frame~, said?, width~, tips?, stint~)
+        }
+        Reading => @sfpages.stations_reading_node(p, core, src, here, on_back=core.pop, frame~, said?, width~, tips?)
+        First => stations_first_node(p, core, here, frame, width, said?, tips?)
+      }
+    },
+    at_once=true,
+    keeps_max=4,
+    keep_if=fn(at) { at is Picked(_) },
+    on_take=fn(_, at) {
+      match at {
+        Picked(a) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfpages.station_shown_at(a)) })
+        _ => ()
+      }
+    },
+  )
 }
 
 ///|
@@ -223,70 +240,55 @@ fn profiles_place_node(
       None => None
     }
   }
-  let kept : @signals.Signal[Array[(String, String)?]] = @signals.signal([])
-  let seen_overview : Ref[Bool] = Ref(false)
-  let recent : Array[(String, String)] = []
-  v.reacts(picked, fn(cur) {
-    match cur {
-      Some(("", "")) => {
-        seen_overview.val = true
-        let next : Array[(String, String)?] = [Some(("", ""))]
-        for x in recent {
-          next.push(Some(x))
+  v.pick_kept(
+    picked,
+    fn(p, at) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      match at {
+        Some(("", "")) => {
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
+          @sfpages.profiles_overview_node(
+            p,
+            core,
+            here,
+            open_profile=fn(address, id) {
+              let ws = here().workspace
+              let route = Route::Profile(address, id)
+              let at = @sfbase.profile_shown_at(address, id)
+              @sfbase.show_answered(src, @sfbase.route_asks(ws, route), at, fn() {
+                place_pick[place_key(ws, "profiles")] = route
+                @sfbase.show_chosen()
+              })
+            },
+            on_back=core.pop,
+            frame~,
+            said?,
+            width~,
+            tips?,
+          )
         }
-        kept.set(next)
+        Some((a, id)) => {
+          // Release any ahead-read handed over by show_answered after the frame draws
+          // (idempotent with profile_node's own shown_read).
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
+          @sfpages.profile_node(p, core, here, a, id, on_back=core.pop, frame~, said?, width~, tips?, stint~)
+        }
+        None => @sfpages.profiles_first_node(p, core, here, on_back=core.pop, frame~, said?, width~, tips?)
       }
-      Some((a, id)) => {
-        // (release any ahead-read handed over by show_answered after the frame draws: covers both initial build,
-        // idempotent with profile_node's own shown_read, and subsequent wake-ups of a parked profile_node)
-        @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
-        match recent.search((a, id)) {
-          Some(i) => recent.remove(i) |> ignore
-          None => ()
-        }
-        recent.push((a, id))
-        while recent.length() > 4 {
-          recent.remove(0) |> ignore
-        }
-        let next : Array[(String, String)?] = []
-        if seen_overview.val {
-          next.push(Some(("", "")))
-        }
-        for x in recent {
-          next.push(Some(x))
-        }
-        kept.set(next)
+    },
+    at_once=true,
+    keeps_max=4,
+    keep_if=fn(k) { k is Some(_) },
+    pin=fn(k) { k == Some(("", "")) },
+    on_take=fn(_, k) {
+      match k {
+        // Overview shares `profile_shown_at("", "")` with `places_side_node.mbt` so any overview ahead-read is released too.
+        Some(("", "")) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
+        Some((a, id)) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
+        None => ()
       }
-      None => ()
-    }
-  })
-  v.each(fn() { [picked()] }, fn(k) { k }, keeps=fn() { kept.get() }, at_once=true, fn(p, at_sig) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    match @signals.untracked(fn() { at_sig.get() }) {
-      Some(("", "")) =>
-        @sfpages.profiles_overview_node(
-          p,
-          core,
-          here,
-          open_profile=fn(address, id) {
-            let ws = here().workspace
-            let route = Route::Profile(address, id)
-            let at = @sfbase.profile_shown_at(address, id)
-            @sfbase.show_answered(src, @sfbase.route_asks(ws, route), at, fn() {
-              place_pick[place_key(ws, "profiles")] = route
-              @sfbase.show_chosen()
-            })
-          },
-          on_back=core.pop,
-          frame~,
-          said?,
-          width~,
-          tips?,
-        )
-      Some((a, id)) => @sfpages.profile_node(p, core, here, a, id, on_back=core.pop, frame~, said?, width~, tips?, stint~)
-      None => @sfpages.profiles_first_node(p, core, here, on_back=core.pop, frame~, said?, width~, tips?)
-    }
-  })
+    },
+  )
 }
 
 ///|

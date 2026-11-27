@@ -13,10 +13,14 @@ jscase = { workspace = true }
 nodepath = { workspace = true }
 sql_db = { workspace = true }
 station_api = { workspace = true }
+station_browser = { workspace = true }
+station_connects = { workspace = true }
+station_devices = { workspace = true }
 station_drivers = { workspace = true }
 station_http = { workspace = true }
 station_jobs = { workspace = true }
 station_ops = { workspace = true }
+station_replica = { workspace = true }
 station_rig = { workspace = true }
 station_rules_bridge = { workspace = true }
 station_screens = { workspace = true }

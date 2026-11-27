@@ -1358,3 +1358,77 @@ for (const kind of ["lent", "stopped"] as const) {
     assert.deepEqual(many, few, `with 30: ${JSON.stringify(few)}, with 300: ${JSON.stringify(many)}`);
   });
 }
+
+test("borrowed-login liveness tracks a witness key via O(1) PK lookup instead of rescanning sessions_live on every session event", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+  await quiet();
+  const share = present(a, "max").share.id as string;
+  const borrowedId = ofShare(b, share).id as string;
+
+  // Create two chats on B using the borrowed login, then return A's original chat.
+  const [mine1] = await newSession(b.rig.hub, { runtime: "claude", profile: borrowedId, createdBy: "p@x" });
+  const [mine2] = await newSession(b.rig.hub, { runtime: "claude", profile: borrowedId, createdBy: "p@x" });
+  await quiet();
+  await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+  await quiet();
+  assert.equal(ofShare(b, share)?.share.borrowed, true);
+
+  let scansCount = 0;
+  let pkCount = 0;
+  const origWitnesses = b.rig.store.liveWitnessesOnProfiles.bind(b.rig.store);
+  const origProfileOf = b.rig.store.liveProfileOf.bind(b.rig.store);
+  b.rig.store.liveWitnessesOnProfiles = (pids) => { scansCount++; return origWitnesses(pids); };
+  b.rig.store.liveProfileOf = (key) => { pkCount++; return origProfileOf(key); };
+
+  // Seed/warm check: routine session updates (e.g. title edits on unrelated chats) perform 0 scans.
+  const [other] = await newSession(b.rig.hub, { runtime: "codex", profile: "bx", createdBy: "p@x" });
+  await quiet();
+  const scansAfterWarm = scansCount;
+  for (let i = 0; i < 10; i++) {
+    b.rig.store.setTitle(other, `edit-${i}`);
+    await quiet();
+  }
+  assert.equal(scansCount, scansAfterWarm, "routine session updates never re-scan sessions_live");
+  assert.ok(pkCount >= 10, "routine session updates use O(1) liveProfileOf PK seeks");
+
+  // Archiving the first borrowed chat promotes the second as witness; borrowed login stays lent.
+  const firstToArchive = [mine1, mine2].sort()[0]!;
+  const secondToArchive = [mine1, mine2].sort()[1]!;
+  b.rig.store.setArchived(firstToArchive, true, "p@x");
+  await quiet();
+  assert.equal(ofShare(b, share)?.share.borrowed, true, "login stays lent while second chat is still live");
+
+  // Archiving the last borrowed chat triggers move.unused and returns the lent login.
+  b.rig.store.setArchived(secondToArchive, true, "p@x");
+  await quiet();
+  assert.equal(b.rig.raw.profiles.some((p: Json) => p.share?.id === share), false, "borrowed login returned once last live chat archived");
+  assert.equal(present(a, "max").share, undefined);
+});
+
+test("borrowed-login witness self-heals when the witness session is archived directly without emitting a store event", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+  await quiet();
+  const share = present(a, "max").share.id as string;
+  const borrowedId = ofShare(b, share).id as string;
+
+  const [mine] = await newSession(b.rig.hub, { runtime: "claude", profile: borrowedId, createdBy: "p@x" });
+  const [other] = await newSession(b.rig.hub, { runtime: "codex", profile: "bx", createdBy: "p@x" });
+  await quiet();
+  await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+  await quiet();
+  assert.equal(ofShare(b, share)?.share.borrowed, true);
+
+  // Archive the witness session via raw SQL without firing store.subscribe.
+  b.rig.store.db.prepare("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?").run(Date.now(), "raw-sql", mine);
+  // Any subsequent unrelated session event re-validates the witness via O(1) PK seek and returns the borrowed login.
+  b.rig.store.setTitle(other, "trigger-self-heal");
+  await quiet();
+  assert.equal(b.rig.raw.profiles.some((p: Json) => p.share?.id === share), false, "borrowed login self-healed and returned");
+  assert.equal(present(a, "max").share, undefined);
+});

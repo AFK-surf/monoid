@@ -547,10 +547,10 @@ test("Agents stdout protocol: mb-agents.ts #said() handles all 8 frame types and
 // ── MB reader source SHA-256 drift manifest (alerts when MoonBit reader changes without Pion sync) ──
 
 const MB_READER_SHA256_MANIFEST: Record<string, string> = {
-  "actors.mbt": "4a56a8bfa195096c8299dd29800cfa1a6fcb65387cf0e17300569ca23271201a",
+  "actors.mbt": "82c9c5afbae46b3975d8816679d30e0127634ad2a9667268f6dbe2dea8e9a0bf",
   "actor_base.mbt": "185a1015d8625ff90beea0c68d7f1f352b1f132085efa561799872e029393344",
   "actor_store.mbt": "ff1a2ed085f37d4db234e76c29aea86f563aaa219bd5b148871064cd602313cd",
-  "actor_run.mbt": "833f3d95d30d6b808c143f47f6f1fc200235ebe07bb0fc0c2d3a68327621f926",
+  "actor_run.mbt": "656822b03a70d9a0e772b36bc92bf4b1b84e296089ecf8d8da26900952dfe0a5",
   "jobs.mbt": "736b7df74c87a85c343e343afd9666a46d9c161a3cbe93ef3fe29b01ef90b818",
   "live.mbt": "adca5f31d70d745251d1768939d282269f67114bca3e565d598bfd12993f2171",
   "remote.mbt": "d8573ab63fd84f6d89b47d7a427c3a3a5c592282af00f9b94e6d713a32f4bc7a",
