@@ -281,6 +281,8 @@ pub struct ActivePeerHttpStream {
   pub mut write_in_flight : Bool
   pub mut finish_pending : Bool
   pub mut idle_exempt : Bool
+  pub mut read_paused : Bool
+  pub mut read_in_flight : Bool
 }
 
 pub struct OutboundTell {
@@ -810,6 +812,7 @@ pub struct DaemonCtx {
   stream_conn_id_fn : (Int64) -> Int64
   peer_http_write_queued_bytes_fn : (Int64) -> Int
   set_stream_idle_exempt_fn : (Int64, Bool) -> Unit
+  set_peer_http_read_paused_fn : (Int64, Bool) -> Unit
   close_mesh_conn_fn : (Int64, Bool, Int, String) -> Unit
 }
 
@@ -936,6 +939,17 @@ pub fn DaemonCtx::write_peer_http_chunk(self : DaemonCtx, sid : Int64, data : By
 /// after all queued chunks flush, without forcibly aborting the peer's read direction.
 pub fn DaemonCtx::finish_peer_http(self : DaemonCtx, sid : Int64) -> Unit {
   (self.finish_peer_http_fn)(sid)
+}
+
+/// Returns `true` when the outbound mesh write queue for `sid` has reached `PEER_HTTP_WRITE_HIGH_WATER`.
+pub fn DaemonCtx::is_peer_http_write_paused(self : DaemonCtx, sid : Int64) -> Bool {
+  (self.peer_http_write_queued_bytes_fn)(sid) >= PEER_HTTP_WRITE_HIGH_WATER
+}
+
+/// Pause or resume reading inbound chunks from a `PEER_HTTP_ALPN` / `ALPN` stream (both direct iroh
+/// and `front.sock`), applying natural QUIC/TCP backpressure when the local upstream is slow.
+pub fn DaemonCtx::set_peer_http_read_paused(self : DaemonCtx, sid : Int64, paused : Bool) -> Unit {
+  (self.set_peer_http_read_paused_fn)(sid, paused)
 }
 
 /// Immediately abort and clean up an active `PEER_HTTP_ALPN` stream (both directions).
@@ -1600,6 +1614,8 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       write_in_flight: false,
       finish_pending: false,
       idle_exempt: false,
+      read_paused: false,
+      read_in_flight: true,
     }
     active_peer_http_streams.set(sid, st)
     if role_ready {
@@ -1888,6 +1904,27 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     set_stream_idle_exempt_fn: fn(sid : Int64, exempt : Bool) -> Unit {
       match active_peer_http_streams.get(sid) {
         Some(st) => st.idle_exempt = exempt
+        None => ()
+      }
+    },
+    set_peer_http_read_paused_fn: fn(sid : Int64, paused : Bool) -> Unit {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => {
+          st.read_paused = paused
+          if !paused && !st.read_in_flight && !st.closed && !st.peer_ended {
+            st.read_in_flight = true
+            if st.is_front {
+              let _ = mux_mesh.call_async_raw(
+                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sid),
+                "tcp.read",
+                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+                None,
+              )
+            } else {
+              call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+            }
+          }
+        }
         None => ()
       }
     },
@@ -2993,7 +3030,17 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                         Ok((_, Some(chunk))) => {
                           if chunk.length() > 0 {
                             if deliver_peer_http_data(sid, chunk) {
-                              call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                              match active_peer_http_streams.get(sid) {
+                                Some(pst) => {
+                                  if pst.read_paused {
+                                    pst.read_in_flight = false
+                                  } else {
+                                    pst.read_in_flight = true
+                                    call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                                  }
+                                }
+                                None => ()
+                              }
                             }
                           } else {
                             deliver_peer_http_end(sid)
@@ -4238,12 +4285,22 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 } else if stream_eof {
                                   deliver_peer_http_end(sock_id)
                                 } else {
-                                  let _ = mux_mesh.call_async_raw(
-                                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
-                                    "tcp.read",
-                                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
-                                    None,
-                                  )
+                                  match active_peer_http_streams.get(sock_id) {
+                                    Some(pst) => {
+                                      if pst.read_paused {
+                                        pst.read_in_flight = false
+                                      } else {
+                                        pst.read_in_flight = true
+                                        let _ = mux_mesh.call_async_raw(
+                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                          "tcp.read",
+                                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                          None,
+                                        )
+                                      }
+                                    }
+                                    None => ()
+                                  }
                                 }
                                 return
                               }

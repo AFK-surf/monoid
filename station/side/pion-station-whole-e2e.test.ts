@@ -1022,23 +1022,49 @@ exec ${JSON.stringify(bin)} "$@"
       assert.equal((await hr3.line()).status, 403);
 
       // `socket: true` WebSocket forwarding over `front.sock` (`preview.ts` 5-byte `[kind: u8][len: u32be][payload]` framing)
-      // with `sec-websocket-protocol` negotiation (`r3.echo`), text+binary echo, close frame, AND 48x1MiB backpressure!
+      // with `Origin: http://localhost:<port>` + `Authorization` passthrough, `sec-websocket-protocol: r3.echo`,
+      // 8 x 4 MiB downlink backpressure, AND 24 x 1 MiB slow-upstream uplink backpressure!
       const wsUpstreamHttp = createHttpServer((_req, res) => { res.writeHead(404); res.end(); });
       const wsUpstream = new WebSocketServer({
-        server: wsUpstreamHttp,
+        noServer: true,
+        maxPayload: 32 * 1024 * 1024,
         handleProtocols: (protos) => (protos.has("r3.echo") ? "r3.echo" : false),
       });
       servers.push(wsUpstreamHttp, wsUpstream);
+      await new Promise<void>((r) => wsUpstreamHttp.listen(0, "127.0.0.1", () => r()));
+      const wsUpPort = (wsUpstreamHttp.address() as { port: number }).port;
+
+      wsUpstreamHttp.on("upgrade", (req, socket, head) => {
+        if (req.url === "/ws") {
+          // R5 Item 4: enforce `Origin: http://localhost:<port>` AND `Authorization: Bearer r5-secret`!
+          if (req.headers.origin !== `http://localhost:${wsUpPort}` || req.headers.authorization !== "Bearer r5-secret") {
+            socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            socket.destroy();
+            return;
+          }
+        }
+        wsUpstream.handleUpgrade(req, socket, head, (wsConn) => {
+          wsUpstream.emit("connection", wsConn, req);
+        });
+      });
+
+      let uplinkGotMsgs = 0;
+      let uplinkGotBytes = 0;
+      const uplinkSha = createHash("sha256");
+      let uplinkDoneResolve: (() => void) | null = null;
+      const uplinkDone = new Promise<void>((r) => { uplinkDoneResolve = r; });
+
       wsUpstream.on("connection", (sock, req) => {
-        if (req.url === "/bulk48") {
-          const oneMb = Buffer.alloc(1024 * 1024, 0x5a);
+        if (req.url === "/bulk32") {
+          // R5 Item 2a: 8 x 4 MiB binary WS messages (33,554,432 bytes)
+          const fourMb = Buffer.alloc(4 * 1024 * 1024, 0x5a);
           let idx = 0;
           const sendNext = () => {
-            if (idx >= 48) {
-              sock.close(1000, "bulk-done");
+            if (idx >= 8) {
+              sock.close(1000, "bulk32-done");
               return;
             }
-            const frame = Buffer.from(oneMb);
+            const frame = Buffer.from(fourMb);
             frame[0] = idx & 0xff;
             idx++;
             sock.send(frame, { binary: true }, (err) => {
@@ -1046,6 +1072,25 @@ exec ${JSON.stringify(bin)} "$@"
             });
           };
           sendNext();
+          return;
+        }
+        if (req.url === "/slow-uplink") {
+          // R5 Item 2b: Pause reading underlying TCP socket for 2s to force true uplink backpressure!
+          const rawSock = (sock as any)._socket as import("node:net").Socket | undefined;
+          if (rawSock) {
+            rawSock.pause();
+            setTimeout(() => rawSock.resume(), 2000);
+          }
+          sock.on("message", (data) => {
+            const b = Buffer.from(data as Buffer);
+            uplinkSha.update(b);
+            uplinkGotMsgs++;
+            uplinkGotBytes += b.length;
+            if (uplinkGotMsgs === 24 && uplinkDoneResolve) {
+              uplinkDoneResolve();
+              uplinkDoneResolve = null;
+            }
+          });
           return;
         }
         sock.on("message", (data, isBinary) => {
@@ -1056,20 +1101,21 @@ exec ${JSON.stringify(bin)} "$@"
           }
         });
       });
-      await new Promise<void>((r) => wsUpstreamHttp.listen(0, "127.0.0.1", () => r()));
-      const wsUpPort = (wsUpstreamHttp.address() as { port: number }).port;
 
       const wsStream = await frontHttpConn.openBi();
       await writeLine(wsStream, {
         workspace: ws,
         port: wsUpPort,
         path: "/ws",
-        headers: [["sec-websocket-protocol", "r3.echo"]],
+        headers: [
+          ["sec-websocket-protocol", "r3.echo"],
+          ["authorization", "Bearer r5-secret"],
+        ],
         socket: true,
       });
       const wsReader = new Reader(wsStream);
       const wsHead = await wsReader.line();
-      assert.equal(wsHead.status, 101, `expected 101 for socket:true WS proxy, got ${JSON.stringify(wsHead)}`);
+      assert.equal(wsHead.status, 101, `expected 101 for socket:true WS proxy with localhost origin + auth, got ${JSON.stringify(wsHead)}`);
       const wsProtoHdr = (wsHead.headers as [string, string][]).find(([k]) => k.toLowerCase() === "sec-websocket-protocol");
       assert.equal(wsProtoHdr?.[1], "r3.echo", `expected sec-websocket-protocol=r3.echo, got ${JSON.stringify(wsHead.headers)}`);
       const encodeWsFrame = (kind: number, payload: Buffer) => {
@@ -1078,7 +1124,7 @@ exec ${JSON.stringify(bin)} "$@"
         hdr.writeUInt32BE(payload.length, 1);
         return Buffer.concat([hdr, payload]);
       };
-      await wsStream.write(encodeWsFrame(1, Buffer.from("hello-ws-r4", "utf8")));
+      await wsStream.write(encodeWsFrame(1, Buffer.from("hello-ws-r5", "utf8")));
       await wsStream.write(encodeWsFrame(2, Buffer.from([1, 2, 3, 4])));
       let wsRaw = wsReader.carry;
       const readWsFrameFrom = async (s: typeof wsStream, state: { buf: Buffer }): Promise<{ kind: number; payload: Buffer } | null> => {
@@ -1102,7 +1148,7 @@ exec ${JSON.stringify(bin)} "$@"
       const f1 = await readWsFrameFrom(wsStream, wsState);
       assert.ok(f1);
       assert.equal(f1!.kind, 1);
-      assert.equal(f1!.payload.toString("utf8"), "WS-ECHO:hello-ws-r4");
+      assert.equal(f1!.payload.toString("utf8"), "WS-ECHO:hello-ws-r5");
       const f2 = await readWsFrameFrom(wsStream, wsState);
       assert.ok(f2);
       assert.equal(f2!.kind, 2);
@@ -1112,22 +1158,22 @@ exec ${JSON.stringify(bin)} "$@"
       await wsStream.write(encodeWsFrame(8, closePayload));
       await wsStream.finish();
 
-      // R4 Item 4b: 48 x 1 MiB WS binary flood + 3s client read pause -> 100% SHA-256 intact, 0 reset!
+      // R5 Item 2a: 8 x 4 MiB (> 2 MiB hard cap!) WS binary frames + 2s client read pause -> 100% SHA-256 intact, 0 reset!
       const expWsSha = createHash("sha256");
-      const baseMb = Buffer.alloc(1024 * 1024, 0x5a);
-      for (let i = 0; i < 48; i++) {
-        const f = Buffer.from(baseMb);
+      const base4Mb = Buffer.alloc(4 * 1024 * 1024, 0x5a);
+      for (let i = 0; i < 8; i++) {
+        const f = Buffer.from(base4Mb);
         f[0] = i & 0xff;
         expWsSha.update(f);
       }
       const expWsDigest = expWsSha.digest("hex");
       const wsBulkStream = await frontHttpConn.openBi();
-      await writeLine(wsBulkStream, { workspace: ws, port: wsUpPort, path: "/bulk48", headers: [], socket: true });
+      await writeLine(wsBulkStream, { workspace: ws, port: wsUpPort, path: "/bulk32", headers: [], socket: true });
       const wsBulkReader = new Reader(wsBulkStream);
       const wsBulkHead = await wsBulkReader.line();
       assert.equal(wsBulkHead.status, 101);
-      // Pause reading for 3 seconds to force downlink WS backpressure!
-      await new Promise((r) => setTimeout(r, 3000));
+      // Pause reading for 2 seconds to force 64 KiB chunked downlink WS backpressure!
+      await new Promise((r) => setTimeout(r, 2000));
       const bulkState = { buf: wsBulkReader.carry };
       const actWsSha = createHash("sha256");
       let wsMsgs = 0;
@@ -1143,10 +1189,33 @@ exec ${JSON.stringify(bin)} "$@"
           break;
         }
       }
-      assert.equal(wsMsgs, 48, `expected all 48 x 1MiB WS messages without reset, got ${wsMsgs}`);
-      assert.equal(wsBytes, 48 * 1024 * 1024);
-      assert.equal(actWsSha.digest("hex"), expWsDigest, "48 MiB backpressured WS SHA-256 mismatch");
+      assert.equal(wsMsgs, 8, `expected all 8 x 4MiB WS messages without reset, got ${wsMsgs}`);
+      assert.equal(wsBytes, 8 * 4 * 1024 * 1024);
+      assert.equal(actWsSha.digest("hex"), expWsDigest, "8x4 MiB backpressured WS SHA-256 mismatch");
       await wsBulkStream.finish();
+
+      // R5 Item 2b: True uplink backpressure — local WS pauses reading 2s while client pushes 24 x 1 MiB frames -> 100% received, 0 reset!
+      const expUpSha = createHash("sha256");
+      const base1Mb = Buffer.alloc(1024 * 1024, 0x3c);
+      const wsUpStream = await frontHttpConn.openBi();
+      await writeLine(wsUpStream, { workspace: ws, port: wsUpPort, path: "/slow-uplink", headers: [], socket: true });
+      const wsUpReader = new Reader(wsUpStream);
+      const wsUpHead = await wsUpReader.line();
+      assert.equal(wsUpHead.status, 101);
+      for (let i = 0; i < 24; i++) {
+        const f = Buffer.from(base1Mb);
+        f[0] = i & 0xff;
+        expUpSha.update(f);
+        await wsUpStream.write(encodeWsFrame(2, f));
+      }
+      await Promise.race([
+        uplinkDone,
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`uplink backpressure timeout: got ${uplinkGotMsgs}/24 (${uplinkGotBytes}B)`)), 20_000)),
+      ]);
+      assert.equal(uplinkGotMsgs, 24);
+      assert.equal(uplinkGotBytes, 24 * 1024 * 1024);
+      assert.equal(uplinkSha.digest("hex"), expUpSha.digest("hex"), "24x1 MiB uplink backpressured WS SHA-256 mismatch");
+      await wsUpStream.finish();
 
       // 16 MiB `tcp: true` backpressure test over `front.sock`: client pauses reading for 2.5s ->
       // MUST receive 100% of 16 MiB bytes with matching SHA-256 and zero stream reset!
@@ -1278,16 +1347,22 @@ exec ${JSON.stringify(bin)} "$@"
   extraPids.push(liveJobPid);
   assert.equal(isAlive(liveJobPid), true, `job pid ${liveJobPid} should be alive before SIGUSR2`);
 
-  // R4 Item 7: Seed a real `stillfail-runner` protocol Unix socket + complete valid descriptor
-  // (`id`, `runner`, `pid`, `pgid`, `startedAt`, `socket`) before `SIGUSR2` handover and assert the
-  // successor actively connects, sends `{"op":"attach"}`, receives post-handover output, and sends `{"op":"ack"}`!
+  // R5 Item 1: Seed ONE claimed runner (`claude-sess-unicode-1`, owned by `sess-unicode-1`) AND
+  // ONE bystander runner (`claude-bystander-unclaimed`, owned by NO session) before `SIGUSR2` handover.
+  // Assert: (1) ONLY claimed runner is attached, bystander is NOT; (2) output is persisted & exposed
+  // via `GET /sessions/sess-unicode-1`; (3) `ack` carries `keep` and is sent AFTER persistence!
   const liveRunnerProc = spawn("sleep", ["30"], { stdio: "ignore" });
-  children.push(liveRunnerProc);
+  const bystanderProc = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(liveRunnerProc, bystanderProc);
   assert.ok(liveRunnerProc.pid && liveRunnerProc.pid > 1);
+  assert.ok(bystanderProc.pid && bystanderProc.pid > 1);
   mkdirSync(join(data, "run", "runners"), { recursive: true });
   const runnerSockPath = join(data, "run", "runners", "claude-sess-unicode-1.sock");
+  const bystanderSockPath = join(data, "run", "runners", "claude-bystander-unclaimed.sock");
   let runnerAttached = false;
   let runnerAckOut = 0;
+  let runnerAckKeep: number | null = null;
+  let bystanderAttached = false;
   const runnerSrv = createNetServer((sock) => {
     let buf = "";
     sock.on("data", (d) => {
@@ -1304,14 +1379,20 @@ exec ${JSON.stringify(bin)} "$@"
             sock.write(JSON.stringify({ op: "out", stream: "out", at: 0, data: postLine.toString("base64") }) + "\n");
           } else if (msg.op === "ack" && typeof msg.out === "number") {
             runnerAckOut = msg.out;
+            runnerAckKeep = typeof msg.keep === "number" ? msg.keep : null;
           }
         }
         nl = buf.indexOf("\n");
       }
     });
   });
-  servers.push(runnerSrv);
+  const bystanderSrv = createNetServer((sock) => {
+    bystanderAttached = true;
+    sock.destroy();
+  });
+  servers.push(runnerSrv, bystanderSrv);
   await new Promise<void>((r) => runnerSrv.listen(runnerSockPath, () => r()));
+  await new Promise<void>((r) => bystanderSrv.listen(bystanderSockPath, () => r()));
   writeFileSync(
     join(data, "run", "runners", "claude-sess-unicode-1.json"),
     JSON.stringify({
@@ -1321,6 +1402,17 @@ exec ${JSON.stringify(bin)} "$@"
       pgid: liveRunnerProc.pid,
       startedAt: Date.now(),
       socket: runnerSockPath,
+    }) + "\n",
+  );
+  writeFileSync(
+    join(data, "run", "runners", "claude-bystander-unclaimed.json"),
+    JSON.stringify({
+      id: "claude-bystander-unclaimed",
+      runner: bystanderProc.pid,
+      pid: bystanderProc.pid,
+      pgid: bystanderProc.pid,
+      startedAt: Date.now(),
+      socket: bystanderSockPath,
     }) + "\n",
   );
 
@@ -1335,11 +1427,13 @@ exec ${JSON.stringify(bin)} "$@"
   assert.notEqual(pid2, pid1);
 
   // CRITICAL: job & native runner started before `SIGUSR2` MUST STILL BE ALIVE,
-  // and successor MUST reconnect to runner Unix socket (`attach` -> `out` -> `ack`)!
+  // claimed runner MUST receive `attach` + `ack` with `keep`, bystander MUST NOT be attached!
   assert.equal(isAlive(liveJobPid), true, `running job pid ${liveJobPid} was killed during SIGUSR2 handover!`);
   assert.equal(isAlive(liveRunnerProc.pid), true, `native runner pid ${liveRunnerProc.pid} was killed during SIGUSR2 handover!`);
-  await until("successor reconnected to adopted runner socket and acked post-handover output", () => runnerAttached && runnerAckOut >= 28, 10_000);
+  await until("successor reconnected to adopted runner socket and acked with keep", () => runnerAttached && runnerAckOut >= 28 && runnerAckKeep === 0, 10_000);
+  assert.equal(bystanderAttached, false, "unclaimed bystander runner MUST NOT be attached");
   liveRunnerProc.kill("SIGKILL");
+  bystanderProc.kill("SIGKILL");
 
   await until("new whole_daemon MCP ready after handover", async () => {
     const r = await mcpCall(bearerToken, "job_list", {});
@@ -1357,6 +1451,14 @@ exec ${JSON.stringify(bin)} "$@"
 
   const { conn: adminConn2, helloReply: hello2 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello2?.ok, true);
+  // R5 Item 1: Verify post-handover adopted runner output is persisted & exposed via `GET /sessions/sess-unicode-1`!
+  const sessAfter = await adminCall(adminConn2, "GET", "/sessions/sess-unicode-1");
+  assert.equal(sessAfter.status, 200, sessAfter.body.toString("utf8"));
+  const sessAfterJson = JSON.parse(sessAfter.body.toString("utf8"));
+  assert.ok(
+    Array.isArray(sessAfterJson.adoptedOutput) && sessAfterJson.adoptedOutput.some((s: string) => s.includes("post-handover-runner-output")),
+    `expected adoptedOutput to contain post-handover-runner-output, got: ${JSON.stringify(sessAfterJson)}`,
+  );
   const archResp = await adminCall(adminConn2, "POST", "/sessions/sess-unicode-1/archive");
   assert.equal(archResp.status, 200, archResp.body.toString("utf8"));
   await adminConn2.close(0, "done");
@@ -1715,6 +1817,27 @@ test("W16B.9: Real personal lock (onPersonalLock) rejects app device removed fro
 
   wd2.sendCtrl({ op: "stop" });
   assert.equal(await wd2.waitExit(), 0, wd2.stderr());
+
+  // R5 Item 3: Transactional persistence of personal lock chain — block `mesh/person-chains.json`
+  // as a directory so `save_person_chains()` fails -> `hello` MUST be refused (`ok !== true`) and dir stays empty!
+  const data3 = freshDir("person-lock-persist-fail");
+  seedWholeDataDir(data3, stSeed, stationId, epGood.id(), drive, ws, grantKeys);
+  writeFileSync(join(data3, "mesh/lock.json"), JSON.stringify({ entries: [wsGen, wsBind] }), { mode: 0o600 });
+  mkdirSync(join(data3, "mesh/person-chains.json"), { recursive: true });
+
+  const wd3 = startWholeDaemon(bin, data3);
+  await until("ready persist-fail", () => wd3.messages.find((m) => m.ready === true));
+  const meshAddr3 = await until("mesh bound persist-fail", () => wd3.meshAddr());
+  const failPersistRes = await openAdminConn(epGood, stationId, meshAddr3, jwtGood, {
+    device: firstDev.base.hex,
+    proof: firstDev.base.sign(endpointBytes(ws, epGood.id())),
+    person: personalChain,
+  });
+  assert.notEqual(failPersistRes.helloReply?.ok, true, `hello MUST fail when person-chains.json cannot persist, got: ${JSON.stringify(failPersistRes.helloReply)}`);
+  assert.equal(readdirSync(join(data3, "mesh/person-chains.json")).length, 0);
+  await failPersistRes.conn.close(0, "done");
+  wd3.sendCtrl({ op: "stop" });
+  assert.equal(await wd3.waitExit(), 0, wd3.stderr());
 });
 
 test("W16B.10: Per-workspace Drive isolation (joined workspace own root 200, empty 403, relative path rejected) + Drive upload atomic protection (fixed CL & no-CL overflow)", { skip: process.platform === "win32" }, async () => {
@@ -1787,7 +1910,7 @@ test("W16B.10: Per-workspace Drive isolation (joined workspace own root 200, emp
         roots: [homeDrive, "relative/ignored-root"],
         workspaces: {
           [wsJoinedEmpty]: [],
-          [wsJoinedOwn]: [joinedOwnDrive, "relative/joined-ignored"],
+          [wsJoinedOwn]: [joinedOwnDrive, "relative/joined-ignored", "\\win-slash", "C:\\win-drive"],
         },
       },
     }) + "\n",
@@ -1807,6 +1930,10 @@ test("W16B.10: Per-workspace Drive isolation (joined workspace own root 200, emp
   assert.equal(rOwnOk.body.toString("utf8"), "JOINED8!");
   const rOwnRel = await adminCall(jOwnConn.conn, "GET", `/drive/read?root=${encodeURIComponent("relative/joined-ignored")}&path=own.txt&offset=0&length=64`);
   assert.equal(rOwnRel.status, 403, `relative drive root must be rejected with 403, got ${rOwnRel.status}`);
+  const rWinSlash = await adminCall(jOwnConn.conn, "GET", `/drive/read?root=${encodeURIComponent("\\win-slash")}&path=own.txt&offset=0&length=64`);
+  assert.equal(rWinSlash.status, 403, `Unix host must reject backslash root with 403, got ${rWinSlash.status}`);
+  const rWinDrive = await adminCall(jOwnConn.conn, "GET", `/drive/read?root=${encodeURIComponent("C:\\win-drive")}&path=own.txt&offset=0&length=64`);
+  assert.equal(rWinDrive.status, 403, `Unix host must reject Windows drive-letter root with 403, got ${rWinDrive.status}`);
   await jOwnConn.conn.close(0, "done");
 
   // 1b. Joined workspace with empty drive.workspaces[wsJoinedEmpty] = [] MUST get 403 for homeDrive, $HOME, and empty root!
@@ -1956,15 +2083,21 @@ exec ${JSON.stringify(bin)} "$@"
   };
   const pid1 = await until("pid1 ready", () => readHubPid(), 15_000);
   await until("DB open before blocking handover path", () => existsSync(join(data, "stillfail.db")), 10_000);
+  // R5 Item 6: Wait until launcher logs confirm `pid1` has taken over before triggering `SIGUSR2`!
+  await until(`launcher confirms Node ${pid1} has taken over`, () => logs.includes(`Node ${pid1} has taken over`), 15_000);
 
   // Block `run/whole-handover.json` by creating a directory at that exact path so `write_private` fails!
   mkdirSync(join(data, "run/whole-handover.json"), { recursive: true });
   process.kill(lc.pid!, "SIGUSR2");
 
   await until("launcher writes run/handoff-failed", () => existsSync(join(data, "run/handoff-failed")), 15_000);
-  const takenMatches = logs.match(/has taken over/g) ?? [];
-  assert.equal(takenMatches.length, 1, `successor MUST NOT take over (only initial pid1 should have taken over)! logs:\n${logs}`);
-  assert.ok(logs.includes("did not take over"), `expected launcher 'did not take over' log; logs:\n${logs}`);
+  const pid2Match = /handover: Pion (\d+) started beside/.exec(logs);
+  assert.ok(pid2Match, `expected successor pid2 in launcher logs; logs:\n${logs}`);
+  const pid2Num = Number(pid2Match![1]);
+  assert.notEqual(pid2Num, pid1);
+  assert.ok(logs.includes(`Node ${pid1} has taken over`), `expected pid1 taken over; logs:\n${logs}`);
+  assert.ok(logs.includes(`Node ${pid2Num} did not take over`), `expected successor Node ${pid2Num} did not take over; logs:\n${logs}`);
+  assert.equal(logs.includes(`Node ${pid2Num} has taken over`), false, `successor Node ${pid2Num} MUST NOT take over; logs:\n${logs}`);
 
   lc.kill("SIGTERM");
   await new Promise((r) => lc.once("exit", () => r(undefined)));

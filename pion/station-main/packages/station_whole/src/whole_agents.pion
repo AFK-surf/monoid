@@ -214,6 +214,10 @@ pub struct WholeAgents {
   pub mcp : station_tools::McpServer
   pub jobs : station_jobs::JobManager
   pub mut bound_to_workspace : Bool
+  pub adopted_session_by_runner_id : Map[String, String]
+  pub adopted_runner_output : Map[String, Array[String]]
+  pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
+  job_fs : station_jobs::FsPort
   active_tokens : Array[(String, String)]
   revoked_tokens : Map[String, Bool]
   session_runtimes : Map[String, String]
@@ -244,6 +248,10 @@ pub fn WholeAgents::new_with_deps(
     mcp: station_tools::McpServer::new(),
     jobs: jobs,
     bound_to_workspace: true,
+    adopted_session_by_runner_id: Map::new(),
+    adopted_runner_output: Map::new(),
+    adopted_runner_exits: Map::new(),
+    job_fs: fs,
     active_tokens: [],
     revoked_tokens: Map::new(),
     session_runtimes: Map::new(),
@@ -769,6 +777,7 @@ pub fn WholeAgents::adopt_sessions(
     Err(e) => return Err(e)
   }
   self.drivers.adoption = station_drivers::RunnerAdoptionMachine::new(runners)
+  self.adopted_session_by_runner_id.clear()
   let rows_map : Map[String, station_sessions::HubSessionRow] = Map::new()
   let adopt_ok : Map[String, Bool] = Map::new()
   for i in 0..<snapshots.length() {
@@ -805,7 +814,10 @@ pub fn WholeAgents::adopt_sessions(
             Some(rk) => {
               let rid = station_drivers::runner_id(rk, row.key)
               match self.drivers.adoption.adopt_once(rid) {
-                Ok(_) => true
+                Ok(_) => {
+                  self.adopted_session_by_runner_id.set(rid, row.key)
+                  true
+                }
                 Err(_) => false
               }
             }
@@ -824,7 +836,92 @@ pub fn WholeAgents::adopt_sessions(
       Err(e) => return Err("get_session during adopt failed: " + e.message)
     }
   }
+  // Also claim live non-terminal runners belonging to existing non-archived SQLite sessions
+  // (e.g. sessions whose actor was lazy before handover); bystander runners with no owning
+  // session are NEVER claimed!
+  let known_keys = self.session_runtimes.keys()
+  for ki in 0..<known_keys.length() {
+    let skey = known_keys[ki]
+    let rt = match self.session_runtimes.get(skey) {
+      Some(r) => r
+      None => ""
+    }
+    match station_drivers::runtime_kind_from_str(rt) {
+      Some(rk) => {
+        let rid = station_drivers::runner_id(rk, skey)
+        if self.adopted_session_by_runner_id.get(rid).is_none() {
+          match self.drivers.adoption.adopt_once(rid) {
+            Ok(_) => self.adopted_session_by_runner_id.set(rid, skey)
+            Err(_) => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
   Ok(self.hub.adopt(snapshots, rows_map, adopt_ok, now_ms))
+}
+
+/// Persist and record post-handover output delivered from an adopted runner for `session_key`.
+/// Caller MUST invoke this BEFORE advancing `acked_out`/`acked_err` or sending `ack` to the runner!
+pub fn WholeAgents::record_adopted_runner_output(
+  self : WholeAgents,
+  session_key : String,
+  runner_id : String,
+  stream : String,
+  at : Int64,
+  payload : Bytes,
+) -> Result[Unit, String] {
+  let sep = self.job_fs.sep
+  let safe_key = station_drivers::key_part(session_key)
+  let sdir = self.config.data_dir + sep + "sessions" + sep + safe_key
+  if !(self.job_fs.mkdir_p)(sdir) {
+    return Err("mkdir session dir failed: " + sdir)
+  }
+  let log_path = sdir + sep + "runner-output.jsonl"
+  let text = payload.to_string()
+  let rec = base_codec::json_stringify(base_codec::json_obj([
+    ("runner", base_codec::json_str(runner_id)),
+    ("stream", base_codec::json_str(stream)),
+    ("at", base_codec::json_int64(at)),
+    ("text", base_codec::json_str(text)),
+  ])) + "\n"
+  let existing = match (self.job_fs.read_file)(log_path) {
+    Some(s) => s
+    None => ""
+  }
+  if !(self.job_fs.write_file)(log_path, (existing + rec).to_bytes()) {
+    return Err("persist runner output failed: " + log_path)
+  }
+  let arr = match self.adopted_runner_output.get(session_key) {
+    Some(a) => a
+    None => {
+      let fresh : Array[String] = []
+      self.adopted_runner_output.set(session_key, fresh)
+      fresh
+    }
+  }
+  if arr.length() >= 256 {
+    let trimmed : Array[String] = []
+    for i in 1..<arr.length() {
+      trimmed.push(arr[i])
+    }
+    trimmed.push(text)
+    self.adopted_runner_output.set(session_key, trimmed)
+  } else {
+    arr.push(text)
+  }
+  Ok(())
+}
+
+/// Record clean exit status of an adopted runner for `session_key`.
+pub fn WholeAgents::record_adopted_runner_exit(
+  self : WholeAgents,
+  session_key : String,
+  code : Option[Int],
+  signal : Option[String],
+) -> Unit {
+  self.adopted_runner_exits.set(session_key, (code, signal))
 }
 
 /// Build a real OS driver launch spec for any of the 10 CLI coding-agent runtimes using

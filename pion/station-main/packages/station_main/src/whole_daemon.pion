@@ -53,7 +53,11 @@ let WHOLE_MAX_ADMIN_HEAD : Int = 65536
 let WHOLE_MAX_PROXY_HEAD : Int = 262144
 let WHOLE_MAX_HTTP_BODY : Int64 = 4194304L
 let WHOLE_MAX_PRE_CONNECT_BODY : Int = 1048576
-let WHOLE_MAX_UPSTREAM_WRITE_Q : Int = 2097152
+let WHOLE_MAX_UPSTREAM_WRITE_Q : Int = 18874368 // 18 MiB hard cap (16 MiB legal WS frame + headroom)
+let WHOLE_UPSTREAM_READ_PAUSE_HIGH : Int = 524288 // 512 KiB pause inbound mesh read
+let WHOLE_UPSTREAM_READ_PAUSE_LOW : Int = 131072 // 128 KiB resume inbound mesh read
+let WHOLE_WS_DOWNSTREAM_CHUNK : Int = 65536 // 64 KiB chunking for large WS frames
+let WHOLE_RUNNER_MAX_LINE_BYTES : Int = 8388608 // 8 MiB max NDJSON line from runner
 let WHOLE_DRIVE_READ_CHUNK : Int = 65536
 let WHOLE_UPKEEP_EVERY_MS : Int64 = 600000L
 
@@ -78,9 +82,12 @@ let RUNNER_TOK_UNIX_CLOSE : Int = 5104
 
 struct AdoptedRunnerConn {
   runner_id : String
+  session_key : String
   socket_path : String
+  keep_from : Int64
   mut sock_id : Int64
-  mut rx_buf : String
+  mut rx_chunks : Array[Bytes]
+  mut rx_total_bytes : Int
   mut acked_out : Int64
   mut acked_err : Int64
   mut lines_received : Int
@@ -178,6 +185,10 @@ struct ProxyStreamState {
   mut tcp_write_in_flight : Bool
   mut tcp_end_pending : Bool
   mut tcp_read_paused : Bool
+  mut downstream_pending : Array[Bytes]
+  mut downstream_pending_idx : Int
+  mut downstream_finish_after : Bool
+  mut mesh_read_paused : Bool
 }
 
 struct WholeDriveRpcPutState {
@@ -251,18 +262,21 @@ fn parse_str_arr_json(j_opt : Option[base_codec::Json]) -> Array[String] {
   out
 }
 
-fn is_abs_drive_root(p : String) -> Bool {
+fn is_abs_drive_root(p : String, is_win : Bool) -> Bool {
   if p.length() == 0 {
     return false
   }
-  let c0 = p.code_unit_at(0) & 0xFF
-  if c0 == 47 || c0 == 92 {
+  if !is_win {
+    return p.starts_with("/")
+  }
+  let c0 = p.code_unit_at(0)
+  if p.length() >= 2 && c0 == 92 && p.code_unit_at(1) == 92 {
     return true
   }
   if p.length() >= 3 {
     let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
-    let c1 = p.code_unit_at(1) & 0xFF
-    let c2 = p.code_unit_at(2) & 0xFF
+    let c1 = p.code_unit_at(1)
+    let c2 = p.code_unit_at(2)
     if is_alpha && c1 == 58 && (c2 == 47 || c2 == 92) {
       return true
     }
@@ -271,13 +285,14 @@ fn is_abs_drive_root(p : String) -> Bool {
 }
 
 fn clean_abs_drive_roots(raw : Array[String]) -> Array[String] {
-  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let is_win = station_sys::os_name() == "win32"
+  let sep = if is_win { "\\" } else { "/" }
   let out : Array[String] = []
   for i in 0..<raw.length() {
     let t = raw[i].trim()
-    if is_abs_drive_root(t) {
+    if is_abs_drive_root(t, is_win) {
       let norm = nodepath::join(sep, [t])
-      if is_abs_drive_root(norm) && !str_in_arr(out, norm) {
+      if is_abs_drive_root(norm, is_win) && !str_in_arr(out, norm) {
         out.push(norm)
       }
     }
@@ -477,16 +492,18 @@ fn find_kept_person_chain(cloud : station_cloud::CloudStore, pin : String) -> Op
   None
 }
 
-/// Upsert `(pin, entries)` into `CloudStore::person_chains` and persist to `<data>/mesh/person-chains.json`.
+/// Transactionally upsert `(pin, entries)` into `CloudStore::person_chains` and persist to disk.
+/// Rolls back in-memory state and returns `Err` if `save_person_chains()` fails.
 fn upsert_and_save_person_chain(
   cloud : station_cloud::CloudStore,
   pin : String,
   entries : Array[form::Json],
-) -> Unit {
+) -> Result[Unit, String] {
+  let prev = cloud.person_chains
   let updated : Array[(String, Array[form::Json])] = []
   let mut found = false
-  for i in 0..<cloud.person_chains.length() {
-    let (g, es) = cloud.person_chains[i]
+  for i in 0..<prev.length() {
+    let (g, es) = prev[i]
     if g == pin {
       updated.push((pin, entries))
       found = true
@@ -498,7 +515,13 @@ fn upsert_and_save_person_chain(
     updated.push((pin, entries))
   }
   cloud.set_person_chains(updated)
-  let _ = cloud.save_person_chains()
+  match cloud.save_person_chains() {
+    Ok(_) => Ok(())
+    Err(e) => {
+      cloud.set_person_chains(prev)
+      Err("failed to persist personal lock chain: " + e)
+    }
+  }
 }
 
 /// Evaluate personal lock (`station/src/mesh/serve.ts:705-732` `onPersonalLock`):
@@ -572,9 +595,12 @@ fn verify_on_personal_lock(
   }
   match lock::admit_person(ls, sub, endpoint, lock_base, lock_proof, chosen, crypto_adapter) {
     Ok((_, lock_role, _)) => {
-      // Persist the winning fork-choice chain if brought entries were provided or chain grew/changed.
+      // Transactionally persist the winning fork-choice chain before admitting `hello`!
       if brought_opt is Some(_) {
-        upsert_and_save_person_chain(cloud, pin, chosen)
+        match upsert_and_save_person_chain(cloud, pin, chosen) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
       }
       Ok(lock_role)
     }
@@ -2074,6 +2100,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     pstream.tcp_write_in_flight = false
     pstream.tcp_end_pending = false
     pstream.tcp_read_paused = false
+    pstream.downstream_pending = []
+    pstream.downstream_pending_idx = 0
+    pstream.downstream_finish_after = false
+    if pstream.mesh_read_paused {
+      pstream.mesh_read_paused = false
+      ctx.set_peer_http_read_paused(pstream.sid, false)
+    }
     if pstream.local_sock >= 0L {
       let lsid = pstream.local_sock
       pstream.local_sock = -1L
@@ -2087,7 +2120,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
   }
 
-  // Serialized upstream TCP writer (max 1 in-flight `tcp.write` per local socket + bounded queue cap).
+  // Serialized upstream TCP writer (max 1 in-flight `tcp.write` per local socket + true inbound mesh read-pause backpressure).
   let enqueue_proxy_tcp_write = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState, data : Bytes) -> Unit {
     if data.length() == 0 || pstream.local_sock < 0L {
       return
@@ -2101,6 +2134,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
       pstream.tcp_write_queue.push(data)
       pstream.tcp_write_queue_bytes = pstream.tcp_write_queue_bytes + data.length()
+      if !pstream.mesh_read_paused && pstream.tcp_write_queue_bytes >= WHOLE_UPSTREAM_READ_PAUSE_HIGH {
+        pstream.mesh_read_paused = true
+        ctx.set_peer_http_read_paused(pstream.sid, true)
+      }
     } else {
       pstream.tcp_write_in_flight = true
       let _ = ctx.mux_role.call_async_raw(
@@ -2132,7 +2169,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     if pstream.local_sock < 0L {
       return
     }
-    if ctx.peer_http_write_queued_bytes(pstream.sid) >= PEER_HTTP_WRITE_HIGH_WATER {
+    if pstream.downstream_pending_idx < pstream.downstream_pending.length()
+    || ctx.is_peer_http_write_paused(pstream.sid)
+    {
       pstream.tcp_read_paused = true
       return
     }
@@ -2143,6 +2182,57 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
       None,
     )
+  }
+
+  let pump_proxy_downstream = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState) -> Unit {
+    while pstream.downstream_pending_idx < pstream.downstream_pending.length() {
+      if ctx.is_peer_http_write_paused(pstream.sid) {
+        pstream.tcp_read_paused = true
+        return
+      }
+      let piece = pstream.downstream_pending[pstream.downstream_pending_idx]
+      pstream.downstream_pending_idx = pstream.downstream_pending_idx + 1
+      ctx.write_peer_http_chunk(pstream.sid, piece)
+    }
+    if pstream.downstream_pending.length() > 0 {
+      pstream.downstream_pending = []
+      pstream.downstream_pending_idx = 0
+    }
+    if pstream.downstream_finish_after {
+      pstream.downstream_finish_after = false
+      ctx.finish_peer_http(pstream.sid)
+      close_proxy_local_resources(ctx, st, pstream)
+      pstream.mode = ProxyStreamMode::Done
+      return
+    }
+    if pstream.tcp_read_paused && pstream.local_sock >= 0L
+    && ctx.peer_http_write_queued_bytes(pstream.sid) <= PEER_HTTP_WRITE_LOW_WATER
+    {
+      issue_proxy_tcp_read_or_pause(ctx, pstream)
+    }
+  }
+
+  // Enqueue a potentially large downstream WS frame (up to 16 MiB) in 64 KiB slices so it NEVER
+  // trips `PEER_HTTP_WRITE_HARD_CAP` (2 MiB) and naturally pauses upstream `tcp.read` on backpressure.
+  let enqueue_proxy_downstream_chunked = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    pstream : ProxyStreamState,
+    data : Bytes,
+    finish_after : Bool,
+  ) -> Unit {
+    let n = data.length()
+    let mut off = 0
+    while off < n {
+      let end = if off + WHOLE_WS_DOWNSTREAM_CHUNK < n { off + WHOLE_WS_DOWNSTREAM_CHUNK } else { n }
+      let piece = if off == 0 && end == n { data } else { slice_bytes_local(data, off, end) }
+      pstream.downstream_pending.push(piece)
+      off = end
+    }
+    if finish_after {
+      pstream.downstream_finish_after = true
+    }
+    pump_proxy_downstream(ctx, st, pstream)
   }
 
   let ws_random_mask = fn() -> UInt {
@@ -2185,13 +2275,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     sb.write_string(port.to_string())
     sb.write_string("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ")
     sb.write_string(ws_key)
-    sb.write_string("\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1:")
+    sb.write_string("\r\nSec-WebSocket-Version: 13\r\nOrigin: http://localhost:")
     sb.write_string(port.to_string())
     sb.write_string("\r\n")
     for hi in 0..<headers.length() {
       let (hk, hv) = headers[hi]
       let kl = mesh_wire::ascii_lower(hk)
-      if kl == "sec-websocket-protocol" || kl == "cookie" || kl == "user-agent" {
+      if kl == "sec-websocket-protocol" || kl == "cookie" || kl == "user-agent" || kl == "authorization" {
         sb.write_string(hk)
         sb.write_string(": ")
         sb.write_string(hv)
@@ -2281,10 +2371,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       match dec.next_message() {
         Ok(None) => break
         Ok(Some(websocket::Message::Text(txt))) => {
-          ctx.write_peer_http_chunk(pstream.sid, encode_ws_proxy_frame(WS_FRAME_TEXT, txt.to_bytes()))
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_TEXT, txt.to_bytes()), false)
         }
         Ok(Some(websocket::Message::Binary(bin))) => {
-          ctx.write_peer_http_chunk(pstream.sid, encode_ws_proxy_frame(WS_FRAME_BINARY, bin))
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_BINARY, bin), false)
         }
         Ok(Some(websocket::Message::Ping(payload))) => {
           let pong_b = websocket::encode_message(websocket::Message::Pong(payload), Some(ws_random_mask()))
@@ -2303,10 +2393,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           for ri in 0..<rb.length() {
             payload[2 + ri] = rb[ri]
           }
-          ctx.write_peer_http_chunk(pstream.sid, encode_ws_proxy_frame(WS_FRAME_CLOSE, payload))
-          ctx.finish_peer_http(pstream.sid)
-          close_proxy_local_resources(ctx, st, pstream)
-          pstream.mode = ProxyStreamMode::Done
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_CLOSE, payload), true)
           return
         }
         Err(_) => {
@@ -2612,45 +2699,107 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     }
                     return
                   }
-                  rconn.rx_buf = rconn.rx_buf + bytes_to_str_local(chunk, chunk.length())
-                  while true {
-                    let nl = find_newline_byte(rconn.rx_buf.to_bytes())
+                  // O(n) raw-byte NDJSON line assembly (no UTF-8 split corruption, bounded to 8 MiB/line).
+                  let mut scan_from = 0
+                  let mut cur_chunk = chunk
+                  while scan_from < cur_chunk.length() {
+                    let mut nl = -1
+                    for bi in scan_from..<cur_chunk.length() {
+                      if (cur_chunk[bi].to_int() & 0xFF) == 10 {
+                        nl = bi
+                        break
+                      }
+                    }
                     if nl < 0 {
+                      let rem = if scan_from == 0 {
+                        cur_chunk
+                      } else {
+                        slice_bytes_local(cur_chunk, scan_from, cur_chunk.length())
+                      }
+                      if rconn.rx_total_bytes + rem.length() > WHOLE_RUNNER_MAX_LINE_BYTES {
+                        ctx.log("adopted runner line exceeded 8 MiB cap (" + rconn.runner_id + "): closing")
+                        rconn.exited = true
+                        break
+                      }
+                      rconn.rx_chunks.push(rem)
+                      rconn.rx_total_bytes = rconn.rx_total_bytes + rem.length()
                       break
                     }
-                    let line_b = rconn.rx_buf.to_bytes()
-                    let line = bytes_to_str_local(line_b, nl)
-                    let rem_b = slice_bytes_local(line_b, nl + 1, line_b.length())
-                    rconn.rx_buf = bytes_to_str_local(rem_b, rem_b.length())
+                    let tail_part = slice_bytes_local(cur_chunk, scan_from, nl)
+                    scan_from = nl + 1
+                    let total_line_len = rconn.rx_total_bytes + tail_part.length()
+                    if total_line_len > WHOLE_RUNNER_MAX_LINE_BYTES {
+                      ctx.log("adopted runner line exceeded 8 MiB cap (" + rconn.runner_id + "): closing")
+                      rconn.rx_chunks = []
+                      rconn.rx_total_bytes = 0
+                      rconn.exited = true
+                      break
+                    }
+                    let line_bytes = if rconn.rx_chunks.length() == 0 {
+                      tail_part
+                    } else {
+                      let merged = Bytes::new(total_line_len)
+                      let mut pos = 0
+                      for ci in 0..<rconn.rx_chunks.length() {
+                        let c = rconn.rx_chunks[ci]
+                        for bi in 0..<c.length() {
+                          merged[pos + bi] = c[bi]
+                        }
+                        pos = pos + c.length()
+                      }
+                      for bi in 0..<tail_part.length() {
+                        merged[pos + bi] = tail_part[bi]
+                      }
+                      rconn.rx_chunks = []
+                      rconn.rx_total_bytes = 0
+                      merged
+                    }
+                    let line = bytes_to_str_local(line_bytes, line_bytes.length())
                     if line.trim().length() == 0 {
                       continue
                     }
                     match station_drivers::decode_runner_frame(line) {
                       Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
-                        let end_pos = at + payload.length().to_int64()
-                        if stream == "err" {
-                          if end_pos > rconn.acked_err {
-                            rconn.acked_err = end_pos
+                        // Persist and deliver to owning session FIRST; NEVER advance offsets or send ACK on failure!
+                        match st.core.agents.record_adopted_runner_output(
+                          rconn.session_key,
+                          rconn.runner_id,
+                          stream,
+                          at,
+                          payload,
+                        ) {
+                          Ok(_) => {
+                            let end_pos = at + payload.length().to_int64()
+                            if stream == "err" {
+                              if end_pos > rconn.acked_err {
+                                rconn.acked_err = end_pos
+                              }
+                            } else if end_pos > rconn.acked_out {
+                              rconn.acked_out = end_pos
+                            }
+                            rconn.lines_received = rconn.lines_received + 1
+                            // Send ACK with `keep` so native `stillfail-runner` preserves active turn stdout!
+                            let ack_line = station_drivers::encode_runner_ack(
+                              rconn.acked_out,
+                              rconn.acked_err,
+                              Some(rconn.keep_from),
+                            ) + "\n"
+                            if rconn.sock_id >= 0L {
+                              let _ = ctx.mux_role.call_async_raw(
+                                builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                                "tcp.write",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                                Some(ack_line.to_bytes()),
+                              )
+                            }
                           }
-                        } else if end_pos > rconn.acked_out {
-                          rconn.acked_out = end_pos
-                        }
-                        rconn.lines_received = rconn.lines_received + 1
-                        let ack_json = base_codec::json_stringify(base_codec::json_obj([
-                          ("op", base_codec::json_str("ack")),
-                          ("out", base_codec::json_int64(rconn.acked_out)),
-                          ("err", base_codec::json_int64(rconn.acked_err)),
-                        ])) + "\n"
-                        if rconn.sock_id >= 0L {
-                          let _ = ctx.mux_role.call_async_raw(
-                            builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
-                            "tcp.write",
-                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
-                            Some(ack_json.to_bytes()),
-                          )
+                          Err(pe) => {
+                            ctx.log("failed to persist adopted runner output (" + rconn.runner_id + "): " + pe)
+                          }
                         }
                       }
-                      Some(station_drivers::RunnerFrame::Exit(_, _)) => {
+                      Some(station_drivers::RunnerFrame::Exit(code_opt, sig_opt)) => {
+                        st.core.agents.record_adopted_runner_exit(rconn.session_key, code_opt, sig_opt)
                         rconn.exited = true
                         if rconn.sock_id >= 0L {
                           let usid = rconn.sock_id
@@ -2667,6 +2816,18 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       }
                       _ => ()
                     }
+                  }
+                  if rconn.exited && rconn.sock_id >= 0L {
+                    let usid = rconn.sock_id
+                    rconn.sock_id = -1L
+                    st.adopted_runner_by_sock.remove(usid)
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_CLOSE, usid),
+                      "tcp.close",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                      None,
+                    )
+                    return
                   }
                   if !rconn.exited && rconn.sock_id >= 0L {
                     let _ = ctx.mux_role.call_async_raw(
@@ -2827,6 +2988,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     if pstream.tcp_write_queue_bytes < 0 {
                       pstream.tcp_write_queue_bytes = 0
                     }
+                    if pstream.mesh_read_paused && pstream.tcp_write_queue_bytes <= WHOLE_UPSTREAM_READ_PAUSE_LOW {
+                      pstream.mesh_read_paused = false
+                      ctx.set_peer_http_read_paused(sid, false)
+                    }
                     let _ = ctx.mux_role.call_async_raw(
                       builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_WRITE, sid),
                       "tcp.write",
@@ -2836,6 +3001,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   } else {
                     pstream.tcp_write_in_flight = false
                     pstream.tcp_write_queue_bytes = 0
+                    if pstream.mesh_read_paused {
+                      pstream.mesh_read_paused = false
+                      ctx.set_peer_http_read_paused(sid, false)
+                    }
                     if pstream.tcp_end_pending {
                       pstream.tcp_end_pending = false
                       let _ = ctx.mux_role.call_async_raw(
@@ -3278,31 +3447,40 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
               }
-              // Actively reconnect to every adopted live runner's Unix socket (`{"op":"attach"}\n`).
+              // Actively reconnect ONLY to runners genuinely claimed by `WholeAgents::adopt_sessions`
+              // (`adopt_once == Ok`); bystander runners not owned by any session are NEVER attached!
               for ri in 0..<live_runners.length() {
                 let rinfo = live_runners[ri]
                 if rinfo.socket.length() > 0 {
-                  let rcid = st.next_runner_conn_id
-                  st.next_runner_conn_id = st.next_runner_conn_id + 1
-                  st.adopted_runners.set(
-                    rcid,
-                    AdoptedRunnerConn::{
-                      runner_id: rinfo.id,
-                      socket_path: rinfo.socket,
-                      sock_id: -1L,
-                      rx_buf: "",
-                      acked_out: 0L,
-                      acked_err: 0L,
-                      lines_received: 0,
-                      exited: false,
-                    },
-                  )
-                  let _ = ctx.mux_role.call_async_raw(
-                    builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_OPEN, 0L),
-                    "unix.open",
-                    base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
-                    None,
-                  )
+                  match st.core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+                    Some(skey) => {
+                      let rcid = st.next_runner_conn_id
+                      st.next_runner_conn_id = st.next_runner_conn_id + 1
+                      st.adopted_runners.set(
+                        rcid,
+                        AdoptedRunnerConn::{
+                          runner_id: rinfo.id,
+                          session_key: skey,
+                          socket_path: rinfo.socket,
+                          keep_from: 0L,
+                          sock_id: -1L,
+                          rx_chunks: [],
+                          rx_total_bytes: 0,
+                          acked_out: 0L,
+                          acked_err: 0L,
+                          lines_received: 0,
+                          exited: false,
+                        },
+                      )
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_OPEN, 0L),
+                        "unix.open",
+                        base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                        None,
+                      )
+                    }
+                    None => ()
+                  }
                 }
               }
               ctx.mark_role_ready()
@@ -3763,6 +3941,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               tcp_write_in_flight: false,
               tcp_end_pending: false,
               tcp_read_paused: false,
+              downstream_pending: [],
+              downstream_pending_idx: 0,
+              downstream_finish_after: false,
+              mesh_read_paused: false,
             },
           )
           Ok(())
@@ -3942,11 +4124,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           match st.proxy_streams.get(sid) {
             Some(pstream) => {
-              if pstream.tcp_read_paused && pstream.local_sock >= 0L
-              && ctx.peer_http_write_queued_bytes(sid) <= PEER_HTTP_WRITE_LOW_WATER
-              {
-                issue_proxy_tcp_read_or_pause(ctx, pstream)
-              }
+              pump_proxy_downstream(ctx, st, pstream)
             }
             None => ()
           }
