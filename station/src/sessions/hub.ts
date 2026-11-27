@@ -1391,7 +1391,7 @@ export class Hub {
       // so the secret bytes are not retained in RAM.
       const missing: string[] = [];
       for (const f of ephemeralFiles) {
-        missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: "session is archived" }));
+        missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: tr(stationLang(), "station.slack.fileWhileArchived") }));
         void chat.download?.(f).catch(() => {});
       }
       said = { text: [said.text, ...missing].filter((t) => t !== "").join("\n\n"), attachments: said.attachments };

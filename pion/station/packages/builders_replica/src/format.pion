@@ -25,6 +25,7 @@ pub fn restore_order() -> Array[String] {
     "closed_cards",
     "entry_proposals",
     "proposal_outcomes",
+    "deferred_files",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -40,7 +41,7 @@ pub fn former_own_names() -> Array[String] {
 }
 
 pub fn own_log_tables() -> Array[String] {
-  ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "dismissed", "reads"]
+  ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "dismissed", "reads"]
 }
 
 pub fn thread_of_col(table : String) -> Option[String] {
@@ -52,6 +53,7 @@ pub fn thread_of_col(table : String) -> Option[String] {
   table == "closed_cards" ||
   table == "entry_proposals" ||
   table == "proposal_outcomes" ||
+  table == "deferred_files" ||
   table == "reads" ||
   table == "hidden_chats" ||
   table == "muted_chats" ||
@@ -64,7 +66,7 @@ pub fn thread_of_col(table : String) -> Option[String] {
 }
 
 pub fn thread_of_tbls() -> Array[Int] {
-  [0, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14]
+  [0, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 }
 
 pub fn thread_column_of(table : String) -> Option[String] {
@@ -74,6 +76,7 @@ pub fn thread_column_of(table : String) -> Option[String] {
   table == "closed_cards" ||
   table == "entry_proposals" ||
   table == "proposal_outcomes" ||
+  table == "deferred_files" ||
   table == "reads" ||
   table == "hidden_chats" ||
   table == "muted_chats" ||
@@ -102,7 +105,7 @@ pub fn session_of_col(table : String) -> Option[String] {
 }
 
 pub fn session_of_tbls() -> Array[Int] {
-  [1, 2, 5, 6, 15, 16]
+  [1, 2, 5, 6, 16, 17]
 }
 
 pub fn order_of(table : String) -> Int {
@@ -124,6 +127,8 @@ pub fn key_columns(table : String) -> Result[Array[String], String] {
     Ok(["thread", "session"])
   } else if table == "entries" || table == "letters" || table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" {
     Ok(["thread", "n"])
+  } else if table == "deferred_files" {
+    Ok(["thread", "n", "file_id"])
   } else if table == "runtime_sessions" {
     Ok(["session_key", "id"])
   } else if table == "reads" || table == "hidden_chats" || table == "muted_chats" || table == "kept_chats" {

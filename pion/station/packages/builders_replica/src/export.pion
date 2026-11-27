@@ -35,6 +35,7 @@ fn small_tables() -> Array[String] {
     "closed_cards",
     "entry_proposals",
     "proposal_outcomes",
+    "deferred_files",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -1360,6 +1361,10 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
     Ok(rs) => rs.length() > 0
     Err(_) => false
   }
+  let has_df = match self.db.all_ordered("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deferred_files'", []) {
+    Ok(rs) => rs.length() > 0
+    Err(_) => false
+  }
   // A session's own rows, but for its threads (which `session_rows` enters).
   let session_own = fn(ws : String, key : String) -> Result[Unit, String] {
     let rts = match all("SELECT * FROM runtime_sessions WHERE session_key = ?", [base_codec::json_str(key)]) {
@@ -1474,6 +1479,18 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       }
       for i in 0..<pos.length() {
         match changed(ws, "proposal_outcomes", pos[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    if has_df {
+      let dfs = match all("SELECT * FROM deferred_files WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<dfs.length() {
+        match changed(ws, "deferred_files", dfs[i]) {
           Ok(()) => ()
           Err(e) => return Err(e)
         }
@@ -1710,7 +1727,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         let sm_tables = small_tables()
         for ti in 0..<sm_tables.length() {
           let table = sm_tables[ti]
-          if (table == "entry_proposals" && !has_ep) || (table == "proposal_outcomes" && !has_po) {
+          if (table == "entry_proposals" && !has_ep) || (table == "proposal_outcomes" && !has_po) || (table == "deferred_files" && !has_df) {
             continue
           }
           let mut after = 0.0

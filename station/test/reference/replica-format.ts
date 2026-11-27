@@ -31,6 +31,7 @@ export const TABLES: Record<string, readonly string[]> = {
   closed_cards: ["thread", "n"],
   entry_proposals: ["thread", "n"],
   proposal_outcomes: ["thread", "n"],
+  deferred_files: ["thread", "n", "file_id"],
   reads: ["viewer", "thread"],
   hidden_chats: ["viewer", "thread"],
   muted_chats: ["viewer", "thread"],
@@ -41,16 +42,16 @@ export const TABLES: Record<string, readonly string[]> = {
 };
 
 /// The order a restore puts them in: what a row points at before it.
-export const RESTORE_ORDER = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"];
+export const RESTORE_ORDER = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"];
 
 /// The column of a table that names the thread or the session a row is of: what goes with a thread or a session gone.
-const THREAD_OF: Record<string, string> = { threads: "id", thread_sessions: "thread", entries: "thread", letters: "thread", closed_cards: "thread", entry_proposals: "thread", proposal_outcomes: "thread", reads: "thread", hidden_chats: "thread", muted_chats: "thread", kept_chats: "thread", dismissed: "thread" };
+const THREAD_OF: Record<string, string> = { threads: "id", thread_sessions: "thread", entries: "thread", letters: "thread", closed_cards: "thread", entry_proposals: "thread", proposal_outcomes: "thread", deferred_files: "thread", reads: "thread", hidden_chats: "thread", muted_chats: "thread", kept_chats: "thread", dismissed: "thread" };
 /// Where a copy is put into a station with chats of its own (a station retired into it, restore.ts `build`'s `merge`):
 /// the columns that name a thread by its id here, given the id it gets there; and the tables numbered by a thread's
 /// own log (`n`, a viewer's read to it too), whose rows go only with a thread new there (one followed by both is the one
 /// there, its log as it is).
-export const THREAD_COLUMNS: Record<string, string> = { thread_sessions: "thread", entries: "thread", letters: "thread", closed_cards: "thread", entry_proposals: "thread", proposal_outcomes: "thread", reads: "thread", hidden_chats: "thread", muted_chats: "thread", kept_chats: "thread", dismissed: "thread", turns: "about_thread" };
-export const OWN_LOG = new Set(["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "dismissed", "reads"]);
+export const THREAD_COLUMNS: Record<string, string> = { thread_sessions: "thread", entries: "thread", letters: "thread", closed_cards: "thread", entry_proposals: "thread", proposal_outcomes: "thread", deferred_files: "thread", reads: "thread", hidden_chats: "thread", muted_chats: "thread", kept_chats: "thread", dismissed: "thread", turns: "about_thread" };
+export const OWN_LOG = new Set(["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "dismissed", "reads"]);
 
 /// A thread's ts a step on (a still.fail chat's, which each station mints itself, met there by another's: restore.ts
 /// `build`'s `merge`): its last digits counted up by one (`9` to `10` as a number is), a `1` put after it where it

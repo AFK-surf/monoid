@@ -20,6 +20,7 @@ pub fn chat_tables() -> Array[String] {
     "closed_cards",
     "entry_proposals",
     "proposal_outcomes",
+    "deferred_files",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -384,6 +385,27 @@ pub fn chat_page(
     return db.all(
       "SELECT * FROM " + table + " WHERE thread = ?1 AND n > ?2 ORDER BY n LIMIT ?3",
       [target_id, sql_db::int64_to_json(cur_n), base_codec::json_int(limit)],
+    )
+  }
+  if table == "deferred_files" {
+    let is_num = match after_cursor {
+      Some(base_codec::Json::Num(_, _)) => true
+      _ => false
+    }
+    if is_num {
+      let cur_n = match after_cursor {
+        Some(c) => json_to_i64(c, after_n)
+        None => after_n
+      }
+      return db.all(
+        "SELECT * FROM deferred_files WHERE thread = ?1 AND n > ?2 ORDER BY n, file_id LIMIT ?3",
+        [target_id, sql_db::int64_to_json(cur_n), base_codec::json_int(limit)],
+      )
+    }
+    let (n_val, fid) = cursor_i64_str(after_cursor, after_n)
+    return db.all(
+      "SELECT * FROM deferred_files WHERE thread = ?1 AND (n > ?2 OR (n = ?2 AND file_id > ?3)) ORDER BY n, file_id LIMIT ?4",
+      [target_id, sql_db::int64_to_json(n_val), base_codec::json_str(fid), base_codec::json_int(limit)],
     )
   }
   if table == "reads" || table == "hidden_chats" || table == "muted_chats" || table == "kept_chats" {
@@ -1309,7 +1331,7 @@ fn import_other_row(
     }
     return Ok(0)
   }
-  if table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" || table == "dismissed" || table == "deliveries" {
+  if table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" || table == "deferred_files" || table == "dismissed" || table == "deliveries" {
     let tidx = find_mapped_thread_idx(next, row_i64(r, "thread", 0.to_int64()))
     if tidx < 0 { return Ok(0) }
     let tm = next.threads[tidx]
@@ -1330,6 +1352,22 @@ fn import_other_row(
         next.added_rows.push((table, [("viewer", sql_db::row_val(copy, "viewer")), ("thread", tid_j), ("n", n_j)]))
       } else if table == "deliveries" {
         next.added_rows.push((table, [("thread", tid_j), ("n", n_j), ("session", sql_db::row_val(copy, "session"))]))
+      } else if table == "deferred_files" {
+        next.added_rows.push((table, [("thread", tid_j), ("n", n_j), ("file_id", sql_db::row_val(copy, "file_id"))]))
+        let is_unresolved = match copy.get("resolved_at") {
+          None => true
+          Some(base_codec::Json::Null) => true
+          _ => false
+        }
+        if is_unresolved {
+          let tcols = match table_columns(db, "threads") { Ok(c) => c, Err(e) => return Err(e) }
+          if arr_contains_str(tcols, "has_deferred") {
+            match db.run("UPDATE threads SET has_deferred = 1 WHERE id = ?1 AND has_deferred = 0", [tid_j]) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+        }
       } else {
         next.added_rows.push((table, [("thread", tid_j), ("n", n_j)]))
       }
@@ -1576,11 +1614,34 @@ pub fn drop_import_in_tx(
       Err(e) => return Err(e)
     }
   }
+  let deferred_tids : Array[base_codec::Json] = []
   for i in 0..<state.added_rows.length() {
     let (tbl, kvs) = state.added_rows[i]
     match delete_row_by_pk(db, tbl, kvs) {
       Ok(_) => ()
       Err(e) => return Err(e)
+    }
+    if tbl == "deferred_files" {
+      for ki in 0..<kvs.length() {
+        if kvs[ki].0 == "thread" {
+          deferred_tids.push(kvs[ki].1)
+        }
+      }
+    }
+  }
+  if deferred_tids.length() > 0 {
+    let tcols = match table_columns(db, "threads") { Ok(c) => c, Err(e) => return Err(e) }
+    if arr_contains_str(tcols, "has_deferred") {
+      for i in 0..<deferred_tids.length() {
+        let tid_j = deferred_tids[i]
+        match db.run(
+          "UPDATE threads SET has_deferred = EXISTS (SELECT 1 FROM deferred_files WHERE thread = ?1 AND resolved_at IS NULL LIMIT 1) WHERE id = ?1",
+          [tid_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
     }
   }
   for i in 0..<state.added_members.length() {

@@ -3516,7 +3516,7 @@ export class Store {
   /// Sets `threads.has_deferred = 1` in the same transaction so readers across handover stay consistent with zero cache.
   recordDeferredFiles(thread: number, n: number, files: readonly { id: string; name: string; size: number; url: string | null }[]): void {
     if (files.length === 0) return;
-    this.#with(() => {
+    this.#with((changes) => {
       const existing = this.#one("SELECT COALESCE(MAX(ord), -1) AS max_ord FROM deferred_files WHERE thread = ? AND n = ?", thread, n);
       let ord = Number(existing?.max_ord ?? -1) + 1;
       for (const f of files) {
@@ -3527,6 +3527,7 @@ export class Store {
         );
       }
       this.#run("UPDATE threads SET has_deferred = 1 WHERE id = ? AND has_deferred = 0", thread);
+      changes.push({ type: "thread", id: thread, entries: [] });
     });
   }
 
@@ -3596,6 +3597,7 @@ export class Store {
       if (this.#one("SELECT 1 FROM deferred_files WHERE thread = ? AND resolved_at IS NULL LIMIT 1", thread) === undefined) {
         this.#run("UPDATE threads SET has_deferred = 0 WHERE id = ? AND has_deferred != 0", thread);
       }
+      if (ns.length > 0 && changes.length === 0) changes.push({ type: "thread", id: thread, entries: [] });
       return ns;
     });
   }
@@ -4097,14 +4099,23 @@ export class Store {
        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid`,
       session,
-    ).map((r) => ({ message: toMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect, hasDeferred: r.has_deferred === 1 }));
+    ).map((r) => {
+      const item: PendingMessage = { message: toMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect };
+      // Non-enumerable so PendingMessage keeps the exact wire shape of MoonBit/Pion readers (`pending-delivery-reader.test.ts`).
+      Object.defineProperty(item, "hasDeferred", { value: r.has_deferred === 1, configurable: true });
+      return item;
+    });
     const letters = this.#all(
       `SELECT l.*, t.surface, t.channel, t.thread_ts, ts.connect FROM letter_deliveries d
        JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread
        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid`,
       session,
-    ).map((r) => ({ message: letterMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect, hasDeferred: false }));
+    ).map((r) => {
+      const item: PendingMessage = { message: letterMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect };
+      Object.defineProperty(item, "hasDeferred", { value: false, configurable: true });
+      return item;
+    });
     if (letters.length === 0) return said;
     if (said.length === 0) return letters;
     // (each in the order handed over; the two together by when each was kept, a message first at the same time)

@@ -2172,8 +2172,27 @@ fn WholeAgents::build_domain_handlers(
             Some(base_codec::Json::Str(s)) => s
             _ => "attachment"
           }
-          let safe_fid = fid.replace("/", "_").replace("\\", "_")
-          let safe_nm = fname.replace("/", "_").replace("\\", "_")
+          let sanitize_seg = fn(raw : String) -> String {
+            let bs = raw.to_bytes()
+            let sb = StringBuilder::new()
+            let mut written = 0
+            for bi in 0..<bs.length() {
+              if written >= 120 {
+                break
+              }
+              let b = bs[bi].to_int()
+              if b < 32 || b == 127 || b == 47 || b == 92 {
+                sb.write_char('_')
+              } else {
+                sb.write_byte(bs[bi])
+              }
+              written = written + 1
+            }
+            let out = sb.to_string()
+            if out.length() == 0 || out == "." || out == ".." { "file" } else { out }
+          }
+          let safe_fid = sanitize_seg(fid)
+          let safe_nm = sanitize_seg(fname)
           let dest_path = nodepath::join(sep, [uploads_dir, safe_fid + "-" + safe_nm])
           let mut ready_path : Option[String] = None
           let mut ready_size = 0L
@@ -2231,7 +2250,7 @@ fn WholeAgents::build_domain_handlers(
                 ("path", base_codec::json_str(local_path)),
                 ("size", base_codec::json_int64(ready_size)),
               ])
-              let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+              match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
                 let unresolved = match t.all(
                   "SELECT DISTINCT n FROM deferred_files WHERE thread = ?1 AND file_id = ?2 AND resolved_at IS NULL ORDER BY n LIMIT 50",
                   [sql_db::int64_to_json(tid), base_codec::json_str(fid)],
@@ -2320,20 +2339,31 @@ fn WholeAgents::build_domain_handlers(
                   [sql_db::int64_to_json(tid)],
                 ) {
                   Ok(None) => {
-                    let _ = t.run("UPDATE threads SET has_deferred = 0 WHERE id = ?1 AND has_deferred != 0", [sql_db::int64_to_json(tid)])
+                    match t.run("UPDATE threads SET has_deferred = 0 WHERE id = ?1 AND has_deferred != 0", [sql_db::int64_to_json(tid)]) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
                   }
-                  _ => ()
+                  Ok(Some(_)) => ()
+                  Err(e) => return Err(e)
                 }
                 Ok(())
-              })
-              fetched_json.push(
-                base_codec::json_obj([
-                  ("id", base_codec::json_str(fid)),
-                  ("name", base_codec::json_str(fname)),
-                  ("size", base_codec::json_int64(ready_size)),
-                  ("path", base_codec::json_str(local_path)),
-                ]),
-              )
+              }) {
+                Ok(()) => fetched_json.push(
+                  base_codec::json_obj([
+                    ("id", base_codec::json_str(fid)),
+                    ("name", base_codec::json_str(fname)),
+                    ("size", base_codec::json_int64(ready_size)),
+                    ("path", base_codec::json_str(local_path)),
+                  ]),
+                )
+                Err(e) => fetched_json.push(
+                  base_codec::json_obj([
+                    ("id", base_codec::json_str(fid)),
+                    ("error", base_codec::json_str("failed to record fetched file: " + e.message)),
+                  ]),
+                )
+              }
             }
           }
         }
