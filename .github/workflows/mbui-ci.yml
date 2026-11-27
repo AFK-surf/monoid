@@ -218,11 +218,42 @@ jobs:
           echo "BUILD_KEY=$CACHE_PREFIX$OWN$c" >> "$GITHUB_ENV"
       - if: always() && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.BUILD_KEY }}
-      - if: always() && github.ref == 'refs/heads/main' && steps.moon.outputs.cache-hit != 'true'
+      # (moon's own alone: strip MBC_STORE, *.mbc, __moonbit_link_core__, *.exe, and retired module dirs before saving;
+      # actions/cache exclusions do not drop MBC_STORE's absolute path or *.mbc/**, which grew this cache to ~1 GB.
+      # Saved whenever tests passed or moonc already wrote test C so consecutive red runs on main still reuse _build.)
+      - name: Trim Moon's build before saving
+        id: moon-trim
+        if: always() && github.ref == 'refs/heads/main' && matrix.fps == '' && steps.moon.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: .
+        run: |
+          if [ '${{ steps.tests.outcome }}' != success ]; then
+            c=
+            if [ -f "$RUNNER_TEMP/start" ]; then
+              c=$(find libs/ui/_build/native/release/test -name '*.c' -size +0c -newer "$RUNNER_TEMP/start" -print -quit 2>/dev/null || true)
+            fi
+            if [ -z "$c" ]; then
+              echo "moon's _build not kept: the tests did not go through and no test C was written"
+              exit 0
+            fi
+          fi
+          rm -rf "$MBC_STORE"
+          find libs/ui/_build -type d \( -name '*.mbc' -o -name '__moonbit_link_core__' \) -prune -exec rm -rf {} +
+          find libs/ui/_build -type f -name '*.exe' -delete
+          rm -rf libs/ui/_build/native/release/build/mbui libs/ui/_build/native/release/build/sf-ui \
+                 libs/ui/_build/native/release/build/liquid-glass libs/ui/_build/native/release/build/fvclient \
+                 libs/ui/_build/native/release/test/mbui libs/ui/_build/native/release/test/sf-ui \
+                 libs/ui/_build/native/release/test/liquid-glass libs/ui/_build/native/release/test/fvclient
+          echo "save=1" >> "$GITHUB_OUTPUT"
+      - if: always() && steps.moon-trim.outputs.save == '1'
         uses: actions/cache/save@v4
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           path: |
             libs/ui/_build

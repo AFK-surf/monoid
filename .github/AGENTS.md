@@ -17,7 +17,8 @@
   540 seconds and can exceed 10 minutes with setup and packaging. Other jobs that need longer are made faster,
   never finished over several pushes or reruns: a branch's
   mbui-check run cut before its programs were all built keeps none of the units it compiled (test.sh's
-  `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
+  `MBUI_BUILT_MARK`), and main's store keeps what its runs used for two hours on app-build, one hour on secondary
+  stores, and three hours on cut runs. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 35), JOB_END written by the
