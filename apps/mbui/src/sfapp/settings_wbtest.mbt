@@ -735,7 +735,7 @@ test "Comma: a connect's page says Comma's words, no way of making sessions and 
   t.tap_text("删除连接")
   t.run_for(@ui.move_most_ms)
   assert_true(
-    t.find("Comma 连接将断开。如需在 Comma 中也移除这台设备，请到 Comma 的 still.fail 插件页或 Comma for Teams 的 still.fail 页面操作。") is Some(_),
+    t.find("断开 Comma 连接；如需移除设备，请在 Comma 的 still.fail 页面操作。") is Some(_),
     msg=t.words().map(fn(x) { x.0 }).join("|"),
   )
   assert_true(t.find("Slack") is None)

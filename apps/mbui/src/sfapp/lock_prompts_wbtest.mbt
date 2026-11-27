@@ -204,7 +204,7 @@ test "where its words stand on each screen: whose and what, where it asks in, th
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
     let about = "platform \{screen.0}, wide \{screen.1}"
-    let body = pair_word(t, "确认申请人和设备后，在新设备上输入下方安全码；无法确认请拒绝。")
+    let body = pair_word(t, "核对申请人与设备后，在新设备输入下方安全码；不确定请拒绝。")
     let head = pair_word(t, "申请访问")
     let (star, mine) = (pair_word(t, "星火工作室", under=head.1), pair_word(t, "个人", under=head.1))
     let code = pair_code(t)

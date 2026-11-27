@@ -172,7 +172,7 @@ test "where its words stand on each screen: the title, what it asks, whose vault
     let about = "platform \{screen.0}, wide \{screen.1}"
     let title = prompt_word(t, "授权密钥库钥匙")
     let device = prompt_word(t, "Pixel 9")
-    let body = prompt_word(t, "此设备已在安全模式受信任，授权后可使用该库密钥。")
+    let body = prompt_word(t, "此设备已在安全模式下受信任，授权后可使用该库密钥。")
     let place = prompt_word(t, "星火工作室 · 林的库")
     let give = t.get(Button, label="授权").rect
     let later = t.get(Button, label="稍后").rect
@@ -296,7 +296,7 @@ test "a teammate's device asking for the workspace vault's key: said to be their
     assert_true(t.find("授权密钥库钥匙") is Some(_), msg=about)
     assert_true(t.find("Ana 的 MacBook Air · still.fail") is Some(_), msg=about)
     assert_true(
-      t.find("这是 Ana 的设备，请核对设备核对码后再授权。") is Some(_),
+      t.find("这是 Ana 的设备，请先与 Ana 核对设备核对码后再授权。") is Some(_),
       msg=about,
     )
     assert_true(t.find("你的受信任设备") is None, msg=about)
@@ -329,7 +329,7 @@ test "a teammate's device asking for the workspace vault's key: said to be their
     platform=0,
     wide=true,
   )
-  assert_true(t_email.find("这是 ana@example.com 的设备，请核对设备核对码后再授权。") is Some(_))
+  assert_true(t_email.find("这是 ana@example.com 的设备，请先与 ana@example.com 核对设备核对码后再授权。") is Some(_))
   assert_true(t_email.find("你的受信任") is None)
   assert_eq(t_email.audit(), [])
   // Both ownerName and ownerEmail empty: generic non-self fallback, never "你的受信任设备".
@@ -338,7 +338,7 @@ test "a teammate's device asking for the workspace vault's key: said to be their
     platform=0,
     wide=true,
   )
-  assert_true(t_unknown.find("这是其他成员的设备，请核对设备核对码后再授权。") is Some(_))
+  assert_true(t_unknown.find("这是其他成员的设备，请先与对方核对设备核对码后再授权。") is Some(_))
   assert_true(t_unknown.find("你的受信任设备") is None)
   assert_eq(t_unknown.audit(), [])
 }

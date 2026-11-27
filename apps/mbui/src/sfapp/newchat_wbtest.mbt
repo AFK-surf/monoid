@@ -609,8 +609,8 @@ test "a new chat's stations on every screen: a row each under its title, Willow 
       guard ns_seen(t, "选择运行的 station") is Some(title) else { fail("\{at}: no title") }
       assert_true(rows[0].rect.1 > title.1 && rows[1].rect.1 > rows[0].rect.1 + rows[0].rect.3 - 0.5, msg="\{at}: \{Repr(rows.map(fn(r) { r.rect }))}")
       // (Willow: 2 at work on its name's line, a chat's icon and 2, read out whole; its figures and 直连 38ms under it;
-      // Maple: 未连接)
-      for w in ["直连 38ms", "未连接", "CPU 72%", "内存 5.8G", "磁盘 380G"] {
+      // Maple: 直连 24ms)
+      for w in ["直连 38ms", "直连 24ms", "CPU 72%", "内存 5.8G", "磁盘 380G"] {
         assert_true(ns_seen(t, w) is Some(_), msg="\{at}: \{w}")
       }
       guard (ns_said(t, "2 个运行中"), ns_seen(t, "直连 38ms")) is (Some(busy), Some(net)) else { fail(at) }
@@ -646,7 +646,7 @@ test "a new chat's stations on every screen, Maple pressed: picked (newChat.pick
           }
           None => ()
         }
-        for w in ["2", "未连接", "直连 38ms"] {
+        for w in ["2", "直连 24ms", "直连 38ms"] {
           assert_true(drawn(w) || !drawn("选择运行的 station"), msg="\{at}: frame \{n} on its way out: \{w} not drawn")
         }
         t.frame()
