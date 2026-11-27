@@ -125,6 +125,8 @@ pub fn record_of(@json.Json?) -> WaysRecord?
 
 pub let relay_check_ms : Int32
 
+pub let relay_rank_ms : Int64
+
 pub fn relay_url(@json.Json, insecure? : Bool) -> String?
 
 pub fn remove_relay(Ways, String, String) -> WaysRecord raise WaysRefusal

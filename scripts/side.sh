@@ -1,6 +1,8 @@
 #!/bin/sh
 # The side run (docs/development.md, "Tests"): the tests CI does not run because they are not the same every run (real
-# time, real processes and sockets, networks made up at random), run every few hours, blocking nothing. A failure here
+# time, real processes and sockets, networks made up at random), run every few hours, blocking nothing. Branch PRs
+# touching core-ts auth/host/protocol/lock/vault paths, station lock paths, or e2e harnesses also run `rigs` and
+# `locks-moved` non-blockingly in `.github/workflows/pipeline.yml` (`check-side-core`, outside `gate`). A failure here
 # is for an agent to reproduce as a test CI runs, one that fails the same way every time, and to fix; one it cannot
 # reproduce is let be.
 #

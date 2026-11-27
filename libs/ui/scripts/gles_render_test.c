@@ -312,7 +312,24 @@ static double luma_at(const unsigned char *px, double x, double y) {
   return (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) / 255.0;
 }
 
+// A group's cut (groups.h mb_group_inst_moved) of a rounded clip (0, 0)-(100, 100), its corners 26, to (-50, -50)-(150,
+// `foot`): the corners at its foot as src/ui/scene.mbt's inst_cut_to has them, round where the cut moves it by a hair
+// (MB_CLIP_HAIR) or less, square where by more.
+static double group_cut_foot_corner(double foot) {
+  double e[MB_GROUP_INST] = {0};
+  e[18] = 100.0;
+  e[19] = 100.0;
+  for (int j = 0; j < 4; j++) e[24 + j] = 26.0;
+  mb_group_inst_moved(e, 0, 0.0, 0.0, 0.0, 1, -50.0, -50.0, 150.0, foot);
+  return e[26] == e[27] ? e[26] : -1.0;
+}
+
 int main(void) {
+  // (a group's cut by a hair keeps its corners, as the app's own: scene.mbt clip_hair)
+  if (group_cut_foot_corner(99.7) != 26.0 || group_cut_foot_corner(99.5) != 26.0 || group_cut_foot_corner(98.0) != 0.0) {
+    LOG("a group's cut by a hair squared a rounded clip's corners, or one by more kept them");
+    return 1;
+  }
   EGLDisplay d = eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
   if (d == EGL_NO_DISPLAY || !eglInitialize(d, NULL, NULL)) {
     LOG("no EGL display (surfaceless)");

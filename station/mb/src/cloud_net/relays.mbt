@@ -415,6 +415,14 @@ async fn ProbeWatch::tick(
 pub let relay_check_ms : Int = 30_000
 
 ///|
+/// How often `keep_relays` concurrently re-ranks all relays by measured RTT to pick the nearest live one.
+pub let relay_rank_ms : Int64 = 600_000L
+
+///|
+/// Timeout for each relay in the concurrent ranking pass (falls back to sequential 2-try check if all miss).
+let relay_rank_timeout_ms : Int = 5_000
+
+///|
 fn bare(url : String) -> String {
   strip_slashes(url)
 }
@@ -508,44 +516,173 @@ pub async fn keep_relays(
       }
     None => ()
   }
+  let mut preferred : (String, Int64)? = None
+  let mut ranked : Array[String] = []
+  let mut ranked_ours : Array[String] = []
   let check = async fn() {
+    let list = ours
     let mut up = false
     let mut reachable : String? = None
     let mut rest : Array[String] = []
-    let order = match (endpoint.home)() {
-      None => ours
-      Some(h) =>
-        [
-          ..ours.filter(u => bare(u) == bare(h)),
-          ..ours.filter(u => bare(u) != bare(h)),
-        ]
+    let use_rank = pinger.pinged is Some(_) && list.length() > 1
+    if !use_rank {
+      preferred = None
+      ranked = []
+      ranked_ours = []
     }
-    // Two tries each: one lost request is not the relay down.
-    for i, relay in order {
-      let mut answered = false
-      for _ in 0..<2 {
-        let ok = (pinger.ping)(bare(relay)) catch { _ => false }
-        if ok {
-          answered = true
-          match pinger.pinged {
-            Some(told) => {
-              let start = @effect.now()
-              let again = (pinger.ping)(bare(relay)) catch { _ => false }
-              if again {
-                told(bare(relay), @effect.now() - start)
+    match pinger.pinged {
+      Some(told) if use_rank => {
+        let now = @effect.now()
+        let need_rank = match preferred {
+          None => true
+          Some((pref, at)) =>
+            !among(list, pref) ||
+            now - at >= relay_rank_ms ||
+            list.iter().any(u => !among(ranked_ours, u))
+        }
+        if need_rank {
+          let tasks : Array[async () -> (String, Int64, Int)?] = []
+          for idx, relay in list {
+            tasks.push(async fn() {
+              let measured = try {
+                @effect.timeout(relay_rank_timeout_ms, async fn() { // timer: a deadline on the concurrent relay rank ping
+                  let ok1 = (pinger.ping)(bare(relay)) catch { _ => false }
+                  if !ok1 {
+                    return None
+                  }
+                  let start = @effect.now()
+                  let ok2 = (pinger.ping)(bare(relay)) catch { _ => false }
+                  if !ok2 {
+                    return None
+                  }
+                  Some((relay, @effect.now() - start, idx))
+                })
+              } catch {
+                _ => None
+              }
+              match measured {
+                Some(Some(res)) => Some(res)
+                _ => None
+              }
+            })
+          }
+          let results = @effect.all(tasks)
+          let ok_sorted : Array[(String, Int64, Int)] = []
+          for r in results {
+            if r is Some(item) {
+              ok_sorted.push(item)
+            }
+          }
+          ok_sorted.sort_by(fn(a, b) {
+            let cmp = a.1.compare(b.1)
+            if cmp != 0 {
+              cmp
+            } else {
+              a.2.compare(b.2)
+            }
+          })
+          if ok_sorted.length() > 0 {
+            let (fastest, fastest_ms, _) = ok_sorted[0]
+            let next_ranked : Array[String] = []
+            for item in ok_sorted {
+              next_ranked.push(item.0)
+            }
+            for idx, relay in list {
+              if !ok_sorted.iter().any(x => x.2 == idx) {
+                next_ranked.push(relay)
               }
             }
-            None => ()
+            up = true
+            reachable = Some(fastest)
+            preferred = Some((fastest, now))
+            ranked = next_ranked
+            ranked_ours = list.copy()
+            rest = ranked[1:].to_owned()
+            told(bare(fastest), fastest_ms)
+          } else {
+            preferred = None
+            ranked = []
+            ranked_ours = []
           }
+        }
+      }
+      _ => ()
+    }
+    if !up {
+      let order = match (use_rank, preferred) {
+        (true, Some((pref, _))) => {
+          let out : Array[String] = []
+          let push_unique = fn(u : String) {
+            if !among(out, u) {
+              out.push(u)
+            }
+          }
+          for u in list {
+            if same_url(u) == same_url(pref) {
+              push_unique(u)
+            }
+          }
+          for u in ranked {
+            if among(list, u) {
+              push_unique(u)
+            }
+          }
+          for u in list {
+            push_unique(u)
+          }
+          out
+        }
+        _ =>
+          match (endpoint.home)() {
+            None => list
+            Some(h) =>
+              [
+                ..list.filter(u => bare(u) == bare(h)),
+                ..list.filter(u => bare(u) != bare(h)),
+              ]
+          }
+      }
+      // Two tries each: one lost request is not the relay down.
+      for i, relay in order {
+        let mut answered = false
+        for _ in 0..<2 {
+          let ok = (pinger.ping)(bare(relay)) catch { _ => false }
+          if ok {
+            answered = true
+            match pinger.pinged {
+              Some(told) => {
+                let start = @effect.now()
+                let again = (pinger.ping)(bare(relay)) catch { _ => false }
+                if again {
+                  told(bare(relay), @effect.now() - start)
+                }
+              }
+              None => ()
+            }
+            break
+          }
+        }
+        if answered {
+          up = true
+          reachable = Some(relay)
+          // (the relays after it, not asked this check: probed through where it fails, relays.ts `PROBE`)
+          rest = order[i + 1:].to_owned()
           break
         }
       }
-      if answered {
-        up = true
-        reachable = Some(relay)
-        // (the relays after it, not asked this check: probed through where it fails, relays.ts `PROBE`)
-        rest = order[i + 1:].to_owned()
-        break
+      if use_rank {
+        match preferred {
+          Some((pref, _)) => {
+            let still_pref = match reachable {
+              Some(r) => up && bare(r) == bare(pref)
+              None => false
+            }
+            if !still_pref {
+              preferred = None
+            }
+          }
+          None => ()
+        }
       }
     }
     if !up && ours_off(ways) {

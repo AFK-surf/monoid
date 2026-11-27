@@ -97,6 +97,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       foot: None,
       hugs: false,
       hugs_centred: false,
+      hugs_wide: false,
       steps: false,
       sheet_heads: false,
       heads: false,

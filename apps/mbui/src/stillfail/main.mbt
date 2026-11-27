@@ -173,16 +173,8 @@ fn refused(name : String) -> Json {
 
 ///|
 let core_source : @sfapp.Source = {
+  ..@sfapp.core_base_source(),
   topic_read: core_topic,
-  topic_key: fn(name, params) { @sfbase.wire_topic_key(name, @sfbase.core_topic_params(name, params)) },
-  topic_keyed: fn(name, params, field, keys) {
-    @core.keyed_of(name, @sfbase.core_topic_params(name, params), field, keys)
-  },
-  topic_scope: None,
-  topic_alive: fn() { true },
-  topic_lease_own: None,
-  waits: fn(name, params) { @core.follow_topic(name, params=@sfbase.core_topic_params(name, params)).waiting },
-  generation: fn(name, params) { @core.client.topic_generation(name, params=@sfbase.core_topic_params(name, params)) },
   call: fn(name, params, done) {
     if read_only && !read_only_calls.contains(name) {
       done(Err(refused(name)))
@@ -339,17 +331,11 @@ let core_source : @sfapp.Source = {
   },
   // (a page opening waits for a picture it shows the device holds: on its way from the core, or not decoded yet)
   picture_waits: pictures.waits,
-  fatal: fn() { @core.fatal() },
   file: chat_file,
   poster: chat_poster,
   draft_picture,
   images: chat_images,
   now: fn() { @ui.wall_ms() },
-  leave: fn(name, params, __reason) {
-      if __reason is @sfbase.TopicLeave::Owned(__stop) { __stop(); return }
-      @core.leave_topic(name, params=@sfbase.core_topic_params(name, params)) },
-  release: fn(name, params) { @core.release_topic(name, params=@sfbase.core_topic_params(name, params)) },
-  refresh: fn(name, params) { @core.refresh_topic(name, params=@sfbase.core_topic_params(name, params)) },
   read_only,
   reads_ahead: fn() { true },
   asks_devices: fn() { true },
@@ -476,30 +462,8 @@ fn main {
   // (cloud/src/preview.ts's stillfail-preview-*); sfbase's service_page.mbt reads its pages' addresses by it
   @hostapi.set_site_name("stillfail")
   // what the places open on, and the last few chats, are kept by the core's client as they are let go of, asked again
-  // with their version
-  @core.client.sensitive(@sfbase.topic_policy_sensitive)
-  @core.client.device_global(@sfbase.topic_policy_device_global)
-  @core.client.sanitize_kept(@sfbase.sanitize_kept_json)
-  @core.client.on_auth_boundary(fn(scope) {
-    match scope {
-      Global | VaultAll => (@sfbase.clear_vault_secrets.val)("", "")
-      Workspace(ws) => (@sfbase.clear_vault_secrets.val)(ws, "")
-      Vault(ws, v) => (@sfbase.clear_vault_secrets.val)(ws, v)
-      VaultWorkspace(_) => ()
-    }
-    @sfbase.invalidate_auth_scope(core_source, fn(name, params) {
-      @core.topic_matches_scope_params(name, params, scope)
-    })
-  })
-  |> ignore
-  @core.auth_stale_message.val = fn() { @sf.t("core-misc.auth.stale") }
-  @sfbase.mask_vault_all.val = fn() { @core.client.mask_scope(@core.AuthScope::VaultAll) }
-  @sfbase.mask_global.val = fn() { @core.client.mask_scope(@core.AuthScope::Global) }
-  @core.client.keep(@sfbase.topic_kept, most=fn() { @sfbase.kept_most_by(true) })
-  // (a page's, a panel's or a card's own topic opened again shown at once as it was, till the core answers)
-  @core.client.show_kept_params(@sfbase.topic_shown_kept_params)
-  // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
-  @core.client.tells_before(@sfbase.chats_told_before)
+  // with their version; auth boundaries invalidate affected scopes
+  @sfapp.wire_core_client(@core.client, core_source) |> ignore
   // SVG pictures (a chat's .svg files) parsed and drawn by mbui's own SVG renderer into premultiplied MBRAWPRE bytes
   @ui.set_vector_pictures_parsed(parse_svg_premul)
   // MBUI_PLATFORM=android: run as a phone's system has it (a test's trace recorded again on a Mac on the system its

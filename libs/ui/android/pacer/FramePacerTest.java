@@ -1436,7 +1436,8 @@ public final class FramePacerTest {
         phA.runUntil(t + 4 * phA.period);
         boolean okA = phA.drawn.size() >= 2 && nowA[1] > t / 1e6;
 
-        // Order B: vsyncCame(T) -> takeRender()+begin()+ended(more=true) -> duplicate vsyncCame(T) -> 0 extra postVsync & T+1 on time!
+        // Order B: vsyncCame(T) -> takeRender()+begin()+ended(more=true) -> stale-gen duplicate vsyncCame(T, shows, 1L)
+        //          -> 0 extra postVsync & T+1 on time; untagged 2-arg vsyncCame(T, shows) fails open without stalling T+1.
         Phone phB = new Phone(120, 3, true, 200_000);
         final double[] nowB = new double[4];
         final int[] postsDeltaB = {-1};
@@ -1446,17 +1447,18 @@ public final class FramePacerTest {
             @Override public boolean more(int f, double now) { return f == 0; }
         };
         phB.main(t - phB.period / 2, phB.pacer::wantFrame);
-        // Duplicate vsyncCame(t, shows) arrives after frame 0's ended(more=true) (t+0.7ms) has already queued T+1
+        // Stale-gen duplicate from T's callback (gen=1) arrives after frame 0's ended(more=true) queued T+1 (gen=2)
         phB.main(t + 1_500_000L, () -> {
             int before = phB.vsyncPosts;
-            phB.pacer.vsyncCame(t, shows);
+            phB.pacer.vsyncCame(t, shows, 1L);
             postsDeltaB[0] = phB.vsyncPosts - before;
         });
         phB.runUntil(t + 4 * phB.period);
         boolean okB = phB.drawn.size() >= 2 && postsDeltaB[0] == 0
                 && Math.abs(nowB[1] - (t + phB.period) / 1e6) < 0.01;
 
-        // Order C: frameNow() at T -> ended(more=true) queues T+1 -> duplicate vsyncCame(T) hits lastFrameNowAt fast path -> 0 extra postVsync & T+1 on time!
+        // Order C: frameNow() at T -> ended(more=true) queues T+1 (gen=1) -> stale-gen duplicate vsyncCame(T, shows, 999L)
+        //          -> 0 extra postVsync & T+1 on time; untagged 2-arg vsyncCame(T, shows) also fails open with T+1 on time.
         Phone phC = new Phone(120, 3, true, 200_000);
         final double[] nowC = new double[4];
         final int[] postsDeltaC = {-1};
@@ -1468,17 +1470,63 @@ public final class FramePacerTest {
         phC.main(t + 100_000L, phC.pacer::frameNow);
         phC.main(t + 1_500_000L, () -> {
             int before = phC.vsyncPosts;
-            phC.pacer.vsyncCame(t, shows);
+            phC.pacer.vsyncCame(t, shows, 999L);
             postsDeltaC[0] = phC.vsyncPosts - before;
         });
         phC.runUntil(t + 4 * phC.period);
         boolean okC = phC.drawn.size() >= 2 && postsDeltaC[0] == 0
                 && Math.abs(nowC[1] - (t + phC.period) / 1e6) < 0.01;
 
+        // Order D: untagged legacy 2-arg duplicate vsyncCame(T, shows) after frameNow()+ended(more=true) fails open
+        //          (zero timestamp heuristic): releases active slot, re-posts T+1 (deltaPosts == 1), and delivers T+1 on time.
+        Phone phD = new Phone(120, 3, true, 200_000);
+        final double[] nowD = new double[4];
+        final int[] postsDeltaD = {-1};
+        phD.app = new App() {
+            @Override public double work(int f, double now) { if (f < 4) nowD[f] = now; return 0.5; }
+            @Override public double gpu(int f, double now) { return 1.0; }
+            @Override public boolean more(int f, double now) { return f == 0; }
+        };
+        phD.main(t + 100_000L, phD.pacer::frameNow);
+        phD.main(t + 1_500_000L, () -> {
+            int before = phD.vsyncPosts;
+            phD.pacer.vsyncCame(t, shows);
+            postsDeltaD[0] = phD.vsyncPosts - before;
+        });
+        phD.runUntil(t + 4 * phD.period);
+        boolean okD = phD.drawn.size() == 2 && postsDeltaD[0] == 1
+                && Math.abs(nowD[1] - (t + phD.period) / 1e6) < 0.01;
+
+        // Order E: matching-gen callback hitting lastFrameNowAt fast path (frameNow at t+1ms -> ended(more=true)
+        //          posts gen=1 -> Choreographer delivers gen=1 at latched t with delta 1ms < period/2):
+        //          must release gen=1, re-post gen=2 (deltaPosts == 1), and deliver T+1 on time without deadlock.
+        Phone phE = new Phone(120, 3, true, 200_000);
+        final double[] nowE = new double[4];
+        final int[] postsDeltaE = {-1};
+        phE.app = new App() {
+            @Override public double work(int f, double now) { if (f < 4) nowE[f] = now; return 0.3; }
+            @Override public double gpu(int f, double now) { return 1.0; }
+            @Override public boolean more(int f, double now) { return f == 0; }
+        };
+        phE.main(t + 1_000_000L, phE.pacer::frameNow);
+        phE.main(t + 2_000_000L, () -> {
+            int before = phE.vsyncPosts;
+            phE.lastVsyncAt = t;
+            List<Runnable> cbs = phE.nextVsync;
+            phE.nextVsync = new ArrayList<>();
+            for (Runnable r : cbs) r.run();
+            postsDeltaE[0] = phE.vsyncPosts - before;
+        });
+        phE.runUntil(t + 4 * phE.period);
+        boolean okE = phE.drawn.size() == 2 && postsDeltaE[0] == 1
+                && Math.abs(nowE[1] - (t + phE.period) / 1e6) < 0.01;
+
         check("duplicate vsyncCame(T) before/after ended(more=true) or frameNow never stalls or double-posts T+1",
-                okA && okB && okC, "okA=" + okA + " (drawn=" + phA.drawn.size() + ", t1=" + nowA[1]
+                okA && okB && okC && okD && okE, "okA=" + okA + " (drawn=" + phA.drawn.size() + ", t1=" + nowA[1]
                         + "), okB=" + okB + " (deltaPosts=" + postsDeltaB[0] + ", t1=" + nowB[1]
-                        + "), okC=" + okC + " (deltaPosts=" + postsDeltaC[0] + ", t1=" + nowC[1] + ")");
+                        + "), okC=" + okC + " (deltaPosts=" + postsDeltaC[0] + ", t1=" + nowC[1]
+                        + "), okD=" + okD + " (deltaPosts=" + postsDeltaD[0] + ", drawn=" + phD.drawn.size() + ", t1=" + nowD[1]
+                        + "), okE=" + okE + " (deltaPosts=" + postsDeltaE[0] + ", drawn=" + phE.drawn.size() + ", t1=" + nowE[1] + ")");
     }
 
     /** 18. Opus: wantImmediateFrame() while ahead==true clears ahead on takeRender() so ended(more=true) drives T+1 on real clock. */
@@ -2245,6 +2293,89 @@ public final class FramePacerTest {
                         + "/2 (stalePostsDelta=" + postsAfterStaleDelta[0] + ")");
     }
 
+    /**
+     * Regression: FrameScheduler.ask() must sample nanoTime() inside lock and reject both stale (age >= period)
+     * and negative-age (now < vsyncAt[0]) ahead slots, preserving demand and re-posting a fresh vsync.
+     */
+    static void askReadsNanoTimeInsideLockAndRejectsStaleOrNegativeAheadCase() {
+        // (a) Stale ahead (age >= period): must NOT render immediately; must re-post vsync and render on T+1.
+        Phone phStale = new Phone(120, 3, true, 200_000);
+        phStale.app = steady(0.5, 0.5, -1);
+        long t0 = 12 * phStale.period;
+        final int[] staleReqs = {-1}, stalePosts = {-1};
+        phStale.main(t0, () -> phStale.pacer.vsyncCame(t0, t0 + 2 * phStale.period));
+        phStale.main(t0 + phStale.period + 1_000_000L, () -> {
+            int req0 = phStale.renderRequests, post0 = phStale.vsyncPosts;
+            phStale.pacer.wantFrame();
+            staleReqs[0] = phStale.renderRequests - req0;
+            stalePosts[0] = phStale.vsyncPosts - post0;
+        });
+        phStale.runUntil(t0 + 4 * phStale.period);
+        boolean okStale = staleReqs[0] == 0 && stalePosts[0] == 1 && phStale.drawn.size() == 1;
+
+        // (b) Negative age (now < vsyncAt[0]): must NOT render immediately; must re-post vsync and render cleanly.
+        final long[] clock = {15 * 8_333_333L};
+        final int[] negReqs = {0}, negPosts = {0};
+        FramePacer negPacer = new FramePacer(new FramePacer.Platform() {
+            @Override public long nanoTime() { return clock[0]; }
+            @Override public boolean onMain() { return true; }
+            @Override public void postMain(Runnable r) { r.run(); }
+            @Override public void postVsync() { negPosts[0]++; }
+            @Override public void postVsync(long gen) { negPosts[0]++; }
+            @Override public void atNextVsyncOnDrawing(Runnable r) {}
+            @Override public void requestRender() { negReqs[0]++; }
+            @Override public boolean setRate(float rate) { return true; }
+            @Override public boolean typing() { return false; }
+        });
+        negPacer.framePeriod = 8_333_333L;
+        long futureVsync = clock[0] + 2_000_000L; // vsyncAt[0] > nanoTime() -> negative age
+        negPacer.vsyncCame(futureVsync, futureVsync + 2 * negPacer.framePeriod);
+        negPacer.wantFrame();
+        boolean okNeg = negReqs[0] == 0 && negPosts[0] == 1 && negPacer.appWanted.get();
+
+        // (c) Deterministic single-thread lock-holding proof: both ask() (when ahead == true) and frameNow()
+        //     must sample Platform.nanoTime() while holding FrameScheduler's lock (Thread.holdsLock(lock) == true).
+        final int[] nanoCalls = {0};
+        final boolean[] allHeldLock = {true};
+        final FramePacer[] lockPacerRef = new FramePacer[1];
+        final long[] lockClock = {100_000_000L};
+        lockPacerRef[0] = new FramePacer(new FramePacer.Platform() {
+            @Override public long nanoTime() {
+                nanoCalls[0]++;
+                if (!lockPacerRef[0].scheduler.holdsLockForTest()) {
+                    allHeldLock[0] = false;
+                }
+                return lockClock[0];
+            }
+            @Override public boolean onMain() { return true; }
+            @Override public void postMain(Runnable r) {}
+            @Override public void postVsync() {}
+            @Override public void postVsync(long gen) {}
+            @Override public void atNextVsyncOnDrawing(Runnable r) {}
+            @Override public void requestRender() {}
+            @Override public boolean setRate(float rate) { return true; }
+            @Override public boolean typing() { return false; }
+        });
+        lockPacerRef[0].framePeriod = 8_333_333L;
+        // Drive ask() with ahead == true:
+        lockPacerRef[0].vsyncCame(lockClock[0], lockClock[0] + 2 * lockPacerRef[0].framePeriod);
+        int beforeAsk = nanoCalls[0];
+        lockPacerRef[0].wantFrame();
+        int askNanoCalls = nanoCalls[0] - beforeAsk;
+        // Drive frameNow():
+        int beforeFrameNow = nanoCalls[0];
+        lockPacerRef[0].frameNow();
+        int frameNowNanoCalls = nanoCalls[0] - beforeFrameNow;
+        boolean okLockOrder = askNanoCalls >= 1 && frameNowNanoCalls >= 1 && allHeldLock[0];
+
+        check("ask() samples nanoTime() inside lock and rejects stale or negative-age ahead",
+                okStale && okNeg && okLockOrder,
+                "stale=" + okStale + " (reqs=" + staleReqs[0] + ", posts=" + stalePosts[0] + ", drawn=" + phStale.drawn.size()
+                        + "), neg=" + okNeg + " (reqs=" + negReqs[0] + ", posts=" + negPosts[0]
+                        + "), lockOrder=" + okLockOrder + " (askCalls=" + askNanoCalls
+                        + ", frameNowCalls=" + frameNowNanoCalls + ", allHeld=" + allHeldLock[0] + ")");
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -2292,6 +2423,7 @@ public final class FramePacerTest {
         frameNowWallClockDoesNotDeadlockWantedCase();
         sameVsyncCallbackInputDoesNotDeadlockWantedCase();
         resetContinuityClearsInFlightWantedCase();
+        askReadsNanoTimeInsideLockAndRejectsStaleOrNegativeAheadCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

@@ -475,3 +475,38 @@ test "a workspace picked in the popover on 大屏 at real size: from the press t
   // (its rows' words drawn while it goes, faded, as switch_drawer's 大屏 test finds: not held to be gone at the end)
   assert_eq(sd_sheet_faults("大屏", frames, at_press, "ws2").filter(fn(f) { !f.contains("still shown at the end") }), [])
 }
+
+///|
+test "the sheet's last workspace held on 小屏 under a phone's status bar, its rows set on the pixels: its ripple round at all four corners at every scale" {
+  // (the list sets its rows on the device's pixels, the last up to half a pixel past its foot: cut there by that, its
+  // ripple's corners were squared; libs/ui scene.mbt clip_hair)
+  let faults : Array[String] = []
+  for fs in [1.0, 1.1, 1.15, 1.2] {
+    for scale in [1.0, 2.625, 2.75, 3.0] {
+      @sfapp.new_run()
+      let src = sd_source(40.0, three=true)
+      let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform=2, scale~, window_inset=true)
+      t.set_rows_on_pixels(true)
+      t.set_groups(true)
+      t.set_font_scale(fs)
+      t.draw()
+      t.run_for(sd_opening_ms)
+      sd_open_sheet(t)
+      let (x, y) = sd_in_sheet(t, "第三个")
+      let (px, py) = (x + 4.0, y + 4.0)
+      t.press_at(px, py)
+      t.run_for(@ui.move_most_ms * 2.0)
+      // (the ripple's disc (a shadow's kind, 2) cut to the row pressed: its clip round it, a row's height; its corners
+      // 24-27)
+      let corners = t
+        .drawn_instances()
+        .filter(fn(a) { a[5] == 2.0 && a[16] <= px && a[18] >= px && a[17] <= py && a[19] >= py && a[19] - a[17] < 120.0 })
+        .map(fn(a) { [a[24], a[25], a[26], a[27]] })
+      if corners.length() != 1 || corners[0].iter().any(fn(r) { r <= 0.0 || r != corners[0][0] }) {
+        faults.push("font \{fs} scale \{scale}: \{Repr(corners)}")
+      }
+      t.release(px, py)
+    }
+  }
+  assert_eq(faults, [])
+}
