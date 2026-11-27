@@ -47,11 +47,28 @@ pub fn fill_chip_node(
     // df98aad1 42956992852, 2026-11-11)
     style_node(b, fn() {
       let base = chip_box_at(b.words_scale(), small)
-      if in_overlay && theme().dark {
+      let boxed = if in_overlay && theme().dark {
         base.then(chip_box_dark_overlay)
       } else {
         base
       }
+      let words_st = if is_refill() {
+        if small {
+          if mark() == "" { chip_refill_words_small_unmarked } else { chip_refill_words_small }
+        } else if mark() == "" {
+          chip_refill_words_unmarked
+        } else {
+          chip_refill_words
+        }
+      } else {
+        let s = if small { chip_words_small } else { chip_words }
+        if mark() == "" || (!label_muted && chip_joined(mark(), words())) {
+          s.then(chip_joined_gap)
+        } else {
+          s
+        }
+      }
+      boxed.then(words_st)
     })
     b.bone_whole(Is(true)).shrink(Is(if squeezes { 1.0 } else { 0.0 })) |> ignore
     if squeezes {
@@ -60,9 +77,9 @@ pub fn fill_chip_node(
     // (its fill a plain rectangle cut along the chip's corners, its end square where it stops)
     b.clips(Is(true)) |> ignore
     b.box(fn(x) {
-      style_node(x, fn() { chip_fill_part })
       x
       .over_at(Is((Some(0.0), Some(0.0), None, Some(0.0))))
+      .height_share(Is(1.0))
       .width_share(By(fn() { if is_refill() { 1.0 } else { part().to_double() / 100.0 } }))
       .ground(By(fn() {
         let t = theme()
@@ -83,59 +100,36 @@ pub fn fill_chip_node(
       |> ignore
     })
     |> ignore
-    b.box(fn(w) {
-      style_node(w, fn() {
-        if is_refill() {
-          if small {
-            if mark() == "" { chip_refill_words_small_unmarked } else { chip_refill_words_small }
-          } else if mark() == "" {
-            chip_refill_words_unmarked
-          } else {
-            chip_refill_words
-          }
-        } else {
-          let s = if small { chip_words_small } else { chip_words }
-          if mark() == "" || (!label_muted && chip_joined(mark(), words())) {
-            s.then(chip_joined_gap)
-          } else {
-            s
-          }
-        }
-      })
-      // (its mark made with it, none where it says none: a chip whose mark comes is the same chip, never one making its
-      // way in across its words)
-      // (a mark run on into its words, 磁盘剩 420 G, one line of words, never two touching)
-      let joined = fn() { !is_refill() && !label_muted && chip_joined(mark(), words()) }
-      let k = words_node(w, fn() { if joined() { "" } else { mark() } }, fn() {
-        if is_refill() { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
-      })
-      match refill {
-        Some(_) =>
-          w.show(at_once=true, is_refill, fn(x) {
-            let ic = icon_node(x, "refresh", icon_sz, By(fn() { theme().p.red }))
-            if squeezes {
-              ic.shrink(Is(0.0)) |> ignore
-            }
-          })
-        None => ()
-      }
-      let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() {
-        if is_refill() { chip_refill_text } else { chip_text }
-      })
-      // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are;
-      // else whole, its mark and figure never squeezed over each other, so a line short of the room for it gives it
-      // up whole: View::drops)
-      if squeezes {
-        w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        k.shrink(Is(0.0)) |> ignore
-        f.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
-      } else {
-        w.shrink(Is(0.0)) |> ignore
-        k.shrink(Is(0.0)) |> ignore
-        f.shrink(Is(0.0)) |> ignore
-      }
+    // (its mark made with it, none where it says none: a chip whose mark comes is the same chip, never one making its
+    // way in across its words)
+    // (a mark run on into its words, 磁盘剩 420 G, one line of words, never two touching)
+    let joined = fn() { !is_refill() && !label_muted && chip_joined(mark(), words()) }
+    let k = words_node(b, fn() { if joined() { "" } else { mark() } }, fn() {
+      if is_refill() { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
     })
-    |> ignore
+    match refill {
+      Some(_) =>
+        b.each(at_once=true, fn() { if is_refill() { [0] } else { [] } }, fn(i) { i }, fn(x, _) {
+          let ic = icon_node(x, "refresh", icon_sz, By(fn() { theme().p.red }))
+          if squeezes {
+            ic.shrink(Is(0.0)) |> ignore
+          }
+        })
+      None => ()
+    }
+    let f = words_node(b, fn() { if joined() { mark() + words() } else { words() } }, fn() {
+      if is_refill() { chip_refill_text } else { chip_text }
+    })
+    // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are;
+    // else whole, its mark and figure never squeezed over each other, so a line short of the room for it gives it
+    // up whole: View::drops)
+    if squeezes {
+      k.shrink(Is(0.0)) |> ignore
+      f.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+    } else {
+      k.shrink(Is(0.0)) |> ignore
+      f.shrink(Is(0.0)) |> ignore
+    }
   })
   match (tips, said) {
     // (`tips_within`: shown by the pointer within it, where the chip stands in what takes no press and so is never

@@ -368,65 +368,145 @@ fn attention_unread(src : Source, w : Workspace) -> Array[Json] {
 }
 
 ///|
+/// A virtualized row of 待处理's panel (attention_rows_node's panel_list_node).
+#derive(Eq, Hash)
+priv enum AttentionBlock {
+  AttTrouble
+  AttGroupHead(String)
+  AttChatItem(String, String)
+  AttOpenJobs
+}
+
+///|
+/// Estimated row height of an attention item for panel_list_node virtualization.
+let att_row_est : Double = 46.0
+
+///|
 /// What 待处理's panel holds (attention_present's), in node `v`: where it is the bell's (`railed`: the rail's, 小屏's
 /// own), the stations' trouble not looked at before it opened (pressed, the Stations' place); each workspace's chats
 /// that want the viewer, the one in view's first, under its name where there are several (its mark before it); where
 /// it is the bell's, what is left up long (open_jobs_node: the viewer's own, the others' folded; under 待处理 in the
 /// sidebar the sidebar's foot lists it); nothing waiting said where none of it is. A part with one before it 6 under
-/// it; each following what it lists as that changes.
+/// it; each following what it lists as that changes. Virtualized via `@sf.panel_list_node` when non-empty so large
+/// workspaces only build visible items on cold open, while the empty state renders directly without list overhead.
 fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Bool, close : () -> Unit) -> Unit {
-  let groups = fn() { attention_groups(src, w, true) }
-  let trouble = fn() { if railed { bell_trouble(src, w) } else { "" } }
-  let jobs = fn() { railed && open_jobs_any(src, w) }
-  let several = fn() {
-    let gs = groups()
-    gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
-  }
-  let next = fn(before : Bool) { if before { @ui.Space::S1_5.px() } else { 0.0 } }
-  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(b) {
-    @sf.style_node(b, fn() { att_empty })
-    @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
+  let plan = @signals.computed(fn(_) {
+    let gs = attention_groups(src, w, true)
+    let tr = if railed { bell_trouble(src, w) } else { "" }
+    let has_jobs = railed && open_jobs_any(src, w)
+    let sev = gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
+    let keys : Array[AttentionBlock] = []
+    let names : Map[String, String] = Map([])
+    let by_key : Map[(String, String), Json] = Map([])
+    let top_gap : Map[AttentionBlock, @ui.Space] = Map([])
+    if tr != "" {
+      keys.push(AttTrouble)
+    }
+    for gi, g in gs {
+      let (ws_id, ws_name, items) = g
+      names[ws_id] = ws_name
+      if sev {
+        let hk = AttGroupHead(ws_id)
+        keys.push(hk)
+        if gi == 0 && tr != "" {
+          top_gap[hk] = S1_5
+        }
+      }
+      for ii, it in items {
+        let ik = attention_key(it)
+        let bk = AttChatItem(ws_id, ik)
+        keys.push(bk)
+        by_key[(ws_id, ik)] = it
+        if !sev && gi == 0 && ii == 0 && tr != "" {
+          top_gap[bk] = S1_5
+        } else if ii > 0 || sev {
+          top_gap[bk] = S0_5
+        }
+      }
+    }
+    if has_jobs {
+      keys.push(AttOpenJobs)
+      if tr != "" || gs.length() > 0 {
+        top_gap[AttOpenJobs] = S1_5
+      }
+    }
+    (keys, names, by_key, top_gap, tr)
   })
-  v.show(at_once=true, fn() { trouble() != "" }, fn(t) {
-    @sf.panel_group_node(t, fn() { "Station" }, fn(rows) {
-      attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(trouble()) } }, fn() {
-        close()
-        @sfbase.go_place("stations", kept=true) |> ignore
+  let keys = @signals.computed(fn(_) { plan.get().0 })
+  v.pick(at_once=true, fn() { keys.get().length() == 0 }, fn(slot, empty) {
+    if empty {
+      slot.box(fn(b) {
+        @sf.style_node(b, fn() { att_empty })
+        @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
       })
-    })
-  })
-  v.box(fn(chats) {
-    // (6 under the trouble where the chats have no name of their own over them)
-    chats.padding(By(fn() { (0.0, next(trouble() != "" && groups().length() > 0 && !several()), 0.0, 0.0) })) |> ignore
-    chats.each(groups, fn(g) { g.0 }, fn(gb, g) {
-      // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
-      let first_item = fn() { attention_mark(src, g.get().0) }
-      @sf.panel_group_node(
-        gb,
-        fn() { if several() { g.get().1 } else { "" } },
-        lead=fn(l) {
-          @sf.workspace_badge_node(
-            l,
-            fn() { g.get().1 },
-            fn() { text(first_item(), "workspaceEmoji") },
-            fn() { text(first_item(), "workspaceIcon") },
-            att_ws_mark,
-          )
-        },
-        fn(rows) {
-          rows.each(fn() { g.get().2 }, attention_key, fn(row, i) {
-            let ws = @signals.untracked(fn() { g.get().0 })
-            attention_item_node(row, src, fn() { i.get() }, fn() { attention_go(src, w, ws, i.untracked(), close) })
-          })
+      |> ignore
+    } else {
+      @sf.panel_list_node(
+        slot,
+        fn() { keys.get() },
+        est=att_row_est,
+        most=fn() { dmax(120.0, v.window_h() - 96.0) },
+        fn(row, k) {
+          let gap = fn() { plan.get().3.get(k) }
+          match k {
+            AttTrouble =>
+              @sf.panel_group_node(row, fn() { "Station" }, fn(rows) {
+                attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(plan.get().4) } }, fn() {
+                  close()
+                  @sfbase.go_place("stations", kept=true) |> ignore
+                })
+              })
+            AttGroupHead(ws_id) => {
+              let first_item = fn() { attention_mark(src, ws_id) }
+              let ws_name = fn() { plan.get().1.get(ws_id).unwrap_or("") }
+              row.box(fn(g) {
+                g.margin(By(fn() {
+                  match gap() {
+                    Some(sp) => (0.0, sp.px(), 0.0, 0.0)
+                    None => (0.0, 0.0, 0.0, 0.0)
+                  }
+                }))
+                |> ignore
+                @sf.panel_group_node(
+                  g,
+                  ws_name,
+                  lead=fn(l) {
+                    @sf.workspace_badge_node(
+                      l,
+                      ws_name,
+                      fn() { text(first_item(), "workspaceEmoji") },
+                      fn() { text(first_item(), "workspaceIcon") },
+                      att_ws_mark,
+                    )
+                  },
+                  fn(_) {  },
+                )
+              })
+              |> ignore
+            }
+            AttChatItem(ws_id, ik) => {
+              let item_sig = @signals.computed(fn(_) { plan.get().2.get((ws_id, ik)).unwrap_or(Json::object(Map([]))) })
+              attention_item_node(row, src, fn() { item_sig.get() }, top_gap=gap, fn() {
+                attention_go(src, w, ws_id, @signals.untracked(fn() { item_sig.get() }), close)
+              })
+            }
+            AttOpenJobs =>
+              row.box(fn(g) {
+                g.margin(By(fn() {
+                  match gap() {
+                    Some(sp) => (0.0, sp.px(), 0.0, 0.0)
+                    None => (0.0, 0.0, 0.0, 0.0)
+                  }
+                }))
+                |> ignore
+                open_jobs_node(g, src, w, close)
+              })
+              |> ignore
+          }
         },
       )
-    })
-  })
-  |> ignore
-  // (what is left up long under what waits on the viewer, 6 under it)
-  v.show(at_once=true, jobs, fn(b) {
-    b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
-    open_jobs_node(b, src, w, close)
+      |> ignore
+    }
   })
 }
 
@@ -435,7 +515,13 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
 /// waiting on the viewer, red gone wrong, blue unread, said as an image of its kind), its title (500) and its line; 忽略
 /// at its end where it can be let go, while the hand is on the row (always to a finger, which hovers over nothing),
 /// its note its tip. Pressed, `go`.
-fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -> Unit) -> Unit {
+fn attention_item_node(
+  row : @view.View,
+  src : Source,
+  i : () -> Json,
+  top_gap? : () -> @ui.Space? = fn() { None },
+  go : () -> Unit,
+) -> Unit {
   let v = fn() { Some(i()) }
   // the time, said again as each minute of a login's time left goes (attention_left's)
   let now = @sf.countdown_now_node(row, src.now, fn() { number(v(), "loginEnds") })
@@ -447,7 +533,13 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
   }
   let tips = @sf.panel_tips_of(row)
   @sf.action_box_node(row, title, fn(_) { go() }, fn(r) {
-    @sf.style_node(r, fn() { if @sf.lit_in_node(r) { att_item_on } else { att_item } })
+    @sf.style_node(r, fn() {
+      let base = if @sf.lit_in_node(r) { att_item_on } else { att_item }
+      match top_gap() {
+        Some(sp) => base.then(@ui.style(mt=sp))
+        None => base
+      }
+    })
     // (its first line: the dot, the title and 忽略, their middles on one line; the line under it from the title's edge,
     // never the dot centred on both: the user, 2026-11-14)
     r.box(fn(head) {
@@ -471,10 +563,11 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
         |> ignore
       })
       |> ignore
-      head.box(fn(words) {
-        @sf.style_node(words, fn() { att_text }, in_row=true)
-        @sf.words_node(words, title, fn() { att_title }) |> ignore
-      })
+      @sf.words_node(head, title, fn() { att_title })
+      .grow(Is(1.0))
+      .shrink(Is(1.0))
+      .basis(Is(Some(0.0)))
+      .min_width(Is(Some(0.0)))
       |> ignore
       head.show(
         at_once=true,
@@ -506,14 +599,9 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
     })
     |> ignore
     r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(u) {
-      @sf.style_node(u, fn() { att_under })
-      // (the dot's column, empty: the line starts where the title does)
-      u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
-      u.box(fn(words) {
-        @sf.style_node(words, fn() { att_text }, in_row=true)
-        @sf.words_node(words, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
-      })
-      |> ignore
+      // (16 dot column + 10 gap = 26: the line starts where the title does, without redundant wrapper boxes)
+      u.padding(Is((26.0, 0.0, 0.0, 0.0))) |> ignore
+      @sf.words_node(u, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
     })
   })
   |> ignore
@@ -581,11 +669,6 @@ let att_item : @ui.Style = @ui.style(w=Full, px=S4, py=S1_5, radius=@sf.panel_in
 let att_head : @ui.Style = @ui.css("row w=Full gap=S2_5 align=ACenter")
 
 ///|
-/// The line under a row's title, from the title's edge: an empty dot's column (att_mark) and att_head's gap before it.
-// kept across runs: a value (no field of it changes)
-let att_under : @ui.Style = @ui.css("row w=Full gap=S2_5")
-
-///|
 // kept across runs: a value (no field of it changes)
 let att_item_on : @ui.Style = att_item.then(@ui.css("bg=Hover"))
 
@@ -599,10 +682,6 @@ let att_mark : @ui.Style = @ui.css("w=S4 align=AStart justify=JCenter")
 /// Its dot, 7 round, in the amber's ink (red gone wrong).
 // kept across runs: a value (no field of it changes)
 let att_dot : @ui.Style = @ui.style(w=@sf.attention_dot, h=@sf.attention_dot, radius=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let att_text : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

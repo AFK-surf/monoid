@@ -554,7 +554,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide home": (1353, 890, 89),
   "wide home-bars": (1353, 890, 89),
   "wide home-jobs": (1353, 890, 89),
-  "wide home-shared-bell": (3096, 2408, 358),
+  // Lowered, 2026-11-27 (PR-B4): attention_rows_node virtualized via panel_list_node and attention_item_node flattened.
+  "wide home-shared-bell": (1595, 1060, 117),
   "wide home-sheet": (1353, 890, 89),
   "wide home-news": (1353, 890, 89),
   "wide home-station-updates": (1353, 890, 89),

@@ -67,10 +67,6 @@ let chip_box_dark_overlay : @ui.Style = @ui.css("bg=A(Bg,O70)")
 let chip_box_small : @ui.Style = chip_box.then(@ui.style(h=Fixed(fill_chip_small_h)))
 
 ///|
-// kept across runs: a value (no field of it changes)
-let chip_fill_part : @ui.Style = @ui.css("h=Full")
-
-///|
 /// Its mark and figure 5 apart, 8 in (a small one's 5).
 // kept across runs: a value (no field of it changes)
 let chip_words : @ui.Style = @ui.css("row px=S2 gap=S1_25 align=ACenter")
