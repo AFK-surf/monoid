@@ -517,8 +517,25 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
   assert_eq(remaining[0].id, "ws-active", msg="ws-active must remain in workspaces snapshot without flashing None")
   let raw_str = sub.value.unwrap().stringify()
   assert_false(raw_str.contains("ws-other"), msg="pruned workspaces snapshot must not retain ws-other in workspaces or ownedWorkspaces")
+  // Production intermediate sync of the pruned `workspaces` snapshot transitions ws-other from pending -> revoked
+  // while preserving ws-active as Some("acct-1").
+  @sfbase.workspace_owners_sync_json(sub.value)
+  assert_true(
+    @sfbase.workspace_explicit_owner_of("ws-other") is None,
+    msg="intermediate pruned snapshot sync must keep ws-other explicit owner None",
+  )
+  assert_eq(
+    @sfbase.workspace_owner_of("ws-other"),
+    "\u{3}revoked",
+    msg="intermediate pruned snapshot sync must transition ws-other to revoked",
+  )
+  assert_eq(
+    @sfbase.workspace_explicit_owner_of("ws-active"),
+    Some("acct-1"),
+    msg="intermediate pruned snapshot sync must preserve ws-active explicit owner",
+  )
   // 2. Follow-up snapshot where old owner acct-1 (loaded=true) lost ws-other and candidate acct-2 (loaded=false)
-  //    lists ws-other: ws-other MUST stay pending (never prematurely confirmed)!
+  //    lists ws-other: even after intermediate revoked state, ws-other MUST enter pending (never prematurely confirmed)!
   let unloaded_candidate : Json = [
     {
       "account": { "sub": "acct-1", "email": "a@example.com" },
@@ -536,12 +553,12 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
   @sfbase.workspace_owners_sync_json(Some(unloaded_candidate))
   assert_true(
     @sfbase.workspace_explicit_owner_of("ws-other") is None,
-    msg="unloaded candidate acct-2 must NOT prematurely confirm ws-other after explicit boundary loss",
+    msg="unloaded candidate acct-2 must NOT prematurely confirm ws-other after revoked intermediate sync",
   )
   assert_eq(
     @sfbase.workspace_owner_of("ws-other"),
     "\u{3}pending",
-    msg="ws-other must stay pending while candidate acct-2 is loaded=false",
+    msg="ws-other must enter pending while candidate acct-2 is loaded=false",
   )
   assert_eq(
     @sfbase.workspace_explicit_owner_of("ws-active"),
@@ -579,6 +596,28 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
     owner_events,
     [("ws-other", "acct-1", "")],
     msg="recovering ws-other to acct-2 after explicit boundary loss must not emit spurious revocations for acct-1 or ws-active",
+  )
+  // 4. P2: invalidating an already-revoked workspace (no cached owner) must still bump workspace_owners_version,
+  //    transition workspace_owner_of from revoked -> pending, and NOT emit any spurious owner_change callback.
+  @sfbase.workspace_owners_sync_json(sub.value)
+  assert_eq(@sfbase.workspace_owner_of("ws-other"), "\u{3}revoked", msg="ws-other revoked before P2 invalidate")
+  let ver_before_p2 = @sfbase.workspace_owners_version.untracked()
+  let events_before_p2 = owner_events.length()
+  @sfbase.workspace_owner_invalidate("ws-other")
+  assert_eq(
+    @sfbase.workspace_owners_version.untracked(),
+    ver_before_p2 + 1,
+    msg="workspace_owner_invalidate on revoked workspace must bump workspace_owners_version",
+  )
+  assert_eq(
+    @sfbase.workspace_owner_of("ws-other"),
+    "\u{3}pending",
+    msg="workspace_owner_invalidate on revoked workspace must transition owner state from revoked to pending",
+  )
+  assert_eq(
+    owner_events.length(),
+    events_before_p2,
+    msg="workspace_owner_invalidate with no cached owner must not emit spurious owner_change callback",
   )
   listen_active.val = false
 }
