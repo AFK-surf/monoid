@@ -26,6 +26,7 @@ import java.util.Random;
 public final class FrameSchedulerPropertyTest {
     private static final long SEED = 0x5F3759DF12345678L;
     private static final int SEQUENCES = 5_000;
+    private static final int BACKWARD_SEQUENCES = 2_000;
     private static final long PERIOD_120 = 8_333_333L;
     private static final long PERIOD_90 = 11_111_111L;
     private static final long PERIOD_60 = 16_666_667L;
@@ -64,8 +65,10 @@ public final class FrameSchedulerPropertyTest {
         int pictureRenders;
         boolean renderPending;
         long lastRenderedAppVsyncNs = -1L;
+        long lastRenderedAppToken = 0L;
         boolean immediateOverrideSinceLastApp;
         int duplicateAppVsyncViolations;
+        int duplicateTokenViolations;
         int staleGenViolations;
         int invariantViolations;
 
@@ -162,6 +165,27 @@ public final class FrameSchedulerPropertyTest {
             onMain = prev;
         }
 
+        void deliverBackwardVsync() {
+            if (inFlightVsyncs.isEmpty()) return;
+            List<PostedVsync> batch = new ArrayList<>(inFlightVsyncs);
+            inFlightVsyncs.clear();
+            long regressedT = Math.max(period, vsyncNow - (1L + rng.nextInt(4)) * period);
+            long shows = showsFor(regressedT);
+            boolean prev = onMain;
+            onMain = true;
+            for (PostedVsync pv : batch) {
+                if (pv.untagged) {
+                    pacer.vsyncCame(regressedT, shows);
+                } else {
+                    pacer.vsyncCame(regressedT, shows, pv.gen);
+                    if (stalePool.size() < 16) stalePool.add(pv);
+                }
+            }
+            onMain = prev;
+            // A deliberately regressed timestamp is a backward clock jump rather than a same-beat duplicate.
+            immediateOverrideSinceLastApp = true;
+        }
+
         void deliverStaleCallback() {
             if (stalePool.isEmpty()) return;
             long activeBefore = pacer.scheduler.activeVsyncGen();
@@ -190,6 +214,10 @@ public final class FrameSchedulerPropertyTest {
             totalRenders++;
             if (tk.app) {
                 appRenders++;
+                if (tk.dispatchToken <= 0L || tk.dispatchToken <= lastRenderedAppToken) {
+                    duplicateTokenViolations++;
+                }
+                lastRenderedAppToken = tk.dispatchToken;
                 long v = tk.vsyncAt[0];
                 if (v != 0L && !immediateOverrideSinceLastApp && v == lastRenderedAppVsyncNs) {
                     duplicateAppVsyncViolations++;
@@ -254,7 +282,7 @@ public final class FrameSchedulerPropertyTest {
         }
     }
 
-    private static void runSequence(int seqIdx, Random rng) {
+    private static void runSequence(int seqIdx, Random rng, boolean allowBackwardVsync) {
         long[] periods = {PERIOD_120, PERIOD_90, PERIOD_60, PERIOD_20};
         long period = periods[rng.nextInt(periods.length)];
         Harness h = new Harness(rng, period);
@@ -271,7 +299,7 @@ public final class FrameSchedulerPropertyTest {
                 h.pacer.topRate = (float) Math.round(1e9 / h.period);
             }
 
-            int op = rng.nextInt(16);
+            int op = rng.nextInt(allowBackwardVsync ? 18 : 17);
             switch (op) {
                 case 0: // wantFrame
                     h.pacer.wantFrame();
@@ -349,6 +377,17 @@ public final class FrameSchedulerPropertyTest {
                     h.onMain = true;
                     h.pacer.vsyncCame(h.vsyncNow, h.showsFor(h.vsyncNow));
                     break;
+                case 16: // frameNow interleaved with immediate same-beat vsyncCame(vsyncNow)
+                    h.onMain = true;
+                    h.immediateOverrideSinceLastApp = true;
+                    h.pacer.frameNow();
+                    h.drainMainQueue();
+                    h.deliverNextVsync(true);
+                    break;
+                case 17: // Active/untagged delivery with regressed (out-of-order/backward) timestamp
+                    h.drainMainQueue();
+                    h.deliverBackwardVsync();
+                    break;
                 default:
                     break;
             }
@@ -400,7 +439,11 @@ public final class FrameSchedulerPropertyTest {
                     + ", hasUndispatched=" + h.pacer.scheduler.hasUndispatchedDemand()
                     + ", inFlight=" + h.inFlightVsyncs.size() + ")");
         }
-        if (h.duplicateAppVsyncViolations > 0) {
+        if (h.duplicateTokenViolations > 0) {
+            throw new AssertionError("SAFETY VIOLATION (non-monotonic dispatchToken) in sequence " + seqIdx
+                    + ": count=" + h.duplicateTokenViolations);
+        }
+        if (!allowBackwardVsync && h.duplicateAppVsyncViolations > 0) {
             throw new AssertionError("SAFETY VIOLATION (duplicate app vsync) in sequence " + seqIdx
                     + ": count=" + h.duplicateAppVsyncViolations);
         }
@@ -418,10 +461,14 @@ public final class FrameSchedulerPropertyTest {
         Random rng = new Random(SEED);
         long t0 = System.nanoTime();
         for (int i = 0; i < SEQUENCES; i++) {
-            runSequence(i, rng);
+            runSequence(i, rng, false);
+        }
+        for (int i = 0; i < BACKWARD_SEQUENCES; i++) {
+            runSequence(SEQUENCES + i, rng, true);
         }
         double ms = (System.nanoTime() - t0) / 1e6;
-        System.out.printf("ok   FrameSchedulerPropertyTest: %d/%d sequences passed (0 deadlocks, 0 safety violations, %.1f ms)%n",
-                SEQUENCES, SEQUENCES, ms);
+        int total = SEQUENCES + BACKWARD_SEQUENCES;
+        System.out.printf("ok   FrameSchedulerPropertyTest: %d/%d sequences passed (%d monotonic/same-beat + %d backward/out-of-order, 0 deadlocks, 0 safety violations, %.1f ms)%n",
+                total, total, SEQUENCES, BACKWARD_SEQUENCES, ms);
     }
 }

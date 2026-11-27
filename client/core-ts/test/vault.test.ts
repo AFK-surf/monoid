@@ -5496,3 +5496,97 @@ test("vault.ask & standalone KeyAsk hardening: concurrent asks independent, cloc
   d1.core.close();
   d2.core.close();
 });
+
+test("Direction 2A R5b: migrate() -> unsealOwn() revocation during second #ready() fails auth_stale before BOX_KEY read", async () => {
+  for (const trigger of ["bumpVault", "bumpWorkspace", "vault.lock"] as const) {
+    const r = await rig();
+    r.putLock();
+    const { made: ownId } = await r.ask("vault.setup", {});
+    await r.ask("vault.putItem", {
+      vault: ownId,
+      plain: { kind: "token", name: "ExistingReady", fields: { value: "existing_ready_val" } },
+      listing: { name: "existing_ready", kind: "token", modes: ["proxy"], hosts: ["er.example.com"] },
+    });
+    const plainId = "i_01JAPLAIN000000000000MIG3";
+    r.st.plain.set(plainId, {
+      id: plainId,
+      version: 0,
+      kind: "token",
+      name: "PlainThree",
+      fields: { value: "plain_val_3" },
+      notes: "",
+      listing: { name: "plain_three", kind: "token", modes: ["proxy"], hosts: ["p3.example.com"] },
+      at: 1000,
+      owner: "a@x.com",
+    });
+    // Restart so mem.keys is cold and any unseal attempt would have to read BOX_KEY via secureGet.
+    await r.restart();
+    await r.core.inner.runner.run(readStation(r.core.inner, "ws/st"));
+    await r.host.time.pass(200);
+    r.take();
+
+    const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+    assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, `${trigger}: vault starts locked after restart`);
+
+    const enteredSecondReady = Deferred.makeUnsafe<void>();
+    const releaseSecondReady = Deferred.makeUnsafe<void>();
+    let signerLoads = 0;
+    let boxKeyReads = 0;
+    const origSecGet = r.host.secureGet!.bind(r.host);
+    r.host.secureGet = (k, reason) => {
+      if (k === Signer.KEY) {
+        return Effect.gen(function* () {
+          signerLoads++;
+          // 1st Signer.KEY read belongs to migrate()'s own #ready(); suspend strictly on the 2nd inside unsealOwn()'s #ready().
+          if (signerLoads === 2) {
+            yield* Deferred.succeed(enteredSecondReady, undefined);
+            yield* Deferred.await(releaseSecondReady);
+          }
+          return yield* origSecGet(k, reason);
+        });
+      }
+      if (k === BOX_KEY) {
+        return Effect.gen(function* () {
+          boxKeyReads++;
+          return yield* origSecGet(k, reason);
+        });
+      }
+      return origSecGet(k, reason);
+    };
+
+    let itemWrites = 0;
+    let plainDeletes = 0;
+    stationReplies(r.host, (req) => {
+      if (req.method === "PUT" && req.url.includes("/vault/items")) itemWrites++;
+      if (req.method === "PUT" && req.url.includes("/vault/plain")) {
+        const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { deleted?: boolean };
+        if (body.deleted) plainDeletes++;
+      }
+      return r.st.reply(req);
+    });
+
+    const migratePromise = r.ask("vault.migrate", {});
+    await Effect.runPromise(Deferred.await(enteredSecondReady));
+    assert.equal(signerLoads, 2, `${trigger}: must pass migrate()'s 1st #ready() and suspend inside unsealOwn()'s 2nd #ready()`);
+    assert.equal(boxKeyReads, 0, `${trigger}: must not read BOX_KEY while suspended inside 2nd #ready()`);
+
+    // Revoke capability while unsealOwn() is suspended inside its 2nd #ready().
+    if (trigger === "bumpVault") {
+      r.core.inner.store.authGen.bumpVault("ws", ownId);
+    } else if (trigger === "bumpWorkspace") {
+      r.core.inner.store.authGen.bumpWorkspace("ws");
+    } else {
+      await r.ask("vault.lock", {});
+    }
+    Effect.runSync(Deferred.succeed(releaseSecondReady, undefined));
+
+    await fails(migratePromise, "auth_stale");
+    assert.equal(boxKeyReads, 0, `${trigger}: unsealOwn() must intercept stale cap before calling #key()/BOX_KEY read`);
+    assert.equal(signerLoads, 2, `${trigger}: must complete without retrying #ready()`);
+    assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, `${trigger}: vault must remain locked`);
+    assert.equal(itemWrites, 0, `${trigger}: stale migrate/unsealOwn must perform 0 item writes`);
+    assert.equal(plainDeletes, 0, `${trigger}: stale migrate/unsealOwn must perform 0 deletePlain writes`);
+    assert.equal(r.st.plain.get(plainId).deleted, undefined, `${trigger}: plain item on station must remain undeleted`);
+    r.core.close();
+  }
+});
