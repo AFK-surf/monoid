@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b9ded7d55](https://github.com/AFK-surf/monoid/commit/b9ded7d55686d46f159ca675666de8ab3d37ef99) fix(mbui): keep watched topics reactive on auth sc | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 103.09 | 131.45 |
 | [3548369bf](https://github.com/AFK-surf/monoid/commit/3548369bf6d69f5cd5342ee6231f105a2389ae5a) perf(cloud): cache compact changelog fixes and bat | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fde30eb69](https://github.com/AFK-surf/monoid/commit/fde30eb69d56d3cfd39ebfe5ef1b0bcacdcddeda) fix(ui): record keyboard scrolls for row motion ch | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
 | [7cb446b32](https://github.com/AFK-surf/monoid/commit/7cb446b322f2282313dd7bf0686de8a1049c863f) fix(mbui): open the first chat when the startup wa | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
-| [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b9ded7d55](https://github.com/AFK-surf/monoid/commit/b9ded7d55686d46f159ca675666de8ab3d37ef99) fix(mbui): keep watched topics reactive on auth sc | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.97 |
 | [3548369bf](https://github.com/AFK-surf/monoid/commit/3548369bf6d69f5cd5342ee6231f105a2389ae5a) perf(cloud): cache compact changelog fixes and bat | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fde30eb69](https://github.com/AFK-surf/monoid/commit/fde30eb69d56d3cfd39ebfe5ef1b0bcacdcddeda) fix(ui): record keyboard scrolls for row motion ch | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.75 |
 | [7cb446b32](https://github.com/AFK-surf/monoid/commit/7cb446b322f2282313dd7bf0686de8a1049c863f) fix(mbui): open the first chat when the startup wa | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.48 |
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
-| [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.46 |
