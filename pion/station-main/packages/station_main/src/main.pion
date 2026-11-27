@@ -855,6 +855,15 @@ pub fn check_external_connects_need_node(data : String, sep : String) -> Array[S
     None => ()
   }
 
+  // 4. Pending replica restore `<data>/restore/ready.json`: decide BEFORE `ready` and BEFORE
+  // predecessor exit so a staged snapshot containing external connects never causes post-`ready`
+  // exit / `/healthz` blips or `STRICT=1` 5-failure give-up.
+  let ready_path = nodepath::join(sep, [data, "restore", "ready.json"])
+  match pending_restore_reason(station_sys::lstat_raw(ready_path) is Some(_)) {
+    Some(r) => reasons.push(r)
+    None => ()
+  }
+
   reasons
 }
 

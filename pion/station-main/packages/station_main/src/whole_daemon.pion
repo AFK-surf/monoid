@@ -314,6 +314,15 @@ pub fn classify_db_dep_check(res : DbDepCheck) -> Option[String] {
   }
 }
 
+/// Returns `"restore:pending-ready-json"` when `<data>/restore/ready.json` exists.
+pub fn pending_restore_reason(ready_exists : Bool) -> Option[String] {
+  if ready_exists {
+    Some("restore:pending-ready-json")
+  } else {
+    None
+  }
+}
+
 /// ASCII case-insensitive strict-engine parser aligned 1:1 with Rust launcher `main.rs:339`
 /// (`STILLFAIL_STATION_ENGINE_STRICT`): returns `true` for trimmed `"1"` or `"true"` (any case).
 pub fn is_engine_strict_value(raw : String) -> Bool {
@@ -4444,8 +4453,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let home_ws = st.core.config.home_workspace
           let before_store_fn = fn(dir : String) -> Result[Unit, String] {
             let ready_path = nodepath::join(ctx.sep, [dir, "restore", "ready.json"])
-            let had_restore_ready = station_sys::lstat_raw(ready_path) is Some(_)
-            if had_restore_ready {
+            if station_sys::lstat_raw(ready_path) is Some(_) {
               let self_argv = host_shim::args()
               let argv0 = if self_argv.length() > 0 { self_argv[0] } else { "" }
               let self_exe = match resolve_self_executable_with(
@@ -4535,28 +4543,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     }
                   }
                 }
-              }
-            }
-            if had_restore_ready {
-              // Post-restore recheck BEFORE opening `WholeStore` and BEFORE emitting `ready`:
-              // if the freshly restored snapshot contains active external/cross-station connects
-              // (or DB check fails), exit before `ready` so the Launcher immediately re-runs
-              // `main.pion` which `exec_replace`s into Node before the first `/healthz 200`.
-              let post_reasons = check_external_connects_need_node(dir, ctx.sep)
-              if post_reasons.length() > 0 {
-                let rsb = StringBuilder::new()
-                for ri in 0..<post_reasons.length() {
-                  if ri > 0 {
-                    rsb.write_string(", ")
-                  }
-                  rsb.write_string(post_reasons[ri])
-                }
-                let msg = "pion whole station beta: restored snapshot requires Node ("
-                + rsb.to_string()
-                + "); exiting before ready for Node handoff"
-                let _ = host_shim::write_stderr_line(msg)
-                ctx.fail_and_stop(msg)
-                return Err(msg)
               }
             }
             match st.replica.before_store(home_ws, ctx.station_key.id, "station_store", "primary", w_now) {

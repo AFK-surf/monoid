@@ -1669,7 +1669,7 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
     };
   };
 
-  // --- Scenario 1: Complete snapshot (Node takeBackSoon vs Pion Launcher) ---
+  // --- Scenario 1: Complete snapshot (Node takeBackSoon vs Pion --internal-replica-restore + native Pion Launcher boot) ---
   {
     // Node side
     const nodeDir = freshDir("replica-node-ok");
@@ -1681,15 +1681,22 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
     assert.equal(nodeOut.error, null);
     assert.equal(existsSync(join(nodeDir, "restore")), false, "Node must clean <data>/restore/");
 
-    // Pion side
+    // Pion `--internal-replica-restore` differential parity + subsequent native Pion Launcher boot
     const { appDir, dataDir, stationId } = setupPionDir("replica-pion-ok");
     stageRestore(dataDir, false);
-    const run = await runPionOnce(appDir, dataDir);
+    const restRes = spawnSync(
+      pionBin,
+      ["--internal-replica-restore", "--db", join(dataDir, "stillfail.db"), "--data", dataDir, "--now", String(nowMs)],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    assert.equal(restRes.status, 0, restRes.stderr);
     const pionOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
     assert.equal(pionOut.error, nodeOut.error, "Pion vs Node complete-restore error parity");
     assert.equal(pionOut.reason, nodeOut.reason, "Pion vs Node complete-restore reason parity");
     assert.equal(existsSync(join(dataDir, "restore")), false, "Pion must clean <data>/restore/");
 
+    // Pure-Web restored dataDir boots natively on Pion via real Launcher and serves `chat:a`!
+    const run = await runPionOnce(appDir, dataDir);
     const clientEp = await bindClientEp(mesh);
     const jwt = signMemberJwt({ ws, device: clientEp.id(), sub: "u-rest", email: "alice@example.com", name: "Alice", role: "owner" });
     const { conn } = await until("restore admin connect", () => openAdminConn(clientEp, stationId, `127.0.0.1:${run.udpPort}`, jwt));
@@ -1719,10 +1726,16 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
     const { appDir, dataDir } = setupPionDir("replica-pion-notempty");
     seedExisting(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
     stageRestore(dataDir, false);
-    const run = await runPionOnce(appDir, dataDir);
+    const restRes = spawnSync(
+      pionBin,
+      ["--internal-replica-restore", "--db", join(dataDir, "stillfail.db"), "--data", dataDir, "--now", String(nowMs)],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    assert.equal(restRes.status, 0, restRes.stderr);
     const pionOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
     assert.equal(pionOut.reason, nodeOut.reason, "Pion vs Node notEmpty reason parity");
     assert.equal(existsSync(join(dataDir, "restore")), false, "Pion must leave no orphan ready.json on notEmpty");
+    const run = await runPionOnce(appDir, dataDir);
     await run.stop();
 
     const checkStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
@@ -1743,11 +1756,16 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
 
     const { appDir, dataDir } = setupPionDir("replica-pion-badhead");
     stageRestore(dataDir, true);
-    const run1 = await runPionOnce(appDir, dataDir);
+    spawnSync(
+      pionBin,
+      ["--internal-replica-restore", "--db", join(dataDir, "stillfail.db"), "--data", dataDir, "--now", String(nowMs)],
+      { encoding: "utf8", timeout: 20_000 },
+    );
     const pionOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
     assert.ok(typeof pionOut.error === "string" && pionOut.error.length > 0, "Pion must record non-empty error");
     assert.equal(pionOut.reason, nodeOut.reason, "Pion vs Node corrupt-head reason parity");
     assert.equal(existsSync(join(dataDir, "restore")), false, "Pion must leave no orphan ready.json on missing head.json");
+    const run1 = await runPionOnce(appDir, dataDir);
     await run1.stop();
 
     // Second restart in the SAME dataDir MUST also boot cleanly (zero boot-loop bricking)!
@@ -2351,35 +2369,35 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     await until("disabled-connects pion pid2 exited", () => !isAlive(pid2));
   }
 
-  // --- Scenario 6 (Astra R6 P1 #1): Post-replica-restore recheck BEFORE `ready` -> first `/healthz 200` served by Node ---
+  // --- Scenario 6 (Astra R7 6a / 6b / 6c): Pending `<data>/restore/ready.json` decided BEFORE `ready` ---
   {
-    const srcDir = freshDir("ext-gate-r7-src");
+    const srcDir = freshDir("ext-gate-r8-src");
     const srcDb = join(srcDir, "stillfail.db");
-    const ws = "ws-r7-rest";
+    const ws = "ws-r8-rest";
     const nowMs = Date.now();
     const peerEp = await bindClientEp(mesh);
     const peerId = peerEp.id();
-    const remoteConnectId = `slack-r7@${peerId}`;
+    const remoteConnectId = `slack-r8@${peerId}`;
 
     const srcStore = Store.open(srcDb, join(srcDir, "archives"));
     srcStore.db
       .prepare(
         "INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run("s:r7-rem", remoteConnectId, "s:r7-rem", "RestoredRemote", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, ws);
+      .run("s:r8-rem", remoteConnectId, "s:r8-rem", "RestoredRemote", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, ws);
     srcStore.db
-      .prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_R7', 'C_R7', '200.001', 'RestoredRemoteThread', ?)")
+      .prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_R8', 'C_R8', '200.001', 'RestoredRemoteThread', ?)")
       .run(nowMs);
     srcStore.db
-      .prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's:r7-rem', ?, ?)")
+      .prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's:r8-rem', ?, ?)")
       .run(remoteConnectId, nowMs);
     srcStore.db
-      .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_R7', 'before-r7-restore', ?)")
+      .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_R8', 'before-r8-restore', ?)")
       .run(nowMs);
 
     const originId = "b".repeat(64);
     const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
-    exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-r7" }] });
+    exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-r8" }] });
     let passRes = exp.pass(nothingTold());
     while (passRes.more) passRes = exp.pass(nothingTold());
     const head = passRes.heads[ws];
@@ -2394,25 +2412,34 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     exp.close();
     srcStore.close();
 
-    const dir = freshDir("ext-gate-r7-restore");
-    const appDir = join(dir, "app");
-    const dataDir = join(dir, "data");
-    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const stageR8Restore = (dataDir: string): void => {
+      const copyDir = join(dataDir, "restore", "copy");
+      mkdirSync(copyDir, { recursive: true });
+      cpSync(genPath, join(copyDir, head.gen), { recursive: true });
+      cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
+      writeFileSync(
+        join(dataDir, "restore", "ready.json"),
+        JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r8", from: peerId }),
+      );
+    };
 
-    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const stationId = idRes.stdout.trim();
-
-    // Stage `<data>/restore/` into the empty dataDir (no `stillfail.db` yet!).
-    const copyDir = join(dataDir, "restore", "copy");
-    mkdirSync(copyDir, { recursive: true });
-    cpSync(genPath, join(copyDir, head.gen), { recursive: true });
-    cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
-    writeFileSync(
-      join(dataDir, "restore", "ready.json"),
-      JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r7", from: peerId }),
-    );
+    const describedR8 = {
+      kind: "slack",
+      workspace: ws,
+      mode: "multi-session",
+      requireMention: false,
+      bind: { runtime: "claude" },
+      botUserId: "UBOT_R8",
+      botName: "r8bot",
+      identity: null,
+      platform: "slack",
+      team: "T_R8",
+      cards: true,
+      loginCards: false,
+      mention: ["<@", ">"],
+      link: null,
+      has: [],
+    };
 
     const cloudHttp = createHttpServer((_req, res) => {
       res.writeHead(404).end();
@@ -2424,9 +2451,9 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
         JSON.stringify({
           type: "state",
           workspace: ws,
-          workspace_name: "R7RestWS",
-          name: "r7-rest-station",
-          peers: [{ id: peerId, name: "peer-r7", relay: null }],
+          workspace_name: "R8RestWS",
+          name: "r8-rest-station",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
           workspaces: [],
           revocations: [],
         }),
@@ -2435,109 +2462,304 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     await new Promise<void>((r) => cloudHttp.listen(0, "127.0.0.1", () => r()));
     const cloudPort = (cloudHttp.address() as AddressInfo).port;
 
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-    writeFileSync(
-      join(dataDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        origin: `http://127.0.0.1:${cloudPort}`,
-        workspace: ws,
-        workspace_name: "R7RestWS",
-        station: stationId,
-        name: "r7-rest-station",
-        peers: [{ id: peerId, name: "peer-r7", relay: null }],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const udpPort = await pickFreeUdpPort();
-    const logs: string[] = [];
-    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: {
-        ...process.env,
-        STILLFAIL_NO_DISCOVERY: "1",
-        STILLFAIL_NO_DHT: "1",
-        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-        STILLFAIL_READER_ENGINE: "mb",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(launcher);
-    launcher.stdout.on("data", (d) => logs.push(String(d)));
-    launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-    // 1. Pion restores snapshot -> detects `db:remote-connect-sessions` BEFORE `ready` -> exits -> Launcher re-runs -> `exec_replace` into Node!
-    await until(
-      "Scenario 6 post-restore pre-ready exit + exec_replace into Node",
-      () =>
-        logs.join("").includes("restored snapshot requires Node (db:remote-connect-sessions); exiting before ready for Node handoff") &&
-        logs.join("").includes("external connects active (db:remote-connect-sessions); exec-replacing into Node station"),
-      30_000,
-    );
-    const nodePid = await until(
-      "Scenario 6 Node pid serving /healthz 200",
-      async () => {
-        const p = readHubPid(dataDir);
-        const port = readPorts(dataDir).admin ?? 0;
-        if (p > 0 && isAlive(p) && port > 0) {
-          try {
-            const r = await httpCall(port, "GET", "/healthz");
-            if (r.status === 200) return p;
-          } catch {}
-        }
-        return null;
-      },
-      25_000,
-    );
-    assert.equal(isAlive(nodePid), true);
-
-    // 2. Peer sends `connect.event` edit -> Node returns `{ result: { ok: true } }` and persists edited text!
-    const evResp = await until("Scenario 6 connect.event edit on Node", async () => {
-      try {
-        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
-          method: "connect.event",
+    // (6a) Live Node + staged `restore/ready.json` + STRICT=1 + flip `engine: "pion"` + SIGUSR2:
+    // Pion exits 1 BEFORE `ready`, original Node PID stays alive with 100% 200 on `/healthz` + `/admin/api/ways`!
+    {
+      const dir = freshDir("ext-gate-r8-6a");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
           workspace: ws,
-          connect: { id: "slack-r7", origin: peerId },
-          described: {
-            kind: "slack",
-            workspace: ws,
-            mode: "multi-session",
-            requireMention: false,
-            bind: { runtime: "claude" },
-            botUserId: "UBOT_R7",
-            botName: "r7bot",
-            identity: null,
-            platform: "slack",
-            team: "T_R7",
-            cards: true,
-            loginCards: false,
-            mention: ["<@", ">"],
-            link: null,
-            has: [],
-          },
-          event: {
-            type: "changed",
-            channel: "C_R7",
-            threadTs: "200.001",
-            ts: "200.001",
-            text: "edited-after-replica-restore",
-          },
-        });
-      } catch {
-        return null;
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r8-6a",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      const udpPort = await pickFreeUdpPort();
+      const logs: string[] = [];
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+          STILLFAIL_STATION_ENGINE_STRICT: "1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(launcher);
+      launcher.stdout.on("data", (d) => logs.push(String(d)));
+      launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+      const pid1 = await until("6a initial Node pid", () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
+      }, 30_000);
+      const port1 = readPorts(dataDir).admin!;
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      launcher.kill("SIGUSR2");
+
+      await until(
+        "6a STRICT=1 refusal logged before ready",
+        () => logs.join("").includes("restore:pending-ready-json"),
+        15_000,
+      );
+      assert.equal(readHubPid(dataDir), pid1, "6a original Node PID must remain unchanged");
+      assert.equal(isAlive(pid1), true, "6a original Node must remain alive");
+      assert.equal(logs.join("").includes("giving up"), false);
+
+      const clientEp = await bindClientEp(mesh);
+      const jwt = signMemberJwt({ ws, device: clientEp.id(), sub: "u-6a", email: "6a@example.com", name: "6a", role: "owner" });
+      const { conn } = await until("6a Node admin /admin/api/ways", () =>
+        openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
+      );
+      for (let i = 0; i < 8; i++) {
+        assert.equal((await httpCall(port1, "GET", "/healthz")).status, 200);
+        assert.equal((await adminRequest(conn, "GET", "/admin/api/ways")).status, 200);
       }
-    }, 15_000);
-    assert.deepEqual(evResp.result, { ok: true });
+      conn.close(0, "done");
 
-    launcher.kill("SIGTERM");
-    await until("Scenario 6 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+      launcher.kill("SIGTERM");
+      await until("6a launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+    }
 
-    const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
-    const editedRows = verifyStore.db
-      .prepare("SELECT text FROM entries WHERE text LIKE '%edited-after-replica-restore%'")
-      .all() as { text: string }[];
-    verifyStore.close();
-    assert.ok(editedRows.length >= 1, "expected edited text persisted in stillfail.db after replica restore handoff");
+    // (6b) Live Node + staged `restore/ready.json` + default mode + flip `engine: "pion"` + SIGUSR2:
+    // Smooth Node->Node handover via in-place `exec_replace` with ZERO `/healthz` resets/timeouts + 1st `connect.event` edit persists!
+    {
+      const dir = freshDir("ext-gate-r8-6b");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r8-6b",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      const udpPort = await pickFreeUdpPort();
+      const logs: string[] = [];
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(launcher);
+      launcher.stdout.on("data", (d) => logs.push(String(d)));
+      launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+      const pid1 = await until("6b initial Node pid", () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
+      }, 30_000);
+      const adminPort = readPorts(dataDir).admin!;
+      assert.equal((await httpCall(adminPort, "GET", "/healthz")).status, 200);
+
+      // Concurrent `/healthz` sampler across the entire `SIGUSR2` handover: ZERO resets / ZERO timeouts!
+      let sampling = true;
+      let sampleOk = 0;
+      const sampleErrs: string[] = [];
+      const sampler = (async () => {
+        while (sampling) {
+          try {
+            const r = await httpCall(adminPort, "GET", "/healthz", { connection: "close" });
+            if (r.status === 200) sampleOk++;
+            else sampleErrs.push(`status=${r.status}`);
+          } catch (e) {
+            sampleErrs.push(String(e));
+          }
+          await new Promise((r) => setTimeout(r, 40));
+        }
+      })();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      launcher.kill("SIGUSR2");
+
+      await until(
+        "6b exec_replace logged for restore:pending-ready-json",
+        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
+        15_000,
+      );
+      const pid2 = await until("6b new Node pid2 after SIGUSR2", () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
+      }, 25_000);
+      await until("6b old Node pid1 exited", () => !isAlive(pid1), 15_000);
+      sampling = false;
+      await sampler;
+      assert.ok(sampleOk >= 3, `expected >= 3 /healthz samples during handover, got ${sampleOk}`);
+      assert.deepEqual(sampleErrs, [], `6b handover must have ZERO /healthz resets/errors, got: ${sampleErrs.join("; ")}`);
+      assert.equal(isAlive(pid2), true);
+
+      const evResp = await until("6b connect.event edit on new Node", async () => {
+        try {
+          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
+            method: "connect.event",
+            workspace: ws,
+            connect: { id: "slack-r8", origin: peerId },
+            described: describedR8,
+            event: {
+              type: "changed",
+              channel: "C_R8",
+              threadTs: "200.001",
+              ts: "200.001",
+              text: "edited-after-6b-sigusr2-restore",
+            },
+          });
+        } catch {
+          return null;
+        }
+      }, 15_000);
+      assert.deepEqual(evResp.result, { ok: true });
+
+      launcher.kill("SIGTERM");
+      await until("6b launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
+      const editedRows = verifyStore.db
+        .prepare("SELECT text FROM entries WHERE text LIKE '%edited-after-6b-sigusr2-restore%'")
+        .all() as { text: string }[];
+      verifyStore.close();
+      assert.ok(editedRows.length >= 1, "6b expected edited text persisted in stillfail.db");
+    }
+
+    // (6c) Fresh empty dataDir cold start + staged `restore/ready.json` + default mode:
+    // First attempt immediately `exec_replace`s into Node -> first `/healthz 200` served by Node -> `connect.event` edit persists!
+    {
+      const dir = freshDir("ext-gate-r8-6c");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+      // Empty schema DB (0 threads, 0 sessions — as on a newly enrolled station before Node `takeBackSoon`).
+      Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives")).close();
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r8-6c",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      const udpPort = await pickFreeUdpPort();
+      const logs: string[] = [];
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(launcher);
+      launcher.stdout.on("data", (d) => logs.push(String(d)));
+      launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+      await until(
+        "6c immediate exec_replace into Node on cold restore",
+        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
+        20_000,
+      );
+      const nodePid = await until(
+        "6c Node pid serving /healthz 200",
+        async () => {
+          const p = readHubPid(dataDir);
+          const port = readPorts(dataDir).admin ?? 0;
+          if (p > 0 && isAlive(p) && port > 0) {
+            try {
+              const r = await httpCall(port, "GET", "/healthz");
+              if (r.status === 200) return p;
+            } catch {}
+          }
+          return null;
+        },
+        25_000,
+      );
+      assert.equal(isAlive(nodePid), true);
+      await until(
+        "6c Node replica restore completed",
+        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
+        15_000,
+      );
+
+      const evResp = await until("6c connect.event edit on Node", async () => {
+        try {
+          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
+            method: "connect.event",
+            workspace: ws,
+            connect: { id: "slack-r8", origin: peerId },
+            described: describedR8,
+            event: {
+              type: "changed",
+              channel: "C_R8",
+              threadTs: "200.001",
+              ts: "200.001",
+              text: "edited-after-6c-cold-restore",
+            },
+          });
+        } catch {
+          return null;
+        }
+      }, 15_000);
+      assert.deepEqual(evResp.result, { ok: true });
+
+      launcher.kill("SIGTERM");
+      await until("6c launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
+      const editedRows = verifyStore.db
+        .prepare("SELECT text FROM entries WHERE text LIKE '%edited-after-6c-cold-restore%'")
+        .all() as { text: string }[];
+      verifyStore.close();
+      assert.ok(editedRows.length >= 1, "6c expected edited text persisted in stillfail.db");
+    }
   }
 
   // --- Scenario 7 (Astra R6 P1 #2): 3-state `DbDepCheck` under 850ms & >2000ms exclusive SQLite lock + clean control DB ---

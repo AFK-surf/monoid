@@ -884,6 +884,11 @@ test "enabled_external_connects_in_config aligns 1:1 with Node config.ts:174 and
     Some(r) => assert_str_eq(r, "db:unreadable:5")
     None => panic("expected fail-safe Unknown reason")
   }
+  assert_true(pending_restore_reason(false) is None, "pending_restore_reason(false)")
+  match pending_restore_reason(true) {
+    Some(r) => assert_str_eq(r, "restore:pending-ready-json")
+    None => panic("expected restore:pending-ready-json")
+  }
 
   match extract_app_dir_from_argv(["bin", "run", "--app", "/opt/app", "--data", "/d"]) {
     Some(d) => assert_str_eq(d, "/opt/app")
