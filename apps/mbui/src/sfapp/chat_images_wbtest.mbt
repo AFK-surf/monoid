@@ -321,7 +321,7 @@ test "a chat's picture coming pill: 24pt scrim capsule (no glass), concentric ri
     assert_eq(t.gap_faults(), [], msg="scale=\{scale}: gap_faults")
     assert_eq(t.fixed_outgrown(), [], msg="scale=\{scale}: fixed_outgrown")
     // Aligned to the bottom-left corner, matching video_capsule_node
-    let img_rect = t.get(Image).rect
+    let img_rect = t.get(Button, label="查看 line.png").rect
     let expected_in = @ui.capsule_in(@sf.message_file_corner, ph)
     assert_true(
       (px - (img_rect.0 + expected_in)).abs() <= 1.0,
