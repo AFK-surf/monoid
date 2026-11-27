@@ -2344,14 +2344,22 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
-static int32_t sts_win_map_open_err(const wchar_t *w, DWORD err) {
+static int32_t sts_win_map_open_err(const wchar_t *w, DWORD err, int32_t dir_code) {
     if (err == ERROR_ACCESS_DENIED && w != NULL) {
         DWORD attrs = GetFileAttributesW(w);
         if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            return -5;
+            return dir_code;
         }
     }
     return sts_win_map_err(err);
+}
+
+static int sts_win_is_name_surrogate_reparse(const FILE_ATTRIBUTE_TAG_INFO *ati) {
+    /* Bit 29 (0x20000000) is IsReparseTagNameSurrogate: matches symlinks, junctions,
+     * and mount points while allowing non-surrogate tags like OneDrive IO_REPARSE_TAG_CLOUD_*
+     * and Windows Dedup IO_REPARSE_TAG_DEDUP. */
+    return ((ati->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) &&
+           ((ati->ReparseTag & 0x20000000U) != 0);
 }
 
 void *sts_read_range_meta(
@@ -2378,7 +2386,7 @@ void *sts_read_range_meta(
         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, NULL);
     DWORD open_err = GetLastError();
     if (h == INVALID_HANDLE_VALUE) {
-        int32_t mapped = sts_win_map_open_err(w, open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err, -4);
         free(w);
         if (out_err != NULL) *out_err = mapped;
         return NULL;
@@ -2389,23 +2397,16 @@ void *sts_read_range_meta(
         if (out_err != NULL) *out_err = -5;
         return NULL;
     }
-    FILE_ATTRIBUTE_TAG_INFO ati;
-    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
-        DWORD e = GetLastError();
-        CloseHandle(h);
-        if (out_err != NULL) *out_err = sts_win_map_err(e);
-        return NULL;
-    }
-    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
-        CloseHandle(h);
-        if (out_err != NULL) *out_err = -5;
-        return NULL;
-    }
     BY_HANDLE_FILE_INFORMATION bi;
     if (!GetFileInformationByHandle(h, &bi)) {
         DWORD e = GetLastError();
         CloseHandle(h);
         if (out_err != NULL) *out_err = sts_win_map_err(e);
+        return NULL;
+    }
+    if ((bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = -4;
         return NULL;
     }
     uint64_t fsz = ((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow;
@@ -2476,7 +2477,7 @@ int32_t sts_write_at(
         NULL, disp, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD open_err = GetLastError();
     if (h == INVALID_HANDLE_VALUE) {
-        int32_t mapped = sts_win_map_open_err(w, open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err, -5);
         free(w);
         return mapped;
     }
@@ -2491,7 +2492,7 @@ int32_t sts_write_at(
         CloseHandle(h);
         return sts_win_map_err(e);
     }
-    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    if ((ati.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || sts_win_is_name_surrogate_reparse(&ati)) {
         CloseHandle(h);
         return -5;
     }
@@ -2573,7 +2574,7 @@ int32_t sts_sync_file(const char *path) {
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
     DWORD open_err = GetLastError();
     if (h == INVALID_HANDLE_VALUE) {
-        int32_t mapped = sts_win_map_open_err(w, open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err, -5);
         free(w);
         return mapped;
     }
@@ -2588,7 +2589,7 @@ int32_t sts_sync_file(const char *path) {
         CloseHandle(h);
         return sts_win_map_err(e);
     }
-    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    if ((ati.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || sts_win_is_name_surrogate_reparse(&ati)) {
         CloseHandle(h);
         return -5;
     }

@@ -400,14 +400,14 @@ static void test_win_drive_io_and_reparse(void) {
     assert(sz == 20 && is_short == 0);
     assert(sts_sync_file(target_path) == 0);
 
-    // Directory MUST return -5 (non-regular file) across write_at / sync_file / read_range_meta.
+    // Directory MUST return -4 (EISDIR, POSIX parity) on read_range_meta and -5 on write_at / sync_file.
     {
         int64_t rlen = 0, rtot = 0, rmtime = 0;
         int32_t rerr = 0;
         assert(sts_write_at(ex_dir, 0, (const uint8_t *)"x", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
         assert(sts_write_at(ex_dir, 0, (const uint8_t *)"x", 1, 1, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
         assert(sts_sync_file(ex_dir) == -5);
-        assert(sts_read_range_meta(ex_dir, 0, 16, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -5);
+        assert(sts_read_range_meta(ex_dir, 0, 16, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -4);
     }
 
     // Non-disk device (\\.\NUL) MUST return -5 across write_at / sync_file / read_range_meta.
@@ -435,7 +435,7 @@ static void test_win_drive_io_and_reparse(void) {
         free(wro);
         assert(sts_unlink(ro_path) == 1);
     }
-    printf("  [PASS] win drive_io (dir -> -5, \\\\.\\NUL -> -5, readonly file -> -3)\n");
+    printf("  [PASS] win drive_io (dir read -> -4 / write+sync -> -5, \\\\.\\NUL -> -5, readonly file -> -3)\n");
 
     // Attempt to create a Windows symlink `evil.part -> target.bin`.
     int wt_n = MultiByteToWideChar(CP_UTF8, 0, target_path, -1, NULL, 0);
