@@ -1154,4 +1154,92 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
 
     await core.close();
   });
+
+  it("lock downgrade following an unconfirmed cloud downgrade preserves workspace gate and re-triggers cloud refresh", async () => {
+    const host = new FakeHost();
+    host.store(STORAGE_KEY, [account("acct-seq", "a@x.test", "A", "tok-seq", "ref-seq", nowS(host) + 3600)]);
+    let fullReads = 0;
+    let holdFetches = false;
+    let role = "admin";
+    let locked = false;
+    const heldResponses: (() => void)[] = [];
+    host.onFetch((req) => {
+      const path = req.url.replace("https://stillfail.test", "");
+      if (path === "/v1/me") {
+        return jsonResponse(200, { workspaces: [{ id: "ws-seq", name: "Dev", role }], invitations: [], relay_url: "https://relay.test" });
+      }
+      if (path === "/v1/workspaces/ws-seq") {
+        fullReads++;
+        const payload = () => ({
+          id: "ws-seq",
+          name: "Dev",
+          role,
+          ...(locked ? { locked: true } : {}),
+          ...(role === "admin" ? { adminOnly: "SECRET_ADMIN_FIELD" } : {}),
+          stations: [{ id: "st-1", name: "willow", online: true }],
+        });
+        if (!holdFetches) return jsonResponse(200, payload());
+        return new Promise((resolve) => {
+          heldResponses.push(() => resolve(jsonResponse(200, payload())));
+        });
+      }
+      if (path === "/v1/me/personal-lock") {
+        return jsonResponse(200, { head: null, entries: [] });
+      }
+      return jsonResponse(404, { error: "not_found" });
+    });
+    const core = await Core.create(host, { clock: host.time.clock, iroh: null });
+    await host.time.pass(500, 50);
+
+    const wsTopic: Topic = { topic: "workspace", workspace: "ws-seq" };
+    (core.inner.adb.personal() as unknown as { isLoaded: () => boolean }).isLoaded = () => true;
+    syncWorkspaceAuth(core.inner, "ws-seq");
+    const readsAtStart = fullReads;
+    assert.equal((core.inner.store.value(wsTopic) as { ok?: { adminOnly?: string } } | undefined)?.ok?.adminOnly, "SECRET_ADMIN_FIELD");
+
+    // 1. Non-fullRead cloud downgrade (`admin -> member`) while the authoritative cloud reread is held in flight.
+    holdFetches = true;
+    role = "member";
+    core.inner.data.set(wsTopic, {
+      id: "ws-seq",
+      name: "Dev",
+      role: "member",
+      adminOnly: "SECRET_ADMIN_FIELD",
+      stations: [{ id: "st-1", name: "willow", online: true }],
+    });
+    await host.time.pass(50, 10);
+    assert.equal(core.inner.store.value(wsTopic), undefined, "unconfirmed cloud downgrade must gate workspace view");
+    assert.equal(fullReads, readsAtStart + 1, "cloud downgrade must trigger authoritative workspace refresh");
+
+    // 2. Lock-only downgrade arrives BEFORE the in-flight cloud reread finishes:
+    // Must NOT pre-confirm `{ topic: "workspace" }` (zero leak of SECRET_ADMIN_FIELD) AND must re-enqueue refresh at the new gen.
+    locked = true;
+    core.inner.data.set(wsTopic, {
+      id: "ws-seq",
+      name: "Dev",
+      role: "member",
+      locked: true,
+      adminOnly: "SECRET_ADMIN_FIELD",
+      stations: [{ id: "st-1", name: "willow", online: true }],
+    });
+    await host.time.pass(50, 10);
+    assert.equal(core.inner.store.value(wsTopic), undefined, "lock downgrade must NEVER bypass an unconfirmed cloud downgrade gate");
+
+    // Release the stale in-flight G+1 response (discarded by readGen check), then release the new G+2 refresh!
+    assert.ok(heldResponses.length >= 1, "first cloud refresh must be in flight");
+    heldResponses.shift()!();
+    await host.time.pass(50, 10);
+    assert.equal(core.inner.store.value(wsTopic), undefined, "stale pre-lock-bump cloud response must be discarded");
+    assert.equal(fullReads, readsAtStart + 2, "lock downgrade while cloud unconfirmed must schedule a fresh G+2 reread");
+    assert.equal(heldResponses.length, 1, "fresh G+2 cloud refresh must be in flight");
+    heldResponses.shift()!();
+    await host.time.pass(50, 10);
+
+    const recovered = core.inner.store.value(wsTopic) as { ok?: { role?: string; adminOnly?: string; locked?: boolean } } | undefined;
+    assert.equal(recovered?.ok?.role, "member", "workspace must recover once fresh G+2 fullRead completes");
+    assert.equal(recovered?.ok?.adminOnly, undefined, "recovered member view must not contain adminOnly");
+    assert.equal(recovered?.ok?.locked, true);
+
+    await core.close();
+  });
 });
