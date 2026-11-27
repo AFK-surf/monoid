@@ -16,8 +16,8 @@
 // - `logic_at` (Tree::logic_at, View::logic_at) fails, wherever it is read, past the bars below.
 // - `drawn_at` (Tree::drawn_at) read in a binding of a source file fails past the bars below: it follows the clock, so
 //   what it draws is never wrong, only worked out again on every frame, still or not (the coordinator of the migration,
-//   2026-11-10: counted, not failing outright). A test's own (a `_test.mbt` or `_wbtest.mbt` file) is not counted: a
-//   test may read the time as it likes.
+//   2026-11-10: counted, not failing outright). A test's own (a `_test.mbt`, `_wbtest.mbt`, or `_test.pion` file) is not
+//   counted: a test may read the time as it likes.
 // - `cycle` (View::cycle) is not counted: a spinner or a band of progress not known turns as long as it shows, which is
 //   no motion with an end (Tree::cycle_read), so it follows the clock all the while by what it is.
 //
@@ -63,7 +63,9 @@ fn place_file(place : String) -> String {
 ///|
 /// Whether a file is a test's.
 fn test_file(file : String) -> Bool {
-  file.has_suffix("_test.mbt") || file.has_suffix("_wbtest.mbt")
+  file.has_suffix("_test.mbt") ||
+  file.has_suffix("_wbtest.mbt") ||
+  file.has_suffix("_test.pion")
 }
 
 ///|
