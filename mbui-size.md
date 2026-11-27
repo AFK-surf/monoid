@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0ca3ccb00](https://github.com/AFK-surf/monoid/commit/0ca3ccb00dba73acf87c7aad0b71ac6fd7ebdd6b) perf(mbui): virtualize attention panel, optimize q | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 118.89 |
 | [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 2.65 | 3.59 | 14.9 | 37.87 | 57.96 | 33.2 | 67.77 | 101.91 | 136.35 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
-| [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0ca3ccb00](https://github.com/AFK-surf/monoid/commit/0ca3ccb00dba73acf87c7aad0b71ac6fd7ebdd6b) perf(mbui): virtualize attention panel, optimize q | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.23 |
 | [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.85 |
 | [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.31 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
-| [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.44 |
