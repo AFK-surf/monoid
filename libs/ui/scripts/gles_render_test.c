@@ -79,12 +79,22 @@ static void feedback_seen(void) {
   glActiveTexture((GLenum)unit_was);
 }
 static int vbo_uploads;
+static size_t vbo_upload_bytes;
+static int fb_blits;
 static int instanced_draws;
 static int instanced_total;
 static int program_binds;
 static void checked_buffer_data(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
-  if (target == GL_ARRAY_BUFFER) vbo_uploads++;
+  if (target == GL_ARRAY_BUFFER) {
+    vbo_uploads++;
+    vbo_upload_bytes += (size_t)size;
+  }
   epoxy_glBufferData(target, size, data, usage);
+}
+static void checked_blit_fb(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1,
+                            GLbitfield mask, GLenum filter) {
+  fb_blits++;
+  epoxy_glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
 }
 static void checked_use_program(GLuint p) {
   program_binds++;
@@ -102,6 +112,8 @@ static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei coun
 }
 #undef glBufferData
 #define glBufferData checked_buffer_data
+#undef glBlitFramebuffer
+#define glBlitFramebuffer checked_blit_fb
 #undef glUseProgram
 #define glUseProgram checked_use_program
 #undef glDrawArrays
@@ -7008,6 +7020,346 @@ int main(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
     glDeleteFramebuffers(1, &hot_fb);
     glDeleteTextures(1, &hot_tex);
+  }
+
+  // Perf-62: lookahead batch glass capture, direct-to-slot blur, VBO trim (skip trailing kind 12), and exact kind-12
+  // segment slicing in under_take/slot_match_under — all verified byte-for-byte identical against unbatched rendering.
+  {
+    GLuint was_target = target_fb, p62_tex = 0, p62_fb = 0;
+    int was_fw = fb_w, was_fh = fb_h;
+    double was_w = cur_w, was_h = cur_h, was_s = cur_scale;
+    if (canvas_fb) {
+      glDeleteFramebuffers(1, &canvas_fb);
+      glDeleteTextures(1, &canvas_tex);
+      canvas_lost();
+    }
+    glass_free();
+    fb_w = 300; fb_h = 600; cur_w = 150.0; cur_h = 300.0; cur_scale = 2.0;
+    glGenTextures(1, &p62_tex);
+    glBindTexture(GL_TEXTURE_2D, p62_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+    glGenFramebuffers(1, &p62_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, p62_fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p62_tex, 0);
+    target_fb = p62_fb;
+    gl_set_fixed_dt(1.0 / 120.0);
+
+    // 1) 5-capture Chat-like scene (non-overlapping float + bottom scrim + overlapping composer + top scrim + top bar)
+    //    and 2-capture Home-like scene + trailing kind-12 shape segments: verify byte-exact parity and counter wins.
+    double scene[64 * MB_INST];
+    int n = 0;
+    // Background rects + two kind-11 shapes (shape A at y=16 under top bar; shape B at y=140 outside all glass)
+    for (int i = 0; i < 6; i++) {
+      rect_at(scene + n * MB_INST, 4, i * 48.0, 142, 40, 0, 0.2 + 0.1 * i, 0.5, 0.8 - 0.1 * i, 0);
+      scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+      n++;
+    }
+    // Shape A (under top bar glass, uses segments 0..5 -> kind-12 index 0)
+    rect_at(scene + n * MB_INST, 20, 14, 16, 16, 11, 0.9, 0.2, 0.2, 0);
+    scene[n * MB_INST + 12] = 0.0; scene[n * MB_INST + 13] = 6.0;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Shape B (mid-screen outside glass, uses segments 6..11 -> kind-12 index 1)
+    rect_at(scene + n * MB_INST, 20, 140, 16, 16, 11, 0.2, 0.9, 0.2, 0);
+    scene[n * MB_INST + 12] = 6.0; scene[n * MB_INST + 13] = 6.0;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Glass 1: float pill (tid=-1, y=180..210)
+    rect_at(scene + n * MB_INST, 110, 180, 32, 30, 6, 1.0, 1.0, 1.0, -1);
+    scene[n * MB_INST + 4] = 15.0; scene[n * MB_INST + 6] = 1.15; scene[n * MB_INST + 7] = 1.2;
+    scene[n * MB_INST + 11] = 0.404; scene[n * MB_INST + 12] = 0.25; scene[n * MB_INST + 13] = 10.0;
+    scene[n * MB_INST + 14] = -1.0; scene[n * MB_INST + 21] = 20.0; scene[n * MB_INST + 22] = 0.06;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Glass 2: bottom progressive scrim (tid=-2, y=268..300) — independent of Glass 1
+    rect_at(scene + n * MB_INST, 0, 268, 150, 32, 5, 0.96, 0.96, 0.97, -2);
+    scene[n * MB_INST + 6] = 1.0; scene[n * MB_INST + 7] = 8.5; scene[n * MB_INST + 11] = 0.0;
+    scene[n * MB_INST + 15] = 1.0; scene[n * MB_INST + 22] = -1.0;
+    scene[n * MB_INST + 52] = 268.0; scene[n * MB_INST + 53] = 18.0;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Glass 3: composer overlapping Glass 2 (tid=-3, y=246..292)
+    rect_at(scene + n * MB_INST, 8, 246, 134, 46, 6, 1.0, 1.0, 1.0, -3);
+    scene[n * MB_INST + 4] = 23.0; scene[n * MB_INST + 6] = 1.15; scene[n * MB_INST + 7] = 1.2;
+    scene[n * MB_INST + 11] = 0.404; scene[n * MB_INST + 12] = 0.25; scene[n * MB_INST + 13] = 10.0;
+    scene[n * MB_INST + 14] = -1.0; scene[n * MB_INST + 21] = 20.0; scene[n * MB_INST + 22] = 0.06;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Glass 4: top progressive scrim (tid=-4, y=0..48) — independent of Glass 1..3
+    rect_at(scene + n * MB_INST, 0, 0, 150, 48, 5, 0.96, 0.96, 0.97, -4);
+    scene[n * MB_INST + 6] = 1.0; scene[n * MB_INST + 7] = 8.5; scene[n * MB_INST + 11] = 0.0;
+    scene[n * MB_INST + 15] = 1.0; scene[n * MB_INST + 22] = -1.0;
+    scene[n * MB_INST + 54] = 48.0; scene[n * MB_INST + 55] = 48.0;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    // Glass 5: top bar overlapping Glass 4 (tid=-5, y=4..40)
+    rect_at(scene + n * MB_INST, 8, 4, 134, 36, 6, 1.0, 1.0, 1.0, -5);
+    scene[n * MB_INST + 4] = 18.0; scene[n * MB_INST + 6] = 1.15; scene[n * MB_INST + 7] = 1.2;
+    scene[n * MB_INST + 11] = 0.404; scene[n * MB_INST + 12] = 0.25; scene[n * MB_INST + 13] = 10.0;
+    scene[n * MB_INST + 14] = -1.0; scene[n * MB_INST + 21] = 20.0; scene[n * MB_INST + 22] = 0.06;
+    scene[n * MB_INST + 18] = 150.0; scene[n * MB_INST + 19] = 300.0;
+    n++;
+    int drawn_pieces = n;
+    // Append 10 trailing kind-12 data instances (index 0 = Shape A segs, index 1 = Shape B segs, 2..9 = extra)
+    for (int s = 0; s < 10; s++) {
+      memset(scene + n * MB_INST, 0, MB_INST * sizeof(double));
+      scene[n * MB_INST + 5] = 12.0;
+      scene[n * MB_INST + 0] = 2.0; scene[n * MB_INST + 1] = 2.0;
+      scene[n * MB_INST + 2] = 14.0; scene[n * MB_INST + 3] = 14.0;
+      n++;
+    }
+
+    // Reference render with lookahead forced off
+    glass_forget();
+    lookahead_force_off = 1;
+    gl_present(scene, n, 0.95, 0.95, 0.96);
+    unsigned char *px_ref = pixels_of_fb(p62_fb);
+
+    // Optimized render with lookahead enabled
+    glass_forget();
+    lookahead_force_off = 0;
+    lookahead_batched = 0;
+    vbo_upload_bytes = 0;
+    fb_blits = 0;
+    gl_present(scene, n, 0.95, 0.95, 0.96);
+    unsigned char *px_opt = pixels_of_fb(p62_fb);
+    CHECK(memcmp(px_ref, px_opt, (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(lookahead_batched == 2);
+    // VBO must only upload drawn_pieces (skipping all 10 trailing kind-12 data instances).
+    CHECK(vbo_upload_bytes == (size_t)drawn_pieces * MB_INST * sizeof(float));
+    // Direct-to-slot blur: 5 target_fb->lv[0] blits + 3 ad_fb blits = 8 total blits (zero slot_fill blits).
+    CHECK(fb_blits == 8);
+    free(px_ref);
+    free(px_opt);
+
+    // 2) Exact kind-12 segment slicing: changing Shape B's segment (outside all glass) must NOT invalidate any blur;
+    //    changing Shape A's segment (under top bar glass) MUST invalidate top scrim + top bar blurs and match fresh.
+    int b0 = blurs_made;
+    scene[(drawn_pieces + 1) * MB_INST + 2] = 10.0;
+    gl_present(scene, n, 0.95, 0.95, 0.96);
+    CHECK(blurs_made == b0);
+    scene[(drawn_pieces + 0) * MB_INST + 2] = 6.0;
+    gl_present(scene, n, 0.95, 0.95, 0.96);
+    CHECK(blurs_made > b0);
+    CHECK(surface_as_fresh(p62_fb));
+
+    // 3) 2-capture Home-like scene: top bar + bottom tab bar batch into 1 lookahead + 1 batched ad_fb update (3 blits total).
+    double home[16 * MB_INST];
+    int hn = 0;
+    rect_at(home + hn * MB_INST, 0, 0, 150, 300, 0, 0.85, 0.88, 0.92, 0);
+    home[hn * MB_INST + 18] = 150.0; home[hn * MB_INST + 19] = 300.0; hn++;
+    rect_at(home + hn * MB_INST, 8, 4, 134, 36, 6, 1.0, 1.0, 1.0, -1);
+    home[hn * MB_INST + 4] = 18.0; home[hn * MB_INST + 6] = 1.15; home[hn * MB_INST + 7] = 1.2;
+    home[hn * MB_INST + 11] = 0.404; home[hn * MB_INST + 12] = 0.25; home[hn * MB_INST + 13] = 10.0;
+    home[hn * MB_INST + 14] = -1.0; home[hn * MB_INST + 21] = 20.0; home[hn * MB_INST + 22] = 0.06;
+    home[hn * MB_INST + 18] = 150.0; home[hn * MB_INST + 19] = 300.0; hn++;
+    rect_at(home + hn * MB_INST, 8, 240, 134, 48, 6, 1.0, 1.0, 1.0, -2);
+    home[hn * MB_INST + 4] = 24.0; home[hn * MB_INST + 6] = 1.15; home[hn * MB_INST + 7] = 1.2;
+    home[hn * MB_INST + 11] = 0.404; home[hn * MB_INST + 12] = 0.25; home[hn * MB_INST + 13] = 10.0;
+    home[hn * MB_INST + 14] = -1.0; home[hn * MB_INST + 21] = 20.0; home[hn * MB_INST + 22] = 0.06;
+    home[hn * MB_INST + 18] = 150.0; home[hn * MB_INST + 19] = 300.0; hn++;
+
+    glass_forget();
+    lookahead_force_off = 1;
+    gl_present(home, hn, 0.95, 0.95, 0.96);
+    unsigned char *h_ref = pixels_of_fb(p62_fb);
+    glass_forget();
+    lookahead_force_off = 0;
+    lookahead_batched = 0;
+    fb_blits = 0;
+    gl_present(home, hn, 0.95, 0.95, 0.96);
+    unsigned char *h_opt = pixels_of_fb(p62_fb);
+    CHECK(memcmp(h_ref, h_opt, (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(lookahead_batched == 1);
+    // 2 target_fb->lv[0] blits + 1 batched ad_fb blit = 3 blits total (zero slot_fill blits).
+    CHECK(fb_blits == 3);
+    free(h_ref);
+    free(h_opt);
+
+    // 4) Intervening merged-liquid group spanning across a later glass rect MUST block lookahead and remain byte-identical.
+    double merged[12 * MB_INST];
+    int mn = 0;
+    rect_at(merged + mn * MB_INST, 0, 0, 150, 300, 0, 0.3, 0.5, 0.7, 0);
+    merged[mn * MB_INST + 18] = 150.0; merged[mn * MB_INST + 19] = 300.0; mn++;
+    // Merged liquid group (tid=-1): two shapes at top (y=10) and bottom (y=230), merge=8 -> u_gb covers y=10..260!
+    rect_at(merged + mn * MB_INST, 20, 10, 40, 30, 6, 1.0, 0.4, 0.2, -1);
+    merged[mn * MB_INST + 4] = 10.0; merged[mn * MB_INST + 6] = 1.1; merged[mn * MB_INST + 7] = 1.2;
+    merged[mn * MB_INST + 11] = 0.45; merged[mn * MB_INST + 21] = 12.0; merged[mn * MB_INST + 23] = 8.0;
+    merged[mn * MB_INST + 18] = 150.0; merged[mn * MB_INST + 19] = 300.0; mn++;
+    rect_at(merged + mn * MB_INST, 80, 230, 40, 30, 6, 1.0, 0.4, 0.2, -1);
+    merged[mn * MB_INST + 4] = 10.0; merged[mn * MB_INST + 6] = 1.1; merged[mn * MB_INST + 7] = 1.2;
+    merged[mn * MB_INST + 11] = 0.45; merged[mn * MB_INST + 21] = 12.0; merged[mn * MB_INST + 23] = 8.0;
+    merged[mn * MB_INST + 18] = 150.0; merged[mn * MB_INST + 19] = 300.0; mn++;
+    // Later glass in the middle (y=110..150): inside merged u_gb, so lookahead MUST refuse it.
+    rect_at(merged + mn * MB_INST, 40, 110, 60, 40, 6, 0.2, 0.8, 1.0, -2);
+    merged[mn * MB_INST + 4] = 12.0; merged[mn * MB_INST + 6] = 1.1; merged[mn * MB_INST + 7] = 1.2;
+    merged[mn * MB_INST + 11] = 0.404; merged[mn * MB_INST + 14] = -1.0; merged[mn * MB_INST + 21] = 14.0;
+    merged[mn * MB_INST + 18] = 150.0; merged[mn * MB_INST + 19] = 300.0; mn++;
+
+    glass_forget();
+    lookahead_force_off = 1;
+    gl_present(merged, mn, 0.2, 0.2, 0.25);
+    unsigned char *m_ref = pixels_of_fb(p62_fb);
+    glass_forget();
+    lookahead_force_off = 0;
+    lookahead_batched = 0;
+    gl_present(merged, mn, 0.2, 0.2, 0.25);
+    unsigned char *m_opt = pixels_of_fb(p62_fb);
+    CHECK(memcmp(m_ref, m_opt, (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(lookahead_batched == 0);
+    free(m_ref);
+    free(m_opt);
+
+    // 5) Intervening kind-8 foreground lens overlapping a later glass rect MUST block lookahead and remain byte-identical.
+    double lens_sc[10 * MB_INST];
+    int ln = 0;
+    rect_at(lens_sc + ln * MB_INST, 0, 0, 150, 300, 0, 0.2, 0.3, 0.4, 0);
+    lens_sc[ln * MB_INST + 18] = 150.0; lens_sc[ln * MB_INST + 19] = 300.0; ln++;
+    rect_at(lens_sc + ln * MB_INST, 8, 4, 134, 36, 6, 1.0, 1.0, 1.0, -1);
+    lens_sc[ln * MB_INST + 4] = 18.0; lens_sc[ln * MB_INST + 6] = 1.1; lens_sc[ln * MB_INST + 7] = 1.2;
+    lens_sc[ln * MB_INST + 11] = 0.404; lens_sc[ln * MB_INST + 14] = -1.0; lens_sc[ln * MB_INST + 21] = 16.0;
+    lens_sc[ln * MB_INST + 18] = 150.0; lens_sc[ln * MB_INST + 19] = 300.0; ln++;
+    // kind-8 lens over y=220..270 with 1 child rect
+    rect_at(lens_sc + ln * MB_INST, 20, 220, 100, 50, 8, 1.0, 1.0, 1.0, 0);
+    lens_sc[ln * MB_INST + 4] = 16.0; lens_sc[ln * MB_INST + 7] = 1.0; lens_sc[ln * MB_INST + 11] = 1.0;
+    lens_sc[ln * MB_INST + 12] = 1.0; lens_sc[ln * MB_INST + 13] = 8.0; lens_sc[ln * MB_INST + 14] = 10.0;
+    lens_sc[ln * MB_INST + 18] = 150.0; lens_sc[ln * MB_INST + 19] = 300.0; ln++;
+    rect_at(lens_sc + ln * MB_INST, 30, 230, 80, 30, 0, 0.95, 0.2, 0.2, 0);
+    lens_sc[ln * MB_INST + 18] = 150.0; lens_sc[ln * MB_INST + 19] = 300.0; ln++;
+    // Later glass at y=240..280 overlapping the kind-8 lens
+    rect_at(lens_sc + ln * MB_INST, 12, 240, 126, 40, 6, 1.0, 1.0, 1.0, -2);
+    lens_sc[ln * MB_INST + 4] = 18.0; lens_sc[ln * MB_INST + 6] = 1.1; lens_sc[ln * MB_INST + 7] = 1.2;
+    lens_sc[ln * MB_INST + 11] = 0.404; lens_sc[ln * MB_INST + 14] = -1.0; lens_sc[ln * MB_INST + 21] = 16.0;
+    lens_sc[ln * MB_INST + 18] = 150.0; lens_sc[ln * MB_INST + 19] = 300.0; ln++;
+
+    glass_forget();
+    lookahead_force_off = 1;
+    gl_present(lens_sc, ln, 0.2, 0.2, 0.25);
+    unsigned char *l_ref = pixels_of_fb(p62_fb);
+    glass_forget();
+    lookahead_force_off = 0;
+    lookahead_batched = 0;
+    gl_present(lens_sc, ln, 0.2, 0.2, 0.25);
+    unsigned char *l_opt = pixels_of_fb(p62_fb);
+    CHECK(memcmp(l_ref, l_opt, (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(lookahead_batched == 0);
+    CHECK(feedback_loops == 0);
+    CHECK(glGetError() == GL_NO_ERROR);
+    free(l_ref);
+    free(l_opt);
+
+    // 6) Slot-pinning stress test (> MB_GLASS_SLOTS = 32 groups, mixing 30 liquid glass pills + 4 progressive scrims):
+    //    verifies lookahead pin budget + defensive fallback never exhausts slots or reads OOB and matches unbatched.
+    {
+      double stress[40 * MB_INST];
+      int sn = 0;
+      rect_at(stress + sn * MB_INST, 0, 0, 150, 300, 0, 0.25, 0.35, 0.45, 0);
+      stress[sn * MB_INST + 18] = 150.0; stress[sn * MB_INST + 19] = 300.0; sn++;
+      for (int g = 0; g < 30; g++) {
+        double gx = (g % 5) * 28.0 + 4.0;
+        double gy = (g / 5) * 34.0 + 4.0;
+        rect_at(stress + sn * MB_INST, gx, gy, 22, 24, 6, 1.0, 1.0, 1.0, -(g + 1));
+        stress[sn * MB_INST + 4] = 8.0; stress[sn * MB_INST + 6] = 1.1; stress[sn * MB_INST + 7] = 1.2;
+        stress[sn * MB_INST + 11] = 0.404; stress[sn * MB_INST + 14] = -1.0; stress[sn * MB_INST + 21] = 10.0;
+        stress[sn * MB_INST + 18] = 150.0; stress[sn * MB_INST + 19] = 300.0; sn++;
+      }
+      for (int d = 0; d < 4; d++) {
+        double dy = 216.0 + d * 20.0;
+        rect_at(stress + sn * MB_INST, 0, dy, 150, 18, 5, 0.95, 0.95, 0.96, -(31 + d));
+        stress[sn * MB_INST + 6] = 1.0; stress[sn * MB_INST + 7] = 6.0; stress[sn * MB_INST + 11] = 0.0;
+        stress[sn * MB_INST + 15] = 1.0; stress[sn * MB_INST + 22] = -1.0;
+        stress[sn * MB_INST + 52] = dy; stress[sn * MB_INST + 53] = 12.0;
+        stress[sn * MB_INST + 18] = 150.0; stress[sn * MB_INST + 19] = 300.0; sn++;
+      }
+      glass_forget();
+      lookahead_force_off = 1;
+      gl_present(stress, sn, 0.25, 0.35, 0.45);
+      unsigned char *st_ref = pixels_of_fb(p62_fb);
+      glass_forget();
+      lookahead_force_off = 0;
+      lookahead_batched = 0;
+      gl_present(stress, sn, 0.25, 0.35, 0.45);
+      unsigned char *st_opt = pixels_of_fb(p62_fb);
+      CHECK(lookahead_batched > 0);
+      CHECK(memcmp(st_ref, st_opt, (size_t)fb_w * fb_h * 4) == 0);
+      CHECK(surface_as_fresh(p62_fb));
+      CHECK(feedback_loops == 0);
+      CHECK(glGetError() == GL_NO_ERROR);
+      free(st_ref);
+      free(st_opt);
+    }
+
+    // 7) Partial multi-rect redraw (n_rects == 2) with lookahead inside a dirty rect + intervening skind-6 ad_barrier:
+    //    verifies lookahead_batched > 0 during partial redraw and byte-exact parity against unbatched rendering.
+    {
+      double bar[12 * MB_INST];
+      int bn = 0;
+      rect_at(bar + bn * MB_INST, 0, 0, 150, 300, 0, 0.85, 0.88, 0.92, 0);
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+      // Group 1 (top left, inside dirty rect 1)
+      rect_at(bar + bn * MB_INST, 8, 8, 60, 32, 6, 1.0, 1.0, 1.0, -1);
+      bar[bn * MB_INST + 4] = 12.0; bar[bn * MB_INST + 6] = 1.1; bar[bn * MB_INST + 7] = 1.2;
+      bar[bn * MB_INST + 11] = 0.404; bar[bn * MB_INST + 14] = -1.0; bar[bn * MB_INST + 21] = 14.0;
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+      // Intervening rect overlapping Group 2 (middle, inside dirty rect 1)
+      rect_at(bar + bn * MB_INST, 20, 100, 100, 40, 0, 0.9, 0.3, 0.2, 0);
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+      // Group 2 (middle, blocked by intervening rect -> sets ad_barrier)
+      rect_at(bar + bn * MB_INST, 24, 104, 92, 32, 6, 1.0, 1.0, 1.0, -2);
+      bar[bn * MB_INST + 4] = 12.0; bar[bn * MB_INST + 6] = 1.1; bar[bn * MB_INST + 7] = 1.2;
+      bar[bn * MB_INST + 11] = 0.404; bar[bn * MB_INST + 14] = -1.0; bar[bn * MB_INST + 21] = 14.0;
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+      // Group 3 (also inside dirty rect 1 at y=160..192, spatially independent of intervening rect -> lookahead + ad_barrier=1)
+      rect_at(bar + bn * MB_INST, 8, 160, 134, 32, 6, 1.0, 1.0, 1.0, -3);
+      bar[bn * MB_INST + 4] = 12.0; bar[bn * MB_INST + 6] = 1.1; bar[bn * MB_INST + 7] = 1.2;
+      bar[bn * MB_INST + 11] = 0.404; bar[bn * MB_INST + 14] = -1.0; bar[bn * MB_INST + 21] = 14.0;
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+      // Group 4 (bottom, inside disjoint dirty rect 2)
+      rect_at(bar + bn * MB_INST, 8, 250, 134, 40, 6, 1.0, 1.0, 1.0, -4);
+      bar[bn * MB_INST + 4] = 14.0; bar[bn * MB_INST + 6] = 1.1; bar[bn * MB_INST + 7] = 1.2;
+      bar[bn * MB_INST + 11] = 0.404; bar[bn * MB_INST + 14] = -1.0; bar[bn * MB_INST + 21] = 14.0;
+      bar[bn * MB_INST + 18] = 150.0; bar[bn * MB_INST + 19] = 300.0; bn++;
+
+      // Warm up full frame into canvas, then partial redraw with 2 disjoint dirty rects (0..210 covers g1+g2+g3; 235..300 covers g4)
+      glass_forget();
+      lookahead_force_off = 1;
+      gl_present(bar, bn, 0.85, 0.88, 0.92);
+      bar[0 * MB_INST + 8] = 0.4; // mutate background
+      gl_dirty_add(0, 0, 150, 210);
+      gl_dirty_add(0, 235, 150, 65);
+      gl_present(bar, bn, 0.85, 0.88, 0.92);
+      unsigned char *p_ref = pixels_of_fb(p62_fb);
+
+      bar[0 * MB_INST + 8] = 0.85;
+      glass_forget();
+      lookahead_force_off = 0;
+      gl_present(bar, bn, 0.85, 0.88, 0.92);
+      bar[0 * MB_INST + 8] = 0.4;
+      lookahead_batched = 0;
+      gl_dirty_add(0, 0, 150, 210);
+      gl_dirty_add(0, 235, 150, 65);
+      gl_present(bar, bn, 0.85, 0.88, 0.92);
+      unsigned char *p_opt = pixels_of_fb(p62_fb);
+      CHECK(lookahead_batched >= 1);
+      CHECK(memcmp(p_ref, p_opt, (size_t)fb_w * fb_h * 4) == 0);
+      CHECK(feedback_loops == 0);
+      CHECK(glGetError() == GL_NO_ERROR);
+      free(p_ref);
+      free(p_opt);
+    }
+
+    gl_set_fixed_dt(0.0);
+    if (canvas_fb) {
+      glDeleteFramebuffers(1, &canvas_fb);
+      glDeleteTextures(1, &canvas_tex);
+      canvas_lost();
+    }
+    glass_free();
+    target_fb = was_target; fb_w = was_fw; fb_h = was_fh; cur_w = was_w; cur_h = was_h; cur_scale = was_s;
+    glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
+    glDeleteFramebuffers(1, &p62_fb);
+    glDeleteTextures(1, &p62_tex);
+    printf("gles_render: p62 lookahead + direct-slot-blur + vbo-trim + seg-slice ok\n");
   }
 
   if (!failed) printf("gles_render: ok\n");
