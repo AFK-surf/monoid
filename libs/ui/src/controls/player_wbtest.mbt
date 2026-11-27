@@ -498,18 +498,53 @@ fn top_bar_faults(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-test "a phone's bar along the top is a capsule its round keys stand concentric in: pressed, lit, the audit clean" {
+test "a phone's bar along the top splits left and right into separate liquid glass capsules with bare title between them: pressed, lit, the audit clean" {
+  // Single video (no playlist): two symmetric 44×44 circular glass buttons, bare title between them.
+  let t1 = player_tester(true, "a-very-long-recording-name-for-narrow-phone-preview.mp4", [], [], [])
+  t1.draw()
+  let pills1 = t1
+    .drawn_glass_corners()
+    .filter(fn(r) { (r.3 - phone_top_pill_h).abs() < 0.5 && r.1 < 200.0 })
+  assert_eq(pills1.length(), 2, msg="single video top pills: \{Repr(pills1)}")
+  let half = phone_top_pill_h / 2.0
+  for p in pills1 {
+    assert_true((p.2 - phone_top_pill_h).abs() < 0.5, msg="symmetric circle width: \{Repr(p)}")
+    assert_eq(p.4, half)
+  }
+  assert_eq(top_bar_faults(t1), [])
+  // Title sits strictly between the left and right glass buttons (not covered by either liquid glass capsule).
+  let title_box = t1.rect_of("a-very-long").unwrap_or_else(fn() {
+    match t1.all(Text, label="a-very-long-recording-name-for-narrow-phone-preview.mp4") {
+      [n, ..] => n.rect
+      [] => (0.0, 0.0, 0.0, 0.0)
+    }
+  })
+  assert_true(title_box.2 > 0.0, msg="title drawn: \{Repr(title_box)}")
+  let left_pill = if pills1[0].0 < pills1[1].0 { pills1[0] } else { pills1[1] }
+  let right_pill = if pills1[0].0 < pills1[1].0 { pills1[1] } else { pills1[0] }
+  assert_true(
+    title_box.0 >= left_pill.0 + left_pill.2 && title_box.0 + title_box.2 <= right_pill.0 + 0.5,
+    msg="bare title \{Repr(title_box)} must sit between left \{Repr(left_pill)} and right \{Repr(right_pill)}",
+  )
+  // Playlist video: left 44×44 back circle + right 2-key capsule (选集 + 下载), concentric keys, title centered, audit clean.
   let t = player_tester(true, "E2.mp4", ["E1.mp4", "E2.mp4", "E3.mp4"], [], [])
   t.draw()
-  // (the bar: 48 high across the top, its keys 40 round, 4 in from its ends)
-  let bars = t
+  let pills = t
     .drawn_glass_corners()
-    .filter(fn(r) { r.2 > 200.0 && (r.3 - 48.0).abs() < 0.5 && r.1 < 200.0 })
-  assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
-  let half = @ui.Space::S12.px() / 2.0
-  assert_eq(bars[0].4, half)
+    .filter(fn(r) { (r.3 - phone_top_pill_h).abs() < 0.5 && r.1 < 200.0 })
+  assert_eq(pills.length(), 2, msg="playlist top pills: \{Repr(pills)}")
+  let lp = if pills[0].0 < pills[1].0 { pills[0] } else { pills[1] }
+  let rp = if pills[0].0 < pills[1].0 { pills[1] } else { pills[0] }
+  assert_true((lp.2 - phone_top_pill_h).abs() < 0.5, msg="left back circle: \{Repr(lp)}")
+  assert_true(rp.2 > phone_top_pill_h + 20.0 && rp.2 < 120.0, msg="right 2-key capsule: \{Repr(rp)}")
+  assert_eq(lp.4, half)
+  assert_eq(rp.4, half)
+  // Short title stays horizontally centered on screen even with 2 right-side buttons
+  let title_pl = t.rect_of("E2.mp4").unwrap()
+  let title_cx = title_pl.0 + title_pl.2 / 2.0
+  assert_true((title_cx - 195.0).abs() < 1.0, msg="playlist title centered: cx=\{title_cx} rect=\{Repr(title_pl)}")
   assert_eq(top_bar_faults(t), [])
-  // the back key and 下载 held down, each drawing its press's round ground and ripple in the bar's ends
+  // the back key and 下载 held down, each drawing its press's round ground and ripple in its capsule
   for icon in ["icon:chevron-left", "icon:download"] {
     let (x, y) = t.locate(icon).filter(fn(p) { p.1 < 100.0 })[0]
     t.press_at(x, y)
@@ -526,6 +561,48 @@ test "a phone's bar along the top is a capsule its round keys stand concentric i
   t.run_for(@ui.move_most_ms)
   let faults = top_bar_faults(t)
   assert_true(faults.is_empty(), msg="选集 lit: " + faults.join("\n"))
+}
+
+///|
+test "phone top bar: buffering never shifts title or buttons, and 2.0x playlist keeps button y pinned and HUD clear" {
+  // 1. Buffering toggles on: title y and top buttons y must not shift by even 0.01pt
+  let buffering : @player.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  let tb = player_tester(true, "clip.mp4", [], [], [], pin=buffering)
+  tb.draw()
+  let title_before = tb.rect_of("clip.mp4").unwrap()
+  let back_before = tb.get(Button, label="common.back").rect
+  let dl_before = tb.get(Button, label="web-main.preview.download").rect
+  assert_true((title_before.0 + title_before.2 / 2.0 - 195.0).abs() < 1.0, msg="single video title centered")
+  tb.run_for(playing_for("k").media.times().0)
+  let wait_pos = tb.find("web-pages.drive.player.buffering").unwrap()
+  assert_true(wait_pos.1 > title_before.1 + title_before.3 && wait_pos.1 < 100.0, msg="buffering below title: \{wait_pos.1}")
+  let title_after = tb.rect_of("clip.mp4").unwrap()
+  let back_after = tb.get(Button, label="common.back").rect
+  let dl_after = tb.get(Button, label="web-main.preview.download").rect
+  assert_true((title_after.1 - title_before.1).abs() < 0.01, msg="title y shifted on buffering: \{title_before.1} -> \{title_after.1}")
+  assert_true((back_after.1 - back_before.1).abs() < 0.01, msg="back y shifted on buffering")
+  assert_true((dl_after.1 - dl_before.1).abs() < 0.01, msg="download y shifted on buffering")
+  // 2. 2.0x font scale + playlist: buttons stay pinned at top y, zero outgrown/squeeze faults, AlongTime HUD clears 2-line title
+  let tp = player_tester(true, "E2.mp4", ["E1.mp4", "E2.mp4", "E3.mp4"], [], [])
+  tp.draw()
+  let back_y1 = tp.get(Button, label="common.back").rect.1
+  let dl_y1 = tp.get(Button, label="web-main.preview.download").rect.1
+  tp.set_font_scale(2.0)
+  tp.draw()
+  let back_y2 = tp.get(Button, label="common.back").rect.1
+  let dl_y2 = tp.get(Button, label="web-main.preview.download").rect.1
+  assert_true((back_y2 - back_y1).abs() < 0.01, msg="back button y pinned at 2.0x: \{back_y1} -> \{back_y2}")
+  assert_true((dl_y2 - dl_y1).abs() < 0.01, msg="download button y pinned at 2.0x: \{dl_y1} -> \{dl_y2}")
+  assert_eq(tp.fixed_outgrown(), [], msg="2.0x playlist fixed_outgrown")
+  assert_eq(tp.squeeze_faults(), [], msg="2.0x playlist squeeze_faults")
+  let which_rect = tp.rect_of("2 / 3").unwrap()
+  let title_bottom = which_rect.1 + which_rect.3
+  tp.press_at(100.0, 300.0)
+  tp.move_to(140.0, 300.0)
+  tp.draw()
+  let hud = tp.rect_of("1×").unwrap()
+  assert_true(hud.1 > title_bottom, msg="2.0x AlongTime HUD y=\{hud.1} must clear 2-line title bottom=\{title_bottom}")
+  tp.release(140.0, 300.0)
 }
 
 ///|

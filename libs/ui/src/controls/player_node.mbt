@@ -2675,11 +2675,12 @@ fn phone_player_node(
         _ => ""
       }
     }
+    let top_bar_h = fn() { phone_top_bar_h(pn.pl.which() != "", pn.waits()) + @ui.Space::S3.px() }
     // what lies over the picture (embedded, in the room over the controls)
     n.box(fn(mid) {
       mid.over(Is(true)).height(By(room_h)) |> ignore
       middle_node(mid, pn, file.name, pill)
-      along_time_hud_node(mid, pn, ink, fn() { @ui.Space::S12.px() + @ui.Space::S3.px() })
+      along_time_hud_node(mid, pn, ink, top_bar_h)
       cue_node(mid, pn, shown, fn() { if embedded { desk_cue_apart } else { phone_cue_over() } }, fn() {
         0.0
       })
@@ -2688,10 +2689,33 @@ fn phone_player_node(
     |> ignore
     let tips_at : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { tips_at.val })
-    // the bar at the top: back, the name, which of the folder's it is, 选集, 下载 (beside the system's bars, an iPhone
-    // Duo's: its actions in them; embedded, the page's own over it)
+    // the bar at the top: pure progressive blur scroll-edge, standalone left liquid glass back button,
+    // bare adaptive-ink title (+ static playlist position), standalone right liquid glass action
+    // button/pill (选集 when playlist + 下载), and a centered waiting sub-line directly below so toggling
+    // buffering never shifts the title or buttons. Beside the system's bars (iPhone Duo): theirs; embedded: page's own.
     n.show(at_once=true, fn() { !native_on() && !embedded }, fn(top) {
-      top.over(Is(true)) |> ignore
+      top
+      .over(Is(true))
+      .alpha(By(fn() { shown(top) }))
+      .hides(By(fn() { away() || pn.faded.get() }))
+      |> ignore
+      let edge_h = fn(_ : @view.View) {
+        if away() || pn.faded.get() {
+          0.0
+        } else {
+          (viewer_host().room)().0 + top_bar_h() + 12.0
+        }
+      }
+      @glass.liquid_scroll_edge_node(
+        top,
+        edge_h,
+        edge_h,
+        side=Top,
+        bg=fn() { ink().stage },
+        shield=false,
+        pure=true,
+      )
+      |> ignore
       top.box(fn(r) { r.height(By(fn() { Some((viewer_host().room)().0) })) |> ignore }) |> ignore
       top.box(fn(place) {
         place
@@ -2699,76 +2723,156 @@ fn phone_player_node(
           let (l, r) = sides_clear_of(@ui.Space::S2.px())
           (l, @ui.Space::S1_5.px(), r, @ui.Space::S1_5.px())
         }))
-        .alpha(By(fn() { shown(place) }))
-        .hides(By(fn() { away() || pn.faded.get() }))
         |> ignore
-        place.box(fn(h) {
-          h
+        place.box(fn(row) {
+          row
           .row(Is(true))
-          .height(Is(Some(@ui.Space::S12.px())))
-          .padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0)))
-          .gap(Is(@ui.Space::S1.px()))
-          .radius(Is(@ui.Space::S12.px() / 2.0))
-          .lines_up(Is(Some(Middle)))
-          .presses(By(live))
+          .min_height(Is(Some(phone_top_pill_h)))
+          .gap(Is(@ui.Space::S2.px()))
+          .lines_up(Is(Some(Start)))
           |> ignore
-          @glass.liquid_capsule_decorate(
-            h,
-            glass=fn(spot) { player_surface_glass(ink, spot) },
-            active=fn() { !away() && shown(place) > 0.001 },
-            shadow=glass_control_shadow,
-            solid_edge=fn() { player_solid_edge(ink) },
-          )
-          |> ignore
-          media_key_node(h, fn() { "chevron-left" }, fn() { t("common.back") }, live, ink, back, side=phone_key_side, faint=false, ripples=true, focus_pn=pn)
-          |> ignore
-          h.box(fn(nm) {
-            nm.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)).padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
-            said_words_node(nm, fn() { file.name }, Ui, fn() { ink().text }, weight=600) |> ignore
+          let glass_pill = fn(pill : @view.View) {
+            pill
+            .row(Is(true))
+            .height(Is(Some(phone_top_pill_h)))
+            .padding(Is((phone_top_pill_pad, phone_top_pill_pad, phone_top_pill_pad, phone_top_pill_pad)))
+            .gap(Is(phone_top_pill_gap))
+            .radius(Is(phone_top_pill_h / 2.0))
+            .lines_up(Is(Some(Middle)))
+            .shrink(Is(0.0))
+            .presses(By(live))
+            |> ignore
+            @glass.liquid_capsule_decorate(
+              pill,
+              glass=fn(spot) { player_surface_glass(ink, spot) },
+              active=fn() { !away() && shown(top) > 0.001 },
+              shadow=glass_control_shadow,
+              solid_edge=fn() { player_solid_edge(ink) },
+            )
+            |> ignore
+          }
+          // left: standalone circular liquid glass back button (+ yielding balance spacer when right pill holds 2 keys)
+          row.box(fn(left) {
+            left
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .shrink(Is(viewer_side_gives))
+            .min_width(Is(Some(phone_top_pill_h)))
+            |> ignore
+            left.box(fn(pill) {
+              glass_pill(pill)
+              media_key_node(
+                pill,
+                fn() { "chevron-left" },
+                fn() { t("common.back") },
+                live,
+                ink,
+                back,
+                side=phone_key_side,
+                faint=false,
+                ripples=true,
+                focus_pn=pn,
+              )
+              |> ignore
+            })
+            |> ignore
+            left.show(at_once=true, fn() { pn.pl.many() }, fn(bal) {
+              bal.width(Is(Some(phone_top_pill_extra))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            })
           })
           |> ignore
-          // what it waits on, once it has waited, after its name (player_wait_node)
-          h.show(at_once=true, fn() { pn.waits() }, fn(w) {
-            w.row(Is(true)).padding(Is((0.0, 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
-            player_wait_node(w, pn, Meta, fn() { ink().muted }) |> ignore
+          // middle: bare adaptive-ink title, with static playlist position on a quiet second line
+          row.box(fn(mid) {
+            mid
+            .grow(Is(1.0))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            .min_height(Is(Some(phone_top_pill_h)))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .adaptive_ink(Is(true))
+            |> ignore
+            mid.box(fn(nm) {
+              nm
+              .words(By(fn() { file.name }))
+              .words_look(By(fn() {
+                let (px, line) = @ui.tree_theme().text_size(Ui)
+                { size: px, weight: 600, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+              }))
+              .cuts(Is(true))
+              .allow_ellipsis(Is(true))
+              .min_width(Is(Some(0.0)))
+              .max_width(Is(Some(1.0e9)), within=true)
+              .ink(By(fn() { ink().text }))
+              .says(By(fn() { Some(@view.said(Text, label=file.name)) }))
+              |> ignore
+            })
+            |> ignore
+            mid.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
+              w
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .clips(Is(true))
+              .min_width(Is(Some(0.0)))
+              .max_width(Is(Some(1.0e9)), within=true)
+              |> ignore
+              said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
+            })
           })
-          h.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
-            w.row(Is(true)) |> ignore
-            said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
-          })
-          h.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
-            k.row(Is(true)) |> ignore
+          |> ignore
+          // right: standalone liquid glass button (下载) or 2-key capsule (选集 + 下载)
+          row.box(fn(pill) {
+            glass_pill(pill)
+            pill.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
+              k.row(Is(true)) |> ignore
+              media_key_node(
+                k,
+                fn() { "list" },
+                fn() { t("web-pages.drive.player.list") },
+                live,
+                ink,
+                fn() { pn.list_open(true) },
+                side=phone_key_side,
+                faint=false,
+                ripples=true,
+                lit=fn() { pn.listing.get() },
+                focus_pn=pn,
+              )
+              |> ignore
+            })
+            // 下载, as every file opened has it
             media_key_node(
-              k,
-              fn() { "list" },
-              fn() { t("web-pages.drive.player.list") },
+              pill,
+              fn() { "download" },
+              fn() { t("web-main.preview.download") },
               live,
               ink,
-              fn() { pn.list_open(true) },
+              fn() { (file.save)() },
               side=phone_key_side,
               faint=false,
               ripples=true,
-              lit=fn() { pn.listing.get() },
               focus_pn=pn,
             )
             |> ignore
           })
-          // 下载, as every file opened has it
-          media_key_node(
-            h,
-            fn() { "download" },
-            fn() { t("web-main.preview.download") },
-            live,
-            ink,
-            fn() { (file.save)() },
-            side=phone_key_side,
-            faint=false,
-            ripples=true,
-            focus_pn=pn,
-          )
           |> ignore
         })
         |> ignore
+        // what it waits on, once it has waited: centered below the bar row so toggling buffering never shifts the title or buttons
+        place.show(at_once=true, fn() { pn.waits() }, fn(w) {
+          w
+          .row(Is(true))
+          .lies_along(Is(Middle))
+          .lines_up(Is(Some(Middle)))
+          .padding(Is((0.0, @ui.Space::S1.px(), 0.0, 0.0)))
+          .presses(Is(false))
+          |> ignore
+          w.box(fn(inner) {
+            inner.row(Is(true)).lines_up(Is(Some(Middle))).adaptive_ink(Is(true)) |> ignore
+            player_wait_node(inner, pn, Meta, fn() { ink().muted }) |> ignore
+          })
+          |> ignore
+        })
       })
       |> ignore
     })
@@ -2826,7 +2930,7 @@ fn phone_player_node(
     n.box(fn(top) {
       top
       .over(Is(true))
-      .height(By(fn() { Some(if !native_on() && !embedded { @ui.Space::S12.px() + @ui.Space::S3.px() + (viewer_host().room)().0 } else { 0.0 }) }))
+      .height(By(fn() { Some(if !native_on() && !embedded { top_bar_h() + (viewer_host().room)().0 } else { 0.0 }) }))
       |> ignore
       top.reacts(fn() { top.pointer_within() && pointer_rests() }, fn(near) { pn.near_top.set(near) })
     })

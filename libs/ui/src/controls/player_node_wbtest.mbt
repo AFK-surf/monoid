@@ -75,16 +75,26 @@ test "player_node video controls use ViewerDark liquid glass with outside shadow
       let t = player_glass_tester(narrow, "video", dark, false)
       let glass = t.drawn_glass()
       let liquid = glass.filter(fn(g) { g.4 == 6 })
-      // Phone has top 48pt capsule + bottom card (2); desktop has viewer_bar pills + bottom control bar (>= 2).
-      let expected_min = if narrow { 2 } else { 2 }
+      // Phone has left back glass button + right action glass button/pill + bottom card (3); desktop has viewer_bar pills + bottom control bar (>= 2).
+      let expected_min = if narrow { 3 } else { 2 }
       assert_true(liquid.length() >= expected_min, msg="narrow=\{narrow} dark=\{dark} liquid=\{liquid.length()}")
+      assert_no_nested_glass(t, "player_node narrow=\{narrow} dark=\{dark}")
       assert_true(has_outside_shadow(t), msg="narrow=\{narrow} dark=\{dark} outside shadow")
+      if narrow {
+        // Bare adaptive ink is active on top-bar title glyphs (kind 7, slot 23 < 0) in GPU mode.
+        let bare = t.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 7.0 && a[23] < 0.0 && a[1] < 100.0 })
+        assert_true(bare.length() > 0, msg="narrow dark=\{dark}: bare adaptive ink active on top bar title")
+      }
       // Every bottom/top player glass instance over video uses ViewerDark (blur = 4.0).
       let blurs = liquid_blurs(t)
       assert_true(blurs.iter().all(fn(b) { (b - 4.0).abs() < 0.01 }), msg="narrow=\{narrow} dark=\{dark} blurs=\{Repr(blurs)}")
-      // Solid fallback: 0 liquid glass instances, solid media_dark_ground drawn.
+      // Solid fallback: 0 liquid glass instances, 0 bare adaptive ink glyphs, solid media_dark_ground drawn.
       let ts = player_glass_tester(narrow, "video", dark, true)
       assert_eq(ts.drawn_glass().length(), 0, msg="narrow=\{narrow} dark=\{dark} solid glass count")
+      if narrow {
+        let bare_solid = ts.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 7.0 && a[23] < 0.0 && a[1] < 100.0 })
+        assert_eq(bare_solid.length(), 0, msg="narrow dark=\{dark}: solid mode disables bare adaptive ink")
+      }
       assert_true(
         ts.drawn_rects().iter().any(fn(r) { r.4 == media_dark_ground }),
         msg="narrow=\{narrow} dark=\{dark} solid ground fallback",
@@ -126,7 +136,9 @@ test "player_node embedded mode emits zero liquid glass instances" {
 test "player_node hidden controls emit zero hidden glass instances" {
   // Phone playing: tap stage once to hide controls, wait past fade-out.
   let t = player_glass_tester(true, "video", true, false, pin=pinned(2000.0))
-  assert_eq(t.drawn_glass().length(), 2, msg="phone visible controls glass count")
+  // Top scroll-edge (frosted) + left back glass button + right action glass pill + bottom card = 4.
+  assert_eq(t.drawn_glass().length(), 4, msg="phone visible controls glass count")
+  assert_eq(t.drawn_glass().filter(fn(g) { g.4 == 6 }).length(), 3, msg="phone visible controls liquid glass count")
   t.tap(195.0, 422.0)
   t.run_for(playing_for("k").media.times().1 + 600.0)
   assert_eq(t.drawn_glass().length(), 0, msg="phone hidden controls must emit zero glass")

@@ -723,6 +723,37 @@ fn phone_row_h() -> Double {
 let phone_key_side : Double = 40.0
 
 ///|
+/// Phone top bar floating liquid glass pill geometry: 2pt inset pad around 40pt concentric round keys -> 44pt height
+/// (22pt full radius); `phone_top_pill_extra` is the extra width added by the second key (`list`) when a folder has
+/// multiple items, shared with the left balance spacer so short titles stay centered.
+let phone_top_pill_pad : Double = 2.0
+
+///|
+let phone_top_pill_h : Double = phone_key_side + 2.0 * phone_top_pill_pad
+
+///|
+let phone_top_pill_gap : Double = @ui.Space::S1.px()
+
+///|
+let phone_top_pill_extra : Double = phone_key_side + phone_top_pill_gap
+
+///|
+/// Rendered height of the phone top bar (`file.name` + optional static playlist index `which`, plus the optional
+/// waiting sub-line when `waiting` is true), growing with system font scale. Shared by the scroll-edge scrim,
+/// `along_time_hud_node`, and the `near_top` pointer zone.
+fn phone_top_bar_h(has_which : Bool, waiting : Bool) -> Double {
+  let th = @ui.tree_theme()
+  let (_, ui_h) = th.text_size(Ui)
+  let (_, meta_h) = th.text_size(Meta)
+  let row_h = dmax(phone_top_pill_h, if has_which { ui_h + meta_h } else { ui_h })
+  if waiting {
+    row_h + @ui.Space::S1.px() + dmax(meta_h, player_pill_spinner)
+  } else {
+    row_h
+  }
+}
+
+///|
 /// Where the row has not the room for all its keys (a phone's narrowest with a paused picture's: its frames' steps, its
 /// captions, 保存此帧), what leaves it first: 保存此帧, then the files before and after; the last key at its end stays
 /// in the controls' foot corner, concentric with it, never past it.
