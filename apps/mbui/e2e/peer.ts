@@ -43,10 +43,11 @@ const origin = process.env.E2E_ORIGIN!;
 const dir = process.env.E2E_PEER_DATA!;
 mkdirSync(dir, { recursive: true });
 // (as URLs: a Windows path is no module specifier)
-const { start } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);
+const { start, ClientAuthTracker } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);
 const { apply } = await import(pathToFileURL(join(src, "client/core-ts/src/delta.ts")).href);
 
 type J = any;
+const auth = new ClientAuthTracker();
 const pending = new Map<number, (m: J) => void>();
 const topics = new Map<number, { value: J; error: J; changed: () => void }>();
 let next = 1;
@@ -56,6 +57,7 @@ const core = start(join(dir, "core"), origin, (_client: number, json: string) =>
     console.error("core fatal:", m.fatal);
     process.exit(3);
   }
+  if (auth.takeMessage(m)) return;
   const t = topics.get(m.id);
   if (t && "value" in m) t.value = m.value;
   else if (t && "delta" in m) t.value = apply(t.value, m.delta);
@@ -69,20 +71,26 @@ const core = start(join(dir, "core"), origin, (_client: number, json: string) =>
 });
 const client = core.connect();
 
-function call(name: string, params?: J): Promise<J> {
+async function call(name: string, params?: J): Promise<J> {
+  if (auth.needsAuth(name)) await auth.whenReady();
+  const callAuth = auth.callAuth(name, params);
   const id = next++;
-  return new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     pending.set(id, (m) => ("error" in m ? reject(new Error(`${name}: ${JSON.stringify(m.error)}`)) : resolve(m.ok)));
-    core.receive(client, JSON.stringify(params === undefined ? { id, call: name } : { id, call: name, params }));
+    const msg: Record<string, unknown> = params === undefined ? { id, call: name } : { id, call: name, params };
+    if (callAuth !== undefined) msg.auth = callAuth;
+    core.receive(client, JSON.stringify(msg));
   });
 }
 
 /// A call with bytes beside it (a file's part going up).
-function callBytes(name: string, params: J, bytes: Uint8Array): Promise<J> {
+async function callBytes(name: string, params: J, bytes: Uint8Array): Promise<J> {
+  if (auth.needsAuth(name)) await auth.whenReady();
+  const callAuth = auth.callAuth(name, params);
   const id = next++;
-  return new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     pending.set(id, (m) => ("error" in m ? reject(new Error(`${name}: ${JSON.stringify(m.error)}`)) : resolve(m.ok)));
-    core.receiveRaw(client, { id, call: name, params, bytes });
+    core.receiveRaw(client, callAuth === undefined ? { id, call: name, params, bytes } : { id, call: name, params, bytes, auth: callAuth });
   });
 }
 
