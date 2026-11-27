@@ -2112,3 +2112,77 @@ test("large per-device overviews do not exhaust EventLog KEPT_BYTES and resuming
   await sibling.close();
   for (let i = 1; i < streams.length; i++) await streams[i]!.close();
 });
+
+test("missed overview catch-up on resume emits a strictly increasing id and does not rewind Last-Event-ID", async () => {
+  const { events, overview, change } = setup(testClock().clock);
+  const v = { ...viewer("a@x"), device: "dev-mono" };
+  const s1 = reader((await events.open(v, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  change({ type: "session", key: "s1" });
+  await settle();
+  const heard1 = s1.got.findLast((e) => e.id)!.id!;
+  const sibling = reader((await events.open(v, "zh", false, [], [], null)).body as AsyncIterable<Buffer>);
+  await s1.close();
+
+  // While s1 is disconnected: overview updates first (older seq), then thread entries arrive (newer seq).
+  overview.running = 7;
+  events.overviewChanged();
+  await settle();
+  change({ type: "thread", id: 9, entries: [{ n: 1 } as any] });
+  await settle();
+  const siblingOvsBefore = sibling.got.filter((e) => e.event === "overview").length;
+  assert.equal(siblingOvsBefore, 1);
+
+  // s1 resumes from heard1: receives replayed thread, then catch-up overview with strictly larger id.
+  const s2 = reader((await events.open(v, "zh", false, [], [], heard1)).body as AsyncIterable<Buffer>);
+  await settle();
+  const seqs = s2.got.filter((e) => e.id).map((e) => Number(e.id!.split(".")[1]));
+  assert.ok(seqs.length >= 2, `expected thread + overview events, got ${JSON.stringify(seqs)}`);
+  for (let i = 1; i < seqs.length; i++) {
+    assert.ok(seqs[i]! > seqs[i - 1]!, `expected strictly increasing ids, got ${JSON.stringify(seqs)}`);
+  }
+  assert.equal(s2.got.filter((e) => e.event === "thread").length, 1);
+  assert.equal(s2.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(sibling.got.filter((e) => e.event === "overview").length, siblingOvsBefore, "sibling does not get a duplicate overview");
+
+  // Reconnecting again from s2's last id must not replay the thread event or push another overview.
+  const heard2 = s2.got.findLast((e) => e.id)!.id!;
+  await s2.close();
+  const s3 = reader((await events.open(v, "zh", false, [], [], heard2)).body as AsyncIterable<Buffer>);
+  await settle();
+  assert.equal(s3.got.filter((e) => e.event === "thread").length, 0, "no duplicate thread replay after catch-up");
+  assert.equal(s3.got.filter((e) => e.event === "overview").length, 0, "no duplicate overview after catch-up");
+
+  await s3.close();
+  await sibling.close();
+});
+
+test("legacy device-less handover keys are used on first compare and dropped on the next handover", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const before = setup(time.clock, { file, previous: previous() });
+  const s0 = await opened(before.events);
+  before.events.overviewChanged();
+  await settle();
+  const heard = s0.got.findLast((e) => e.id)!.id!;
+  await before.events.handOver();
+  // Rewrite handed-over overviews to legacy 3-part viewerKey (without device), plus an offline legacy key.
+  const legacy = JSON.parse(readFileSync(file, "utf8"));
+  legacy.overviews = [
+    ["a@x\0w\0zh", JSON.stringify({ running: 0 })],
+    ["ghost@x\0w\0zh", JSON.stringify({ running: 0 })],
+  ];
+  delete legacy.overviewSeqs;
+  writeFileSync(file, JSON.stringify(legacy));
+
+  const after = setup(time.clock, { file, previous: previous() }, before);
+  const back = await opened(after.events, heard);
+  await settle();
+  assert.equal(back.got.filter((e) => e.event === "overview").length, 0, "legacy key suppresses unchanged overview");
+  await after.events.handOver();
+
+  const nextHanded = JSON.parse(readFileSync(file, "utf8"));
+  assert.ok(nextHanded.overviews.every(([k]: [string, string]) => k.split("\0").length === 4), `no legacy keys carried over: ${JSON.stringify(nextHanded.overviews)}`);
+  assert.ok(nextHanded.overviews.some(([k]: [string, string]) => k === "a@x\0w\0zh\0d"));
+  await s0.close();
+  await back.close();
+});

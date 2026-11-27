@@ -603,6 +603,8 @@ export class Events {
   private openingShared = 0;
   /// Handed-over comparable overview texts from the previous process, promoted into `overviewMemo` on first compare.
   private overviewTold = new Map<string, string>();
+  /// Timestamp (`handed.at`) of entries taken up into `overviewTold`, so untouched entries expire after `KEPT_MS`.
+  private overviewToldTakenAt = -Infinity;
   /// Lightweight per-device comparable memos sharing serialized key strings across devices in a flush round.
   private overviewMemo = new Map<string, OverviewKeyMemo>();
   /// Latest `EventLog` sequence number sent as an `overview` per `overviewKey`, so resuming streams catch missed
@@ -711,6 +713,7 @@ export class Events {
           const overviews = new Map<string, string>(handed.overviews);
           this.log = taken;
           this.overviewTold = overviews;
+          this.overviewToldTakenAt = handed.at;
           this.overviewMemo.clear();
           this.overviewToldSeq = new Map<string, number>(Array.isArray(handed.overviewSeqs) ? handed.overviewSeqs : []);
           this.last = handed.last;
@@ -788,6 +791,9 @@ export class Events {
     }
     for (const [k, text] of this.overviewTold) {
       if (this.overviewMemo.has(k)) continue;
+      // Drop legacy device-less `viewerKey` entries (only 2 `\0` separators) and expired untouched entries.
+      if (k.split("\0").length < 4) continue;
+      if (!active.has(k) && at - this.overviewToldTakenAt > KEPT_MS) continue;
       overviews.push([k, text]);
       keptKeys.add(k);
     }
@@ -1533,8 +1539,11 @@ export class Events {
                 if (missed !== undefined && missed.length > 0 && toldSeq !== undefined) {
                   const active = missed.filter((c) => this.clients.includes(c));
                   if (active.length > 0) {
+                    // Allocate a fresh monotonic id (above any `log.after(since)` events already sent to `active`) so
+                    // clients' `Last-Event-ID` cursor never rewinds back to `toldSeq`.
+                    const n = this.log.nextSeq();
                     const rawJson = serializeRawOverview(value, next, jsonCache);
-                    const sse = `id: ${this.log.run}.${toldSeq}\nevent: overview\ndata: ${rawJson}\n\n`;
+                    const sse = `id: ${this.log.run}.${n}\nevent: overview\ndata: ${rawJson}\n\n`;
                     for (const c of active) c.raw(sse);
                   }
                 }
