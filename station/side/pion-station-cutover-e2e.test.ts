@@ -2657,10 +2657,12 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       assert.ok(editedRows.length >= 1, "6b expected edited text persisted in stillfail.db");
     }
 
-    // (6c) Fresh empty dataDir cold start + staged `restore/ready.json` + default mode:
-    // First attempt immediately `exec_replace`s into Node -> first `/healthz 200` served by Node -> `connect.event` edit persists!
-    {
-      const dir = freshDir("ext-gate-r8-6c");
+    // (6c-no-db & 6c-empty-db) Cold start + staged `restore/ready.json` + default mode:
+    // Both with NO `stillfail.db` at all (`6c-no-db`) and with a pre-created empty schema DB (`6c-empty-db`),
+    // Pion immediately `exec_replace`s into Node -> `restored.json.error === null` -> first `/healthz 200`
+    // served by Node -> restored cross-station session present -> `connect.event` edit persists!
+    for (const mode of ["6c-no-db", "6c-empty-db"] as const) {
+      const dir = freshDir(`ext-gate-r9-${mode}`);
       const appDir = join(dir, "app");
       const dataDir = join(dir, "data");
       installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
@@ -2668,8 +2670,11 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
       assert.equal(idRes.status, 0, idRes.stderr);
       const stationId = idRes.stdout.trim();
-      // Empty schema DB (0 threads, 0 sessions — as on a newly enrolled station before Node `takeBackSoon`).
-      Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives")).close();
+      if (mode === "6c-empty-db") {
+        Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives")).close();
+      } else {
+        assert.equal(existsSync(join(dataDir, "stillfail.db")), false, "6c-no-db must start with NO stillfail.db");
+      }
       stageR8Restore(dataDir);
       writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
       writeFileSync(
@@ -2679,7 +2684,7 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
           workspace: ws,
           workspace_name: "R8RestWS",
           station: stationId,
-          name: "r8-6c",
+          name: `r9-${mode}`,
           peers: [{ id: peerId, name: "peer-r8", relay: null }],
           relay_urls: [],
           grant_keys: grantKeys,
@@ -2703,12 +2708,12 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       launcher.stderr.on("data", (d) => logs.push(String(d)));
 
       await until(
-        "6c immediate exec_replace into Node on cold restore",
+        `${mode} immediate exec_replace into Node on cold restore`,
         () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
         20_000,
       );
       const nodePid = await until(
-        "6c Node pid serving /healthz 200",
+        `${mode} Node pid serving /healthz 200`,
         async () => {
           const p = readHubPid(dataDir);
           const port = readPorts(dataDir).admin ?? 0;
@@ -2724,12 +2729,15 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       );
       assert.equal(isAlive(nodePid), true);
       await until(
-        "6c Node replica restore completed",
+        `${mode} Node replica restore completed`,
         () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
         15_000,
       );
+      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+      assert.equal(restoredOut.error, null, `${mode} restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
 
-      const evResp = await until("6c connect.event edit on Node", async () => {
+      const editedText = `edited-after-${mode}-cold-restore`;
+      const evResp = await until(`${mode} connect.event edit on Node`, async () => {
         try {
           return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
             method: "connect.event",
@@ -2741,7 +2749,7 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
               channel: "C_R8",
               threadTs: "200.001",
               ts: "200.001",
-              text: "edited-after-6c-cold-restore",
+              text: editedText,
             },
           });
         } catch {
@@ -2751,14 +2759,16 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       assert.deepEqual(evResp.result, { ok: true });
 
       launcher.kill("SIGTERM");
-      await until("6c launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+      await until(`${mode} launcher exit`, () => launcher.exitCode !== null || launcher.signalCode !== null);
 
       const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
+      const sessRow = verifyStore.getSession("s:r8-rem");
+      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, `${mode} expected restored cross-station session s:r8-rem`);
       const editedRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE '%edited-after-6c-cold-restore%'")
-        .all() as { text: string }[];
+        .prepare("SELECT text FROM entries WHERE text LIKE ?")
+        .all(`%${editedText}%`) as { text: string }[];
       verifyStore.close();
-      assert.ok(editedRows.length >= 1, "6c expected edited text persisted in stillfail.db");
+      assert.ok(editedRows.length >= 1, `${mode} expected edited text persisted in stillfail.db`);
     }
   }
 

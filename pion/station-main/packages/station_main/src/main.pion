@@ -1002,6 +1002,26 @@ fn maybe_handoff_external_connects_to_node(argv : Array[String]) -> Option[Int] 
   }
   match resolve_node_and_main_js(argv, sep, os_name) {
     Some((node_bin, main_js)) => {
+      // Cold-start pending replica restore without an existing `stillfail.db`: initialize an empty
+      // schema DB and close it immediately before `exec_replace` so Node's `takeBackSoon`
+      // (`restore.mbt:155`) finds an existing target database with zero leaked FDs.
+      let mut has_pending_restore = false
+      for i in 0..<reasons.length() {
+        if reasons[i] == "restore:pending-ready-json" {
+          has_pending_restore = true
+          break
+        }
+      }
+      if has_pending_restore {
+        let db_path = nodepath::join(sep, [data, "stillfail.db"])
+        if station_sys::lstat_raw(db_path) is None {
+          let _ = station_sys::register_sqlite_js_lower()
+          match station_store::Store::open(db_path) {
+            Ok(st_init) => st_init.close()
+            Err(_) => ()
+          }
+        }
+      }
       let _ = host_shim::write_stderr_line(
         "stillfail-station-pion: external connects active ("
         + reason_str
