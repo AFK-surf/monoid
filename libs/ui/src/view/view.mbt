@@ -2850,7 +2850,7 @@ fn Tree::node_visible(self : Tree, at : Int, allow_self_alpha_zero~ : Bool) -> B
     }
     if k > 0 && m.clips_said {
       let my0 = y
-      let my1 = y + m.lh * s
+      let my1 = y + dmax(0.0, m.lh + m.look.clips_past + self.fades_past_now(idx)) * s
       if my0 > cy0 {
         cy0 = my0
       }

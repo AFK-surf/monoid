@@ -20,7 +20,7 @@ priv struct UnaskedSeen {
 /// The screen of `c` as it stands now (its groups drawn out as a host draws them: Ctx::flat_from).
 fn unasked_seen(c : Ctx) -> UnaskedSeen {
   c.flat_from(0)
-  let (inst, n) = looks_seen(c.inst, c.ninst)
+  let (inst, n) = looks_seen(c.inst, c.ninst, c.window_w, c.window_h)
   { inst, n, nodes: looks_nodes_of(c) }
 }
 
@@ -31,7 +31,7 @@ fn unasked_seen(c : Ctx) -> UnaskedSeen {
 fn Tester::unasked_said(self : Tester, seen : UnaskedSeen, at : Double, how : String) -> String? {
   let c = g()
   c.flat_from(0)
-  let (now, m) = looks_seen(c.inst, c.ninst)
+  let (now, m) = looks_seen(c.inst, c.ninst, c.window_w, c.window_h)
   let (q, slot) = drawn_parted(seen.inst, seen.n, now, m)
   if q < 0 {
     return None
