@@ -86,14 +86,68 @@ test "a step's back key in a dialog and on a sheet stands on its title's first l
 }
 
 ///|
-test "a sheet's step's back key stands concentric with the sheet's top corner, the title of one line or of two" {
+test "a sheet's step's back key stands concentric with the sheet's top corner and flush with body words across scales" {
+  for title in ["申请钥匙", head_long_title] {
+    for scale in [0.85, 1.0, 1.3, 1.8, 2.0] {
+      let at = "\{title} scale=\{scale}"
+      let open = fn(_ : Anchor) {
+        panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
+          v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+        })
+        panel_go_nodes(title, fn(v, _) {
+          v.box(fn(b) { words_node(b, fn() { "下一步的内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+        })
+      }
+      presenters_reset()
+      let back = t("common.back")
+      let tt = @ui.Tester::new(
+        fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+        tree=presented_tree(presenting_view(open)),
+        w=390.0,
+        h=800.0,
+        platform=0,
+      )
+      tt.check_looks(false)
+      tt.set_font_scale(scale)
+      tt.draw()
+      tt.tap_text("打开")
+      tt.run_for(@ui.move_most_ms)
+      tt.leave()
+      tt.draw()
+      let key = tt.all(Button, label=back)
+      let sheet = tt.all(Dialog, label=title)
+      let body = tt.words().filter(fn(x) { x.0 == "下一步的内容" })
+      guard key.length() == 1 && sheet.length() == 1 && body.length() == 1 else {
+        @halt.saying("\{at}: missing back/sheet/body: \{key.length()} \{sheet.length()} \{body.length()}")
+      }
+      let (kx, ky, kw, kh) = key[0].rect
+      let (sx, sy, _, _) = sheet[0].rect
+      let (_, bx, _, _, _, _) = body[0]
+      assert_eq((kw.round(), kh.round()), (36.0, 36.0), msg=at)
+      assert_eq(((kx - sx).round(), (ky - sy).round()), (24.0, 24.0), msg=at)
+      assert_eq((kx - bx).round(), 0.0, msg=at)
+      let cf = tt.corner_faults()
+      let af = tt.audit().filter(fn(f) { !f.contains("「打开」") })
+      let cfs = cf.join("; ")
+      let afs = af.join("; ")
+      assert_eq(cf, [], msg="\{at}: \{cfs}")
+      assert_eq(af, [], msg="\{at}: \{afs}")
+    }
+  }
+}
+
+///|
+test "a stepped centred dialog's back key stands concentric with its top-left corner and flush with body words" {
   for title in ["申请钥匙", head_long_title] {
     let open = fn(_ : Anchor) {
-      panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
-        v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
-      })
-      panel_go_nodes(title, fn(v, _) {
-        v.box(fn(b) { words_node(b, fn() { "下一步的内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+      panel_nodes("第一步", from=Unanchored, fn(v, close) {
+        button_node(v, fn() { "下一步" }, fn() {
+          close()
+          panel_nodes(title, from=Unanchored, fn(v2, _) {
+            v2.box(fn(b) { words_node(b, fn() { "下一步的内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+          })
+        })
+        |> ignore
       })
     }
     presenters_reset()
@@ -101,7 +155,7 @@ test "a sheet's step's back key stands concentric with the sheet's top corner, t
     let tt = @ui.Tester::new(
       fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
       tree=presented_tree(presenting_view(open)),
-      w=390.0,
+      w=1200.0,
       h=800.0,
       platform=0,
     )
@@ -109,15 +163,24 @@ test "a sheet's step's back key stands concentric with the sheet's top corner, t
     tt.draw()
     tt.tap_text("打开")
     tt.run_for(@ui.move_most_ms)
+    tt.tap_text("下一步")
+    tt.run_for(@ui.move_most_ms)
     tt.leave()
     tt.draw()
     let key = tt.all(Button, label=back)
-    let sheet = tt.all(Dialog, label=title)
-    guard key.length() == 1 && sheet.length() == 1 else {
-      @halt.saying("no back key or sheet: \{key.length()} \{sheet.length()}")
+    let dlg = tt.all(Dialog, label=title)
+    let body = tt.words().filter(fn(x) { x.0 == "下一步的内容" })
+    guard key.length() == 1 && dlg.length() == 1 && body.length() == 1 else {
+      @halt.saying("\{title}: missing back/dialog/body: \{key.length()} \{dlg.length()} \{body.length()}")
     }
-    let (kx, ky, _, _) = key[0].rect
-    let (sx, sy, _, _) = sheet[0].rect
-    assert_eq(((kx - sx).round(), (ky - sy).round()), (26.0, 26.0), msg=title)
+    let (kx, ky, kw, kh) = key[0].rect
+    let (dx, dy, _, _) = dlg[0].rect
+    let (_, bx, _, _, _, _) = body[0]
+    let cf = tt.corner_faults()
+    let cfs = cf.join("; ")
+    assert_eq((kw.round(), kh.round()), (36.0, 36.0), msg=title)
+    assert_eq(((kx - dx).round(), (ky - dy).round()), (24.0, 24.0), msg=title)
+    assert_eq((kx - bx).round(), 0.0, msg=title)
+    assert_eq(cf, [], msg="\{title}: \{cfs}")
   }
 }

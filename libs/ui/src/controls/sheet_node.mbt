@@ -1193,20 +1193,12 @@ fn sheet_node(
                       None => ()
                     }
                   }
-                  // (a step further in: its back key before its title, as a step's head has it (step_head), the row no
-                  // taller for it; the key concentric with the sheet's top corner (sheet_step_key_at), its title on the
-                  // key's line beside it)
+                  // (a step further in: its circular back key concentric with the sheet's 42 top-left corner at 24×24
+                  // (corner_back_side = 36, left edge aligned with sheet_panel_sides = 24), its title's first line on
+                  // the key's middle beside it)
                   let step_row = fn(r : @view.View) {
-                    style_node(r, fn() { sheet_title_row.then(step_head_gap).then(sheet_step_row_over(r)) })
-                    r.box(fn(key) {
-                      style_node(key, fn() {
-                        in_line(step_back_side - node_sp(key, @ui.tree_theme().text_size(Title).1)).then(
-                          @ui.style(ml=room(sheet_step_key_at - sheet_panel_sides)),
-                        )
-                      })
-                      icon_button_node(key, "chevron-left", fn() { t("common.back") }, go_back, size=step_back_side) |> ignore
-                    })
-                    |> ignore
+                    style_node(r, fn() { sheet_step_row_style(r) })
+                    corner_back_key_node(r, go_back) |> ignore
                     // (its words on as many lines as they take, in the room the row leaves them, as the host's title)
                     r.box(fn(at) {
                       style_node(at, fn() { sheet_title_room }, in_row=true)
@@ -1639,22 +1631,86 @@ impl Eq for SheetItem with equal(a, b) {
 }
 
 ///|
-/// How far in from a sheet's side and top its step's back key stands (step_row's): concentric with the sheet's corner
-/// (capsule_in: 42 round, a key 32 across, 26 in each way), as a dialog's close button stands in its corner.
-let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, step_back_side)
+/// Diameter of a step's circular back button standing in a 42pt pane/dialog corner (`pane_corner` / `dialog_r`):
+/// 36pt (`radius = 18`), so `@ui.capsule_in(42, 36) = 24` aligns its left edge flush with `panel_words` /
+/// `sheet_panel_sides` (24pt) while staying concentric with the 42pt corner (`24 + 18 = 42`).
+let corner_back_side : Double = 36.0
 
 ///|
-/// The room over a sheet's step's head row (sheet_title_row's own, made up to it): its back key, a line of its title
-/// tall in the row (in_line) at the size of words of `v`'s tree, as far under the sheet's top as sheet_step_key_at,
-/// under its grabber (sheet_grab_h).
-fn sheet_step_row_over(v : @view.View) -> @ui.Style {
-  @ui.style(pt=room(sheet_step_over(v)))
+/// How far in from a 42pt sheet or dialog corner its 36pt circular back button stands (`capsule_in(42, 36) = 24`,
+/// flush with `sheet_panel_sides` and `dialog_pad`).
+let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, corner_back_side)
+
+///|
+/// Circular surface back button (`corner_back_side` = 36pt, `p.chip` ground matching secondary buttons on the same
+/// sheet/dialog) for step headers sitting directly in a 42pt top-left corner.
+#callsite(autofill(loc))
+fn corner_back_key_node(
+  parent : @view.View,
+  press : () -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let feel_of : Ref[@motion.PressFeel?] = Ref(None)
+  @headless.button(
+    made_for=loc,
+    parent,
+    fn() { t("common.back") },
+    fn(_) { press() },
+    hold=@headless.Hold::new(@ui.touch_slop(), @ui.long_press_ms, fn() { false }, down=fn(d) {
+      if feel_of.val is Some(f) {
+        f.down(d)
+      }
+    }),
+    fn(v, b) {
+      let is_lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
+      let hand = @motion.NodeWay::new(0.0)
+      v.reacts(is_lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let feel = @motion.press_feel(v, live=fn() { true }, hovers=false)
+      feel_of.val = Some(feel)
+      let deeper = lit_before_press(v, b, hand)
+      v
+      .focus_ring_theme()
+      .width(Is(Some(corner_back_side)))
+      .height(Is(Some(corner_back_side)))
+      .shrink(Is(0.0))
+      .radius(Is(corner_back_side / 2.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .ground(
+        By(fn() {
+          let p = theme().p
+          let pr = if deeper.val { dmin(1.0, dmax(0.0, feel.pressed_on(v))) } else { 0.0 }
+          let base = over(p.chip, alpha(p.hover, hand.shown(v)))
+          if pr <= 0.0 {
+            base
+          } else {
+            over(base, alpha(p.hover, pr))
+          }
+        }),
+      )
+      |> ignore
+      icon_node(v, "chevron-left", 18.0, By(fn() { theme().p.text }), weighed=true) |> ignore
+    },
+  )
 }
 
 ///|
-/// sheet_step_row_over's room, in points: the key's top (sheet_step_key_at) less the grabber's and less how far the key
-/// stands out over its line (in_line's half).
-fn sheet_step_over(v : @view.View) -> Double {
+/// Layout style for a sheet step's header row (`step_row`): `AFirstLine` aligns the title's first line with the
+/// 36pt circular back button at `(24, 24)` across every font scale, keeping the button concentric with `pane_corner`
+/// and flush with `sheet_panel_sides`.
+fn sheet_step_row_style(v : @view.View) -> @ui.Style {
   let line = node_sp(v, @ui.tree_theme().text_size(Title).1)
-  dmax(0.0, sheet_step_key_at - sheet_grab_h + (step_back_side - line) / 2.0)
+  let over = sheet_step_key_at - sheet_grab_h - dmax(0.0, (line - corner_back_side) / 2.0)
+  let pt_room = room(dmax(0.0, over))
+  let mt_room = room(dmin(0.0, over))
+  @ui.style(
+    row=true,
+    w=Full,
+    align=AFirstLine,
+    gap=S2_5,
+    px=room(sheet_step_key_at),
+    pt=pt_room,
+    pb=S3,
+    mt=mt_room,
+  )
 }

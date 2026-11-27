@@ -2050,12 +2050,6 @@ let step_back_out_px : Double = r_menu - step_back_side / 2.0 - panel_pad - text
 let step_back_out : @ui.Style = @ui.style(ml=room(step_back_out_px))
 
 ///|
-/// A step's back key before a dialog's title in its head's row (dialog_head, its parts S3 apart): as far out of the
-/// words' line, its chevron as near the title as a step's head has it (step_head_gap).
-// kept across runs: a value (no field of it changes)
-let dialog_back_at : @ui.Style = @ui.style(ml=room(-step_back_in), mr=room(@ui.Space::px(S1) - @ui.Space::px(S3)))
-
-///|
 // kept across runs: a value (no field of it changes)
 let step_head_gap : @ui.Style = @ui.css("gap=S1")
 
