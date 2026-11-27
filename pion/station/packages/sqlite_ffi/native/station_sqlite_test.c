@@ -351,6 +351,179 @@ int main(void) {
         stq_free(fstr);
     }
 
+    // 6. Exhaustive equivalence verification of binary-search + fast-int stq_format_js_double
+    //    against the original linear reference over powers of 2 (±1 ULP), realistic costs, and
+    //    random IEEE-754 bit patterns.
+    {
+        uint64_t rng = 0x9e3779b97f4a7c15ULL;
+        const int total_rand = 20000;
+        for (int kind = 0; kind < 3; kind++) {
+            int count = (kind == 0) ? 2098 * 3 : (kind == 1 ? 5000 : total_rand);
+            for (int idx = 0; idx < count; idx++) {
+                double v = 0.0;
+                if (kind == 0) {
+                    // Every power of 2 (subnormals + normals) and ±1 ULP around it.
+                    int exp_idx = idx / 3;
+                    int delta = (idx % 3) - 1;
+                    uint64_t bits = 0;
+                    if (exp_idx < 52) {
+                        bits = 1ULL << exp_idx;
+                    } else {
+                        uint64_t e = (uint64_t)(exp_idx - 51);
+                        if (e >= 2047ULL) {
+                            continue;
+                        }
+                        bits = e << 52;
+                    }
+                    if (delta < 0 && bits > 0) {
+                        bits -= 1ULL;
+                    } else if (delta > 0 && bits < 0x7fefffffffffffffULL) {
+                        bits += 1ULL;
+                    }
+                    if (idx & 1) {
+                        bits |= (1ULL << 63);
+                    }
+                    memcpy(&v, &bits, sizeof(v));
+                } else if (kind == 1) {
+                    // Realistic token/cost doubles and integer boundaries.
+                    rng ^= rng >> 12;
+                    rng ^= rng << 25;
+                    rng ^= rng >> 27;
+                    uint64_t r = rng * 2685821657736338717ULL;
+                    if (idx < 256) {
+                        v = (double)((int64_t)(9007199254740991LL - idx));
+                    } else if (idx < 512) {
+                        v = -(double)((int64_t)(9007199254740991LL - (idx - 256)));
+                    } else {
+                        double tokens = (double)(r % 1000000000ULL);
+                        double price = (double)((r >> 32) % 100ULL + 1ULL) * 0.25;
+                        v = (tokens * price) / 1.0e6;
+                    }
+                } else {
+                    rng ^= rng >> 12;
+                    rng ^= rng << 25;
+                    rng ^= rng >> 27;
+                    uint64_t bits = rng * 2685821657736338717ULL;
+                    memcpy(&v, &bits, sizeof(v));
+                }
+                int64_t got_len = 0;
+                char *got = (char *)stq_format_js_double(v, &got_len);
+                REQUIRE(got != NULL && got_len > 0 && got_len < 64);
+                char got_z[64];
+                memcpy(got_z, got, (size_t)got_len);
+                got_z[got_len] = '\0';
+                stq_free(got);
+
+                if (v != v || (v - v) != 0.0) {
+                    REQUIRE(strcmp(got_z, "null") == 0);
+                } else if (v == 0.0) {
+                    REQUIRE(strcmp(got_z, "0") == 0);
+                } else {
+                    // Must round-trip identically via strtod!
+                    REQUIRE(strtod(got_z, NULL) == v);
+                    // Verify shortest-precision match against linear reference for non-integers.
+                    double ax = v < 0.0 ? -v : v;
+                    if (!(ax <= 9007199254740991.0 && (double)(int64_t)ax == ax)) {
+                        int ref_prec = -1;
+                        for (int prec = 0; prec <= 16; prec++) {
+                            char sci[64];
+                            snprintf(sci, sizeof(sci), "%.*e", prec, ax);
+                            if (strtod(sci, NULL) == ax) {
+                                ref_prec = prec;
+                                break;
+                            }
+                            char c0[32];
+                            int ck = 0;
+                            const char *p = sci;
+                            while (*p != '\0' && *p != 'e' && *p != 'E') {
+                                if (*p >= '0' && *p <= '9' && ck < 31) c0[ck++] = *p;
+                                p++;
+                            }
+                            c0[ck] = '\0';
+                            int cexp = (*p == 'e' || *p == 'E') ? atoi(p + 1) : 0;
+                            char up[32];
+                            memcpy(up, c0, (size_t)ck + 1);
+                            int up_exp = cexp;
+                            int carry = 1;
+                            for (int j = ck - 1; j >= 0 && carry; j--) {
+                                if (up[j] == '9') up[j] = '0';
+                                else { up[j]++; carry = 0; }
+                            }
+                            if (carry) {
+                                up[0] = '1';
+                                for (int j = 1; j < ck; j++) up[j] = '0';
+                                up_exp = cexp + 1;
+                            }
+                            char up_sci[64];
+                            int up_p = 0;
+                            up_sci[up_p++] = up[0];
+                            if (ck > 1) {
+                                up_sci[up_p++] = '.';
+                                memcpy(up_sci + up_p, up + 1, (size_t)(ck - 1));
+                                up_p += ck - 1;
+                            }
+                            snprintf(up_sci + up_p, sizeof(up_sci) - (size_t)up_p, "e%+03d", up_exp);
+                            if (strtod(up_sci, NULL) == ax) {
+                                ref_prec = prec;
+                                break;
+                            }
+                            char dn[32];
+                            memcpy(dn, c0, (size_t)ck + 1);
+                            int dn_exp = cexp;
+                            int all_zero = 1;
+                            for (int j = 1; j < ck; j++) {
+                                if (dn[j] != '0') { all_zero = 0; break; }
+                            }
+                            if (dn[0] == '1' && all_zero) {
+                                for (int j = 0; j < ck; j++) dn[j] = '9';
+                                dn_exp = cexp - 1;
+                            } else {
+                                int borrow = 1;
+                                for (int j = ck - 1; j >= 0 && borrow; j--) {
+                                    if (dn[j] == '0') dn[j] = '9';
+                                    else { dn[j]--; borrow = 0; }
+                                }
+                            }
+                            char dn_sci[64];
+                            int dn_p = 0;
+                            dn_sci[dn_p++] = dn[0];
+                            if (ck > 1) {
+                                dn_sci[dn_p++] = '.';
+                                memcpy(dn_sci + dn_p, dn + 1, (size_t)(ck - 1));
+                                dn_p += ck - 1;
+                            }
+                            snprintf(dn_sci + dn_p, sizeof(dn_sci) - (size_t)dn_p, "e%+03d", dn_exp);
+                            if (strtod(dn_sci, NULL) == ax) {
+                                ref_prec = prec;
+                                break;
+                            }
+                        }
+                        REQUIRE(ref_prec >= 0);
+                        // Count significant digits in got_z (excluding sign, leading 0s, '.', exponent)
+                        const char *q = got_z;
+                        if (*q == '-') q++;
+                        int sig = 0;
+                        int seen_nz = 0;
+                        int trailing_z = 0;
+                        while (*q != '\0' && *q != 'e' && *q != 'E') {
+                            if (*q >= '0' && *q <= '9') {
+                                if (*q != '0') {
+                                    seen_nz = 1;
+                                    sig += trailing_z + 1;
+                                    trailing_z = 0;
+                                } else if (seen_nz) {
+                                    trailing_z++;
+                                }
+                            }
+                            q++;
+                        }
+                        REQUIRE(sig <= ref_prec + 1);
+                    }
+                }
+            }
+        }
+    }
+
     printf("station_sqlite_test: ALL PASSED\n");
     return 0;
 }

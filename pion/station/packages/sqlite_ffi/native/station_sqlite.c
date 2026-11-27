@@ -525,50 +525,35 @@ static void build_sci_candidate(char *buf, size_t cap, const char *digs, int k, 
     snprintf(buf + p, cap - (size_t)p, "e%+03d", exp);
 }
 
-// Format a finite IEEE-754 double using ECMAScript Number::toString shortest-decimal rules
-// (matching MoonBit/JS JSON.stringify: fixed notation for 1e-6 <= |d| < 1e21, otherwise
-// shortest d[.ddd]e±exp with no leading zeros in exponent; -0.0 -> "0"; non-finite -> "null").
-// Relies on the default "C" locale (LC_NUMERIC decimal point is '.'; stillfail-pion never
-// calls setlocale).
-void *stq_format_js_double(double value, int64_t *out_len) {
-    if (value != value || (value - value) != 0.0) {
-        return copy_cstr("null", out_len);
-    }
-    if (value == 0.0) {
-        return copy_cstr("0", out_len);
-    }
-    int neg = value < 0.0;
-    double x = neg ? -value : value;
+static int try_format_prec(double x, int prec, char digits[32], int *out_k, int *out_exp) {
+    char sci[64];
+    snprintf(sci, sizeof(sci), "%.*e", prec, x);
 
-    char digits[32];
-    int k = 0;
-    int exp = 0;
-    for (int prec = 0; prec <= 16; prec++) {
-        char sci[64];
-        snprintf(sci, sizeof(sci), "%.*e", prec, x);
-
-        char c0[32];
-        int ck = 0;
-        const char *p = sci;
-        while (*p != '\0' && *p != 'e' && *p != 'E') {
-            if (*p >= '0' && *p <= '9' && ck < (int)sizeof(c0) - 1) {
-                c0[ck++] = *p;
-            }
-            p++;
+    char c0[32];
+    int ck = 0;
+    const char *p = sci;
+    while (*p != '\0' && *p != 'e' && *p != 'E') {
+        if (*p >= '0' && *p <= '9' && ck < (int)sizeof(c0) - 1) {
+            c0[ck++] = *p;
         }
-        c0[ck] = '\0';
-        int cexp = (*p == 'e' || *p == 'E') ? atoi(p + 1) : 0;
+        p++;
+    }
+    c0[ck] = '\0';
+    int cexp = (*p == 'e' || *p == 'E') ? atoi(p + 1) : 0;
 
-        if (strtod(sci, NULL) == x) {
-            memcpy(digits, c0, (size_t)ck + 1);
-            k = ck;
-            exp = cexp;
-            break;
-        }
+    double p0 = strtod(sci, NULL);
+    if (p0 == x) {
+        memcpy(digits, c0, (size_t)ck + 1);
+        *out_k = ck;
+        *out_exp = cexp;
+        return 1;
+    }
 
-        // At asymmetric rounding boundaries (e.g. powers of two like 2^-24 where the upper
-        // half-ULP is twice the lower half-ULP), c0 = round(x, k) can fall just outside x's
-        // rounding interval while c0 + 1 or c0 - 1 lands inside and round-trips to x.
+    // At asymmetric rounding boundaries (e.g. powers of two where the upper half-ULP is
+    // twice the lower half-ULP), c0 = round(x, k) can fall just outside x's rounding
+    // interval while c0 + 1 (if p0 < x) or c0 - 1 (if p0 > x) lands inside and
+    // round-trips to x. Monotonicity of strtod rules out the opposite direction.
+    if (p0 < x) {
         char up[32];
         memcpy(up, c0, (size_t)ck + 1);
         int up_exp = cexp;
@@ -590,62 +575,118 @@ void *stq_format_js_double(double value, int64_t *out_len) {
         }
         char up_sci[64];
         build_sci_candidate(up_sci, sizeof(up_sci), up, ck, up_exp);
-        int up_ok = (strtod(up_sci, NULL) == x);
-
-        char dn[32];
-        memcpy(dn, c0, (size_t)ck + 1);
-        int dn_exp = cexp;
-        int all_zero_tail = 1;
-        for (int i = 1; i < ck; i++) {
-            if (dn[i] != '0') {
-                all_zero_tail = 0;
-                break;
-            }
+        if (strtod(up_sci, NULL) == x) {
+            memcpy(digits, up, (size_t)ck + 1);
+            *out_k = ck;
+            *out_exp = up_exp;
+            return 1;
         }
-        if (dn[0] == '1' && all_zero_tail) {
-            for (int i = 0; i < ck; i++) {
-                dn[i] = '9';
-            }
-            dn_exp = cexp - 1;
-        } else {
-            int borrow = 1;
-            for (int i = ck - 1; i >= 0 && borrow; i--) {
-                if (dn[i] == '0') {
-                    dn[i] = '9';
-                } else {
-                    dn[i]--;
-                    borrow = 0;
-                }
-            }
-        }
-        char dn_sci[64];
-        build_sci_candidate(dn_sci, sizeof(dn_sci), dn, ck, dn_exp);
-        int dn_ok = (strtod(dn_sci, NULL) == x);
+        return 0;
+    }
 
-        if (up_ok || dn_ok) {
-            if (up_ok && !dn_ok) {
-                memcpy(digits, up, (size_t)ck + 1);
-                k = ck;
-                exp = up_exp;
-            } else if (dn_ok && !up_ok) {
-                memcpy(digits, dn, (size_t)ck + 1);
-                k = ck;
-                exp = dn_exp;
-            } else {
-                // Both round-trip (unreachable when c0 missed by convexity, kept defensive):
-                // prefer even last digit.
-                int up_even = ((up[ck - 1] - '0') % 2) == 0;
-                if (up_even) {
-                    memcpy(digits, up, (size_t)ck + 1);
-                    k = ck;
-                    exp = up_exp;
-                } else {
-                    memcpy(digits, dn, (size_t)ck + 1);
-                    k = ck;
-                    exp = dn_exp;
-                }
-            }
+    char dn[32];
+    memcpy(dn, c0, (size_t)ck + 1);
+    int dn_exp = cexp;
+    int all_zero_tail = 1;
+    for (int i = 1; i < ck; i++) {
+        if (dn[i] != '0') {
+            all_zero_tail = 0;
             break;
+        }
+    }
+    if (dn[0] == '1' && all_zero_tail) {
+        for (int i = 0; i < ck; i++) {
+            dn[i] = '9';
+        }
+        dn_exp = cexp - 1;
+    } else {
+        int borrow = 1;
+        for (int i = ck - 1; i >= 0 && borrow; i--) {
+            if (dn[i] == '0') {
+                dn[i] = '9';
+            } else {
+                dn[i]--;
+                borrow = 0;
+            }
+        }
+    }
+    char dn_sci[64];
+    build_sci_candidate(dn_sci, sizeof(dn_sci), dn, ck, dn_exp);
+    if (strtod(dn_sci, NULL) == x) {
+        memcpy(digits, dn, (size_t)ck + 1);
+        *out_k = ck;
+        *out_exp = dn_exp;
+        return 1;
+    }
+    return 0;
+}
+
+// Format a finite IEEE-754 double using ECMAScript Number::toString shortest-decimal rules
+// (matching MoonBit/JS JSON.stringify: fixed notation for 1e-6 <= |d| < 1e21, otherwise
+// shortest d[.ddd]e±exp with no leading zeros in exponent; -0.0 -> "0"; non-finite -> "null").
+// Relies on the default "C" locale (LC_NUMERIC decimal point is '.'; stillfail-pion never
+// calls setlocale).
+void *stq_format_js_double(double value, int64_t *out_len) {
+    if (value != value || (value - value) != 0.0) {
+        return copy_cstr("null", out_len);
+    }
+    if (value == 0.0) {
+        return copy_cstr("0", out_len);
+    }
+    int neg = value < 0.0;
+    double x = neg ? -value : value;
+
+    // Fast path for exact safe integers (|value| <= 2^53 - 1 < 1e21):
+    // always plain decimal digits with zero snprintf/strtod calls.
+    if (x <= 9007199254740991.0) {
+        int64_t iv = (int64_t)x;
+        if ((double)iv == x) {
+            char out[32];
+            char rev[24];
+            int rlen = 0;
+            uint64_t u = (uint64_t)iv;
+            while (u > 0u) {
+                rev[rlen++] = (char)('0' + (u % 10u));
+                u /= 10u;
+            }
+            int pos = 0;
+            if (neg) {
+                out[pos++] = '-';
+            }
+            while (rlen > 0) {
+                out[pos++] = rev[--rlen];
+            }
+            return copy_bytes(out, pos, out_len);
+        }
+    }
+
+    char digits[32];
+    int k = 0;
+    int exp = 0;
+    // Start from prec = 16 (17 significant digits, guaranteed round-trip for IEEE-754 binary64).
+    // Stripping trailing zeros tightens the upper bound for short decimals (e.g. 0.5 -> hi = 0),
+    // then binary search finds the exact minimum prec in at most 4 steps instead of 17.
+    int hi = 16;
+    if (try_format_prec(x, 16, digits, &k, &exp)) {
+        while (k > 1 && digits[k - 1] == '0') {
+            k--;
+        }
+        digits[k] = '\0';
+        hi = k - 1;
+    }
+    int lo = 0;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        char cand[32];
+        int ck = 0;
+        int cexp = 0;
+        if (try_format_prec(x, mid, cand, &ck, &cexp)) {
+            memcpy(digits, cand, (size_t)ck + 1);
+            k = ck;
+            exp = cexp;
+            hi = mid;
+        } else {
+            lo = mid + 1;
         }
     }
 

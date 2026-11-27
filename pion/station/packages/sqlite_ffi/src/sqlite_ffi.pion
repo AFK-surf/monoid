@@ -111,11 +111,43 @@ fn take_c_bytes(p : Ptr, out_len : Ptr) -> Bytes {
   out
 }
 
+pub fn alloc_len_buf() -> Ptr {
+  let buf = ptr_alloc(8.to_int64())
+  ptr_write_i64(buf, 0.to_int64(), 0.to_int64())
+  buf
+}
+
+pub fn free_ptr(p : Ptr) -> Unit {
+  stq_free(p)
+}
+
+fn take_c_bytes_reuse(p : Ptr, out_len : Ptr) -> Bytes {
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      stq_free(p)
+    }
+    return Bytes::new(0)
+  }
+  let out = bytes_from_ptr(p, n.to_int())
+  stq_free(p)
+  out
+}
+
 pub fn format_js_double(value : Double) -> String {
+  if value == 0.0 {
+    return "0"
+  }
+  if value >= -9007199254740991.0 && value <= 9007199254740991.0 {
+    let iv = value.to_int64()
+    if iv.to_double() == value {
+      return iv.to_string()
+    }
+  }
   let out_len = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
   let p = stq_format_js_double(value, out_len)
-  bytes_to_str(take_c_bytes(p, out_len))
+  take_c_bytes(p, out_len).to_string()
 }
 
 pub fn errstr_bytes(rc : Int) -> Bytes {
@@ -321,9 +353,21 @@ pub fn Stmt::column_text_bytes(self : Stmt, index : Int) -> Bytes {
   take_c_bytes(p, out_len)
 }
 
+pub fn Stmt::column_text_bytes_with(self : Stmt, index : Int, out_len : Ptr) -> Bytes {
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_column_text(self.handle, index, out_len)
+  take_c_bytes_reuse(p, out_len)
+}
+
 pub fn Stmt::column_blob(self : Stmt, index : Int) -> Bytes {
   let out_len = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
   let p = stq_column_blob(self.handle, index, out_len)
   take_c_bytes(p, out_len)
+}
+
+pub fn Stmt::column_blob_with(self : Stmt, index : Int, out_len : Ptr) -> Bytes {
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_column_blob(self.handle, index, out_len)
+  take_c_bytes_reuse(p, out_len)
 }

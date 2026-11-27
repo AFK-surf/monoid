@@ -387,42 +387,123 @@ pub fn parse_json(raw : String) -> base_codec::JsonParseResult {
   }
 }
 
-/// Recursively prepare `Json::Num` values for ECMAScript / MoonBit `Json::stringify()`:
-/// - Numbers with non-empty `repr` keep `repr` verbatim (`1e400`, `18446744073709551615`, `9007199254740993`, `-0.0`).
-/// - Numbers with empty `repr`: non-finite -> `null`, finite -> ECMAScript shortest decimal (`sqlite_ffi::format_js_double`).
-fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
+fn json_hex_lower(v : Int) -> Byte {
+  if v < 10 { (48 + v) as Byte } else { (87 + v) as Byte }
+}
+
+// Single-pass JSON string escaping matching `base_codec::json_stringify` byte-for-byte.
+fn write_json_string(sb : StringBuilder, s : String) -> Unit {
+  sb.write_byte(34 as Byte) // '"'
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let b = s.code_unit_at(i)
+    if b >= 0x20 && b != 34 && b != 92 {
+      let mut j = i + 1
+      while j < n {
+        let c = s.code_unit_at(j)
+        if c < 0x20 || c == 34 || c == 92 {
+          break
+        }
+        j = j + 1
+      }
+      if j - i >= 4 {
+        sb.write_substring(s, i, j)
+      } else {
+        for k in i..<j {
+          sb.write_byte(s.code_unit_at(k) as Byte)
+        }
+      }
+      i = j
+      continue
+    }
+    if b == 34 {
+      sb.write_string("\\\"")
+    } else if b == 92 {
+      sb.write_string("\\\\")
+    } else if b == 8 {
+      sb.write_string("\\b")
+    } else if b == 12 {
+      sb.write_string("\\f")
+    } else if b == 10 {
+      sb.write_string("\\n")
+    } else if b == 13 {
+      sb.write_string("\\r")
+    } else if b == 9 {
+      sb.write_string("\\t")
+    } else {
+      sb.write_string("\\u00")
+      sb.write_byte(json_hex_lower((b >> 4) & 0xF))
+      sb.write_byte(json_hex_lower(b & 0xF))
+    }
+    i = i + 1
+  }
+  sb.write_byte(34 as Byte)
+}
+
+fn write_json_value(sb : StringBuilder, j : base_codec::Json, fmt_num : (Double) -> String) -> Unit {
   match j {
+    base_codec::Json::Null => sb.write_string("null")
+    base_codec::Json::Bool(b) => sb.write_string(if b { "true" } else { "false" })
     base_codec::Json::Num(d, repr) => {
       if repr.length() > 0 {
-        base_codec::Json::Num(d, repr)
+        sb.write_string(repr)
+      } else if d == 0.0 {
+        sb.write_byte(48 as Byte)
+      } else if d >= -9007199254740991.0 && d <= 9007199254740991.0 {
+        let iv = d.to_int64()
+        if iv.to_double() == d {
+          sb.write_string(iv.to_string())
+        } else {
+          sb.write_string(fmt_num(d))
+        }
       } else if is_nan_or_inf(d) {
-        base_codec::json_null()
+        sb.write_string("null")
       } else {
-        base_codec::Json::Num(d, sqlite_ffi::format_js_double(d))
+        sb.write_string(fmt_num(d))
       }
     }
+    base_codec::Json::Str(s) => write_json_string(sb, s)
     base_codec::Json::Arr(items) => {
-      let out : Array[base_codec::Json] = []
+      sb.write_byte(91 as Byte) // '['
       for i in 0..<items.length() {
-        out.push(normalize_json_for_stringify(items[i]))
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        write_json_value(sb, items[i], fmt_num)
       }
-      base_codec::Json::Arr(out)
+      sb.write_byte(93 as Byte) // ']'
     }
     base_codec::Json::Obj(fields) => {
-      let out : Array[(String, base_codec::Json)] = []
+      sb.write_byte(123 as Byte) // '{'
       for i in 0..<fields.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
         let (k, v) = fields[i]
-        out.push((k, normalize_json_for_stringify(v)))
+        write_json_string(sb, k)
+        sb.write_byte(58 as Byte) // ':'
+        write_json_value(sb, v, fmt_num)
       }
-      base_codec::Json::Obj(out)
+      sb.write_byte(125 as Byte) // '}'
     }
-    other => other
   }
 }
 
-/// Stringify a `base_codec::Json` value matching MoonBit / ECMAScript `Json::stringify()`.
+/// Single-pass JSON stringifier with caller-supplied non-integer double formatter
+/// (enables pure-Pion unit tests without linking `sqlite_ffi`).
+pub fn stringify_json_with(j : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  let sb = StringBuilder::new()
+  write_json_value(sb, j, fmt_num)
+  sb.to_string()
+}
+
+/// Stringify a `base_codec::Json` value matching MoonBit / ECMAScript `Json::stringify()`
+/// in a single pass with zero tree cloning and zero C FFI for safe integers.
 pub fn stringify_json(j : base_codec::Json) -> String {
-  base_codec::json_stringify(normalize_json_for_stringify(j))
+  let sb = StringBuilder::new()
+  write_json_value(sb, j, sqlite_ffi::format_js_double)
+  sb.to_string()
 }
 
 /// Format a Double column value as `base_codec::Json` (non-finite -> Null).
@@ -608,16 +689,16 @@ fn Db::prepared(self : Db, sql : String, params : Array[base_codec::Json]) -> Re
   Ok(kept)
 }
 
-fn read_column_value(stmt : sqlite_ffi::Stmt, index : Int) -> base_codec::Json {
+fn read_column_value(stmt : sqlite_ffi::Stmt, index : Int, len_buf : Ptr) -> base_codec::Json {
   let ty = stmt.column_type(index)
   if ty == sqlite_ffi::COL_INTEGER {
     int64_to_json(stmt.column_int64(index))
   } else if ty == sqlite_ffi::COL_FLOAT {
     double_to_json(stmt.column_double(index))
   } else if ty == sqlite_ffi::COL_TEXT {
-    base_codec::json_str(decode_utf8_lossy_bytes(stmt.column_text_bytes(index)))
+    base_codec::json_str(decode_utf8_lossy_bytes(stmt.column_text_bytes_with(index, len_buf)))
   } else if ty == sqlite_ffi::COL_BLOB {
-    let b = stmt.column_blob(index)
+    let b = stmt.column_blob_with(index, len_buf)
     let items : Array[base_codec::Json] = []
     for j in 0..<b.length() {
       items.push(base_codec::json_int(b[j].to_int() & 0xFF))
@@ -664,23 +745,66 @@ pub fn Db::all(
   if !kept.reads_only {
     self.changed = self.changed + 1
   }
+  let len_buf = sqlite_ffi::alloc_len_buf()
   let rows : Array[Map[String, base_codec::Json]] = []
+  let ncols = kept.names.length()
   while true {
     let rc = kept.stmt.step()
     if rc == sqlite_ffi::SQLITE_ROW {
       let row : Map[String, base_codec::Json] = Map::new()
-      for i in 0..<kept.names.length() {
-        row.set(kept.names[i], read_column_value(kept.stmt, i))
+      for i in 0..<ncols {
+        row.set(kept.names[i], read_column_value(kept.stmt, i, len_buf))
       }
       rows.push(row)
     } else if rc == sqlite_ffi::SQLITE_DONE {
       break
     } else {
       let err = SqlError::{ code: rc, message: self.errmsg() }
+      sqlite_ffi::free_ptr(len_buf)
       reset_stmt(kept.stmt)
       return Err(err)
     }
   }
+  sqlite_ffi::free_ptr(len_buf)
+  reset_stmt(kept.stmt)
+  Ok(rows)
+}
+
+/// Execute a query and return all rows as positional column arrays in SQL column order
+/// (avoids per-row `Map` allocations and string hashing on high-row-count fixed-schema queries).
+pub fn Db::all_rows(
+  self : Db,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Array[Array[base_codec::Json]], SqlError] {
+  let kept = match self.prepared(sql, params) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  if !kept.reads_only {
+    self.changed = self.changed + 1
+  }
+  let len_buf = sqlite_ffi::alloc_len_buf()
+  let rows : Array[Array[base_codec::Json]] = []
+  let ncols = kept.names.length()
+  while true {
+    let rc = kept.stmt.step()
+    if rc == sqlite_ffi::SQLITE_ROW {
+      let row : Array[base_codec::Json] = []
+      for i in 0..<ncols {
+        row.push(read_column_value(kept.stmt, i, len_buf))
+      }
+      rows.push(row)
+    } else if rc == sqlite_ffi::SQLITE_DONE {
+      break
+    } else {
+      let err = SqlError::{ code: rc, message: self.errmsg() }
+      sqlite_ffi::free_ptr(len_buf)
+      reset_stmt(kept.stmt)
+      return Err(err)
+    }
+  }
+  sqlite_ffi::free_ptr(len_buf)
   reset_stmt(kept.stmt)
   Ok(rows)
 }
@@ -699,14 +823,16 @@ pub fn Db::all_ordered(
   if !kept.reads_only {
     self.changed = self.changed + 1
   }
+  let len_buf = sqlite_ffi::alloc_len_buf()
   let rows : Array[Array[(String, base_codec::Json)]] = []
+  let ncols = kept.names.length()
   while true {
     let rc = kept.stmt.step()
     if rc == sqlite_ffi::SQLITE_ROW {
       let row : Array[(String, base_codec::Json)] = []
-      for i in 0..<kept.names.length() {
+      for i in 0..<ncols {
         let name = kept.names[i]
-        let v = read_column_value(kept.stmt, i)
+        let v = read_column_value(kept.stmt, i, len_buf)
         let mut updated = false
         for j in 0..<row.length() {
           if row[j].0 == name {
@@ -724,10 +850,12 @@ pub fn Db::all_ordered(
       break
     } else {
       let err = SqlError::{ code: rc, message: self.errmsg() }
+      sqlite_ffi::free_ptr(len_buf)
       reset_stmt(kept.stmt)
       return Err(err)
     }
   }
+  sqlite_ffi::free_ptr(len_buf)
   reset_stmt(kept.stmt)
   Ok(rows)
 }
