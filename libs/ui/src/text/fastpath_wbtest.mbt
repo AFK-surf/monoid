@@ -21,18 +21,21 @@ test "line_breaks handles lone surrogates and adjacent valid surrogate pairs ide
     }
     sb.to_string()
   }
-  let cases = [
-    mk([0xD800, 0x0061]), // lone high surrogate followed by 'a'
-    mk([0x0061, 0xDC00]), // 'a' followed by lone low surrogate
-    mk([0xD800]), // trailing lone high surrogate
-    mk([0xDC00]), // lone low surrogate
-    mk([0xD800, 0xD800, 0xDC00]), // lone high surrogate before valid pair U+10000
-    mk([0x4E2D, 0xD800, 0x6587]), // CJK surrounding lone high surrogate
+  let cases : Array[(Array[Int], Array[Int])] = [
+    ([0xD800, 0x0061], [0, 0, 2]), // lone high surrogate (SG->AL) + 'a' (AL): LB28 no break
+    ([0x0061, 0xDC00], [0, 0, 2]), // 'a' (AL) + lone low surrogate (SG->AL): LB28 no break
+    ([0xD800], [0, 2]), // trailing lone high surrogate
+    ([0xDC00], [0, 2]), // lone low surrogate
+    ([0xD800, 0xD800, 0xDC00], [0, 0, 0, 2]), // lone high surrogate + valid U+10000 (AL)
+    ([0x4E2D, 0xD800, 0x6587], [0, 1, 1, 2]), // '中' (ID) ÷ lone 0xD800 (AL) ÷ '文' (ID)
   ]
-  for idx, s in cases {
+  for idx, pair in cases {
+    let s = mk(pair.0)
+    let want = pair.1
     let b = line_breaks(s)
-    assert_eq(b.length(), s.length() + 1, msg="case \{idx}: length")
-    assert_eq(b[0], 0, msg="case \{idx}: start")
-    assert_eq(b[s.length()], 2, msg="case \{idx}: end")
+    assert_eq(b.length(), want.length(), msg="case \{idx}: length")
+    for i in 0..<want.length() {
+      assert_eq(b[i], want[i], msg="case \{idx} pos \{i}")
+    }
   }
 }

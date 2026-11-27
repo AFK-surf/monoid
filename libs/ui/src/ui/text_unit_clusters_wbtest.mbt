@@ -264,23 +264,25 @@ test "rich_lines defers line_breaks until overflow and matches eager breaks acro
       // Independently verify line_y / line_h / line_base / h against per-cluster dmax reference.
       let mut ref_y = 0.0
       let mut ref_last_extra = p_lazy.extra
+      let ref_last_line = lay_lazy.line_start.length() - 1
       for li in 0..<lay_lazy.line_start.length() {
         let s0 = lay_lazy.line_start[li]
         let e0 = lay_lazy.line_end[li]
-        let mut la = if s0 == e0 { p_lazy.base_asc } else { 0.0 }
-        let mut ld = if s0 == e0 { p_lazy.base_desc } else { 0.0 }
-        let mut lx = if s0 == e0 { p_lazy.extra } else { 0.0 }
+        let mut la = p_lazy.base_asc
+        let mut ld = p_lazy.base_desc
+        let is_last = li == ref_last_line
         for c in s0..<e0 {
           let rk = p_lazy.run_of[c]
           la = dmax(la, p_lazy.run_lasc[rk])
           ld = dmax(ld, p_lazy.run_ldesc[rk])
-          lx = dmax(lx, p_lazy.run_extra[rk])
+          if is_last {
+            ref_last_extra = dmax(ref_last_extra, p_lazy.run_extra[rk])
+          }
         }
         assert_eq(lay_lazy.line_y[li], ref_y, msg="case \{idx} w=\{max_w} line \{li}: ref line_y")
         assert_eq(lay_lazy.line_h[li], la + ld, msg="case \{idx} w=\{max_w} line \{li}: ref line_h")
         assert_eq(lay_lazy.line_base[li], la, msg="case \{idx} w=\{max_w} line \{li}: ref line_base")
         ref_y = ref_y + la + ld
-        ref_last_extra = lx
       }
       assert_eq(lay_lazy.h, ref_y + ref_last_extra, msg="case \{idx} w=\{max_w}: ref h")
     }
