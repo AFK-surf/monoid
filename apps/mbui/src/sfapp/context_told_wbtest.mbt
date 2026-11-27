@@ -114,12 +114,18 @@ test "大屏: 选中对话正文后右键出现「分享为图片」，点击打
   assert_true(t.find("复制图片") is Some(_), msg="expected 复制图片 on excerpt share stage")
   assert_true(t.find("保存图片") is Some(_), msg="expected 保存图片 on excerpt share stage")
   assert_eq(t.audit(), [])
-  // Copy image triggers a take_picture shot.
+  // Copy image triggers a take_picture shot; tapping Save immediately after while Copy is in flight must not deadlock.
   let shots_before = t.shot_drawn().length()
   t.tap_text("复制图片")
+  t.tap_text("保存图片")
   t.run_for(@ui.move_most_ms)
   assert_true(t.shot_drawn().length() > shots_before, msg="expected 复制图片 to render PNG shot")
   assert_true(t.find("已复制") is Some(_), msg="expected 已复制 state/toast after copying share image")
+  // Save works cleanly right after Copy completes (no stuck busy state).
+  let shots_after_copy = t.shot_drawn().length()
+  t.tap_text("保存图片")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.shot_drawn().length() > shots_after_copy, msg="expected 保存图片 to render PNG shot after copy completes")
   // Close via Escape.
   t.key_told(@ui.key_escape, 0, t.time())
   t.run_for(@ui.move_most_ms)
@@ -170,6 +176,12 @@ test "小屏 390x844 与 1.3x 字号下分享图预览（常规与超长分页�
       t.run_for(@ui.move_most_ms)
       let faults = t.audit()
       assert_eq(faults, [], msg="audit failed for \{mode} \{lang} at 390x844 1.3x: \{Repr(faults)}")
+      if mode == "chat-share-excerpt-long" {
+        t.tap_text(if lang == "zh" { "分页卡片" } else { "Series" })
+        t.run_for(@ui.move_most_ms)
+        let paged_faults = t.audit()
+        assert_eq(paged_faults, [], msg="paged audit failed for \{lang} at 390x844 1.3x: \{Repr(paged_faults)}")
+      }
     }
   }
 }

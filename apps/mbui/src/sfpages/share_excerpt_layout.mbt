@@ -347,11 +347,56 @@ pub fn trim_after_context(after : String, max_units? : Double = excerpt_context_
 }
 
 ///|
-/// Plans single-card or paginated share cards for any selection length (including 10,000+ chars).
+/// Returns at most `max_chars` Unicode scalar values from `s` without allocating an array over the full string.
+fn excerpt_bounded_head(s : String, max_chars : Int) -> (String, Bool) {
+  let out = StringBuilder()
+  let mut count = 0
+  let mut truncated = false
+  for c in s {
+    if count >= max_chars {
+      truncated = true
+      break
+    }
+    out.write_char(c)
+    count += 1
+  }
+  (out.to_string(), truncated)
+}
+
+///|
+/// Measures both non-whitespace character count and weighted visual units in one linear O(N) pass with no allocation.
+fn measure_excerpt_stats(s : String) -> (Int, Double) {
+  let mut chars = 0
+  let mut units = 0.0
+  let mut prev_nl = false
+  for c in s {
+    if c == '\n' {
+      if prev_nl {
+        // Second newline of a paragraph break: upgrade single break to paragraph break.
+        units += excerpt_para_break_units - excerpt_single_break_units
+        prev_nl = false
+      } else {
+        units += excerpt_single_break_units
+        prev_nl = true
+      }
+    } else if c == '\r' {
+      ()
+    } else {
+      prev_nl = false
+      if !excerpt_is_space(c) {
+        chars += 1
+      }
+      units += excerpt_char_units(c)
+    }
+  }
+  (chars, units)
+}
+
+///|
+/// Plans single-card or paginated share cards for any selection length (including 1 MB+ logs) in O(N) time.
 pub fn plan_excerpt_cards(payload : ExcerptPayload, requested : ExcerptMode) -> ExcerptPlan {
   let selected = payload.selected_text.trim(chars=" \n\t\r").to_owned()
-  let total_chars = count_excerpt_chars(selected)
-  let total_units = measure_excerpt_units(selected)
+  let (total_chars, total_units) = measure_excerpt_stats(selected)
   let exceeds = total_units > excerpt_single_max_units
   let before_snip = trim_before_context(payload.before_context)
   let after_snip = trim_after_context(payload.after_context)
@@ -379,29 +424,50 @@ pub fn plan_excerpt_cards(payload : ExcerptPayload, requested : ExcerptMode) -> 
       ],
     }
   }
-  let all_chunks : Array[String] = []
-  let mut remaining = selected
-  let mut guard_n = 0
-  while remaining != "" && guard_n < 100 {
-    guard_n += 1
-    if measure_excerpt_units(remaining) <= excerpt_page_max_units {
-      all_chunks.push(remaining)
+  // Only split up to `excerpt_max_pages` chunks on a bounded prefix so huge selections (e.g. 1 MB logs) stay instant.
+  // Worst-case narrow ASCII is ~0.52 units/char, so 2.5x unit budget in chars always covers the full page budget.
+  let max_prefix_chars = ((excerpt_max_pages + 1).to_double() * excerpt_page_max_units * 2.5).to_int()
+  let (work_str, had_more_beyond_window) = excerpt_bounded_head(selected, max_prefix_chars)
+  let chunks : Array[String] = []
+  let mut remaining = work_str
+  let mut used_units = 0.0
+  let mut more_chunks = had_more_beyond_window
+  while remaining != "" && chunks.length() < excerpt_max_pages {
+    let (_, rem_units) = measure_excerpt_stats(remaining)
+    if rem_units <= excerpt_page_max_units && !had_more_beyond_window {
+      chunks.push(remaining)
+      used_units += rem_units
       remaining = ""
       break
     }
     let (head, tail) = excerpt_take_prefix(remaining, excerpt_page_max_units)
     if head.is_empty() {
-      all_chunks.push(remaining)
+      chunks.push(remaining)
+      used_units += rem_units
       remaining = ""
       break
     }
-    all_chunks.push(head)
+    let (_, head_units) = measure_excerpt_stats(head)
+    chunks.push(head)
+    used_units += head_units
     remaining = tail
   }
-  let total_possible = if all_chunks.length() < 2 { 2 } else { all_chunks.length() }
+  if remaining != "" {
+    more_chunks = true
+  }
+  let total_possible = if !more_chunks {
+    if chunks.length() < 2 { 2 } else { chunks.length() }
+  } else {
+    let left_units = if total_units > used_units { total_units - used_units } else { excerpt_page_max_units }
+    let extra = (left_units / excerpt_page_max_units).ceil().to_int()
+    let est = chunks.length() + (if extra < 1 { 1 } else { extra })
+    if est < 2 { 2 } else { est }
+  }
   if requested == Excerpt {
-    let (head, _) = excerpt_take_prefix(selected, excerpt_single_max_units)
-    let excerpt_text = if head != "" { head } else { selected }
+    let single_window = (excerpt_single_max_units * 2.5).to_int()
+    let (single_src, _) = excerpt_bounded_head(selected, single_window)
+    let (head, _) = excerpt_take_prefix(single_src, excerpt_single_max_units)
+    let excerpt_text = if head != "" { head } else { single_src }
     let shown_chars = count_excerpt_chars(excerpt_text)
     return {
       mode: Excerpt,
@@ -426,12 +492,12 @@ pub fn plan_excerpt_cards(payload : ExcerptPayload, requested : ExcerptMode) -> 
       ],
     }
   }
-  let capped_len = if all_chunks.length() > excerpt_max_pages { excerpt_max_pages } else { all_chunks.length() }
-  let was_capped = all_chunks.length() > excerpt_max_pages
+  let capped_len = chunks.length()
+  let was_capped = more_chunks
   let mut shown_chars = 0
   let cards : Array[ExcerptSlice] = []
   for i in 0..<capped_len {
-    let chunk = all_chunks[i]
+    let chunk = chunks[i]
     shown_chars += count_excerpt_chars(chunk)
     let is_first = i == 0
     let is_last = i == capped_len - 1
@@ -628,16 +694,49 @@ fn excerpt_join_kind(adjacent_edge_space : Bool) -> ExcerptJoin {
 }
 
 ///|
-fn excerpt_find_with_before(haystack : String, before_hint : String, needle : String) -> Int? {
+/// Finds `(paragraph_index, utf16_offset)` of `needle` across `paragraphs`, disambiguating duplicates with `before_hint`.
+/// Priority:
+/// 1. Exact paragraph prefix match (`para` starts with `before_hint + needle`, since `WordsPicked.first_before` is the
+///    prefix within the start paragraph).
+/// 2. Longest suffix of `before_hint` (outer loop descending 24..1, inner loop across all paragraphs).
+/// 3. When `before_hint` is empty, prefer a paragraph that starts with `needle` before scanning mid-paragraph matches.
+fn excerpt_locate_start(paragraphs : Array[String], before_hint : String, needle : String) -> (Int, Int)? {
   if needle.is_empty() {
     return None
   }
-  let cs = before_hint.to_array()
-  let max_n = if cs.length() < 24 { cs.length() } else { 24 }
-  for n = max_n; n >= 0; n = n - 1 {
-    let tail = String::from_array(cs[cs.length() - n:].to_owned())
-    if haystack.find(tail + needle) is Some(i) {
-      return Some(i + tail.length())
+  if before_hint != "" {
+    // 1. Exact paragraph-start match: `before_hint` + `needle` at offset 0 of a paragraph.
+    let exact_prefix = before_hint + needle
+    for pi in 0..<paragraphs.length() {
+      if paragraphs[pi].has_prefix(exact_prefix) {
+        return Some((pi, before_hint.length()))
+      }
+    }
+    // 2. Hint length outer loop (descending), paragraph inner loop, so a later paragraph matching a longer hint beats
+    //    an earlier paragraph that only contains `needle` without matching context.
+    let cs = before_hint.to_array()
+    let max_n = if cs.length() < 24 { cs.length() } else { 24 }
+    for n = max_n; n >= 1; n = n - 1 {
+      let tail = String::from_array(cs[cs.length() - n:].to_owned())
+      let pat = tail + needle
+      for pi in 0..<paragraphs.length() {
+        if paragraphs[pi].find(pat) is Some(i) {
+          return Some((pi, i + tail.length()))
+        }
+      }
+    }
+  } else {
+    // Empty `before_hint`: selection began at paragraph start; prefer start-of-paragraph matches first.
+    for pi in 0..<paragraphs.length() {
+      if paragraphs[pi].has_prefix(needle) {
+        return Some((pi, 0))
+      }
+    }
+  }
+  // 3. Fallback: first occurrence anywhere.
+  for pi in 0..<paragraphs.length() {
+    if paragraphs[pi].find(needle) is Some(i) {
+      return Some((pi, i))
     }
   }
   None
@@ -686,30 +785,23 @@ pub fn build_excerpt_payload(
   }
   // Locate the first selected line in `paragraphs` using `first_before` to disambiguate duplicates.
   let first_line = sel_lines[0]
-  let mut start_p = -1
-  let mut start_off = -1
-  for pi in 0..<paragraphs.length() {
-    if excerpt_find_with_before(paragraphs[pi], first_before, first_line) is Some(off) {
-      start_p = pi
-      start_off = off
-      break
-    }
-  }
-  if start_p < 0 {
-    return {
-      before_context: first_before.trim(chars=" \n\t\r").to_owned(),
-      before_join: if first_before.has_suffix(" ") { InlineSpace } else { Inline },
-      selected_text: sel_lines.join("\n\n"),
-      after_context: "",
-      after_join: Paragraph,
-      source_title,
-      date_label,
-    }
+  let (start_p, start_off) = match excerpt_locate_start(paragraphs, first_before, first_line) {
+    Some(pos) => pos
+    None =>
+      return {
+        before_context: first_before.trim(chars=" \n\t\r").to_owned(),
+        before_join: if first_before.has_suffix(" ") { InlineSpace } else { Inline },
+        selected_text: sel_lines.join("\n\n"),
+        after_context: "",
+        after_join: Paragraph,
+        source_title,
+        date_label,
+      }
   }
   // Determine end paragraph and offset.
-  let last_line = sel_lines[sel_lines.length() - 1]
   let mut end_p = start_p
   let mut end_off = start_off + first_line.length()
+  let mut matched_all = true
   if sel_lines.length() > 1 {
     // Walk forward matching subsequent lines across paragraphs.
     let mut cur_p = start_p
@@ -741,15 +833,18 @@ pub fn build_excerpt_payload(
         p_scan += 1
       }
       if !found_next {
+        matched_all = false
         break
       }
       li += 1
     }
-  } else {
-    ignore(last_line)
   }
-  // Build selected text preserving exact paragraph breaks between distinct paragraphs.
-  let selected_out = if start_p == end_p {
+  // Build selected text preserving exact paragraph breaks. If any subsequent line could not be matched in AST
+  // paragraphs (e.g. table cell spacing / inline code normalization), fall back to full `sel_lines` so no tail text
+  // is ever silently dropped.
+  let selected_out = if !matched_all {
+    sel_lines.join("\n\n")
+  } else if start_p == end_p {
     paragraphs[start_p].clamped_view(start=start_off, end=end_off).to_owned().trim(chars=" \n\t\r").to_owned()
   } else {
     let parts : Array[String] = []
@@ -785,21 +880,25 @@ pub fn build_excerpt_payload(
   } else {
     ("", Paragraph)
   }
-  // Extract afterContext: inline suffix of `end_p`, supplemented by following paragraph when short.
-  let raw_after_inline = paragraphs[end_p].clamped_view(start=end_off).to_owned()
-  let trimmed_after_inline = raw_after_inline.trim(chars=" \n\t\r").to_owned()
-  let (after_context, after_join) = if trimmed_after_inline != "" {
-    let edge_space = raw_after_inline.has_prefix(" ") || raw_after_inline.has_prefix("\t")
-    let combined = if end_p + 1 < paragraphs.length() && measure_excerpt_units(trimmed_after_inline) < excerpt_context_max_units * 0.7 {
-      trimmed_after_inline + "\n\n" + paragraphs[end_p + 1]
-    } else {
-      trimmed_after_inline
-    }
-    (combined, excerpt_join_kind(edge_space))
-  } else if end_p + 1 < paragraphs.length() {
-    (paragraphs[end_p + 1], Paragraph)
-  } else {
+  // Extract afterContext: inline suffix of `end_p`, supplemented by following paragraph when short (omitted on partial match).
+  let (after_context, after_join) = if !matched_all {
     ("", Paragraph)
+  } else {
+    let raw_after_inline = paragraphs[end_p].clamped_view(start=end_off).to_owned()
+    let trimmed_after_inline = raw_after_inline.trim(chars=" \n\t\r").to_owned()
+    if trimmed_after_inline != "" {
+      let edge_space = raw_after_inline.has_prefix(" ") || raw_after_inline.has_prefix("\t")
+      let combined = if end_p + 1 < paragraphs.length() && measure_excerpt_units(trimmed_after_inline) < excerpt_context_max_units * 0.7 {
+        trimmed_after_inline + "\n\n" + paragraphs[end_p + 1]
+      } else {
+        trimmed_after_inline
+      }
+      (combined, excerpt_join_kind(edge_space))
+    } else if end_p + 1 < paragraphs.length() {
+      (paragraphs[end_p + 1], Paragraph)
+    } else {
+      ("", Paragraph)
+    }
   }
   {
     before_context,
@@ -813,14 +912,15 @@ pub fn build_excerpt_payload(
 }
 
 ///|
-/// Formats UTC epoch milliseconds as `YYYY.MM.DD` (Swiss poster date). Returns `""` for invalid/zero timestamps.
-pub fn format_excerpt_date(at_ms : Double) -> String {
+/// Formats epoch milliseconds as local `YYYY.MM.DD` (Swiss poster date) using `offset_min` (`@ui.utc_offset_min`).
+/// Returns `""` for invalid/zero timestamps.
+pub fn format_excerpt_date(at_ms : Double, offset_min? : Int = 0) -> String {
   // Reject unset/fixture-ordinal timestamps prior to year 2000.
   if at_ms < 946684800000.0 {
     return ""
   }
-  let total_sec = (at_ms / 1000.0).to_int64()
-  let days = total_sec / 86400L
+  let local_ms = at_ms + offset_min.to_double() * 60000.0
+  let days = (local_ms / 86400000.0).floor().to_int64()
   let z = days + 719468L
   let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
   let doe = z - era * 146097L

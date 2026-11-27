@@ -8,7 +8,68 @@ test "excerpt layout: visual unit measurement and thousands formatting" {
   assert_eq(format_excerpt_count(999), "999")
   assert_eq(format_excerpt_count(10000), "10,000")
   assert_eq(format_excerpt_date(1795774775027.0), "2026.11.27")
+  // Local timezone crossing midnight: 2026-11-27 17:30 UTC is 2026-11-28 01:30 UTC+8.
+  assert_eq(format_excerpt_date(1795800600000.0, offset_min=0), "2026.11.27")
+  assert_eq(format_excerpt_date(1795800600000.0, offset_min=480), "2026.11.28")
   assert_eq(format_excerpt_date(0.0), "")
+}
+
+///|
+test "excerpt layout: disambiguates duplicate sentences across paragraphs via first_before" {
+  let paras = [
+    "第一段开场：好的，先这样。后面还有别的事。",
+    "第二段过渡内容。",
+    "第三段前文铺垫。",
+    "第四段总结：好的，先这样。我们明天继续。",
+  ]
+  let p = build_excerpt_payload(paras, "好的，先这样。", "第四段总结：", false, "重复句子测试", "2026.11.27")
+  assert_true(p.before_context.contains("第四段总结："), msg="expected paragraph 4 before context, got: \{p.before_context}")
+  assert_true(p.after_context.contains("我们明天继续"), msg="expected paragraph 4 after context, got: \{p.after_context}")
+  // Empty first_before prefers a paragraph that starts with the needle over an earlier mid-paragraph match.
+  let paras2 = [
+    "前缀里也有：好的，先这样。",
+    "好的，先这样。这是段首的另一处。",
+  ]
+  let p2 = build_excerpt_payload(paras2, "好的，先这样。", "", false, "段首优先测试", "2026.11.27")
+  assert_true(p2.after_context.contains("这是段首的另一处"), msg="expected start-of-paragraph match, got: \{p2.after_context}")
+}
+
+///|
+test "excerpt layout: partial multi-line match preserves all selected lines without dropping tail" {
+  let paras = ["第一行原文。", "第二行原文。"]
+  let p = build_excerpt_payload(paras, "第一行原文。\n未在 AST 中匹配到的表格行\n末尾补充一句", "", false, "部分匹配测试", "2026.11.27")
+  assert_true(p.selected_text.contains("第一行原文。"))
+  assert_true(p.selected_text.contains("未在 AST 中匹配到的表格行"))
+  assert_true(p.selected_text.contains("末尾补充一句"))
+  assert_eq(p.after_context, "")
+}
+
+///|
+test "excerpt layout: 100k-char selection stays bounded O(N) and ZWJ emoji stays intact in fade tokens" {
+  let chunk = "这是一段用于测试超长日志性能的连续中文段落内容，验证线性扫描不会在主线程卡死。"
+  let parts : Array[String] = []
+  for _ in 0..<2500 {
+    parts.push(chunk)
+  }
+  let mega = parts.join("\n\n")
+  let payload : ExcerptPayload = {
+    before_context: "",
+    before_join: Paragraph,
+    selected_text: mega,
+    after_context: "",
+    after_join: Paragraph,
+    source_title: "超长日志",
+    date_label: "2026.11.27",
+  }
+  let p_pages = plan_excerpt_cards(payload, Pages)
+  assert_eq(p_pages.cards.length(), 9)
+  assert_true(p_pages.was_truncated)
+  assert_true(p_pages.total_chars >= 90000)
+  assert_true(p_pages.total_possible_pages > 100)
+  // ZWJ emoji sequence stays in a single fade token.
+  let tokens = ex_fade_tokens("前👩‍💻后")
+  assert_eq(tokens.length(), 3)
+  assert_eq(tokens[1], "👩‍💻")
 }
 
 ///|

@@ -36,7 +36,7 @@ let ex_margin : Double = 38.0
 let ex_qr_side : Double = 72.0
 
 ///|
-let ex_qr_plate_pad : Double = 8.0
+let ex_qr_plate_pad : Double = 9.0
 
 ///|
 let ex_qr_mark_side : Double = 14.0
@@ -178,7 +178,23 @@ fn ex_rgba(r : Int, g : Int, b : Int, alpha : Double) -> Int64 {
 }
 
 ///|
-/// Tokenizes `text` into atomic chunks (keeping Latin words whole so wrapping never splits mid-word).
+fn ex_is_grapheme_extender(c : Char) -> Bool {
+  let code = c.to_int()
+  code == 0x200D || // ZWJ
+  code == 0xFE0E ||
+  code == 0xFE0F || // variation selectors
+  code == 0x20E3 || // combining enclosing keycap
+  (code >= 0x1F3FB && code <= 0x1F3FF) || // emoji skin tone modifiers
+  (code >= 0x0300 && code <= 0x036F) || // combining diacritical marks
+  (code >= 0x1AB0 && code <= 0x1AFF) ||
+  (code >= 0x1DC0 && code <= 0x1DFF) ||
+  (code >= 0x20D0 && code <= 0x20FF) ||
+  (code >= 0xFE20 && code <= 0xFE2F)
+}
+
+///|
+/// Tokenizes `text` into atomic chunks (keeping Latin words and ZWJ/combining emoji clusters whole so wrapping and
+/// color-band transitions never split mid-word or mid-grapheme).
 fn ex_fade_tokens(text : String) -> Array[String] {
   let cs = text.to_array()
   let tokens : Array[String] = []
@@ -187,13 +203,22 @@ fn ex_fade_tokens(text : String) -> Array[String] {
     let c = cs[i]
     if excerpt_is_latin_word(c) {
       let start = i
-      while i < cs.length() && excerpt_is_latin_word(cs[i]) {
+      while i < cs.length() && (excerpt_is_latin_word(cs[i]) || ex_is_grapheme_extender(cs[i])) {
         i += 1
       }
       tokens.push(String::from_array(cs[start:i].to_owned()))
     } else {
-      tokens.push(c.to_string())
+      let start = i
       i += 1
+      while i < cs.length() && ex_is_grapheme_extender(cs[i]) {
+        if cs[i].to_int() == 0x200D && i + 1 < cs.length() {
+          // Consume ZWJ plus the joined following scalar value.
+          i += 2
+        } else {
+          i += 1
+        }
+      }
+      tokens.push(String::from_array(cs[start:i].to_owned()))
     }
   }
   tokens
@@ -477,6 +502,15 @@ fn excerpt_card_node(
         let idx = ex_imin(page_idx(), p.cards.length() - 1)
         (p, p.cards[idx])
       }
+      // Keep typography scale uniform across all cards of a paginated series (anchored to page 1).
+      let sizing_text = fn() -> String {
+        let (p, slice) = cur_slice()
+        if p.cards.length() > 1 {
+          p.cards[0].selected_text
+        } else {
+          slice.selected_text
+        }
+      }
       body_wrap
       .grow(Is(1.0))
       .fills_across(Is(true))
@@ -486,7 +520,7 @@ fn excerpt_card_node(
       body_wrap.box(fn(body) {
         body
         .fills_across(Is(true))
-        .gap(By(fn() { ex_body_metrics(cur_slice().1.selected_text).2 }))
+        .gap(By(fn() { ex_body_metrics(sizing_text()).2 }))
         |> ignore
         let para_items = fn() -> Array[(Int, Array[@ui.Run])] {
           let (_, slice) = cur_slice()
@@ -498,7 +532,7 @@ fn excerpt_card_node(
           .fills_across(Is(true))
           .words_runs(By(fn() { item.get().1 }))
           .words_look(By(fn() {
-            let (font_size, line_h, _) = ex_body_metrics(cur_slice().1.selected_text)
+            let (font_size, line_h, _) = ex_body_metrics(sizing_text())
             @view.WordsLook::of(font_size, weight=400, line=line_h, wrap=true)
           }))
           .runs_look(Is(runs_look))
@@ -657,11 +691,15 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
       copied.set(false)
     }
   }
-  let take_one = fn(idx : Int, p : ExcerptPlan, done : (Bytes?) -> Unit) {
+  let shot_seq : Ref[Int] = Ref(0)
+  let busy = fn() -> Bool { copying.get() || saving.get() }
+  let take_one = fn(op : String, idx : Int, p : ExcerptPlan, done : (Bytes?) -> Unit) {
     let single_plan = fn() { p }
     let single_idx = fn() { idx }
+    shot_seq.val += 1
+    let key = ex_shot_prefix + "/" + op + "/" + idx.to_string() + "/" + shot_seq.val.to_string()
     @ui.take_picture(
-      ex_shot_prefix + "/" + idx.to_string(),
+      key,
       ex_card_w,
       fn(paper) { excerpt_card_node(paper, single_plan, single_idx, payload.source_title, payload.date_label, qr_shapes, true) },
       done,
@@ -669,12 +707,12 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
     )
   }
   let do_save_one = fn(idx : Int) {
-    if saving.untracked() {
+    if copying.untracked() || saving.untracked() {
       return
     }
     let p = @signals.untracked(active_plan)
     saving.set(true)
-    take_one(idx, p, fn(png) {
+    take_one("save", idx, p, fn(png) {
       saving.set(false)
       match png {
         Some(bytes) => @sfbase.keep_bytes_now(ex_file_name(payload.date_label, idx, p.cards.length()), "image/png", bytes)
@@ -683,7 +721,7 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
     })
   }
   let do_save_all = fn() {
-    if saving.untracked() {
+    if copying.untracked() || saving.untracked() {
       return
     }
     let p = @signals.untracked(active_plan)
@@ -693,19 +731,19 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
       return
     }
     saving.set(true)
-    let mut failed = false
+    let mut render_failed = false
     fn save_next(i : Int) {
       if i >= total {
         saving.set(false)
-        if !failed {
-          @sfbase.toast_later(@sf.t("web-main.chat.shareExcerpt.savedAll", args=[("count", total.to_string())]))
+        if render_failed {
+          @sfbase.toast_later(@sf.t(if @sf.picture_to_album() { "web-main.stations.saveToPhotosFailed" } else { "android-chat.file.saveFailed" }))
         }
         return
       }
-      take_one(i, p, fn(png) {
+      take_one("save-all", i, p, fn(png) {
         match png {
           Some(bytes) => @sfbase.keep_bytes_now(ex_file_name(payload.date_label, i, total), "image/png", bytes)
-          None => failed = true
+          None => render_failed = true
         }
         save_next(i + 1)
       })
@@ -715,7 +753,7 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
 
   let above : ((@view.View) -> Unit)? = if plan_excerpt.exceeds_single_limit {
     Some(fn(v) {
-      let capped_count = ex_imin(plan_excerpt.total_possible_pages, excerpt_max_pages)
+      let capped_count = plan_pages.cards.length()
       v.box(fn(col) {
         col.fills_across(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
         @sf.share_tabs_node(
@@ -774,7 +812,7 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
             fn() { do_save_one(page_idx.untracked()) },
             icon="download",
             on_night=true,
-            disabled=fn() { saving.get() },
+            disabled=busy,
           )
           |> ignore
         })
@@ -849,24 +887,19 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
           icon="copy",
           on_night=true,
           busy=fn() { copying.get() },
-          disabled=fn() { copying.get() },
+          disabled=busy,
           done=fn() { copied.get() },
           fn() {
-            if copying.untracked() {
+            if copying.untracked() || saving.untracked() {
               return
             }
             let p = @signals.untracked(active_plan)
             let idx = ex_imin(page_idx.untracked(), p.cards.length() - 1)
             copying.set(true)
-            take_one(idx, p, fn(png) {
+            take_one("copy", idx, p, fn(png) {
               copying.set(false)
-              match png {
-                Some(bytes) => {
-                  @ui.clipboard_set_png(bytes, label=@sf.product())
-                  @sfbase.toast_later(@sf.t("common.copied"))
-                  copied.set(true)
-                }
-                None => @sfbase.toast_later(@sf.t("web-main.stations.shareFailed"))
+              if picture_out_now(png, copy=true) {
+                copied.set(true)
               }
             })
           },
@@ -889,7 +922,7 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
         icon="download",
         on_night=true,
         busy=fn() { saving.get() },
-        disabled=fn() { saving.get() },
+        disabled=busy,
         fn() {
           if @signals.untracked(active_plan).cards.length() > 1 {
             do_save_all()
@@ -921,7 +954,14 @@ fn chat_excerpt_share_of(src : Source, here : MessageNodeHere, p : @ui.WordsPick
       m.created_at
     }
   }
-  let payload = build_excerpt_payload(paras, raw, p.first_before, whole, title, format_excerpt_date(date_ms))
+  let payload = build_excerpt_payload(
+    paras,
+    raw,
+    p.first_before,
+    whole,
+    title,
+    format_excerpt_date(date_ms, offset_min=@ui.utc_offset_min(date_ms)),
+  )
   @ui.picked_let_go()
   open_excerpt_share_payload(payload)
 }

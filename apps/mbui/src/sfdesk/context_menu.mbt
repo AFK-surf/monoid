@@ -389,10 +389,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
     let words = context.words
     item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
     match context.share_excerpt {
-      Some(go_excerpt) => {
-        group()
-        item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
-      }
+      Some(go_excerpt) => item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
       None => ()
     }
   }
