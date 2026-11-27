@@ -21,18 +21,61 @@ pub fn wire_core_client(client : @core.Client, src : Source) -> () -> Unit {
   @sfbase.mask_vault_all.val = fn() { client.mask_scope(@core.AuthScope::VaultAll) }
   @sfbase.mask_global.val = fn() { client.mask_scope(@core.AuthScope::Global) }
   client.keep(@sfbase.topic_kept, most=fn() { @sfbase.kept_most_by(true) })
+  // (a page's, a panel's or a card's own topic opened again shown at once as it was, till the core answers)
   client.show_kept_params(@sfbase.topic_shown_kept_params)
+  // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
   client.tells_before(@sfbase.chats_told_before)
   unsub
 }
 
 ///|
-/// Current high-level app boot/auth state name for smoke verification.
-pub fn app_state_name(src : Source) -> String {
-  match app_is(src) {
-    Starting => "Starting"
-    SignedOut => "SignedOut"
-    SignedIn => "SignedIn"
-    Failed => "Failed"
+/// Shared `@core` topic/lifecycle `Source` wiring used by `apps/mbui/src/stillfail/main.mbt`
+/// and `apps/mbui/src/sfcoldstart`: routes topic reads, keyed lookups, waits, generations,
+/// fatal state, leave/release/refresh, and default calls through the production `@core`
+/// singleton (`@core.follow_topic`, `@core.keyed_of`, `@core.fatal`, `@core.call`).
+pub fn core_base_source() -> Source {
+  let base = @sfbase.made_source()
+  {
+    ..base,
+    topic_read: fn(name, params) {
+      let s = @core.follow_topic(name, params=@sfbase.core_topic_params(name, params))
+      { value: s.value, error: s.error, version: s.version }
+    },
+    topic_key: fn(name, params) {
+      @sfbase.wire_topic_key(name, @sfbase.core_topic_params(name, params))
+    },
+    topic_keyed: fn(name, params, field, keys) {
+      @core.keyed_of(name, @sfbase.core_topic_params(name, params), field, keys)
+    },
+    topic_scope: None,
+    topic_alive: fn() { true },
+    topic_lease_own: None,
+    waits: fn(name, params) {
+      @core.follow_topic(name, params=@sfbase.core_topic_params(name, params)).waiting
+    },
+    generation: fn(name, params) {
+      @core.client.topic_generation(name, params=@sfbase.core_topic_params(name, params))
+    },
+    call: fn(name, params, done) {
+      if @sfbase.unread_answer(done) {
+        @core.call(name, params~)
+      } else {
+        @core.call(name, params~, on_done=done)
+      }
+    },
+    fatal: fn() { @core.fatal() },
+    leave: fn(name, params, __reason) {
+      if __reason is @sfbase.TopicLeave::Owned(__stop) {
+        __stop()
+        return
+      }
+      @core.leave_topic(name, params=@sfbase.core_topic_params(name, params))
+    },
+    release: fn(name, params) {
+      @core.release_topic(name, params=@sfbase.core_topic_params(name, params))
+    },
+    refresh: fn(name, params) {
+      @core.refresh_topic(name, params=@sfbase.core_topic_params(name, params))
+    },
   }
 }

@@ -127,10 +127,10 @@ decide() {
   if has '^(station/native/(launcher|runner|mesh|screen|screen-linux)/|libs/mesh-transport/|client/(shell|iroh-wasm)/|client/Cargo\.(toml|lock)$|vendor/|\.github/actions/setup-(native-linux|linux|mac)/)'; then check_rust=true; fi
   # Branch PR gate: real Node Core (empty data dir) + real apps/mbui cold-start smoke (Starting -> Sign in).
   cold_start_smoke=false
-  if [ "${GITHUB_REF:-}" != refs/heads/main ] && has '^(client/core-ts/|apps/mbui/src/(core|sfbase|sfapp|stillfail|sfcoldstart)/|apps/mbui/scripts/cold-start-smoke\.mjs$|scripts/plan\.sh$|\.github/workflows/pipeline\.yml$)'; then cold_start_smoke=true; fi
-  # Branch PR gate: run side rigs + locks suites when core-ts auth/host/protocol/lock paths or e2e harnesses change.
+  if [ "${GITHUB_REF:-}" != refs/heads/main ] && has '^(client/|shared/|rules/js/|apps/mbui/(src/|moon\.)|libs/ui/(src/|moon\.)|apps/mbui/scripts/cold-start-smoke\.mjs$|scripts/plan\.sh$|\.github/workflows/pipeline\.yml$|\.github/actions/(setup|mbui-moonbit)/)'; then cold_start_smoke=true; fi
+  # Branch PR non-blocking signal: run side rigs + locks-moved suites when core-ts auth/host/protocol/lock/vault paths, station lock paths, or e2e harnesses change.
   side_core=false
-  if [ "${GITHUB_REF:-}" != refs/heads/main ] && has '^(client/core-ts/src/(hosts/|core\.ts$|auth-gen\.ts$|client-auth\.ts$|store\.ts$|protocol\.ts$|views/lock\.ts$|personal-lock\.ts$)|apps/mbui/e2e/(locks|rigs|peer|device)\.ts$|scripts/side\.sh$|apps/mbui/scripts/e2e-local\.sh$)'; then side_core=true; fi
+  if [ "${GITHUB_REF:-}" != refs/heads/main ] && has '^(client/core-ts/src/(hosts/|core\.ts$|core/|auth-gen\.ts$|client-auth\.ts$|store\.ts$|protocol\.ts$|topic-policy\.ts$|station/(calls|link)\.ts$|sync/cloud\.ts$|views/(lock|vault)\.ts$|personal-lock\.ts$|adb\.ts$|lock-.*\.ts$)|station/src/(mesh/lock-.*\.ts$|cloud/log-keep\.ts$)|apps/mbui/e2e/(locks|locks-moved|rigs|peer|device)\.ts$|scripts/side\.sh$|apps/mbui/scripts/e2e-local\.sh$)'; then side_core=true; fi
 }
 
 print() {

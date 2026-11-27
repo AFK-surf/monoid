@@ -1509,7 +1509,9 @@ jobs:
       - name: Cold-start smoke (real Core + apps/mbui)
         run: node apps/mbui/scripts/cold-start-smoke.mjs
 
-  # Branch PR gate: run side rigs + locks-moved suites when core-ts auth/host/protocol/lock paths or e2e harnesses change.
+  # Branch PR non-blocking signal: run side rigs + locks-moved suites when core-ts auth/host/protocol/lock/vault paths,
+  # station lock paths, or e2e harnesses change. Kept out of `gate.needs` on purpose: `rigs` exercises real multi-process
+  # sockets/timing and cannot block merge under `gate-rerun-check.mjs` (consistent with root AGENTS.md and side.yml).
   # (rigs ~90s, locks-moved ~160-185s on ubuntu-24.04, well within the 5-minute PR budget; full `locks` takes 303-361s
   # and stays on side.yml's 10-minute schedule.)
   check-side-core:
@@ -1542,7 +1544,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, check-cold-start, check-side-core, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, check-cold-start, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

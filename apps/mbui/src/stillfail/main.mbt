@@ -173,16 +173,8 @@ fn refused(name : String) -> Json {
 
 ///|
 let core_source : @sfapp.Source = {
+  ..@sfapp.core_base_source(),
   topic_read: core_topic,
-  topic_key: fn(name, params) { @sfbase.wire_topic_key(name, @sfbase.core_topic_params(name, params)) },
-  topic_keyed: fn(name, params, field, keys) {
-    @core.keyed_of(name, @sfbase.core_topic_params(name, params), field, keys)
-  },
-  topic_scope: None,
-  topic_alive: fn() { true },
-  topic_lease_own: None,
-  waits: fn(name, params) { @core.follow_topic(name, params=@sfbase.core_topic_params(name, params)).waiting },
-  generation: fn(name, params) { @core.client.topic_generation(name, params=@sfbase.core_topic_params(name, params)) },
   call: fn(name, params, done) {
     if read_only && !read_only_calls.contains(name) {
       done(Err(refused(name)))
@@ -339,17 +331,11 @@ let core_source : @sfapp.Source = {
   },
   // (a page opening waits for a picture it shows the device holds: on its way from the core, or not decoded yet)
   picture_waits: pictures.waits,
-  fatal: fn() { @core.fatal() },
   file: chat_file,
   poster: chat_poster,
   draft_picture,
   images: chat_images,
   now: fn() { @ui.wall_ms() },
-  leave: fn(name, params, __reason) {
-      if __reason is @sfbase.TopicLeave::Owned(__stop) { __stop(); return }
-      @core.leave_topic(name, params=@sfbase.core_topic_params(name, params)) },
-  release: fn(name, params) { @core.release_topic(name, params=@sfbase.core_topic_params(name, params)) },
-  refresh: fn(name, params) { @core.refresh_topic(name, params=@sfbase.core_topic_params(name, params)) },
   read_only,
   reads_ahead: fn() { true },
   asks_devices: fn() { true },

@@ -1,7 +1,6 @@
 import {
   "moonbitlang/core/json",
   "stillfail/core",
-  "stillfail/sfbase",
   "stillfail/sfapp",
   "ui/ui",
 }
@@ -14,7 +13,6 @@ options(
         "cold_start_take_outbox",
         "cold_start_receive",
         "cold_start_frame",
-        "cold_start_state",
         "cold_start_journal",
         "cold_start_fatal",
       ],
