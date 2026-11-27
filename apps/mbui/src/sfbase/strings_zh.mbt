@@ -952,7 +952,7 @@ let zh : Map[String, String] = {
   "web-main.skillMenu.source.agent": "Agent",
   "web-main.skillMenu.source.builtin": "内置",
   "web-main.skillMenu.source.project": "项目记忆",
-  "web-main.skillMenu.source.session": "当前目录",
+  "web-main.skillMenu.source.session": "工作目录",
   "web-main.skillMenu.source.workspace": "工作区",
   "web-main.skillMenu.title": "调用 Skill",
   "web-main.skillMenu.unavailable": "更新 station 后才能调用 Skill",

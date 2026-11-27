@@ -964,7 +964,7 @@ let en : Map[String, String] = {
   "web-main.skillMenu.source.agent": "Agent",
   "web-main.skillMenu.source.builtin": "Built-in",
   "web-main.skillMenu.source.project": "Project",
-  "web-main.skillMenu.source.session": "Workspace dir",
+  "web-main.skillMenu.source.session": "Working dir",
   "web-main.skillMenu.source.workspace": "Workspace",
   "web-main.skillMenu.title": "Invoke a skill",
   "web-main.skillMenu.unavailable": "Update station to invoke skills",
