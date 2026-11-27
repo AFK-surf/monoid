@@ -212,6 +212,8 @@ priv struct SettingsFixture {
   mut ours_off : Bool
   /// whether the profiles' overview uses the multi-pool summary fixture (`settings-profiles-sum-a`)
   mut summary : Bool
+  /// whether the profiles' fixture builds a large 24-account workspace across four providers (`settings-profiles-many`)
+  mut many_profiles : Bool
 }
 
 ///|
@@ -309,6 +311,7 @@ let fx : SettingsFixture = {
   relays: [],
   ours_off: false,
   summary: false,
+  many_profiles: false,
 }
 
 ///|
@@ -718,6 +721,7 @@ fn fixture_reset() -> Unit {
   fx.several = false
   fx.offer_quota = false
   fx.summary = false
+  fx.many_profiles = false
   fx.profile_hosts = false
   fx.profile_unshareable = false
   fx.profile_one_owner = false
@@ -1223,6 +1227,7 @@ pub fn fixture_page(mode : String) -> String {
     // (an account on several stations' own page: its members those of a profile's hosts)
     "settings-profile-account" => fx.profile_hosts = true
     "settings-profiles-sum-a" | "settings-profiles-overview" => fx.summary = true
+    "settings-profiles-many" => fx.many_profiles = true
     "settings-profiles-manage" => {
       fx.summary = true
       fx.mba_online = true
@@ -1550,7 +1555,7 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-long-name" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-long-name" | "settings-profiles-many" => "profiles"
     "settings-profiles-sum-a" | "settings-profiles-overview" => "profiles-overview"
     "settings-profiles-manage" => "profiles-manage"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
@@ -1838,6 +1843,9 @@ fn fx_profiles() -> Array[Json] {
   if fx.several {
     fx_several(profiles)
   }
+  if fx.many_profiles {
+    return fx_many_profiles()
+  }
   if fx.summary {
     return fx_summary_profiles()
   }
@@ -1984,6 +1992,80 @@ fn fx_summary_profiles() -> Array[Json] {
       ("usedBy", []),
     ]),
   ]
+}
+
+///|
+/// Large 24-account workspace across four provider groups (`settings-profiles-many` / `share-accounts-many`) for
+/// verifying scrollable share previews and provider filtering.
+fn fx_many_profiles() -> Array[Json] {
+  let ok_q = fn(ws : Array[Json]) -> Json {
+    obj([("state", str("ok")), ("windows", Json::array(ws)), ("checkedAt", Json::number(0.0)), ("time", obj([("checkedAt", stamp_of("2 分钟前"))]))])
+  }
+  let out : Array[Json] = []
+  for i in 1..<=8 {
+    let left5 = (i * 17) % 100
+    let leftw = (i * 11 + 12) % 95
+    let leftf = (i * 19 + 20) % 100
+    out.push(
+      fx_profile("mc\{i}", "claude\{i}@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+        ("email", str("claude\{i}@proton.me")),
+        ("planText", str(if i % 2 == 0 { "Max 20x" } else { "Max 5x" })),
+        ("quota", ok_q([
+          fx_window("5 小时", "5H", left5, "2 小时后恢复", ""),
+          fx_window("每周", "W", leftw, "4 天后恢复", ""),
+          fx_window("每周 · Fable", "Fable", leftf, "4 天后恢复", "Fable"),
+        ])),
+      ]),
+    )
+  }
+  for i in 1..<=6 {
+    let left5 = (i * 23 + 30) % 100
+    let leftw = (i * 13 + 25) % 95
+    out.push(
+      fx_profile("mx\{i}", "codex\{i}@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+        ("email", str("codex\{i}@cue.surf")),
+        ("planText", str(if i <= 3 { "Pro 200" } else { "Plus" })),
+        ("quota", ok_q([
+          fx_window("5 小时", "5H", left5, "3 小时后恢复", ""),
+          fx_window("每周", "W", leftw, "3 天后恢复", ""),
+        ])),
+      ]),
+    )
+  }
+  for i in 1..<=5 {
+    let g5 = (i * 19 + 40) % 100
+    let gw = (i * 17 + 30) % 95
+    let c5 = (i * 29 + 10) % 100
+    let cw = (i * 15 + 20) % 95
+    out.push(
+      fx_profile("mg\{i}", "gemini\{i}@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+        ("email", str("gemini\{i}@gmail.com")),
+        ("planText", str("AI Ultra")),
+        ("signInProvider", str("Google")),
+        ("quota", ok_q([
+          fx_window("5 小时 · Gemini", "Gemini 5H", g5, "2 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "Gemini W", gw, "3 天后恢复", "Gemini"),
+          fx_window("5 小时 · Claude / GPT", "Claude / GPT 5H", c5, "4 小时后恢复", "Claude / GPT"),
+          fx_window("每周 · Claude / GPT", "Claude / GPT W", cw, "3 天后恢复", "Claude / GPT"),
+        ])),
+      ]),
+    )
+  }
+  for i in 1..<=5 {
+    let left5 = (i * 21 + 35) % 100
+    let leftw = (i * 14 + 45) % 95
+    out.push(
+      fx_profile("mo\{i}", "opencode\{i}@cue.surf", "subscription", "green", "可用", "opencode", "OpenCode Go 订阅", [
+        ("email", str("opencode\{i}@cue.surf")),
+        ("planText", str("Go")),
+        ("quota", ok_q([
+          fx_window("5 小时", "5H", left5, "2 小时后恢复", ""),
+          fx_window("每周", "W", leftw, "5 天后恢复", ""),
+        ])),
+      ]),
+    )
+  }
+  out
 }
 
 ///|

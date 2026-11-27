@@ -17,13 +17,15 @@ fn share_picture_open(
   draw : (@view.View, Bool) -> Unit,
   above? : (@view.View) -> Unit,
   w? : Double = @sf.share_w_most,
+  scroll? : @view.Scroll,
 ) -> Unit {
-  @sf.panel_nodes(
+  let clip_in_stage = scroll is Some(_)
+  @sf.stage_panel_nodes(
     @sf.t(title),
-    fn(v, _) { draw(v, false) },
-    from=Unanchored,
-    stage=true,
+    fn(v, _) { draw(v, clip_in_stage) },
     w~,
+    scroll?,
+    bg=fn() { @sf.theme().p.bg },
     above?,
     live=fn() { (@sf.t(title), "", "") },
     foot=fn(f, _) {
@@ -102,9 +104,25 @@ fn share_frame_node(v : @view.View, flat : Bool, count : () -> String, body : (@
 // ── the subscriptions' allowances ──────────────────────────────────────
 
 ///|
+/// Short vendor label for the share stage's provider filter tabs: strips trailing "订阅" / "subscription(s)" suffix
+/// when present so tabs read crisply ("Claude", "ChatGPT", "Google", "OpenCode Go") instead of repeating "订阅".
+fn share_group_tab_label(title : String) -> String {
+  for suffix in [" 订阅", "订阅", " subscriptions", " Subscriptions", " subscription", " Subscription"] {
+    if title.has_suffix(suffix) {
+      let trimmed = title[:title.length() - suffix.length()].trim(chars=" ").to_owned()
+      if trimmed != "" {
+        return trimmed
+      }
+    }
+  }
+  title
+}
+
+///|
 /// The picture of the workspace's subscriptions and what is left of each, as the core's `profiles` of workspace `scope`
 /// says those with an allowance to show: how many at its head; each kind as Profile's 账号 lists it, its heading over its
-/// card, each account its row there (share_account_row); its names hidden as share_mask_all says, chosen over it.
+/// card, each account its row there (share_account_row); scrollable at readable width on the stage when tall, filtered
+/// by provider when more than one group exists, and masked as `share_mask_all` says.
 pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
   let entries = @signals.computed(fn(_) {
     items((core.topic)("profiles", { "scope": Json::string(scope()) }).get().value, "items").filter(fn(e) {
@@ -112,11 +130,56 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
       text(q, "state") == "ok" && items(q, "windows").length() > 0
     })
   }, same=jsons_same)
+  let all_groups = @signals.computed(fn(_) { pl_groups(entries.get()) }, same=fn(a, b) {
+    if a.length() != b.length() {
+      return false
+    }
+    for i in 0..<a.length() {
+      if a[i].0 != b[i].0 || a[i].1 != b[i].1 || !jsons_same(a[i].2, b[i].2) {
+        return false
+      }
+    }
+    true
+  })
+  let chosen_group : @signals.Signal[String] = @signals.signal("")
+  let scroll = @view.Scroll::new()
+  let active_group = fn() {
+    let g = chosen_group.get()
+    if g != "" && all_groups.get().iter().any(fn(x) { x.0 == g }) {
+      g
+    } else {
+      ""
+    }
+  }
+  let shown_groups = fn() {
+    let g = active_group()
+    let gs = all_groups.get()
+    if g == "" {
+      gs
+    } else {
+      gs.filter(fn(x) { x.0 == g })
+    }
+  }
+  let shown_count = fn() {
+    let mut n = 0
+    for g in shown_groups() {
+      n = n + g.2.length()
+    }
+    n
+  }
+  let group_tabs = fn() -> Array[(String, String)] {
+    let out : Array[(String, String)] = [("", @sf.t("web-main.filter.all"))]
+    for g in all_groups.get() {
+      out.push((g.0, share_group_tab_label(g.1)))
+    }
+    out
+  }
   share_picture_open(
     "web-main.share.accounts",
+    scroll~,
     fn(v, flat) {
-      share_frame_node(v, flat, fn() { entries.get().length().to_string() + " " + @sf.t("web-main.share.accountsCount") }, fn(p) {
-        p.each(fn() { pl_groups(entries.get()) }, fn(g) { g.0 }, fn(x, g) {
+      share_frame_node(v, flat, fn() { shown_count().to_string() + " " + @sf.t("web-main.share.accountsCount") }, fn(p) {
+        p.each(at_once=true, shown_groups, fn(g) { g.0 }, fn(x, g) {
           @sf.section_heading_node(x, fn() { g.get().1 })
           let grp_sig = @signals.computed(
             fn(_) {
@@ -134,21 +197,38 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
               let n = list.length()
               list.mapi(fn(i, e) { (e, @sf.card_piece_of(i, n)) })
             }
-            rows.each(keyed, fn(item) { text(Some(item.0), "key") }, fn(r, item) {
+            rows.each(at_once=true, keyed, fn(item) { text(Some(item.0), "key") }, fn(r, item) {
               let piece = fn() { item.get().1 }
               @sf.card_sep_node(r, piece)
-              share_account_row(
-                r,
-                fn() { Some(item.get().0) },
-                grp,
-                fn() { piece() is (@sf.CardFoot | @sf.CardWhole) },
-              )
+              // Share rows never carry a trailing status line below the quota strip, so `at_foot=true` matches
+              // Profiles' exact compact row height across every row in the group.
+              share_account_row(r, fn() { Some(item.get().0) }, grp, fn() { true })
             })
           })
         })
       })
     },
-    above=share_mask_pick_node,
+    above=fn(v) {
+      v.box(fn(all) {
+        @sf.style_node(all, fn() { groups_and_looks })
+        all.show(at_once=true, fn() { all_groups.get().length() > 1 }, fn(row) {
+          row.fills_across(Is(true)) |> ignore
+          @sf.share_tabs_each_node(
+            row,
+            fn() { @sf.t("web-main.projects.filter_section") },
+            group_tabs,
+            active_group,
+            fn(k) {
+              chosen_group.set(k)
+              scroll.put(0.0)
+            },
+          )
+          |> ignore
+        })
+        share_mask_tabs_node(all)
+      })
+      |> ignore
+    },
   )
 }
 
@@ -159,21 +239,16 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
 let share_mask_all : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-/// 部分打码 | 完全打码 over the picture's buttons, as the card to share's sets of looks are chosen there
-/// (share_looks_pick_node's tabs, on the night).
-fn share_mask_pick_node(v : @view.View) -> Unit {
-  v.box(fn(all) {
-    @sf.style_node(all, fn() { groups_and_looks })
-    @sf.share_tabs_node(
-      all,
-      fn() { @sf.t("web-main.share.mask") },
-      [false, true],
-      fn(b) { @sf.t(if b { "web-main.share.maskAll" } else { "web-main.share.maskSome" }) },
-      fn() { share_mask_all.get() },
-      fn(b) { share_mask_all.set(b) },
-    )
-    |> ignore
-  })
+/// 部分打码 | 完全打码 tab row on the stage night scrim.
+fn share_mask_tabs_node(v : @view.View) -> Unit {
+  @sf.share_tabs_node(
+    v,
+    fn() { @sf.t("web-main.share.mask") },
+    [false, true],
+    fn(b) { @sf.t(if b { "web-main.share.maskAll" } else { "web-main.share.maskSome" }) },
+    fn() { share_mask_all.get() },
+    fn(b) { share_mask_all.set(b) },
+  )
   |> ignore
 }
 
@@ -330,7 +405,7 @@ pub fn pool_share_open(core : Core, scope : () -> String) -> Unit {
   let pools = @signals.computed(fn(_) {
     items((core.topic)("profilesOverview", { "scope": Json::string(scope()) }).get().value, "pools").map(ov_pool_of)
   }, same=fn(a, b) { a == b })
-  share_picture_open("web-main.share.pool", w=pool_share_w, fn(v, flat) {
+  share_picture_open("web-main.share.pool", w=pool_share_w, scroll=@view.Scroll::new(), fn(v, flat) {
     share_frame_node(v, flat, fn() { "" }, fn(p) {
       p.each(fn() { pools.get() }, fn(pool) { pool.title }, fn(x, pool) {
         @sf.section_heading_node(x, fn() { pool.get().title }, trailing=fn() {

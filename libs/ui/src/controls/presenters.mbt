@@ -171,6 +171,10 @@ priv struct PanelOf {
   popover : Bool
   /// a picture shown alone over the window, its buttons under it (panel_nodes' `stage`)
   stage : Bool
+  /// on a stage, scroll vertically at readable width when taller than the stage instead of shrinking whole
+  stage_scroll : @view.Scroll?
+  /// optional solid backdrop behind a scrollable stage viewport so edge fades dissolve into the card's own ground
+  stage_bg : (() -> Int64)?
   /// on a stage, what is chosen of the picture between it and its buttons (panel_nodes' `above`)
   above : ((@view.View) -> Unit)?
   /// beside what opened it, no head: what it holds draws its own (panel_nodes' `heads_itself`)
@@ -771,6 +775,8 @@ pub fn panel_nodes(
       form,
       popover,
       stage,
+      stage_scroll: None,
+      stage_bg: None,
       above,
       heads_itself,
       side,
@@ -783,6 +789,52 @@ pub fn panel_nodes(
     }),
     from,
     gone~,
+  )
+}
+
+///|
+/// A stage (stage_node: a picture to hand out shown alone over the night, its buttons under it), laid out `w` wide;
+/// when `scroll` is given, what it holds stays at readable width (`min(1, stage_width / w)`) and scrolls vertically
+/// inside a `pane_corner` clipped viewport instead of shrinking a long picture down to fit the stage's height.
+pub fn stage_panel_nodes(
+  title : String,
+  body : (@view.View, () -> Unit) -> Unit,
+  w? : Double = share_w_most,
+  scroll? : @view.Scroll,
+  bg? : () -> Int64,
+  foot? : (@view.View, () -> Unit) -> Unit,
+  above? : (@view.View) -> Unit,
+  live? : () -> (String, String, String),
+) -> Unit {
+  present(
+    Panel({
+      title,
+      description: "",
+      w,
+      fits: false,
+      wide: false,
+      live,
+      tall: 0.0,
+      grows: false,
+      focus: true,
+      ruled: false,
+      fade_out_together: false,
+      form: false,
+      popover: false,
+      stage: true,
+      stage_scroll: scroll,
+      stage_bg: bg,
+      above,
+      heads_itself: false,
+      side: Bottom,
+      along: Start,
+      offset: panel_offset,
+      match_panel: 0,
+      scrolls_under: false,
+      on_back: None,
+      nodes: { body, foot, hugs: false, hugs_centred: false, hugs_wide: false, steps: false, sheet_heads: false, heads: false, top: 0.0, most: None, flush: false, head_end: None },
+    }),
+    Unanchored,
   )
 }
 

@@ -505,11 +505,11 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
     @sfpages.share_card_open(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" })
   }
   // (the subscriptions' allowances to share, and the overview's pool to share, of the four kinds' accounts:
-  // share_quota.mbt)
-  if mode == "share-accounts" || mode == "share-pool" {
-    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  // share_quota.mbt; share-accounts-many opens 24 accounts across four providers to verify stage scroll + filter)
+  if mode == "share-accounts" || mode == "share-accounts-many" || mode == "share-pool" {
+    @settings.fixture_page(if mode == "share-accounts-many" { "settings-profiles-many" } else { "settings-profiles-sum-a" }) |> ignore
     let ws : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }
-    if mode == "share-accounts" {
+    if mode == "share-accounts" || mode == "share-accounts-many" {
       @sfpages.accounts_share_open(settings_core(src, ws), fn() { "ws1" })
     } else {
       @sfpages.pool_share_open(settings_core(src, ws), fn() { "ws1" })

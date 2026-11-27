@@ -330,6 +330,8 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     form: false,
     popover: false,
     stage: false,
+    stage_scroll: None,
+    stage_bg: None,
     above: None,
     heads_itself: true,
     side: Bottom,

@@ -2716,6 +2716,9 @@ pub let share_ring_grey : Int64
 pub let share_rings : Array[Int64]
 
 #callsite(autofill(loc))
+pub fn share_tabs_each_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
 pub fn[K : Eq] share_tabs_node(@view.View, () -> String, Array[K], (K) -> String, () -> K, (K) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let share_terminal_cell : Int64
@@ -2841,6 +2844,8 @@ pub fn spokes_node(@view.View, Double, () -> Int64, box? : Double, loc~ : Source
 pub fn spokes_turn(@view.View) -> Double
 
 pub let stage_edge : Int64
+
+pub fn stage_panel_nodes(String, (@view.View, () -> Unit) -> Unit, w? : Double, scroll? : @view.Scroll, bg? : () -> Int64, foot? : (@view.View, () -> Unit) -> Unit, above? : (@view.View) -> Unit, live? : () -> (String, String, String)) -> Unit
 
 pub let stage_plain : Int64
 

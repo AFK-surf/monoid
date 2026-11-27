@@ -54,8 +54,11 @@ fn stage_node(
       .presses(Is(true))
       .on_press(fn() {  })
       |> ignore
-      // what it holds: as tall as it is laid out at the stage's width, giving way to what the column leaves it
-      stage_fit_node(d, x.w, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
+      // what it holds: scrolled vertically at readable width when `stage_scroll` is given, else scaled to fit whole
+      match x.stage_scroll {
+        Some(sc) => stage_scroll_node(d, x.w, sc, x.stage_bg, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
+        None => stage_fit_node(d, x.w, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
+      }
       // under it: what is chosen of it over 关闭 and its foot's buttons, on the night
       d.box(fn(u) {
         style_node(u, fn() { stage_under })
@@ -109,6 +112,64 @@ fn stage_fit_node(parent : @view.View, most : Double, seen : () -> Double, body 
     whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(drawn), about=@view.Pivot::At(0.5, 0.0)) |> ignore
     // (its room: as tall as it is drawn at the stage's width, given less by the column where it has not that)
     held.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
+  })
+  .shrink(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(seen))
+  |> ignore
+}
+
+///|
+/// What a scrollable stage holds in `parent` (a column that gives it what it leaves under the rest): laid out `most`
+/// wide, scaled horizontally only when the stage is narrower than `most`, and scrolled vertically inside a
+/// `pane_corner` clipped viewport whenever taller than the room the column leaves it — keeping long lists readable
+/// instead of shrinking them into a narrow strip. Short pictures hug their own height with zero scroll.
+fn stage_scroll_node(
+  parent : @view.View,
+  most : Double,
+  scroll : @view.Scroll,
+  bg : (() -> Int64)?,
+  seen : () -> Double,
+  body : (@view.View) -> Unit,
+) -> Unit {
+  parent.by_room(fn(held, room) {
+    let across = fn() { dmin(1.0, room.width() / most) }
+    // Outer rounded viewport clips both top and bottom smoothly while scrolling; keeping `.scrolls` on an inner child
+    // places the vertical scroll container strictly between scrolled cards and this rounded frame (corners.mbt).
+    held.shrink(Is(1.0)).min_height(Is(Some(0.0))).radius(By(fn() { pane_corner * across() })).clips(Is(true)) |> ignore
+    match bg {
+      Some(g) => held.ground(By(g)) |> ignore
+      None => ()
+    }
+    let made : Ref[@view.View?] = Ref(None)
+    held.box(fn(sc) {
+      sc
+      .shrink(Is(1.0))
+      .min_height(Is(Some(0.0)))
+      .scrolls(
+        scroll,
+        slop=@ui.touch_slop(),
+        bar=@ui.tree_scroll_bar(),
+        bar_clear=fn() { (pane_corner * across() / 2.0, pane_corner * across() / 2.0) },
+        fn(content) {
+          content.box(fn(b) {
+            made.val = Some(b)
+            b.over(Is(true), edges=(Some(0.0), Some(0.0), None, None)).width(Is(Some(most))) |> ignore
+            body(b)
+          })
+          |> ignore
+          let whole = made.val.unwrap()
+          whole
+          .offset(By(fn() { ((room.width() - most) / 2.0, 0.0) }))
+          .scale(By(across), about=@view.Pivot::At(0.5, 0.0))
+          |> ignore
+          // (reserve the scaled height so scroll range and short-content hug height match what is drawn)
+          content.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
   })
   .shrink(Is(1.0))
   .min_height(Is(Some(0.0)))
