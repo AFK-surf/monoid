@@ -1267,6 +1267,22 @@ test "the call itself failed: said with the core's words; 重新打开 there" {
 }
 
 ///|
+test "auth_stale reopens screen.view automatically up to retry bound" {
+  let r = screen_rig()
+  r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
+  assert_eq(r.told("screen.view").length(), 2)
+  assert_true(r.t.find("无法打开此屏幕") is None)
+  r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
+  assert_eq(r.told("screen.view").length(), 3)
+  assert_true(r.t.find("无法打开此屏幕") is None)
+  r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
+  assert_eq(r.told("screen.view").length(), 3)
+  assert_true(r.t.find("无法打开此屏幕") is Some(_))
+  assert_true(r.t.find("授权或锁定状态已变化，请重试") is Some(_))
+  screen_done(r.t)
+}
+
+///|
 test "out of sight the view is let go of, the last frame kept; back in sight it opens again" {
   let r = screen_rig()
   r.live()
