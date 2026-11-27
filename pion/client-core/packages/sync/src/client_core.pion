@@ -21,6 +21,8 @@ struct MarksWanted {
   threads : Array[Int]
 }
 
+let PENDING_WIRE_MAX : Int = 256
+
 pub struct ClientCore {
   pub mut workspace : String
   pub station : String
@@ -31,6 +33,7 @@ pub struct ClientCore {
   pub events : StationEvents
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
+  pub auth : AuthGenTracker
   pub doing : DoingTracker
   pub composers : ComposerManager
   extra_events : Map[String, StationEvents]
@@ -41,6 +44,11 @@ pub struct ClientCore {
   pub mut rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
   pending_dirty_rows : Array[(String, String)]
+  mut wire_sink : Option[(String, Option[Bytes]) -> Unit]
+  pending_wire_events : Array[(String, Option[Bytes])]
+  lock_digest_by_ws : Map[String, String]
+  lock_sec_digest_by_ws : Map[String, String]
+  mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub login_flow : views::LoginFlowMachine
@@ -103,12 +111,18 @@ pub fn ClientCore::new(
   db : sql::Sql,
   transport : StationTransport,
   on_frame_wake : () -> Unit,
+  conn_seq : Option[Int64] = None,
 ) -> ClientCore {
   let frame_outbox : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(on_frame_wake)
   let md_store = store::MdStore::new(db, station)
   let events = StationEvents::new(workspace, station, db, frame_outbox, transport)
   let local_outbox = LocalOutbox::new(station, db, frame_outbox, transport)
   let sync = SyncScheduler::new(workspace, station, events, transport)
+  let auth = match conn_seq {
+    Some(c) => AuthGenTracker::new(conn_seq=c)
+    None => AuthGenTracker::open_with_db(db)
+  }
+  auth.ensure_workspace(workspace)
   let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
   let core = ClientCore::{
     workspace: workspace,
@@ -120,6 +134,7 @@ pub fn ClientCore::new(
     events: events,
     local_outbox: local_outbox,
     sync: sync,
+    auth: auth,
     doing: DoingTracker::new(),
     composers: ComposerManager::new(db),
     extra_events: Map::new(),
@@ -130,6 +145,11 @@ pub fn ClientCore::new(
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
     pending_dirty_rows: [],
+    wire_sink: None,
+    pending_wire_events: [],
+    lock_digest_by_ws: Map::new(),
+    lock_sec_digest_by_ws: Map::new(),
+    on_runtime_boundary: None,
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     login_flow: views::LoginFlowMachine::new(),
@@ -193,6 +213,9 @@ pub fn ClientCore::new(
   router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
     core.evaluate_view_topic(id, topic)
   })
+  let _ = auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    core.handle_auth_boundary(ev)
+  })
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
   core.restore_notify_state()
@@ -229,6 +252,8 @@ fn ClientCore::wire_station_hooks(
 ) -> Unit {
   let rt = self.rt
   let local_outbox = self.local_outbox
+  events.set_auth_tracker(self.auth)
+  sync.set_auth_tracker(self.auth)
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
       local_outbox.reconcile_entry_in_burst(b, th, n, ck, station=Some(station))
@@ -711,6 +736,7 @@ pub fn ClientCore::detach_station_transport(self : ClientCore, station : String)
   self.local_outbox.unregister_station_transport(station)
   if station == self.station {
     self.events.stop()
+    self.events.reset_state()
     let off = core_offline_transport()
     self.events.set_transport(off)
     self.sync.set_transport(off)
@@ -718,11 +744,18 @@ pub fn ClientCore::detach_station_transport(self : ClientCore, station : String)
     match self.extra_events.get(station) {
       Some(ev) => {
         ev.stop()
+        ev.reset_state()
         self.extra_events.remove(station)
       }
       None => ()
     }
-    self.extra_sync.remove(station)
+    match self.extra_sync.get(station) {
+      Some(sy) => {
+        sy.bump_epoch()
+        self.extra_sync.remove(station)
+      }
+      None => ()
+    }
   }
 }
 
@@ -2198,6 +2231,186 @@ pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Arra
   self.router.refresh_topic_name(topic_name)
 }
 
+/// Refresh all active subscriptions matching `topic_name`, returning `(Topic, CoreEvent)` pairs
+/// so outbound callers can stamp exact `WireOutGen` envelopes.
+pub fn ClientCore::refresh_topic_with_topics(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(protocol::Topic, protocol::CoreEvent)] {
+  self.router.refresh_topic_with_topics(topic_name)
+}
+
+/// Refresh all active subscriptions matching `topic_name` and encode each with unified `WireOutGen`.
+pub fn ClientCore::refresh_topic_wire(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(String, Option[Bytes])] {
+  let pairs = self.router.refresh_topic_with_topics(topic_name)
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<pairs.length() {
+    let (topic, ev) = pairs[i]
+    out.push(self.encode_sub_event(topic, ev))
+  }
+  out
+}
+
+/// Register a real host outbound wire sink (used by `core_runtime`).
+/// When registered, outbound wire frames go directly to the host sink and NEVER accumulate
+/// in `pending_wire_events`.
+pub fn ClientCore::set_wire_sink(
+  self : ClientCore,
+  sink : (String, Option[Bytes]) -> Unit,
+) -> Unit {
+  self.wire_sink = Some(sink)
+  if self.pending_wire_events.length() > 0 {
+    let drained : Array[(String, Option[Bytes])] = []
+    for i in 0..<self.pending_wire_events.length() {
+      drained.push(self.pending_wire_events[i])
+    }
+    self.pending_wire_events.clear()
+    for i in 0..<drained.length() {
+      sink(drained[i].0, drained[i].1)
+    }
+  }
+}
+
+fn is_auth_handshake_wire_frame(json_text : String) -> Bool {
+  json_text.contains("\"id\":0") && json_text.contains("\"auth\":")
+}
+
+/// Emit one outbound wire frame directly to the host sink if registered, or buffer it in
+/// bounded `pending_wire_events` (`<= 256`) in headless unit-test mode, NEVER evicting the
+/// latest `{"id":0,"auth":...}` handshake frame.
+pub fn ClientCore::emit_wire_out(
+  self : ClientCore,
+  json_text : String,
+  bytes : Option[Bytes] = None,
+) -> Unit {
+  match self.wire_sink {
+    Some(sink) => sink(json_text, bytes)
+    None => {
+      self.pending_wire_events.push((json_text, bytes))
+      while self.pending_wire_events.length() > PENDING_WIRE_MAX {
+        let mut latest_hs_idx = -1
+        for i in 0..<self.pending_wire_events.length() {
+          if is_auth_handshake_wire_frame(self.pending_wire_events[i].0) {
+            latest_hs_idx = i
+          }
+        }
+        let drop_idx = if latest_hs_idx == 0 && self.pending_wire_events.length() > 1 { 1 } else { 0 }
+        let trimmed : Array[(String, Option[Bytes])] = []
+        for i in 0..<self.pending_wire_events.length() {
+          if i != drop_idx {
+            trimmed.push(self.pending_wire_events[i])
+          }
+        }
+        self.pending_wire_events.clear()
+        for i in 0..<trimmed.length() {
+          self.pending_wire_events.push(trimmed[i])
+        }
+      }
+    }
+  }
+}
+
+pub fn ClientCore::drain_pending_wire_events(self : ClientCore) -> Array[(String, Option[Bytes])] {
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<self.pending_wire_events.length() {
+    out.push(self.pending_wire_events[i])
+  }
+  self.pending_wire_events.clear()
+  out
+}
+
+pub fn ClientCore::pending_wire_event_count(self : ClientCore) -> Int {
+  self.pending_wire_events.length()
+}
+
+/// Emit the authoritative `{"id": 0, "auth": {"conn": N, ...}}` handshake/boundary snapshot.
+pub fn ClientCore::emit_auth_handshake(self : ClientCore) -> String {
+  let json_text = base_codec::json_stringify(self.auth.handshake_json())
+  self.emit_wire_out(json_text)
+  json_text
+}
+
+/// Encode any subscription `protocol::CoreEvent` with the single unified `WireOutGen` envelope
+/// (`conn`, plus `authGen` for non-device-global topics and `vaultGen` for vault topics).
+pub fn ClientCore::encode_sub_event(
+  self : ClientCore,
+  topic : protocol::Topic,
+  ev : protocol::CoreEvent,
+) -> (String, Option[Bytes]) {
+  let gen = self.auth.wire_out_gen(topic)
+  protocol::encode_sub_event_with_auth(ev, gen)
+}
+
+pub fn ClientCore::set_on_runtime_boundary(
+  self : ClientCore,
+  cb : (AuthBoundaryEvent) -> Unit,
+) -> Unit {
+  self.on_runtime_boundary = Some(cb)
+}
+
+/// Build the full `WireOutGen` envelope for a raw JSON `subscribe` request whose full parse failed
+/// (`Invalid`), preserving `conn` + `authGen` + `vaultGen` whenever `subscribe.topic` is recognizable.
+pub fn ClientCore::wire_out_gen_for_raw_subscribe(
+  self : ClientCore,
+  raw : base_codec::Json,
+) -> protocol::WireOutGen {
+  match base_codec::json_get(raw, "subscribe") {
+    Some(base_codec::Json::Obj(fs)) => {
+      let mut tname = ""
+      let params : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "topic" {
+          match v {
+            base_codec::Json::Str(s) => { tname = s }
+            _ => ()
+          }
+        } else {
+          params.push((k, v))
+        }
+      }
+      if tname.length() > 0 {
+        return self.auth.wire_out_gen(protocol::Topic::{ name: tname, params: params })
+      }
+    }
+    _ => ()
+  }
+  protocol::WireOutGen::{ conn: self.auth.conn_seq, auth_gen: None, vault_gen: None }
+}
+
+fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  // 1. Always emit the authoritative `{id: 0, auth: ...}` boundary snapshot first.
+  let _ = self.emit_auth_handshake()
+  // 2. Purge affected `kept` cache & reset cached `last_value` on active subs strictly per `auth.matches_topic`.
+  let matches = fn(t : protocol::Topic) -> Bool {
+    self.auth.matches_topic(t, ev)
+  }
+  self.router.invalidate_kept_where(matches)
+  self.router.invalidate_sub_cache_where(matches)
+  // 3. Re-anchor affected active subscriptions in `self.router` immediately (never freeze subs!).
+  let subs = self.router.active_subs_snapshot()
+  for i in 0..<subs.length() {
+    let (sid, st) = subs[i]
+    if matches(st) {
+      match self.router.refresh_sub_force(sid) {
+        Some((topic, sev)) => {
+          let (j, b) = self.encode_sub_event(topic, sev)
+          self.emit_wire_out(j, bytes=b)
+        }
+        None => ()
+      }
+    }
+  }
+  // 4. Notify runtime host (`core_runtime`) to re-anchor `runtime_subs` and scrub `kept_vals`.
+  match self.on_runtime_boundary {
+    Some(cb) => cb(ev)
+    None => ()
+  }
+}
+
 fn lock_aside_most() -> Int { 256 }
 
 fn lock_entry_hash(e : form::Json, c : lock::Crypto) -> String {
@@ -2407,6 +2620,10 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
       self.lock_state = Some(v.state)
       self.lock_kept_entries = v.chain.entries
       self.lock_kept_aside = kept_aside
+      // Seed canonical lock digests from SQLite at startup without bumping `authGen` / `vaultGen`.
+      let (full_dig, sec_dig) = canonical_lock_digest(v.state)
+      self.lock_digest_by_ws.set(self.workspace, full_dig)
+      self.lock_sec_digest_by_ws.set(self.workspace, sec_dig)
       let now_secs = self.rt.now().to_double() / 1000.0
       match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
         Ok(eff) => {
@@ -2743,6 +2960,30 @@ pub fn ClientCore::apply_lock_chain(
       match self.persist_lock_state() {
         Ok(_) => ()
         Err(msg) => return Err(msg)
+      }
+      // Full-set canonical lock digest (disabled + sorted members + devices + sign_keys + passkeys +
+      // persons + gateways + cloud_keys + moved + stations, excluding volatile `head`/`seq`).
+      // Cold-start first verified lock seeds the digest without spuriously bumping `authGen`/`vaultGen`;
+      // NEVER derive `revoked` from `lock.members`.
+      let (new_full, new_sec) = canonical_lock_digest(v.state)
+      let prev_full = self.lock_digest_by_ws.get(self.workspace)
+      let prev_sec = self.lock_sec_digest_by_ws.get(self.workspace)
+      self.lock_digest_by_ws.set(self.workspace, new_full)
+      self.lock_sec_digest_by_ws.set(self.workspace, new_sec)
+      let full_changed = match prev_full {
+        Some(pf) => pf != new_full
+        None => false
+      }
+      let sec_changed = match prev_sec {
+        Some(ps) => ps != new_sec
+        None => false
+      }
+      if full_changed {
+        if sec_changed {
+          let _ = self.auth.bump_workspace_and_vault(self.workspace)
+        } else {
+          let _ = self.auth.bump_workspace(self.workspace)
+        }
       }
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
@@ -4214,14 +4455,36 @@ pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Op
     match protocol::wire_error_id(raw) {
       Some(id) => {
         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_message", message: msg })
-        Some(protocol::encode_core_event(ev))
+        if base_codec::json_get(raw, "subscribe").is_some() {
+          Some(protocol::encode_sub_event_with_auth(ev, self.wire_out_gen_for_raw_subscribe(raw)))
+        } else {
+          Some(protocol::encode_core_event(ev))
+        }
       }
       None => None
     }
-    protocol::ParseRequestResult::Ok(req) =>
-    match self.handle_request(req) {
-      Some(ev) => Some(protocol::encode_core_event(ev))
-      None => None
+    protocol::ParseRequestResult::Ok(req) => {
+      let sub_topic_opt : Option[protocol::Topic] = match req {
+        protocol::CoreRequest::Subscribe(_, topic, _, _, _) => Some(topic)
+        protocol::CoreRequest::Unsubscribe(id, _, _) => self.router.active_sub_topic(id)
+        _ => None
+      }
+      match self.handle_request(req) {
+        Some(ev) =>
+        match sub_topic_opt {
+          Some(topic) => Some(self.encode_sub_event(topic, ev))
+          None =>
+          match ev {
+            protocol::CoreEvent::Unsubscribed(_, _) =>
+            Some(protocol::encode_sub_event_with_auth(
+              ev,
+              protocol::WireOutGen::{ conn: self.auth.conn_seq, auth_gen: None, vault_gen: None },
+            ))
+            _ => Some(protocol::encode_core_event(ev))
+          }
+        }
+        None => None
+      }
     }
   }
 }

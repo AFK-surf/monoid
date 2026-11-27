@@ -702,6 +702,8 @@ pub struct StationEvents {
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
+  mut auth : Option[AuthGenTracker]
+  mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
   mut active_cancel : Option[() -> Unit]
@@ -741,10 +743,31 @@ pub fn StationEvents::new(
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
+    auth: None,
+    stream_epoch: 1L,
     stream_fiber: None,
     active_stream_fiber: None,
     active_cancel: None,
   }
+}
+
+pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTracker) -> Unit {
+  self.auth = Some(tracker)
+}
+
+/// Reset all in-memory stream state (`sessions`, `jobs`, `dirty_threads`, `last_event_id`)
+/// and bump `stream_epoch` so late callbacks from prior streams are discarded.
+pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
+  self.stream_epoch += 1L
+  self.last_event_id = None
+  self.attempts = 0
+  self.sessions.clear()
+  self.session_order.clear()
+  self.jobs.clear()
+  self.job_order.clear()
+  self.dirty_threads.clear()
+  self.resync_needed = 0
+  self.marks_dirty_count = 0
 }
 
 pub fn StationEvents::set_missed_hook(self : StationEvents, cb : () -> Unit) -> Unit {
@@ -2875,6 +2898,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     Some(eid) => "/events?since=" + encode_uri_component(eid)
     None => "/events"
   }
+  let my_epoch = self.stream_epoch
   let parser = wire::Sse::new()
   let mut marked_connected = false
   let aborted : Array[Bool] = [false]
@@ -2885,7 +2909,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       path,
       headers,
       fn(chunk : Bytes) -> Unit {
-        if aborted[0] || self.stopped {
+        if aborted[0] || self.stopped || self.stream_epoch != my_epoch {
           return
         }
         if !marked_connected {
@@ -2931,6 +2955,10 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     self.active_stream_fiber = Some(child)
   }
   done_sig.wait_k(fn(wex : effect::Exit[Bool]) -> Unit {
+    if self.stream_epoch != my_epoch {
+      k(effect::Exit::Interrupted)
+      return
+    }
     self.active_stream_fiber = None
     self.active_cancel = None
     if self.stopped || effect::is_interrupted() {
@@ -2972,6 +3000,7 @@ pub fn StationEvents::set_transport(
   if was_running {
     self.stop()
   }
+  self.stream_epoch += 1L
   self.transport = transport
   self.attempts = 0
   if was_running {
@@ -2989,6 +3018,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
     None => ()
   }
   self.stopped = false
+  self.state = ConnectionState::Connecting
   let f = rt.fork_quiet_named("station-events:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     self.stream_loop_k(rt, k)
   })
@@ -2998,6 +3028,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
 /// Stop the `/events` stream fiber and immediately cancel any active underlying stream & backoff sleep.
 pub fn StationEvents::stop(self : StationEvents) -> Unit {
   self.stopped = true
+  self.stream_epoch += 1L
   self.cancel_active_stream()
   match self.stream_fiber {
     Some(f) => {

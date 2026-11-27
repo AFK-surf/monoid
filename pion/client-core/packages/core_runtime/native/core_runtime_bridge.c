@@ -7,10 +7,17 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "core_api.h"
+
+void pion_core_log_warn(const char *msg, int64_t len) {
+    if (msg != NULL && len > 0) {
+        fprintf(stderr, "[pion-core] %.*s\n", (int)len, msg);
+    }
+}
 
 int64_t pion_core_wall_now_ms(void) {
     struct timespec ts;

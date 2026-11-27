@@ -837,6 +837,9 @@ test("Sub-suite 4: Stateful multi-step Wire session parity (TS Core vs Pion Clie
       msg: { id: 10, subscribe: { topic: "chats", scope: "ws1" }, keyed: true },
     });
     assert.equal(subChats.id, 10);
+    assert.equal(subChats.conn, 1, "chats subscribe must stamp WireOutGen conn:1");
+    assert.equal(subChats.authGen, 1, "chats subscribe must stamp WireOutGen authGen:1");
+    assert.equal(subChats.vaultGen, undefined, "non-vault chats subscribe must omit vaultGen");
     assert.ok("value" in subChats);
     assertConformsStrict("chats", subChats.value);
     let clientChats = structuredClone(subChats.value);
@@ -857,6 +860,8 @@ test("Sub-suite 4: Stateful multi-step Wire session parity (TS Core vs Pion Clie
     const refreshed = await rpc.call("core.refreshTopic", { topic: "chats" });
     assert.equal(refreshed.length, 1);
     assert.equal(refreshed[0].id, 10);
+    assert.equal(refreshed[0].conn, 1, "refreshed chats delta must stamp WireOutGen conn:1");
+    assert.equal(refreshed[0].authGen, 1, "refreshed chats delta must stamp WireOutGen authGen:1");
     if ("delta" in refreshed[0]) {
       clientChats = collectionsTs.applyKeyed(clientChats, refreshed[0].delta);
     } else {
@@ -867,16 +872,18 @@ test("Sub-suite 4: Stateful multi-step Wire session parity (TS Core vs Pion Clie
     assert.equal(clientChats.days[0].items[0].title, "Build parity (pinned)");
     counts.suite4Core++;
 
-    // unsubscribe(keep: true) -> returns { id, v }
+    // unsubscribe(keep: true) -> returns { id, v, conn, authGen }
     const unsub = await rpc.call("core.wire", { msg: { id: 10, unsubscribe: true, keep: true } });
     assert.equal(unsub.id, 10);
+    assert.equal(unsub.conn, 1, "unsubscribe(keep:true) must stamp WireOutGen conn:1");
+    assert.equal(unsub.authGen, 1, "unsubscribe(keep:true) on chats must stamp authGen:1");
     assert.equal(typeof unsub.v, "string", "unsubscribe(keep:true) must return kept token string v");
 
-    // Re-subscribe with same have token (no change) -> { id, same: true }
+    // Re-subscribe with same have token (no change) -> { id, same: true, conn, authGen }
     const resubSame = await rpc.call("core.wire", {
       msg: { id: 11, subscribe: { topic: "chats", scope: "ws1" }, keyed: true, have: unsub.v },
     });
-    assert.deepEqual(resubSame, { id: 11, same: true }, "re-subscribe unchanged with have must return same:true");
+    assert.deepEqual(resubSame, { id: 11, same: true, conn: 1, authGen: 1 }, "re-subscribe unchanged with have must return same:true with WireOutGen");
     counts.suite4Core++;
 
     // Unsubscribe keep again, mutate chat, re-subscribe with have -> delta + kept: true!
@@ -954,11 +961,31 @@ test("Sub-suite 4: Stateful multi-step Wire session parity (TS Core vs Pion Clie
     ]) {
       const ev = await rpc.call("core.wire", { msg: { id: subId, subscribe: topic } });
       assert.equal(ev.id, subId);
+      assert.equal(ev.conn, 1, `${topic.topic} must carry WireOutGen conn:1`);
+      assert.equal(ev.authGen, 1, `${topic.topic} must carry WireOutGen authGen:1`);
+      if (topic.topic === "vaults") {
+        assert.equal(ev.vaultGen, 1, "vaults topic must carry WireOutGen vaultGen:1");
+      } else {
+        assert.equal(ev.vaultGen, undefined, `${topic.topic} must omit vaultGen`);
+      }
       assert.ok("value" in ev, `expected value for ${topic.topic}`);
       assertConformsStrict(topic.topic, ev.value);
       assert.ok(!JSON.stringify(ev.value).includes("个人锁"), `「个人锁」 leaked in ${topic.topic}`);
       counts.suite4Core++;
     }
+
+    // 4F. Device-global `prefs` omits authGen/vaultGen, and reopening on same DB increments connSeq 1 -> 2
+    const subPrefs1 = await rpc.call("core.wire", { msg: { id: 36, subscribe: { topic: "prefs" } } });
+    assert.equal(subPrefs1.conn, 1, "prefs before reopen must carry conn:1");
+    assert.equal(subPrefs1.authGen, undefined, "device-global prefs must omit authGen");
+    assert.equal(subPrefs1.vaultGen, undefined, "device-global prefs must omit vaultGen");
+
+    const reopened = await rpc.call("core.reopen", { workspace: "ws1", station: "ws1/s1" });
+    assert.equal(reopened.conn, 2, "reopening ClientCore on same DB must monotonically increment connSeq 1 -> 2");
+    const subPrefs2 = await rpc.call("core.wire", { msg: { id: 37, subscribe: { topic: "prefs" } } });
+    assert.equal(subPrefs2.conn, 2, "post-reopen subscription must carry incremented conn:2");
+    assert.equal(subPrefs2.authGen, undefined, "post-reopen prefs must still omit authGen");
+    counts.suite4Core++;
   } finally {
     await core.close();
   }

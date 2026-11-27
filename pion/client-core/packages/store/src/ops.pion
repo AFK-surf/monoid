@@ -269,3 +269,67 @@ pub fn search_chats(
     }
   }
 }
+
+/// Compute the next strictly monotonic `conn_seq`:
+/// `max(persisted + 1, floor + 1, now_ms * 1000)` when `now_ms > 0`, or `max(persisted + 1, floor + 1)`
+/// in deterministic virtual-clock tests (`now_ms == 0`), guaranteeing strict monotonicity even across
+/// same-millisecond consecutive allocations or read-only storage (`core.ts:406-414`).
+pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L, floor : Int64 = 0L) -> Int64 {
+  let base_p = if persisted > 0L { persisted } else { 0L }
+  let base_f = if floor > 0L { floor } else { 0L }
+  let base = if base_p > base_f { base_p } else { base_f }
+  let next_seq = base + 1L
+  let time_floor = if now_ms > 0L { now_ms * 1000L } else { 0L }
+  if time_floor > next_seq { time_floor } else { next_seq }
+}
+
+/// Parse a stored `conn_seq` JSON/integer string (`"42"` or `{"conn": 42}`).
+pub fn parse_conn_seq_raw(raw : String) -> Int64 {
+  let trimmed = raw.trim()
+  match base_codec::parse_int64_str(trimmed) {
+    Some(v) => if v > 0L { v } else { 0L }
+    None =>
+    match base_codec::json_parse(trimmed) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => {
+        if repr.length() > 0 {
+          match base_codec::parse_int64_str(repr) {
+            Some(v) => if v > 0L { v } else { 0L }
+            None => if n > 0.0 { n.to_int64() } else { 0L }
+          }
+        } else if n > 0.0 {
+          n.to_int64()
+        } else {
+          0L
+        }
+      }
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "conn") {
+        Some(base_codec::Json::Num(n, repr)) => {
+          if repr.length() > 0 {
+            match base_codec::parse_int64_str(repr) {
+              Some(v) => if v > 0L { v } else { 0L }
+              None => if n > 0.0 { n.to_int64() } else { 0L }
+            }
+          } else if n > 0.0 {
+            n.to_int64()
+          } else {
+            0L
+          }
+        }
+        _ => 0L
+      }
+      _ => 0L
+    }
+  }
+}
+
+/// Read `account_doc("conn_seq")`, compute strictly monotonic next `conn_seq`, persist back, and return it.
+pub fn load_and_bump_conn_seq(db : sql::Sql, now_ms : Int64 = 0L) -> Int64 {
+  let prev : Int64 = match get_account_doc(db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => parse_conn_seq_raw(raw)
+    _ => 0L
+  }
+  let next = next_monotonic_conn_seq(prev, now_ms=now_ms)
+  let _ = put_account_doc(db, "conn_seq", next.to_string())
+  next
+}
