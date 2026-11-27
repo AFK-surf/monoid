@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "effect"
+import "mesh"
 import "sql"
 
 pub struct SyncScheduler {
@@ -92,6 +93,13 @@ pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTra
 
 let MAX_LOCK_RETRY_ATTEMPTS : Int = 5
 
+enum LockFetchOutcome {
+  Done(Bool)
+  TransientFail(effect::EffectError)
+  PermanentFail(effect::EffectError)
+  Interrupted
+}
+
 fn lock_retry_backoff_ms(attempt : Int) -> Int {
   if attempt <= 0 {
     100
@@ -106,23 +114,30 @@ fn lock_retry_backoff_ms(attempt : Int) -> Int {
   }
 }
 
-fn is_transient_lock_error(e : effect::EffectError) -> Bool {
+/// Structured transport-layer retry classifier for `GET /lock` (called ONLY on
+/// `self.transport.request_k` failures, never on HTTP response bodies or lock verification):
+/// 1. `mesh::mesh_error_of(e)`: retry ONLY `code == "mesh" || code == "host"` (language-independent).
+/// 2. `effect::EffectError::IoError(_)`: always transient.
+/// 3. `effect::EffectError::BothFailed(a, b)`: transient if either branch is transient.
+/// 4. `Interrupt` / `QueueShutdown`: never retry.
+/// 5. `Custom(msg)` (non-mesh `shell.fetch_k` / test mock transport): strict transport whitelist,
+///    explicitly excluding `transport_epoch_changed`, `lock_unconfirmed:*`, and `lock_station:*`.
+fn is_transient_lock_transport_error(e : effect::EffectError) -> Bool {
+  match mesh::mesh_error_of(e) {
+    Some(me) => return me.code == "mesh" || me.code == "host"
+    None => ()
+  }
   match e {
+    effect::EffectError::IoError(_) => true
+    effect::EffectError::BothFailed(a, b) =>
+    is_transient_lock_transport_error(a) || is_transient_lock_transport_error(b)
+    effect::EffectError::Interrupt | effect::EffectError::QueueShutdown => false
     effect::EffectError::Custom(msg) => {
-      if msg == "transport_epoch_changed" || msg.starts_with("lock json parse failed:") {
+      if msg == "transport_epoch_changed" ||
+      msg.starts_with("lock_unconfirmed:") ||
+      msg.starts_with("lock_station:") {
         return false
       }
-      // Errors from lock verification / SQLite application: ONLY whitelist transient SQLite
-      // read/persist failures; never retry cryptographic, signature, rule, or root rejections.
-      if msg.starts_with("lock apply failed:") {
-        return msg.contains("failed to persist lock state") ||
-        msg.contains("persisted lock state unreadable")
-      }
-      // HTTP status whitelist: 5xx and 429 only.
-      if msg.starts_with("lock fetch status ") {
-        return msg.starts_with("lock fetch status 5") || msg == "lock fetch status 429"
-      }
-      // Transport / network / timeout whitelist (case-insensitive).
       let low = ascii_lower(msg)
       low.contains("network") ||
       low.contains("timeout") ||
@@ -160,13 +175,13 @@ fn SyncScheduler::run_lock_refresh_loop_k(
     return
   }
   self.pending_lock_refresh = false
-  self.fetch_lock_k(effect::priority_shown(), fn(ex : effect::Exit[Bool]) -> Unit {
+  self.fetch_lock_inner_k(effect::priority_shown(), fn(out : LockFetchOutcome) -> Unit {
     if self.transport_epoch != enqueue_epoch {
       k(effect::Exit::Succeeded(()))
       return
     }
-    match ex {
-      effect::Exit::Succeeded(_) => {
+    match out {
+      LockFetchOutcome::Done(_) => {
         if self.pending_lock_refresh {
           self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
         } else {
@@ -174,12 +189,20 @@ fn SyncScheduler::run_lock_refresh_loop_k(
           k(effect::Exit::Succeeded(()))
         }
       }
-      effect::Exit::Interrupted => {
+      LockFetchOutcome::Interrupted => {
         self.lock_refresh_running = false
         k(effect::Exit::Interrupted)
       }
-      effect::Exit::Failed(err) => {
-        if !is_transient_lock_error(err) || attempt >= MAX_LOCK_RETRY_ATTEMPTS {
+      LockFetchOutcome::PermanentFail(_) => {
+        if self.pending_lock_refresh {
+          self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
+        } else {
+          self.lock_refresh_running = false
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+      LockFetchOutcome::TransientFail(_) => {
+        if attempt >= MAX_LOCK_RETRY_ATTEMPTS {
           if self.pending_lock_refresh {
             self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
           } else {
@@ -190,7 +213,7 @@ fn SyncScheduler::run_lock_refresh_loop_k(
         }
         self.pending_lock_refresh = true
         let delay = lock_retry_backoff_ms(attempt)
-        // timer: bounded exponential backoff retry on whitelisted transient GET /lock or SQLite persist failure.
+        // timer: bounded exponential backoff retry on typed transient GET /lock or SQLite persist failure.
         effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             k(effect::Exit::Succeeded(()))
@@ -240,50 +263,57 @@ pub fn SyncScheduler::focus_thread(self : SyncScheduler, thread : Option[Int]) -
   }
 }
 
-/// Schedule a workspace lock fetch (`GET /lock`) at the given priority.
-/// Parses `{ head, entries, aside? }` and forwards it to `StationEvents::notify_lock_payload`
-/// (`ClientCore::handle_lock_event` -> `ClientCore::apply_lock_chain`), preserving Gate #2
-/// genesis pinning, anti-rollback, and SQLite `workspace_pref(ws, "lock")` persistence.
-/// Never blocked by `authGen` (lock itself updates `authGen`), guarded by `transport_epoch`.
-pub fn SyncScheduler::fetch_lock_k(
+fn SyncScheduler::fetch_lock_inner_k(
   self : SyncScheduler,
   priority : Int,
-  k : (effect::Exit[Bool]) -> Unit,
+  k : (LockFetchOutcome) -> Unit,
 ) -> Unit {
   let key = self.task_key("lock")
   let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     priority,
-    fn(_preempt : effect::Preempt, tk : (effect::Exit[Bool]) -> Unit) -> Unit {
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[LockFetchOutcome]) -> Unit) -> Unit {
       if self.transport_epoch != enqueue_epoch {
-        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(effect::EffectError::Custom("transport_epoch_changed"))))
         return
       }
       let req_fn = self.transport.request_k
       req_fn("GET", "/lock", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
         if self.transport_epoch != enqueue_epoch {
-          tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(effect::EffectError::Custom("transport_epoch_changed"))))
           return
         }
         match ex {
           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Failed(e) => {
+            if is_transient_lock_transport_error(e) {
+              tk(effect::Exit::Succeeded(LockFetchOutcome::TransientFail(e)))
+            } else {
+              tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(e)))
+            }
+          }
           effect::Exit::Succeeded(reply) => {
             if reply.status == 404 {
               self.completed_order.push("lock")
-              tk(effect::Exit::Succeeded(false))
+              tk(effect::Exit::Succeeded(LockFetchOutcome::Done(false)))
               return
             }
             if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("lock fetch status " + reply.status.to_string())))
+              let err = effect::EffectError::Custom("lock fetch status " + reply.status.to_string())
+              if reply.status >= 500 || reply.status == 429 {
+                tk(effect::Exit::Succeeded(LockFetchOutcome::TransientFail(err)))
+              } else {
+                tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(err)))
+              }
               return
             }
             match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom("lock json parse failed: " + e)))
+              base_codec::JsonParseResult::Err(e) =>
+              tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(effect::EffectError::Custom(e))))
               base_codec::JsonParseResult::Ok(j) => {
                 if self.transport_epoch != enqueue_epoch {
-                  tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+                  tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(effect::EffectError::Custom("transport_epoch_changed"))))
                   return
                 }
                 let has_entries = match base_codec::json_get(j, "entries") {
@@ -294,21 +324,53 @@ pub fn SyncScheduler::fetch_lock_k(
                   match self.events.notify_lock_payload_result(j) {
                     Ok(_) => ()
                     Err(msg) => {
-                      tk(effect::Exit::Failed(effect::EffectError::Custom("lock apply failed: " + msg)))
+                      let err = effect::EffectError::Custom("lock apply failed: " + msg)
+                      if msg.contains("failed to persist lock state") ||
+                      msg.contains("persisted lock state unreadable") {
+                        tk(effect::Exit::Succeeded(LockFetchOutcome::TransientFail(err)))
+                      } else {
+                        tk(effect::Exit::Succeeded(LockFetchOutcome::PermanentFail(err)))
+                      }
                       return
                     }
                   }
                 }
                 self.completed_order.push("lock")
-                tk(effect::Exit::Succeeded(has_entries))
+                tk(effect::Exit::Succeeded(LockFetchOutcome::Done(has_entries)))
               }
             }
           }
         }
       })
     },
-    k,
+    fn(ex : effect::Exit[LockFetchOutcome]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(out) => k(out)
+        effect::Exit::Interrupted => k(LockFetchOutcome::Interrupted)
+        effect::Exit::Failed(e) => k(LockFetchOutcome::PermanentFail(e))
+      }
+    },
   )
+}
+
+/// Schedule a workspace lock fetch (`GET /lock`) at the given priority.
+/// Parses `{ head, entries, aside? }` and forwards it to `StationEvents::notify_lock_payload`
+/// (`ClientCore::handle_lock_event` -> `ClientCore::apply_lock_chain`), preserving Gate #2
+/// genesis pinning, anti-rollback, and SQLite `workspace_pref(ws, "lock")` persistence.
+/// Never blocked by `authGen` (lock itself updates `authGen`), guarded by `transport_epoch`.
+pub fn SyncScheduler::fetch_lock_k(
+  self : SyncScheduler,
+  priority : Int,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.fetch_lock_inner_k(priority, fn(out : LockFetchOutcome) -> Unit {
+    match out {
+      LockFetchOutcome::Done(has_entries) => k(effect::Exit::Succeeded(has_entries))
+      LockFetchOutcome::TransientFail(e) => k(effect::Exit::Failed(e))
+      LockFetchOutcome::PermanentFail(e) => k(effect::Exit::Failed(e))
+      LockFetchOutcome::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
 }
 
 /// Schedule a viewer marks fetch (`GET /chats?marks=1&own=1` with optional `&session=...&thread=...` scope),

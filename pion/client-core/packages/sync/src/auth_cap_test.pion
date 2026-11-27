@@ -21,6 +21,7 @@ import "base_codec"
 import "effect"
 import "form"
 import "lock"
+import "mesh"
 import "outbox"
 import "protocol"
 import "shell"
@@ -1665,20 +1666,124 @@ test "auth_cap 12: SSE event:lock {workspace, head} retries on transient 500 & S
   rt.advance(120000)
   debug_assert(cap_calls[0] == 6, "0 extra retries after bounded backoff cap exhausted")
 
-  // 12f. Safe-integer `parse_conn_seq_raw` & `next_monotonic_conn_seq` bounds (reject decimals & overflow)
+  // 12f. Safe-integer `parse_conn_seq_raw` & `next_monotonic_conn_seq_checked` bounds:
+  //      separate disk cap (`MAX_PERSISTED_CONN_SEQ`) vs wire cap (`MAX_SAFE_CONN_SEQ`) + exhaustion guard.
   debug_assert(store::parse_conn_seq_raw("42") == 42L, "plain integer parsed")
-  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740990}") == 9007199254740990L, "max stored safe int accepted")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199253740991}") == store::MAX_PERSISTED_CONN_SEQ, "MAX_PERSISTED_CONN_SEQ accepted")
   debug_assert(store::parse_conn_seq_raw("12.5") == 0L, "decimal string rejected")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.5}") == 0L, "decimal JSON connSeq rejected")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.0}") == 0L, "float-formatted JSON connSeq rejected")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":0}") == 0L, "zero connSeq rejected")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":-7}") == 0L, "negative connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740990}") == 0L, "above MAX_PERSISTED_CONN_SEQ rejected")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740991}") == 0L, "MAX_SAFE_CONN_SEQ rejected as stored value")
   debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9223372036854775807}") == 0L, "Int64::MAX rejected as stored value")
   debug_assert(store::parse_conn_seq_raw("9223372036854775807") == 0L, "raw Int64::MAX rejected")
   let safe_from_ovf = store::next_monotonic_conn_seq(9223372036854775807L, now_ms=1790000000000L, floor=10L)
   debug_assert(safe_from_ovf >= 1790000000000000L && safe_from_ovf <= store::MAX_SAFE_CONN_SEQ, "next_monotonic_conn_seq never overflows on Int64::MAX")
-  let safe_from_max = store::next_monotonic_conn_seq(9007199254740990L, now_ms=0L, floor=0L)
-  debug_assert(safe_from_max == 9007199254740991L, "max stored safe int increments to MAX_SAFE_CONN_SEQ without overflow")
+  // Two consecutive in-process allocations starting from persisted = MAX_PERSISTED_CONN_SEQ:
+  let r1 = match store::next_monotonic_conn_seq_checked(store::MAX_PERSISTED_CONN_SEQ, now_ms=0L, floor=0L) {
+    Ok(v) => v
+    Err(e) => panic("expected Ok r1: " + e)
+  }
+  debug_assert(r1 == 9007199253740992L, "1st restart from MAX_PERSISTED_CONN_SEQ yields +1 in headroom zone")
+  let r2 = match store::next_monotonic_conn_seq_checked(store::parse_conn_seq_raw(r1.to_string()), now_ms=0L, floor=r1) {
+    Ok(v) => v
+    Err(e) => panic("expected Ok r2: " + e)
+  }
+  debug_assert(r2 == 9007199253740993L && r2 > r1, "2nd in-process restart strictly increments from floor even when disk > MAX_PERSISTED_CONN_SEQ")
+  // Exhausted in-process floor == MAX_SAFE_CONN_SEQ returns Err("conn_seq_exhausted") (never regresses!)
+  let exhausted = match store::next_monotonic_conn_seq_checked(0L, now_ms=1790000000000L, floor=store::MAX_SAFE_CONN_SEQ) {
+    Err("conn_seq_exhausted") => true
+    _ => false
+  }
+  debug_assert(exhausted, "floor == MAX_SAFE_CONN_SEQ returns Err(conn_seq_exhausted) instead of regressing")
+  // Cold process (`floor == 0L`) facing disk `MAX_SAFE_CONN_SEQ` recovers cleanly!
+  let cold_recover = match store::next_monotonic_conn_seq_checked(store::parse_conn_seq_raw("9007199254740991"), now_ms=1790000000000L, floor=0L) {
+    Ok(v) => v == 1790000000000000L
+    Err(_) => false
+  }
+  debug_assert(cold_recover, "cold startup (floor=0) recovers cleanly from over-limit disk MAX_SAFE_CONN_SEQ")
+
+  // 12g. Structured `LockFetchOutcome` + `mesh::mesh_error_of` + `EffectError::IoError`:
+  //      SSE stays connected and pushes `{workspace, head}`; GET /lock returns localized mesh errors
+  //      (`The server didn't respond`, `The server's response was cut off mid-line.`, Chinese msg)
+  //      and `EffectError::IoError("io reset")` -> scheduler MUST retry and converge `authGen` 3 -> 4;
+  //      then `mesh::MeshError("credential_refused", "connection timeout refused", "")` MUST halt in 1 attempt (0 retries)!
+  let e3 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(3.0)),
+      ("prev", form::Json::Str(h2)),
+      ("at", form::Json::Num(1790000030.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("d"))), ("name", form::Json::Str("Retry Station 3"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h3 = match lock::entry_hash(e3, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h3") }
+  let body_seq3 = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(3)), ("hash", base_codec::json_str(h3)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2), form_to_codec(e3)])),
+  ]))
+  let mesh_calls = [0]
+  let tr_mesh_errs = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        mesh_calls[0] = mesh_calls[0] + 1
+        let n = mesh_calls[0]
+        if n == 1 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "The server didn't respond", "").to_effect_error()))
+        } else if n == 2 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "The server's response was cut off mid-line.", "").to_effect_error()))
+        } else if n == 3 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "服务器未响应", "").to_effect_error()))
+        } else if n == 4 {
+          rk(effect::Exit::Failed(effect::EffectError::IoError("io reset")))
+        } else {
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body_seq3.to_bytes() }))
+        }
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_mesh_errs)
+  // SSE remains connected without reconnecting; push `{workspace, head}` notification directly!
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":3,\"hash\":\"" + h3 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(mesh_calls[0] == 1 && core.sync.has_pending_lock_refresh(), "mesh no_reply scheduled backoff retry #1")
+  rt.advance(100)
+  debug_assert(mesh_calls[0] == 2 && core.sync.has_pending_lock_refresh(), "mesh reply_cut scheduled backoff retry #2")
+  rt.advance(500)
+  debug_assert(mesh_calls[0] == 3 && core.sync.has_pending_lock_refresh(), "localized zh mesh error scheduled backoff retry #3")
+  rt.advance(2000)
+  debug_assert(mesh_calls[0] == 4 && core.sync.has_pending_lock_refresh(), "EffectError::IoError scheduled backoff retry #4")
+  rt.advance(8000)
+  debug_assert(mesh_calls[0] == 5 && !core.sync.has_pending_lock_refresh(), "5th call converged and cleared pending_lock_refresh")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 4, "lock persisted and bumped authGen 3 -> 4 after structured mesh/IoError retries")
+
+  // Non-transient `mesh::MeshError` (`credential_refused`) MUST halt in 1 attempt (0 retries) even if message contains 'timeout'!
+  let cred_calls = [0]
+  let tr_cred_refused = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        cred_calls[0] = cred_calls[0] + 1
+        rk(effect::Exit::Failed(mesh::MeshError::new("credential_refused", "connection timeout refused", "").to_effect_error()))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_cred_refused)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(cred_calls[0] == 1, "credential_refused attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "credential_refused halted immediately with 0 retries despite 'timeout' text")
+  rt.advance(60000)
+  debug_assert(cred_calls[0] == 1, "0 extra retries after credential_refused over 60s")
   core.stop()
 }

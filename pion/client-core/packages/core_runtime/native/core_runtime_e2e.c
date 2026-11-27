@@ -704,9 +704,10 @@ int main(void) {
     }
     mb_core_stop();
 
-    //    9c. Corrupt `device/conn_seq_floor` containing `Int64::MAX` (`9223372036854775807`) MUST be
-    //        rejected without overflow wraparound, overwritten/repaired with a valid safe integer,
-    //        and emit a valid `auth` handshake.
+    //    9c. Corrupt `device/conn_seq_floor` containing `Int64::MAX` (`9223372036854775807`) or
+    //        over-limit `9007199254740991` MUST be rejected without overflow wraparound,
+    //        overwritten/repaired with a valid safe integer, and an immediate 2nd restart MUST
+    //        still increment strictly monotonically (`conn_ovf2 > conn_ovf`).
     {
         FILE *f = fopen(cold_floor_path, "w");
         assert(f != NULL);
@@ -731,6 +732,43 @@ int main(void) {
         snprintf(ovf_kv, sizeof(ovf_kv), "\"connSeq\":%lld", conn_ovf);
         assert(strstr(fbuf, ovf_kv) != NULL);
     }
+    mb_core_stop();
+
+    // Immediate 2nd in-process restart after repair: strictly monotonic `conn_ovf2 > conn_ovf`
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9c2 post-repair 2nd restart -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_ovf2 = extract_conn_seq(m->json);
+    assert(conn_ovf2 > conn_ovf && conn_ovf2 <= 9007199254740991LL);
+    mb_core_stop();
+
+    //    9d. Pre-seeded disk boundary `MAX_PERSISTED_CONN_SEQ` (`9007199253740991`):
+    //        two consecutive in-process restarts MUST emit strictly monotonic `9007199253740992`
+    //        and `9007199253740993` without dropping the in-process `floor`!
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":9007199253740991}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9d boundary restart #1 -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_r1 = extract_conn_seq(m->json);
+    assert(conn_r1 == 9007199253740992LL);
+    mb_core_stop();
+
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9d boundary restart #2 -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_r2 = extract_conn_seq(m->json);
+    assert(conn_r2 == 9007199253740993LL && conn_r2 > conn_r1);
     mb_core_stop();
 
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",
