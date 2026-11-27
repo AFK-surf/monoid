@@ -21,6 +21,14 @@ struct MarksWanted {
   threads : Array[Int]
 }
 
+struct PendingAuthConfirm {
+  gen : Int
+  confirmed_keys : Map[String, Bool]
+  confirmed_names : Map[String, Bool]
+}
+
+let PENDING_WIRE_MAX : Int = 256
+
 pub struct ClientCore {
   pub mut workspace : String
   pub station : String
@@ -31,6 +39,7 @@ pub struct ClientCore {
   pub events : StationEvents
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
+  pub auth : AuthGenTracker
   pub doing : DoingTracker
   pub composers : ComposerManager
   extra_events : Map[String, StationEvents]
@@ -41,6 +50,15 @@ pub struct ClientCore {
   pub mut rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
   pending_dirty_rows : Array[(String, String)]
+  mut wire_sink : Option[(String, Option[Bytes]) -> Unit]
+  pending_wire_events : Array[(String, Option[Bytes])]
+  ws_roles : Map[String, String]
+  pending_auth_confirm : Map[String, PendingAuthConfirm]
+  lock_digest_by_ws : Map[String, String]
+  lock_sec_digest_by_ws : Map[String, String]
+  mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
+  mut on_workspace_revoked_hook : Option[(String) -> Unit]
+  mut on_topic_confirmed_hook : Option[(String, String) -> Unit]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub login_flow : views::LoginFlowMachine
@@ -109,6 +127,8 @@ pub fn ClientCore::new(
   let events = StationEvents::new(workspace, station, db, frame_outbox, transport)
   let local_outbox = LocalOutbox::new(station, db, frame_outbox, transport)
   let sync = SyncScheduler::new(workspace, station, events, transport)
+  let auth = AuthGenTracker::open_with_db(db)
+  auth.ensure_workspace(workspace)
   let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
   let core = ClientCore::{
     workspace: workspace,
@@ -120,6 +140,7 @@ pub fn ClientCore::new(
     events: events,
     local_outbox: local_outbox,
     sync: sync,
+    auth: auth,
     doing: DoingTracker::new(),
     composers: ComposerManager::new(db),
     extra_events: Map::new(),
@@ -130,6 +151,15 @@ pub fn ClientCore::new(
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
     pending_dirty_rows: [],
+    wire_sink: None,
+    pending_wire_events: [],
+    ws_roles: Map::new(),
+    pending_auth_confirm: Map::new(),
+    lock_digest_by_ws: Map::new(),
+    lock_sec_digest_by_ws: Map::new(),
+    on_runtime_boundary: None,
+    on_workspace_revoked_hook: None,
+    on_topic_confirmed_hook: None,
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     login_flow: views::LoginFlowMachine::new(),
@@ -193,7 +223,14 @@ pub fn ClientCore::new(
   router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
     core.evaluate_view_topic(id, topic)
   })
+  router.set_topic_authorizer(fn(topic : protocol::Topic) -> Bool {
+    core.is_topic_authorized(topic)
+  })
+  let _ = auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    core.handle_auth_boundary(ev)
+  })
   core.wire_station_hooks(station, events, sync)
+  core.seed_workspace_roles_from_db()
   core.restore_lock_state()
   core.restore_notify_state()
   core
@@ -229,6 +266,14 @@ fn ClientCore::wire_station_hooks(
 ) -> Unit {
   let rt = self.rt
   let local_outbox = self.local_outbox
+  events.set_auth_tracker(self.auth)
+  events.set_overview_applied_hook(fn(ws : String, gen : Int) -> Unit {
+    self.handle_confirmed_station_read(ws, "overview", gen)
+  })
+  sync.set_auth_tracker(self.auth)
+  sync.set_on_confirmed_read(fn(ws : String, kind : String, gen : Int) -> Unit {
+    self.handle_confirmed_station_read(ws, kind, gen)
+  })
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
       local_outbox.reconcile_entry_in_burst(b, th, n, ck, station=Some(station))
@@ -1012,6 +1057,9 @@ pub fn ClientCore::set_viewer(
 /// `workspace.json` (`list_workspace_stations`) and merging live `station(addr, "overview")`
 /// fields without leaking `self.station` across workspace boundaries.
 pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String) -> Array[views::StationBrief] {
+  if ws_scope.length() > 0 && self.auth.is_revoked(ws_scope) {
+    return []
+  }
   let out : Array[views::StationBrief] = []
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
   let is_own_scope = ws_scope.length() == 0 || ws_scope == self.workspace
@@ -1654,6 +1702,9 @@ fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json]
 /// Evaluate subscription topics through `packages/views` projections so `Slice1Router`
 /// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
 fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
+  if !self.is_topic_authorized(topic) {
+    return Some(protocol::CoreEvent::Waiting(id))
+  }
   if topic.name == "chats" {
     match chats_unsupported_param(topic) {
       Some(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
@@ -2198,6 +2249,713 @@ pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Arra
   self.router.refresh_topic_name(topic_name)
 }
 
+/// Refresh all active subscriptions matching `topic_name`, returning `(Topic, CoreEvent)` pairs
+/// so outbound callers can stamp exact `WireOutGen` envelopes.
+pub fn ClientCore::refresh_topic_with_topics(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(protocol::Topic, protocol::CoreEvent)] {
+  self.router.refresh_topic_with_topics(topic_name)
+}
+
+/// Refresh all active subscriptions matching `topic_name` and encode each with unified `WireOutGen`.
+pub fn ClientCore::refresh_topic_wire(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(String, Option[Bytes])] {
+  let pairs = self.router.refresh_topic_with_topics(topic_name)
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<pairs.length() {
+    let (topic, ev) = pairs[i]
+    out.push(self.encode_sub_event(topic, ev))
+  }
+  out
+}
+
+/// Register a real host outbound wire sink (used by `core_runtime`).
+/// When registered, outbound wire frames go directly to the host sink and NEVER accumulate
+/// in `pending_wire_events`.
+pub fn ClientCore::set_wire_sink(
+  self : ClientCore,
+  sink : (String, Option[Bytes]) -> Unit,
+) -> Unit {
+  self.wire_sink = Some(sink)
+  if self.pending_wire_events.length() > 0 {
+    let drained : Array[(String, Option[Bytes])] = []
+    for i in 0..<self.pending_wire_events.length() {
+      drained.push(self.pending_wire_events[i])
+    }
+    self.pending_wire_events.clear()
+    for i in 0..<drained.length() {
+      sink(drained[i].0, drained[i].1)
+    }
+  }
+}
+
+/// Emit one outbound wire frame directly to the host sink if registered, or buffer it in
+/// bounded `pending_wire_events` (`<= 256`) in headless unit-test mode.
+pub fn ClientCore::emit_wire_out(
+  self : ClientCore,
+  json_text : String,
+  bytes : Option[Bytes] = None,
+) -> Unit {
+  match self.wire_sink {
+    Some(sink) => sink(json_text, bytes)
+    None => {
+      self.pending_wire_events.push((json_text, bytes))
+      while self.pending_wire_events.length() > PENDING_WIRE_MAX {
+        let trimmed : Array[(String, Option[Bytes])] = []
+        for i in 1..<self.pending_wire_events.length() {
+          trimmed.push(self.pending_wire_events[i])
+        }
+        self.pending_wire_events.clear()
+        for i in 0..<trimmed.length() {
+          self.pending_wire_events.push(trimmed[i])
+        }
+      }
+    }
+  }
+}
+
+pub fn ClientCore::drain_pending_wire_events(self : ClientCore) -> Array[(String, Option[Bytes])] {
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<self.pending_wire_events.length() {
+    out.push(self.pending_wire_events[i])
+  }
+  self.pending_wire_events.clear()
+  out
+}
+
+pub fn ClientCore::pending_wire_event_count(self : ClientCore) -> Int {
+  self.pending_wire_events.length()
+}
+
+/// Emit the authoritative `{"id": 0, "auth": {"conn": N, ...}}` handshake/boundary snapshot.
+pub fn ClientCore::emit_auth_handshake(self : ClientCore) -> String {
+  let json_text = base_codec::json_stringify(self.auth.handshake_json())
+  self.emit_wire_out(json_text)
+  json_text
+}
+
+/// Encode any subscription `protocol::CoreEvent` with the single unified `WireOutGen` envelope
+/// (`conn`, plus `authGen` for non-device-global topics and `vaultGen` for vault topics).
+pub fn ClientCore::encode_sub_event(
+  self : ClientCore,
+  topic : protocol::Topic,
+  ev : protocol::CoreEvent,
+) -> (String, Option[Bytes]) {
+  let gen = self.auth.wire_out_gen(topic)
+  protocol::encode_sub_event_with_auth(ev, gen)
+}
+
+pub fn ClientCore::set_on_runtime_boundary(
+  self : ClientCore,
+  cb : (AuthBoundaryEvent) -> Unit,
+) -> Unit {
+  self.on_runtime_boundary = Some(cb)
+}
+
+pub fn ClientCore::set_on_workspace_revoked(
+  self : ClientCore,
+  cb : (String) -> Unit,
+) -> Unit {
+  self.on_workspace_revoked_hook = Some(cb)
+}
+
+pub fn ClientCore::set_on_topic_confirmed(
+  self : ClientCore,
+  cb : (String, String) -> Unit,
+) -> Unit {
+  self.on_topic_confirmed_hook = Some(cb)
+}
+
+fn ClientCore::seed_workspace_roles_from_db(self : ClientCore) -> Unit {
+  match store::list_workspaces(self.db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        self.auth.ensure_workspace(r.id)
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) =>
+          match proto_str(j, "role") {
+            Some(role) => if role.length() > 0 { self.ws_roles.set(r.id, role) }
+            None => ()
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+}
+
+/// Whether `ws` currently has an active role-downgrade confirmation latch.
+pub fn ClientCore::is_workspace_downgrade_gated(self : ClientCore, ws : String) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => self.auth.workspace_auth_gen(ws) >= p.gen
+    None => false
+  }
+}
+
+fn ClientCore::effective_topic_workspace(self : ClientCore, topic : protocol::Topic) -> Option[String] {
+  if is_device_global_topic(topic.name) || is_aggregate_topic(topic.name) {
+    return None
+  }
+  match topic.param("scope") {
+    Some(base_codec::Json::Str(s)) => if s == "all" || s == "*" { return None }
+    _ => ()
+  }
+  match protocol::topic_workspace(topic) {
+    Some(ws) => if ws.length() > 0 { Some(ws) } else { Some(self.workspace) }
+    None => if self.workspace.length() > 0 { Some(self.workspace) } else { None }
+  }
+}
+
+/// Authorization gate consulted before projecting or caching a topic value
+/// (`client/core-ts/src/core.ts:419-440` + `:1540` downgrade confirmation latch).
+pub fn ClientCore::is_topic_authorized(self : ClientCore, topic : protocol::Topic) -> Bool {
+  if is_device_global_topic(topic.name) {
+    return true
+  }
+  if topic.name == "draft" || topic.name == "composer" || topic.name == "drivePlace" {
+    return true
+  }
+  match self.effective_topic_workspace(topic) {
+    Some(ws) => {
+      if ws.length() == 0 || ws == "all" || ws == "*" {
+        return true
+      }
+      match self.pending_auth_confirm.get(ws) {
+        Some(pending) => {
+          let cur_gen = self.auth.workspace_auth_gen(ws)
+          if cur_gen >= pending.gen {
+            let tk = protocol::topic_key(topic)
+            if pending.confirmed_keys.get(tk).is_some() || pending.confirmed_names.get(topic.name).is_some() {
+              return true
+            }
+            return false
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  true
+}
+
+/// Confirm fresh post-downgrade data for an exact `(ws, topic)` under `gen` and immediately
+/// release waiting active subscribers (`client/core-ts/src/core.ts:352`).
+pub fn ClientCore::confirm_workspace_topic_auth(
+  self : ClientCore,
+  ws : String,
+  topic : protocol::Topic,
+  gen : Int,
+) -> Unit {
+  let pending = match self.pending_auth_confirm.get(ws) {
+    Some(p) => p
+    None => return
+  }
+  if self.auth.workspace_auth_gen(ws) != gen || gen < pending.gen {
+    return
+  }
+  let tk = protocol::topic_key(topic)
+  if pending.confirmed_keys.get(tk).is_none() {
+    pending.confirmed_keys.set(tk, true)
+    let subs = self.router.active_subs_snapshot()
+    for i in 0..<subs.length() {
+      let (sid, st) = subs[i]
+      if protocol::topic_key(st) == tk {
+        match self.router.refresh_sub_force(sid) {
+          Some((rt, ev)) => {
+            let (j, b) = self.encode_sub_event(rt, ev)
+            self.emit_wire_out(j, bytes=b)
+          }
+          None => ()
+        }
+      }
+    }
+    match self.on_topic_confirmed_hook {
+      Some(cb) => cb(ws, topic.name)
+      None => ()
+    }
+  }
+}
+
+/// Confirm fresh post-downgrade data for all topics named `topic_name` in `ws` under `gen`
+/// and immediately push refreshed values to waiting active subscribers.
+pub fn ClientCore::confirm_workspace_topic_name_auth(
+  self : ClientCore,
+  ws : String,
+  topic_name : String,
+  gen : Int,
+) -> Unit {
+  let pending = match self.pending_auth_confirm.get(ws) {
+    Some(p) => p
+    None => return
+  }
+  if self.auth.workspace_auth_gen(ws) != gen || gen < pending.gen {
+    return
+  }
+  if pending.confirmed_names.get(topic_name).is_none() {
+    pending.confirmed_names.set(topic_name, true)
+    let subs = self.router.active_subs_snapshot()
+    for i in 0..<subs.length() {
+      let (sid, st) = subs[i]
+      if st.name == topic_name {
+        let matches_ws = match self.effective_topic_workspace(st) {
+          Some(tws) => tws == ws
+          None => false
+        }
+        if matches_ws {
+          match self.router.refresh_sub_force(sid) {
+            Some((rt, ev)) => {
+              let (j, b) = self.encode_sub_event(rt, ev)
+              self.emit_wire_out(j, bytes=b)
+            }
+            None => ()
+          }
+        }
+      }
+    }
+    match self.on_topic_confirmed_hook {
+      Some(cb) => cb(ws, topic_name)
+      None => ()
+    }
+  }
+}
+
+fn ClientCore::handle_confirmed_station_read(
+  self : ClientCore,
+  ws : String,
+  kind : String,
+  gen : Int,
+) -> Unit {
+  if !self.is_workspace_downgrade_gated(ws) {
+    return
+  }
+  if kind == "overview" {
+    self.confirm_workspace_topic_name_auth(ws, "stations", gen)
+    self.confirm_workspace_topic_name_auth(ws, "station", gen)
+    self.confirm_workspace_topic_name_auth(ws, "stationPart", gen)
+    self.confirm_workspace_topic_name_auth(ws, "profiles", gen)
+    self.confirm_workspace_topic_name_auth(ws, "profilesOverview", gen)
+    self.confirm_workspace_topic_name_auth(ws, "settings", gen)
+    self.confirm_workspace_topic_name_auth(ws, "models", gen)
+    self.confirm_workspace_topic_name_auth(ws, "fleet", gen)
+    self.confirm_workspace_topic_name_auth(ws, "usage", gen)
+    self.confirm_workspace_topic_name_auth(ws, "agentRates", gen)
+    self.confirm_workspace_topic_name_auth(ws, "stationUpdates", gen)
+  } else if kind == "snapshot" || kind == "marks" {
+    self.confirm_workspace_topic_name_auth(ws, "chats", gen)
+    self.confirm_workspace_topic_name_auth(ws, "chatRow", gen)
+    self.confirm_workspace_topic_name_auth(ws, "archive", gen)
+    self.confirm_workspace_topic_name_auth(ws, "search", gen)
+    self.confirm_workspace_topic_name_auth(ws, "chatSearch", gen)
+    self.confirm_workspace_topic_name_auth(ws, "railCard", gen)
+  } else if kind == "thread" {
+    self.confirm_workspace_topic_name_auth(ws, "chat", gen)
+    self.confirm_workspace_topic_name_auth(ws, "chatJobs", gen)
+  } else if kind == "lock" {
+    self.confirm_workspace_topic_name_auth(ws, "lock", gen)
+    self.confirm_workspace_topic_name_auth(ws, "vaults", gen)
+  }
+}
+
+/// Update authoritative workspace role for `ws` (Invariant 5, `client/core-ts/src/core.ts:1540`):
+/// - First observation seeds `ws_roles[ws]` without bumping `authGen`.
+/// - Role downgrade (`owner`/`admin` -> `member`, etc.): updates persisted workspace role if requested,
+///   installs per-`(ws, topic)` confirmation latch BEFORE bumping `authGen` so boundary refresh
+///   never re-stamps stale privileged SQLite views (`manages: true`) with the new `authGen`.
+/// - Role upgrade: clears any pending downgrade latch and bumps `authGen`.
+pub fn ClientCore::update_workspace_role(
+  self : ClientCore,
+  ws : String,
+  new_role : String,
+  confirm_workspace_doc : Bool = false,
+) -> Bool {
+  if ws.length() == 0 || new_role.length() == 0 {
+    return false
+  }
+  self.auth.ensure_workspace(ws)
+  let prev_opt = self.ws_roles.get(ws)
+  match prev_opt {
+    None => {
+      self.ws_roles.set(ws, new_role)
+      if ws == self.workspace {
+        self.viewer_role = new_role
+      }
+      false
+    }
+    Some(prev_role) => {
+      if prev_role == new_role {
+        return false
+      }
+      self.ws_roles.set(ws, new_role)
+      if ws == self.workspace {
+        self.viewer_role = new_role
+      }
+      let is_downgrade = auth_role_rank(new_role) < auth_role_rank(prev_role)
+      if is_downgrade {
+        // Pre-install the confirmation latch for `next_gen = cur_gen + 1` BEFORE `bump_workspace`
+        // fires `on_boundary`, so the boundary re-anchor emits `Waiting` instead of leaking stale
+        // privileged SQLite rows under the new `authGen`!
+        let next_gen = self.auth.workspace_auth_gen(ws) + 1
+        let confirmed_keys : Map[String, Bool] = Map::new()
+        let confirmed_names : Map[String, Bool] = Map::new()
+        if confirm_workspace_doc {
+          let ws_topic = protocol::Topic::{
+            name: "workspace",
+            params: [("workspace", base_codec::json_str(ws))],
+          }
+          confirmed_keys.set(protocol::topic_key(ws_topic), true)
+        }
+        self.pending_auth_confirm.set(ws, PendingAuthConfirm::{
+          gen: next_gen,
+          confirmed_keys: confirmed_keys,
+          confirmed_names: confirmed_names,
+        })
+        let _ = self.auth.bump_workspace(ws)
+      } else {
+        self.pending_auth_confirm.remove(ws)
+        let _ = self.auth.bump_workspace(ws)
+      }
+      true
+    }
+  }
+}
+
+fn ClientCore::collect_stations_for_workspace(self : ClientCore, ws : String) -> Array[String] {
+  let out : Array[String] = []
+  let ws_prefix = ws + "/"
+  let add_unique = fn(st : String) -> Unit {
+    if st.length() == 0 {
+      return
+    }
+    for i in 0..<out.length() {
+      if out[i] == st {
+        return
+      }
+    }
+    out.push(st)
+  }
+  let cloud_sts = list_workspace_stations(self.db, ws)
+  for i in 0..<cloud_sts.length() {
+    add_unique(ws_prefix + cloud_sts[i].id)
+    if ws == self.workspace && cloud_sts[i].id == self.station {
+      add_unique(self.station)
+    }
+  }
+  if self.station == ws || self.station.starts_with(ws_prefix) || (ws == self.workspace && !self.station.contains("/")) {
+    add_unique(self.station)
+  }
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    let st = eks[i]
+    if st == ws || st.starts_with(ws_prefix) {
+      add_unique(st)
+    }
+  }
+  let sks = self.extra_sync.keys()
+  for i in 0..<sks.length() {
+    let st = sks[i]
+    if st == ws || st.starts_with(ws_prefix) {
+      add_unique(st)
+    }
+  }
+  out
+}
+
+/// Confirm workspace revocation (`client/core-ts/src/sync/cloud.ts:1467`):
+/// 1. Detaches station transports & stops sync tasks for all stations of `ws`.
+/// 2. Atomically purges EVERY SQLite table row for `ws` via `store::drop_workspace` in 1 transaction.
+/// 3. Purges ALL in-memory caches (`composers`, `chat_places`, `chat_windows`, `chat_sub_snapshots`,
+///    `rows_memo`, `pending_dirty_rows`, `viewer_marks`, `router.kept`, `local_outbox`, `lock_*`, etc.).
+/// 4. Marks `ws` as `revoked` and atomically bumps `authGen` + `vaultGen`, pushing `{id: 0, auth}`
+///    and re-anchoring active subscriptions via `on_boundary` without freezing them.
+pub fn ClientCore::revoke_workspace(self : ClientCore, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.auth.ensure_workspace(ws)
+  let ws_stations = self.collect_stations_for_workspace(ws)
+  let ws_prefix = ws + "/"
+  let matches_station = fn(st : String) -> Bool {
+    if st == ws || st.starts_with(ws_prefix) {
+      return true
+    }
+    for i in 0..<ws_stations.length() {
+      if st == ws_stations[i] {
+        return true
+      }
+    }
+    false
+  }
+
+  // 1. Mark revoked first so in-flight async reads/SSE immediately abort with zero SQLite writes.
+  self.auth.set_revoked(ws, true)
+  self.pending_auth_confirm.remove(ws)
+  self.ws_roles.remove(ws)
+  self.lock_digest_by_ws.remove(ws)
+  self.lock_sec_digest_by_ws.remove(ws)
+
+  // 2. Detach station transports & stop sync tasks for all stations belonging to `ws`.
+  for i in 0..<ws_stations.length() {
+    let st = ws_stations[i]
+    self.detach_station_transport(st)
+    self.marks_wanted.remove(st)
+  }
+  self.local_outbox.purge_workspace(ws, extra_stations=ws_stations)
+  match self.on_workspace_revoked_hook {
+    Some(cb) => cb(ws)
+    None => ()
+  }
+
+  // 3. Atomic SQLite drop across every table in `schema.pion` (never alters schema or `chat_marks` index).
+  let _ = store::drop_workspace(self.db, ws, extra_stations=ws_stations)
+
+  // 4. Purge all in-memory caches for `ws`.
+  self.composers.purge_workspace(ws, extra_stations=ws_stations)
+  self.rows_memo.purge_workspace(ws, extra_stations=ws_stations)
+  self.viewer_marks.purge_workspace(ws, extra_stations=ws_stations)
+  self.router.purge_workspace_kept(ws, extra_stations=ws_stations)
+
+  // Purge `pending_dirty_rows`
+  let kept_dirty : Array[(String, String)] = []
+  for i in 0..<self.pending_dirty_rows.length() {
+    if !matches_station(self.pending_dirty_rows[i].0) {
+      kept_dirty.push(self.pending_dirty_rows[i])
+    }
+  }
+  self.pending_dirty_rows.clear()
+  for i in 0..<kept_dirty.length() {
+    self.pending_dirty_rows.push(kept_dirty[i])
+  }
+
+  // Purge `chat_places` + `chat_place_order`
+  let sep = "\u{01}"
+  let kept_place_order : Array[String] = []
+  for i in 0..<self.chat_place_order.length() {
+    let pk = self.chat_place_order[i]
+    let drop = match pk.index_of(sep) {
+      idx if idx > 0 => matches_station(pk.slice(0, idx))
+      _ => false
+    }
+    if drop {
+      self.chat_places.remove(pk)
+    } else {
+      kept_place_order.push(pk)
+    }
+  }
+  self.chat_place_order.clear()
+  for i in 0..<kept_place_order.length() {
+    self.chat_place_order.push(kept_place_order[i])
+  }
+
+  // Purge `chat_windows`
+  let cw_keys = self.chat_windows.keys()
+  for i in 0..<cw_keys.length() {
+    let wk = cw_keys[i]
+    let st_part = match wk.index_of(":t:") {
+      idx if idx > 0 => wk.slice(0, idx)
+      _ => match wk.index_of(":s:") {
+        idx if idx > 0 => wk.slice(0, idx)
+        _ => ""
+      }
+    }
+    if st_part.length() > 0 && matches_station(st_part) {
+      self.chat_windows.remove(wk)
+    }
+  }
+
+  // Purge `chat_sub_snapshots`
+  let snap_ids = self.chat_sub_snapshots.keys()
+  for i in 0..<snap_ids.length() {
+    match self.chat_sub_snapshots.get(snap_ids[i]) {
+      Some(snap) => if matches_station(snap.station) { self.chat_sub_snapshots.remove(snap_ids[i]) }
+      None => ()
+    }
+  }
+
+  // Purge workspace-owned lock & in-memory view state when `ws == self.workspace`
+  if ws == self.workspace {
+    self.lock_state = None
+    self.lock_root = None
+    self.lock_kept_entries = []
+    self.lock_kept_aside = []
+    self.lock_seen = None
+    self.lock_corrupt = false
+    self.lock_effective = None
+    self.viewer_role = "member"
+  }
+
+  // Purge `notices_held`, `lock_pairing_prompts`, `vault_key_asks`, `downloads_held`, `presets_held` for `ws`
+  let kept_notices : Array[views::NoticeItemInput] = []
+  for i in 0..<self.notices_held.length() {
+    if self.notices_held[i].workspace != ws {
+      kept_notices.push(self.notices_held[i])
+    }
+  }
+  self.notices_held.clear()
+  for i in 0..<kept_notices.length() {
+    self.notices_held.push(kept_notices[i])
+  }
+
+  let kept_dl : Array[views::DownloadEntry] = []
+  for i in 0..<self.downloads_held.length() {
+    if !matches_station(self.downloads_held[i].station) {
+      kept_dl.push(self.downloads_held[i])
+    }
+  }
+  self.downloads_held.clear()
+  for i in 0..<kept_dl.length() {
+    self.downloads_held.push(kept_dl[i])
+  }
+
+  // 5. Atomically bump `authGen` + `vaultGen`, emitting `{id: 0, auth}` and refreshing active subs via `on_boundary`.
+  let _ = self.auth.bump_workspace_and_vault(ws)
+}
+
+/// Apply authoritative `/v1/me` result to viewer identity & workspace role/revocation recovery state.
+pub fn ClientCore::apply_cloud_me(self : ClientCore, me : CloudMe) -> Unit {
+  if me.email.length() > 0 || me.sub.length() > 0 {
+    self.set_viewer(me.email, sub=me.sub)
+  }
+  for i in 0..<me.workspaces.length() {
+    let w = me.workspaces[i]
+    self.auth.ensure_workspace(w.id)
+    if self.auth.is_revoked(w.id) {
+      self.auth.set_revoked(w.id, false)
+      self.pending_auth_confirm.remove(w.id)
+      if w.role.length() > 0 {
+        self.ws_roles.set(w.id, w.role)
+        if w.id == self.workspace {
+          self.viewer_role = w.role
+        }
+      }
+      let _ = self.auth.bump_workspace(w.id)
+    } else if w.role.length() > 0 {
+      let _ = self.update_workspace_role(w.id, w.role, confirm_workspace_doc=false)
+    }
+  }
+}
+
+/// Apply authoritative `/v1/workspaces/<ws>` 200 result:
+/// - If `ws_id` was previously `revoked`, clears `revoked`, seeds role, bumps `authGen`, and resumes sync.
+/// - Otherwise checks viewer's role for downgrade/upgrade and enforces the Invariant 5 confirmation latch.
+pub fn ClientCore::apply_cloud_workspace(
+  self : ClientCore,
+  ws_id : String,
+  ws : CloudWorkspace,
+) -> Unit {
+  if ws_id.length() == 0 {
+    return
+  }
+  self.auth.ensure_workspace(ws_id)
+  // Resolve viewer's role from top-level `role` or `members` entry matching `viewer_sub`/`viewer_marks.me`.
+  let mut resolved_role = match proto_str(ws.raw, "role") {
+    Some(r) => r
+    None => ""
+  }
+  if resolved_role.length() == 0 {
+    for i in 0..<ws.members.length() {
+      let m = ws.members[i]
+      let sub_match = self.viewer_sub.length() > 0 && m.sub == self.viewer_sub
+      let email_match = self.viewer_marks.me.length() > 0 && m.email == self.viewer_marks.me
+      if (sub_match || email_match) && m.role.length() > 0 {
+        resolved_role = m.role
+        break
+      }
+    }
+  }
+  // Ensure persisted SQLite `workspace.json` carries top-level `"role"` when resolved from `members`
+  // so `views::project_profiles` (`manages`) and `views::project_workspace` always reflect the new role.
+  if resolved_role.length() > 0 && proto_str(ws.raw, "role").is_none() {
+    let patched = j_set_field(ws.raw, "role", base_codec::json_str(resolved_role))
+    let _ = self.db.run(sql_workspace_put(), params=[
+      base_codec::json_str(ws_id),
+      base_codec::json_str(base_codec::json_stringify(patched)),
+      base_codec::json_int64(self.rt.now()),
+    ])
+  }
+  if self.auth.is_revoked(ws_id) {
+    self.auth.set_revoked(ws_id, false)
+    self.pending_auth_confirm.remove(ws_id)
+    if resolved_role.length() > 0 {
+      self.ws_roles.set(ws_id, resolved_role)
+      if ws_id == self.workspace {
+        self.viewer_role = resolved_role
+      }
+    }
+    let _ = self.auth.bump_workspace(ws_id)
+    if self.live && ws_id == self.workspace && !self.events.is_running() {
+      self.events.start(self.rt)
+    }
+    return
+  }
+  if resolved_role.length() > 0 {
+    let changed = self.update_workspace_role(ws_id, resolved_role, confirm_workspace_doc=true)
+    if !changed {
+      // Confirm `{topic: "workspace", workspace: ws_id}` if an earlier latch was waiting for it.
+      let ws_topic = protocol::Topic::{
+        name: "workspace",
+        params: [("workspace", base_codec::json_str(ws_id))],
+      }
+      self.confirm_workspace_topic_auth(ws_id, ws_topic, self.auth.workspace_auth_gen(ws_id))
+    }
+  }
+}
+
+/// Bind a `CloudSync` instance so `/v1/events` WebSocket and `/v1/workspaces/<ws>` responses
+/// directly drive `ClientCore` revocation, recovery, and role downgrade lifecycles.
+pub fn ClientCore::bind_cloud_sync(self : ClientCore, cs : CloudSync) -> Unit {
+  cs.set_authority_hooks(
+    fn(me : CloudMe) -> Unit { self.apply_cloud_me(me) },
+    fn(ws_id : String, ws : CloudWorkspace) -> Unit { self.apply_cloud_workspace(ws_id, ws) },
+    fn(ws_id : String, _status : Int) -> Unit { self.revoke_workspace(ws_id) },
+  )
+}
+
+fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  // 1. Always emit the authoritative `{id: 0, auth: ...}` boundary snapshot first.
+  let _ = self.emit_auth_handshake()
+  // 2. Purge affected `kept` cache & reset cached `last_value` on active subs so re-anchor emits fresh Values.
+  let matches = fn(t : protocol::Topic) -> Bool {
+    if self.auth.matches_topic(t, ev) {
+      return true
+    }
+    match ev {
+      AuthBoundaryEvent::Workspace(ws, _) | AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) =>
+      match self.effective_topic_workspace(t) {
+        Some(tws) => tws == ws
+        None => false
+      }
+      _ => false
+    }
+  }
+  self.router.invalidate_kept_where(matches)
+  self.router.invalidate_sub_cache_where(matches)
+  // 3. Re-anchor affected active subscriptions in `self.router` immediately (never freeze subs!).
+  let subs = self.router.active_subs_snapshot()
+  for i in 0..<subs.length() {
+    let (sid, st) = subs[i]
+    if matches(st) {
+      match self.router.refresh_sub_force(sid) {
+        Some((topic, sev)) => {
+          let (j, b) = self.encode_sub_event(topic, sev)
+          self.emit_wire_out(j, bytes=b)
+        }
+        None => ()
+      }
+    }
+  }
+  // 4. Notify runtime host (`core_runtime`) to re-anchor `runtime_subs` and scrub `kept_vals`.
+  match self.on_runtime_boundary {
+    Some(cb) => cb(ev)
+    None => ()
+  }
+}
+
 fn lock_aside_most() -> Int { 256 }
 
 fn lock_entry_hash(e : form::Json, c : lock::Crypto) -> String {
@@ -2311,8 +3069,16 @@ fn ClientCore::mark_lock_corrupt(self : ClientCore, detail : String) -> Unit {
 
 fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
   let raw = match store::get_workspace_pref(self.db, self.workspace, "lock") {
-    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else { return }
-    _ => return
+    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else {
+      self.lock_digest_by_ws.set(self.workspace, "")
+      self.lock_sec_digest_by_ws.set(self.workspace, "")
+      return
+    }
+    _ => {
+      self.lock_digest_by_ws.set(self.workspace, "")
+      self.lock_sec_digest_by_ws.set(self.workspace, "")
+      return
+    }
   }
   let doc = match base_codec::json_parse(raw) {
     base_codec::JsonParseResult::Ok(j) => j
@@ -2407,6 +3173,10 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
       self.lock_state = Some(v.state)
       self.lock_kept_entries = v.chain.entries
       self.lock_kept_aside = kept_aside
+      // Seed canonical lock digests from SQLite at startup without bumping `authGen` / `vaultGen`.
+      let (full_dig, sec_dig) = canonical_lock_digest(v.state)
+      self.lock_digest_by_ws.set(self.workspace, full_dig)
+      self.lock_sec_digest_by_ws.set(self.workspace, sec_dig)
       let now_secs = self.rt.now().to_double() / 1000.0
       match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
         Ok(eff) => {
@@ -2744,6 +3514,29 @@ pub fn ClientCore::apply_lock_chain(
         Ok(_) => ()
         Err(msg) => return Err(msg)
       }
+      // Invariant 4: Full-set canonical lock digest (disabled + sorted members + devices + passkeys
+      // + stations + moved, excluding volatile `head`). NEVER derive `revoked` from `lock.members`!
+      let (new_full, new_sec) = canonical_lock_digest(v.state)
+      let prev_full = self.lock_digest_by_ws.get(self.workspace)
+      let prev_sec = self.lock_sec_digest_by_ws.get(self.workspace)
+      self.lock_digest_by_ws.set(self.workspace, new_full)
+      self.lock_sec_digest_by_ws.set(self.workspace, new_sec)
+      let full_changed = match prev_full {
+        Some(pf) => pf != new_full
+        None => true
+      }
+      let sec_changed = match prev_sec {
+        Some(ps) => ps != new_sec
+        None => true
+      }
+      if full_changed {
+        if sec_changed {
+          let _ = self.auth.bump_workspace_and_vault(self.workspace)
+        } else {
+          let _ = self.auth.bump_workspace(self.workspace)
+        }
+      }
+      self.handle_confirmed_station_read(self.workspace, "lock", self.auth.workspace_auth_gen(self.workspace))
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
         v.state.head,
@@ -4218,10 +5011,28 @@ pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Op
       }
       None => None
     }
-    protocol::ParseRequestResult::Ok(req) =>
-    match self.handle_request(req) {
-      Some(ev) => Some(protocol::encode_core_event(ev))
-      None => None
+    protocol::ParseRequestResult::Ok(req) => {
+      let sub_topic_opt : Option[protocol::Topic] = match req {
+        protocol::CoreRequest::Subscribe(_, topic, _, _, _) => Some(topic)
+        protocol::CoreRequest::Unsubscribe(id, _, _) => self.router.active_sub_topic(id)
+        _ => None
+      }
+      match self.handle_request(req) {
+        Some(ev) =>
+        match sub_topic_opt {
+          Some(topic) => Some(self.encode_sub_event(topic, ev))
+          None =>
+          match ev {
+            protocol::CoreEvent::Unsubscribed(_, _) =>
+            Some(protocol::encode_sub_event_with_auth(
+              ev,
+              protocol::WireOutGen::{ conn: self.auth.conn_seq, auth_gen: None, vault_gen: None },
+            ))
+            _ => Some(protocol::encode_core_event(ev))
+          }
+        }
+        None => None
+      }
     }
   }
 }

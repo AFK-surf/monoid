@@ -23,6 +23,7 @@ struct AccountInfo {
   email : String
   name : String
   picture : String
+  access : String
 }
 
 struct RuntimeSub {
@@ -41,6 +42,7 @@ struct RuntimeSession {
   station_online : Map[String, Bool]
   runtime_subs : Array[RuntimeSub]
   kept_vals : Map[String, base_codec::Json]
+  kept_topics : Map[String, protocol::Topic]
   kept_order : Array[String]
   md_stores : Map[String, store::MdStore]
   mesh_transports : Map[String, sync::MeshStationTransport]
@@ -197,9 +199,10 @@ fn emit_topic_refresh(
   topic_name : String,
   changed_keys : Option[Array[(String, String)]] = None,
 ) -> Unit {
-  let deltas = sess.core.refresh_topic(topic_name)
+  let deltas = sess.core.refresh_topic_with_topics(topic_name)
   for i in 0..<deltas.length() {
-    let (dj, db) = protocol::encode_core_event(deltas[i])
+    let (topic, ev) = deltas[i]
+    let (dj, db) = sess.core.encode_sub_event(topic, ev)
     emit_wire(dj, payload=db)
   }
   for i in 0..<sess.runtime_subs.length() {
@@ -216,20 +219,27 @@ fn emit_topic_refresh(
               if sub.keyed {
                 let ops = protocol::diff_keyed(prev_val, new_val, protocol::spec_for_topic(topic_name))
                 if ops.length() > 0 {
-                  let (dj, db) = protocol::encode_core_event(protocol::CoreEvent::Delta(sub.id, ops, None, false))
+                  let (dj, db) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Delta(sub.id, ops, None, false))
                   emit_wire(dj, payload=db)
                 }
               } else {
-                let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+                let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
                 emit_wire(vj, payload=vb)
               }
             }
           }
           None => {
             sub.last_val = Some(new_val)
-            let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+            let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
             emit_wire(vj, payload=vb)
           }
+        }
+      }
+      Some(protocol::CoreEvent::Waiting(wid)) => {
+        if sub.last_val.is_some() {
+          sub.last_val = None
+          let (wj, wb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Waiting(wid))
+          emit_wire(wj, payload=wb)
         }
       }
       _ => ()
@@ -364,9 +374,10 @@ fn flush_session_md_stores(sess : RuntimeSession) -> Unit {
   }
 }
 
-fn kept_put(sess : RuntimeSession, tok : String, v : base_codec::Json) -> Unit {
+fn kept_put(sess : RuntimeSession, tok : String, topic : protocol::Topic, v : base_codec::Json) -> Unit {
   let existed = sess.kept_vals.get(tok).is_some()
   sess.kept_vals.set(tok, v)
+  sess.kept_topics.set(tok, topic)
   if !existed {
     sess.kept_order.push(tok)
     while sess.kept_vals.length() > 64 && sess.kept_order.length() > 0 {
@@ -380,8 +391,198 @@ fn kept_put(sess : RuntimeSession, tok : String, v : base_codec::Json) -> Unit {
         sess.kept_order.push(next_ord[i])
       }
       sess.kept_vals.remove(oldest)
+      sess.kept_topics.remove(oldest)
     }
   }
+}
+
+fn kept_purge_where(sess : RuntimeSession, pred : (protocol::Topic) -> Bool) -> Unit {
+  let next_ord : Array[String] = []
+  for i in 0..<sess.kept_order.length() {
+    let tok = sess.kept_order[i]
+    let drop = match sess.kept_topics.get(tok) {
+      Some(t) => pred(t)
+      None => true
+    }
+    if drop {
+      sess.kept_vals.remove(tok)
+      sess.kept_topics.remove(tok)
+    } else {
+      next_ord.push(tok)
+    }
+  }
+  sess.kept_order.clear()
+  for i in 0..<next_ord.length() {
+    sess.kept_order.push(next_ord[i])
+  }
+}
+
+fn runtime_topic_matches_boundary(
+  sess : RuntimeSession,
+  topic : protocol::Topic,
+  ev : sync::AuthBoundaryEvent,
+) -> Bool {
+  if sess.core.auth.matches_topic(topic, ev) {
+    return true
+  }
+  if sync::is_device_global_topic(topic.name) || sync::is_aggregate_topic(topic.name) {
+    return false
+  }
+  match ev {
+    sync::AuthBoundaryEvent::Workspace(ws, _) | sync::AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) =>
+    match protocol::topic_workspace(topic) {
+      Some(tws) => tws == ws
+      None => ws == sess.core.workspace
+    }
+    _ => false
+  }
+}
+
+fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEvent) -> Unit {
+  kept_purge_where(sess, fn(t : protocol::Topic) -> Bool {
+    runtime_topic_matches_boundary(sess, t, ev)
+  })
+  for i in 0..<sess.runtime_subs.length() {
+    let sub = sess.runtime_subs[i]
+    if runtime_topic_matches_boundary(sess, sub.topic, ev) {
+      sub.last_val = None
+      match evaluate_runtime_topic(sess, sub.id, sub.topic) {
+        Some(sev) => {
+          match sev {
+            protocol::CoreEvent::Value(_, new_val, _) => { sub.last_val = Some(new_val) }
+            _ => ()
+          }
+          let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
+          emit_wire(j, payload=b)
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name : String) -> Unit {
+  for i in 0..<sess.runtime_subs.length() {
+    let sub = sess.runtime_subs[i]
+    if sub.topic.name != topic_name {
+      continue
+    }
+    let matches_ws = match protocol::topic_workspace(sub.topic) {
+      Some(tws) => tws == ws
+      None => ws == sess.core.workspace
+    }
+    if matches_ws {
+      sub.last_val = None
+      match evaluate_runtime_topic(sess, sub.id, sub.topic) {
+        Some(sev) => {
+          match sev {
+            protocol::CoreEvent::Value(_, new_val, _) => { sub.last_val = Some(new_val) }
+            _ => ()
+          }
+          let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
+          emit_wire(j, payload=b)
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit {
+  let ws_prefix = ws + "/"
+  let matches_st = fn(st : String) -> Bool {
+    st == ws || st.starts_with(ws_prefix) || (ws == sess.core.workspace && st == sess.core.station && !st.contains("/"))
+  }
+  let mkeys = sess.mesh_transports.keys()
+  for i in 0..<mkeys.length() {
+    let st = mkeys[i]
+    if matches_st(st) {
+      match sess.mesh_transports.get(st) {
+        Some(ctrl) => {
+          sess.core.detach_station_transport(st)
+          sess.mesh_transports.remove(st)
+          ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+        }
+        None => ()
+      }
+    }
+  }
+  let okeys = sess.station_online.keys()
+  for i in 0..<okeys.length() {
+    if matches_st(okeys[i]) {
+      sess.station_online.remove(okeys[i])
+    }
+  }
+  kept_purge_where(sess, fn(t : protocol::Topic) -> Bool {
+    match protocol::topic_workspace(t) {
+      Some(tws) => tws == ws
+      None => !sync::is_device_global_topic(t.name)
+    }
+  })
+}
+
+fn start_cloud_events_ws(sess : RuntimeSession, cs : sync::CloudSync) -> Unit {
+  if cs.is_events_ws_running() {
+    return
+  }
+  cs.start_events_ws(fn(ev : sync::CloudEvent) -> Unit {
+    match ev {
+      sync::CloudEvent::WorkspacesChanged(_) => {
+        let _ = sess.core.rt.fork_quiet_named("cloud-ws:fetch-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => {
+                emit_topic_refresh(sess, "workspaces")
+                emit_topic_refresh(sess, "workspace")
+                emit_topic_refresh(sess, "stations")
+                emit_topic_refresh(sess, "chats")
+                emit_topic_refresh(sess, "workspaceMarks")
+              }
+              _ => ()
+            }
+            fk(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      sync::CloudEvent::WorkspaceChanged(wid, _) => {
+        let _ = sess.core.rt.fork_quiet_named("cloud-ws:fetch-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          cs.fetch_workspace_k(wid, fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
+            match wex {
+              effect::Exit::Succeeded(_) => {
+                emit_topic_refresh(sess, "workspaces")
+                emit_topic_refresh(sess, "workspace")
+                emit_topic_refresh(sess, "stations")
+                emit_topic_refresh(sess, "chats")
+                emit_topic_refresh(sess, "profiles")
+                emit_topic_refresh(sess, "settings")
+                emit_topic_refresh(sess, "workspaceMarks")
+              }
+              _ => ()
+            }
+            fk(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      sync::CloudEvent::Other(name, payload) => {
+        if name == "workspace_revoked" || name == "revoked" || name == "member_removed" {
+          let wid = match opt_str_param(payload, "workspace") {
+            Some(s) => if s.length() > 0 { s } else {
+              match opt_str_param(payload, "workspaceId") { Some(w) => w; None => "" }
+            }
+            None => match opt_str_param(payload, "workspaceId") { Some(w) => w; None => "" }
+          }
+          if wid.length() > 0 {
+            let _ = sess.core.rt.fork_quiet_named("cloud-ws:verify-revoke:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              cs.fetch_workspace_k(wid, fn(_ : effect::Exit[sync::CloudWorkspace]) -> Unit {
+                fk(effect::Exit::Succeeded(()))
+              })
+            })
+          }
+        }
+      }
+      _ => ()
+    }
+  })
 }
 
 fn remove_runtime_sub(sess : RuntimeSession, id : Int64) -> Option[RuntimeSub] {
@@ -528,7 +729,11 @@ fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
           Some(s) => s
           None => ""
         }
-        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture })
+        let access = match opt_str_param(a, "access") {
+          Some(s) => s
+          None => ""
+        }
+        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture, access: access })
       }
     }
     _ => ()
@@ -564,6 +769,9 @@ fn is_station_online(sess : RuntimeSession, addr : String) -> Bool {
 }
 
 fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views::StationBrief] {
+  if ws_scope.length() > 0 && sess.core.auth.is_revoked(ws_scope) {
+    return []
+  }
   let out : Array[views::StationBrief] = []
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
   let lang = sess_lang(sess)
@@ -998,7 +1206,7 @@ pub extern "C" fn pion_core_runtime_start(
         email: ai.email,
         name: ai.name,
         picture: ai.picture,
-        access: "",
+        access: ai.access,
         refresh: "",
         access_expires: 0.to_int64(),
       })
@@ -1013,6 +1221,7 @@ pub extern "C" fn pion_core_runtime_start(
     station_online: Map::new(),
     runtime_subs: [],
     kept_vals: Map::new(),
+    kept_topics: Map::new(),
     kept_order: [],
     md_stores: Map::new(),
     mesh_transports: Map::new(),
@@ -1022,7 +1231,31 @@ pub extern "C" fn pion_core_runtime_start(
     device_app: "desktop",
     device_locale: "",
   }
+  core.set_wire_sink(fn(j : String, b : Option[Bytes]) -> Unit {
+    emit_wire(j, payload=b)
+  })
+  core.set_on_workspace_revoked(fn(ws : String) -> Unit {
+    handle_runtime_workspace_revoked(sess, ws)
+  })
+  core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
+    handle_runtime_auth_boundary(sess, ev)
+  })
+  core.set_on_topic_confirmed(fn(ws : String, topic_name : String) -> Unit {
+    handle_runtime_topic_confirmed(sess, ws, topic_name)
+  })
   g_session[0] = Some(sess)
+  // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
+  let _ = core.emit_auth_handshake()
+  match cloud_opt {
+    Some(cs) => {
+      core.bind_cloud_sync(cs)
+      if origin.length() > 0 && accounts.length() > 0 && accounts[0].access.length() > 0 {
+        cs.set_origin_and_token(origin, accounts[0].access)
+        start_cloud_events_ws(sess, cs)
+      }
+    }
+    None => ()
+  }
   1
 }
 
@@ -1083,6 +1316,9 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
   }
   let cs = match sess.cloud {
     Some(existing) => {
+      if req_origin != sess.origin && existing.is_events_ws_running() {
+        existing.stop()
+      }
       existing.set_origin_and_token(req_origin, token)
       existing
     }
@@ -1091,6 +1327,11 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
       sess.cloud = Some(created)
       created
     }
+  }
+  sess.origin = req_origin
+  sess.core.bind_cloud_sync(cs)
+  if token.length() > 0 {
+    start_cloud_events_ws(sess, cs)
   }
   let _ = sess.core.rt.fork_quiet_named("runtime:cloud.sync", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
     cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
@@ -1103,12 +1344,6 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
         }
         effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
         effect::Exit::Succeeded(me) => {
-          let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
-            me.workspaces[0].role
-          } else {
-            "member"
-          }
-          sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
           let ws_target : Option[String] = match want_ws {
             Some(w) => Some(w)
             None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
@@ -1123,6 +1358,8 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
               ]), None)
               let (out_j, out_b) = protocol::encode_core_event(ok_ev)
               emit_wire(out_j, payload=out_b)
+              emit_topic_refresh(sess, "workspaces")
+              emit_topic_refresh(sess, "workspaceMarks")
               fk(effect::Exit::Succeeded(()))
             }
             Some(wid) => {
@@ -1150,6 +1387,9 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                     emit_topic_refresh(sess, "workspace")
                     emit_topic_refresh(sess, "stations")
                     emit_topic_refresh(sess, "chats")
+                    emit_topic_refresh(sess, "profiles")
+                    emit_topic_refresh(sess, "settings")
+                    emit_topic_refresh(sess, "workspaceMarks")
                   }
                 }
                 fk(effect::Exit::Succeeded(()))
@@ -1169,6 +1409,15 @@ fn evaluate_runtime_topic(
   changed_keys : Option[Array[(String, String)]] = None,
 ) -> Option[protocol::CoreEvent] {
   let tname = topic.name
+  let is_runtime_owned = tname == "chats" || tname == "chat" || tname == "stations" ||
+  tname == "driveTransfers" || tname == "newChat" || tname == "adbShare" ||
+  tname == "releases" || tname == "decisions"
+  if !is_runtime_owned {
+    return None
+  }
+  if !sess.core.is_topic_authorized(topic) {
+    return Some(protocol::CoreEvent::Waiting(id))
+  }
   let lang = sess_lang(sess)
   let now_ms = pion_core_wall_now_ms()
   let utc_offset_min = pion_core_utc_offset_min(now_ms)
@@ -1461,23 +1710,28 @@ pub extern "C" fn pion_core_runtime_send(
               if !replaced {
                 sess.runtime_subs.push(RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt })
               }
-              let out_ev = match (have, val_opt) {
-                (Some(tok), Some(cur_val)) => match sess.kept_vals.get(tok) {
-                  Some(prev_val) => {
-                    if protocol::json_equal(prev_val, cur_val) {
-                      protocol::CoreEvent::Same(id)
-                    } else if keyed {
-                      let ops = protocol::diff_keyed(prev_val, cur_val, protocol::spec_for_topic(topic.name))
-                      protocol::CoreEvent::Delta(id, ops, None, true)
-                    } else {
-                      ev
+              let allow_kept = !sync::is_vault_topic(topic.name) && sess.core.is_topic_authorized(topic)
+              let out_ev = if allow_kept {
+                match (have, val_opt) {
+                  (Some(tok), Some(cur_val)) => match sess.kept_vals.get(tok) {
+                    Some(prev_val) => {
+                      if protocol::json_equal(prev_val, cur_val) {
+                        protocol::CoreEvent::Same(id)
+                      } else if keyed {
+                        let ops = protocol::diff_keyed(prev_val, cur_val, protocol::spec_for_topic(topic.name))
+                        protocol::CoreEvent::Delta(id, ops, None, true)
+                      } else {
+                        ev
+                      }
                     }
+                    None => ev
                   }
-                  None => ev
+                  _ => ev
                 }
-                _ => ev
+              } else {
+                ev
               }
-              let (out_j, out_b) = protocol::encode_core_event(out_ev)
+              let (out_j, out_b) = sess.core.encode_sub_event(topic, out_ev)
               emit_wire(out_j, payload=out_b)
               let _ = drain_and_emit(sess)
               flush_session_md_stores(sess)
@@ -1494,14 +1748,23 @@ pub extern "C" fn pion_core_runtime_send(
             Some(removed) => {
               sess.core.close_chat_sub_snapshot(id)
               if keep {
-                match removed.last_val {
-                  Some(v) => {
-                    let tok = protocol::value_token(v)
-                    kept_put(sess, tok, v)
-                    let (uj, ub) = protocol::encode_core_event(protocol::CoreEvent::Unsubscribed(id, Some(tok)))
-                    emit_wire(uj, payload=ub)
+                let allow_keep = !sync::is_vault_topic(removed.topic.name) && sess.core.is_topic_authorized(removed.topic)
+                if allow_keep {
+                  match removed.last_val {
+                    Some(v) => {
+                      let tok = protocol::value_token(v)
+                      kept_put(sess, tok, removed.topic, v)
+                      let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, Some(tok)))
+                      emit_wire(uj, payload=ub)
+                    }
+                    None => {
+                      let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, None))
+                      emit_wire(uj, payload=ub)
+                    }
                   }
-                  None => ()
+                } else {
+                  let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, None))
+                  emit_wire(uj, payload=ub)
                 }
               }
               let _ = drain_and_emit(sess)
@@ -1668,9 +1931,25 @@ pub extern "C" fn pion_core_runtime_send(
         }
         _ => None
       }
+      let sub_topic_opt : Option[protocol::Topic] = match req {
+        protocol::CoreRequest::Subscribe(_, topic, _, _, _) => Some(topic)
+        protocol::CoreRequest::Unsubscribe(id, _, _) => sess.core.router.active_sub_topic(id)
+        _ => None
+      }
       match sess.core.handle_request(req) {
         Some(ev) => {
-          let (out_j, out_b) = protocol::encode_core_event(ev)
+          let (out_j, out_b) = match sub_topic_opt {
+            Some(topic) => sess.core.encode_sub_event(topic, ev)
+            None =>
+            match ev {
+              protocol::CoreEvent::Unsubscribed(_, _) =>
+              protocol::encode_sub_event_with_auth(
+                ev,
+                protocol::WireOutGen::{ conn: sess.core.auth.conn_seq, auth_gen: None, vault_gen: None },
+              )
+              _ => protocol::encode_core_event(ev)
+            }
+          }
           emit_wire(out_j, payload=out_b)
         }
         None => ()

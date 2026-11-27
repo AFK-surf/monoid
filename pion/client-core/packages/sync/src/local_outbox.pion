@@ -204,6 +204,91 @@ pub fn LocalOutbox::unregister_station_transport(self : LocalOutbox, station : S
   }
 }
 
+/// Purge all in-memory outbox messages, pending chats, changing overlays, in-flight locks,
+/// and station transports belonging to `ws` (or its stations) on workspace revocation.
+pub fn LocalOutbox::purge_workspace(
+  self : LocalOutbox,
+  ws : String,
+  extra_stations : Array[String] = [],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  let ws_prefix = ws + "/"
+  let matches_station = fn(st : String) -> Bool {
+    if st == ws || st.starts_with(ws_prefix) {
+      return true
+    }
+    for i in 0..<extra_stations.length() {
+      if extra_stations[i].length() > 0 && st == extra_stations[i] {
+        return true
+      }
+    }
+    false
+  }
+  let kept_msgs : Array[OutboxMessage] = []
+  for i in 0..<self.queued_messages.length() {
+    if !matches_station(self.queued_messages[i].station) {
+      kept_msgs.push(self.queued_messages[i])
+    }
+  }
+  self.queued_messages.clear()
+  for i in 0..<kept_msgs.length() {
+    self.queued_messages.push(kept_msgs[i])
+  }
+
+  let kept_pend : Array[PendingChatOp] = []
+  for i in 0..<self.queued_pending.length() {
+    if !matches_station(self.queued_pending[i].station) {
+      kept_pend.push(self.queued_pending[i])
+    }
+  }
+  self.queued_pending.clear()
+  for i in 0..<kept_pend.length() {
+    self.queued_pending.push(kept_pend[i])
+  }
+
+  let kept_ov : Array[ChangingOverlay] = []
+  for i in 0..<self.queued_overlays.length() {
+    if !matches_station(self.queued_overlays[i].station) {
+      kept_ov.push(self.queued_overlays[i])
+    }
+  }
+  self.queued_overlays.clear()
+  for i in 0..<kept_ov.length() {
+    self.queued_overlays.push(kept_ov[i])
+  }
+
+  let st_keys = self.station_transports.keys()
+  for i in 0..<st_keys.length() {
+    if matches_station(st_keys[i]) {
+      self.station_transports.remove(st_keys[i])
+    }
+  }
+  let sep = "\u{01}"
+  let purge_flight_map_str = fn(m : Map[String, String]) -> Unit {
+    let ks = m.keys()
+    for i in 0..<ks.length() {
+      match ks[i].index_of(sep) {
+        idx if idx > 0 => if matches_station(ks[i].slice(0, idx)) { m.remove(ks[i]) }
+        _ => ()
+      }
+    }
+  }
+  let purge_flight_map_bool = fn(m : Map[String, Bool]) -> Unit {
+    let ks = m.keys()
+    for i in 0..<ks.length() {
+      match ks[i].index_of(sep) {
+        idx if idx > 0 => if matches_station(ks[i].slice(0, idx)) { m.remove(ks[i]) }
+        _ => ()
+      }
+    }
+  }
+  purge_flight_map_str(self.in_flight_threads)
+  purge_flight_map_bool(self.in_flight_pending)
+  purge_flight_map_bool(self.in_flight_overlays)
+}
+
 /// Resolve transport for `station`: NEVER silently fall back to `self.transport` for a different station!
 fn LocalOutbox::transport_for(self : LocalOutbox, station : String) -> Option[StationTransport] {
   match self.station_transports.get(station) {

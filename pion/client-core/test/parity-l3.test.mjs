@@ -872,11 +872,11 @@ test("Sub-suite 4: Stateful multi-step Wire session parity (TS Core vs Pion Clie
     assert.equal(unsub.id, 10);
     assert.equal(typeof unsub.v, "string", "unsubscribe(keep:true) must return kept token string v");
 
-    // Re-subscribe with same have token (no change) -> { id, same: true }
+    // Re-subscribe with same have token (no change) -> { id, same: true, conn, authGen }
     const resubSame = await rpc.call("core.wire", {
       msg: { id: 11, subscribe: { topic: "chats", scope: "ws1" }, keyed: true, have: unsub.v },
     });
-    assert.deepEqual(resubSame, { id: 11, same: true }, "re-subscribe unchanged with have must return same:true");
+    assert.deepEqual(resubSame, { id: 11, same: true, conn: 1, authGen: 1 }, "re-subscribe unchanged with have must return same:true with WireOutGen");
     counts.suite4Core++;
 
     // Unsubscribe keep again, mutate chat, re-subscribe with have -> delta + kept: true!

@@ -269,3 +269,347 @@ pub fn search_chats(
     }
   }
 }
+
+/// Read `account_doc("conn_seq")`, increment monotonically (`1 -> 2 -> ...`), persist back, and return it.
+pub fn load_and_bump_conn_seq(db : sql::Sql) -> Int64 {
+  let prev : Int64 = match get_account_doc(db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => {
+      let trimmed = raw.trim()
+      match base_codec::parse_int64_str(trimmed) {
+        Some(v) => if v > 0L { v } else { 0L }
+        None =>
+        match base_codec::json_parse(trimmed) {
+          base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => {
+            if repr.length() > 0 {
+              match base_codec::parse_int64_str(repr) {
+                Some(v) => if v > 0L { v } else { 0L }
+                None => if n > 0.0 { n.to_int64() } else { 0L }
+              }
+            } else if n > 0.0 {
+              n.to_int64()
+            } else {
+              0L
+            }
+          }
+          base_codec::JsonParseResult::Ok(j) =>
+          match base_codec::json_get(j, "conn") {
+            Some(base_codec::Json::Num(n, repr)) => {
+              if repr.length() > 0 {
+                match base_codec::parse_int64_str(repr) {
+                  Some(v) => if v > 0L { v } else { 0L }
+                  None => if n > 0.0 { n.to_int64() } else { 0L }
+                }
+              } else if n > 0.0 {
+                n.to_int64()
+              } else {
+                0L
+              }
+            }
+            _ => 0L
+          }
+          _ => 0L
+        }
+      }
+    }
+    _ => 0L
+  }
+  let next = prev + 1L
+  let _ = put_account_doc(db, "conn_seq", next.to_string())
+  next
+}
+
+pub fn sql_drop_workspace_row() -> String {
+  "DELETE FROM workspace WHERE id = ?"
+}
+
+pub fn sql_drop_workspace_prefs() -> String {
+  "DELETE FROM workspace_pref WHERE workspace = ?"
+}
+
+pub fn sql_drop_workspace_vault_docs() -> String {
+  "DELETE FROM account_doc WHERE name = ?1 OR substr(name, 1, length(?2)) = ?2 OR substr(name, 1, length(?3)) = ?3"
+}
+
+pub fn sql_drop_station_table_by_ws(table : String, col : String) -> String {
+  "DELETE FROM " + table + " WHERE " + col + " = ?1 OR substr(" + col + ", 1, length(?2)) = ?2"
+}
+
+pub fn sql_drop_station_table_exact(table : String, col : String) -> String {
+  "DELETE FROM " + table + " WHERE " + col + " = ?1"
+}
+
+pub fn sql_drop_moved_by_ws() -> String {
+  "DELETE FROM moved WHERE station = ?1 OR substr(station, 1, length(?2)) = ?2 OR there_station = ?1 OR substr(there_station, 1, length(?2)) = ?2"
+}
+
+pub fn sql_drop_moved_exact() -> String {
+  "DELETE FROM moved WHERE station = ?1 OR there_station = ?1"
+}
+
+fn delete_station_scoped_in_burst(
+  b : sql::Burst,
+  table : String,
+  col : String,
+  ws : String,
+  ws_prefix : String,
+  extra_stations : Array[String],
+) -> sql::SqlResult[Unit] {
+  match b.run(sql_drop_station_table_by_ws(table, col), params=[
+    base_codec::json_str(ws),
+    base_codec::json_str(ws_prefix),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  for i in 0..<extra_stations.length() {
+    let st = extra_stations[i]
+    if st.length() > 0 && st != ws && !st.starts_with(ws_prefix) {
+      match b.run(sql_drop_station_table_exact(table, col), params=[base_codec::json_str(st)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+  }
+  sql::SqlResult::Ok(())
+}
+
+/// Atomically purge EVERY persisted row belonging to `ws` across all tables in `schema.pion`
+/// (`workspace`, `station`, `slack_app`, `list`, `chat`, `session`, `thread`, `thread_member`,
+/// `entry`, `transcript`, `job`, `outbox`, `pending`, `first`, `changing`, `draft`,
+/// `workspace_pref`, `said`, `log_use`, `md_kept`, `moved`, `shared_sidecar`, `shared_mark`,
+/// `shared_meta`, and workspace-scoped `account_doc` vault/me entries) in a single SQLite
+/// transaction without altering any table or index definition (`chat_marks` untouched).
+pub fn drop_workspace(
+  db : sql::Sql,
+  ws : String,
+  extra_stations : Array[String] = [],
+) -> sql::SqlResult[Unit] {
+  if ws.length() == 0 {
+    return sql::SqlResult::Ok(())
+  }
+  let ws_prefix = ws + "/"
+  // Discover existing tables so optional ensured tables (`md_kept`, `shared_sidecar`, etc.)
+  // never fail the atomic transaction on minimal DBs.
+  let existing_tables : Map[String, Bool] = Map::new()
+  let mut has_sqlite_master = false
+  match db.all("SELECT name FROM sqlite_master WHERE type = 'table'") {
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        has_sqlite_master = true
+        for i in 0..<rows.length() {
+          existing_tables.set(sql::col_text(rows[i], 0), true)
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let table_exists = fn(name : String) -> Bool {
+    if !has_sqlite_master {
+      true
+    } else {
+      existing_tables.get(name).is_some()
+    }
+  }
+
+  // Pre-read `account_doc` documents that may embed workspace entries (`me`, `vault_status`, `vault_secrets`)
+  // so scrubbing happens inside the exact same transaction.
+  let next_me_raw : Option[String] = match get_account_doc(db, "me") {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => {
+        let mut changed = false
+        let next_fs : Array[(String, base_codec::Json)] = []
+        for i in 0..<fs.length() {
+          let (k, v) = fs[i]
+          if k == "workspaces" {
+            match v {
+              base_codec::Json::Arr(xs) => {
+                let kept : Array[base_codec::Json] = []
+                for j in 0..<xs.length() {
+                  let wid = match base_codec::json_get(xs[j], "id") {
+                    Some(base_codec::Json::Str(s)) => s
+                    _ => ""
+                  }
+                  if wid == ws {
+                    changed = true
+                  } else {
+                    kept.push(xs[j])
+                  }
+                }
+                next_fs.push((k, base_codec::json_arr(kept)))
+              }
+              _ => next_fs.push((k, v))
+            }
+          } else {
+            next_fs.push((k, v))
+          }
+        }
+        if changed { Some(base_codec::json_stringify(base_codec::json_obj(next_fs))) } else { None }
+      }
+      _ => None
+    }
+    _ => None
+  }
+  let drop_vault_status = match get_account_doc(db, "vault_status") {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "workspace") {
+        Some(base_codec::Json::Str(w)) => w == ws
+        _ => false
+      }
+      _ => false
+    }
+    _ => false
+  }
+  let next_vault_secrets_raw : Option[String] = match get_account_doc(db, "vault_secrets") {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+        let mut changed = false
+        let kept : Array[base_codec::Json] = []
+        for i in 0..<xs.length() {
+          let item_ws = match base_codec::json_get(xs[i], "workspace") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          if item_ws == ws {
+            changed = true
+          } else {
+            kept.push(xs[i])
+          }
+        }
+        if changed { Some(base_codec::json_stringify(base_codec::json_arr(kept))) } else { None }
+      }
+      _ => None
+    }
+    _ => None
+  }
+
+  let burst = sql::Burst::new(db)
+  burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    // 1. Core workspace & preference rows
+    if table_exists("workspace") {
+      match b.run(sql_drop_workspace_row(), params=[base_codec::json_str(ws)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    if table_exists("workspace_pref") {
+      match b.run(sql_drop_workspace_prefs(), params=[base_codec::json_str(ws)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    // 2. Station-scoped core tables (`station` uses column `address`; all others use `station`)
+    if table_exists("station") {
+      match delete_station_scoped_in_burst(b, "station", "address", ws, ws_prefix, extra_stations) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    let core_station_tables = [
+      "slack_app",
+      "list",
+      "chat",
+      "session",
+      "thread",
+      "thread_member",
+      "entry",
+      "transcript",
+      "job",
+      "outbox",
+      "pending",
+      "first",
+      "changing",
+      "draft",
+    ]
+    for i in 0..<core_station_tables.length() {
+      let tbl = core_station_tables[i]
+      if table_exists(tbl) {
+        match delete_station_scoped_in_burst(b, tbl, "station", ws, ws_prefix, extra_stations) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+    }
+    // 3. Optional ensured tables (`said`, `log_use`, `md_kept`, `moved`, `shared_sidecar`, `shared_mark`, `shared_meta`)
+    let opt_station_tables = [
+      "said",
+      "log_use",
+      "md_kept",
+      "shared_sidecar",
+      "shared_mark",
+      "shared_meta",
+    ]
+    for i in 0..<opt_station_tables.length() {
+      let tbl = opt_station_tables[i]
+      if table_exists(tbl) {
+        match delete_station_scoped_in_burst(b, tbl, "station", ws, ws_prefix, extra_stations) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+    }
+    if table_exists("moved") {
+      match b.run(sql_drop_moved_by_ws(), params=[
+        base_codec::json_str(ws),
+        base_codec::json_str(ws_prefix),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      for i in 0..<extra_stations.length() {
+        let st = extra_stations[i]
+        if st.length() > 0 && st != ws && !st.starts_with(ws_prefix) {
+          match b.run(sql_drop_moved_exact(), params=[base_codec::json_str(st)]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => ()
+          }
+        }
+      }
+    }
+    // 4. Workspace-scoped `account_doc` vault documents and `me` workspace entry
+    if table_exists("account_doc") {
+      match b.run(sql_drop_workspace_vault_docs(), params=[
+        base_codec::json_str("vaults:" + ws),
+        base_codec::json_str("vault:" + ws + "/"),
+        base_codec::json_str("vaults:" + ws + "/"),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      if drop_vault_status {
+        match b.run("DELETE FROM account_doc WHERE name = ?", params=[base_codec::json_str("vault_status")]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+      match next_vault_secrets_raw {
+        Some(raw) =>
+        match b.run(sql_account_doc_put(), params=[
+          base_codec::json_str("vault_secrets"),
+          base_codec::json_str(raw),
+          base_codec::json_null(),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        None => ()
+      }
+      match next_me_raw {
+        Some(raw) =>
+        match b.run(sql_account_doc_put(), params=[
+          base_codec::json_str("me"),
+          base_codec::json_str(raw),
+          base_codec::json_null(),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        None => ()
+      }
+    }
+    sql::SqlResult::Ok(())
+  })
+}

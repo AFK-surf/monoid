@@ -702,6 +702,8 @@ pub struct StationEvents {
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
+  mut on_overview_applied : (String, Int) -> Unit
+  mut auth : Option[AuthGenTracker]
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
   mut active_cancel : Option[() -> Unit]
@@ -741,9 +743,26 @@ pub fn StationEvents::new(
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
+    on_overview_applied: fn(_ws : String, _gen : Int) -> Unit {},
+    auth: None,
     stream_fiber: None,
     active_stream_fiber: None,
     active_cancel: None,
+  }
+}
+
+pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTracker) -> Unit {
+  self.auth = Some(tracker)
+}
+
+pub fn StationEvents::set_overview_applied_hook(self : StationEvents, cb : (String, Int) -> Unit) -> Unit {
+  self.on_overview_applied = cb
+}
+
+fn StationEvents::is_workspace_revoked(self : StationEvents) -> Bool {
+  match self.auth {
+    Some(t) => t.is_revoked(self.workspace)
+    None => false
   }
 }
 
@@ -1720,6 +1739,9 @@ fn patch_chats_for_thread_bool_in_burst(
 /// Ingest an initial snapshot (`chats`, `threads`, `entries`, `sessions`, `jobs`) in a single `sql::Burst` transaction
 /// and emit coalesced `CoreEvent` notifications to `FrameOutbox`.
 pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec::Json) -> sql::SqlResult[Int] {
+  if self.is_workspace_revoked() {
+    return sql::SqlResult::Ok(0)
+  }
   let changed_chats : Array[String] = []
   let added_entries : Array[(Int, store::Entry, Option[String])] = []
   let snap_events : Array[CoreEvent] = []
@@ -2505,6 +2527,9 @@ pub fn StationEvents::apply_marks_to_db(
   scoped_sessions : Array[String] = [],
   scoped_threads : Array[Int] = [],
 ) -> sql::SqlResult[Array[String]] {
+  if self.is_workspace_revoked() {
+    return sql::SqlResult::Ok([])
+  }
   let affected : Array[String] = []
   let seen : Map[String, Bool] = Map::new()
   let burst = sql::Burst::new(self.db)
@@ -2753,8 +2778,13 @@ pub fn StationEvents::apply_marks_to_db(
 /// matching `client/core-ts/src/station/sync.ts:1848-2164`.
 /// Advances `self.last_event_id` ONLY after the SQLite transaction commits successfully.
 pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire::Event]) -> sql::SqlResult[Int] {
-  if events.length() == 0 {
+  if events.length() == 0 || self.is_workspace_revoked() {
     return sql::SqlResult::Ok(0)
+  }
+  let mut saw_overview = false
+  let cap_gen = match self.auth {
+    Some(t) => t.workspace_auth_gen(self.workspace)
+    None => 0
   }
   let changed_chats : Array[String] = []
   let pending_events : Array[CoreEvent] = []
@@ -2791,6 +2821,9 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         }
         None => ()
       }
+      if ev.name == "overview" {
+        saw_overview = true
+      }
       match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty, lock_payloads) {
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(n) => { applied += n }
@@ -2804,6 +2837,10 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
       match pending_last_event_id {
         Some(eid) => self.last_event_id = Some(eid)
         None => ()
+      }
+      if saw_overview {
+        let cb = self.on_overview_applied
+        cb(self.workspace, cap_gen)
       }
       if changed_chats.length() > 0 {
         self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))

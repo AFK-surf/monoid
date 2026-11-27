@@ -599,7 +599,9 @@ pub fn start_events_ws(
   })
 }
 
-/// Stateful Cloud Sync coordinator holding credential cache and `/v1/events` WebSocket fiber.
+/// Stateful Cloud Sync coordinator holding credential cache, per-workspace monotonic
+/// `cloud_req_seq` ordering (preventing stale 403/200 response inversions), authority hooks,
+/// and `/v1/events` WebSocket fiber.
 pub struct CloudSync {
   pub sh : shell::Shell
   pub db : sql::Sql
@@ -607,6 +609,14 @@ pub struct CloudSync {
   mut token : String
   cred_cache : Map[String, MemberCredential]
   mut ws_fiber : Option[effect::Fiber[Unit]]
+  ws_next_req_seq : Map[String, Int64]
+  ws_last_applied_seq : Map[String, Int64]
+  mut me_next_req_seq : Int64
+  mut me_last_applied_seq : Int64
+  known_workspaces : Map[String, Bool]
+  mut on_me_fetched : Option[(CloudMe) -> Unit]
+  mut on_workspace_fetched : Option[(String, CloudWorkspace) -> Unit]
+  mut on_workspace_revoked : Option[(String, Int) -> Unit]
 }
 
 pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
@@ -617,6 +627,14 @@ pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token :
     token: token,
     cred_cache: Map::new(),
     ws_fiber: None,
+    ws_next_req_seq: Map::new(),
+    ws_last_applied_seq: Map::new(),
+    me_next_req_seq: 1L,
+    me_last_applied_seq: 0L,
+    known_workspaces: Map::new(),
+    on_me_fetched: None,
+    on_workspace_fetched: None,
+    on_workspace_revoked: None,
   }
 }
 
@@ -633,8 +651,157 @@ pub fn CloudSync::origin(self : CloudSync) -> String {
   self.origin
 }
 
+pub fn CloudSync::token(self : CloudSync) -> String {
+  self.token
+}
+
+pub fn CloudSync::is_events_ws_running(self : CloudSync) -> Bool {
+  self.ws_fiber.is_some()
+}
+
+pub fn CloudSync::set_authority_hooks(
+  self : CloudSync,
+  on_me : (CloudMe) -> Unit,
+  on_workspace : (String, CloudWorkspace) -> Unit,
+  on_revoked : (String, Int) -> Unit,
+) -> Unit {
+  self.on_me_fetched = Some(on_me)
+  self.on_workspace_fetched = Some(on_workspace)
+  self.on_workspace_revoked = Some(on_revoked)
+}
+
+pub fn CloudSync::clear_workspace_credentials(self : CloudSync, ws_id : String) -> Unit {
+  if ws_id.length() == 0 {
+    return
+  }
+  let prefix = ws_id + "/"
+  let ks = self.cred_cache.keys()
+  for i in 0..<ks.length() {
+    if ks[i] == ws_id || ks[i].starts_with(prefix) {
+      self.cred_cache.remove(ks[i])
+    }
+  }
+}
+
+/// Allocate the next monotonic request sequence number for `ws_id` before sending a Cloud request.
+pub fn CloudSync::next_req_seq(self : CloudSync, ws_id : String) -> Int64 {
+  let seq = match self.ws_next_req_seq.get(ws_id) {
+    Some(n) => n
+    None => 1L
+  }
+  self.ws_next_req_seq.set(ws_id, seq + 1L)
+  seq
+}
+
+/// Last applied monotonic sequence number for `ws_id` (`0` if none applied yet).
+pub fn CloudSync::last_applied_seq(self : CloudSync, ws_id : String) -> Int64 {
+  match self.ws_last_applied_seq.get(ws_id) {
+    Some(n) => n
+    None => 0L
+  }
+}
+
+/// Attempt to apply a Cloud response carrying `req_seq` for `ws_id`.
+/// Drops any stale response where `req_seq < last_applied_seq` (returns `false`).
+fn CloudSync::try_apply_ws_seq(self : CloudSync, ws_id : String, req_seq : Int64) -> Bool {
+  let last = self.last_applied_seq(ws_id)
+  if req_seq < last {
+    return false
+  }
+  self.ws_last_applied_seq.set(ws_id, req_seq)
+  true
+}
+
+fn CloudSync::notify_revoked(self : CloudSync, ws_id : String, status : Int) -> Unit {
+  self.clear_workspace_credentials(ws_id)
+  self.known_workspaces.remove(ws_id)
+  match self.on_workspace_revoked {
+    Some(cb) => cb(ws_id, status)
+    None => ()
+  }
+}
+
 pub fn CloudSync::fetch_me_k(self : CloudSync, k : (effect::Exit[CloudMe]) -> Unit) -> Unit {
-  fetch_me_k(self.sh, self.origin, self.token, self.db, k)
+  let me_seq = self.me_next_req_seq
+  self.me_next_req_seq += 1L
+  // Snapshot a fresh `cloud_req_seq` for every currently known workspace before issuing `/v1/me`
+  // so a delayed `/v1/me` response can never overwrite a newer `/v1/workspaces/<ws>` 200 or 403.
+  let ws_seqs : Map[String, Int64] = Map::new()
+  let prev_wss = self.known_workspaces.keys()
+  for i in 0..<prev_wss.length() {
+    let wid = prev_wss[i]
+    ws_seqs.set(wid, self.next_req_seq(wid))
+  }
+  let url = join_base_url(self.origin, "/v1/me")
+  self.sh.fetch_k("GET", url, cloud_auth_headers(self.token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        if me_seq < self.me_last_applied_seq {
+          k(effect::Exit::Failed(effect::EffectError::Custom("stale_cloud_response")))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed /v1/me json: " + e)))
+            return
+          }
+        }
+        let me = parse_cloud_me(j)
+        self.me_last_applied_seq = me_seq
+        let raw_json = base_codec::json_stringify(j)
+        let now_ms = self.sh.rt.now()
+        let burst = sql::Burst::new(self.db)
+        match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          match b.run(sql_account_doc_put(), params=[
+            base_codec::json_str("me"),
+            base_codec::json_str(raw_json),
+            base_codec::json_int64(now_ms),
+          ]) {
+            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+          }
+        }) {
+          sql::SqlResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+            return
+          }
+          sql::SqlResult::Ok(_) => ()
+        }
+        let next_set : Map[String, Bool] = Map::new()
+        for i in 0..<me.workspaces.length() {
+          let wid = me.workspaces[i].id
+          next_set.set(wid, true)
+          self.known_workspaces.set(wid, true)
+        }
+        // Any previously-known workspace absent from `/v1/me` is revoked (guarded by `ws_seq`).
+        for i in 0..<prev_wss.length() {
+          let wid = prev_wss[i]
+          if next_set.get(wid).is_none() {
+            let wseq = match ws_seqs.get(wid) {
+              Some(s) => s
+              None => me_seq
+            }
+            if self.try_apply_ws_seq(wid, wseq) {
+              self.notify_revoked(wid, 403)
+            }
+          }
+        }
+        match self.on_me_fetched {
+          Some(cb) => cb(me)
+          None => ()
+        }
+        k(effect::Exit::Succeeded(me))
+      }
+    }
+  })
 }
 
 pub fn CloudSync::fetch_workspace_k(
@@ -642,10 +809,71 @@ pub fn CloudSync::fetch_workspace_k(
   ws_id : String,
   k : (effect::Exit[CloudWorkspace]) -> Unit,
 ) -> Unit {
-  fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k)
+  let req_seq = self.next_req_seq(ws_id)
+  let url = join_base_url(self.origin, "/v1/workspaces/" + ws_id)
+  self.sh.fetch_k("GET", url, cloud_auth_headers(self.token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status == 403 || resp.status == 404 {
+          if self.try_apply_ws_seq(ws_id, req_seq) {
+            self.notify_revoked(ws_id, resp.status)
+            k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          } else {
+            k(effect::Exit::Failed(effect::EffectError::Custom("stale_cloud_response")))
+          }
+          return
+        }
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        if !self.try_apply_ws_seq(ws_id, req_seq) {
+          k(effect::Exit::Failed(effect::EffectError::Custom("stale_cloud_response")))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed workspace json: " + e)))
+            return
+          }
+        }
+        let ws = parse_cloud_workspace(ws_id, j)
+        let raw_json = base_codec::json_stringify(j)
+        let now_ms = self.sh.rt.now()
+        let burst = sql::Burst::new(self.db)
+        match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          match b.run(sql_workspace_put(), params=[
+            base_codec::json_str(ws.id),
+            base_codec::json_str(raw_json),
+            base_codec::json_int64(now_ms),
+          ]) {
+            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+          }
+        }) {
+          sql::SqlResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+            return
+          }
+          sql::SqlResult::Ok(_) => ()
+        }
+        self.known_workspaces.set(ws.id, true)
+        match self.on_workspace_fetched {
+          Some(cb) => cb(ws.id, ws)
+          None => ()
+        }
+        k(effect::Exit::Succeeded(ws))
+      }
+    }
+  })
 }
 
 /// Get a cached member credential or fetch & cache a fresh one when missing/expired (`expires_at <= now_sec + 60`).
+/// Guarded by per-workspace monotonic `cloud_req_seq`; 403/404 drives revocation when latest.
 pub fn CloudSync::fetch_member_credential_k(
   self : CloudSync,
   ws_id : String,
@@ -666,19 +894,53 @@ pub fn CloudSync::fetch_member_credential_k(
       None => ()
     }
   }
-  fetch_member_credential_k(self.sh, self.origin, self.token, ws_id, device, fn(ex : effect::Exit[MemberCredential]) -> Unit {
+  let req_seq = self.next_req_seq(ws_id)
+  let url = join_base_url(self.origin, "/v1/workspaces/" + ws_id + "/credential")
+  let body = base_codec::json_stringify(base_codec::json_obj([("device", base_codec::json_str(device))])).to_bytes()
+  self.sh.fetch_k("POST", url, cloud_auth_headers(self.token, json_body=true), Some(body), fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
     match ex {
-      effect::Exit::Succeeded(c) => {
-        self.cred_cache.set(cache_key, c)
-        k(effect::Exit::Succeeded(c))
-      }
-      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status == 403 || resp.status == 404 {
+          if self.try_apply_ws_seq(ws_id, req_seq) {
+            self.notify_revoked(ws_id, resp.status)
+            k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          } else {
+            k(effect::Exit::Failed(effect::EffectError::Custom("stale_cloud_response")))
+          }
+          return
+        }
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        if !self.try_apply_ws_seq(ws_id, req_seq) {
+          k(effect::Exit::Failed(effect::EffectError::Custom("stale_cloud_response")))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed credential json: " + e)))
+            return
+          }
+        }
+        match parse_member_credential(j) {
+          Ok(c) => {
+            self.cred_cache.set(cache_key, c)
+            k(effect::Exit::Succeeded(c))
+          }
+          Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+        }
+      }
     }
   })
 }
 
-/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` or `/v1/workspaces/<ws>` on change events.
+/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` or `/v1/workspaces/<ws>` on change events
+/// and drives real-time revocation / member / role changes through `CloudSync` authority hooks.
 pub fn CloudSync::start_events_ws(self : CloudSync, on_event : (CloudEvent) -> Unit) -> Unit {
   match self.ws_fiber {
     Some(_) => return
@@ -695,6 +957,19 @@ pub fn CloudSync::start_events_ws(self : CloudSync, on_event : (CloudEvent) -> U
         let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
           self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
         })
+      }
+      CloudEvent::Other(ev_type, j) => {
+        if ev_type == "workspace_revoked" || ev_type == "revoked" || ev_type == "member_removed" {
+          let wid = match j_opt_str(j, "workspace") {
+            Some(w) => w
+            None => j_str(j, "id")
+          }
+          if wid.length() > 0 {
+            let _ = self.sh.rt.fork_quiet_named("cloud-refresh-revoked:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
+            })
+          }
+        }
       }
       _ => ()
     }

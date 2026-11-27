@@ -12,6 +12,8 @@ pub struct SyncScheduler {
   pub lane : effect::Scheduler
   pub events : StationEvents
   pub mut transport : StationTransport
+  mut auth : Option[AuthGenTracker]
+  mut on_confirmed_read : Option[(String, String, Int) -> Unit]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -31,9 +33,31 @@ pub fn SyncScheduler::new(
     lane: effect::Scheduler::new(width=width, urgent_room=urgent_room),
     events: events,
     transport: transport,
+    auth: None,
+    on_confirmed_read: None,
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
+  }
+}
+
+/// Bind an `AuthGenTracker` so non-lock station reads run through fail-open `guarded_read_k`.
+pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTracker) -> Unit {
+  self.auth = Some(tracker)
+}
+
+/// Register a callback `(workspace, kind, auth_gen)` invoked after a guarded read commits to SQLite.
+pub fn SyncScheduler::set_on_confirmed_read(
+  self : SyncScheduler,
+  cb : (String, String, Int) -> Unit,
+) -> Unit {
+  self.on_confirmed_read = Some(cb)
+}
+
+fn SyncScheduler::notify_confirmed(self : SyncScheduler, kind : String, auth_gen : Int) -> Unit {
+  match self.on_confirmed_read {
+    Some(cb) => cb(self.workspace, kind, auth_gen)
+    None => ()
   }
 }
 
@@ -150,30 +174,64 @@ pub fn SyncScheduler::fetch_marks_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
-      req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(affected) => {
-                  self.completed_order.push("marks")
-                  tk(effect::Exit::Succeeded(affected))
-                }
+      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        let req_fn = self.transport.request_k
+        req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(reply) => {
+              if reply.status < 200 || reply.status >= 300 {
+                fk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
+                return
+              }
+              match base_codec::json_parse(bytes_to_str(reply.body)) {
+                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
               }
             }
           }
+        })
+      }
+      let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Array[String], String] {
+        match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
+          sql::SqlResult::Err(e) => Err(e.to_string())
+          sql::SqlResult::Ok(affected) => {
+            self.completed_order.push("marks")
+            match confirmed_gen {
+              Some(ag) => self.notify_confirmed("marks", ag)
+              None => ()
+            }
+            Ok(affected)
+          }
         }
-      })
+      }
+      match self.auth {
+        Some(tracker) =>
+        guarded_read_k(
+          tracker,
+          self.workspace,
+          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            do_fetch_io(io_done)
+          },
+          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Array[String], String] {
+            apply_json(j, Some(cap.auth_gen))
+          },
+          tk,
+        )
+        None =>
+        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(j) =>
+            match apply_json(j, None) {
+              Ok(affected) => tk(effect::Exit::Succeeded(affected))
+              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            }
+          }
+        })
+      }
     },
     k,
   )
@@ -190,30 +248,64 @@ pub fn SyncScheduler::fetch_snapshot_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
-      req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_snapshot(j) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(n) => {
-                  self.completed_order.push("snapshot")
-                  tk(effect::Exit::Succeeded(n))
-                }
+      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        let req_fn = self.transport.request_k
+        req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(reply) => {
+              if reply.status < 200 || reply.status >= 300 {
+                fk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
+                return
+              }
+              match base_codec::json_parse(bytes_to_str(reply.body)) {
+                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
               }
             }
           }
+        })
+      }
+      let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Int, String] {
+        match self.events.apply_snapshot(j) {
+          sql::SqlResult::Err(e) => Err(e.to_string())
+          sql::SqlResult::Ok(n) => {
+            self.completed_order.push("snapshot")
+            match confirmed_gen {
+              Some(ag) => self.notify_confirmed("snapshot", ag)
+              None => ()
+            }
+            Ok(n)
+          }
         }
-      })
+      }
+      match self.auth {
+        Some(tracker) =>
+        guarded_read_k(
+          tracker,
+          self.workspace,
+          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            do_fetch_io(io_done)
+          },
+          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+            apply_json(j, Some(cap.auth_gen))
+          },
+          tk,
+        )
+        None =>
+        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(j) =>
+            match apply_json(j, None) {
+              Ok(n) => tk(effect::Exit::Succeeded(n))
+              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            }
+          }
+        })
+      }
     },
     k,
   )
@@ -238,31 +330,65 @@ pub fn SyncScheduler::fetch_thread_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
       let path = "/threads/" + thread.to_string() + "/entries"
-      req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_snapshot(j) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(n) => {
-                  self.completed_order.push("thread:" + thread.to_string())
-                  tk(effect::Exit::Succeeded(n))
-                }
+      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        let req_fn = self.transport.request_k
+        req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(reply) => {
+              if reply.status < 200 || reply.status >= 300 {
+                fk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
+                return
+              }
+              match base_codec::json_parse(bytes_to_str(reply.body)) {
+                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
               }
             }
           }
+        })
+      }
+      let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Int, String] {
+        match self.events.apply_snapshot(j) {
+          sql::SqlResult::Err(e) => Err(e.to_string())
+          sql::SqlResult::Ok(n) => {
+            self.completed_order.push("thread:" + thread.to_string())
+            match confirmed_gen {
+              Some(ag) => self.notify_confirmed("thread", ag)
+              None => ()
+            }
+            Ok(n)
+          }
         }
-      })
+      }
+      match self.auth {
+        Some(tracker) =>
+        guarded_read_k(
+          tracker,
+          self.workspace,
+          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            do_fetch_io(io_done)
+          },
+          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+            apply_json(j, Some(cap.auth_gen))
+          },
+          tk,
+        )
+        None =>
+        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(j) =>
+            match apply_json(j, None) {
+              Ok(n) => tk(effect::Exit::Succeeded(n))
+              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            }
+          }
+        })
+      }
     },
     fn(ex : effect::Exit[Int]) -> Unit {
       match end_fg {
@@ -328,12 +454,22 @@ pub fn SyncScheduler::prefetch_idle_k(
               }
               match base_codec::json_parse(bytes_to_str(reply.body)) {
                 base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-                base_codec::JsonParseResult::Ok(j) =>
-                match self.events.apply_snapshot(j) {
-                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                  sql::SqlResult::Ok(n) => {
-                    self.completed_order.push("idle:" + thread.to_string())
-                    tk(effect::Exit::Succeeded(n))
+                base_codec::JsonParseResult::Ok(j) => {
+                  match self.auth {
+                    Some(tracker) => {
+                      if tracker.is_revoked(self.workspace) {
+                        tk(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
+                        return
+                      }
+                    }
+                    None => ()
+                  }
+                  match self.events.apply_snapshot(j) {
+                    sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                    sql::SqlResult::Ok(n) => {
+                      self.completed_order.push("idle:" + thread.to_string())
+                      tk(effect::Exit::Succeeded(n))
+                    }
                   }
                 }
               }

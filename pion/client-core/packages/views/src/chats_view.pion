@@ -232,6 +232,64 @@ pub fn ViewerMarks::set_dismissed(self : ViewerMarks, station : String, thread :
   self.dismissed.set(station + ":" + thread.to_string() + ":" + seq.to_string(), true)
 }
 
+fn station_belongs_to_ws_cv(station : String, ws : String, extra_stations : Array[String]) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  if station == ws || station.starts_with(ws + "/") {
+    return true
+  }
+  for i in 0..<extra_stations.length() {
+    if extra_stations[i].length() > 0 && station == extra_stations[i] {
+      return true
+    }
+  }
+  false
+}
+
+/// Purge all viewer marks (`reads`, `pins`, `kept`, `hidden`, `muted`, `dismissed`, `quoted_threads`)
+/// belonging to stations of `ws` (used on workspace revocation).
+pub fn ViewerMarks::purge_workspace(
+  self : ViewerMarks,
+  ws : String,
+  extra_stations : Array[String] = [],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  let matches_key = fn(k : String) -> Bool {
+    match k.index_of(":") {
+      idx if idx > 0 => station_belongs_to_ws_cv(k.slice(0, idx), ws, extra_stations)
+      _ => false
+    }
+  }
+  let rks = self.reads.keys()
+  for i in 0..<rks.length() {
+    if matches_key(rks[i]) {
+      self.reads.remove(rks[i])
+    }
+  }
+  let pks = self.pins.keys()
+  for i in 0..<pks.length() {
+    if matches_key(pks[i]) {
+      self.pins.remove(pks[i])
+    }
+  }
+  let purge_bool_map = fn(m : Map[String, Bool]) -> Unit {
+    let ks = m.keys()
+    for i in 0..<ks.length() {
+      if matches_key(ks[i]) {
+        m.remove(ks[i])
+      }
+    }
+  }
+  purge_bool_map(self.kept)
+  purge_bool_map(self.hidden)
+  purge_bool_map(self.muted)
+  purge_bool_map(self.dismissed)
+  purge_bool_map(self.quoted_threads)
+}
+
 struct MemoEntry {
   index_fp : String
   row_fp : String
@@ -280,6 +338,59 @@ pub fn RowsMemo::reset_counters(self : RowsMemo) -> Unit {
 
 pub fn RowsMemo::cached_count(self : RowsMemo) -> Int {
   self.rows.length()
+}
+
+/// Purge all cached rows and scope watermarks belonging to `ws` (or its stations) on revocation.
+pub fn RowsMemo::purge_workspace(
+  self : RowsMemo,
+  ws : String,
+  extra_stations : Array[String] = [],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.whole = ""
+  self.scope_wholes.remove(ws)
+  self.scope_wholes.remove("")
+  let next_lru : Array[String] = []
+  let sep = "\u{01}"
+  let ws_scope_prefix = ws + sep
+  for i in 0..<self.lru_keys.length() {
+    let k = self.lru_keys[i]
+    let mut drop = k.starts_with(ws_scope_prefix)
+    if !drop {
+      // Key format is `scope\x01station\x01id` (or `station\x01id`).
+      match k.index_of(sep) {
+        idx1 if idx1 >= 0 => {
+          let rest = k.slice(idx1 + 1, k.length())
+          match rest.index_of(sep) {
+            idx2 if idx2 > 0 => {
+              let st = rest.slice(0, idx2)
+              if station_belongs_to_ws_cv(st, ws, extra_stations) {
+                drop = true
+              }
+            }
+            _ => {
+              let st = k.slice(0, idx1)
+              if station_belongs_to_ws_cv(st, ws, extra_stations) {
+                drop = true
+              }
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    if drop {
+      self.rows.remove(k)
+    } else {
+      next_lru.push(k)
+    }
+  }
+  self.lru_keys.clear()
+  for i in 0..<next_lru.length() {
+    self.lru_keys.push(next_lru[i])
+  }
 }
 
 fn memo_put(memo : RowsMemo, key : String, entry : MemoEntry) -> Unit {
