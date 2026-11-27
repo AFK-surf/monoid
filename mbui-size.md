@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
 | [be4a9e8eb](https://github.com/AFK-surf/monoid/commit/be4a9e8eb72735551e96495fa6d12a247039a6e9) feat(ui): let the reader's layout choose the colum | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
 | [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.7 | 131.79 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.68 | 128.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
 | [c7da62951](https://github.com/AFK-surf/monoid/commit/c7da629516b59b6a2ca85a1c1fa45c58f9885cbf) fix(mesh): stop noq-udp recv_single busy-loop afte | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
-| [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.57 |
 | [be4a9e8eb](https://github.com/AFK-surf/monoid/commit/be4a9e8eb72735551e96495fa6d12a247039a6e9) feat(ui): let the reader's layout choose the colum | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.74 |
 | [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.75 |
 | [c7da62951](https://github.com/AFK-surf/monoid/commit/c7da629516b59b6a2ca85a1c1fa45c58f9885cbf) fix(mesh): stop noq-udp recv_single busy-loop afte | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.79 |
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.67 |
-| [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.54 |
