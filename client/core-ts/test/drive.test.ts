@@ -231,13 +231,22 @@ test("the reader's settings are the core's: whole, each in its bounds, one chang
   await host.settle();
   const values = new Map();
   apply(host, values);
-  assert.deepEqual(v(values, 1).reader, { size: 16, line: 1.7, margin: 22, face: "sans", indent: true, paper: "follow" });
-  call(core, ui, 2, "prefs.set", { reader: { size: 40, paper: "green" } });
+  assert.deepEqual(v(values, 1).reader, { size: 16, line: 1.7, margin: 22, face: "sans", indent: true, paper: "follow", width: "standard" });
+  call(core, ui, 2, "prefs.set", { reader: { size: 40, paper: "green", width: "wide" } });
   await host.settle();
   call(core, ui, 3, "prefs.set", { reader: { line: 1.93, paper: "nope" } });
   await host.settle();
   apply(host, values);
-  assert.deepEqual(v(values, 1).reader, { size: 32, line: 1.9, margin: 22, face: "sans", indent: true, paper: "follow" });
+  assert.deepEqual(v(values, 1).reader, { size: 32, line: 1.9, margin: 22, face: "sans", indent: true, paper: "follow", width: "wide" });
+  // a width there is not falls back to the column it always had; another is kept as chosen
+  call(core, ui, 4, "prefs.set", { reader: { width: "huge" } });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).reader.width, "standard");
+  call(core, ui, 5, "prefs.set", { reader: { width: "full" } });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).reader.width, "full");
   core.close();
 });
 
@@ -269,7 +278,7 @@ test("changing the reader's paper does not make its default size a chosen size",
   await host.settle();
   const reopened = new Map();
   apply(host, reopened);
-  assert.deepEqual(v(reopened, 1).reader, { size: 24, line: 1.9, margin: 22, face: "sans", indent: true, paper: "green" });
+  assert.deepEqual(v(reopened, 1).reader, { size: 24, line: 1.9, margin: 22, face: "sans", indent: true, paper: "green", width: "standard" });
   again.close();
 });
 

@@ -229,6 +229,41 @@ let first_reading_wait_ms : Double = 300.0
 let first_after_splash_ms : Double = 50.0
 
 ///|
+test "a chat opens at the first page's deadline and waits for its data on the next visit" {
+  let base = fixture_app("chat")
+  let workspace_pending = @signals.signal(true)
+  let chat_pending = @signals.signal(true)
+  let src = {
+    ..base,
+    topic_read: fn(name, params) {
+      if (name == "workspaces" && workspace_pending.get()) || (name == "chat" && chat_pending.get()) {
+        return { value: None, error: None, version: -1 }
+      }
+      (base.topic_read)(name, params)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  let chat = app.nav.top()
+  t.run_for(splash_label_ms - @sf.local_ms)
+  workspace_pending.set(false)
+  t.draw()
+  assert_true(app.nav.top_waits(), msg="the chat must first wait for its local content")
+  t.run_for(first_page_ms / 2.0)
+  assert_true(first_shown.get())
+  assert_true(!app.nav.top_waits(), msg="startup ended but the chat is still waiting over Home")
+  t.run_for(@ui.move_ms(390.0))
+  assert_true(!app.nav.root_shows(), msg="Home is still on screen")
+  t.back()
+  t.run_for(@ui.move_ms(390.0))
+  @sfbase.open_page(chat)
+  t.draw()
+  assert_true(app.nav.top_waits(), msg="a second open of this chat needs its own wait")
+  chat_pending.set(false)
+  t.draw()
+  assert_true(!app.nav.top_waits(), msg="the local chat has arrived")
+}
+
+///|
 test "workspaces arrive after 300ms in Reading while a non-critical first-page topic stays unanswered: first page releases before splash_label_ms with no loading bar" {
   for w in [390.0, 1280.0] {
     new_run()

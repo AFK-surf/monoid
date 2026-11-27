@@ -102,7 +102,8 @@ fn bar_part_told(p : BarPart) -> String {
     Ball =>
       spr_told(m.ball_x) +
       spr_told(m.ball_y) +
-      spr_told(m.held) +
+      "\{m.ball_held.target()} \{m.ball_held.starts_at()} \{m.ball_held.ends_at()};" +
+      "\{m.tap_lens.starts_at()} \{m.tap_lens.ends_at()};" +
       glide_told(m.ball_alpha) +
       glide_told(m.ball_scale)
     Tints => {
@@ -181,7 +182,10 @@ fn bar_k_until() -> Double {
 /// Where the ball as drawn ends (bar_ball_at: where it is, held, how big, how faint).
 fn bar_ball_until() -> Double {
   let m = bar
-  dmax(dmax(m.ball_x.end(), m.ball_y.end()), dmax(m.held.end(), dmax(m.ball_scale.end(), m.ball_alpha.end())))
+  dmax(
+    dmax(m.ball_x.end(), m.ball_y.end()),
+    dmax(dmax(m.ball_held.ends_at(), m.tap_lens.ends_at()), dmax(m.ball_scale.end(), m.ball_alpha.end())),
+  )
 }
 
 ///|
@@ -595,7 +599,14 @@ fn bar_glass_capsule(
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     @sf.tab_bar_surface_decorate(g.radius(By(fn() { dmin(rad, h() / 2.0) })), fn() {
       bar_part_said(Notch)
-      let until = dmax(if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }, bar_k_until())
+      let until = dmax(
+        if bar.ball_held.target() > 0.01 {
+          bar_ball_until()
+        } else {
+          dmax(bar.ball_held.ends_at(), bar.tap_lens.ends_at())
+        },
+        bar_k_until(),
+      )
       let t = bar_moment(g, Ball, until)
       let a = bar_ball_at(t)
       let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
@@ -627,6 +638,7 @@ priv struct BallAt {
   alpha : Double
   scale : Double
   held : Double
+  drag_held : Double
   k : Double
   collapse : Double
 }
@@ -639,22 +651,23 @@ let ball_box_w : Double = 160.0
 let ball_box_h : Double = 96.0
 
 ///|
-/// The ball at moment `t`.
+/// The ball at moment `t`. Uses a bounded symmetric C-infinity squash-and-stretch (`16u / 3.5u`) instead of
+/// `@motion.speed_stretch` (whose linear +36pt elongation would overflow the narrow glass capsule on cross-tab flights).
 fn bar_ball_at(t : Double) -> BallAt {
   let m = bar
   let (x, xv) = m.ball_x.at(t)
-  // (its way a frame at 60, as fast as it goes then: none at rest. Not cut to none within half a point of where it goes,
-  // as the old view's was: a spring passing it there went on stretched the frame after, a jump each frame drew)
-  let v = xv / 60.0
-  let (stretch, lower) = @motion.speed_stretch(v)
+  let u = xv.abs() / (xv.abs() + 950.0)
+  let stretch = u * 16.0
+  let lower = u * 3.5
   {
-    cx: x + (if v < 0.0 { -stretch } else { stretch }) / 2.0,
+    cx: x,
     cy: m.ball_y.at(t).0,
     stretch,
     lower,
     alpha: m.ball_alpha.at(t).0,
     scale: m.ball_scale.at(t).0,
-    held: m.held.at(t).0,
+    held: m.held_at(t),
+    drag_held: m.ball_held.value_at(t),
     k: m.k_at(t),
     collapse: m.collapse_at(t),
   }
@@ -664,18 +677,53 @@ fn bar_ball_at(t : Double) -> BallAt {
 /// How wide and high the ball `a` is drawn on the bar laid out as `l`: the pill as wide as its place and past it to
 /// the pill's inset at the bar's ends (ShellTabBar.kt pillWidthFor), `lens` its lens lifting out of it as it is held,
 /// taller than the bar and wider than a place (TabBarLens.kt lensSize, lensLiftedWidth); each stretched along its way.
-fn bar_ball_size(a : BallAt, l : BarLaid, lens : Bool) -> (Double, Double) {
+fn bar_ball_size(a : BallAt, l : BarLaid, lens : Bool, solid? : Bool = false) -> (Double, Double) {
   let iw = bar_item_w(l.w, a.k, l.items.length())
   let pw = iw + 2.0 * (tab_edge - pill_inset)
+  let lh = bar_track * lens_lift_h
+  let lw = dmin(lh * lens_lift_aspect, iw * lens_lift_aspect)
   let (w, h) = if lens {
-    let lh = bar_track * lens_lift_h
-    let lw = dmin(lh * lens_lift_aspect, iw * lens_lift_aspect)
-    let up = dclamp(a.held, 0.0, 1.2)
+    let up = dclamp(a.held, 0.0, 1.0)
     (pw + (lw - pw) * up, pill_h + (lh - pill_h) * up)
   } else {
-    (pw, pill_h)
+    let up = if solid { 0.0 } else { dclamp(a.held, 0.0, 1.0) }
+    (pw + (lw - pw) * up * 0.25, pill_h + (lh - pill_h) * up * 0.25)
   }
   (w + a.stretch, dmax(8.0, h - a.lower))
+}
+
+///|
+/// Unified drawn frame `(cx, cy, sw, sh)` of the selection pill or clear glass lens with elastic inner-wall clamping
+/// inside the glass capsule so the pill never overflows `[0, cap_w]`.
+fn bar_ball_frame(a : BallAt, l : BarLaid, lens : Bool, solid? : Bool = false) -> (Double, Double, Double, Double) {
+  let (sw_raw, sh_raw) = bar_ball_size(a, l, lens, solid~)
+  if l.w > 0.0 && l.items.length() > 0 && a.collapse < 0.5 {
+    let track_cy = l.row_top + bar_track / 2.0
+    let row_mix = bar_smoothstep(4.0, 28.0, (a.cy - track_cy).abs())
+    let main_cap_w = bar_cur_capsule_w(l.w, a.k, a.collapse)
+    let cap_w = main_cap_w + (l.w - main_cap_w) * row_mix
+    if !lens {
+      let min_x = 2.0
+      let max_x = dmax(min_x + 8.0, cap_w - 2.0)
+      let left = dclamp(a.cx - sw_raw / 2.0, min_x, max_x - 8.0)
+      let right = dclamp(a.cx + sw_raw / 2.0, left + 8.0, max_x)
+      ((left + right) / 2.0, a.cy, right - left, sh_raw)
+    } else {
+      let iw = bar_item_w(l.w, a.k, l.items.length())
+      let pw = iw + 2.0 * (tab_edge - pill_inset)
+      let lh = bar_track * lens_lift_h
+      let lw = dmin(lh * lens_lift_aspect, iw * lens_lift_aspect)
+      let lens_over = dmax(0.0, (lw - pw) / 2.0) * dclamp(a.held, 0.0, 1.0) +
+        12.0 * dclamp(a.drag_held, 0.0, 1.0)
+      let min_x = 2.0 - lens_over
+      let max_x = dmax(10.0, cap_w - 2.0 + lens_over)
+      let left = dclamp(a.cx - sw_raw / 2.0, min_x, max_x - 8.0)
+      let right = dclamp(a.cx + sw_raw / 2.0, left + 8.0, max_x)
+      ((left + right) / 2.0, a.cy, right - left, sh_raw)
+    }
+  } else {
+    (a.cx, a.cy, sw_raw, sh_raw)
+  }
 }
 
 ///|
@@ -703,19 +751,30 @@ fn bar_ball_capsule(
         (bar.ball_x.to - ball_box_w / 2.0, bar.ball_y.to - ball_box_h / 2.0)
       }))
       .alpha(By(fn() { alpha(b, at(b)) }))
-      .scale(By(fn() { at(b).scale }))
       |> ignore
-      bar_moved(b, Ball, bar_ball_until, fn(t) {
-        let a = bar_ball_at(t)
-        (a.cx - bar.ball_x.to, a.cy - bar.ball_y.to)
-      })
+      bar_moved(
+        b,
+        Ball,
+        fn() {
+          bar_part_said(Notch)
+          dmax(bar_ball_until(), bar_k_until())
+        },
+        fn(t) {
+          bar_part_said(Notch)
+          let (cx, cy, _, _) = bar_ball_frame(bar_ball_at(t), bar_laid_now(), lens, solid=b.glass_solid())
+          (cx - bar.ball_x.to, cy - bar.ball_y.to)
+        },
+      )
       b.box(fn(s) {
         s.over(Is(true)) |> ignore
         // (as wide and as high as it is drawn about its middle, as round as the shorter)
         s
         .ground_drawn(
           By(fn() {
-            let (sw, sh) = bar_ball_size(at(s), bar_laid_now(), lens)
+            let a = at(s)
+            let (_, _, sw0, sh0) = bar_ball_frame(a, bar_laid_now(), lens, solid=s.glass_solid())
+            let sw = sw0 * a.scale
+            let sh = sh0 * a.scale
             let r = dmin(sw, sh) / 2.0
             {
               dx: (ball_box_w - sw) / 2.0,
@@ -746,9 +805,10 @@ fn bar_ball_node(holder : @view.View) -> Unit {
     holder,
     false,
     fn(n, b) {
-      let lensed = if n.glass_solid() { 0.0 } else { dmin(1.0, b.held) }
+      let lensed = if n.glass_solid() { 0.0 } else { dclamp(b.held, 0.0, 1.0) }
+      let pill_vis = 1.0 - bar_smoothstep(0.15, 0.70, lensed)
       let fade = dclamp(1.0 - b.collapse / 0.25, 0.0, 1.0)
-      b.alpha * (1.0 - lensed) * fade
+      b.alpha * pill_vis * fade
     },
     fn(g) { g.ground(By(@sf.glass_selection)) |> ignore },
   )
@@ -763,14 +823,17 @@ fn bar_lens_node(holder : @view.View) -> Unit {
     b.over(Is(true)) |> ignore
     b.show(at_once=true, fn() { !b.glass_solid() }, fn(on) {
       on.over(Is(true)) |> ignore
-      let held = fn(n : @view.View) { bar.held.at(bar_moment(n, Ball, bar.held.end())).0 }
+      let held = fn(n : @view.View) {
+        bar.held_at(bar_moment(n, Ball, dmax(bar.ball_held.ends_at(), bar.tap_lens.ends_at())))
+      }
       bar_ball_capsule(
         on,
         true,
         fn(_, a) {
           let fade = dclamp(1.0 - a.collapse / 0.4, 0.0, 1.0)
-          if a.held > 0.01 && a.alpha > 0.0 && fade > 0.0 {
-            dmin(1.0, a.held) * a.alpha * fade
+          let lens_vis = bar_smoothstep(0.05, 0.60, dclamp(a.held, 0.0, 1.0))
+          if lens_vis > 0.005 && a.alpha > 0.0 && fade > 0.0 {
+            lens_vis * a.alpha * fade
           } else {
             0.0
           }

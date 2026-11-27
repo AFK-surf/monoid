@@ -1959,6 +1959,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       raising.val is None &&
       !raise_holds(c.id) &&
       !unsteady(c.id) &&
+      !tree.is_section_sticky_scroll(c.id) &&
       dr.mode == 0 &&
       !shooting.val &&
       groups_on() &&

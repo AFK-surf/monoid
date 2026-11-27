@@ -211,7 +211,7 @@ test "w4-m2: inline_rename_node trim, empty cancel, unchanged cancel, and outsid
 ///|
 test "w4-m2: reader_layout_node slider drag-release commit and keyboard step via @headless.slider" {
   let style_sig : @signals.Signal[@controls.ReaderStyle] = @signals.signal(
-    { paper: "white", size: 18, line: 1.6, margin: 40, face: "serif", indent: true },
+    { paper: "white", size: 18, line: 1.6, margin: 40, face: "serif", indent: true, width: "standard" },
   )
   let commits : Array[Double] = []
   let prev = @controls.viewer_host()

@@ -1774,6 +1774,16 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
     return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
 }
 
+int64_t sts_proc_start_ticks(int32_t pid) {
+    (void)pid;
+    return -1;
+}
+
+void *sts_boot_id(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    return NULL;
+}
+
 // ---------------------------------------------------------------------------
 // 3. Windows Launcher Control Channel (Named Pipe)
 // ---------------------------------------------------------------------------
@@ -2258,6 +2268,276 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
+static int sts_win_rel_safe(const char *rel) {
+    if (rel == NULL || rel[0] == '\0' || rel[0] == '/' || rel[0] == '\\') return 0;
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') break;
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') {
+            if (*p == ':') return 0;
+            p++;
+        }
+        size_t n = (size_t)(p - seg);
+        if ((n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) return 0;
+    }
+    return 1;
+}
+
+static HANDLE sts_win_open_dir_locked(const char *dir_utf8) {
+    wchar_t *w = utf8_to_wide(dir_utf8);
+    if (w == NULL) return INVALID_HANDLE_VALUE;
+    // Omit FILE_SHARE_DELETE so no concurrent rename/unlink can swap this directory while we walk/open the leaf.
+    HANDLE h = CreateFileW(
+        w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)
+        || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0
+        || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        CloseHandle(h);
+        return INVALID_HANDLE_VALUE;
+    }
+    return h;
+}
+
+static void sts_win_close_handles(HANDLE *handles, size_t count) {
+    for (size_t i = count; i > 0; i--) {
+        if (handles[i - 1] != INVALID_HANDLE_VALUE) {
+            CloseHandle(handles[i - 1]);
+        }
+    }
+}
+
+static int sts_win_verify_leaf_under_parent(HANDLE leaf_h, HANDLE parent_h) {
+    wchar_t leaf_path[1024];
+    wchar_t parent_path[1024];
+    DWORD ll = GetFinalPathNameByHandleW(leaf_h, leaf_path, 1024, FILE_NAME_NORMALIZED);
+    DWORD pl = GetFinalPathNameByHandleW(parent_h, parent_path, 1024, FILE_NAME_NORMALIZED);
+    if (ll == 0 || ll >= 1024 || pl == 0 || pl >= 1024) return 0;
+    while (pl > 0 && (parent_path[pl - 1] == L'\\' || parent_path[pl - 1] == L'/')) pl--;
+    if (ll <= pl) return 0;
+    if (_wcsnicmp(leaf_path, parent_path, pl) != 0) return 0;
+    if (leaf_path[pl] != L'\\' && leaf_path[pl] != L'/') return 0;
+    // Leaf must be a direct child of the locked immediate parent directory (no extra separators).
+    for (DWORD i = pl + 1; i < ll; i++) {
+        if (leaf_path[i] == L'\\' || leaf_path[i] == L'/') return 0;
+    }
+    return 1;
+}
+
+static char *sts_win_walk_lock_parents(
+    const char *root,
+    const char *rel,
+    int create_parents,
+    HANDLE *dir_handles,
+    size_t max_handles,
+    size_t *out_count) {
+    *out_count = 0;
+    if (root == NULL || root[0] == '\0' || !sts_win_rel_safe(rel) || max_handles == 0) return NULL;
+    HANDLE rh = sts_win_open_dir_locked(root);
+    if (rh == INVALID_HANDLE_VALUE) return NULL;
+    dir_handles[(*out_count)++] = rh;
+    size_t rlen = strlen(root), lrel = strlen(rel);
+    char *cur = (char *)malloc(rlen + lrel + 4);
+    if (cur == NULL) {
+        sts_win_close_handles(dir_handles, *out_count);
+        *out_count = 0;
+        return NULL;
+    }
+    memcpy(cur, root, rlen);
+    size_t cur_len = rlen;
+    while (cur_len > 0 && (cur[cur_len - 1] == '\\' || cur[cur_len - 1] == '/')) cur_len--;
+    cur[cur_len] = '\0';
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') break;
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') p++;
+        size_t slen = (size_t)(p - seg);
+        const char *rest = p;
+        while (*rest == '/' || *rest == '\\') rest++;
+        cur[cur_len++] = '\\';
+        memcpy(cur + cur_len, seg, slen);
+        cur_len += slen;
+        cur[cur_len] = '\0';
+        if (*rest == '\0') {
+            return cur;
+        }
+        if (*out_count >= max_handles) {
+            free(cur);
+            sts_win_close_handles(dir_handles, *out_count);
+            *out_count = 0;
+            return NULL;
+        }
+        if (create_parents) {
+            wchar_t *wd = utf8_to_wide(cur);
+            if (wd != NULL) {
+                (void)CreateDirectoryW(wd, NULL);
+                free(wd);
+            }
+        }
+        HANDLE dh = sts_win_open_dir_locked(cur);
+        if (dh == INVALID_HANDLE_VALUE) {
+            free(cur);
+            sts_win_close_handles(dir_handles, *out_count);
+            *out_count = 0;
+            return NULL;
+        }
+        dir_handles[(*out_count)++] = dh;
+        p = rest;
+    }
+    free(cur);
+    sts_win_close_handles(dir_handles, *out_count);
+    *out_count = 0;
+    return NULL;
+}
+
+void *sts_read_under_nofollow(
+    const char *root,
+    const char *rel,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_size) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_size != NULL) *out_size = 0;
+    if (root == NULL || offset < 0 || len < 0) return NULL;
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 0, parents, 128, &n_parents);
+    if (full == NULL) return NULL;
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return NULL;
+    }
+    HANDLE h = CreateFileW(
+        w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        sts_win_close_handles(parents, n_parents);
+        return NULL;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    int valid = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0
+        && n_parents > 0
+        && sts_win_verify_leaf_under_parent(h, parents[n_parents - 1]);
+    sts_win_close_handles(parents, n_parents);
+    if (!valid) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t fsize = ((int64_t)info.nFileSizeHigh << 32) | (int64_t)info.nFileSizeLow;
+    if (out_size != NULL) *out_size = fsize;
+    if (offset > fsize) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t want = (offset + len > fsize) ? (fsize - offset) : len;
+    if (want <= 0) {
+        CloseHandle(h);
+        return dup_bytes("", 0, out_len);
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)want);
+    if (buf == NULL) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        DWORD chunk = (DWORD)((want - total) > 0x7fffffffLL ? 0x7fffffffLL : (want - total));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, chunk, &got, NULL) || got == 0) break;
+        total += (int64_t)got;
+    }
+    CloseHandle(h);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t mode,
+    int32_t truncate_end) {
+    (void)mode;
+    if (root == NULL || len < 0 || offset < 0) return 0;
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 1, parents, 128, &n_parents);
+    if (full == NULL) return 0;
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return 0;
+    }
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        sts_win_close_handles(parents, n_parents);
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    int valid = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0
+        && n_parents > 0
+        && sts_win_verify_leaf_under_parent(h, parents[n_parents - 1]);
+    sts_win_close_handles(parents, n_parents);
+    if (!valid) {
+        CloseHandle(h);
+        return 0;
+    }
+    int64_t fsize = ((int64_t)info.nFileSizeHigh << 32) | (int64_t)info.nFileSizeLow;
+    if (offset > fsize) {
+        CloseHandle(h);
+        return -2;
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return 0;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        DWORD chunk = (DWORD)((len - done) > 0x7fffffffLL ? 0x7fffffffLL : (len - done));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + done, chunk, &wrote, NULL)) {
+            CloseHandle(h);
+            return 0;
+        }
+        done += (int64_t)wrote;
+    }
+    if (truncate_end != 0) {
+        if (!SetEndOfFile(h)) {
+            CloseHandle(h);
+            return 0;
+        }
+    }
+    CloseHandle(h);
+    return 1;
+}
+
 int32_t sts_write_file_mode(
     const char *path,
     const uint8_t *data,
@@ -2375,6 +2655,207 @@ int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
     if (buf == NULL) return 0;
     NTSTATUS st = BCryptGenRandom(NULL, buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     return st == 0 ? 1 : 0;
+}
+
+int32_t sts_mkdir_mode(const char *path, int32_t mode) {
+    (void)mode;
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    BOOL ok = CreateDirectoryW(w, NULL);
+    DWORD gle = ok ? 0 : GetLastError();
+    free(w);
+    if (ok) return 1;
+    if (gle == ERROR_ALREADY_EXISTS) return -2;
+    if (gle == ERROR_ACCESS_DENIED) return -3;
+    if (gle == ERROR_PATH_NOT_FOUND) return -4;
+    return 0;
+}
+
+int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
+    if (target == NULL || link_path == NULL || link_path[0] == '\0') return 0;
+    wchar_t *wt = utf8_to_wide(target);
+    wchar_t *wl = utf8_to_wide(link_path);
+    if (wt == NULL || wl == NULL) {
+        free(wt);
+        free(wl);
+        return 0;
+    }
+    DWORD base_flags = is_dir ? 0x1u : 0u; // SYMBOLIC_LINK_FLAG_DIRECTORY
+    DWORD unpriv_flag = 0x2u;              // SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+    BOOLEAN ok = CreateSymbolicLinkW(wl, wt, base_flags | unpriv_flag);
+    if (!ok && GetLastError() == ERROR_INVALID_PARAMETER) {
+        ok = CreateSymbolicLinkW(wl, wt, base_flags);
+    }
+    free(wt);
+    free(wl);
+    return ok ? 1 : 0;
+}
+
+int32_t sts_is_dir_symlink(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    DWORD attr = GetFileAttributesW(w);
+    free(w);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    return ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+}
+
+void *sts_getcwd(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    DWORD need = GetCurrentDirectoryW(0, NULL);
+    if (need == 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)(need + 1) * sizeof(wchar_t));
+    if (w == NULL) return NULL;
+    DWORD got = GetCurrentDirectoryW(need + 1, w);
+    if (got == 0 || got > need) {
+        free(w);
+        return NULL;
+    }
+    char *u8 = wide_to_utf8(w);
+    free(w);
+    if (u8 == NULL) return NULL;
+    if (out_len != NULL) *out_len = (int64_t)strlen(u8);
+    return u8;
+}
+
+void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = 3;
+    if (path == NULL || path[0] == '\0') return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    DWORD gle = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_err != NULL) {
+            if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) *out_err = 1;
+            else if (gle == ERROR_ACCESS_DENIED) *out_err = 2;
+            else *out_err = 3;
+        }
+        return NULL;
+    }
+    LARGE_INTEGER fsz;
+    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart < 0 || fsz.QuadPart > (1LL << 30)) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t sz = (size_t)fsz.QuadPart;
+    uint8_t *buf = (uint8_t *)malloc(sz + 1);
+    if (buf == NULL) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t off = 0;
+    while (off < sz) {
+        DWORD chunk = (DWORD)((sz - off) > 0x7fffffffULL ? 0x7fffffffULL : (sz - off));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + off, chunk, &got, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            if (out_err != NULL) *out_err = 3;
+            return NULL;
+        }
+        if (got == 0) break;
+        off += (size_t)got;
+    }
+    CloseHandle(h);
+    buf[off] = 0;
+    if (out_len != NULL) *out_len = (int64_t)off;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
+    (void)mode;
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    const char *last_sep = NULL;
+    for (const char *p = path; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') last_sep = p;
+    }
+    size_t dir_len = 0;
+    if (last_sep != NULL) {
+        dir_len = (size_t)(last_sep - path) + 1;
+    } else if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':') {
+        // Drive-relative Windows path (e.g. "D:result.bin"): preserve "D:" prefix
+        // so the temp file stays on the same volume and in the same target directory.
+        dir_len = 2;
+    }
+    wchar_t *wdst = utf8_to_wide(path);
+    if (wdst == NULL) return 0;
+
+    static const char hx[] = "0123456789abcdef";
+    HANDLE h = INVALID_HANDLE_VALUE;
+    wchar_t *wtmp = NULL;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(wdst);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        size_t tmp_cap = dir_len + 64;
+        char *tmp = (char *)malloc(tmp_cap);
+        if (tmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%lu.%s", (int)dir_len, path, (unsigned long)GetCurrentProcessId(), hex);
+        wtmp = utf8_to_wide(tmp);
+        free(tmp);
+        if (wtmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) break;
+        DWORD gle = GetLastError();
+        free(wtmp);
+        wtmp = NULL;
+        if (gle != ERROR_FILE_EXISTS) {
+            free(wdst);
+            return 0;
+        }
+    }
+    if (h == INVALID_HANDLE_VALUE || wtmp == NULL) {
+        free(wtmp);
+        free(wdst);
+        return 0;
+    }
+    int64_t off = 0;
+    BOOL ok = TRUE;
+    while (off < len) {
+        DWORD chunk = (DWORD)((len - off) > 0x7fffffffLL ? 0x7fffffffLL : (len - off));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + off, chunk, &wrote, NULL)) {
+            ok = FALSE;
+            break;
+        }
+        off += (int64_t)wrote;
+    }
+    if (ok) ok = FlushFileBuffers(h);
+    CloseHandle(h);
+    if (ok) ok = MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!ok) DeleteFileW(wtmp);
+    free(wtmp);
+    free(wdst);
+    return ok ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -4929,14 +5410,11 @@ int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     return rc == 0 ? 0 : -errno;
 }
 
-int64_t sts_proc_start_time_ms(int32_t pid) {
+int64_t sts_proc_start_ticks(int32_t pid) {
     if (pid <= 0) return -1;
 #ifdef __APPLE__
-    struct proc_bsdinfo info;
-    memset(&info, 0, sizeof(info));
-    int got = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info));
-    if (got <= 0) return -1;
-    return (int64_t)info.pbi_start_tvsec * 1000LL + (int64_t)(info.pbi_start_tvusec / 1000);
+    (void)pid;
+    return -1;
 #else
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
@@ -4965,6 +5443,40 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
         field += 1;
     }
     if (field != 22) return -1;
+    return (int64_t)starttime;
+#endif
+}
+
+void *sts_boot_id(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+#ifdef __APPLE__
+    return NULL;
+#else
+    FILE *f = fopen("/proc/sys/kernel/random/boot_id", "r");
+    if (f == NULL) return NULL;
+    char buf[128];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ' || buf[n - 1] == '\t')) {
+        n--;
+    }
+    if (n == 0) return NULL;
+    return dup_bytes(buf, n, out_len);
+#endif
+}
+
+int64_t sts_proc_start_time_ms(int32_t pid) {
+    if (pid <= 0) return -1;
+#ifdef __APPLE__
+    struct proc_bsdinfo info;
+    memset(&info, 0, sizeof(info));
+    int got = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info));
+    if (got <= 0) return -1;
+    return (int64_t)info.pbi_start_tvsec * 1000LL + (int64_t)(info.pbi_start_tvusec / 1000);
+#else
+    int64_t ticks = sts_proc_start_ticks(pid);
+    if (ticks < 0) return -1;
+    unsigned long long starttime = (unsigned long long)ticks;
     long clk = sysconf(_SC_CLK_TCK);
     if (clk <= 0) clk = 100;
     // Read btime from /proc/stat.
@@ -5393,13 +5905,14 @@ void *sts_lstat(const char *path, int64_t *out_len) {
 #endif
     char buf[192];
     int n = snprintf(
-        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu",
+        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu|%u",
         kind,
         (long long)st.st_size,
         (st.st_mode & 0111) != 0 ? 1 : 0,
         (long long)mtime_ms,
         (unsigned long long)st.st_dev,
-        (unsigned long long)st.st_ino);
+        (unsigned long long)st.st_ino,
+        (unsigned int)(st.st_mode & 07777));
     return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
 }
 
@@ -5468,6 +5981,159 @@ int32_t sts_write_file_mode(
             return 0;
         }
         off += (int64_t)w;
+    }
+    return close(fd) == 0 ? 1 : 0;
+}
+
+static int sts_open_dir_nofollow_walk(const char *root, const char *rel, int create_parents, char *leaf_out, size_t leaf_cap) {
+    if (root == NULL || root[0] == '\0' || rel == NULL || rel[0] == '\0') return -1;
+    if (rel[0] == '/' || rel[0] == '\\') return -1;
+    int dirfd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirfd < 0) return -1;
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') {
+            close(dirfd);
+            return -1;
+        }
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') p++;
+        size_t seglen = (size_t)(p - seg);
+        if (seglen == 0 || seglen >= leaf_cap) {
+            close(dirfd);
+            return -1;
+        }
+        if ((seglen == 1 && seg[0] == '.') || (seglen == 2 && seg[0] == '.' && seg[1] == '.')) {
+            close(dirfd);
+            return -1;
+        }
+        const char *rest = p;
+        while (*rest == '/' || *rest == '\\') rest++;
+        if (*rest == '\0') {
+            memcpy(leaf_out, seg, seglen);
+            leaf_out[seglen] = '\0';
+            return dirfd;
+        }
+        char comp[512];
+        if (seglen >= sizeof(comp)) {
+            close(dirfd);
+            return -1;
+        }
+        memcpy(comp, seg, seglen);
+        comp[seglen] = '\0';
+        if (create_parents) {
+            (void)mkdirat(dirfd, comp, 0755);
+        }
+        int nextfd = openat(dirfd, comp, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        close(dirfd);
+        if (nextfd < 0) return -1;
+        dirfd = nextfd;
+        p = rest;
+    }
+    close(dirfd);
+    return -1;
+}
+
+void *sts_read_under_nofollow(
+    const char *root,
+    const char *rel,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_size) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_size != NULL) *out_size = 0;
+    if (offset < 0 || len < 0) return NULL;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 0, leaf, sizeof(leaf));
+    if (dirfd < 0) return NULL;
+    int fd = openat(dirfd, leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    close(dirfd);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return NULL;
+    }
+    int64_t fsize = (int64_t)st.st_size;
+    if (out_size != NULL) *out_size = fsize;
+    if (offset > fsize) {
+        close(fd);
+        return NULL;
+    }
+    int64_t want = len;
+    if (offset + want > fsize) want = fsize - offset;
+    if (want <= 0) {
+        close(fd);
+        return dup_bytes("", 0, out_len);
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)want);
+    if (buf == NULL) {
+        close(fd);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        ssize_t got = pread(fd, buf + total, (size_t)(want - total), (off_t)(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            return NULL;
+        }
+        if (got == 0) break;
+        total += (int64_t)got;
+    }
+    close(fd);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t mode,
+    int32_t truncate_end) {
+    if (len < 0 || offset < 0) return 0;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 1, leaf, sizeof(leaf));
+    if (dirfd < 0) return 0;
+    mode_t m = mode > 0 ? (mode_t)mode : (mode_t)0600;
+    int fd = openat(dirfd, leaf, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, m);
+    close(dirfd);
+    if (fd < 0) return 0;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return 0;
+    }
+    if (offset > (int64_t)st.st_size) {
+        close(fd);
+        return -2;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        ssize_t w = pwrite(fd, data + done, (size_t)(len - done), (off_t)(offset + done));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return 0;
+        }
+        done += (int64_t)w;
+    }
+    if (truncate_end != 0) {
+        int trc;
+        do {
+            trc = ftruncate(fd, (off_t)(offset + len));
+        } while (trc < 0 && errno == EINTR);
+        if (trc != 0) {
+            close(fd);
+            return 0;
+        }
     }
     return close(fd) == 0 ? 1 : 0;
 }
@@ -5547,6 +6213,166 @@ int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
     close(fd);
     return 1;
 #endif
+}
+
+int32_t sts_mkdir_mode(const char *path, int32_t mode) {
+    if (path == NULL || path[0] == '\0') return 0;
+    mode_t m = mode > 0 ? (mode_t)(mode & 0777) : (mode_t)0700;
+    if (mkdir(path, m) == 0) {
+        return 1;
+    }
+    if (errno == EEXIST) return -2;
+    if (errno == EACCES || errno == EPERM) return -3;
+    if (errno == ENOENT) return -4;
+    return 0;
+}
+
+int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
+    (void)is_dir;
+    if (target == NULL || link_path == NULL || link_path[0] == '\0') return 0;
+    return symlink(target, link_path) == 0 ? 1 : 0;
+}
+
+int32_t sts_is_dir_symlink(const char *path) {
+    (void)path;
+    return 0;
+}
+
+void *sts_getcwd(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    char buf[4096];
+    if (getcwd(buf, sizeof(buf)) == NULL) return NULL;
+    size_t n = strlen(buf);
+    char *out = (char *)malloc(n + 1);
+    if (out == NULL) return NULL;
+    memcpy(out, buf, n + 1);
+    if (out_len != NULL) *out_len = (int64_t)n;
+    return out;
+}
+
+void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = 3;
+    if (path == NULL || path[0] == '\0') return NULL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        if (out_err != NULL) {
+            if (errno == ENOENT || errno == ENOTDIR) *out_err = 1;
+            else if (errno == EACCES || errno == EPERM) *out_err = 2;
+            else *out_err = 3;
+        }
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    if (st.st_size < 0 || (uint64_t)st.st_size > (1ULL << 30)) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t cap = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(cap + 1);
+    if (buf == NULL) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t off = 0;
+    while (off < cap) {
+        ssize_t n = read(fd, buf + off, cap - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            if (out_err != NULL) *out_err = 3;
+            return NULL;
+        }
+        if (n == 0) break;
+        off += (size_t)n;
+    }
+    close(fd);
+    buf[off] = 0;
+    if (out_len != NULL) *out_len = (int64_t)off;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    const char *slash = strrchr(path, '/');
+    size_t dir_len = slash != NULL ? (size_t)(slash - path) + 1 : 0;
+    int enforce_mode = mode >= 0;
+    mode_t open_mode = enforce_mode ? (mode_t)(mode & 0777) : (mode_t)0666;
+
+    static const char hx[] = "0123456789abcdef";
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) return 0;
+    int fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(tmp);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%ld.%s", (int)dir_len, path, (long)getpid(), hex);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, open_mode);
+        if (fd >= 0) break;
+        if (errno != EEXIST) {
+            free(tmp);
+            return 0;
+        }
+    }
+    if (fd < 0) {
+        free(tmp);
+        return 0;
+    }
+    if (enforce_mode && fchmod(fd, open_mode) != 0) {
+        close(fd);
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, data + off, (size_t)(len - off));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            unlink(tmp);
+            free(tmp);
+            return 0;
+        }
+        off += (int64_t)w;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    if (close(fd) != 0) {
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    free(tmp);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,109 @@ pub fn is_pid_alive(pid : Int) -> Bool {
   )
 }
 
+/// Identity of a previous station process read from `<run>/hub.json`, including optional
+/// Linux monotonic `procStartTicks` + `bootId`, `procStartTimeMs`, and file mtime to defeat
+/// PID-reuse, `{pid: 1}`, and NTP/chrony wall-clock jump deadlocks.
+pub struct PreviousIdentity {
+  pub pid : Int
+  pub start_time_ms : Option[Int64]
+  pub start_ticks : Option[Int64]
+  pub boot_id : Option[String]
+  pub file_mtime_ms : Option[Int64]
+}
+
+/// Read the previous station process identity from `<run>/hub.json`, returning `None` if absent,
+/// `pid <= 1`, or equal to `self_pid`.
+pub fn read_previous_identity(
+  fs : OpsFs,
+  run_dir : String,
+  self_pid : Int,
+  sep : String = "/",
+) -> Option[PreviousIdentity] {
+  let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
+  match fs.read_text(hub_path) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "pid") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let pid = d.to_int()
+          if pid.to_double() == d && pid > 1 && pid != self_pid {
+            let start_ms : Option[Int64] = match base_codec::json_get(v, "procStartTimeMs") {
+              Some(base_codec::Json::Num(sd, _)) => {
+                let sv = sd.to_int64()
+                if sv > 0L { Some(sv) } else { None }
+              }
+              _ => None
+            }
+            let start_ticks : Option[Int64] = match base_codec::json_get(v, "procStartTicks") {
+              Some(base_codec::Json::Num(td, _)) => {
+                let tv = td.to_int64()
+                if tv >= 0L { Some(tv) } else { None }
+              }
+              _ => None
+            }
+            let bid : Option[String] = match base_codec::json_get(v, "bootId") {
+              Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+              _ => None
+            }
+            let mtime_ms : Option[Int64] = match (fs.stat)(hub_path) {
+              Ok(meta) => if meta.mtime_ms > 0L { Some(meta.mtime_ms) } else { None }
+              Err(_) => None
+            }
+            Some(PreviousIdentity::{
+              pid: pid,
+              start_time_ms: start_ms,
+              start_ticks: start_ticks,
+              boot_id: bid,
+              file_mtime_ms: mtime_ms,
+            })
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+/// Returns `true` iff `id` still refers to a live same-UID predecessor process (rejects `pid <= 1`,
+/// `ESRCH`/`EPERM`, Linux `bootId`+`procStartTicks` mismatch immune to wall-clock jumps, or
+/// `procStartTimeMs` mismatch > 500ms / legacy `hub.json` mtime + 5s).
+pub fn is_same_predecessor_alive(id : PreviousIdentity) -> Bool {
+  if id.pid <= 1 {
+    return false
+  }
+  // Only rc == 0 means a live process we can signal (same UID); ESRCH and EPERM both return != 0.
+  if station_sys::proc_kill(id.pid, station_sys::SIG_PROBE, false) != 0 {
+    return false
+  }
+  match (id.boot_id, id.start_ticks) {
+    (Some(expected_boot), Some(expected_ticks)) => {
+      return match (station_sys::boot_id(), station_sys::proc_start_ticks(id.pid)) {
+        (Some(cur_boot), Some(actual_ticks)) => cur_boot == expected_boot && actual_ticks == expected_ticks
+        _ => false
+      }
+    }
+    _ => ()
+  }
+  match (id.start_time_ms, station_sys::proc_start_time_ms(id.pid)) {
+    (Some(expected), Some(actual)) => {
+      let diff = if actual >= expected { actual - expected } else { expected - actual }
+      diff <= 500L
+    }
+    (Some(_), None) => false
+    (None, Some(actual)) => {
+      match id.file_mtime_ms {
+        Some(mtime) => actual <= mtime + 5000L
+        None => true
+      }
+    }
+    _ => false
+  }
+}
+
 /// Read the previous station process PID from `<run>/hub.json`, returning `None` if absent
 /// or equal to `self_pid`.
 pub fn read_previous_pid(
@@ -118,7 +221,8 @@ pub fn PreviousProcess::is_gone(
 }
 
 /// True ONLY when the previous process has actually exited (even past `PREVIOUS_LIMIT_MS`).
-/// Backfills wait for `is_exited` rather than `is_gone`.
+/// Backfills and rig handover barriers wait for `is_exited` rather than `is_gone` so two
+/// processes never concurrently mutate `hub.json` or `grants.json`.
 pub fn PreviousProcess::is_exited(
   self : PreviousProcess,
   now_ms : Int64,
@@ -128,4 +232,15 @@ pub fn PreviousProcess::is_exited(
     PreviousStatus::Exited => true
     _ => false
   }
+}
+
+/// Evaluate rig handover barrier: returns `PreviousStatus::Exited` when safe to take over,
+/// `PreviousStatus::Waiting` while within `limit_ms`, or `PreviousStatus::GoneTimedOut` when
+/// the previous process failed to exit in time (callers MUST fail loudly instead of overwriting `hub.json`).
+pub fn PreviousProcess::rig_barrier(
+  self : PreviousProcess,
+  now_ms : Int64,
+  is_alive : (Int) -> Bool = is_pid_alive,
+) -> PreviousStatus {
+  self.poll(now_ms, is_alive)
 }

@@ -111,7 +111,7 @@ pub fn chat_row_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.Cha
 
 pub fn chat_through(@json.Json?) -> ChatThrough?
 
-pub fn chats_lists_node(@view.View, @sfbase.Source, () -> @sfbase.Workspace?, ListsNodeFrame, @sf.TipLayer, () -> Int32) -> Unit
+pub fn chats_lists_node(@view.View, @sfbase.Source, () -> @sfbase.Workspace?, ListsNodeFrame, @sf.TipLayer, () -> Int32, keep_rows? : () -> Bool) -> Unit
 
 pub let code_field : @ui.Style
 

@@ -68,9 +68,6 @@ let over : Double = 20.0
 let rad : Double = bar_track / 2.0
 
 ///|
-let slot_px : Double = 90.0
-
-///|
 let lean : Double = 0.25
 
 
@@ -596,7 +593,7 @@ priv struct BarModel {
   /// how open the panel is (0 the bar, 1 the panel); the notch (1 open); the ball held
   o : Spr
   k : Spr
-  held : Spr
+  ball_held : @motion.Way
   /// drawn up out from under a finger that has the bar (1), back as it lets go (bar_raise)
   up : Spr
   /// the bar shown, the ball shown and its size
@@ -605,11 +602,13 @@ priv struct BarModel {
   ball_scale : Glide
   /// each place drawn ("bar:<place>", "row:<place>"): how lit
   tints : Map[String, Glide]
-  /// the ball: where across (stiff as the way is short) and down, on springs damped as the web's (ZETA 0.635)
+  /// the ball: where across and down, on iOS 27.0 calibrated springs (zeta 0.85)
   ball_x : Spr
   ball_y : Spr
-  /// how far the ball went to the place shown last (its spring as stiff as the way is short)
-  mut trip : Double
+  /// closed-form clear glass droplet pulse during cross-tab tap flight (@motion.Way impulse)
+  tap_lens : @motion.Way
+  /// target tab key armed by a finger tap on a non-active tab, cleared on consumption or any new gesture
+  mut tap_pending_key : String
   mut active_was : String
   /// a finger: where it has the ball (-1 none), its height once the panel is its own
   mut drag : Double
@@ -646,8 +645,22 @@ priv struct BarModel {
 }
 
 ///|
-/// The ball's springs: down and up 300; across as stiff as it is told; damped as the web's (ZETA 0.635).
+/// The ball's springs: down and up 300; across calibrated to measured Apple iOS 27.0 UITabBar
+/// (duration=0.40s, bounce=0.15 => zeta=0.85), using `ball_tap_k = 280.0` (~0.375s visual settle) and
+/// `ball_drag_k = 600.0` for 1:1 finger tracking.
 let ball_down : Double = 300.0
+
+///|
+let ball_zeta : Double = 0.85
+
+///|
+let ball_tap_k : Double = 280.0
+
+///|
+let ball_drag_k : Double = 600.0
+
+///|
+let ball_drag_damping : Double = 2.0 * 0.95 * ball_drag_k.sqrt()
 
 ///|
 /// The bar drawn up (bar_raise): its spring as stiff as the ball's going down, critically damped (it goes up and
@@ -656,7 +669,35 @@ let raise_damping : Double = 2.0 * ball_down.sqrt()
 
 ///|
 fn ball_damping(tension : Double) -> Double {
-  2.0 * 0.635 * tension.sqrt()
+  2.0 * ball_zeta * tension.sqrt()
+}
+
+///|
+/// Hyperbolic iOS rubber-band damping for horizontal drag past the first/last tab center.
+fn bar_rubber(over : Double, max_over : Double) -> Double {
+  if over == 0.0 {
+    0.0
+  } else {
+    let a = over.abs()
+    let d = max_over * a / (a + max_over / 0.35)
+    if over < 0.0 { -d } else { d }
+  }
+}
+
+///|
+/// Hermite smoothstep in [0, 1] across [e0, e1].
+fn bar_smoothstep(e0 : Double, e1 : Double, x : Double) -> Double {
+  let t = dclamp((x - e0) / (e1 - e0), 0.0, 1.0)
+  t * t * (3.0 - 2.0 * t)
+}
+
+///|
+/// Effective lens intensity at moment `t`: smooth C-infinity probabilistic union of finger hold/drag lens and
+/// cross-tab tap flight droplet (no V-shaped kink where the two curves cross).
+fn BarModel::held_at(self : BarModel, t : Double) -> Double {
+  let a = dclamp(self.ball_held.value_at(t), 0.0, 1.0)
+  let b = dclamp(self.tap_lens.value_at(t), 0.0, 1.0)
+  a + b - a * b
 }
 
 ///|
@@ -668,15 +709,16 @@ let bar : BarModel = {
   mode: @signals.signal(false, same=fn(a, b) { a == b }),
   o: spr(0.0, 260.0, 17.0, "bar/o"),
   k: spr(1.0, 300.0, 30.0, "bar/k"),
-  held: spr(0.0, 420.0, 16.0, "bar/held"),
+  ball_held: @motion.Way::new(0.0),
   up: spr(0.0, ball_down, raise_damping, "bar/up"),
   vis: glide(0.0),
   ball_alpha: glide(1.0),
   ball_scale: glide(1.0),
   tints: {},
-  ball_x: spr(0.0, 300.0, ball_damping(300.0), "bar/ball-x", rest=ball_rest_within),
+  ball_x: spr(0.0, ball_tap_k, ball_damping(ball_tap_k), "bar/ball-x", rest=ball_rest_within),
   ball_y: spr(0.0, ball_down, ball_damping(ball_down), "bar/ball-y", rest=ball_rest_within),
-  trip: slot_px,
+  tap_lens: @motion.Way::new(0.0),
+  tap_pending_key: "",
   active_was: "",
   drag: -1.0,
   drag_y: -1.0,
@@ -713,15 +755,16 @@ fn bar_reset() -> Unit {
   bar.mode.set(false)
   bar.o.back(0.0, 260.0, 17.0)
   bar.k.back(1.0, 300.0, 30.0)
-  bar.held.back(0.0, 420.0, 16.0)
+  bar.ball_held.put(0.0)
   bar.up.back(0.0, ball_down, raise_damping)
   back_glide(bar.vis, 0.0)
   back_glide(bar.ball_alpha, 1.0)
   back_glide(bar.ball_scale, 1.0)
   bar.tints.clear()
-  bar.ball_x.back(0.0, 300.0, ball_damping(300.0))
+  bar.ball_x.back(0.0, ball_tap_k, ball_damping(ball_tap_k))
   bar.ball_y.back(0.0, ball_down, ball_damping(ball_down))
-  bar.trip = slot_px
+  bar.tap_lens.put(0.0)
+  bar.tap_pending_key = ""
   bar.active_was = ""
   bar.drag = -1.0
   bar.drag_y = -1.0
@@ -783,7 +826,7 @@ fn BarModel::open_panel(self : BarModel, open : Bool, at~ : Double) -> Unit {
 /// waits for midway: there a test asks the end of the one path it looks at, not of the whole bar.
 fn BarModel::rest(self : BarModel) -> Double {
   let mut e = -1.0
-  for s in [self.o, self.k, self.held, self.up, self.ball_x, self.ball_y] {
+  for s in [self.o, self.k, self.up, self.ball_x, self.ball_y] {
     e = dmax(e, s.end())
   }
   let gs = [self.vis, self.ball_alpha, self.ball_scale, self.icon_swap]
@@ -793,6 +836,7 @@ fn BarModel::rest(self : BarModel) -> Double {
   for g in gs {
     e = dmax(e, g.end())
   }
+  e = dmax(e, dmax(self.ball_held.ends_at(), self.tap_lens.ends_at()))
   e = dmax(e, dmax(self.bond_merge.ends_at(), self.bond_recoil.ends_at()))
   e = dmax(e, self.collapse.ends_at())
   e
@@ -820,9 +864,12 @@ pub fn bar_landed() -> Double {
 ///|
 /// Everything where it is going, at once (the first frame; reduced motion).
 fn BarModel::jump(self : BarModel) -> Unit {
-  for s in [self.o, self.k, self.held, self.up, self.ball_x, self.ball_y] {
+  for s in [self.o, self.k, self.up, self.ball_x, self.ball_y] {
     s.put(s.to)
   }
+  self.ball_held.put(self.ball_held.target())
+  self.tap_lens.put(0.0)
+  self.tap_pending_key = ""
   for g in [self.vis, self.ball_alpha, self.ball_scale, self.icon_swap] {
     g.snap(g.target)
   }
@@ -1281,50 +1328,87 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let w = told.width
   let row_top = bar_row_top(told.sets.length())
   let sliding = m.drag >= 0.0
-  // The bar rises and the notch closes together while a finger has it, returning together on release.
-  m.held.go(if sliding { 1.0 } else { 0.0 }, 1000.0, 2.0 * 1000.0.sqrt(), at~)
+  // The bar rises while a finger has it, returning on release (taps never raise the bar).
   m.up.go(if m.holds || sliding { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
+  let prev_x = m.ball_x.value_at(at)
+  let mut goal_x = m.ball_x.to
   if w > 0.0 {
     match m.swap_at(at) {
       // a bar chosen landing: the ball rides the place tapped with it or as it lands (bar_finger_at's on_tab), else
       // the place shown where the bar has it; nothing tells it again once it has landed, so where it rides it stays
       Some(s) =>
         match s.sets[s.i].search(s.key.unwrap_or(active_key)) {
-          Some(j) => m.ride(s, j, w, row_top, at)
+          Some(j) => {
+            m.ride(s, j, w, row_top, at)
+            goal_x = m.ball_x.to
+          }
           None => ()
         }
       None => {
         let final_cs = bar_centres(w, m.k_end(), items.length())
         let now_cs = bar_centres(w, m.k_at(at), items.length())
-        let (goal_x, goal_y) = match bar_finger(told, now_cs, m.drag, m.drag_y) {
-          Some((cx, cy, set, key)) => {
-            // Keep the selected ball with the same place as the notch and its places move.
-            let target_x = if set == told.cur { final_cs[items.search(key).unwrap_or(0)] } else { cx }
-            (target_x + (m.drag - target_x) * lean, cy + ((if m.drag_y >= 0.0 { m.drag_y } else { row_top + bar_track / 2.0 }) - cy) * lean)
+        let (gx, goal_y) = match bar_finger(told, now_cs, m.drag, m.drag_y) {
+          Some((cx, cy, set, _)) => {
+            let target_x = if set == told.cur && items.length() > 0 {
+              let lo = final_cs[0]
+              let hi = final_cs[imin(items.length() - 1, final_cs.length() - 1)]
+              if m.drag < lo {
+                lo + bar_rubber(m.drag - lo, 12.0)
+              } else if m.drag > hi {
+                hi + bar_rubber(m.drag - hi, 12.0)
+              } else {
+                m.drag
+              }
+            } else {
+              cx + (m.drag - cx) * lean
+            }
+            (target_x, cy + ((if m.drag_y >= 0.0 { m.drag_y } else { row_top + bar_track / 2.0 }) - cy) * lean)
           }
           None => (final_cs[if ai < 0 { 0 } else { ai }], row_top + bar_track / 2.0)
         }
-        if !sliding && active_key != m.active_was {
-          m.active_was = active_key
-          m.trip = dmax(8.0, (goal_x - m.ball_x.value_at(at)).abs())
-          // (told anew on its way, a way no stiffer than the one it is on: its speed, which its stretch draws, taken off
-          // by a spring stiffer than the one that gave it is gone in a frame, the stretch and the ball's height with it, at
-          // 60 a second a step of 3.6 points then 0.2 (a place switched back within its way, bar_places_kept); one as
-          // stiff turns it back at the rate it went)
-          if m.ball_x.end() > at {
-            m.trip = dmax(m.trip, 300.0 * slot_px / m.ball_x.tension)
-          }
-        }
-        let tension = if sliding { 300.0 } else { dclamp(300.0 * slot_px / m.trip, 90.0, 700.0) }
+        goal_x = gx
         if m.placed && m.width != w {
           m.ball_x.put(goal_x)
+        } else if sliding {
+          m.ball_x.go(goal_x, ball_drag_k, ball_drag_damping, at~)
         } else {
-          m.ball_x.go(goal_x, tension, ball_damping(tension), at~)
+          m.ball_x.go(goal_x, ball_tap_k, ball_damping(ball_tap_k), at~)
         }
         m.ball_y.go(goal_y, ball_down, ball_damping(ball_down), at~)
       }
     }
     m.width = w
+  }
+  if sliding {
+    m.tap_pending_key = ""
+    m.tap_lens.go(0.0, @motion.snappy_damped, at~)
+    if m.ball_held.target() < 0.5 {
+      m.ball_held.go(1.0, @motion.backdrop_press_spring, at~)
+    }
+  } else {
+    if active_key != m.active_was {
+      let from_tap = m.tap_pending_key != "" && active_key == m.tap_pending_key
+      m.tap_pending_key = ""
+      m.active_was = active_key
+      if from_tap && m.placed && m.swap_at(at) is None {
+        let trip = (goal_x - prev_x).abs()
+        if trip > 4.0 {
+          let peak = dclamp(trip / 140.0, 0.55, 1.0)
+          let v0 = peak * 2.718281828459045 * 420.0.sqrt()
+          let (_, cur_v) = m.tap_lens.at(at)
+          m.tap_lens.go(0.0, @motion.snappy_damped, at~, velocity=dmax(cur_v, v0))
+        }
+      }
+    }
+    if m.ball_held.target() > 0.5 {
+      if w <= 0.0 {
+        m.ball_held.put(0.0)
+      } else {
+        let dist = (goal_x - prev_x).abs()
+        let land_delay = if dist <= 4.0 { 0.0 } else { dclamp(dist / 2.2, 40.0, 140.0) }
+        m.ball_held.go(0.0, @motion.snappy_damped.delayed(land_delay), at~)
+      }
+    }
   }
   // each place lit as it is the one under the finger, else the one shown, in the bar and in the panel's rows (300 ms,
   // CSS's ease); one come anew as it is; a bar chosen landing, its places as they will be as it lands
@@ -1616,6 +1700,9 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
         if m.mode.get() {
           m.open_panel(false, at=t)
         }
+        if Some(l.items[j]) != told.active {
+          m.tap_pending_key = l.items[j]
+        }
         on_tab(l.items[j], true)
       }
     }
@@ -1671,6 +1758,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   let mut took = false
   match how {
     Pressed => {
+      m.tap_pending_key = ""
       pressed()
       // a finger down on a place's tab, the panel shut: what the place opens on asked from now (sfbase's places_ahead)
       if !m.mode.get() && py >= l.row_top - 4.0 && l.items.length() > 0 {
@@ -1679,6 +1767,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       }
     }
     Dragging => {
+      m.tap_pending_key = ""
       if l.multi {
         let raw = m.o0 + (m.y0 - py - (if m.from_open { 0.0 } else { 8.0 })) / l.reach
         if !m.holds && raw > 0.0 {
@@ -1712,13 +1801,16 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     }
     // held still where it went down, on the bar's row: the ball the finger's there, the lens over it as while it
     // slides (iOS's tab bar), going nowhere till the finger moves; let go, as a drag ends
-    Held =>
+    Held => {
+      m.tap_pending_key = ""
       if !m.holds && py >= l.row_top - 4.0 {
         m.drag = px
         m.drag_y = -1.0
         took = l.items.length() > 0
       }
+    }
     Ended => {
+      m.tap_pending_key = ""
       let had = m.holds
       let final_cs = bar_centres(l.w, m.k_at(t), l.items.length())
       // (let go still moving across: the place it was going to, as it carried on (bar_flung); the ball, chasing the

@@ -903,6 +903,25 @@ let desk_column_ems : Double = 34.0
 let doc_column_ems : Double = 48.0
 
 ///|
+/// A wide column (the layout's 宽, ReaderStyle's "wide"): a plain text's 48 of its size, a document's 64.
+let wide_text_ems : Double = 48.0
+
+///|
+let wide_doc_ems : Double = 64.0
+
+///|
+/// How many of its size a column is wide (`doc`: a Markdown document's, or any text's in the panel beside a chat) by
+/// the layout's width (`width`): "standard" a novel's 34 or a document's 48, "wide" 48 or 64, "full" none (as wide as
+/// the row is, less the margins and a panel docked beside the text).
+fn reader_column_ems(doc : Bool, width : String) -> Double? {
+  match width {
+    "full" => None
+    "wide" => Some(if doc { wide_doc_ems } else { wide_text_ems })
+    _ => Some(if doc { doc_column_ems } else { desk_column_ems })
+  }
+}
+
+///|
 /// How far from its end a reader's list is before its scroll-to-bottom float shows (matches a chat's to_newest_away:
 /// a corner of the screen).
 let reader_end_away : Double = 120.0
@@ -1008,6 +1027,10 @@ let desk_margin_step : Double = 1.0
 ///|
 /// The face's and the indent's choices on a desktop: each half of the panel's room (280, less the track's 4).
 let desk_seg_item : Double = 138.0
+
+///|
+/// The width's three choices on a desktop: each a third of the panel's room (280, less the track's 4).
+let desk_seg_third : Double = 92.0
 
 ///|
 /// A swatch's edge: the ink at 14% (2 of the accent on the one).

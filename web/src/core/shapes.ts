@@ -1731,6 +1731,12 @@ export type ReaderFace = "serif" | "sans";
 /** The reader's paper: as the app looks (`follow`), or one of its own. */
 export type ReaderPaper = "follow" | "white" | "green" | "grey" | "night";
 
+/**
+ * How wide the reader's column is: a novel's 34em or a document's 48em (`standard`), 48em or 64em (`wide`), or
+ * the whole row (`full`).
+ */
+export type ReaderWidth = "standard" | "wide" | "full";
+
 /** How the drive's reader lays text out on this device (`prefs.set {reader: {…}}`, one setting or several). */
 export interface ReaderPrefs {
 	/** The text's size (sp/px), 12 to 32. */
@@ -1743,6 +1749,7 @@ export interface ReaderPrefs {
 	/** Paragraphs start indented two characters. */
 	indent: boolean;
 	paper: ReaderPaper;
+	width: ReaderWidth;
 }
 
 /** Lines of what people and agents wrote: closer, as the app sets them, or further apart. */

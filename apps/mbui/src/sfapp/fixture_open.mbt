@@ -470,7 +470,7 @@ pub fn fixture_app(mode : String) -> Source {
   new_run()
   if mode.has_prefix("projects-") {
     @sffixture.fx_projects_on.val = true
-    if mode == "projects-grouped" {
+    if mode == "projects-grouped" || mode == "projects-sticky" || mode == "projects-sticky-quiet" {
       @sffixture.fx_set_list_group("ws1", "project")
     }
   }

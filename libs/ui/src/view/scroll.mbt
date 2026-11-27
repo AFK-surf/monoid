@@ -169,9 +169,8 @@ pub struct Scroll {
   /// column it covers is not seen of a picture flying from it (Tree::stays_bounds), and what flies from a
   /// thing in the column or in it is drawn in the list over both (Tree::incoming_host)
   mut foot_at : Int
-  /// the logic's moment it was last put at once (Scroll::put: a page's list brought to a block or to its foot, the
-  /// app's put), for the Tester's judges: what it moves by its offset alone (its bar's thumb) goes there with it in the
-  /// frame that takes it (Tree::scroll_put_at)
+  /// the logic's moment it was last put at once by Scroll::put or a scroll key (Tree::scroll_put_at).
+  /// Its rows and its bar's thumb can move with it in that frame.
   priv mut put_at : Double
   /// the logic's moment the wheel last moved it directly (rows_steady.mbt)
   priv mut wheel_at : Double
@@ -968,8 +967,8 @@ fn Scroll::moved(self : Scroll, t : Double, d : Double) -> Bool {
 }
 
 ///|
-/// Brought to `to` at `t`, as far as it can go (a part of it brought into sight).
-fn Scroll::sent(self : Scroll, t : Double, to : Double) -> Unit {
+/// Brought to `to` at `t`, as far as it can go (a part of it brought into sight): whether it moved.
+fn Scroll::sent(self : Scroll, t : Double, to : Double) -> Bool {
   let was = self.stopped(t)
   // (brought over the top it is held at for what is tucked (a part of that brought into sight): its own top again)
   if to < @signals.untracked(fn() { self.top_now() }) - 0.5 {
@@ -980,6 +979,7 @@ fn Scroll::sent(self : Scroll, t : Double, to : Double) -> Unit {
   if to != was {
     self.scrolled_at(t)
   }
+  to != was
 }
 
 ///|
@@ -1968,9 +1968,9 @@ pub fn View::scrolls(
     // is, on its way or at its foot following it, nothing written of it)
     let x = @signals.untracked(fn() { s.where_at(t) })
     if top < tc {
-      s.sent(t, x + top - tc)
+      s.sent(t, x + top - tc) |> ignore
     } else if foot > vh {
-      s.sent(t, x + dmin(top - tc, foot - vh))
+      s.sent(t, x + dmin(top - tc, foot - vh)) |> ignore
     } else {
       return 0.0
     }
@@ -2106,9 +2106,9 @@ pub fn Tree::in_scroller(self : Tree, id : NodeId) -> Bool {
 }
 
 ///|
-/// The logic's moment column `at` (View::scrolls) was last put at once (Scroll::put): what its bar's thumb, moved by its
-/// offset alone, does in the frame that takes it is the put's (the Tester's judges: ui's sizes_steady.mbt); -1e9 where
-/// it never was, or scrolls nothing.
+/// The logic's moment column `at` (View::scrolls) was last put at once by Scroll::put or moved by a scroll key.
+/// The motion checks use it for the column's rows and its bar's thumb. Returns -1e9 if it never moved this way
+/// or the node scrolls nothing.
 pub fn Tree::scroll_put_at(self : Tree, at : Int) -> Double {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return -1.0e9 }
   match self.scrolls_at.get(at) {

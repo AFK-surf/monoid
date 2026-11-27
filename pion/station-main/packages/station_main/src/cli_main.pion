@@ -1,0 +1,741 @@
+// Production CLI wiring (`CliPorts`) for all 8 non-`run` subcommands in `stillfail-station-pion`:
+// `id`, `status`, `lock`, `channel`, `enroll`, `update`, `heap`, `admin`.
+// Zero test stubs and zero deterministic random fallbacks:
+// - OS CSPRNG via `station_sys::random_bytes` / `station_sys::random_hex`
+// - Binary-safe `OpsFs` (`write_bytes` via `station_sys::write_file_mode` + `chmod`)
+// - Verbatim-symlink `copy_dir` (`readlink` + `fs.symlink`, preserving executable mode bits)
+// - Real TLS (system webpki roots + optional `ca_pem`) + proxy + timeout HTTP via `station_http::HttpClient`
+// - Formally verified Ed25519/ES256 signature verification via `station_rules_bridge::shell_verifier` (`libcrux`)
+// - Real `.tar.gz`/`.tgz`/`.zip` archive extraction via `station_sys::proc_spawn`
+// - Real launcher detection (`ps` / PowerShell), `SIGHUP` / Windows launcher pipe, `fs_watch` `wait_for_file`,
+//   `fs.utimes` `touch_file`, `fs.mkdir` (`recursive: false`) + `chmod(0700)` `mkdir_exclusive`,
+//   `fs.remove` (`recursive: true`) `remove_tree`, and live `heap_stats` (`process_usage` + `open_fd_count`).
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "nodepath"
+import "station_cli"
+import "station_http"
+import "station_ops"
+import "station_rules_bridge"
+import "station_sys"
+
+/// Whether `cmd` is one of the 8 wired CLI subcommands.
+pub fn is_cli_command(cmd : String) -> Bool {
+  cmd == "id" ||
+  cmd == "status" ||
+  cmd == "lock" ||
+  cmd == "channel" ||
+  cmd == "enroll" ||
+  cmd == "update" ||
+  cmd == "heap" ||
+  cmd == "admin"
+}
+
+/// Find the subcommand in `cli_args` (excluding `argv[0]`), matching `station/src/main.ts` line 98.
+pub fn find_main_subcommand(cli_args : Array[String]) -> Option[String] {
+  let mut i = 0
+  while i < cli_args.length() {
+    let a = cli_args[i]
+    if !a.starts_with("--") {
+      let prev_is_flag = i > 0 && cli_args[i - 1].starts_with("--") && cli_args[i - 1] != "--with-parent"
+      if !prev_is_flag {
+        return Some(a)
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Parse `KEY=VALUE` environment entries into a `Map[String, String]`, preserving `=` in values.
+pub fn parse_env_entries(entries : Array[String], fallback_home : String) -> Map[String, String] {
+  let env : Map[String, String] = Map::new()
+  let mut i = 0
+  while i < entries.length() {
+    let entry = entries[i]
+    let eq = entry.index_of("=")
+    if eq > 0 {
+      let k = station_ops::ops_slice_str(entry, 0, eq)
+      let v = station_ops::ops_slice_str(entry, eq + 1, entry.length())
+      env.set(k, v)
+    }
+    i = i + 1
+  }
+  let has_home = match env.get("HOME") {
+    Some(h) => h.length() > 0
+    None => false
+  }
+  if !has_home && fallback_home.length() > 0 {
+    env.set("HOME", fallback_home)
+  }
+  env
+}
+
+/// Parse `(rss_bytes, cpu_ns)` for `pid` from `station_sys::process_usage_json([pid])`.
+pub fn parse_process_usage_entry(usage_json : String, fallback_rss : Int64) -> (Int64, Int64) {
+  let mut rss = fallback_rss
+  let mut cpu_ns = 0L
+  match base_codec::json_parse(usage_json) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => {
+      if arr.length() > 0 {
+        let item = arr[0]
+        match base_codec::json_get(item, "footprint") {
+          Some(base_codec::Json::Num(d, _)) => {
+            let v = d.to_int64()
+            if v > 0L {
+              rss = v
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(item, "cpuNs") {
+          Some(base_codec::Json::Num(d, _)) => {
+            let v = d.to_int64()
+            if v >= 0L {
+              cpu_ns = v
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  (rss, cpu_ns)
+}
+
+fn cli_parse_shell_sync_err(raw : String) -> Option[String] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "error") {
+        Some(base_codec::Json::Str(e)) => if e.length() > 0 { Some(e) } else { None }
+        _ => None
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => Some("invalid shell reply: " + e)
+  }
+}
+
+fn cli_append_bytes(dst : Array[Byte], src : Bytes) -> Unit {
+  let mut i = 0
+  while i < src.length() {
+    dst.push(src[i])
+    i = i + 1
+  }
+}
+
+fn cli_byte_array_to_string(buf : Array[Byte]) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < buf.length() {
+    sb.write_byte(buf[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Run a short-lived child process via `station_sys::proc_spawn` (never `"proc.run"`),
+/// collecting stdout/stderr and waiting for exit within `timeout_ms`.
+fn cli_run_child(
+  ev_id : Int64,
+  program : String,
+  args : Array[String],
+  cwd : String,
+  timeout_ms : Int64,
+) -> Result[(Int, String, String), String] {
+  let opts = station_sys::SpawnOptions::{
+    program: program,
+    args: args,
+    env: None,
+    cwd: cwd,
+    new_pgid: false,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: true,
+    pipe_stderr: true,
+  }
+  let child = match station_sys::proc_spawn(ev_id, opts) {
+    Ok(c) => c
+    Err(e) => return Err("failed to spawn " + program + ": " + e)
+  }
+  let stdout_buf : Array[Byte] = []
+  let stderr_buf : Array[Byte] = []
+  let mut exited = false
+  let mut exit_code = -1
+  let mut stdout_eof = false
+  let mut stderr_eof = false
+  // timer: bounded child process wait for CLI helper command
+  let deadline = host_shim::now_ms() + timeout_ms
+  while !(exited && stdout_eof && stderr_eof) {
+    let rem = deadline - host_shim::now_ms()
+    if rem <= 0L {
+      let _ = child.kill(station_sys::SIG_KILL, false)
+      let _ = child.close()
+      return Err(program + " timed out after " + timeout_ms.to_string() + "ms")
+    }
+    let step = if rem < 100L { rem } else { 100L }
+    match host_shim::wait(step) {
+      Some(host_shim::HostEvent::Sys(id, payload)) => {
+        if id == ev_id {
+          match station_sys::decode_sys_event(payload) {
+            Some(station_sys::SysEvent::ProcStdout(b)) => cli_append_bytes(stdout_buf, b)
+            Some(station_sys::SysEvent::ProcStderr(b)) => cli_append_bytes(stderr_buf, b)
+            Some(station_sys::SysEvent::ProcStdoutEof) => stdout_eof = true
+            Some(station_sys::SysEvent::ProcStderrEof) => stderr_eof = true
+            Some(station_sys::SysEvent::ProcExit(st)) => {
+              exited = true
+              exit_code = st.code
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  let _ = child.close()
+  Ok((exit_code, cli_byte_array_to_string(stdout_buf), cli_byte_array_to_string(stderr_buf)))
+}
+
+/// Binary-safe production `OpsFs`: uses `station_sys::read_file_strict` to distinguish ENOENT from
+/// EACCES/IO errors (never folding permission errors into NotFound) and `station_sys::write_file_atomic`
+/// (`O_CREAT|O_EXCL` tmp + `fchmod` + `fsync` + `rename`) for atomic private/binary writes.
+fn build_cli_ops_fs(_os : station_ops::PlatformOs, sep : String) -> station_ops::OpsFs {
+  let base = station_ops::shell_ops_fs()
+  station_ops::OpsFs::{
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      match station_sys::read_file_strict(path) {
+        Ok(b) => Ok(b)
+        Err(station_sys::StrictReadErr::NotFound) => Err(station_ops::FsErr::NotFound)
+        Err(station_sys::StrictReadErr::PermissionDenied) => {
+          Err(station_ops::FsErr::PermissionDenied("EACCES: " + path))
+        }
+        Err(station_sys::StrictReadErr::Other) => {
+          Err(station_ops::FsErr::Other("read failed: " + path))
+        }
+      }
+    },
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
+      let dir = nodepath::dirname(sep, path)
+      if dir != "" && dir != "." && dir != path {
+        let _ = (base.mkdir_p)(dir)
+      }
+      if !station_sys::write_file_atomic(path, data, mode) {
+        return Err(station_ops::FsErr::Other("atomic write failed: " + path))
+      }
+      Ok(())
+    },
+    stat: base.stat,
+    lstat: base.lstat,
+    readlink: base.readlink,
+    realpath: base.realpath,
+    mkdir_p: base.mkdir_p,
+    rename: base.rename,
+    remove: base.remove,
+    truncate: fn(path : String, size : Int64) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::truncate_in_place(path, size) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("truncate failed: " + path))
+      }
+    },
+    readdir: base.readdir,
+    rotate_in_place_native: None,
+  }
+}
+
+/// Recursively copy `src` to `dst`, recreating symlinks verbatim (`readlink` + `fs.symlink`)
+/// without dereferencing them and preserving executable mode bits on regular files.
+fn cli_copy_dir_verbatim(
+  ops_fs : station_ops::OpsFs,
+  src : String,
+  dst : String,
+  sep : String,
+  depth : Int,
+) -> Result[Unit, String] {
+  if depth > 64 {
+    return Err("directory nesting too deep: " + src)
+  }
+  let meta = match (ops_fs.lstat)(src) {
+    Ok(m) => m
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  if meta.is_link {
+    let target = match (ops_fs.readlink)(src) {
+      Ok(t) => t
+      Err(e) => return Err("readlink failed for " + src + ": " + station_ops::fs_err_msg(e))
+    }
+    let target_is_dir = station_sys::is_dir_symlink(src)
+    let parent = nodepath::dirname(sep, dst)
+    if parent != "" && parent != "." && parent != dst {
+      match (ops_fs.mkdir_p)(parent) {
+        Ok(_) => ()
+        Err(e) => return Err(station_ops::fs_err_msg(e))
+      }
+    }
+    let _ = (ops_fs.remove)(dst)
+    if !station_sys::symlink(target, dst, target_is_dir) {
+      return Err("symlink failed for " + dst)
+    }
+    return Ok(())
+  }
+  if meta.is_dir {
+    match (ops_fs.mkdir_p)(dst) {
+      Ok(_) => ()
+      Err(e) => return Err(station_ops::fs_err_msg(e))
+    }
+    let names = match (ops_fs.readdir)(src) {
+      Ok(ns) => ns
+      Err(e) => return Err(station_ops::fs_err_msg(e))
+    }
+    let mut i = 0
+    while i < names.length() {
+      let name = names[i]
+      let child_src = nodepath::join(sep, [src, name])
+      let child_dst = nodepath::join(sep, [dst, name])
+      match cli_copy_dir_verbatim(ops_fs, child_src, child_dst, sep, depth + 1) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      i = i + 1
+    }
+    return Ok(())
+  }
+  if !meta.is_file {
+    return Err("Cannot copy special file (FIFO/socket/device): " + src)
+  }
+  // Regular file: preserve permission bits (including executable bits).
+  let data = match (ops_fs.read_bytes)(src) {
+    Ok(b) => b
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let parent = nodepath::dirname(sep, dst)
+  if parent != "" && parent != "." && parent != dst {
+    match (ops_fs.mkdir_p)(parent) {
+      Ok(_) => ()
+      Err(e) => return Err(station_ops::fs_err_msg(e))
+    }
+  }
+  match (ops_fs.lstat)(dst) {
+    Ok(dm) => if dm.is_link { let _ = (ops_fs.remove)(dst) }
+    Err(_) => ()
+  }
+  let perms = meta.mode & 511
+  let mode = if perms > 0 { perms } else { 420 }
+  match (ops_fs.write_bytes)(dst, data, mode) {
+    Ok(_) => Ok(())
+    Err(e) => Err(station_ops::fs_err_msg(e))
+  }
+}
+
+fn cli_escape_ps_single(s : String) -> String {
+  station_cli::cli_replace_all(s, "'", "''")
+}
+
+/// Build production `CliPorts` backed by real `station_sys`, `host_shim`, `station_http`, and `station_rules_bridge`.
+fn build_production_cli_ports(
+  default_app : String,
+  process_start_ms : Int64,
+) -> station_cli::CliPorts {
+  let os = station_ops::detect_os()
+  let is_win = match os {
+    station_ops::PlatformOs::Windows => true
+    _ => false
+  }
+  let sep = if is_win { "\\" } else { "/" }
+  let ops_fs = build_cli_ops_fs(os, sep)
+  let cloud_fs = station_cli::cloud_fs_from_ops(ops_fs, sep=sep)
+  let key_fs = station_cli::key_fs_from_ops(
+    ops_fs,
+    fn(n : Int) -> Result[Bytes, String] { station_sys::random_bytes(n) },
+    sep=sep,
+  )
+  let mux = builders_core::ShellMux::host(start_stdin=false)
+  let hc = station_http::HttpClient::new(mux)
+  let mut next_http_id = 1
+  let mut next_ev_id = 50000L
+
+  let http_fn = fn(req : station_cli::CliHttpRequest) -> Result[station_cli::CliHttpResponse, String] {
+    let rid = next_http_id
+    next_http_id = next_http_id + 1
+    let opts = station_http::FetchOptions::{
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      body: req.body,
+      timeout_ms: req.timeout_ms,
+      stall_ms: req.timeout_ms,
+      redirect: if req.redirect.length() > 0 { req.redirect } else { "follow" },
+      proxy: req.proxy,
+      ca_pem: req.ca_pem,
+      entry: None,
+    }
+    let call_id = hc.fetch_async(rid, opts)
+    let base_timeout = match req.timeout_ms {
+      Some(ms) => if ms > 0L { ms } else { 30000L }
+      None => 30000L
+    }
+    // timer: bounded CLI HTTP fetch deadline
+    let deadline = mux.now_ms() + base_timeout + 5000L
+    let mut done_res : Option[Result[station_cli::CliHttpResponse, String]] = None
+    while done_res is None {
+      let rem = deadline - mux.now_ms()
+      if rem <= 0L {
+        let _ = mux.cancel(call_id)
+        return Err("HTTP request timed out: " + req.url)
+      }
+      let step = if rem < 100L { rem } else { 100L }
+      let _ = mux.step(
+        step,
+        fn(_line : String) -> Unit {},
+        fn() -> Unit {},
+        fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+          match tok {
+            builders_core::MuxToken::Tagged(owner_id, kind, _) => {
+              if owner_id == rid && kind == station_http::CLIENT_TOK_FETCH {
+                match station_http::decode_fetch_done(done) {
+                  Ok(r) => {
+                    done_res = Some(Ok(station_cli::CliHttpResponse::{
+                      status: r.status,
+                      headers: r.headers,
+                      body: r.body,
+                    }))
+                  }
+                  Err(e) => {
+                    done_res = Some(Err(e.message))
+                  }
+                }
+              }
+            }
+            _ => ()
+          }
+        },
+      )
+    }
+    match done_res {
+      Some(r) => r
+      None => Err("HTTP request aborted: " + req.url)
+    }
+  }
+
+  let verify_fn = Some(station_rules_bridge::shell_verifier(fn(op : String, args : String) -> String {
+    // sync: CLI Ed25519/ES256 verification via libcrux crypto.verify
+    host_shim::shell_sync(op, args)
+  }))
+
+  let pid_alive_fn = fn(pid : Int) -> Bool {
+    if pid <= 0 {
+      return false
+    }
+    let rc = station_sys::proc_kill(pid, station_sys::SIG_PROBE, false)
+    if is_win {
+      rc == 0
+    } else {
+      // POSIX: 0 = signaled, -1 (-EPERM) = alive but owned by another user.
+      rc == 0 || rc == -1
+    }
+  }
+
+  let is_launcher_fn = fn(pid : Int) -> Bool {
+    if pid <= 0 {
+      return false
+    }
+    let eid = next_ev_id
+    next_ev_id = next_ev_id + 1L
+    if is_win {
+      let cmd = "(Get-Process -Id " + pid.to_string() + " -ErrorAction Stop).ProcessName"
+      match cli_run_child(eid, "powershell", ["-NoProfile", "-NonInteractive", "-Command", cmd], station_sys::tmpdir(), 5000L) {
+        Ok((code, out, _)) => {
+          if code != 0 {
+            return false
+          }
+          let low = station_cli::cli_ascii_lower(station_cli::cli_trim(out))
+          low == "stillfail-station" || low == "stillfail-station-w"
+        }
+        Err(_) => false
+      }
+    } else {
+      match cli_run_child(eid, "ps", ["-p", pid.to_string(), "-o", "command="], station_sys::tmpdir(), 5000L) {
+        Ok((code, out, _)) => code == 0 && out.contains("stillfail-station")
+        Err(_) => false
+      }
+    }
+  }
+
+  let ask_launcher_hup_fn = fn(pid : Int) -> Result[Unit, String] {
+    if pid <= 0 {
+      return Err("invalid pid")
+    }
+    if is_win {
+      let eid = next_ev_id
+      next_ev_id = next_ev_id + 1L
+      let pipe_name = "\\\\.\\pipe\\stillfail-launcher-" + pid.to_string()
+      match station_sys::ctrl_open_pipe(eid, pipe_name) {
+        Some(ch) => {
+          let ok = ch.write_line("{\"op\":\"hup\"}")
+          let _ = ch.close()
+          if ok { Ok(()) } else { Err("failed to write hup to launcher pipe") }
+        }
+        None => Err("failed to open launcher pipe for pid " + pid.to_string())
+      }
+    } else {
+      let rc = station_sys::proc_kill(pid, station_sys::SIG_HUP, false)
+      if rc == 0 {
+        Ok(())
+      } else {
+        Err("kill(SIGHUP) failed (errno=" + (-rc).to_string() + ")")
+      }
+    }
+  }
+
+  let wait_for_file_fn = fn(path : String, wait_ms : Int64) -> Option[String] {
+    match ops_fs.read_text(path) {
+      Ok(t) => return Some(t)
+      Err(_) => ()
+    }
+    if wait_ms <= 0L {
+      return None
+    }
+    let dir = nodepath::dirname(sep, path)
+    let eid = next_ev_id
+    next_ev_id = next_ev_id + 1L
+    let watcher = station_sys::fs_watch_open(eid, dir)
+    // timer: bounded wait for CLI answer file (fs_watch + 100ms fallback)
+    let deadline = host_shim::now_ms() + wait_ms
+    let mut found : Option[String] = None
+    while true {
+      match ops_fs.read_text(path) {
+        Ok(t) => {
+          found = Some(t)
+          break
+        }
+        Err(_) => ()
+      }
+      let rem = deadline - host_shim::now_ms()
+      if rem <= 0L {
+        break
+      }
+      let step = if rem < 100L { rem } else { 100L }
+      let _ = host_shim::wait(step)
+    }
+    match watcher {
+      Some(w) => {
+        let _ = w.close()
+      }
+      None => ()
+    }
+    match found {
+      Some(t) => Some(t)
+      None => match ops_fs.read_text(path) {
+        Ok(t) => Some(t)
+        Err(_) => None
+      }
+    }
+  }
+
+  let touch_file_fn = fn(path : String, mtime_ms : Int64) -> Unit {
+    let req = base_codec::json_stringify(base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("mtimeMs", base_codec::json_int64(mtime_ms)),
+    ]))
+    // sync: CLI touch_file via fs.utimes for heap request coalescing
+    let _ = host_shim::shell_sync("fs.utimes", req)
+  }
+
+  let sleep_ms_fn = fn(ms : Int64) -> Unit {
+    if ms <= 0L {
+      return
+    }
+    // timer: bounded CLI sleep_ms
+    let deadline = host_shim::now_ms() + ms
+    while true {
+      let rem = deadline - host_shim::now_ms()
+      if rem <= 0L {
+        break
+      }
+      let _ = host_shim::wait(rem)
+    }
+  }
+
+  let random_hex_fn = fn(num_bytes : Int) -> String {
+    match station_sys::random_hex(num_bytes) {
+      Ok(h) => h
+      Err(e) => panic("OS CSPRNG failed: " + e)
+    }
+  }
+
+  let copy_dir_fn = Some(fn(src : String, dst : String) -> Result[Unit, String] {
+    cli_copy_dir_verbatim(ops_fs, src, dst, sep, 0)
+  })
+
+  let extract_archive_fn = Some(fn(src : String, dst : String) -> Result[Unit, String] {
+    // Resolve relative archive path against caller cwd BEFORE spawning child in `cwd: dst`
+    // (also guarantees absolute path cannot start with `-` for option injection).
+    let abs_src = if nodepath::is_absolute(sep, src) {
+      src
+    } else {
+      match station_sys::getcwd() {
+        Some(cwd) => nodepath::join(sep, [cwd, src])
+        None => return Err("failed to resolve working directory for archive: " + src)
+      }
+    }
+    let low = station_cli::cli_ascii_lower(abs_src)
+    let eid = next_ev_id
+    next_ev_id = next_ev_id + 1L
+    let res = if low.ends_with(".tar.gz") || low.ends_with(".tgz") {
+      cli_run_child(eid, "tar", ["-xzf", abs_src, "-C", dst], dst, 120000L)
+    } else if low.ends_with(".zip") {
+      if is_win {
+        let ps = "Expand-Archive -Path '" + cli_escape_ps_single(abs_src) + "' -DestinationPath '" + cli_escape_ps_single(dst) + "' -Force"
+        cli_run_child(eid, "powershell", ["-NoProfile", "-Command", ps], dst, 120000L)
+      } else {
+        cli_run_child(eid, "unzip", ["-q", abs_src, "-d", dst], dst, 120000L)
+      }
+    } else {
+      return Err("unsupported archive format: " + abs_src)
+    }
+    match res {
+      Ok((code, _out, err_out)) => {
+        if code == 0 {
+          Ok(())
+        } else {
+          let detail = station_cli::cli_trim(err_out)
+          Err(
+            "archive extraction failed (exit " +
+            code.to_string() +
+            ")" +
+            (if detail.length() > 0 { ": " + detail } else { "" }),
+          )
+        }
+      }
+      Err(e) => Err(e)
+    }
+  })
+
+  let remove_tree_fn = Some(fn(path : String) -> Result[Unit, String] {
+    let req = base_codec::json_stringify(base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("recursive", base_codec::json_bool(true)),
+    ]))
+    // sync: CLI recursive remove_tree via fs.remove
+    let raw = host_shim::shell_sync("fs.remove", req)
+    match cli_parse_shell_sync_err(raw) {
+      Some(err) => Err(err)
+      None => Ok(())
+    }
+  })
+
+  let mkdir_exclusive_fn = Some(fn(dir : String, mode : Int) -> Result[Unit, String] {
+    match station_sys::mkdir_mode(dir, mode) {
+      station_sys::MkdirModeResult::Ok => Ok(())
+      station_sys::MkdirModeResult::AlreadyExists => Err("EEXIST: " + dir)
+      station_sys::MkdirModeResult::PermissionDenied => Err("EACCES: " + dir)
+      station_sys::MkdirModeResult::NotFound => Err("ENOENT: " + dir)
+      station_sys::MkdirModeResult::Error => Err("mkdir failed: " + dir)
+    }
+  })
+
+  let symlink_dir_fn = Some(fn(target : String, link_path : String) -> Result[Unit, String] {
+    let parent = nodepath::dirname(sep, link_path)
+    if parent != "" && parent != "." && parent != link_path {
+      let _ = (ops_fs.mkdir_p)(parent)
+    }
+    let _ = (ops_fs.remove)(link_path)
+    if station_sys::symlink(target, link_path, true) {
+      Ok(())
+    } else {
+      Err("symlink_dir failed for " + link_path)
+    }
+  })
+
+  let heap_stats_fn = Some(fn() -> station_cli::HeapDiagSnapshot {
+    let self_pid = host_shim::pid()
+    let usage_json = station_sys::process_usage_json([self_pid])
+    let (rss, cpu_ns) = parse_process_usage_entry(usage_json, host_shim::rss_bytes())
+    let up = host_shim::now_ms() - process_start_ms
+    station_cli::HeapDiagSnapshot::{
+      pid: self_pid,
+      rss_bytes: rss,
+      open_fds: host_shim::open_fd_count(),
+      cpu_ns: cpu_ns,
+      uptime_ms: if up < 0L { 0L } else { up },
+      objects: 0L,
+    }
+  })
+
+  station_cli::CliPorts::{
+    fs: ops_fs,
+    cloud_fs: cloud_fs,
+    key_fs: key_fs,
+    http: http_fn,
+    now_ms: host_shim::wall_ms,
+    pid_alive: pid_alive_fn,
+    is_launcher: is_launcher_fn,
+    ask_launcher_hup: ask_launcher_hup_fn,
+    wait_for_file: wait_for_file_fn,
+    touch_file: touch_file_fn,
+    sleep_ms: sleep_ms_fn,
+    self_pid: host_shim::pid(),
+    platform_os: os,
+    arch: station_sys::arch_name(),
+    sep: sep,
+    default_app: default_app,
+    verify_fn: verify_fn,
+    random_hex: random_hex_fn,
+    tmpdir: station_sys::tmpdir(),
+    copy_dir: copy_dir_fn,
+    extract_archive: extract_archive_fn,
+    remove_tree: remove_tree_fn,
+    mkdir_exclusive: mkdir_exclusive_fn,
+    symlink_dir: symlink_dir_fn,
+    heap_stats: heap_stats_fn,
+  }
+}
+
+/// Entrypoint for all 8 non-`run` CLI subcommands.
+pub fn run_cli_main(argv : Array[String]) -> Int {
+  let process_start_ms = host_shim::now_ms()
+  let os = station_ops::detect_os()
+  let sep = match os {
+    station_ops::PlatformOs::Windows => "\\"
+    _ => "/"
+  }
+  let cli_args : Array[String] = []
+  let mut i = 1
+  while i < argv.length() {
+    cli_args.push(argv[i])
+    i = i + 1
+  }
+  let default_app = if argv.length() > 0 && argv[0].length() > 0 {
+    let resolved = match station_sys::realpath(argv[0]) {
+      Some(p) => p
+      None => argv[0]
+    }
+    let station_dir = nodepath::dirname(sep, resolved)
+    if station_dir != "" && station_dir != "." {
+      nodepath::dirname(sep, station_dir)
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+  let shell_dir = station_sys::tmpdir()
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("stillfail-station-pion: host_shim::start failed")
+    return 1
+  }
+  let env = parse_env_entries(station_sys::env_all(), station_sys::homedir())
+  let ports = build_production_cli_ports(default_app, process_start_ms)
+  let res = station_cli::dispatch_cli(cli_args, env, ports)
+  if res.stdout.length() > 0 {
+    let _ = host_shim::write_stdout(res.stdout.to_bytes())
+  }
+  if res.stderr.length() > 0 {
+    let _ = host_shim::write_stderr(res.stderr.to_bytes())
+  }
+  host_shim::stop()
+  res.exit_code
+}

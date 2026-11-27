@@ -4,6 +4,7 @@
 // Abstracts mesh & store callbacks so `station_jobs` does not couple to unmerged packages.
 
 import "admit"
+import "base_codec"
 import "crypto"
 import "nodepath"
 
@@ -158,6 +159,7 @@ pub fn mirror_state_str(s : MirrorState) -> String {
 }
 
 pub struct RemoteTaskRecord {
+  pub task_id : String
   pub key : String
   pub room_id : String
   pub workspace : String
@@ -166,9 +168,15 @@ pub struct RemoteTaskRecord {
   pub name : String
   pub command : String
   pub mirror_name : Option[String]
+  pub dir_source : Option[String]
+  pub spec_json : String
   pub back_paths : Array[String]
   pub screen : Bool
   pub small : Bool
+  pub mut push_ref : Option[String]
+  pub uploads : Map[String, Bool]
+  pub mut synced : Bool
+  pub mut collected : Bool
   pub mut state : RemoteTaskState
   pub mut job_id : Option[String]
   pub mut exit_code : Option[Int]
@@ -240,6 +248,7 @@ pub struct RemoteManager {
   pub mirrors_map : Map[String, MirrorRecord]
   pub mirror_keys : Array[String]
   pub job_to_task : Map[String, String]
+  pub mut can_start : Option[(String, String, String) -> Bool]
   mut tombstone_seq : Int64
 }
 
@@ -267,6 +276,7 @@ pub fn RemoteManager::new(
     mirrors_map: Map::new(),
     mirror_keys: [],
     job_to_task: Map::new(),
+    can_start: None,
     tombstone_seq: 0.to_int64(),
   }
 }
@@ -294,9 +304,156 @@ fn RemoteManager::tombstone_dir(self : RemoteManager, dir_path : String, now_ms 
   }
 }
 
-pub fn remote_room_id(workspace : String, source_station : String, source_session : String) -> String {
+fn remote_room_id(workspace : String, source_station : String, source_session : String) -> String {
   let raw = (workspace + ":" + source_station + ":" + source_session).to_bytes()
   sj_slice_str(crypto::sha256_hex(raw), 0, 16)
+}
+
+/// Computes the Node/MB-compatible full 64-char SHA-256 hex room ID (`rhash([workspace, peer, session])`).
+pub fn remote_room_id_v2(workspace : String, source_station : String, source_session : String) -> String {
+  let arr = base_codec::json_arr([
+    base_codec::json_str(workspace),
+    base_codec::json_str(source_station),
+    base_codec::json_str(source_session),
+  ])
+  crypto::sha256_hex(base_codec::json_stringify(arr).to_bytes())
+}
+
+/// Computes the Node/MB-compatible full 64-char SHA-256 hex incoming task ID
+/// (`rhash([workspace, peer, session, key])`, matching `remote_target.mbt:136`).
+pub fn remote_task_id(
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+) -> String {
+  let arr = base_codec::json_arr([
+    base_codec::json_str(workspace),
+    base_codec::json_str(source_station),
+    base_codec::json_str(source_session),
+    base_codec::json_str(key),
+  ])
+  crypto::sha256_hex(base_codec::json_stringify(arr).to_bytes())
+}
+
+/// Returns `true` iff `s` is a 64-char lowercase hex string (`remote_target.mbt:444`).
+pub fn is_hex64(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let b = s.code_unit_at(i) & 0xFF
+    if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Deep structural JSON equality (key-order independent for objects).
+pub fn json_deep_eq(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  match (a, b) {
+    (base_codec::Json::Null, base_codec::Json::Null) => true
+    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
+    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
+    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
+    (base_codec::Json::Arr(xs), base_codec::Json::Arr(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if !json_deep_eq(xs[i], ys[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (base_codec::Json::Obj(fs1), base_codec::Json::Obj(fs2)) => {
+      if fs1.length() != fs2.length() {
+        return false
+      }
+      for i in 0..<fs1.length() {
+        let (k, v1) = fs1[i]
+        match base_codec::json_get(b, k) {
+          Some(v2) => if !json_deep_eq(v1, v2) { return false }
+          None => return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Derives a safe mirror directory name from a caller-provided source `dir` path
+/// (`remote_target.mbt:667` `mirror_name`), capping at 100 UTF-16 code units and
+/// disambiguating collisions with `-2`, `-3`, ...
+pub fn derive_mirror_name(dir : String, claimed : Map[String, String]) -> String {
+  let slash_parts = dir.split("/")
+  let mut last = ""
+  for i in 0..<slash_parts.length() {
+    let sub = slash_parts[i].split("\\")
+    for j in 0..<sub.length() {
+      if sub[j].length() > 0 {
+        last = sub[j]
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  let raw = last.to_bytes()
+  let mut idx = 0
+  let mut utf16_units = 0
+  while idx < raw.length() {
+    let b0 = raw[idx].to_int() & 0xFF
+    let (seq_len, units) = if b0 < 0x80 {
+      (1, 1)
+    } else if (b0 & 0xE0) == 0xC0 && idx + 1 < raw.length() {
+      (2, 1)
+    } else if (b0 & 0xF0) == 0xE0 && idx + 2 < raw.length() {
+      (3, 1)
+    } else if (b0 & 0xF8) == 0xF0 && idx + 3 < raw.length() {
+      (4, 2)
+    } else {
+      (1, 1)
+    }
+    if utf16_units >= 100 {
+      break
+    }
+    if seq_len == 1 && b0 < 0x80 {
+      let ok = (b0 >= 65 && b0 <= 90)
+      || (b0 >= 97 && b0 <= 122)
+      || (b0 >= 48 && b0 <= 57)
+      || b0 == 46
+      || b0 == 95
+      || b0 == 32
+      || b0 == 45
+      sb.write_byte(if ok { raw[idx] } else { 95 as Byte })
+    } else {
+      for k in 0..<seq_len {
+        sb.write_byte(raw[idx + k])
+      }
+    }
+    utf16_units = utf16_units + units
+    idx = idx + seq_len
+  }
+  let mut base = sb.to_string()
+  if base.length() == 0 || base == "." || base == ".." {
+    base = "dir"
+  }
+  match claimed.get(base) {
+    None => return base
+    Some(prev) => if prev == dir { return base }
+  }
+  let mut n = 2
+  while n < 10000 {
+    let cand = base + "-" + n.to_string()
+    match claimed.get(cand) {
+      None => return cand
+      Some(prev) => if prev == dir { return cand }
+    }
+    n = n + 1
+  }
+  base + "-" + sj_slice_str(crypto::sha256_hex(dir.to_bytes()), 0, 8)
 }
 
 fn mirror_compound_key(room_id : String, mirror_name : String) -> String {
@@ -495,7 +652,7 @@ fn is_valid_mirror_name(mname : String) -> Bool {
 }
 
 /// Prepares a remote task under `req.key`. Idempotent when `req.key` already exists.
-pub fn RemoteManager::prepare(
+fn RemoteManager::prepare(
   self : RemoteManager,
   req : RemotePrepareRequest,
   now_ms : Int64,
@@ -539,6 +696,7 @@ pub fn RemoteManager::prepare(
     None => ()
   }
   let task = RemoteTaskRecord::{
+    task_id: req.key,
     key: req.key,
     room_id: room.room_id,
     workspace: req.workspace,
@@ -547,9 +705,15 @@ pub fn RemoteManager::prepare(
     name: if req.name.length() > 0 { req.name } else { req.key },
     command: req.command,
     mirror_name: req.mirror_name,
+    dir_source: req.mirror_name,
+    spec_json: "",
     back_paths: req.back_paths,
     screen: req.screen,
     small: req.small,
+    push_ref: None,
+    uploads: Map::new(),
+    synced: false,
+    collected: false,
     state: RemoteTaskState::Prepared,
     job_id: None,
     exit_code: None,
@@ -575,7 +739,7 @@ fn RemoteManager::spawn_task_job(
       match self.mirrors_map.get(mk) {
         Some(m) => {
           m.state = MirrorState::InUse
-          m.active_task = Some(task.key)
+          m.active_task = Some(task.task_id)
           m.last_used_at = now_ms
           m.path
         }
@@ -593,7 +757,7 @@ fn RemoteManager::spawn_task_job(
     }
   }
   let session_owner = "remote:" + task.workspace + ":" + task.source_station + ":" + task.source_session
-  let jid = "remote_" + task.key
+  let jid = "remote_" + task.task_id
   let req = JobStartRequest::{
     session: session_owner,
     name: task.name,
@@ -602,7 +766,7 @@ fn RemoteManager::spawn_task_job(
     port: None,
     watch: false,
     id: Some(jid),
-    queued: true,
+    queued: false,
     screen: task.screen,
     small: task.small,
     pipe_stdio: false,
@@ -612,21 +776,36 @@ fn RemoteManager::spawn_task_job(
       task.job_id = Some(job.id)
       task.state = RemoteTaskState::Running
       task.started_at = Some(now_ms)
-      self.job_to_task.set(job.id, task.key)
+      self.job_to_task.set(job.id, task.task_id)
+      let _ = self.persist_incoming_task(task)
       (self.callbacks.on_task_changed)(task)
       Ok(task)
     }
     Err(e) => {
       task.state = RemoteTaskState::Failed
       task.ended_at = Some(now_ms)
+      let _ = self.persist_incoming_task(task)
       (self.callbacks.on_task_changed)(task)
       Err(e)
     }
   }
 }
 
+/// Returns `true` if any recorded file upload for `task` has not yet been finalized (`final: true`).
+pub fn RemoteManager::has_incomplete_uploads(self : RemoteManager, task : RemoteTaskRecord) -> Bool {
+  let _ = self.root.length()
+  let ks = task.uploads.keys()
+  for i in 0..<ks.length() {
+    match task.uploads.get(ks[i]) {
+      Some(false) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
 /// Starts a prepared remote task.
-pub fn RemoteManager::start(
+fn RemoteManager::start(
   self : RemoteManager,
   key : String,
   now_ms : Int64,
@@ -641,6 +820,9 @@ pub fn RemoteManager::start(
   match task.state {
     RemoteTaskState::Prepared => ()
     _ => return Ok(task)
+  }
+  if self.has_incomplete_uploads(task) {
+    return Err("input upload is incomplete; finish it before starting")
   }
   match task.mirror_name {
     Some(mname) => {
@@ -657,9 +839,10 @@ pub fn RemoteManager::start(
           }
           if needs_sync {
             m.state = MirrorState::Syncing
-            m.active_task = Some(task.key)
+            m.active_task = Some(task.task_id)
             m.last_used_at = now_ms
             task.state = RemoteTaskState::Syncing
+            let _ = self.persist_incoming_task(task)
             (self.callbacks.on_task_changed)(task)
             return Ok(task)
           }
@@ -676,7 +859,7 @@ pub fn RemoteManager::start(
 }
 
 /// Marks a mirror dirsync as complete and advances the task into the admission queue.
-pub fn RemoteManager::sync_complete(
+fn RemoteManager::sync_complete(
   self : RemoteManager,
   key : String,
   manifest_hash : String,
@@ -738,7 +921,7 @@ pub fn RemoteManager::drain_queue(
                 None => t.created_at.to_double()
               }
               waiting.push(admit::Waiting::{
-                id: t.key,
+                id: t.task_id,
                 session: t.room_id,
                 screen: t.screen,
                 queued_at: qat,
@@ -747,14 +930,14 @@ pub fn RemoteManager::drain_queue(
             }
             RemoteTaskState::Running => {
               running.push(admit::Started::{
-                id: t.key,
+                id: t.task_id,
                 screen: t.screen,
                 small: t.small,
               })
             }
             RemoteTaskState::Stopping => {
               running.push(admit::Started::{
-                id: t.key,
+                id: t.task_id,
                 screen: t.screen,
                 small: t.small,
               })
@@ -777,8 +960,20 @@ pub fn RemoteManager::drain_queue(
       Some(admit::Picked::Start(w)) => {
         match self.tasks.get(w.id) {
           Some(task) => {
+            let allowed = match self.can_start {
+              Some(check) => check(task.workspace, task.source_station, task.source_session)
+              None => true
+            }
+            if !allowed {
+              task.state = RemoteTaskState::Stopped
+              task.ended_at = Some(now_ms)
+              self.release_task_mirror_idle(task)
+              let _ = self.persist_incoming_task(task)
+              (self.callbacks.on_task_changed)(task)
+              continue
+            }
             match self.spawn_task_job(task, now_ms) {
-              Ok(_) => started_keys.push(task.key)
+              Ok(_) => started_keys.push(task.task_id)
               Err(_) => ()
             }
           }
@@ -849,15 +1044,16 @@ pub fn RemoteManager::on_job_event(
     }
     None => ()
   }
+  let _ = self.persist_incoming_task(task)
   (self.callbacks.on_task_changed)(task)
   true
 }
 
-pub fn RemoteManager::get(self : RemoteManager, key : String) -> Option[RemoteTaskRecord] {
+fn RemoteManager::get(self : RemoteManager, key : String) -> Option[RemoteTaskRecord] {
   self.tasks.get(key)
 }
 
-pub fn RemoteManager::log(
+fn RemoteManager::log(
   self : RemoteManager,
   key : String,
   lines : Int = JOB_LOG_LINES_DEFAULT,
@@ -875,7 +1071,7 @@ pub fn RemoteManager::log(
 /// Stops a remote task. If an underlying job process is still alive (`JobState::Stopping`),
 /// transitions task to `Stopping` and keeps its mirror locked (`InUse`) until `on_job_event`
 /// confirms actual process exit so no concurrent task can corrupt the mirror.
-pub fn RemoteManager::stop(
+fn RemoteManager::stop(
   self : RemoteManager,
   key : String,
   now_ms : Int64,
@@ -912,7 +1108,7 @@ pub fn RemoteManager::stop(
       match self.mirrors_map.get(mk) {
         Some(m) => {
           if match m.active_task {
-            Some(ak) => ak == task.key
+            Some(ak) => ak == task.task_id
             None => false
           } {
             m.state = MirrorState::Idle
@@ -924,12 +1120,13 @@ pub fn RemoteManager::stop(
     }
     None => ()
   }
+  let _ = self.persist_incoming_task(task)
   (self.callbacks.on_task_changed)(task)
   Ok(task)
 }
 
 /// Releases a mirror held in `PendingRelease` after partial result download.
-pub fn RemoteManager::release(self : RemoteManager, key : String) -> Result[RemoteTaskRecord, String] {
+fn RemoteManager::release(self : RemoteManager, key : String) -> Result[RemoteTaskRecord, String] {
   let task = match self.tasks.get(key) {
     Some(t) => t
     None => return Err("unknown remote task: " + key)
@@ -960,7 +1157,7 @@ pub fn RemoteManager::release(self : RemoteManager, key : String) -> Result[Remo
   Ok(task)
 }
 
-pub fn RemoteManager::list(
+fn RemoteManager::list(
   self : RemoteManager,
   room_id_opt : Option[String] = None,
 ) -> Array[RemoteTaskRecord] {
@@ -982,7 +1179,7 @@ pub fn RemoteManager::list(
   out
 }
 
-pub fn RemoteManager::mirrors(
+fn RemoteManager::mirrors(
   self : RemoteManager,
   room_id_opt : Option[String] = None,
 ) -> Array[MirrorRecord] {
@@ -1008,7 +1205,7 @@ pub fn RemoteManager::mirrors(
 }
 
 /// Removes an idle mirror directory and marks it cleaned. Refuses if busy or pending release.
-pub fn RemoteManager::clean_mirror(
+fn RemoteManager::clean_mirror(
   self : RemoteManager,
   room_id : String,
   mirror_name : String,
@@ -1453,4 +1650,930 @@ pub fn RemoteManager::sweep(
     tasks_expired: [],
     budget_evicted_rooms: [],
   }
+}
+
+fn remote_task_state_from_str(s : String) -> RemoteTaskState {
+  if s == "prepared" {
+    RemoteTaskState::Prepared
+  } else if s == "syncing" {
+    RemoteTaskState::Syncing
+  } else if s == "queued" {
+    RemoteTaskState::Queued
+  } else if s == "running" {
+    RemoteTaskState::Running
+  } else if s == "stopping" {
+    RemoteTaskState::Stopping
+  } else if s == "exited" {
+    RemoteTaskState::Exited
+  } else if s == "stopped" {
+    RemoteTaskState::Stopped
+  } else if s == "released" {
+    RemoteTaskState::Released
+  } else {
+    RemoteTaskState::Failed
+  }
+}
+
+fn RemoteManager::release_task_mirror_idle(self : RemoteManager, task : RemoteTaskRecord) -> Unit {
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          if match m.active_task {
+            Some(ak) => ak == task.task_id
+            None => false
+          } {
+            m.state = MirrorState::Idle
+            m.active_task = None
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+}
+
+fn RemoteManager::ensure_room_v2(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> RemoteRoomRecord {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  match self.rooms.get(rid) {
+    Some(r) => {
+      if r.closed {
+        let _ = (self.fs.mkdir_p)(r.work_dir)
+      }
+      r.last_used_at = now_ms
+      r.closed = false
+      r
+    }
+    None => {
+      let work_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid, "work"])
+      let _ = (self.fs.mkdir_p)(work_dir)
+      let room = RemoteRoomRecord::{
+        room_id: rid,
+        workspace: workspace,
+        source_station: source_station,
+        source_session: source_session,
+        work_dir: work_dir,
+        last_used_at: now_ms,
+        closed: false,
+      }
+      self.rooms.set(rid, room)
+      self.room_ids.push(rid)
+      room
+    }
+  }
+}
+
+fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskRecord) -> Result[Unit, String] {
+  if task.task_id.length() == 0 || task.workspace.length() == 0 || task.source_station.length() == 0 || task.source_session.length() == 0 {
+    return Ok(())
+  }
+  let dir = nodepath::join(self.fs.sep, [self.root, "incoming", task.task_id])
+  if !(self.fs.mkdir_p)(dir) {
+    return Err("failed to create incoming task dir")
+  }
+  let back_arr : Array[base_codec::Json] = []
+  for i in 0..<task.back_paths.length() {
+    back_arr.push(base_codec::json_str(task.back_paths[i]))
+  }
+  let spec_obj = match base_codec::json_parse(task.spec_json) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => {
+      let sf : Array[(String, base_codec::Json)] = [
+        ("name", base_codec::json_str(task.name)),
+        ("command", base_codec::json_str(task.command)),
+        ("back", base_codec::json_arr(back_arr)),
+        ("screen", base_codec::json_bool(task.screen)),
+        ("small", base_codec::json_bool(task.small)),
+      ]
+      match task.dir_source {
+        Some(ds) => sf.push(("dir", base_codec::json_str(ds)))
+        None => ()
+      }
+      base_codec::json_obj(sf)
+    }
+  }
+  let upload_fields : Array[(String, base_codec::Json)] = []
+  let ukeys = task.uploads.keys()
+  for ui in 0..<ukeys.length() {
+    let uk = ukeys[ui]
+    match task.uploads.get(uk) {
+      Some(done) => upload_fields.push((uk, base_codec::json_bool(done)))
+      None => ()
+    }
+  }
+  // 1:1 Node/MB `remote_target.mbt:166` field names (`spec`, `workspace`, `station`, `session`, `key`, `layout`, `mirror`, `push`, `uploads`, `synced`, `collected`).
+  let fields : Array[(String, base_codec::Json)] = [
+    ("spec", spec_obj),
+    ("workspace", base_codec::json_str(task.workspace)),
+    ("station", base_codec::json_str(task.source_station)),
+    ("session", base_codec::json_str(task.source_session)),
+    ("key", base_codec::json_str(task.key)),
+    ("layout", base_codec::json_str("session")),
+    ("state", base_codec::json_str(remote_task_state_str(task.state))),
+    ("created_at", base_codec::json_int64(task.created_at)),
+    ("uploads", base_codec::json_obj(upload_fields)),
+    ("synced", base_codec::json_bool(task.synced)),
+    ("collected", base_codec::json_bool(task.collected)),
+    ("pending_results", base_codec::json_bool(task.pending_results)),
+  ]
+  match task.mirror_name {
+    Some(m) => fields.push(("mirror", base_codec::json_str(m)))
+    None => ()
+  }
+  match task.push_ref {
+    Some(p) => fields.push(("push", base_codec::json_str(p)))
+    None => ()
+  }
+  match task.job_id {
+    Some(j) => fields.push(("job_id", base_codec::json_str(j)))
+    None => ()
+  }
+  match task.exit_code {
+    Some(c) => fields.push(("exit_code", base_codec::json_int(c)))
+    None => ()
+  }
+  match task.queued_at {
+    Some(q) => fields.push(("queued_at", base_codec::json_int64(q)))
+    None => ()
+  }
+  match task.started_at {
+    Some(s) => fields.push(("started_at", base_codec::json_int64(s)))
+    None => ()
+  }
+  match task.ended_at {
+    Some(e) => fields.push(("ended_at", base_codec::json_int64(e)))
+    None => ()
+  }
+  let path = nodepath::join(self.fs.sep, [dir, "task.json"])
+  let tmp = path + ".tmp"
+  let data = (base_codec::json_stringify(base_codec::json_obj(fields)) + "\n").to_bytes()
+  if !(self.fs.write_file_mode)(tmp, data, 384, false) {
+    return Err("failed to write task.json")
+  }
+  if !(self.fs.rename)(tmp, path) {
+    let _ = (self.fs.remove_file)(tmp)
+    return Err("failed to rename task.json")
+  }
+  Ok(())
+}
+
+/// Reloads persisted `<data>/remote/incoming/<task_id>/task.json` records (both Node/MB and Pion format)
+/// and reconciles them against adopted `self.jobs` records.
+pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64) -> Int {
+  let inc_root = nodepath::join(self.fs.sep, [self.root, "incoming"])
+  let dirs = match (self.fs.read_dir)(inc_root) {
+    Some(ds) => ds
+    None => return 0
+  }
+  let mut count = 0
+  for i in 0..<dirs.length() {
+    let tid = dirs[i]
+    if sj_starts_with(tid, ".") {
+      continue
+    }
+    let path = nodepath::join(self.fs.sep, [inc_root, tid, "task.json"])
+    let raw = match (self.fs.read_file)(path) {
+      Some(s) => s
+      None => continue
+    }
+    let parsed = match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => continue
+    }
+    let task_id = tid
+    if self.tasks.contains(task_id) {
+      continue
+    }
+    let key = match base_codec::json_get(parsed, "key") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => continue
+    }
+    let ws = match base_codec::json_get(parsed, "workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let src_st = match base_codec::json_get(parsed, "station") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => match base_codec::json_get(parsed, "source_station") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+    }
+    let src_sess = match base_codec::json_get(parsed, "session") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => match base_codec::json_get(parsed, "source_session") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+    }
+    let spec_v = match base_codec::json_get(parsed, "spec") {
+      Some(s) => s
+      None => parsed
+    }
+    let spec_json = base_codec::json_stringify(spec_v)
+    let name = match base_codec::json_get(spec_v, "name") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => key
+    }
+    let command = match base_codec::json_get(spec_v, "command") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let dir_source : Option[String] = match base_codec::json_get(spec_v, "dir") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+    let mirror_name : Option[String] = match base_codec::json_get(parsed, "mirror") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => match base_codec::json_get(parsed, "mirror_name") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
+    }
+    let push_ref : Option[String] = match base_codec::json_get(parsed, "push") {
+      Some(base_codec::Json::Str(s)) => if is_hex64(s) { Some(s) } else { None }
+      _ => None
+    }
+    let back_paths : Array[String] = []
+    match base_codec::json_get(spec_v, "back") {
+      Some(base_codec::Json::Arr(arr)) => {
+        for ai in 0..<arr.length() {
+          match arr[ai] {
+            base_codec::Json::Str(s) => back_paths.push(s)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let screen = match base_codec::json_get(spec_v, "screen") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let small = match base_codec::json_get(spec_v, "small") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let synced = match base_codec::json_get(parsed, "synced") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let collected = match base_codec::json_get(parsed, "collected") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let mut state = match base_codec::json_get(parsed, "state") {
+      Some(base_codec::Json::Str(s)) => remote_task_state_from_str(s)
+      _ => RemoteTaskState::Prepared
+    }
+    let default_jid = "remote_" + task_id
+    let mut job_id : Option[String] = match base_codec::json_get(parsed, "job_id") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => if self.jobs.get(default_jid) is Some(_) { Some(default_jid) } else { None }
+    }
+    let mut exit_code : Option[Int] = match base_codec::json_get(parsed, "exit_code") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int())
+      _ => None
+    }
+    let created_at = match base_codec::json_get(parsed, "created_at") {
+      Some(base_codec::Json::Num(d, _)) => d.to_int64()
+      _ => now_ms
+    }
+    let queued_at : Option[Int64] = match base_codec::json_get(parsed, "queued_at") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+    let started_at : Option[Int64] = match base_codec::json_get(parsed, "started_at") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+    let mut ended_at : Option[Int64] = match base_codec::json_get(parsed, "ended_at") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+    let pending_results = match base_codec::json_get(parsed, "pending_results") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let room = self.ensure_room_v2(ws, src_st, src_sess, now_ms)
+    match job_id {
+      Some(jid) => {
+        self.job_to_task.set(jid, task_id)
+        match self.jobs.get(jid) {
+          Some(j) => {
+            match j.state {
+              JobState::Running => state = RemoteTaskState::Running
+              JobState::Stopping => state = RemoteTaskState::Stopping
+              JobState::Exited => {
+                state = RemoteTaskState::Exited
+                exit_code = j.exit_code
+                ended_at = j.ended_at
+              }
+              JobState::Stopped => {
+                state = RemoteTaskState::Stopped
+                exit_code = j.exit_code
+                ended_at = j.ended_at
+              }
+              JobState::Failed => {
+                state = RemoteTaskState::Failed
+                exit_code = j.exit_code
+                ended_at = j.ended_at
+              }
+              _ => ()
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    let uploads_map : Map[String, Bool] = Map::new()
+    match base_codec::json_get(parsed, "uploads") {
+      Some(base_codec::Json::Obj(ufs)) => {
+        for ui in 0..<ufs.length() {
+          let (uk, uv) = ufs[ui]
+          match uv {
+            base_codec::Json::Bool(b) => uploads_map.set(uk, b)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let rec = RemoteTaskRecord::{
+      task_id: task_id,
+      key: key,
+      room_id: room.room_id,
+      workspace: ws,
+      source_station: src_st,
+      source_session: src_sess,
+      name: name,
+      command: command,
+      mirror_name: mirror_name,
+      dir_source: dir_source,
+      spec_json: spec_json,
+      back_paths: back_paths,
+      screen: screen,
+      small: small,
+      push_ref: push_ref,
+      uploads: uploads_map,
+      synced: synced,
+      collected: collected,
+      state: state,
+      job_id: job_id,
+      exit_code: exit_code,
+      created_at: created_at,
+      queued_at: queued_at,
+      started_at: started_at,
+      ended_at: ended_at,
+      pending_results: pending_results,
+    }
+    self.tasks.set(task_id, rec)
+    self.task_keys.push(task_id)
+    count = count + 1
+  }
+  count
+}
+
+/// Prepares a scoped remote task keyed by full 64-char `remote_task_id(ws, peer, session, key)`.
+/// Rejects conflicting re-prepare of the same key with different `spec_json`, and derives safe
+/// mirror names from `spec.dir` (never using raw `spec.dir` as a directory name).
+pub fn RemoteManager::prepare_scoped(
+  self : RemoteManager,
+  req : RemotePrepareRequest,
+  now_ms : Int64,
+  spec_json : String = "",
+) -> Result[RemoteTaskRecord, String] {
+  if req.workspace.length() == 0 || req.source_station.length() == 0 || req.source_session.length() == 0 {
+    return Err("workspace, peer, and session are required")
+  }
+  if req.key.length() == 0 || req.key.length() > 128 {
+    return Err("task key is required (max 128 chars)")
+  }
+  if req.command.length() == 0 {
+    return Err("task command is required")
+  }
+  let tid = remote_task_id(req.workspace, req.source_station, req.source_session, req.key)
+  match self.tasks.get(tid) {
+    Some(existing) => {
+      if spec_json.length() > 0 && existing.spec_json.length() > 0 {
+        let eq = match (base_codec::json_parse(existing.spec_json), base_codec::json_parse(spec_json)) {
+          (base_codec::JsonParseResult::Ok(ja), base_codec::JsonParseResult::Ok(jb)) => json_deep_eq(ja, jb)
+          _ => existing.spec_json == spec_json
+        }
+        if !eq {
+          return Err("task key already used with different inputs; choose a new key for new work")
+        }
+      }
+      if existing.command != req.command || existing.name != (if req.name.length() > 0 { req.name } else { req.key }) {
+        return Err("task key already used with different inputs; choose a new key for new work")
+      }
+      return Ok(existing)
+    }
+    None => ()
+  }
+  let room = self.ensure_room_v2(req.workspace, req.source_station, req.source_session, now_ms)
+  let mut derived_mirror : Option[String] = None
+  match req.mirror_name {
+    Some(raw_dir) => {
+      let claimed : Map[String, String] = Map::new()
+      for ti in 0..<self.task_keys.length() {
+        match self.tasks.get(self.task_keys[ti]) {
+          Some(other) => {
+            if other.room_id == room.room_id {
+              match (other.mirror_name, other.dir_source) {
+                (Some(om), Some(od)) => claimed.set(om, od)
+                _ => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      let mname = derive_mirror_name(raw_dir, claimed)
+      let mk = mirror_compound_key(room.room_id, mname)
+      if !self.mirrors_map.contains(mk) {
+        let mpath = nodepath::join(self.fs.sep, [room.work_dir, mname])
+        let _ = (self.fs.mkdir_p)(mpath)
+        self.mirrors_map.set(
+          mk,
+          MirrorRecord::{
+            name: mname,
+            room_id: room.room_id,
+            path: mpath,
+            state: MirrorState::Idle,
+            active_task: None,
+            last_used_at: now_ms,
+            bytes: 0.to_int64(),
+            manifest_hash: "",
+          },
+        )
+        self.mirror_keys.push(mk)
+      }
+      derived_mirror = Some(mname)
+    }
+    None => ()
+  }
+  let task = RemoteTaskRecord::{
+    task_id: tid,
+    key: req.key,
+    room_id: room.room_id,
+    workspace: req.workspace,
+    source_station: req.source_station,
+    source_session: req.source_session,
+    name: if req.name.length() > 0 { req.name } else { req.key },
+    command: req.command,
+    mirror_name: derived_mirror,
+    dir_source: req.mirror_name,
+    spec_json: spec_json,
+    back_paths: req.back_paths,
+    screen: req.screen,
+    small: req.small,
+    push_ref: None,
+    uploads: Map::new(),
+    synced: false,
+    collected: false,
+    state: RemoteTaskState::Prepared,
+    job_id: None,
+    exit_code: None,
+    created_at: now_ms,
+    queued_at: None,
+    started_at: None,
+    ended_at: None,
+    pending_results: false,
+  }
+  match self.persist_incoming_task(task) {
+    Ok(_) => {
+      self.tasks.set(tid, task)
+      self.task_keys.push(tid)
+      Ok(task)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn RemoteManager::get_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+) -> Option[RemoteTaskRecord] {
+  self.tasks.get(remote_task_id(workspace, source_station, source_session, key))
+}
+
+pub fn RemoteManager::set_task_push_ref(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+  push_ref : String,
+) -> Result[Unit, String] {
+  if is_hex64(push_ref) {
+    task.push_ref = Some(push_ref)
+    self.persist_incoming_task(task)
+  } else {
+    Ok(())
+  }
+}
+
+pub fn RemoteManager::record_task_upload(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+  rel_path : String,
+  complete : Bool,
+) -> Result[Unit, String] {
+  let prev = task.uploads.get(rel_path)
+  task.uploads.set(rel_path, complete)
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      match prev {
+        Some(v) => task.uploads.set(rel_path, v)
+        None => task.uploads.remove(rel_path)
+      }
+      Err(e)
+    }
+  }
+}
+
+pub fn RemoteManager::mark_task_synced(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+) -> Result[Unit, String] {
+  let prev = task.synced
+  task.synced = true
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      task.synced = prev
+      Err(e)
+    }
+  }
+}
+
+pub fn RemoteManager::mark_task_collected(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+) -> Result[Unit, String] {
+  let prev_c = task.collected
+  let prev_p = task.pending_results
+  task.collected = true
+  task.pending_results = false
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      task.collected = prev_c
+      task.pending_results = prev_p
+      Err(e)
+    }
+  }
+}
+
+pub fn RemoteManager::start_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+  now_ms : Int64,
+  needs_sync : Bool = false,
+  pressure : Option[Pressure] = None,
+  person_present : Bool = false,
+) -> Result[RemoteTaskRecord, String] {
+  let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
+  self.start(tid, now_ms, needs_sync=needs_sync, pressure=pressure, person_present=person_present)
+}
+
+pub fn RemoteManager::sync_complete_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+  manifest_hash : String,
+  now_ms : Int64,
+  pressure : Option[Pressure] = None,
+  person_present : Bool = false,
+) -> Result[RemoteTaskRecord, String] {
+  let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
+  self.sync_complete(tid, manifest_hash, now_ms, pressure=pressure, person_present=person_present)
+}
+
+pub fn RemoteManager::log_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+  lines : Int = JOB_LOG_LINES_DEFAULT,
+) -> Result[String, String] {
+  let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
+  self.log(tid, lines=lines)
+}
+
+pub fn RemoteManager::stop_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+  now_ms : Int64,
+) -> Result[RemoteTaskRecord, String] {
+  let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
+  self.stop(tid, now_ms)
+}
+
+pub fn RemoteManager::release_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  key : String,
+) -> Result[RemoteTaskRecord, String] {
+  let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
+  match self.release(tid) {
+    Ok(t) => {
+      let _ = self.persist_incoming_task(t)
+      Ok(t)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn RemoteManager::list_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+) -> Array[RemoteTaskRecord] {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  self.list(room_id_opt=Some(rid))
+}
+
+pub fn RemoteManager::mirrors_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+) -> Array[MirrorRecord] {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  self.mirrors(room_id_opt=Some(rid))
+}
+
+pub fn RemoteManager::clean_mirror_scoped(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  mirror_name : String,
+) -> Result[Bool, String] {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  self.clean_mirror(rid, mirror_name)
+}
+
+pub fn RemoteManager::task_base_dir(self : RemoteManager, task : RemoteTaskRecord) -> String {
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => m.path
+        None => nodepath::join(self.fs.sep, [self.root, "sessions", task.room_id, "work", mname])
+      }
+    }
+    None => {
+      match self.rooms.get(task.room_id) {
+        Some(r) => r.work_dir
+        None => nodepath::join(self.fs.sep, [self.root, "sessions", task.room_id, "work"])
+      }
+    }
+  }
+}
+
+pub fn RemoteManager::session_work_dir(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> String {
+  let room = self.ensure_room_v2(workspace, source_station, source_session, now_ms)
+  room.work_dir
+}
+
+pub fn RemoteManager::session_work_size(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+) -> (Bool, Int64) {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+  match (self.fs.lstat)(room_dir) {
+    None => (false, 0L)
+    Some(_) => {
+      let sz = tree_bytes(self.fs, room_dir)
+      (true, sz.bytes)
+    }
+  }
+}
+
+/// Recursively lists files under `rel` relative to `cwd` (`remote_target.mbt:460` `visit_files`),
+/// sorting directory entries lexicographically and capping at 1000 files.
+pub fn visit_files_recursive(
+  fs : FsPort,
+  cwd : String,
+  rel : String,
+  out : Array[(String, Option[Int64])],
+) -> Result[Unit, String] {
+  if out.length() >= 1000 {
+    return Err("more than 1000 files to bring back")
+  }
+  let full = match safe_transfer_path(fs, cwd, rel, false) {
+    Ok(p) => p
+    Err(_) => {
+      out.push((rel, None))
+      return Ok(())
+    }
+  }
+  match (fs.lstat)(full) {
+    None => {
+      out.push((rel, None))
+      Ok(())
+    }
+    Some(st) => {
+      if st.is_file() {
+        out.push((rel, Some(st.size)))
+        Ok(())
+      } else if st.is_dir() && !st.is_symlink() {
+        let names = match (fs.read_dir)(full) {
+          Some(ns) => ns
+          None => return Ok(())
+        }
+        // Sort names lexicographically (insertion sort).
+        for i in 1..<names.length() {
+          let cur = names[i]
+          let mut j = i - 1
+          while j >= 0 && names[j] > cur {
+            names[j + 1] = names[j]
+            j = j - 1
+          }
+          names[j + 1] = cur
+        }
+        let mut base = rel
+        while base.ends_with("/") && base.length() > 0 {
+          base = sj_slice_str(base, 0, base.length() - 1)
+        }
+        for i in 0..<names.length() {
+          let child_rel = if base.length() > 0 { base + "/" + names[i] } else { names[i] }
+          match visit_files_recursive(fs, cwd, child_rel, out) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(())
+      } else {
+        Ok(())
+      }
+    }
+  }
+}
+
+/// Cancels all queued, syncing, running, or stopping tasks & jobs for `(workspace, peer, session)`.
+pub fn RemoteManager::cancel_session_tasks(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> Int {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  let mut count = 0
+  for i in 0..<self.task_keys.length() {
+    let tid = self.task_keys[i]
+    match self.tasks.get(tid) {
+      Some(t) => {
+        if t.room_id == rid && !remote_task_is_done(t.state) {
+          let _ = self.stop(tid, now_ms)
+          count = count + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let owner = "remote:" + workspace + ":" + source_station + ":" + source_session
+  let js = self.jobs.list(session_opt=Some(owner))
+  for ji in 0..<js.length() {
+    if job_state_is_up(js[ji].state) {
+      let _ = self.jobs.stop(js[ji].id, now_ms, false)
+      count = count + 1
+    }
+  }
+  count
+}
+
+/// Cancels all active tasks & jobs owned by `(workspace, peer)` (e.g. peer left roster).
+pub fn RemoteManager::cancel_peer_tasks(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  now_ms : Int64,
+) -> Int {
+  let mut count = 0
+  for i in 0..<self.task_keys.length() {
+    let tid = self.task_keys[i]
+    match self.tasks.get(tid) {
+      Some(t) => {
+        if t.workspace == workspace && t.source_station == source_station && !remote_task_is_done(t.state) {
+          let _ = self.stop(tid, now_ms)
+          count = count + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let prefix = "remote:" + workspace + ":" + source_station + ":"
+  let js = self.jobs.list()
+  for ji in 0..<js.length() {
+    if job_state_is_up(js[ji].state) && sj_starts_with(js[ji].session, prefix) {
+      let _ = self.jobs.stop(js[ji].id, now_ms, false)
+      count = count + 1
+    }
+  }
+  count
+}
+
+/// Cancels all active tasks & jobs for `workspace` (e.g. rig removed from workspace).
+pub fn RemoteManager::cancel_workspace_tasks(
+  self : RemoteManager,
+  workspace : String,
+  now_ms : Int64,
+) -> Int {
+  let mut count = 0
+  for i in 0..<self.task_keys.length() {
+    let tid = self.task_keys[i]
+    match self.tasks.get(tid) {
+      Some(t) => {
+        if t.workspace == workspace && !remote_task_is_done(t.state) {
+          let _ = self.stop(tid, now_ms)
+          count = count + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let prefix = "remote:" + workspace + ":"
+  let js = self.jobs.list()
+  for ji in 0..<js.length() {
+    if job_state_is_up(js[ji].state) && sj_starts_with(js[ji].session, prefix) {
+      let _ = self.jobs.stop(js[ji].id, now_ms, false)
+      count = count + 1
+    }
+  }
+  count
+}
+
+/// Stops all tasks/jobs in `(workspace, peer, session)` and removes its room directory.
+pub fn RemoteManager::close_session_room(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> Bool {
+  let _ = self.cancel_session_tasks(workspace, source_station, source_session, now_ms)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+  match self.tombstone_dir(room_dir, now_ms) {
+    Some(tomb) => {
+      let _ = (self.fs.remove_dir_all)(tomb)
+    }
+    None => ()
+  }
+  match self.rooms.get(rid) {
+    Some(r) => r.closed = true
+    None => ()
+  }
+  true
 }

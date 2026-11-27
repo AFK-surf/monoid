@@ -1,0 +1,2921 @@
+// Pure testable helpers and RPC dispatcher for the pure-Pion `roles:rig` daemon (`station_main`).
+
+import "base64"
+import "base_codec"
+import "form"
+import "nodepath"
+import "station_cloud"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_rig"
+import "station_rules_bridge"
+import "station_store"
+import "station_sys"
+import "station_vault"
+
+pub struct RigRunArgs {
+  pub app : Option[String]
+  pub data : String
+  pub port : Option[Int]
+  pub launcher : station_ops::LauncherArgs
+}
+
+fn parse_non_neg_int(s : String) -> Option[Int] {
+  if s.length() == 0 {
+    return None
+  }
+  let mut acc = 0
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  Some(acc)
+}
+
+/// Parse `stillfail-station-pion run [--app DIR] [--port N] [--data DIR] [--control-fd N] [--launcher-*]`
+/// arguments into a normalized `RigRunArgs`.
+pub fn parse_rig_run_args(
+  argv : Array[String],
+  env_data : Option[String],
+  home : String,
+  sep : String = "/",
+) -> Result[RigRunArgs, String] {
+  let args : Array[String] = []
+  let start = if argv.length() > 1 && argv[1] == "run" { 2 } else { 1 }
+  for i in start..<argv.length() {
+    args.push(argv[i])
+  }
+  let app = station_ops::flag(args, "--app")
+  let data = station_ops::data_dir(args, env_data, home, sep=sep)
+  let port : Option[Int] = match station_ops::flag(args, "--port") {
+    Some(p) => {
+      match parse_non_neg_int(p) {
+        Some(n) => {
+          if n > 65535 {
+            return Err("invalid --port value: " + p)
+          }
+          Some(n)
+        }
+        None => return Err("invalid --port value: " + p)
+      }
+    }
+    None => None
+  }
+  let base_launcher = station_ops::parse_launcher_args(args)
+  let launcher = match (base_launcher.fds, station_ops::flag(args, "--control-fd")) {
+    (None, Some(fd_raw)) => {
+      match parse_non_neg_int(fd_raw) {
+        Some(fd) => {
+          station_ops::LauncherArgs::{
+            fds: Some(station_ops::LauncherFds::{ mcp: -1, loopback: -1, control: fd }),
+            pipe: base_launcher.pipe,
+            ports: base_launcher.ports,
+            carries: base_launcher.carries,
+            heartbeats: base_launcher.heartbeats,
+            installer: base_launcher.installer,
+          }
+        }
+        None => return Err("invalid --control-fd value: " + fd_raw)
+      }
+    }
+    _ => base_launcher
+  }
+  Ok(RigRunArgs::{ app: app, data: data, port: port, launcher: launcher })
+}
+
+/// Launcher-parity `is_rig` check on raw `cloud.json` text (`station/native/launcher/src/data.rs:202`):
+/// returns `true` iff top-level JSON is an object with an object `rig` field AND NO `removed_at` key
+/// (even `"removed_at": null` MUST return `false` to match the Rust launcher).
+pub fn is_rig_raw_cloud_json(raw : String) -> Bool {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fields)) => {
+      let mut has_rig = false
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if k == "removed_at" {
+          return false
+        }
+        if k == "rig" {
+          match v {
+            base_codec::Json::Obj(_) => has_rig = true
+            _ => ()
+          }
+        }
+      }
+      has_rig
+    }
+    _ => false
+  }
+}
+
+/// `remote:<workspace>:<station>:<session>` job owner key (`station/src/rig/main.ts:44`).
+pub fn owner_of(workspace : String, station : String, session : String) -> String {
+  "remote:" + workspace + ":" + station + ":" + session
+}
+
+/// Parse `remote:<workspace>:<station>:<session>` back into `RunningChat`, preserving colons in `<session>`.
+pub fn parse_owner(session_key : String) -> Option[station_rig::RunningChat] {
+  if !session_key.starts_with("remote:") {
+    return None
+  }
+  let rest = session_key.slice(7, session_key.length())
+  let mut c1 = -1
+  for i in 0..<rest.length() {
+    if (rest.code_unit_at(i) & 0xFF) == 58 {
+      c1 = i
+      break
+    }
+  }
+  if c1 < 0 {
+    return None
+  }
+  let mut c2 = -1
+  for i in (c1 + 1)..<rest.length() {
+    if (rest.code_unit_at(i) & 0xFF) == 58 {
+      c2 = i
+      break
+    }
+  }
+  if c2 < 0 {
+    return None
+  }
+  let ws = rest.slice(0, c1)
+  let st = rest.slice(c1 + 1, c2)
+  let sess = rest.slice(c2 + 1, rest.length())
+  Some(station_rig::RunningChat::{ workspace: ws, station: st, session: sess })
+}
+
+pub fn format_hub_json(pid : Int) -> String {
+  "{\"pid\":" + pid.to_string() + "}\n"
+}
+
+pub fn format_hub_json_with_start(
+  pid : Int,
+  proc_start_time_ms : Option[Int64],
+  proc_start_ticks : Option[Int64] = None,
+  boot_id : Option[String] = None,
+) -> String {
+  let fields : Array[(String, base_codec::Json)] = [("pid", base_codec::json_int(pid))]
+  match proc_start_time_ms {
+    Some(st) => if st > 0L { fields.push(("procStartTimeMs", base_codec::json_int64(st))) }
+    None => ()
+  }
+  match (proc_start_ticks, boot_id) {
+    (Some(ticks), Some(bid)) => {
+      if ticks >= 0L && bid.length() > 0 {
+        fields.push(("procStartTicks", base_codec::json_int64(ticks)))
+        fields.push(("bootId", base_codec::json_str(bid)))
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
+}
+
+pub fn format_ports_json(port : Int) -> String {
+  "{\"admin\":" + port.to_string() + "}\n"
+}
+
+pub fn format_mcp_json(port : Int) -> String {
+  "{\"port\":" + port.to_string() + "}\n"
+}
+
+pub fn read_hub_pid(text : String) -> Option[Int] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "pid") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let p = d.to_int()
+          if p.to_double() == d && p > 0 { Some(p) } else { None }
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Build `LoopbackPlace` from `CloudStore` for `/healthz` and `/admin*` redirects.
+pub fn build_loopback_place(cloud : station_cloud::CloudStore) -> Option[station_ops::LoopbackPlace] {
+  match cloud.state {
+    Some(s) => {
+      Some(station_ops::LoopbackPlace::{
+        origin: s.origin,
+        workspace: s.workspace,
+        workspace_name: s.workspace_name,
+        station: s.station,
+        removed_at: s.removed_at,
+      })
+    }
+    None => None
+  }
+}
+
+fn json_str_field(v : base_codec::Json, key : String, fallback : String = "") -> String {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn json_opt_str_field(v : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn json_bool_field(v : base_codec::Json, key : String, fallback : Bool = false) -> Bool {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+fn json_int_field(v : base_codec::Json, key : String, fallback : Int = 0) -> Int {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => d.to_int()
+    _ => fallback
+  }
+}
+
+fn json_int64_field(v : base_codec::Json, key : String, fallback : Int64 = 0L) -> Int64 {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => fallback
+  }
+}
+
+fn json_str_array_field(v : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn require_session(req : base_codec::Json) -> Result[String, String] {
+  let s = json_str_field(req, "session")
+  if s.length() == 0 || s.length() > 256 {
+    return Err("session is required (1..256 chars)")
+  }
+  Ok(s)
+}
+
+fn require_key(req : base_codec::Json) -> Result[String, String] {
+  let k = json_str_field(req, "key")
+  if k.length() == 0 || k.length() > 128 {
+    return Err("key is required (1..128 chars)")
+  }
+  Ok(k)
+}
+
+fn is_valid_env_name(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 || raw.length() > 128 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let is_alpha = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+    let is_digit = b >= 48 && b <= 57
+    if i == 0 && !is_alpha {
+      return false
+    }
+    if !(is_alpha || is_digit) {
+      return false
+    }
+  }
+  true
+}
+
+fn is_safe_under(under : String) -> Bool {
+  if under.length() == 0 {
+    return true
+  }
+  if under.starts_with("/") || under.starts_with("\\") {
+    return false
+  }
+  let parts = under.split("/")
+  for i in 0..<parts.length() {
+    if parts[i] == ".." {
+      return false
+    }
+    let sub = parts[i].split("\\")
+    for j in 0..<sub.length() {
+      if sub[j] == ".." {
+        return false
+      }
+    }
+  }
+  true
+}
+
+/// Convert `station_cloud::CloudStore` into the decoupled `station_mesh::CloudRoster` view.
+pub fn build_cloud_roster(
+  cloud : station_cloud::CloudStore,
+  now_secs : Double,
+  peers_current : Bool,
+) -> station_mesh::CloudRoster {
+  let st = match cloud.state {
+    Some(s) => s
+    None => return station_mesh::CloudRoster::empty()
+  }
+  let ms = cloud.memberships(now_secs)
+  let out_ms : Array[station_mesh::WorkspaceMembership] = []
+  for i in 0..<ms.length() {
+    let m = ms[i]
+    let peers : Array[station_mesh::PeerInfo] = []
+    for pi in 0..<m.peers.length() {
+      let pid = json_str_field(m.peers[pi], "id")
+      if pid.length() > 0 {
+        peers.push(station_mesh::PeerInfo::{ id: pid, name: json_str_field(m.peers[pi], "name") })
+      }
+    }
+    let rigs : Array[station_mesh::RigInfo] = []
+    match m.rigs {
+      Some(rs) => {
+        for ri in 0..<rs.length() {
+          rigs.push(station_mesh::RigInfo::{
+            id: rs[ri].id,
+            name: rs[ri].name,
+            workspace: m.workspace,
+          })
+        }
+      }
+      None => ()
+    }
+    let ws_opt : Option[String] = if m.home { None } else { Some(m.workspace) }
+    let waiting = match cloud.locked(now_secs, ws=ws_opt) {
+      Some(eff) => eff.waiting
+      None => false
+    }
+    out_ms.push(station_mesh::WorkspaceMembership::{
+      workspace: m.workspace,
+      name: m.name,
+      home: m.home,
+      is_rig_here: m.rig is Some(_),
+      waiting: waiting,
+      peers: peers,
+      unprotected: [],
+      rigs: rigs,
+      rigs_named: rigs,
+    })
+  }
+  let relays = match st.stillfail_relays {
+    Some(rs) => rs
+    None => st.relay_urls
+  }
+  station_mesh::CloudRoster::{
+    origin: st.origin,
+    station_id: st.station,
+    peers_current: peers_current,
+    stillfail_relays: relays,
+    memberships: out_ms,
+    moved_offered: Map::new(),
+  }
+}
+
+/// Convert a `station_jobs::RemoteTaskRecord` + its backing `JobRecord` into the Node/MB wire `job` JSON.
+/// Returns `null` when the task has not yet started (`t.job_id is None`), matching `remote_target.mbt:389,392`.
+pub fn remote_task_job_json(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> base_codec::Json {
+  match t.job_id {
+    Some(jid) => {
+      match remote.jobs.get(jid) {
+        Some(j) => return j.to_json()
+        None => ()
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(jid)),
+        ("session", base_codec::json_str(owner_of(t.workspace, t.source_station, t.source_session))),
+        ("name", base_codec::json_str(t.name)),
+        ("command", base_codec::json_str(t.command)),
+        ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state))),
+        ("startedAt", base_codec::json_int64(match t.started_at { Some(s) => s; None => t.created_at })),
+        ("screen", base_codec::json_bool(t.screen)),
+        ("small", base_codec::json_bool(t.small)),
+      ]
+      match t.exit_code {
+        Some(c) => fields.push(("exitCode", base_codec::json_int(c)))
+        None => ()
+      }
+      match t.ended_at {
+        Some(e) => fields.push(("endedAt", base_codec::json_int64(e)))
+        None => ()
+      }
+      base_codec::json_obj(fields)
+    }
+    None => base_codec::json_null()
+  }
+}
+
+pub fn remote_task_spec_json(t : station_jobs::RemoteTaskRecord) -> base_codec::Json {
+  let back_arr : Array[base_codec::Json] = []
+  for i in 0..<t.back_paths.length() {
+    back_arr.push(base_codec::json_str(t.back_paths[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(t.name)),
+    ("command", base_codec::json_str(t.command)),
+    ("back", base_codec::json_arr(back_arr)),
+    ("screen", base_codec::json_bool(t.screen)),
+    ("small", base_codec::json_bool(t.small)),
+  ]
+  match t.mirror_name {
+    Some(m) => fields.push(("dir", base_codec::json_str(m)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn task_notices_json(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  match t.job_id {
+    Some(jid) => {
+      match remote.jobs.get(jid) {
+        Some(j) => {
+          for i in 0..<j.notices.length() {
+            out.push(base_codec::json_obj([
+              ("at", base_codec::json_int64(j.notices[i].at)),
+              ("text", base_codec::json_str(j.notices[i].text)),
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  base_codec::json_arr(out)
+}
+
+/// Convert a `station_jobs::RemoteTaskRecord` into its wire JSON representation.
+pub fn remote_task_to_json(t : station_jobs::RemoteTaskRecord) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("key", base_codec::json_str(t.key)),
+    ("name", base_codec::json_str(t.name)),
+    ("command", base_codec::json_str(t.command)),
+    ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state))),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+    ("screen", base_codec::json_bool(t.screen)),
+    ("small", base_codec::json_bool(t.small)),
+    ("pendingResults", base_codec::json_bool(t.pending_results)),
+  ]
+  match t.job_id {
+    Some(jid) => fields.push(("job", base_codec::json_str(jid)))
+    None => ()
+  }
+  match t.exit_code {
+    Some(c) => fields.push(("exitCode", base_codec::json_int(c)))
+    None => ()
+  }
+  match t.started_at {
+    Some(s) => fields.push(("startedAt", base_codec::json_int64(s)))
+    None => ()
+  }
+  match t.ended_at {
+    Some(e) => fields.push(("endedAt", base_codec::json_int64(e)))
+    None => ()
+  }
+  match t.mirror_name {
+    Some(m) => fields.push(("mirror", base_codec::json_str(m)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Mirror a `station_jobs::JobRecord` into `station_store::Store` (`stillfail.db`).
+pub fn sync_job_to_store(store : station_store::Store, job : station_jobs::JobRecord) -> Unit {
+  let port_opt : Option[Int64] = match job.port {
+    Some(p) => Some(p.to_int64())
+    None => None
+  }
+  let pgid_opt : Option[Int64] = match job.pgid {
+    Some(p) => Some(p.to_int64())
+    None => None
+  }
+  let exit_opt : Option[Int64] = match job.exit_code {
+    Some(c) => Some(c.to_int64())
+    None => None
+  }
+  let state_s = station_jobs::job_state_to_str(job.state)
+  match station_store::get_job(store.db, job.id) {
+    Ok(Some(_)) => {
+      let _ = station_store::update_job_state(
+        store.db,
+        job.id,
+        state_s,
+        pgid_opt,
+        exit_opt,
+        job.ended_at,
+      )
+    }
+    Ok(None) => {
+      let rec = station_store::JobRecord::{
+        id: job.id,
+        session_key: job.session,
+        name: job.name,
+        command: job.command,
+        cwd: job.cwd,
+        port: port_opt,
+        token: job.token,
+        state: state_s,
+        pgid: pgid_opt,
+        exit_code: exit_opt,
+        started_at: job.started_at,
+        ended_at: job.ended_at,
+        restarts: job.restarts.to_int64(),
+        log: job.log_path,
+        watch: job.watch,
+        queued: if job.queued { Some(1L) } else { None },
+        screen: if job.screen { Some(1L) } else { None },
+        size: None,
+        small: if job.small { Some(1L) } else { None },
+      }
+      let _ = station_store::insert_job(store.db, rec)
+    }
+    Err(_) => ()
+  }
+}
+
+/// Hydrate a `station_store::JobRecord` (e.g. written by Node `RigLive`) into a `station_jobs::JobRecord`.
+pub fn store_job_to_job_record(rec : station_store::JobRecord) -> station_jobs::JobRecord {
+  let port_opt : Option[Int] = match rec.port {
+    Some(p) => Some(p.to_int())
+    None => None
+  }
+  let pgid_opt : Option[Int] = match rec.pgid {
+    Some(p) => Some(p.to_int())
+    None => None
+  }
+  let exit_opt : Option[Int] = match rec.exit_code {
+    Some(c) => Some(c.to_int())
+    None => None
+  }
+  station_jobs::JobRecord::{
+    id: rec.id,
+    session: rec.session_key,
+    name: rec.name,
+    command: rec.command,
+    cwd: rec.cwd,
+    port: port_opt,
+    token: rec.token,
+    state: station_jobs::job_state_from_str(rec.state),
+    pgid: pgid_opt,
+    start_time_ms: None,
+    exit_code: exit_opt,
+    started_at: rec.started_at,
+    ended_at: rec.ended_at,
+    restarts: rec.restarts.to_int(),
+    log_path: rec.log,
+    watch: rec.watch,
+    queued: match rec.queued { Some(v) => v != 0L; None => false },
+    screen: match rec.screen { Some(v) => v != 0L; None => false },
+    small: match rec.small { Some(v) => v != 0L; None => false },
+    notices: [],
+    next_restart_at: None,
+    stop_deadline_at: None,
+  }
+}
+
+/// Request handed off to the daemon's real process runner for `vault.run` / `vault.capture`.
+pub struct VaultExecRequest {
+  pub id : String
+  pub workspace : String
+  pub peer : String
+  pub session : String
+  pub command : String
+  pub cwd : String
+  pub env_pairs : Array[(String, String)]
+  pub secret_values : Array[String]
+  pub timeout_ms : Int64
+  pub grant_exp_sec : Int64
+  pub idle_timeout_sec : Int64
+  pub capture : Bool
+}
+
+/// Streaming file response plan for `file.get` (`whole: true`), streamed in chunks to EOF without truncation.
+pub struct StreamFilePlan {
+  pub root : String
+  pub rel : String
+  pub offset : Int64
+  pub size : Int64
+}
+
+/// Wire reply returned by `dispatch_rig_peer_rpc_ext` (JSON header + optional binary tail or streamed file).
+pub struct PeerDispatchReply {
+  pub json : base_codec::Json
+  pub binary : Option[Bytes]
+  pub stream_file : Option[StreamFilePlan]
+}
+
+fn reply_json(j : base_codec::Json) -> PeerDispatchReply {
+  PeerDispatchReply::{ json: j, binary: None, stream_file: None }
+}
+
+/// Runtime hooks injected by `rig_daemon.pion` (or mocked in pure unit tests).
+pub struct RigDispatchHooks {
+  pub on_lock_sync : (String, base_codec::Json) -> Result[base_codec::Json, String]
+  pub on_ways_sync : (String, base_codec::Json) -> Result[base_codec::Json, String]
+  pub on_vault_exec : (VaultExecRequest) -> Result[Unit, String]
+  pub on_vault_revoke : (String, String) -> Unit
+  pub take_grants_write_err : () -> Option[String]
+  pub read_under_hook : Option[(String, String, Int64, Int) -> Result[(Bytes, Int64), String]]
+  pub write_under_hook : Option[(String, String, Bytes, Int64, Int, Bool) -> Result[Unit, String]]
+}
+
+pub fn default_rig_dispatch_hooks() -> RigDispatchHooks {
+  RigDispatchHooks::{
+    on_lock_sync: fn(_ws : String, req : base_codec::Json) -> Result[base_codec::Json, String] {
+      station_mesh::answer_lock(
+        0,
+        None,
+        None,
+        [],
+        req,
+        fn(_entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
+          Err("lock write not configured")
+        },
+        fn(_entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
+          Err("lock offer not configured")
+        },
+      )
+    },
+    on_ways_sync: fn(_ws : String, _req : base_codec::Json) -> Result[base_codec::Json, String] {
+      Err("ways sync not configured")
+    },
+    on_vault_exec: fn(_req : VaultExecRequest) -> Result[Unit, String] {
+      Err("vault execution runner not configured")
+    },
+    on_vault_revoke: fn(_peer : String, _id : String) -> Unit {},
+    take_grants_write_err: fn() -> Option[String] { None },
+    read_under_hook: None,
+    write_under_hook: None,
+  }
+}
+
+fn is_hex40(s : String) -> Bool {
+  if s.length() != 40 {
+    return false
+  }
+  for i in 0..<40 {
+    let b = s.code_unit_at(i) & 0xFF
+    if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn slice_bytes_helper(b : Bytes, start : Int, end : Int) -> Bytes {
+  let s = if start < 0 { 0 } else if start > b.length() { b.length() } else { start }
+  let e = if end < s { s } else if end > b.length() { b.length() } else { end }
+  let out = Bytes::new(e - s)
+  for i in 0..<(e - s) {
+    out[i] = b[s + i]
+  }
+  out
+}
+
+fn bytes_to_str_helper(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+/// Safe read under `root`/`rel`: uses FD-level `O_NOFOLLOW` hook in production, or `remote.fs` in pure tests.
+fn safe_read_under(
+  fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
+  root : String,
+  rel : String,
+  offset : Int64,
+  max_len : Int,
+) -> Result[(Bytes, Int64), String] {
+  match hooks.read_under_hook {
+    Some(f) => f(root, rel, offset, max_len)
+    None => {
+      let target = match station_jobs::safe_transfer_path(fs, root, rel, false) {
+        Ok(p) => p
+        Err(e) => return Err(e)
+      }
+      let st = match (fs.lstat)(target) {
+        Some(s) => {
+          if s.is_symlink() || !s.is_file() {
+            return Err("file path is not a regular file: " + rel)
+          }
+          s
+        }
+        None => return Err("file not found: " + rel)
+      }
+      if max_len <= 0 || offset >= st.size {
+        return Ok((Bytes::new(0), st.size))
+      }
+      match (fs.read_range)(target, offset, max_len.to_int64()) {
+        Some(b) => Ok((b, st.size))
+        None => Err("failed to read file: " + rel)
+      }
+    }
+  }
+}
+
+/// Safe write under `root`/`rel`: uses FD-level `O_NOFOLLOW` hook in production, or `remote.fs` in pure tests.
+fn safe_write_under(
+  fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
+  root : String,
+  rel : String,
+  data : Bytes,
+  offset : Int64,
+  mode : Int,
+  truncate : Bool,
+) -> Result[Unit, String] {
+  match hooks.write_under_hook {
+    Some(f) => f(root, rel, data, offset, mode, truncate)
+    None => {
+      let target = match station_jobs::safe_transfer_path(fs, root, rel, true) {
+        Ok(p) => p
+        Err(e) => return Err(e)
+      }
+      let append = offset > 0L
+      if append {
+        match (fs.lstat)(target) {
+          Some(st) => {
+            if st.is_symlink() || !st.is_file() {
+              return Err("file path is not a regular file")
+            }
+            if offset > st.size {
+              return Err("offset mismatch: expected <= " + st.size.to_string())
+            }
+          }
+          None => return Err("offset mismatch: file does not exist")
+        }
+      } else {
+        match (fs.lstat)(target) {
+          Some(st) => {
+            if st.is_symlink() {
+              return Err("file path contains a symbolic link")
+            }
+          }
+          None => ()
+        }
+      }
+      if !(fs.write_file_mode)(target, data, mode, append) {
+        return Err("failed to write file: " + rel)
+      }
+      Ok(())
+    }
+  }
+}
+
+/// Pure-Pion streaming SHA-1 (RFC 3174) for O(1)-memory Git blob hashing up to 1 GiB.
+struct Sha1Hasher {
+  mut h0 : Int
+  mut h1 : Int
+  mut h2 : Int
+  mut h3 : Int
+  mut h4 : Int
+  mut total_bytes : Int64
+  block : Array[Int]
+  mut block_len : Int
+}
+
+fn sha1_rotl(v : Int, bits : Int) -> Int {
+  let u = v & 0xFFFFFFFF
+  ((u << bits) | ((u >> (32 - bits)) & ((1 << bits) - 1))) & 0xFFFFFFFF
+}
+
+fn Sha1Hasher::new() -> Sha1Hasher {
+  let blk : Array[Int] = []
+  for _ in 0..<64 {
+    blk.push(0)
+  }
+  Sha1Hasher::{
+    h0: 0x67452301,
+    h1: 0xEFCDAB89,
+    h2: 0x98BADCFE,
+    h3: 0x10325476,
+    h4: 0xC3D2E1F0,
+    total_bytes: 0L,
+    block: blk,
+    block_len: 0,
+  }
+}
+
+fn Sha1Hasher::compress(self : Sha1Hasher) -> Unit {
+  let w : Array[Int] = []
+  for i in 0..<16 {
+    let j = i * 4
+    let word = ((self.block[j] & 0xFF) << 24)
+    | ((self.block[j + 1] & 0xFF) << 16)
+    | ((self.block[j + 2] & 0xFF) << 8)
+    | (self.block[j + 3] & 0xFF)
+    w.push(word & 0xFFFFFFFF)
+  }
+  for i in 16..<80 {
+    w.push(sha1_rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1))
+  }
+  let mut a = self.h0
+  let mut b = self.h1
+  let mut c = self.h2
+  let mut d = self.h3
+  let mut e = self.h4
+  for i in 0..<80 {
+    let (f, k) = if i < 20 {
+      (((b & c) | (((b ^ 0xFFFFFFFF) & 0xFFFFFFFF) & d)) & 0xFFFFFFFF, 0x5A827999)
+    } else if i < 40 {
+      ((b ^ c ^ d) & 0xFFFFFFFF, 0x6ED9EBA1)
+    } else if i < 60 {
+      (((b & c) | (b & d) | (c & d)) & 0xFFFFFFFF, 0x8F1BBCDC)
+    } else {
+      ((b ^ c ^ d) & 0xFFFFFFFF, 0xCA62C1D6)
+    }
+    let tmp = (sha1_rotl(a, 5) + f + e + k + w[i]) & 0xFFFFFFFF
+    e = d
+    d = c
+    c = sha1_rotl(b, 30)
+    b = a
+    a = tmp
+  }
+  self.h0 = (self.h0 + a) & 0xFFFFFFFF
+  self.h1 = (self.h1 + b) & 0xFFFFFFFF
+  self.h2 = (self.h2 + c) & 0xFFFFFFFF
+  self.h3 = (self.h3 + d) & 0xFFFFFFFF
+  self.h4 = (self.h4 + e) & 0xFFFFFFFF
+}
+
+fn Sha1Hasher::update(self : Sha1Hasher, data : Bytes) -> Unit {
+  for i in 0..<data.length() {
+    self.block[self.block_len] = data[i].to_int() & 0xFF
+    self.block_len = self.block_len + 1
+    self.total_bytes = self.total_bytes + 1L
+    if self.block_len == 64 {
+      self.compress()
+      self.block_len = 0
+    }
+  }
+}
+
+fn Sha1Hasher::finish_hex(self : Sha1Hasher) -> String {
+  let bit_len = self.total_bytes * 8L
+  self.block[self.block_len] = 0x80
+  self.block_len = self.block_len + 1
+  if self.block_len > 56 {
+    while self.block_len < 64 {
+      self.block[self.block_len] = 0
+      self.block_len = self.block_len + 1
+    }
+    self.compress()
+    self.block_len = 0
+  }
+  while self.block_len < 56 {
+    self.block[self.block_len] = 0
+    self.block_len = self.block_len + 1
+  }
+  self.block[56] = ((bit_len >> 56) & 0xFFL).to_int()
+  self.block[57] = ((bit_len >> 48) & 0xFFL).to_int()
+  self.block[58] = ((bit_len >> 40) & 0xFFL).to_int()
+  self.block[59] = ((bit_len >> 32) & 0xFFL).to_int()
+  self.block[60] = ((bit_len >> 24) & 0xFFL).to_int()
+  self.block[61] = ((bit_len >> 16) & 0xFFL).to_int()
+  self.block[62] = ((bit_len >> 8) & 0xFFL).to_int()
+  self.block[63] = (bit_len & 0xFFL).to_int()
+  self.compress()
+  let out = Bytes::new(20)
+  let words = [self.h0, self.h1, self.h2, self.h3, self.h4]
+  for wi in 0..<5 {
+    let v = words[wi]
+    out[wi * 4] = ((v >> 24) & 0xFF) as Byte
+    out[wi * 4 + 1] = ((v >> 16) & 0xFF) as Byte
+    out[wi * 4 + 2] = ((v >> 8) & 0xFF) as Byte
+    out[wi * 4 + 3] = (v & 0xFF) as Byte
+  }
+  base_codec::hex_encode(out)
+}
+
+/// Computes Git blob SHA-1 (`"blob <size>\0" + content`) in 256 KiB chunks via `safe_read_under` (O(1) RAM, supports up to 1 GiB).
+fn stream_file_blob_id(
+  fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
+  root : String,
+  rel : String,
+  size : Int64,
+) -> Result[String, String] {
+  let hasher = Sha1Hasher::new()
+  let hdr = ("blob " + size.to_string()).to_bytes()
+  hasher.update(hdr)
+  let nul = Bytes::new(1)
+  nul[0] = 0 as Byte
+  hasher.update(nul)
+  let mut off = 0L
+  while off < size {
+    let rem = size - off
+    let take = if rem > station_jobs::REMOTE_CHUNK.to_int64() { station_jobs::REMOTE_CHUNK } else { rem.to_int() }
+    match safe_read_under(fs, hooks, root, rel, off, take) {
+      Ok((chunk, _)) => {
+        if chunk.length() == 0 {
+          return Err("unexpected EOF hashing " + rel)
+        }
+        hasher.update(chunk)
+        off = off + chunk.length().to_int64()
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(hasher.finish_hex())
+}
+
+/// Copies `src_root/src_rel` to `dst_root/dst_rel` in 256 KiB chunks via `safe_read_under` / `safe_write_under` (O(1) RAM, up to 1 GiB).
+fn stream_copy_file(
+  fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
+  src_root : String,
+  src_rel : String,
+  dst_root : String,
+  dst_rel : String,
+  size : Int64,
+  mode : Int,
+) -> Result[Unit, String] {
+  if size == 0L {
+    return safe_write_under(fs, hooks, dst_root, dst_rel, Bytes::new(0), 0L, mode, true)
+  }
+  let mut off = 0L
+  while off < size {
+    let rem = size - off
+    let take = if rem > station_jobs::REMOTE_CHUNK.to_int64() { station_jobs::REMOTE_CHUNK } else { rem.to_int() }
+    let chunk = match safe_read_under(fs, hooks, src_root, src_rel, off, take) {
+      Ok((b, _)) => b
+      Err(e) => return Err(e)
+    }
+    if chunk.length() == 0 {
+      return Err("unexpected EOF copying " + src_rel)
+    }
+    let is_last = off + chunk.length().to_int64() >= size
+    match safe_write_under(fs, hooks, dst_root, dst_rel, chunk, off, mode, is_last || off == 0L) {
+      Ok(_) => off = off + chunk.length().to_int64()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
+}
+
+/// Recursively scan `mirror_dir` into MB-compatible `files` map: `path -> [blobId, mode, size, mtimeMs, ino, ctimeMs]`.
+fn scan_mirror_files_map(
+  fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
+  mirror_dir : String,
+  rel_prefix : String,
+  out : Map[String, base_codec::Json],
+) -> Unit {
+  let cur_dir = if rel_prefix.length() == 0 {
+    mirror_dir
+  } else {
+    nodepath::join(fs.sep, [mirror_dir, rel_prefix])
+  }
+  let names = match (fs.read_dir)(cur_dir) {
+    Some(ns) => ns
+    None => return
+  }
+  for i in 1..<names.length() {
+    let cur = names[i]
+    let mut j = i - 1
+    while j >= 0 && names[j] > cur {
+      names[j + 1] = names[j]
+      j = j - 1
+    }
+    names[j + 1] = cur
+  }
+  for i in 0..<names.length() {
+    let name = names[i]
+    let child_rel = if rel_prefix.length() == 0 { name } else { rel_prefix + "/" + name }
+    let full = nodepath::join(fs.sep, [cur_dir, name])
+    match (fs.lstat)(full) {
+      Some(st) => {
+        if st.is_symlink() {
+          continue
+        }
+        if st.is_dir() {
+          scan_mirror_files_map(fs, hooks, mirror_dir, child_rel, out)
+        } else if st.is_file() {
+          match stream_file_blob_id(fs, hooks, mirror_dir, child_rel, st.size) {
+            Ok(bid) => {
+              let mode_s = if fs.sep != "\\" && st.executable {
+                station_jobs::DIRSYNC_EXEC_MODE
+              } else {
+                station_jobs::DIRSYNC_FILE_MODE
+              }
+              out.set(
+                child_rel,
+                base_codec::json_arr([
+                  base_codec::json_str(bid),
+                  base_codec::json_str(mode_s),
+                  base_codec::json_int64(st.size),
+                  base_codec::json_int64(st.mtime_ms),
+                  base_codec::json_int64(0L),
+                  base_codec::json_int64(st.mtime_ms),
+                ]),
+              )
+            }
+            Err(_) => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+fn files_map_to_json_obj(m : Map[String, base_codec::Json]) -> base_codec::Json {
+  let ks = m.keys()
+  for i in 1..<ks.length() {
+    let cur = ks[i]
+    let mut j = i - 1
+    while j >= 0 && ks[j] > cur {
+      ks[j + 1] = ks[j]
+      j = j - 1
+    }
+    ks[j + 1] = cur
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ks.length() {
+    match m.get(ks[i]) {
+      Some(v) => fields.push((ks[i], v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+fn parse_files_map_from_json(v : base_codec::Json) -> Map[String, base_codec::Json] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  match v {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (k, ev) = fs[i]
+        out.set(k, ev)
+      }
+    }
+    base_codec::Json::Arr(arr) => {
+      // Backward-compat fallback for legacy `[path, id, mode]` arrays.
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Arr(tuple) => {
+            if tuple.length() >= 3 {
+              match tuple[0] {
+                base_codec::Json::Str(p) => {
+                  out.set(p, base_codec::json_arr([tuple[1], tuple[2]]))
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn files_map_to_sorted_entries(m : Map[String, base_codec::Json]) -> Array[base_codec::Json] {
+  let ks = m.keys()
+  for i in 1..<ks.length() {
+    let cur = ks[i]
+    let mut j = i - 1
+    while j >= 0 && ks[j] > cur {
+      ks[j + 1] = ks[j]
+      j = j - 1
+    }
+    ks[j + 1] = cur
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<ks.length() {
+    match m.get(ks[i]) {
+      Some(base_codec::Json::Arr(ev)) => {
+        if ev.length() >= 2 {
+          out.push(base_codec::json_arr([base_codec::json_str(ks[i]), ev[0], ev[1]]))
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+fn entry_hash_mode(opt : Option[base_codec::Json]) -> Option[(String, String)] {
+  match opt {
+    Some(base_codec::Json::Arr(ev)) => {
+      if ev.length() >= 2 {
+        match (ev[0], ev[1]) {
+          (base_codec::Json::Str(h), base_codec::Json::Str(m)) => Some((h, m))
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn same_hash_mode(a : Option[(String, String)], b : Option[(String, String)]) -> Bool {
+  match (a, b) {
+    (Some((h1, m1)), Some((h2, m2))) => h1 == h2 && m1 == m2
+    (None, None) => true
+    _ => false
+  }
+}
+
+/// Active streaming `file.put` context for bounded-memory binary uploads up to 1 GiB.
+pub struct StreamPutCtx {
+  pub ws : String
+  pub rec : station_jobs::RemoteTaskRecord
+  pub work : String
+  pub rel : String
+  pub start_offset : Int64
+  pub expected_size : Option[Int64]
+  pub is_final : Bool
+  pub mut cur_offset : Int64
+  pub mut written : Int64
+}
+
+/// Validates auth, grants, task key, offset, and size for a streaming `PEER_BYTES` `file.put` request
+/// BEFORE receiving its binary body, recording `uploads[rel] = false`.
+pub fn begin_streaming_file_put(
+  roster : station_mesh::CloudRoster,
+  peer : String,
+  env : station_mesh::PeerRequestEnvelope,
+  rig : station_rig::Rig,
+  remote : station_jobs::RemoteManager,
+  now_ms : Int64,
+) -> Result[StreamPutCtx, String] {
+  let ws = match station_mesh::route_incoming_peer(roster, peer, env, false, false) {
+    Ok(station_mesh::PeerRouteTarget::BusLocal(w)) => w
+    Ok(_) => return Err("a rig does not answer this route")
+    Err(e) => return Err(e)
+  }
+  let form_req = station_rules_bridge::base_to_form(env.request)
+  match rig.guard_request(ws, peer, form_req) {
+    Ok(_) => ()
+    Err(r) => return Err(r.message)
+  }
+  let session = match require_session(env.request) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let key = match require_key(env.request) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  let rec = match remote.get_scoped(ws, peer, session, key) {
+    Some(t) => {
+      if t.job_id is Some(_) {
+        return Err("inputs are immutable after a task starts")
+      }
+      t
+    }
+    None => return Err("unknown remote task: " + key)
+  }
+  let rel = json_str_field(env.request, "path")
+  if rel.length() == 0 {
+    return Err("file path is required")
+  }
+  let offset = json_int64_field(env.request, "offset", fallback=0L)
+  if offset < 0L {
+    return Err("invalid negative offset")
+  }
+  let explicit_final : Option[Bool] = match base_codec::json_get(env.request, "final") {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+  let req_size_opt : Option[Int64] = match base_codec::json_get(env.request, "size") {
+    Some(base_codec::Json::Num(d, _)) => {
+      let sz = d.to_int64()
+      if sz < 0L || sz > station_jobs::REMOTE_MAX_FILE {
+        return Err("file size exceeds 1 GiB limit")
+      }
+      Some(sz)
+    }
+    _ => None
+  }
+  let is_whole = match (req_size_opt, explicit_final) {
+    (Some(_), None) => offset == 0L
+    (Some(_), Some(true)) => offset == 0L
+    _ => false
+  }
+  let is_final = is_whole || (match explicit_final { Some(b) => b; None => false })
+  let work = remote.session_work_dir(ws, peer, session, now_ms)
+  match remote.record_task_upload(rec, rel, false) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  Ok(StreamPutCtx::{
+    ws: ws,
+    rec: rec,
+    work: work,
+    rel: rel,
+    start_offset: offset,
+    expected_size: if is_whole { req_size_opt } else { None },
+    is_final: is_final,
+    cur_offset: offset,
+    written: 0L,
+  })
+}
+
+/// Finalizes a streaming `file.put` on EOF: checks `expected_size`, truncates if needed, and persists `uploads[rel] = true`.
+pub fn finish_streaming_file_put(
+  remote : station_jobs::RemoteManager,
+  ctx : StreamPutCtx,
+) -> Result[base_codec::Json, String] {
+  match ctx.expected_size {
+    Some(expected_sz) => {
+      if ctx.written != expected_sz {
+        return Err("file size mismatch: expected " + expected_sz.to_string())
+      }
+    }
+    None => ()
+  }
+  if ctx.is_final {
+    match remote.record_task_upload(ctx.rec, ctx.rel, true) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(base_codec::json_obj([("bytes", base_codec::json_int64(ctx.written))]))
+}
+
+/// Extract the primary secret value and all non-empty string values from `secret.fields`.
+fn extract_secret_fields(secret : base_codec::Json) -> (Option[String], Array[String]) {
+  let values : Array[String] = []
+  let fields = match base_codec::json_get(secret, "fields") {
+    Some(base_codec::Json::Obj(fs)) => fs
+    _ => return (None, values)
+  }
+  let mut primary : Option[String] = None
+  let mut first_non_empty : Option[String] = None
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    match v {
+      base_codec::Json::Str(s) => {
+        if s.length() > 0 {
+          values.push(s)
+          if first_non_empty is None {
+            first_non_empty = Some(s)
+          }
+          if k == "value" || k == "token" || k == "password" || k == "secret" || k == "key" {
+            if primary is None {
+              primary = Some(s)
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  match primary {
+    Some(p) => (Some(p), values)
+    None => (first_non_empty, values)
+  }
+}
+
+/// Full incoming peer RPC dispatcher with binary tail & runtime hooks.
+pub fn dispatch_rig_peer_rpc_ext(
+  roster : station_mesh::CloudRoster,
+  peer : String,
+  env : station_mesh::PeerRequestEnvelope,
+  binary_tail : Option[Bytes],
+  v2_bytes : Bool,
+  rig : station_rig::Rig,
+  remote : station_jobs::RemoteManager,
+  incoming : station_vault::IncomingRegistry,
+  vault_grants : station_vault::GrantStore,
+  load_json : () -> base_codec::Json,
+  hooks : RigDispatchHooks,
+  now_ms : Int64,
+) -> Result[PeerDispatchReply, String] {
+  let ws = match station_mesh::route_incoming_peer(roster, peer, env, false, false) {
+    Ok(station_mesh::PeerRouteTarget::BusLocal(w)) => w
+    Ok(station_mesh::PeerRouteTarget::LockSync(w)) => {
+      match (hooks.on_lock_sync)(w, env.request) {
+        Ok(res) => return Ok(reply_json(res))
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(station_mesh::PeerRouteTarget::WaysSync(w)) => {
+      match (hooks.on_ways_sync)(w, env.request) {
+        Ok(res) => return Ok(reply_json(res))
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(_) => return Err("a rig does not answer this route")
+    Err(e) => return Err(e)
+  }
+  let form_req = station_rules_bridge::base_to_form(env.request)
+  match rig.guard_request(ws, peer, form_req) {
+    Ok(_) => ()
+    Err(r) => return Err(r.message)
+  }
+  let method = json_str_field(env.request, "method")
+  if method.starts_with("rig.") {
+    // Clear any prior write error before mutating rig grants, then check immediately after.
+    let _ = (hooks.take_grants_write_err)()
+    match rig.heard(peer, form_req, ws) {
+      Ok(res_form) => {
+        match (hooks.take_grants_write_err)() {
+          Some(werr) => {
+            rig.grants.reload()
+            return Err("failed to persist rig grants: " + werr)
+          }
+          None => return Ok(reply_json(station_rules_bridge::form_to_base(res_form)))
+        }
+      }
+      Err(r) => return Err(r.message)
+    }
+  }
+  if method == "describe" {
+    let desc_form = rig.described(ws)
+    let desc_base = station_rules_bridge::form_to_base(desc_form)
+    let fields : Array[(String, base_codec::Json)] = match desc_base {
+      base_codec::Json::Obj(fs) => fs
+      _ => []
+    }
+    fields.push(("load", load_json()))
+    fields.push(("runtime", base_codec::json_str("pion")))
+    fields.push(("role", base_codec::json_str("rig")))
+    return Ok(reply_json(base_codec::json_obj(fields)))
+  }
+  if method == "task.prepare" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let spec = match base_codec::json_get(env.request, "spec") {
+      Some(s) => s
+      None => env.request
+    }
+    let sandbox_req = match json_opt_str_field(env.request, "sandbox") {
+      Some(s) => Some(s)
+      None => json_opt_str_field(spec, "sandbox")
+    }
+    match sandbox_req {
+      Some(_) => return Err("sandboxes are not supported on this rig")
+      None => ()
+    }
+    let name = json_str_field(spec, "name", fallback=key)
+    let command = json_str_field(spec, "command")
+    let mirror = match json_opt_str_field(spec, "dir") {
+      Some(d) => Some(d)
+      None => json_opt_str_field(spec, "mirror")
+    }
+    let back_paths = json_str_array_field(spec, "back")
+    let screen = json_bool_field(spec, "screen")
+    let small = json_bool_field(spec, "small")
+    if small && screen {
+      return Err("a small task cannot use the screen")
+    }
+    let req = station_jobs::RemotePrepareRequest::{
+      key: key,
+      workspace: ws,
+      source_station: peer,
+      source_session: session,
+      name: name,
+      command: command,
+      mirror_name: mirror,
+      back_paths: back_paths,
+      screen: screen,
+      small: small,
+    }
+    let spec_json = base_codec::json_stringify(spec)
+    match remote.prepare_scoped(req, now_ms, spec_json=spec_json) {
+      Ok(rec) => {
+        let fields : Array[(String, base_codec::Json)] = [
+          ("key", base_codec::json_str(rec.key)),
+          ("prepared", base_codec::json_bool(true)),
+        ]
+        match rec.mirror_name {
+          Some(m) => fields.push(("dir", base_codec::json_str(m)))
+          None => ()
+        }
+        return Ok(reply_json(base_codec::json_obj(fields)))
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.start" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let needs_sync = json_bool_field(env.request, "syncing", fallback=false)
+    match remote.get_scoped(ws, peer, session, key) {
+      Some(rec) => {
+        if rec.mirror_name is Some(_) && !rec.synced && !needs_sync {
+          return Err("directory sync is not complete; finish sync.commit before starting")
+        }
+        let push_raw = json_str_field(env.request, "push")
+        if push_raw.length() > 0 && station_jobs::is_hex64(push_raw) {
+          match remote.set_task_push_ref(rec, push_raw) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      None => return Err("unknown remote task: " + key)
+    }
+    match remote.start_scoped(ws, peer, session, key, now_ms, needs_sync=needs_sync) {
+      Ok(rec) => {
+        let job_j = remote_task_job_json(remote, rec)
+        let fields : Array[(String, base_codec::Json)] = [
+          ("key", base_codec::json_str(rec.key)),
+          ("job", job_j),
+        ]
+        if rec.push_ref is Some(_) {
+          fields.push(("push", base_codec::json_bool(true)))
+        }
+        match rec.state {
+          station_jobs::RemoteTaskState::Syncing => fields.push(("syncing", base_codec::json_bool(true)))
+          _ => ()
+        }
+        return Ok(reply_json(base_codec::json_obj(fields)))
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  if method.starts_with("sync.") {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => t
+      None => return Err("unknown remote task: " + key)
+    }
+    let mname = match rec.mirror_name {
+      Some(m) => m
+      None => return Err("this task has no directory to sync")
+    }
+    let room_dir = nodepath::join(remote.fs.sep, [remote.root, "sessions", rec.room_id])
+    let sync_dir = nodepath::join(remote.fs.sep, [room_dir, "sync", mname])
+    let blobs_dir = nodepath::join(remote.fs.sep, [sync_dir, "blobs"])
+    let state_path = nodepath::join(remote.fs.sep, [sync_dir, "state.json"])
+    let actual_path = nodepath::join(remote.fs.sep, [sync_dir, "actual.json"])
+    let base_path = nodepath::join(remote.fs.sep, [sync_dir, "base.json"])
+    let plan_path = nodepath::join(remote.fs.sep, [sync_dir, "plan.jsonl"])
+    let manifests_dir = nodepath::join(remote.fs.sep, [room_dir, "mirrors"])
+    let manifest_path = nodepath::join(remote.fs.sep, [manifests_dir, mname + ".json"])
+    let mirror_dir = remote.task_base_dir(rec)
+    if method == "sync.begin" {
+      if rec.job_id is Some(_) {
+        return Ok(reply_json(base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("started", base_codec::json_bool(true)),
+        ])))
+      }
+      let _ = (remote.fs.mkdir_p)(mirror_dir)
+      let _ = (remote.fs.mkdir_p)(manifests_dir)
+      let mut prev_version = 0
+      let mut base_map : Map[String, base_codec::Json] = Map::new()
+      match (remote.fs.read_file)(manifest_path) {
+        Some(mraw) => {
+          match base_codec::json_parse(mraw) {
+            base_codec::JsonParseResult::Ok(mj) => {
+              prev_version = json_int_field(mj, "version", fallback=0)
+              match base_codec::json_get(mj, "files") {
+                Some(fv) => base_map = parse_files_map_from_json(fv)
+                None => match base_codec::json_get(mj, "entries") {
+                  Some(ev) => base_map = parse_files_map_from_json(ev)
+                  None => ()
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+      let actual_map : Map[String, base_codec::Json] = Map::new()
+      scan_mirror_files_map(remote.fs, hooks, mirror_dir, "", actual_map)
+      let sid = station_jobs::remote_task_id(ws, peer, session, rec.key + ":" + now_ms.to_string())
+      let _ = (remote.fs.remove_dir_all)(sync_dir)
+      if !(remote.fs.mkdir_p)(blobs_dir) {
+        return Err("failed to create sync staging directory")
+      }
+      let st_json = base_codec::json_stringify(base_codec::json_obj([
+        ("id", base_codec::json_str(sid)),
+        ("key", base_codec::json_str(rec.key)),
+        ("version", base_codec::json_int(prev_version)),
+      ]))
+      if !(remote.fs.write_file_mode)(state_path, st_json.to_bytes(), 384, false) {
+        return Err("failed to write sync state.json")
+      }
+      let _ = (remote.fs.write_file_mode)(actual_path, base_codec::json_stringify(files_map_to_json_obj(actual_map)).to_bytes(), 384, false)
+      let _ = (remote.fs.write_file_mode)(base_path, base_codec::json_stringify(files_map_to_json_obj(base_map)).to_bytes(), 384, false)
+      let _ = (remote.fs.write_file_mode)(plan_path, Bytes::new(0), 384, false)
+      return Ok(reply_json(base_codec::json_obj([
+        ("key", base_codec::json_str(rec.key)),
+        ("id", base_codec::json_str(sid)),
+        ("dir", base_codec::json_str(mname)),
+        ("version", base_codec::json_int(prev_version)),
+        ("safe", base_codec::json_int(1)),
+      ])))
+    }
+    // Validate active sync session state (`id` and `key`) for manifest/base/put/commit.
+    let req_sid = json_str_field(env.request, "id")
+    let st_obj = match (remote.fs.read_file)(state_path) {
+      Some(sraw) => {
+        match base_codec::json_parse(sraw) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => return Err("corrupt sync state")
+        }
+      }
+      None => return Err("no active sync session for this mirror")
+    }
+    let active_sid = json_str_field(st_obj, "id")
+    let active_key = json_str_field(st_obj, "key")
+    let prev_ver = json_int_field(st_obj, "version", fallback=0)
+    if req_sid.length() == 0 || req_sid != active_sid || active_key != rec.key {
+      return Err("sync session mismatch or superseded")
+    }
+    if method == "sync.manifest" || method == "sync.base" {
+      let src_path = if method == "sync.manifest" { actual_path } else { base_path }
+      let all_entries : Array[base_codec::Json] = match (remote.fs.read_file)(src_path) {
+        Some(raw) => {
+          match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => files_map_to_sorted_entries(parse_files_map_from_json(j))
+            _ => []
+          }
+        }
+        None => []
+      }
+      let after = json_int_field(env.request, "after", fallback=json_int_field(env.request, "cursor", fallback=0))
+      let start = if after < 0 { 0 } else if after > all_entries.length() { all_entries.length() } else { after }
+      let page_lim = 500
+      let end = if start + page_lim < all_entries.length() { start + page_lim } else { all_entries.length() }
+      let page : Array[base_codec::Json] = []
+      for i in start..<end {
+        page.push(all_entries[i])
+      }
+      let next_j = if end < all_entries.length() { base_codec::json_int(end) } else { base_codec::json_null() }
+      return Ok(reply_json(base_codec::json_obj([
+        ("entries", base_codec::json_arr(page)),
+        ("next", next_j),
+      ])))
+    }
+    if method == "sync.put" {
+      let pieces_arr = match base_codec::json_get(env.request, "pieces") {
+        Some(base_codec::Json::Arr(a)) => a
+        _ => match base_codec::json_get(env.request, "blobs") {
+          Some(base_codec::Json::Arr(a)) => a
+          _ => return Err("pieces array is required")
+        }
+      }
+      let raw_data : Bytes = match binary_tail {
+        Some(b) => b
+        None => {
+          let b64 = json_str_field(env.request, "data")
+          match base64::decode(b64) {
+            Ok(dec) => dec
+            Err(_) => return Err("invalid base64 sync.put data")
+          }
+        }
+      }
+      let mut at = 0
+      let mut total_expected = 0
+      for i in 0..<pieces_arr.length() {
+        match pieces_arr[i] {
+          base_codec::Json::Arr(tuple) => {
+            if tuple.length() < 4 {
+              return Err("invalid piece tuple")
+            }
+            let plen = match tuple[3] {
+              base_codec::Json::Num(d, _) => d.to_int()
+              _ => return Err("invalid piece length")
+            }
+            if plen < 0 {
+              return Err("invalid negative piece length")
+            }
+            if plen > station_jobs::DIRSYNC_RAW_MAX - total_expected {
+              return Err("sync.put payload exceeds 16 MiB limit")
+            }
+            total_expected = total_expected + plen
+          }
+          _ => return Err("invalid piece entry")
+        }
+      }
+      if raw_data.length() > station_jobs::DIRSYNC_RAW_MAX {
+        return Err("sync.put payload exceeds 16 MiB limit")
+      }
+      if raw_data.length() != total_expected {
+        return Err("pieces do not match their data")
+      }
+      let _ = (remote.fs.mkdir_p)(blobs_dir)
+      for i in 0..<pieces_arr.length() {
+        match pieces_arr[i] {
+          base_codec::Json::Arr(tuple) => {
+            let hash = match tuple[0] {
+              base_codec::Json::Str(s) => s
+              _ => return Err("invalid blob hash")
+            }
+            if !is_hex40(hash) {
+              return Err("invalid blob hash: " + hash)
+            }
+            let size = match tuple[1] {
+              base_codec::Json::Num(d, _) => d.to_int64()
+              _ => return Err("invalid blob size")
+            }
+            let offset = match tuple[2] {
+              base_codec::Json::Num(d, _) => d.to_int64()
+              _ => return Err("invalid blob offset")
+            }
+            let plen = match tuple[3] {
+              base_codec::Json::Num(d, _) => d.to_int()
+              _ => return Err("invalid blob length")
+            }
+            let piece = slice_bytes_helper(raw_data, at, at + plen)
+            at = at + plen
+            let done_path = nodepath::join(remote.fs.sep, [blobs_dir, hash])
+            if (remote.fs.lstat)(done_path) is Some(_) {
+              continue
+            }
+            let part_rel = hash + ".part"
+            let part_path = nodepath::join(remote.fs.sep, [blobs_dir, part_rel])
+            let has = match (remote.fs.lstat)(part_path) {
+              Some(st) => st.size
+              None => 0L
+            }
+            let end_off = offset + plen.to_int64()
+            if end_off <= has && !(offset == 0L && has == 0L) {
+              continue
+            }
+            if offset != has {
+              return Err("a content's pieces came out of order")
+            }
+            match safe_write_under(remote.fs, hooks, blobs_dir, part_rel, piece, offset, 384, false) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+            if end_off == size {
+              match stream_file_blob_id(remote.fs, hooks, blobs_dir, part_rel, size) {
+                Ok(got_hash) => {
+                  if got_hash != hash {
+                    let _ = (remote.fs.remove_file)(part_path)
+                    return Err("a content sent does not match its id")
+                  }
+                }
+                Err(_) => {
+                  let _ = (remote.fs.remove_file)(part_path)
+                  return Err("cannot verify staged blob on the target")
+                }
+              }
+              if !(remote.fs.rename)(part_path, done_path) {
+                let _ = (remote.fs.remove_file)(part_path)
+                return Err("failed to finalize staged blob")
+              }
+            }
+          }
+          _ => return Err("invalid piece entry")
+        }
+      }
+      return Ok(reply_json(base_codec::json_obj([("pieces", base_codec::json_int(pieces_arr.length()))])))
+    }
+    if method == "sync.commit" {
+      let set_arr = match base_codec::json_get(env.request, "set") {
+        Some(base_codec::Json::Arr(a)) => a
+        _ => []
+      }
+      let rem_arr = match base_codec::json_get(env.request, "remove") {
+        Some(base_codec::Json::Arr(a)) => a
+        _ => []
+      }
+      let part_line = base_codec::json_stringify(base_codec::json_obj([
+        ("set", base_codec::json_arr(set_arr)),
+        ("remove", base_codec::json_arr(rem_arr)),
+      ])) + "\n"
+      let existing_plan = match (remote.fs.read_file)(plan_path) {
+        Some(s) => s
+        None => ""
+      }
+      // Deduplicate retries of the same trailing plan page so `written`/`removed` counts stay exact.
+      if !existing_plan.ends_with(part_line) {
+        if !(remote.fs.write_file_mode)(plan_path, part_line.to_bytes(), 384, true) {
+          return Err("failed to append sync plan")
+        }
+      }
+      let is_final = json_bool_field(env.request, "final", fallback=true)
+      if !is_final {
+        return Ok(reply_json(base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("planned", base_codec::json_bool(true)),
+        ])))
+      }
+      let plan_raw = match (remote.fs.read_file)(plan_path) {
+        Some(s) => s
+        None => ""
+      }
+      let plan_lines = plan_raw.split("\n")
+      // Phase 1: load `base.json` and scan live mirror on disk (streaming Git SHA-1, O(1) RAM)
+      // to enforce MB conflict protection (`dirsync.mbt:520-542`) and stage all sets on disk (`<sync>/stage`).
+      let base_map : Map[String, base_codec::Json] = match (remote.fs.read_file)(base_path) {
+        Some(braw) => match base_codec::json_parse(braw) {
+          base_codec::JsonParseResult::Ok(bj) => parse_files_map_from_json(bj)
+          _ => Map::new()
+        }
+        None => Map::new()
+      }
+      let current_map : Map[String, base_codec::Json] = Map::new()
+      scan_mirror_files_map(remote.fs, hooks, mirror_dir, "", current_map)
+      let by_hash : Map[String, (String, Int64)] = Map::new()
+      let cur_keys = current_map.keys()
+      for ci in 0..<cur_keys.length() {
+        let cp = cur_keys[ci]
+        match current_map.get(cp) {
+          Some(base_codec::Json::Arr(ev)) => {
+            if ev.length() >= 3 {
+              match (ev[0], ev[2]) {
+                (base_codec::Json::Str(ch), base_codec::Json::Num(szd, _)) => {
+                  if !by_hash.contains(ch) {
+                    by_hash.set(ch, (cp, szd.to_int64()))
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      let safe_removes : Array[String] = []
+      let seen_removes : Map[String, Bool] = Map::new()
+      let safe_sets : Array[(String, String, String)] = []
+      let set_idx_by_path : Map[String, Int] = Map::new()
+      for li in 0..<plan_lines.length() {
+        let ln = plan_lines[li]
+        if ln.length() == 0 {
+          continue
+        }
+        let pj = match base_codec::json_parse(ln) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => return Err("corrupt sync plan")
+        }
+        match base_codec::json_get(pj, "remove") {
+          Some(base_codec::Json::Arr(rems)) => {
+            for ri in 0..<rems.length() {
+              match rems[ri] {
+                base_codec::Json::Str(rel) => {
+                  match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                    Ok(_) => ()
+                    Err(e) => return Err(e)
+                  }
+                  if !base_map.contains(rel) {
+                    continue
+                  }
+                  if current_map.contains(rel) && !same_hash_mode(entry_hash_mode(base_map.get(rel)), entry_hash_mode(current_map.get(rel))) {
+                    return Err("sync conflict at " + rel + ": the remote file changed before removal")
+                  }
+                  if !seen_removes.contains(rel) {
+                    seen_removes.set(rel, true)
+                    safe_removes.push(rel)
+                  }
+                }
+                _ => return Err("invalid remove entry")
+              }
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(pj, "set") {
+          Some(base_codec::Json::Arr(sets)) => {
+            for si in 0..<sets.length() {
+              match sets[si] {
+                base_codec::Json::Arr(tuple) => {
+                  if tuple.length() < 3 {
+                    return Err("invalid set tuple")
+                  }
+                  let rel = match tuple[0] {
+                    base_codec::Json::Str(s) => s
+                    _ => return Err("invalid set path")
+                  }
+                  let hash = match tuple[1] {
+                    base_codec::Json::Str(s) => s
+                    _ => return Err("invalid set hash")
+                  }
+                  let mode_s = match tuple[2] {
+                    base_codec::Json::Str(s) => s
+                    _ => station_jobs::DIRSYNC_FILE_MODE
+                  }
+                  if !is_hex40(hash) {
+                    return Err("invalid blob hash in plan")
+                  }
+                  match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                    Ok(_) => ()
+                    Err(e) => return Err(e)
+                  }
+                  let before_hm = entry_hash_mode(base_map.get(rel))
+                  let current_hm = entry_hash_mode(current_map.get(rel))
+                  let wanted_hm = Some((hash, mode_s))
+                  if same_hash_mode(before_hm, wanted_hm) && !same_hash_mode(before_hm, current_hm) {
+                    continue
+                  }
+                  if !same_hash_mode(before_hm, current_hm) && !same_hash_mode(current_hm, wanted_hm) {
+                    return Err("sync conflict at " + rel + ": source and remote both changed; preserve the remote result and reconcile the files")
+                  }
+                  match set_idx_by_path.get(rel) {
+                    Some(idx) => safe_sets[idx] = (rel, hash, mode_s)
+                    None => {
+                      set_idx_by_path.set(rel, safe_sets.length())
+                      safe_sets.push((rel, hash, mode_s))
+                    }
+                  }
+                }
+                _ => return Err("invalid set entry")
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      // Phase 2: stream-verify & stage every set item onto disk (`<sync>/stage/s_<i>`), supporting up to 1 GiB in O(1) RAM.
+      let stage_dir = nodepath::join(remote.fs.sep, [sync_dir, "stage"])
+      if !(remote.fs.mkdir_p)(stage_dir) {
+        return Err("failed to create sync stage directory")
+      }
+      let staged_items : Array[(String, String, Int64, Int, String, String)] = []
+      let set_paths : Map[String, Bool] = Map::new()
+      for si in 0..<safe_sets.length() {
+        let (rel, hash, mode_s) = safe_sets[si]
+        let stage_name = "s_" + si.to_string()
+        let blob_path = nodepath::join(remote.fs.sep, [blobs_dir, hash])
+        let src_sz : Int64 = match (remote.fs.lstat)(blob_path) {
+          Some(bst) => {
+            match stream_file_blob_id(remote.fs, hooks, blobs_dir, hash, bst.size) {
+              Ok(got_h) => if got_h != hash { return Err("staged blob hash mismatch for " + rel) }
+              Err(e) => return Err(e)
+            }
+            match stream_copy_file(remote.fs, hooks, blobs_dir, hash, stage_dir, stage_name, bst.size, 384) {
+              Ok(_) => bst.size
+              Err(e) => return Err(e)
+            }
+          }
+          None => {
+            match by_hash.get(hash) {
+              Some((src_rel, existing_sz)) => {
+                match stream_file_blob_id(remote.fs, hooks, mirror_dir, src_rel, existing_sz) {
+                  Ok(got_h) => if got_h != hash { return Err("reused blob hash mismatch for " + rel) }
+                  Err(e) => return Err(e)
+                }
+                match stream_copy_file(remote.fs, hooks, mirror_dir, src_rel, stage_dir, stage_name, existing_sz, 384) {
+                  Ok(_) => existing_sz
+                  Err(e) => return Err(e)
+                }
+              }
+              None => return Err("the content of " + rel + " was not sent")
+            }
+          }
+        }
+        let fmode = if mode_s == station_jobs::DIRSYNC_EXEC_MODE { 493 } else { 420 }
+        staged_items.push((rel, stage_name, src_sz, fmode, hash, mode_s))
+        set_paths.set(rel, true)
+      }
+      // Phase 2b: back up all existing files that will be overwritten or removed into `<sync>/stage/bak_<i>`
+      // BEFORE touching `mirror_dir`, capturing exact POSIX mode bits (`st.mode & 0o7777`) so any rollback restores them bit-for-bit!
+      let backup_items : Array[(String, String, Int64, Int)] = []
+      let backed_up : Map[String, Bool] = Map::new()
+      let backup_one = fn(rel : String) -> Result[Unit, String] {
+        if backed_up.contains(rel) {
+          return Ok(())
+        }
+        match current_map.get(rel) {
+          Some(base_codec::Json::Arr(ev)) => {
+            let fallback_mode = if ev.length() >= 2 {
+              match ev[1] {
+                base_codec::Json::Str(ms) => if ms == station_jobs::DIRSYNC_EXEC_MODE { 493 } else { 420 }
+                _ => 420
+              }
+            } else {
+              420
+            }
+            let orig_mode = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+              Ok(abs) => match (remote.fs.lstat)(abs) {
+                Some(st) => if st.mode > 0 { st.mode } else { fallback_mode }
+                None => fallback_mode
+              }
+              Err(_) => fallback_mode
+            }
+            let orig_sz = if ev.length() >= 3 {
+              match ev[2] {
+                base_codec::Json::Num(szd, _) => szd.to_int64()
+                _ => 0L
+              }
+            } else {
+              0L
+            }
+            let bak_name = "bak_" + backup_items.length().to_string()
+            match stream_copy_file(remote.fs, hooks, mirror_dir, rel, stage_dir, bak_name, orig_sz, 384) {
+              Ok(_) => {
+                backed_up.set(rel, true)
+                backup_items.push((rel, bak_name, orig_sz, orig_mode))
+                Ok(())
+              }
+              Err(e) => Err("failed to backup " + rel + ": " + e)
+            }
+          }
+          _ => Ok(())
+        }
+      }
+      for si in 0..<staged_items.length() {
+        let (rel, _, _, _, _, _) = staged_items[si]
+        if current_map.contains(rel) {
+          match backup_one(rel) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      for ri in 0..<safe_removes.length() {
+        let rel = safe_removes[ri]
+        if !set_paths.contains(rel) && current_map.contains(rel) {
+          match backup_one(rel) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      // Phase 3: apply removals FIRST (matching `dirsync.mbt:349,382`, enabling `item` <-> `item/nested` renames),
+      // then apply writes, then persist MB manifest, then persist `task.json`.
+      // Track exact `removed_dirs` (with original POSIX modes) and newly `created_dirs` (never pre-existing empty dirs)
+      // so rollback restores bytes, file modes, removed dir modes, and cleans only dirs created by this commit.
+      let is_posix = remote.fs.sep != "\\"
+      let old_manifest_raw = (remote.fs.read_file)(manifest_path)
+      let created_new : Array[String] = []
+      let created_dirs : Array[String] = []
+      let created_dirs_seen : Map[String, Bool] = Map::new()
+      let removed_dirs : Array[(String, Int)] = []
+      let touched_existing : Map[String, Bool] = Map::new()
+      let prune_removed_parents = fn(rel : String) -> Unit {
+        let mut cur_rel = nodepath::dirname("/", rel)
+        while cur_rel.length() > 0 && cur_rel != "." && cur_rel != "/" {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, cur_rel, false) {
+            Ok(dir_abs) => {
+              let dmode = match (remote.fs.lstat)(dir_abs) {
+                Some(st) => if st.mode > 0 { st.mode } else { 493 }
+                None => 493
+              }
+              if (remote.fs.rmdir)(dir_abs) {
+                removed_dirs.push((cur_rel, dmode))
+              } else {
+                break
+              }
+            }
+            Err(_) => break
+          }
+          cur_rel = nodepath::dirname("/", cur_rel)
+        }
+      }
+      let record_new_parents = fn(rel : String) -> Unit {
+        let missing : Array[String] = []
+        let mut cur_rel = nodepath::dirname("/", rel)
+        while cur_rel.length() > 0 && cur_rel != "." && cur_rel != "/" {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, cur_rel, false) {
+            Ok(dir_abs) => {
+              if (remote.fs.lstat)(dir_abs) is None {
+                missing.push(cur_rel)
+              } else {
+                break
+              }
+            }
+            Err(_) => break
+          }
+          cur_rel = nodepath::dirname("/", cur_rel)
+        }
+        let mut mi = missing.length() - 1
+        while mi >= 0 {
+          let drel = missing[mi]
+          if !created_dirs_seen.contains(drel) {
+            created_dirs_seen.set(drel, true)
+            created_dirs.push(drel)
+          }
+          mi = mi - 1
+        }
+      }
+      let rollback_commit = fn() -> Unit {
+        for ci in 0..<created_new.length() {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
+            Ok(p) => { let _ = (remote.fs.remove_file)(p) }
+            Err(_) => ()
+          }
+        }
+        let mut cdi = created_dirs.length() - 1
+        while cdi >= 0 {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_dirs[cdi], false) {
+            Ok(dir_abs) => { let _ = (remote.fs.rmdir)(dir_abs) }
+            Err(_) => ()
+          }
+          cdi = cdi - 1
+        }
+        let mut rdi = removed_dirs.length() - 1
+        while rdi >= 0 {
+          let (drel, dmode) = removed_dirs[rdi]
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, drel, false) {
+            Ok(dir_abs) => {
+              let _ = (remote.fs.mkdir_p)(dir_abs)
+              if is_posix {
+                let _ = (remote.fs.chmod)(dir_abs, dmode)
+              }
+            }
+            Err(_) => ()
+          }
+          rdi = rdi - 1
+        }
+        for bi in 0..<backup_items.length() {
+          let (rel, bak_name, orig_sz, orig_mode) = backup_items[bi]
+          if touched_existing.contains(rel) {
+            let _ = stream_copy_file(remote.fs, hooks, stage_dir, bak_name, mirror_dir, rel, orig_sz, orig_mode)
+            if is_posix {
+              match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                Ok(p) => { let _ = (remote.fs.chmod)(p, orig_mode) }
+                Err(_) => ()
+              }
+            }
+          }
+        }
+        match old_manifest_raw {
+          Some(old_raw) => { let _ = (remote.fs.write_file_mode)(manifest_path, old_raw.to_bytes(), 384, false) }
+          None => { let _ = (remote.fs.remove_file)(manifest_path) }
+        }
+      }
+      let mut removed = 0
+      for ri in 0..<safe_removes.length() {
+        let rel = safe_removes[ri]
+        if set_paths.contains(rel) {
+          continue
+        }
+        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+          Ok(p) => p
+          Err(e) => {
+            rollback_commit()
+            return Err(e)
+          }
+        }
+        if (remote.fs.lstat)(abs) is Some(_) {
+          if (remote.fs.remove_file)(abs) {
+            touched_existing.set(rel, true)
+            removed = removed + 1
+            prune_removed_parents(rel)
+          } else {
+            rollback_commit()
+            return Err("failed to remove " + rel)
+          }
+        }
+      }
+      let mut written = 0
+      for si in 0..<staged_items.length() {
+        let (rel, stage_name, src_sz, fmode, _, _) = staged_items[si]
+        if current_map.contains(rel) {
+          touched_existing.set(rel, true)
+        } else {
+          created_new.push(rel)
+          record_new_parents(rel)
+        }
+        match stream_copy_file(remote.fs, hooks, stage_dir, stage_name, mirror_dir, rel, src_sz, fmode) {
+          Ok(_) => {
+            if is_posix {
+              match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                Ok(p) => { let _ = (remote.fs.chmod)(p, fmode) }
+                Err(_) => ()
+              }
+            }
+            written = written + 1
+          }
+          Err(e) => {
+            rollback_commit()
+            return Err(e)
+          }
+        }
+      }
+      let next_files : Map[String, base_codec::Json] = Map::new()
+      let bks = base_map.keys()
+      for bi in 0..<bks.length() {
+        match base_map.get(bks[bi]) {
+          Some(v) => next_files.set(bks[bi], v)
+          None => ()
+        }
+      }
+      for si in 0..<staged_items.length() {
+        let (rel, _, src_sz, _, hash, mode_s) = staged_items[si]
+        let mtime = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+          Ok(p) => match (remote.fs.lstat)(p) { Some(st) => st.mtime_ms; None => now_ms }
+          Err(_) => now_ms
+        }
+        next_files.set(
+          rel,
+          base_codec::json_arr([
+            base_codec::json_str(hash),
+            base_codec::json_str(mode_s),
+            base_codec::json_int64(src_sz),
+            base_codec::json_int64(mtime),
+            base_codec::json_int64(0L),
+            base_codec::json_int64(mtime),
+          ]),
+        )
+      }
+      for ri in 0..<safe_removes.length() {
+        if !set_paths.contains(safe_removes[ri]) {
+          next_files.remove(safe_removes[ri])
+        }
+      }
+      let new_ver = prev_ver + 1
+      let dir_label = match rec.dir_source { Some(d) => d; None => mname }
+      let m_json = base_codec::json_stringify(base_codec::json_obj([
+        ("dir", base_codec::json_str(dir_label)),
+        ("name", base_codec::json_str(mname)),
+        ("version", base_codec::json_int(new_ver)),
+        ("files", files_map_to_json_obj(next_files)),
+      ]))
+      let m_tmp = manifest_path + ".tmp"
+      let manifest_ok = (remote.fs.write_file_mode)(m_tmp, m_json.to_bytes(), 384, false)
+      && (remote.fs.rename)(m_tmp, manifest_path)
+      if !manifest_ok {
+        let _ = (remote.fs.remove_file)(m_tmp)
+        rollback_commit()
+        return Err("failed to persist mirror manifest")
+      }
+      match remote.mark_task_synced(rec) {
+        Ok(_) => ()
+        Err(e) => {
+          rollback_commit()
+          return Err(e)
+        }
+      }
+      let _ = (remote.fs.remove_dir_all)(sync_dir)
+      return Ok(reply_json(base_codec::json_obj([
+        ("key", base_codec::json_str(rec.key)),
+        ("synced", base_codec::json_bool(true)),
+        ("written", base_codec::json_int(written)),
+        ("removed", base_codec::json_int(removed)),
+        ("version", base_codec::json_int(new_ver)),
+      ])))
+    }
+    return Err("unsupported sync method: " + method)
+  }
+  if method == "task.get" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    match remote.get_scoped(ws, peer, session, key) {
+      Some(rec) => {
+        let log_json = match remote.log_scoped(ws, peer, session, key, lines=station_jobs::JOB_LOG_LINES_DEFAULT) {
+          Ok(txt) => base_codec::json_str(txt)
+          Err(_) => base_codec::json_null()
+        }
+        let fields : Array[(String, base_codec::Json)] = [
+          ("key", base_codec::json_str(rec.key)),
+          ("job", remote_task_job_json(remote, rec)),
+          ("log", log_json),
+          ("notices", task_notices_json(remote, rec)),
+        ]
+        if rec.push_ref is Some(_) {
+          fields.push(("push", base_codec::json_bool(true)))
+        }
+        return Ok(reply_json(base_codec::json_obj(fields)))
+      }
+      None => return Err("unknown remote task: " + key)
+    }
+  }
+  if method == "task.gets" || method == "task.batch" {
+    let items : Array[base_codec::Json] = []
+    match base_codec::json_get(env.request, "tasks") {
+      Some(base_codec::Json::Arr(arr)) => {
+        let lim = if arr.length() > 64 { 64 } else { arr.length() }
+        for i in 0..<lim {
+          let item = arr[i]
+          let sess = json_str_field(item, "session")
+          let key = json_str_field(item, "key")
+          if sess.length() == 0 || key.length() == 0 {
+            items.push(base_codec::json_obj([
+              ("session", base_codec::json_str(sess)),
+              ("key", base_codec::json_str(key)),
+              ("error", base_codec::json_str("session and key are required")),
+            ]))
+            continue
+          }
+          match remote.get_scoped(ws, peer, sess, key) {
+            Some(rec) => {
+              let log_json = match remote.log_scoped(ws, peer, sess, key, lines=station_jobs::JOB_LOG_LINES_DEFAULT) {
+                Ok(txt) => base_codec::json_str(txt)
+                Err(_) => base_codec::json_null()
+              }
+              items.push(base_codec::json_obj([
+                ("session", base_codec::json_str(sess)),
+                ("key", base_codec::json_str(key)),
+                (
+                  "result",
+                  base_codec::json_obj([
+                    ("key", base_codec::json_str(rec.key)),
+                    ("job", remote_task_job_json(remote, rec)),
+                    ("log", log_json),
+                    ("notices", task_notices_json(remote, rec)),
+                  ]),
+                ),
+              ]))
+            }
+            None => {
+              items.push(base_codec::json_obj([
+                ("session", base_codec::json_str(sess)),
+                ("key", base_codec::json_str(key)),
+                ("error", base_codec::json_str("unknown remote task: " + key)),
+              ]))
+            }
+          }
+        }
+        return Ok(reply_json(base_codec::json_obj([("tasks", base_codec::json_arr(items))])))
+      }
+      _ => {
+        // Legacy fallback: require top-level `session` + `keys` array (never unscoped).
+        let sess = match require_session(env.request) {
+          Ok(s) => s
+          Err(e) => return Err(e)
+        }
+        let keys = json_str_array_field(env.request, "keys")
+        let lim = if keys.length() > 64 { 64 } else { keys.length() }
+        for i in 0..<lim {
+          match remote.get_scoped(ws, peer, sess, keys[i]) {
+            Some(rec) => {
+              items.push(base_codec::json_obj([
+                ("session", base_codec::json_str(sess)),
+                ("key", base_codec::json_str(rec.key)),
+                ("job", remote_task_job_json(remote, rec)),
+              ]))
+            }
+            None => ()
+          }
+        }
+        return Ok(reply_json(base_codec::json_obj([("tasks", base_codec::json_arr(items))])))
+      }
+    }
+  }
+  if method == "task.log" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let lines = json_int_field(env.request, "lines", fallback=station_jobs::JOB_LOG_LINES_DEFAULT)
+    match remote.get_scoped(ws, peer, session, key) {
+      Some(rec) => {
+        match remote.log_scoped(ws, peer, session, key, lines=lines) {
+          Ok(txt) => {
+            return Ok(reply_json(base_codec::json_obj([
+              ("key", base_codec::json_str(rec.key)),
+              ("job", remote_task_job_json(remote, rec)),
+              ("log", base_codec::json_str(txt)),
+              ("notices", task_notices_json(remote, rec)),
+            ])))
+          }
+          Err(e) => return Err(e)
+        }
+      }
+      None => return Err("unknown remote task: " + key)
+    }
+  }
+  if method == "task.list" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let recs = remote.list_scoped(ws, peer, session)
+    let items : Array[base_codec::Json] = []
+    for i in 0..<recs.length() {
+      let r = recs[i]
+      items.push(base_codec::json_obj([
+        ("key", base_codec::json_str(r.key)),
+        ("spec", remote_task_spec_json(r)),
+        ("job", remote_task_job_json(remote, r)),
+      ]))
+    }
+    return Ok(reply_json(base_codec::json_obj([("tasks", base_codec::json_arr(items))])))
+  }
+  if method == "task.stop" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    match remote.stop_scoped(ws, peer, session, key, now_ms) {
+      Ok(rec) => {
+        return Ok(reply_json(base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("job", remote_task_job_json(remote, rec)),
+        ])))
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.release" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    match remote.release_scoped(ws, peer, session, key) {
+      Ok(rec) => {
+        return Ok(reply_json(base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("released", base_codec::json_bool(true)),
+          ("job", remote_task_job_json(remote, rec)),
+        ])))
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.files" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => t
+      None => return Err("unknown remote task: " + key)
+    }
+    match rec.state {
+      station_jobs::RemoteTaskState::Running => {
+        return Err("wait for the task to finish before downloading artifacts")
+      }
+      station_jobs::RemoteTaskState::Stopping => {
+        return Err("wait for the task to finish before downloading artifacts")
+      }
+      _ => ()
+    }
+    let req_paths = json_str_array_field(env.request, "paths")
+    let paths = if req_paths.length() > 0 { req_paths } else { rec.back_paths }
+    if paths.length() > 100 {
+      return Err("paths are required (at most 100)")
+    }
+    let base_dir = remote.task_base_dir(rec)
+    let visited : Array[(String, Option[Int64])] = []
+    for i in 0..<paths.length() {
+      match station_jobs::visit_files_recursive(remote.fs, base_dir, paths[i], visited) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let files_arr : Array[base_codec::Json] = []
+    for i in 0..<visited.length() {
+      let (rel, sz_opt) = visited[i]
+      let sz = match sz_opt {
+        Some(n) => base_codec::json_int64(n)
+        None => base_codec::json_null()
+      }
+      files_arr.push(base_codec::json_arr([base_codec::json_str(rel), sz]))
+    }
+    let base_j = match rec.mirror_name {
+      Some(m) => base_codec::json_str(m)
+      None => base_codec::json_str("")
+    }
+    return Ok(reply_json(base_codec::json_obj([
+      ("key", base_codec::json_str(rec.key)),
+      ("base", base_j),
+      ("files", base_codec::json_arr(files_arr)),
+    ])))
+  }
+  if method == "task.collected" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => t
+      None => return Err("unknown remote task: " + key)
+    }
+    match rec.state {
+      station_jobs::RemoteTaskState::Running => return Err("the task has not finished")
+      station_jobs::RemoteTaskState::Stopping => return Err("the task has not finished")
+      _ => ()
+    }
+    match remote.mark_task_collected(rec) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let _ = remote.release_scoped(ws, peer, session, key)
+    return Ok(reply_json(base_codec::json_obj([
+      ("key", base_codec::json_str(rec.key)),
+      ("collected", base_codec::json_bool(true)),
+    ])))
+  }
+  if method == "task.mirrors" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let ms = remote.mirrors_scoped(ws, peer, session)
+    let items : Array[base_codec::Json] = []
+    for i in 0..<ms.length() {
+      let m = ms[i]
+      items.push(base_codec::json_obj([
+        ("name", base_codec::json_str(m.name)),
+        ("state", base_codec::json_str(station_jobs::mirror_state_str(m.state))),
+        ("bytes", base_codec::json_int64(m.bytes)),
+        ("lastUsedAt", base_codec::json_int64(m.last_used_at)),
+      ]))
+    }
+    return Ok(reply_json(base_codec::json_obj([("mirrors", base_codec::json_arr(items))])))
+  }
+  if method == "task.clean" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let mirror = json_str_field(env.request, "mirror")
+    if mirror.length() == 0 {
+      return Err("mirror name is required")
+    }
+    match remote.clean_mirror_scoped(ws, peer, session, mirror) {
+      Ok(removed) => return Ok(reply_json(base_codec::json_obj([("removed", base_codec::json_bool(removed))])))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "file.put" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => {
+        if t.job_id is Some(_) {
+          return Err("inputs are immutable after a task starts")
+        }
+        t
+      }
+      None => return Err("unknown remote task: " + key)
+    }
+    let rel = json_str_field(env.request, "path")
+    let work = remote.session_work_dir(ws, peer, session, now_ms)
+    let data_bytes : Bytes = match binary_tail {
+      Some(b) => b
+      None => {
+        let b64 = json_str_field(env.request, "data")
+        match base64::decode(b64) {
+          Ok(dec) => dec
+          Err(_) => return Err("invalid base64 file data")
+        }
+      }
+    }
+    let offset = json_int64_field(env.request, "offset", fallback=0L)
+    if offset < 0L {
+      return Err("invalid negative offset")
+    }
+    let explicit_final : Option[Bool] = match base_codec::json_get(env.request, "final") {
+      Some(base_codec::Json::Bool(b)) => Some(b)
+      _ => None
+    }
+    let req_size_opt : Option[Int64] = match base_codec::json_get(env.request, "size") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+    let is_whole = match (req_size_opt, explicit_final) {
+      (Some(expected_sz), None) => {
+        if offset != 0L || data_bytes.length().to_int64() != expected_sz {
+          return Err("file size mismatch: expected " + expected_sz.to_string())
+        }
+        true
+      }
+      (Some(expected_sz), Some(true)) => {
+        if offset == 0L && data_bytes.length().to_int64() != expected_sz {
+          return Err("file size mismatch: expected " + expected_sz.to_string())
+        }
+        true
+      }
+      _ => false
+    }
+    let is_final = is_whole || (match explicit_final { Some(b) => b; None => false })
+    let truncate_end = is_final || offset == 0L
+    match remote.record_task_upload(rec, rel, false) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match safe_write_under(remote.fs, hooks, work, rel, data_bytes, offset, 384, truncate_end) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    if is_final {
+      match remote.record_task_upload(rec, rel, true) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    return Ok(reply_json(base_codec::json_obj([("bytes", base_codec::json_int(data_bytes.length()))])))
+  }
+  if method == "file.get" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let rel = json_str_field(env.request, "path")
+    let base_dir = match json_opt_str_field(env.request, "key") {
+      Some(k) => {
+        match remote.get_scoped(ws, peer, session, k) {
+          Some(rec) => {
+            match rec.state {
+              station_jobs::RemoteTaskState::Running => {
+                return Err("wait for the task to finish before downloading artifacts")
+              }
+              station_jobs::RemoteTaskState::Stopping => {
+                return Err("wait for the task to finish before downloading artifacts")
+              }
+              _ => remote.task_base_dir(rec)
+            }
+          }
+          None => return Err("unknown remote task: " + k)
+        }
+      }
+      None => remote.session_work_dir(ws, peer, session, now_ms)
+    }
+    let offset = json_int64_field(env.request, "offset", fallback=0L)
+    if offset < 0L {
+      return Err("invalid negative offset")
+    }
+    let whole = json_bool_field(env.request, "whole", fallback=false)
+    if whole && v2_bytes {
+      let (_, total_size) = match safe_read_under(remote.fs, hooks, base_dir, rel, offset, 0) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let rem = if offset >= total_size { 0L } else { total_size - offset }
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([
+          ("bytes", base_codec::json_int64(rem)),
+          ("size", base_codec::json_int64(total_size)),
+          ("eof", base_codec::json_bool(true)),
+        ]),
+        binary: None,
+        stream_file: Some(StreamFilePlan::{
+          root: base_dir,
+          rel: rel,
+          offset: offset,
+          size: total_size,
+        }),
+      })
+    }
+    let want_len = json_int_field(env.request, "length", fallback=station_jobs::REMOTE_CHUNK)
+    let max_len = if want_len <= 0 || want_len > station_jobs::REMOTE_CHUNK {
+      station_jobs::REMOTE_CHUNK
+    } else {
+      want_len
+    }
+    let (chunk, total_size) = match safe_read_under(remote.fs, hooks, base_dir, rel, offset, max_len) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let eof = offset + chunk.length().to_int64() >= total_size
+    if v2_bytes {
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([
+          ("bytes", base_codec::json_int(chunk.length())),
+          ("size", base_codec::json_int64(total_size)),
+          ("eof", base_codec::json_bool(eof)),
+        ]),
+        binary: Some(chunk),
+        stream_file: None,
+      })
+    } else {
+      return Ok(reply_json(base_codec::json_obj([
+        ("bytes", base_codec::json_int(chunk.length())),
+        ("size", base_codec::json_int64(total_size)),
+        ("eof", base_codec::json_bool(eof)),
+        ("data", base_codec::json_str(base64::encode(chunk))),
+      ])))
+    }
+  }
+  if method == "vault.capabilities" {
+    return Ok(reply_json(base_codec::json_obj([
+      ("timeouts", base_codec::json_bool(true)),
+      ("env", base_codec::json_bool(true)),
+      ("proxy", base_codec::json_bool(false)),
+      ("ssh", base_codec::json_bool(false)),
+      ("scrub", base_codec::json_bool(true)),
+    ])))
+  }
+  if method == "vault.revoke" {
+    let id = json_str_field(env.request, "id")
+    let _ = vault_grants.revoke(id)
+    (hooks.on_vault_revoke)(peer, id)
+    match incoming.revoke_from_peer(peer, id) {
+      Ok(_) => return Ok(reply_json(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "vault.run" || method == "vault.capture" {
+    let id = json_str_field(env.request, "id")
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let command = json_str_field(env.request, "command")
+    let under = json_str_field(env.request, "under")
+    if id.length() == 0 || command.length() == 0 {
+      return Err("id, session and command are required")
+    }
+    if !is_safe_under(under) {
+      return Err("under is a path inside the session's directory")
+    }
+    let work = remote.session_work_dir(ws, peer, session, now_ms)
+    let cwd = if under.length() == 0 {
+      work
+    } else {
+      match station_jobs::safe_transfer_path(remote.fs, work, under, true) {
+        Ok(p) => {
+          let _ = (remote.fs.mkdir_p)(p)
+          p
+        }
+        Err(e) => return Err(e)
+      }
+    }
+    let raw_to = json_int64_field(
+      env.request,
+      "timeoutMs",
+      fallback=if method == "vault.capture" { station_vault::CAPTURE_MS } else { station_vault::RUN_MS },
+    )
+    let max_to = if method == "vault.capture" { station_vault::CAPTURE_MS } else { station_vault::MAX_RUN_MS }
+    let timeout_ms = if raw_to < 1L { 1L } else if raw_to > max_to { max_to } else { raw_to }
+    if method == "vault.capture" {
+      let exec_req = VaultExecRequest::{
+        id: id,
+        workspace: ws,
+        peer: peer,
+        session: session,
+        command: command,
+        cwd: cwd,
+        env_pairs: [],
+        secret_values: [],
+        timeout_ms: timeout_ms,
+        grant_exp_sec: 0L,
+        idle_timeout_sec: 0L,
+        capture: true,
+      }
+      match (hooks.on_vault_exec)(exec_req) {
+        Ok(_) => return Ok(reply_json(base_codec::json_obj([("started", base_codec::json_bool(true))])))
+        Err(e) => return Err(e)
+      }
+    }
+    let mode = json_str_field(env.request, "mode")
+    if mode != "env" {
+      return Err("delivery mode " + mode + " is not supported on this rig")
+    }
+    let grant_id = json_str_field(env.request, "grant")
+    let secret = match base_codec::json_get(env.request, "secret") {
+      Some(s) => s
+      None => return Err("mode, grant and secret are required")
+    }
+    if grant_id.length() == 0 {
+      return Err("mode, grant and secret are required")
+    }
+    let (primary_opt, secret_values) = extract_secret_fields(secret)
+    let secret_val = match primary_opt {
+      Some(v) => v
+      None => return Err("the secret holds no value")
+    }
+    let env_name = match json_opt_str_field(env.request, "env") {
+      Some(en) => {
+        if !is_valid_env_name(en) {
+          return Err("invalid env variable name: " + en)
+        }
+        en
+      }
+      None => "STILLFAIL_SECRET"
+    }
+    let now_sec = now_ms / 1000L
+    let req_expires = json_int64_field(env.request, "expires", fallback=0L)
+    let max_grant_sec = 30L * 86400L
+    let req_grant_timeout = match base_codec::json_get(env.request, "grantTimeout") {
+      Some(base_codec::Json::Obj(_)) => {
+        let kind = json_str_field(
+          match base_codec::json_get(env.request, "grantTimeout") { Some(o) => o; None => base_codec::json_null() },
+          "kind",
+        )
+        let secs = json_int64_field(
+          match base_codec::json_get(env.request, "grantTimeout") { Some(o) => o; None => base_codec::json_null() },
+          "seconds",
+          fallback=0L,
+        )
+        if kind != "idle" || secs <= 0L || secs > max_grant_sec {
+          return Err("invalid grantTimeout: expected { kind: \"idle\", seconds: 1..2592000 }")
+        }
+        secs
+      }
+      Some(base_codec::Json::Num(d, _)) => {
+        let secs = d.to_int64()
+        if secs <= 0L || secs > max_grant_sec {
+          return Err("invalid grantTimeout seconds")
+        }
+        secs
+      }
+      _ => 0L
+    }
+    if req_expires > 0L && now_sec >= req_expires {
+      return Err("vault grant has expired")
+    }
+    let exp_sec = if req_expires > 0L {
+      req_expires
+    } else if req_grant_timeout > 0L {
+      now_sec + req_grant_timeout
+    } else {
+      now_sec + (timeout_ms / 1000L) + 60L
+    }
+    match incoming.start_run(id, peer, session, command, under, grant_id, exp_sec, req_grant_timeout) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let exec_req = VaultExecRequest::{
+      id: id,
+      workspace: ws,
+      peer: peer,
+      session: session,
+      command: command,
+      cwd: cwd,
+      env_pairs: [(env_name, secret_val)],
+      secret_values: secret_values,
+      timeout_ms: timeout_ms,
+      grant_exp_sec: exp_sec,
+      idle_timeout_sec: req_grant_timeout,
+      capture: false,
+    }
+    match (hooks.on_vault_exec)(exec_req) {
+      Ok(_) => return Ok(reply_json(base_codec::json_obj([("started", base_codec::json_bool(true))])))
+      Err(e) => {
+        let _ = incoming.finish_run(id)
+        return Err(e)
+      }
+    }
+  }
+  if method == "session.close" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let _ = remote.close_session_room(ws, peer, session, now_ms)
+    return Ok(reply_json(base_codec::json_obj([("closed", base_codec::json_bool(true))])))
+  }
+  if method == "session.size" {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let (present, bytes) = remote.session_work_size(ws, peer, session)
+    if present {
+      return Ok(reply_json(base_codec::json_obj([
+        ("present", base_codec::json_bool(true)),
+        ("bytes", base_codec::json_int64(bytes)),
+      ])))
+    } else {
+      return Ok(reply_json(base_codec::json_obj([("present", base_codec::json_bool(false))])))
+    }
+  }
+  Err("unknown method " + method)
+}
+
+/// Convenience wrapper for pure unit tests without binary tail or custom hooks.
+pub fn dispatch_rig_peer_rpc(
+  roster : station_mesh::CloudRoster,
+  peer : String,
+  env : station_mesh::PeerRequestEnvelope,
+  rig : station_rig::Rig,
+  remote : station_jobs::RemoteManager,
+  incoming : station_vault::IncomingRegistry,
+  vault_grants : station_vault::GrantStore,
+  load_json : () -> base_codec::Json,
+  now_ms : Int64,
+) -> Result[base_codec::Json, String] {
+  match dispatch_rig_peer_rpc_ext(
+    roster,
+    peer,
+    env,
+    None,
+    false,
+    rig,
+    remote,
+    incoming,
+    vault_grants,
+    load_json,
+    default_rig_dispatch_hooks(),
+    now_ms,
+  ) {
+    Ok(rep) => Ok(rep.json)
+    Err(e) => Err(e)
+  }
+}
+
+/// Filter the station's OS environment for `vault.run` / `vault.capture`, stripping
+/// `STILLFAIL_*`, `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*` (matching `incoming.ts::baseEnv`).
+pub fn vault_base_env() -> Array[String] {
+  let out : Array[String] = []
+  let entries = station_sys::env_all()
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if e.starts_with("STILLFAIL_")
+    || e.starts_with("ANTHROPIC_")
+    || e.starts_with("CLAUDE_")
+    || e.starts_with("OPENAI_")
+    || e.starts_with("CODEX_")
+    {
+      continue
+    }
+    out.push(e)
+  }
+  out
+}
+
+/// Generate a cryptographically random hex boot ID using OS CSPRNG (`station_sys::random_hex`).
+pub fn generate_boot_id() -> Result[String, String] {
+  station_sys::random_hex(8)
+}
+
+/// Build a production `station_rig::LogBackend` writing atomically/append with `0600` permissions.
+pub fn sys_command_log_backend(fs : station_jobs::FsPort) -> station_rig::LogBackend {
+  station_rig::LogBackend::{
+    ensure_dir: fn(path : String) -> Bool {
+      let dir = nodepath::dirname(fs.sep, path)
+      (fs.mkdir_p)(dir)
+    },
+    stat_size: fn(path : String) -> Int64 {
+      match (fs.lstat)(path) {
+        Some(st) => st.size
+        None => 0L
+      }
+    },
+    rename: fn(from : String, to : String) -> Bool { (fs.rename)(from, to) },
+    append: fn(path : String, data : Bytes) -> Bool {
+      (fs.write_file_mode)(path, data, 384, true)
+    },
+    read_tail: fn(path : String, max_bytes : Int64) -> Option[(Bytes, Int64)] {
+      match (fs.lstat)(path) {
+        None => None
+        Some(st) => {
+          let start = if st.size > max_bytes { st.size - max_bytes } else { 0L }
+          let len = (st.size - start).to_int()
+          match (fs.read_range)(path, start, len) {
+            Some(b) => Some((b, start))
+            None => None
+          }
+        }
+      }
+    },
+  }
+}

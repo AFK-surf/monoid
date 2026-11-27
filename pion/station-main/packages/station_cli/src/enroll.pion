@@ -103,6 +103,7 @@ fn redeem_enroll(
       timeout_ms: Some(20000L),
       proxy: None,
       ca_pem: None,
+      redirect: "follow",
     }
     let resp = match (ports.http)(req) {
       Ok(r) => r
@@ -375,6 +376,7 @@ pub fn run_enroll_command(
         timeout_ms: Some(20000L),
         proxy: None,
         ca_pem: None,
+        redirect: "follow",
       }
       match (ports.http)(req) {
         Ok(r) => Ok((r.status, r.body_text()))

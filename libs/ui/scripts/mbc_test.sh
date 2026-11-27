@@ -19,6 +19,24 @@ block() { awk -v name="$1" '$0 ~ "^let " name " " { on = 1; next } on && /^  #\|
 grep -q 'moonbit_init' "$T/p.c" || fail "no fixture from csplit_wbtest.mbt"
 "$MBC" csplit "$T/p.c" "$T/warm" 2>/dev/null >/dev/null  # (built before anything is timed)
 
+if [ "$(uname -s)" = Darwin ]; then
+  mkdir -p "$T/separate/pkg/__moonbit_link_core__" "$T/combined/pkg"
+  empty_src="$T/empty.c"
+  echo '#error mbc compiled a generated program with no tests' > "$empty_src"
+  empty_obj="$T/separate/pkg/__moonbit_link_core__/pkg.internal_test.o"
+  empty_cc() { MBC_EMPTY_TESTS=pkg/pkg.internal_test "$MBC" wrap --real "$CC" -- "$@"; }
+  empty_cc -c "$empty_src" -o "$empty_obj" || fail "empty test object"
+  empty_cc "$empty_obj" -o "$T/separate/pkg/pkg.internal_test.exe" || fail "empty test link"
+  empty_cc "$empty_src" -o "$T/combined/pkg/pkg.internal_test.exe" || fail "empty test compile and link"
+  for exe in "$T/"{separate,combined}/pkg/pkg.internal_test.exe; do
+    dsymutil "$exe" || fail "empty test debug symbols for $exe"
+    [ -s "$exe.dSYM/Contents/Resources/DWARF/${exe##*/}" ] || fail "empty dSYM for $exe"
+    if "$exe" 2>"$T/empty.err"; then fail "$exe reported success"; fi
+    grep -q 'has no tests' "$T/empty.err" || fail "$exe did not explain its exit"
+  done
+  ok "empty test programs supply debug symbols and fail if run"
+fi
+
 # the made-up program whole and split, and the link kept when nothing changed
 "$CC" "$T/p.c" -o "$T/whole" || fail "the whole file did not compile"
 objs=$("$MBC" compile --cc "$CC" --obj "$T/o" "$T/p.c") || fail "mbc compile"

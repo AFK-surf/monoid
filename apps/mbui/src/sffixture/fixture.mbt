@@ -2410,7 +2410,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           _ => base
         }
       })
-    "chats" => fixture_chats(f, params).map(fn(v) { fx_decorate_chats(listed_chats(v), params) })
+    "chats" => fixture_chats(f, params).map(fn(v) { fx_decorate_chats(listed_chats(v), params, mode=f.mode) })
     "projects" | "project" | "tags" => fx_projects_topic(name, params)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
