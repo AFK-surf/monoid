@@ -1367,6 +1367,12 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
   let _ = devs.tick_expiry_with(3500L, 3500L, fn(_pk : PendingProcKill) -> Unit {})
   edge_assert(devs.active_mdns_scan_count() == 0)
   edge_assert(devs.take_android_tv_mdns_result(ev1) is Some(_))
+  // Unclaimed completed_mdns_scans are evicted after MDNS_RESULT_TTL_MS in tick_expiry_with
+  let (ev3, _, dl3) = devs.start_android_tv_mdns_scan_virtual(4000L, timeout_ms=300L)
+  edge_assert(dl3 == 4300L)
+  let _ = devs.tick_expiry_with(4300L, 4300L, fn(_pk : PendingProcKill) -> Unit {})
+  let _ = devs.tick_expiry_with(4300L + MDNS_RESULT_TTL_MS, 4300L + MDNS_RESULT_TTL_MS, fn(_pk : PendingProcKill) -> Unit {})
+  edge_assert(devs.take_android_tv_mdns_result(ev3) is None)
 
   // P2-5: unconfigured data_dir fails closed (never falls back to /tmp)
   let uncfg = DevicesOsRuntime::new(now_fn=mock_now)

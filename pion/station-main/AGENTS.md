@@ -12,7 +12,7 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
   - No polling timers without an explicit `timer:` reason on the line or preceding line.
   - Business code spawns child processes via the dedicated `station_sys` process-spawning primitive (added in W10-A) and never invokes `"proc.run"` directly; mark any required blocking `shell_sync*`/`shell_call_wait` call with `sync:` and a reason.
   - No raw SQLite transaction SQL (`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`) outside `pion/station/packages/sql_db/`.
-  - All listeners stay local (`"127.0.0.1"`, `"::1"`, `"localhost"`, `unix_listen`, `tcp_listen_fd`, or `{ "fd": ... }`) and no tunnel names appear in station code.
+  - All listeners stay local (`"127.0.0.1"`, `"::1"`, `"localhost"`, `unix_listen`, `tcp_listen_fd`, or `{ "fd": ... }`) and no tunnel names appear in station code; the sole narrow exemption is `pion/station-main/packages/station_whole/src/devices_os.pion` binding an ephemeral port-0 UDP socket (`udp_bind(..., "0.0.0.0", 0)`) for outbound LAN mDNS discovery and closing it on timeout.
   - Mesh base packages (`mesh_wire`, `mesh_door`, `mesh_accept`, when present) import no station-domain packages and do not mention `still.fail` in code.
 
 ## Packages and Scripts

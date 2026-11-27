@@ -3001,11 +3001,47 @@ pub fn parse_adb_status_dumps(
   base_codec::json_obj(fields)
 }
 
+pub enum AdbVolumePlan {
+  /// Single-stage ADB shell command (`mute`, `up`, `down`, or query `--get`).
+  Direct(Array[String])
+  /// Two-stage volume set (`adb-client.ts:479-487`): run stage-1 `--get` command, then pass its
+  /// real stdout together with the clamped `0..100` level into `build_adb_volume_set_command`.
+  QueryThenSet(Array[String], Int)
+}
+
+/// Plan an ADB `volume` action without ever trusting caller-supplied volume range dumps.
+pub fn plan_adb_volume_command(args : base_codec::Json) -> AdbVolumePlan {
+  let is_mute = match json_bool_opt(args, "mute") {
+    Some(true) => true
+    _ => {
+      match json_str_opt(args, "action") {
+        Some(a) => a == "mute"
+        None => false
+      }
+    }
+  }
+  if is_mute {
+    return AdbVolumePlan::Direct(["input", "keyevent", "164"])
+  }
+  match json_str_opt(args, "action") {
+    Some("up") => return AdbVolumePlan::Direct(["input", "keyevent", "24"])
+    Some("down") => return AdbVolumePlan::Direct(["input", "keyevent", "25"])
+    _ => ()
+  }
+  match json_num_round_opt(args, "level") {
+    Some(raw_lvl) => {
+      let clamped = if raw_lvl < 0 { 0 } else if raw_lvl > 100 { 100 } else { raw_lvl }
+      AdbVolumePlan::QueryThenSet(["cmd", "media_session", "volume", "--stream", "3", "--get"], clamped)
+    }
+    None => AdbVolumePlan::Direct(["cmd", "media_session", "volume", "--stream", "3", "--get"])
+  }
+}
+
 /// Compute the `cmd media_session volume --stream 3 --set <idx>` command from a 0..100 `level`
-/// and the output of `cmd media_session volume --stream 3 --get` (`adb-client.ts:479-488`).
-pub fn build_adb_volume_set_command(level : Int, vol_dump : String) -> (Array[String], Int, Int) {
+/// and the real stdout of `cmd media_session volume --stream 3 --get` (`adb-client.ts:479-488`).
+pub fn build_adb_volume_set_command(level : Int, get_stdout : String) -> (Array[String], Int, Int) {
   let clamped = if level < 0 { 0 } else if level > 100 { 100 } else { level }
-  let max_vol = match parse_adb_volume_dump(vol_dump) {
+  let max_vol = match parse_adb_volume_dump(get_stdout) {
     Some((_, _, vmax)) => if vmax > 0 { vmax } else { 15 }
     None => 15
   }
@@ -3099,33 +3135,10 @@ pub fn build_adb_control_commands(
     return Ok([["dumpsys", "media_session"]])
   }
   if action == "volume" {
-    let is_mute = match json_bool_opt(args, "mute") {
-      Some(true) => true
-      _ => {
-        match json_str_opt(args, "action") {
-          Some(a) => a == "mute"
-          None => false
-        }
-      }
-    }
-    if is_mute {
-      return Ok([["input", "keyevent", "164"]])
-    }
-    match json_str_opt(args, "action") {
-      Some("up") => return Ok([["input", "keyevent", "24"]])
-      Some("down") => return Ok([["input", "keyevent", "25"]])
-      _ => ()
-    }
-    match json_num_round_opt(args, "level") {
-      Some(raw_lvl) => {
-        let vol_dump = match json_str_opt(args, "volumeDump") {
-          Some(d) => d
-          None => ""
-        }
-        let (set_cmd, _, _) = build_adb_volume_set_command(raw_lvl, vol_dump)
-        return Ok([["cmd", "media_session", "volume", "--stream", "3", "--get"], set_cmd])
-      }
-      None => return Ok([["cmd", "media_session", "volume", "--stream", "3", "--get"]])
+    match plan_adb_volume_command(args) {
+      AdbVolumePlan::Direct(cmd) => return Ok([cmd])
+      // Stage 1 only: executor runs `--get`, then computes stage 2 via `build_adb_volume_set_command(level, get_stdout)`.
+      AdbVolumePlan::QueryThenSet(get_cmd, _) => return Ok([get_cmd])
     }
   }
   if action == "keyboard" {

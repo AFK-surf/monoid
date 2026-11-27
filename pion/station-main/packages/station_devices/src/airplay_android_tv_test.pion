@@ -492,6 +492,24 @@ test "w17b4 review regressions: streaming HTTP buffer, ADB volume & launch fallb
   }
   let (set_cmd, idx, vmax) = build_adb_volume_set_command(50, "volume is 4 in range [0..20]")
   w17_assert(idx == 10 && vmax == 20 && set_cmd[5] == "--set" && set_cmd[6] == "10", "volume range conversion 50% of 20 = 10")
+  // Two-stage volume plan: ignores caller volumeDump, computes stage-2 --set from real --get stdout (max=100 -> --set 50, not 8)
+  match plan_adb_volume_command(
+    base_codec::json_obj([
+      ("level", base_codec::json_int(50)),
+      ("volumeDump", base_codec::json_str("volume is 1 in range [0..15]")),
+    ]),
+  ) {
+    AdbVolumePlan::QueryThenSet(get_cmd, clamped_level) => {
+      w17_assert(get_cmd[5] == "--get" && clamped_level == 50, "stage-1 --get and clamped level 50")
+      let (stage2_cmd, idx100, vmax100) = build_adb_volume_set_command(clamped_level, "volume is 20 in range [0..100]")
+      w17_assert(idx100 == 50 && vmax100 == 100 && stage2_cmd[5] == "--set" && stage2_cmd[6] == "50", "max=100 level=50 -> --set 50")
+    }
+    _ => w17_assert(false, "expected QueryThenSet for level")
+  }
+  match build_adb_control_commands("volume", base_codec::json_obj([("level", base_codec::json_int(50))])) {
+    Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0][5] == "--get", "build_adb_control_commands emits only stage-1 --get")
+    Err(e) => w17_assert(false, e.message)
+  }
   match build_adb_control_commands("volume", base_codec::json_obj([])) {
     Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0][5] == "--get", "adb volume query")
     Err(e) => w17_assert(false, e.message)

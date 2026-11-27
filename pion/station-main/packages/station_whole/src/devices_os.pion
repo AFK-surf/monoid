@@ -1249,6 +1249,8 @@ pub enum AndroidTvTunnelStep {
 pub let MDNS_SCAN_DEFAULT_TIMEOUT_MS : Int64 = 2500L
 pub let MDNS_SCAN_MIN_TIMEOUT_MS : Int64 = 300L
 pub let MDNS_SCAN_MAX_TIMEOUT_MS : Int64 = 10000L
+/// Retention TTL for unclaimed completed mDNS scan results before `tick_expiry_with` evicts them.
+pub let MDNS_RESULT_TTL_MS : Int64 = 60000L
 /// Disjoint event_id base (`8 << 32`, clear of `whole_daemon`'s `1<<32..7<<32`).
 pub let MDNS_EVENT_ID_BASE : Int64 = 34359738368L
 pub let MDNS_BIND_ADDR : String = "0.0.0.0"
@@ -1259,6 +1261,11 @@ struct ActiveMdnsScan {
   bind_addr : String
   deadline_ms : Int64
   packets : Array[station_devices::ParsedMdnsRecords]
+}
+
+struct CompletedMdnsScan {
+  candidates : Array[station_devices::AndroidTvCandidate]
+  expires_at_ms : Int64
 }
 
 /// Configure a serial port raw at `baud` via `stty` (`-f` on macOS, `-F` on Linux; rejects Windows).
@@ -1348,7 +1355,7 @@ pub struct DevicesOsRuntime {
   pending_grant_kills : Map[Int64, PendingProcKill]
   rig_devices : Map[String, Array[station_devices::KeptDevice]]
   mdns_scans : Map[Int64, ActiveMdnsScan]
-  completed_mdns_scans : Map[Int64, Array[station_devices::AndroidTvCandidate]]
+  completed_mdns_scans : Map[Int64, CompletedMdnsScan]
   mut next_mdns_event_id : Int64
 }
 
@@ -2034,9 +2041,9 @@ pub fn DevicesOsRuntime::take_android_tv_mdns_result(
   event_id : Int64,
 ) -> Option[Array[station_devices::AndroidTvCandidate]] {
   match self.completed_mdns_scans.get(event_id) {
-    Some(cands) => {
+    Some(rec) => {
       self.completed_mdns_scans.remove(event_id)
-      Some(cands)
+      Some(rec.candidates)
     }
     None => None
   }
@@ -2062,13 +2069,20 @@ pub fn DevicesOsRuntime::cancel_android_tv_mdns_scan(
 fn DevicesOsRuntime::finalize_mdns_scan(
   self : DevicesOsRuntime,
   scan : ActiveMdnsScan,
+  now_ms : Int64,
 ) -> Unit {
   self.mdns_scans.remove(scan.event_id)
   match scan.on_close {
     Some(f) => f()
     None => ()
   }
-  self.completed_mdns_scans.set(scan.event_id, station_devices::merge_mdns_records(scan.packets))
+  self.completed_mdns_scans.set(
+    scan.event_id,
+    CompletedMdnsScan::{
+      candidates: station_devices::merge_mdns_records(scan.packets),
+      expires_at_ms: now_ms + MDNS_RESULT_TTL_MS,
+    },
+  )
 }
 
 pub fn DevicesOsRuntime::pending_kill_count(self : DevicesOsRuntime) -> Int {
@@ -2104,7 +2118,7 @@ pub fn DevicesOsRuntime::handle_sys_event(
           scan.packets.push(station_devices::parse_mdns_packet(dg.data))
         }
         station_sys::SysEvent::UdpClosed => {
-          self.finalize_mdns_scan(scan)
+          self.finalize_mdns_scan(scan, (self.now_fn)())
         }
         _ => ()
       }
@@ -2270,7 +2284,19 @@ pub fn DevicesOsRuntime::tick_expiry_with(
     match self.mdns_scans.get(ev_id) {
       Some(scan) => {
         if mono_ms >= scan.deadline_ms {
-          self.finalize_mdns_scan(scan)
+          self.finalize_mdns_scan(scan, mono_ms)
+        }
+      }
+      None => ()
+    }
+  }
+  let done_mdns_ids = self.completed_mdns_scans.keys()
+  for i in 0..<done_mdns_ids.length() {
+    let ev_id = done_mdns_ids[i]
+    match self.completed_mdns_scans.get(ev_id) {
+      Some(rec) => {
+        if mono_ms >= rec.expires_at_ms {
+          self.completed_mdns_scans.remove(ev_id)
         }
       }
       None => ()
