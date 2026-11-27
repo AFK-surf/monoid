@@ -296,14 +296,47 @@ pub fn remote_connects_file_needs_node(
   }
 }
 
-/// Aligned with `station/native/launcher/src/main.rs:68` (`STILLFAIL_STATION_ENGINE_STRICT`):
-/// returns `true` for `"1"` or `"true"`.
+/// Strict 3-state result for read-only SQLite cross-station session dependency checks:
+/// `Unknown` (lock contention, busy timeout, I/O error, corrupt DB) MUST fail-safe and
+/// never be treated as `NoneFound`.
+pub enum DbDepCheck {
+  NoneFound
+  Found
+  Unknown(String)
+}
+
+/// Maps `DbDepCheck` into a fallback/refusal reason (`None` only for `NoneFound`).
+pub fn classify_db_dep_check(res : DbDepCheck) -> Option[String] {
+  match res {
+    DbDepCheck::NoneFound => None
+    DbDepCheck::Found => Some("db:remote-connect-sessions")
+    DbDepCheck::Unknown(reason) => Some(reason)
+  }
+}
+
+/// ASCII case-insensitive strict-engine parser aligned 1:1 with Rust launcher `main.rs:339`
+/// (`STILLFAIL_STATION_ENGINE_STRICT`): returns `true` for trimmed `"1"` or `"true"` (any case).
+pub fn is_engine_strict_value(raw : String) -> Bool {
+  let t = raw.trim()
+  let b = t.to_bytes()
+  if b.length() == 1 && b[0] == (49).to_byte() {
+    return true
+  }
+  if b.length() != 4 {
+    return false
+  }
+  let lc = fn(ch : Byte) -> Int {
+    let c = ch.to_int() & 0xFF
+    if c >= 65 && c <= 90 { c + 32 } else { c }
+  }
+  lc(b[0]) == 116 && lc(b[1]) == 114 && lc(b[2]) == 117 && lc(b[3]) == 101
+}
+
+/// Aligned with `station/native/launcher/src/main.rs:339` (`STILLFAIL_STATION_ENGINE_STRICT`):
+/// returns `true` for `"1"` or `"true"` (ASCII case-insensitive).
 pub fn is_engine_strict_env(raw_val : Option[String]) -> Bool {
   match raw_val {
-    Some(s) => {
-      let t = s.trim()
-      t == "1" || t == "true" || t == "TRUE"
-    }
+    Some(s) => is_engine_strict_value(s)
     None => false
   }
 }
@@ -4411,7 +4444,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let home_ws = st.core.config.home_workspace
           let before_store_fn = fn(dir : String) -> Result[Unit, String] {
             let ready_path = nodepath::join(ctx.sep, [dir, "restore", "ready.json"])
-            if station_sys::lstat_raw(ready_path) is Some(_) {
+            let had_restore_ready = station_sys::lstat_raw(ready_path) is Some(_)
+            if had_restore_ready {
               let self_argv = host_shim::args()
               let argv0 = if self_argv.length() > 0 { self_argv[0] } else { "" }
               let self_exe = match resolve_self_executable_with(
@@ -4501,6 +4535,28 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     }
                   }
                 }
+              }
+            }
+            if had_restore_ready {
+              // Post-restore recheck BEFORE opening `WholeStore` and BEFORE emitting `ready`:
+              // if the freshly restored snapshot contains active external/cross-station connects
+              // (or DB check fails), exit before `ready` so the Launcher immediately re-runs
+              // `main.pion` which `exec_replace`s into Node before the first `/healthz 200`.
+              let post_reasons = check_external_connects_need_node(dir, ctx.sep)
+              if post_reasons.length() > 0 {
+                let rsb = StringBuilder::new()
+                for ri in 0..<post_reasons.length() {
+                  if ri > 0 {
+                    rsb.write_string(", ")
+                  }
+                  rsb.write_string(post_reasons[ri])
+                }
+                let msg = "pion whole station beta: restored snapshot requires Node ("
+                + rsb.to_string()
+                + "); exiting before ready for Node handoff"
+                let _ = host_shim::write_stderr_line(msg)
+                ctx.fail_and_stop(msg)
+                return Err(msg)
               }
             }
             match st.replica.before_store(home_ws, ctx.station_key.id, "station_store", "primary", w_now) {

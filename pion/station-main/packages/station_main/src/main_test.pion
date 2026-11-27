@@ -859,11 +859,32 @@ test "enabled_external_connects_in_config aligns 1:1 with Node config.ts:174 and
     None => panic("expected unreadable remote-connects fail-safe")
   }
 
-  // strict env & --app extraction
-  assert_true(is_engine_strict_env(Some("1")), "strict 1")
-  assert_true(is_engine_strict_env(Some("true")), "strict true")
-  assert_true(!is_engine_strict_env(Some("0")), "strict 0 false")
-  assert_true(!is_engine_strict_env(None), "strict none false")
+  // strict env (ASCII case-insensitive 1:1 with Rust launcher main.rs:339) & --app extraction
+  assert_true(is_engine_strict_value("1"), "strict 1")
+  assert_true(is_engine_strict_value("true"), "strict true")
+  assert_true(is_engine_strict_value("True"), "strict True")
+  assert_true(is_engine_strict_value("TrUe"), "strict TrUe")
+  assert_true(is_engine_strict_value("TRUE"), "strict TRUE")
+  assert_true(is_engine_strict_value(" true "), "strict trimmed true")
+  assert_true(!is_engine_strict_value("0"), "strict 0 false")
+  assert_true(!is_engine_strict_value("false"), "strict false")
+  assert_true(!is_engine_strict_value(""), "strict empty false")
+  assert_true(is_engine_strict_env(Some("True")), "strict env True")
+  assert_true(is_engine_strict_env(Some("TrUe")), "strict env TrUe")
+  assert_true(!is_engine_strict_env(Some("0")), "strict env 0 false")
+  assert_true(!is_engine_strict_env(None), "strict env none false")
+
+  // Strict 3-state DbDepCheck classifier (NoneFound -> None; Found & Unknown -> Some)
+  assert_true(classify_db_dep_check(DbDepCheck::NoneFound) is None, "DbDepCheck::NoneFound")
+  match classify_db_dep_check(DbDepCheck::Found) {
+    Some(r) => assert_str_eq(r, "db:remote-connect-sessions")
+    None => panic("expected db:remote-connect-sessions")
+  }
+  match classify_db_dep_check(DbDepCheck::Unknown("db:unreadable:5")) {
+    Some(r) => assert_str_eq(r, "db:unreadable:5")
+    None => panic("expected fail-safe Unknown reason")
+  }
+
   match extract_app_dir_from_argv(["bin", "run", "--app", "/opt/app", "--data", "/d"]) {
     Some(d) => assert_str_eq(d, "/opt/app")
     None => panic("expected --app value")

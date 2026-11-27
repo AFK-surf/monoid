@@ -770,7 +770,55 @@ fn run_internal_replica_restore(argv : Array[String]) -> Int {
   }
 }
 
-fn check_external_connects_need_node(data : String, sep : String) -> Array[String] {
+/// Strict 3-state read-only SQLite check for active cross-station `@` sessions.
+/// Uses `OPEN_READONLY` + `busy_timeout=2000` and always closes its handle immediately so
+/// zero FDs leak into `exec_replace`. Any open/prepare/step error returns `Unknown(...)`
+/// (fail-safe) rather than silently returning `NoneFound`.
+pub fn db_has_remote_connect_session(db_path : String) -> DbDepCheck {
+  if station_sys::lstat_raw(db_path) is None {
+    return DbDepCheck::NoneFound
+  }
+  let db = match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY, 2000) {
+    Ok(d) => d
+    Err(e) => return DbDepCheck::Unknown("db:unreadable:" + e.code.to_string())
+  }
+  match db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1") {
+    Ok(mstmt) => {
+      let mrc = mstmt.step()
+      let _ = mstmt.finalize()
+      if mrc == 101 {
+        let _ = db.close()
+        return DbDepCheck::NoneFound
+      }
+      if mrc != 100 {
+        let _ = db.close()
+        return DbDepCheck::Unknown("sqlite_master_err:" + mrc.to_string())
+      }
+    }
+    Err(e) => {
+      let _ = db.close()
+      return DbDepCheck::Unknown("sqlite_master_err:" + e.code.to_string())
+    }
+  }
+  let res = match db.prepare("SELECT 1 FROM sessions WHERE connect LIKE '%@%' AND archived_at IS NULL LIMIT 1") {
+    Ok(stmt) => {
+      let rc = stmt.step()
+      let _ = stmt.finalize()
+      if rc == 100 {
+        DbDepCheck::Found
+      } else if rc == 101 {
+        DbDepCheck::NoneFound
+      } else {
+        DbDepCheck::Unknown("db:unreadable:" + rc.to_string())
+      }
+    }
+    Err(e) => DbDepCheck::Unknown("db:unreadable:" + e.code.to_string())
+  }
+  let _ = db.close()
+  res
+}
+
+pub fn check_external_connects_need_node(data : String, sep : String) -> Array[String] {
   let reasons : Array[String] = []
 
   // 1. Local `config.json` enabled connects (1:1 with `station/src/sessions/config.ts:174`).
@@ -800,24 +848,11 @@ fn check_external_connects_need_node(data : String, sep : String) -> Array[Strin
     None => ()
   }
 
-  // 3. Read-only SQLite fallback check for active cross-station `@` sessions (immediately closes handle).
+  // 3. Strict 3-state read-only SQLite fallback check for active cross-station `@` sessions.
   let db_path = nodepath::join(sep, [data, "stillfail.db"])
-  if station_sys::lstat_raw(db_path) is Some(_) {
-    match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY, 500) {
-      Ok(db) => {
-        match db.prepare("SELECT 1 FROM sessions WHERE connect LIKE '%@%' AND archived_at IS NULL LIMIT 1") {
-          Ok(stmt) => {
-            if stmt.step() == 100 {
-              reasons.push("db:remote-connect-sessions")
-            }
-            let _ = stmt.finalize()
-          }
-          Err(_) => ()
-        }
-        let _ = db.close()
-      }
-      Err(_) => ()
-    }
+  match classify_db_dep_check(db_has_remote_connect_session(db_path)) {
+    Some(r) => reasons.push(r)
+    None => ()
   }
 
   reasons
