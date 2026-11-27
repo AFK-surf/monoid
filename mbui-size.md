@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 2.65 | 3.59 | 14.9 | 37.87 | 57.96 | 33.2 | 67.77 | 101.91 | 136.35 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [c76f57771](https://github.com/AFK-surf/monoid/commit/c76f5777167157b08f93aae71073e90428e54cd4) feat(shell): add image.thumb operation for station | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
-| [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.31 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
 | [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
 | [c76f57771](https://github.com/AFK-surf/monoid/commit/c76f5777167157b08f93aae71073e90428e54cd4) feat(shell): add image.thumb operation for station | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.57 |
-| [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
