@@ -1000,19 +1000,17 @@ static void place(int full_key, MBDrawn *d) {
   e->color = d.color;
 }
 
-// ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), and the phases of a glyph
-// first drawn on the frames' thread that it was not drawn at, drawn on queues of their own, as Android's MBText draws
-// them on threads of their own and win_text.cpp on threads of theirs; each phase taken as it is first asked for, from
-// what was drawn ahead: waited for while a queue draws that phase, drawn here when none has begun it. So a word
-// moved across by less than a pixel finds the phases it comes to drawn (ui's view_rephase). A phase at a time: a
-// frame's glyphs each first at the phase its key says (bits 26..27: where its line put it, text.mbt laid_ahead; 0 for
-// one shaped and not laid out), over the cores, before any other phase of theirs, which a queue of less weight draws
-// after ----
+// ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), and the remaining subpixel
+// phases of a glyph once it is actually requested at a second distinct phase (horizontal subpixel motion), drawn on
+// queues of their own, matching Android's MBText and Windows' win_text.cpp; each phase taken as it is first asked for
+// from what was drawn ahead, or drawn immediately here without ever blocking the frames' thread if a background worker
+// is still drawing it (skip mask). ----
 
 // One glyph asked to be drawn ahead at some of its phases: what it is drawn from (set before a queue has it, not
 // changed after); under ahead_lock, by phase (bit `sub`), those asked and not begun (`want`), those of them drawn
-// first (`first`), those being drawn (`drawing`), those drawn and not taken (`have`) and their pictures, and whether
-// it was let go (`gone`: what is still drawn of it then is dropped).
+// first (`first`), those being drawn (`drawing`), those taken over by the frames' thread while drawing (`skip`, so the
+// worker drops its bitmap when done), those drawn and not taken (`have`) and their pictures, and whether it was let go
+// (`gone`: what is still drawn of it then is dropped).
 @interface MBAhead : NSObject
 @property(nonatomic) int key;
 @property(nonatomic, copy) NSString *cluster;
@@ -1028,6 +1026,7 @@ static void place(int full_key, MBDrawn *d) {
 @property(nonatomic) uint8_t want;
 @property(nonatomic) uint8_t first;
 @property(nonatomic) uint8_t drawing;
+@property(nonatomic) uint8_t skip;
 @property(nonatomic) uint8_t have;
 // by phase: an MBDrawn, NSNull where none
 @property(nonatomic, strong) NSMutableArray *drawn;
@@ -1038,7 +1037,6 @@ static void place(int full_key, MBDrawn *d) {
 // The most glyphs asked for or drawn ahead and not placed yet (the oldest let go past it).
 #define AHEAD_MOST 1024
 static pthread_mutex_t ahead_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t ahead_drawn = PTHREAD_COND_INITIALIZER;
 // the first phases' queue and the rest's, of less weight
 static dispatch_queue_t ahead_q, ahead_rest_q;
 // (the frames' thread's) what was asked for and not all taken yet, by key, and in the order asked
@@ -1066,11 +1064,12 @@ static void draw_ahead(MBAhead *a, BOOL first) {
   }
   pthread_mutex_lock(&ahead_lock);
   a.drawing = (uint8_t)(a.drawing & ~bit);
-  if (d && !a.gone) {
+  BOOL skipped = (a.skip & bit) != 0;
+  a.skip = (uint8_t)(a.skip & ~bit);
+  if (d && !a.gone && !skipped) {
     a.drawn[s] = d;
     a.have = (uint8_t)(a.have | bit);
   }
-  pthread_cond_broadcast(&ahead_drawn);
   pthread_mutex_unlock(&ahead_lock);
 }
 
@@ -1094,6 +1093,7 @@ static BOOL drop_oldest_drawn(void) {
     a.have = 0;
     a.want = 0;
     a.first = 0;
+    a.skip = 0;
   }
   pthread_mutex_unlock(&ahead_lock);
   if (!idle) return NO;
@@ -1113,6 +1113,7 @@ static void ahead_forget(void) {
     a.have = 0;
     a.want = 0;
     a.first = 0;
+    a.skip = 0;
   }
   pthread_mutex_unlock(&ahead_lock);
   [ahead_of removeAllObjects];
@@ -1197,12 +1198,15 @@ static NSMutableArray<MBAhead *> *ahead_rests(NSArray<MBAhead *> *asked) {
 // What was asked handed to the queues, a phase an item: each glyph's first phases over the cores there are (a page's
 // few hundred drawn in the time a frame or two takes, not one after another), each batch after the one before; the
 // rest of their phases on the queue of less weight (ahead_rests). `firsts`: more first phases of glyphs asked before.
-static void ahead_go(NSMutableArray<MBAhead *> *asked, NSMutableArray<MBAhead *> *firsts) {
-  if (!asked.count && !firsts.count) return;
+// `extra_rests`: more rest phases added to glyphs asked before.
+static void ahead_go(NSMutableArray<MBAhead *> *asked, NSMutableArray<MBAhead *> *firsts,
+                     NSMutableArray<MBAhead *> *extra_rests) {
+  if (!asked.count && !firsts.count && !extra_rests.count) return;
   for (MBAhead *a in asked) {
     for (int n = __builtin_popcount(a.first); n > 0; n--) [firsts addObject:a];
   }
   NSMutableArray<MBAhead *> *rests = ahead_rests(asked);
+  if (extra_rests.count) [rests addObjectsFromArray:extra_rests];
   if (firsts.count) {
     dispatch_async(ahead_q, ^{
       dispatch_apply(firsts.count, DISPATCH_APPLY_AUTO, ^(size_t i) { draw_ahead(firsts[i], YES); });
@@ -1225,46 +1229,61 @@ static void ahead_ensure(void) {
   ahead_order = [NSMutableOrderedSet new];
 }
 
-// The glyphs of keys[0..n) (each with the phase to draw first: key_sub) to draw ahead at the phases of each not drawn
-// or asked yet; a glyph asked again at another phase not begun has that phase drawn first too.
+// The glyphs of keys[0..n) (each with the phase to draw first: key_sub) to draw ahead at that phase alone on first
+// sight; the remaining phases are queued onto ahead_rest_q only once the same glyph is actually requested at a second
+// distinct phase (horizontal subpixel motion), matching win_text.cpp and Android's MBText.
 void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
   @autoreleasepool {
     ahead_ensure();
     ahead_batch++;
     NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
     NSMutableArray<MBAhead *> *firsts = [NSMutableArray new];
+    NSMutableArray<MBAhead *> *extra_rests = [NSMutableArray new];
     for (int32_t i = 0; i < n; i++) {
       if (keys[i] < 0) continue;
       int k = key_base(keys[i]);
       if (k >= n_entries) continue;
       uint8_t bit = (uint8_t)(1 << key_sub(keys[i]));
+      uint8_t prev = entries[k].subs_queued;
+      BOOL moved = prev != 0 && (prev & bit) == 0;
+      uint8_t want = moved ? (uint8_t)(bit | (SUB_ALL & ~prev)) : bit;
       MBAhead *a = ahead_of[@(k)];
       if (a) {
         pthread_mutex_lock(&ahead_lock);
         BOOL stale = a.gone || a.scale != text_scale;
-        BOOL add_first = NO;
+        uint8_t add = 0;
+        uint8_t add_first = 0;
+        uint8_t promote = 0;
         if (stale) {
           a.gone = YES;
           a.drawn = nil;
           a.have = 0;
           a.want = 0;
           a.first = 0;
-        } else if ((a.want & bit) && !(a.first & bit)) {
-          a.first = (uint8_t)(a.first | bit);
-          add_first = YES;
-        } else if (!((a.want | a.drawing | a.have) & bit)) {
-          a.want = (uint8_t)(a.want | bit);
-          a.first = (uint8_t)(a.first | bit);
-          add_first = YES;
+          a.skip = 0;
+        } else {
+          uint8_t unskip = (uint8_t)(want & a.drawing & a.skip);
+          if (unskip) a.skip = (uint8_t)(a.skip & ~unskip);
+          add = (uint8_t)(want & ~(a.want | a.drawing | a.have));
+          if (add) {
+            a.want = (uint8_t)(a.want | add);
+            add_first = (uint8_t)(add & bit);
+            if (add_first) a.first = (uint8_t)(a.first | add_first);
+          }
+          promote = (uint8_t)(bit & a.want & ~a.first);
+          if (promote) a.first = (uint8_t)(a.first | promote);
         }
         pthread_mutex_unlock(&ahead_lock);
         if (stale) {
           ahead_let_go(a);
         } else {
-          if (add_first) {
-            entries[k].subs_queued |= bit;
+          uint8_t new_first = (uint8_t)(add_first | promote);
+          uint8_t new_rest = (uint8_t)(add & ~add_first);
+          if (add || promote) {
+            entries[k].subs_queued |= want;
             if (a.batch != ahead_batch) {
-              [firsts addObject:a];
+              for (int m = __builtin_popcount(new_first); m > 0; m--) [firsts addObject:a];
+              for (int m = __builtin_popcount(new_rest); m > 0; m--) [extra_rests addObject:a];
               [ahead_order removeObject:a];
               [ahead_order addObject:a];
             }
@@ -1272,15 +1291,15 @@ void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
           continue;
         }
       }
-      uint8_t want = (uint8_t)(bit | (SUB_ALL & ~entries[k].subs_queued));
       if (!ahead_ask(k, want, (uint8_t)(want & bit), asked)) continue;
     }
-    ahead_go(asked, firsts);
+    ahead_go(asked, firsts, extra_rests);
   }
 }
 
-// What was drawn ahead of glyph `key` at phase `sub` and the scale of now, taken; nil when it was not (asked and not
-// begun: that phase no longer asked, drawn here).
+// What was drawn ahead of glyph `key` at phase `sub` and the scale of now, taken; nil when it was not ready (asked and
+// not begun: that phase no longer asked; currently drawing on a background queue: marked skipped so the worker drops
+// its bitmap when done and the frames' thread draws immediately without blocking).
 static MBDrawn *drawn_ahead(int key, int sub) {
   MBAhead *a = ahead_of[@(key)];
   if (!a) return nil;
@@ -1291,14 +1310,15 @@ static MBDrawn *drawn_ahead(int key, int sub) {
     // (left out of what the queues draw, which pass over it)
     a.want = (uint8_t)(a.want & ~bit);
     a.first = (uint8_t)(a.first & ~bit);
-  } else {
-    while (a.drawing & bit) pthread_cond_wait(&ahead_drawn, &ahead_lock);
-    if (a.have & bit) {
-      id got = a.drawn[sub];
-      if (got != NSNull.null && a.scale == text_scale) d = got;
-      a.drawn[sub] = NSNull.null;
-      a.have = (uint8_t)(a.have & ~bit);
-    }
+  } else if (a.drawing & bit) {
+    // (a background worker — possibly UTILITY QoS — is drawing this phase: never stall the frames' thread on it;
+    // mark skip so the worker discards its bitmap when done and draw here immediately)
+    a.skip = (uint8_t)(a.skip | bit);
+  } else if (a.have & bit) {
+    id got = a.drawn[sub];
+    if (got != NSNull.null && a.scale == text_scale) d = got;
+    a.drawn[sub] = NSNull.null;
+    a.have = (uint8_t)(a.have & ~bit);
   }
   BOOL done = (a.want | a.drawing | a.have) == 0 || a.scale != text_scale;
   if (done) {
@@ -1307,28 +1327,63 @@ static MBDrawn *drawn_ahead(int key, int sub) {
     a.have = 0;
     a.want = 0;
     a.first = 0;
+    a.skip = 0;
   }
   pthread_mutex_unlock(&ahead_lock);
   if (done) ahead_let_go(a);
   return d;
 }
 
-// Glyph `full_key` (its cluster's and its phase) drawn, from what was drawn ahead of it when there is, else here; the
-// phases of it not drawn or asked yet asked of the queue, for where the words are moved to next.
+// Glyph `full_key` (its cluster's and its phase) drawn, from what was drawn ahead of it when ready, else here; the
+// remaining subpixel phases are queued onto ahead_rest_q only once this glyph is actually requested at a second distinct
+// phase (horizontal subpixel motion).
 static void rasterize(int full_key) {
   int key = key_base(full_key), sub = key_sub(full_key);
   glyph_entry *e = &entries[key];
+  uint8_t bit = (uint8_t)(1 << sub);
+  BOOL moved = e->subs_queued != 0 && (e->subs_queued & bit) == 0;
   MBDrawn *d = drawn_ahead(key, sub);
   if (!d) {
     d = draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(sub), text_scale);
   }
-  e->subs_queued |= (uint8_t)(1 << sub);
-  uint8_t rest = (uint8_t)(SUB_ALL & ~e->subs_queued);
-  if (rest && !ahead_of[@(key)]) {
-    ahead_ensure();
-    NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
-    ahead_ask(key, rest, 0, asked);
-    ahead_go(asked, [NSMutableArray new]);
+  e->subs_queued |= bit;
+  if (moved) {
+    uint8_t rest = (uint8_t)(SUB_ALL & ~e->subs_queued);
+    if (rest) {
+      ahead_ensure();
+      NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
+      NSMutableArray<MBAhead *> *extra_rests = [NSMutableArray new];
+      MBAhead *a = ahead_of[@(key)];
+      if (a) {
+        pthread_mutex_lock(&ahead_lock);
+        BOOL stale = a.gone || a.scale != text_scale;
+        uint8_t add = 0;
+        if (stale) {
+          a.gone = YES;
+          a.drawn = nil;
+          a.have = 0;
+          a.want = 0;
+          a.first = 0;
+          a.skip = 0;
+        } else {
+          uint8_t unskip = (uint8_t)(rest & a.drawing & a.skip);
+          if (unskip) a.skip = (uint8_t)(a.skip & ~unskip);
+          add = (uint8_t)(rest & ~(a.want | a.drawing | a.have));
+          if (add) a.want = (uint8_t)(a.want | add);
+        }
+        pthread_mutex_unlock(&ahead_lock);
+        if (stale) {
+          ahead_let_go(a);
+          ahead_ask(key, rest, 0, asked);
+        } else if (add) {
+          e->subs_queued |= add;
+          for (int m = __builtin_popcount(add); m > 0; m--) [extra_rests addObject:a];
+        }
+      } else {
+        ahead_ask(key, rest, 0, asked);
+      }
+      ahead_go(asked, [NSMutableArray new], extra_rests);
+    }
   }
   place(full_key, d);
 }

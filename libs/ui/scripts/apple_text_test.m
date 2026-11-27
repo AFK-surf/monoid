@@ -296,8 +296,9 @@ static void rests_in_turn(void) {
   CHECK([got isEqualToString:@"0124" @"012" @"01"], "rests in the order %s", got.UTF8String);
 }
 
-// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead, their first phase where their keys put
-// them, the rest after): each phase of each taken drawn there, as the frames' thread draws it, to the byte.
+// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead): on first sight only the requested phase
+// is drawn ahead; once a glyph is requested at a second distinct phase (horizontal subpixel motion), the remaining
+// phases are queued and drawn byte-identical to foreground drawing.
 static void ahead_page(void) {
   NSString *page = @"文字渲染横向推入页面每个字形的四分之一像素相位Rendering every glyph's phases ahead 0123456789";
   int sizes[] = {13, 15, 17};
@@ -315,33 +316,82 @@ static void ahead_page(void) {
     }
   }
   CHECK(n > 100, "only %d glyphs to draw ahead", n);
+  // Pass 1 (first sight): only the requested single phase per glyph is drawn ahead.
   mb_host_glyphs_ahead(keys, n);
-  // (both queues serial, each item of theirs a dispatch_apply over all it was handed: done when a block after it is)
   dispatch_sync(ahead_q, ^{
                 });
   dispatch_sync(ahead_rest_q, ^{
                 });
-  int ahead = 0, same = 0;
+  int first_hit = 0, first_same = 0, extra_drawn = 0;
   for (int i = 0; i < n; i++) {
     int key = key_base(keys[i]);
+    int sub0 = key_sub(keys[i]);
     glyph_entry *e = &entries[key];
+    CHECK(e->subs_queued == (uint8_t)(1 << sub0), "first sight queued %u for glyph %d (want %u)", e->subs_queued, key,
+          (uint8_t)(1 << sub0));
     for (int s = 0; s < SUB_COUNT; s++) {
       MBDrawn *d = drawn_ahead(key, s);
+      if (s == sub0) {
+        if (!d) continue;
+        first_hit++;
+        MBDrawn *r =
+            draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(s), text_scale);
+        BOOL eq = d.pw == r.pw && d.ph == r.ph && d.color == r.color && CGRectEqualToRect(d.b, r.b) &&
+                  (!d.px || !r.px ? d.px == r.px : memcmp(d.px, r.px, (size_t)d.pw * d.ph * (d.color ? 4 : 1)) == 0);
+        if (eq) first_same++;
+        CHECK(eq, "glyph %d phase %d drawn ahead not as drawn here", key, s);
+      } else if (d != nil) {
+        extra_drawn++;
+      }
+    }
+  }
+  CHECK(first_hit == n && first_same == n, "first sight: %d/%d hit, %d same", first_hit, n, first_same);
+  CHECK(extra_drawn == 0, "first sight drew %d unrequested phases", extra_drawn);
+  int left = 0;
+  for (int i = 0; i < n; i++) left += ahead_of[@(key_base(keys[i]))] != nil;
+  CHECK(left == 0, "%d glyphs still asked ahead after taking first phase", left);
+
+  // Pass 2 (second distinct phase — horizontal motion): triggers the remaining 3 phases.
+  int moved_keys[3 * 128];
+  for (int i = 0; i < n; i++) {
+    int key = key_base(keys[i]);
+    int sub1 = (key_sub(keys[i]) + 1) % SUB_COUNT;
+    moved_keys[i] = key | (sub1 << 26);
+  }
+  mb_host_glyphs_ahead(moved_keys, n);
+  dispatch_sync(ahead_q, ^{
+                });
+  dispatch_sync(ahead_rest_q, ^{
+                });
+  int moved_hit = 0, moved_same = 0;
+  for (int i = 0; i < n; i++) {
+    int key = key_base(keys[i]);
+    int sub0 = key_sub(keys[i]);
+    glyph_entry *e = &entries[key];
+    CHECK(e->subs_queued == SUB_ALL, "moved glyph %d subs_queued=%u (want %u)", key, e->subs_queued, SUB_ALL);
+    for (int s = 0; s < SUB_COUNT; s++) {
+      MBDrawn *d = drawn_ahead(key, s);
+      if (s == sub0) {
+        CHECK(d == nil, "moved glyph %d unexpectedly redrew already-queued phase %d", key, s);
+        continue;
+      }
       if (!d) continue;
-      ahead++;
+      moved_hit++;
       MBDrawn *r =
           draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(s), text_scale);
       BOOL eq = d.pw == r.pw && d.ph == r.ph && d.color == r.color && CGRectEqualToRect(d.b, r.b) &&
                 (!d.px || !r.px ? d.px == r.px : memcmp(d.px, r.px, (size_t)d.pw * d.ph * (d.color ? 4 : 1)) == 0);
-      if (eq) same++;
-      CHECK(eq, "glyph %d phase %d drawn ahead not as drawn here", key, s);
+      if (eq) moved_same++;
+      CHECK(eq, "moved glyph %d phase %d drawn ahead not as drawn here", key, s);
     }
   }
-  printf("ahead page: %d glyphs, %d of their %d phases drawn ahead, %d as drawn here\n", n, ahead, n * SUB_COUNT, same);
-  CHECK(ahead == n * SUB_COUNT, "%d of %d phases drawn ahead", ahead, n * SUB_COUNT);
-  int left = 0;
+  printf("ahead page: %d glyphs, first=%d/%d, moved=%d/%d (same=%d)\n", n, first_hit, n, moved_hit, n * (SUB_COUNT - 1),
+         moved_same);
+  CHECK(moved_hit == n * (SUB_COUNT - 1) && moved_same == n * (SUB_COUNT - 1),
+        "moved: %d of %d remaining phases drawn ahead (%d same)", moved_hit, n * (SUB_COUNT - 1), moved_same);
+  left = 0;
   for (int i = 0; i < n; i++) left += ahead_of[@(key_base(keys[i]))] != nil;
-  CHECK(left == 0, "%d glyphs still asked ahead, all their phases taken", left);
+  CHECK(left == 0, "%d glyphs still asked ahead after taking all phases", left);
 }
 
 static void drain_ahead_queues(void) {
@@ -358,7 +408,8 @@ static BOOL drawn_eq(MBDrawn *d, MBDrawn *r) {
 }
 
 // Re-requesting glyphs after eviction/consumption, active single-phase re-request, same-batch double-phase re-request,
-// old MBAhead new-batch double-phase with duplicate key, and full-queue continuation for already-active entries.
+// old MBAhead new-batch double-phase with duplicate key, full-queue continuation, foreground rasterize lazy phases,
+// and non-blocking skip mask when a phase is actively drawing.
 static void ahead_rewarm(void) {
   ahead_ensure();
   drain_ahead_queues();
@@ -367,8 +418,8 @@ static void ahead_rewarm(void) {
   {
     int k = key_of(@"重", 19, 0);
     CHECK(k >= 0, "rewarm 1: no key");
-    int32_t init[1] = {k};
-    mb_host_glyphs_ahead(init, 1);
+    int32_t init[2] = {k | (0 << 26), k | (1 << 26)};
+    mb_host_glyphs_ahead(init, 2);
     drain_ahead_queues();
     for (int s = 0; s < SUB_COUNT; s++) {
       MBDrawn *d = drawn_ahead(k, s);
@@ -390,12 +441,12 @@ static void ahead_rewarm(void) {
     CHECK(ahead_of[@(k)] == nil, "rewarm 1: ahead_of still set after consuming phase 1");
   }
 
-  // 2. Active single-phase consumed re-request: take phase 0 only, keep same MBAhead pointer, re-request phase 0.
+  // 2. Active single-phase consumed re-request: keep phases 1..3 active, take phase 0, reuse same MBAhead pointer.
   {
     int k = key_of(@"热", 19, 0);
     CHECK(k >= 0, "rewarm 2: no key");
-    int32_t init[1] = {k};
-    mb_host_glyphs_ahead(init, 1);
+    int32_t init[2] = {k | (0 << 26), k | (1 << 26)};
+    mb_host_glyphs_ahead(init, 2);
     drain_ahead_queues();
     CHECK(drawn_ahead(k, 0) != nil, "rewarm 2: initial phase 0 missing");
     MBAhead *kept = ahead_of[@(k)];
@@ -417,6 +468,7 @@ static void ahead_rewarm(void) {
   }
 
   // 3. Same-batch double-phase re-request: subs_queued = 0b0011, batch asks phase 0 and phase 1 together.
+  // Neither phase triggers `moved` (both already in subs_queued), so only phases 0 and 1 are re-warmed.
   {
     int k = key_of(@"双", 19, 0);
     CHECK(k >= 0, "rewarm 3: no key");
@@ -431,9 +483,7 @@ static void ahead_rewarm(void) {
           draw_cluster(texts[k], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(s), text_scale);
       CHECK(drawn_eq(got, ref), "rewarm 3: phase %d not byte-identical", s);
     }
-    for (int s = 2; s < SUB_COUNT; s++) {
-      CHECK(drawn_ahead(k, s) != nil, "rewarm 3: unqueued phase %d missing", s);
-    }
+    CHECK(drawn_ahead(k, 2) == nil && drawn_ahead(k, 3) == nil, "rewarm 3: unmoved glyph unexpectedly drew phases 2..3");
     CHECK(ahead_of[@(k)] == nil, "rewarm 3: ahead_of not cleared");
   }
 
@@ -441,8 +491,8 @@ static void ahead_rewarm(void) {
   {
     int k = key_of(@"复", 19, 0);
     CHECK(k >= 0, "rewarm 4: no key");
-    int32_t init[1] = {k};
-    mb_host_glyphs_ahead(init, 1);
+    int32_t init[2] = {k | (0 << 26), k | (1 << 26)};
+    mb_host_glyphs_ahead(init, 2);
     drain_ahead_queues();
     CHECK(drawn_ahead(k, 0) != nil && drawn_ahead(k, 1) != nil, "rewarm 4: initial phases 0..1 missing");
     MBAhead *old_a = ahead_of[@(k)];
@@ -470,8 +520,8 @@ static void ahead_rewarm(void) {
     int k_active = key_of(@"满", 19, 0);
     int k_new = key_of(@"新", 19, 0);
     CHECK(k_active >= 0 && k_new >= 0, "rewarm 5: no keys");
-    int32_t init[1] = {k_active};
-    mb_host_glyphs_ahead(init, 1);
+    int32_t init[2] = {k_active | (0 << 26), k_active | (1 << 26)};
+    mb_host_glyphs_ahead(init, 2);
     drain_ahead_queues();
     CHECK(drawn_ahead(k_active, 0) != nil, "rewarm 5: initial phase 0 missing");
     MBAhead *active_a = ahead_of[@(k_active)];
@@ -504,6 +554,76 @@ static void ahead_rewarm(void) {
     blocker.drawing = 0;
     for (MBAhead *d in dummies) [ahead_order removeObject:d];
     CHECK(ahead_order.count == 0, "rewarm 5: ahead_order not clean (%lu)", (unsigned long)ahead_order.count);
+  }
+
+  // 6. Foreground rasterize lazy phases: first sight queues nothing; second distinct phase queues remaining 2 phases.
+  {
+    int k = key_of(@"懒", 19, 0);
+    CHECK(k >= 0, "rewarm 6: no key");
+    double out[8] = {0};
+    mb_host_glyph(k | (0 << 26), out);
+    drain_ahead_queues();
+    CHECK(entries[k].subs_queued == 0x1, "rewarm 6: first foreground rasterize queued %u", entries[k].subs_queued);
+    CHECK(ahead_of[@(k)] == nil, "rewarm 6: first foreground rasterize unexpectedly created MBAhead");
+
+    mb_host_glyph(k | (2 << 26), out);
+    drain_ahead_queues();
+    CHECK(entries[k].subs_queued == SUB_ALL, "rewarm 6: second phase queued %u", entries[k].subs_queued);
+    CHECK(drawn_ahead(k, 1) != nil && drawn_ahead(k, 3) != nil, "rewarm 6: remaining phases 1 & 3 not drawn ahead");
+    CHECK(drawn_ahead(k, 0) == nil && drawn_ahead(k, 2) == nil, "rewarm 6: already-drawn phases 0 & 2 redrawn");
+    CHECK(ahead_of[@(k)] == nil, "rewarm 6: ahead_of not cleared");
+  }
+
+  // 7. Non-blocking skip mask: drawn_ahead never blocks on an actively drawing phase and discards worker output.
+  {
+    int k = key_of(@"跳", 19, 0);
+    CHECK(k >= 0, "rewarm 7: no key");
+    MBAhead *a = [MBAhead new];
+    a.key = k;
+    a.cluster = texts[k];
+    a.font = (__bridge id)font_for(entries[k].size, entries[k].weight, entries[k].style);
+    a.style = entries[k].style;
+    a.dx = entries[k].dx;
+    a.scale = text_scale;
+    a.drawing = (uint8_t)(1 << 1);
+    a.drawn = [NSMutableArray arrayWithObjects:NSNull.null, NSNull.null, NSNull.null, NSNull.null, nil];
+    ahead_of[@(k)] = a;
+    [ahead_order addObject:a];
+
+    MBDrawn *d = drawn_ahead(k, 1);
+    CHECK(d == nil, "rewarm 7: expected nil while drawing");
+    CHECK((a.skip & (1 << 1)) != 0, "rewarm 7: skip bit not set");
+    CHECK(ahead_of[@(k)] == a, "rewarm 7: MBAhead removed while drawing");
+
+    // Re-requesting while drawing + skip clears skip so the worker's output is kept.
+    int32_t req[1] = {k | (1 << 26)};
+    mb_host_glyphs_ahead(req, 1);
+    CHECK((a.skip & (1 << 1)) == 0, "rewarm 7: re-request did not clear skip bit");
+
+    // Clean up synthetic entry.
+    a.drawing = 0;
+    a.gone = YES;
+    ahead_let_go(a);
+    entries[k].subs_queued = 0;
+  }
+
+  // 8. Existing MBAhead gains rest phases when moved in a later batch (a.batch != ahead_batch).
+  {
+    int k = key_of(@"移", 19, 0);
+    CHECK(k >= 0, "rewarm 8: no key");
+    int32_t req1[1] = {k | (0 << 26)};
+    mb_host_glyphs_ahead(req1, 1);
+    drain_ahead_queues();
+    MBAhead *a = ahead_of[@(k)];
+    CHECK(a != nil && (a.have == 0x1), "rewarm 8: phase 0 not ready");
+    int32_t req2[1] = {k | (2 << 26)};
+    mb_host_glyphs_ahead(req2, 1);
+    drain_ahead_queues();
+    CHECK(ahead_of[@(k)] == a, "rewarm 8: MBAhead pointer changed on move");
+    for (int s = 0; s < SUB_COUNT; s++) {
+      CHECK(drawn_ahead(k, s) != nil, "rewarm 8: phase %d missing after move on existing MBAhead", s);
+    }
+    CHECK(ahead_of[@(k)] == nil, "rewarm 8: ahead_of not cleared");
   }
   printf("ahead_rewarm: ok\n");
 }
