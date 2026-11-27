@@ -415,13 +415,9 @@ pub fn WholeApi::new(
       match st.get_session(key) {
         Ok(Some(row)) => {
           let out_items : Array[base_codec::Json] = []
-          match agents.adopted_runner_output.get(key) {
-            Some(lines) => {
-              for li in 0..<lines.length() {
-                out_items.push(base_codec::json_str(lines[li]))
-              }
-            }
-            None => ()
+          let lines = agents.read_adopted_runner_output(key)
+          for li in 0..<lines.length() {
+            out_items.push(base_codec::json_str(lines[li]))
           }
           return Ok(
             base_codec::json_obj([

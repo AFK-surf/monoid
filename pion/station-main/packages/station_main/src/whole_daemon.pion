@@ -2682,6 +2682,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           match st.adopted_runners.get(owner_id) {
             None => ()
             Some(rconn) => {
+              if rconn.exited {
+                return
+              }
               match builders_core::decode_shell_done(d) {
                 Ok((_, Some(chunk))) => {
                   if chunk.length() == 0 {
@@ -2760,41 +2763,73 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     }
                     match station_drivers::decode_runner_frame(line) {
                       Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
-                        // Persist and deliver to owning session FIRST; NEVER advance offsets or send ACK on failure!
-                        match st.core.agents.record_adopted_runner_output(
-                          rconn.session_key,
-                          rconn.runner_id,
-                          stream,
-                          at,
-                          payload,
-                        ) {
-                          Ok(_) => {
-                            let end_pos = at + payload.length().to_int64()
-                            if stream == "err" {
-                              if end_pos > rconn.acked_err {
-                                rconn.acked_err = end_pos
-                              }
-                            } else if end_pos > rconn.acked_out {
-                              rconn.acked_out = end_pos
-                            }
-                            rconn.lines_received = rconn.lines_received + 1
-                            // Send ACK with `keep` so native `stillfail-runner` preserves active turn stdout!
-                            let ack_line = station_drivers::encode_runner_ack(
-                              rconn.acked_out,
-                              rconn.acked_err,
-                              Some(rconn.keep_from),
-                            ) + "\n"
-                            if rconn.sock_id >= 0L {
-                              let _ = ctx.mux_role.call_async_raw(
-                                builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
-                                "tcp.write",
-                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
-                                Some(ack_line.to_bytes()),
-                              )
-                            }
+                        let current_acked = if stream == "err" { rconn.acked_err } else { rconn.acked_out }
+                        let end_pos = at + payload.length().to_int64()
+                        if end_pos <= current_acked {
+                          // Already committed on disk (duplicate replay): skip duplicate write and re-ACK.
+                          let ack_line = station_drivers::encode_runner_ack(
+                            rconn.acked_out,
+                            rconn.acked_err,
+                            Some(rconn.keep_from),
+                          ) + "\n"
+                          if rconn.sock_id >= 0L {
+                            let _ = ctx.mux_role.call_async_raw(
+                              builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                              "tcp.write",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                              Some(ack_line.to_bytes()),
+                            )
                           }
-                          Err(pe) => {
-                            ctx.log("failed to persist adopted runner output (" + rconn.runner_id + "): " + pe)
+                        } else if at > current_acked {
+                          // Offset gap: fail-stop immediately without advancing ACK across the gap.
+                          ctx.log(
+                            "adopted runner offset gap (" + rconn.runner_id + "): at=" + at.to_string() +
+                            " > acked=" + current_acked.to_string() + "; closing runner socket",
+                          )
+                          rconn.exited = true
+                          break
+                        } else {
+                          let (write_at, write_payload) = if at < current_acked {
+                            let skip = (current_acked - at).to_int()
+                            (current_acked, slice_bytes_local(payload, skip, payload.length()))
+                          } else {
+                            (at, payload)
+                          }
+                          // Persist and deliver to owning session FIRST; NEVER advance offsets or send ACK on failure!
+                          match st.core.agents.record_adopted_runner_output(
+                            rconn.session_key,
+                            rconn.runner_id,
+                            stream,
+                            write_at,
+                            write_payload,
+                          ) {
+                            Ok(_) => {
+                              if stream == "err" {
+                                rconn.acked_err = end_pos
+                              } else {
+                                rconn.acked_out = end_pos
+                              }
+                              rconn.lines_received = rconn.lines_received + 1
+                              // Send ACK with `keep: 0` so native `stillfail-runner` preserves active turn stdout!
+                              let ack_line = station_drivers::encode_runner_ack(
+                                rconn.acked_out,
+                                rconn.acked_err,
+                                Some(rconn.keep_from),
+                              ) + "\n"
+                              if rconn.sock_id >= 0L {
+                                let _ = ctx.mux_role.call_async_raw(
+                                  builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                                  "tcp.write",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                                  Some(ack_line.to_bytes()),
+                                )
+                              }
+                            }
+                            Err(pe) => {
+                              ctx.log("failed to persist adopted runner output (" + rconn.runner_id + "): " + pe + "; closing runner socket fail-stop")
+                              rconn.exited = true
+                              break
+                            }
                           }
                         }
                       }
@@ -3456,6 +3491,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     Some(skey) => {
                       let rcid = st.next_runner_conn_id
                       st.next_runner_conn_id = st.next_runner_conn_id + 1
+                      let (init_out, init_err) = st.core.agents.committed_runner_offsets(skey)
                       st.adopted_runners.set(
                         rcid,
                         AdoptedRunnerConn::{
@@ -3466,8 +3502,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           sock_id: -1L,
                           rx_chunks: [],
                           rx_total_bytes: 0,
-                          acked_out: 0L,
-                          acked_err: 0L,
+                          acked_out: init_out,
+                          acked_err: init_err,
                           lines_received: 0,
                           exited: false,
                         },

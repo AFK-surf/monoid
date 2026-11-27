@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
 import { createSocket as createUdpSocket } from "node:dgram";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from "node:http";
-import { createServer as createNetServer, type Server as NetServer } from "node:net";
+import { createConnection, createServer as createNetServer, type Server as NetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
@@ -142,6 +142,21 @@ function resolveReaderBinary(): string {
   }).trim();
   const candidate = join(dir, process.platform === "win32" ? "stillfail-reader.exe" : "stillfail-reader");
   assert.ok(existsSync(candidate), `reader binary not found at ${candidate}`);
+  return candidate;
+}
+
+function resolveRunnerBinary(): string {
+  if (process.env.STILLFAIL_RUNNER && existsSync(process.env.STILLFAIL_RUNNER)) {
+    return process.env.STILLFAIL_RUNNER;
+  }
+  const target = process.platform === "darwin" ? "darwin-arm64"
+    : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  const dir = execFileSync(process.execPath, [join(root, "scripts/native.ts"), "path", "runner", target], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  const candidate = join(dir, process.platform === "win32" ? "stillfail-runner.exe" : "stillfail-runner");
+  assert.ok(existsSync(candidate), `runner binary not found at ${candidate}`);
   return candidate;
 }
 
@@ -2231,4 +2246,293 @@ test("W16B.12: Live connection role downgrade via signed workspace lock takes ef
   await bobConn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W16B.13: Real stillfail-runner O(1) JSONL persistence + 2nd SIGUSR2 disk recovery + write-failure fail-stop ACK", { skip: process.platform === "win32" }, async () => {
+  const launcher = resolveLauncherBinary();
+  const readerBin = resolveReaderBinary();
+  const runnerBin = resolveRunnerBinary();
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+
+  const app = freshDir("r6-runner-app");
+  const data = freshDir("r6-runner-data");
+  const drive = freshDir("r6-runner-drive");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(readerBin, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  writeFileSync(join(app, "station", "main.js"), "process.exit(99);\n");
+  writeFileSync(join(app, "BUILD"), "9916\n");
+
+  const wrapperPath = join(app, "station", "stillfail-station-pion");
+  writeFileSync(
+    wrapperPath,
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo 'stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin'
+  exit 0
+fi
+export STILLFAIL_PION_WHOLE_DAEMON=1
+exec ${JSON.stringify(bin)} "$@"
+`,
+  );
+  chmodSync(wrapperPath, 0o755);
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const memberEp = await addon.bind({
+    secretKey: randomBytes(32),
+    alpns: [ADMIN_ALPN],
+    relayUrls: [],
+    discovery: false,
+    dht: false,
+    bindAddr: "127.0.0.1:0",
+  });
+  endpoints.push(memberEp);
+
+  const ws = "ws-r6-runner";
+  const frontPort = await pickFreeUdpPort();
+  seedWholeDataDir(data, stSeed, stationId, memberEp.id(), drive, ws, grantKeys);
+
+  let logs = "";
+  const lc = spawn(launcher, ["run", "--app", app, "--data", data], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      STILLFAIL_NODE: process.execPath,
+      STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
+      STILLFAIL_STATION_PION: wrapperPath,
+      STILLFAIL_STATION_ENGINE: "pion",
+      STILLFAIL_STATION_ENGINE_STRICT: "1",
+      STILLFAIL_NO_DISCOVERY: "1",
+      STILLFAIL_NO_DHT: "1",
+      STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${frontPort}`,
+    },
+  });
+  children.push(lc);
+  lc.stdout?.on("data", (d) => { logs += d.toString("utf8"); });
+  lc.stderr?.on("data", (d) => { logs += d.toString("utf8"); });
+  const lcExit = new Promise<number | null>((resolve) => lc.once("exit", (code) => resolve(code)));
+
+  const readHubPid = () => {
+    try {
+      const j = JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8"));
+      return typeof j.pid === "number" && j.pid > 0 ? j.pid : null;
+    } catch { return null; }
+  };
+  const pid1 = await until("r6 pid1 ready", () => readHubPid(), 15_000);
+  await until(`launcher confirms Node ${pid1} has taken over`, () => logs.includes(`Node ${pid1} has taken over`), 15_000);
+
+  const frontAddr = `127.0.0.1:${frontPort}`;
+  const memberJwt = signMemberJwt({ ws, device: memberEp.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
+
+  // Create two sessions via AdminApi before 1st handover: one for real `stillfail-runner`, one for fail-stop write error.
+  const { conn: adminConn1, helloReply: hello1 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
+  assert.equal(hello1?.ok, true, JSON.stringify(hello1));
+  const createReal = await adminCall(
+    adminConn1,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "sess-r6-real", title: "R6 Real Runner" })),
+  );
+  assert.equal(createReal.status, 200, createReal.body.toString("utf8"));
+  const createFail = await adminCall(
+    adminConn1,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "sess-r6-failstop", title: "R6 FailStop" })),
+  );
+  assert.equal(createFail.status, 200, createFail.body.toString("utf8"));
+  await adminConn1.close(0, "done");
+
+  // (a) Spawn REAL release `stillfail-runner` for `sess-r6-real`!
+  const runnersDir = join(data, "run", "runners");
+  mkdirSync(runnersDir, { recursive: true });
+  const expectedText = "r6-real-runner-line-1\nr6-real-runner-line-2\n";
+  const runnerReady = await new Promise<{ runner: number; pid: number; pgid: number; socket: string }>((resolve, reject) => {
+    const rproc = spawn(
+      runnerBin,
+      [
+        "--dir", runnersDir,
+        "--id", "claude-sess-r6-real",
+        "--cwd", data,
+        "--",
+        "/bin/sh", "-c",
+        "printf 'r6-real-runner-line-1\\nr6-real-runner-line-2\\n'; sleep 30",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    );
+    children.push(rproc);
+    let out = "";
+    let err = "";
+    rproc.stdout?.on("data", (d) => { out += d.toString("utf8"); });
+    rproc.stderr?.on("data", (d) => { err += d.toString("utf8"); });
+    rproc.on("error", reject);
+    rproc.stdout?.on("end", () => {
+      const line = out.split("\n").find((l) => l.startsWith("{"));
+      if (line) {
+        const j = JSON.parse(line);
+        if (j.ready) {
+          resolve(j);
+          return;
+        }
+      }
+      reject(new Error(`real stillfail-runner failed to start: ${err || out}`));
+    });
+  });
+  extraPids.push(runnerReady.runner, runnerReady.pid, runnerReady.pgid);
+
+  // (c) Pre-occupy `sessions/sess-r6-failstop/runner-output.jsonl` as a directory to trigger write failure,
+  // and seed a claimed mock runner that sends two contiguous 12-byte frames `[0..12)` and `[12..24)`.
+  mkdirSync(join(data, "sessions", "sess-r6-failstop", "runner-output.jsonl"), { recursive: true });
+  const failProc = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(failProc);
+  assert.ok(failProc.pid && failProc.pid > 1);
+  const failSockPath = join(runnersDir, "claude-sess-r6-failstop.sock");
+  let failAttached = false;
+  let failClosed = false;
+  let failAckOut = 0;
+  let failAckCount = 0;
+  const failSrv = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attach") {
+            failAttached = true;
+            const f1 = Buffer.from("frame-one-12", "utf8");
+            const f2 = Buffer.from("frame-two-12", "utf8");
+            sock.write(
+              JSON.stringify({ op: "out", stream: "out", at: 0, data: f1.toString("base64") }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 12, data: f2.toString("base64") }) + "\n",
+            );
+          } else if (msg.op === "ack") {
+            failAckCount++;
+            if (typeof msg.out === "number") failAckOut = msg.out;
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+    sock.on("close", () => { failClosed = true; });
+  });
+  servers.push(failSrv);
+  await new Promise<void>((r) => failSrv.listen(failSockPath, () => r()));
+  writeFileSync(
+    join(runnersDir, "claude-sess-r6-failstop.json"),
+    JSON.stringify({
+      id: "claude-sess-r6-failstop",
+      runner: failProc.pid,
+      pid: failProc.pid,
+      pgid: failProc.pid,
+      startedAt: Date.now(),
+      socket: failSockPath,
+    }) + "\n",
+  );
+
+  // 1st SIGUSR2 handover: pid1 -> pid2
+  process.kill(lc.pid!, "SIGUSR2");
+  const pid2 = await until("r6 pid2 after 1st SIGUSR2", () => {
+    const p = readHubPid();
+    return p && p !== pid1 ? p : null;
+  }, 20_000);
+  await until("r6 pid1 exited", () => !isAlive(pid1), 15_000);
+  await until(`launcher confirms Node ${pid2} has taken over`, () => logs.includes(`Node ${pid2} has taken over`), 15_000);
+
+  // Assert (c): write failure closed runner socket immediately and NEVER advanced ACK past 0!
+  await until("failstop runner attached and closed on write error", () => failAttached && failClosed, 10_000);
+  assert.equal(failAckOut, 0, `write failure MUST keep ack.out at 0 (before gap), got ${failAckOut}`);
+  assert.equal(failAckCount, 0, `write failure MUST send 0 ACKs, got ${failAckCount}`);
+  failProc.kill("SIGKILL");
+
+  // Assert (a): real `stillfail-runner` output persisted as valid 0600 JSONL and exposed via GET /sessions/sess-r6-real!
+  const { conn: adminConn2, helloReply: hello2 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
+  assert.equal(hello2?.ok, true, JSON.stringify(hello2));
+  await until("GET /sessions/sess-r6-real adoptedOutput contains real runner output", async () => {
+    const r = await adminCall(adminConn2, "GET", "/sessions/sess-r6-real");
+    if (r.status !== 200) return false;
+    const j = JSON.parse(r.body.toString("utf8"));
+    return Array.isArray(j.adoptedOutput) && j.adoptedOutput.join("").includes(expectedText);
+  }, 10_000);
+  await adminConn2.close(0, "done");
+
+  const logPath = join(data, "sessions", "sess-r6-real", "runner-output.jsonl");
+  assert.equal(existsSync(logPath), true, `expected ${logPath} on disk`);
+  assert.equal(statSync(logPath).mode & 0o777, 0o600, "runner-output.jsonl must be 0600");
+  const jsonlLines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+  assert.ok(jsonlLines.length >= 1, "expected at least 1 JSONL record");
+  let decodedAll = "";
+  for (const rawLine of jsonlLines) {
+    const rec = JSON.parse(rawLine);
+    assert.equal(rec.runner, "claude-sess-r6-real");
+    assert.equal(rec.stream, "out");
+    assert.equal(typeof rec.at, "number");
+    assert.equal(typeof rec.end, "number");
+    assert.equal(typeof rec.dataB64, "string");
+    assert.equal(typeof rec.text, "string");
+    const fromB64 = Buffer.from(rec.dataB64, "base64").toString("utf8");
+    assert.equal(fromB64, rec.text, "dataB64 must round-trip losslessly to text");
+    decodedAll += fromB64;
+  }
+  assert.equal(decodedAll, expectedText, `JSONL decoded output mismatch: ${JSON.stringify(decodedAll)}`);
+
+  // (b) Trigger 2nd normal SIGUSR2 handover: pid2 -> pid3, and assert GET /sessions/sess-r6-real
+  // recovers `adoptedOutput` from disk (NEVER `[]`)!
+  process.kill(lc.pid!, "SIGUSR2");
+  const pid3 = await until("r6 pid3 after 2nd SIGUSR2", () => {
+    const p = readHubPid();
+    return p && p !== pid2 ? p : null;
+  }, 20_000);
+  await until("r6 pid2 exited", () => !isAlive(pid2), 15_000);
+
+  const { conn: adminConn3, helloReply: hello3 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
+  assert.equal(hello3?.ok, true, JSON.stringify(hello3));
+  const sess3 = await adminCall(adminConn3, "GET", "/sessions/sess-r6-real");
+  assert.equal(sess3.status, 200, sess3.body.toString("utf8"));
+  const sess3Json = JSON.parse(sess3.body.toString("utf8"));
+  assert.ok(
+    Array.isArray(sess3Json.adoptedOutput) && sess3Json.adoptedOutput.join("").includes(expectedText),
+    `2nd SIGUSR2 handover MUST restore adoptedOutput from disk (not []), got: ${JSON.stringify(sess3Json)}`,
+  );
+  await adminConn3.close(0, "done");
+
+  // Verify directly with the REAL `stillfail-runner` that it recorded `out >= expectedText.length` and `keep === 0`!
+  const attachedAck = await new Promise<{ op: string; out: number; err: number; keep: number | null }>((resolve, reject) => {
+    const s = createConnection(runnerReady.socket);
+    let buf = "";
+    const timer = setTimeout(() => { s.destroy(); reject(new Error("timeout waiting for real runner attached frame")); }, 5_000);
+    s.on("error", (e) => { clearTimeout(timer); reject(e); });
+    s.on("connect", () => { s.write('{"op":"attach"}\n'); });
+    s.on("data", (d) => {
+      buf += d.toString("utf8");
+      const nl = buf.indexOf("\n");
+      if (nl >= 0) {
+        clearTimeout(timer);
+        const msg = JSON.parse(buf.slice(0, nl));
+        s.destroy();
+        resolve(msg);
+      }
+    });
+  });
+  assert.equal(attachedAck.op, "attached", JSON.stringify(attachedAck));
+  assert.ok(
+    attachedAck.out >= Buffer.byteLength(expectedText, "utf8"),
+    `real runner must have received ack.out >= ${Buffer.byteLength(expectedText, "utf8")}, got ${JSON.stringify(attachedAck)}`,
+  );
+  assert.equal(attachedAck.keep, 0, `real runner must have received ack.keep === 0, got ${JSON.stringify(attachedAck)}`);
+
+  // Clean launcher shutdown -> zero orphans
+  lc.kill("SIGTERM");
+  assert.equal(await Promise.race([lcExit, new Promise<null>((r) => setTimeout(() => r(null), 15_000))]), 0, logs);
+  await until("r6 pid3 exited cleanly", () => !isAlive(pid3), 10_000);
 });

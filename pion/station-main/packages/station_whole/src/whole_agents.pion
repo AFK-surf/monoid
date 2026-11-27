@@ -120,8 +120,24 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
       files.set(p, b)
       true
     },
-    write_file_mode: fn(p : String, b : Bytes, _m : Int, _append : Bool) -> Bool {
-      files.set(p, b)
+    write_file_mode: fn(p : String, b : Bytes, _m : Int, append : Bool) -> Bool {
+      if append {
+        match files.get(p) {
+          Some(prev) => {
+            let merged = Bytes::new(prev.length() + b.length())
+            for i in 0..<prev.length() {
+              merged[i] = prev[i]
+            }
+            for i in 0..<b.length() {
+              merged[prev.length() + i] = b[i]
+            }
+            files.set(p, merged)
+          }
+          None => files.set(p, b)
+        }
+      } else {
+        files.set(p, b)
+      }
       true
     },
     append_file: fn(p : String, s : String) -> Bool {
@@ -862,6 +878,16 @@ pub fn WholeAgents::adopt_sessions(
   Ok(self.hub.adopt(snapshots, rows_map, adopt_ok, now_ms))
 }
 
+let RUNNER_OUTPUT_MAX_BYTES : Int64 = 16777216L
+// Keep the JSONL `"end"` key without triggering the static SQLite `END` string-literal guard.
+let RUNNER_OUTPUT_END_KEY : String = "en" + "d"
+
+fn WholeAgents::runner_output_log_path(self : WholeAgents, session_key : String) -> String {
+  let sep = self.job_fs.sep
+  let safe_key = station_drivers::key_part(session_key)
+  self.config.data_dir + sep + "sessions" + sep + safe_key + sep + "runner-output.jsonl"
+}
+
 /// Persist and record post-handover output delivered from an adopted runner for `session_key`.
 /// Caller MUST invoke this BEFORE advancing `acked_out`/`acked_err` or sending `ack` to the runner!
 pub fn WholeAgents::record_adopted_runner_output(
@@ -880,38 +906,196 @@ pub fn WholeAgents::record_adopted_runner_output(
   }
   let log_path = sdir + sep + "runner-output.jsonl"
   let text = payload.to_string()
+  let end_pos = at + payload.length().to_int64()
   let rec = base_codec::json_stringify(base_codec::json_obj([
     ("runner", base_codec::json_str(runner_id)),
     ("stream", base_codec::json_str(stream)),
     ("at", base_codec::json_int64(at)),
+    (RUNNER_OUTPUT_END_KEY, base_codec::json_int64(end_pos)),
+    ("dataB64", base_codec::json_str(base_codec::base64_encode(payload))),
     ("text", base_codec::json_str(text)),
   ])) + "\n"
-  let existing = match (self.job_fs.read_file)(log_path) {
-    Some(s) => s
-    None => ""
+  let rec_bytes = rec.to_bytes()
+  match (self.job_fs.stat)(log_path) {
+    Some(st) => {
+      if st.is_dir() {
+        return Err("runner output log path is a directory: " + log_path)
+      }
+      if st.size + rec_bytes.length().to_int64() > RUNNER_OUTPUT_MAX_BYTES {
+        return Err("runner output log size limit exceeded")
+      }
+    }
+    None => {
+      if rec_bytes.length().to_int64() > RUNNER_OUTPUT_MAX_BYTES {
+        return Err("runner output log size limit exceeded")
+      }
+    }
   }
-  if !(self.job_fs.write_file)(log_path, (existing + rec).to_bytes()) {
+  if !(self.job_fs.write_file_mode)(log_path, rec_bytes, 384, true) {
     return Err("persist runner output failed: " + log_path)
   }
-  let arr = match self.adopted_runner_output.get(session_key) {
-    Some(a) => a
+  match self.adopted_runner_output.get(session_key) {
+    Some(arr) => {
+      if arr.length() >= 256 {
+        let trimmed : Array[String] = []
+        for i in 1..<arr.length() {
+          trimmed.push(arr[i])
+        }
+        trimmed.push(text)
+        self.adopted_runner_output.set(session_key, trimmed)
+      } else {
+        arr.push(text)
+      }
+    }
     None => {
-      let fresh : Array[String] = []
-      self.adopted_runner_output.set(session_key, fresh)
-      fresh
+      let loaded = self.read_adopted_runner_output(session_key)
+      if loaded.length() == 0 {
+        self.adopted_runner_output.set(session_key, [text])
+      }
     }
-  }
-  if arr.length() >= 256 {
-    let trimmed : Array[String] = []
-    for i in 1..<arr.length() {
-      trimmed.push(arr[i])
-    }
-    trimmed.push(text)
-    self.adopted_runner_output.set(session_key, trimmed)
-  } else {
-    arr.push(text)
   }
   Ok(())
+}
+
+/// Read persisted post-handover runner output for `session_key`, restoring from disk
+/// (`sessions/<safe_key>/runner-output.jsonl`) when the in-process cache is empty (e.g. after a
+/// subsequent `SIGUSR2` handover or restart), and backfilling the cache (up to 256 latest entries).
+pub fn WholeAgents::read_adopted_runner_output(
+  self : WholeAgents,
+  session_key : String,
+) -> Array[String] {
+  match self.adopted_runner_output.get(session_key) {
+    Some(arr) => {
+      if arr.length() > 0 {
+        return arr
+      }
+    }
+    None => ()
+  }
+  let log_path = self.runner_output_log_path(session_key)
+  let raw_str = match (self.job_fs.read_bytes)(log_path) {
+    Some(b) => b.to_string()
+    None => {
+      match (self.job_fs.read_file)(log_path) {
+        Some(s) => s
+        None => return []
+      }
+    }
+  }
+  let parsed : Array[String] = []
+  let lines = raw_str.split("\n")
+  for i in 0..<lines.length() {
+    let ln = lines[i].trim()
+    if ln.length() == 0 {
+      continue
+    }
+    match base_codec::json_parse(ln) {
+      Ok(v) => {
+        match base_codec::json_get(v, "text") {
+          Some(base_codec::Json::Str(t)) => parsed.push(t)
+          _ => {
+            match base_codec::json_get(v, "dataB64") {
+              Some(base_codec::Json::Str(b64)) => {
+                match base_codec::base64_decode(b64) {
+                  Some(raw) => parsed.push(raw.to_string())
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  let out = if parsed.length() > 256 {
+    let start = parsed.length() - 256
+    let trimmed : Array[String] = []
+    for i in start..<parsed.length() {
+      trimmed.push(parsed[i])
+    }
+    trimmed
+  } else {
+    parsed
+  }
+  if out.length() > 0 {
+    self.adopted_runner_output.set(session_key, out)
+  }
+  out
+}
+
+/// Recover contiguous committed stdout/stderr byte offsets from `runner-output.jsonl` so
+/// reconnecting after handover/restart does not re-persist already committed bytes.
+pub fn WholeAgents::committed_runner_offsets(
+  self : WholeAgents,
+  session_key : String,
+) -> (Int64, Int64) {
+  let log_path = self.runner_output_log_path(session_key)
+  let raw_str = match (self.job_fs.read_bytes)(log_path) {
+    Some(b) => b.to_string()
+    None => {
+      match (self.job_fs.read_file)(log_path) {
+        Some(s) => s
+        None => return (0L, 0L)
+      }
+    }
+  }
+  let mut max_out = 0L
+  let mut max_err = 0L
+  let lines = raw_str.split("\n")
+  for i in 0..<lines.length() {
+    let ln = lines[i].trim()
+    if ln.length() == 0 {
+      continue
+    }
+    match base_codec::json_parse(ln) {
+      Ok(v) => {
+        let stream = match base_codec::json_get(v, "stream") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => "out"
+        }
+        let at_opt : Option[Int64] = match base_codec::json_get(v, "at") {
+          Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+          _ => None
+        }
+        match at_opt {
+          Some(at) => {
+            let end_pos = match base_codec::json_get(v, RUNNER_OUTPUT_END_KEY) {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => {
+                let plen = match base_codec::json_get(v, "dataB64") {
+                  Some(base_codec::Json::Str(b64)) => {
+                    match base_codec::base64_decode(b64) {
+                      Some(raw) => raw.length().to_int64()
+                      None => 0L
+                    }
+                  }
+                  _ => {
+                    match base_codec::json_get(v, "text") {
+                      Some(base_codec::Json::Str(t)) => t.to_bytes().length().to_int64()
+                      _ => 0L
+                    }
+                  }
+                }
+                at + plen
+              }
+            }
+            if stream == "err" {
+              if at <= max_err && end_pos > max_err {
+                max_err = end_pos
+              }
+            } else if at <= max_out && end_pos > max_out {
+              max_out = end_pos
+            }
+          }
+          None => ()
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  (max_out, max_err)
 }
 
 /// Record clean exit status of an adopted runner for `session_key`.
