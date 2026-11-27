@@ -698,6 +698,7 @@ pub struct StationEvents {
   mut on_chat_client_key : (sql::Burst, String, String) -> Unit
   mut on_connected : () -> Unit
   mut on_lock_payload : (base_codec::Json) -> Unit
+  mut on_lock_apply : Option[(base_codec::Json) -> Result[Unit, String]]
   mut on_missed : () -> Unit
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
@@ -739,6 +740,7 @@ pub fn StationEvents::new(
     on_chat_client_key: fn(_b : sql::Burst, _cid : String, _ck : String) -> Unit {},
     on_connected: fn() -> Unit {},
     on_lock_payload: fn(_j : base_codec::Json) -> Unit {},
+    on_lock_apply: None,
     on_missed: fn() -> Unit {},
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
@@ -785,9 +787,29 @@ pub fn StationEvents::set_marks_applied_hook(
   self.on_marks_applied = cb
 }
 
+pub fn StationEvents::set_lock_apply_hook(
+  self : StationEvents,
+  cb : (base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_lock_apply = Some(cb)
+}
+
+pub fn StationEvents::notify_lock_payload_result(
+  self : StationEvents,
+  payload : base_codec::Json,
+) -> Result[Unit, String] {
+  match self.on_lock_apply {
+    Some(cb) => cb(payload)
+    None => {
+      let cb = self.on_lock_payload
+      cb(payload)
+      Ok(())
+    }
+  }
+}
+
 pub fn StationEvents::notify_lock_payload(self : StationEvents, payload : base_codec::Json) -> Unit {
-  let cb = self.on_lock_payload
-  cb(payload)
+  let _ = self.notify_lock_payload_result(payload)
 }
 
 pub fn StationEvents::set_thread_dirty_hook(self : StationEvents, cb : (Int) -> Unit) -> Unit {
@@ -919,6 +941,7 @@ pub fn StationEvents::set_hooks(
   self.on_chat_client_key = on_chat_client_key
   self.on_connected = on_connected
   self.on_lock_payload = on_lock_payload
+  self.on_lock_apply = None
 }
 
 pub fn StationEvents::connection_state(self : StationEvents) -> ConnectionState {
@@ -2830,8 +2853,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         self.outbox.tell(pending_events[i])
       }
       for i in 0..<lock_payloads.length() {
-        let cb = self.on_lock_payload
-        cb(lock_payloads[i])
+        let _ = self.notify_lock_payload_result(lock_payloads[i])
       }
       for i in 0..<marks_dirty.length() {
         self.marks_dirty_count += 1
@@ -2914,8 +2936,7 @@ fn StationEvents::dispatch_lock_sse_event(self : StationEvents, ev : wire::Event
   if !is_actionable_lock_payload(payload) {
     return
   }
-  let cb = self.on_lock_payload
-  cb(payload)
+  let _ = self.notify_lock_payload_result(payload)
 }
 
 /// Process a parsed SSE chunk segmented at `event: lock` boundaries under `stream_cap`:

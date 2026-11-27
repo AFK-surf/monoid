@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "core_api.h"
@@ -174,6 +175,18 @@ int main(void) {
     char conn1_auth_kv[64];
     snprintf(conn1_auth_kv, sizeof(conn1_auth_kv), "\"connSeq\":%lld", conn1);
     assert(strstr(dev_auth_buf, conn1_auth_kv) != NULL);
+    // Verify authoritative `device/conn_seq_floor` was ALSO persisted on first startup!
+    char floor_path[256];
+    snprintf(floor_path, sizeof(floor_path), "%s/device%%2Fconn_seq_floor", data_dir);
+    {
+        FILE *ff = fopen(floor_path, "r");
+        assert(ff != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, ff);
+        fclose(ff);
+        fbuf[fn] = '\0';
+        assert(strstr(fbuf, conn1_auth_kv) != NULL);
+    }
 
     // 1. settings.set + settings.get (real SQLite `workspace_pref`)
     send_json("{\"id\":1,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"dark\"}}");
@@ -593,8 +606,6 @@ int main(void) {
         assert(strcmp(buf3, "{corrupt-ts-device-auth capRev:ws-99") == 0);
     }
     // Verify `device/conn_seq_floor` was persisted at `data_dir/device%2Fconn_seq_floor` with `"connSeq":<conn3>`!
-    char floor_path[256];
-    snprintf(floor_path, sizeof(floor_path), "%s/device%%2Fconn_seq_floor", data_dir);
     {
         FILE *f = fopen(floor_path, "r");
         assert(f != NULL);
@@ -615,6 +626,41 @@ int main(void) {
     printf("[core_runtime_e2e] restart #4 (floor recovery) handshake -> %s\n", m->json);
     long long conn4 = extract_conn_seq(m->json);
     assert(conn4 > conn3);
+    mb_core_stop();
+
+    // 9. Cold directory (NO `device/conn_seq_floor`) with corrupt `device/auth` MUST fail-closed:
+    //    emits a `fatal` frame (NO auth handshake), preserves `device/auth` byte-for-byte,
+    //    and MUST NOT create `device/conn_seq_floor` with a regressed connSeq!
+    char cold_dir[160];
+    snprintf(cold_dir, sizeof(cold_dir), "%s_cold", data_dir);
+    assert(mkdir(cold_dir, 0700) == 0);
+    char cold_auth_path[256];
+    snprintf(cold_auth_path, sizeof(cold_auth_path), "%s/device%%2Fauth", cold_dir);
+    {
+        FILE *f = fopen(cold_auth_path, "w");
+        assert(f != NULL);
+        fputs("{corrupt-ts-cold capRev:ws-cold", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9 cold corrupt device/auth -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") != NULL);
+    assert(strstr(m->json, "\"auth\":{") == NULL);
+    // Verify `device/auth` is preserved byte-for-byte and `device/conn_seq_floor` was NOT created.
+    {
+        FILE *f = fopen(cold_auth_path, "r");
+        assert(f != NULL);
+        char cbuf[256];
+        size_t cn = fread(cbuf, 1, sizeof(cbuf) - 1, f);
+        fclose(f);
+        cbuf[cn] = '\0';
+        assert(strcmp(cbuf, "{corrupt-ts-cold capRev:ws-cold") == 0);
+    }
+    char cold_floor_path[256];
+    snprintf(cold_floor_path, sizeof(cold_floor_path), "%s/device%%2Fconn_seq_floor", cold_dir);
+    assert(fopen(cold_floor_path, "r") == NULL);
     mb_core_stop();
 
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",

@@ -1421,3 +1421,170 @@ test "auth_cap 11: transient SQLite lock read error never caches empty slot or o
   debug_assert(queued_aborted[0], "queued task aborted with transport_epoch_changed on dequeue after bump_epoch")
   debug_assert(req_paths.length() == 1 && req_paths[0] == "/chats", "aborted queued task NEVER issued HTTP request for /threads/55/entries")
 }
+
+test "auth_cap 12: SSE event:lock {workspace, head} retries on transient 500 & SQLite persist failure with backoff, and halts on transport swap" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_pref_write = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_pref_write[0] && op == "sql.run" {
+        match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => {
+            if s.contains("workspace_pref") {
+              return shell::AskResult::Err(shell::ShellError::{ message: "injected sqlite disk busy on lock persist" })
+            }
+          }
+          _ => ()
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-lock-retry") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open: " + e.to_string())
+  }
+  let base_st = SimStation::new(rt)
+
+  let seed = make_seed(121)
+  let key_id = ed25519_key_id(seed)
+  let g0 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root = match lock::entry_hash(g0, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let e1 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("b"))), ("name", form::Json::Str("Retry Station 1"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h1 = match lock::entry_hash(e1, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h1") }
+  let e2 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("c"))), ("name", form::Json::Str("Retry Station 2"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h2 = match lock::entry_hash(e2, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h2") }
+
+  let lock_http_calls = [0]
+  let fail_500_count = [0]
+  let current_lock_body = [base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(0)), ("hash", base_codec::json_str(root)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0)])),
+  ]))]
+  let tr_retry = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        lock_http_calls[0] = lock_http_calls[0] + 1
+        if fail_500_count[0] > 0 {
+          fail_500_count[0] = fail_500_count[0] - 1
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 500, headers: [], body: "server error".to_bytes() }))
+        } else {
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: current_lock_body[0].to_bytes() }))
+        }
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+
+  let core = ClientCore::new("ws-lret", "ws-lret/st-1", rt, db, tr_retry, fn() -> Unit {})
+  core.start()
+  rt.advance(20)
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 1, "genesis seeded at authGen=1")
+
+  // 12a. Round 1: SSE `{workspace, head}` triggers GET /lock -> first attempt returns HTTP 500,
+  //      backoff 100ms -> second attempt succeeds, persists seq=1, and bumps authGen 1 -> 2!
+  current_lock_body[0] = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(1)), ("hash", base_codec::json_str(h1)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  fail_500_count[0] = 1
+  let calls_before_1 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":1,\"hash\":\"" + h1 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_1 + 1, "first GET /lock attempt ran and hit 500")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 1, "authGen unchanged after HTTP 500")
+  debug_assert(core.sync.has_pending_lock_refresh(), "pending_lock_refresh stays true after HTTP 500")
+  rt.advance(110)
+  debug_assert(lock_http_calls[0] == calls_before_1 + 2, "backoff retry ran second GET /lock")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 2, "second GET /lock converged and bumped authGen 1 -> 2")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "pending_lock_refresh cleared on success")
+
+  // 12b. Round 2: SSE `{workspace, head}` triggers GET /lock -> HTTP 200 but SQLite persist fails!
+  //      fetch_lock_k MUST treat apply/persist failure as Exit::Failed and retry after backoff ->
+  //      once SQLite recovers, second attempt succeeds and bumps authGen 2 -> 3!
+  current_lock_body[0] = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(2)), ("hash", base_codec::json_str(h2)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2)])),
+  ]))
+  fail_pref_write[0] = true
+  let calls_before_2 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":2,\"hash\":\"" + h2 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_2 + 1, "first GET /lock ran and failed on SQLite persist")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 2, "authGen unchanged after SQLite persist failure")
+  debug_assert(core.sync.has_pending_lock_refresh(), "pending_lock_refresh stays true after SQLite persist failure")
+  fail_pref_write[0] = false
+  rt.advance(110)
+  debug_assert(lock_http_calls[0] == calls_before_2 + 2, "backoff retry ran second GET /lock after SQLite recovery")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 3, "retry persisted seq=2 and bumped authGen 2 -> 3")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "pending_lock_refresh cleared after SQLite recovery")
+
+  // 12c. Transport swap (`set_transport`) during backoff immediately stops lock retry loop!
+  fail_500_count[0] = 10
+  let calls_before_3 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":3,\"hash\":\"h3\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_3 + 1 && core.sync.has_pending_lock_refresh(), "entered backoff on 500")
+  let new_tr_calls = [0]
+  let tr_swapped = StationTransport::{
+    request_k: fn(_m : String, _p : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      new_tr_calls[0] = new_tr_calls[0] + 1
+      rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_swapped)
+  debug_assert(!core.sync.has_pending_lock_refresh(), "set_transport cleared pending_lock_refresh immediately")
+  rt.advance(5000)
+  debug_assert(lock_http_calls[0] == calls_before_3 + 1 && new_tr_calls[0] == 0, "prior retry loop stopped completely after transport swap")
+  core.stop()
+}

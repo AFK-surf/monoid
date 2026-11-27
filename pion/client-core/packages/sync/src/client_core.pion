@@ -302,17 +302,16 @@ fn ClientCore::wire_station_hooks(
           k(effect::Exit::Succeeded(()))
         })
       })
-      let _ = rt.fork_quiet_named("initial-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-        sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
-          k(effect::Exit::Succeeded(()))
-        })
-      })
+      sync.schedule_lock_refresh(rt)
       local_outbox.flush_station_offline(rt, station)
     },
     fn(lock_payload : base_codec::Json) -> Unit {
-      self.handle_lock_event_for_workspace(target_ws, lock_payload, sync_opt=Some(sync), station=station)
+      let _ = self.handle_lock_event_for_workspace(target_ws, lock_payload, sync_opt=Some(sync), station=station)
     },
   )
+  events.set_lock_apply_hook(fn(lock_payload : base_codec::Json) -> Result[Unit, String] {
+    self.handle_lock_event_for_workspace(target_ws, lock_payload, sync_opt=Some(sync), station=station)
+  })
   events.set_missed_hook(fn() -> Unit {
     let _ = rt.fork_quiet_named("missed-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
       sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
@@ -320,11 +319,7 @@ fn ClientCore::wire_station_hooks(
       })
     })
     self.schedule_marks_read(station, sync, [], [], true)
-    let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    sync.schedule_lock_refresh(rt)
   })
   events.set_marks_applied_hook(fn(
     payload : base_codec::Json,
@@ -871,11 +866,19 @@ pub fn ClientCore::start(self : ClientCore) -> Unit {
 pub fn ClientCore::stop(self : ClientCore) -> Unit {
   self.live = false
   self.local_outbox.set_online(false)
+  self.sync.bump_epoch()
   self.events.stop()
   let ks = self.extra_events.keys()
   for i in 0..<ks.length() {
     match self.extra_events.get(ks[i]) {
       Some(ev) => ev.stop()
+      None => ()
+    }
+  }
+  let sks = self.extra_sync.keys()
+  for i in 0..<sks.length() {
+    match self.extra_sync.get(sks[i]) {
+      Some(sy) => sy.bump_epoch()
       None => ()
     }
   }
@@ -3339,7 +3342,7 @@ pub fn ClientCore::open_job_count(self : ClientCore) -> Int {
 }
 
 fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) -> Unit {
-  self.handle_lock_event_for_workspace(self.workspace, payload, sync_opt=Some(self.sync), station=self.station)
+  let _ = self.handle_lock_event_for_workspace(self.workspace, payload, sync_opt=Some(self.sync), station=self.station)
 }
 
 fn ClientCore::handle_lock_event_for_workspace(
@@ -3348,11 +3351,12 @@ fn ClientCore::handle_lock_event_for_workspace(
   payload : base_codec::Json,
   sync_opt : Option[SyncScheduler] = None,
   station : String = "",
-) -> Unit {
+) -> Result[Unit, String] {
+  let _ = station
   match proto_str(payload, "workspace") {
     Some(ws) => {
       if ws.length() > 0 && ws != target_ws {
-        return
+        return Ok(())
       }
     }
     None => ()
@@ -3363,25 +3367,18 @@ fn ClientCore::handle_lock_event_for_workspace(
   }
   if raw_entries.length() == 0 {
     // Real station SSE `event: lock` notification (`station/src/mesh/lock-events.ts:27`) carries
-    // `{ workspace, head }` without `entries`: trigger an ungated `GET /lock` on the bound station.
+    // `{ workspace, head }` without `entries`: trigger coalesced ungated `GET /lock` retry loop.
     if base_codec::json_get(payload, "head").is_some() {
       let target_sync : Option[SyncScheduler] = match sync_opt {
         Some(sy) => Some(sy)
         None => if target_ws == self.workspace { Some(self.sync) } else { None }
       }
       match target_sync {
-        Some(sy) => {
-          let st_tag = if station.length() > 0 { station } else { sy.station }
-          let _ = self.rt.fork_quiet_named("sse-lock-fetch:" + st_tag, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-            sy.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
-              k(effect::Exit::Succeeded(()))
-            })
-          })
-        }
+        Some(sy) => sy.schedule_lock_refresh(self.rt)
         None => ()
       }
     }
-    return
+    return Ok(())
   }
   let form_entries : Array[form::Json] = []
   for i in 0..<raw_entries.length() {
@@ -3403,8 +3400,9 @@ fn ClientCore::handle_lock_event_for_workspace(
     if self.lock_read_pending {
       self.restore_lock_state()
       if self.lock_read_pending {
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, "persisted lock state unreadable; refusing lock event"))
-        return
+        let msg = "persisted lock state unreadable; refusing lock event"
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        return Err(msg)
       }
     }
     self.lock_root
@@ -3413,7 +3411,7 @@ fn ClientCore::handle_lock_event_for_workspace(
       Ok(sl) => sl.lock_root
       Err(msg) => {
         self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
-        return
+        return Err(msg)
       }
     }
   }
@@ -3446,9 +3444,12 @@ fn ClientCore::handle_lock_event_for_workspace(
     }
   }
   if root.length() == 0 {
-    return
+    return Err("missing lock root")
   }
-  let _ = self.apply_lock_chain_for_workspace(target_ws, form_entries, root)
+  match self.apply_lock_chain_for_workspace(target_ws, form_entries, root) {
+    Ok(_) => Ok(())
+    Err(msg) => Err(msg)
+  }
 }
 
 /// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).

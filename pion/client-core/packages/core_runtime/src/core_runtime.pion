@@ -1046,26 +1046,69 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     None
   }
-  // Device-level strictly monotonic `connSeq` aligned 1:1 with TS `device/auth` (`{"connSeq": N}`,
-  // preserving sibling fields like `capRev:*` via Rust Shell atomic `storage.set("device/auth")`).
-  // Strictly distinguishes `Absent` / `Found(Obj)` vs `ReadError` (I/O failure/timeout/corrupt JSON):
-  // - If `device/auth` is `Absent` or `Found(Obj)`, merge-write `{"connSeq": N, ...}` to `device/auth`
-  //   (falling back to `device/conn_seq_floor` if `device/auth` write fails).
-  // - If `device/auth` is `ReadError` or non-object, NEVER overwrite `device/auth` (protecting TS
-  //   `capRev:*` records per `client/core-ts/src/data.ts:267`); write independent device-level
-  //   `device/conn_seq_floor` instead.
-  // - Mandatory device-level durability: emit `{id:0, auth:{conn: N, ...}}` ONLY after a device-level
-  //   storage write is confirmed `Ok`; if ALL device-level writes fail, log warning + emit fatal and
-  //   abort startup (never publish an unpersisted `conn` or treat per-account SQLite as device-level).
+  // Single authoritative device-level `connSeq` high-water mark (`device/conn_seq_floor`),
+  // synchronized with TS `device/auth` (`{"connSeq": N}`, preserving sibling fields like `capRev:*`):
+  // - Every published `conn` ALWAYS persists to `device/conn_seq_floor` first, and also merge-writes
+  //   `device/auth` whenever `device/auth` is `Found(Obj)` or `Absent`.
+  // - Never treat `ReadError` as `0L`:
+  //   1. `device/conn_seq_floor` is `ReadError` (or invalid non-positive JSON) -> fatal & abort startup.
+  //   2. `device/auth` is `ReadError` (or non-object) AND `device/conn_seq_floor` is `Absent` ->
+  //      TS migration high-water mark is unreadable with no authoritative floor; preserve `device/auth`
+  //      byte-for-byte untouched, log warning, emit fatal, and abort startup (never publish a regressing `conn`).
+  //   3. `device/auth` is `ReadError` (or non-object) AND `device/conn_seq_floor` is `Found(floor_n)` ->
+  //      `floor_n` is authoritative over all published values; preserve `device/auth` untouched,
+  //      increment from `max(floor_n, ...)` and persist `device/conn_seq_floor` (must succeed before handshake).
+  //   4. `device/auth` is `Found(Obj)`/`Absent` AND `device/conn_seq_floor` is `Found`/`Absent` ->
+  //      increment from `max(...)`, persist `device/conn_seq_floor` (must succeed) AND merge-write
+  //      `device/auth` (must succeed) before emitting `{id:0, auth:{conn: N, ...}}`.
+  let abort_conn_seq_startup = fn(err_msg : String) -> Int {
+    g_last_conn_seq_persist_err[0] = Some(err_msg)
+    log_runtime_warn(err_msg)
+    acct.db.close()
+    shell_native::stop()
+    emit_fatal(err_msg)
+    0
+  }
   let parse_conn_read = fn(st : StorageRead) -> Int64 {
     match st {
       StorageRead::Found(j) => store::parse_conn_seq_raw(base_codec::json_stringify(j))
       _ => 0L
     }
   }
+  let floor_read = read_storage_json_state(sh, "device/conn_seq_floor")
   let auth_read = read_storage_json_state(sh, "device/auth")
+
+  // State 1: authoritative `device/conn_seq_floor` unreadable or corrupt -> refuse startup.
+  let floor_conn : Int64 = match floor_read {
+    StorageRead::Absent => 0L
+    StorageRead::ReadError(reason) => {
+      return abort_conn_seq_startup("authoritative device/conn_seq_floor unreadable; aborting auth handshake: " + reason)
+    }
+    StorageRead::Found(fj) => {
+      let v = store::parse_conn_seq_raw(base_codec::json_stringify(fj))
+      if v <= 0L {
+        return abort_conn_seq_startup("authoritative device/conn_seq_floor has invalid connSeq; aborting auth handshake")
+      }
+      v
+    }
+  }
+
+  let auth_is_writable = match auth_read {
+    StorageRead::Absent => true
+    StorageRead::Found(base_codec::Json::Obj(_)) => true
+    _ => false
+  }
+  // State 2: `device/auth` unreadable/corrupt AND no authoritative `device/conn_seq_floor` ->
+  // preserve `device/auth` untouched and abort startup so we never publish a regressing `conn`.
+  if !auth_is_writable && floor_conn == 0L {
+    let why = match auth_read {
+      StorageRead::ReadError(r) => r
+      _ => "device/auth is non-object JSON"
+    }
+    return abort_conn_seq_startup("device/auth unreadable/corrupt with no authoritative device/conn_seq_floor (" + why + "); preserving device/auth and aborting auth handshake")
+  }
+
   let auth_conn = parse_conn_read(auth_read)
-  let floor_conn = parse_conn_read(read_storage_json_state(sh, "device/conn_seq_floor"))
   let file_conn = parse_conn_read(read_storage_json_state(sh, "conn_seq"))
   let legacy_conn = parse_conn_read(read_storage_json_state(sh, "device/conn_seq"))
   let mut storage_device_conn = if auth_conn >= floor_conn { auth_conn } else { floor_conn }
@@ -1081,19 +1124,24 @@ pub extern "C" fn pion_core_runtime_start(
   }
   let prev_device_conn = if storage_device_conn >= db_conn { storage_device_conn } else { db_conn }
   let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms(), floor=g_last_device_conn_seq[0])
-  g_last_device_conn_seq[0] = device_conn_seq
 
   let floor_doc = base_codec::json_obj([("connSeq", base_codec::json_int64(device_conn_seq))])
-  let device_persist_res : Result[Unit, String] = match auth_read {
+  // Always persist authoritative `device/conn_seq_floor` FIRST on every startup.
+  match write_storage_json(sh, "device/conn_seq_floor", floor_doc) {
+    Ok(_) => ()
+    Err(e) => {
+      return abort_conn_seq_startup("authoritative device/conn_seq_floor persist failed; aborting auth handshake: " + e)
+    }
+  }
+  // When `device/auth` is writable (`Absent` or `Found(Obj)`), also merge-write `device/auth`
+  // preserving all sibling fields (such as TS `capRev:*`); when `device/auth` is unreadable/corrupt
+  // (State 3), preserve `device/auth` untouched and rely on authoritative `device/conn_seq_floor`.
+  match auth_read {
     StorageRead::Absent => {
       match write_storage_json(sh, "device/auth", floor_doc) {
-        Ok(_) => Ok(())
-        Err(e1) => {
-          log_runtime_warn("conn_seq device/auth write failed (" + e1 + "); falling back to device/conn_seq_floor")
-          match write_storage_json(sh, "device/conn_seq_floor", floor_doc) {
-            Ok(_) => Ok(())
-            Err(e2) => Err("device/auth (" + e1 + ") and device/conn_seq_floor (" + e2 + ") both failed")
-          }
+        Ok(_) => ()
+        Err(e) => {
+          return abort_conn_seq_startup("device/auth persist failed; aborting auth handshake: " + e)
         }
       }
     }
@@ -1107,45 +1155,27 @@ pub extern "C" fn pion_core_runtime_start(
       }
       merged_auth_fields.push(("connSeq", base_codec::json_int64(device_conn_seq)))
       match write_storage_json(sh, "device/auth", base_codec::json_obj(merged_auth_fields)) {
-        Ok(_) => Ok(())
-        Err(e1) => {
-          log_runtime_warn("conn_seq device/auth merge-write failed (" + e1 + "); falling back to device/conn_seq_floor")
-          match write_storage_json(sh, "device/conn_seq_floor", floor_doc) {
-            Ok(_) => Ok(())
-            Err(e2) => Err("device/auth (" + e1 + ") and device/conn_seq_floor (" + e2 + ") both failed")
-          }
+        Ok(_) => ()
+        Err(e) => {
+          return abort_conn_seq_startup("device/auth merge-write failed; aborting auth handshake: " + e)
         }
       }
     }
     StorageRead::Found(_) => {
-      log_runtime_warn("device/auth is non-object JSON; preserving device/auth and writing device/conn_seq_floor")
-      write_storage_json(sh, "device/conn_seq_floor", floor_doc)
+      log_runtime_warn("device/auth is non-object JSON; preserving device/auth and using authoritative device/conn_seq_floor")
     }
     StorageRead::ReadError(reason) => {
-      log_runtime_warn("device/auth unreadable/corrupt (" + reason + "); preserving device/auth and writing device/conn_seq_floor")
-      write_storage_json(sh, "device/conn_seq_floor", floor_doc)
+      log_runtime_warn("device/auth unreadable/corrupt (" + reason + "); preserving device/auth and using authoritative device/conn_seq_floor")
     }
   }
-  match device_persist_res {
-    Ok(_) => {
-      g_last_conn_seq_persist_err[0] = None
-      match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
-        sql::SqlResult::Ok(_) => ()
-        sql::SqlResult::Err(e) => {
-          let err_msg = "conn_seq sqlite mirror failed: " + e.to_string()
-          g_last_conn_seq_persist_err[0] = Some(err_msg)
-          log_runtime_warn(err_msg)
-        }
-      }
-    }
-    Err(device_err) => {
-      let err_msg = "device-level connSeq persist failed; aborting auth handshake: " + device_err
+  g_last_device_conn_seq[0] = device_conn_seq
+  g_last_conn_seq_persist_err[0] = None
+  match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      let err_msg = "conn_seq sqlite mirror failed: " + e.to_string()
       g_last_conn_seq_persist_err[0] = Some(err_msg)
       log_runtime_warn(err_msg)
-      acct.db.close()
-      shell_native::stop()
-      emit_fatal(err_msg)
-      return 0
     }
   }
   let core = sync::ClientCore::new(

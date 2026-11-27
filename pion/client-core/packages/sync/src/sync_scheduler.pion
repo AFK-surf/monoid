@@ -15,6 +15,8 @@ pub struct SyncScheduler {
   mut transport_epoch : Int64
   mut auth : Option[AuthGenTracker]
   pending_refresh : Map[String, Bool]
+  mut pending_lock_refresh : Bool
+  mut lock_refresh_running : Bool
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -37,6 +39,8 @@ pub fn SyncScheduler::new(
     transport_epoch: 1L,
     auth: None,
     pending_refresh: Map::new(),
+    pending_lock_refresh: false,
+    lock_refresh_running: false,
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
@@ -56,6 +60,10 @@ pub fn SyncScheduler::has_pending_refresh(self : SyncScheduler, resource : Strin
   self.pending_refresh.get(self.task_key(resource)).is_some()
 }
 
+pub fn SyncScheduler::has_pending_lock_refresh(self : SyncScheduler) -> Bool {
+  self.pending_lock_refresh
+}
+
 pub fn SyncScheduler::idle_preemptions(self : SyncScheduler) -> Int {
   self.idle_preempted_count
 }
@@ -65,17 +73,135 @@ pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
 }
 
 /// Bump the transport epoch so any in-flight reads from a prior transport are discarded
-/// and any pending stale-refresh reschedules stop immediately.
+/// and any pending stale-refresh / lock-refresh retries stop immediately.
 pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
   self.transport_epoch += 1L
   self.pending_refresh.clear()
+  self.pending_lock_refresh = false
+  self.lock_refresh_running = false
 }
 
 /// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
 pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTransport) -> Unit {
   self.transport_epoch += 1L
   self.pending_refresh.clear()
+  self.pending_lock_refresh = false
+  self.lock_refresh_running = false
   self.transport = transport
+}
+
+fn lock_retry_backoff_ms(attempt : Int) -> Int {
+  if attempt <= 0 {
+    100
+  } else if attempt == 1 {
+    500
+  } else {
+    2000
+  }
+}
+
+fn is_transient_lock_error(e : effect::EffectError) -> Bool {
+  match e {
+    effect::EffectError::Custom(msg) => {
+      if msg == "transport_epoch_changed" {
+        return false
+      }
+      if msg.starts_with("lock fetch status 4") {
+        return false
+      }
+      if msg.contains("lock root mismatch") ||
+      msg.contains("lock rollback rejected") ||
+      msg.contains("corrupt persisted lock state") ||
+      msg.contains("incoming lock entries rejected") ||
+      msg.contains("lock workspace mismatch") ||
+      msg.contains("lock genesis mismatch") ||
+      msg.contains("empty lock chain") {
+        return false
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+fn SyncScheduler::run_lock_refresh_loop_k(
+  self : SyncScheduler,
+  rt : effect::Runtime,
+  enqueue_epoch : Int64,
+  attempt : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.transport_epoch != enqueue_epoch {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  if !self.pending_lock_refresh {
+    self.lock_refresh_running = false
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.pending_lock_refresh = false
+  self.fetch_lock_k(effect::priority_shown(), fn(ex : effect::Exit[Bool]) -> Unit {
+    if self.transport_epoch != enqueue_epoch {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+    match ex {
+      effect::Exit::Succeeded(_) => {
+        if self.pending_lock_refresh {
+          self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
+        } else {
+          self.lock_refresh_running = false
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+      effect::Exit::Interrupted => {
+        self.lock_refresh_running = false
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(err) => {
+        if !is_transient_lock_error(err) {
+          if self.pending_lock_refresh {
+            self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
+          } else {
+            self.lock_refresh_running = false
+            k(effect::Exit::Succeeded(()))
+          }
+          return
+        }
+        self.pending_lock_refresh = true
+        let delay = lock_retry_backoff_ms(attempt)
+        // timer: failure retry backoff on transient GET /lock or SQLite lock persist failure.
+        effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+          if self.transport_epoch != enqueue_epoch {
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          match sex {
+            effect::Exit::Interrupted => {
+              self.lock_refresh_running = false
+              k(effect::Exit::Interrupted)
+            }
+            _ => self.run_lock_refresh_loop_k(rt, enqueue_epoch, attempt + 1, k)
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Coalesced, ungated `GET /lock` refresh loop with capped backoff (`100ms -> 500ms -> 2000ms`)
+/// on transient HTTP 5xx / network / SQLite persist failures, halting immediately on `bump_epoch` / `set_transport`.
+pub fn SyncScheduler::schedule_lock_refresh(self : SyncScheduler, rt : effect::Runtime) -> Unit {
+  self.pending_lock_refresh = true
+  if self.lock_refresh_running {
+    return
+  }
+  self.lock_refresh_running = true
+  let enqueue_epoch = self.transport_epoch
+  let _ = rt.fork_quiet_named("lock-refresh:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
+  })
 }
 
 /// Raise priority for the currently focused chat/thread (`client.focus`),
@@ -144,7 +270,13 @@ pub fn SyncScheduler::fetch_lock_k(
                   _ => false
                 }
                 if has_entries {
-                  self.events.notify_lock_payload(j)
+                  match self.events.notify_lock_payload_result(j) {
+                    Ok(_) => ()
+                    Err(msg) => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("lock apply failed: " + msg)))
+                      return
+                    }
+                  }
                 }
                 self.completed_order.push("lock")
                 tk(effect::Exit::Succeeded(has_entries))
