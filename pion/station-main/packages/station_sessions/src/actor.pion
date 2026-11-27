@@ -42,6 +42,7 @@ pub enum TurnEndAction {
 /// An item queued on a session's serial actor queue.
 pub enum ActorWork {
   Prompt(String)
+  InternalPrompt(String)
   Steer(String)
   Deliver(String)
   ToolCall(String)
@@ -202,6 +203,7 @@ pub struct SessionActor {
   pub mut completed_barriers : Array[Int]
   pub mut running_history : Array[Bool]
   pub mut started_prompts : Array[String]
+  pub mut started_prompts_internal : Array[Bool]
   /// Tool calls begun and not ended since the turn started (or since a mid-wait steer cleared them, `36bef9f96a`).
   pub mut open_tools : Array[String]
   /// Deadline timestamp when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
@@ -238,6 +240,7 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     completed_barriers: [],
     running_history: [],
     started_prompts: [],
+    started_prompts_internal: [],
     open_tools: [],
     steer_silent_due_at: None,
     last_live_event_at: None,
@@ -308,7 +311,7 @@ pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
   Some(first)
 }
 
-fn SessionActor::start_prompt_now(self : SessionActor, text : String) -> Unit {
+fn SessionActor::start_prompt_now(self : SessionActor, text : String, is_internal~ : Bool = false) -> Unit {
   self.phase = ActorPhase::Running
   self.idle_since_ms = None
   self.reprompt_count = 0
@@ -321,6 +324,7 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String) -> Unit {
   self.steered_during_silence.clear()
   self.running_history.push(true)
   self.started_prompts.push(text)
+  self.started_prompts_internal.push(is_internal)
 }
 
 /// Submits user input according to `route_input` while preserving strict FIFO queue order:
@@ -367,17 +371,22 @@ pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
       }
       ActorWork::Prompt(text) => {
         let _ = self.pop_next()
-        self.start_prompt_now(text)
+        self.start_prompt_now(text, is_internal=false)
+        return
+      }
+      ActorWork::InternalPrompt(text) => {
+        let _ = self.pop_next()
+        self.start_prompt_now(text, is_internal=true)
         return
       }
       ActorWork::Deliver(text) => {
         let _ = self.pop_next()
-        self.start_prompt_now(text)
+        self.start_prompt_now(text, is_internal=false)
         return
       }
       ActorWork::Steer(text) => {
         let _ = self.pop_next()
-        self.start_prompt_now(text)
+        self.start_prompt_now(text, is_internal=false)
         return
       }
       _ => return

@@ -573,9 +573,12 @@ test "runner: frames, single-shot adoption, and orphan detection" {
   }
   let orphans = machine.orphan_agent_runners()
   expect(orphans.length() == 1 && orphans[0] == "codex-p1", "only unadopted non-terminal runner is orphan")
-  expect(is_runner_live(r1, true, Some(5000L)), "live within 5s slack")
-  expect(!is_runner_live(r1, true, Some(9000L)), "pid reused past 5s slack")
-  expect(!is_runner_live(r1, true, None), "missing os start time fails closed")
+  expect(is_runner_live(r1, true, Some(50000L)), "live within 60s slack (Node parity)")
+  expect(!is_runner_live(r1, true, Some(90000L)), "pid reused past 60s slack")
+  expect(is_runner_live(r1, true, None), "is_runner_live allows None for adoption parity")
+  expect(is_runner_live_strict(r1, true, Some(5000L)), "strict kill live within 5s slack")
+  expect(!is_runner_live_strict(r1, true, Some(9000L)), "strict kill rejects past 5s slack")
+  expect(!is_runner_live_strict(r1, true, None), "strict kill fails closed when os start time missing")
 }
 
 test "sandbox and colab: auto-expose, 3-VM lease pool, and reapColab on disabled accounts" {

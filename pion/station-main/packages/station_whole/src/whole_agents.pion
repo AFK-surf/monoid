@@ -241,6 +241,7 @@ pub struct WholeAgents {
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   pub active_adopted_instances : Map[String, Bool]
+  pub codex_active_turns : Map[String, String]
   pub mut disabled_runtimes : Array[String]
   mut adopted_db : Option[sql_db::Db]
   mut adopted_db_closed : Bool
@@ -278,6 +279,7 @@ pub fn WholeAgents::new_with_deps(
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     active_adopted_instances: Map::new(),
+    codex_active_turns: Map::new(),
     disabled_runtimes: [],
     adopted_db: None,
     adopted_db_closed: false,
@@ -636,24 +638,31 @@ pub fn WholeAgents::create_session(
     Some(w) => if w.length() > 0 { Some(w) } else { Some(self.config.home_ws) }
     None => Some(self.config.home_ws)
   }
-  let eff_workspace = if workspace.trim().length() == 0 || workspace.trim() == self.config.data_dir {
+  // R6 Invariant 1: `sessions.workspace` is ALWAYS server-owned by `(data_dir, ws, key)`.
+  // Any caller-supplied `workspace` path goes ONLY into `sessions.cwd` for live policy validation!
+  let sanitize_seg = fn(raw : String, fallback : String) -> String {
     let sb = StringBuilder::new()
-    let kb = key.to_bytes()
-    for i in 0..<kb.length() {
-      let c = kb[i].to_int() & 0xFF
+    let rb = raw.to_bytes()
+    for i in 0..<rb.length() {
+      let c = rb[i].to_int() & 0xFF
       let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
       sb.write_byte((if ok { c } else { 95 }) as Byte)
     }
-    let safe_k = if sb.to_string().length() > 0 { sb.to_string() } else { "session" }
-    let sep = if self.config.data_dir.contains("\\") { "\\" } else { "/" }
-    nodepath::join(sep, [self.config.data_dir, "sessions", safe_k, "workspace"])
-  } else {
-    workspace.trim()
+    let out = sb.to_string()
+    if out.length() > 0 { out } else { fallback }
   }
-  let eff_cwd : Option[String] = if workspace.trim().length() == 0 || workspace.trim() == self.config.data_dir {
+  let eff_ws_seg = match effective_ws {
+    Some(w) => sanitize_seg(w, "home")
+    None => sanitize_seg(self.config.home_ws, "home")
+  }
+  let safe_k = sanitize_seg(key, "session")
+  let sep = if self.config.data_dir.contains("\\") { "\\" } else { "/" }
+  let eff_workspace = nodepath::join(sep, [self.config.data_dir, "sessions", eff_ws_seg, safe_k, "workspace"])
+  let caller_path = workspace.trim()
+  let eff_cwd : Option[String] = if caller_path.length() == 0 || caller_path == self.config.data_dir {
     None
   } else {
-    Some(eff_workspace)
+    Some(caller_path)
   }
   let tid = match st.tx(fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
     match t.run(
@@ -900,6 +909,19 @@ pub fn WholeAgents::adopt_sessions(
   let adopt_ok : Map[String, Bool] = Map::new()
   for i in 0..<snapshots.length() {
     let snap = snapshots[i]
+    for ni in 0..<snap.notices.length() {
+      let note = snap.notices[ni]
+      if note.starts_with("codex_turn:") {
+        let nb = note.to_bytes()
+        if nb.length() > 11 {
+          let sub = Bytes::new(nb.length() - 11)
+          for bi in 11..<nb.length() {
+            sub[bi - 11] = nb[bi]
+          }
+          self.codex_active_turns.set(snap.key, sub.to_string())
+        }
+      }
+    }
     match st.get_session(snap.key) {
       Ok(Some(row)) => {
         let cb = match row.created_by {
@@ -1748,12 +1770,19 @@ pub fn WholeAgents::export_session_snapshots(
     seen.set(key, true)
     match self.hub.actors.get(key) {
       Some(actor) => {
+        let notices : Array[String] = []
+        match self.codex_active_turns.get(key) {
+          Some(tid) => if tid.length() > 0 {
+            notices.push("codex_turn:" + tid)
+          }
+          None => ()
+        }
         out.push(station_sessions::HandoverSnapshot::{
           key: key,
           runtime: actor.runtime,
           has_agent: actor.has_process,
           has_turn: actor.is_busy(),
-          notices: [],
+          notices: notices,
         })
       }
       None => ()

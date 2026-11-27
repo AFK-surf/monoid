@@ -796,7 +796,8 @@ fn handle_connect_inbound_event(
     station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
     station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
   }
-  let routed_elsewhere = connects.workspace.thread_station(connect_id, ch, tts) is Some(_)
+  // R6 Invariant 4: Query local SQLite `handed_over` directly (never rely on stale in-memory route cache).
+  let routed_elsewhere = query_thread_moved_to(st_db, meta.config_surface, connect_id, ch, tts) is Some(_)
   let existing_tid : Option[Int64] = match st_db.db.first(
     "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
     [
@@ -7181,27 +7182,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
                     }
-                    // `movedTo` forwarding: check locally authorized `ConnectWorkspace` cache AND
-                    // persistent SQLite `handed_over` table (1:1 with Node `hub.ts:801` `movedTo`),
-                    // never mutating local routes from untrusted peer request fields.
-                    let moved_opt : Option[String] = match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
-                      Some(m) => Some(m)
-                      None => match st.core.store.require_open() {
-                        Ok(st_db) => {
-                          let desc_surf = match base_codec::json_get(desc, "kind") {
-                            Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "slack" }
-                            _ => "slack"
-                          }
-                          match query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts) {
-                            Some(m) => {
-                              st.connects.workspace.route_thread(remote_cid, ev_ch, ev_tts, Some(m))
-                              Some(m)
-                            }
-                            None => None
-                          }
+                    // R6 Invariant 4: Query local SQLite `handed_over` directly (1:1 with Node
+                    // `hub.ts:801` `movedTo`, zero stale in-memory cache).
+                    let moved_opt : Option[String] = match st.core.store.require_open() {
+                      Ok(st_db) => {
+                        let desc_surf = match base_codec::json_get(desc, "kind") {
+                          Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "slack" }
+                          _ => "slack"
                         }
-                        Err(_) => None
+                        query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts)
                       }
+                      Err(_) => None
                     }
                     match moved_opt {
                       Some(moved) => {
