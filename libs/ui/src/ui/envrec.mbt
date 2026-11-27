@@ -265,24 +265,42 @@ pub fn Tester::settings_said(self : Tester, line : String) -> Bool {
 /// place (src/sfreplay: Flow::start).
 pub fn settings_of(j : Json) -> Result[(Double, Double, Double, Int, Pointing, Bool), String] {
   guard j is Object(o) && o.get("settings") is Some(Object(m)) else { return Err("no {\"settings\":…}") }
-  let need = fn(k : String) -> Double raise Failure {
+  let need = fn(k : String) -> Result[Double, String] {
     match m.get(k) {
-      Some(Number(d, ..)) => d
-      _ => fail(k)
+      Some(Number(d, ..)) => Ok(d)
+      _ => Err("its {\"settings\":…} has no " + k)
     }
   }
-  try {
-    let w = need("w")
-    let h = need("h")
-    let scale = need("scale")
-    let platform = need("platform").to_int()
-    let pointing = if need("pointing") != 0.0 { Finger } else { Mouse }
-    let dark = need("dark") != 0.0
-    for k in ["font", "utc", "motion", "glass", "inset", "ime", "copy"] {
-      ignore(need(k))
-    }
-    Ok((w, h, scale, platform, pointing, dark))
-  } catch {
-    Failure(k) => Err("its {\"settings\":…} has no " + k)
+  let w = match need("w") {
+    Ok(v) => v
+    Err(e) => return Err(e)
   }
+  let h = match need("h") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let scale = match need("scale") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let platform = match need("platform") {
+    Ok(v) => v.to_int()
+    Err(e) => return Err(e)
+  }
+  let pointing = match need("pointing") {
+    Ok(v) => if v != 0.0 { Finger } else { Mouse }
+    Err(e) => return Err(e)
+  }
+  let dark = match need("dark") {
+    Ok(v) => v != 0.0
+    Err(e) => return Err(e)
+  }
+  let req_keys = ["font", "utc", "motion", "glass", "inset", "ime", "copy"]
+  for i = 0; i < req_keys.length(); i = i + 1 {
+    match need(req_keys[i]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok((w, h, scale, platform, pointing, dark))
 }

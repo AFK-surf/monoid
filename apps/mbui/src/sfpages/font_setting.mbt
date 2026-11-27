@@ -1049,7 +1049,7 @@ fn face_in_node(
       if ss == 1.0 && ls == 1.0 {
         base
       } else {
-        { ..base, size: base.size * ss, line: base.line * ss * ls }
+        @view.WordsLook::{ ..base, size: base.size * ss, line: base.line * ss * ls }
       }
     }))
     .ink(By(fn() { @ui.style_ink(style) }))
@@ -1060,7 +1060,7 @@ fn face_in_node(
           Some(c) => c()
           None => None
         }
-        {
+        @view.RunsLook::{
           ..@view.runs_plain,
           words: match person {
             Some(p) => p()
@@ -1167,7 +1167,8 @@ fn local_tried(family : String) -> Int {
 
 ///|
 fn local_families() -> Array[String] {
-  let parsed = @json.parse(@ui.local_font_families()) catch { _ => Json::null() }
+  let raw = @ui.local_font_families()
+  let parsed = @json.parse(raw) catch { _ => Json::null() }
   match parsed {
     Array(a) => a.filter_map(fn(x) { if x is String(s) { Some(s) } else { None } })
     _ => []

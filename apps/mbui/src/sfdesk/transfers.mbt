@@ -77,8 +77,21 @@ priv struct Going {
 fn Coming::going(self : Coming) -> Going {
   let going = self.transfers.filter(fn(x) { flag(Some(x), "active") })
   let coming = self.downloads.filter(fn(d) { flag(Some(d), "active") })
-  let failed = self.transfers.iter().any(fn(x) { text(Some(x), "state") == "failed" }) ||
-    self.downloads.iter().any(fn(d) { text(Some(d), "state") == "failed" })
+  let mut failed = false
+  for x in self.transfers {
+    if text(Some(x), "state") == "failed" {
+      failed = true
+      break
+    }
+  }
+  if !failed {
+    for d in self.downloads {
+      if text(Some(d), "state") == "failed" {
+        failed = true
+        break
+      }
+    }
+  }
   let sizes = fn(a : Array[Json], field : String) { a.fold(init=0.0, fn(n, x) { n + number(Some(x), field) }) }
   let total = sizes(going, "total") + sizes(coming, "size") + sizes(self.keeping, "size")
   let copied = sizes(going, "copied") + sizes(coming, "loaded") + sizes(self.keeping, "loaded")

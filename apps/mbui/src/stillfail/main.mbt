@@ -449,7 +449,7 @@ fn svg_fonts_for(faces : Array[Bytes]) -> (@font.FontDb, String) {
 /// the app's own words' face for every generic family but monospace, the code face for that.
 fn parse_svg_premul(data : Bytes) -> ((Int) -> (Int, Int, FixedArray[Byte])?)? {
   let (fonts, own) = svg_fonts_for(@sfbase.vector_faces(data))
-  match @svg.SvgDoc::parse(data, opt={ ..@svg.Options::default(), fonts, font_family: own }) {
+  match @svg.SvgDoc::parse(data, opt=@svg.Options::{ ..@svg.Options::default(), fonts, font_family: own }) {
     Some(doc) => Some(fn(px) { doc.rasterize_premul(px) })
     None => None
   }
@@ -487,7 +487,8 @@ fn main {
   let cloud = @ui.env("MBUI_CLOUD")
   if @ui.env("MBUI_CORE_TRACE") == "1" && local_cloud(cloud) {
     // (bytes over MBUI_CORE_TRACE_BYTES, scripts/trace make's MAX_BYTES, kept as their length alone)
-    let bytes_max = @string.parse_int(@ui.env("MBUI_CORE_TRACE_BYTES")[:]) catch { _ => 16384 }
+    let raw_bytes_max = @ui.env("MBUI_CORE_TRACE_BYTES")
+    let bytes_max = @string.parse_int(raw_bytes_max[:]) catch { _ => 16384 }
     // (and to a scripted run, whose `answered` counts the core's answers as they come, read by the app or not)
     @core.trace_to(
       fn(line) {
@@ -513,7 +514,8 @@ fn main {
     @hostapi.log("CORETRACE " + Json::object({ "env": Json::object(started) }).stringify())
     // and which station this machine is, as the app's own native call says it (`local_station`: what the files' page
     // lists first), for a replay's host to say the same
-    let own_station = @json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() }
+    let raw_station = @hostapi.app_said("local_station")
+    let own_station = @json.parse(raw_station) catch { _ => Json::null() }
     @hostapi.log("CORETRACE " + ({ "host": { "localStation": own_station } } : Json).stringify())
     // and what the host said of its views (a video's frames' times, a frame grabbed), at the core's clock, beside it
     @ui.trace_views(fn(m) { @core.trace_note(m) })

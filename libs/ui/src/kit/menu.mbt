@@ -152,7 +152,15 @@ fn menu_panel(
       _ => true
     })
   }
-  let mine = c.has_focus(pid) || ids.iter().any(fn(id) { c.has_focus(id) })
+  let mut mine = c.has_focus(pid)
+  if !mine {
+    for i = 0; i < ids.length(); i = i + 1 {
+      if c.has_focus(ids[i]) {
+        mine = true
+        break
+      }
+    }
+  }
   let mut sub = kit.val.subs.get(pid).unwrap_or(-1)
   let mut chosen : String? = None
   let mut back = false

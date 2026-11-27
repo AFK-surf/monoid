@@ -2361,8 +2361,8 @@ fn field_comes_other(field : @ui.Field, wl : @view.WordsLook, max_lines : Int, w
   let wide = lines.room.2 / (if lines.scale > 0.0 { lines.scale } else { 1.0 })
   guard wide > 0.0 else { return None }
   let laid = @signals.untracked(fn() { field.laid(font_size=wl.size, line=wl.line, max_lines~, trim=true) })
-  let (_, h0) = { ..laid, words: was }.size(Some(wide))
-  let (_, h1) = { ..laid, words: now }.size(Some(wide))
+  let (_, h0) = @ui.FieldLaid::{ ..laid, words: was }.size(Some(wide))
+  let (_, h1) = @ui.FieldLaid::{ ..laid, words: now }.size(Some(wide))
   if (h1 - h0).abs() > 0.01 {
     Some(h1 - h0)
   } else {

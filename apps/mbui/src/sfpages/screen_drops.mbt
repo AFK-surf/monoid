@@ -107,7 +107,14 @@ fn ScreenSess::pump(self : ScreenSess) -> Unit {
   if self.pumping {
     return
   }
-  match self.drops.iter().find_first(fn(d) { d.state.get() == "waiting" }) {
+  let mut waiting : ScreenDropItem? = None
+  for i = 0; i < self.drops.length(); i = i + 1 {
+    if self.drops[i].state.get() == "waiting" {
+      waiting = Some(self.drops[i])
+      break
+    }
+  }
+  match waiting {
     Some(d) => {
       if self.src.read_only {
         d.state.set("failed")

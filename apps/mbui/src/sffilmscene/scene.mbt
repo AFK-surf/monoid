@@ -75,7 +75,7 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         }
         // MBUI_OPEN_WHOLE=1: a card, a panel or a sheet opened the first time waits for what it reads, as the app does
         // (@sf.OpenGate; a fixture's own tests say what shows before the core answers, so not without it)
-        let s = if arg("MBUI_OPEN_WHOLE") == "1" { { ..s, gates_opens: fn() { true } } } else { s }
+        let s = if arg("MBUI_OPEN_WHOLE") == "1" { @sfapp.Source::{ ..s, gates_opens: fn() { true } } } else { s }
         let held = arg("MBUI_HOLD")
         let s = if held != "" { @sffixture.held_topics(s, held.split(",").map(fn(x) { x.to_owned() }).collect()) } else { s }
         let failed = arg("MBUI_FAILED")
@@ -97,7 +97,7 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           @ui.fake_decode_bytes_after.val.push((bytes, whole_ms(arg("MBUI_FILM_FACE_MS"))))
           let faces = @sfapp.core_pictures_waited(fn(_, done) { done(Some(bytes)) }, fn(_, done) { done(Some(bytes)) })
           let waits = arg("MBUI_FILM_FACE_WAITS") == "1"
-          {
+          @sfapp.Source::{
             ..s,
             picture: fn(url, stint) {
               let key = (faces.shown)(url, stint)

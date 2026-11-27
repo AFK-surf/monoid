@@ -45,7 +45,7 @@ pub fn nav_item_node(
         let l = theme().chat_list
         // (a capsule on its last line kept as far in from its foot corner as one of its height is from a corner)
         let item = match (at, foot_capsule) {
-          (Side | Tape, Some(h)) if foot_on() => {
+          (Side | ListAt::Tape, Some(h)) if foot_on() => {
             let bottom = @ui.capsule_in(row_corner, h) - (l.meta_h - h) / 2.0
             l.item.then(@ui.style(pb=room(bottom)))
           }

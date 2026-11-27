@@ -140,7 +140,7 @@ fn marks_tools_node(col : @view.View, tips : @sf.TipLayer) -> Unit {
     .padding(Is((6.0, 0.0, 6.0, 0.0)))
     .gap(Is(2.0))
     |> ignore
-    for x in [(Select, "cursor", "select"), (Rect, "square", "rect"), (Arrow, "arrow-up-right", "arrow"), (Pen, "scribble", "pen"), (Words, "text", "text")] {
+    for x in [(Select, "cursor", "select"), (Rect, "square", "rect"), (Arrow, "arrow-up-right", "arrow"), (Pen, "scribble", "pen"), (MarkTool::Words, "text", "text")] {
       let (tool, icon, name) = x
       @sf.tool_node(
         row,

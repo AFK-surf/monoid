@@ -307,16 +307,15 @@ let vector_parsed_cache : Map[String, (Bytes, (Int) -> (Int, Int, FixedArray[Byt
 
 ///|
 // kept across runs: LRU key order for vector_parsed_cache (most recently used at end), shrunk on eviction/clear
-let vector_parsed_order : Array[String] = []
+let vector_parsed_order : Ref[Array[String]] = Ref([])
 
 ///|
 fn vector_parsed_remove(key : String) -> Unit {
   if vector_parsed_cache.contains(key) {
     vector_parsed_cache.remove(key)
-    for i in 0..<vector_parsed_order.length() {
-      if vector_parsed_order[i] == key {
-        vector_parsed_order.remove(i) |> ignore
-        vector_parsed_order.shrink_to_fit()
+    for i in 0..<vector_parsed_order.val.length() {
+      if vector_parsed_order.val[i] == key {
+        vector_parsed_order.val.remove(i) |> ignore
         break
       }
     }
@@ -326,23 +325,22 @@ fn vector_parsed_remove(key : String) -> Unit {
 ///|
 fn vector_parsed_clear() -> Unit {
   vector_parsed_cache.clear()
-  vector_parsed_order.clear()
-  vector_parsed_order.shrink_to_fit()
+  vector_parsed_order.val = []
 }
 
 ///|
 fn vector_parsed_touch(key : String) -> Unit {
-  let n = vector_parsed_order.length()
-  if n > 0 && vector_parsed_order[n - 1] == key {
+  let n = vector_parsed_order.val.length()
+  if n > 0 && vector_parsed_order.val[n - 1] == key {
     return
   }
   for i in 0..<n {
-    if vector_parsed_order[i] == key {
-      vector_parsed_order.remove(i) |> ignore
+    if vector_parsed_order.val[i] == key {
+      vector_parsed_order.val.remove(i) |> ignore
       break
     }
   }
-  vector_parsed_order.push(key)
+  vector_parsed_order.val.push(key)
 }
 
 ///|
@@ -355,13 +353,12 @@ fn vector_parsed_insert(key : String, data : Bytes, draw : (Int) -> (Int, Int, F
     vector_parsed_touch(key)
     return
   }
-  while vector_parsed_order.length() >= vector_parsed_max_entries {
-    let oldest = vector_parsed_order.remove(0)
+  while vector_parsed_order.val.length() >= vector_parsed_max_entries {
+    let oldest = vector_parsed_order.val.remove(0)
     vector_parsed_cache.remove(oldest)
-    vector_parsed_order.shrink_to_fit()
   }
   vector_parsed_cache[key] = (data, draw)
-  vector_parsed_order.push(key)
+  vector_parsed_order.val.push(key)
 }
 
 ///|
@@ -1159,7 +1156,7 @@ fn decode_state_now(src : String, want : Int) -> DecodeState {
     Some(list) =>
       if list.iter().any(fn(e) { e.state == 1 && e.px == want }) {
         DecodeDone
-      } else if list.iter().any(fn(e) { e.state == -1 && e.px >= want }) {
+      } else if arr_any(list, fn(e) { e.state == -1 && e.px >= want }) {
         DecodeFailed
       } else {
         DecodeComing

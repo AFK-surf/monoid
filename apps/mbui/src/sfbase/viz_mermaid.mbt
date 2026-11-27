@@ -178,11 +178,14 @@ fn mermaid_asked(src : Source, key : String, ask : Json) -> Unit {
   }
   (src.call)("mermaid.chart", ask, fn(r) {
     match r {
-      Ok({ "svg": String(svg), "width": Number(w, ..), "height": Number(h, ..), .. }) if w > 0.0 && h > 0.0 => {
-        mermaid_chart_made(key, @utf8.encode(svg), w, h)
-      }
+      Ok(Object(obj)) =>
+        match (obj.get("svg"), obj.get("width"), obj.get("height")) {
+          (Some(String(svg)), Some(Number(w, ..)), Some(Number(h, ..))) if w > 0.0 && h > 0.0 =>
+            mermaid_chart_made(key, @utf8.encode(svg), w, h)
+          _ => mermaid_charts[key] = ChartRefused
+        }
       // a core that has not mermaid (started anew since it was given it): given it again, asked again
-      Err({ "code": String("mermaid_absent"), .. }) if mermaid_given.val => {
+      Err(Object(obj)) if mermaid_given.val && obj.get("code") == Some(Json::string("mermaid_absent")) => {
         mermaid_given.val = false
         mermaid_charts.remove(key)
       }

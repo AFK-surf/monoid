@@ -163,7 +163,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
             }
           }
         }),
-        about=At(0.5, 0.5),
+        about=@view.Pivot::At(0.5, 0.5),
       )
       |> ignore
       node.drawn_off(
@@ -345,7 +345,7 @@ pub fn anchored_popover_bridge(
             1.0
           }
         }),
-        about=At(0.5, 0.5),
+        about=@view.Pivot::At(0.5, 0.5),
         moves_besides=false,
       )
       |> ignore
@@ -510,13 +510,13 @@ pub fn anchored_popover_bridge(
             let prev = @signals.set_owner(None)
             trig.pill.scale(
               By(fn() { 1.0 + 0.05 * trig.press_way.shown(trig.pill) }),
-              about=At(0.5, 0.5),
+              about=@view.Pivot::At(0.5, 0.5),
               moves_besides=false,
             )
             |> ignore
             @signals.set_owner(prev) |> ignore
           } else {
-            trig.pill.scale(Is(1.0), about=At(0.5, 0.5)) |> ignore
+            trig.pill.scale(Is(1.0), about=@view.Pivot::At(0.5, 0.5)) |> ignore
           }
           trig.pill.drawn_off(Is((0.0, 0.0)), exact=false) |> ignore
           trig.pill.ground_drawn(Is(@view.ground_as_laid)) |> ignore

@@ -502,7 +502,14 @@ pub fn nav_frame(body : () -> Unit) -> Unit {
   nav_page_before.clear()
   nav_page_before.append(handed)
   // (a chat's own as it handed them, not one on its way out handing none, nor what was kept for it)
-  if bar_chat_of.val is Some(_) && bar_chat_carried.length() == 0 && nav_page.iter().any(fn(p) { p.0.id.has_prefix("page/chat/") }) {
+  let mut has_chat_page = false
+  for p in nav_page {
+    if p.0.id.has_prefix("page/chat/") {
+      has_chat_page = true
+      break
+    }
+  }
+  if bar_chat_of.val is Some(_) && bar_chat_carried.length() == 0 && has_chat_page {
     bar_chat_last.clear()
     for p in nav_page {
       if p.0.id.has_prefix("page/chat/") {
@@ -694,13 +701,21 @@ fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@
   tabs.push({ ..item(at + "attention", rail_label(src, "attention"), "bell"), dot: bell_lit(src, w) })
   let selected = tab_of_place(places, lit)
   let t = @sf.theme()
+  let new_item : @hostapi.NavItem = {
+    id: "new",
+    title: @sf.t("web-main.sidebar.newChat"),
+    icon: @sf.icon_path("plus"),
+    dot: false,
+    prominent: true,
+    menu: [],
+  }
   {
     floating: native_floating.val,
     groups: [
       { items: card, foot: false, foldable: true },
       { items: tabs, foot: false, foldable: false },
       {
-        items: [{ ..item("new", @sf.t("web-main.sidebar.newChat"), "plus"), prominent: true }],
+        items: [new_item],
         foot: true,
         foldable: false,
       },

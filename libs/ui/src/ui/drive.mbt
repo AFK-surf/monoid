@@ -416,7 +416,10 @@ fn tree_on_screen_nodes(
     } else if what.has_prefix("switch:") {
       // a switch by what it turns (its label, whole), as on_screen_nodes finds an old view's: the switch alone
       let label = what.unsafe_substring(start=7, end=what.length())
-      tree.said_of(d.id) is Some({ role: Switch, label: l, .. }) && l == label
+      match tree.said_of(d.id) {
+        Some(said) => said.role is Switch && said.label == label
+        None => false
+      }
     } else if what.has_prefix("field:") && what.length() > 6 {
       // a field by the words in it, not its placeholder, as on_screen_nodes finds an old view's
       match tree_fields.get(d.id) {
@@ -449,7 +452,7 @@ fn tree_on_screen_nodes(
   // (one called so that holds words found: those words, once, as an old view's row read out by its words is found by
   // its text alone)
   hits
-  .filter(fn(h) { h.4 || !hits.iter().any(fn(w) { w.4 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
+  .filter(fn(h) { h.4 || !arr_any(hits, fn(w) { w.4 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
   .map(fn(h) { (h.0, h.1, h.2, h.3) })
 }
 
@@ -1127,7 +1130,7 @@ fn wheel_followed(d : Driver) -> Unit {
   guard d.wheel_follow is Some((id, words, y0, last, t0)) else { return }
   let after = (view_logic_at.val - t0).to_int()
   let drawn = match view_app.val {
-    Some(tree) => tree.drawn().iter().find_first(fn(e) { e.id == id })
+    Some(tree) => arr_find_first(tree.drawn(), fn(e) { e.id == id })
     None => None
   }
   match drawn {
@@ -1378,7 +1381,7 @@ fn drive_steps(c : Ctx) -> Unit {
           d.count_answers()
           d.answers.get(arg).unwrap_or(0) > taken
         } else {
-          runtime().outside_ended_since(d.mark).iter().any(fn(w) { outside_named(cmd, arg, w) })
+          arr_any(runtime().outside_ended_since(d.mark), fn(w) { outside_named(cmd, arg, w) })
         }
         if d.seen_frame < 0 && come {
           d.seen_frame = c.frame_no
@@ -1618,7 +1621,8 @@ fn drive_steps(c : Ctx) -> Unit {
         d.bms = 300.0
         d.bedge = 0
         d.boff = false
-        for w in words[1:] {
+        for wi = 1; wi < words.length(); wi = wi + 1 {
+          let w = words[wi]
           match w {
             "right" => d.bedge = 1
             "off" => d.boff = true
@@ -2154,7 +2158,7 @@ fn over_it(c : Ctx, x : Double, y : Double) -> String {
     Some(tree) => {
       let said = fn(what : String, id : @view.NodeId) {
         let at = "at \{x.to_int()},\{y.to_int()} \{what}"
-        match tree.drawn().search_by(fn(d) { d.id == id }) {
+        match arr_search_by(tree.drawn(), fn(d) { d.id == id }) {
           Some(k) => {
             let d = tree.drawn()[k]
             let words = tree_first_words(tree, id)

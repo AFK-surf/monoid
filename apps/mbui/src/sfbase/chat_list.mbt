@@ -397,8 +397,21 @@ pub fn answered_at(v : ChatView, all : Array[Entry]) -> Array[Agent] {
     match v.agents.search_by(fn(a) { a.key == by }) {
       Some(i) => {
         let a = v.agents[i]
-        let shown = all.iter().any(fn(x) { x is Working(w) && w.key == a.key })
-        if !at_work(a) && !shown && !out.iter().any(fn(x) { x.key == a.key }) {
+        let mut shown = false
+        for x in all {
+          if x is Working(w) && w.key == a.key {
+            shown = true
+            break
+          }
+        }
+        let mut in_out = false
+        for x in out {
+          if x.key == a.key {
+            in_out = true
+            break
+          }
+        }
+        if !at_work(a) && !shown && !in_out {
           out.push({ ..a, status: "queued", started: true })
         }
       }
@@ -411,9 +424,11 @@ pub fn answered_at(v : ChatView, all : Array[Entry]) -> Array[Agent] {
     guard e is Out(o) && o.state != "failed" else { continue }
     for q in o.quotes {
       guard q.role == "agent" && q.ts != "" else { continue }
-      match v.messages.search_by(fn(m) { m.ts == q.ts && m.card is Some(_) }) {
-        Some(i) => take(v.messages[i].by.agent)
-        None => ()
+      for m in v.messages {
+        if m.ts == q.ts && m.card is Some(_) {
+          take(m.by.agent)
+          break
+        }
       }
     }
     match last {
@@ -1063,7 +1078,13 @@ fn chat_tick_lingering(rk : String, rd : Reading, v : ChatView, ms? : ChatMessag
   }
   for k, a in rd.running {
     if !running.contains(k) && !rd.linger.contains(k) {
-      let now = v.agents.iter().find_first(fn(b) { b.key == k }).unwrap_or(a)
+      let mut now = a
+      for b in v.agents {
+        if b.key == k {
+          now = b
+          break
+        }
+      }
       let awaits = on_its_way(now)
       if keeps.contains(k) || awaits >= 0.0 {
         rd.linger[k] = { agent: a, once: false, unseen: false, awaits }
@@ -1426,7 +1447,7 @@ pub fn read_place(
         k = k + 1
       }
       match list.get(k) {
-        Some(Said(m)) => m.seq
+        Some(Entry::Said(m)) => m.seq
         _ => -1.0
       }
     }
@@ -1439,7 +1460,7 @@ pub fn read_place(
         k = k - 1
       }
       match list.get(k) {
-        Some(Said(m)) => m.seq
+        Some(Entry::Said(m)) => m.seq
         _ => -1.0
       }
     }

@@ -640,13 +640,26 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
       if held.contains(row_name(item)) {
         continue
       }
-      let into = match out.search_by(fn(o) { o.0.key == d.key }) {
+      let mut found_into : Int? = None
+      for k, o in out {
+        if o.0.key == d.key {
+          found_into = Some(k)
+          break
+        }
+      }
+      let into = match found_into {
         Some(k) => k
         None => {
           // before the first day shown that comes after it now
           let mut at = out.length()
           for k, o in out {
-            let later = days.search_by(fn(x) { x.key == o.0.key })
+            let mut later : Int? = None
+            for j, x in days {
+              if x.key == o.0.key {
+                later = Some(j)
+                break
+              }
+            }
             match later {
               Some(j) if j > di => {
                 at = k
@@ -663,9 +676,10 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
       items.insert(if i < items.length() { i } else { items.length() }, item)
     }
   }
-  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o) {
-    if o.0.group_kind == "" || row_day.is_empty() {
-      { ..o.0, items: o.1 }
+  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o : (ChatDay, Array[ChatItem])) {
+    let head : ChatDay = o.0
+    if head.group_kind == "" || row_day.is_empty() {
+      { ..head, items: o.1 }
     } else {
       let breaks : Array[(Int, String)] = []
       let mut last_lbl = ""
@@ -676,7 +690,7 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
           last_lbl = lbl
         }
       }
-      { ..o.0, day_breaks: breaks, items: o.1 }
+      { ..head, day_breaks: breaks, items: o.1 }
     }
   })
   shown_days[key] = result
@@ -759,7 +773,14 @@ pub fn row_agent_groups(item : ChatItem) -> Array[RowAgent] {
   let groups : Array[RowAgent] = []
   for a in item.agents {
     let key = if a.maker != "" { a.maker } else { a.runtime }
-    if !groups.iter().any(fn(g) { (if g.maker != "" { g.maker } else { g.runtime }) == key }) {
+    let mut has_group = false
+    for g in groups {
+      if (if g.maker != "" { g.maker } else { g.runtime }) == key {
+        has_group = true
+        break
+      }
+    }
+    if !has_group {
       groups.push(a)
     }
   }

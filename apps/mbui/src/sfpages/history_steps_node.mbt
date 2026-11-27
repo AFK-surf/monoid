@@ -1778,7 +1778,7 @@ fn place_live_node(v : @view.View, station : String, place : () -> Json?, link :
           @sfbase.open_slack(app_url, url) |> ignore
         } else if session != "" {
           @sfbase.history_push()
-          app.nav.push(Chat({ station, session, title: text(pl, "name"), station_name: "" }))
+          app.nav.push(@sfbase.Page::Chat({ station, session, title: text(pl, "name"), station_name: "" }))
         }
       })
     }
@@ -2168,11 +2168,26 @@ fn ended_node(v : @view.View, key : String, ends : String, words : String, rail 
 /// call's kind (`step_label`); `think` for a group of thoughts alone.
 fn group_icon(g : Json?) -> String {
   let rows = items(g, "rows")
-  guard rows.iter().find_first(fn(r) { text(Some(r), "kind") == "step" }) is Some(first) else { return "think" }
+  let mut first_opt : Json? = None
+  for i = 0; i < rows.length(); i = i + 1 {
+    if text(Some(rows[i]), "kind") == "step" {
+      first_opt = Some(rows[i])
+      break
+    }
+  }
+  guard first_opt is Some(first) else { return "think" }
   let title = text(g, "title")
   let label = step_label(text(field(Some(first), "content"), "name"))
   let says = fn(prefixes : Array[String], labels : Array[String]) {
-    prefixes.iter().any(fn(p) { title.has_prefix(p) }) || labels.contains(label)
+    if labels.contains(label) {
+      return true
+    }
+    for i = 0; i < prefixes.length(); i = i + 1 {
+      if title.has_prefix(prefixes[i]) {
+        return true
+      }
+    }
+    false
   }
   if says(["修改", "编辑", "新建"], ["编辑", "新建"]) {
     "edit"
@@ -2212,7 +2227,13 @@ fn group_node(
   let failures = number(g, "failures").to_int()
   let pending = number(g, "pending").to_int()
   let rows = items(g, "rows")
-  let calls = rows.iter().any(fn(r) { text(Some(r), "kind") == "step" })
+  let mut calls = false
+  for i = 0; i < rows.length(); i = i + 1 {
+    if text(Some(rows[i]), "kind") == "step" {
+      calls = true
+      break
+    }
+  }
   event_reveal_stack_node(
     v,
     open,
@@ -2448,7 +2469,7 @@ fn steps_opened_under(ik : String) -> Bool {
 fn steps_row_shape(row : StepsRow?, station : String, key : String, ignore_opened? : Bool = false) -> Int? {
   match row {
     Some(Live(_, _)) => return Some(66)
-    Some(Item(item, _)) => {
+    Some(StepsRow::Item(item, _)) => {
       let ik = text(Some(item), "key")
       if ik == "" || (!ignore_opened && steps_opened_under(steps_item_key(station, key, ik))) {
         return None
@@ -2669,14 +2690,14 @@ fn steps_reused_row_node(
           let turn_kind = shape % 3
           let item_fn = fn() {
             match picked.get().row {
-              Some(Item(item, _)) => Some(item)
+              Some(StepsRow::Item(item, _)) => Some(item)
               _ => None
             }
           }
           let has_rail_sig = @signals.computed(
             fn(_) {
               match picked.get().row {
-                Some(Item(_, rail)) => rail
+                Some(StepsRow::Item(_, rail)) => rail
                 _ => false
               }
             },
@@ -3967,7 +3988,7 @@ fn jump_to_dispatch_target(src : Source, station : String, key : String, current
     }
     if session != "" && station != "" {
       @sfbase.history_push()
-      app.nav.push(Chat({ station, session, title: t, station_name: "" }))
+      app.nav.push(@sfbase.Page::Chat({ station, session, title: t, station_name: "" }))
       return
     }
   }
@@ -4605,7 +4626,7 @@ priv enum StepsRow {
 impl Eq for StepsRow with equal(a, b) {
   match (a, b) {
     (Edge, Edge) => true
-    (Item(j, x), Item(k, y)) | (Live(j, x), Live(k, y)) => x == y && @signals.same_value(j, k)
+    (StepsRow::Item(j, x), StepsRow::Item(k, y)) | (Live(j, x), Live(k, y)) => x == y && @signals.same_value(j, k)
     (Phase(j), Phase(k)) => @signals.same_value(j, k)
     _ => false
   }
@@ -4694,7 +4715,7 @@ fn steps_rows_of_topic(src : Source, params : Map[String, Json], lkey : String) 
 fn steps_row_same(a : StepsRow?, b : StepsRow?) -> Bool {
   match (a, b) {
     (None, None) | (Some(Edge), Some(Edge)) => true
-    (Some(Item(x, r)), Some(Item(y, s))) => physical_equal(x, y) && r == s
+    (Some(StepsRow::Item(x, r)), Some(StepsRow::Item(y, s))) => physical_equal(x, y) && r == s
     (Some(Live(x, r)), Some(Live(y, s))) => physical_equal(x, y) && r == s
     (Some(Phase(x)), Some(Phase(y))) => physical_equal(x, y)
     _ => false

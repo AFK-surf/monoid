@@ -270,7 +270,7 @@ fn chat_body_ends(
       }
     }
     let row = if l.row.joined && j + 1 < still.length() && still[j + 1].row.joined {
-      { ..l.row, followed: true }
+      @sfbase.Outgoing::{ ..l.row, followed: true }
     } else {
       l.row
     }
@@ -853,8 +853,17 @@ fn chat_body_answered(
         let a = v.agents[i]
         let at_work = a.status == "running" || a.status == "queued"
         let shown = at_work && !v.newer
-        if !at_work && !shown && !out.iter().any(fn(x) { x.key == a.key }) {
-          out.push({ ..a, status: "queued", started: true })
+        if !at_work && !shown {
+          let mut exists = false
+          for i = 0; i < out.length(); i = i + 1 {
+            if out[i].key == a.key {
+              exists = true
+              break
+            }
+          }
+          if !exists {
+            out.push({ ..a, status: "queued", started: true })
+          }
         }
       }
       None => ()

@@ -119,13 +119,15 @@ fn open_invite_link() -> Unit {
 /// first; "" none.
 fn invite_sub(src : Source) -> String {
   let list = invite_accounts(src)
-  match list.iter().find_first(fn(a) { text(Some(a), "sub") == invite.chosen.get() }) {
+  let chosen_sub = invite.chosen.get()
+  for a in list {
+    if text(Some(a), "sub") == chosen_sub {
+      return text(Some(a), "sub")
+    }
+  }
+  match list.get(0) {
     Some(a) => text(Some(a), "sub")
-    None =>
-      match list.get(0) {
-        Some(a) => text(Some(a), "sub")
-        None => ""
-      }
+    None => ""
   }
 }
 

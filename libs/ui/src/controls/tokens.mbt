@@ -2129,7 +2129,7 @@ pub let grow : @ui.Len = Grow(1.0)
 
 ///|
 /// A card as wide as what holds it (card's `fill`): one whose words change as it is answered, its width not with them.
-pub let card_across : @ui.Size = Fill(1.0)
+pub let card_across : @ui.Size = @ui.Size::Fill(1.0)
 
 ///|
 /// A visualization in a message: its place while it comes (120 high), the ways

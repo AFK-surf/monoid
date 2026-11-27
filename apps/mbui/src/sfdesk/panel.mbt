@@ -65,15 +65,19 @@ pub fn side_change(src : Source, r : ChatRef, action : String, tab : String?) ->
 pub fn view_step(src : Source, r : ChatRef, tab : String, was : String) -> String {
   let now = side_now(src, r)
   let open = match @sfbase.view_tab_file(tab) {
-    Some(f) =>
-      now.0
-      .iter()
-      .find_first(fn(t) {
+    Some(f) => {
+      let mut found : String? = None
+      for t in now.0 {
         match @sfbase.view_tab_file(t) {
-          Some(g) => f.same_file(g)
-          None => false
+          Some(g) if f.same_file(g) => {
+            found = Some(t)
+            break
+          }
+          _ => ()
         }
-      })
+      }
+      found
+    }
     None => None
   }
   let put = open.unwrap_or(tab)
@@ -266,15 +270,19 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String, full? : Bool = false
     None => ()
   }
   let open = match @sfbase.view_tab_file(tab) {
-    Some(f) =>
-      side_now(src, r).0
-      .iter()
-      .find_first(fn(t) {
+    Some(f) => {
+      let mut found : String? = None
+      for t in side_now(src, r).0 {
         match @sfbase.view_tab_file(t) {
-          Some(g) => f.same_file(g)
-          None => false
+          Some(g) if f.same_file(g) => {
+            found = Some(t)
+            break
+          }
+          _ => ()
         }
-      })
+      }
+      found
+    }
     None => None
   }
   let put = open.unwrap_or(tab)

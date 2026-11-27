@@ -555,7 +555,7 @@ pub fn Ctx::space(self : Ctx, s : Space) -> Double {
 ///|
 /// What a colour token comes to in the theme in force.
 pub fn Ctx::color(self : Ctx, c : Color) -> Int64 {
-  self.theme.color(c)
+  Theme::color(self.theme, c)
 }
 
 ///|
@@ -689,10 +689,13 @@ pub fn Theme::corner(self : Theme, r : Radius) -> Double {
         dmax(exact_ok(c, "Radius"), exact_ok(d, "Radius")),
       )
     // (where it comes from, now: corner_of.mbt)
-    Linked(c) => c.radius(corner_roots())
+    Linked(c) => CornerOf::radius(c, corner_roots())
     LinkedEach(a, b, c, d) => {
       let at = corner_roots()
-      dmax(dmax(a.radius(at), b.radius(at)), dmax(c.radius(at), d.radius(at)))
+      dmax(
+        dmax(CornerOf::radius(a, at), CornerOf::radius(b, at)),
+        dmax(CornerOf::radius(c, at), CornerOf::radius(d, at)),
+      )
     }
   }
 }
@@ -705,7 +708,14 @@ pub fn Radius::each(self : Radius) -> FixedArray[Double]? {
     Corners(a, b, c, d) => Some(FixedArray::from_array([a, b, c, d]))
     LinkedEach(a, b, c, d) => {
       let at = corner_roots()
-      Some(FixedArray::from_array([a.radius(at), b.radius(at), c.radius(at), d.radius(at)]))
+      Some(
+        FixedArray::from_array([
+          CornerOf::radius(a, at),
+          CornerOf::radius(b, at),
+          CornerOf::radius(c, at),
+          CornerOf::radius(d, at),
+        ]),
+      )
     }
     InnerOr(own) => own.each()
     _ => None

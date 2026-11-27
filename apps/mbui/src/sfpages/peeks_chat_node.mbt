@@ -34,13 +34,13 @@ fn chat_card_node(
 ) -> Unit {
   // (asked once the link is known, as it changes: chat_named asks the core only for one it has not)
   parent.reacts(href, fn(h) { chat_named(src, here, h) |> ignore })
-  let named = fn() { chats_named.get(here + "\u{1}" + href()).unwrap_or(Asking) }
+  let named = fn() { chats_named.get(here + "\u{1}" + href()).unwrap_or(Named::Asking) }
   // (the chat found, as its whole row says it (`chatRow`, by the link's station and key, read where it is read: one
   // record of the device's, whether the workspace's list shows it or not): None while the link or its row is read,
   // Some(None) where its station has none unarchived, or another workspace's: chat_card's)
   let found = fn() -> (ChatItem, Bool, Double?)?? {
     match named() {
-      Chat(station, key, history, seq) => {
+      Named::Chat(station, key, history, seq) => {
         guard peek_ours(here, station) else { return Some(None) }
         peek_row(src.topic("chatRow", @sfbase.whole_params(station, key)).get()).map(fn(r) {
           r.map(fn(i) { (i, history, seq) })
@@ -54,11 +54,11 @@ fn chat_card_node(
       Some(l) if l.archived => Archived
       _ =>
         match named() {
-          Asking => Sample
+          Named::Asking => ChatShows::Sample
           NoChat => Gone
-          Chat(_) =>
+          Named::Chat(_) =>
             match found() {
-              None => Sample
+              None => ChatShows::Sample
               Some(None) => Gone
               Some(Some(_)) => Found
             }
@@ -78,7 +78,7 @@ fn chat_card_node(
           // (the message its link names, by the thread its message says it has)
           let message = fn() {
             match (named(), l().thread) {
-              (Chat(station, _, _, Some(seq)), Some(thread)) => Some((station, thread, seq))
+              (Named::Chat(station, _, _, Some(seq)), Some(thread)) => Some((station, thread, seq))
               _ => None
             }
           }

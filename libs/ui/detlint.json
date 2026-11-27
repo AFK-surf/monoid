@@ -327,10 +327,7 @@
       "src/view/grid.mbt": 1
     },
     "each-min-height": {},
-    "each-lookup": {
-      "src/ui/nav_flat_view.mbt": 1,
-      "src/ui/nav_view.mbt": 1
-    },
+    "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {},

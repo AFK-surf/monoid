@@ -106,7 +106,7 @@ fn stage_fit_node(parent : @view.View, most : Double, seen : () -> Double, body 
         _ => across()
       }
     }
-    whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(drawn), about=At(0.5, 0.0)) |> ignore
+    whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(drawn), about=@view.Pivot::At(0.5, 0.0)) |> ignore
     // (its room: as tall as it is drawn at the stage's width, given less by the column where it has not that)
     held.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
   })

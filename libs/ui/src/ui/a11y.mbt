@@ -150,7 +150,7 @@ fn A11yMirror::apply(self : A11yMirror, full : Bool, focus : Int, told : Array[A
 /// node's number, its holder's, its widget, its role, its flags (f where it has the focus), where it is in the window
 /// and its size, its label, value, description, range and actions).
 fn A11yMirror::lines(self : A11yMirror) -> String {
-  let sb = StringBuilder()
+  let sb : StringBuilder = StringBuilder()
   fn put(k : Int, holder : Int, px : Double, py : Double) -> Unit {
     guard self.nodes.get(k) is Some(n) else { return }
     let x = px + n.x
@@ -258,7 +258,8 @@ fn a11y_update_read(text : String) -> (Bool, Int, Array[A11yNode])? {
   let num = a11y_int
   let real = a11y_real
   let told : Array[A11yNode] = []
-  for l in lines[1:] {
+  for i = 1; i < lines.length(); i = i + 1 {
+    let l = lines[i]
     let f = l.split(a11y_sep).map(fn(v) { v.to_owned() }).to_array()
     if f.length() < 17 || f[0] != "N" {
       continue
@@ -1045,13 +1046,30 @@ fn sem_unnamed(s : SemNode) -> Bool {
 /// The rule that what can be done is named (a button, a field, a slider: a screen reader says what it is), held on the
 /// tree as a test reads it (Tester::semantics: every query by role and name) and as a host that reads it is told
 /// (Tester::hold_a11y_whole): one of the window's tree's that breaks it fails the test at once, with where it is.
+fn sem_action_repr(a : Action) -> String {
+  match a {
+    Action::Activate => "Activate"
+    Action::Increment => "Increment"
+    Action::Decrement => "Decrement"
+    Action::Expand => "Expand"
+    Action::Collapse => "Collapse"
+    Action::Dismiss => "Dismiss"
+    Action::Focus => "Focus"
+    Action::SetText(t) => "SetText(\"" + t + "\")"
+  }
+}
+
+///|
 fn Tester::hold_named(self : Tester, tree : Array[SemNode]) -> Unit {
   let bad = tree.filter(sem_unnamed)
   if bad.is_empty() {
     return
   }
   let said = "what can be done is named (mbui's src/ui/a11y.mbt, sem_unnamed), on a frame drawn at \{self.fake.time}:\n" +
-    bad.map(fn(s) { "  \{s.describe()} at \{Repr(s.rect)}, actions \{Repr(s.actions)}" }).join("\n")
+    bad.map(fn(s) {
+      let acts = "[" + s.actions.map(sem_action_repr).join(", ") + "]"
+      "  \{s.describe()} at \{Repr(s.rect)}, actions \{acts}"
+    }).join("\n")
   @halt.saying(said)
 }
 
@@ -1066,7 +1084,7 @@ pub fn Tester::a11y_dump(self : Tester) -> String {
 ///|
 /// What a host has, as Tester::a11y_dump says it.
 fn A11yMirror::dump(self : A11yMirror) -> String {
-  let sb = StringBuilder()
+  let sb : StringBuilder = StringBuilder()
   fn put(k : Int, depth : Int) -> Unit {
     guard self.nodes.get(k) is Some(n) else { return }
     let own = k != 0 && !n.flags.contains("v")

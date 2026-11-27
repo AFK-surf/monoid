@@ -5,8 +5,9 @@
 /// The faces a stack story shows.
 fn stack_sample(n : Int) -> Array[@sf.StackFace] {
   let names = ["左子健", "Ada Lovelace", "Grace Hopper", "林青", "Linus", "王小明", "Ken Thompson", "陈默"]
-  Array::makei(n, fn(i) {
-    let name = names[i % names.length()]
+  let count : Int = names.length()
+  Array::makei(n, fn(i : Int) {
+    let name = names[i % count]
     let face : @sf.StackFace = { id: "u\{i}", name, pictured: false, picture: fn() { "" } }
     face
   })
@@ -120,7 +121,10 @@ fn stories_u3(tips : @sf.TipLayer) -> Array[Story] {
             @sf.page_find_node(
               card,
               fn() { "\{at.get()}/12" },
-              fn(d) { at.set(((at.untracked() - 1 + d) % 12 + 12) % 12 + 1) },
+              fn(d : Int) {
+                let cur : Int = at.untracked()
+                at.set(((cur - 1 + d) % 12 + 12) % 12 + 1)
+              },
               fn(_) { true },
               fn() { @sfbase.toast_later("已关闭查找") },
               field=f,

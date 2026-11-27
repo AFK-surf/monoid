@@ -34,8 +34,8 @@ pub(all) enum Anchor {
 /// The same opener: the same node, the same rectangle, or both nothing.
 pub impl Eq for Anchor with equal(self, other) {
   match (self, other) {
-    (Node(a), Node(b)) => a.id() == b.id()
-    (At(x, y, w, h), At(x2, y2, w2, h2)) => x == x2 && y == y2 && w == w2 && h == h2
+    (Anchor::Node(a), Anchor::Node(b)) => a.id() == b.id()
+    (Anchor::At(x, y, w, h), Anchor::At(x2, y2, w2, h2)) => x == x2 && y == y2 && w == w2 && h == h2
     (Unanchored, Unanchored) => true
     _ => false
   }
@@ -329,7 +329,7 @@ priv enum How {
 ///|
 /// What is presented, the lowest first; how many were opened (each one's keys its own).
 // kept across runs: put back by presenters_reset (parts_reset)
-let presented_now : Array[Presented] = []
+let presented_now : Ref[Array[Presented]] = Ref([])
 
 ///|
 // kept across runs: put back by presenters_reset (parts_reset)
@@ -397,7 +397,7 @@ let presented_drawn_said : Ref[@signals.Keyed[Int]] = Ref(@signals.keyed())
 fn presented_told() -> Unit {
   // (one closed, whether the tree draws it still going out: what the host lets go of as it is gone)
   @view.transition(fn() {
-    presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+    presented_said.val.set(presented_now.val.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
   })
 }
 
@@ -405,9 +405,9 @@ fn presented_told() -> Unit {
 /// What one presented shows changed where it is kept (a menu's items given anew as they are now): what draws it told,
 /// where they show otherwise.
 pub fn presented_changed() -> Unit {
-  for p in presented_now {
+  for p in presented_now.val {
     match (p.shows, presented_items_said.get(p.serial)) {
-      (Menu(items, _, _, _), Some(s)) => s.set(items_shown(items))
+      (Shows::Menu(items, _, _, _), Some(s)) => s.set(items_shown(items))
       _ => ()
     }
   }
@@ -437,7 +437,7 @@ let presented_window_of : Map[Int, Int] = Map([])
 ///|
 /// Nothing presented (the app begun again).
 pub fn presenters_reset() -> Unit {
-  presented_now.clear()
+  presented_now.val.clear()
   presented_window_of.clear()
   took_place.clear()
   tree_presented.clear()
@@ -467,10 +467,10 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   let held_flag = presented_held.val
   presented_held.val = false
   let no_lower_closed = fn(old : Presented) -> Bool {
-    match presented_now.search_by(fn(q) { q.serial == old.serial }) {
+    match presented_now.val.search_by(fn(q) { q.serial == old.serial }) {
       Some(idx) => {
         for k in 0..<idx {
-          if presented_now[k].closed_now {
+          if presented_now.val[k].closed_now {
             return false
           }
         }
@@ -502,9 +502,9 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
   // that one's place, the topmost of them's; a menu, short pick, or confirm by what was chosen in a menu: a page of
   // that one's sheet. Resolved before `transient_dismiss_for_present` so in-place push keeps its anchor host alive.)
-  let closed_sheet = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
+  let closed_sheet = presented_now.val.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
   match (closed_sheet, shows) {
-    (Some(old), Menu(items, title, _, _)) if menu_can_push_sheet(old) => {
+    (Some(old), Shows::Menu(items, title, _, _)) if menu_can_push_sheet(old) => {
       // (a page of that sheet, as a panel's step further in is)
       panel_page(old, menu_sheet_panel(old.serial, title, fn() { items }), from, gone)
       return
@@ -551,9 +551,9 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   }
   // (a menu, a short pick shown as one, or a confirm opened by choosing an item in an AsPopover menu: push as an
   // in-container level of the same menu, as every level further in from a menu goes in and back)
-  let chosen_menu = presented_now.iter().filter(fn(q) { q.closed_now && q.chosen && q.taken_by == 0 }).last()
+  let chosen_menu = presented_now.val.iter().filter(fn(q) { q.closed_now && q.chosen && q.taken_by == 0 }).last()
   match (chosen_menu, shows) {
-    (Some(old), Menu(items, title, _, _)) if menu_can_push_popover(old) => {
+    (Some(old), Shows::Menu(items, title, _, _)) if menu_can_push_popover(old) => {
       menu_push(old, items, title, gone)
       return
     }
@@ -570,13 +570,13 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   }
   // (a panel by what a panel on a sheet of the window's tree held, which closed for it: a page of that sheet)
   match (closed_sheet, shows) {
-    (Some(old), Panel(x)) if old.chosen &&
+    (Some(old), Shows::Panel(x)) if old.chosen &&
       old.stands_now is Some(_) &&
       // (that sheet drawn still: not one the window's tree let go of as the window came to another screen)
       tree_presented.contains(old.serial) &&
       tree_as_sheet.get(old.serial).unwrap_or(false) &&
       sheet_panel_of(x) &&
-      old.shows is Panel(_) => {
+      old.shows is Shows::Panel(_) => {
       panel_page(old, x, from, gone)
       return
     }
@@ -599,13 +599,13 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   }
   // (a panel by what a panel held, which closed for it, no frame drawn of that going yet: a step further in from that
   // one, on a sheet or not)
-  let under = match (presented_now.iter().filter(fn(q) { q.closed_now }).last(), shows) {
-    (Some(old), Panel(x)) if old.chosen && !x.stage && old.shows is Panel(_) => Some(old)
+  let under = match (presented_now.val.iter().filter(fn(q) { q.closed_now }).last(), shows) {
+    (Some(old), Shows::Panel(x)) if old.chosen && !x.stage && old.shows is Shows::Panel(_) => Some(old)
     _ => None
   }
   // (what is presented written whole, then told as one change: what reads it as it is told finds it there)
   presented_window_of[presented_count.val] = @ui.current_window_id()
-  presented_now.push({
+  presented_now.val.push({
     serial: presented_count.val,
     shows,
     from,
@@ -629,7 +629,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   })
   @signals.start_batch()
   presented_told()
-  presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
+  presented_drawn_said.val.set(presented_now.val.map(fn(p) { p.serial }))
   @signals.end_batch()
 }
 
@@ -821,7 +821,7 @@ pub fn panel_go_nodes(
       }
     }
   }
-  match presented_now.iter().filter(fn(q) { q.open && steps_base(q) is Some(_) }).last() {
+  match presented_now.val.iter().filter(fn(q) { q.open && steps_base(q) is Some(_) }).last() {
     Some(p) =>
       match steps_base(p) {
         Some((x, from)) => {
@@ -864,7 +864,7 @@ pub fn panel_go_nodes(
 /// to.
 pub fn panel_back(to? : Int) -> Bool {
   let back_one = fn() {
-    match presented_now.iter().filter(fn(q) { q.open && (q.more.untracked().length() > 0 || q.under is Some(_)) }).last() {
+    match presented_now.val.iter().filter(fn(q) { q.open && (q.more.untracked().length() > 0 || q.under is Some(_)) }).last() {
       Some(p) => panel_pop(p) || back_under(p)
       None => false
     }
@@ -896,7 +896,7 @@ fn steps_in_now() -> Int {
     })
   }
 
-  match presented_now.iter().filter(fn(q) { q.open }).last() {
+  match presented_now.val.iter().filter(fn(q) { q.open }).last() {
     Some(p) => deep(p)
     None => 0
   }
@@ -958,7 +958,7 @@ pub fn close_presented_of(serial : Int) -> Unit {
 ///|
 /// Immediately removes `presented_now[i..]` without an exit animation, running each entry's `gone` hook once.
 fn drop_presented_from(i : Int) -> Unit {
-  let dropped = presented_now[i:].to_owned()
+  let dropped = presented_now.val[i:].to_owned()
   for p in dropped.rev() {
     p.open = false
     p.closed_now = false
@@ -986,13 +986,10 @@ fn drop_presented_from(i : Int) -> Unit {
       }
     }
   }
-  let kept = presented_now[:i].to_owned()
-  presented_now.clear()
-  presented_now.append(kept)
-  presented_now.shrink_to_fit()
+  presented_now.val = presented_now.val[:i].to_owned()
   @signals.start_batch()
   presented_told()
-  presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
+  presented_drawn_said.val.set(presented_now.val.map(fn(p) { p.serial }))
   @signals.end_batch()
 }
 
@@ -1000,7 +997,7 @@ fn drop_presented_from(i : Int) -> Unit {
 fn drop_presented_in_window(serial : Int) -> Bool {
   let mut s = serial
   while true {
-    match presented_now.search_by(fn(q) { q.serial == s }) {
+    match presented_now.val.search_by(fn(q) { q.serial == s }) {
       Some(i) => {
         drop_presented_from(i)
         return true
@@ -1062,13 +1059,13 @@ pub fn drop_presented_of_any_window(serial : Int) -> Unit {
 ///|
 /// Whether anything presented is still drawn (open, or going).
 pub fn presented_drawn() -> Bool {
-  !presented_now.is_empty()
+  !presented_now.val.is_empty()
 }
 
 ///|
 /// Whether the one presented as `serial` is open (not going, nor gone).
 pub fn presented_open_of(serial : Int) -> Bool {
-  presented_now.iter().any(fn(p) { p.serial == serial && p.open })
+  presented_now.val.iter().any(fn(p) { p.serial == serial && p.open })
 }
 
 ///|
@@ -1078,7 +1075,7 @@ pub fn presented_open_chain_of(serial : Int) -> Bool {
   presented_said.val.get() |> ignore
   let mut s = serial
   while true {
-    if presented_now.iter().any(fn(p) { p.serial == s && p.open }) {
+    if presented_now.val.iter().any(fn(p) { p.serial == s && p.open }) {
       return true
     }
     match took_place.get(s) {
@@ -1097,7 +1094,7 @@ pub fn presented_drawn_of(serial : Int) -> Bool {
   while true {
     // (read so: what reads it built again as it is presented or gone, not as others are)
     presented_drawn_said.val.has(s) |> ignore
-    if presented_now.iter().any(fn(p) { p.serial == s }) {
+    if presented_now.val.iter().any(fn(p) { p.serial == s }) {
       return true
     }
     match took_place.get(s) {
@@ -1174,14 +1171,14 @@ pub fn ask_here(
 pub fn presenting() -> Bool {
   // (read: what asks is built again as one is presented or let go)
   presented_said.val.get() |> ignore
-  presented_now.iter().any(fn(p) { p.open })
+  presented_now.val.iter().any(fn(p) { p.open })
 }
 
 ///|
 /// Whether a presenter still occupies the screen, including its declared exit transition.
 pub fn presenter_visible() -> Bool {
   presented_said.val.get() |> ignore
-  !presented_now.is_empty()
+  !presented_now.val.is_empty()
 }
 
 ///|
@@ -1193,8 +1190,8 @@ pub fn close_all_presented() -> Unit {
 ///|
 /// Closes the topmost presented, as back does.
 pub fn close_presented() -> Unit {
-  for i = presented_now.length() - 1; i >= 0; i = i - 1 {
-    if presented_now[i].open {
+  for i = presented_now.val.length() - 1; i >= 0; i = i - 1 {
+    if presented_now.val[i].open {
       close_from(i)
       return
     }
@@ -1206,8 +1203,8 @@ pub fn close_presented() -> Unit {
 fn close_from(i : Int) -> Unit {
   // (what is closed written first, then told once: what reads it finds it whole)
   let mut closed = false
-  for k in i..<presented_now.length() {
-    let q = presented_now[k]
+  for k in i..<presented_now.val.length() {
+    let q = presented_now.val[k]
     if q.open {
       q.open = false
       q.closed_now = true
@@ -1224,7 +1221,7 @@ fn close_from(i : Int) -> Unit {
   // what is let go of then is: presented_left)
   if closed {
     closed_over(fn() {
-      for q in presented_now {
+      for q in presented_now.val {
         if !q.open {
           q.closed_now = false
         }
@@ -1270,14 +1267,14 @@ fn closing_together(f : () -> Unit) -> Unit {
 /// @ui.Ctx::with_dismissed): where it is open still, it closes, and what is over it, and what it holds is let go of, once,
 /// then; its view draws it going from the next frame on.
 fn dismissed_now(serial : Int, back? : Bool = false) -> Unit {
-  match presented_now.search_by(fn(q) { q.serial == serial }) {
+  match presented_now.val.search_by(fn(q) { q.serial == serial }) {
     // (a step further in, gone back from: a submenu level popped, a page of its sheet taken off, or a panel back)
     Some(i) if back &&
-      presented_now[i].open &&
-      (menu_pop(presented_now[i]) || panel_pop(presented_now[i]) || back_under(presented_now[i])) => ()
-    Some(i) if presented_now[i].open => {
+      presented_now.val[i].open &&
+      (menu_pop(presented_now.val[i]) || panel_pop(presented_now.val[i]) || back_under(presented_now.val[i])) => ()
+    Some(i) if presented_now.val[i].open => {
       // (it and what is over it, each closed unsaid let go of once, from the top)
-      let closing = presented_now[i:].to_owned().filter(fn(q) { q.open && !q.ended }).rev()
+      let closing = presented_now.val[i:].to_owned().filter(fn(q) { q.open && !q.ended }).rev()
       for q in closing {
         q.ended = true
       }
@@ -1466,8 +1463,8 @@ fn menu_push_confirm(
 /// level/page matches `level_n`. Closes the menu presenter and invokes `run()` outside `chosen_in` so `choosing.val`
 /// stays `0` (preventing re-attachment to the consumed menu while still permitting Small Sheet `in_place` handoff).
 fn confirm_menu_run(serial : Int, level_n : Int, run : () -> Unit) -> Unit {
-  guard presented_now.search_by(fn(q) { q.serial == serial }) is Some(i) else { return }
-  let p = presented_now[i]
+  guard presented_now.val.search_by(fn(q) { q.serial == serial }) is Some(i) else { return }
+  let p = presented_now.val[i]
   guard p.open && !p.ended && !p.confirm_said else { return }
   let as_sheet = tree_as_sheet.get(serial).unwrap_or(false)
   let top_matches = if as_sheet {
@@ -1525,8 +1522,8 @@ fn gone_all(p : Presented) -> Unit {
 /// still. Whether it went back so.
 fn back_under(p : Presented) -> Bool {
   guard p.under is Some(u) && p.open else { return false }
-  guard presented_now.search_by(fn(q) { q.serial == p.serial }) is Some(i) else { return false }
-  let closing = presented_now[i:].to_owned().filter(fn(q) { q.open && !q.ended }).rev()
+  guard presented_now.val.search_by(fn(q) { q.serial == p.serial }) is Some(i) else { return false }
+  let closing = presented_now.val[i:].to_owned().filter(fn(q) { q.open && !q.ended }).rev()
   // (closed and the one before presented as one change: what draws `p` going finds that one in its place already)
   @signals.start_batch()
   for q in closing {
@@ -1538,7 +1535,7 @@ fn back_under(p : Presented) -> Bool {
   }
   let before = presented_count.val
   present(u.shows, u.from, gone=u.gone)
-  match presented_now.last() {
+  match presented_now.val.last() {
     Some(q) if presented_count.val > before => {
       q.under = u.under
       // (the pages it had past its first, with it)
@@ -1565,12 +1562,12 @@ fn scrim_owner(sheet : Bool) -> Int {
       _ => presented_how_of(p, sheet) != AsPopover
     }
   }
-  for p in presented_now {
+  for p in presented_now.val {
     if p.open && dims(p) {
       return p.serial
     }
   }
-  for p in presented_now {
+  for p in presented_now.val {
     // (still drawn: told as it is let go)
     if dims(p) && presented_drawn_said.val.has(p.serial) {
       return p.serial
@@ -1584,10 +1581,19 @@ fn scrim_owner(sheet : Bool) -> Int {
 /// itself, dialog_veil), read as one is presented or closed.
 fn dialog_covered(serial : Int) -> Bool {
   presented_said.val.get() |> ignore
-  match presented_now.search_by(fn(q) { q.serial == serial }) {
-    Some(i) =>
-      presented_now[i].open &&
-      presented_now[i + 1:].iter().any(fn(q) { q.open && presented_how_of(q, false) == AsDialog })
+  match presented_now.val.search_by(fn(q) { q.serial == serial }) {
+    Some(i) => {
+      if !presented_now.val[i].open {
+        return false
+      }
+      for k = i + 1; k < presented_now.val.length(); k = k + 1 {
+        let q = presented_now.val[k]
+        if q.open && presented_how_of(q, false) == AsDialog {
+          return true
+        }
+      }
+      false
+    }
     None => false
   }
 }
@@ -1597,11 +1603,16 @@ fn dialog_covered(serial : Int) -> Bool {
 /// covered, its `over`'s height): None otherwise.
 fn sheet_over(serial : Int) -> Double? {
   presented_said.val.get() |> ignore
-  match presented_now.search_by(fn(q) { q.serial == serial }) {
-    Some(i) if presented_now[i].open =>
-      presented_now[i + 1:].iter().filter(fn(q) { q.open && presented_how_of(q, true) == AsSheet }).last().map(fn(q) {
-        q.sheet_h.get()
-      })
+  match presented_now.val.search_by(fn(q) { q.serial == serial }) {
+    Some(i) if presented_now.val[i].open => {
+      for k = presented_now.val.length() - 1; k > i; k = k - 1 {
+        let q = presented_now.val[k]
+        if q.open && presented_how_of(q, true) == AsSheet {
+          return Some(q.sheet_h.get())
+        }
+      }
+      None
+    }
     _ => None
   }
 }
@@ -1610,10 +1621,16 @@ fn sheet_over(serial : Int) -> Double? {
 /// Whether the one presented in sheet `p`'s place (`taken_by`) is a sheet too (the host's, present_sheet, or the
 /// tree's, sheet_node), so in its place indeed: `p` is drawn no more.
 fn taken_as_sheet(p : Presented) -> Bool {
-  p.taken_by != 0 &&
-  presented_now.iter().any(fn(q) {
-    q.serial == p.taken_by && q.in_place is Some(_) && presented_how_of(q, true) == AsSheet
-  })
+  if p.taken_by == 0 {
+    return false
+  }
+  for k = 0; k < presented_now.val.length(); k = k + 1 {
+    let q = presented_now.val[k]
+    if q.serial == p.taken_by && q.in_place is Some(_) && presented_how_of(q, true) == AsSheet {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -1697,7 +1714,7 @@ fn presented_followed(sheet : Bool, win_h : Double) -> Unit {
   presented_sheets.val = sheet
   presented_win_h.val = win_h
   presented_how.clear()
-  for p in presented_now {
+  for p in presented_now.val {
     if p.open {
       presented_how.push(presented_how_of(p, sheet))
     } else if !p.ended {
@@ -1715,7 +1732,7 @@ fn presented_followed(sheet : Bool, win_h : Double) -> Unit {
 /// (`closed_now`, close_from): its levels let go, what led to it leading nowhere, what reads whether it is drawn told.
 fn presented_left() -> Unit {
   let sheet = presented_sheets.val
-  let gone = presented_now
+  let gone = presented_now.val
     .filter(fn(p) {
       !p.open &&
       !p.closed_now &&
@@ -1724,7 +1741,7 @@ fn presented_left() -> Unit {
     .map(fn(p) { p.serial })
   guard !gone.is_empty() else { return }
   // (one closed unsaid whose letting go was not done yet: done now, as it goes)
-  for p in presented_now {
+  for p in presented_now.val {
     if gone.contains(p.serial) && !p.ended {
       p.ended = true
       gone_all(p)
@@ -1748,24 +1765,21 @@ fn presented_left() -> Unit {
       }
     }
   }
-  let left = presented_now.filter(fn(p) { !gone.contains(p.serial) })
-  presented_now.clear()
-  presented_now.append(left)
-  presented_now.shrink_to_fit()
+  presented_now.val = presented_now.val.filter(fn(p) { !gone.contains(p.serial) })
   @signals.start_batch()
   presented_told()
   // (what read whether one of them is drawn told: a row marked while its menu is, built again unmarked)
-  presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
+  presented_drawn_said.val.set(presented_now.val.map(fn(p) { p.serial }))
   @signals.end_batch()
 }
 
 ///|
 fn how_of(shows : Shows, from : Anchor, held : Bool, sheet : Bool, win_h : Double) -> How {
   match (sheet, shows) {
-    (_, Panel(x)) if x.stage => AsDialog
+    (_, Shows::Panel(x)) if x.stage => AsDialog
     (true, _) => if small_as_popover(shows, from, held, win_h) { AsPopover } else { AsSheet }
-    (false, Panel(x)) if from == Unanchored || x.form => AsDialog
-    (false, Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) | Panel(_)) => AsPopover
+    (false, Shows::Panel(x)) if from == Unanchored || x.form => AsDialog
+    (false, Shows::Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) | Shows::Panel(_)) => AsPopover
     (false, Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
   }
 }
@@ -1850,9 +1864,9 @@ let dialog_frame_h : Double = dialog_room + dialog_pad + dialog_pad
 
 ///|
 fn close_from_serial(serial : Int) -> Unit {
-  match presented_now.search_by(fn(q) { q.serial == serial }) {
+  match presented_now.val.search_by(fn(q) { q.serial == serial }) {
     // (one closed already, going: what was opened over it since is not its, as one opened as it went)
-    Some(i) if presented_now[i].open => close_from(i)
+    Some(i) if presented_now.val[i].open => close_from(i)
     _ => ()
   }
 }
@@ -1891,13 +1905,21 @@ pub struct ChoiceHeld {
 /// where no menu's choice is being done, or that one is gone.
 pub fn choice_held() -> ChoiceHeld? {
   guard choosing.val > 0 else { return None }
-  match presented_now.search_by(fn(q) { q.serial == choosing.val }) {
-    Some(i) if presented_now[i].shows is Menu(_, _, _, _) &&
-      presented_now[i].closed_now &&
-      !presented_now[i].confirm_said &&
-      !(presented_now[i].menu_more.untracked().last() is Some({ kind: MenuConfirmLevel(_), .. })) &&
-      !(presented_now[i].more.untracked().last() is Some({ is_confirm: true, .. })) => {
-      let p = presented_now[i]
+  let target = choosing.val
+  let mut found : Int? = None
+  for k = 0; k < presented_now.val.length(); k = k + 1 {
+    if presented_now.val[k].serial == target {
+      found = Some(k)
+      break
+    }
+  }
+  match found {
+    Some(i) if presented_now.val[i].shows is Menu(_, _, _, _) &&
+      presented_now.val[i].closed_now &&
+      !presented_now.val[i].confirm_said &&
+      !(presented_now.val[i].menu_more.untracked().last() is Some({ kind: MenuConfirmLevel(_), .. })) &&
+      !(presented_now.val[i].more.untracked().last() is Some({ is_confirm: true, .. })) => {
+      let p = presented_now.val[i]
       // (open again as it was: closed for the choice in this same handler, no frame drawn of its going; as a level's
       // page put on reopens it, panel_page, menu_level)
       p.open = true
@@ -1948,9 +1970,9 @@ pub fn ChoiceHeld::answer(
 /// Whether the menu is held still: open, nothing chosen in it, no level change or confirm, and not closed since.
 pub fn ChoiceHeld::still(self : ChoiceHeld) -> Bool {
   self.on &&
-  (match presented_now.search_by(fn(q) { q.serial == self.serial }) {
+  (match presented_now.val.search_by(fn(q) { q.serial == self.serial }) {
     Some(i) => {
-      let p = presented_now[i]
+      let p = presented_now.val[i]
       p.open && !p.ended && !p.confirm_said && p.steps_made == self.steps_made
     }
     None => false
@@ -1978,9 +2000,9 @@ pub fn ChoiceHeld::close(self : ChoiceHeld, chosen~ : Bool) -> Unit {
   }
   self.on = false
   if chosen {
-    match presented_now.search_by(fn(q) { q.serial == self.serial }) {
+    match presented_now.val.search_by(fn(q) { q.serial == self.serial }) {
       Some(i) => {
-        let p = presented_now[i]
+        let p = presented_now.val[i]
         p.ended = true
         p.chosen = true
         close_from(i)

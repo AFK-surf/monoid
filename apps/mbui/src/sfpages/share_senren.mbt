@@ -213,9 +213,12 @@ fn sr_said(key : String, args : Array[(String, String)], hi : Int64, scale? : Do
             if i > 0 {
               runs.push(@ui.span(rest.exact_view(end=i).to_owned()))
             }
-            let value = match args.iter().find_first(fn(a) { a.0 == name }) {
-              Some(a) => a.1
-              None => "{" + name + "}"
+            let mut value = "{" + name + "}"
+            for ai = 0; ai < args.length(); ai = ai + 1 {
+              if args[ai].0 == name {
+                value = args[ai].1
+                break
+              }
             }
             runs.push(@ui.span(value, color=hi, weight=700, scale~))
             rest = after.exact_view(start=j + 1).to_owned()

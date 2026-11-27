@@ -99,7 +99,7 @@ test "wide on a Mac: the closed bar, shown a while, one corner all round, the wi
       .unwrap()
       .drawn()
       .iter()
-      .find_first(fn(d) { d.x == @sfdesk.closed_bar_in && d.h > 400.0 && d.ground != 0L }) is Some(bar) else {
+      .find_first(fn(d) { d.x == @sfdesk.closed_bar_in && d.h > 400.0 && (d.ground != 0L || d.glass is Some(_)) }) is Some(bar) else {
       fail("no closed bar's ground drawn at \{@sfdesk.closed_bar_in}")
     }
     let radii = match bar.corners {
@@ -1331,4 +1331,46 @@ test "wide: the CPU's dial turned on a station's page turns its CPU in the stati
   t.run_for(@ui.move_most_ms)
   assert_true(side_meters_said(t).contains("72%"), msg="back to idle: " + side_meters_said(t).join("|"))
   assert_eq(t.squeeze_faults(), [])
+}
+
+
+///|
+test "wide: folded rail blends into theme background at rest and switches to translucent drawer glass when peeking, in light and dark" {
+  for dark in [false, true] {
+    let t = screen_in("chat", ("wide", 1280.0, 800.0, 0, ""), "zh", dark~, window_inset=true)
+    t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
+    t.move_to(1000.0, 400.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfdesk.wide.folded.get())
+    assert_false(@sfdesk.wide.peeking.get())
+    // At rest: blends seamlessly into the page background with zero glass, zero border, zero shadow.
+    guard @ui.view_tree()
+      .unwrap()
+      .drawn()
+      .iter()
+      .find_first(fn(d) { d.x == @sfdesk.closed_bar_in && d.h > 400.0 && d.ground != 0L }) is Some(rest_bar) else {
+      fail("dark=\{dark}: no resting folded bar drawn")
+    }
+    assert_eq(rest_bar.ground, @sf.theme().p.bg)
+    assert_true(rest_bar.glass is None, msg="dark=\{dark}: resting folded rail should not emit hidden glass")
+    assert_eq(rest_bar.edge.1 & 0xFFL, 0L)
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.contrast_faults(), [])
+    // Peeking after hover dwell: switches to translucent drawer glass (0L solid ground so glass shows through).
+    let gear = t.query(Button, label=@sf.t("web-pages.settings.title")).unwrap().rect
+    t.move_to(gear.0 + gear.2 / 2.0, gear.1 + gear.3 / 2.0)
+    t.run_for(@sfdesk.peek_enter_ms)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfdesk.wide.peeking.get())
+    guard @ui.view_tree()
+      .unwrap()
+      .drawn()
+      .iter()
+      .find_first(fn(d) { d.x == @sfdesk.closed_bar_in && d.h > 400.0 && d.glass is Some(_) }) is Some(peek_bar) else {
+      fail("dark=\{dark}: no translucent glass peeking bar drawn")
+    }
+    assert_eq(peek_bar.ground, 0L)
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.contrast_faults(), [])
+  }
 }

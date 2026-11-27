@@ -3638,4 +3638,6 @@ let zh : Map[String, String] = {
   "web-pages.stations.unprotected.leadOwnerDevice": "当前 workspace 已开启安全模式。「{name}」尚未受保护，暂无法连接。请使用你的受信任客户端设备打开「设置 › 安全」保护它。",
   "web-pages.stations.unprotected.leadMember": "当前 workspace 已开启安全模式。「{name}」尚未受保护，暂无法连接。请联系 workspace 的 owner 在受信任设备上保护它。",
   "web-pages.stations.unprotected.toSecurity": "前往设置 › 安全",
+  "web-pages.chat.openPanelTab": "打开侧栏标签",
+  "web-pages.chat.tabOpen": "已打开",
 }

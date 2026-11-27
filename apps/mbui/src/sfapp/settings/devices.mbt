@@ -26,9 +26,12 @@ pub fn devices_ask(here : Here) -> (String, Map[String, Json]) {
 ///|
 /// The device `id` attached to station `station` (a phone's: "" for any station it is lent to), as the core says it now.
 fn device_at(core : Core, here : Here, station : String, id : String) -> Json? {
-  devices_listed(core, here)
-  .iter()
-  .find_first(fn(d) { text(Some(d), "id") == id && (station == "" || text(Some(d), "station") == station || text(Some(d), "via") == "phone") })
+  for d in devices_listed(core, here) {
+    if text(Some(d), "id") == id && (station == "" || text(Some(d), "station") == station || text(Some(d), "via") == "phone") {
+      return Some(d)
+    }
+  }
+  None
 }
 
 ///|

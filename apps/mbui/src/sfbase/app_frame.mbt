@@ -468,7 +468,14 @@ pub fn workspace_in_view(src : Source) -> (Workspace?, Array[Workspace], Bool, B
   } else {
     text(prefs.value, "workspace")
   }
-  let current = match all.iter().find_first(fn(w) { w.id == kept }) {
+  let mut found_kept : Workspace? = None
+  for w in all {
+    if w.id == kept {
+      found_kept = Some(w)
+      break
+    }
+  }
+  let current = match found_kept {
     Some(w) => Some(w)
     None =>
       if all.length() > 0 && (kept == "" || answered) {

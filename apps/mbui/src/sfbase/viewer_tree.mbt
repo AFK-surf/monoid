@@ -635,11 +635,13 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     match said {
       // (a film's or a song's: its name and its actions there, close, 全屏 and download (vf_native_media), as wide as
       // its player is laid out; filling the window, none: the bars put away, its name none either)
-      Some({ full, width, .. }) if vw.played() =>
+      Some(v) if vw.played() => {
+        let { full, width, .. } = v
         if @sf.native_over_up(if full { "" } else { vw.file.name }, alive=fn() { vw.up_still() }, owner="viewer", over=2) &&
           !full {
           vf_native_media(vw, @ui.current(), src, width)
         }
+      }
       Some(_) =>
         // (a picture's actions and a page's there; anything else its own bar still, its name and tabs theirs)
         if @sf.native_over_up(vf_title(vw), alive=fn() { vw.up_still() }, owner="viewer", over=2) &&
@@ -2094,7 +2096,7 @@ fn viewer_note_node(
   if bars {
     note.presses(Is(true)).on_press(fn() {
       let now = @signals.untracked(stage)
-      if now == Coming || now == Failed {
+      if now == OuterStage::Coming || now == OuterStage::Failed {
         vw.toggle()
       }
     })
@@ -2102,8 +2104,8 @@ fn viewer_note_node(
   }
   note.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
   note.show(fn() { stage() == Facts }, fn(f) { viewer_facts_node(f, src, vw) })
-  note.show(fn() { stage() == Coming }, fn(f) { viewer_coming_node(f, vw) })
-  note.show(fn() { stage() == Failed }, fn(w) {
+  note.show(fn() { stage() == OuterStage::Coming }, fn(f) { viewer_coming_node(f, vw) })
+  note.show(fn() { stage() == OuterStage::Failed }, fn(w) {
     w
     .words(By(fn() { pv_fill("android-chat.file.loadFailed", [("error", vw.error.get().unwrap_or(""))]) }))
     .words_look(By(fn() {

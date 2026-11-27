@@ -156,10 +156,14 @@ pub fn open_chat_handoff_step(src : Source, r : ChatRef, step : String, to : Str
   guard @sfbase.chat_view_now(src, r) is Some(cv) && cv.thread is Some(thread) else { return }
   match step {
     "pick" => open_chat_handoff(src, r, thread, from~)
-    _ =>
-      match handoff_stations(src, r).iter().find_first(fn(s) { s.address == to }) {
-        Some(st) => handoff_confirm(src, r, thread, st, asked=step == "asked")
-        None => ()
+    _ => {
+      let sts = handoff_stations(src, r)
+      for i = 0; i < sts.length(); i = i + 1 {
+        if sts[i].address == to {
+          handoff_confirm(src, r, thread, sts[i], asked=step == "asked")
+          break
+        }
       }
+    }
   }
 }

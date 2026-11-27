@@ -545,7 +545,7 @@ fn excerpt_card_node(
           let (_, slice) = cur_slice()
           ex_build_paragraph_runs(slice).mapi(fn(i, runs) { (i, runs) })
         }
-        let runs_look = { ..@view.runs_plain, words: true }
+        let runs_look = @view.RunsLook::{ ..@view.runs_plain, words: true }
         body.each(at_once=true, para_items, fn(x) { x.0 }, fn(pnode, item) {
           pnode
           .fills_across(Is(true))
@@ -712,7 +712,7 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
   }
   let shot_seq : Ref[Int] = Ref(0)
   let busy = fn() -> Bool { copying.get() || saving.get() }
-  let take_one = fn(op : String, idx : Int, p : ExcerptPlan, done : (Bytes?) -> Unit) {
+  let take_one : (String, Int, ExcerptPlan, (Bytes?) -> Unit) -> Unit = fn(op : String, idx : Int, p : ExcerptPlan, done : (Bytes?) -> Unit) {
     let single_plan = fn() { p }
     let single_idx = fn() { idx }
     shot_seq.val += 1
@@ -743,8 +743,8 @@ pub fn open_excerpt_share_payload(payload : ExcerptPayload) -> Unit {
     if copying.untracked() || saving.untracked() {
       return
     }
-    let p = @signals.untracked(active_plan)
-    let total = p.cards.length()
+    let p : ExcerptPlan = @signals.untracked(active_plan)
+    let total : Int = p.cards.length()
     if total <= 1 {
       do_save_one(0)
       return

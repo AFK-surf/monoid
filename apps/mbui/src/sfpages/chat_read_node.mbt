@@ -47,8 +47,12 @@ fn chat_read_whole_seq(rs : ChatBodyNow, w : String, whole_slice : Int) -> Doubl
   let mut i = rs.last_index_of(w).unwrap_or(-1)
   while i >= 0 {
     match rs.get(rs.keys[i]) {
-      Some({ entry: Said(m), .. }) if rs.keys[i] != w || whole_slice >= rs.slices(w) - 1 =>
-        return m.notice_last_seq
+      Some({ entry: Said(m), .. }) =>
+        if rs.keys[i] != w || whole_slice >= rs.slices(w) - 1 {
+          return m.notice_last_seq
+        } else {
+          i = i - 1
+        }
       _ => i = i - 1
     }
   }
@@ -433,8 +437,10 @@ fn chat_nodes_find_list(r : ChatRef) -> FindList {
       let out : Map[Double, Int] = Map([])
       for key in rs.keys {
         match rs.get(key) {
-          Some({ entry: Said(m), .. }) if seqs.contains(m.seq) =>
-            out[m.seq] = find_times_drawn(m, words)
+          Some({ entry: Said(m), .. }) =>
+            if seqs.contains(m.seq) {
+              out[m.seq] = find_times_drawn(m, words)
+            }
           _ => ()
         }
       }

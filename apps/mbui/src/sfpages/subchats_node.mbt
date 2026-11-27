@@ -156,11 +156,25 @@ pub fn subchats_filter_local(items : Array[@sfbase.OpenedChat], q : String) -> A
   let rest : Array[@sfbase.SubchatHit] = []
   for o in items {
     let tl = o.chat.title.to_lower()
-    if words.iter().all(fn(w) { tl.contains(w) }) {
+    let mut tl_ok = true
+    for wi = 0; wi < words.length(); wi = wi + 1 {
+      if !tl.contains(words[wi]) {
+        tl_ok = false
+        break
+      }
+    }
+    if tl_ok {
       titled.push({ opened: o, found_text: "", found_marks: [] })
     } else {
       let sl = o.state_text.to_lower()
-      if words.iter().all(fn(w) { sl.contains(w) }) {
+      let mut sl_ok = true
+      for wi = 0; wi < words.length(); wi = wi + 1 {
+        if !sl.contains(words[wi]) {
+          sl_ok = false
+          break
+        }
+      }
+      if sl_ok {
         rest.push({ opened: o, found_text: "", found_marks: [] })
       }
     }
@@ -703,7 +717,7 @@ fn subchat_row_node_with_text(
           Some(f) => f()
           None => ()
         }
-        @sfbase.open_page(Chat(o.chat))
+        @sfbase.open_page(@sfbase.Page::Chat(o.chat))
       }
       None => ()
     }

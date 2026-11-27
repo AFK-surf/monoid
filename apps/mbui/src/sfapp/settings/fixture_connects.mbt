@@ -38,9 +38,13 @@ pub fn connects_rows(v : Json?) -> Json? {
 /// they are still read (or some station could not be); null where it is not there.
 pub fn connect_said(all : Json?, address : String, id : String, candidates : Bool) -> Json? {
   guard all is Some(Object(_)) else { None }
-  let found = items(all, "items")
-    .iter()
-    .find_first(fn(x) { text(Some(x), "station") == address && text(field(Some(x), "connect"), "id") == id })
+  let mut found : Json? = None
+  for x in items(all, "items") {
+    if text(Some(x), "station") == address && text(field(Some(x), "connect"), "id") == id {
+      found = Some(x)
+      break
+    }
+  }
   match found {
     Some(Object(o)) if candidates =>
       Some(

@@ -3667,4 +3667,6 @@ let en : Map[String, String] = {
   "web-pages.stations.unprotected.leadOwnerDevice": "Security mode is on for this workspace, so {name} cannot be used until it is protected. Open Settings › Security on a trusted app device to protect it.",
   "web-pages.stations.unprotected.leadMember": "Security mode is on for this workspace, so {name} cannot be used until it is protected. Ask a workspace owner to protect it on a trusted device.",
   "web-pages.stations.unprotected.toSecurity": "Open Settings › Security",
+  "web-pages.chat.openPanelTab": "Open panel tab",
+  "web-pages.chat.tabOpen": "Open",
 }

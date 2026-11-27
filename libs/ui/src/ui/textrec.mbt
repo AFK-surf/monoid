@@ -131,10 +131,17 @@ fn json_nums(j : Json?) -> Array[Double] {
 ///|
 fn json_args(j : Json?) -> (String, String)? {
   match j {
-    Some(Array([Number(size, ..), Number(weight, ..), Number(style, ..), .. rest])) => {
-      let text = match rest {
-        [String(t), ..] => t
-        _ => ""
+    Some(Array(arr)) if arr.length() >= 3 => {
+      guard (arr[0], arr[1], arr[2]) is (Number(size, ..), Number(weight, ..), Number(style, ..)) else {
+        return None
+      }
+      let text = if arr.length() >= 4 {
+        match arr[3] {
+          String(t) => t
+          _ => ""
+        }
+      } else {
+        ""
       }
       Some((style_key(size, weight.to_int(), style.to_int()), text))
     }

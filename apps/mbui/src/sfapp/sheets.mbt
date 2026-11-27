@@ -152,7 +152,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
   let agents = fn() { items(chat(), "agents") }
   let opened_any = fn() {
     match view() {
-      Some({ opened: [_, ..], .. }) => true
+      Some(v) => v.opened.length() > 0
       _ => false
     }
   }
@@ -287,8 +287,8 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     col.pick(
       fn() {
         match view() {
-          Some({ opened: [_, ..] as opened, opened_text, .. }) =>
-            Some((opened.map(fn(o) { (o.chat.station, o.chat.session, o.archived) }), opened_text))
+          Some(v) if v.opened.length() > 0 =>
+            Some((v.opened.map(fn(o) { (o.chat.station, o.chat.session, o.archived) }), v.opened_text))
           _ => None
         }
       },
@@ -790,7 +790,7 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
       @sf.rippled_node(
         b,
         fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
-        info_rename_side / 2.0,
+        (info_rename_side : Double) / 2.0,
         fn() { tr("android-chat.rename.title") },
       )
       @sf.icon_node(b, "edit", info_icon, By(fn() { @sf.theme().p.text })) |> ignore
@@ -1310,7 +1310,7 @@ fn stop_button_node(v : @view.View, src : Source, station : String, key : String
           )
         }
       },
-      agent_stop_h / 2.0,
+      (agent_stop_h : Double) / 2.0,
       fn() { tr("android-chat.agent.stop") },
     )
     b.pick(fn() { doing(skey) }, fn(i, busy) {
@@ -2470,7 +2470,14 @@ fn job_meta_node(parent : @view.View, job : () -> Json?, size : Double) -> Unit 
 /// it changes.
 fn job_node(v : @view.View, src : Source, r : ChatRef, id : String) -> Unit {
   let topic = fn() { src.topic("chatJobs", chat_params(r)).get().value }
-  let job = fn() { items(topic(), "jobs").iter().find_first(fn(j) { text(Some(j), "id") == id }) }
+  let job = fn() -> Json? {
+    for j in items(topic(), "jobs") {
+      if text(Some(j), "id") == id {
+        return Some(j)
+      }
+    }
+    None
+  }
   v.show(fn() { job() is None }, fn(w) {
     @sf.style_node(w, fn() { @sf.panel_words_in_node(w) })
     job_words_node(
@@ -2729,7 +2736,7 @@ fn job_stop_node(v : @view.View, src : Source, r : ChatRef, id : String, j : () 
           )
         }
       },
-      job_stop_h / 2.0,
+      (job_stop_h : Double) / 2.0,
       fn() { tr("android-misc.jobs.stop") },
     )
     b.show(busy, fn(s) { @sf.spinner_node(s, size=job_stop_spin) |> ignore })
@@ -2847,8 +2854,13 @@ let job_stop_icon : Double = 16.0
 /// A job (job_node): the library's panel, most of the window, dragged between half and nearly all of it; titled 任务
 /// while it is not there (read, or gone), its own head (its dot and name) once it is.
 fn open_job(src : Source, r : ChatRef, id : String) -> Unit {
-  let missing = fn() {
-    !items(src.topic("chatJobs", chat_params(r)).get().value, "jobs").iter().any(fn(j) { text(Some(j), "id") == id })
+  let missing = fn() -> Bool {
+    for j in items(src.topic("chatJobs", chat_params(r)).get().value, "jobs") {
+      if text(Some(j), "id") == id {
+        return false
+      }
+    }
+    true
   }
   @sf.panel_nodes(
     "",

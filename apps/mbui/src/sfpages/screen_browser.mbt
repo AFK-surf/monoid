@@ -538,7 +538,7 @@ fn send_url_to_open_chat(src : Source, url : String) -> Unit {
   let pages = @sfbase.app.nav.pages()
   let mut i = pages.length() - 1
   while i >= 0 {
-    if pages[i] is Chat(r) {
+    if pages[i] is @sfbase.Page::Chat(r) {
       let w = @sfbase.writing(src, r.station + ":" + r.session)
       let cur = @signals.untracked(fn() { w.text.get() })
       let next = if cur == "" {
@@ -603,7 +603,13 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
     return
   }
   let use_tabs = if fresh_tabs.is_empty() { tabs } else { fresh_tabs }
-  let at = use_tabs.search_by(fn(t) { text(Some(t), "id") == id }).unwrap_or(-1)
+  let mut at = -1
+  for i = 0; i < use_tabs.length(); i = i + 1 {
+    if text(Some(use_tabs[i]), "id") == id {
+      at = i
+      break
+    }
+  }
   let rest = use_tabs.filter(fn(t) { text(Some(t), "id") != id && !flag(Some(t), "opening") })
   if rest.is_empty() {
     close()

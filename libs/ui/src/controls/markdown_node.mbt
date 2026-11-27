@@ -318,17 +318,35 @@ fn md_has_passage(b : MdBlock, passage : String, rows : (Int, Int)?) -> Bool {
   }
   match b {
     Paragraph(xs) | Heading(_, xs) => find_passage(md_plain(xs), passage) is Some(_)
-    Quote(bs) => bs.iter().any(fn(x) { md_has_passage(x, passage, None) })
-    List(l) => {
-      for i, it in l.items {
-        if within(i) && it.blocks.iter().any(fn(x) { md_has_passage(x, passage, None) }) {
+    Quote(bs) => {
+      for i = 0; i < bs.length(); i = i + 1 {
+        if md_has_passage(bs[i], passage, None) {
           return true
         }
       }
       false
     }
+    List(l) => {
+      for i, it in l.items {
+        if within(i) {
+          for j = 0; j < it.blocks.length(); j = j + 1 {
+            if md_has_passage(it.blocks[j], passage, None) {
+              return true
+            }
+          }
+        }
+      }
+      false
+    }
     Table(t) => {
-      let cells = fn(row : Array[Array[MdInline]]) { row.iter().any(fn(c) { find_passage(md_plain(c), passage) is Some(_) }) }
+      let cells = fn(row : Array[Array[MdInline]]) {
+        for i = 0; i < row.length(); i = i + 1 {
+          if find_passage(md_plain(row[i]), passage) is Some(_) {
+            return true
+          }
+        }
+        false
+      }
       if within(0) && cells(t.head) {
         return true
       }
@@ -616,11 +634,24 @@ fn md_paragraph_kind(md : MdNode, xs : Array[MdInline]) -> Int {
   if parts.length() == 1 && parts[0] is Link(_, _, _) && file_of(parts[0]) is Some(_) {
     return 21
   }
-  if parts.length() > 1 && parts.iter().all(fn(x) { x is Image(_, _) && file_of(x).bind(fn(p) { p.image }) is Some(_) }) {
-    return 22
+  if parts.length() > 1 {
+    let mut all_images = true
+    for i = 0; i < parts.length(); i = i + 1 {
+      let x = parts[i]
+      if !(x is Image(_, _) && file_of(x).bind(fn(p) { p.image }) is Some(_)) {
+        all_images = false
+        break
+      }
+    }
+    if all_images {
+      return 22
+    }
   }
-  if xs.iter().any(fn(x) { x is Image(_, _) && file_of(x) is Some(_) }) {
-    return 23
+  for i = 0; i < xs.length(); i = i + 1 {
+    let x = xs[i]
+    if x is Image(_, _) && file_of(x) is Some(_) {
+      return 23
+    }
   }
   0
 }
@@ -757,7 +788,7 @@ fn md_block_node(
         let quoted = { ..md, ink: fn() { web().muted }, bleed: fn() { 0.0 } }
         md_blocks_node(inner, quoted, fn() {
           match block() {
-            Some(Quote(bs)) => bs
+            Some(MdBlock::Quote(bs)) => bs
             _ => []
           }
         }, false)
@@ -1316,7 +1347,7 @@ fn md_list_node(
           ..inner_md,
           before: fn() {
             let items = list().map(fn(l) { l.items }).unwrap_or([])
-            (md.before)() + md_found_in(md, items.map(fn(it) { Quote(it.blocks) }), i) + md_found_in(md, bs(), k)
+            (md.before)() + md_found_in(md, items.map(fn(it) { MdBlock::Quote(it.blocks) }), i) + md_found_in(md, bs(), k)
           },
         }
         // (its first block right at the item's top)
@@ -1519,7 +1550,7 @@ pub fn code_block_node(
     .words_look(By(look))
     .runs_look(By(fn() {
       match code_cjk() {
-        Some(_) as cc => { ..@view.runs_plain, code_cjk: cc }
+        Some(_) as cc => @view.RunsLook::{ ..@view.runs_plain, code_cjk: cc }
         None => @view.runs_plain
       }
     }))
@@ -1773,13 +1804,19 @@ fn md_placed_runs(md : MdNode, xs : Array[MdInline]) -> Array[(Int, Array[MdInli
   let out : Array[(Int, Array[MdInline])] = []
   let mut run : Array[MdInline] = []
   let flush = fn() {
-    if run.iter().any(fn(x) {
-        match x {
-          Text(t) => t.trim(chars=" ").to_owned() != ""
-          HardBreak => false
-          _ => true
-        }
-      }) {
+    let mut has_content = false
+    for i = 0; i < run.length(); i = i + 1 {
+      let ok = match run[i] {
+        MdInline::Text(t) => t.trim(chars=" ").to_owned() != ""
+        HardBreak => false
+        _ => true
+      }
+      if ok {
+        has_content = true
+        break
+      }
+    }
+    if has_content {
       out.push((0, run))
     }
     run = []

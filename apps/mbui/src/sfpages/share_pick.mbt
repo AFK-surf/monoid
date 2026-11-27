@@ -24,7 +24,12 @@ fn share_on_whitelist(x : Json) -> Bool {
 
 ///|
 fn SharePick::others(self : SharePick) -> Bool {
-  self.stations.iter().any(fn(x) { text(Some(x), "id") != self.own })
+  for i = 0; i < self.stations.length(); i = i + 1 {
+    if text(Some(self.stations[i]), "id") != self.own {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -34,10 +39,13 @@ fn SharePick::all(self : SharePick) -> Bool {
     return false
   }
   if self.others() {
-    self.stations.iter().all(fn(x) {
-      let xid = text(Some(x), "id")
-      xid == self.own || self.ticked.get(xid).unwrap_or(false)
-    })
+    for i = 0; i < self.stations.length(); i = i + 1 {
+      let xid = text(Some(self.stations[i]), "id")
+      if xid != self.own && !self.ticked.get(xid).unwrap_or(false) {
+        return false
+      }
+    }
+    true
   } else {
     self.future_all.get()
   }
@@ -47,12 +55,16 @@ fn SharePick::all(self : SharePick) -> Bool {
 /// Whether anything more than `own` is chosen: every station, the whitelist (a rule, even while it names none), or one
 /// ticked.
 fn SharePick::any(self : SharePick) -> Bool {
-  self.all() ||
-  self.follow.get() ||
-  self.stations.iter().any(fn(x) {
-    let xid = text(Some(x), "id")
-    xid != self.own && self.ticked.get(xid).unwrap_or(false)
-  })
+  if self.all() || self.follow.get() {
+    return true
+  }
+  for i = 0; i < self.stations.length(); i = i + 1 {
+    let xid = text(Some(self.stations[i]), "id")
+    if xid != self.own && self.ticked.get(xid).unwrap_or(false) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -452,11 +464,25 @@ pub fn pick_stations_many(
     let p = field(Some(r), "profile")
     text(p, "runtime") == "claude" && text(field(p, "access"), "kind") == "subscription"
   })
-  let auto_ok = rows.iter().all(fn(r) { flag(Some(r), "batchShareAllowAuto") })
+  let mut auto_ok = true
+  let mut rows_all_auto = true
+  let mut rows_all_every = true
+  for i = 0; i < rows.length(); i = i + 1 {
+    let rv = Some(rows[i])
+    if !flag(rv, "batchShareAllowAuto") {
+      auto_ok = false
+    }
+    let sa = flag(rv, "shareAuto")
+    if !sa {
+      rows_all_auto = false
+    }
+    if sa || field(rv, "shareStationCount") is Some(_) {
+      rows_all_every = false
+    }
+  }
   let all_shared = unshared.is_empty()
-  let all_auto = all_shared && rows.iter().all(fn(r) { flag(Some(r), "shareAuto") })
-  let all_every = all_shared &&
-    rows.iter().all(fn(r) { !flag(Some(r), "shareAuto") && field(Some(r), "shareStationCount") is None })
+  let all_auto = all_shared && rows_all_auto
+  let all_every = all_shared && rows_all_every
   let all_unshared = unshared.length() == rows.length()
   let neutral_mixed = !(all_auto || all_every || all_unshared)
   let pick = if all_auto {

@@ -254,7 +254,10 @@ fn kept_parts_node(b : @view.View, core : Core) -> Unit {
         @sf.style_node(grid, fn() { kept_parts_grid })
         // (by what once: each cell reads its own part, told only as that one changes)
         let by_what = grid.keyed_by(parts, fn(p) { p.1 })
-        grid.each(fn() { Array::makei((parts().length() + 1) / 2, fn(i) { i }) }, fn(i) { i }, fn(line, i) {
+        grid.each(fn() {
+          let n : Int = parts().length()
+          Array::makei((n + 1) / 2, fn(i) { i })
+        }, fn(i) { i }, fn(line, i) {
           @sf.style_node(line, fn() { kept_parts_line })
           // (a line's two, the second of an odd last line room alone, as wide as one)
           let two = fn() {

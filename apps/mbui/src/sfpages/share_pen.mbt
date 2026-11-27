@@ -170,7 +170,7 @@ fn Pen::dress(
     (Some(f), Some({ w: Some(Pct(_)), .. })) => {
       let rest = fn() {
         let s = f()
-        { ..s, base: { ..s.base, w: None } }
+        @ui.Style::{ ..s, base: @ui.Patch::{ ..s.base, w: None } }
       }
       @sf.style_node(b, rest, in_row=self.row)
       b.width_share(By(fn() {

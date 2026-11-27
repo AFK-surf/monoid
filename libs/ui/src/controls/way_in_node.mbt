@@ -235,7 +235,7 @@ pub fn way_in_button_node(
         fn() { if solid { spun_ink() } else { library_theme().p.accent } },
         fn() { turning.shown(v) },
         fn() { open.shown(v) },
-        At(0.0, 0.5),
+        @view.Pivot::At(0.0, 0.5),
       )
       |> ignore
     })

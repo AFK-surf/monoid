@@ -45,7 +45,14 @@ fn glyph_of(icon : String) -> (String, String)? {
     Some(i) => (rest.unsafe_substring(start=0, end=i), rest.unsafe_substring(start=i + 1, end=rest.length()))
     None => (rest, "")
   }
-  if glyph_list.iter().any(fn(g) { g.0 == name }) {
+  let mut has_glyph = false
+  for g in glyph_list {
+    if g.0 == name {
+      has_glyph = true
+      break
+    }
+  }
+  if has_glyph {
     Some((name, if mark_colors.contains(colour) { colour } else { "" }))
   } else {
     None

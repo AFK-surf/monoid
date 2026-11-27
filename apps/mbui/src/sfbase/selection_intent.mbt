@@ -184,7 +184,7 @@ pub fn selection_intent_unpin(id : Int) -> Unit {
 pub fn selection_intent_toggle_collapse(id : Int) -> Unit {
   let cur = @signals.untracked(fn() { pinned_intents.get() })
   pinned_intents.set(
-    cur.map(fn(p) { if p.id == id { { ..p, collapsed: !p.collapsed } } else { p } }),
+    cur.map(fn(p : PinnedIntent) { if p.id == id { { ..p, collapsed: !p.collapsed } } else { p } }),
   )
 }
 

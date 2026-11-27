@@ -178,7 +178,14 @@ pub fn adb_lend_view(all : Json?, address : String) -> Json? {
   if flag(all, "sharing") && text(all, "station") == address {
     return all
   }
-  match adb_lends(all).iter().find_first(fn(l) { text(Some(l), "station") == address }) {
+  let mut found_lend : Json? = None
+  for l in adb_lends(all) {
+    if text(Some(l), "station") == address {
+      found_lend = Some(l)
+      break
+    }
+  }
+  match found_lend {
     Some(Object(l)) => {
       let out : Map[String, Json] = Map([])
       for k, v in l {

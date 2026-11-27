@@ -9,7 +9,7 @@ fn section_header(parent : @view.View, title : String, color : Int64) -> Unit {
       w
       .words(
         Is(title),
-        look={ ..@glass.words_at(13.5, weight=600), tracking: Points(0.35) },
+        look=@view.WordsLook::{ ..@glass.words_at(13.5, weight=600), tracking: Points(0.35) },
       )
       .ink(Is(color))
       |> ignore

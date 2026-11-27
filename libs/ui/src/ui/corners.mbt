@@ -722,7 +722,7 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
                 out.push(
                   "\{c.named(i)} (corner \{rb}) in the \{corner_names[k]} of \{c.named(p)} (corner \{ra}): linked to follow a corner \{src} round from \{e} in, it stands \{dx} and \{dy} from its edges",
                 )
-              } else if ls[k].radius(corner_roots()) > dmin(b.fw, b.fh) / 2.0 + 0.5 &&
+              } else if CornerOf::radius(ls[k], corner_roots()) > dmin(b.fw, b.fh) / 2.0 + 0.5 &&
                 (dmin(ra, c.container_room(ct)) - (dmax(dx, dy) + rb)).abs() > 0.5 {
                 // A link can ask for a radius larger than its box. The renderer clips that radius to half the box,
                 // producing a circle or capsule: check that shape instead of trusting the requested linked radius.
@@ -1063,7 +1063,7 @@ fn scaled_said(r : Double, u : Double) -> String {
 ///|
 /// Whether corner `r` is one of the ladder's (within half a pixel).
 fn on_ladder(ladder : Array[Double], r : Double) -> Bool {
-  ladder.iter().any(fn(x) { (x - r).abs() <= 0.5 })
+  arr_any(ladder, fn(x) { (x - r).abs() <= 0.5 })
 }
 
 ///|
@@ -1699,7 +1699,7 @@ fn Ctx::inner_after_layout(self : Ctx, i : Int, grounds : Map[Int, Int], hung : 
     return
   }
   let d = near[0].1
-  if near.iter().any(fn(s) { (s.1 - d).abs() > inner_even }) {
+  if arr_any(near, fn(s) { (s.1 - d).abs() > inner_even }) {
     let said = near.map(fn(s) { "\{s.0} \{s.1}" }).join(", ")
     self.inner_faults.push(
       "\{self.named(i)}: radius=Inner, at different distances from the edges of \{self.named(p)} (corner \{ra}): \{said}",

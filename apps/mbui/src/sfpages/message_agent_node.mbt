@@ -307,7 +307,13 @@ fn agent_prose_node(
   }
   let placed = fn(name : String) -> Attachment? {
     if m().placed.contains(name) {
-      files().iter().find_first(fn(a) { a.name == name })
+      let fs = files()
+      for i = 0; i < fs.length(); i = i + 1 {
+        if fs[i].name == name {
+          return Some(fs[i])
+        }
+      }
+      None
     } else {
       None
     }
@@ -347,7 +353,7 @@ fn agent_prose_node(
       tree=fn() { m().md },
       size=fn() { body_size },
       typography=fn() {
-        {
+        @sf.MdTypography::{
           ..@sf.md_typography_default,
           prose_scale: @sfbase.prose_text_scale(),
           code_scale: @sfbase.code_text_scale(),

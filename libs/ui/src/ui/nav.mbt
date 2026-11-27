@@ -202,14 +202,14 @@ struct Nav[P] {
   // root entries put by as another took the stack's root (Nav::replace_kept), each known by its serial still, out of
   // the stack: taken back as its page is put at the root again; and whether what holds the stack shelves a page (its
   // page made once as nodes, nav_view's `keeps_made`), none where nothing keeps them (an old view's frame, a flat one)
-  shelf : Array[NavPage[P]]
+  mut shelf : Array[NavPage[P]]
   mut shelves : ((P) -> Bool)?
   // entries over the root that left the stack (popped, put in place of, taken off as pages were put over the root)
   // kept by what holds the stack (`keeps_left`: their page made once as nodes, a key it is known by and its kind), the
   // least lately used first, nav_kept_left_most at most: known by their serial still, out of the stack (not shown, taking
   // no press), their nodes put by at rest; taken back as a page of the same key and kind is put on again
   // (Nav::take_kept_left). None where nothing keeps them (an old view's frame, a stack no view holds)
-  kept_left : Array[(String, String, NavPage[P])]
+  mut kept_left : Array[(String, String, NavPage[P])]
   mut keeps_left : ((P) -> (String, String)?)?
   // dual-ended root tab transition (Nav::replace_tab): outgoing root page kept shown until swap_t0 + swap_dur
   mut swap_out : NavPage[P]?
@@ -397,9 +397,7 @@ pub fn[P] Nav::is_kept_left(self : Nav[P], serial : Int) -> Bool {
 /// for good from the kept left (its leaving told) or never shown is none.
 fn[P] Nav::parks_soon(self : Nav[P], serial : Int) -> NavPage[P]? {
   guard self.flat_owner && self.keeps_left is Some(keeps) else { return None }
-  self.gone
-  .iter()
-  .find_first(fn(e) {
+  arr_find_first(self.gone, fn(e) {
     e.serial == serial && e.shown_once && !e.ended && !e.told_left && keeps(e.page) is Some(_)
   })
 }
@@ -415,7 +413,7 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     return false
   }
   guard self.keeps_left is Some(keeps) && keeps(e.page) is Some((key, kind)) else { return false }
-  match self.kept_left.search_by(fn(x) { x.0 == key }) {
+  match arr_search_by(self.kept_left, fn(x) { x.0 == key }) {
     Some(i) => self.gone.push(self.kept_left.remove(i).2)
     None => ()
   }
@@ -438,7 +436,7 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
       }
     }
     while kind_count >= kind_cap {
-      match self.kept_left.search_by(fn(x) { x.1 == kind }) {
+      match arr_search_by(self.kept_left, fn(x) { x.1 == kind }) {
         Some(i) => {
           self.gone.push(self.kept_left.remove(i).2)
           kind_count = kind_count - 1
@@ -481,7 +479,7 @@ fn[P] Nav::take_kept_left(self : Nav[P], page : P, under : P?) -> NavPage[P] {
     Some(keeps) =>
       match keeps(page) {
         Some((key, kind)) =>
-          match self.kept_left.search_by(fn(x) { x.0 == key }) {
+          match arr_search_by(self.kept_left, fn(x) { x.0 == key }) {
             Some(i) => {
               let (_, kd, e) = self.kept_left.remove(i)
               if kd == kind && !e.ended {
@@ -512,8 +510,7 @@ fn[P] Nav::kept_left_empty(self : Nav[P]) -> Unit {
   for x in self.kept_left {
     self.gone.push(x.2)
   }
-  self.kept_left.clear()
-  self.kept_left.shrink_to_fit()
+  self.kept_left = []
 }
 
 ///|
@@ -524,8 +521,7 @@ fn[P] Nav::shelf_clear_gone(self : Nav[P]) -> Unit {
     e.shown_once = false
     self.gone.push(e)
   }
-  self.shelf.clear()
-  self.shelf.shrink_to_fit()
+  self.shelf = []
 }
 
 ///|
@@ -1264,7 +1260,7 @@ fn[P : Eq] Nav::replace_kept_now(self : Nav[P], page : P) -> Unit {
     was.shown_once = false
     self.gone.push(was)
   }
-  let e = match self.shelf.search_by(fn(e) { e.page == page }) {
+  let e = match arr_search_by(self.shelf, fn(e) { e.page == page }) {
     Some(i) => {
       let e = self.shelf.remove(i)
       e.stint = next_stint()
@@ -1282,7 +1278,7 @@ fn[P : Eq] Nav::replace_kept_now(self : Nav[P], page : P) -> Unit {
 /// The serial of the entry on the shelf whose page is `page` (Nav::replace_kept), if one is: what putting it at the
 /// root takes back.
 pub fn[P : Eq] Nav::shelved(self : Nav[P], page : P) -> Int? {
-  self.shelf.iter().find_first(fn(e) { e.page == page }).map(fn(e) { e.serial })
+  arr_find_first(self.shelf, fn(e) { e.page == page }).map(fn(e) { e.serial })
 }
 
 ///|
@@ -1327,7 +1323,7 @@ fn[P : Eq] Nav::replace_tab_now(self : Nav[P], page : P, way : Int, dur : Double
   }
   let was = self.pages.pop().unwrap()
   let e = if kept && self.shelves is Some(_) {
-    match self.shelf.search_by(fn(x) { x.page == page }) {
+    match arr_search_by(self.shelf, fn(x) { x.page == page }) {
       Some(i) => {
         let x = self.shelf.remove(i)
         x.stint = next_stint()

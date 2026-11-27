@@ -301,7 +301,7 @@ pub fn agent_snapshot(tree : @view.Tree) -> Array[AgentEntry] {
       if tree.presses_do(sn.id) || s.actions.contains(Activate) {
         agent_push_unique(actions, "press")
       }
-      if tree.can_focus(sn.id) || s.actions.contains(Focus) {
+      if tree.can_focus(sn.id) || s.actions.contains(Action::Focus) {
         agent_push_unique(actions, "focus")
       }
       if s.actions.contains(Increment) || (s.role == Slider && s.range is Some(_)) {

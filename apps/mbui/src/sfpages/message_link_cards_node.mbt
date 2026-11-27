@@ -137,7 +137,7 @@ fn chat_link_card(l : @sf.LinkOf, src : Source, here : String, href : String, li
     fn() {
       guard (l.pointed)() else { return None }
       match chats_named.get(here + "\u{1}" + href) {
-        Some(Chat(station, key, _, _)) if peek_ours(here, station) => Some((station, key))
+        Some(Named::Chat(station, key, _, _)) if peek_ours(here, station) => Some((station, key))
         _ => None
       }
     },
