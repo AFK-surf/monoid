@@ -921,10 +921,10 @@ final class MBText {
     }
 
     /**
-     * Whether a cluster may be drawn in colours of its own (an emoji's): false only where every unit of it is of what
-     * no font draws so (letters of Latin, Greek and Cyrillic and their marks, ASCII's, Han, kana, Hangul, the full
-     * width's punctuation); a unit of anything else (a symbol, a pair of surrogates, U+FE0F, U+200D, U+20E3, © and ®,
-     * 〰 and 〽) says it may.
+     * Whether a cluster may be drawn in colours of its own (an emoji's): false only where every unit of it is a
+     * non-emoji text glyph (ASCII, Latin/Greek/Cyrillic and their marks, common monochrome punctuation/arrows/math/
+     * box-drawing/check-cross symbols, Han, kana, Hangul, full-width punctuation); anything else (other symbols, a
+     * surrogate pair, U+FE0F, U+200D, U+20E3, ©, ®, 〰, 〽) says it may.
      */
     static boolean mayBeColour(String s) {
         for (int i = 0, n = s.length(); i < n; i++) {

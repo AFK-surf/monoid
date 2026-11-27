@@ -44,6 +44,15 @@ test "unit_clusters matches UAX #29, non-joining, and LTR-only guarantees" {
     assert_true(@text.bidi_mixed(s) is None, msg="unexpected bidi for U+\{cp}")
     assert_false(joining(s, 0), msg="unexpected joining for U+\{cp}")
   }
+  for cp in 0..<0x3000 {
+    let s = Int::unsafe_to_char(cp).to_string()
+    if unit_clusters(s) {
+      assert_eq(@text.graphemes(s), [0, 1], msg="expected single grapheme for U+\{cp}")
+      assert_eq(@text.graphemes(s + s), [0, 1, 2], msg="expected unjoined pair for U+\{cp}")
+      assert_true(@text.bidi_mixed(s) is None, msg="unexpected bidi for U+\{cp}")
+      assert_false(joining(s, 0), msg="unexpected joining for U+\{cp}")
+    }
+  }
   let complex_cases = [
     "a\r\nb",
     "e\u{0301}",
@@ -252,6 +261,60 @@ test "rich_lines defers line_breaks until overflow and matches eager breaks acro
       assert_eq(lay_lazy.line_base, lay_eager.line_base, msg="case \{idx} w=\{max_w}: line_base")
       assert_eq(lay_lazy.w, lay_eager.w, msg="case \{idx} w=\{max_w}: w")
       assert_eq(lay_lazy.h, lay_eager.h, msg="case \{idx} w=\{max_w}: h")
+      // Independently verify line_y / line_h / line_base / h against per-cluster dmax reference.
+      let mut ref_y = 0.0
+      let mut ref_last_extra = p_lazy.extra
+      for li in 0..<lay_lazy.line_start.length() {
+        let s0 = lay_lazy.line_start[li]
+        let e0 = lay_lazy.line_end[li]
+        let mut la = if s0 == e0 { p_lazy.base_asc } else { 0.0 }
+        let mut ld = if s0 == e0 { p_lazy.base_desc } else { 0.0 }
+        let mut lx = if s0 == e0 { p_lazy.extra } else { 0.0 }
+        for c in s0..<e0 {
+          let rk = p_lazy.run_of[c]
+          la = dmax(la, p_lazy.run_lasc[rk])
+          ld = dmax(ld, p_lazy.run_ldesc[rk])
+          lx = dmax(lx, p_lazy.run_extra[rk])
+        }
+        assert_eq(lay_lazy.line_y[li], ref_y, msg="case \{idx} w=\{max_w} line \{li}: ref line_y")
+        assert_eq(lay_lazy.line_h[li], la + ld, msg="case \{idx} w=\{max_w} line \{li}: ref line_h")
+        assert_eq(lay_lazy.line_base[li], la, msg="case \{idx} w=\{max_w} line \{li}: ref line_base")
+        ref_y = ref_y + la + ld
+        ref_last_extra = lx
+      }
+      assert_eq(lay_lazy.h, ref_y + ref_last_extra, msg="case \{idx} w=\{max_w}: ref h")
     }
   }
+  // Single-run rich_prep_one reuses the shared Shaped.brk cache across rich_kept evictions.
+  clear_shapes()
+  rich_kept.clear()
+  let one_r : Rich = {
+    runs: [plain("单段长文本复用 Shaped.brk 缓存避免 rich_kept 淘汰后重复做 UAX #14 分析")],
+    size: 14.0,
+    weight: 400,
+    color: 0xFF000000L,
+    line: 0.0,
+    trim: false,
+    wrap: true,
+    link_color: 0xFF0000FFL,
+    pressed_bg: 0L,
+    code_color: 0xFF333333L,
+    code_bg: 0xFFEEEEEEL,
+    code_scale: 0.9,
+    spacing: 0.0,
+    base: 0,
+    select: false,
+    max_lines: 0,
+    faces: 0,
+    shaped_in: 0,
+    cjk_override: None,
+    code_cjk_override: None,
+  }
+  let p1 = rich_prep(one_r)
+  ignore(rich_lines(one_r, p1, 80.0))
+  assert_eq(p1.brk.length(), p1.starts.length())
+  rich_kept.clear()
+  let p2 = rich_prep(one_r)
+  ignore(rich_lines(one_r, p2, 80.0))
+  assert_true(physical_equal(p1.brk, p2.brk))
 }

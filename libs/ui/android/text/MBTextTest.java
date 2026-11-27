@@ -111,7 +111,7 @@ public final class MBTextTest extends Instrumentation {
         MBText.Scratch scratch = new MBText.Scratch();
         MBTextBefore.Scratch before = new MBTextBefore.Scratch();
         for (float size : new float[]{21.5f, 112f, 13f}) {
-            for (String text : new String[]{"中", "j", "f", "W", "fi", "♥", "👩🏽‍💻", "café", " "}) {
+            for (String text : new String[]{"中", "j", "f", "W", "fi", "♥", "👩🏽‍💻", "café", "→", "≤", "✓", "✗", "─", " "}) {
                 MBText.Entry e = new MBText.Entry(text, size, 700, 1);
                 MBTextBefore.Entry old = new MBTextBefore.Entry(text, size, 700, 1);
                 for (float scale : new float[]{1f, 2.625f, 1f}) {

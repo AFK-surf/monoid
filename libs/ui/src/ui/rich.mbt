@@ -455,20 +455,28 @@ priv struct RichPrep {
   base_desc : Double
   extra : Double
   bidi : @text.Bidi?
+  one_shape : Shaped?
 }
 
 ///|
-/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`.
+/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`
+/// (reusing the shared `Shaped.brk` cache for single-run paragraphs).
 fn RichPrep::breaks(self : RichPrep) -> Array[Int] {
   let n = self.starts.length()
   if self.brk.length() == n {
     return self.brk
   }
-  let brk = Array::make(n, 0)
-  if n > 1 {
-    let b = @text.line_breaks(self.text)
-    for i in 1..<n {
-      brk[i] = b[self.starts[i]]
+  let brk = match self.one_shape {
+    Some(s) => s.breaks(self.text)
+    None => {
+      let arr = Array::make(n, 0)
+      if n > 1 {
+        let b = @text.line_breaks(self.text)
+        for i in 1..<n {
+          arr[i] = b[self.starts[i]]
+        }
+      }
+      arr
     }
   }
   self.brk = brk
@@ -1026,6 +1034,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     base_desc,
     extra,
     bidi: bd,
+    one_shape: None,
   }
 }
 
@@ -1095,6 +1104,7 @@ fn rich_prep_one(
     base_desc,
     extra,
     bidi: s.bidi,
+    one_shape: Some(s),
   }
 }
 
