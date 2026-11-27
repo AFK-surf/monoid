@@ -2237,9 +2237,8 @@ fn is_abs_drive_root(p : String, is_win : Bool) -> Bool {
   false
 }
 
-fn clean_abs_drive_roots(raw : Array[String]) -> Array[String] {
-  let is_win = station_sys::os_name() == "win32"
-  let sep = if is_win { "\\" } else { "/" }
+fn clean_abs_drive_roots_with_sep(raw : Array[String], sep : String) -> Array[String] {
+  let is_win = sep == "\\"
   let out : Array[String] = []
   for i in 0..<raw.length() {
     let t = raw[i].trim()
@@ -2253,27 +2252,36 @@ fn clean_abs_drive_roots(raw : Array[String]) -> Array[String] {
   out
 }
 
+fn clean_abs_drive_roots(raw : Array[String]) -> Array[String] {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  clean_abs_drive_roots_with_sep(raw, sep)
+}
+
 /// Strictly resolve Drive roots for a single workspace (1:1 with `station/src/drive/drive.ts:104-107`):
 /// - Home workspace (`is_home == true`): `drive.roots` (or `driveRoots` / `STILLFAIL_DRIVE_ROOTS`).
 /// - Joined workspace (`is_home == false`): `drive.workspaces[ws]` ONLY.
 /// - Rejects relative paths, normalizes absolute paths, NEVER shares home roots with joined workspaces,
 ///   and NEVER falls back to `$HOME`!
-fn parse_drive_roots_for_workspace(
+/// Pure workspace-scoped Drive roots resolver (zero `station_sys` dependency so unit tests can
+/// exercise `resolve_session_launch_policy` directly).
+fn parse_drive_roots_for_workspace_pure(
   cfg_raw : base_codec::Json,
   ws : String,
   is_home : Bool,
+  env_roots_opt : Option[String],
+  sep : String,
 ) -> Array[String] {
   if !is_home {
     match base_codec::json_get(cfg_raw, "drive") {
       Some(drv) => match base_codec::json_get(drv, "workspaces") {
-        Some(wss) => return clean_abs_drive_roots(parse_str_arr_json(base_codec::json_get(wss, ws)))
+        Some(wss) => return clean_abs_drive_roots_with_sep(parse_str_arr_json(base_codec::json_get(wss, ws)), sep)
         None => return []
       }
       None => return []
     }
   }
   let out : Array[String] = []
-  match station_sys::env_get("STILLFAIL_DRIVE_ROOTS") {
+  match env_roots_opt {
     Some(env_roots) => {
       if env_roots.length() > 0 {
         let parts = env_roots.split(",")
@@ -2288,16 +2296,25 @@ fn parse_drive_roots_for_workspace(
     None => ()
   }
   if out.length() > 0 {
-    return clean_abs_drive_roots(out)
+    return clean_abs_drive_roots_with_sep(out, sep)
   }
   let from_drive_roots = match base_codec::json_get(cfg_raw, "drive") {
     Some(drv) => parse_str_arr_json(base_codec::json_get(drv, "roots"))
     None => []
   }
   if from_drive_roots.length() > 0 {
-    return clean_abs_drive_roots(from_drive_roots)
+    return clean_abs_drive_roots_with_sep(from_drive_roots, sep)
   }
-  clean_abs_drive_roots(parse_str_arr_json(base_codec::json_get(cfg_raw, "driveRoots")))
+  clean_abs_drive_roots_with_sep(parse_str_arr_json(base_codec::json_get(cfg_raw, "driveRoots")), sep)
+}
+
+fn parse_drive_roots_for_workspace(
+  cfg_raw : base_codec::Json,
+  ws : String,
+  is_home : Bool,
+) -> Array[String] {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  parse_drive_roots_for_workspace_pure(cfg_raw, ws, is_home, station_sys::env_get("STILLFAIL_DRIVE_ROOTS"), sep)
 }
 
 fn build_whole_core_config(ctx : DaemonCtx, now_secs : Double) -> station_whole::WholeCoreConfig {
@@ -6919,12 +6936,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               // reuse the SAME live runner without socket collisions (while still persisting
               // `adopted-runners.db` chunks with `keep: 0` for `adoptedOutput`).
               let adopt_wall_ms = host_shim::wall_ms()
+              let adopt_now_ms = host_shim::now_ms()
+              let adopt_cfg = live_config_raw(st.core, ctx.cfg_raw)
               for ri in 0..<live_runners.length() {
                 let rinfo = live_runners[ri]
                 if rinfo.socket.length() > 0 {
                   match st.core.agents.adopted_session_by_runner_id.get(rinfo.id) {
                     Some(skey) => {
-                      let _ = st.live_runners.adopt_live_runner(ctx, st.core, rinfo, skey, adopt_wall_ms)
+                      let _ = st.live_runners.adopt_live_runner(ctx, st.core, adopt_cfg, rinfo, skey, adopt_now_ms, adopt_wall_ms)
                     }
                     None => ()
                   }
@@ -7162,9 +7181,29 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
                     }
-                    // `movedTo` forwarding (only from locally authorized `ConnectWorkspace` routes,
-                    // never mutating local routes from untrusted peer request fields).
-                    match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
+                    // `movedTo` forwarding: check locally authorized `ConnectWorkspace` cache AND
+                    // persistent SQLite `handed_over` table (1:1 with Node `hub.ts:801` `movedTo`),
+                    // never mutating local routes from untrusted peer request fields.
+                    let moved_opt : Option[String] = match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
+                      Some(m) => Some(m)
+                      None => match st.core.store.require_open() {
+                        Ok(st_db) => {
+                          let desc_surf = match base_codec::json_get(desc, "kind") {
+                            Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "slack" }
+                            _ => "slack"
+                          }
+                          match query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts) {
+                            Some(m) => {
+                              st.connects.workspace.route_thread(remote_cid, ev_ch, ev_tts, Some(m))
+                              Some(m)
+                            }
+                            None => None
+                          }
+                        }
+                        Err(_) => None
+                      }
+                    }
+                    match moved_opt {
                       Some(moved) => {
                         if moved != ctx.station_key.id {
                           let fwd_req = base_codec::json_obj([

@@ -636,10 +636,29 @@ pub fn WholeAgents::create_session(
     Some(w) => if w.length() > 0 { Some(w) } else { Some(self.config.home_ws) }
     None => Some(self.config.home_ws)
   }
+  let eff_workspace = if workspace.trim().length() == 0 || workspace.trim() == self.config.data_dir {
+    let sb = StringBuilder::new()
+    let kb = key.to_bytes()
+    for i in 0..<kb.length() {
+      let c = kb[i].to_int() & 0xFF
+      let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+      sb.write_byte((if ok { c } else { 95 }) as Byte)
+    }
+    let safe_k = if sb.to_string().length() > 0 { sb.to_string() } else { "session" }
+    let sep = if self.config.data_dir.contains("\\") { "\\" } else { "/" }
+    nodepath::join(sep, [self.config.data_dir, "sessions", safe_k, "workspace"])
+  } else {
+    workspace.trim()
+  }
+  let eff_cwd : Option[String] = if workspace.trim().length() == 0 || workspace.trim() == self.config.data_dir {
+    None
+  } else {
+    Some(eff_workspace)
+  }
   let tid = match st.tx(fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
     match t.run(
       "INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, model, effort, workspace, cwd, token, running, created_at, last_active_at, ws, told_notes)" +
-      " VALUES (?1, ?2, 'all', ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, 0, ?10, ?10, ?11, 0)",
+      " VALUES (?1, ?2, 'all', ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, 0, ?11, ?11, ?12, 0)",
       [
         base_codec::json_str(key),
         base_codec::json_str(connect),
@@ -648,7 +667,8 @@ pub fn WholeAgents::create_session(
         base_codec::json_str(runtime),
         base_codec::json_str(profile),
         opt_str_json_param(model),
-        base_codec::json_str(workspace),
+        base_codec::json_str(eff_workspace),
+        opt_str_json_param(eff_cwd),
         base_codec::json_str(token),
         sql_db::int64_to_json(now_ms),
         opt_str_json_param(effective_ws),

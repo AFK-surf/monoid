@@ -12,7 +12,7 @@ import "nodepath"
 // ---------------------------------------------------------------------------
 
 pub let TERMINAL_RUNNER : String = "term-"
-pub let STARTED_SLACK_MS : Int64 = 60000L
+pub let STARTED_SLACK_MS : Int64 = 5000L
 pub let RUNNER_LEFT_MS : Int64 = 300000L
 
 pub struct RunnerInfo {
@@ -143,13 +143,14 @@ pub fn describe_exit(code : Option[Int], signal : Option[String]) -> String {
 }
 
 /// Check whether a runner is still alive and matches its original start time (no PID reuse).
+/// Fail-closed when the OS cannot supply a process start time (`None => false`).
 pub fn is_runner_live(info : RunnerInfo, pid_alive : Bool, os_start_time_ms : Option[Int64]) -> Bool {
   if !pid_alive {
     return false
   }
   match os_start_time_ms {
     Some(started) => started <= info.started_at + STARTED_SLACK_MS
-    None => true
+    None => false
   }
 }
 

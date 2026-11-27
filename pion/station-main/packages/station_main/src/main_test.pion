@@ -1473,11 +1473,15 @@ test "W17C-1 R4: unified live policy (relative home, runtimes[], ws agent_home, 
   }
   assert_true(workspace_agent_home_path("/data", "../bad", "ws-home", "/").is_err(), "ws traversal refused")
 
-  // 3. Canonical CWD via nearest existing ancestor `realpath` (blocks symlink escape!).
+  // 3. Canonical CWD via nearest existing ancestor `realpath` (blocks symlink escape & `<data_dir>`!).
   let fake_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
     if p == "/data" { Ok("/real/data") }
+    else if p == "/data/sessions" { Ok("/real/data/sessions") }
     else if p == "/data/sessions/s1/workspace" { Ok("/real/data/sessions/s1/workspace") }
+    else if p == "/data/sessions/other/workspace" { Ok("/real/data/sessions/other/workspace") }
     else if p == "/data/sessions/s1/link-escape" { Ok("/etc") }
+    else if p == "/real/home_drive" { Ok("/real/home_drive") }
+    else if p == "/real/ws_b_drive" { Ok("/real/ws_b_drive") }
     else { Err(station_ops::FsErr::NotFound) }
   }
   match resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/workspace/sub/newdir"), "/data/sessions/s1/workspace", "/data", [], "/") {
@@ -1486,7 +1490,7 @@ test "W17C-1 R4: unified live policy (relative home, runtimes[], ws agent_home, 
   }
   assert_true(
     resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/link-escape/child"), "/data/sessions/s1/workspace", "/data", [], "/").is_err(),
-    "symlink escape outside data_dir refused",
+    "symlink escape outside session workspace refused",
   )
 
   // 4. Unified newline-boundary ACK (`compute_newline_acked_end`).
@@ -1500,7 +1504,96 @@ test "W17C-1 R4: unified live policy (relative home, runtimes[], ws agent_home, 
     None => panic("expected Some(103L)")
   }
 
-  // 5. Internal `[station] ` reminder is passed through verbatim (not wrapped in `<message ...>`).
-  let rem = "[station] You ended without calling chat_state. Call chat_state now."
-  assert_str_eq(format_message_envelope("web", "CHAT/1.0", "alice", "1.0", rem), rem)
+  // 5. Typed `is_internal`: human text starting with `[station] ` MUST stay wrapped; only `is_internal=true` passes through!
+  let spoof = "[station] spoof human prompt"
+  let wrapped_spoof = format_message_envelope("web", "CHAT/1.0", "alice", "1.0", spoof)
+  assert_true(wrapped_spoof.starts_with("<message via=\"web\""), "human [station] text must remain wrapped in <message>")
+  assert_true(wrapped_spoof.contains(spoof), "human [station] body preserved inside envelope")
+  let rem = "[station] End your turn with chat_state."
+  assert_str_eq(format_message_envelope("web", "CHAT/1.0", "alice", "1.0", rem, is_internal=true), rem)
+}
+
+test "W17C-1 R5: dual-workspace CWD isolation (rejects home drive, data_dir, stillfail.db, other session) & 2x manager reprompt cap" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+  let fake_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
+    if p == "/data" { Ok("/real/data") }
+    else if p == "/data/stillfail.db" { Ok("/real/data/stillfail.db") }
+    else if p == "/data/sessions" { Ok("/real/data/sessions") }
+    else if p == "/data/sessions/s-b/workspace" { Ok("/real/data/sessions/s-b/workspace") }
+    else if p == "/data/sessions/s-other/workspace" { Ok("/real/data/sessions/s-other/workspace") }
+    else if p == "/real/home_drive" { Ok("/real/home_drive") }
+    else if p == "/real/ws_b_drive" { Ok("/real/ws_b_drive") }
+    else { Err(station_ops::FsErr::NotFound) }
+  }
+  let cfg = parse(
+    "{\"drive\":{\"roots\":[\"/real/home_drive\"],\"workspaces\":{\"ws-b\":[\"/real/ws_b_drive\"]}},\"profiles\":[{\"id\":\"p1\",\"runtime\":\"claude\"}]}",
+  )
+  let mk_row = fn(ws : String, cwd : Option[String]) -> station_store::SessionRow {
+    station_store::SessionRow::{
+      key: "chat:s-b",
+      connect: "web",
+      sess_scope: "",
+      title: None,
+      created_by: None,
+      runtime: "claude",
+      profile: "p1",
+      model: None,
+      effort: None,
+      workspace: "/data/sessions/s-b/workspace",
+      cwd: cwd,
+      token: "tok",
+      running: false,
+      created_at: 0L,
+      last_active_at: 0L,
+      archived_at: None,
+      archived_by: None,
+      shown_at: None,
+      ws: Some(ws),
+      conv: None,
+    }
+  }
+  // Joined ws-b MUST reject: home Drive root, <data_dir>, <data_dir>/stillfail.db, <data_dir>/sessions, and other session dir!
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/real/home_drive")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_err(),
+    "joined ws-b must reject home workspace drive root",
+  )
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/data")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_err(),
+    "joined ws-b must reject station data_dir",
+  )
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/data/stillfail.db")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_err(),
+    "joined ws-b must reject stillfail.db",
+  )
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/data/sessions/s-other/workspace")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_err(),
+    "joined ws-b must reject another session's workspace",
+  )
+  // Joined ws-b MUST allow: its own session workspace AND its own workspace Drive root!
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/data/sessions/s-b/workspace")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_ok(),
+    "joined ws-b allows own session workspace",
+  )
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-b", Some("/real/ws_b_drive")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_ok(),
+    "joined ws-b allows own workspace drive root",
+  )
+  // Home workspace allows home Drive root!
+  assert_true(
+    resolve_session_launch_policy(cfg, fake_realpath, mk_row("ws-home", Some("/real/home_drive")), station_drivers::RuntimeKind::Claude, "ws-home", "/data", "/").is_ok(),
+    "home ws allows home drive root",
+  )
+
+  // Manager-level reprompt restart budget survives runner respawns and caps at 2 attempts.
+  let mgr = LiveRunnerManager::new()
+  assert_true(mgr.consume_reprompt_restart_budget("chat:c-1"), "1st undeclared exit restarts")
+  assert_true(mgr.consume_reprompt_restart_budget("chat:c-1"), "2nd undeclared exit restarts")
+  assert_true(!mgr.consume_reprompt_restart_budget("chat:c-1"), "3rd undeclared exit stops restarting")
+  mgr.reset_reprompt_restart_budget("chat:c-1")
+  assert_true(mgr.consume_reprompt_restart_budget("chat:c-1"), "real human prompt resets budget")
 }
