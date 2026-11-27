@@ -487,8 +487,9 @@ export function screenPath(station: string, id: string): string {
 
 /// The `screens` topic's value: what is held (none while the station is down: `online` false).
 /// `known`: display readiness (`held !== undefined`); `confirmed`: station replied in the current auth generation.
-export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean, confirmed = held !== undefined): J {
+export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean, confirmed = held !== undefined, denied = false): J {
   const control = mayDrive(inner, station);
+  if (denied) return { screens: [], outdated: false, control, known: false, confirmed: false, denied: true };
   if (held?.outdated) return { screens: [], outdated: true, control, known: true, confirmed, note: t("core-views.screen.outdated") };
   if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined, confirmed: held !== undefined && confirmed };
   const screens = held.screens.flatMap((s) => {
@@ -922,9 +923,22 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
 
+    // If the station already explicitly refused GET /screens (401/403) in this auth generation, fail closed immediately.
+    if (inner.stations.isDenied("screens", station)) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      tell();
+      return null;
+    }
     // A station whose screens are not known yet is asked first: one from before screens would take the view's stream
     // for a request and never answer it.
     if (inner.stations.screens(station) === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
+    if (inner.stations.isDenied("screens", station)) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      tell();
+      return null;
+    }
     if (inner.stations.screens(station)?.outdated) {
       state.phase = "outdated";
       state.message = t("core-views.screen.outdated");
@@ -943,6 +957,12 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // A view is opened only of a screen the station listed: not listed as it was held, its
     // list is read again first.
     if (listedItem() === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
+    if (inner.stations.isDenied("screens", station)) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      tell();
+      return null;
+    }
     if (listedItem() === undefined && inner.stations.screens(station) !== undefined) {
       state.phase = "gone";
       state.message = t("core-views.screen.gone");

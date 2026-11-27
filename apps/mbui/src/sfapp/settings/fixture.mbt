@@ -3778,7 +3778,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             (
               "screens",
               [
-                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的桌面")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("桌面 · 3024×1964")), ("link", str(""))]),
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的屏幕")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("3024 × 1964 · 无人在看")), ("link", str(""))]),
                 obj([("id", str("browser:T1")), ("kind", str("browser")), ("agent", Json::boolean(true)), ("title", str("登录 - GitHub")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("浏览器标签页 · 1280×800 · 由「整理发布清单」打开")), ("link", str(""))]),
               ],
             ),

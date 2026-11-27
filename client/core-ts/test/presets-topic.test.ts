@@ -543,16 +543,32 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   const link = core.inner.stations.link(S);
   assert.ok(link);
 
-  // Cold-start keeper cache (without setConfirmed) -> confirmedIn is false -> known is false.
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  // Cold-start keeper cache WITH matching authDigest -> known: true, confirmed: false (0 flicker, actions blocked).
+  const curDigest = core.inner.store.authGen.workspaceDigest("ws");
+  assert.ok(typeof curDigest === "string" && curDigest.length > 0, "workspaceDigest is populated");
   link.memory.deletePrefix("screens");
   link.memory.deletePrefix("terminals");
-  // Restore into DB bypassing deletePrefix bound to simulate cold-start keeper row.
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
   assert.equal(core.inner.stations.isConfirmed("screens", S), false, "keeper-only screens must not be confirmed");
   assert.equal(core.inner.stations.isConfirmed("terminals", S), false, "keeper-only terminals must not be confirmed");
+  assert.ok(core.inner.stations.screens(S) !== undefined, "matching authDigest allows cold-start display");
+  assert.ok(core.inner.stations.terminals(S) !== undefined, "matching authDigest allows cold-start display");
+
+  // Cold-start keeper cache with MISMATCHED authDigest (e.g. downgrade/switch account + read-only DB across Link rebuild/restart):
+  // MUST return undefined so pre-boundary screens/terminals never resurrect even on a read-only DB.
+  link.memory.deletePrefix("screens");
+  link.memory.deletePrefix("terminals");
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "WrongAuth", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: "stale-owner-digest" });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-stale", by: "other@x.com", cwd: "/secret", at: 1, looking: [] }], outdated: false, authDigest: "stale-owner-digest" });
+  assert.equal(core.inner.stations.screens(S), undefined, "mismatched authDigest must hide keeper-cached screens");
+  assert.equal(core.inner.stations.terminals(S), undefined, "mismatched authDigest must hide keeper-cached terminals");
+
+  // Restore matching authDigest to test cold-start topic projection -> boundary refetch recovery.
+  link.memory.deletePrefix("screens");
+  link.memory.deletePrefix("terminals");
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
 
   const ui = core.connect();
   const values = new Map<number, unknown>();
@@ -661,6 +677,28 @@ test("same_gen_sse_beats_older_inflight_get_and_403_clears_screens_terminals_con
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).confirmed, false, "403 must clear confirmed state");
+  assert.equal(v(values, 1).denied, true, "403 must project denied: true");
   assert.deepEqual(v(values, 1).terminals, [], "403 must clear stale terminal rows");
+
+  // 3. When GET /screens returns 403, screen.view fails closed with phase "denied" and never opens a screenView stream.
+  let screensForbidden = true;
+  stationLater(host, (req) => {
+    if (screensForbidden && req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  assert.equal(core.inner.stations.isDenied("screens", S), true, "403 on GET /screens marks screens denied");
+  const beforeStreamReqs = host.requests.length;
+  host.takeEmitted();
+  call(core, ui, 99, "screen.view", { station: S, screen: "desktop", view: "v-denied", codecs: ["jpeg"] });
+  await host.settle();
+  const emitted = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(emitted.some((m) => m.id === 99 && m.value?.state?.phase === "denied"), "screen.view must report phase: denied");
+  const streamReqs = host.requests.slice(beforeStreamReqs).filter((r) => r.url.includes("/screens/"));
+  assert.equal(streamReqs.length, 0, "screen.view must not open a screen stream when screens is denied");
+  screensForbidden = false;
   core.close();
 });

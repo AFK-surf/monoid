@@ -175,7 +175,7 @@ fn peek_station_topics(core : Core, address : String) -> PeekTopics {
       }
     },
     screens: fn() { screens.get().value },
-    screens_retained: fn() { screens.get().is_retained() },
+    screens_retained: fn() { !screens.get().is_confirmed_known() },
   }
 }
 

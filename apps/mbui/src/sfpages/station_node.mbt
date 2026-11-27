@@ -948,9 +948,15 @@ fn all_screens_v(core : Core, address : String) -> Json? {
 }
 
 ///|
-/// Whether `screens` is currently showing a retained/unconfirmed value (`version < 0`).
-fn all_screens_retained(core : Core, address : String) -> Bool {
-  (core.topic)("screens", { "station": str(address) }).get().is_retained()
+/// The live `screens` read for `address`.
+fn all_screens_read(core : Core, address : String) -> @settings.Read {
+  (core.topic)("screens", { "station": str(address) }).get()
+}
+
+///|
+/// Whether `screens` is freshly confirmed by the station in the current auth generation.
+fn all_screens_confirmed(core : Core, address : String) -> Bool {
+  all_screens_read(core, address).is_confirmed_known()
 }
 
 ///|
@@ -1039,8 +1045,12 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
             p,
             fn() { text(sv(), "title") },
             fn() {
-              if !own && !@signals.untracked(fn() { all_screens_retained(core, address) }) {
-                @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+              if !own {
+                let sr = @signals.untracked(fn() { all_screens_read(core, address) })
+                if sr.is_confirmed_known() &&
+                  items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") }) {
+                  @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+                }
               }
             },
             note=fn() { if own { @sf.t("android-misc.screen.here") } else { text(sv(), "line") } },
@@ -1059,7 +1069,7 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
         row,
         fn() { @sf.t("web-pages.screen.openBrowserRow") },
         fn() {
-          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+          if @signals.untracked(fn() { all_screens_confirmed(core, address) }) {
             @settings.open_station_browser(core, address)
           }
         },
@@ -1116,7 +1126,7 @@ fn station_user_pages_node(b : @view.View, core : Core, here : () -> Here, s : (
         g,
         fn() { @sf.t("web-pages.screen.openBrowserRow") },
         fn() {
-          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+          if @signals.untracked(fn() { all_screens_confirmed(core, address) }) {
             @settings.open_station_browser(core, address)
           }
         },
@@ -1154,7 +1164,9 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
         p,
         fn() { text(sv(), "title") },
         fn() {
-          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+          let sr = @signals.untracked(fn() { all_screens_read(core, address) })
+          if sr.is_confirmed_known() &&
+            items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") }) {
             @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: true }))
           }
         },
@@ -1168,12 +1180,14 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
               e,
               fn() { @sf.t("web-pages.screen.closeTab") },
               fn() {
-                if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+                let sr = @signals.untracked(fn() { all_screens_read(core, address) })
+                if sr.is_confirmed_known() &&
+                  items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") && flag(Some(x), "closable") }) {
                   @settings.act(core, what, "screen.close", obj([("station", str(address)), ("screen", str(id))]))
                 }
               },
               busy=fn() { is_doing(core, ["screen.close"], on) },
-              disabled=fn() { all_screens_retained(core, address) },
+              disabled=fn() { !all_screens_confirmed(core, address) },
             )
             |> ignore
           })
@@ -1211,8 +1225,12 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
             p,
             fn() { text(sv(), "title") },
             fn() {
-              if !own && !@signals.untracked(fn() { all_screens_retained(core, address) }) {
-                @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+              if !own {
+                let sr = @signals.untracked(fn() { all_screens_read(core, address) })
+                if sr.is_confirmed_known() &&
+                  items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") }) {
+                  @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+                }
               }
             },
             // what it lacks says so in its line
@@ -1239,7 +1257,10 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
 fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : String, screen : () -> Json?) -> Unit {
   let id = text(@signals.untracked(screen), "id")
   let asked = fn(name : String, what : String, params : Array[(String, Json)]) {
-    if @signals.untracked(fn() { all_screens_retained(core, address) }) {
+    let sr = @signals.untracked(fn() { all_screens_read(core, address) })
+    if !sr.is_confirmed_known() ||
+      !flag(sr.value, "control") ||
+      !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") }) {
       return
     }
     @settings.act(core, what, name, obj([("station", str(address)), ("screen", str(id)), ("account", str(@signals.untracked(here).sub)), ..params]))
@@ -1271,7 +1292,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
                 fn() { asked("screen.watchOnly", what, [("view", str(view))]) },
                 tone=Ghost,
                 busy=fn() { is_doing(core, ["screen.watchOnly"], on) },
-                disabled=fn() { all_screens_retained(core, address) },
+                disabled=fn() { !all_screens_confirmed(core, address) },
               )
               |> ignore
             })
@@ -1282,7 +1303,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
               fn() { asked("screen.endView", what, [("view", str(view))]) },
               tone=Ghost,
               busy=fn() { is_doing(core, ["screen.endView"], on) },
-              disabled=fn() { all_screens_retained(core, address) },
+              disabled=fn() { !all_screens_confirmed(core, address) },
             )
             |> ignore
           })
@@ -1300,7 +1321,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
           fn() { asked("screen.endViews", what, []) },
           tone=Ghost,
           busy=fn() { is_doing(core, ["screen.endViews"], [("screen", id)]) },
-          disabled=fn() { all_screens_retained(core, address) },
+          disabled=fn() { !all_screens_confirmed(core, address) },
         )
         |> ignore
       })

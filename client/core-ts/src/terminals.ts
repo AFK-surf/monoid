@@ -210,7 +210,8 @@ function folderName(cwd: string): string {
 /// The `terminals` topic: the station's terminals as it said them last (kept: there as the app opens again while it is
 /// reached anew), and whether the viewer may open one and type.
 /// `known`: display readiness (`held !== undefined`); `confirmed`: station replied in the current auth generation.
-export function terminalsView(inner: Inner, station: string, held: { terminals: unknown[]; outdated: boolean } | undefined, confirmed = held !== undefined): J {
+export function terminalsView(inner: Inner, station: string, held: { terminals: unknown[]; outdated: boolean } | undefined, confirmed = held !== undefined, denied = false): J {
+  if (denied) return { terminals: [], outdated: false, open: mayDrive(inner, station), known: false, confirmed: false, denied: true };
   const terminals = (held?.terminals ?? []).flatMap((v) => {
     if (!isObject(v) || typeof v.id !== "string" || typeof v.by !== "string" || typeof v.cwd !== "string") return [];
     const looking = Array.isArray(v.looking) ? v.looking.filter((n: unknown): n is string => typeof n === "string") : [];

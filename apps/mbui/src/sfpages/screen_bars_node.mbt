@@ -1404,7 +1404,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
     fn() {
       let ts = sub_t.get()
       let ss = sub_s.get()
-      @sfbase.opens_answered(ts) && !ts.is_retained() && @sfbase.opens_answered(ss) && !ss.is_retained()
+      @sfbase.cap_settled(ts) && @sfbase.cap_settled(ss)
     },
     fn() {
       let ts = @signals.untracked(fn() { sub_t.get() })
@@ -1430,10 +1430,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let scs = items(sval, "screens")
       let others = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
       let user_ids = scs
-        .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+        .filter(fn(sc) { !flag(Some(sc), "opening") && (flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_")) })
         .map(fn(sc) { text(Some(sc), "id") })
-      let t_outdated = ts.is_confirmed() && flag(tval, "outdated")
-      let s_outdated = ss.is_confirmed() && flag(sval, "outdated")
+      let t_outdated = ts.is_confirmed() && flag(tval, "confirmed") && flag(tval, "outdated")
+      let s_outdated = ss.is_confirmed() && flag(sval, "confirmed") && flag(sval, "outdated")
       let can_term = if t_confirmed { flag(tval, "open") } else if t_outdated { false } else { @signals.untracked(fn() { (s.src.asks_terminals)() }) }
       let can_browse = if s_confirmed { flag(sval, "browser") && flag(sval, "control") } else if s_outdated { false } else { true }
       let menu_items : Array[@sf.MenuItem?] = []

@@ -329,7 +329,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
                       go(cur)
                     },
                     let_go=fn() { @sfbase.let_go(src, scope) },
-                    most=@sf.open_hold_ms,
+                    most=5000.0,
                   )
                   |> ignore
                 }

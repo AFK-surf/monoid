@@ -294,6 +294,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["control", "bool", { doc: "The viewer may drive them (a read-only member only sees)." }],
     ["known", "bool", { doc: "The station said which it has (false while it has not been reached since the core started)." }],
     ["confirmed", "bool", { doc: "The station replied in the current auth generation (false while showing keeper cache from before)." }],
+    ["denied", opt("bool"), { doc: "The station explicitly refused access (401/403) in the current auth generation." }],
     ["note", opt("String"), { said: true, doc: "Why there are none to show, when there is a reason (the station needs an update, is offline)." }],
   ], { doc: "A station's screens (the `screens` topic, client/core-ts/src/screens.ts)." }),
   TerminalItem: struct([
@@ -313,6 +314,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["open", "bool", { doc: "The viewer may open one and type (a read-only member only looks)." }],
     ["known", "bool", { doc: "The station said which it has (false while it has not been reached since the core started)." }],
     ["confirmed", "bool", { doc: "The station replied in the current auth generation (false while showing keeper cache from before)." }],
+    ["denied", opt("bool"), { doc: "The station explicitly refused access (401/403) in the current auth generation." }],
   ], { doc: "A station's terminals (the `terminals` topic, client/core-ts/src/terminals.ts)." }),
   ScreenCard: struct([
     ["kind", "String", { doc: "`desktop` or `browser`, as the screen is (or, not in its station's list, as its id says)." }],

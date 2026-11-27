@@ -776,11 +776,20 @@ export class StationsSync {
   /// Monotonic per-station sequence numbers for `screens` and `terminals` so an older in-flight GET cannot overwrite a newer SSE or GET.
   readonly #screensSeq = new Map<string, number>();
   readonly #terminalsSeq = new Map<string, number>();
+  /// Per-station auth generation where `GET /screens` or `GET /terminals` returned 401/403 (survives Link rebuild within the same authGen).
+  readonly #screensDeniedGen = new Map<string, number>();
+  readonly #terminalsDeniedGen = new Map<string, number>();
 
   #nextSeq(map: Map<string, number>, address: string): number {
     const n = (map.get(address) ?? 0) + 1;
     map.set(address, n);
     return n;
+  }
+
+  /// Whether station `address` explicitly refused `screens` or `terminals` (401/403) in the current auth generation.
+  isDenied(key: "screens" | "terminals", address: string): boolean {
+    const map = key === "screens" ? this.#screensDeniedGen : this.#terminalsDeniedGen;
+    return map.get(address) === this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
   }
 
   /// The station's screens as it has them now, in its link's memory (kept: what was said last
@@ -791,6 +800,7 @@ export class StationsSync {
     const ws = ofAddress(address);
     const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const seq = this.#nextSeq(this.#screensSeq, address);
@@ -799,6 +809,7 @@ export class StationsSync {
       if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) }, startGen);
       else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true }, startGen);
       else if (answer.failure.status === 401 || answer.failure.status === 403) {
+        this.#screensDeniedGen.set(address, startGen);
         link.memory.clearKey("screens");
         this.onChange(address, "screens");
       } else return yield* Effect.fail(answer.failure);
@@ -807,7 +818,7 @@ export class StationsSync {
 
   /// What is held of a station's screens but `screen` (closed from here), or but its view `view` (ended from here).
   #screensWithout(address: string, screen: string, view: string | null): void {
-    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string } | undefined;
     if (held === undefined) return;
     let changed = false;
     const screens = held.screens.flatMap((s) => {
@@ -821,14 +832,23 @@ export class StationsSync {
       changed = true;
       return [{ ...(s as object), views: views.filter((v) => get(v, "id") !== view) }];
     });
-    if (changed) this.#heldScreens(address, { ...held, screens });
+    if (changed) {
+      this.#nextSeq(this.#screensSeq, address);
+      this.#heldScreens(address, { ...held, screens });
+    }
   }
 
-  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }, confirmedGen?: number): void {
+  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string }, confirmedGen?: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    if (confirmedGen !== undefined) link.memory.setConfirmed("screens", held, confirmedGen);
-    else link.memory.set("screens", held);
+    const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+    const stored = digest !== undefined ? { ...held, authDigest: digest } : held;
+    if (confirmedGen !== undefined) {
+      this.#screensDeniedGen.delete(address);
+      link.memory.setConfirmed("screens", stored, confirmedGen);
+    } else {
+      link.memory.set("screens", stored);
+    }
     this.onChange(address, "screens");
   }
 
@@ -838,6 +858,7 @@ export class StationsSync {
     const ws = ofAddress(address);
     const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const seq = this.#nextSeq(this.#terminalsSeq, address);
@@ -846,17 +867,24 @@ export class StationsSync {
       if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false }, startGen);
       else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true }, startGen);
       else if (answer.failure.status === 401 || answer.failure.status === 403) {
+        this.#terminalsDeniedGen.set(address, startGen);
         link.memory.clearKey("terminals");
         this.onChange(address, "terminals");
       } else return yield* Effect.fail(answer.failure);
     });
   }
 
-  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean }, confirmedGen?: number): void {
+  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean; authDigest?: string }, confirmedGen?: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    if (confirmedGen !== undefined) link.memory.setConfirmed("terminals", held, confirmedGen);
-    else link.memory.set("terminals", held);
+    const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+    const stored = digest !== undefined ? { ...held, authDigest: digest } : held;
+    if (confirmedGen !== undefined) {
+      this.#terminalsDeniedGen.delete(address);
+      link.memory.setConfirmed("terminals", stored, confirmedGen);
+    } else {
+      link.memory.set("terminals", stored);
+    }
     this.onChange(address, "terminals");
   }
 
@@ -867,17 +895,30 @@ export class StationsSync {
     return link.memory.confirmedIn(key, this.#core.store.authGen.workspaceAuthGen(ofAddress(address)));
   }
 
-  /// What is held of the station's terminals; undefined while it has not said.
+  /// What is held of the station's terminals; undefined while it has not said, was denied, or failed cold-start authDigest check.
   terminals(address: string): { terminals: unknown[]; outdated: boolean } | undefined {
-    return this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean } | undefined;
+    if (this.isDenied("terminals", address)) return undefined;
+    const held = this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean; authDigest?: string } | undefined;
+    if (held === undefined) return undefined;
+    if (!this.isConfirmed("terminals", address)) {
+      const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+      if (curDigest === undefined || held.authDigest !== curDigest) return undefined;
+    }
+    return held;
   }
 
-  /// What is held of the station's screens; undefined while it has not said. A tab this device is opening
-  /// (`#openingTabs`) is among them until the station lists it, said `opening`.
+  /// What is held of the station's screens; undefined while it has not said, was denied, or failed cold-start authDigest check.
+  /// A tab this device is opening (`#openingTabs`) is among them until the station lists it, said `opening`.
   screens(address: string): { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined {
-    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+    if (this.isDenied("screens", address)) return undefined;
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string } | undefined;
+    if (held === undefined) return undefined;
+    if (!this.isConfirmed("screens", address)) {
+      const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+      if (curDigest === undefined || held.authDigest !== curDigest) return undefined;
+    }
     const opening = this.#openingTabs.get(address);
-    if (held === undefined || opening === undefined || opening.size === 0) return held;
+    if (opening === undefined || opening.size === 0) return held;
     // (the same object while neither changed: the views compare what they read by reference first)
     const kept = this.#screensWithOpening.get(address);
     if (kept !== undefined && kept.held === held && kept.opening === opening) return kept.value;
@@ -3329,6 +3370,12 @@ export class StationsSync {
     }
     for (const addr of [...this.#screensWithOpening.keys()]) {
       if (ws === null || ofAddress(addr) === ws) this.#screensWithOpening.delete(addr);
+    }
+    for (const addr of [...this.#screensDeniedGen.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#screensDeniedGen.delete(addr);
+    }
+    for (const addr of [...this.#terminalsDeniedGen.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#terminalsDeniedGen.delete(addr);
     }
     for (const link of this.#links.values()) {
       const address = link.addr.toString();

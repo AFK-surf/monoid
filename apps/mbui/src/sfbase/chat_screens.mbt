@@ -96,9 +96,13 @@ pub fn confirmed_user_browser_ids(sr : TopicState) -> Array[String] {
 
 ///|
 /// Whether a station capability topic (`screens` / `terminals`) has settled for the current auth generation:
-/// confirmed by the station, explicitly `outdated`, or answered with an error (never a cold-start `confirmed: false` cache).
+/// confirmed by the station, explicitly confirmed `outdated` (404), explicitly `denied` (401/403), or answered with an error
+/// (never a cold-start `confirmed: false` cache).
 pub fn cap_settled(st : TopicState) -> Bool {
-  st.is_confirmed_known() || (st.is_confirmed() && flag(st.value, "outdated")) || st.error is Some(_)
+  st.is_confirmed_known() ||
+  (st.is_confirmed() && flag(st.value, "confirmed") && flag(st.value, "outdated")) ||
+  (st.is_confirmed() && flag(st.value, "denied")) ||
+  st.error is Some(_)
 }
 
 ///|
@@ -125,7 +129,7 @@ pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal 
                 }
               },
               let_go=fn() { let_go(source, scope) },
-              most=@sf.open_hold_ms,
+              most=5000.0,
             )
             |> ignore
           }
@@ -154,7 +158,7 @@ pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal 
                   }
                 },
                 let_go=fn() { let_go(source, scope) },
-                most=@sf.open_hold_ms,
+                most=5000.0,
               )
               |> ignore
             }

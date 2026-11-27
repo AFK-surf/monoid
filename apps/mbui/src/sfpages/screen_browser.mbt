@@ -72,19 +72,15 @@ priv enum TabAct {
 }
 
 ///|
-/// Whether `screens` for this viewer's station is currently fresh and confirmed (`version >= 0 && value is Some(_)`).
-fn browser_screens_confirmed(s : ScreenSess) -> Bool {
-  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_confirmed_known() })
-}
-
-///|
 /// Tab action `act` done (in a press's handler): `close` closes the viewer where its last tab closes.
 fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Unit {
   match act {
-    Show(id, title) =>
-      if id != s.screen && browser_screens_confirmed(s) {
+    Show(id, title) => {
+      let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+      if id != s.screen && @sfbase.live_screen_confirmed(sr, id) {
         switch_screen_to(s, u, id, title, false)
       }
+    }
     Window(window) => {
       let p : Map[String, Json] = { "t": Json::string("window") }
       match window {
@@ -128,7 +124,7 @@ fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
         note: text(Some(item), "site"),
         current,
         press: Show(id, title),
-        close: if confirmed && flag(Some(item), "closable") { Some(Close(id)) } else { None },
+        close: if confirmed && !flag(Some(item), "opening") && flag(Some(item), "closable") { Some(Close(id)) } else { None },
       }
     })
     if !tabs.iter().any(fn(t) { t.current }) {
@@ -595,8 +591,8 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
   }
   let fresh_tabs = items(sr.value, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
   let can_close = match fresh_tabs.iter().find_first(fn(t) { text(Some(t), "id") == id }) {
-    Some(item) => flag(Some(item), "closable")
-    None => id == s.screen && (s.user_tab() || s.opens_url()) && flag(sr.value, "control")
+    Some(item) => !flag(Some(item), "opening") && flag(Some(item), "closable")
+    None => false
   }
   if !can_close {
     return
