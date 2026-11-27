@@ -53,25 +53,25 @@ priv struct OverlayEntry {
 /// it decided (View::window_downs), so each is decided once whichever layer is told of it first.
 priv struct OverlayStack {
   tree : @view.Tree
-  entries : Array[OverlayEntry]
+  mut entries : Array[OverlayEntry]
   changed : @signals.Signal[Int]
   mut down : Int
 }
 
 ///|
 /// The stacks of the trees that have overlays now, each kept while it holds one.
-let overlay_stacks : Array[OverlayStack] = []
+let overlay_stacks : Ref[Array[OverlayStack]] = Ref([])
 
 ///|
 /// The stack of `tree` (made where it has none).
 fn overlay_stack(tree : @view.Tree) -> OverlayStack {
-  for s in overlay_stacks {
+  for s in overlay_stacks.val {
     if physical_equal(s.tree, tree) {
       return s
     }
   }
   let s = { tree, entries: [], changed: @signals.signal(0), down: -1 }
-  overlay_stacks.push(s)
+  overlay_stacks.val.push(s)
   s
 }
 
@@ -86,15 +86,15 @@ fn OverlayStack::drop(self : OverlayStack, id : @view.NodeId) -> Unit {
   }
   self.changed.set(self.changed.untracked() + 1)
   if self.entries.is_empty() {
-    self.entries.shrink_to_fit()
-    for i, s in overlay_stacks {
+    self.entries = []
+    for i, s in overlay_stacks.val {
       if physical_equal(s, self) {
-        overlay_stacks.remove(i) |> ignore
+        overlay_stacks.val.remove(i) |> ignore
         break
       }
     }
-    if overlay_stacks.is_empty() {
-      overlay_stacks.shrink_to_fit()
+    if overlay_stacks.val.is_empty() {
+      overlay_stacks.val = []
     }
   }
 }
@@ -283,7 +283,7 @@ pub fn Overlay::node(self : Overlay) -> @view.View {
 ///|
 /// How many overlays `tree`'s stack holds now (inert ones too): none once each is let go.
 pub fn overlays_open(tree : @view.Tree) -> Int {
-  for s in overlay_stacks {
+  for s in overlay_stacks.val {
     if physical_equal(s.tree, tree) {
       return s.entries.length()
     }

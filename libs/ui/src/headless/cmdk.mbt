@@ -406,8 +406,22 @@ pub fn[K] cmdk_first(rows : Array[CmdkEntry[K]]) -> K? {
 /// elsewhere changes nothing), else the first that can be (cmdk: the one selected gone, the first).
 pub fn[K : Eq] cmdk_keep(rows : Array[CmdkEntry[K]], selected : K?) -> K? {
   match selected {
-    Some(k) if cmdk_valid(rows).iter().any(fn(it) { it.key == k }) => Some(k)
-    _ => cmdk_first(rows)
+    Some(k) => {
+      let valid = cmdk_valid(rows)
+      let mut found = false
+      for i = 0; i < valid.length(); i = i + 1 {
+        if valid[i].key == k {
+          found = true
+          break
+        }
+      }
+      if found {
+        Some(k)
+      } else {
+        cmdk_first(rows)
+      }
+    }
+    None => cmdk_first(rows)
   }
 }
 
@@ -442,7 +456,16 @@ pub fn[K : Eq] cmdk_move(
     return selected
   }
   let at = match selected {
-    Some(k) => valid.search_by(fn(it) { it.key == k })
+    Some(k) => {
+      let mut found : Int? = None
+      for i = 0; i < valid.length(); i = i + 1 {
+        if valid[i].key == k {
+          found = Some(i)
+          break
+        }
+      }
+      found
+    }
     None => None
   }
   let key = fn(i : Int) { Some(valid[i].key) }
@@ -485,7 +508,26 @@ pub fn[K : Eq] cmdk_move(
         }
       }
       let mine = match selected {
-        Some(k) => runs.search_by(fn(r) { r.0 != "" && r.1.iter().any(fn(it) { it.key == k }) })
+        Some(k) => {
+          let mut found : Int? = None
+          for i = 0; i < runs.length(); i = i + 1 {
+            let r = runs[i]
+            if r.0 != "" {
+              let mut hit = false
+              for j = 0; j < r.1.length(); j = j + 1 {
+                if r.1[j].key == k {
+                  hit = true
+                  break
+                }
+              }
+              if hit {
+                found = Some(i)
+                break
+              }
+            }
+          }
+          found
+        }
         None => None
       }
       guard mine is Some(m) else { return by_one(change) }

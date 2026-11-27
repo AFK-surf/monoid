@@ -170,7 +170,7 @@ pub fn apply_trigger(
 /// suppresses reopening until the cursor leaves that trigger or the text changes.
 pub struct TriggerMenu[K] {
   priv rules : Array[TriggerRule]
-  priv items : Array[K]
+  priv mut items : Array[K]
   priv current : Ref[TriggerMatch?]
   priv active_idx : @signals.Signal[Int]
   priv dismissed : Ref[(Int, String)?]
@@ -200,13 +200,7 @@ pub fn[K] TriggerMenu::update(
   items : Array[K],
 ) -> TriggerMatch? {
   self.last_text.val = text
-  self.items.clear()
-  for item in items {
-    self.items.push(item)
-  }
-  if self.items.is_empty() {
-    self.items.shrink_to_fit()
-  }
+  self.items = items.copy()
   match detect_trigger(text, cursor, self.rules) {
     None => {
       self.dismissed.val = None
