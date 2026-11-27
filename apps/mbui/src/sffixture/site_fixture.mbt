@@ -1,5 +1,5 @@
 // Bilingual (English / Chinese) website showcase fixtures for monoid.build:
-// - chat-site-duo: iPhone Duo unfolded two-panel tape (Login page on phones)
+// - chat-site-duo: iPhone chat (Login page on phones)
 // - chat-site-android: Android phone chat (Login page on phones, virtual screen test)
 // - chat-site-web: Web browser chat (CSV export for orders, Markdown table + code)
 // - settings-station-site: Desktop station overview (Willow / Mini / Laptop / Server)
@@ -173,6 +173,40 @@ fn site_days(mode : String) -> Array[Json] {
             "people": [ana],
           },
         ),
+        row(
+          "c6",
+          if en { "Duplicate push notifications" } else { "推送通知重复" },
+          "ws1/st2",
+          if en { "1d" } else { "昨天" },
+          {
+            "last": last(
+              if en {
+                "Deduplicated by message id on the device; two days without a repeat."
+              } else {
+                "改成在设备端按消息 id 去重，观察两天没再重复。"
+              },
+            ),
+            "agents": [agent("openai", "codex")],
+            "people": [zhou],
+          },
+        ),
+        row(
+          "c7",
+          if en { "Home page first paint" } else { "首页首屏加载" },
+          "ws1/st1",
+          if en { "1d" } else { "昨天" },
+          {
+            "last": last(
+              if en {
+                "Inlined critical CSS and deferred the charts: LCP 2.4 s → 1.1 s."
+              } else {
+                "关键 CSS 内联、图表延后加载，LCP 从 2.4 秒降到 1.1 秒。"
+              },
+            ),
+            "agents": [agent("anthropic", "claude")],
+            "people": [lin, ana],
+          },
+        ),
       ],
     },
   ]
@@ -276,12 +310,34 @@ fn site_chat(mode : String) -> Json {
       "ending": "all_done",
       "md": site_md_json(if en { site_web_md_en } else { site_web_md_zh }),
     }
+    let plain : Map[String, Json] = Map([])
+    let look_text = if en {
+      "The current export reads the whole result into memory before writing it, so 100k orders peak above 400 MB. I'll try three ways and compare time and memory."
+    } else {
+      "看了现在的导出：先把整页结果读进内存再拼成 CSV，10 万条订单时内存峰值超过 400 MB。我按三种写法各跑一遍，对比耗时和内存。"
+    }
+    let keep_text = if en {
+      "Keep it the same as the list: same filters, same sort order."
+    } else {
+      "导出结果要跟列表页一致，筛选条件和排序都别变。"
+    }
+    let kept_text = if en {
+      "Done: the export takes the list's filter and sort as they are, so it matches what's on screen row for row."
+    } else {
+      "好的，导出直接复用列表页的筛选和排序，和页面上看到的逐行一致。"
+    }
     let messages : Array[Json] = [
       msg(1, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), ask_text, if en { "26 min ago" } else { "26 分钟前" }, {
         "mine": true,
         "author": "lin@acme.dev",
       }),
-      msg(2, "agent", codex, answer, if en { "3 min ago" } else { "3 分钟前" }, web_more),
+      msg(2, "agent", codex, look_text, if en { "24 min ago" } else { "24 分钟前" }, plain),
+      msg(3, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), keep_text, if en { "18 min ago" } else { "18 分钟前" }, {
+        "mine": true,
+        "author": "lin@acme.dev",
+      }),
+      msg(4, "agent", codex, kept_text, if en { "15 min ago" } else { "15 分钟前" }, plain),
+      msg(5, "agent", codex, answer, if en { "3 min ago" } else { "3 分钟前" }, web_more),
     ]
     return {
       "archived": false,
@@ -331,7 +387,12 @@ fn site_chat(mode : String) -> Json {
   } else {
     site_duo_reply_zh
   }
-  let messages : Array[Json] = if is_android {
+  let messages : Array[Json] = {
+    let shot_text = if en {
+      "Took screenshots at 375, 390 and 430 px wide: at 375 px the sign-in button runs 24 px past the right edge; the other two look right."
+    } else {
+      "先在 375、390、430 三个宽度下各截了一张图：375 宽时登录按钮右边超出屏幕 24px，另外两个宽度正常。"
+    }
     let first_reply = if en {
       "Found it — `.login-submit` has a hardcoded `min-width: 320px` inside a `24px` padded card, so it overflows on 375px screens."
     } else {
@@ -345,29 +406,23 @@ fn site_chat(mode : String) -> Json {
     } else {
       "深色模式也顺手看一下，周宁说次要链接对比度偏低。"
     }
-    let reply_more : Map[String, Json] = Map([])
+    let reply_more : Map[String, Json] = if is_android {
+      Map([])
+    } else {
+      { "md": site_md_json(if en { site_duo_md_en } else { site_duo_md_zh }) }
+    }
     [
       msg(1, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), ask_text, if en { "14 min ago" } else { "14 分钟前" }, {
         "mine": true,
         "author": "lin@acme.dev",
       }),
-      msg(2, "agent", claude, first_reply, if en { "11 min ago" } else { "11 分钟前" }, first_more),
-      msg(3, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), followup, if en { "8 min ago" } else { "8 分钟前" }, {
+      msg(2, "agent", claude, shot_text, if en { "13 min ago" } else { "13 分钟前" }, Map([])),
+      msg(3, "agent", claude, first_reply, if en { "11 min ago" } else { "11 分钟前" }, first_more),
+      msg(4, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), followup, if en { "8 min ago" } else { "8 分钟前" }, {
         "mine": true,
         "author": "lin@acme.dev",
       }),
-      msg(4, "agent", claude, reply_text, if en { "6 min ago" } else { "6 分钟前" }, reply_more),
-    ]
-  } else {
-    let duo_more : Map[String, Json] = {
-      "md": site_md_json(if en { site_duo_md_en } else { site_duo_md_zh }),
-    }
-    [
-      msg(1, "person", by_person(if en { "Lin Xiao" } else { "林晓" }), ask_text, if en { "9 min ago" } else { "9 分钟前" }, {
-        "mine": true,
-        "author": "lin@acme.dev",
-      }),
-      msg(2, "agent", claude, reply_text, if en { "6 min ago" } else { "6 分钟前" }, duo_more),
+      msg(5, "agent", claude, reply_text, if en { "6 min ago" } else { "6 分钟前" }, reply_more),
     ]
   }
   {

@@ -3,7 +3,7 @@
 # OS chrome (website/devices-chrome.mjs), downloads the device models, renders each device in Blender Cycles
 # (website/render-devices.py) at 3840x2880 and encodes 3840x2880 (2x) + 1280x960 (1x) WebPs into website/assets/shots/.
 #
-# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, desk = the desktop app maximized on a Windows laptop,
+# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, desk = the desktop app in a window on a Windows laptop,
 # web = the web app in a full-screen browser on a MacBook Air 15".
 #
 # Usage:
@@ -60,20 +60,20 @@ for loc_tag in "en:en" "zh:zh-CN"; do
   echo "→ capturing 3x apps/mbui screens ($tag)"
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-duo" MBUI_DARK="0" MBUI_LOCALE="$loc" \
     MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="390x796" MBUI_FILM_SCALE="3" \
-    MBUI_FILM_PLATFORM="1" MBUI_NATIVE_INPUT="finger" MBUI_FILM_NAV_ABLE="1" \
+    MBUI_FILM_PLATFORM="1" MBUI_NATIVE_INPUT="finger" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/duo-${tag}.png" "$WORK/drive" >/dev/null
 
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-android" MBUI_DARK="0" MBUI_LOCALE="$loc" \
     MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="390x802" MBUI_FILM_SCALE="3" \
-    MBUI_FILM_PLATFORM="2" MBUI_NATIVE_INPUT="finger" MBUI_FILM_NAV_ABLE="1" \
+    MBUI_FILM_PLATFORM="2" MBUI_NATIVE_INPUT="finger" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/android-${tag}.png" "$WORK/drive" >/dev/null
 
-  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="place-stations-site" MBUI_DARK="0" MBUI_LOCALE="$loc" \
-    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1440x912" MBUI_FILM_SCALE="3" \
-    MBUI_FILM_PLATFORM="3" MBUI_FILM_INSET="1" MBUI_NATIVE_INPUT="mouse" \
+  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-web" MBUI_DARK="0" MBUI_LOCALE="$loc" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1440x900" MBUI_FILM_SCALE="2" \
+    MBUI_FILM_PLATFORM="3" MBUI_FILM_INSET="1" MBUI_FILM_WINDOW_CORNER="8" MBUI_NATIVE_INPUT="mouse" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/desk-${tag}.png" "$WORK/drive" >/dev/null
 
-  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-web" MBUI_DARK="0" MBUI_LOCALE="$loc" \
+  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-android" MBUI_DARK="0" MBUI_LOCALE="$loc" \
     MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1470x882" MBUI_FILM_SCALE="2" \
     MBUI_FILM_PLATFORM="4" MBUI_NATIVE_INPUT="mouse" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/web-${tag}.png" "$WORK/drive" >/dev/null

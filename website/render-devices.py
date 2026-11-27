@@ -182,11 +182,11 @@ def camera(loc, target, lens=85.0, fstop=None):
     return c
 
 
-GLOW = float(arg("--glow", "4"))
+GLOW = float(arg("--glow", "2.5"))
 
 
-def screen_material(path, name="Screen", sheen=0.035):
-    """The app's pixels as emission, plus a faint mirror reflection like a cover glass."""
+def screen_material(path, name="Screen", sheen=0.006):
+    """The app's pixels as emission, plus the faintest reflection of a matte (anti-glare) screen."""
     m = bpy.data.materials.new(name); m.use_nodes = True
     n, l = m.node_tree.nodes, m.node_tree.links
     n.clear()
@@ -392,12 +392,12 @@ def android():
     render()
 
 
-def floor(color=(0.0, 0.0, 0.0), rough=0.12):
+def floor(color=(0.0, 0.0, 0.0), rough=0.2):
     m = bpy.data.materials.new("Floor"); m.use_nodes = True
     b = principled(m)
     b.inputs["Base Color"].default_value = (*color, 1)
     b.inputs["Roughness"].default_value = rough
-    b.inputs["Specular IOR Level"].default_value = float(arg("--fspec", "0.5"))
+    b.inputs["Specular IOR Level"].default_value = float(arg("--fspec", "0.25"))
     # fade the floor out radially so it melts into the black backdrop (no horizon)
     n, l = m.node_tree.nodes, m.node_tree.links
     out = next(x for x in n if x.type == "OUTPUT_MATERIAL")

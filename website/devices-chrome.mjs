@@ -2,7 +2,7 @@
 // Composite 3x native OS chrome onto pure apps/mbui 3x captures before mapping onto official 3D CAD meshes:
 //   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
 //   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
-//   - desk:    the desktop app maximized on a Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; app + taskbar)
+//   - desk:    the desktop app in a window on a Windows 11 laptop, 3:2 (3840x2560 @2x = 1920x1280; desktop + taskbar)
 //   - web:     the web app in a full-screen browser on a MacBook Air 15" (2940x1908 @2x = 1470x954; notch band + bar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
@@ -86,13 +86,21 @@ function makeHtml(key) {
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
 
   if (dev === "desk") {
-    // The desktop app on a Windows 11 laptop (3:2, 1440x960 @3x = 4320x2880), maximized: the 1440x912 apps/mbui
-    // capture 1:1 (filmed as Windows with an inset window, so the app draws its own minimize/maximize/close in its top
-    // row, as the Windows app does) over the 48px taskbar with the app running.
+    // The desktop app in a window on a Windows 11 laptop's desktop (3:2, 1920x1280 @2x = 3840x2560): the 1440x900
+    // apps/mbui capture 1:1, filmed as Windows with an inset window (the app draws its own minimize/maximize/close in
+    // its top row, as the Windows app does), with the corners and shadow Windows 11 gives a window, over the
+    // wallpaper and the 48px taskbar with the app (its icon: assets/mark.svg) running.
+    const mark = readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "assets/mark.svg"), "utf8")
+      .replace(/<title>.*?<\/title>/, "").replace('width="32" height="32"', 'width="20" height="20"');
     return {
-      w: 1440, h: 960, dpr: 3,
-      html: `<!doctype html><html><body style="margin:0;width:1440px;height:960px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
-      <img src="${imgUrl}" style="display:block;width:1440px;height:912px;">
+      w: 1920, h: 1280, dpr: 2,
+      html: `<!doctype html><html><body style="margin:0;width:1920px;height:1280px;overflow:hidden;position:relative;font-family:${font};background:#0d2b5c;">
+      <div style="position:absolute;inset:0;background:
+        radial-gradient(ellipse 60% 55% at 62% 58%, rgba(120,170,255,0.95) 0%, rgba(60,110,220,0.55) 35%, rgba(20,50,120,0) 70%),
+        radial-gradient(ellipse 45% 40% at 30% 30%, rgba(90,200,255,0.55) 0%, rgba(40,90,200,0) 70%),
+        radial-gradient(ellipse 80% 70% at 80% 100%, rgba(150,110,255,0.45) 0%, rgba(40,30,120,0) 70%),
+        linear-gradient(160deg,#0d2b5c 0%,#1a4a9a 45%,#0e2350 100%);"></div>
+      <img src="${imgUrl}" style="position:absolute;left:240px;top:166px;width:1440px;height:900px;border-radius:8px;box-shadow:0 0 0 1px rgba(0,0,0,0.18),0 24px 64px rgba(0,0,0,0.45),0 8px 20px rgba(0,0,0,0.25);">
       <div style="position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
@@ -111,7 +119,7 @@ function makeHtml(key) {
             <svg width="19" height="19" viewBox="0 0 20 20" fill="none"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4l1.5 1.8H16A1.5 1.5 0 0 1 17.5 7.3V15a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 15V5.5Z" fill="#F2C94C"/><rect x="6" y="13" width="8" height="2.4" rx="0.8" fill="#0078D4"/></svg>
           </div>
           <div style="width:32px;height:30px;border-radius:6px;background:rgba(255,255,255,0.75);border:1px solid rgba(28,27,26,0.08);display:flex;align-items:center;justify-content:center;position:relative;">
-            <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" fill="#1C1B1A"/><circle cx="7.4" cy="9.6" r="1.15" fill="#FFFFFF"/><circle cx="12.6" cy="9.6" r="1.15" fill="#FFFFFF"/><path d="M7.5 12.6h5" stroke="#EF6334" stroke-width="1.4" stroke-linecap="round"/></svg>
+            ${mark}
             <span style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:12px;height:2.5px;border-radius:2px;background:#0078D4;"></span>
           </div>
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
