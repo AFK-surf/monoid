@@ -725,6 +725,36 @@ pub fn WholeCore::init_pre_handover(
     api.note_waiting_session(key)
     api.events.overview_changed("session")
   })
+  api.events.on_emit = Some(fn(ev : String, data : base_codec::Json) -> Unit {
+    if ev == "session" || ev == "turn" || ev == "thread" || ev == "sessionRemoved" {
+      match base_codec::json_get(data, "key") {
+        Some(base_codec::Json::Str(k)) => {
+          if k.length() > 0 {
+            waiting_tracker.note("session", Some(k))
+            api.note_waiting_session(k)
+          } else {
+            waiting_tracker.note("session", None)
+            api.note_waiting_all()
+          }
+        }
+        _ => match base_codec::json_get(data, "session") {
+          Some(base_codec::Json::Str(k)) => {
+            if k.length() > 0 {
+              waiting_tracker.note("session", Some(k))
+              api.note_waiting_session(k)
+            } else {
+              waiting_tracker.note("session", None)
+              api.note_waiting_all()
+            }
+          }
+          _ => {
+            waiting_tracker.note("session", None)
+            api.note_waiting_all()
+          }
+        }
+      }
+    }
+  })
   api.hooks.on_overview_dirty = Some(fn(reason : String) -> Unit {
     api.events.overview_changed(reason)
   })

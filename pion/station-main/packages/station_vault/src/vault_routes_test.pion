@@ -976,4 +976,9 @@ test "W17C2 R2: handle_put_item / handle_get_items CAS + sig + 404 non-member, a
     }
     _ => panic("expected boxes array")
   }
+
+  // 6. R3: `device_of_viewer` converts `now_ms` (Unix ms) to Unix seconds for `lock::admit`:
+  // a valid proof at `now_ms = 1700000000000L` (1700000000 s) MUST be admitted (not rejected as year 55843).
+  let admit_resp = handle_put_box(ctx, v_alice, alice_cert, now_ms=1700000000000L)
+  assert(admit_resp.status == 200)
 }

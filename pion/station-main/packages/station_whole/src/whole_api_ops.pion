@@ -30,6 +30,7 @@ import "station_vault"
 /// browser sign-ins, hot Drive roots) without cyclic package imports.
 pub struct WholeApiRuntimeHooks {
   pub mut lock_of : Option[(String) -> Option[lock::LockState]]
+  pub mut chains_of : Option[(String) -> form::Json]
   pub mut on_restart : Option[() -> Result[Unit, String]]
   pub mut on_workspace_join : Option[(base_codec::Json) -> Result[base_codec::Json, String]]
   pub mut on_logins_op : Option[(String, Array[String], base_codec::Json) -> Result[base_codec::Json, station_api::ApiError]]
@@ -43,6 +44,7 @@ pub struct WholeApiRuntimeHooks {
 pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
   WholeApiRuntimeHooks::{
     lock_of: None,
+    chains_of: None,
     on_restart: None,
     on_workspace_join: None,
     on_logins_op: None,
@@ -104,7 +106,7 @@ pub struct WholeApiRuntimePort {
   pub put_board_drafts : (String, String, base_codec::Json) -> Result[Unit, station_api::ApiError]
   pub get_widget_state : (String, String) -> Result[base_codec::Json, station_api::ApiError]
   pub put_widget_state : (String, String, base_codec::Json, Int64) -> Result[Unit, station_api::ApiError]
-  pub put_archive_policy : (String, String, String, String, Int64) -> Result[Unit, station_api::ApiError]
+  pub put_archive_policy : (Option[String], String, String, String, Int64) -> Result[Unit, station_api::ApiError]
 }
 
 pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
@@ -200,8 +202,9 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
       widgets_mem.set(key + "|" + path, v)
       Ok(())
     },
-    put_archive_policy: fn(ws : String, policy : String, _author : String, _summary : String, _now : Int64) -> Result[Unit, station_api::ApiError] {
-      policy_mem.set(ws, policy)
+    put_archive_policy: fn(ws_opt : Option[String], policy : String, _author : String, _summary : String, _now : Int64) -> Result[Unit, station_api::ApiError] {
+      let k = match ws_opt { Some(w) => w, None => "__home__" }
+      policy_mem.set(k, policy)
       Ok(())
     },
   }
@@ -336,11 +339,13 @@ pub fn WholeApiRuntimePort::production(
         Err(e) => return Err(station_api::ApiError::new(503, e))
       }
       let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-        // Strictly scope thread update to `ws` (threads with sessions in `ws`, or sessionless home threads when `ws == home_ws`).
+        // Respect `thread_visible_in_ws` `threads.home` priority so joined workspaces never touch
+        // threads whose `threads.home` belongs to another workspace.
         match txdb.run(
-          "UPDATE threads SET project = ?1 WHERE project = ?2 AND (" +
-          "EXISTS (SELECT 1 FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?3) = ?4)" +
-          " OR (NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) AND ?4 = ?3))",
+          "UPDATE threads SET project = ?1 WHERE project = ?2 AND (CASE" +
+          " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?3) = ?4)" +
+          " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?4 = ?3" +
+          " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?3) = ?4) END)",
           [
             base_codec::json_str(to_name),
             base_codec::json_str(from_name),
@@ -612,10 +617,14 @@ pub fn WholeApiRuntimePort::production(
         Err(e) => Err(station_api::ApiError::new(500, e.message))
       }
     },
-    put_archive_policy: fn(ws : String, policy : String, author : String, summary : String, now_ms : Int64) -> Result[Unit, station_api::ApiError] {
+    put_archive_policy: fn(ws_opt : Option[String], policy : String, author : String, summary : String, now_ms : Int64) -> Result[Unit, station_api::ApiError] {
       let st = match whole_store.require_open() {
         Ok(s) => s
         Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let ws_param = match ws_opt {
+        Some(w) => base_codec::json_str(w)
+        None => base_codec::json_null()
       }
       match st.db.run(
         "INSERT INTO archive_policy (at, policy, author, summary, ws) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -624,7 +633,7 @@ pub fn WholeApiRuntimePort::production(
           base_codec::json_str(policy),
           base_codec::json_str(author),
           base_codec::json_str(summary),
-          base_codec::json_str(ws),
+          ws_param,
         ],
       ) {
         Ok(_) => Ok(())
@@ -749,6 +758,11 @@ fn update_config_with(
   match cfg.reload_now() {
     Ok(_) => ()
     Err(e) => return Err(config_error_to_api_error(e))
+  }
+  // Validate BEFORE calling `cfg.update(...)` so invalid requests NEVER write disk or trigger listeners!
+  match mutate(cfg.raw()) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
   }
   let mut validation_err : Option[station_api::ApiError] = None
   let res = cfg.update(fn(raw : base_codec::Json) -> base_codec::Json {
@@ -914,6 +928,9 @@ fn redact_string_map(obj : base_codec::Json) -> base_codec::Json {
   }
 }
 
+/// Fail-closed redacted view of managed MCP servers (aligns with `station/src/api/routes/mcp-servers.ts`):
+/// skips malformed/non-object entries, requires non-empty `command` or `url`, and emits only allowlisted
+/// fields with `env` and `headers` strictly masked.
 fn redact_mcp_servers_view(raw_servers : base_codec::Json) -> base_codec::Json {
   match raw_servers {
     base_codec::Json::Obj(entries) => {
@@ -921,21 +938,32 @@ fn redact_mcp_servers_view(raw_servers : base_codec::Json) -> base_codec::Json {
       for i in 0..<entries.length() {
         let name = entries[i].0
         let entry = entries[i].1
+        if name.length() == 0 || name.length() > 128 {
+          continue
+        }
         match entry {
           base_codec::Json::Obj(fields) => {
+            let has_cmd = match json_field_str(entry, "command") { Some(s) => s.length() > 0, None => false }
+            let has_url = match json_field_str(entry, "url") { Some(s) => s.length() > 0, None => false }
+            if !has_cmd && !has_url {
+              continue
+            }
             let masked_fields : Array[(String, base_codec::Json)] = []
             for fi in 0..<fields.length() {
               let fk = fields[fi].0
               let fv = fields[fi].1
               if fk == "env" || fk == "headers" {
-                masked_fields.push((fk, redact_string_map(fv)))
-              } else {
+                match fv {
+                  base_codec::Json::Obj(_) => masked_fields.push((fk, redact_string_map(fv)))
+                  _ => ()
+                }
+              } else if fk == "command" || fk == "args" || fk == "url" || fk == "transport" || fk == "disabled" || fk == "cwd" {
                 masked_fields.push((fk, fv))
               }
             }
             out.push((name, base_codec::json_obj(masked_fields)))
           }
-          _ => out.push((name, entry))
+          _ => ()
         }
       }
       base_codec::json_obj(out)
@@ -1144,40 +1172,12 @@ fn vault_response_to_result(resp : station_vault::VaultRouteResponse) -> Result[
   }
 }
 
-fn plain_vault_shown_item(item : base_codec::Json) -> base_codec::Json {
-  match item {
-    base_codec::Json::Obj(fs) => {
-      let out : Array[(String, base_codec::Json)] = []
-      for i in 0..<fs.length() {
-        let k = fs[i].0
-        if k == "value" || k == "secret" || k == "password" || k == "token" || k == "cookies" || k == "fields" {
-          continue
-        }
-        out.push(fs[i])
-      }
-      base_codec::json_obj(out)
-    }
-    _ => item
-  }
-}
-
-fn plain_vault_refuse(status : Int, code : String, msg : String, extra : Array[(String, base_codec::Json)] = []) -> station_api::ApiError {
-  let fs : Array[(String, base_codec::Json)] = [
-    ("error", base_codec::json_str(msg)),
-    ("code", base_codec::json_str(code)),
-  ]
-  for i in 0..<extra.length() {
-    fs.push(extra[i])
-  }
-  station_api::ApiError::json(status, base_codec::json_obj(fs), no_cache=true)
-}
-
 fn dispatch_vault_op(
   op : String,
   req : station_api::ApiRequest,
   body : base_codec::Json,
   whole_store : WholeStore,
-  agents : WholeAgents,
+  _agents : WholeAgents,
   auth_policy : PeerAuthPolicy,
   events : station_api::EventsHub,
   hooks : WholeApiRuntimeHooks,
@@ -1186,19 +1186,12 @@ fn dispatch_vault_op(
   if !op.starts_with("vault.") {
     return None
   }
-  let fs = agents.jobs.fs
-  let data_dir = agents.config.data_dir
-  let ws_slug = sanitize_ws_key(req.viewer.workspace)
   let lock_fn : (String) -> Option[lock::LockState] = match hooks.lock_of {
     Some(f) => f
     None => fn(_ws : String) -> Option[lock::LockState] { None }
   }
-  let is_security_mode_locked = match lock_fn(req.viewer.workspace) {
-    Some(l) => l.genesis.length() > 0
-    None => false
-  }
 
-  // Vault secret approval / usage state machine ops: honest 501 until secrets approval manager is wired.
+  // Vault secret approval / usage / plain-SQLite ops: honest 501 until SQLite `vault_plain` & secrets approval manager are wired.
   if op == "vault.uses.get" ||
   op == "vault.cross-uses.get" ||
   op == "vault.requests.get" ||
@@ -1208,191 +1201,8 @@ fn dispatch_vault_op(
   op == "vault.described.post" ||
   op == "vault.removed.post" ||
   op == "vault.browses.post" ||
-  op == "vault.plain.grants.post" ||
-  op == "vault.plain.denials.post" ||
-  op == "vault.plain.described.post" ||
-  op == "vault.plain.removed.post" ||
-  op == "vault.plain.saves.post" {
+  op.starts_with("vault.plain.") {
     return Some(Err(err_not_implemented(op)))
-  }
-
-  // Plain Vault (per-(ws, owner) isolation, redacted list, version CAS, security-mode delete-only)
-  let owner_id = if req.viewer.sub.length() > 0 { req.viewer.sub } else { req.viewer.email }
-  let owner_slug = sanitize_ws_key(owner_id)
-  let plain_fname = "vault-plain-" + ws_slug + "-" + owner_slug + ".json"
-
-  if op == "vault.plain.GET" {
-    let doc = read_data_json_file(
-      fs,
-      data_dir,
-      plain_fname,
-      base_codec::json_obj([("items", base_codec::json_arr([]))]),
-    )
-    let shown_items : Array[base_codec::Json] = []
-    match base_codec::json_get(doc, "items") {
-      Some(base_codec::Json::Arr(items)) => {
-        for i in 0..<items.length() {
-          if json_field_str(items[i], "owner") == Some(owner_id) {
-            shown_items.push(plain_vault_shown_item(items[i]))
-          }
-        }
-      }
-      _ => ()
-    }
-    let out_fields : Array[(String, base_codec::Json)] = [
-      ("items", base_codec::json_arr(shown_items)),
-      ("locked", base_codec::json_bool(is_security_mode_locked)),
-    ]
-    match base_codec::json_get(doc, "lasts") {
-      Some(lv) => {
-        out_fields.push(("lasts", lv))
-        match base_codec::json_get(doc, "lastsAt") {
-          Some(lat) => out_fields.push(("lastsAt", lat))
-          None => ()
-        }
-      }
-      None => ()
-    }
-    return Some(Ok(base_codec::json_obj(out_fields)))
-  }
-  if op == "vault.plain.item.get" {
-    let id = match req.param("id") {
-      Some(s) => s
-      None => ""
-    }
-    let doc = read_data_json_file(
-      fs,
-      data_dir,
-      plain_fname,
-      base_codec::json_obj([("items", base_codec::json_arr([]))]),
-    )
-    match base_codec::json_get(doc, "items") {
-      Some(base_codec::Json::Arr(items)) => {
-        for i in 0..<items.length() {
-          let it = items[i]
-          let del = match json_field_bool(it, "deleted") { Some(b) => b, None => false }
-          if json_field_str(it, "id") == Some(id) && json_field_str(it, "owner") == Some(owner_id) && !del {
-            return Some(Ok(base_codec::json_obj([("item", it)])))
-          }
-        }
-      }
-      _ => ()
-    }
-    return Some(Err(plain_vault_refuse(404, "vault_unknown", "no such item here, or not yours")))
-  }
-  if op == "vault.plain.lasts.put" {
-    if hooks.read_only_handover_cell[0] {
-      return Some(Err(plain_vault_refuse(503, "vault_handover", "the previous station has not finished handing over")))
-    }
-    let cur = read_data_json_file(
-      fs,
-      data_dir,
-      plain_fname,
-      base_codec::json_obj([("items", base_codec::json_arr([]))]),
-    )
-    let cur_items = match base_codec::json_get(cur, "items") {
-      Some(v) => v
-      None => base_codec::json_arr([])
-    }
-    let lasts_v = match base_codec::json_get(body, "lasts") {
-      Some(v) => v
-      None => return Some(Err(plain_vault_refuse(400, "vault_invalid", "lasts is required")))
-    }
-    let at_v = match base_codec::json_get(body, "at") {
-      Some(v) => v
-      None => base_codec::json_int64(now_ms)
-    }
-    let next_doc = base_codec::json_obj([("items", cur_items), ("lasts", lasts_v), ("lastsAt", at_v)])
-    match write_data_json_file(fs, data_dir, plain_fname, next_doc) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "vault.plain.PUT" {
-    if hooks.read_only_handover_cell[0] {
-      return Some(Err(plain_vault_refuse(503, "vault_handover", "the previous station has not finished handing over")))
-    }
-    let id = match json_field_str(body, "id") {
-      Some(s) => if s.length() > 0 { s } else { return Some(Err(plain_vault_refuse(400, "vault_invalid", "item id is required"))) }
-      None => return Some(Err(plain_vault_refuse(400, "vault_invalid", "an item, as JSON")))
-    }
-    let is_deleted = match json_field_bool(body, "deleted") { Some(b) => b, None => false }
-    if is_security_mode_locked && !is_deleted {
-      return Some(Err(plain_vault_refuse(409, "vault_locked", "secrets now go into the encrypted vault")))
-    }
-    let next_ver = match base_codec::json_get(body, "version") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int64()
-      _ => return Some(Err(plain_vault_refuse(400, "vault_invalid", "version must be an integer")))
-    }
-    let cur = read_data_json_file(
-      fs,
-      data_dir,
-      plain_fname,
-      base_codec::json_obj([("items", base_codec::json_arr([]))]),
-    )
-    let cur_items : Array[base_codec::Json] = match base_codec::json_get(cur, "items") {
-      Some(base_codec::Json::Arr(xs)) => xs
-      _ => []
-    }
-    let mut prev_opt : Option[base_codec::Json] = None
-    let next_items : Array[base_codec::Json] = []
-    for i in 0..<cur_items.length() {
-      if json_field_str(cur_items[i], "id") == Some(id) {
-        prev_opt = Some(cur_items[i])
-      } else {
-        next_items.push(cur_items[i])
-      }
-    }
-    match prev_opt {
-      Some(prev) => {
-        if json_field_str(prev, "owner") != Some(owner_id) {
-          return Some(Err(plain_vault_refuse(404, "vault_unknown", "no such item here, or not yours")))
-        }
-        let prev_ver = match base_codec::json_get(prev, "version") {
-          Some(base_codec::Json::Num(n, _)) => n.to_int64()
-          _ => 0L
-        }
-        if next_ver != prev_ver + 1L {
-          return Some(Err(plain_vault_refuse(
-            409,
-            "vault_conflict",
-            "version " + (prev_ver + 1L).to_string() + " is the one that follows",
-            extra=[("item", plain_vault_shown_item(prev))],
-          )))
-        }
-      }
-      None => {
-        if next_ver != 0L {
-          return Some(Err(plain_vault_refuse(409, "vault_conflict", "version 0 is the one that follows")))
-        }
-      }
-    }
-    let kept_item = json_obj_set(json_obj_set(body, "ws", Some(base_codec::json_str(req.viewer.workspace))), "owner", Some(base_codec::json_str(owner_id)))
-    next_items.push(kept_item)
-    let next_doc = json_obj_set(cur, "items", Some(base_codec::json_arr(next_items)))
-    match write_data_json_file(fs, data_dir, plain_fname, next_doc) {
-      Ok(_) => {
-        let shown = plain_vault_shown_item(kept_item)
-        let ev_target = station_api::EventTarget::{
-          lang: None,
-          viewer: None,
-          device: None,
-          email: Some(req.viewer.email),
-          workspace: Some(req.viewer.workspace),
-          subs: None,
-          read_only: None,
-          managers: None,
-          vault: None,
-          sees_ws: Some(Some(req.viewer.workspace)),
-          sees_session: None,
-          sees_thread: None,
-          sees_job: None,
-        }
-        let _ = events.emit("vault-plain", shown, ev_target, now_ms, Some("vault-plain\x00" + id))
-        return Some(Ok(base_codec::json_obj([("item", shown)])))
-      }
-      Err(e) => return Some(Err(e))
-    }
   }
 
   // Encrypted SQLite-backed `VaultStore` routes
@@ -1460,7 +1270,7 @@ fn dispatch_vault_op(
     )))
   }
   if op == "vault.boxes.GET" {
-    return Some(vault_response_to_result(station_vault::handle_get_boxes(vctx, vviewer)))
+    return Some(vault_response_to_result(station_vault::handle_get_boxes(vctx, vviewer, chains_fn=hooks.chains_of)))
   }
   if op == "vault.asks.GET" {
     return Some(vault_response_to_result(station_vault::handle_get_asks(vctx, vviewer, query)))
@@ -1536,22 +1346,11 @@ fn dispatch_updates_op(
     return None
   }
   let ops_lang = api_lang_to_ops(req.lang)
-  let build_items_json = fn() -> base_codec::Json {
-    let items : Array[base_codec::Json] = [runtime_item_to_json(updates.station)]
-    for i in 0..<updates.runtimes.length() {
-      items.push(runtime_item_to_json(updates.runtimes[i]))
-    }
-    base_codec::json_obj([("items", base_codec::json_arr(items))])
-  }
-  if op == "updates.check" || op == "updates.wait" {
-    return Some(Ok(build_items_json()))
+  if op == "updates.check" || op == "updates.wait" || op == "updates.install" {
+    return Some(Err(err_not_implemented(op)))
   }
   if !req.viewer.manages_station() {
     return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage station updates")))
-  }
-  if op == "updates.install" {
-    // Installer process spawning is not yet wired in Pion station-main; report honestly.
-    return Some(Err(err_not_implemented(op)))
   }
   if op == "updates.channel" {
     let ch = match json_field_str(body, "channel") {
@@ -1632,10 +1431,23 @@ pub fn dispatch_extra_read_op(
   let data_dir = agents.config.data_dir
 
   if op == "memory" {
-    let mem_path = nodepath::join(fs.sep, [data_dir, "MEMORY.md"])
-    let content = match (fs.read_file)(mem_path) {
-      Some(s) => s
-      None => ""
+    // Strictly isolate MEMORY.md per workspace (aligned 1:1 with `station/src/api/routes/usage.ts:55-62`):
+    // non-home workspaces read ONLY `<data>/agent/workspaces/<ws>/MEMORY.md` and never home's MEMORY.md.
+    let content = if req.viewer.home {
+      let p1 = nodepath::join(fs.sep, [data_dir, "agent", "MEMORY.md"])
+      match (fs.read_file)(p1) {
+        Some(s) => s
+        None => match (fs.read_file)(nodepath::join(fs.sep, [data_dir, "MEMORY.md"])) {
+          Some(s) => s
+          None => ""
+        }
+      }
+    } else {
+      let p_ws = nodepath::join(fs.sep, [data_dir, "agent", "workspaces", sanitize_ws_key(req.viewer.workspace), "MEMORY.md"])
+      match (fs.read_file)(p_ws) {
+        Some(s) => s
+        None => ""
+      }
     }
     return Some(Ok(base_codec::json_obj([("memory", base_codec::json_str(content))])))
   }
@@ -1646,11 +1458,7 @@ pub fn dispatch_extra_read_op(
     return Some((port.changed_sessions)(req.viewer.workspace))
   }
   if op == "resources" {
-    return Some(Ok(base_codec::json_obj([
-      ("machine", (port.machine_stats)()),
-      ("station", (port.process_usage)()),
-      ("processes", base_codec::json_arr([])),
-    ])))
+    return Some(Err(err_not_implemented(op)))
   }
   if op == "job.log" {
     let id = match json_field_str(args, "id") {
@@ -2000,23 +1808,8 @@ pub fn dispatch_extra_call_op(
     }
     return Some(Ok(base_codec::json_obj([("access", access)])))
   }
-  if op == "tools.access.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "toolsAccess", Some(body)) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "toolsAccess")
-        return Some(Ok(base_codec::json_obj([("access", body)])))
-      }
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "xshare.hosts.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "xshareHosts", Some(body)) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "xshare")
-        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      }
-      Err(e) => return Some(Err(e))
-    }
+  if op == "tools.access.put" || op == "xshare.hosts.put" {
+    return Some(Err(err_not_implemented(op)))
   }
   if op == "workspaces.list" {
     let arr : Array[base_codec::Json] = []
@@ -2039,101 +1832,26 @@ pub fn dispatch_extra_call_op(
     }
   }
 
-  // 4. Accounts / Profiles / Automatic Decisions / Archiving / Auto-Chats
+  // 4. Accounts / Archive Policy (profiles CRUD and unvalidated config writers return honest 501 until full schema/array parity)
   if op.starts_with("accounts.") {
-    if op == "accounts.archiving.put" {
-      match update_config_key(cfg_opt, cfg_open_err, "archiving", Some(body)) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "archiving")
-          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
-    if op == "accounts.auto-chats.put" {
-      match update_config_key(cfg_opt, cfg_open_err, "autoChats", Some(body)) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "autoChats")
-          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
-    if op == "accounts.automaticDecisions.put" {
-      match update_config_key(cfg_opt, cfg_open_err, "automaticDecisions", Some(body)) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "automaticDecisions")
-          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
     if op == "accounts.automaticDecisions.policy.put" {
-      // Strictly workspace-scoped in SQLite `archive_policy` table (never pollutes global/home config.json).
+      // Aligned 1:1 with `station/src/store/store.ts:3691-3694`: home workspace stores SQL NULL for `ws`,
+      // and `author` stores a JSON actor object `{ email, sub, name }`.
       let policy_text = match json_field_str(body, "policy") {
         Some(s) => s
         None => base_codec::json_stringify(body)
       }
       let summary_text = match json_field_str(body, "summary") { Some(s) => s, None => "" }
-      match (port.put_archive_policy)(req.viewer.workspace, policy_text, req.viewer.email, summary_text, now_ms) {
+      let ws_opt : Option[String] = if req.viewer.home { None } else { Some(req.viewer.workspace) }
+      let author_json = base_codec::json_stringify(base_codec::json_obj([
+        ("email", base_codec::json_str(req.viewer.email)),
+        ("sub", base_codec::json_str(req.viewer.sub)),
+        ("name", base_codec::json_str(req.viewer.name)),
+      ]))
+      match (port.put_archive_policy)(ws_opt, policy_text, author_json, summary_text, now_ms) {
         Ok(_) => {
           hooks_notify_overview(hooks, "automaticDecisions")
           return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("workspace", base_codec::json_str(req.viewer.workspace))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
-    if op == "accounts.profiles.createKeyed" || op == "accounts.profiles.createMachine" || op == "accounts.profiles.put" {
-      let id = if params.length() > 0 {
-        params[0]
-      } else {
-        match json_field_str(body, "id") {
-          Some(s) => if s.length() > 0 { s } else { "p-" + (port.random_hex)(6) }
-          None => "p-" + (port.random_hex)(6)
-        }
-      }
-      // Compute updated profiles INSIDE `cfg.update` callback so concurrent external edits are preserved.
-      match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-        let next_profiles : Array[(String, base_codec::Json)] = []
-        match base_codec::json_get(raw, "profiles") {
-          Some(base_codec::Json::Obj(ps)) => {
-            for i in 0..<ps.length() {
-              if ps[i].0 != id {
-                next_profiles.push(ps[i])
-              }
-            }
-          }
-          _ => ()
-        }
-        next_profiles.push((id, body))
-        Ok(json_obj_set(raw, "profiles", Some(base_codec::json_obj(next_profiles))))
-      }) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "profiles")
-          return Some(Ok(base_codec::json_obj([("id", base_codec::json_str(id)), ("ok", base_codec::json_bool(true))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
-    if op == "accounts.profiles.delete" && params.length() >= 1 {
-      let id = params[0]
-      match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-        let next_profiles : Array[(String, base_codec::Json)] = []
-        match base_codec::json_get(raw, "profiles") {
-          Some(base_codec::Json::Obj(ps)) => {
-            for i in 0..<ps.length() {
-              if ps[i].0 != id {
-                next_profiles.push(ps[i])
-              }
-            }
-          }
-          _ => ()
-        }
-        Ok(json_obj_set(raw, "profiles", Some(base_codec::json_obj(next_profiles))))
-      }) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "profiles")
-          return Some(Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))])))
         }
         Err(e) => return Some(Err(e))
       }
@@ -2408,85 +2126,64 @@ pub fn dispatch_extra_call_op(
       }
     }
   }
-  let sub_id = if req.viewer.sub.length() > 0 { req.viewer.sub } else { req.viewer.email }
-  if op == "presetProjects.GET" {
-    match (port.get_preset_projects)(req.viewer.workspace, sub_id) {
-      Ok(v) => return Some(Ok(base_codec::json_obj([("projects", v)])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "presetProjects.PUT" {
-    let val_j = match base_codec::json_get(body, "projects") { Some(v) => v, None => body }
-    match (port.put_preset_projects)(req.viewer.workspace, sub_id, val_j) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "stars.GET" {
-    match (port.get_stars)(req.viewer.workspace, sub_id) {
-      Ok(v) => return Some(Ok(base_codec::json_obj([("stars", v)])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "stars.PUT" {
-    let val_j = match base_codec::json_get(body, "stars") { Some(v) => v, None => body }
-    match (port.put_stars)(req.viewer.workspace, sub_id, val_j) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "progress.GET" {
-    match (port.get_progress)(req.viewer.workspace, sub_id) {
-      Ok(v) => return Some(Ok(base_codec::json_obj([("progress", v)])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "progress.PUT" {
-    let val_j = match base_codec::json_get(body, "progress") { Some(v) => v, None => body }
-    match (port.put_progress)(req.viewer.workspace, sub_id, req.viewer.email, val_j) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "board.drafts.GET" {
-    match (port.get_board_drafts)(req.viewer.workspace, sub_id) {
-      Ok(v) => return Some(Ok(base_codec::json_obj([("drafts", v)])))
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "board.drafts.PUT" {
-    let val_j = match base_codec::json_get(body, "drafts") { Some(v) => v, None => body }
-    match (port.put_board_drafts)(req.viewer.workspace, sub_id, val_j) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
+  // 7b. `stars.*`, `progress.*`, `presetProjects.*`, `board.drafts.*`: honest 501 until per-record `rev` merge (`preset-records`) is ported.
+  if op == "presetProjects.GET" ||
+  op == "presetProjects.PUT" ||
+  op == "stars.GET" ||
+  op == "stars.PUT" ||
+  op == "progress.GET" ||
+  op == "progress.PUT" ||
+  op == "board.drafts.GET" ||
+  op == "board.drafts.PUT" {
+    return Some(Err(err_not_implemented(op)))
   }
 
-  // 8. Copies settings (manager-gated + redacted backupView)
+  // 8. Copies settings (manager-gated + redacted backupView; PUT returns honest 501 until field-preserving `applyBackupUpdate` is ported)
   if op == "copies.settings.get" {
     let raw = read_config_raw(cfg_opt)
     return Some(Ok(redact_backup_view(raw)))
   }
   if op == "copies.settings.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "backup", Some(body)) {
-      Ok(written) => {
-        hooks_notify_overview(hooks, "copies")
-        return Some(Ok(redact_backup_view(written)))
-      }
-      Err(e) => return Some(Err(e))
-    }
+    return Some(Err(err_not_implemented(op)))
   }
 
-  // 9. Drive roots (strictly home `drive.roots` vs joined `drive.workspaces[ws]` + live hot-update)
+  // 9. Drive roots (manager-gated, MOST_ROOTS=64, absolute-path checkRoot validation, home vs joined isolation + live hot-update)
   if op == "drive.roots.put" {
-    let roots_arr : Array[String] = []
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage drive roots")))
+    }
     let raw_roots = match base_codec::json_get(body, "roots") {
       Some(base_codec::Json::Arr(xs)) => xs
-      _ => return Some(Err(station_api::ApiError::new(400, "roots must be an array of paths")))
+      _ => return Some(Err(station_api::ApiError::new(400, "roots: at most 64 paths")))
     }
+    if raw_roots.length() > 64 {
+      return Some(Err(station_api::ApiError::new(400, "roots: at most 64 paths")))
+    }
+    let roots_arr : Array[String] = []
+    let seen_roots : Map[String, Bool] = Map::new()
     for i in 0..<raw_roots.length() {
       match raw_roots[i] {
-        base_codec::Json::Str(s) => if s.length() > 0 { roots_arr.push(s) }
+        base_codec::Json::Str(raw_p) => {
+          let p = raw_p.trim()
+          if p.length() == 0 || p.length() > 4096 || p.contains("\x00") {
+            return Some(Err(station_api::ApiError::new(400, "invalid drive root path")))
+          }
+          let is_abs = p.starts_with("/") || (p.length() >= 3 && p.code_unit_at(1) == 58 && (p.code_unit_at(2) == 47 || p.code_unit_at(2) == 92))
+          if !is_abs {
+            return Some(Err(station_api::ApiError::new(400, "drive root must be an absolute path: " + p)))
+          }
+          // Reject path traversal segments `..`
+          let segs = p.split("/")
+          for si in 0..<segs.length() {
+            if segs[si] == ".." {
+              return Some(Err(station_api::ApiError::new(400, "drive root must not contain '..': " + p)))
+            }
+          }
+          if !seen_roots.contains(p) {
+            seen_roots.set(p, true)
+            roots_arr.push(p)
+          }
+        }
         _ => return Some(Err(station_api::ApiError::new(400, "each drive root must be a string")))
       }
     }

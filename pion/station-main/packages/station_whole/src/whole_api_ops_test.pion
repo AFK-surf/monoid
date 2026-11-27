@@ -190,6 +190,7 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   let req = make_test_api_req("POST", "/test")
 
   let unimplemented_read_ops : Array[String] = [
+    "resources",
     "usage",
     "usage.calls",
     "machineSessions",
@@ -211,20 +212,37 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
 
   let unimplemented_call_ops : Array[String] = [
     "updates.install",
+    "updates.check",
+    "updates.wait",
     "network.station.restart",
     "workspaces.join",
     "connects.put",
     "connects.delete",
     "slack.connects.create",
     "feishu.connects.post",
+    "copies.settings.put",
     "copies.retire.POST",
     "copies.restore",
     "copies.s3.test",
     "drive.mkdir.post",
     "transfers.cancel",
+    "tools.access.put",
+    "xshare.hosts.put",
+    "accounts.archiving.put",
+    "accounts.auto-chats.put",
+    "accounts.automaticDecisions.put",
+    "accounts.profiles.put",
+    "accounts.profiles.createKeyed",
+    "accounts.profiles.delete",
     "accounts.profiles.login",
     "accounts.profiles.quota",
     "accounts.skills.share",
+    "stars.GET",
+    "stars.PUT",
+    "progress.GET",
+    "progress.PUT",
+    "presetProjects.GET",
+    "board.drafts.PUT",
     "resources.process.end",
     "screens.browser.open",
     "links.preview",
@@ -236,6 +254,9 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "hub.session.compact",
     "vault.uses.get",
     "vault.grants.post",
+    "vault.plain.GET",
+    "vault.plain.PUT",
+    "vault.plain.item.get",
     "vault.plain.grants.post",
   ]
   for i in 0..<unimplemented_call_ops.length() {
@@ -247,10 +268,10 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   }
 }
 
-test "wave17c2 vault structured JSON error payloads and plain vault dual-owner isolation, redaction, CAS, and security mode" {
-  let (_, _, api, _, _, hooks) = make_mem_whole_api_fixture()
+test "wave17c2 R3: vault structured JSON error payloads, memory cross-ws isolation, drive.roots.put validation, and EventsHub WaitingTracker refresh" {
+  let (_, agents, api, _, _, hooks) = make_mem_whole_api_fixture()
   let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
-  let bob = make_test_viewer("bob@example.com", "u-bob", "ws-main", true, "member")
+  let joined_member = make_test_viewer("bob@example.com", "u-bob", "ws-other", false, "member")
 
   // 1. Pre-handover returns structured 503 JSON with `code: "vault_handover"`
   hooks.read_only_handover_cell[0] = true
@@ -278,105 +299,59 @@ test "wave17c2 vault structured JSON error payloads and plain vault dual-owner i
     Ok(_) => panic("expected 409")
   }
 
-  // 3. Plain vault: Alice creates item v0 with secret value
-  let item0 = base_codec::json_obj([
-    ("id", base_codec::json_str("sec-1")),
-    ("name", base_codec::json_str("STRIPE_KEY")),
-    ("value", base_codec::json_str("sk_live_supersecret")),
-    ("version", base_codec::json_int(0)),
-  ])
-  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item0) {
-    Ok(res) => {
-      // Returned item MUST be redacted (no `value` field!)
-      let shown = match base_codec::json_get(res, "item") { Some(v) => v, None => panic("missing item") }
-      if !(base_codec::json_get(shown, "value") is None) {
-        panic("plain vault PUT leaked secret value in shown response")
-      }
-    }
-    Err(e) => panic("alice plain PUT failed: " + e.message)
+  // 3. `memory` strict workspace isolation: non-home workspace MUST NEVER read home MEMORY.md!
+  let _ = (agents.jobs.fs.mkdir_p)("/tmp/w17c2-api-test/agent")
+  let _ = (agents.jobs.fs.write_file)("/tmp/w17c2-api-test/agent/MEMORY.md", "HOME-SECRET-MEMORY")
+  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", alice), base_codec::json_obj([])) {
+    Ok(res) => if json_field_str(res, "memory") != Some("HOME-SECRET-MEMORY") { panic("home viewer must read home MEMORY.md") }
+    Err(e) => panic("home memory read failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", joined_member), base_codec::json_obj([])) {
+    Ok(res) => if json_field_str(res, "memory") != Some("") { panic("joined viewer leaked home MEMORY.md!") }
+    Err(e) => panic("joined memory read failed: " + e.message)
   }
 
-  // 4. Plain vault GET list for Alice returns redacted item; Bob sees empty list and gets 404 on item
-  match (api.admin.host.call)("vault.plain.GET", make_test_api_req_as("GET", "/vault/plain", alice), [], base_codec::json_obj([])) {
-    Ok(res) => match base_codec::json_get(res, "items") {
-      Some(base_codec::Json::Arr(xs)) => {
-        if xs.length() != 1 || !(base_codec::json_get(xs[0], "value") is None) {
-          panic("alice plain GET must return 1 redacted item")
-        }
-      }
-      _ => panic("missing items")
-    }
-    Err(e) => panic("alice plain GET failed: " + e.message)
+  // 4. `drive.roots.put`: non-manager rejected 403, relative path rejected 400, traversal rejected 400
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_member), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/ok")]))])) {
+    Err(e) => if e.status != 403 { panic("non-manager drive.roots.put must return 403") }
+    Ok(_) => panic("non-manager drive.roots.put must be rejected")
   }
-  match (api.admin.host.call)("vault.plain.GET", make_test_api_req_as("GET", "/vault/plain", bob), [], base_codec::json_obj([])) {
-    Ok(res) => match base_codec::json_get(res, "items") {
-      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("bob must NOT see alice's plain vault items") }
-      _ => panic("missing items")
-    }
-    Err(e) => panic("bob plain GET failed: " + e.message)
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("relative/path")]))])) {
+    Err(e) => if e.status != 400 { panic("relative drive root must return 400") }
+    Ok(_) => panic("relative drive root must be rejected")
   }
-  match (api.admin.host.call)("vault.plain.item.get", make_test_api_req_as("GET", "/vault/plain/item?id=sec-1", bob), [], base_codec::json_obj([])) {
-    Err(e) => if e.status != 404 { panic("bob plain item GET must return 404, got " + e.status.to_string()) }
-    Ok(_) => panic("bob must NOT read alice's plain item")
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/tmp/../etc")]))])) {
+    Err(e) => if e.status != 400 { panic("traversal drive root must return 400") }
+    Ok(_) => panic("traversal drive root must be rejected")
   }
 
-  // 5. Stale version PUT returns structured 409 vault_conflict with `item`
-  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item0) {
-    Err(e) => {
-      if e.status != 409 { panic("expected 409 on stale plain version") }
-      match e.raw_body {
-        Some(b) => {
-          if json_field_str(b, "code") != Some("vault_conflict") { panic("expected vault_conflict code") }
-          if base_codec::json_get(b, "item") is None { panic("expected conflict item payload") }
-        }
-        None => panic("expected structured conflict body")
+  // 5. EventsHub::emit live WaitingTracker refresh (empty -> turn enters need_human -> reads -> turn exits -> empty)
+  let mut live_waiting : Array[station_api::WaitingSessionInfo] = []
+  let wt = station_api::WaitingTracker::new(station_api::WaitingStorePort::{
+    waiting_for_people: fn(_since, _lim) { live_waiting },
+    waiting_for_person_of: Some(fn(k, _since) {
+      for i in 0..<live_waiting.length() {
+        if live_waiting[i].key == k { return Some(live_waiting[i]) }
       }
-    }
-    Ok(_) => panic("stale plain version must be rejected")
-  }
-
-  // 6. Security mode (lock.genesis != "") allows deletion only on plain vault
-  hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
-    Some(lock::LockState::{
-      ws: ws,
-      seq: 1.0,
-      head: "h1",
-      genesis: "gen-1",
-      origins: [],
-      rp_id: "",
-      cloud_keys: form::Json::Arr([]),
-      members: form::OrderedMap::new(),
-      devices: form::OrderedMap::new(),
-      sign_keys: form::OrderedMap::new(),
-      passkeys: form::OrderedMap::new(),
-      signed: form::OrderedMap::new(),
-      stations: form::OrderedMap::new(),
-      gateways: form::OrderedMap::new(),
-      persons: form::OrderedMap::new(),
-      disabled: false,
-      moved: None,
-    })
+      None
+    }),
   })
-  let item1_non_del = base_codec::json_obj([
-    ("id", base_codec::json_str("sec-1")),
-    ("name", base_codec::json_str("STRIPE_KEY")),
-    ("value", base_codec::json_str("sk_new")),
-    ("version", base_codec::json_int(1)),
-  ])
-  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item1_non_del) {
-    Err(e) => if e.status != 409 { panic("expected 409 vault_locked in security mode") }
-    Ok(_) => panic("non-delete plain PUT must fail in security mode")
-  }
-  let item1_del = base_codec::json_obj([
-    ("id", base_codec::json_str("sec-1")),
-    ("name", base_codec::json_str("STRIPE_KEY")),
-    ("deleted", base_codec::json_bool(true)),
-    ("version", base_codec::json_int(1)),
-  ])
-  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item1_del) {
-    Ok(_) => ()
-    Err(e) => panic("delete plain PUT in security mode should succeed: " + e.message)
-  }
+  api.waiting_trackers.set("ws-main", wt)
+  api.events.on_emit = Some(fn(ev : String, data : base_codec::Json) -> Unit {
+    if ev == "turn" || ev == "session" {
+      match base_codec::json_get(data, "key") {
+        Some(base_codec::Json::Str(k)) => api.note_waiting_session(k)
+        _ => api.note_waiting_all()
+      }
+    }
+  })
+  if wt.read(0L, 10).length() != 0 { panic("expected empty waiting initially") }
+  live_waiting = [station_api::WaitingSessionInfo::{ key: "s-live", title: Some("Need"), need: Some("approve"), ended_at: 5000L }]
+  let _ = api.events.emit("turn", base_codec::json_obj([("key", base_codec::json_str("s-live"))]), station_api::EventTarget::everyone(), 5000L, None)
+  if wt.read(0L, 10).length() != 1 { panic("expected WaitingTracker to refresh after turn emit") }
+  live_waiting = []
+  let _ = api.events.emit("turn", base_codec::json_obj([("key", base_codec::json_str("s-live"))]), station_api::EventTarget::everyone(), 6000L, None)
+  if wt.read(0L, 10).length() != 0 { panic("expected WaitingTracker to clear after turn exit emit") }
 }
 
 test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace drive.roots.put, presets RMW, and cross-ws rejection" {

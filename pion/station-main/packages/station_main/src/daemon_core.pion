@@ -319,6 +319,7 @@ pub struct ActiveOutbound {
   pub mut stream_id : Option[Int64]
   pub mut sock_id : Option[Int64]
   pub mut reply_buf : Bytes
+  pub mut sent : Bool
   pub on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit]
 }
 
@@ -1422,10 +1423,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
-    // PR #9132: never auto-retry outbound `connect.call` RPCs on transport read errors (prevents duplicate posts).
-    if ob.method == "connect.call" {
+    // PR #9132: never auto-retry outbound `connect.call` RPCs after payload has been written (prevents duplicate posts),
+    // while still allowing pre-send connection/dial failures to retry.
+    if ob.method == "connect.call" && ob.sent {
       match ob.on_ask_done {
-        Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed (no auto-retry)"))
+        Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed after send (no auto-retry)"))
         None => ()
       }
       return
@@ -2249,11 +2251,10 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   // 2. Mesh endpoint (`front.sock` or direct `iroh.bind` fallback).
-  let mut relay_urls : Array[String] = match cloud.state {
+  let relay_urls : Array[String] = match cloud.state {
     Some(s) => s.relay_urls
     None => []
   }
-  let daemon_relay_ranker = DaemonRelayRanker::new(host_shim::now_ms())
   let _ = config_file.listen(fn(next_raw : base_codec::Json) -> Unit {
     ctx.cfg_raw = next_raw
   })
@@ -2620,6 +2621,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
               stream_id: None,
               sock_id: None,
               reply_buf: Bytes::new(0),
+              sent: false,
               on_ask_done: tell.on_ask_done,
             },
           )
@@ -3426,6 +3428,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             }
                             if sid >= 0L {
                               ob.stream_id = Some(sid)
+                              ob.sent = true
                               call_envelope(mux_mesh, 0, MESH_TOK_OUT_WRITE, oid, mesh_door::direct_istream_write(sid, ob.payload))
                             } else {
                               match ob.conn_id {
@@ -3982,6 +3985,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                             front_early_out_socks.remove(fsid)
                                             front_out_by_sock.set(early_sock, oid)
                                             ob.sock_id = Some(early_sock)
+                                            ob.sent = true
                                             let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
                                             let _ = mux_mesh.call_async_raw(
                                               builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
@@ -4185,6 +4189,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                     match active_outbounds.get(oid) {
                                       Some(ob) => {
                                         ob.sock_id = Some(sock_id)
+                                        ob.sent = true
                                         let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
                                         let _ = mux_mesh.call_async_raw(
                                           builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),

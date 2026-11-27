@@ -255,6 +255,7 @@ test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" 
   let fs = station_jobs::FsPort::{
     sep: "/",
     lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    lstat_err: None,
     stat: fn(p : String) -> Option[station_jobs::FsStat] {
       if stats.contains(p) { Some(dir_stat) } else { None }
     },

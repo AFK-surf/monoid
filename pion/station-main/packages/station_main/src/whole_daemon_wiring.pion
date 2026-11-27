@@ -8,6 +8,7 @@
 //    with disjoint `9 << 32` `event_id` base and 30-minute per-repo deadline — NEVER blocks loop!)
 
 import "base_codec"
+import "form"
 import "host_shim"
 import "lock"
 import "nodepath"
@@ -18,6 +19,7 @@ import "station_jobs"
 import "station_mesh"
 import "station_ops"
 import "station_sys"
+import "station_vault"
 import "station_whole"
 
 /// Disjoint event_id base for async upkeep child processes (`9 << 32`, clear of `1<<32..8<<32`).
@@ -183,6 +185,73 @@ pub fn parse_device_tunnel_http_req(carry : Bytes) -> Option[(String, String, Ar
 // 2. Wire WholeCore Runtime Hooks (`CloudStore` lock_of, restart, logins, signins)
 // ---------------------------------------------------------------------------
 
+fn build_personal_lock_sources(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  ws : String,
+) -> station_cloud::PersonalLockSources {
+  let member_emails : Map[String, String] = Map::new()
+  let member_roles : Map[String, String] = Map::new()
+  let vault_summaries : Array[station_cloud::VaultRecordSummary] = []
+  let box_summaries : Array[station_cloud::BoxCertSummary] = []
+  match core.store.vault_store {
+    Some(vs) => {
+      match vs.vaults(ws) {
+        Ok(vs_list) => {
+          for i in 0..<vs_list.length() {
+            let v = vs_list[i]
+            let owner = match form::json_field(Some(v), "owner") { Some(form::Json::Str(s)) => s, _ => "" }
+            let del = match form::json_field(Some(v), "deleted") { Some(form::Json::Bool(true)) => true, _ => false }
+            let sk = match form::json_field(form::json_field(Some(v), "sig"), "key") { Some(form::Json::Str(s)) => s, _ => "" }
+            let mem_arr : Array[String] = []
+            match form::json_field(Some(v), "members") {
+              Some(form::Json::Arr(xs)) => {
+                for j in 0..<xs.length() {
+                  match xs[j] {
+                    form::Json::Str(s) => mem_arr.push(s)
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+            vault_summaries.push(station_cloud::VaultRecordSummary::{
+              owner: owner,
+              deleted: del,
+              sig_key: sk,
+              members: mem_arr,
+            })
+          }
+        }
+        Err(_) => ()
+      }
+      match vs.boxes(ws) {
+        Ok(bs_list) => {
+          for i in 0..<bs_list.length() {
+            let b = bs_list[i]
+            let dev = match form::json_field(Some(b), "device") { Some(form::Json::Str(s)) => s, _ => "" }
+            let at = match form::json_field(Some(b), "at") { Some(form::Json::Num(n)) => n.to_int64(), _ => 0L }
+            box_summaries.push(station_cloud::BoxCertSummary::{ device: dev, at: at, raw: b })
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  let vf = core.api.auth_policy.verify_fn
+  station_cloud::PersonalLockSources::{
+    chains: ctx.cloud.person_chains,
+    member_emails: member_emails,
+    member_roles: member_roles,
+    vaults: vault_summaries,
+    boxes: box_summaries,
+    cert_ok: fn(l : lock::LockState, b : station_cloud::BoxCertSummary) -> Bool {
+      station_vault::cert_ok_for_lock(l, b.raw, verify_fn=vf)
+    },
+  }
+}
+
 pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
@@ -192,22 +261,47 @@ pub fn wire_whole_core_runtime_hooks(
   let _ = browser
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     match ctx.cloud.lock_of(Some(ws)) {
-      Some(kept) => kept.state
-      None => None
+      Some(kept) => match kept.state {
+        Some(l) => Some(l)
+        None => {
+          let sources = build_personal_lock_sources(ctx, core, ws)
+          if sources.chains.length() > 0 {
+            Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=core.api.auth_policy.verify_fn))
+          } else {
+            None
+          }
+        }
+      }
+      None => {
+        let sources = build_personal_lock_sources(ctx, core, ws)
+        if sources.chains.length() > 0 {
+          Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=core.api.auth_policy.verify_fn))
+        } else {
+          None
+        }
+      }
     }
   })
-  core.api.hooks.on_restart = Some(fn() -> Result[Unit, String] {
-    ctx.request_stop()
-    Ok(())
+  core.api.hooks.chains_of = Some(fn(ws : String) -> form::Json {
+    let sources = build_personal_lock_sources(ctx, core, ws)
+    let picked = station_cloud::personal_vault_chains(ws, sources, verify_fn=core.api.auth_policy.verify_fn)
+    let fields : Array[(String, form::Json)] = []
+    let ks = picked.keys()
+    for i in 0..<ks.length() {
+      match picked.get(ks[i]) {
+        Some(ch) => fields.push((ks[i], form::Json::Arr(ch)))
+        None => ()
+      }
+    }
+    form::Json::Obj(fields)
   })
+  // Honest 501 until real hot handover restart is wired (never fake restart by stopping the daemon).
+  core.api.hooks.on_restart = None
   core.api.hooks.on_logins_op = Some(fn(
     op : String,
     params : Array[String],
     _body : base_codec::Json,
   ) -> Result[base_codec::Json, station_api::ApiError] {
-    if op == "logins.machine.list" {
-      return Ok(base_codec::json_obj([("logins", base_codec::json_arr([]))]))
-    }
     let id = if params.length() > 0 { params[0] } else { "" }
     if op == "logins.machine.get" {
       match logins.manager.get(id) {
@@ -225,10 +319,12 @@ pub fn wire_whole_core_runtime_hooks(
       }
     }
     if op == "logins.machine.delete" {
-      let _ = logins.cancel_login(id, None, host_shim::now_ms())
-      return Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))]))
+      match logins.cancel_login(id, None, host_shim::now_ms()) {
+        Ok(_) => return Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))]))
+        Err(msg) => return Err(station_api::ApiError::new(404, msg))
+      }
     }
-    Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("op", base_codec::json_str(op)), ("id", base_codec::json_str(id))]))
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
   })
 }
 

@@ -141,6 +141,7 @@ fn sees_vault(v : form::Json, viewer : VaultViewer) -> Bool {
 }
 
 /// Cryptographically verify the lock device the request comes from via `lock::admit` (1:1 with `deviceOf`).
+/// Note: `lock::admit` checks expiry in Unix seconds (`now_s`), while HTTP routes carry `now_ms`.
 fn device_of_viewer(
   ctx : VaultRouteCtx,
   l : lock::LockState,
@@ -148,7 +149,8 @@ fn device_of_viewer(
   now_ms : Int64 = 0L,
 ) -> Option[String] {
   let lc = station_rules_bridge::lock_crypto_with(ctx.verify_fn)
-  match lock::admit(l, viewer.sub, viewer.device, viewer.lock_base, viewer.lock_proof, now_ms.to_double(), lc) {
+  let now_s = (now_ms / 1000L).to_double()
+  match lock::admit(l, viewer.sub, viewer.device, viewer.lock_base, viewer.lock_proof, now_s, lc) {
     Ok((dev, _)) => Some(dev.id)
     Err(_) => None
   }
@@ -1649,6 +1651,17 @@ pub fn handle_put_item(
     return route_ok(form::Json::Obj([("item", next)]))
   }
   route_refuse(409, "vault_conflict", "the vault or item changed while it was being written")
+}
+
+/// Helper for callers without a direct `vault` package dependency to check a box cert against a lock.
+pub fn cert_ok_for_lock(
+  l : lock::LockState,
+  raw : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Bool {
+  let lv = lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  vault::cert_ok(lv, Some(raw), false, vc) is None
 }
 
 /// `GET /vault/boxes`: device box certificates filtered by `cert_ok(l, c) == None` so revoked

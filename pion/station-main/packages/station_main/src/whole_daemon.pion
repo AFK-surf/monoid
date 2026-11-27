@@ -1957,65 +1957,10 @@ fn handle_device_tunnel(
         station_devices::DeviceKind::Serial
         | station_devices::DeviceKind::AirPlay
         | station_devices::DeviceKind::AndroidTv => {
-          match resolve_device_tunnel_via_os(st.devices, kept) {
-            ResolvedDeviceTunnel::Tcp(host, port) => (host, port)
-            ResolvedDeviceTunnel::Serial(_path, _baud) => {
-              // Honest 501 until real OS serial FD tunneling is implemented.
-              send_refusal(ctx, pstream.sid, 501, "serial device tunneling is not yet implemented on Pion station")
-              pstream.mode = ProxyStreamMode::Done
-              return
-            }
-            ResolvedDeviceTunnel::AirPlay(dev_ref) => {
-              if is_probe {
-                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
-                ctx.finish_peer_http(pstream.sid)
-              } else {
-                match parse_device_tunnel_http_req(carry) {
-                  Some((req_m, req_p, req_h, req_b)) => {
-                    let ap_resp = st.devices.handle_airplay_http(dev_ref, req_m, req_p, req_h, req_b)
-                    ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(ap_resp.status, [("content-type", "application/json")]))
-                    ctx.write_peer_http_chunk(pstream.sid, ap_resp.body)
-                    ctx.finish_peer_http(pstream.sid)
-                  }
-                  None => send_refusal(ctx, pstream.sid, 400, "invalid HTTP request for AirPlay device")
-                }
-              }
-              pstream.mode = ProxyStreamMode::Done
-              return
-            }
-            ResolvedDeviceTunnel::AndroidTv(dev_ref, adb_host, adb_port) => {
-              if is_probe {
-                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
-                ctx.finish_peer_http(pstream.sid)
-                pstream.mode = ProxyStreamMode::Done
-                return
-              }
-              match parse_device_tunnel_http_req(carry) {
-                Some((req_m, req_p, _req_h, req_b)) => {
-                  let atv_resp = st.devices.handle_android_tv_http(dev_ref, req_m, req_p, req_b)
-                  ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(atv_resp.status, [("content-type", "application/json")]))
-                  ctx.write_peer_http_chunk(pstream.sid, atv_resp.body)
-                  ctx.finish_peer_http(pstream.sid)
-                  pstream.mode = ProxyStreamMode::Done
-                  return
-                }
-                None => {
-                  // Multiplexed ADB wire channel: forward directly to the Android TV ADB TCP endpoint.
-                  if own_ports.contains(adb_port) {
-                    send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
-                    pstream.mode = ProxyStreamMode::Done
-                    return
-                  }
-                  (adb_host, adb_port)
-                }
-              }
-            }
-            ResolvedDeviceTunnel::Refuse(code, msg) => {
-              send_refusal(ctx, pstream.sid, code, msg)
-              pstream.mode = ProxyStreamMode::Done
-              return
-            }
-          }
+          // Honest 501 until full streaming device tunnel state machines are wired.
+          send_refusal(ctx, pstream.sid, 501, "device tunnel for this device kind is not yet implemented on Pion station")
+          pstream.mode = ProxyStreamMode::Done
+          return
         }
       }
       if is_probe {

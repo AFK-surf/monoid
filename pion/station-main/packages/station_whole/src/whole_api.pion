@@ -1066,6 +1066,16 @@ pub fn WholeApi::note_waiting_session(self : WholeApi, key : String) -> Unit {
   }
 }
 
+pub fn WholeApi::note_waiting_all(self : WholeApi) -> Unit {
+  let ks = self.waiting_trackers.keys()
+  for i in 0..<ks.length() {
+    match self.waiting_trackers.get(ks[i]) {
+      Some(wt) => wt.note("session", None)
+      None => ()
+    }
+  }
+}
+
 pub fn WholeApi::new(
   whole_store : WholeStore,
   agents : WholeAgents,
