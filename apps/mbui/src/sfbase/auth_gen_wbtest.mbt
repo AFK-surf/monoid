@@ -204,7 +204,9 @@ test "Direction 2A sfbase: watched FollowedTopic, Derived, and Kept survive repe
 
   // Derived that tracks whether `was` was ever leaked across a boundary!
   let leaked_was : Ref[Int] = Ref(0)
+  let d_chats_runs : Ref[Int] = Ref(0)
   let d_chats : Derived[String] = Derived::new("chats", fn(j, was) {
+    d_chats_runs.val += 1
     if was is Some(prev) && prev.contains("A1") && j.stringify().contains("A2") {
       leaked_was.val += 1
     }
@@ -265,16 +267,18 @@ test "Direction 2A sfbase: watched FollowedTopic, Derived, and Kept survive repe
   assert_true(seen_v2.val.unwrap().contains("V2_OK"), msg="v2 must be untouched by v1 boundary")
   assert_true(seen_b.val.unwrap().contains("B1"), msg="wsB must be untouched by v1 boundary")
 
-  // Boundary 2: Workspace(wsA) invalidation (direct A1 -> A2 transition without None in between to verify `was` is dropped!)
+  // Boundary 2: Workspace(wsA) invalidation — in a single batch, transition directly A1 -> A2
+  // (never passing through None) while invalidating wsA, and verify d_chats ran with `was == None`.
+  let runs_before_ws_inval = d_chats_runs.val
+  @signals.start_batch()
   chats_a_sig.set(Some({ "items": ["A2"] }))
-  // Reset leaked_was after normal pre-boundary transition (we test post-boundary transition next)
-  leaked_was.val = 0
-  // Put back A1, then invalidate directly and feed A2 on the boundary recomputation
-  chats_a_sig.set(Some({ "items": ["A1"] }))
-  leaked_was.val = 0
   invalidate_auth_scope(src, fn(_, params) {
     params.get("scope") == Some(Json::string("wsA")) || params.get("workspace") == Some(Json::string("wsA"))
   })
+  @signals.end_batch()
+  assert_true(d_chats_runs.val > runs_before_ws_inval, msg="d_chats must recompute on batched Workspace boundary A1 -> A2")
+  assert_true(seen_a.val.unwrap().contains("A2"), msg="wsA watched Derived must see A2 directly")
+  assert_eq(leaked_was.val, 0, msg="batched direct A1 -> A2 across Workspace boundary must pass was=None")
   assert_true(d_unwatched.kept_from(src, p_a) is None, msg="unwatched Derived must be evicted on Workspace boundary")
   assert_true(seen_b.val.unwrap().contains("B1"), msg="wsB must remain intact on wsA boundary")
 

@@ -543,7 +543,7 @@ class Lend {
       if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
       const [mesh, link] = yield* this.#link(station);
       if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
-      const reply = yield* link.ask(head(), { adb: { ...ask, phone: mesh.deviceId() } });
+      const reply = yield* link.ask(head(), { adb: { ...ask, phone: mesh.deviceId() } }, guard);
       const parts: Uint8Array[] = [];
       for (;;) {
         const chunk = yield* Effect.mapError(reply.body.take, (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.cut")));

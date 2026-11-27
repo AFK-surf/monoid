@@ -652,10 +652,12 @@ export class Link {
   /// would read.
   /// `media`: a token its frames' datagrams are taken under before its head goes (IrohStream.receiveMediaDatagrams), the
   /// head made knowing whether they are (`head` a function); the fourth of what it gives.
-  #open(head: J | ((media: boolean) => J), finish: boolean, body: Uint8Array | null, wrote?: (sent: number) => void, media = 0): Effect.Effect<[IrohStream, Lines, J, boolean], CoreError> {
+  #open(head: J | ((media: boolean) => J), finish: boolean, body: Uint8Array | null, wrote?: (sent: number) => void, media = 0, guard?: () => boolean): Effect.Effect<[IrohStream, Lines, J, boolean], CoreError> {
     let opened: IrohStream | null = null;
     return Effect.gen({ self: this }, function* () {
+      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "auth_stale"));
       const stream = (opened = yield* Effect.mapError(this.conn.openBi(), cut));
+      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "auth_stale"));
       const taking = media > 0 && stream.receiveMediaDatagrams !== undefined ? yield* Effect.orElseSucceed(stream.receiveMediaDatagrams(media), () => false) : false;
       const said = typeof head === "function" ? head(taking) : head;
       yield* Effect.mapError(stream.write(utf8(`${JSON.stringify(said)}\n`)), cut);
@@ -719,10 +721,10 @@ export class Link {
   }
 
   /// One request on its own stream; `wrote`: how much of its body has gone, as it goes.
-  request(head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<Reply, CoreError> {
+  request(head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void, guard?: () => boolean): Effect.Effect<Reply, CoreError> {
     const wire = { method: head.method, path: head.path, headers: Object.fromEntries(head.headers) };
     return Effect.mapError(
-      Effect.map(this.#open(wire, true, body, wrote), ([stream, lines, reply]) => ({ status: reply.status, headers: headersOf(reply.headers), body: Link.#body(this, stream, lines), cancel: () => stream.reset(0) })),
+      Effect.map(this.#open(wire, true, body, wrote, 0, guard), ([stream, lines, reply]) => ({ status: reply.status, headers: headersOf(reply.headers), body: Link.#body(this, stream, lines), cancel: () => stream.reset(0) })),
       (e) => this.refused ?? e,
     );
   }
@@ -768,9 +770,9 @@ export class Link {
 
   /// A request with no body whose head line carries further fields (`more`, after its headers), on its own stream: this
   /// phone's adb offered to the station, or asked about, its head's `adb` (adb.ts).
-  ask(head: RequestHead, more: Record<string, unknown>): Effect.Effect<Reply, CoreError> {
+  ask(head: RequestHead, more: Record<string, unknown>, guard?: () => boolean): Effect.Effect<Reply, CoreError> {
     const wire = { method: head.method, path: head.path, headers: Object.fromEntries(head.headers), ...more };
-    return Effect.map(this.#open(wire, true, null), ([stream, lines, reply]) => ({ status: reply.status, headers: headersOf(reply.headers), body: Link.#body(this, stream, lines), cancel: () => stream.reset(0) }));
+    return Effect.map(this.#open(wire, true, null, undefined, 0, guard), ([stream, lines, reply]) => ({ status: reply.status, headers: headersOf(reply.headers), body: Link.#body(this, stream, lines), cancel: () => stream.reset(0) }));
   }
 
   /// The next stream the station opens on the link; null once it closed.

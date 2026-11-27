@@ -4906,3 +4906,133 @@ test("vault calls r18: recover with startSnap allows newly-discovered vault when
     r.core.close();
   }
 });
+
+test("Direction 2A R3 P1-2: expired old-epoch key after rekey does not bumpVault or lock live new-epoch key", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", {
+    vault: id,
+    plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } },
+    listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] },
+  });
+  const phoneCert = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(fill(7)), at: 2000 }, TAG.box, r.phone);
+  r.st.boxes.set(r.phone.hex, phoneCert);
+  r.push("vault-box", phoneCert);
+  await r.host.time.pass(500);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.seq, 1, "phone given key");
+
+  stationReplies(r.host, (req) => (req.url.includes("/v1/workspaces/ws/lock") ? r.lock : r.st.reply(req)));
+  grow(r, "device.remove", { id: r.phone.hex });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  await r.host.time.pass(500, 10);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.epoch, 1, "vault rekeyed to epoch 1 (epoch 0 + epoch 1 keys live)");
+
+  // Advance half of UNLOCK_MS, then add and remove a second device so a second rekey produces epoch 2
+  // (extending epoch 1 + epoch 2 TTLs to t + UNLOCK_MS while epoch 0 still expires at the original UNLOCK_MS).
+  await r.host.time.pass(UNLOCK_MS / 2, 1000);
+  const peer2 = key(fill(99));
+  grow(r, "device", { id: peer2.hex, sub: "s1", kind: "app", label: "ipad", sign_key: peer2.id });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  const peer2Cert = sign({ v: 1 as const, ws: "ws", device: peer2.hex, box: boxPublic(fill(98)), at: 3000 }, TAG.box, peer2);
+  r.st.boxes.set(peer2.hex, peer2Cert);
+  r.push("vault-box", peer2Cert);
+  await r.host.time.pass(500);
+  r.take();
+  grow(r, "device.remove", { id: peer2.hex });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  await r.host.time.pass(500, 10);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.epoch, 2, "vault rekeyed to epoch 2");
+
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.open, true, "epoch 2 key unlocked after second rekey");
+
+  const genBeforeOldExpiry = r.core.inner.store.authGen.vaultGen("ws", id);
+  const askedBeforeOldExpiry = r.host.secureAsked.length;
+
+  // Advance past old epoch 0 expiry (UNLOCK_MS / 2 + 2000 ms) while new epoch 2 still has ~half UNLOCK_MS left.
+  await r.host.time.pass(UNLOCK_MS / 2 + 2000, 1000);
+  assert.equal(
+    r.core.inner.store.authGen.vaultGen("ws", id),
+    genBeforeOldExpiry,
+    "expiring historical epoch 0 key must NOT bumpVault and invalidate live epoch 2 key",
+  );
+  assert.equal(
+    vaults().vaults.find((v: any) => v.id === id)?.open,
+    true,
+    "vault must remain unlocked under live epoch 2 key after old epoch 0 expires",
+  );
+  const openedAfter = await r.ask("vault.open", { item: put.id, vault: id });
+  assert.equal(openedAfter.plain.fields.value, "ghp_x");
+  assert.equal(r.host.secureAsked.length, askedBeforeOldExpiry, "live epoch 2 key must stay usable without re-prompting");
+  r.core.close();
+});
+
+test("Direction 2A R3 P1-4: #describe strictly targets declared r.vault when two vaults share the same item ID", async () => {
+  const r = await rig();
+  r.putLock();
+  // Fake station stores items by `${vault}/${id}` so colliding item IDs across two vaults can coexist.
+  const perVaultItems = new Map<string, Item>();
+  stationReplies(r.host, (httpReq) => {
+    if (httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      const body = JSON.parse(new TextDecoder().decode(httpReq.body ?? new Uint8Array())) as Item;
+      perVaultItems.set(`${body.vault}/${body.id}`, body);
+      r.st.items.set(body.id, body);
+      return { item: body };
+    }
+    return r.st.reply(httpReq);
+  });
+  const { made: v1 } = await r.ask("vault.setup", {});
+  const { id: v2 } = await r.ask("vault.create", { name: "Second" });
+  const sharedId = "i_01M4871X3MTC0903ZX5CPB8J99";
+  await r.ask("vault.putItem", {
+    vault: v1,
+    id: sharedId,
+    plain: { kind: "token", name: "Alpha", fields: { value: "tok_v1" }, notes: "v1-note" },
+    listing: { name: "Alpha", kind: "token", modes: ["proxy"], hosts: ["a.example.com"], about: "v1-note" },
+  });
+  await r.ask("vault.putItem", {
+    vault: v2,
+    id: sharedId,
+    plain: { kind: "token", name: "Beta", fields: { value: "tok_v2" }, notes: "v2-note" },
+    listing: { name: "Beta", kind: "token", modes: ["proxy"], hosts: ["b.example.com"], about: "v2-note" },
+  });
+
+  const req: Request = {
+    id: "r_desc_collide",
+    ws: "ws",
+    vault: v2,
+    item: sharedId,
+    session: "s-desc",
+    chat: "Desc Test",
+    mode: "proxy",
+    hosts: ["b.example.com"],
+    reason: "rename beta",
+    box: "",
+    at: 3000,
+    status: "pending",
+    describe: { name: "BetaRenamed", about: "v2-updated", was: { name: "Beta", about: "v2-note" } },
+  };
+  r.st.requests.push(req);
+  r.push("vault-request", req);
+  await r.host.time.pass(200);
+  r.take();
+
+  await r.ask("vault.approve", { request: "r_desc_collide", scope: "once" });
+
+  const openedV2 = await r.ask("vault.open", { item: sharedId, vault: v2 });
+  assert.equal(openedV2.vault, v2);
+  assert.equal(openedV2.plain.name, "BetaRenamed");
+  assert.equal(openedV2.plain.notes, "v2-updated");
+  assert.equal(openedV2.version, 1, "declared target vault v2 item must be updated to version 1");
+
+  const openedV1 = await r.ask("vault.open", { item: sharedId, vault: v1 });
+  assert.equal(openedV1.vault, v1);
+  assert.equal(openedV1.plain.name, "Alpha", "other vault v1 item with colliding ID must remain untouched");
+  assert.equal(openedV1.plain.notes, "v1-note");
+  assert.equal(openedV1.version, 0, "other vault v1 item must remain at version 0");
+  r.core.close();
+});

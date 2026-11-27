@@ -1289,6 +1289,10 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) 
         let holder = followed_topics.val[i].holder
         // Detach + drop + release BEFORE `holder.dispose()` so synchronous re-entrant `on_unwatched`
         // callbacks outside a frame/batch never observe the entry a second time.
+        // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
+        // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
+        // 2026-11-12, every switch of workspace left what was declared and never read subscribed:
+        // src/sfapp/declared_let_go_wbtest.mbt)
         retire_if_unwatched(holder, fn() {
           followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
           topic_readers_drop(src, key)

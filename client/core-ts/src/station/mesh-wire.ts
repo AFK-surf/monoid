@@ -211,7 +211,7 @@ export class MeshWire implements StationWire {
               mesh.noteSpeed(key, wayKey, n, elapsed);
             }
           };
-        return Effect.map(l.request(sent, body, onSent), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
+        return Effect.map(l.request(sent, body, onSent, guard), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
       });
       let answered: [Link, Reply, number];
       if (repeats) {

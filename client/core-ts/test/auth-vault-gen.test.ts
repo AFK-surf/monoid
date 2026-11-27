@@ -1425,30 +1425,82 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     // 3. P1-3: Requests.call forwards guard to StationWire.request so invalidation while waiting for a link aborts with auth_stale and 0 sends
     const { CoreError } = await import("../src/error.ts");
     const cap3 = tracker.vaultCapability("ws-wire", "v3");
-    let linkWaited = false;
     let wireSent = 0;
-    const waitGate = Effect.runSync(Deferred.make<void>());
+    const enteredWait = Deferred.makeUnsafe<void>();
+    const waitGate = Deferred.makeUnsafe<void>();
     const fakeWire = {
       request: (_station: InstanceType<typeof StationAddr>, _head: { method: string; path: string; headers: [string, string][] }, _body: Uint8Array, _onProgress?: unknown, guard?: () => boolean) =>
         Effect.gen(function* () {
           if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
-          linkWaited = true;
+          yield* Deferred.succeed(enteredWait, undefined);
           yield* Deferred.await(waitGate);
           if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
           wireSent++;
           return { status: 200, headers: [] as [string, string][], body: { take: Effect.succeed(null) }, via: null };
         }),
     };
-    const coreWire = await Core.create(new FakeHost(), { wire: () => fakeWire, iroh: null });
-    const pending = Effect.runPromise(Effect.result(coreWire.inner.stations.requests.call(addr, "PUT", "/vault/items", {}, { guard: () => cap3.isValid() })));
-    await new Promise((r) => setTimeout(r, 10));
-    assert.equal(linkWaited, true, "request must be waiting inside transport");
-    tracker.bumpVault("ws-wire", "v3");
-    Effect.runSync(Deferred.succeed(waitGate, undefined));
-    const waitRes = await pending;
-    assert.equal(waitRes._tag, "Failure");
-    assert.equal(waitRes.failure.code, "auth_stale");
-    assert.equal(wireSent, 0, "invalidation while waiting for link must abort before sending");
-    await coreWire.close();
+    const hostWire = new FakeHost();
+    const coreWire = await Core.create(hostWire, { clock: hostWire.time.clock, wire: () => fakeWire, iroh: null });
+    try {
+      const pending = Effect.runPromise(Effect.result(coreWire.inner.stations.requests.call(addr, "PUT", "/vault/items", {}, { guard: () => cap3.isValid() })));
+      await Effect.runPromise(Deferred.await(enteredWait));
+      tracker.bumpVault("ws-wire", "v3");
+      Effect.runSync(Deferred.succeed(waitGate, undefined));
+      const waitRes = await pending;
+      assert.equal(waitRes._tag, "Failure");
+      assert.equal(waitRes.failure.code, "auth_stale");
+      assert.equal(wireSent, 0, "invalidation while waiting for link must abort before sending");
+    } finally {
+      await coreWire.close();
+    }
+
+    // 4. R3 P1-1: Real Link.#open re-checks guard AFTER conn.openBi() resolves and resets stream with 0 writes
+    const { Link } = await import("../src/mesh.ts");
+    const makePendingLinkCase = async (kind: "request" | "ask") => {
+      const capOpen = tracker.vaultCapability("ws-wire", `v-open-${kind}`);
+      const enteredOpenBi = Deferred.makeUnsafe<void>();
+      const releaseOpenBi = Deferred.makeUnsafe<void>();
+      let writeCalls = 0;
+      let resetCalls = 0;
+      const fakeStream = {
+        write: () => Effect.sync(() => { writeCalls++; }),
+        finish: () => Effect.void,
+        read: () => Effect.succeed(null),
+        reset: () => { resetCalls++; },
+      };
+      const fakeConn = {
+        openBi: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(enteredOpenBi, undefined);
+            yield* Deferred.await(releaseOpenBi);
+            return fakeStream;
+          }),
+        acceptBi: () => Effect.succeed(null),
+        paths: () => [],
+        stats: () => ({ rxBytes: 0, txBytes: 0 }),
+        closeReason: () => null,
+        close: () => {},
+      };
+      const fakeControl = {} as never;
+      const fakeCreds = { credential: () => Effect.succeed("cred") } as never;
+      const link = new Link(fakeConn as never, fakeControl, "cred", fakeCreds, null);
+      const pendingCall = Effect.runPromise(
+        Effect.result(
+          kind === "request"
+            ? link.request(head, new Uint8Array([1, 2, 3]), undefined, () => capOpen.isValid())
+            : link.ask(head, { adb: { op: "revoke" } }, () => capOpen.isValid()),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(enteredOpenBi));
+      tracker.bumpVault("ws-wire", `v-open-${kind}`);
+      Effect.runSync(Deferred.succeed(releaseOpenBi, undefined));
+      const res = await pendingCall;
+      assert.equal(res._tag, "Failure", `Link.${kind} must fail when invalidated during openBi()`);
+      assert.equal(res.failure.code, "auth_stale", `Link.${kind} must fail with auth_stale`);
+      assert.equal(writeCalls, 0, `Link.${kind} must write 0 bytes after openBi() when guard is stale`);
+      assert.equal(resetCalls, 1, `Link.${kind} must reset the opened stream immediately when guard is stale`);
+    };
+    await makePendingLinkCase("request");
+    await makePendingLinkCase("ask");
   });
 });

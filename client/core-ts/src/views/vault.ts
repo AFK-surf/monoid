@@ -817,8 +817,8 @@ export function install(inner: Inner): void {
 
 // ── what the stations hold ──
 
-const ask = (inner: Inner, address: string, method: string, path: string, body: unknown = null, ctx: SpanContext | null = null) =>
-  inner.stations.requests.call(StationAddr.parse(address), method, path, body, { quiet: true, ctx });
+const ask = (inner: Inner, address: string, method: string, path: string, body: unknown = null, ctx: SpanContext | null = null, guard?: () => boolean) =>
+  inner.stations.requests.call(StationAddr.parse(address), method, path, body, { quiet: true, ctx, ...(guard ? { guard } : {}) });
 
 /// What a station holds of the vault, read again: its vaults (and their items), the box certificates, the requests.
 /// One that holds none says why (no lock pinned; a station from before).
@@ -1181,26 +1181,39 @@ function spreadAll(inner: Inner, ws: string): void {
 /// A station brought the latest version of each vault and item it lacks, as copies (`?copy=1`: a later version than
 /// the one it holds, checked as any is). One that will not take it (a station from before, which takes only the next
 /// version) is left as it is: its agents see what it holds.
-function spread(inner: Inner, address: string): Effect.Effect<void> {
+function spread(inner: Inner, address: string, opts?: { cap?: AuthScopeCapability; vaultId?: string }): Effect.Effect<void> {
   const ws = ofAddress(address);
   const station = address.slice(ws.length + 1);
   return Effect.gen(function* () {
     if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
-    for (const want of lacks(held(inner, ws), (vault) => items(inner, ws, vault), station)) {
+    const allWanted = lacks(held(inner, ws), (vault) => items(inner, ws, vault), station);
+    const wanted = opts?.vaultId !== undefined ? allWanted.filter((w) => w.id === opts.vaultId) : allWanted;
+    for (const want of wanted) {
+      const cap = opts?.cap ?? inner.store.authGen.vaultCapability(ws, want.id);
+      if (!cap.isValid()) {
+        if (opts?.cap !== undefined) return;
+        continue;
+      }
+      const guard = () => cap.isValid();
       if (want.vault !== null) {
-        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault));
+        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault, null, guard));
         if (said._tag === "Failure") continue;
-        const v = (get(said.success, "vault") as Vault | undefined) ?? want.vault;
-        change(inner, ws, (h) => holds(h, v, station, null, fits(inner, ws)));
+        const raw = get(said.success, "vault") as Vault | undefined;
+        const v = raw && raw.ws === ws && raw.id === want.vault.id ? raw : want.vault;
+        cap.commit(() => change(inner, ws, (h) => holds(h, v, station, null, fits(inner, ws))));
       }
       for (const i of want.items) {
-        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/items?copy=1", i));
+        if (!cap.isValid()) break;
+        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/items?copy=1", i, null, guard));
         if (said._tag === "Failure") continue;
-        const kept = (get(said.success, "item") as Item | undefined) ?? i;
-        change(inner, ws, (h) => {
-          const at = h.on[want.id]?.[station];
-          if (at !== undefined) holdsItem(at, kept);
-        });
+        const raw = get(said.success, "item") as Item | undefined;
+        const kept = raw && raw.ws === ws && raw.vault === want.id && raw.id === i.id ? raw : i;
+        cap.commit(() =>
+          change(inner, ws, (h) => {
+            const at = h.on[want.id]?.[station];
+            if (at !== undefined) holdsItem(at, kept);
+          }),
+        );
       }
     }
   });
@@ -3283,10 +3296,21 @@ class Vaults {
         Effect.andThen(
           Effect.sleep(UNLOCK_MS),
           Effect.sync(() => {
+            const now = inner.host.nowMs();
             const k = mem(inner).keys.get(slot);
-            if (k && k.until <= inner.host.nowMs()) {
+            if (k && k.until <= now) {
               mem(inner).keys.delete(slot);
-              inner.store.authGen.bumpVault(this.ws, v.id, dependentVaultWorkspaces(inner, this.ws));
+              const cur = held(inner, this.ws).vaults[v.id];
+              const prefix = `${this.ws}/${v.id}/`;
+              const newerKeyLive = [...mem(inner).keys.entries()].some(
+                ([keySlot, entry]) =>
+                  keySlot.startsWith(prefix) &&
+                  entry.until > now &&
+                  entry.cap.isValid(),
+              );
+              if ((!cur || cur.epoch <= v.epoch) && !newerKeyLive) {
+                inner.store.authGen.bumpVault(this.ws, v.id, dependentVaultWorkspaces(inner, this.ws));
+              }
             }
             changed(inner, this.ws);
           }),
@@ -3318,7 +3342,8 @@ class Vaults {
           : Option.some(yield* Effect.result(put));
         if (Option.isNone(res)) continue;
         if (res.value._tag === "Success") {
-          const v = (get(res.value.success, "vault") as Vault | undefined) ?? next;
+          const raw = get(res.value.success, "vault") as Vault | undefined;
+          const v = raw && raw.ws === self.ws && raw.id === next.id ? raw : next;
           cap.commit(() => {
             change(inner, self.ws, (h) => holds(h, v, s, null, fits(inner, self.ws)));
             spreadAll(inner, self.ws);
@@ -3694,8 +3719,8 @@ class Vaults {
       if (n > 0) yield* askPerson(inner, t("core-misc.vault.reason.delete", { name: v.name }), "vault_refused");
       const { sig: _, recovery: _r, ...rest } = v;
       yield* self.#putVault(sign({ ...rest, seq: v.seq + 1, epoch: v.epoch + 1, keys: [], deleted: true as const, at: nowS(inner) }, TAG.vault, signer), hostOf(inner, self.ws, v.id), cap);
+      mem(inner).keys.delete(keyOf(self.ws, v));
       cap.commit(() => {
-        mem(inner).keys.delete(keyOf(self.ws, v));
         inner.data.forgetRecord("vaultItems", `${self.ws}/${v.id}`);
         changed(inner, self.ws);
       });
@@ -3816,7 +3841,8 @@ class Vaults {
           : Option.some(yield* Effect.result(put));
         if (Option.isNone(res)) continue;
         if (res.value._tag === "Success") {
-          item = (get(res.value.success, "item") as Item | undefined) ?? next;
+          const raw = get(res.value.success, "item") as Item | undefined;
+          item = raw && raw.ws === self.ws && raw.vault === v.id && raw.id === next.id ? raw : next;
           on = s;
           break;
         }
@@ -3849,10 +3875,11 @@ class Vaults {
   }
 
   /// The item, found in its vault, that vault, and the lock it is read by (`readAs`: one waiting to be keyed anew, as
-  /// the lock took it).
-  #find(lock: Checked, self: { device: string }, id: string): Effect.Effect<{ v: Vault; item: Item; as: Checked }, CoreError> {
+  /// the lock took it). When `declaredVault` is supplied, restricts lookup strictly to that vault.
+  #find(lock: Checked, self: { device: string }, id: string, declaredVault?: string): Effect.Effect<{ v: Vault; item: Item; as: Checked }, CoreError> {
     const h = held(this.#inner, this.ws);
-    for (const v of Object.values(h.vaults)) {
+    const candidates = declaredVault !== undefined ? (h.vaults[declaredVault] ? [h.vaults[declaredVault]!] : []) : Object.values(h.vaults);
+    for (const v of candidates) {
       const item = items(this.#inner, this.ws, v.id)[id];
       const as = item && !item.deleted ? readAs(this.#inner, this.ws, lock, v, self) : null;
       if (item && as !== null) return Effect.succeed({ v, item, as });
@@ -3875,19 +3902,20 @@ class Vaults {
       const declaredCap = declaredVault !== undefined ? self.#vaultCap(declaredVault) : null;
       // (a device taken out of the lock opens nothing, of a vault waiting to be keyed anew either: #ready refuses it)
       const { lock, self: who } = yield* self.#ready();
-      let { v, item, as } = yield* self.#find(lock, who, id);
+      let { v, item, as } = yield* self.#find(lock, who, id, declaredVault);
       if (declaredVault !== undefined && declaredVault !== v.id) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
       if (wsCap !== null) yield* wsCap.assertValid();
       const cap = declaredCap ?? wsCap!.narrowVault(v.id);
       yield* cap.assertValid();
+      const targetVault = declaredVault ?? v.id;
       // Written before its vault was keyed anew (`rekeyGone`), as held here: its station read again for the one
       // written since under the new key.
       if (item.epoch < v.epoch) {
         const host = hostOf(inner, self.ws, v.id);
         if (host !== "") yield* Effect.ignore(readItems(inner, `${self.ws}/${host}`, v.id), { log: "Unhandled", message: "vault items read" });
-        ({ v, item, as } = yield* self.#find(lock, who, id));
+        ({ v, item, as } = yield* self.#find(lock, who, id, targetVault));
         yield* self.#assertCapTarget(cap, v.id);
       }
       const name = item.listing?.name ?? v.name;
@@ -3898,7 +3926,7 @@ class Vaults {
       // reading the box key, which opening it would fail on the same way: the answer, not asked again.
       if (item.epoch < v.epoch) {
         yield* self.carryOn(v.id, reason, undefined, {}, cap);
-        ({ v, item, as } = yield* self.#find(lock, who, id));
+        ({ v, item, as } = yield* self.#find(lock, who, id, targetVault));
         yield* self.#assertCapTarget(cap, v.id);
       }
       const key = yield* self.#key(v, who, false, reason, true, undefined, cap);
@@ -4423,7 +4451,7 @@ class Vaults {
           )
         : null;
       // The station that asked holds its copy before it is told.
-      yield* spread(inner, `${self.ws}/${station}`);
+      yield* spread(inner, `${self.ws}/${station}`, { cap: saveCap, vaultId: vault.id });
       yield* self.#postDecisionGuarded(saveCap, station, "/vault/saves", { request: r.id, vault: vault.id, ...(grant ? { grant } : {}) }, r.id);
       saveCap.commit(() => self.#settled(r.id, { status: "granted", ...(grant ? { scope } : {}) }));
       return { request: r.id, vault: vault.id, item: r.item, ...(grant ? { scope } : {}) };
@@ -4446,16 +4474,17 @@ class Vaults {
         wsCap.commit(() => self.#settled(r.id, { status: "granted" }));
         return { request: r.id, item: r.item };
       }
-      const opened = (yield* self.open(r.item)) as { vault: string; plain: Plain };
-      const cap = startCap.vault(self.ws, opened.vault);
+      const cap = startCap.vault(self.ws, r.vault);
       yield* cap.assertValid();
+      const opened = (yield* self.open(r.item, r.vault)) as { vault: string; plain: Plain };
+      yield* self.#assertCapTarget(cap, opened.vault);
       const item = items(inner, self.ws, opened.vault)[r.item];
       if (!item || item.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const { about: _, ...listing } = item.listing ?? { name: d.name, kind: opened.plain.kind, modes: [], hosts: [] };
       // (one agents may not ask for keeps no listing: its name and notes alone change)
       yield* self.putItem(opened.vault, r.item, { ...opened.plain, name: d.name, notes: d.about }, item.listing ? { ...listing, name: d.name, ...(d.about ? { about: d.about } : {}) } : null, cap);
       // The station that asked holds its copy before it is told.
-      yield* spread(inner, `${self.ws}/${station}`);
+      yield* spread(inner, `${self.ws}/${station}`, { cap, vaultId: opened.vault });
       yield* self.#postDecisionGuarded(cap, station, "/vault/described", { request: r.id }, r.id);
       cap.commit(() => self.#settled(r.id, { status: "granted" }));
       return { request: r.id, item: r.item };
@@ -4484,7 +4513,7 @@ class Vaults {
         yield* self.deleteItem(r.vault, r.item, cap);
       }
       // The station that asked holds its copy before it is told.
-      yield* spread(inner, `${self.ws}/${station}`);
+      yield* spread(inner, `${self.ws}/${station}`, { cap, vaultId: r.vault });
       yield* self.#postDecisionGuarded(cap, station, "/vault/removed", { request: r.id }, r.id);
       cap.commit(() => self.#settled(r.id, { status: "granted" }));
       return { request: r.id, item: r.item };
@@ -4647,7 +4676,7 @@ class Vaults {
           // Deleted where it was only once that station holds the vault's copy whole: a station that keeps no vault (one
           // from before, `vault_needs_lock`) or did not take it now is left with what it had, its agents listing it
           // still. Deleted at once, the item was on this device alone and agents on every station listed none (FB-70).
-          yield* spread(inner, `${self.ws}/${row.station}`);
+          yield* spread(inner, `${self.ws}/${row.station}`, { vaultId: own.id });
           if (lacks(held(inner, self.ws), (id) => items(inner, self.ws, id), row.station).some((w) => w.id === own.id)) {
             unkept.add(row.station);
             return yield* fail("vault_no_station", t("core-misc.vault.noPlainStation"));
