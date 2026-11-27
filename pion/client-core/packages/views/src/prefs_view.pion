@@ -111,13 +111,33 @@ pub fn project_prefs(
     }
   }
   let app_kind = if device_app.length() > 0 { device_app } else { "desktop" }
-  let dev_fields : Array[(String, base_codec::Json)] = [
-    ("app", base_codec::json_str(app_kind)),
-    ("phone", base_codec::json_bool(device_phone)),
-    ("handoff", base_codec::json_bool(false)),
-  ]
-  if device_locale.length() > 0 {
-    dev_fields.push(("locale", base_codec::json_str(device_locale)))
+  let device_val = match prefs_m.get("device") {
+    Some(base_codec::Json::Obj(stored_dev)) => {
+      if stored_dev.length() > 0 {
+        base_codec::json_obj(stored_dev)
+      } else {
+        let dev_fields : Array[(String, base_codec::Json)] = [
+          ("app", base_codec::json_str(app_kind)),
+          ("phone", base_codec::json_bool(device_phone)),
+          ("handoff", base_codec::json_bool(app_kind == "web" && !device_phone)),
+        ]
+        if device_locale.length() > 0 {
+          dev_fields.push(("locale", base_codec::json_str(device_locale)))
+        }
+        base_codec::json_obj(dev_fields)
+      }
+    }
+    _ => {
+      let dev_fields : Array[(String, base_codec::Json)] = [
+        ("app", base_codec::json_str(app_kind)),
+        ("phone", base_codec::json_bool(device_phone)),
+        ("handoff", base_codec::json_bool(app_kind == "web" && !device_phone)),
+      ]
+      if device_locale.length() > 0 {
+        dev_fields.push(("locale", base_codec::json_str(device_locale)))
+      }
+      base_codec::json_obj(dev_fields)
+    }
   }
   let empty_face = fn(mono : Bool) -> base_codec::Json {
     base_codec::json_obj([
@@ -176,7 +196,7 @@ pub fn project_prefs(
     ("failsGone", base_codec::json_obj([])),
     ("resume", base_codec::json_obj([])),
     ("stationUpdatesDismissed", base_codec::json_obj([])),
-    ("device", base_codec::json_obj(dev_fields)),
+    ("device", device_val),
     ("productName", base_codec::json_str("still.fail")),
     ("product", base_codec::json_str("still.fail")),
     ("reader", reader_norm),

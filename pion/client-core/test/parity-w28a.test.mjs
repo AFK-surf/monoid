@@ -183,7 +183,7 @@ fn op_stations_merged(world : World, args : base_codec::Json) -> base_codec::Jso
     sql::SqlResult::Err(e) => return base_codec::json_obj([("error", base_codec::json_str(e.to_string()))])
   }
   let router = protocol::Slice1Router::new(db, store::MdStore::new(db, ws + "/st-a"), workspace=ws)
-  let proto_stations = match router.handle(protocol::CoreRequest::Call(1L, "stations.list", base_codec::json_obj([("workspace", base_codec::json_str(ws))]), None)) {
+  let proto_stations = match router.handle(protocol::CoreRequest::Call(1L, "stations.list", base_codec::json_obj([("workspace", base_codec::json_str(ws))]), None, None)) {
     Some(protocol::CoreEvent::Ok(_, v, _)) => v
     _ => base_codec::json_null()
   }
@@ -293,6 +293,7 @@ fn op_chat_moved_compact(world : World, args : base_codec::Json) -> base_codec::
       ("session", base_codec::json_str(session)),
       ("compact", base_codec::json_bool(compact)),
     ]),
+    None,
     None,
   )) {
     Some(protocol::CoreEvent::Ok(_, v, _)) => v

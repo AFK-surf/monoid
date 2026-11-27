@@ -699,9 +699,9 @@ function checkStrictTy(val, ty, p, errors) {
       errors.push(`${p}.${k}: UNDECLARED extra field not in ${ty}`);
     }
   }
-  // 2. Every non-optional field MUST be present; every present field MUST match type!
+  // 2. Every non-optional / non-defaulted field MUST be present; every present field MUST match type!
   for (const f of shape.fields) {
-    const isOpt = typeof f.ty === "object" && "opt" in f.ty;
+    const isOpt = (typeof f.ty === "object" && "opt" in f.ty) || f.default === true || shape.default === true;
     if (!(f.name in val)) {
       if (!isOpt) {
         errors.push(`${p}.${f.name}: MISSING required field of ${ty} (${JSON.stringify(f.ty)})`);

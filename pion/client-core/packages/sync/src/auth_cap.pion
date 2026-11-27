@@ -38,20 +38,19 @@ fn is_workspace_aggregate_topic(name : String) -> Bool {
   name == "workspaces" || name == "lockPrompts" || name == "downloads"
 }
 
+/// Single source of truth for device-global & transport-only topics exempt from `(account, workspace)` `authGen`,
+/// 1:1 with `client/core-ts/src/topic-policy.ts:238-250` (`DEVICE_GLOBAL_TOPICS`).
 fn is_device_global_topic(name : String) -> Bool {
-  name == "prefs" ||
-  name == "accounts" ||
   name == "releases" ||
-  name == "changelog" ||
   name == "fonts" ||
-  name == "adbShare" ||
+  name == "changelog" ||
+  name == "prefs" ||
   name == "doing" ||
-  name == "status" ||
-  name == "notices" ||
-  name == "notify" ||
-  name == "workspaceMarks" ||
-  name == "lockPrompts" ||
-  name == "downloads"
+  name == "adbShare" ||
+  name == "link" ||
+  name == "connection" ||
+  name == "way" ||
+  name == "net"
 }
 
 pub fn workspace_of_station_addr(addr : String) -> String {
@@ -97,13 +96,54 @@ pub fn topic_scope_of(topic : protocol::Topic) -> TopicScope {
   TopicScope::Global
 }
 
+/// Immutable snapshot of `(account, workspace)` and per-vault generations.
+/// Internal maps `scopes` and `vaults` are encapsulated so external callers cannot mutate them.
 pub struct AuthBoundary {
   pub conn : Int
   pub global : Int
   pub aggregate : Int
   pub vault_global : Int
-  pub scopes : Map[String, Int]
-  pub vaults : Map[String, Int]
+  scopes : Map[String, Int]
+  vaults : Map[String, Int]
+}
+
+pub fn AuthBoundary::scope_gen(self : AuthBoundary, ws : String) -> Option[Int] {
+  self.scopes.get(ws)
+}
+
+pub fn AuthBoundary::vault_gen_raw(self : AuthBoundary, key : String) -> Option[Int] {
+  self.vaults.get(key)
+}
+
+/// Encode an `AuthBoundary` snapshot into wire JSON (`{ conn, global, aggregate, vaultGlobal, scopes, vaults }`)
+/// matching `client/core-ts/src/auth-gen.ts:560-574`.
+pub fn AuthBoundary::to_json(self : AuthBoundary) -> base_codec::Json {
+  let scope_fields : Array[(String, base_codec::Json)] = []
+  let sks = self.scopes.keys()
+  for i in 0..<sks.length() {
+    let k = sks[i]
+    match self.scopes.get(k) {
+      Some(v) => scope_fields.push((k, base_codec::json_int(v)))
+      None => ()
+    }
+  }
+  let vault_fields : Array[(String, base_codec::Json)] = []
+  let vks = self.vaults.keys()
+  for i in 0..<vks.length() {
+    let k = vks[i]
+    match self.vaults.get(k) {
+      Some(v) => vault_fields.push((k, base_codec::json_int(v)))
+      None => ()
+    }
+  }
+  base_codec::json_obj([
+    ("conn", base_codec::json_int(self.conn)),
+    ("global", base_codec::json_int(self.global)),
+    ("aggregate", base_codec::json_int(self.aggregate)),
+    ("vaultGlobal", base_codec::json_int(self.vault_global)),
+    ("scopes", base_codec::json_obj(scope_fields)),
+    ("vaults", base_codec::json_obj(vault_fields)),
+  ])
 }
 
 pub enum AuthBoundaryEvent {
@@ -869,8 +909,97 @@ pub fn ScopeCap::is_valid(self : ScopeCap) -> Bool {
   }
 }
 
+/// Convert top-level wire `protocol::WireCallAuth` decoded by `protocol::parse_client_message` into `CallAuth`.
+pub fn call_auth_from_wire(w : protocol::WireCallAuth) -> CallAuth {
+  CallAuth::{
+    conn: w.conn,
+    account: w.account,
+    workspace: w.workspace,
+    vault: w.vault,
+    auth_gen: w.auth_gen,
+    vault_gen: w.vault_gen,
+  }
+}
+
+/// Encode an authoritative boundary snapshot for wire `{ id: 0, auth }` emission.
+pub fn AuthGenTracker::snapshot_json(self : AuthGenTracker, conn : Int) -> base_codec::Json {
+  self.snapshot(conn=conn).to_json()
+}
+
+/// Encode an incremental `AuthBoundaryEvent` into wire JSON matching `auth-gen.ts:599-627` `toBoundaryMessage`.
+pub fn AuthGenTracker::boundary_event_json(
+  self : AuthGenTracker,
+  conn : Int,
+  ev : AuthBoundaryEvent,
+) -> base_codec::Json {
+  match ev {
+    AuthBoundaryEvent::Global(g) => base_codec::json_obj([
+      ("conn", base_codec::json_int(conn)),
+      ("global", base_codec::json_int(g)),
+      ("aggregate", base_codec::json_int(self.aggregate_auth_gen)),
+    ])
+    AuthBoundaryEvent::Workspace(ws, ag, deps, dep_vaults) => {
+      let fs : Array[(String, base_codec::Json)] = [
+        ("conn", base_codec::json_int(conn)),
+        ("global", base_codec::json_int(self.global_gen)),
+        ("aggregate", base_codec::json_int(self.aggregate_auth_gen)),
+        ("workspace", base_codec::json_str(ws)),
+        ("authGen", base_codec::json_int(ag)),
+      ]
+      if deps.length() > 0 {
+        let darr : Array[base_codec::Json] = []
+        for i in 0..<deps.length() {
+          darr.push(base_codec::json_str(deps[i]))
+        }
+        fs.push(("dependentWorkspaces", base_codec::json_arr(darr)))
+      }
+      let dvks = dep_vaults.keys()
+      if dvks.length() > 0 {
+        let dvfs : Array[(String, base_codec::Json)] = []
+        for i in 0..<dvks.length() {
+          let k = dvks[i]
+          match dep_vaults.get(k) {
+            Some(v) => dvfs.push((k, base_codec::json_int(v)))
+            None => ()
+          }
+        }
+        fs.push(("dependentVaultGens", base_codec::json_obj(dvfs)))
+      }
+      base_codec::json_obj(fs)
+    }
+    AuthBoundaryEvent::Vault(ws, v, vg, deps) => {
+      let fs : Array[(String, base_codec::Json)] = [
+        ("conn", base_codec::json_int(conn)),
+        ("global", base_codec::json_int(self.global_gen)),
+        ("workspace", base_codec::json_str(ws)),
+        ("vault", base_codec::json_str(v)),
+        ("vaultGen", base_codec::json_int(vg)),
+      ]
+      if deps.length() > 0 {
+        let darr : Array[base_codec::Json] = []
+        for i in 0..<deps.length() {
+          darr.push(base_codec::json_str(deps[i]))
+        }
+        fs.push(("dependentWorkspaces", base_codec::json_arr(darr)))
+      }
+      base_codec::json_obj(fs)
+    }
+    AuthBoundaryEvent::VaultAll(vg) => base_codec::json_obj([
+      ("conn", base_codec::json_int(conn)),
+      ("global", base_codec::json_int(self.global_gen)),
+      ("vaultAll", base_codec::json_bool(true)),
+      ("vaultGen", base_codec::json_int(vg)),
+    ])
+  }
+}
+
 pub fn AuthCapability::all(caps : Array[ScopeCap]) -> CompositeCapability {
-  CompositeCapability::{ caps: caps }
+  // Defensive copy so external mutations to the caller's array cannot alter the capability.
+  let copy : Array[ScopeCap] = []
+  for i in 0..<caps.length() {
+    copy.push(caps[i])
+  }
+  CompositeCapability::{ caps: copy }
 }
 
 /// Immutable capability bound to one workspace (and optionally owner `sub`, `vaultGlobalGen`,
@@ -1031,8 +1160,13 @@ pub fn VaultCapability::as_scope(self : VaultCapability) -> ScopeCap {
 }
 
 /// Combines multiple capabilities so `is_valid()` holds iff every constituent capability is valid.
+/// Constituent array is private and defensively copied on construction.
 pub struct CompositeCapability {
-  pub caps : Array[ScopeCap]
+  caps : Array[ScopeCap]
+}
+
+pub fn CompositeCapability::len(self : CompositeCapability) -> Int {
+  self.caps.length()
 }
 
 pub fn CompositeCapability::is_valid(self : CompositeCapability) -> Bool {

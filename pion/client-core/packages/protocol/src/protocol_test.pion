@@ -211,7 +211,7 @@ fn unwrap_sql_p[T](r : sql::SqlResult[T]) -> T {
 test "wire codec round-trips call, subscribe, unsubscribe, cancel, delta, fatal, and binary bytes" {
   let payload = "BIN!".to_bytes()
   match decode_client_message("{\"id\":1,\"call\":\"echo.bytes\",\"params\":{\"a\":1}}", bytes=Some(payload)) {
-    ParseRequestResult::Ok(CoreRequest::Call(id, name, _, b)) => {
+    ParseRequestResult::Ok(CoreRequest::Call(id, name, _, b, _)) => {
       debug_assert(id == 1.to_int64() && name == "echo.bytes", "call parsed")
       match b {
         Some(raw) => debug_assert(raw.length() == 4 && raw[0].to_int() == 66, "bytes preserved")
@@ -221,8 +221,8 @@ test "wire codec round-trips call, subscribe, unsubscribe, cancel, delta, fatal,
     _ => debug_assert(false, "expected Call")
   }
 
-  match decode_client_message("{\"id\":2,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws/1\"},\"keyed\":true,\"from\":1,\"have\":\"tok\"}") {
-    ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have)) => {
+  match decode_client_message("{\"id\":2,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws/1\"},\"keyed\":true,\"from\":1,\"have\":\"tok\",\"conn\":3,\"authGen\":2,\"vaultGen\":1}") {
+    ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have, sub_gen)) => {
       debug_assert(id == 2.to_int64() && topic.name == "chats" && keyed, "subscribe parsed")
       let from_ok = match from_id {
         Some(v) => v == 1.to_int64()
@@ -232,11 +232,23 @@ test "wire codec round-trips call, subscribe, unsubscribe, cancel, delta, fatal,
         Some(h) => h == "tok"
         None => false
       }
-      debug_assert(from_ok && have_ok, "from & have")
+      let gen_ok = match sub_gen {
+        Some(sg) => {
+          let c_ok = match sg.conn { Some(v) => v == 3; None => false }
+          let a_ok = match sg.auth_gen { Some(v) => v == 2; None => false }
+          let v_ok = match sg.vault_gen { Some(v) => v == 1; None => false }
+          c_ok && a_ok && v_ok
+        }
+        None => false
+      }
+      debug_assert(from_ok && have_ok && gen_ok, "from, have & sub_gen")
       debug_assert(topic.param("mine").is_some(), "default mine filled")
     }
     _ => debug_assert(false, "expected Subscribe")
   }
+
+  let (auth_s, _) = encode_core_event(CoreEvent::Auth(base_codec::json_obj([("conn", base_codec::json_int(1)), ("global", base_codec::json_int(1))])))
+  debug_assert(auth_s.contains("\"id\":0") && auth_s.contains("\"auth\"") && auth_s.contains("\"conn\":1"), "auth wire")
 
   match decode_client_message("{\"id\":3,\"unsubscribe\":true,\"keep\":true}") {
     ParseRequestResult::Ok(CoreRequest::Unsubscribe(id, u, k)) => {

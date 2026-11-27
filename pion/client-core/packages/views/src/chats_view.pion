@@ -942,6 +942,7 @@ struct ProjectedItem {
   id : String
   pinned_at : Option[Int64]
   last_active : Int64
+  project : String
   row : base_codec::Json
 }
 
@@ -977,6 +978,48 @@ fn sort_projected_items(items : Array[ProjectedItem]) -> Unit {
   }
 }
 
+fn row_matches_project_tag_filter(
+  raw : base_codec::Json,
+  project_filter : Option[String],
+  unclassified_only : Bool,
+  tag_filter : Option[String],
+) -> Bool {
+  let proj = j_str(raw, "project")
+  let want_unclassified = unclassified_only || (match project_filter {
+    Some(p) => p.length() == 0
+    None => false
+  })
+  if want_unclassified {
+    if proj.length() > 0 {
+      return false
+    }
+  } else {
+    match project_filter {
+      Some(p) => if proj != p { return false }
+      None => ()
+    }
+  }
+  match tag_filter {
+    Some(want_tag) => {
+      if want_tag.length() > 0 {
+        let tags = j_arr(raw, "tags")
+        let mut found = false
+        for ti in 0..<tags.length() {
+          match tags[ti] {
+            base_codec::Json::Str(t) => if t == want_tag { found = true; break }
+            _ => ()
+          }
+        }
+        if !found {
+          return false
+        }
+      }
+    }
+    None => ()
+  }
+  true
+}
+
 /// Project the `chats` topic for `workspace` across `stations`, matching `shapes/chat.ts ChatsView`.
 /// Uses `store::query_chat_window` (indexed `chat_recent`, never scanning `chat` whole) and
 /// `RowsMemo` so a single-chat update reads and recomputes only 1–2 rows at 3× scale.
@@ -991,6 +1034,10 @@ pub fn project_chats(
   mine_only : Bool = false,
   watching_only : Bool = false,
   hidden_mode : Int = 0,
+  project_filter : Option[String] = None,
+  unclassified_only : Bool = false,
+  tag_filter : Option[String] = None,
+  group_by : String = "time",
   tz_offset_ms : Int64 = 0.to_int64(),
   changed_keys : Option[Array[(String, String)]] = None,
   lang : String = "zh",
@@ -1255,12 +1302,13 @@ pub fn project_chats(
       Some(ck) => seen_client_keys.set(wr.station + "\u{01}" + ck, true)
       None => ()
     }
-    if !entry.archived {
+    if !entry.archived && row_matches_project_tag_filter(raw, project_filter, unclassified_only, tag_filter) {
       projected.push(ProjectedItem::{
         station: wr.station,
         id: wr.id,
         pinned_at: entry.pinned_at,
         last_active: entry.last_active,
+        project: j_str(raw, "project"),
         row: entry.row,
       })
     }
@@ -1277,6 +1325,9 @@ pub fn project_chats(
         continue
       }
       let pj = parse_json_or_null(pr.json)
+      if !row_matches_project_tag_filter(pj, project_filter, unclassified_only, tag_filter) {
+        continue
+      }
       let p_title = match j_opt_str_any(pj, "title") {
         Some(t) => if t.length() > 0 { t } else { "新对话" }
         None => "新对话"
@@ -1305,6 +1356,7 @@ pub fn project_chats(
         id: pr.key,
         pinned_at: None,
         last_active: p_at,
+        project: j_str(pj, "project"),
         row: base_codec::json_obj(fields),
       })
     }
@@ -1408,6 +1460,114 @@ pub fn project_chats(
     ("days", base_codec::json_arr(days_json)),
     ("glyph", glyph),
   ]
+  if group_by == "project" {
+    // Group rows by project (`unclassified` first, then named projects sorted alphabetically).
+    let unclass_items : Array[ProjectedItem] = []
+    let proj_names : Array[String] = []
+    let proj_items : Map[String, Array[ProjectedItem]] = Map::new()
+    for i in 0..<projected.length() {
+      let it = projected[i]
+      let pname = it.project
+      if pname.length() == 0 {
+        unclass_items.push(it)
+      } else {
+        match proj_items.get(pname) {
+          Some(xs) => xs.push(it)
+          None => {
+            proj_names.push(pname)
+            proj_items.set(pname, [it])
+          }
+        }
+      }
+    }
+    for i in 1..<proj_names.length() {
+      let cur = proj_names[i]
+      let mut j = i - 1
+      while j >= 0 && proj_names[j] > cur {
+        proj_names[j + 1] = proj_names[j]
+        j -= 1
+      }
+      proj_names[j + 1] = cur
+    }
+    let build_proj_group = fn(gkey : String, gkind : String, glabel : String, gproj : Option[String], items_in : Array[ProjectedItem]) -> base_codec::Json {
+      let rows_out : Array[base_codec::Json] = []
+      let day_breaks : Array[base_codec::Json] = []
+      let mut last_lbl = ""
+      let mut running_c = 0
+      let mut alert_c = 0
+      let mut asking_c = 0
+      let mut unread_c = 0
+      let mut latest_at = 0L
+      for idx in 0..<items_in.length() {
+        let it = items_in[idx]
+        rows_out.push(it.row)
+        if it.last_active > latest_at {
+          latest_at = it.last_active
+        }
+        let st = j_str(it.row, "state")
+        if st == "run" {
+          running_c += 1
+        }
+        let tn = j_str(it.row, "tone")
+        if tn == "alert" {
+          alert_c += 1
+        } else if tn == "wait" {
+          asking_c += 1
+        }
+        if j_bool(it.row, "unread") {
+          unread_c += 1
+        }
+        let d_ago = match it.pinned_at {
+          Some(_) => -1L
+          None => {
+            let diff = today - local_day_index(it.last_active, tz_offset_ms)
+            if diff < 0L { 0L } else { diff }
+          }
+        }
+        let lbl = day_bucket_label_at(d_ago, it.last_active, now_ms, utc_offset_min, lang)
+        if lbl != last_lbl {
+          day_breaks.push(base_codec::json_obj([
+            ("at", base_codec::json_int(idx)),
+            ("label", base_codec::json_str(lbl)),
+          ]))
+          last_lbl = lbl
+        }
+      }
+      let gf : Array[(String, base_codec::Json)] = [
+        ("key", base_codec::json_str(gkey)),
+        ("kind", base_codec::json_str(gkind)),
+        ("label", base_codec::json_str(glabel)),
+      ]
+      match gproj {
+        Some(p) => gf.push(("project", base_codec::json_str(p)))
+        None => ()
+      }
+      gf.push(("chatCount", base_codec::json_int(items_in.length())))
+      gf.push(("runningCount", base_codec::json_int(running_c)))
+      if alert_c > 0 {
+        gf.push(("alertCount", base_codec::json_int(alert_c)))
+      }
+      gf.push(("askingCount", base_codec::json_int(asking_c)))
+      gf.push(("unreadCount", base_codec::json_int(unread_c)))
+      gf.push(("latestActiveAt", base_codec::json_int64(latest_at)))
+      if day_breaks.length() > 0 {
+        gf.push(("dayBreaks", base_codec::json_arr(day_breaks)))
+      }
+      gf.push(("items", base_codec::json_arr(rows_out)))
+      base_codec::json_obj(gf)
+    }
+    let groups_out : Array[base_codec::Json] = []
+    if unclass_items.length() > 0 {
+      let unclass_lbl = if lang == "en" { "Unclassified" } else { "未归类" }
+      groups_out.push(build_proj_group("unclassified", "unclassified", unclass_lbl, None, unclass_items))
+    }
+    for i in 0..<proj_names.length() {
+      let pn = proj_names[i]
+      let pitems = match proj_items.get(pn) { Some(xs) => xs; None => [] }
+      groups_out.push(build_proj_group("project:" + pn, "project", pn, Some(pn), pitems))
+    }
+    view_fields.push(("groups", base_codec::json_arr(groups_out)))
+  }
   if has_more {
     view_fields.push(("more", base_codec::json_int(1)))
   }

@@ -220,14 +220,29 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
       return ok_resp(base_codec::json_obj([("invalid", base_codec::json_str(msg))]))
       protocol::ParseRequestResult::Ok(req) =>
       match req {
-        protocol::CoreRequest::Call(id, call_name, params, _) =>
-        return ok_resp(base_codec::json_obj([
-          ("kind", base_codec::json_str("call")),
-          ("id", base_codec::json_int64(id)),
-          ("call", base_codec::json_str(call_name)),
-          ("params", params),
-        ]))
-        protocol::CoreRequest::Subscribe(id, topic, keyed, from_id, have) => {
+        protocol::CoreRequest::Call(id, call_name, params, _, call_auth) => {
+          let fs : Array[(String, base_codec::Json)] = [
+            ("kind", base_codec::json_str("call")),
+            ("id", base_codec::json_int64(id)),
+            ("call", base_codec::json_str(call_name)),
+            ("params", params),
+          ]
+          match call_auth {
+            Some(a) => {
+              let af : Array[(String, base_codec::Json)] = []
+              match a.conn { Some(v) => af.push(("conn", base_codec::json_int(v))); None => () }
+              match a.account { Some(v) => af.push(("account", base_codec::json_str(v))); None => () }
+              match a.workspace { Some(v) => af.push(("workspace", base_codec::json_str(v))); None => () }
+              match a.auth_gen { Some(v) => af.push(("authGen", base_codec::json_int(v))); None => () }
+              match a.vault { Some(v) => af.push(("vault", base_codec::json_str(v))); None => () }
+              match a.vault_gen { Some(v) => af.push(("vaultGen", base_codec::json_int(v))); None => () }
+              fs.push(("auth", base_codec::json_obj(af)))
+            }
+            None => ()
+          }
+          return ok_resp(base_codec::json_obj(fs))
+        }
+        protocol::CoreRequest::Subscribe(id, topic, keyed, from_id, have, sub_gen) => {
           let fs : Array[(String, base_codec::Json)] = [
             ("kind", base_codec::json_str("subscribe")),
             ("id", base_codec::json_int64(id)),
@@ -242,6 +257,14 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
           }
           match have {
             Some(h) => fs.push(("have", base_codec::json_str(h)))
+            None => ()
+          }
+          match sub_gen {
+            Some(sg) => {
+              match sg.conn { Some(v) => fs.push(("conn", base_codec::json_int(v))); None => () }
+              match sg.auth_gen { Some(v) => fs.push(("authGen", base_codec::json_int(v))); None => () }
+              match sg.vault_gen { Some(v) => fs.push(("vaultGen", base_codec::json_int(v))); None => () }
+            }
             None => ()
           }
           return ok_resp(base_codec::json_obj(fs))

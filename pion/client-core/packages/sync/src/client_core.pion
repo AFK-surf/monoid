@@ -70,14 +70,18 @@ pub struct ClientCore {
   pub mut lang : String
   pub mut device_app : String
   pub mut device_locale : String
-  pub mut device_build : Option[Int]
+  pub mut device_build : String
   pub mut device_phone : Bool
   pub mut utc_offset_min : Int
   pub mut active_conn : Int
+  pub mut auth_enforced : Bool
+  workspace_owners : Map[String, String]
   sub_auth_caps : Map[Int64, (Int, Int)]
   chat_windows : Map[String, Int]
-  chat_places : Map[String, base_codec::Json]
-  mut next_chat_seq : Int
+  chat_places : Map[String, (Int, Option[Double])]
+  chat_place_order : Array[String]
+  pending_wire_events : Array[protocol::CoreEvent]
+  mut on_wire_event : Option[(protocol::CoreEvent) -> Unit]
   mut on_prefs_saved : Option[(base_codec::Json) -> Result[Unit, String]]
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
@@ -166,14 +170,18 @@ pub fn ClientCore::new(
     lang: "zh",
     device_app: "desktop",
     device_locale: "",
-    device_build: None,
+    device_build: "",
     device_phone: false,
     utc_offset_min: 0,
     active_conn: 0,
+    auth_enforced: false,
+    workspace_owners: Map::new(),
     sub_auth_caps: Map::new(),
     chat_windows: Map::new(),
     chat_places: Map::new(),
-    next_chat_seq: 1,
+    chat_place_order: [],
+    pending_wire_events: [],
+    on_wire_event: None,
     on_prefs_saved: None,
     auth_seq: 0,
     lock_state: None,
@@ -198,8 +206,15 @@ pub fn ClientCore::new(
   router.set_sub_auth_guard(fn(id : Int64, topic : protocol::Topic) -> Bool {
     core.is_sub_auth_valid(id, topic)
   })
+  router.set_sub_gen_provider(fn(topic : protocol::Topic) -> (Int, Int) {
+    (core.auth_gen.auth_gen_of(topic), core.auth_gen.vault_gen_of(topic))
+  })
+  let _ = core.auth_gen.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    core.on_auth_boundary(ev)
+  })
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
+  core.restore_notify_state()
   core
 }
 
@@ -242,31 +257,57 @@ fn ClientCore::wire_station_hooks(
     },
     fn() -> Unit {
       local_outbox.set_online(true)
+      let ws_cap = self.workspace_capability(self.workspace)
       let _ = rt.fork_quiet_named("initial-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if !ws_cap.is_valid() {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
         sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
+          let _ = ws_cap.commit(fn() -> Unit {})
           k(effect::Exit::Succeeded(()))
         })
       })
       let _ = rt.fork_quiet_named("initial-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if !ws_cap.is_valid() {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
         sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
+          let _ = ws_cap.commit(fn() -> Unit {})
           k(effect::Exit::Succeeded(()))
         })
       })
-      local_outbox.flush_station_offline(rt, station)
+      if ws_cap.is_valid() {
+        local_outbox.flush_station_offline(rt, station)
+      }
     },
     fn(lock_payload : base_codec::Json) -> Unit {
       self.handle_lock_event(lock_payload)
     },
   )
   events.set_missed_hook(fn() -> Unit {
+    let ws_cap = self.workspace_capability(self.workspace)
     let _ = rt.fork_quiet_named("missed-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if !ws_cap.is_valid() {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
+        let _ = ws_cap.commit(fn() -> Unit {})
         k(effect::Exit::Succeeded(()))
       })
     })
-    self.schedule_marks_read(station, sync, [], [], true)
+    if ws_cap.is_valid() {
+      self.schedule_marks_read(station, sync, [], [], true)
+    }
     let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if !ws_cap.is_valid() {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
+        let _ = ws_cap.commit(fn() -> Unit {})
         k(effect::Exit::Succeeded(()))
       })
     })
@@ -1342,16 +1383,284 @@ pub fn ClientCore::lock_all_vaults(self : ClientCore) -> Int {
   self.auth_gen.bump_all_vaults()
 }
 
-/// Verify optional call auth boundary metadata carried in `params` (`_auth` / `auth`).
+/// Register authoritative owner `sub` for `workspace` (fed from CloudSync / workspace sync).
+pub fn ClientCore::register_workspace_owner(self : ClientCore, ws : String, owner_sub : String) -> Unit {
+  if ws.length() > 0 && owner_sub.length() > 0 {
+    self.workspace_owners.set(ws, owner_sub)
+  }
+}
+
+/// Resolve authoritative owner `sub` for `ws` (never ignores `ws`).
+pub fn ClientCore::owner_of_workspace(self : ClientCore, ws : String) -> Option[String] {
+  match self.workspace_owners.get(ws) {
+    Some(s) => return Some(s)
+    None => ()
+  }
+  match store::get_workspace(self.db, ws) {
+    sql::SqlResult::Ok(Some(row)) => match base_codec::json_parse(row.json) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match proto_str(j, "ownerSub") {
+          Some(s) => if s.length() > 0 { return Some(s) }
+          None => ()
+        }
+        match proto_str(j, "owner") {
+          Some(s) => if s.length() > 0 { return Some(s) }
+          None => ()
+        }
+        match proto_str(j, "account") {
+          Some(s) => if s.length() > 0 { return Some(s) }
+          None => ()
+        }
+        // Workspace row exists in the active account's DB -> active account owns it.
+        match self.auth_store.active_sub {
+          Some(s) => if s.length() > 0 { return Some(s) }
+          None => ()
+        }
+        if self.viewer_sub.length() > 0 {
+          return Some(self.viewer_sub)
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+  if ws == self.workspace {
+    match self.auth_store.active_sub {
+      Some(s) => if s.length() > 0 { return Some(s) }
+      None => ()
+    }
+    if self.viewer_sub.length() > 0 {
+      return Some(self.viewer_sub)
+    }
+  }
+  None
+}
+
+/// Register a wire event sink invoked synchronously on auth boundaries (`{id: 0, auth}` and
+/// re-anchored full topic snapshots).
+pub fn ClientCore::set_on_wire_event(self : ClientCore, cb : (protocol::CoreEvent) -> Unit) -> Unit {
+  self.on_wire_event = Some(cb)
+}
+
+/// Drain buffered wire events emitted by auth/vault boundaries (for tests and non-callback hosts).
+pub fn ClientCore::drain_wire_events(self : ClientCore) -> Array[protocol::CoreEvent] {
+  let out : Array[protocol::CoreEvent] = []
+  for i in 0..<self.pending_wire_events.length() {
+    out.push(self.pending_wire_events[i])
+  }
+  self.pending_wire_events.clear()
+  out
+}
+
+/// Build the initial `{ id: 0, auth }` snapshot event for `self.active_conn`.
+pub fn ClientCore::auth_snapshot_event(self : ClientCore) -> protocol::CoreEvent {
+  protocol::CoreEvent::Auth(self.auth_gen.snapshot_json(self.active_conn))
+}
+
+fn ClientCore::emit_boundary_wire_event(self : ClientCore, ev : protocol::CoreEvent) -> Unit {
+  self.pending_wire_events.push(ev)
+  match self.on_wire_event {
+    Some(cb) => cb(ev)
+    None => ()
+  }
+}
+
+/// Auth/vault boundary handler (`client/core-ts/src/store.ts:453-500` `#onAuthBoundary`):
+/// 1. Invalidates affected `kept` / `kept_by_token` caches in `Slice1Router`;
+/// 2. Re-anchors affected live subscriptions (`sub_auth_caps` & `ActiveSub`) to their new generation
+///    and forces a fresh full `CoreEvent::Value` snapshot (never a delta, never freezing live subs!);
+/// 3. Leaves unrelated workspace / vault subscriptions completely untouched;
+/// 4. Emits `{ id: 0, auth }` incremental boundary message when `active_conn > 0`.
+fn ClientCore::on_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  self.router.invalidate_kept_where(fn(t : protocol::Topic) -> Bool {
+    self.auth_gen.matches(t, ev)
+  })
+  let refreshed = self.router.reanchor_and_refresh_where(
+    fn(t : protocol::Topic) -> Bool { self.auth_gen.matches(t, ev) },
+    fn(sid : Int64, _t : protocol::Topic, new_ag : Int, new_vg : Int) -> Unit {
+      self.sub_auth_caps.set(sid, (new_ag, new_vg))
+    },
+  )
+  if self.active_conn > 0 {
+    self.emit_boundary_wire_event(protocol::CoreEvent::Auth(
+      self.auth_gen.boundary_event_json(self.active_conn, ev),
+    ))
+  }
+  for i in 0..<refreshed.length() {
+    self.emit_boundary_wire_event(refreshed[i])
+  }
+}
+
+/// Restore persisted notification settings (`on`, `asked`, `preview`, `kinds`, `muted`) from SQLite.
+fn ClientCore::restore_notify_state(self : ClientCore) -> Unit {
+  match store::get_account_doc(self.db, "notify") {
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "on") {
+          Some(base_codec::Json::Bool(b)) => {
+            self.notify_on = b
+            self.notify_push = b
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "asked") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_asked = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "preview") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_preview = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "muted") {
+          Some(base_codec::Json::Arr(xs)) => {
+            self.notify_muted.clear()
+            for i in 0..<xs.length() {
+              match xs[i] {
+                base_codec::Json::Str(s) => if s.length() > 0 { self.notify_muted.push(s) }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "kinds") {
+          Some(kj) => match kj {
+            base_codec::Json::Obj(_) => {
+              let cur = self.notify_kinds
+              let next_done = match proto_str(kj, "done") {
+                Some(s) => if s == "off" || s == "away" || s == "always" { s } else { cur.done }
+                None => cur.done
+              }
+              self.notify_kinds = views::NotifyKindsInput::{
+                wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
+                failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
+                done: next_done,
+                message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
+                billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+              }
+            }
+            _ => ()
+          }
+          None => ()
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+}
+
+/// Look up effective `chat.window` row count for `(station, thread?, session?)` (`views.ts:5023`).
+pub fn ClientCore::chat_window_for(
+  self : ClientCore,
+  station : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> Int {
+  let mut best = 0
+  match thread {
+    Some(th) => match self.chat_windows.get(station + ":t:" + th.to_string()) {
+      Some(n) => if n > best { best = n }
+      None => ()
+    }
+    None => ()
+  }
+  match session {
+    Some(sk) => if sk.length() > 0 {
+      match self.chat_windows.get(station + ":s:" + sk) {
+        Some(n) => if n > best { best = n }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  if best > 0 { best } else { 30 }
+}
+
+/// Look up in-memory scroll position `(at, atOffset)` for `(station, thread)` (`topics.ts:750`).
+pub fn ClientCore::chat_place_for(
+  self : ClientCore,
+  station : String,
+  thread : Option[Int],
+) -> (Option[Int], Option[Double]) {
+  match thread {
+    Some(th) => match self.chat_places.get(station + "\u{01}" + th.to_string()) {
+      Some((seq, off)) => (Some(seq), off)
+      None => (None, None)
+    }
+    None => (None, None)
+  }
+}
+
+fn ClientCore::set_chat_place_mem(
+  self : ClientCore,
+  station : String,
+  thread : Int,
+  seq_opt : Option[Int],
+  offset_opt : Option[Double],
+) -> Unit {
+  let pk = station + "\u{01}" + thread.to_string()
+  match seq_opt {
+    None => {
+      self.chat_places.remove(pk)
+      let next : Array[String] = []
+      for i in 0..<self.chat_place_order.length() {
+        if self.chat_place_order[i] != pk {
+          next.push(self.chat_place_order[i])
+        }
+      }
+      self.chat_place_order.clear()
+      for i in 0..<next.length() {
+        self.chat_place_order.push(next[i])
+      }
+    }
+    Some(seq) => {
+      self.chat_places.set(pk, (seq, offset_opt))
+      let next : Array[String] = []
+      for i in 0..<self.chat_place_order.length() {
+        if self.chat_place_order[i] != pk {
+          next.push(self.chat_place_order[i])
+        }
+      }
+      next.push(pk)
+      self.chat_place_order.clear()
+      for i in 0..<next.length() {
+        self.chat_place_order.push(next[i])
+      }
+      while self.chat_place_order.length() > 256 {
+        let oldest = self.chat_place_order[0]
+        let trimmed : Array[String] = []
+        for i in 1..<self.chat_place_order.length() {
+          trimmed.push(self.chat_place_order[i])
+        }
+        self.chat_place_order.clear()
+        for i in 0..<trimmed.length() {
+          self.chat_place_order.push(trimmed[i])
+        }
+        self.chat_places.remove(oldest)
+      }
+    }
+  }
+}
+
+/// Verify top-level wire `auth` on protected write calls (1:1 with `client/core-ts/src/core.ts:1100-1121`).
+/// Only `sub`s are admitted in `signed_in` (never emails), and workspace ownership is resolved per `ws`.
 pub fn ClientCore::verify_write_auth(
   self : ClientCore,
-  params : base_codec::Json,
+  wire_auth : Option[protocol::WireCallAuth],
   ws_opt : Option[String] = None,
   vault_opt : Option[String] = None,
   is_vault : Bool = false,
 ) -> Option[protocol::CoreError] {
-  let call_auth = parse_call_auth(params)
-  if call_auth.is_none() && self.active_conn <= 0 {
+  let call_auth : Option[CallAuth] = match wire_auth {
+    Some(w) => {
+      self.auth_enforced = true
+      Some(call_auth_from_wire(w))
+    }
+    None => None
+  }
+  let enforced = self.active_conn > 0 && self.auth_enforced
+  if call_auth.is_none() && !enforced {
     return None
   }
   let signed_in : Map[String, Bool] = Map::new()
@@ -1360,21 +1669,12 @@ pub fn ClientCore::verify_write_auth(
     if a.sub.length() > 0 {
       signed_in.set(a.sub, true)
     }
-    if a.email.length() > 0 {
-      signed_in.set(a.email, true)
-    }
   }
   if self.viewer_sub.length() > 0 {
     signed_in.set(self.viewer_sub, true)
   }
-  if self.viewer_marks.me.length() > 0 {
-    signed_in.set(self.viewer_marks.me, true)
-  }
-  let owner_of = fn(_ws : String) -> Option[String] {
-    match self.auth_store.active_sub {
-      Some(s) => Some(s)
-      None => if self.viewer_sub.length() > 0 { Some(self.viewer_sub) } else { None }
-    }
+  let owner_of = fn(ws : String) -> Option[String] {
+    self.owner_of_workspace(ws)
   }
   let target = CallAuthTarget::{
     account: None,
@@ -1389,7 +1689,7 @@ pub fn ClientCore::verify_write_auth(
     owner_of,
     signed_in,
     target=target,
-    protected_write=self.active_conn > 0,
+    protected_write=enforced,
   )
 }
 
@@ -1465,6 +1765,22 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Bool(true)) => 1
       _ => 0
     }
+    let project_filter : Option[String] = match topic.param("project") {
+      Some(base_codec::Json::Str(s)) => Some(s)
+      _ => None
+    }
+    let unclassified_only = match topic.param("unclassified") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let tag_filter : Option[String] = match topic.param("tag") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+    let group_by = match topic.param("groupBy") {
+      Some(base_codec::Json::Str(g)) => if g == "project" { "project" } else { "time" }
+      _ => "time"
+    }
     let briefs = self.station_briefs_for_scope(ws_scope)
     let dirty_opt : Option[Array[(String, String)]] = if self.pending_dirty_rows.length() > 0 {
       let copy : Array[(String, String)] = []
@@ -1486,7 +1802,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       mine_only=mine_only,
       watching_only=watching_only,
       hidden_mode=hidden_mode,
+      project_filter=project_filter,
+      unclassified_only=unclassified_only,
+      tag_filter=tag_filter,
+      group_by=group_by,
       changed_keys=dirty_opt,
+      lang=self.lang,
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -1515,17 +1836,8 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let win_key = match th_opt {
-      Some(th) => st + ":t:" + th.to_string()
-      None => match sess_opt {
-        Some(sk) => st + ":s:" + sk
-        None => st
-      }
-    }
-    let rows_lim = match self.chat_windows.get(win_key) {
-      Some(n) => if n > 0 { n } else { 30 }
-      None => 30
-    }
+    let rows_lim = self.chat_window_for(st, th_opt, sess_opt)
+    let (at_opt, at_off_opt) = self.chat_place_for(st, th_opt)
     match views::project_chat_by_params(
       self.db,
       st,
@@ -1535,6 +1847,8 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       self.viewer_marks.me,
       self.rt.now(),
       rows=rows_lim,
+      at=at_opt,
+      at_offset=at_off_opt,
       utc_offset_min=self.utc_offset_min,
       lang=self.lang,
     ) {
@@ -1543,7 +1857,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     }
   }
   if topic.name == "workspaces" {
-    match views::project_workspaces(self.db) {
+    match views::project_workspaces(
+      self.db,
+      accounts=self.auth_store.accounts,
+      viewer_sub=self.viewer_sub,
+      viewer_email=self.viewer_marks.me,
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -1949,45 +2268,6 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
   }
-  if topic.name == "driveTransfers" {
-    let ws = match topic.param("workspace") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => self.workspace
-    }
-    let briefs = self.station_briefs_for_scope(ws)
-    match views::project_drive_transfers(self.db, ws, briefs, lang=self.lang) {
-      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
-      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-    }
-  }
-  if topic.name == "changelog" {
-    let news_only = match topic.param("news") {
-      Some(base_codec::Json::Bool(b)) => b
-      _ => false
-    }
-    let part_opt : Option[String] = match topic.param("part") {
-      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-      _ => None
-    }
-    let lim_opt : Option[Int] = match topic.param("limit") {
-      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
-      _ => None
-    }
-    match views::project_changelog(
-      self.db,
-      self.device_app,
-      self.device_build,
-      news_only,
-      part_opt,
-      lim_opt,
-      self.rt.now(),
-      utc_offset_min=self.utc_offset_min,
-      lang=self.lang,
-    ) {
-      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
-      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-    }
-  }
   if topic.name == "composer" {
     let key = match topic.param("key") {
       Some(base_codec::Json::Str(s)) => s
@@ -2007,62 +2287,6 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     let ws_of_st = workspace_of_station_addr(st)
     let briefs = self.station_briefs_for_scope(ws_of_st)
     match views::project_chat_row(self.db, st, sess, briefs, self.viewer_marks, self.rt.now(), lang=self.lang) {
-      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
-      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-    }
-  }
-  if topic.name == "chatFeedback" {
-    let st = match topic.param("station") {
-      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
-      _ => self.station
-    }
-    let sess = match topic.param("session") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => ""
-    }
-    let acct = match self.auth_store.active_sub {
-      Some(s) => s
-      None => self.viewer_sub
-    }
-    match views::project_chat_feedback(
-      self.db,
-      st,
-      sess,
-      acct,
-      self.rt.now(),
-      utc_offset_min=self.utc_offset_min,
-      lang=self.lang,
-    ) {
-      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
-      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-    }
-  }
-  if topic.name == "live" {
-    let st = match topic.param("station") {
-      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
-      _ => self.station
-    }
-    let key = match topic.param("key") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => ""
-    }
-    let first_opt : Option[Int] = match topic.param("first") {
-      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
-      _ => None
-    }
-    match views::project_live(self.db, st, key, first_hint=first_opt, online=self.live) {
-      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
-      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-    }
-  }
-  if topic.name == "newChat" {
-    let ws_scope = match topic.param("scope") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => self.workspace
-    }
-    let briefs = self.station_briefs_for_scope(ws_scope)
-    let next_key = "new:chat-" + self.next_chat_seq.to_string()
-    match views::project_new_chat(self.db, ws_scope, briefs, self.presets_held, next_key, lang=self.lang) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2626,6 +2850,12 @@ pub fn ClientCore::apply_lock_chain(
         Ok(_) => ()
         Err(msg) => return Err(msg)
       }
+      // Feed authoritative lock state digest into `auth_gen.sync_workspace` so lock enable/disable,
+      // member removal, or device revocation advances `authGen` and re-anchors live subscriptions.
+      let lock_digest = "lock:" + v.state.ws + "|dis:" + (if v.state.disabled { "1" } else { "0" }) +
+      "|head:" + v.state.head + "|m:" + v.state.members.length().to_string() +
+      "|d:" + v.state.devices.length().to_string()
+      let _ = self.auth_gen.sync_workspace(self.workspace, lock_digest)
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
         v.state.head,
@@ -2781,7 +3011,7 @@ fn proto_int(j : base_codec::Json, k : String) -> Option[Int] {
 /// Handle a `protocol::CoreRequest` across both Slice 1 read-only queries and Slice 2 sync/outbox commands.
 pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest) -> Option[protocol::CoreEvent] {
   match req {
-    protocol::CoreRequest::Call(id, call_name, params, _bytes) => {
+    protocol::CoreRequest::Call(id, call_name, params, bytes, call_auth) => {
       if call_name == "client.focus" {
         match proto_int(params, "thread") {
           Some(th) => {
@@ -2800,7 +3030,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           None => self.station
         }
         let target_ws = workspace_of_station_addr(target_st)
-        match self.verify_write_auth(params, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
+        match self.verify_write_auth(call_auth, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -2851,7 +3081,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           None => self.station
         }
         let target_ws = workspace_of_station_addr(target_st)
-        match self.verify_write_auth(params, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
+        match self.verify_write_auth(call_auth, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -2941,7 +3171,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           None => self.station
         }
         let target_ws = workspace_of_station_addr(target_st)
-        match self.verify_write_auth(params, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
+        match self.verify_write_auth(call_auth, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -3010,7 +3240,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           }
           let op_vault = proto_str(params, "vault")
           let op_is_vault = call_name.starts_with("vault.")
-          match self.verify_write_auth(params, ws_opt=op_ws, vault_opt=op_vault, is_vault=op_is_vault) {
+          match self.verify_write_auth(call_auth, ws_opt=op_ws, vault_opt=op_vault, is_vault=op_is_vault) {
             Some(err) => return Some(protocol::CoreEvent::Err(id, err))
             None => ()
           }
@@ -3181,7 +3411,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(w) => if w.length() > 0 { Some(w) } else { Some(self.workspace) }
           None => Some(self.workspace)
         }
-        match self.verify_write_auth(params, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
+        match self.verify_write_auth(call_auth, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -3211,7 +3441,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(w) => if w.length() > 0 { Some(w) } else { Some(self.workspace) }
           None => Some(self.workspace)
         }
-        match self.verify_write_auth(params, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
+        match self.verify_write_auth(call_auth, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -3240,7 +3470,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(w) => if w.length() > 0 { Some(w) } else { Some(self.workspace) }
           None => Some(self.workspace)
         }
-        match self.verify_write_auth(params, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
+        match self.verify_write_auth(call_auth, ws_opt=v_ws, vault_opt=proto_str(params, "vault"), is_vault=true) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -3448,48 +3678,159 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
       }
       if call_name == "client.device" {
-        match proto_str(params, "app") {
-          Some(a) => if a.length() > 0 { self.device_app = a }
-          None => ()
+        // 1:1 with `client/core-ts/src/prefs.ts:518-560` (`device`)
+        let trim_str = fn(k : String) -> String {
+          match proto_str(params, k) {
+            Some(s) => s.trim()
+            None => ""
+          }
         }
-        match proto_str(params, "locale") {
-          Some(l) => { self.device_locale = l }
-          None => ()
+        let app = trim_str("app")
+        if app != "web" && app != "desktop" && app != "android" && app != "ios" {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid app: expected web|desktop|android|ios" }))
         }
-        match proto_int(params, "build") {
-          Some(b) => { self.device_build = Some(b) }
-          None => ()
+        let build = trim_str("build")
+        let agent = trim_str("userAgent")
+        let model = trim_str("model")
+        let machine_raw = trim_str("machine")
+        let machine = if machine_raw.length() > 60 { machine_raw.slice(0, 60) } else { machine_raw }
+        let locale = trim_str("locale")
+        let client_raw = trim_str("client")
+        let client_name = if client_raw.length() > 40 { client_raw.slice(0, 40) } else { client_raw }
+        let agent_lc = {
+          let bs = agent.to_bytes()
+          let sb = StringBuilder::new()
+          for i in 0..<bs.length() {
+            let c = bs[i].to_int()
+            if c >= 65 && c <= 90 { sb.write_byte((c + 32) as Byte) } else { sb.write_byte(bs[i]) }
+          }
+          sb.to_string()
         }
-        match base_codec::json_get(params, "phone") {
-          Some(base_codec::Json::Bool(b)) => { self.device_phone = b }
-          _ => ()
+        let phone = app == "android" || app == "ios" || (app == "web" && (agent_lc.contains("android") || agent_lc.contains("iphone") || agent_lc.contains("ipad")))
+        let handoff = app == "web" && !phone
+        let is_mac = app == "ios" || agent_lc.contains("mac os x") || agent_lc.contains("iphone") || agent_lc.contains("ipad")
+        let os_s = if agent_lc.contains("iphone") || agent_lc.contains("ipad") {
+          "iOS"
+        } else if agent.contains("Mac OS X") {
+          "macOS"
+        } else if agent.contains("Windows") {
+          "Windows"
+        } else if agent.contains("Android") {
+          "Android"
+        } else if agent.contains("Linux") {
+          "Linux"
+        } else {
+          ""
         }
-        let dev_fields : Array[(String, base_codec::Json)] = [
-          ("app", base_codec::json_str(self.device_app)),
-          ("locale", base_codec::json_str(self.device_locale)),
-          ("phone", base_codec::json_bool(self.device_phone)),
+        let browser_s = if agent.contains("Edg/") {
+          "Edge"
+        } else if agent.contains("Chrome/") {
+          "Chrome"
+        } else if agent.contains("Firefox/") {
+          "Firefox"
+        } else if agent.contains("Safari/") {
+          "Safari"
+        } else {
+          ""
+        }
+        let b_suffix = if build.length() == 0 { "" } else { " " + build }
+        let sent_from = if app == "web" {
+          "web" + b_suffix + " (" + (if phone { "phone" } else { "pc" }) + ")"
+        } else {
+          app + b_suffix
+        }
+        self.device_app = app
+        self.device_build = build
+        self.device_phone = phone
+        if locale.length() > 0 {
+          self.device_locale = locale
+        }
+        let cur_prefs = match store::get_device_prefs(self.db) {
+          sql::SqlResult::Ok(j) => j
+          sql::SqlResult::Err(_) => base_codec::json_obj([])
+        }
+        let eff_lang = match proto_str(cur_prefs, "language") {
+          Some(l) => if l == "en" { "en" } else { "zh" }
+          None => if locale.length() > 0 {
+            if locale.starts_with("zh") || locale.starts_with("ZH") || locale.starts_with("Zh") { "zh" } else { "en" }
+          } else {
+            self.lang
+          }
+        }
+        self.lang = eff_lang
+        let brand = if client_name.length() > 0 { client_name } else { "still.fail" }
+        let more_str = fn(s : String) -> String { if s.length() == 0 { "" } else { " · " + s } }
+        let dev_name = if app == "android" {
+          let extra = if machine.length() > 0 { machine } else { model }
+          brand + " Android" + more_str(extra)
+        } else if app == "ios" {
+          let extra = if machine.length() > 0 { machine } else { model }
+          brand + " iOS" + more_str(extra)
+        } else if app == "desktop" {
+          let extra = if machine.length() > 0 { machine } else { os_s }
+          brand + (if eff_lang == "en" { " Desktop" } else { " 桌面版" }) + more_str(extra)
+        } else {
+          let br = if browser_s.length() > 0 { browser_s } else if eff_lang == "en" { "Browser" } else { "浏览器" }
+          brand + " Web · " + br + more_str(os_s)
+        }
+        let told_fields : Array[(String, base_codec::Json)] = [
+          ("app", base_codec::json_str(app)),
+          ("phone", base_codec::json_bool(phone)),
+          ("handoff", base_codec::json_bool(handoff)),
+          ("sentFrom", base_codec::json_str(sent_from)),
+          ("mac", base_codec::json_bool(is_mac)),
+          ("name", base_codec::json_str(dev_name)),
         ]
-        match self.device_build {
-          Some(b) => dev_fields.push(("build", base_codec::json_int(b)))
+        if locale.length() > 0 {
+          told_fields.push(("locale", base_codec::json_str(locale)))
+        }
+        if client_name.length() > 0 {
+          told_fields.push(("client", base_codec::json_str(client_name)))
+        }
+        let next_prefs = j_set_field(
+          j_set_field(cur_prefs, "device", base_codec::json_obj(told_fields)),
+          "lang",
+          base_codec::json_str(eff_lang),
+        )
+        let _ = store::put_account_doc(self.db, "prefs", base_codec::json_stringify(next_prefs))
+        match self.on_prefs_saved {
+          Some(hook) => { let _ = hook(next_prefs) }
           None => ()
         }
-        let _ = store::put_account_doc(self.db, "changelog:device", base_codec::json_stringify(base_codec::json_obj(dev_fields)))
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
       }
       if call_name == "notify.permission" {
-        match proto_str(params, "state") {
-          Some(st) => { self.notify_permission = st }
-          None => ()
+        let st = match proto_str(params, "state") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing state" }))
         }
+        if st != "granted" && st != "denied" && st != "default" && st != "unknown" {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid permission state" }))
+        }
+        self.notify_permission = st
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
       }
       if call_name == "notify.set" {
+        // 1:1 with `client/core-ts/src/attend-parse.ts:58-68` & `attend.ts:155-162`
+        match base_codec::json_get(params, "kinds") {
+          Some(base_codec::Json::Null) | None => ()
+          Some(base_codec::Json::Obj(_)) => ()
+          _ => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "kinds must be an object" }))
+        }
+        match base_codec::json_get(params, "workspaces") {
+          Some(base_codec::Json::Null) | None => ()
+          Some(base_codec::Json::Obj(_)) => ()
+          _ => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "workspaces must be an object" }))
+        }
         match base_codec::json_get(params, "asked") {
           Some(base_codec::Json::Bool(b)) => { self.notify_asked = b }
           _ => ()
         }
         match base_codec::json_get(params, "on") {
-          Some(base_codec::Json::Bool(b)) => { self.notify_on = b }
+          Some(base_codec::Json::Bool(b)) => {
+            self.notify_on = b
+            self.notify_push = b
+          }
           _ => ()
         }
         match base_codec::json_get(params, "push") {
@@ -3504,38 +3845,93 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(base_codec::Json::Bool(b)) => { self.notify_in_front = b }
           _ => ()
         }
+        // Support both `workspaces: { wsId: boolean }` patch (`true` = heard/unmuted, `false` = muted)
+        // and explicit `muted: [wsId]` array.
+        let muted_set : Map[String, Bool] = Map::new()
+        for i in 0..<self.notify_muted.length() {
+          muted_set.set(self.notify_muted[i], true)
+        }
         match base_codec::json_get(params, "muted") {
           Some(base_codec::Json::Arr(xs)) => {
-            self.notify_muted.clear()
+            muted_set.clear()
             for i in 0..<xs.length() {
               match xs[i] {
-                base_codec::Json::Str(s) => self.notify_muted.push(s)
+                base_codec::Json::Str(s) => if s.length() > 0 { muted_set.set(s, true) }
                 _ => ()
               }
             }
           }
           _ => ()
         }
-        match base_codec::json_get(params, "kinds") {
-          Some(base_codec::Json::Obj(_)) => {
-            let kj = match base_codec::json_get(params, "kinds") { Some(v) => v; None => base_codec::json_null() }
-            let cur = self.notify_kinds
-            self.notify_kinds = views::NotifyKindsInput::{
-              wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
-              failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
-              done: match proto_str(kj, "done") { Some(s) => s; None => cur.done },
-              message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
-              billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+        match base_codec::json_get(params, "workspaces") {
+          Some(base_codec::Json::Obj(ws_entries)) => {
+            for i in 0..<ws_entries.length() {
+              let (wid, v) = ws_entries[i]
+              match v {
+                base_codec::Json::Bool(heard) => {
+                  if heard {
+                    muted_set.remove(wid)
+                  } else {
+                    muted_set.set(wid, true)
+                  }
+                }
+                _ => ()
+              }
             }
           }
           _ => ()
         }
+        let sorted_muted = muted_set.keys()
+        for i in 1..<sorted_muted.length() {
+          let cur = sorted_muted[i]
+          let mut j = i - 1
+          while j >= 0 && sorted_muted[j] > cur {
+            sorted_muted[j + 1] = sorted_muted[j]
+            j -= 1
+          }
+          sorted_muted[j + 1] = cur
+        }
+        self.notify_muted.clear()
+        for i in 0..<sorted_muted.length() {
+          self.notify_muted.push(sorted_muted[i])
+        }
+        match base_codec::json_get(params, "kinds") {
+          Some(kj) => match kj {
+            base_codec::Json::Obj(_) => {
+              let cur = self.notify_kinds
+              let next_done = match proto_str(kj, "done") {
+                Some(s) => if s == "off" || s == "away" || s == "always" { s } else { cur.done }
+                None => cur.done
+              }
+              self.notify_kinds = views::NotifyKindsInput::{
+                wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
+                failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
+                done: next_done,
+                message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
+                billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+              }
+            }
+            _ => ()
+          }
+          None => ()
+        }
+        let muted_j : Array[base_codec::Json] = []
+        for i in 0..<self.notify_muted.length() {
+          muted_j.push(base_codec::json_str(self.notify_muted[i]))
+        }
+        let kinds_j = base_codec::json_obj([
+          ("wait", base_codec::json_bool(self.notify_kinds.wait)),
+          ("failed", base_codec::json_bool(self.notify_kinds.failed)),
+          ("done", base_codec::json_str(self.notify_kinds.done)),
+          ("message", base_codec::json_bool(self.notify_kinds.message)),
+          ("billed", base_codec::json_bool(self.notify_kinds.billed)),
+        ])
         let persist_j = base_codec::json_obj([
           ("on", base_codec::json_bool(self.notify_on)),
           ("asked", base_codec::json_bool(self.notify_asked)),
-          ("push", base_codec::json_bool(self.notify_push)),
+          ("kinds", kinds_j),
           ("preview", base_codec::json_bool(self.notify_preview)),
-          ("permission", base_codec::json_str(self.notify_permission)),
+          ("muted", base_codec::json_arr(muted_j)),
         ])
         let _ = store::put_account_doc(self.db, "notify", base_codec::json_stringify(persist_j))
         match views::project_notify(self.db, self.current_notify_state(), self.notices_held, lang=self.lang) {
@@ -3544,89 +3940,111 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
       }
       if call_name == "chat.place" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:743-751` & `station/topics.ts:750`:
+        // in-memory bounded map only (no unbounded `account_doc` writes per scroll), consumed by `project_chat`.
         let st = match proto_str(params, "station") {
           Some(s) => if s.length() > 0 { s } else { self.station }
           None => self.station
         }
         let target_ws = workspace_of_station_addr(st)
-        match self.verify_write_auth(params, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
+        match self.verify_write_auth(call_auth, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
-        let pk = match proto_int(params, "thread") {
-          Some(th) => st + ":t:" + th.to_string()
-          None => match proto_str(params, "session") {
-            Some(s) => st + ":s:" + s
-            None => match proto_str(params, "chat") {
-              Some(c) => st + ":c:" + c
-              None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread or session" }))
-            }
-          }
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
         }
-        let place_fields : Array[(String, base_codec::Json)] = [("at", base_codec::json_int64(self.rt.now()))]
-        match proto_int(params, "seq") {
-          Some(s) => place_fields.push(("seq", base_codec::json_int(s)))
-          None => ()
+        let seq_opt = proto_int(params, "seq")
+        let off_opt : Option[Double] = match base_codec::json_get(params, "offset") {
+          Some(base_codec::Json::Num(n, _)) => Some(n)
+          _ => None
         }
-        match base_codec::json_get(params, "offset") {
-          Some(v) => place_fields.push(("offset", v))
-          None => ()
-        }
-        match proto_str(params, "anchor") {
-          Some(a) => place_fields.push(("anchor", base_codec::json_str(a)))
-          None => ()
-        }
-        let place_j = base_codec::json_obj(place_fields)
-        self.chat_places.set(pk, place_j)
-        let _ = store::put_account_doc(self.db, "chat_place:" + pk, base_codec::json_stringify(place_j))
+        self.set_chat_place_mem(st, th, seq_opt, off_opt)
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
       }
       if call_name == "chat.window" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:787-796`: `rows` required, clamped to `[1, 200]`.
         let st = match proto_str(params, "station") {
           Some(s) => if s.length() > 0 { s } else { self.station }
           None => self.station
         }
-        let rows_val = match proto_int(params, "rows") {
-          Some(r) => if r > 0 { r } else { 30 }
-          None => match proto_int(params, "limit") {
-            Some(l) => if l > 0 { l } else { 30 }
-            None => 30
-          }
+        let raw_rows = match proto_int(params, "rows") {
+          Some(r) => r
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing rows" }))
         }
-        let wk = match proto_int(params, "thread") {
-          Some(th) => st + ":t:" + th.to_string()
-          None => match proto_str(params, "session") {
-            Some(s) => st + ":s:" + s
-            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread or session" }))
-          }
+        if raw_rows <= 0 {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "rows must be positive" }))
         }
-        self.chat_windows.set(wk, rows_val)
+        let clamped_rows = if raw_rows > 200 { 200 } else { raw_rows }
+        let th_opt = proto_int(params, "thread")
+        let sess_opt = match proto_str(params, "session") {
+          Some(s) => if s.length() > 0 { Some(s) } else { None }
+          None => None
+        }
+        if th_opt.is_none() && sess_opt.is_none() {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread or session" }))
+        }
+        match th_opt {
+          Some(th) => self.chat_windows.set(st + ":t:" + th.to_string(), clamped_rows)
+          None => ()
+        }
+        match sess_opt {
+          Some(s) => self.chat_windows.set(st + ":s:" + s, clamped_rows)
+          None => ()
+        }
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
       }
       if call_name == "draft.get" {
-        let st = match proto_str(params, "station") {
-          Some(s) => if s.length() > 0 { s } else { self.station }
-          None => self.station
-        }
-        let chat = match proto_str(params, "chat") {
-          Some(c) => c
-          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing chat" }))
+        // 1:1 with `client/core-ts/src/core/calls.ts:901-913`: accepts `{ key }` OR `{ station, chat }`.
+        let (st, chat) = match proto_str(params, "key") {
+          Some(k) => match draft_at_key(k) {
+            Some(pair) => pair
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
+          }
+          None => {
+            let s = match proto_str(params, "station") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            let c = match proto_str(params, "chat") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            if s.length() == 0 || c.length() == 0 {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key or station+chat" }))
+            }
+            (s, c)
+          }
         }
         return Some(protocol::CoreEvent::Ok(id, self.composers.read_draft(st, chat), None))
       }
       if call_name == "draft.put" {
-        let st = match proto_str(params, "station") {
-          Some(s) => if s.length() > 0 { s } else { self.station }
-          None => self.station
+        // 1:1 with `client/core-ts/src/core/calls.ts:901-921`: accepts `{ key }` OR `{ station, chat }`.
+        let (st, chat) = match proto_str(params, "key") {
+          Some(k) => match draft_at_key(k) {
+            Some(pair) => pair
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
+          }
+          None => {
+            let s = match proto_str(params, "station") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            let c = match proto_str(params, "chat") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            if s.length() == 0 || c.length() == 0 {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key or station+chat" }))
+            }
+            (s, c)
+          }
         }
         let target_ws = workspace_of_station_addr(st)
-        match self.verify_write_auth(params, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
+        match self.verify_write_auth(call_auth, ws_opt=if target_ws.length() > 0 { Some(target_ws) } else { Some(self.workspace) }) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
-        }
-        let chat = match proto_str(params, "chat") {
-          Some(c) => c
-          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing chat" }))
         }
         let draft_val = match base_codec::json_get(params, "value") {
           Some(v) => v
@@ -3666,12 +4084,6 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         let parsed = views::parse_link_target(self.db, url, self.cloud_origin)
         return Some(protocol::CoreEvent::Ok(id, parsed, None))
       }
-      if call_name == "cache.usage" {
-        match views::compute_cache_usage(self.db) {
-          sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Ok(id, j, None))
-          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
-        }
-      }
       if call_name == "composer.text" {
         let key = match proto_str(params, "key") {
           Some(k) => k
@@ -3703,7 +4115,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(s) => if s.length() > 0 { Some(workspace_of_station_addr(s)) } else { Some(self.workspace) }
           None => Some(self.workspace)
         }
-        match self.verify_write_auth(params, ws_opt=target_ws) {
+        match self.verify_write_auth(call_auth, ws_opt=target_ws) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -3722,8 +4134,10 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(base_codec::Json::Arr(xs)) => xs
           _ => []
         }
-        let v = self.composers.add(key, st, files)
-        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+        match self.composers.add(key, st, files, bytes=bytes) {
+          Ok(v) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+        }
       }
       if call_name == "composer.mode" {
         let key = match proto_str(params, "key") {
@@ -3878,13 +4292,66 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         if acct.length() == 0 {
           return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "empty account" }))
         }
-        let _ = self.auth_store.switch_account(acct)
-        let _ = self.auth_gen.bump_global()
+        if self.auth_store.accounts.length() > 0 {
+          // Resolve by `sub` or `email` against signed-in accounts; refuse unknown accounts without writing `active_account`.
+          let mut target_sub = acct
+          let mut target_email = ""
+          for i in 0..<self.auth_store.accounts.length() {
+            let a = self.auth_store.accounts[i]
+            if a.sub == acct || a.email == acct {
+              target_sub = a.sub
+              target_email = a.email
+              break
+            }
+          }
+          match self.auth_store.switch_account(target_sub) {
+            Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: msg }))
+            Ok(_) => {
+              if target_email.length() > 0 {
+                self.set_viewer(target_email, sub=target_sub)
+              }
+              self.sync_auth_accounts_digest()
+            }
+          }
+        } else {
+          // When `auth_store` is empty, verify against persisted `account_doc("accounts")` if populated.
+          match store::get_account_doc(self.db, "accounts") {
+            sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+              base_codec::JsonParseResult::Ok(j) => {
+                let items = match j {
+                  base_codec::Json::Arr(xs) => xs
+                  base_codec::Json::Obj(_) => match base_codec::json_get(j, "accounts") {
+                    Some(base_codec::Json::Arr(xs)) => xs
+                    _ => []
+                  }
+                  _ => []
+                }
+                if items.length() > 0 {
+                  let mut found = false
+                  for i in 0..<items.length() {
+                    let it = items[i]
+                    let s = match proto_str(it, "sub") { Some(v) => v; None => match proto_str(it, "id") { Some(v) => v; None => "" } }
+                    let e = match proto_str(it, "email") { Some(v) => v; None => "" }
+                    if s == acct || e == acct {
+                      found = true
+                      break
+                    }
+                  }
+                  if !found {
+                    return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "account not found: " + acct }))
+                  }
+                }
+              }
+              base_codec::JsonParseResult::Err(_) => ()
+            }
+            _ => ()
+          }
+        }
         return self.router.handle(req)
       }
       self.router.handle(req)
     }
-    protocol::CoreRequest::Subscribe(id, topic, _keyed, _from, _have) => {
+    protocol::CoreRequest::Subscribe(id, topic, _keyed, _from, _have, sub_gen) => {
       // Rule 4: subscribing NEVER starts a network request; only reads local SQLite.
       // If subscribing to a specific chat thread, only raises priority without opening a new fetch.
       if topic.name == "chat" {
@@ -3892,6 +4359,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(base_codec::Json::Num(n, _)) => self.sync.focus_thread(Some(n.to_int()))
           _ => ()
         }
+      }
+      if sub_gen.is_some() {
+        self.auth_enforced = true
       }
       self.sub_auth_caps.set(id, (self.auth_gen.auth_gen_of(topic), self.auth_gen.vault_gen_of(topic)))
       self.router.handle(req)

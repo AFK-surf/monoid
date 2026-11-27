@@ -182,6 +182,9 @@ fn FakeDb::answer(self : FakeDb, op : String, args : base_codec::Json) -> shell:
       }
       return shell::AskResult::Ok(base_codec::json_null())
     }
+    if stmt.starts_with("DROP INDEX IF EXISTS chat_marked;") {
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
     return shell::AskResult::Err(shell::ShellError::{ message: "the fake database does not know exec: " + stmt })
   }
 

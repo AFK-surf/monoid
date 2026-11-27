@@ -189,7 +189,8 @@ pub fn AccountStore::fail_refresh(
   "refresh_failed: 令牌刷新失败，请稍后重试"
 }
 
-/// Project UI-safe `accounts` topic: strictly `{ sub, email, name, picture }` — NEVER exposes tokens!
+/// Project UI-safe `accounts` topic as a JSON array `[{ sub, email, name, picture }]`
+/// matching `apps/mbui/src/sfbase/source.mbt` and `client/core-ts` — NEVER exposes tokens!
 pub fn project_accounts_topic(store : AccountStore) -> base_codec::Json {
   let out : Array[base_codec::Json] = []
   for i in 0..<store.accounts.length() {
@@ -201,14 +202,7 @@ pub fn project_accounts_topic(store : AccountStore) -> base_codec::Json {
       ("picture", base_codec::json_str(a.picture)),
     ]))
   }
-  let active_j = match store.active_sub {
-    Some(s) => base_codec::json_str(s)
-    None => base_codec::json_null()
-  }
-  base_codec::json_obj([
-    ("activeSub", active_j),
-    ("accounts", base_codec::json_arr(out)),
-  ])
+  base_codec::json_arr(out)
 }
 
 // ---------------------------------------------------------------------------

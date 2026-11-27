@@ -390,7 +390,44 @@ pub fn fetch_me_k(
   })
 }
 
+/// Deterministic canonical authorization digest for a `CloudWorkspace` (owner + locked + sorted `sub:role` members).
+/// Used to feed `AuthGenTracker::sync_workspace` so role downgrades / member removals advance `authGen`.
+pub fn workspace_auth_digest(ws : CloudWorkspace, owner_sub : String = "") -> String {
+  let parts : Array[String] = []
+  for i in 0..<ws.members.length() {
+    let m = ws.members[i]
+    parts.push(m.sub + ":" + m.role)
+  }
+  for i in 1..<parts.length() {
+    let cur = parts[i]
+    let mut j = i - 1
+    while j >= 0 && parts[j] > cur {
+      parts[j + 1] = parts[j]
+      j -= 1
+    }
+    parts[j + 1] = cur
+  }
+  let locked_s = if j_bool(ws.raw, "locked") { "1" } else { "0" }
+  let role_s = j_str(ws.raw, "role")
+  let sb = StringBuilder::new()
+  sb.write_string("ws:")
+  sb.write_string(ws.id)
+  sb.write_string("|owner:")
+  sb.write_string(owner_sub)
+  sb.write_string("|role:")
+  sb.write_string(role_s)
+  sb.write_string("|locked:")
+  sb.write_string(locked_s)
+  for i in 0..<parts.length() {
+    sb.write_string("|")
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
 /// Fetch `GET <origin>/v1/workspaces/<ws_id>`, parse members & stations, and persist to SQLite `workspace`.
+/// When `auth_gen` or `cap` is supplied, captures a `WorkspaceCapability` before I/O, guards SQLite
+/// write-back via `cap.commit(...)`, and feeds `sync_workspace` on persist.
 pub fn fetch_workspace_k(
   sh : shell::Shell,
   origin : String,
@@ -398,7 +435,17 @@ pub fn fetch_workspace_k(
   ws_id : String,
   db : sql::Sql,
   k : (effect::Exit[CloudWorkspace]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
+  auth_gen : Option[AuthGenTracker] = None,
+  owner_sub : String = "",
 ) -> Unit {
+  let eff_cap : Option[WorkspaceCapability] = match cap {
+    Some(c) => Some(c)
+    None => match auth_gen {
+      Some(tracker) => Some(tracker.workspace_capability(ws_id))
+      None => None
+    }
+  }
   let url = join_base_url(origin, "/v1/workspaces/" + ws_id)
   sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
     match ex {
@@ -420,21 +467,42 @@ pub fn fetch_workspace_k(
         let ws = parse_cloud_workspace(ws_id, j)
         let raw_json = base_codec::json_stringify(j)
         let now_ms = sh.rt.now()
-        let burst = sql::Burst::new(db)
-        match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-          // Cloud MUST NEVER overwrite station-owned `station(address, "overview")` rows;
-          // full Cloud workspace metadata (including station roster) lives strictly in `workspace.json`.
-          match b.run(sql_workspace_put(), params=[
-            base_codec::json_str(ws.id),
-            base_codec::json_str(raw_json),
-            base_codec::json_int64(now_ms),
-          ]) {
-            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+        let write_ws = fn() -> sql::SqlResult[Unit] {
+          let burst = sql::Burst::new(db)
+          burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+            // Cloud MUST NEVER overwrite station-owned `station(address, "overview")` rows;
+            // full Cloud workspace metadata (including station roster) lives strictly in `workspace.json`.
+            match b.run(sql_workspace_put(), params=[
+              base_codec::json_str(ws.id),
+              base_codec::json_str(raw_json),
+              base_codec::json_int64(now_ms),
+            ]) {
+              sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+            }
+          })
+        }
+        let persisted = match eff_cap {
+          Some(c) => match c.commit(write_ws) {
+            None => {
+              k(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+              return
+            }
+            Some(r) => r
           }
-        }) {
+          None => write_ws()
+        }
+        match persisted {
           sql::SqlResult::Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-          sql::SqlResult::Ok(_) => k(effect::Exit::Succeeded(ws))
+          sql::SqlResult::Ok(_) => {
+            match auth_gen {
+              Some(tracker) => {
+                let _ = tracker.sync_workspace(ws.id, workspace_auth_digest(ws, owner_sub=owner_sub))
+              }
+              None => ()
+            }
+            k(effect::Exit::Succeeded(ws))
+          }
         }
       }
     }
@@ -641,8 +709,21 @@ pub fn CloudSync::fetch_workspace_k(
   self : CloudSync,
   ws_id : String,
   k : (effect::Exit[CloudWorkspace]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
+  auth_gen : Option[AuthGenTracker] = None,
+  owner_sub : String = "",
 ) -> Unit {
-  fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k)
+  fetch_workspace_k(
+    self.sh,
+    self.origin,
+    self.token,
+    ws_id,
+    self.db,
+    k,
+    cap=cap,
+    auth_gen=auth_gen,
+    owner_sub=owner_sub,
+  )
 }
 
 /// Get a cached member credential or fetch & cache a fresh one when missing/expired (`expires_at <= now_sec + 60`).

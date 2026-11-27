@@ -314,6 +314,18 @@ pub struct AccountDbHandle {
   pub read_only : Bool
 }
 
+/// Ensure the covering partial index `chat_marks` exists (matching `schema.ts:725` plus `unread > 0`
+/// so pure unread-only chats are served without scanning `chat`).
+pub fn ensure_chat_marks(db : sql::Sql) -> sql::SqlResult[Unit] {
+  match db.exec(
+    "DROP INDEX IF EXISTS chat_marked;\n" +
+    "CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks, unread) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread > 0);",
+  ) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
 /// Open an account database (`databases/<name>.db`), running forward migrations when needed.
 /// If the database was written by a newer core (`user_version > VERSION`), opens read-only
 /// and executes zero write statements.
@@ -344,6 +356,10 @@ pub fn open_account_db(sh : shell::Shell, name : String) -> sql::SqlResult[Accou
       sql::SqlResult::Ok(_) => ()
     }
     match ensure_shared_sidecar(db) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match ensure_chat_marks(db) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => ()
     }

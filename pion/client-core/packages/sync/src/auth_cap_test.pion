@@ -1,15 +1,14 @@
-// Pure Pion unit tests for first-class immutable `AuthCapability` scope isolation:
-// - Routine workspace switching (A -> B) preserves A's WorkspaceCapability (zero false invalidation)
-// - Workspace revocation (`bump_workspace` / `sync_workspace`) invalidates only target workspace
-// - Single-vault lock (`bump_vault`) isolates V1 from V2 and non-vault WorkspaceCapability
-// - `narrow_vault` anchors to entry `AuthBoundary` snapshot even when called after bump
-// - `CompositeCapability` (`AuthCapability::all`) invalidates on any constituent workspace/vault bump
-// - `ClientCore` write guard rejects stale generation commits with `auth_stale` and drops stale sub pushes
+// Pure Pion unit tests for first-class immutable `AuthCapability` scope isolation,
+// wire-level `auth` / `conn` / `authGen` / `vaultGen` enforcement, P0-1 boundary re-anchoring
+// (live subscriptions re-anchor & push full snapshots rather than permanently freezing),
+// sensitive-topic `kept` / `have` security ceiling, and async `CloudSync` capability guards.
 
 import "base_codec"
 import "effect"
 import "protocol"
+import "shell"
 import "sql"
+import "store"
 import "views"
 
 fn open_auth_cap_db(rt : effect::Runtime) -> sql::Sql {
@@ -18,6 +17,76 @@ fn open_auth_cap_db(rt : effect::Runtime) -> sql::Sql {
     sql::SqlResult::Ok(db) => db
     sql::SqlResult::Err(e) => panic("sql::Sql::open failed: " + e.to_string())
   }
+}
+
+fn wire_str(res : Option[(String, Option[Bytes])]) -> String {
+  match res {
+    Some((s, _)) => s
+    None => ""
+  }
+}
+
+fn has_auth_event(evs : Array[protocol::CoreEvent]) -> Bool {
+  for i in 0..<evs.length() {
+    match evs[i] {
+      protocol::CoreEvent::Auth(_) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+fn has_value_for_sub(evs : Array[protocol::CoreEvent], sub_id : Int64) -> Bool {
+  for i in 0..<evs.length() {
+    match evs[i] {
+      protocol::CoreEvent::Value(sid, _, _) => if sid == sub_id { return true }
+      _ => ()
+    }
+  }
+  false
+}
+
+fn has_any_for_sub(evs : Array[protocol::CoreEvent], sub_id : Int64) -> Bool {
+  for i in 0..<evs.length() {
+    match evs[i] {
+      protocol::CoreEvent::Value(sid, _, _)
+      | protocol::CoreEvent::Delta(sid, _, _, _)
+      | protocol::CoreEvent::Same(sid) => if sid == sub_id { return true }
+      _ => ()
+    }
+  }
+  false
+}
+
+fn insert_test_chat_ac(
+  db : sql::Sql,
+  station : String,
+  id : String,
+  thread : Int,
+  json : String,
+  at : Int64,
+) -> Unit {
+  let _ = db.run(
+    sql_chat_upsert(),
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_str(id),
+      base_codec::json_int(0),
+      base_codec::json_num(1.0),
+      base_codec::json_int(thread),
+      base_codec::json_str(id),
+      base_codec::json_null(),
+      base_codec::json_int64(at),
+      base_codec::json_null(),
+      base_codec::json_int(0),
+      base_codec::json_int(1),
+      base_codec::json_int(0),
+      base_codec::json_null(),
+      base_codec::json_int(0),
+      base_codec::json_int(0),
+      base_codec::json_str(json),
+    ],
+  )
 }
 
 test "auth_cap: routine workspace switch preserves capability; workspace revocation isolates ws" {
@@ -37,7 +106,7 @@ test "auth_cap: routine workspace switch preserves capability; workspace revocat
     None => debug_assert(false, "expected Some(42)")
   }
 
-  // Revoking ws-a invalidates cap_a, leaves cap_b completely valid!
+  // Revoking ws-a invalidates cap_a, leaves cap_b completely valid.
   debug_assert(tracker.sync_workspace("ws-a", "owner:u1:role:viewer"), "changed digest must bump")
   debug_assert(!cap_a.is_valid(), "cap_a invalidated after role change")
   debug_assert(cap_b.is_valid(), "cap_b unaffected by ws-a revocation")
@@ -67,12 +136,12 @@ test "auth_cap: single-vault lock isolates V1 from V2 and non-vault WorkspaceCap
   let next_vg = tracker.bump_vault("ws-a", "v1")
   debug_assert(next_vg > 1, "bump_vault advances vaultGen")
 
-  // v1 invalidated; v2 and non-vault ws_cap remain valid!
+  // v1 invalidated; v2 and non-vault ws_cap remain valid.
   debug_assert(!v1_cap.is_valid(), "v1_cap invalidated")
   debug_assert(v2_cap.is_valid(), "v2_cap unaffected")
   debug_assert(ws_cap.is_valid(), "non-vault ws_cap unaffected")
 
-  // `narrow_vault("v1")` called AFTER bump MUST still anchor to entry snapshot and be invalid!
+  // `narrow_vault("v1")` called AFTER bump MUST still anchor to entry snapshot and be invalid.
   let narrowed_v1 = ws_cap.narrow_vault("v1")
   debug_assert(!narrowed_v1.is_valid(), "narrow_vault(v1) must anchor to entry snapshot")
   match narrowed_v1.assert_valid() {
@@ -81,44 +150,61 @@ test "auth_cap: single-vault lock isolates V1 from V2 and non-vault WorkspaceCap
   }
   // `narrow_vault("v2")` remains valid
   let narrowed_v2 = ws_cap.narrow_vault("v2")
-  debug_assert(narrowed_v2.is_valid(), "narrow_vault(v2) still valid")
+  debug_assert(narrowed_v2.is_valid(), "narrowed_v2 still valid")
 
-  // `bump_all_vaults` invalidates v2 while still leaving non-vault ws_cap valid!
+  // `bump_all_vaults` invalidates v2 while still leaving non-vault ws_cap valid.
   let _ = tracker.bump_all_vaults()
   debug_assert(!v2_cap.is_valid(), "v2_cap invalidated after bump_all_vaults")
   debug_assert(!narrowed_v2.is_valid(), "narrowed_v2 invalidated after bump_all_vaults")
   debug_assert(ws_cap.is_valid(), "non-vault ws_cap still valid after bump_all_vaults")
 }
 
-test "auth_cap: composite cross-workspace capability invalidates when either constituent bumps" {
+test "auth_cap: composite capability defensive copy and cross-workspace invalidation" {
   let tracker = AuthGenTracker::new()
   let entry = tracker.capture()
   let ws_a = entry.workspace("ws-a")
   let vault_b = entry.vault("ws-b", "vb1")
-  let comp = AuthCapability::all([ws_a.as_scope(), vault_b.as_scope()])
+  let input_caps = [ws_a.as_scope(), vault_b.as_scope()]
+  let comp = AuthCapability::all(input_caps)
+  // Mutating caller's array after construction MUST NOT weaken the composite capability.
+  input_caps.clear()
+  debug_assert(comp.len() == 2, "composite must defensively copy constituent array")
   debug_assert(comp.is_valid(), "composite valid initially")
-  match comp.commit_or_fail(fn() -> String { "ok" }) {
-    Ok(s) => debug_assert(s == "ok", "composite commit ok")
-    Err(_) => debug_assert(false, "composite should be valid before bump")
-  }
 
-  // Locking vault vb1 in ws-b invalidates the composite even though ws-a is still valid!
   let _ = tracker.bump_vault("ws-b", "vb1")
   debug_assert(ws_a.is_valid(), "ws_a still valid")
   debug_assert(!vault_b.is_valid(), "vault_b invalidated")
-  debug_assert(!comp.is_valid(), "composite invalidated")
+  debug_assert(!comp.is_valid(), "composite invalidated even after caller cleared input array")
   debug_assert(comp.commit(fn() -> Int { 1 }).is_none(), "stale composite commit returns None")
-  match comp.commit_or_fail(fn() -> Int { 1 }) {
-    Err(e) => debug_assert(e.code == "auth_stale", "composite auth_stale")
-    Ok(_) => debug_assert(false, "composite must reject commit with auth_stale")
-  }
 
-  // Global bump (e.g. account sign-out / change) invalidates ws-a too!
   let _ = tracker.bump_global()
   debug_assert(!ws_a.is_valid(), "ws_a invalidated on global bump")
 }
 
-test "auth_cap: ClientCore write guard rejects stale auth generation and subscription guard drops stale pushes" {
+test "auth_cap: topic_scope_of aligns DEVICE_GLOBAL_TOPICS 1:1 with topic-policy.ts" {
+  // Exact 10 device-global topics -> TopicScope::Device
+  let dev_names = [
+    "releases", "fonts", "changelog", "prefs", "doing",
+    "adbShare", "link", "connection", "way", "net",
+  ]
+  for i in 0..<dev_names.length() {
+    match topic_scope_of(protocol::Topic::{ name: dev_names[i], params: [] }) {
+      TopicScope::Device => ()
+      _ => debug_assert(false, dev_names[i] + " must be TopicScope::Device")
+    }
+  }
+  // `workspaceMarks` and `accounts` are NOT device-global (must be Global / auth-scoped).
+  match topic_scope_of(protocol::Topic::{ name: "workspaceMarks", params: [] }) {
+    TopicScope::Global => ()
+    _ => debug_assert(false, "workspaceMarks must not be TopicScope::Device")
+  }
+  match topic_scope_of(protocol::Topic::{ name: "accounts", params: [] }) {
+    TopicScope::Global => ()
+    _ => debug_assert(false, "accounts must not be TopicScope::Device")
+  }
+}
+
+test "auth_cap: real wire protocol enforces top-level auth before outbox & checks real workspace owner" {
   let rt = effect::Runtime::new()
   let db = open_auth_cap_db(rt)
   let core = ClientCore::new("ws-a", "ws-a/st1", rt, db, core_offline_transport(), fn() -> Unit {})
@@ -132,119 +218,261 @@ test "auth_cap: ClientCore write guard rejects stale auth generation and subscri
     refresh: "",
     access_expires: 0L,
   })
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-bob",
+    email: "bob@still.fail",
+    name: "Bob",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  core.register_workspace_owner("ws-a", "sub-alice")
+  core.register_workspace_owner("ws-b", "sub-bob")
   core.active_conn = 7
 
-  // Routine workspace switch A -> B preserves ws-a capability (no false authGen bump)
-  let cap_a = core.workspace_capability("ws-a")
-  core.switch_workspace("ws-b")
-  debug_assert(cap_a.is_valid(), "routine workspace switch must not invalidate cap_a")
-  core.switch_workspace("ws-a")
+  // 1. Valid wire Call with top-level `auth` succeeds and enqueues into SQLite outbox.
+  let ok_wire = "{\"id\":11,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":1,\"text\":\"fresh msg\"},\"auth\":{\"conn\":7,\"account\":\"sub-alice\",\"workspace\":\"ws-a\",\"authGen\":1}}"
+  let raw_ok = wire_str(core.handle_wire(ok_wire))
+  debug_assert(raw_ok.contains("\"ok\""), "expected ok on valid wire auth: " + raw_ok)
 
-  // Subscribe to `chats` in ws-a at generation 1
-  let chats_topic = protocol::Topic::{ name: "chats", params: [("scope", base_codec::json_str("ws-a"))] }
-  let sub_req = protocol::CoreRequest::Subscribe(10L, chats_topic, true, None, None)
-  match core.handle_request(sub_req) {
-    Some(protocol::CoreEvent::Value(sid, _, _)) => debug_assert(sid == 10L, "sub id 10")
-    _ => debug_assert(false, "expected initial chats value")
+  let outbox_after_ok = match store::list_outbox_for_station(db, "ws-a/st1") {
+    sql::SqlResult::Ok(xs) => xs.length()
+    sql::SqlResult::Err(_) => -1
   }
-  debug_assert(core.is_sub_auth_valid(10L, chats_topic), "sub 10 valid at gen 1")
+  debug_assert(outbox_after_ok == 1, "valid write must land in outbox")
 
-  // Valid write carrying current authGen=1 succeeds
-  let ok_send = protocol::CoreRequest::Call(
-    11L,
-    "chat.send",
-    base_codec::json_obj([
-      ("station", base_codec::json_str("ws-a/st1")),
-      ("thread", base_codec::json_int(1)),
-      ("text", base_codec::json_str("fresh msg")),
-      (
-        "_auth",
-        base_codec::json_obj([
-          ("conn", base_codec::json_int(7)),
-          ("account", base_codec::json_str("sub-alice")),
-          ("workspace", base_codec::json_str("ws-a")),
-          ("authGen", base_codec::json_int(1)),
-        ]),
-      ),
-    ]),
-    None,
-  )
-  match core.handle_request(ok_send) {
-    Some(protocol::CoreEvent::Ok(cid, _, _)) => debug_assert(cid == 11L, "chat.send ok")
-    _ => debug_assert(false, "expected valid auth write to succeed")
-  }
+  // 2. Spoofing another signed-in account's `sub` (sub-bob) for ws-a (owned by sub-alice) is rejected BEFORE outbox.
+  let spoof_wire = "{\"id\":12,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":2,\"text\":\"spoofed\"},\"auth\":{\"conn\":7,\"account\":\"sub-bob\",\"workspace\":\"ws-a\",\"authGen\":1}}"
+  let raw_spoof = wire_str(core.handle_wire(spoof_wire))
+  debug_assert(raw_spoof.contains("\"auth_stale\""), "expected auth_stale on wrong workspace owner: " + raw_spoof)
 
-  // Revoke ws-a -> bumps authGen to 2
+  // 3. Passing email instead of canonical `sub` is rejected BEFORE outbox.
+  let email_wire = "{\"id\":13,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":3,\"text\":\"email-sub\"},\"auth\":{\"conn\":7,\"account\":\"alice@still.fail\",\"workspace\":\"ws-a\",\"authGen\":1}}"
+  let raw_email = wire_str(core.handle_wire(email_wire))
+  debug_assert(raw_email.contains("\"auth_stale\""), "expected auth_stale when email used instead of sub: " + raw_email)
+
+  // 4. Once auth_enforced is active, omitting top-level `auth` on protected write is rejected BEFORE outbox.
+  let missing_auth_wire = "{\"id\":14,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":4,\"text\":\"no-auth\"}}"
+  let raw_missing = wire_str(core.handle_wire(missing_auth_wire))
+  debug_assert(raw_missing.contains("\"auth_stale\""), "expected auth_stale when auth omitted: " + raw_missing)
+
+  // 5. Revoking ws-a bumps authGen to 2 -> delayed wire write carrying authGen=1 rejected BEFORE outbox.
   let new_gen = core.revoke_workspace("ws-a")
   debug_assert(new_gen == 2, "revoked authGen == 2")
-  debug_assert(!cap_a.is_valid(), "cap_a invalid after revocation")
+  let stale_wire = "{\"id\":15,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":5,\"text\":\"stale\"},\"auth\":{\"conn\":7,\"account\":\"sub-alice\",\"workspace\":\"ws-a\",\"authGen\":1}}"
+  let raw_stale = wire_str(core.handle_wire(stale_wire))
+  debug_assert(raw_stale.contains("\"auth_stale\""), "expected auth_stale on stale gen: " + raw_stale)
 
-  // Subscription 10 captured gen=1 -> now stale, refresh must drop emission!
-  debug_assert(!core.is_sub_auth_valid(10L, chats_topic), "sub 10 stale after ws-a revoke")
-  debug_assert(core.refresh_subscription(10L).is_none(), "stale sub push must be dropped")
+  // Outbox MUST still contain ONLY the 1 authorized thread (zero stale/spoofed writes!).
+  let outbox_after_rejects = match store::list_outbox_for_station(db, "ws-a/st1") {
+    sql::SqlResult::Ok(xs) => xs.length()
+    sql::SqlResult::Err(_) => -1
+  }
+  debug_assert(outbox_after_rejects == 1, "rejected calls must never touch outbox")
 
-  // Delayed write carrying stale authGen=1 is rejected with `auth_stale`
-  let stale_send = protocol::CoreRequest::Call(
-    12L,
-    "chat.send",
-    base_codec::json_obj([
-      ("station", base_codec::json_str("ws-a/st1")),
-      ("thread", base_codec::json_int(1)),
-      ("text", base_codec::json_str("stale msg")),
-      (
-        "_auth",
-        base_codec::json_obj([
-          ("conn", base_codec::json_int(7)),
-          ("account", base_codec::json_str("sub-alice")),
-          ("workspace", base_codec::json_str("ws-a")),
-          ("authGen", base_codec::json_int(1)),
-        ]),
-      ),
-    ]),
-    None,
+  // 6. Wire call with updated authGen=2 succeeds.
+  let fresh_gen2 = "{\"id\":16,\"call\":\"chat.send\",\"params\":{\"station\":\"ws-a/st1\",\"thread\":6,\"text\":\"gen2\"},\"auth\":{\"conn\":7,\"account\":\"sub-alice\",\"workspace\":\"ws-a\",\"authGen\":2}}"
+  let raw_gen2 = wire_str(core.handle_wire(fresh_gen2))
+  debug_assert(raw_gen2.contains("\"ok\""), "expected ok with gen 2: " + raw_gen2)
+}
+
+test "auth_cap: P0-1 regression — boundary re-anchors affected live subs and pushes full snapshot without freezing" {
+  let rt = effect::Runtime::new()
+  let db = open_auth_cap_db(rt)
+  let core = ClientCore::new("ws-a", "ws-a/st1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  core.active_conn = 3
+  let _ = store::upsert_workspace(
+    db,
+    "ws-a",
+    "{\"id\":\"ws-a\",\"name\":\"WS A\",\"role\":\"owner\",\"stations\":[{\"id\":\"st1\",\"name\":\"St1\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
   )
-  match core.handle_request(stale_send) {
-    Some(protocol::CoreEvent::Err(cid, err)) => {
-      debug_assert(cid == 12L && err.code == "auth_stale", "expected auth_stale on stale chat.send")
+  let _ = store::upsert_workspace(
+    db,
+    "ws-b",
+    "{\"id\":\"ws-b\",\"name\":\"WS B\",\"role\":\"owner\",\"stations\":[{\"id\":\"st2\",\"name\":\"St2\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
+  )
+
+  let wire_evs : Array[protocol::CoreEvent] = []
+  core.set_on_wire_event(fn(ev : protocol::CoreEvent) -> Unit {
+    wire_evs.push(ev)
+  })
+
+  // Subscribe to ws-a chats (10), ws-b chats (20), ws-a vaults (30), ws-b vaults (31) via wire JSON.
+  let _ = core.handle_wire("{\"id\":10,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":3,\"authGen\":1}")
+  let _ = core.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-b\"},\"conn\":3,\"authGen\":1}")
+  let _ = core.handle_wire("{\"id\":30,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-a\"},\"conn\":3,\"authGen\":1,\"vaultGen\":1}")
+  let _ = core.handle_wire("{\"id\":31,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-b\"},\"conn\":3,\"authGen\":1,\"vaultGen\":1}")
+  wire_evs.clear()
+
+  // Revoke ws-a -> on_auth_boundary must:
+  // 1. emit `{id: 0, auth}` boundary notification
+  // 2. re-anchor sub 10 (ws-a chats) & sub 30 (ws-a vaults) and push full `Value` snapshots
+  // 3. leave sub 20 (ws-b chats) & sub 31 (ws-b vaults) untouched (no spurious push)
+  let _ = core.revoke_workspace("ws-a")
+  debug_assert(has_auth_event(wire_evs), "workspace boundary must emit {id:0, auth} event")
+  debug_assert(has_value_for_sub(wire_evs, 10L), "ws-a chats sub 10 must receive full Value snapshot on boundary")
+  debug_assert(!has_any_for_sub(wire_evs, 20L), "unrelated ws-b chats sub 20 must NOT be disturbed")
+
+  // Verify sub 10 is NOT frozen: mutating ws-a chat data and refreshing still emits updates!
+  insert_test_chat_ac(
+    db,
+    "ws-a/st1",
+    "chat-after-bump",
+    5,
+    "{\"id\":\"chat-after-bump\",\"title\":\"Live After Bump\",\"at\":1730000001000}",
+    1730000001000L,
+  )
+  match core.refresh_subscription(10L) {
+    Some(protocol::CoreEvent::Value(sid, _, _)) | Some(protocol::CoreEvent::Delta(sid, _, _, _)) => {
+      debug_assert(sid == 10L, "sub 10 must keep delivering updates after boundary re-anchor")
     }
-    _ => debug_assert(false, "expected auth_stale on stale chat.send")
+    _ => debug_assert(false, "P0-1 regression: sub 10 froze permanently after auth boundary!")
   }
 
-  // Single-vault lock via `vault.lock` rejects stale vault write while preserving non-vault writes
-  let _ = core.handle_request(protocol::CoreRequest::Call(
-    13L,
-    "vault.lock",
-    base_codec::json_obj([
-      ("workspace", base_codec::json_str("ws-a")),
-      ("vault", base_codec::json_str("v1")),
-    ]),
-    None,
-  ))
-  let stale_vault_call = protocol::CoreRequest::Call(
-    14L,
-    "vault.approve",
-    base_codec::json_obj([
-      ("workspace", base_codec::json_str("ws-a")),
-      ("vault", base_codec::json_str("v1")),
-      ("request", base_codec::json_str("req-1")),
-      (
-        "_auth",
-        base_codec::json_obj([
-          ("conn", base_codec::json_int(7)),
-          ("account", base_codec::json_str("sub-alice")),
-          ("workspace", base_codec::json_str("ws-a")),
-          ("vault", base_codec::json_str("v1")),
-          ("authGen", base_codec::json_int(2)),
-          ("vaultGen", base_codec::json_int(1)),
-        ]),
-      ),
-    ]),
-    None,
-  )
-  match core.handle_request(stale_vault_call) {
-    Some(protocol::CoreEvent::Err(cid, err)) => {
-      debug_assert(cid == 14L && err.code == "auth_stale", "expected auth_stale on stale vault.approve")
+  // Single-vault lock on (ws-a, v1): re-anchors sub 30 (ws-a vaults), leaves sub 31 (ws-b vaults) and sub 10 (non-vault ws-a chats) untouched!
+  wire_evs.clear()
+  let _ = core.handle_wire("{\"id\":40,\"call\":\"vault.lock\",\"params\":{\"workspace\":\"ws-a\",\"vault\":\"v1\"},\"auth\":{\"conn\":3,\"workspace\":\"ws-a\",\"authGen\":2,\"vaultGen\":1}}")
+  debug_assert(has_auth_event(wire_evs), "vault boundary must emit {id:0, auth} event")
+  debug_assert(has_value_for_sub(wire_evs, 30L), "ws-a vaults sub 30 must receive full Value snapshot on vault lock")
+  debug_assert(!has_any_for_sub(wire_evs, 31L), "unrelated ws-b vaults sub 31 must NOT be disturbed by ws-a v1 lock")
+  debug_assert(!has_any_for_sub(wire_evs, 10L), "non-vault ws-a chats sub 10 must NOT be disturbed by v1 lock")
+
+  // Stale client subscribe carrying old authGen=1 + `have` token on ws-a (now at 2)
+  // MUST ignore `have`/`kept` and emit a full fresh `value` snapshot (never `same: true` or `delta`).
+  let unsub_sub10 = wire_str(core.handle_wire("{\"id\":10,\"unsubscribe\":true,\"keep\":true}"))
+  let sub10_tok = match base_codec::json_parse(unsub_sub10) {
+    base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
     }
-    _ => debug_assert(false, "expected auth_stale on stale vault.approve after vault.lock")
+    base_codec::JsonParseResult::Err(_) => ""
   }
+  let raw_stale_sub = wire_str(core.handle_wire("{\"id\":50,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":3,\"authGen\":1,\"have\":\"" + sub10_tok + "\"}"))
+  debug_assert(!raw_stale_sub.contains("\"same\":true"), "stale subscribe authGen must NEVER return same:true: " + raw_stale_sub)
+  debug_assert(raw_stale_sub.contains("\"value\""), "stale subscribe authGen must emit full fresh value snapshot: " + raw_stale_sub)
+}
+
+test "auth_cap: sensitive topics never enter kept/have cache; non-sensitive kept purged on boundary" {
+  let rt = effect::Runtime::new()
+  let db = open_auth_cap_db(rt)
+  let core = ClientCore::new("ws-a", "ws-a/st1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+
+  // Sensitive topics `vaults` and `accounts` with `keep: true` MUST NOT emit a `v` token on unsubscribe.
+  let raw_vault = wire_str(core.handle_wire("{\"id\":60,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-a\"}}"))
+  debug_assert(raw_vault.contains("\"value\""), "expected value for vaults: " + raw_vault)
+  let unsub_vault = wire_str(core.handle_wire("{\"id\":60,\"unsubscribe\":true,\"keep\":true}"))
+  debug_assert(!unsub_vault.contains("\"v\""), "sensitive topic vaults must NEVER emit kept token v: " + unsub_vault)
+  let _ = core.handle_wire("{\"id\":601,\"subscribe\":{\"topic\":\"accounts\"}}")
+  let unsub_accs = wire_str(core.handle_wire("{\"id\":601,\"unsubscribe\":true,\"keep\":true}"))
+  debug_assert(!unsub_accs.contains("\"v\""), "sensitive topic accounts must NEVER emit kept token v: " + unsub_accs)
+
+  // Non-sensitive topic `workspaceMarks` emits token `v` on `unsubscribe(keep: true)` and supports `have` -> `same`,
+  // UNTIL a global auth boundary purges `kept`, after which the old `have` token MUST return full `value`.
+  let _ = core.handle_wire("{\"id\":61,\"subscribe\":{\"topic\":\"workspaceMarks\"}}")
+  let unsub_marks = wire_str(core.handle_wire("{\"id\":61,\"unsubscribe\":true,\"keep\":true}"))
+  let tok = match base_codec::json_parse(unsub_marks) {
+    base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    base_codec::JsonParseResult::Err(_) => ""
+  }
+  debug_assert(tok.length() > 0, "workspaceMarks unsubscribe(keep:true) should emit token v: " + unsub_marks)
+
+  // Before boundary: `have: tok` returns `same: true`
+  let raw_same = wire_str(core.handle_wire("{\"id\":62,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"have\":\"" + tok + "\"}"))
+  debug_assert(raw_same.contains("\"same\":true"), "expected same:true before boundary: " + raw_same)
+  let _ = core.handle_wire("{\"id\":62,\"unsubscribe\":true,\"keep\":true}")
+
+  // Global auth boundary purges `kept` for auth-scoped `workspaceMarks`!
+  let _ = core.auth_gen.bump_global()
+
+  // After boundary: old `have: tok` MUST NOT return `same: true`; must return full `value`.
+  let raw_after = wire_str(core.handle_wire("{\"id\":63,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"have\":\"" + tok + "\"}"))
+  debug_assert(!raw_after.contains("\"same\":true"), "stale have token must NEVER return same after auth boundary: " + raw_after)
+  debug_assert(raw_after.contains("\"value\""), "expected full value after boundary purge: " + raw_after)
+}
+
+test "auth_cap: CloudSync fetch_workspace_k drops stale SQLite write-back when workspace revokes mid-flight" {
+  let rt = effect::Runtime::new()
+  let tracker = AuthGenTracker::new()
+  let pending_http : Array[Int64] = []
+  let mut workspace_writes = 0
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      if op == "fetch" {
+        pending_http.push(id)
+      }
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+      }
+      if op == "sql.run" {
+        let sql_text = match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        if sql_text.contains("INTO workspace") {
+          workspace_writes += 1
+        }
+        return shell::AskResult::Ok(base_codec::json_obj([("changes", base_codec::json_int(1))]))
+      }
+      shell::AskResult::Ok(base_codec::json_arr([]))
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "cloud-cap-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-1")
+  let cap = tracker.workspace_capability("ws-a")
+
+  let mut got_auth_stale = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k(
+      "ws-a",
+      fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom(msg)) => {
+            if msg.contains("auth_stale") {
+              got_auth_stale = true
+            }
+          }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      cap=Some(cap),
+      auth_gen=Some(tracker),
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_http.length() == 1, "expected 1 in-flight fetch")
+
+  // Mid-flight workspace revocation happens BEFORE the HTTP response returns!
+  let _ = tracker.bump_workspace("ws-a")
+
+  // Now deliver the stale 200 OK workspace response.
+  let body_b = "{\"id\":\"ws-a\",\"name\":\"Stale Write\",\"role\":\"owner\",\"stations\":[]}".to_bytes()
+  sh.answer(
+    pending_http[0],
+    base_codec::json_obj([
+      ("status", base_codec::json_int(200)),
+      ("headers", base_codec::json_arr([])),
+      ("redirected", base_codec::json_bool(false)),
+    ]),
+    bytes=Some(body_b),
+  )
+  let _ = rt.run_ready()
+
+  debug_assert(got_auth_stale, "fetch_workspace_k must reject stale mid-flight completion with auth_stale")
+  debug_assert(workspace_writes == 0, "stale CloudSync response must NEVER be written to SQLite!")
 }

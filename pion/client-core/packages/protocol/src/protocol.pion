@@ -613,9 +613,62 @@ pub fn is_view(t : Topic) -> Bool {
   n == "workspaceWays" || n == "projects" || n == "project" || n == "tags"
 }
 
+/// Unconditional security ceiling (`client/core-ts/src/topic-policy.ts:91-231`):
+/// sensitive topics NEVER keep values, NEVER emit `v` keep tokens, and NEVER honor `have`/`same`/`from`.
+pub fn is_sensitive_topic(t : Topic) -> Bool {
+  let n = t.name
+  if n == "accounts" ||
+  n == "machineLogins" ||
+  n == "machineLogin" ||
+  n == "machineLoginScreen" ||
+  n == "loginSessions" ||
+  n == "admin" ||
+  n == "adminList" ||
+  n == "adminItem" ||
+  n == "adminOverview" ||
+  n == "adminRelays" ||
+  n == "rigs" ||
+  n == "devices" ||
+  n == "slackTokens" ||
+  n == "lock" ||
+  n == "joinable" ||
+  n == "memberships" ||
+  n == "lockDraft" ||
+  n == "lockPrompts" ||
+  n == "vaults" ||
+  n == "vaultItems" ||
+  n == "vaultUses" {
+    return true
+  }
+  if n == "stationPart" {
+    match t.param("part") {
+      Some(base_codec::Json::Str(p)) => return p == "machineLogins" || p == "logins"
+      _ => ()
+    }
+  }
+  false
+}
+
+/// Top-level `auth` object carried on a `call` message (`client/core-ts/src/protocol.ts:376-387`).
+pub struct WireCallAuth {
+  pub conn : Option[Int]
+  pub account : Option[String]
+  pub workspace : Option[String]
+  pub vault : Option[String]
+  pub auth_gen : Option[Int]
+  pub vault_gen : Option[Int]
+}
+
+/// Top-level generation metadata carried on a `subscribe` message (`client/core-ts/src/protocol.ts:359-362`).
+pub struct WireSubGen {
+  pub conn : Option[Int]
+  pub auth_gen : Option[Int]
+  pub vault_gen : Option[Int]
+}
+
 pub enum CoreRequest {
-  Call(Int64, String, base_codec::Json, Option[Bytes])
-  Subscribe(Int64, Topic, Bool, Option[Int64], Option[String])
+  Call(Int64, String, base_codec::Json, Option[Bytes], Option[WireCallAuth])
+  Subscribe(Int64, Topic, Bool, Option[Int64], Option[String], Option[WireSubGen])
   Unsubscribe(Int64, Bool, Bool)
   Cancel(Int64, Bool)
 }
@@ -633,12 +686,47 @@ pub enum CoreEvent {
   Waiting(Int64)
   Same(Int64)
   Unsubscribed(Int64, Option[String])
+  Auth(base_codec::Json)
   Fatal(String)
 }
 
 pub enum ParseRequestResult {
   Ok(CoreRequest)
   Invalid(String)
+}
+
+fn parse_wire_call_auth(raw : base_codec::Json) -> Option[WireCallAuth] {
+  let obj = match base_codec::json_get(raw, "auth") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+    _ => return None
+  }
+  let conn = match opt_nonneg_int64(obj, "conn") { Some(v) => Some(v.to_int()); None => None }
+  let account = match opt_str_field(obj, "account") { Some(s) => if s.length() > 0 { Some(s) } else { None }; None => None }
+  let workspace = match opt_str_field(obj, "workspace") { Some(s) => if s.length() > 0 { Some(s) } else { None }; None => None }
+  let vault = match opt_str_field(obj, "vault") { Some(s) => if s.length() > 0 { Some(s) } else { None }; None => None }
+  let auth_gen = match opt_nonneg_int64(obj, "authGen") { Some(v) => Some(v.to_int()); None => None }
+  let vault_gen = match opt_nonneg_int64(obj, "vaultGen") { Some(v) => Some(v.to_int()); None => None }
+  if conn.is_none() && account.is_none() && workspace.is_none() && vault.is_none() && auth_gen.is_none() && vault_gen.is_none() {
+    return None
+  }
+  Some(WireCallAuth::{
+    conn: conn,
+    account: account,
+    workspace: workspace,
+    vault: vault,
+    auth_gen: auth_gen,
+    vault_gen: vault_gen,
+  })
+}
+
+fn parse_wire_sub_gen(raw : base_codec::Json) -> Option[WireSubGen] {
+  let conn = match opt_nonneg_int64(raw, "conn") { Some(v) => Some(v.to_int()); None => None }
+  let auth_gen = match opt_nonneg_int64(raw, "authGen") { Some(v) => Some(v.to_int()); None => None }
+  let vault_gen = match opt_nonneg_int64(raw, "vaultGen") { Some(v) => Some(v.to_int()); None => None }
+  if conn.is_none() && auth_gen.is_none() && vault_gen.is_none() {
+    return None
+  }
+  Some(WireSubGen::{ conn: conn, auth_gen: auth_gen, vault_gen: vault_gen })
 }
 
 /// Parse a client message from a JSON value matching `client/core-ts/src/protocol.ts parseClientMessage` 1:1.
@@ -658,7 +746,8 @@ pub fn parse_client_message(raw : base_codec::Json, bytes : Option[Bytes] = None
         Some(p) => p
         None => base_codec::json_null()
       }
-      return ParseRequestResult::Ok(CoreRequest::Call(id, call_name, params, bytes))
+      let call_auth = parse_wire_call_auth(raw)
+      return ParseRequestResult::Ok(CoreRequest::Call(id, call_name, params, bytes, call_auth))
     }
     None => ()
   }
@@ -671,6 +760,7 @@ pub fn parse_client_message(raw : base_codec::Json, bytes : Option[Bytes] = None
           _ => false
         }
         let have = opt_str_field(raw, "have")
+        let sub_gen = parse_wire_sub_gen(raw)
         let from_id = if keyed {
           match opt_nonneg_int64(raw, "from") {
             Some(f) => if f != id { Some(f) } else { None }
@@ -679,7 +769,7 @@ pub fn parse_client_message(raw : base_codec::Json, bytes : Option[Bytes] = None
         } else {
           None
         }
-        return ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have))
+        return ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have, sub_gen))
       }
       None => ()
     }
@@ -755,6 +845,10 @@ pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
         None => base_codec::json_null()
       }
       let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("v", v)])
+      (base_codec::json_stringify(j), None)
+    }
+    CoreEvent::Auth(auth_json) => {
+      let j = base_codec::json_obj([("id", base_codec::json_int64(0L)), ("auth", auth_json)])
       (base_codec::json_stringify(j), None)
     }
     CoreEvent::Fatal(msg) => {
@@ -839,11 +933,17 @@ pub struct ActiveSub {
   pub topic : Topic
   pub topic_key : String
   pub keyed : Bool
+  pub mut auth_gen : Int
+  pub mut vault_gen : Int
   pub mut last_value : Option[base_codec::Json]
   pub mut last_token : Option[String]
 }
 
 struct KeptSub {
+  topic : Topic
+  topic_key : String
+  auth_gen : Int
+  vault_gen : Int
   value : base_codec::Json
   token : String
 }
@@ -856,10 +956,11 @@ pub struct Slice1Router {
   sub_ids : Array[Int64]
   kept : Map[String, KeptSub]
   kept_order : Array[String]
-  kept_by_token : Map[String, base_codec::Json]
+  kept_by_token : Map[String, KeptSub]
   kept_token_order : Array[String]
   mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
   mut sub_auth_guard : Option[(Int64, Topic) -> Bool]
+  mut sub_gen_provider : Option[(Topic) -> (Int, Int)]
 }
 
 pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
@@ -875,6 +976,7 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     kept_token_order: [],
     topic_evaluator: None,
     sub_auth_guard: None,
+    sub_gen_provider: None,
   }
 }
 
@@ -894,6 +996,21 @@ pub fn Slice1Router::set_sub_auth_guard(
   self.sub_auth_guard = Some(check_fn)
 }
 
+/// Install a provider returning current `(auth_gen, vault_gen)` for any `Topic`.
+pub fn Slice1Router::set_sub_gen_provider(
+  self : Slice1Router,
+  provider : (Topic) -> (Int, Int),
+) -> Unit {
+  self.sub_gen_provider = Some(provider)
+}
+
+fn Slice1Router::current_topic_gen(self : Slice1Router, topic : Topic) -> (Int, Int) {
+  match self.sub_gen_provider {
+    Some(f) => f(topic)
+    None => (0, 0)
+  }
+}
+
 pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {
   match self.subs.get(id) {
     Some(s) => Some(s.topic_key)
@@ -905,12 +1022,49 @@ pub fn Slice1Router::kept_count(self : Slice1Router) -> Int {
   self.kept_order.length()
 }
 
-fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_codec::Json, token : String) -> Unit {
+fn kept_token_composite_key(tk : String, token : String) -> String {
+  tk + "\u{01}" + token
+}
+
+fn remove_str_from_array(xs : Array[String], needle : String) -> Unit {
+  let next : Array[String] = []
+  for i in 0..<xs.length() {
+    if xs[i] != needle {
+      next.push(xs[i])
+    }
+  }
+  xs.clear()
+  for i in 0..<next.length() {
+    xs.push(next[i])
+  }
+}
+
+fn Slice1Router::remember_kept(
+  self : Slice1Router,
+  topic : Topic,
+  tk : String,
+  auth_gen : Int,
+  vault_gen : Int,
+  value : base_codec::Json,
+  token : String,
+) -> Unit {
+  // Unconditional security ceiling: sensitive topics are NEVER kept.
+  if is_sensitive_topic(topic) {
+    return
+  }
+  let entry = KeptSub::{
+    topic: topic,
+    topic_key: tk,
+    auth_gen: auth_gen,
+    vault_gen: vault_gen,
+    value: value,
+    token: token,
+  }
   if self.kept.get(tk).is_none() {
     self.kept_order.push(tk)
   }
-  self.kept.set(tk, KeptSub::{ value: value, token: token })
-  // Cap remembered values at 96 (matches store.ts kept_most_by).
+  self.kept.set(tk, entry)
+  // Cap remembered values at 96 (matches store.ts kept_most_by); evict synced token entries too.
   while self.kept_order.length() > 96 {
     let oldest = self.kept_order[0]
     let next_order : Array[String] = []
@@ -921,13 +1075,22 @@ fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_co
     for i in 0..<next_order.length() {
       self.kept_order.push(next_order[i])
     }
+    match self.kept.get(oldest) {
+      Some(evicted) => {
+        let comp_k = kept_token_composite_key(oldest, evicted.token)
+        self.kept_by_token.remove(comp_k)
+        remove_str_from_array(self.kept_token_order, comp_k)
+      }
+      None => ()
+    }
     self.kept.remove(oldest)
   }
-  // Also index by value token (capped at 64) so repeated `have: token` reconnects can diff cleanly.
-  if self.kept_by_token.get(token).is_none() {
-    self.kept_token_order.push(token)
+  // Scoped index by `(topic_key, token)` (capped at 64) so `have: token` verifies topic + generation.
+  let comp_key = kept_token_composite_key(tk, token)
+  if self.kept_by_token.get(comp_key).is_none() {
+    self.kept_token_order.push(comp_key)
   }
-  self.kept_by_token.set(token, value)
+  self.kept_by_token.set(comp_key, entry)
   while self.kept_token_order.length() > 64 {
     let oldest_tok = self.kept_token_order[0]
     let next_toks : Array[String] = []
@@ -940,6 +1103,85 @@ fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_co
     }
     self.kept_by_token.remove(oldest_tok)
   }
+}
+
+/// Drop all `kept` and `kept_by_token` entries matching `pred` (called on `AuthBoundaryEvent`).
+pub fn Slice1Router::invalidate_kept_where(self : Slice1Router, pred : (Topic) -> Bool) -> Unit {
+  let next_order : Array[String] = []
+  for i in 0..<self.kept_order.length() {
+    let tk = self.kept_order[i]
+    match self.kept.get(tk) {
+      Some(k) => {
+        if pred(k.topic) {
+          self.kept.remove(tk)
+        } else {
+          next_order.push(tk)
+        }
+      }
+      None => ()
+    }
+  }
+  self.kept_order.clear()
+  for i in 0..<next_order.length() {
+    self.kept_order.push(next_order[i])
+  }
+  let next_toks : Array[String] = []
+  for i in 0..<self.kept_token_order.length() {
+    let ck = self.kept_token_order[i]
+    match self.kept_by_token.get(ck) {
+      Some(k) => {
+        if pred(k.topic) {
+          self.kept_by_token.remove(ck)
+        } else {
+          next_toks.push(ck)
+        }
+      }
+      None => ()
+    }
+  }
+  self.kept_token_order.clear()
+  for i in 0..<next_toks.length() {
+    self.kept_token_order.push(next_toks[i])
+  }
+}
+
+/// On an auth/vault boundary (`store.ts:453-481` `#onAuthBoundary`):
+/// re-anchor matching active subscriptions to their new `(auth_gen, vault_gen)`, clear `last_value`/
+/// `last_token`, and force-emit a fresh full `CoreEvent::Value` snapshot (never a delta).
+/// Unrelated subscriptions remain live and untouched.
+pub fn Slice1Router::reanchor_and_refresh_where(
+  self : Slice1Router,
+  pred : (Topic) -> Bool,
+  on_reanchor : (Int64, Topic, Int, Int) -> Unit,
+) -> Array[CoreEvent] {
+  let out : Array[CoreEvent] = []
+  for i in 0..<self.sub_ids.length() {
+    let sid = self.sub_ids[i]
+    match self.subs.get(sid) {
+      Some(sub) => {
+        if !pred(sub.topic) {
+          continue
+        }
+        let (new_ag, new_vg) = self.current_topic_gen(sub.topic)
+        sub.auth_gen = new_ag
+        sub.vault_gen = new_vg
+        sub.last_value = None
+        sub.last_token = None
+        on_reanchor(sid, sub.topic, new_ag, new_vg)
+        match self.evaluate_topic_value(sid, sub.topic) {
+          CoreEvent::Value(_, next_val, bytes) => {
+            sub.last_value = Some(next_val)
+            sub.last_token = Some(value_token(next_val))
+            out.push(CoreEvent::Value(sid, next_val, bytes))
+          }
+          CoreEvent::Err(_, err) => out.push(CoreEvent::Err(sid, err))
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  out
 }
 
 fn Slice1Router::remove_sub_id(self : Slice1Router, id : Int64) -> Unit {
@@ -1803,7 +2045,7 @@ fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : 
 /// Dispatch one typed `CoreRequest` through the Slice 1 local read-only router.
 pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[CoreEvent] {
   match req {
-    CoreRequest::Call(id, call_name, params, bytes) => {
+    CoreRequest::Call(id, call_name, params, bytes, _call_auth) => {
       if call_name == "chat.open" {
         return Some(self.handle_chat_open(id, params, false))
       }
@@ -1857,8 +2099,18 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       }
       Some(CoreEvent::Err(id, CoreError::{ code: "unknown_call", message: "unknown call: " + call_name }))
     }
-    CoreRequest::Subscribe(id, topic, keyed, from_id, have) => {
+    CoreRequest::Subscribe(id, topic, keyed, from_id, have, sub_gen) => {
       let tk = topic_key(topic)
+      let (cur_auth, cur_vault) = self.current_topic_gen(topic)
+      let sensitive = is_sensitive_topic(topic)
+      let gen_mismatch = match sub_gen {
+        None => false
+        Some(sg) => {
+          let ag_bad = match sg.auth_gen { Some(ag) => cur_auth > 0 && ag != cur_auth; None => false }
+          let vg_bad = match sg.vault_gen { Some(vg) => cur_vault > 0 && vg != cur_vault; None => false }
+          ag_bad || vg_bad
+        }
+      }
       let ev = self.evaluate_topic_value(id, topic)
       match ev {
         CoreEvent::Value(_, payload, bytes) => {
@@ -1871,6 +2123,8 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             topic: topic,
             topic_key: tk,
             keyed: keyed,
+            auth_gen: cur_auth,
+            vault_gen: cur_vault,
             last_value: Some(payload),
             last_token: Some(tok),
           })
@@ -1879,21 +2133,39 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
           if kept_opt.is_some() {
             self.kept.remove(tk)
           }
-          // 2. `have` exact match -> `same: true`, or diff against kept == 0 -> `same: true`.
+          // Unconditional security ceiling: sensitive topics or stale client generations
+          // NEVER honor `have`/`same`/`from`/`kept` — always emit a full fresh snapshot.
+          if sensitive || gen_mismatch {
+            return Some(CoreEvent::Value(id, payload, bytes))
+          }
+          // 2. `have` exact match -> `same: true`, or diff against matching `(topic_key, auth_gen, vault_gen)` kept.
           let mut kept_ops_opt : Option[Array[base_codec::Json]] = None
           match have {
             Some(h) => {
-              if h == tok {
+              let kept_matches = fn(k : KeptSub) -> Bool {
+                k.topic_key == tk && k.auth_gen == cur_auth && k.vault_gen == cur_vault
+              }
+              let comp_key = kept_token_composite_key(tk, h)
+              let prev_entry_opt : Option[KeptSub] = match kept_opt {
+                Some(k) => if k.token == h && kept_matches(k) { Some(k) } else {
+                  match self.kept_by_token.get(comp_key) {
+                    Some(kt) => if kept_matches(kt) { Some(kt) } else { None }
+                    None => None
+                  }
+                }
+                None => match self.kept_by_token.get(comp_key) {
+                  Some(kt) => if kept_matches(kt) { Some(kt) } else { None }
+                  None => None
+                }
+              }
+              // Only honor `h == tok` -> `Same(id)` if token matches a same-scope kept entry or no generation guard is active.
+              if h == tok && (prev_entry_opt.is_some() || (cur_auth == 0 && cur_vault == 0)) {
                 return Some(CoreEvent::Same(id))
               }
-              let prev_val_opt : Option[base_codec::Json] = match kept_opt {
-                Some(k) => if k.token == h { Some(k.value) } else { self.kept_by_token.get(h) }
-                None => self.kept_by_token.get(h)
-              }
-              match prev_val_opt {
-                Some(prev_val) => {
+              match prev_entry_opt {
+                Some(prev_k) => {
                   let spec = if keyed { spec_for_topic(topic.name) } else { None }
-                  let ops = diff_keyed(prev_val, payload, spec)
+                  let ops = diff_keyed(prev_k.value, payload, spec)
                   if ops.length() == 0 {
                     return Some(CoreEvent::Same(id))
                   }
@@ -1904,13 +2176,15 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             }
             None => ()
           }
-          // 3. `from` negotiation (keyed delta from another live subscription of same topic).
+          // 3. `from` negotiation (keyed delta from another live subscription of same topic & current auth/vault gen).
           match from_id {
             Some(fid) => {
               if keyed {
                 match self.subs.get(fid) {
                   Some(base_sub) =>
-                  if base_sub.topic.name == topic.name {
+                  if base_sub.topic.name == topic.name &&
+                  base_sub.auth_gen == cur_auth &&
+                  base_sub.vault_gen == cur_vault {
                     match base_sub.last_value {
                       Some(base_val) => {
                         let ops = diff_keyed(base_val, payload, spec_for_topic(topic.name))
@@ -1952,6 +2226,8 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             topic: topic,
             topic_key: tk,
             keyed: keyed,
+            auth_gen: cur_auth,
+            vault_gen: cur_vault,
             last_value: None,
             last_token: None,
           })
@@ -1965,13 +2241,18 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       self.remove_sub_id(id)
       if keep {
         match prev {
-          Some(sub) =>
-          match (sub.last_value, sub.last_token) {
-            (Some(v), Some(tok)) => {
-              self.remember_kept(sub.topic_key, v, tok)
-              Some(CoreEvent::Unsubscribed(id, Some(tok)))
+          Some(sub) => {
+            if is_sensitive_topic(sub.topic) {
+              // Sensitive topics unconditionally forbid `keep` / `v` tokens (`topic-policy.ts`).
+              return None
             }
-            _ => Some(CoreEvent::Unsubscribed(id, None))
+            match (sub.last_value, sub.last_token) {
+              (Some(v), Some(tok)) => {
+                self.remember_kept(sub.topic, sub.topic_key, sub.auth_gen, sub.vault_gen, v, tok)
+                Some(CoreEvent::Unsubscribed(id, Some(tok)))
+              }
+              _ => Some(CoreEvent::Unsubscribed(id, None))
+            }
           }
           None => Some(CoreEvent::Unsubscribed(id, None))
         }

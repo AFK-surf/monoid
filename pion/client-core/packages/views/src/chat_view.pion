@@ -261,6 +261,7 @@ pub fn project_chat(
   now_ms : Int64,
   rows : Int = 30,
   at : Option[Int] = None,
+  at_offset : Option[Double] = None,
   utc_offset_min : Int = 0,
   lang : String = "zh",
   online : Bool = true,
@@ -812,6 +813,16 @@ pub fn project_chat(
   push_opt_int(out, "firstEntry", oldest_opt)
   push_opt_int(out, "lastEntry", newest_opt)
   push_opt_int(out, "unreadLine", unread_line)
+  match at {
+    Some(at_seq) => {
+      out.push(("at", base_codec::json_int(at_seq)))
+      match at_offset {
+        Some(off) => out.push(("atOffset", base_codec::json_num(off)))
+        None => ()
+      }
+    }
+    None => ()
+  }
   match thread_rec {
     Some(tr) => {
       let unread_cnt = match tr.unread {
@@ -883,6 +894,7 @@ pub fn project_chat_by_params(
   now_ms : Int64,
   rows : Int = 30,
   at : Option[Int] = None,
+  at_offset : Option[Double] = None,
   utc_offset_min : Int = 0,
   lang : String = "zh",
   online : Bool = true,
@@ -984,6 +996,7 @@ pub fn project_chat_by_params(
         now_ms,
         rows=rows,
         at=at,
+        at_offset=at_offset,
         utc_offset_min=utc_offset_min,
         lang=lang,
         online=online,

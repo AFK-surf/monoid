@@ -421,9 +421,6 @@ pub fn project_settings(
     ("decisionsText", base_codec::json_str(decisions_text)),
     ("hintNoReview", base_codec::json_bool(hint_no_review)),
     ("hintReviewText", base_codec::json_str(hint_review_text)),
-    ("progressMinutes", base_codec::json_int(0)),
-    ("progressStrength", base_codec::json_str("")),
-    ("progressSeq", base_codec::json_int64(0L)),
   ]))
 }
 

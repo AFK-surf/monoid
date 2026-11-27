@@ -123,7 +123,7 @@ test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.co
 
   // `doing` topic reads live `core.doing`
   let did = core.doing.start("chat.rename", base_codec::json_obj([("station", base_codec::json_str("ws-1/st-1"))]), 1700000000000L)
-  match core.handle_request(protocol::CoreRequest::Subscribe(1L, protocol::Topic::{ name: "doing", params: [] }, false, None, None)) {
+  match core.handle_request(protocol::CoreRequest::Subscribe(1L, protocol::Topic::{ name: "doing", params: [] }, false, None, None, None)) {
     Some(protocol::CoreEvent::Value(_, v, _)) => {
       let s = base_codec::json_stringify(v)
       debug_assert(s.contains("chat.rename") && s.contains("\"stage\":\"running\""), "doing topic projects real DoingTracker item: " + s)
@@ -135,7 +135,7 @@ test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.co
   // `status`, `lockPrompts`, `notices`, `notify` all evaluate through real W28a projectors
   let tnames = ["status", "lockPrompts", "notices", "notify"]
   for i in 0..<tnames.length() {
-    match core.handle_request(protocol::CoreRequest::Subscribe((10 + i).to_int64(), protocol::Topic::{ name: tnames[i], params: [] }, false, None, None)) {
+    match core.handle_request(protocol::CoreRequest::Subscribe((10 + i).to_int64(), protocol::Topic::{ name: tnames[i], params: [] }, false, None, None, None)) {
       Some(protocol::CoreEvent::Value(_, _, _)) => ()
       _ => debug_assert(false, "expected real projector value for " + tnames[i])
     }
@@ -143,7 +143,7 @@ test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.co
 
   // `auth.begin` + `auth.complete { query }` (no verifier/code/error_description leak)
   let mut state_tok = ""
-  match core.handle_request(protocol::CoreRequest::Call(20L, "auth.begin", base_codec::json_obj([]), None)) {
+  match core.handle_request(protocol::CoreRequest::Call(20L, "auth.begin", base_codec::json_obj([]), None, None)) {
     Some(protocol::CoreEvent::Ok(_, v, _)) => {
       let raw = base_codec::json_stringify(v)
       debug_assert(!raw.contains("verifier"), "auth.begin must never expose verifier")
@@ -155,7 +155,7 @@ test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.co
     _ => debug_assert(false, "auth.begin failed")
   }
   let q = "?state=" + state_tok + "&code=secret_auth_code_42"
-  match core.handle_request(protocol::CoreRequest::Call(21L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str(q))]), None)) {
+  match core.handle_request(protocol::CoreRequest::Call(21L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str(q))]), None, None)) {
     Some(protocol::CoreEvent::Ok(_, v, _)) => {
       let raw = base_codec::json_stringify(v)
       debug_assert(raw.contains("\"ok\":true"), "auth.complete query succeeded")
@@ -164,7 +164,7 @@ test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.co
     _ => debug_assert(false, "auth.complete query failed")
   }
   // Unverified error_description must NEVER leak
-  match core.handle_request(protocol::CoreRequest::Call(22L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str("?error=access_denied&error_description=EVIL_PHISHING_TEXT"))]), None)) {
+  match core.handle_request(protocol::CoreRequest::Call(22L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str("?error=access_denied&error_description=EVIL_PHISHING_TEXT"))]), None, None)) {
     Some(protocol::CoreEvent::Err(_, err)) => {
       debug_assert(!err.message.contains("EVIL_PHISHING_TEXT"), "unverified error_description must not leak")
     }

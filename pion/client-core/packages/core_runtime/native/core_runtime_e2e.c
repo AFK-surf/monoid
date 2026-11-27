@@ -141,6 +141,11 @@ int main(void) {
     int next_idx = 0;
     recorded_msg_t *m = NULL;
 
+    // 0. Startup authoritative `{ id: 0, auth }` connection snapshot (`conn: 1`)
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #0 auth snapshot -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\"") != NULL && strstr(m->json, "\"conn\":1") != NULL);
+
     // 1. settings.set + settings.get (real SQLite `workspace_pref`)
     send_json("{\"id\":1,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"dark\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -388,6 +393,10 @@ int main(void) {
 
     atomic_store(&g_ctx.stopped, 0);
     mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart auth snapshot -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\"") != NULL && strstr(m->json, "\"conn\":1") != NULL);
+
     send_json("{\"id\":40,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #40 settings.get after restart -> %s\n", m->json);

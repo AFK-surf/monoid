@@ -133,7 +133,7 @@ fn make_mem_db(
         }
         return shell::AskResult::Ok(base_codec::json_arr(rows))
       }
-      if stmt == "SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1)" {
+      if stmt == "SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread > 0)" {
         for i in 0..<chats.length() {
           if chats[i].0 == p0 {
             rows.push(base_codec::json_arr([
@@ -265,7 +265,7 @@ fn handle(world : World, req : base_codec::Json) -> String {
       sql::SqlResult::Ok(_) => ()
       sql::SqlResult::Err(e) => return base_codec::json_stringify(base_codec::json_obj([("err", base_codec::json_str(e.message))]))
     }
-    match db.exec("CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1); DROP INDEX IF EXISTS chat_marked;") {
+    match db.exec("DROP INDEX IF EXISTS chat_marks; CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks, unread) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread > 0); DROP INDEX IF EXISTS chat_marked;") {
       sql::SqlResult::Ok(_) => ()
       sql::SqlResult::Err(e) => return base_codec::json_stringify(base_codec::json_obj([("err", base_codec::json_str(e.message))]))
     }
@@ -743,7 +743,7 @@ test("Real SQLite 3,000-row EXPLAIN QUERY PLAN: marks_view hits chat_marks parti
       json TEXT NOT NULL,
       PRIMARY KEY (station, archived, id)
     );
-    CREATE INDEX chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);
+    CREATE INDEX chat_marks ON chat (station, archived, id, tone, asks, unread) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread > 0);
   `);
   const ins = db.prepare(
     "INSERT INTO chat (station, id, archived, ord, last_active, unread, mine, tone, asks, json) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
@@ -760,7 +760,7 @@ test("Real SQLite 3,000-row EXPLAIN QUERY PLAN: marks_view hits chat_marks parti
 
   const planRows = db
     .prepare(
-      "EXPLAIN QUERY PLAN SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1)"
+      "EXPLAIN QUERY PLAN SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread > 0)"
     )
     .all("ws/st-1");
   const planText = planRows.map((r) => r.detail).join("\n");

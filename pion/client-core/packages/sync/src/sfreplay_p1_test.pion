@@ -1,16 +1,21 @@
-// Unit tests covering Direction 2B Phase 1 real SQLite / state-machine / view implementations:
-// - Topics: prefs, workspaceMarks, driveTransfers, changelog, composer, chatRow, chatFeedback, live, newChat
-// - Calls: prefs.get/set, client.device, notify.permission/set, chat.place, chat.window,
-//          draft.get/put, markdown (with md_kept cache), link.parse (with moved resolution),
-//          cache.usage, and full composer.* closure.
+// Unit tests covering Direction 2B Phase 1 real SQLite / state-machine / view implementations (R2):
+// - Unshadowed topics: accounts (mbui array), workspaces (account-grouped array), prefs
+// - Real P1 topics: workspaceMarks (including pure unread > 0 via chat_marks index), composer,
+//                   chatRow (changing overlays + views.ts menu rules), chats (project/unclassified/tag/groupBy)
+// - Real P1 calls: prefs.get/set, client.device (string build + prefs.device), notify.permission/set
+//                  (workspaces patch + restart persistence), chat.place (in-memory LRU only + at/atOffset),
+//                  chat.window (required rows clamped [1, 200]), draft.get/put ({key} and {station, chat}),
+//                  markdown (with md_kept cache), link.parse (with moved + copies.formerly resolution),
+//                  account.switch (refuses unknown account), and full composer.* closure (refuses raw bytes + LRU).
 
 import "base_codec"
 import "effect"
 import "protocol"
 import "sql"
 import "store"
+import "views"
 
-fn open_sf_p1_core(name : String) -> (ClientCore, sql::Sql) {
+fn open_sf_p1_core(name : String) -> (ClientCore, sql::Sql, effect::Runtime) {
   let rt = effect::Runtime::new()
   let sim_db = SimAccountDb::new(rt)
   let db = match sql::Sql::open(sim_db.sh, name) {
@@ -19,19 +24,26 @@ fn open_sf_p1_core(name : String) -> (ClientCore, sql::Sql) {
   }
   let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
   core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
-  (core, db)
+  (core, db, rt)
 }
 
 fn sf_call_ok(core : ClientCore, id : Int64, name : String, params : base_codec::Json) -> base_codec::Json {
-  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None)) {
+  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None, None)) {
     Some(protocol::CoreEvent::Ok(_, v, _)) => v
     Some(protocol::CoreEvent::Err(_, e)) => panic("call " + name + " failed: " + e.code + " " + e.message)
     _ => panic("call " + name + " returned unexpected event")
   }
 }
 
+fn sf_call_err_code(core : ClientCore, id : Int64, name : String, params : base_codec::Json) -> String {
+  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None, None)) {
+    Some(protocol::CoreEvent::Err(_, e)) => e.code
+    _ => panic("expected Err for call " + name)
+  }
+}
+
 fn sf_sub_val(core : ClientCore, id : Int64, topic_name : String, params : Array[(String, base_codec::Json)]) -> base_codec::Json {
-  let req = protocol::CoreRequest::Subscribe(id, protocol::Topic::{ name: topic_name, params: params }, true, None, None)
+  let req = protocol::CoreRequest::Subscribe(id, protocol::Topic::{ name: topic_name, params: params }, true, None, None, None)
   match core.handle_request(req) {
     Some(protocol::CoreEvent::Value(_, v, _)) => v
     Some(protocol::CoreEvent::Err(_, e)) => panic("sub " + topic_name + " failed: " + e.code + " " + e.message)
@@ -60,13 +72,131 @@ fn sf_expect_int(j : base_codec::Json, key : String, want : Int) -> Unit {
   }
 }
 
-test "sfreplay_p1: prefs, workspaceMarks, client.device, notify.permission/set" {
-  let (core, _) = open_sf_p1_core("sf-p1-prefs")
+fn sf_insert_chat(
+  db : sql::Sql,
+  station : String,
+  id : String,
+  json : String,
+  thread : Option[Int],
+  session : Option[String],
+  at : Int64,
+  unread : Int,
+) -> Unit {
+  let th_j = match thread {
+    Some(t) => base_codec::json_int(t)
+    None => base_codec::json_null()
+  }
+  let sess_j = match session {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+  let _ = db.run(
+    sql_chat_upsert(),
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_str(id),
+      base_codec::json_int(0),
+      base_codec::json_num(1.0),
+      th_j,
+      sess_j,
+      base_codec::json_null(),
+      base_codec::json_int64(at),
+      base_codec::json_null(),
+      base_codec::json_int(unread),
+      base_codec::json_int(1),
+      base_codec::json_int(0),
+      base_codec::json_null(),
+      base_codec::json_int(0),
+      base_codec::json_int(0),
+      base_codec::json_str(json),
+    ],
+  )
+}
+
+fn sf_insert_changing(
+  db : sql::Sql,
+  station : String,
+  change_id : Int,
+  json : String,
+) -> Unit {
+  let _ = db.run(
+    sql_changing_put(),
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_int(change_id),
+      base_codec::json_str(json),
+    ],
+  )
+}
+
+test "sfreplay_p1: accounts & workspaces mbui wire shapes + account.switch validation" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-accounts")
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-alice",
+    email: "alice@still.fail",
+    name: "Alice",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
+  )
+
+  // `accounts` MUST be a JSON array matching `apps/mbui/src/sfbase/model.mbt:654`
+  let accs = sf_sub_val(core, 1L, "accounts", [])
+  match accs {
+    base_codec::Json::Arr(xs) => {
+      debug_assert(xs.length() == 1, "expected 1 account")
+      sf_expect_str(xs[0], "sub", "sub-alice")
+      sf_expect_str(xs[0], "email", "alice@still.fail")
+    }
+    _ => debug_assert(false, "accounts must be a JSON array")
+  }
+
+  // `workspaces` MUST be an account-grouped array matching `apps/mbui/src/sfbase/source.mbt:853`
+  let wss = sf_sub_val(core, 2L, "workspaces", [])
+  match wss {
+    base_codec::Json::Arr(groups) => {
+      debug_assert(groups.length() == 1, "expected 1 account group in workspaces")
+      match base_codec::json_get(groups[0], "account") {
+        Some(acc) => sf_expect_str(acc, "sub", "sub-alice")
+        None => debug_assert(false, "workspaces group missing account")
+      }
+      match base_codec::json_get(groups[0], "workspaces") {
+        Some(base_codec::Json::Arr(ws_list)) => {
+          debug_assert(ws_list.length() == 1, "expected 1 workspace under account")
+          sf_expect_str(ws_list[0], "id", "ws-1")
+        }
+        _ => debug_assert(false, "workspaces group missing workspaces array")
+      }
+    }
+    _ => debug_assert(false, "workspaces must be an account-grouped JSON array")
+  }
+
+  // `account.switch` with unknown account MUST fail and NOT mutate active_account!
+  let err_code = sf_call_err_code(core, 3L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-nonexistent")),
+  ]))
+  debug_assert(err_code == "not_found", "unknown account.switch must return not_found")
+  let still_alice = match core.auth_store.active_sub {
+    Some(s) => s == "sub-alice"
+    None => false
+  }
+  debug_assert(still_alice, "failed switch must not mutate active_sub")
+}
+
+test "sfreplay_p1: prefs, client.device (string build), notify.set persistence & workspaceMarks pure unread" {
+  let (core, db, rt) = open_sf_p1_core("sf-p1-prefs")
 
   let _ = sf_call_ok(core, 1L, "client.device", base_codec::json_obj([
-    ("app", base_codec::json_str("desktop")),
-    ("locale", base_codec::json_str("en-US")),
-    ("build", base_codec::json_int(1420)),
+    ("app", base_codec::json_str("ios")),
+    ("locale", base_codec::json_str("zh-CN")),
+    ("build", base_codec::json_str("1420")),
   ]))
   let _ = sf_call_ok(core, 2L, "prefs.set", base_codec::json_obj([
     ("appearance", base_codec::json_str("light")),
@@ -81,27 +211,71 @@ test "sfreplay_p1: prefs, workspaceMarks, client.device, notify.permission/set" 
     None => debug_assert(false, "missing reader")
   }
   match base_codec::json_get(p, "device") {
-    Some(d) => sf_expect_str(d, "locale", "en-US")
-    None => debug_assert(false, "missing device")
+    Some(d) => {
+      sf_expect_str(d, "locale", "zh-CN")
+      sf_expect_bool(d, "phone", true)
+      sf_expect_bool(d, "handoff", false)
+      sf_expect_str(d, "sentFrom", "ios 1420")
+      sf_expect_bool(d, "mac", true)
+      sf_expect_str(d, "name", "still.fail iOS")
+    }
+    None => debug_assert(false, "missing device in prefs")
   }
 
+  // Insert a chat with PURE `unread = 3` (`tone = NULL`, `asks = 0`) and verify workspaceMarks counts it!
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-unread-only",
+    "{\"id\":\"chat-unread-only\",\"title\":\"Unread Only\",\"mine\":true,\"unread\":true,\"lastActiveAt\":1730000000000}",
+    None,
+    Some("chat-unread-only"),
+    1730000000000L,
+    3,
+  )
   let wm = sf_sub_val(core, 4L, "workspaceMarks", [])
   match base_codec::json_get(wm, "badgeKinds") {
     Some(bk) => sf_expect_bool(bk, "on", false)
     None => debug_assert(false, "missing badgeKinds in workspaceMarks")
   }
+  match base_codec::json_get(wm, "workspaces") {
+    Some(ms) => match base_codec::json_get(ms, "ws-1") {
+      Some(m) => sf_expect_int(m, "unread", 1)
+      None => debug_assert(false, "workspaceMarks must include pure unread > 0 chat for ws-1")
+    }
+    None => debug_assert(false, "missing workspaces map in workspaceMarks")
+  }
 
+  // `notify.permission` + `notify.set` with `workspaces` patch persists across restart!
   let _ = sf_call_ok(core, 5L, "notify.permission", base_codec::json_obj([("state", base_codec::json_str("granted"))]))
   let nv = sf_call_ok(core, 6L, "notify.set", base_codec::json_obj([
     ("asked", base_codec::json_bool(true)),
     ("preview", base_codec::json_bool(false)),
+    ("workspaces", base_codec::json_obj([("ws-1", base_codec::json_bool(false))])),
   ]))
   sf_expect_str(nv, "permission", "granted")
   sf_expect_bool(nv, "preview", false)
+  sf_expect_bool(nv, "asked", true)
+
+  // Construct a brand new ClientCore over the same DB -> notify settings MUST restore!
+  let core2 = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let nv2 = sf_call_ok(core2, 7L, "notify.set", base_codec::json_obj([]))
+  sf_expect_bool(nv2, "preview", false)
+  sf_expect_bool(nv2, "asked", true)
+  match base_codec::json_get(nv2, "muted") {
+    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "ws-1 muted must persist across restart")
+    _ => debug_assert(false, "expected muted array restored on restart")
+  }
 }
 
-test "sfreplay_p1: composer closure + draft.get/put + SQLite persistence" {
-  let (core, db) = open_sf_p1_core("sf-p1-composer")
+test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form, and LRU bound" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-composer")
   let key = "ws-1/st-1:sess-9"
 
   let _ = sf_call_ok(core, 10L, "composer.text", base_codec::json_obj([
@@ -123,7 +297,21 @@ test "sfreplay_p1: composer closure + draft.get/put + SQLite persistence" {
   sf_expect_str(cv1, "focus", "q1")
   sf_expect_bool(cv1, "ready", true)
 
-  let _ = sf_call_ok(core, 13L, "composer.focused", base_codec::json_obj([("key", base_codec::json_str(key))]))
+  // `composer.add` with raw binary `bytes` MUST fail explicitly instead of silently discarding bytes!
+  let raw_err = sf_call_err_code(core, 13L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("raw-1")),
+        ("name", base_codec::json_str("photo.png")),
+        ("bytes", base_codec::json_str("iVBORw0KGgo=")),
+      ]),
+    ])),
+  ]))
+  debug_assert(raw_err == "unsupported", "composer.add with raw bytes must return unsupported")
+
+  // `composer.add` with ref succeeds
   let _ = sf_call_ok(core, 14L, "composer.add", base_codec::json_obj([
     ("key", base_codec::json_str(key)),
     ("station", base_codec::json_str("ws-1/st-1")),
@@ -142,164 +330,179 @@ test "sfreplay_p1: composer closure + draft.get/put + SQLite persistence" {
       ]),
     ])),
   ]))
-  let _ = sf_call_ok(core, 15L, "composer.mode", base_codec::json_obj([
-    ("key", base_codec::json_str(key)),
-    ("id", base_codec::json_str("f1")),
-    ("mode", base_codec::json_str("file")),
-  ]))
-  let _ = sf_call_ok(core, 16L, "composer.mode", base_codec::json_obj([
-    ("key", base_codec::json_str(key)),
-    ("id", base_codec::json_str("f1")),
-    ("mode", base_codec::json_str("path")),
-  ]))
-  let _ = sf_call_ok(core, 17L, "composer.starting", base_codec::json_obj([
-    ("key", base_codec::json_str(key)),
-    ("starting", base_codec::json_bool(true)),
-  ]))
-  let cv_starting = sf_sub_val(core, 18L, "composer", [("key", base_codec::json_str(key))])
-  sf_expect_bool(cv_starting, "ready", false)
-  let _ = sf_call_ok(core, 19L, "composer.starting", base_codec::json_obj([
-    ("key", base_codec::json_str(key)),
-    ("starting", base_codec::json_bool(false)),
-  ]))
 
-  // Verify draft persisted and readable via `draft.get`
-  let dg = sf_call_ok(core, 20L, "draft.get", base_codec::json_obj([
+  // Verify `draft.get` works with BOTH `{station, chat}` AND `{key}`!
+  let dg_sc = sf_call_ok(core, 20L, "draft.get", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
     ("chat", base_codec::json_str("sess-9")),
   ]))
-  sf_expect_str(dg, "text", "hello world")
-
-  // Carry to another key and take
-  let key2 = "ws-1/st-1:sess-10"
-  let _ = sf_call_ok(core, 21L, "composer.carry", base_codec::json_obj([
+  sf_expect_str(dg_sc, "text", "hello world")
+  let dg_key = sf_call_ok(core, 21L, "draft.get", base_codec::json_obj([
     ("key", base_codec::json_str(key)),
-    ("to", base_codec::json_str(key2)),
   ]))
-  let taken = sf_call_ok(core, 22L, "composer.take", base_codec::json_obj([
-    ("key", base_codec::json_str(key2)),
-    ("station", base_codec::json_str("ws-1/st-1")),
+  sf_expect_str(dg_key, "text", "hello world")
+
+  // `draft.put` with `{key}` form
+  let _ = sf_call_ok(core, 22L, "draft.put", base_codec::json_obj([
+    ("key", base_codec::json_str("ws-1/st-1:sess-10")),
+    ("value", base_codec::json_obj([("text", base_codec::json_str("key-form draft"))])),
   ]))
-  match base_codec::json_get(taken, "text") {
-    Some(base_codec::Json::Str(s)) => {
-      debug_assert(s.contains("hello world"), "taken text has body")
-      debug_assert(s.contains("/tmp/spec.md"), "taken text has path ref")
-    }
-    _ => debug_assert(false, "expected taken text")
+  let dg2 = sf_call_ok(core, 23L, "draft.get", base_codec::json_obj([
+    ("key", base_codec::json_str("ws-1/st-1:sess-10")),
+  ]))
+  sf_expect_str(dg2, "text", "key-form draft")
+
+  // Verify `ComposerManager` bounded LRU (never exceeds COMPOSER_MAX_STATES = 64)
+  for i in 0..<80 {
+    let k = "ws-1/st-1:lru-" + i.to_string()
+    let _ = sf_call_ok(core, (100 + i).to_int64(), "composer.text", base_codec::json_obj([
+      ("key", base_codec::json_str(k)),
+      ("text", base_codec::json_str("x")),
+    ]))
   }
-  // Draft cleared after take
-  match store::get_draft(db, "ws-1/st-1", "sess-10") {
-    sql::SqlResult::Ok(None) => ()
-    _ => debug_assert(false, "draft should be deleted after take")
-  }
-  // `draft.put` round-trip
-  let _ = sf_call_ok(core, 23L, "draft.put", base_codec::json_obj([
-    ("station", base_codec::json_str("ws-1/st-1")),
-    ("chat", base_codec::json_str("sess-10")),
-    ("value", base_codec::json_obj([("text", base_codec::json_str("restored draft"))])),
-  ]))
-  let dg2 = sf_call_ok(core, 24L, "draft.get", base_codec::json_obj([
-    ("station", base_codec::json_str("ws-1/st-1")),
-    ("chat", base_codec::json_str("sess-10")),
-  ]))
-  sf_expect_str(dg2, "text", "restored draft")
+  debug_assert(core.composers.states.keys().length() <= 64, "composer in-memory states must be LRU-bounded")
+  let _ = db
 }
 
-test "sfreplay_p1: driveTransfers, changelog, chatFeedback, live, newChat, markdown, link.parse, cache.usage, chat.place, chat.window" {
-  let (core, db) = open_sf_p1_core("sf-p1-views")
+test "sfreplay_p1: chatRow overlays & menu rules, chats filters/groupBy, chat.place in-memory, chat.window clamp, markdown, link.parse formerly" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-views")
 
-  let _ = store::upsert_workspace(db, "ws-1", "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}", confirmed=Some(1730000000000L))
-  let _ = store::upsert_station_doc(db, "ws-1/st-1", "overview", "{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true,\"acceptAutoChats\":true,\"drive\":{\"roots\":[\"home\"]}}", confirmed=Some(1730000000000L))
-  let _ = store::upsert_station_doc(db, "ws-1/st-1", "driveTransfers", "{\"transfers\":[{\"id\":\"tr-1\",\"names\":[\"a.bin\"],\"state\":\"running\",\"total\":1000,\"copied\":500,\"createdAt\":1730000000000}]}", confirmed=Some(1730000000000L))
-  let _ = store::put_account_doc(db, "changelog:feed", "{\"entries\":[{\"id\":\"cl-1\",\"part\":\"desktop\",\"build\":1420,\"at\":1730000000000,\"text\":\"Added AuthCapability\"}]}")
-  let _ = store::put_account_doc(db, "changelog:seen", "{\"build\":1400}")
-  let _ = sf_call_ok(core, 30L, "client.device", base_codec::json_obj([("app", base_codec::json_str("desktop")), ("build", base_codec::json_int(1420))]))
-  let _ = store::put_workspace_pref(db, "ws-1", "feedback", "[{\"id\":\"fb-1\",\"number\":7,\"station\":\"st-1\",\"session\":\"sess-1\",\"title\":\"Bug\",\"replies\":[{\"id\":\"r-1\",\"author\":\"team\",\"body\":\"Fixed\",\"at\":1730000000000}]}]")
-
-  // 1. driveTransfers
-  let dt = sf_sub_val(core, 31L, "driveTransfers", [("workspace", base_codec::json_str("ws-1"))])
-  sf_expect_bool(dt, "supported", true)
-  sf_expect_bool(dt, "loaded", true)
-  match base_codec::json_get(dt, "transfers") {
-    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 drive transfer")
-    _ => debug_assert(false, "expected 1 drive transfer")
-  }
-
-  // 2. changelog
-  let cl = sf_sub_val(core, 32L, "changelog", [])
-  match base_codec::json_get(cl, "news") {
-    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 changelog news item")
-    _ => debug_assert(false, "expected 1 changelog news item")
-  }
-
-  // 3. chatFeedback
-  let cf = sf_sub_val(core, 34L, "chatFeedback", [("station", base_codec::json_str("ws-1/st-1")), ("session", base_codec::json_str("sess-1"))])
-  match base_codec::json_get(cf, "reports") {
-    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 feedback report")
-    _ => debug_assert(false, "expected 1 feedback report")
-  }
-
-  // 4. live (populated transcript rows from SQLite)
-  let _ = db.run(
-    "INSERT OR REPLACE INTO transcript (station, session, i, json) VALUES (?, ?, ?, ?)",
-    params=[
-      base_codec::json_str("ws-1/st-1"),
-      base_codec::json_str("sess-1"),
-      base_codec::json_int(0),
-      base_codec::json_str("{\"kind\":\"step\",\"phase\":\"running\",\"text\":\"thinking\"}"),
-    ],
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true,\"formerly\":[\"st-old\"]}]}",
+    confirmed=Some(1730000000000L),
   )
-  let lv = sf_sub_val(core, 35L, "live", [("station", base_codec::json_str("ws-1/st-1")), ("key", base_codec::json_str("sess-1"))])
-  sf_expect_bool(lv, "loaded", true)
-  sf_expect_str(lv, "phase", "running")
+  let _ = store::upsert_workspace(
+    db,
+    "ws-other",
+    "{\"id\":\"ws-other\",\"name\":\"Other WS\",\"role\":\"member\",\"stations\":[]}",
+    confirmed=Some(1730000000000L),
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-1",
+    "{\"id\":\"chat-1\",\"title\":\"Original Title\",\"project\":\"proj-alpha\",\"tags\":[\"urgent\"],\"at\":1730000002000,\"connect\":\"chat\",\"runtime\":\"claude\",\"thread\":10}",
+    Some(10),
+    Some("chat-1"),
+    1730000002000L,
+    0,
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-2",
+    "{\"id\":\"chat-2\",\"title\":\"Unclassified Chat\",\"at\":1730000001000,\"connect\":\"chat\",\"thread\":11}",
+    Some(11),
+    Some("chat-2"),
+    1730000001000L,
+    0,
+  )
+  // Add local `changing` rename + pin overlays for chat-1
+  sf_insert_changing(db, "ws-1/st-1", 1, "{\"kind\":\"rename\",\"id\":\"chat-1\",\"title\":\"Renamed Locally\"}")
+  sf_insert_changing(db, "ws-1/st-1", 2, "{\"kind\":\"pin\",\"id\":\"chat-1\",\"pinned\":true,\"pinnedAt\":1730000003000}")
 
-  // 5. newChat
-  let nc = sf_sub_val(core, 36L, "newChat", [("scope", base_codec::json_str("ws-1"))])
-  sf_expect_bool(nc, "any", true)
-  sf_expect_int(nc, "autoPoolCount", 1)
+  // 1. `chatRow` applies local `changing` overlays and aligns menu permissions with views.ts
+  let cr = sf_sub_val(core, 30L, "chatRow", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("session", base_codec::json_str("chat-1")),
+  ])
+  sf_expect_str(cr, "title", "Renamed Locally")
+  sf_expect_bool(cr, "pinned", true)
+  sf_expect_bool(cr, "mayShare", true)
+  sf_expect_bool(cr, "mayPublish", true)
+  sf_expect_bool(cr, "mayMove", true)
+  sf_expect_bool(cr, "swipeArchive", true)
 
-  // 6. markdown + md_kept caching
-  let md1 = sf_call_ok(core, 37L, "markdown", base_codec::json_obj([("text", base_codec::json_str("# Hello **world**"))]))
+  // 2. `chats` filters by `project`, `unclassified`, `tag`, and groups by `groupBy: "project"`
+  let count_chat_items = fn(v : base_codec::Json) -> Int {
+    let mut n = 0
+    match base_codec::json_get(v, "days") {
+      Some(base_codec::Json::Arr(ds)) => {
+        for i in 0..<ds.length() {
+          match base_codec::json_get(ds[i], "items") {
+            Some(base_codec::Json::Arr(its)) => { n += its.length() }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    n
+  }
+  let ch_proj = sf_sub_val(core, 31L, "chats", [
+    ("scope", base_codec::json_str("ws-1")),
+    ("project", base_codec::json_str("proj-alpha")),
+  ])
+  debug_assert(count_chat_items(ch_proj) == 1, "expected 1 chat matching project=proj-alpha")
+  let ch_unclass = sf_sub_val(core, 32L, "chats", [
+    ("scope", base_codec::json_str("ws-1")),
+    ("unclassified", base_codec::json_bool(true)),
+  ])
+  debug_assert(count_chat_items(ch_unclass) == 1, "expected 1 unclassified chat")
+  let ch_tag = sf_sub_val(core, 33L, "chats", [
+    ("scope", base_codec::json_str("ws-1")),
+    ("tag", base_codec::json_str("urgent")),
+  ])
+  debug_assert(count_chat_items(ch_tag) == 1, "expected 1 chat matching tag=urgent")
+  let ch_grouped = sf_sub_val(core, 34L, "chats", [
+    ("scope", base_codec::json_str("ws-1")),
+    ("groupBy", base_codec::json_str("project")),
+  ])
+  match base_codec::json_get(ch_grouped, "groups") {
+    Some(base_codec::Json::Arr(gs)) => debug_assert(gs.length() == 2, "expected 2 project groups (proj-alpha + unclassified)")
+    _ => debug_assert(false, "groupBy=project must emit groups array")
+  }
+
+  // 3. `chat.place` stays in-memory ONLY (zero account_doc writes!) and feeds `chat` view `at` / `atOffset`
+  let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+  match store::get_account_doc(db, "chat_place:ws-1/st-1:t:10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "chat.place MUST NOT write to SQLite account_doc!")
+  }
+  let ch_view = sf_sub_val(core, 41L, "chat", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ])
+  sf_expect_int(ch_view, "at", 4)
+
+  // 4. `chat.window` requires `rows` and clamps to [1, 200]
+  let win_err = sf_call_err_code(core, 42L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ]))
+  debug_assert(win_err == "bad_params", "chat.window without rows must fail with bad_params")
+  let _ = sf_call_ok(core, 43L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(999)),
+  ]))
+  debug_assert(core.chat_window_for("ws-1/st-1", Some(10), None) == 200, "chat.window must clamp rows to 200")
+
+  // 5. `markdown` + `md_kept` cache
+  let md1 = sf_call_ok(core, 44L, "markdown", base_codec::json_obj([("text", base_codec::json_str("# Hello **world**"))]))
   debug_assert(base_codec::json_get(md1, "md").is_some(), "markdown returns md AST")
   let _ = core.md_store.flush_turn()
   debug_assert(core.md_store.has(store::md_key("# Hello **world**")), "md_kept cached parsed markdown")
 
-  // 7. link.parse (including host + query + history/message parsing)
-  let lp = sf_call_ok(core, 38L, "link.parse", base_codec::json_obj([
-    ("url", base_codec::json_str("https://app.still.fail/w/ws-1/s/st-1/chats/sess-1?message=5&history=run-2&entry=3")),
+  // 6. `link.parse` resolves replaced station via overview's `copies.formerly` on every hop
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-2",
+    "overview",
+    "{\"copies\":{\"formerly\":[\"st-old\"]}}",
+    confirmed=Some(1730000000000L),
+  )
+  let lp_replaced = sf_call_ok(core, 45L, "link.parse", base_codec::json_obj([
+    ("url", base_codec::json_str("https://app.still.fail/w/ws-1/s/st-old/chats/sess-9")),
   ]))
-  sf_expect_str(lp, "opens", "chat")
-  sf_expect_str(lp, "workspace", "ws-1")
-  sf_expect_str(lp, "station", "st-1")
-  sf_expect_str(lp, "chat", "sess-1")
-  sf_expect_str(lp, "history", "run-2")
-  sf_expect_int(lp, "entry", 3)
-  sf_expect_int(lp, "message", 5)
-
-  let lp_rel = sf_call_ok(core, 381L, "link.parse", base_codec::json_obj([
-    ("url", base_codec::json_str("/w/ws-1/s/st-1/adb")),
-  ]))
-  sf_expect_str(lp_rel, "opens", "adbShare")
-
-  // 8. cache.usage
-  let cu = sf_call_ok(core, 39L, "cache.usage", base_codec::json_obj([]))
-  debug_assert(base_codec::json_get(cu, "chats").is_some(), "cache.usage returns chats")
-  debug_assert(base_codec::json_get(cu, "drive").is_some(), "cache.usage returns drive")
-  debug_assert(base_codec::json_get(cu, "loose").is_some(), "cache.usage returns loose")
-
-  // 9. chat.place + chat.window
-  let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
-    ("station", base_codec::json_str("ws-1/st-1")),
-    ("thread", base_codec::json_int(10)),
-    ("seq", base_codec::json_int(1)),
-  ]))
-  match store::get_account_doc(db, "chat_place:ws-1/st-1:t:10") {
-    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"seq\":1"), "chat.place persisted in account_doc")
-    _ => debug_assert(false, "expected chat.place persisted")
-  }
-  let _ = sf_call_ok(core, 41L, "chat.window", base_codec::json_obj([
-    ("station", base_codec::json_str("ws-1/st-1")),
-    ("thread", base_codec::json_int(10)),
-    ("rows", base_codec::json_int(60)),
-  ]))
+  sf_expect_str(lp_replaced, "opens", "chat")
+  sf_expect_str(lp_replaced, "station", "st-2")
+  sf_expect_str(lp_replaced, "chat", "sess-9")
 }

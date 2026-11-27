@@ -67,9 +67,12 @@ struct ComposerState {
   mut id : String
 }
 
+let COMPOSER_MAX_STATES : Int = 64
+
 pub struct ComposerManager {
   db : sql::Sql
   states : Map[String, ComposerState]
+  state_order : Array[String]
   mut seq : Int
 }
 
@@ -77,7 +80,34 @@ pub fn ComposerManager::new(db : sql::Sql) -> ComposerManager {
   ComposerManager::{
     db: db,
     states: Map::new(),
+    state_order: [],
     seq: 1,
+  }
+}
+
+fn ComposerManager::touch_state_lru(self : ComposerManager, key : String) -> Unit {
+  let next : Array[String] = []
+  for i in 0..<self.state_order.length() {
+    if self.state_order[i] != key {
+      next.push(self.state_order[i])
+    }
+  }
+  next.push(key)
+  self.state_order.clear()
+  for i in 0..<next.length() {
+    self.state_order.push(next[i])
+  }
+  while self.state_order.length() > COMPOSER_MAX_STATES {
+    let oldest = self.state_order[0]
+    let trimmed : Array[String] = []
+    for i in 1..<self.state_order.length() {
+      trimmed.push(self.state_order[i])
+    }
+    self.state_order.clear()
+    for i in 0..<trimmed.length() {
+      self.state_order.push(trimmed[i])
+    }
+    self.states.remove(oldest)
   }
 }
 
@@ -595,7 +625,10 @@ fn ComposerManager::ensure_id(self : ComposerManager, s : ComposerState) -> Stri
 
 fn ComposerManager::state_for(self : ComposerManager, key : String) -> ComposerState {
   match self.states.get(key) {
-    Some(existing) => existing
+    Some(existing) => {
+      self.touch_state_lru(key)
+      existing
+    }
     None => {
       let kept_j = match self.resolve_at(key) {
         Some((st, ch)) => match store::get_draft(self.db, st, ch) {
@@ -609,6 +642,7 @@ fn ComposerManager::state_for(self : ComposerManager, key : String) -> ComposerS
       }
       let s = self.state_from_draft(kept_j)
       self.states.set(key, s)
+      self.touch_state_lru(key)
       s
     }
   }
@@ -878,14 +912,22 @@ pub fn ComposerManager::starting(self : ComposerManager, key : String, starting 
   self.changed(key, s, count=true)
 }
 
-/// `composer.add`
+/// `composer.add` (supports `ref` path/file references, `link` attachments, and already-uploaded `done`
+/// attachments; explicitly refuses raw binary `bytes` uploads instead of silently discarding bytes).
 pub fn ComposerManager::add(
   self : ComposerManager,
   key : String,
   station : String,
   files_json : Array[base_codec::Json],
-) -> Int {
+  bytes : Option[Bytes] = None,
+) -> Result[Int, String] {
   let _ = station
+  match bytes {
+    Some(b) => if b.length() > 0 {
+      return Err("binary attachment upload is not yet wired in Pion core")
+    }
+    None => ()
+  }
   let s = self.state_for(key)
   let fresh = is_fresh_key(key)
   for i in 0..<files_json.length() {
@@ -893,6 +935,35 @@ pub fn ComposerManager::add(
     let fid = match cm_nonempty_str(fj, "id") { Some(v) => v; None => self.local_id("file") }
     let fname = match cm_opt_str(fj, "name") { Some(v) => v; None => "" }
     let fsize = cm_int64(fj, "size")
+    let link_opt : Option[ComposerLink] = match base_codec::json_get(fj, "link") {
+      Some(lj) => match cm_nonempty_str(lj, "url") {
+        Some(u) => Some(ComposerLink::{
+          url: u,
+          title: cm_nonempty_str(lj, "title"),
+          site: cm_nonempty_str(lj, "site"),
+        })
+        None => None
+      }
+      None => None
+    }
+    if link_opt.is_some() {
+      s.files.push(ComposerFile::{
+        id: fid,
+        name: fname,
+        size: fsize,
+        sent: None,
+        width: None,
+        height: None,
+        done: None,
+        error: None,
+        waits: false,
+        pasted: None,
+        ref_: None,
+        link: link_opt,
+        quote: None,
+      })
+      continue
+    }
     let ref_opt : Option[ComposerRef] = match base_codec::json_get(fj, "ref") {
       Some(rj) => match (cm_nonempty_str(rj, "station"), cm_nonempty_str(rj, "path")) {
         (Some(rst), Some(rpath)) => {
@@ -929,6 +1000,10 @@ pub fn ComposerManager::add(
       })
       continue
     }
+    let done_opt = base_codec::json_get(fj, "done")
+    if ref_opt.is_none() && done_opt.is_none() {
+      return Err("raw attachment upload is not yet wired in Pion core")
+    }
     let too_big = fsize > COMPOSER_MAX_FILE_BYTES
     let mut quote_bind : Option[String] = None
     match cm_nonempty_str(fj, "quote") {
@@ -949,7 +1024,7 @@ pub fn ComposerManager::add(
       sent: None,
       width: cm_opt_int(fj, "width"),
       height: cm_opt_int(fj, "height"),
-      done: base_codec::json_get(fj, "done"),
+      done: done_opt,
       error: if too_big { Some("File exceeds 1 GiB limit") } else { None },
       waits: !too_big && fresh,
       pasted: base_codec::json_get(fj, "pasted"),
@@ -958,7 +1033,7 @@ pub fn ComposerManager::add(
       quote: quote_bind,
     })
   }
-  self.changed(key, s, count=true)
+  Ok(self.changed(key, s, count=true))
 }
 
 /// `composer.mode`
