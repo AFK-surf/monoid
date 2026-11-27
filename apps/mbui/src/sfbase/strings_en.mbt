@@ -2315,6 +2315,8 @@ let en : Map[String, String] = {
   "web-pages.connect.tokenSavedReconnecting": "Tokens saved, reconnecting",
   "web-pages.connect.tokenWhy": "With it, {name} creates the Slack app for you: set its name, avatar and permissions here instead of in Slack's admin. Only you can use it; others on this station can't see it.",
   "web-pages.connect.useThis": "Use this session",
+  "web-pages.connects.statusSessions": "{status}, {n} sessions",
+  "web-pages.connects.statusSessions.one": "{status}, 1 session",
   "web-pages.connects.whichStation": "Add to station",
   "web-pages.drive.add": "Add",
   "web-pages.drive.addRoot": "Add an accessible folder",

@@ -2280,6 +2280,7 @@ web-pages.connect.tokenSavedConnecting
 web-pages.connect.tokenSavedReconnecting
 web-pages.connect.tokenWhy
 web-pages.connect.useThis
+web-pages.connects.statusSessions
 web-pages.connects.whichStation
 web-pages.drive.add
 web-pages.drive.addRoot

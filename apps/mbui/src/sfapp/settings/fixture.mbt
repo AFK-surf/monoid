@@ -2361,7 +2361,7 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
     ("statusText", str(status)),
     ("presence", str(presence)),
     ("modeText", str(if mode == "multi-session" { "每个 thread 一个会话" } else { "所有 thread 共用一个会话" })),
-    ("modeShort", str("")),
+    ("modeShort", str(if mode == "multi-session" { "多会话" } else { "单会话" })),
     ("runtimeText", str("Claude Code")),
     ("runText", str("")),
     ("modelName", str("Opus 5.5")),

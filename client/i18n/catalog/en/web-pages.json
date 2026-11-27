@@ -773,6 +773,10 @@
   "web-pages.connects.removeHere": "Remove",
   "web-pages.connects.stationFirst": "Add a station first",
   "web-pages.connects.stationOffline": "Station offline",
+  "web-pages.connects.statusSessions": {
+    "one": "{status}, 1 session",
+    "other": "{status}, {n} sessions"
+  },
   "web-pages.connects.waiting": "Pending Slack apps",
   "web-pages.connects.whichStation": "Add to station",
   "web-pages.errors.inviteCodeExpired": "Invite code expired",

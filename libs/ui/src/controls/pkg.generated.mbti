@@ -344,7 +344,7 @@ pub let card_name : @ui.TextStyle
 pub let card_pad : Double
 
 #callsite(autofill(loc))
-pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit, wide_card? : Bool, wide_list? : Bool, wide_gap? : Double, wide_group? : Bool, wide_group_foot? : Bool, wide_piece? : () -> CardPiece, loc~ : SourceLoc) -> Unit
+pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit, wide_card? : Bool, wide_list? : Bool, wide_gap? : Double, wide_group? : Bool, wide_group_foot? : Bool, wide_group_ends_pad? : Bool, wide_piece? : () -> CardPiece, loc~ : SourceLoc) -> Unit
 
 pub fn card_piece_of(Int32, Int32) -> CardPiece
 
@@ -353,6 +353,9 @@ pub fn card_presses_node(@view.View, () -> Unit, () -> Bool) -> Unit
 pub let card_radius : @ui.Radius
 
 pub let card_row : @ui.Style
+
+#callsite(autofill(loc))
+pub fn card_sep_node(@view.View, () -> CardPiece, lit? : CardRowLit, key? : String, key_now? : () -> String, prev_key? : () -> String?, inset? : Double, loc~ : SourceLoc) -> Unit
 
 pub let card_strong : @ui.TextStyle
 
@@ -3446,6 +3449,16 @@ pub(all) enum CardPiece {
   CardBetween
   CardFoot
 }
+
+pub struct CardRowLit {
+  // private fields
+}
+pub fn CardRowLit::bind_bot(Self, String, @view.View, Bool) -> Unit
+pub fn CardRowLit::bind_top(Self, String, @view.View) -> Unit
+pub fn CardRowLit::bind_top_now(Self, () -> String, @view.View) -> Unit
+pub fn CardRowLit::lit_bot(Self, String) -> Bool
+pub fn CardRowLit::lit_top(Self, String) -> Bool
+pub fn CardRowLit::new() -> Self
 
 #derive(Eq)
 pub(all) struct ChangeLine {

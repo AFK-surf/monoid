@@ -1432,7 +1432,8 @@ test "profiles list aggregates Google Colab under Google group and add profile f
   assert_true(t_list.find("Google") is Some(_), msg="profiles list shows Google group")
   assert_true(t_list.find("Ultra 5x") is Some(_), msg="profiles list shows Antigravity CLI row")
   assert_true(t_list.find("Google Colab") is Some(_), msg="profiles list shows Google Colab tag on Colab row")
-  assert_true(t_list.find("2,500 CU · 1 台运行中 · 10.05 CU/h") is Some(_), msg="profiles list shows CU balance and active VM detail")
+  assert_true(t_list.find("2,500 CU") is Some(_), msg="profiles list shows CU balance")
+  assert_true(t_list.find("1 台运行中 · 10.05 CU/h") is Some(_), msg="profiles list shows active VM detail")
   assert_eq(t_list.audit(), [])
 
   // Add profile flow: Google method step shows Google Colab option and sends profile.flow.edit(method: "colab")

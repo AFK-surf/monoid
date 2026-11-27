@@ -2289,6 +2289,7 @@ let zh : Map[String, String] = {
   "web-pages.connect.tokenSavedReconnecting": "已保存 token，正在重新连接",
   "web-pages.connect.tokenWhy": "{name} 可用它替你在 Slack 创建 app：名称、头像、权限均在此填写，无需在 Slack 后台逐项配置。它仅供你使用，此 station 上的其他人无法查看。",
   "web-pages.connect.useThis": "使用此会话",
+  "web-pages.connects.statusSessions": "{status}，{n} 个会话",
   "web-pages.connects.whichStation": "添加到 station",
   "web-pages.drive.add": "添加",
   "web-pages.drive.addRoot": "添加可访问的文件夹",

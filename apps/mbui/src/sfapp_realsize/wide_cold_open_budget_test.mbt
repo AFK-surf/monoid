@@ -155,7 +155,7 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
   // Hotspot #2 (PR-B4) + #8938 three-tier profiles: actual 744/2/636/218/976, strictly below #8938-without-B4 (~770/2/667/225/1020)
   "medium/profiles(overview)": (765, 6, 658, 235, 1005),
   "medium/profile_detail(p1)": (23, 0, 70, 6, 35),
-  "medium/connects": (1817, 2283, 1190, 156, 1816),
+  "medium/connects": (1817, 2283, 1190, 167, 1816),
   "medium/usage": (1865, 2283, 1284, 244, 2105),
   "medium/vault": (1730, 2283, 1120, 135, 1780),
   "medium/settings(home/Me)": (461, 6, 407, 75, 564),

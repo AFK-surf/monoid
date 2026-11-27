@@ -66,10 +66,10 @@ test "全部密钥: a secret used runs the bindings of its own row alone, a vaul
 }
 
 ///|
-test "连接: a session more on one connect runs none of its rows' bindings, none of what a row says of it changed" {
+test "连接: a session more on one connect runs only that row's inline session count and a11y status bindings" {
   for win in real_size_windows {
     let ran = page_fanout_of("settings-connects", win, "connects").get("connects/session").unwrap_or(0)
-    assert_eq(ran, 0, msg="\{win.0} settings-connects connects/session: ran \{ran} bindings, nothing a row says changed")
+    assert_eq(ran, 2, msg="\{win.0} settings-connects connects/session: ran \{ran} bindings, expected 2 (inline session count + a11y status label)")
   }
 }
 
