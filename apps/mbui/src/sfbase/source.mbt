@@ -1058,6 +1058,9 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   workspace_pending_ws.clear()
   for id, _ in pending_ws {
     if !seen.contains(id) {
+      if prev_explicit_loss.contains(id) || workspace_revoked.get(id) == Some(true) {
+        next_explicit_loss[id] = true
+      }
       workspace_pending_ws[id] = true
       workspace_revoked.remove(id)
     }

@@ -621,3 +621,103 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
   )
   listen_active.val = false
 }
+
+///|
+test "PR-B3c r7 P2: legacy earlier_unloaded_empty preserves explicit_loss across pending and avoids spurious fallback revocation" {
+  reset()
+  @sfbase.account_principal_sig.set("acct-1")
+  let initial : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-legacy", "name": "Legacy" }],
+      "ownedWorkspaces": ["ws-legacy"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(initial))
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-legacy"), Some("acct-1"), msg="initial owner confirmed")
+  let owner_events : Array[(String, String, String)] = []
+  let listen_active = Ref(true)
+  @sfbase.on_workspace_owner_change(fn(w, old_o, new_o) {
+    if listen_active.val {
+      owner_events.push((w, old_o, new_o))
+    }
+  })
+  // Explicitly invalidate ws-legacy, then sync an empty-of-ws-legacy snapshot so it enters revoked.
+  @sfbase.workspace_owner_invalidate("ws-legacy")
+  assert_eq(owner_events, [("ws-legacy", "acct-1", "")], msg="initial explicit revocation emitted once")
+  let revoked_snap : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-other-ok", "name": "Other" }],
+      "ownedWorkspaces": ["ws-other-ok"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(revoked_snap))
+  assert_eq(@sfbase.workspace_owner_of("ws-legacy"), "\u{3}revoked", msg="ws-legacy revoked")
+  // Legacy snapshot (no ownedWorkspaces) with leading acct-0 (loaded=false, workspaces=[]) and acct-2 (loaded=false):
+  // hits earlier_unloaded_empty branch and must preserve explicit_loss while entering pending!
+  let legacy_unloaded : Json = [
+    {
+      "account": { "sub": "acct-0", "email": "z@example.com" },
+      "loaded": false,
+      "workspaces": [],
+    },
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-other-ok", "name": "Other" }],
+    },
+    {
+      "account": { "sub": "acct-2", "email": "b@example.com" },
+      "loaded": false,
+      "workspaces": [{ "id": "ws-legacy", "name": "Legacy" }],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(legacy_unloaded))
+  assert_true(@sfbase.workspace_explicit_owner_of("ws-legacy") is None, msg="legacy earlier_unloaded_empty keeps ws-legacy unconfirmed")
+  assert_eq(@sfbase.workspace_owner_of("ws-legacy"), "\u{3}pending", msg="ws-legacy enters pending")
+  // 1. Switching to an ownedWorkspaces snapshot where acct-2 is still loaded=false must STILL stay pending!
+  let owned_unloaded : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-other-ok", "name": "Other" }],
+      "ownedWorkspaces": ["ws-other-ok"],
+    },
+    {
+      "account": { "sub": "acct-2", "email": "b@example.com" },
+      "loaded": false,
+      "workspaces": [{ "id": "ws-legacy", "name": "Legacy" }],
+      "ownedWorkspaces": ["ws-legacy"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(owned_unloaded))
+  assert_true(@sfbase.workspace_explicit_owner_of("ws-legacy") is None, msg="preserved explicit_loss prevents premature confirmation under ownedWorkspaces")
+  assert_eq(@sfbase.workspace_owner_of("ws-legacy"), "\u{3}pending", msg="ws-legacy remains pending while acct-2 is loaded=false")
+  // 2. Final loaded=true snapshot confirms acct-2 without emitting a spurious (ws-legacy, acct-1, acct-2) revocation!
+  let owned_loaded : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-other-ok", "name": "Other" }],
+      "ownedWorkspaces": ["ws-other-ok"],
+    },
+    {
+      "account": { "sub": "acct-2", "email": "b@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-legacy", "name": "Legacy" }],
+      "ownedWorkspaces": ["ws-legacy"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(owned_loaded))
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-legacy"), Some("acct-2"), msg="loaded=true confirms acct-2")
+  assert_eq(
+    owner_events,
+    [("ws-legacy", "acct-1", "")],
+    msg="preserved explicit_loss must avoid spurious fallback revocation (ws-legacy, acct-1, acct-2)",
+  )
+  listen_active.val = false
+  @ui.run_let_go()
+}
