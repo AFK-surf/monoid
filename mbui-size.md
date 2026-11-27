@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 2.71 | 3.68 | 15.26 | 38.39 | 59.13 | 33.63 | 68.73 | 103.7 | 128.94 |
 | [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 2.72 | 3.68 | 15.26 | 38.39 | 59.12 | 33.64 | 68.73 | 103.5 | 141.68 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.15 | 154.34 |
 | [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.19 | 136.76 |
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
-| [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.62 |
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.57 |
 | [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.89 |
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
-| [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
