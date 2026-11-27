@@ -2618,3 +2618,16 @@ test("Antigravity handover and crash recovery preserve background holding state 
   await c2.dispose();
   assert.equal(existsSync(cStateDir), false);
 });
+
+test("Antigravity dispose waits for in-flight stateDir removal triggered by exited()", async () => {
+  const { options, events, driver, dump } = setup();
+  const s = await driver.open(options, (e) => events.push(e));
+  const stateDir: string = JSON.parse(readFileSync(dump, "utf8").trim().split("\n")[0]!).stateDir;
+  await s.prompt("bg-hold");
+  await until(() => ended(events).length === 1);
+  // Populate stateDir with many entries so the async rm() started by exited() during super.dispose()
+  // is still in flight when dispose() reaches #removeStateDir().
+  for (let i = 0; i < 200; i++) writeFileSync(join(stateDir, `pad-${i}.tmp`), "x");
+  await s.dispose();
+  assert.equal(existsSync(stateDir), false, "dispose must await stateDir removal started by exited()");
+});

@@ -1023,11 +1023,16 @@ export class AgySession extends AcpSession {
   #holdingSince: number | null = null;
   /// Serialized in-flight async reads of `#stateDir/<sessionId>.json`.
   #stateSync: Promise<void> | null = null;
+  /// In-flight removal of `#stateDir`, shared across `exited()`, `settled()`, and `dispose()` so callers never observe
+  /// a half-removed directory after `dispose()` or `closed`.
+  #stateDirRemoval: Promise<void> | null = null;
   /// Non-recursive directory watcher on `#stateDir`, open only while `#holding` is true so idle background work
   /// finishing clears `#holding` immediately without polling.
   #watcher: FSWatcher | null = null;
   /// True once disposed, exited, detached, or frozen for handover so late async callbacks never open a watcher or emit.
   #closed = false;
+  /// True once the underlying process has exited (distinct from handover/detach, which keep `#stateDir` alive).
+  #exited = false;
 
   constructor(driver: AgyDriver, events: Events, options: OpenOptions, stateDir: string | null = null) {
     super(driver, events, new KeptTranscript("agy", join(agyHome(options.profile.home), SESSIONS)));
@@ -1038,6 +1043,7 @@ export class AgySession extends AcpSession {
   /// Restores the per-process state directory discovered during crash recovery before `adopted()` reads it.
   setStateDir(dir: string) {
     this.#stateDir = dir;
+    if (this.#exited) void this.#removeStateDir();
   }
 
   background(): BackgroundTask[] {
@@ -1083,12 +1089,20 @@ export class AgySession extends AcpSession {
     } catch {}
   }
 
-  async #removeStateDir() {
+  #removeStateDir(): Promise<void> {
+    if (this.#stateDirRemoval !== null) return this.#stateDirRemoval;
     const dir = this.#stateDir;
     this.#stateDir = null;
-    if (dir === null) return;
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-    await rmdir(dirname(dir)).catch(() => {});
+    if (dir === null) return Promise.resolve();
+    const removal = (async () => {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      await rmdir(dirname(dir)).catch(() => {});
+    })();
+    this.#stateDirRemoval = removal;
+    void removal.then(() => {
+      if (this.#stateDirRemoval === removal) this.#stateDirRemoval = null;
+    });
+    return removal;
   }
 
   /// Reads `<stateDir>/<sessionId>.json` off the main thread and updates `#holding`. Awaited by `settled()` before
@@ -1153,11 +1167,10 @@ export class AgySession extends AcpSession {
   }
 
   protected override settled(): Promise<void> | null {
-    const parent = super.settled();
-    const state = this.#stateSync;
-    if (parent === null) return state;
-    if (state === null) return parent;
-    return Promise.all([parent, state]).then(() => undefined);
+    const pending = [super.settled(), this.#stateSync, this.#stateDirRemoval].filter((p): p is Promise<void> => p !== null);
+    if (pending.length === 0) return null;
+    if (pending.length === 1) return pending[0]!;
+    return Promise.all(pending).then(() => undefined);
   }
 
   protected override handOver() {
@@ -1176,6 +1189,7 @@ export class AgySession extends AcpSession {
     // Keep `#holding` intact so the actor's `closed` handler sees what background work died with the process and
     // wakes a waiting session immediately (`BACKGROUND_STOPPED_WAITING`).
     this.#closed = true;
+    this.#exited = true;
     this.#unwatchState();
     void this.#removeStateDir();
     return super.exited(said, stderr);
