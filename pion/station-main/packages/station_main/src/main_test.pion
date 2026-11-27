@@ -529,3 +529,69 @@ test "vault.capabilities is honest and vault.run fails closed on unsupported del
     Err(e) => panic("vault.capabilities failed: " + e)
   }
 }
+
+test "hooks_tui_main classifies direct subcommands and .mjs paths without interfering with CLI/run" {
+  match classify_hooks_tui_command("repo-rules-hook") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/repo-rules-hook.mjs") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for POSIX path")
+  }
+  match classify_hooks_tui_command("C:\\app\\repo-rules-hook.mjs") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for Windows path")
+  }
+  match classify_hooks_tui_command("subagent-hook") {
+    Some(HooksTuiCommand::SubagentHook) => ()
+    _ => panic("expected SubagentHook for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/subagent-hook.mjs") {
+    Some(HooksTuiCommand::SubagentHook) => ()
+    _ => panic("expected SubagentHook for POSIX path")
+  }
+  match classify_hooks_tui_command("claude-tui") {
+    Some(HooksTuiCommand::ClaudeTui) => ()
+    _ => panic("expected ClaudeTui for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/claude-tui.mjs") {
+    Some(HooksTuiCommand::ClaudeTui) => ()
+    _ => panic("expected ClaudeTui for POSIX path")
+  }
+  assert_true(classify_hooks_tui_command("run") is None, "run must not match hooks_tui")
+  assert_true(classify_hooks_tui_command("status") is None, "status must not match hooks_tui")
+  assert_true(classify_hooks_tui_command("--version") is None, "--version must not match hooks_tui")
+}
+
+test "hooks_tui_main parses stat_raw, formats RFC 4122 UUID v4, and merges env overrides" {
+  match parse_stat_mtime_is_dir("dir|4096|1|1732678123456|1|2|493") {
+    Some((mt, is_dir)) => assert_true(mt == 1732678123456.0 && is_dir, "dir stat parsed")
+    None => panic("expected valid dir stat")
+  }
+  match parse_stat_mtime_is_dir("file|128|0|1700000000000|1|3|420") {
+    Some((mt, is_dir)) => assert_true(mt == 1700000000000.0 && !is_dir, "file stat parsed")
+    None => panic("expected valid file stat")
+  }
+  assert_true(parse_stat_mtime_is_dir("bad") is None, "malformed stat rejected")
+
+  let raw = Bytes::new(16)
+  for i in 0..<16 {
+    raw[i] = i as Byte
+  }
+  match hooks_uuid_v4_from_bytes(raw) {
+    Some(u) => assert_str_eq(u, "00010203-0405-4607-8809-0a0b0c0d0e0f")
+    None => panic("expected UUID v4")
+  }
+  assert_true(hooks_uuid_v4_from_bytes(Bytes::new(8)) is None, "short bytes rejected")
+
+  let merged = merge_env_overrides(
+    ["PATH=/usr/bin", "STILLFAIL_TUI_PORT=1", "KEEP=yes"],
+    [("STILLFAIL_TUI_PORT", "4321"), ("MCP_DISCOVERY_CACHE", "0")],
+  )
+  assert_true(merged.length() == 4, "merged env length == 4")
+  assert_str_eq(merged[0], "PATH=/usr/bin")
+  assert_str_eq(merged[1], "KEEP=yes")
+  assert_str_eq(merged[2], "STILLFAIL_TUI_PORT=4321")
+  assert_str_eq(merged[3], "MCP_DISCOVERY_CACHE=0")
+}
