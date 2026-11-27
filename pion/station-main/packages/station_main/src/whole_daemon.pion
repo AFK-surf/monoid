@@ -34,6 +34,7 @@ import "mesh_accept"
 import "mesh_door"
 import "mesh_wire"
 import "nodepath"
+import "sql_db"
 import "station_api"
 import "station_browser"
 import "station_cloud"
@@ -188,8 +189,10 @@ enum ProxyStreamMode {
 
 struct ProxyStreamState {
   sid : Int64
+  conn_id : Int64
   remote_id : String
   is_front : Bool
+  mut ws : Option[String]
   mut mode : ProxyStreamMode
   mut rx_buf : Bytes
   mut local_sock : Int64
@@ -225,6 +228,7 @@ struct WholeRuntimeState {
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
+  connect_ws : Map[String, String]
   mut replica_before_store_ok : Bool
   mcp_srv : station_http::HttpServer
   mcp_cb : station_http::ServerCallbacks
@@ -245,111 +249,94 @@ struct WholeRuntimeState {
   mut next_upkeep_ms : Int64
 }
 
-fn load_devices_from_json(
-  j : base_codec::Json,
-  default_ws : String,
-  devices : station_whole::DevicesOsRuntime,
-  now_secs : Int64,
-) -> Unit {
-  let items : Array[base_codec::Json] = match j {
-    base_codec::Json::Arr(arr) => arr
-    base_codec::Json::Obj(_) => match base_codec::json_get(j, "devices") {
-      Some(base_codec::Json::Arr(arr)) => arr
-      _ => []
-    }
-    _ => []
+fn devices_table_exists_sql(db : sql_db::Db) -> Bool {
+  match db.first("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='devices' LIMIT 1", []) {
+    Ok(Some(_)) => true
+    _ => false
   }
-  for i in 0..<items.length() {
-    let it = items[i]
-    let dev_obj = match base_codec::json_get(it, "device") {
-      Some(d) => d
-      None => it
-    }
-    let id = match base_codec::json_get(dev_obj, "id") {
-      Some(base_codec::Json::Str(s)) => s.trim()
-      _ => ""
-    }
-    let name = match base_codec::json_get(dev_obj, "name") {
-      Some(base_codec::Json::Str(s)) => s.trim()
-      _ => id
-    }
-    let kind_str = match base_codec::json_get(dev_obj, "kind") {
-      Some(base_codec::Json::Str(s)) => s.trim()
-      _ => ""
-    }
-    let target = match base_codec::json_get(dev_obj, "target") {
-      Some(base_codec::Json::Str(s)) => s.trim()
-      _ => ""
-    }
-    let ws = match base_codec::json_get(it, "ws") {
-      Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { s.trim() } else { default_ws }
-      _ => match base_codec::json_get(it, "workspace") {
-        Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { s.trim() } else { default_ws }
-        _ => default_ws
+}
+
+fn count_registered_devices_sql(store : station_whole::WholeStore) -> Int {
+  match store.require_open() {
+    Err(_) => 0
+    Ok(st_db) => {
+      if !devices_table_exists_sql(st_db.db) {
+        return 0
       }
-    }
-    let kind_opt = station_devices::parse_device_kind(kind_str)
-    match kind_opt {
-      Some(kind) => {
-        if id.length() > 0 && target.length() > 0 && ws.length() > 0 {
-          let spec = station_devices::DeviceSpec::{
-            id: id,
-            name: name,
-            kind: kind,
-            target: target,
-            baud: None,
-            model: None,
-            protocols: None,
-            paired: None,
-          }
-          let owner_sub = match base_codec::json_get(it, "ownerSub") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => "local"
-          }
-          let owner_email = match base_codec::json_get(it, "ownerEmail") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => "local@station"
-          }
-          let owner_name = match base_codec::json_get(it, "ownerName") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => "local"
-          }
-          let _ = devices.registry.add(ws, owner_sub, owner_email, owner_name, spec, now_secs)
+      match st_db.db.first("SELECT COUNT(*) AS c FROM devices", []) {
+        Ok(Some(row)) => match row.get("c") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => 0
         }
+        _ => 0
       }
-      None => ()
     }
   }
 }
 
-fn load_devices_for_whole_daemon(
-  ops_fs : station_ops::OpsFs,
-  data : String,
-  sep : String,
-  cfg_raw : base_codec::Json,
-  home_ws : String,
-  devices : station_whole::DevicesOsRuntime,
-  now_secs : Int64,
-) -> Unit {
-  let dev_path = nodepath::join(sep, [data, "devices.json"])
-  match ops_fs.read_text(dev_path) {
-    Ok(raw) => {
-      match base_codec::json_parse(raw) {
-        base_codec::JsonParseResult::Ok(j) => load_devices_from_json(j, home_ws, devices, now_secs)
-        _ => ()
+fn lookup_registered_device_sql(
+  store : station_whole::WholeStore,
+  ws : String,
+  dev_id : String,
+) -> Option[station_devices::DeviceSpec] {
+  match store.require_open() {
+    Err(_) => None
+    Ok(st_db) => {
+      if !devices_table_exists_sql(st_db.db) {
+        return None
+      }
+      match st_db.db.first(
+        "SELECT body FROM devices WHERE id = ?1 AND ws = ?2 LIMIT 1",
+        [base_codec::json_str(dev_id), base_codec::json_str(ws)],
+      ) {
+        Ok(Some(row)) => match row.get("body") {
+          Some(base_codec::Json::Str(body_str)) => match base_codec::json_parse(body_str) {
+            base_codec::JsonParseResult::Ok(j) => {
+              let id = match base_codec::json_get(j, "id") {
+                Some(base_codec::Json::Str(s)) => s.trim()
+                _ => dev_id
+              }
+              let name = match base_codec::json_get(j, "name") {
+                Some(base_codec::Json::Str(s)) => s.trim()
+                _ => id
+              }
+              let kind_str = match base_codec::json_get(j, "kind") {
+                Some(base_codec::Json::Str(s)) => s.trim()
+                _ => ""
+              }
+              let target = match base_codec::json_get(j, "target") {
+                Some(base_codec::Json::Str(s)) => s.trim()
+                _ => ""
+              }
+              match station_devices::parse_device_kind(kind_str) {
+                Some(kind) => Some(station_devices::DeviceSpec::{
+                  id: id,
+                  name: name,
+                  kind: kind,
+                  target: target,
+                  baud: None,
+                  model: None,
+                  protocols: None,
+                  paired: None,
+                })
+                None => None
+              }
+            }
+            _ => None
+          }
+          _ => None
+        }
+        _ => None
       }
     }
-    Err(_) => ()
-  }
-  match base_codec::json_get(cfg_raw, "devices") {
-    Some(j) => load_devices_from_json(j, home_ws, devices, now_secs)
-    None => ()
   }
 }
 
 fn load_connects_from_config(
   cfg_raw : base_codec::Json,
   connects : station_whole::ConnectsOsRuntime,
+  connect_ws : Map[String, String],
+  home_ws : String,
 ) -> Unit {
   let items = match base_codec::json_get(cfg_raw, "connects") {
     Some(base_codec::Json::Arr(arr)) => arr
@@ -361,6 +348,20 @@ fn load_connects_from_config(
       _ => ""
     }
   }
+  let get_nested_str = fn(parent : base_codec::Json, sub_opt : Option[base_codec::Json], k : String) -> String {
+    match sub_opt {
+      Some(sub) => {
+        let s = get_str(sub, k)
+        if s.length() > 0 { return s }
+      }
+      None => ()
+    }
+    get_str(parent, k)
+  }
+  let env_slack_api = match station_sys::env_get("STILLFAIL_SLACK_API") {
+    Some(u) => if u.trim().length() > 0 { u.trim() } else { "" }
+    None => ""
+  }
   for i in 0..<items.length() {
     let it = items[i]
     let enabled = match base_codec::json_get(it, "enabled") {
@@ -371,26 +372,56 @@ fn load_connects_from_config(
       continue
     }
     let cid = get_str(it, "id")
-    let kind = get_str(it, "kind")
     if cid.length() == 0 {
       continue
     }
+    // Missing or null `kind` defaults to `"slack"` (1:1 with `station/src/slack/index.ts:53`).
+    let raw_kind = get_str(it, "kind")
+    let kind = if raw_kind.length() == 0 { "slack" } else { raw_kind }
+    let ws = {
+      let w = get_str(it, "workspace").trim()
+      if w.length() > 0 { w } else { home_ws }
+    }
+    connect_ws.set(cid, ws)
     if kind == "slack" {
-      let bot_tok = get_str(it, "botToken")
-      let app_tok = get_str(it, "appToken")
+      let sub = base_codec::json_get(it, "slack")
+      let bot_tok = get_nested_str(it, sub, "botToken")
+      let app_tok = get_nested_str(it, sub, "appToken")
+      let cfg_base = get_nested_str(it, sub, "baseUrl")
+      let base_url = if cfg_base.length() > 0 {
+        cfg_base
+      } else if env_slack_api.length() > 0 {
+        env_slack_api
+      } else {
+        "https://slack.com/api"
+      }
       if bot_tok.length() > 0 && app_tok.length() > 0 {
-        match connects.register_slack(cid, app_tok, bot_tok) {
-          Ok(_) => {
-            let _ = connects.start_connect(cid)
+        match connects.register_slack(cid, app_tok, bot_tok, base_url=base_url) {
+          Ok(_) => match connects.start_connect(cid) {
+            Ok(_) => ()
+            Err(se) => {
+              let _ = host_shim::write_stderr_line("[whole] slack connect " + cid + " start failed: " + se)
+            }
           }
-          Err(_) => ()
+          Err(re) => {
+            let _ = host_shim::write_stderr_line("[whole] slack connect " + cid + " register failed: " + re)
+          }
         }
       }
     } else if kind == "feishu" {
-      let app_id = get_str(it, "appId")
-      let app_sec = get_str(it, "appSecret")
+      let sub = base_codec::json_get(it, "feishu")
+      let app_id = get_nested_str(it, sub, "appId")
+      let app_sec = get_nested_str(it, sub, "appSecret")
+      let dom_str = get_nested_str(it, sub, "domain")
+      let dom = if dom_str == "lark" {
+        station_connects::FeishuDomain::Lark
+      } else {
+        station_connects::FeishuDomain::Feishu
+      }
+      let cfg_base = get_nested_str(it, sub, "baseUrl")
+      let base_opt : Option[String] = if cfg_base.length() > 0 { Some(cfg_base) } else { None }
       if app_id.length() > 0 && app_sec.length() > 0 {
-        match connects.register_feishu(cid, app_id, app_sec) {
+        match connects.register_feishu(cid, app_id, app_sec, domain=dom, base_url=base_opt) {
           Ok(_) => {
             let _ = connects.start_connect(cid)
           }
@@ -398,10 +429,12 @@ fn load_connects_from_config(
         }
       }
     } else if kind == "comma" {
-      let url = get_str(it, "url")
-      let tok = get_str(it, "token")
-      let cname = get_str(it, "name")
-      let inst_id = get_str(it, "instanceId")
+      let sub = base_codec::json_get(it, "comma")
+      let srv = get_nested_str(it, sub, "server")
+      let url = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "url") }
+      let tok = get_nested_str(it, sub, "token")
+      let cname = get_nested_str(it, sub, "name")
+      let inst_id = get_nested_str(it, sub, "instanceId")
       if url.length() > 0 && tok.length() > 0 {
         connects.register_comma(
           cid,
@@ -409,14 +442,21 @@ fn load_connects_from_config(
           tok,
           if cname.length() > 0 { cname } else { cid },
           if inst_id.length() > 0 { inst_id } else { cid },
+          workspace=if ws.length() > 0 { Some(ws) } else { None },
         )
         let _ = connects.start_connect(cid)
       }
     } else if kind == "group" {
-      let origin = get_str(it, "origin")
-      let secret = get_str(it, "secretHex")
-      let member_id = get_str(it, "memberId")
-      let bot_name = get_str(it, "botName")
+      let sub = base_codec::json_get(it, "group")
+      let srv = get_nested_str(it, sub, "server")
+      let origin = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "origin") }
+      let key_hex = get_nested_str(it, sub, "key")
+      let secret = if key_hex.length() > 0 { key_hex } else { get_nested_str(it, sub, "secretHex") }
+      let member_id = get_nested_str(it, sub, "memberId")
+      let bot_name = {
+        let bn = get_nested_str(it, sub, "botName")
+        if bn.length() > 0 { bn } else { get_nested_str(it, sub, "name") }
+      }
       if origin.length() > 0 && secret.length() > 0 && member_id.length() > 0 {
         match connects.register_group(
           cid,
@@ -447,59 +487,78 @@ fn handle_device_tunnel(
   own_ports : Map[Int, Bool],
   send_refusal : (DaemonCtx, Int64, Int, String) -> Unit,
 ) -> Unit {
+  pstream.ws = Some(ws)
   if dev_id.length() == 0 {
-    send_refusal(ctx, pstream.sid, 404, "that machine refused: missing device id")
+    send_refusal(ctx, pstream.sid, 404, "no such device on this station")
     pstream.mode = ProxyStreamMode::Done
     return
   }
-  match st.devices.registry.get(ws, dev_id) {
+  // Live SQLite `devices` table query (1:1 with `station/src/devices/registry.ts`).
+  // Any miss (missing or cross-workspace) returns unified 404 (zero existence oracle).
+  match lookup_registered_device_sql(st.core.store, ws, dev_id) {
     None => {
-      // Distinguish cross-workspace unauthorized (403) from unknown device (404).
-      let mut exists_elsewhere = false
-      for di in 0..<st.devices.registry.devices.length() {
-        if st.devices.registry.devices[di].device.id == dev_id {
-          exists_elsewhere = true
-          break
-        }
-      }
-      if exists_elsewhere {
-        send_refusal(ctx, pstream.sid, 403, "that machine refused: device is not authorized for workspace " + ws)
-      } else {
-        send_refusal(ctx, pstream.sid, 404, "that machine refused: no such device " + dev_id)
-      }
+      send_refusal(ctx, pstream.sid, 404, "no such device on this station")
       pstream.mode = ProxyStreamMode::Done
     }
-    Some(kept) => {
+    Some(spec) => {
       // Rig workspaces require explicit owner approval (fail-closed 403 here).
       if ctx.cloud.rig_in(ws) is Some(_) {
         send_refusal(ctx, pstream.sid, 403, "that machine refused: rig device requires owner approval")
         pstream.mode = ProxyStreamMode::Done
         return
       }
-      let hp = match kept.device.kind {
-        station_devices::DeviceKind::Tcp
-        | station_devices::DeviceKind::Adb
-        | station_devices::DeviceKind::AirPlay
-        | station_devices::DeviceKind::AndroidTv => {
-          match station_devices::host_port(kept.device.target) {
+      let (dial_ip, dial_port) : (String, Int) = match spec.kind {
+        station_devices::DeviceKind::Tcp => {
+          let hp = match station_devices::host_port(spec.target) {
             Some(parsed) => parsed
             None => {
-              send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: invalid target " + kept.device.target)
+              send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: invalid target " + spec.target)
               pstream.mode = ProxyStreamMode::Done
               return
             }
           }
+          let reject_lo = own_ports.contains(hp.port)
+          match station_sys::resolve_host_for_tunnel(hp.host, reject_lo) {
+            station_sys::TunnelResolveResult::BlockedLoopback => {
+              send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            station_sys::TunnelResolveResult::Failed => {
+              send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: failed to resolve " + hp.host)
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            station_sys::TunnelResolveResult::Allowed(ip) => (ip, hp.port)
+          }
         }
-        station_devices::DeviceKind::Serial => {
-          send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: serial device does not support tcp tunnel")
+        station_devices::DeviceKind::Adb => {
+          let adb_port = 5037
+          if own_ports.contains(adb_port) {
+            send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
+            pstream.mode = ProxyStreamMode::Done
+            return
+          }
+          ("127.0.0.1", adb_port)
+        }
+        station_devices::DeviceKind::Serial
+        | station_devices::DeviceKind::AirPlay
+        | station_devices::DeviceKind::AndroidTv => {
+          let kind_name = match spec.kind {
+            station_devices::DeviceKind::Serial => "serial"
+            station_devices::DeviceKind::AirPlay => "airplay"
+            station_devices::DeviceKind::AndroidTv => "android_tv"
+            _ => "unsupported"
+          }
+          send_refusal(
+            ctx,
+            pstream.sid,
+            501,
+            "device kind '" + kind_name + "' is not supported by pion whole station yet",
+          )
           pstream.mode = ProxyStreamMode::Done
           return
         }
-      }
-      if (hp.host == "127.0.0.1" || hp.host == "localhost" || hp.host == "::1") && own_ports.contains(hp.port) {
-        send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
-        pstream.mode = ProxyStreamMode::Done
-        return
       }
       if is_probe {
         ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
@@ -512,10 +571,10 @@ fn handle_device_tunnel(
         pstream.mode = ProxyStreamMode::Done
         return
       }
-      pstream.mode = ProxyStreamMode::OpeningTcp(hp.port, carry, pstream.peer_ended)
+      pstream.mode = ProxyStreamMode::OpeningTcp(dial_port, carry, pstream.peer_ended)
       let dial_args = base_codec::json_obj([
-        ("host", base_codec::json_str(hp.host)),
-        ("port", base_codec::json_int(hp.port)),
+        ("host", base_codec::json_str(dial_ip)),
+        ("port", base_codec::json_int(dial_port)),
         ("timeoutMs", base_codec::json_int(5000)),
       ])
       let _ = ctx.mux_role.call_async_raw(
@@ -3006,6 +3065,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   if usid >= 0L {
                     rconn.sock_id = usid
                     st.adopted_runner_by_sock.set(usid, owner_id)
+                    st.core.agents.set_adopted_instance_active(rconn.instance_id, true)
                     let attach_b = "{\"op\":\"attach\"}\n".to_bytes()
                     let _ = ctx.mux_role.call_async_raw(
                       builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, usid),
@@ -3020,13 +3080,20 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       None,
                     )
                     ctx.log("adopted runner attached: " + rconn.runner_id)
+                  } else {
+                    st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
+                    st.adopted_runners.remove(owner_id)
                   }
                 }
                 Err(e) => {
                   ctx.log("adopted runner unix.open failed (" + rconn.runner_id + "): " + e.message)
+                  st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
                   st.adopted_runners.remove(owner_id)
                 }
-                _ => st.adopted_runners.remove(owner_id)
+                _ => {
+                  st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
+                  st.adopted_runners.remove(owner_id)
+                }
               }
             }
           }
@@ -3043,6 +3110,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 Ok((_, Some(chunk))) => {
                   if chunk.length() == 0 {
                     rconn.exited = true
+                    st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
                     if rconn.sock_id >= 0L {
                       let usid = rconn.sock_id
                       rconn.sock_id = -1L
@@ -3294,6 +3362,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   if !rconn.exited {
                     let _ = flush_batch()
                   }
+                  if rconn.exited {
+                    st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
+                  }
                   if rconn.exited && rconn.sock_id >= 0L {
                     let usid = rconn.sock_id
                     rconn.sock_id = -1L
@@ -3317,6 +3388,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
                 _ => {
                   rconn.exited = true
+                  st.core.agents.set_adopted_instance_active(rconn.instance_id, false)
                   if rconn.sock_id >= 0L {
                     let usid = rconn.sock_id
                     rconn.sock_id = -1L
@@ -3796,11 +3868,115 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         fn(s : String) -> String { s },
         fn(_cid : String) -> Option[String] { None },
       )
+      let connect_ws : Map[String, String] = Map::new()
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
+      let connect_cbs = station_whole::ConnectsCallbacks::{
+        on_event: fn(
+          connect_id : String,
+          platform : station_connects::ConnectPlatform,
+          ev : station_connects::ChatEvent,
+        ) -> Bool {
+          let st_db = match core.store.require_open() {
+            Ok(d) => d
+            Err(_) => return false
+          }
+          match ev {
+            station_connects::ChatEvent::Message(m) | station_connects::ChatEvent::OwnNotice(m) => {
+              let surface = match platform {
+                station_connects::ConnectPlatform::Slack => "slack"
+                station_connects::ConnectPlatform::Feishu
+                | station_connects::ConnectPlatform::Lark => "feishu"
+                station_connects::ConnectPlatform::Comma => "comma"
+                station_connects::ConnectPlatform::Group => "group"
+                station_connects::ConnectPlatform::Chat => "web"
+              }
+              let ws = match connect_ws.get(connect_id) {
+                Some(w) => w
+                None => core.config.home_workspace
+              }
+              let thread_ts = if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts }
+              let now_ms = host_shim::wall_ms()
+              let tid = match st_db.ensure_thread(
+                surface,
+                m.channel,
+                thread_ts,
+                None,
+                Some(m.user),
+                now_ms,
+                home=if ws.length() > 0 { Some(ws) } else { None },
+              ) {
+                Ok(id) => id
+                Err(_) => return false
+              }
+              let msg_n = match st_db.insert_message(
+                station_store::NewMessage::{
+                  thread: tid,
+                  ts: Some(m.ts),
+                  author_kind: "person",
+                  author: m.user,
+                  agent_identity: None,
+                  text: Some(m.text),
+                  attachments: None,
+                  quotes: m.quoted,
+                  declared: None,
+                  client: Some(connect_id),
+                  card: None,
+                  options: None,
+                  proposal: None,
+                  at: now_ms,
+                },
+              ) {
+                Ok((n, _)) => n
+                Err(_) => return false
+              }
+              let ev_payload = base_codec::json_obj([
+                ("id", base_codec::json_int64(tid)),
+                (
+                  "entries",
+                  base_codec::json_arr([
+                    base_codec::json_obj([
+                      ("n", base_codec::json_int64(msg_n)),
+                      ("kind", base_codec::json_str("message")),
+                      ("authorKind", base_codec::json_str("person")),
+                      ("author", base_codec::json_str(m.user)),
+                      ("text", base_codec::json_str(m.text)),
+                      ("at", base_codec::json_int64(now_ms)),
+                    ]),
+                  ]),
+                ),
+              ])
+              let ev_target = station_api::EventTarget::{
+                lang: None,
+                viewer: None,
+                email: None,
+                workspace: if ws.length() > 0 { Some(ws) } else { None },
+                subs: None,
+                read_only: None,
+                managers: None,
+                vault: None,
+                sees_ws: if ws.length() > 0 { Some(Some(ws)) } else { None },
+                sees_session: None,
+                sees_thread: None,
+                sees_job: None,
+              }
+              let _ = core.api.events.emit("thread", ev_payload, ev_target, now_ms, None)
+              true
+            }
+            _ => true
+          }
+        },
+        on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool {
+          core.store.require_open() is Ok(_)
+        },
+        on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Bool {
+          core.store.require_open() is Ok(_)
+        },
+        on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
+      }
       let connects = station_whole::ConnectsOsRuntime::new(
         connect_bridge,
         ctx.station_key.id,
-        station_whole::ConnectsCallbacks::noop(),
+        connect_cbs,
       )
       ctx.edge_hub.set_router(fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Bool {
         connects.handle_mux_reply(tok, done)
@@ -3819,7 +3995,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           (
             "devices",
             base_codec::json_obj([
-              ("registered", base_codec::json_int(devices.registry.devices.length())),
+              ("registered", base_codec::json_int(count_registered_devices_sql(core.store))),
               ("terminals", base_codec::json_int(terminals.live_count())),
               ("logins", base_codec::json_int(logins.live_count())),
               ("pendingKills", base_codec::json_int(devices.pending_kill_count() + terminals.pending_kill_count() + logins.pending_kill_count())),
@@ -3934,6 +4110,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         logins: logins,
         browser: browser,
         connects: connects,
+        connect_ws: connect_ws,
         replica_before_store_ok: false,
         mcp_srv: mcp_srv,
         mcp_cb: mcp_cb,
@@ -4002,7 +4179,102 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let live_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
           let w_now = host_shim::wall_ms()
           let home_ws = st.core.config.home_workspace
-          let before_store_fn = fn(_dir : String) -> Result[Unit, String] {
+          let before_store_fn = fn(dir : String) -> Result[Unit, String] {
+            let ready_path = nodepath::join(ctx.sep, [dir, "restore", "ready.json"])
+            match station_sys::read_file_strict(ready_path) {
+              Err(station_sys::StrictReadErr::NotFound) => ()
+              Err(_) => {
+                return Err("failed to read restore/ready.json (preserving file)")
+              }
+              Ok(raw_bytes) => {
+                let raw_str = raw_bytes.to_string()
+                match base_codec::json_parse(raw_str) {
+                  base_codec::JsonParseResult::Ok(j) => {
+                    match base_codec::json_get(j, "gen") {
+                      Some(base_codec::Json::Str(g)) => {
+                        if g.length() == 0 {
+                          return Err("corrupt restore/ready.json: empty gen (preserving file)")
+                        }
+                      }
+                      _ => return Err("corrupt restore/ready.json: missing gen (preserving file)")
+                    }
+                  }
+                  base_codec::JsonParseResult::Err(pe) => {
+                    return Err("corrupt restore/ready.json (" + pe + "; preserving file)")
+                  }
+                }
+                let self_argv = host_shim::args()
+                if self_argv.length() == 0 {
+                  return Err("cannot determine self executable for replica restore")
+                }
+                let db_path = nodepath::join(ctx.sep, [dir, "stillfail.db"])
+                // Disjoint high event_id (6 << 32) for one-shot `--internal-replica-restore` helper.
+                let restore_ev_id : Int64 = 25769803776L
+                let spawn_opts = station_sys::SpawnOptions::{
+                  program: self_argv[0],
+                  args: [
+                    "--internal-replica-restore",
+                    "--db",
+                    db_path,
+                    "--data",
+                    dir,
+                    "--now",
+                    w_now.to_string(),
+                    "--sep",
+                    ctx.sep,
+                  ],
+                  env: None,
+                  cwd: dir,
+                  new_pgid: false,
+                  strip_malloc_space_efficient: false,
+                  pipe_stdin: false,
+                  pipe_stdout: false,
+                  pipe_stderr: true,
+                }
+                let child = match station_sys::proc_spawn(restore_ev_id, spawn_opts) {
+                  Ok(c) => c
+                  Err(se) => return Err("failed to spawn --internal-replica-restore: " + se)
+                }
+                let mut exit_code : Option[Int] = None
+                let err_sb = StringBuilder::new()
+                let prev_router = ctx.edge_hub.get_sys_router()
+                ctx.edge_hub.set_sys_router(fn(eid : Int64, payload : Bytes) -> Bool {
+                  if eid != restore_ev_id {
+                    return false
+                  }
+                  match station_sys::decode_sys_event(payload) {
+                    Some(station_sys::SysEvent::ProcStderr(b)) => err_sb.write_string(b.to_string())
+                    Some(station_sys::SysEvent::ProcExit(es)) => exit_code = Some(es.code)
+                    _ => ()
+                  }
+                  true
+                })
+                // timer: bounded replica restore helper deadline (120s)
+                let deadline = host_shim::now_ms() + 120000L
+                while exit_code is None && host_shim::now_ms() < deadline {
+                  let _ = ctx.edge_hub.pump_one(50L)
+                }
+                ctx.edge_hub.restore_sys_router(prev_router)
+                match exit_code {
+                  Some(0) => {
+                    let _ = child.close()
+                  }
+                  Some(rc) => {
+                    let _ = child.close()
+                    let detail = err_sb.to_string().trim()
+                    return Err(
+                      "replica restore helper exited " + rc.to_string()
+                      + (if detail.length() > 0 { ": " + detail } else { "" }),
+                    )
+                  }
+                  None => {
+                    let _ = child.kill(station_sys::SIG_KILL, false)
+                    let _ = child.close()
+                    return Err("replica restore helper timed out after 120s")
+                  }
+                }
+              }
+            }
             match st.replica.before_store(home_ws, ctx.station_key.id, "station_store", "primary", w_now) {
               Ok(_) => {
                 st.replica_before_store_ok = true
@@ -4036,7 +4308,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   (
                     "devices",
                     base_codec::json_obj([
-                      ("registered", base_codec::json_int(st.devices.registry.devices.length())),
+                      ("registered", base_codec::json_int(count_registered_devices_sql(st.core.store))),
                       ("terminals", base_codec::json_int(st.terminals.live_count())),
                       ("logins", base_codec::json_int(st.logins.live_count())),
                       ("pendingKills", base_codec::json_int(st.devices.pending_kill_count() + st.terminals.pending_kill_count() + st.logins.pending_kill_count())),
@@ -4067,17 +4339,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   ),
                 ])
               })
-              // Load registered local devices & configured connects after primary store opens.
-              load_devices_for_whole_daemon(
-                ctx.ops_fs,
-                ctx.data,
-                ctx.sep,
-                ctx.cfg_raw,
-                home_ws,
-                st.devices,
-                w_now / 1000L,
-              )
-              load_connects_from_config(ctx.cfg_raw, st.connects)
+              // Load configured connects after primary store opens (devices are queried live from SQLite `devices` table).
+              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_ws, home_ws)
               // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
@@ -4096,7 +4359,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                         rinfo.runner_pid,
                         rinfo.started_at,
                       )
-                      st.core.agents.set_adopted_instance_active(inst_id, true)
                       st.adopted_runners.set(
                         rcid,
                         AdoptedRunnerConn::{
@@ -4575,8 +4837,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             sid,
             ProxyStreamState::{
               sid: sid,
+              conn_id: ctx.stream_conn_id(sid),
               remote_id: remote_id,
               is_front: is_front,
+              ws: None,
               mode: ProxyStreamMode::ReadingHeadLine,
               rx_buf: Bytes::new(0),
               local_sock: -1L,
@@ -4844,7 +5108,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           st.core.on_tick(wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
-          let _ = st.devices.tick_expiry(wall)
+          let _ = st.devices.tick_expiry(now, wall)
           let _ = st.devices.adb_runner.tick(now)
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
@@ -4941,6 +5205,48 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
               }
               None => ()
+            }
+          }
+          // Immediately re-check every live `stillfail/http/1` peer-http / `device:` tunnel on fresh cloud roster!
+          if ctx.cloud.peers_current {
+            let ps_keys = st.proxy_streams.keys()
+            for psi in 0..<ps_keys.length() {
+              let sid = ps_keys[psi]
+              match st.proxy_streams.get(sid) {
+                Some(pstream) => {
+                  let mut kick : Option[(Int, String)] = station_mesh::check_peer_http_roster_change(
+                    roster,
+                    pstream.remote_id,
+                  )
+                  if kick is None {
+                    match pstream.ws {
+                      Some(ws) => {
+                        if station_mesh::member(roster, pstream.remote_id, Some(ws)) is Err(_) {
+                          kick = Some((3, "not in the workspace"))
+                        } else if ctx.cloud.rig_in(ws) is Some(_) {
+                          kick = Some((3, "rig device requires owner approval"))
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                  match kick {
+                    Some((code, reason)) => {
+                      ctx.log(
+                        "kicking live peer-http stream " + sid.to_string()
+                        + " (conn=" + pstream.conn_id.to_string() + "): " + reason,
+                      )
+                      close_proxy_local_resources(ctx, st, pstream)
+                      pstream.mode = ProxyStreamMode::Done
+                      ctx.close_peer_http(sid)
+                      st.proxy_streams.remove(sid)
+                      ctx.close_mesh_conn(pstream.conn_id, pstream.is_front, code, reason)
+                    }
+                    None => ()
+                  }
+                }
+                None => ()
+              }
             }
           }
           if !connected {

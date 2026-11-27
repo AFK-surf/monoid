@@ -175,6 +175,12 @@ extern "C" fn sts_write_under_nofollow(
   mode : Int,
   truncate_end : Int,
 ) -> Int
+extern "C" fn sts_resolve_host_for_tunnel(
+  host : Ptr,
+  reject_loopback_or_unspec : Int,
+  out_ip : Ptr,
+  out_cap : Int64,
+) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -1546,5 +1552,43 @@ pub fn register_sqlite_js_lower() -> Result[Unit, String] {
     Ok(())
   } else {
     Err("sqlite3_auto_extension(js_lower) failed with rc=" + rc.to_string())
+  }
+}
+
+pub enum TunnelResolveResult {
+  Allowed(String)
+  BlockedLoopback
+  Failed
+}
+
+/// Resolve `host` via OS `getaddrinfo` for `device:` tunnel dialing.
+/// When `reject_loopback_or_unspec` is `true`, returns `BlockedLoopback` if ANY resolved
+/// address is loopback (`127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`) or unspecified
+/// (`0.0.0.0`, `::`, `::ffff:0.0.0.0`); otherwise returns `Allowed(first_literal_ip)`.
+pub fn resolve_host_for_tunnel(
+  host : String,
+  reject_loopback_or_unspec : Bool,
+) -> TunnelResolveResult {
+  let cap = 128
+  let buf = ptr_alloc(cap.to_int64())
+  ptr_write_i64(buf, 0L, 0L)
+  let rc = sts_resolve_host_for_tunnel(
+    host.as_cstr(),
+    if reject_loopback_or_unspec { 1 } else { 0 },
+    buf,
+    cap.to_int64(),
+  )
+  let _ = host.length()
+  if rc == 1 {
+    let ip = read_cstr_from_buf(buf, cap)
+    sts_free(buf)
+    TunnelResolveResult::Allowed(ip)
+  } else {
+    sts_free(buf)
+    if rc == -2 {
+      TunnelResolveResult::BlockedLoopback
+    } else {
+      TunnelResolveResult::Failed
+    }
   }
 }

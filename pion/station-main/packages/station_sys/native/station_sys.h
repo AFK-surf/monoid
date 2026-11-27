@@ -294,6 +294,16 @@ int32_t sts_js_lower_utf8(
 // Implemented in `station_sqlite_ext.c`; returns 0 (SQLITE_OK) on success, non-zero SQLite rc on error.
 int32_t sts_register_sqlite_js_lower(void);
 
+// Resolve `host` via `getaddrinfo` for `device:` tunnel dialing.
+// Returns 1 on success (`out_ip` holds the first resolved literal IP), -2 if
+// `reject_loopback_or_unspec != 0` and ANY resolved address is loopback/unspecified
+// (127.0.0.0/8, 0.0.0.0, ::1, ::, ::ffff:127.0.0.0/104, ::ffff:0.0.0.0), or -1 on error.
+int32_t sts_resolve_host_for_tunnel(
+    const char *host,
+    int32_t reject_loopback_or_unspec,
+    char *out_ip,
+    size_t out_cap);
+
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
 

@@ -204,6 +204,8 @@ fi
   -c "$MAIN_DIR/packages/station_sys/native/station_sys.c" -o "$work/station_sys.o"
 "${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
   -c "$MAIN_DIR/packages/station_sys/native/station_sqlite_ext.c" -o "$work/station_sqlite_ext.o"
+"${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
+  -c "$STATION_PION_DIR/packages/builders_replica/native/carry_fs.c" -o "$work/carry_fs.o"
 
 "${cc[@]}" -O2 "${cc_extra[@]}" -o "$out" \
   "$work/libstation_main.a" \
@@ -212,6 +214,7 @@ fi
   "$work/station_sqlite.o" \
   "$work/station_sys.o" \
   "$work/station_sqlite_ext.o" \
+  "$work/carry_fs.o" \
   "$shell_lib" \
   "${libs[@]}"
 

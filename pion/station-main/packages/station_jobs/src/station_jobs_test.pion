@@ -912,7 +912,7 @@ test "JobManager piped mode waits for stdout+stderr EOF, stop() never kills Queu
     Ok(j) => j
     Err(e) => panic("start piped failed: " + e)
   }
-  let ev_id = 1000.to_int64()
+  let ev_id = 4294967296L
   let _ = jm.handle_sys_event(
     ev_id,
     station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" }),
@@ -1062,7 +1062,7 @@ test "RemoteManager keeps mirror locked while Stopping, adopts existing rooms, e
 
   // Now process exits -> on_job_event unlocks mirror to Idle
   let _ = jm.handle_sys_event(
-    1000.to_int64(),
+    4294967296L,
     station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: -1, signal: 15, signal_name: "SIGTERM" }),
     1300.to_int64(),
   )
@@ -1455,7 +1455,7 @@ test "Upkeep step_upkeep yields across ticks, prunes stale jobs/state/*.json, fi
   }
   // Leader exits while process group is still alive (alive_pids still contains pgid)
   let _ = jm.handle_sys_event(
-    1000.to_int64(),
+    4294967296L,
     station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" }),
     1500.to_int64(),
   )

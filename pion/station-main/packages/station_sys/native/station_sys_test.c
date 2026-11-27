@@ -1582,6 +1582,31 @@ static void test_pty(void) {
     }
     test_js_lower_utf8();
 
+    {
+        char ip[128];
+        // Loopback & unspecified aliases MUST be blocked (-2) when reject_loopback_or_unspec=1.
+        assert(sts_resolve_host_for_tunnel("127.0.0.1", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("127.0.0.2", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0.0.0.0", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::1", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::1]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.1]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.2]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::ffff:0.0.0.0", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("2130706433", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("localhost", 1, ip, sizeof(ip)) == -2);
+        // When reject_loopback_or_unspec=0, loopback resolves cleanly to literal IP.
+        assert(sts_resolve_host_for_tunnel("127.0.0.2", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "127.0.0.2") == 0);
+        assert(sts_resolve_host_for_tunnel("[::1]", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "::1") == 0);
+        // Non-loopback literal passes even with reject_loopback_or_unspec=1.
+        assert(sts_resolve_host_for_tunnel("192.0.2.10", 1, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "192.0.2.10") == 0);
+        printf("  [PASS] resolve_host_for_tunnel (loopback/unspec/v4-mapped/decimal blocked)\n");
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
     int st = 0;
@@ -2166,6 +2191,31 @@ int main(void) {
     }
 
     test_js_lower_utf8();
+
+    {
+        char ip[128];
+        // Loopback & unspecified aliases MUST be blocked (-2) when reject_loopback_or_unspec=1.
+        assert(sts_resolve_host_for_tunnel("127.0.0.1", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("127.0.0.2", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0.0.0.0", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::1", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::1]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.1]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.2]", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("::ffff:0.0.0.0", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("2130706433", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("localhost", 1, ip, sizeof(ip)) == -2);
+        // When reject_loopback_or_unspec=0, loopback resolves cleanly to literal IP.
+        assert(sts_resolve_host_for_tunnel("127.0.0.2", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "127.0.0.2") == 0);
+        assert(sts_resolve_host_for_tunnel("[::1]", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "::1") == 0);
+        // Non-loopback literal passes even with reject_loopback_or_unspec=1.
+        assert(sts_resolve_host_for_tunnel("192.0.2.10", 1, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "192.0.2.10") == 0);
+        printf("  [PASS] resolve_host_for_tunnel (loopback/unspec/v4-mapped/decimal blocked)\n");
+    }
 
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();

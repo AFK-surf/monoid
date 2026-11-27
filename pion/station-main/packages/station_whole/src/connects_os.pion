@@ -1189,17 +1189,18 @@ pub fn ConnectMuxBridge::load_outbound_file(
 // ---------------------------------------------------------------------------
 
 pub struct ConnectsCallbacks {
-  pub on_event : (String, station_connects::ConnectPlatform, station_connects::ChatEvent) -> Unit
-  pub on_card_answer : (String, station_connects::FeishuCardAnswer) -> Unit
-  pub on_interactive : (String, String, base_codec::Json) -> Unit
+  pub on_event : (String, station_connects::ConnectPlatform, station_connects::ChatEvent) -> Bool
+  pub on_card_answer : (String, station_connects::FeishuCardAnswer) -> Bool
+  pub on_interactive : (String, String, base_codec::Json) -> Bool
   pub on_disconnect : (String, String) -> Unit
 }
 
+/// Fail-closed default callbacks: return `false` so unattached runtimes NEVER ACK inbound frames.
 pub fn ConnectsCallbacks::noop() -> ConnectsCallbacks {
   ConnectsCallbacks::{
-    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent) -> Unit {},
-    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
-    on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Unit {},
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent) -> Bool { false },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { false },
+    on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Bool { false },
     on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
   }
 }
@@ -1571,24 +1572,36 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
   match entry {
     ConnectorEntry::Slack(s) => match s.handle_frame(tr, frame) {
       station_connects::SlackStep::Event(eid, ev) => {
-        if self.is_connect_running(connect_id) {
+        let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Slack, ev)
+        } else {
+          false
         }
-        let _ = s.ack(tr, eid)
+        if delivered && self.is_connect_running(connect_id) {
+          let _ = s.ack(tr, eid)
+        }
         true
       }
       station_connects::SlackStep::Interactive(eid, payload) => {
-        if self.is_connect_running(connect_id) {
+        let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_interactive)(connect_id, eid, payload)
+        } else {
+          false
         }
-        let _ = s.ack(tr, eid)
+        if delivered && self.is_connect_running(connect_id) {
+          let _ = s.ack(tr, eid)
+        }
         true
       }
       station_connects::SlackStep::SlashCommand(eid, payload) => {
-        if self.is_connect_running(connect_id) {
+        let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_interactive)(connect_id, eid, payload)
+        } else {
+          false
         }
-        let _ = s.ack(tr, eid)
+        if delivered && self.is_connect_running(connect_id) {
+          let _ = s.ack(tr, eid)
+        }
         true
       }
       station_connects::SlackStep::DuplicateIgnored(eid, _) => {
@@ -1627,17 +1640,25 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
           station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
           station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
         }
-        if self.is_connect_running(connect_id) {
+        let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_event)(connect_id, plat, ev)
+        } else {
+          false
         }
-        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        if delivered && self.is_connect_running(connect_id) {
+          let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        }
         true
       }
       station_connects::FeishuStep::CardAction(req, dedupe_key, ans) => {
-        if self.is_connect_running(connect_id) {
+        let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_card_answer)(connect_id, ans)
+        } else {
+          false
         }
-        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        if delivered && self.is_connect_running(connect_id) {
+          let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        }
         true
       }
       station_connects::FeishuStep::DuplicateIgnored(req, dedupe_key) => {
@@ -1664,16 +1685,26 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
     }
     ConnectorEntry::Comma(c) => match c.handle_frame(tr, frame) {
       station_connects::CommaStep::TaskPut(batch) => {
-        if self.is_connect_running(connect_id) {
+        let mut all_delivered = self.is_connect_running(connect_id)
+        if all_delivered {
           for i in 0..<batch.events.length() {
-            (self.callbacks.on_event)(
+            if !self.is_connect_running(connect_id) {
+              all_delivered = false
+              break
+            }
+            if !(self.callbacks.on_event)(
               connect_id,
               station_connects::ConnectPlatform::Comma,
               batch.events[i],
-            )
+            ) {
+              all_delivered = false
+              break
+            }
           }
         }
-        c.commit_put(tr, batch)
+        if all_delivered && self.is_connect_running(connect_id) {
+          c.commit_put(tr, batch)
+        }
         true
       }
       station_connects::CommaStep::Closed(reason_opt) => {
@@ -1826,8 +1857,9 @@ pub fn ConnectsOsRuntime::feed_group_sse(
         match g.take_sse(evs[i], now_ms) {
           station_connects::GroupStep::Event(ev) => {
             if self.is_connect_running(connect_id) {
-              (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev)
-              delivered = delivered + 1
+              if (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev) {
+                delivered = delivered + 1
+              }
             }
           }
           _ => ()

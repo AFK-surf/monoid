@@ -72,6 +72,9 @@ jscase = { path = "../station/packages/jscase" }
 nodepath = { path = "../station/packages/nodepath" }
 station_conv = { path = "../station/packages/station_conv" }
 builders_core = { path = "../station/packages/builders_core" }
+builders_replica = { path = "../station/packages/builders_replica" }
+transcript_io = { path = "../station/packages/transcript_io" }
+locate = { path = "../station/packages/locate" }
 admit = { path = "../station/packages/admit" }
 live_wire = { path = "../station/packages/live_wire" }
 pieces = { path = "../station/packages/pieces" }

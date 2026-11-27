@@ -486,7 +486,7 @@ pub fn JobManager::new(
     ending_group_pgids: [],
     screen_claims: [],
     next_seq: 1.to_int64(),
-    next_event_id: 1000.to_int64(),
+    next_event_id: 4294967296L,
   }
 }
 

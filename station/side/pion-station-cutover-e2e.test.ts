@@ -22,6 +22,7 @@ import { createSocket as createUdpSocket } from "node:dgram";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -39,10 +40,13 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
+import { DeviceRegistry } from "../src/devices/registry.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
+import { Store } from "../src/store/store.ts";
+import { Exporter, genDir, nothingTold, ownDir } from "../test/reference/replica-export.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -785,12 +789,17 @@ exit 0
   await until("bidi launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
 });
 
-test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tunnel (404/403/200 echo) + clean shutdown", async () => {
+test("W17A.3: SQLite devices + unified 404 + serial 501 + own-port loopback guard + live peer revocation", async () => {
   const mesh = resolveMeshAddon();
   const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
 
-  // Start a local TCP echo server to act as an attached TCP device target.
+  // Start a local TCP echo server that also tracks open upstream sockets for revocation proof.
+  let openUpstreamSockets = 0;
   const echoSrv = createNetServer((sock) => {
+    openUpstreamSockets++;
+    sock.on("close", () => {
+      openUpstreamSockets--;
+    });
     sock.on("data", (chunk) => sock.write(chunk));
   });
   servers.push(echoSrv);
@@ -811,10 +820,42 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
   const peerEp = await bindClientEp(mesh);
   const peerId = peerEp.id();
 
+  // Controllable mock cloud presence server so we can push live peer revocation!
+  let cloudConnected = false;
+  const cloudSockets: import("ws").WebSocket[] = [];
+  const cloudSrv = createHttpServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  const cloudWss = new WebSocketServer({ noServer: true });
+  servers.push(cloudWss, cloudSrv);
+  cloudSrv.on("upgrade", (req, socket, head) => {
+    cloudWss.handleUpgrade(req, socket, head, (ws) => {
+      cloudSockets.push(ws);
+      cloudConnected = true;
+      ws.on("message", (m) => {
+        if (String(m) === "ping") ws.send("pong");
+      });
+      ws.send(
+        JSON.stringify({
+          type: "state",
+          workspace: "ws-edge",
+          workspace_name: "EdgeWS",
+          name: "edge-station",
+          peers: [{ id: peerId, name: "peer-caller", ips: ["127.0.0.1"] }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => cloudSrv.listen(0, "127.0.0.1", () => resolve()));
+  const cloudPort = (cloudSrv.address() as AddressInfo).port;
+
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion" }));
   writeFileSync(
     join(dataDir, "mesh", "cloud.json"),
     JSON.stringify({
+      origin: `http://127.0.0.1:${cloudPort}`,
       workspace: "ws-edge",
       workspace_name: "EdgeWS",
       station: stationId,
@@ -824,30 +865,19 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
       grant_keys: grantKeys,
     }),
   );
-  // Register 2 devices: one in `ws-edge` (authorized) and one in `ws-other` (unauthorized for `ws-edge`).
-  writeFileSync(
-    join(dataDir, "devices.json"),
-    JSON.stringify([
-      {
-        ws: "ws-edge",
-        device: {
-          id: "0123456789abcdef",
-          name: "echo-dev",
-          kind: "tcp",
-          target: `127.0.0.1:${echoPort}`,
-        },
-      },
-      {
-        ws: "ws-other",
-        device: {
-          id: "fedcba9876543210",
-          name: "other-ws-dev",
-          kind: "tcp",
-          target: `127.0.0.1:${echoPort}`,
-        },
-      },
-    ]),
-  );
+
+  // Seed devices directly via real Node `Store.open` + `DeviceRegistry.add` into `stillfail.db`!
+  const seedStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
+  const seedReg = new DeviceRegistry(seedStore.db);
+  const by = { sub: "u-edge", email: "edge@example.com", name: "Edge" };
+  const seedAt = Date.now();
+  const addedTcp = seedReg.add("ws-edge", by, { name: "echo-dev", kind: "tcp", target: `127.0.0.1:${echoPort}` }, seedAt);
+  assert.ok(typeof addedTcp === "object", `seed tcp device failed: ${JSON.stringify(addedTcp)}`);
+  const addedOtherWs = seedReg.add("ws-other", by, { name: "other-ws-dev", kind: "tcp", target: `127.0.0.1:${echoPort}` }, seedAt);
+  assert.ok(typeof addedOtherWs === "object", `seed other-ws device failed: ${JSON.stringify(addedOtherWs)}`);
+  const addedSerial = seedReg.add("ws-edge", by, { name: "serial-dev", kind: "serial", target: "/dev/ttyUSB0", baud: 115200 }, seedAt);
+  assert.ok(typeof addedSerial === "object", `seed serial device failed: ${JSON.stringify(addedSerial)}`);
+  seedStore.close();
 
   const udpPort = await pickFreeUdpPort();
   const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
@@ -865,8 +895,10 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
     const p = readHubPid(dataDir);
     return p > 0 && isAlive(p) ? p : null;
   });
+  const adminPort = await until("edge admin loopback port", () => readPorts(dataDir).admin || null);
+  await until("edge cloud state connected", () => cloudConnected);
 
-  // 1. Verify `/status` reports all 4 edge adapters + unified `EdgeMuxHub` healthy.
+  // 1. Verify `/status` reports live SQLite `edge.devices.registered === 3` + unified `EdgeMuxHub` healthy.
   const jwt = signMemberJwt({
     ws: "ws-edge",
     device: peerId,
@@ -882,15 +914,39 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
   assert.equal(stResp.status, 200);
   const stJson = JSON.parse(stResp.body.toString("utf8"));
   assert.equal(stJson.edge.replica.beforeStoreCalled, true);
-  assert.equal(stJson.edge.devices.registered, 2);
+  assert.equal(stJson.edge.devices.registered, 3);
   assert.equal(stJson.edge.browser.running, 0);
   assert.equal(stJson.edge.connects.stopped, false);
   assert.equal(stJson.edge.mux.deferredSysDropped, 0);
   adminConn.close(0, "done");
 
-  // 2. Verify `stillfail/http/1` `device:` tunnel authorization & backpressured forwarding.
+  // Dynamically add 2 own-port loopback alias devices (`127.0.0.2:<adminPort>` & `0.0.0.0:<adminPort>`)
+  // into live SQLite `stillfail.db` without restarting Pion!
+  const liveDb = new DatabaseSync(join(dataDir, "stillfail.db"));
+  liveDb.exec("PRAGMA busy_timeout=5000;");
+  const liveReg = new DeviceRegistry(liveDb);
+  const liveAt = Date.now();
+  const ownAlias1 = liveReg.add("ws-edge", by, { name: "own-127-2", kind: "tcp", target: `127.0.0.2:${adminPort}` }, liveAt);
+  assert.ok(typeof ownAlias1 === "object");
+  const ownAlias2 = liveReg.add("ws-edge", by, { name: "own-0000", kind: "tcp", target: `0.0.0.0:${adminPort}` }, liveAt);
+  assert.ok(typeof ownAlias2 === "object");
+  liveDb.close();
+
+  // 2. Verify `stillfail/http/1` `device:` tunnel authorization, 501, own-port guard, & live revocation.
   const fdBefore = openFdCount(pionPid);
-  const httpConn = await peerEp.connect({ id: stationId, relays: [], ips: [`127.0.0.1:${udpPort}`] }, PEER_HTTP_ALPN);
+  const httpConn = await until("peer http conn ready", async () => {
+    const c = await peerEp.connect({ id: stationId, relays: [], ips: [`127.0.0.1:${udpPort}`] }, PEER_HTTP_ALPN);
+    try {
+      const s = await c.openBi();
+      await writeLine(s, { workspace: "ws-edge", device: addedTcp.id, session: "s1", tcp: true, probe: true });
+      await s.finish();
+      const r = new Reader(s, 65536);
+      const h = (await r.line()) as { status: number };
+      if (h.status === 200) return c;
+    } catch {}
+    c.close(0, "retry");
+    return null;
+  });
 
   // 2a. Unknown device -> 404.
   {
@@ -902,30 +958,40 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
     assert.equal(head.status, 404, `expected 404 for unknown device, got ${JSON.stringify(head)}`);
   }
 
-  // 2b. Cross-workspace device -> 403.
+  // 2b. Cross-workspace device -> UNIFIED 404 (no existence oracle!).
   {
     const s = await httpConn.openBi();
-    await writeLine(s, { workspace: "ws-edge", device: "fedcba9876543210", session: "s1", tcp: true, probe: true });
+    await writeLine(s, { workspace: "ws-edge", device: addedOtherWs.id, session: "s1", tcp: true, probe: true });
     await s.finish();
     const r = new Reader(s, 65536);
     const head = (await r.line()) as { status: number };
-    assert.equal(head.status, 403, `expected 403 for cross-ws device, got ${JSON.stringify(head)}`);
+    assert.equal(head.status, 404, `expected unified 404 for cross-ws device, got ${JSON.stringify(head)}`);
   }
 
-  // 2c. Authorized device probe -> 200.
+  // 2c. Unsupported serial device -> 501.
   {
     const s = await httpConn.openBi();
-    await writeLine(s, { workspace: "ws-edge", device: "0123456789abcdef", session: "s1", tcp: true, probe: true });
+    await writeLine(s, { workspace: "ws-edge", device: addedSerial.id, session: "s1", tcp: true, probe: true });
     await s.finish();
     const r = new Reader(s, 65536);
     const head = (await r.line()) as { status: number };
-    assert.equal(head.status, 200, `expected 200 for authorized device probe, got ${JSON.stringify(head)}`);
+    assert.equal(head.status, 501, `expected 501 for serial device, got ${JSON.stringify(head)}`);
   }
 
-  // 2d. Authorized device full-duplex TCP tunnel (256 KiB payload) -> exact echo!
+  // 2d. Own-port loopback alias (`127.0.0.2:<adminPort>` & `0.0.0.0:<adminPort>`) -> 403!
+  for (const aliasId of [ownAlias1.id, ownAlias2.id]) {
+    const s = await httpConn.openBi();
+    await writeLine(s, { workspace: "ws-edge", device: aliasId, session: "s1", tcp: true, probe: true });
+    await s.finish();
+    const r = new Reader(s, 65536);
+    const head = (await r.line()) as { status: number };
+    assert.equal(head.status, 403, `expected 403 for own-port alias ${aliasId}, got ${JSON.stringify(head)}`);
+  }
+
+  // 2e. Authorized device full-duplex TCP tunnel (256 KiB payload) -> exact echo!
   {
     const s = await httpConn.openBi();
-    await writeLine(s, { workspace: "ws-edge", device: "0123456789abcdef", session: "s1", tcp: true });
+    await writeLine(s, { workspace: "ws-edge", device: addedTcp.id, session: "s1", tcp: true });
     const r = new Reader(s, 65536);
     const head = (await r.line()) as { status: number };
     assert.equal(head.status, 200, `expected 200 for device tunnel, got ${JSON.stringify(head)}`);
@@ -943,6 +1009,49 @@ test("W17A.3: Unified EdgeMuxHub + 4 edge adapters + stillfail/http/1 device: tu
     const echoed = Buffer.concat(gotChunks);
     assert.equal(echoed.length, payload.length);
     assert.ok(echoed.equals(payload), "device tunnel echoed bytes mismatch");
+  }
+
+  // 2f. Live peer revocation (`on_cloud_changed` with `peers_current == true`) MUST immediately
+  //     sever an active `device:` tunnel and close its upstream TCP socket!
+  {
+    const liveStream = await httpConn.openBi();
+    await writeLine(liveStream, { workspace: "ws-edge", device: addedTcp.id, session: "s1", tcp: true });
+    const lr = new Reader(liveStream, 65536);
+    const lhead = (await lr.line()) as { status: number };
+    assert.equal(lhead.status, 200);
+    await liveStream.write(Buffer.from("ping-before-revoke"));
+    const echoedPing = lr.carry.length > 0 ? lr.carry : (await liveStream.read()) ?? Buffer.alloc(0);
+    assert.equal(echoedPing.toString("utf8"), "ping-before-revoke");
+    assert.ok(openUpstreamSockets >= 1, "expected open upstream socket before revocation");
+
+    // Push fresh cloud state with `peers: []` (revoking `peerId`).
+    for (const ws of cloudSockets) {
+      ws.send(
+        JSON.stringify({
+          type: "state",
+          workspace: "ws-edge",
+          workspace_name: "EdgeWS",
+          name: "edge-station",
+          peers: [],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+    }
+
+    // Active stream MUST close immediately AND upstream TCP socket MUST be closed!
+    let streamClosed = false;
+    try {
+      const next = await Promise.race([
+        liveStream.read(),
+        new Promise<string>((r) => setTimeout(() => r("TIMEOUT"), 5000)),
+      ]);
+      if (next === null) streamClosed = true;
+    } catch {
+      streamClosed = true;
+    }
+    assert.equal(streamClosed, true, "active device tunnel was NOT severed on live peer revocation");
+    await until("upstream TCP socket closed on peer revocation", () => openUpstreamSockets === 0, 5000);
   }
 
   httpConn.close(0, "done");
@@ -1394,4 +1503,308 @@ exit 0
   conn.close(0, "done");
   launcher.kill("SIGTERM");
   await until("r9 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+});
+
+test("W17A.6: Real before_store restore/ready.json recovery (Node Exporter -> Pion) + corrupt ready.json fail-closed", async () => {
+  const mesh = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+
+  // --- Part A: Export a real snapshot from a Node Store and restore it on Pion startup ---
+  const srcDir = freshDir("replica-src");
+  const srcDb = join(srcDir, "stillfail.db");
+  const srcStore = Store.open(srcDb, join(srcDir, "archive"));
+  const ws = "ws-restore";
+  const nowMs = Date.now();
+  srcStore.db
+    .prepare(
+      "INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run("chat:a", "chat", "chat:a", "RestoredFromNode", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, null);
+  srcStore.db
+    .prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(1, "web", "CHAT", "1.000", "RestoredFromNode", nowMs);
+  srcStore.db
+    .prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, ?, ?)")
+    .run(1, "chat:a", "chat", nowMs);
+  srcStore.db
+    .prepare("INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (?, ?, 'message', 'person', ?, ?, ?)")
+    .run(1, 1, "alice@example.com", "hello-before-restore", nowMs);
+
+  const originId = "a".repeat(64);
+  const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
+  exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-laptop" }] });
+  let passRes = exp.pass(nothingTold());
+  while (passRes.more) passRes = exp.pass(nothingTold());
+  const head = passRes.heads[ws];
+  assert.ok(head, "expected Exporter head for workspace");
+  const genPath = genDir(ownDir(join(srcDir, "replica")), ws, head.gen);
+  const filesSrcDir = join(srcDir, "exported-files");
+  mkdirSync(filesSrcDir, { recursive: true });
+  for (const hash of Object.keys(head.files)) {
+    const p = exp.sourceOf(hash);
+    if (p) copyFileSync(p, join(filesSrcDir, hash));
+  }
+  exp.close();
+  srcStore.close();
+
+  const destDir = freshDir("replica-dest");
+  const appDir = join(destDir, "app");
+  const dataDir = join(destDir, "data");
+  installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+  mkdirSync(join(dataDir, "mesh"), { recursive: true });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion" }));
+
+  const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+  assert.equal(idRes.status, 0, idRes.stderr);
+  const stationId = idRes.stdout.trim();
+  writeFileSync(
+    join(dataDir, "mesh", "cloud.json"),
+    JSON.stringify({
+      workspace: ws,
+      workspace_name: "RestoreWS",
+      station: stationId,
+      name: "restore-station",
+      peers: [],
+      relay_urls: [],
+      grant_keys: grantKeys,
+    }),
+  );
+
+  // Stage `<data>/restore/copy/<gen>`, `<data>/restore/copy/files`, and `<data>/restore/ready.json`.
+  const copyDir = join(dataDir, "restore", "copy");
+  mkdirSync(copyDir, { recursive: true });
+  cpSync(genPath, join(copyDir, head.gen), { recursive: true });
+  cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
+  writeFileSync(
+    join(dataDir, "restore", "ready.json"),
+    JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-laptop", from: "peer-1" }),
+  );
+  // Pre-create empty schema DB as Node/Pion fresh restore expects (or let restore build it).
+  assert.equal(existsSync(join(dataDir, "stillfail.db")), false);
+
+  const udpPort = await pickFreeUdpPort();
+  const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+    env: {
+      ...process.env,
+      STILLFAIL_NO_DISCOVERY: "1",
+      STILLFAIL_NO_DHT: "1",
+      STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+    },
+    stdio: "ignore",
+  });
+  children.push(launcher);
+
+  await until("restored pion pid", () => {
+    const p = readHubPid(dataDir);
+    return p > 0 && isAlive(p) ? p : null;
+  });
+
+  // Verify `ready.json` was consumed, `replica/restored.json` has `error: null`, and `chat:a` is visible!
+  const restoredJson = await until("replica/restored.json written", () => {
+    const p = join(dataDir, "replica", "restored.json");
+    if (!existsSync(p)) return null;
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) as { error: unknown };
+    } catch {
+      return null;
+    }
+  });
+  assert.equal(restoredJson.error, null, `unexpected restore error: ${JSON.stringify(restoredJson)}`);
+  assert.equal(existsSync(join(dataDir, "restore", "ready.json")), false, "ready.json should be consumed after restore");
+
+  const clientEp = await bindClientEp(mesh);
+  const jwt = signMemberJwt({
+    ws,
+    device: clientEp.id(),
+    sub: "u-rest",
+    email: "alice@example.com",
+    name: "Alice",
+    role: "owner",
+  });
+  const { conn } = await until("restore admin connect", () =>
+    openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
+  );
+  const chatsResp = await adminRequest(conn, "GET", "/chats");
+  assert.equal(chatsResp.status, 200, chatsResp.body.toString("utf8"));
+  assert.ok(chatsResp.body.toString("utf8").includes("RestoredFromNode"), `restored chat missing: ${chatsResp.body.toString("utf8")}`);
+  conn.close(0, "done");
+
+  launcher.kill("SIGTERM");
+  await until("restore launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+  // --- Part B: Corrupt `restore/ready.json` MUST fail closed, NOT create empty DB, and preserve `ready.json` ---
+  const badDir = freshDir("replica-corrupt");
+  mkdirSync(join(badDir, "restore"), { recursive: true });
+  mkdirSync(join(badDir, "mesh"), { recursive: true });
+  writeFileSync(join(badDir, "config.json"), JSON.stringify({ engine: "pion" }));
+  const badReady = join(badDir, "restore", "ready.json");
+  writeFileSync(badReady, "{not-valid-json");
+
+  const badRun = spawnSync(pionBin, ["run", "--data", badDir, "--port", "0"], {
+    env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  assert.notEqual(badRun.status, 0, "corrupt ready.json must exit non-zero");
+  assert.equal(existsSync(badReady), true, "corrupt ready.json must be preserved");
+  assert.equal(readFileSync(badReady, "utf8"), "{not-valid-json");
+  assert.equal(existsSync(join(badDir, "stillfail.db")), false, "corrupt ready.json must NOT create empty stillfail.db");
+});
+
+test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUSR2 handover & clean shutdown", async () => {
+  const { grantKeys } = makeGrantKeysAndSigner();
+
+  // Local mock Slack HTTP (`apps.connections.open`) + Socket Mode WS server.
+  let wsConnections = 0;
+  const ackedEnvelopes: string[] = [];
+  const dbRowsAtAck: number[] = [];
+  let dataDirRef = "";
+
+  const slackSrv = createHttpServer((req, res) => {
+    if (req.url?.includes("apps.connections.open")) {
+      const port = (slackSrv.address() as AddressInfo).port;
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port}/slack-ws` }),
+      );
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+  });
+  const slackWss = new WebSocketServer({ noServer: true });
+  servers.push(slackWss, slackSrv);
+  slackSrv.on("upgrade", (req, socket, head) => {
+    slackWss.handleUpgrade(req, socket, head, (ws) => {
+      wsConnections++;
+      const connNum = wsConnections;
+      ws.send(JSON.stringify({ type: "hello", num_connections: connNum }));
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(String(raw));
+          if (typeof msg.envelope_id === "string") {
+            ackedEnvelopes.push(msg.envelope_id);
+            // At the exact moment ACK arrives, verify the row is ALREADY persisted in SQLite!
+            if (dataDirRef && existsSync(join(dataDirRef, "stillfail.db"))) {
+              const db = new DatabaseSync(join(dataDirRef, "stillfail.db"), { readOnly: true });
+              const row = db
+                .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE text = 'hello-slack-db-before-ack'")
+                .get() as { cnt: number };
+              db.close();
+              dbRowsAtAck.push(row.cnt);
+            }
+          }
+        } catch {}
+      });
+      if (connNum === 1) {
+        ws.send(
+          JSON.stringify({
+            envelope_id: "env-w17a-slack-1",
+            type: "events_api",
+            payload: {
+              event: {
+                type: "app_mention",
+                channel: "C_W17A",
+                ts: "1795780000.000100",
+                thread_ts: "1795780000.000100",
+                user: "U_ALICE",
+                text: "hello-slack-db-before-ack",
+              },
+            },
+          }),
+        );
+      }
+    });
+  });
+  await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
+  const slackPort = (slackSrv.address() as AddressInfo).port;
+
+  const dir = freshDir("slack-connect");
+  const appDir = join(dir, "app");
+  const dataDir = join(dir, "data");
+  dataDirRef = dataDir;
+  installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+  mkdirSync(join(dataDir, "mesh"), { recursive: true });
+
+  const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+  assert.equal(idRes.status, 0, idRes.stderr);
+  const stationId = idRes.stdout.trim();
+
+  // Real Node nested `config.json` schema: omitted `kind` MUST default to `"slack"`, omitted `enabled` to `true`!
+  writeFileSync(
+    join(dataDir, "config.json"),
+    JSON.stringify({
+      engine: "pion",
+      connects: [
+        {
+          id: "slack-main",
+          bind: { runtime: "claude" },
+          slack: {
+            appToken: "xapp-1-w17a-test",
+            botToken: "xoxb-w17a-test",
+            baseUrl: `http://127.0.0.1:${slackPort}`,
+          },
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(dataDir, "mesh", "cloud.json"),
+    JSON.stringify({
+      workspace: "ws-slack",
+      workspace_name: "SlackWS",
+      station: stationId,
+      name: "slack-station",
+      peers: [],
+      relay_urls: [],
+      grant_keys: grantKeys,
+    }),
+  );
+
+  const udpPort = await pickFreeUdpPort();
+  const slackLogs: string[] = [];
+  const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+    env: {
+      ...process.env,
+      STILLFAIL_NO_DISCOVERY: "1",
+      STILLFAIL_NO_DHT: "1",
+      STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  children.push(launcher);
+  launcher.stdout.on("data", (d) => slackLogs.push(String(d)));
+  launcher.stderr.on("data", (d) => slackLogs.push(String(d)));
+
+  const pid1 = await until("slack pion pid1", () => {
+    const p = readHubPid(dataDir);
+    return p > 0 && isAlive(p) ? p : null;
+  });
+
+  // Verify Slack Socket Mode connected, persisted message to `stillfail.db` BEFORE sending ACK!
+  try {
+    await until("slack envelope ACK received", () => ackedEnvelopes.includes("env-w17a-slack-1"), 8_000);
+  } catch (e) {
+    const logPath = join(dataDir, "stillfail.log");
+    const logTail = existsSync(logPath) ? readFileSync(logPath, "utf8").slice(-1000) : "(no stillfail.log)";
+    throw new Error(`${(e as Error).message} | wsConnections=${wsConnections} | slackLogs=${slackLogs.join("").slice(-300)} | stillfail.log=${logTail}`);
+  }
+  assert.ok(dbRowsAtAck.length >= 1 && dbRowsAtAck[0] >= 1, `DB row was NOT persisted before Slack ACK: ${JSON.stringify(dbRowsAtAck)}`);
+
+  // Trigger `SIGUSR2` handover while Slack connector is live -> old Pion exits cleanly, new Pion reconnects!
+  const fdBefore = openFdCount(pid1);
+  launcher.kill("SIGUSR2");
+  const pid2 = await until("slack pion pid2 after SIGUSR2", () => {
+    const p = readHubPid(dataDir);
+    return p > 0 && p !== pid1 && isAlive(p) ? p : null;
+  });
+  await until("old pion pid1 exited after handover", () => !isAlive(pid1), 10_000);
+  await until("new pion reconnected to mock Slack WS", () => wsConnections >= 2, 15_000);
+  const fdAfter = openFdCount(pid2);
+  if (fdBefore > 0 && fdAfter > 0) {
+    assert.ok(Math.abs(fdAfter - fdBefore) <= 12, `unexpected FD delta across handover: before=${fdBefore} after=${fdAfter}`);
+  }
+
+  // Graceful `SIGTERM` shutdown: launcher + pion exit cleanly with zero orphans!
+  launcher.kill("SIGTERM");
+  await until("slack launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+  await until("slack pion pid2 exited", () => !isAlive(pid2));
 });

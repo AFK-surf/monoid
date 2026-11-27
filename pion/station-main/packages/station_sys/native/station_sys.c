@@ -56,6 +56,7 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -8680,5 +8681,121 @@ void *sts_network_interfaces(int64_t *out_len) {
 }
 
 #endif // _WIN32
+
+static int sts_sockaddr_is_loopback_or_unspec(const struct sockaddr *sa) {
+    if (sa == NULL) return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        uint32_t ip = ntohl(sin->sin_addr.s_addr);
+        if ((ip >> 24) == 127u) return 1; // 127.0.0.0/8
+        if (ip == 0u) return 1;           // 0.0.0.0
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        const uint8_t *b = (const uint8_t *)sin6->sin6_addr.s6_addr;
+        int all_zero = 1;
+        for (int i = 0; i < 16; i++) {
+            if (b[i] != 0) {
+                all_zero = 0;
+                break;
+            }
+        }
+        if (all_zero) return 1; // ::
+        int v6_lo = 1;
+        for (int i = 0; i < 15; i++) {
+            if (b[i] != 0) {
+                v6_lo = 0;
+                break;
+            }
+        }
+        if (v6_lo && b[15] == 1) return 1; // ::1
+        int v4_mapped = 1;
+        for (int i = 0; i < 10; i++) {
+            if (b[i] != 0) {
+                v4_mapped = 0;
+                break;
+            }
+        }
+        if (v4_mapped && b[10] == 0xff && b[11] == 0xff) {
+            if (b[12] == 127) return 1; // ::ffff:127.0.0.0/104
+            if (b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] == 0) return 1; // ::ffff:0.0.0.0
+        }
+        return 0;
+    }
+    return 0;
+}
+
+int32_t sts_resolve_host_for_tunnel(
+    const char *host,
+    int32_t reject_loopback_or_unspec,
+    char *out_ip,
+    size_t out_cap) {
+    if (host == NULL || host[0] == '\0' || out_ip == NULL || out_cap < 2) {
+        return -1;
+    }
+    out_ip[0] = '\0';
+    size_t hlen = strlen(host);
+    char clean[512];
+    const char *lookup_host = host;
+    if (hlen >= 2 && host[0] == '[' && host[hlen - 1] == ']') {
+        size_t inner = hlen - 2;
+        if (inner == 0 || inner >= sizeof(clean)) return -1;
+        memcpy(clean, host + 1, inner);
+        clean[inner] = '\0';
+        lookup_host = clean;
+    }
+#ifdef _WIN32
+    static atomic_int g_sts_resolve_wsa = 0;
+    if (atomic_load(&g_sts_resolve_wsa) == 0) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+            atomic_store(&g_sts_resolve_wsa, 1);
+        }
+    }
+#endif
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *res = NULL;
+    int gai_rc = getaddrinfo(lookup_host, NULL, &hints, &res);
+    if (gai_rc != 0 || res == NULL) {
+        return -1;
+    }
+    char first_ip[INET6_ADDRSTRLEN];
+    first_ip[0] = '\0';
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (ai->ai_addr == NULL) continue;
+        if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) continue;
+        if (reject_loopback_or_unspec != 0 && sts_sockaddr_is_loopback_or_unspec(ai->ai_addr)) {
+            freeaddrinfo(res);
+            return -2;
+        }
+        if (first_ip[0] == '\0') {
+            if (ai->ai_family == AF_INET) {
+                const struct sockaddr_in *sin = (const struct sockaddr_in *)ai->ai_addr;
+                if (inet_ntop(AF_INET, &sin->sin_addr, first_ip, sizeof(first_ip)) == NULL) {
+                    first_ip[0] = '\0';
+                }
+            } else if (ai->ai_family == AF_INET6) {
+                const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ai->ai_addr;
+                if (inet_ntop(AF_INET6, &sin6->sin6_addr, first_ip, sizeof(first_ip)) == NULL) {
+                    first_ip[0] = '\0';
+                }
+            }
+        }
+    }
+    freeaddrinfo(res);
+    if (first_ip[0] == '\0') {
+        return -1;
+    }
+    size_t flen = strlen(first_ip);
+    if (flen + 1 > out_cap) {
+        return -1;
+    }
+    memcpy(out_ip, first_ip, flen + 1);
+    return 1;
+}
 
 #include "station_js_lower.h"

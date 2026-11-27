@@ -139,7 +139,7 @@ pub fn TerminalsOsRuntime::new(
     by_event: Map::new(),
     pending_kills: Map::new(),
     ended_screens: Map::new(),
-    next_event_id: 800001L,
+    next_event_id: 12884901888L,
   }
 }
 
@@ -474,7 +474,7 @@ pub fn LoginsOsRuntime::new(
     by_id: Map::new(),
     by_event: Map::new(),
     pending_kills: Map::new(),
-    next_event_id: 850001L,
+    next_event_id: 17179869184L,
   }
 }
 
@@ -840,7 +840,7 @@ pub struct AdbOsRunner {
   mut next_event_id : Int64
 }
 
-pub fn AdbOsRunner::new(start_event_id : Int64 = 890001L) -> AdbOsRunner {
+pub fn AdbOsRunner::new(start_event_id : Int64 = 21474836480L) -> AdbOsRunner {
   AdbOsRunner::{
     by_event: Map::new(),
     completed: Map::new(),
@@ -1038,7 +1038,7 @@ pub fn run_adb_command_os(
 ) -> Result[AdbExecResult, String] {
   let r = match runner {
     Some(existing) => existing
-    None => AdbOsRunner::new(start_event_id=890001L + ((hub.now_fn)() & 0xFFFFL))
+    None => AdbOsRunner::new(start_event_id=21474836480L + ((hub.now_fn)() & 0xFFFFL))
   }
   let ev_id = match r.start_cmd(
     program,
@@ -1304,23 +1304,42 @@ pub fn DevicesOsRuntime::stop_grant_server_os(
   }
 }
 
-pub fn DevicesOsRuntime::tick_expiry(self : DevicesOsRuntime, now_ms : Int64) -> (Int, Int) {
+pub fn DevicesOsRuntime::tick_expiry_with(
+  self : DevicesOsRuntime,
+  mono_ms : Int64,
+  wall_ms : Int64,
+  on_kill : (PendingProcKill) -> Unit,
+) -> (Int, Int) {
   let pk_ids = self.pending_grant_kills.keys()
   for i in 0..<pk_ids.length() {
     let ev_id = pk_ids[i]
     match self.pending_grant_kills.get(ev_id) {
       Some(pk) => {
-        if now_ms >= pk.deadline_ms {
+        if mono_ms >= pk.deadline_ms {
           self.pending_grant_kills.remove(ev_id)
-          pk.pgid_killed = dev_force_kill_proc_explicit_and_close(pk.child, pk.pgid_killed)
+          on_kill(pk)
         }
       }
       None => ()
     }
   }
-  let ap_expired = self.airplay_pairing.expire_due(now_ms)
-  let disp_expired = self.phone_displays.sweep_idle(now_ms, [])
+  let ap_expired = self.airplay_pairing.expire_due(wall_ms)
+  let disp_expired = self.phone_displays.sweep_idle(wall_ms, [])
   (ap_expired.length(), disp_expired.length())
+}
+
+pub fn DevicesOsRuntime::tick_expiry(
+  self : DevicesOsRuntime,
+  mono_ms : Int64,
+  wall_ms : Int64,
+) -> (Int, Int) {
+  self.tick_expiry_with(
+    mono_ms,
+    wall_ms,
+    fn(pk : PendingProcKill) -> Unit {
+      pk.pgid_killed = dev_force_kill_proc_explicit_and_close(pk.child, pk.pgid_killed)
+    },
+  )
 }
 
 pub fn DevicesOsRuntime::drain_kills_with_hub(
@@ -1334,7 +1353,7 @@ pub fn DevicesOsRuntime::drain_kills_with_hub(
   while self.pending_grant_kills.length() > 0 && (self.now_fn)() < limit {
     let _ = hub.pump_one(20L)
     let before = self.pending_grant_kills.length()
-    let _ = self.tick_expiry((self.now_fn)())
+    let _ = self.tick_expiry((self.now_fn)(), host_shim::wall_ms())
     let after = self.pending_grant_kills.length()
     if before > after {
       finalized = finalized + (before - after)

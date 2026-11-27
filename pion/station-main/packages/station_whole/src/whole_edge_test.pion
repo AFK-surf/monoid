@@ -305,14 +305,15 @@ test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
   let received_events : Array[String] = []
   let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
-    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Unit {
+    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Bool {
       match ev {
         station_connects::ChatEvent::Message(m) => received_events.push(cid + ":" + m.text)
         _ => received_events.push(cid + ":other")
       }
+      true
     },
-    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
-    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Unit {},
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { true },
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Bool { true },
     on_disconnect: fn(cid : String, reason : String) -> Unit { disconnects.push(cid + ":" + reason) },
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
@@ -827,4 +828,124 @@ test "connects_os_ws_send_async_two_arg_default_awaitable" {
   let _ = bridge.ws_send_async(ws_h, station_connects::WsFrame::Ping, discard=true)
   let _ = h.hub.pump_one(0L)
   edge_assert(h.hub.deferred_done_count() == 0)
+}
+
+test "devices_os_tick_expiry_uses_monotonic_clock_for_grant_kills" {
+  let now_cell : Array[Int64] = [1000L]
+  let mock_now = fn() -> Int64 { now_cell[0] }
+  let devs = DevicesOsRuntime::new(now_fn=mock_now)
+  // Schedule a pending grant kill at mono_ms = 3000ms.
+  // Passing a huge wall_ms (e.g. 1_795_000_000_000ms) MUST NOT trigger premature SIGKILL when mono_ms < 3000!
+  devs.pending_grant_kills.set(
+    999999L,
+    PendingProcKill::{
+      child: station_sys::ChildProcess::{ handle: 0L, pid: 999999 },
+      event_id: 999999L,
+      deadline_ms: 3000L,
+      pgid_killed: false,
+    },
+  )
+  let wall_huge : Int64 = 1795000000000L
+  let killed_pids : Array[Int] = []
+  let _ = devs.tick_expiry_with(1500L, wall_huge, fn(pk : PendingProcKill) -> Unit { killed_pids.push(pk.child.pid) })
+  edge_assert(devs.pending_kill_count() == 1)
+  edge_assert(killed_pids.length() == 0)
+  // Once monotonic clock passes 3000ms, the pending kill is drained.
+  let _ = devs.tick_expiry_with(3001L, wall_huge, fn(pk : PendingProcKill) -> Unit { killed_pids.push(pk.child.pid) })
+  edge_assert(devs.pending_kill_count() == 0)
+  edge_assert(killed_pids.length() == 1 && killed_pids[0] == 999999)
+}
+
+test "connects_os_fail_closed_ack_on_callback_false" {
+  let mem = station_ops::MemFs::new()
+  let mut ack_count = 0
+  let mut ws_next_served = 0
+  let mut stream10_reads = 0
+  let h2 = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "stream.open" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":10,\"status\":200,\"headers\":[]}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "stream.read" {
+        stream10_reads = stream10_reads + 1
+        if stream10_reads == 1 {
+          let body = "{\"ok\":true,\"url\":\"wss://mock.slack.test/link\"}".to_bytes()
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"end\":false}", error: "", bytes: Some(body) },
+            ),
+          )
+        } else {
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None },
+            ),
+          )
+        }
+      } else if op == "stream.close" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.open" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":77}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.next" {
+        ws_next_served = ws_next_served + 1
+        if ws_next_served == 1 {
+          let env1 = "{\"envelope_id\":\"env-fail\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C1\",\"ts\":\"1.1\",\"thread_ts\":\"1.1\",\"user\":\"U1\",\"text\":\"drop me\"}}}"
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"kind\":\"text\",\"text\":" + base_codec::json_stringify(base_codec::json_str(env1)) + "}", error: "", bytes: None },
+            ),
+          )
+        } else if ws_next_served == 2 {
+          let env2 = "{\"envelope_id\":\"env-ok\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C1\",\"ts\":\"1.2\",\"thread_ts\":\"1.2\",\"user\":\"U1\",\"text\":\"persist me\"}}}"
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"kind\":\"text\",\"text\":" + base_codec::json_stringify(base_codec::json_str(env2)) + "}", error: "", bytes: None },
+            ),
+          )
+        }
+      } else if op == "ws.send" {
+        if json.contains("envelope_id") {
+          ack_count = ack_count + 1
+        }
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None },
+          ),
+        )
+      }
+    },
+  )
+  let bridge = ConnectMuxBridge::with_hub(h2.hub, mem.ops())
+  let allow_deliver : Array[Bool] = [false]
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent) -> Bool {
+      allow_deliver[0]
+    },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { false },
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Bool { false },
+    on_disconnect: fn(_cid : String, _r : String) -> Unit {},
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
+  edge_assert(rt.register_slack("sl-1", "xapp-test", "xoxb-test", base_url="http://127.0.0.1:9998") is Ok(_))
+  edge_assert(rt.start_connect("sl-1") is Ok(_))
+  // First event: callback returns false -> NO ACK sent!
+  let _ = h2.hub.pump_one(10L)
+  edge_assert(ack_count == 0)
+  // Second event: callback returns true -> ACK sent!
+  allow_deliver[0] = true
+  let _ = h2.hub.pump_one(10L)
+  edge_assert(ack_count == 1)
+  rt.stop()
 }

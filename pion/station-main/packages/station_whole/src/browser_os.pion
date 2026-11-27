@@ -750,7 +750,7 @@ pub fn BrowserOsManager::new(
     by_event: Map::new(),
     pending_kills: Map::new(),
     gates: Map::new(),
-    next_event_id: 700001L,
+    next_event_id: 8589934592L,
   }
 }
 

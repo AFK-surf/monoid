@@ -3,7 +3,9 @@
 
 import "base_codec"
 import "builders_core"
+import "builders_replica"
 import "host_shim"
+import "js_json"
 import "jscase"
 import "nodepath"
 import "sql_db"
@@ -694,6 +696,128 @@ fn run_smoke_js_lower() -> Int {
   0
 }
 
+fn run_internal_replica_restore(argv : Array[String]) -> Int {
+  let mut db = ""
+  let mut data = ""
+  let mut sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let mut now_ms = host_shim::wall_ms()
+  let mut i = 2
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "--db" && i + 1 < argv.length() {
+      db = argv[i + 1]
+      i = i + 2
+    } else if a == "--data" && i + 1 < argv.length() {
+      data = argv[i + 1]
+      i = i + 2
+    } else if a == "--sep" && i + 1 < argv.length() {
+      sep = argv[i + 1]
+      i = i + 2
+    } else if a == "--now" && i + 1 < argv.length() {
+      match base_codec::parse_int64_str(argv[i + 1]) {
+        Some(v) => now_ms = v
+        None => {
+          let _ = host_shim::write_stderr_line("internal-replica-restore: invalid --now value")
+          return 2
+        }
+      }
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  if db.length() == 0 || data.length() == 0 {
+    let _ = host_shim::write_stderr_line("internal-replica-restore: --db and --data are required")
+    return 2
+  }
+  let ready_path = nodepath::join(sep, [data, "restore", "ready.json"])
+  // Strict pre-validation: corrupt or unreadable `ready.json` MUST fail closed while preserving the file!
+  let ready_raw = match station_sys::read_file_strict(ready_path) {
+    Ok(b) => b.to_string()
+    Err(_) => {
+      let _ = host_shim::write_stderr_line("internal-replica-restore: cannot read ready.json")
+      return 1
+    }
+  }
+  match base_codec::json_parse(ready_raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "gen") {
+        Some(base_codec::Json::Str(g)) => {
+          if g.length() == 0 {
+            let _ = host_shim::write_stderr_line("internal-replica-restore: ready.json missing non-empty gen")
+            return 1
+          }
+        }
+        _ => {
+          let _ = host_shim::write_stderr_line("internal-replica-restore: ready.json missing string gen")
+          return 1
+        }
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => {
+      let _ = host_shim::write_stderr_line("internal-replica-restore: corrupt ready.json: " + e)
+      return 1
+    }
+  }
+  // Ensure target `stillfail.db` has the initialized schema before `builders_replica::take_back`
+  // populates it (only AFTER `ready.json` passed strict validation, so corrupt `ready.json` never
+  // creates an empty DB).
+  match station_sys::read_file_strict(db) {
+    Err(station_sys::StrictReadErr::NotFound) => {
+      let _ = station_sys::register_sqlite_js_lower()
+      match station_store::Store::open(db) {
+        Ok(st_init) => st_init.close()
+        Err(se) => {
+          let _ = host_shim::write_stderr_line("internal-replica-restore: failed to init target db: " + se.message)
+          return 1
+        }
+      }
+    }
+    _ => ()
+  }
+  let shell_dir = station_sys::tmpdir() + "/stillfail-replica-restore-" + host_shim::pid().to_string() + "-" + host_shim::wall_ms().to_string()
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("internal-replica-restore: host_shim::start failed")
+    return 1
+  }
+  let rc = match builders_replica::take_back(
+    builders_core::ShellClient::new(),
+    sep,
+    data,
+    db,
+    now_ms.to_double(),
+  ) {
+    Ok(Some(outcome)) => {
+      let err_opt : Option[String] = match base_codec::json_parse(js_json::stringify(outcome)) {
+        base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "error") {
+          Some(base_codec::Json::Null) | None => None
+          Some(base_codec::Json::Str(s)) => Some(s)
+          _ => Some("restore reported non-null error")
+        }
+        base_codec::JsonParseResult::Err(pe) => Some("invalid restore outcome json: " + pe)
+      }
+      match err_opt {
+        None => 0
+        Some(msg) => {
+          let _ = host_shim::write_stderr_line("internal-replica-restore: " + msg)
+          1
+        }
+      }
+    }
+    Ok(None) => {
+      let _ = host_shim::write_stderr_line("internal-replica-restore: take_back returned None despite ready.json")
+      1
+    }
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("internal-replica-restore: " + e)
+      1
+    }
+  }
+  host_shim::stop()
+  let _ = station_sys::rmdir(shell_dir)
+  rc
+}
+
 fn should_run_whole_daemon(argv : Array[String]) -> Bool {
   for i in 1..<argv.length() {
     if argv[i] == "--whole-daemon" {
@@ -743,6 +867,13 @@ fn main(_world : World) -> Unit {
   }
   if argv.length() == 2 && argv[1] == "--smoke-js-lower" {
     let rc = run_smoke_js_lower()
+    if rc != 0 {
+      host_shim::exit_process(rc)
+    }
+    return
+  }
+  if argv.length() >= 2 && argv[1] == "--internal-replica-restore" {
+    let rc = run_internal_replica_restore(argv)
     if rc != 0 {
       host_shim::exit_process(rc)
     }
