@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 2.7 | 3.66 | 15.2 | 38.26 | 58.91 | 33.51 | 68.53 | 103.3 | 126.98 |
 | [4e97bdec0](https://github.com/AFK-surf/monoid/commit/4e97bdec08523a8bdb980f04d6664ebece312599) feat(vault): workspace vault discovery, join reque | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 118.89 |
 | [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
-| [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.82 |
 | [4e97bdec0](https://github.com/AFK-surf/monoid/commit/4e97bdec08523a8bdb980f04d6664ebece312599) feat(vault): workspace vault discovery, join reque | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.85 |
 | [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.64 |
-| [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
