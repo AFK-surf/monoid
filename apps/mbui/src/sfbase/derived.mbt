@@ -71,7 +71,7 @@ priv struct KeptList {
   sweep : () -> Unit
   clear : () -> Unit
   forget_source : (Source, Bool) -> Unit
-  forget_matching : (Source, (String) -> Bool) -> Unit
+  forget_matching : (Source, (String) -> Bool, Array[@signals.Signal[Int]]) -> Unit
 }
 
 ///|
@@ -107,6 +107,8 @@ priv struct SourceKept[T] {
 priv struct SourceKeptOne[T] {
   source : Source
   value : @signals.Computed[T]
+  epoch : @signals.Signal[Int]
+  stale : Ref[Bool]
 }
 
 ///|
@@ -138,7 +140,20 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
         }
         kept_count.left = kept_count.made
       }
-      let made = { source, value: @signals.computed_by(getter, same~) }
+      let epoch = @signals.signal(0)
+      let stale : Ref[Bool] = Ref(false)
+      let made = {
+        source,
+        value: @signals.computed_by(fn(was) {
+          epoch.get() |> ignore
+          let prev = if stale.val { None } else { was }
+          let out = getter(prev)
+          stale.val = false
+          out
+        }, same~),
+        epoch,
+        stale,
+      }
       entries.push(made)
       kept_count.made += 1
       if !self.listed {
@@ -147,7 +162,7 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
           sweep: fn() { self.sweep() },
           clear: fn() { self.clear() },
           forget_source: fn(src, kept) { self.forget_source(src, kept~) },
-          forget_matching: fn(src, matches) { self.forget_matching(src, matches) },
+          forget_matching: fn(src, matches, pending_bumps) { self.forget_matching(src, matches, pending_bumps) },
         })
       }
       made
@@ -163,7 +178,10 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
 /// The last value read for these parameters, without acquiring another topic.
 fn[T] SourceKept::peek(self : SourceKept[T], key : String) -> T? {
   match self.kept.get(key) {
-    Some(entries) if entries.length() > 0 => entries[entries.length() - 1].value.peek()
+    Some(entries) if entries.length() > 0 => {
+      let entry = entries[entries.length() - 1]
+      if entry.stale.val { None } else { entry.value.peek() }
+    }
     _ => None
   }
 }
@@ -174,7 +192,7 @@ fn[T] SourceKept::peek_from(self : SourceKept[T], source : Source, key : String)
   match self.kept.get(key) {
     Some(entries) =>
       match entries.iter().find_first(fn(entry) { physical_equal(entry.source, source) }) {
-        Some(entry) => entry.value.peek()
+        Some(entry) => if entry.stale.val { None } else { entry.value.peek() }
         None => None
       }
     None => None
@@ -189,7 +207,7 @@ fn[T] SourceKept::forget_from(self : SourceKept[T], source : Source, key : Strin
       match entries.search_by(fn(entry) { physical_equal(entry.source, source) }) {
         Some(i) => {
           let entry = entries[i]
-          if !entry.value.watched() { entry.value.dispose() }
+          dispose_if_unwatched(entry.value) |> ignore
           entries.remove(i) |> ignore
           kept_count.made -= 1
           if entries.length() == 0 { self.kept.remove(key) |> ignore }
@@ -209,8 +227,8 @@ fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : B
   if kept {
     for _, entries in self.kept {
       for e in entries {
-        if physical_equal(e.source, source) && !e.value.watched() {
-          e.value.dispose()
+        if physical_equal(e.source, source) {
+          dispose_if_unwatched(e.value) |> ignore
         }
       }
     }
@@ -226,8 +244,7 @@ fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : B
     match self.kept.get(key) {
       Some(entries) => {
         let rest = entries.filter(fn(e) {
-          if physical_equal(e.source, source) && !e.value.watched() {
-            e.value.dispose()
+          if physical_equal(e.source, source) && dispose_if_unwatched(e.value) {
             kept_count.made -= 1
             false
           } else {
@@ -246,8 +263,15 @@ fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : B
 }
 
 ///|
-/// Disposes and removes derived `Kept` entries of `source` whose key satisfies `matches` (auth/vault boundary).
-fn[T] SourceKept::forget_matching(self : SourceKept[T], source : Source, matches : (String) -> Bool) -> Unit {
+/// Invalidates derived `Kept` entries of `source` whose key satisfies `matches` (auth/vault boundary)
+/// through `invalidate_live_or_dispose`: unwatched entries are disposed and evicted, while live watched
+/// entries stay tracked with `stale = true` and have their `epoch` signal queued for batched recomputation.
+fn[T] SourceKept::forget_matching(
+  self : SourceKept[T],
+  source : Source,
+  matches : (String) -> Bool,
+  pending_bumps : Array[@signals.Signal[Int]],
+) -> Unit {
   let keys : Array[String] = []
   for key, entries in self.kept {
     if matches(key) && entries.iter().any(fn(e) { physical_equal(e.source, source) }) {
@@ -259,9 +283,13 @@ fn[T] SourceKept::forget_matching(self : SourceKept[T], source : Source, matches
       Some(entries) => {
         let rest = entries.filter(fn(e) {
           if physical_equal(e.source, source) {
-            if !e.value.watched() { e.value.dispose() }
-            kept_count.made -= 1
-            false
+            if invalidate_live_or_dispose(e.value, e.epoch, pending_bumps) {
+              kept_count.made -= 1
+              false
+            } else {
+              e.stale.val = true
+              true
+            }
           } else {
             true
           }
@@ -278,9 +306,13 @@ fn[T] SourceKept::forget_matching(self : SourceKept[T], source : Source, matches
 }
 
 ///|
-fn kept_forget_matching(src : Source, matches : (String) -> Bool) -> Unit {
+fn kept_forget_matching(
+  src : Source,
+  matches : (String) -> Bool,
+  pending_bumps : Array[@signals.Signal[Int]],
+) -> Unit {
   for l in kept_lists {
-    (l.forget_matching)(src, matches)
+    (l.forget_matching)(src, matches, pending_bumps)
   }
 }
 
@@ -299,14 +331,14 @@ fn[T] SourceKept::forget_unwatched_from(self : SourceKept[T], source : Source, k
   match self.kept.get(key) {
     Some(entries) =>
       match entries.search_by(fn(entry) { physical_equal(entry.source, source) && !entry.value.watched() }) {
-        Some(i) => {
-          entries[i].value.dispose()
-          entries.remove(i) |> ignore
-          kept_count.made -= 1
-          if entries.length() == 0 {
-            self.kept.remove(key) |> ignore
+        Some(i) =>
+          if dispose_if_unwatched(entries[i].value) {
+            entries.remove(i) |> ignore
+            kept_count.made -= 1
+            if entries.length() == 0 {
+              self.kept.remove(key) |> ignore
+            }
           }
-        }
         None => ()
       }
     None => ()
@@ -318,7 +350,7 @@ fn[T] SourceKept::forget(self : SourceKept[T], key : String) -> Unit {
   match self.kept.get(key) {
     Some(entries) => {
       for entry in entries {
-        if !entry.value.watched() { entry.value.dispose() }
+        dispose_if_unwatched(entry.value) |> ignore
       }
       kept_count.made -= entries.length()
       self.kept.remove(key) |> ignore
@@ -344,12 +376,12 @@ fn[T] SourceKept::sweep(self : SourceKept[T]) -> Unit {
     match self.kept.get(key) {
       Some(entries) =>
         match entries.search_by(fn(other) { physical_equal(other, entry) }) {
-          Some(i) => {
-            entry.value.dispose()
-            entries.remove(i) |> ignore
-            kept_count.made -= 1
-            if entries.length() == 0 { self.kept.remove(key) |> ignore }
-          }
+          Some(i) =>
+            if dispose_if_unwatched(entry.value) {
+              entries.remove(i) |> ignore
+              kept_count.made -= 1
+              if entries.length() == 0 { self.kept.remove(key) |> ignore }
+            }
           None => ()
         }
       None => ()

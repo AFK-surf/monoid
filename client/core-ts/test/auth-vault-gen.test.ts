@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import { Deferred, Effect } from "effect";
 import { apply as applyOps, type Op } from "../src/delta.ts";
 import { STORAGE_KEY } from "../src/accounts.ts";
-import { AuthGenTracker } from "../src/auth-gen.ts";
+import { AuthCapability, AuthGenTracker } from "../src/auth-gen.ts";
 import { Core, syncWorkspaceAuth } from "../src/core.ts";
 import { DEVICE_TABLES } from "../src/data.ts";
 import { HostError } from "../src/host.ts";
@@ -1302,5 +1302,67 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     assert.equal(recoveredAfterUpgrade?.ok?.locked, undefined);
 
     await core.close();
+  });
+
+  it("Direction 2A: AuthCapability / WorkspaceCapability / VaultCapability / CompositeCapability enforce generation, vault isolation, owner binding, and guarded egress/commits", async () => {
+    const tracker = new AuthGenTracker();
+    let owner = "acct-a";
+
+    // 1. WorkspaceCapability without trackVaultGlobal (ADB semantics): unaffected by vault.lock, invalidated by workspace bump or owner switch
+    const adbCap = tracker.workspaceCapability("wsA", { sub: "acct-a", resolveOwner: () => owner });
+    assert.equal(adbCap.isValid(), true);
+    let committed = 0;
+    assert.equal(adbCap.commit(() => ++committed), 1);
+
+    // vault.lock does NOT invalidate ADB WorkspaceCapability, but DOES invalidate vaultWorkspaceCapability
+    const vaultWsCap = tracker.vaultWorkspaceCapability("wsA");
+    const v1Cap = tracker.vaultCapability("wsA", "v1");
+    const v2Cap = tracker.vaultCapability("wsA", "v2");
+    tracker.bumpVault("wsA", "v1");
+    assert.equal(adbCap.isValid(), true, "single-vault bump must not invalidate ADB WorkspaceCapability");
+    assert.equal(vaultWsCap.isValid(), true, "single-vault bump must not invalidate vaultGlobal-only WorkspaceCapability");
+    assert.equal(v1Cap.isValid(), false, "single-vault bump must invalidate v1 VaultCapability");
+    assert.equal(v2Cap.isValid(), true, "single-vault bump must NOT invalidate v2 VaultCapability");
+
+    // Guarded egress sink refuses stale v1Cap without invoking the inner effect
+    let egressCalls = 0;
+    const v1Res = await Effect.runPromise(
+      Effect.result(v1Cap.ask(() => Effect.sync(() => ++egressCalls))),
+    );
+    assert.equal(v1Res._tag, "Failure");
+    assert.equal(v1Res.failure.code, "auth_stale");
+    assert.equal(egressCalls, 0, "stale capability must block egress before running effect");
+    assert.equal(v1Cap.commit(() => ++committed), undefined, "stale capability must block commit");
+
+    // v2Cap still succeeds
+    const v2Res = await Effect.runPromise(v2Cap.guard(Effect.sync(() => ++egressCalls)));
+    assert.equal(v2Res, 1);
+
+    // 2. AuthCapability snapshot anchoring: narrowVault / workspace derived AFTER an intermediate bump stay anchored to entry snapshot
+    const entryCap = tracker.capture();
+    const compositeCap = AuthCapability.all(
+      entryCap.workspace("wsB", { trackVaultGlobal: true }),
+      entryCap.vault("wsA", "v2"),
+    );
+    assert.equal(compositeCap.isValid(), true);
+    tracker.bumpVault("wsA", "v2");
+    assert.equal(compositeCap.isValid(), false, "CompositeCapability must invalidate when source vault bumps");
+    assert.equal(
+      entryCap.vault("wsA", "v2").isValid(),
+      false,
+      "VaultCapability derived from entry AuthCapability must stay anchored to entry snapshot",
+    );
+
+    // 3. vault.lock invalidates vaultWorkspaceCapability but NOT ADB WorkspaceCapability
+    tracker.bumpAllVaults();
+    assert.equal(vaultWsCap.isValid(), false, "bumpAllVaults must invalidate vaultWorkspaceCapability");
+    assert.equal(adbCap.isValid(), true, "bumpAllVaults must NOT invalidate ADB WorkspaceCapability");
+
+    // 4. Owner switch invalidates owner-bound WorkspaceCapability immediately even without wsAuthGen bump
+    owner = "acct-b";
+    assert.equal(adbCap.isValid(), false, "owner switch must invalidate owner-bound WorkspaceCapability");
+    const ownerFail = await Effect.runPromise(Effect.result(adbCap.assertValid()));
+    assert.equal(ownerFail._tag, "Failure");
+    assert.equal(ownerFail.failure.code, "auth_stale");
   });
 });
