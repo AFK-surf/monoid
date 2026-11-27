@@ -16,5 +16,7 @@ fn init {
     // (the real size's screens, made under its own file since their motion is not judged (sfapptest's screen_in):
     // what Studio's run of both windows held at most, 2026-11-16, the wide window's)
     ("src/sfapp_realsize/real_size_test.mbt", 1975151),
+    // Wide/medium rail switch budget gates on the real-size workspace (same chat avatar decode ceiling as bar_places_kept_test).
+    ("src/sfapp_realsize/wide_switch_budget_test.mbt", 38548),
   ])
 }
