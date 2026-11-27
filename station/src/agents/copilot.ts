@@ -320,10 +320,8 @@ export class CopilotSession extends OwnProcessSession {
     this.proc.write(JSON.stringify({ id: `compact:${uuid()}`, op: "compact" }));
   }
 
-  async abort() {
-    if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
-    this.turn.aborting = true;
-    this.proc.tell("aborting");
+  /// Asked to stop its running turn (own-process.ts `abort`).
+  protected cancel() {
     this.proc.write(JSON.stringify({ id: `cancel:${uuid()}`, op: "cancel" }));
   }
 

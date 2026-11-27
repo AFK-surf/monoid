@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { after, test } from "node:test";
 import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, agyWithOmittedSkills, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
+import { ACP_STALL_MS } from "../src/agents/acp.ts";
+import { STOP_GRACE_MS } from "../src/agents/own-process.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { billedPerUse, profileRuntimes, vertexKeyFile } from "../src/agents/profiles.ts";
@@ -373,6 +375,96 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   // Its spent quota after the turn's own words (2026-11-24): a spent account, not the agent's last words.
   assert.equal(noticeFailure("⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s."), "rate_limit");
   assert.equal(noticeFailure("All 7 lines are still running.\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h46m59s.\n"), "rate_limit");
+});
+
+// FB-80: `agy acp` stuck in a request upstream (46 minutes on streamGenerateContent at 0% CPU) never read 停止, and its
+// turn held the session's queue for good.
+const heardDelta = (events: RuntimeEvent[], text: string) => events.some((e) => e.type === "live" && e.event.kind === "delta" && e.event.text === text);
+const closed = (events: RuntimeEvent[]) => events.some((e) => e.type === "closed");
+const keptEnd = (home: string, id: string) => {
+  const lines = readFileSync(transcriptPath("agy", home, id)!, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  return lines.filter((l) => l.type === "end").at(-1);
+};
+
+test("a turn asked to stop whose process never stops it ends aborted, its process ended once STOP_GRACE_MS passes, or at once when asked again (FB-80)", async () => {
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const { options, events } = setup();
+  const s = await driver.open(options, (e) => events.push(e));
+  await s.prompt("deaf");
+  await until(() => heardDelta(events, "first "));
+  await s.abort();
+  await settle(5);
+  await time.adjust(STOP_GRACE_MS - 1);
+  await settle(20);
+  assert.deepEqual(ended(events), [], "still given its time to stop");
+  assert.equal(closed(events), false);
+  await time.adjust(1);
+  await until(() => closed(events));
+  assert.deepEqual(ended(events), [{ type: "turnEnded", outcome: { kind: "aborted" } }]);
+  assert.equal(keptEnd(options.profile.home, s.id()).status, "cancelled");
+  await assert.rejects(s.prompt("again"), /closed/);
+
+  // 停止 pressed again: ended at once, no clock moved.
+  const again = setup();
+  const s2 = await driver.open(again.options, (e) => again.events.push(e));
+  await s2.prompt("deaf");
+  await until(() => heardDelta(again.events, "first "));
+  await s2.abort();
+  await s2.abort();
+  await until(() => closed(again.events));
+  assert.deepEqual(ended(again.events), [{ type: "turnEnded", outcome: { kind: "aborted" } }]);
+  assert.equal(keptEnd(again.options.profile.home, s2.id()).status, "cancelled");
+});
+
+test("an ACP turn that hears nothing for ACP_STALL_MS with no call open fails, its process ended; one with a call open may be quiet for longer (FB-80)", async () => {
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  // A call open (a long command), taken over across a handover too: quiet for twice as long while open, then ended once
+  // the call completes and ACP_STALL_MS passes with nothing else heard.
+  const busy = setup();
+  const s1 = await driver.open(busy.options, (e) => busy.events.push(e));
+  await s1.prompt("deaf-call");
+  await until(() => busy.events.some((e) => e.type === "live" && e.event.kind === "start" && e.event.step === "tool"));
+  await settle(5);
+  await time.adjust(ACP_STALL_MS * 2);
+  await settle(20);
+  assert.deepEqual(ended(busy.events), []);
+  assert.equal(closed(busy.events), false);
+  await driver.freeze();
+  const snap = s1.snapshot();
+  s1.detach();
+  await allLeft();
+  const next = new AgyDriver({ data, clock: time.clock });
+  drivers.push(next);
+  const later: RuntimeEvent[] = [];
+  const adopted = await next.adopt(busy.options, snap, (e) => later.push(e));
+  await settle(5);
+  await time.adjust(ACP_STALL_MS * 2);
+  await settle(20);
+  assert.deepEqual(ended(later), [], "seeded open call still holds off the stall deadline");
+  adopted.hostedProc().write(JSON.stringify({ jsonrpc: "2.0", method: "test/finish-call" }));
+  await until(() => later.some((e) => e.type === "live" && e.event.kind === "end" && e.event.id === "call:d1"));
+  await settle(5);
+  await time.adjust(ACP_STALL_MS);
+  await until(() => closed(later));
+  assert.deepEqual(ended(later), [{ type: "turnEnded", outcome: { kind: "failed", reason: "network", message: `Antigravity CLI heard nothing from its model for ${ACP_STALL_MS / 60_000} minutes with no tool running: its process was ended` } }]);
+
+  // Nothing open: ended once ACP_STALL_MS passes since it heard something last.
+  const { options, events } = setup();
+  const s = await driver.open(options, (e) => events.push(e));
+  await s.prompt("deaf");
+  await until(() => heardDelta(events, "first "));
+  await settle(5);
+  await time.adjust(ACP_STALL_MS - 1);
+  await settle(20);
+  assert.deepEqual(ended(events), [], "not yet");
+  await time.adjust(1);
+  await until(() => closed(events));
+  assert.deepEqual(ended(events), [{ type: "turnEnded", outcome: { kind: "failed", reason: "network", message: `Antigravity CLI heard nothing from its model for ${ACP_STALL_MS / 60_000} minutes with no tool running: its process was ended` } }]);
+  assert.equal(keptEnd(options.profile.home, s.id()).status, "error");
 });
 
 test("a borrowed Google account: a process opens on a sign-in lent anew once the one it has runs out soon, and goes on with one that lasts", async () => {

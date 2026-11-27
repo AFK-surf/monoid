@@ -729,7 +729,8 @@ export type AgyDriverOptions = {
   /// Another station's subscription, borrowed (share/index.ts): its sign-in file written with the access token the
   /// station signed in on it lent (`write`, when it runs out).
   lent?: { borrowed(profile: Profile): boolean; write(profile: Profile): Promise<number> };
-  /// What it waits on between openings of a process that could not load its models (`AGY_CATALOG_RETRY_MS`).
+  /// What it waits on between openings of a process that could not load its models (`AGY_CATALOG_RETRY_MS`), and its
+  /// sessions' deadlines (`STOP_GRACE_MS`, `ACP_STALL_MS`).
   clock?: Clock.Clock;
 };
 
@@ -772,7 +773,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
   readonly #clock: Clock.Clock;
 
   constructor(options: AgyDriverOptions) {
-    super(options.data);
+    super(options.data, undefined, options.clock);
     this.command = options.command ?? "agy";
     this.lent = options.lent;
     this.#clock = options.clock ?? liveClock;

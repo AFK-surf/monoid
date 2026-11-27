@@ -231,6 +231,7 @@ const say = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m })
 const reply = (id, result) => say({ id, result });
 let sessionId;
 let held;
+let deaf = false;
 let loaded = false;
 let loadReplayCount = 0;
 const update = (u) => say({ method: 'session/update', params: { sessionId, update: u } });
@@ -285,7 +286,11 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (m.method === 'session/set_model') {
     if (offline || !models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: `Unknown model ID: ${p.modelId}` } });
     else reply(m.id, {});
+  } else if (m.method === 'test/finish-call') {
+    update({ sessionUpdate: 'tool_call_update', toolCallId: 'd1', status: 'completed', content: [] });
   } else if (m.method === 'session/cancel') {
+    // Stuck in a request upstream that never answers (FB-80): it reads the cancel and does nothing.
+    if (deaf) continue;
     if (held) reply(held, { stopReason: 'cancelled' }); held = null;
   } else if (m.method === 'session/prompt') {
     const dbFile = join(conversations, `${sessionId}.db`);
@@ -319,6 +324,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });
     if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn')) continue;
+    // Stuck for good, deaf to a cancel: with nothing open, or with a call open.
+    if (text.includes('deaf')) {
+      deaf = true;
+      if (text.includes('deaf-call')) update({ sessionUpdate: 'tool_call', toolCallId: 'd1', title: 'run_command', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'sleep 3600' } });
+      continue;
+    }
     // Held once: the marker is consumed here, so the test sees the hold only after this process read the prompt.
     if (dump && existsSync(dump + '.hold-auth-retry') && text.includes('authentication error')) { try { unlinkSync(dump + '.hold-auth-retry'); } catch {} continue; }
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });

@@ -260,10 +260,8 @@ export class CursorSession extends OwnProcessSession {
     return true;
   }
 
-  async abort() {
-    if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
-    this.turn.aborting = true;
-    this.proc.tell("aborting");
+  /// Asked to stop its running turn (own-process.ts `abort`).
+  protected cancel() {
     this.proc.write(JSON.stringify({ id: `cancel:${uuid()}`, op: "cancel" }));
   }
 

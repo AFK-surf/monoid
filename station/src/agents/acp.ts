@@ -10,7 +10,9 @@
 //   prompt of ours put in the turn as it ended became a turn of its own;
 // - a permission it asks is granted for the call (the station runs its agents without approvals); any other request of
 //   its own is refused (what it would ask is asked in the chat);
-// - a call to the station's tools failing as unreachable says the tools are lost.
+// - a call to the station's tools failing as unreachable says the tools are lost;
+// - a turn that hears nothing for `ACP_STALL_MS` with no call open and nothing in the background has its process ended
+//   and fails (a request upstream that never answers: agy's sat 46 minutes at 0% CPU, FB-80).
 // The updates and a prompt's answer are read by the station's MoonBit program (mb/src/acp, mb/src/reader
 // agents_own.mbt), off the station's thread: what the model says is put together there, its steps given the session's
 // actor there, and this is told what it keeps of them (the transcript's lines, a prompt's answer, the usage) and given
@@ -31,6 +33,11 @@ import type { RunnerInfo } from "./runner.ts";
 import { runtimeLabel, uuid, type FailureReason, type OpenOptions, type RuntimeKind, type TurnOutcome } from "./runtime.ts";
 
 type Json = any;
+
+/// How long a running turn may hear nothing of its process (no line, no chunk, no update) with no call open and nothing
+/// in the background before its process is ended and the turn fails: a call or a background task may run quietly for
+/// long, the model's own request does not.
+export const ACP_STALL_MS = 15 * 60_000;
 
 /// The ids of the requests the station makes. A prompt carries its own (prompt:<uuid>), and so does a prompt put in the
 /// running turn (steer:<uuid>), so whatever answers one (after a crash too) is known for what it is.
@@ -224,6 +231,14 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
   #pendingPrompt: string | null = null;
   /// Previous prompt id when the reader reported `loadReplay`, resent after `heardHosted` finishes `take(turn)`.
   #resendFrom: string | null = null;
+  /// The running turn's calls open and its background tasks, as its live steps say: while any runs, the turn may be
+  /// quiet (`ACP_STALL_MS`).
+  #calls = new Set<string>();
+  #background = 0;
+  /// Calls off the running turn's deadline for hearing something.
+  #stallDeadline: (() => void) | null = null;
+  /// Its process was ended for its turn heard nothing (`ACP_STALL_MS`).
+  #stalled = false;
 
   /// Open: session/new's or session/load's answer (`result`) says what it runs on besides. What it says of its past
   /// before is no turn's (the program is told).
@@ -285,6 +300,7 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
 
   /// What the program says of the session for this alone: the transcript's lines, its usage, a prompt's answer.
   protected took(e: Json): boolean {
+    this.#watch(e);
     if (e?.type === "kept") {
       this.transcript?.keep(this.sessionId, e.line);
       return true;
@@ -316,7 +332,94 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
       this.#resendFrom = null;
       this.resendPrompt(prev);
     }
+    // (something heard: its deadline starts again, once what it said is taken)
+    this.#armStall();
+    if (out instanceof Promise) return out.then(() => this.#armStall());
     return out;
+  }
+
+  /// What the running turn has open, as its events say.
+  #watch(e: Json) {
+    if (e?.type === "turnStarted") {
+      this.#stalled = false;
+      this.#calls.clear();
+      this.#background = 0;
+      return;
+    }
+    if (e?.type === "turnEnded") {
+      this.#calls.clear();
+      this.#background = 0;
+      this.#stopStall();
+      return;
+    }
+    if (e?.type !== "live") return;
+    const live = e.event;
+    if (live?.kind === "start" && live.step === "tool" && typeof live.id === "string") this.#calls.add(live.id);
+    else if (live?.kind === "end" && typeof live.id === "string") this.#calls.delete(live.id);
+    else if (live?.kind === "tasks") this.#background = Array.isArray(live.tasks) ? live.tasks.length : 0;
+  }
+
+  /// Its running turn's deadline for hearing something, from now: only while it runs, is not being stopped (that has
+  /// its own deadline, own-process.ts `abort`), and has no call open and nothing in the background.
+  #armStall() {
+    this.#stopStall();
+    const proc = this.proc as typeof this.proc | undefined;
+    if (proc === undefined || this.turn.closed || !this.turn.busy || this.stopAsked() || this.#calls.size > 0 || this.#background > 0) return;
+    // timer: a timeout or deadline (a running ACP turn that hears nothing for ACP_STALL_MS has its process ended)
+    this.#stallDeadline = this.driver.fibers.after(ACP_STALL_MS, () => {
+      this.#stallDeadline = null;
+      if (this.turn.closed || !this.turn.busy || this.stopAsked() || this.#calls.size > 0 || this.#background > 0) return;
+      this.#stalled = true;
+      this.endProcess(`its turn heard nothing for ${ACP_STALL_MS / 60_000} min with no call open`);
+    });
+  }
+
+  #stopStall() {
+    this.#stallDeadline?.();
+    this.#stallDeadline = null;
+  }
+
+  /// Seeds what is open of a turn taken up (a snapshot's or a crash's live steps): its tool calls (a subagent's too),
+  /// named by their live step ids (`call:…`, `sub:<child>:call:…`) so their `end` events clear them.
+  #seed(state: Json) {
+    this.#calls.clear();
+    this.#background = 0;
+    for (const id of Array.isArray(state?.live?.open) ? state.live.open : []) {
+      if (typeof id === "string" && id.startsWith("call:")) this.#calls.add(id);
+    }
+    for (const child of Array.isArray(state?.children) ? state.children : []) {
+      if (!Array.isArray(child) || typeof child[0] !== "string") continue;
+      for (const id of Array.isArray(child[1]?.live?.open) ? child[1].live.open : []) {
+        if (typeof id === "string" && id.startsWith("call:")) this.#calls.add(`sub:${child[0]}:${id}`);
+      }
+    }
+  }
+
+  async adopted() {
+    await super.adopted();
+    this.#armStall();
+  }
+
+  /// A turn its process went away during, ended for it heard nothing: failed as such (its notice offers 重试).
+  protected override exitOutcome(said: string, why: string): TurnOutcome {
+    const outcome = super.exitOutcome(said, why);
+    if (outcome.kind !== "failed" || !this.#stalled) return outcome;
+    return { kind: "failed", reason: "network", message: `${runtimeLabel(this.kind)} heard nothing from its model for ${ACP_STALL_MS / 60_000} minutes with no tool running: its process was ended` };
+  }
+
+  protected override exited(said: string, stderr: string): void | Promise<void> {
+    this.#stopStall();
+    return super.exited(said, stderr);
+  }
+
+  async dispose() {
+    this.#stopStall();
+    await super.dispose();
+  }
+
+  detach() {
+    this.#stopStall();
+    super.detach();
   }
 
   private resendPrompt(previous: string) {
@@ -345,9 +448,9 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
 
   /// Its process went away during a turn: what was being said is written by the program (its steps end there), its end
   /// here.
-  protected cutShort(said: string) {
+  protected cutShort(_said: string, outcome: TurnOutcome) {
     this.#pendingPrompt = null;
-    this.transcript?.ended(this.sessionId, { kind: "failed", reason: "exited", message: `${this.kind} exited (${said})` });
+    this.transcript?.ended(this.sessionId, outcome);
   }
 
   async prompt(text: string) {
@@ -358,6 +461,10 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     this.turn.owner = owner;
     this.proc.say("acpPrompt", { owner, ...(this.transcript !== null ? { text } : {}) });
     this.proc.write(rpc(owner, "session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.promptText(text) }] }));
+    this.#stalled = false;
+    this.#calls.clear();
+    this.#background = 0;
+    this.#armStall();
   }
 
   /// Not into the running turn: the station gives it as the next turn's.
@@ -393,10 +500,9 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     return this.injectPrompt(text, true);
   }
 
-  async abort() {
-    if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
-    this.turn.aborting = true;
-    this.proc.tell("aborting");
+  /// Asked to stop its running turn (own-process.ts `abort`): its deadline for hearing something is the stop's now.
+  protected cancel() {
+    this.#stopStall();
     this.proc.write(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } }));
   }
 
@@ -408,6 +514,7 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     this.toolsUrl = snapshot.tools;
     this.model = snapshot.model ?? this.model;
     this.#open = true;
+    this.#seed(this.liveState);
     this.taken(snapshot);
   }
 
@@ -419,6 +526,7 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     const t = replayed.turn ?? {};
     this.turn = { busy: t.busy === true, aborting: false, closed: false, owner: null, steering: [] };
     this.liveState = replayed.live ?? null;
+    this.#seed(this.liveState);
     this.#open = true;
     const configured = this.model;
     if (replayed.opened !== undefined && replayed.opened !== null) this.opened(replayed.opened);
@@ -431,6 +539,7 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
   }
 
   snapshot(): AcpSnapshot {
+    this.#stopStall();
     const frozen = this.handOver();
     const turn = frozen?.turn ?? this.turnNow();
     const state = frozen?.live ?? this.liveState ?? {};
