@@ -115,3 +115,26 @@ test("the screens' list says which tab is a Farview tab", async () => {
   assert.deepEqual((values.get(1) as J).screens.map((s: J) => [s.id, s.farview === true]), [["browser:fv_1", true], ["browser:T1", false]]);
   core.close();
 });
+
+test("cancelling a farview view releases its name synchronously for immediate same-name reopen", async () => {
+  const wire = farviewWire(() => 200);
+  const { host, core } = await started(base(), 0, wire.make);
+  const ui = core.connect();
+  call(core, ui, 1, "farview.view", { station, screen: "browser:fv_1", view: "fv-same" });
+  await host.settle();
+  assert.equal(wire.opens.length, 1);
+
+  core.receive(ui, { kind: "cancel", id: 1, cancel: true });
+  call(core, ui, 2, "farview.view", { station, screen: "browser:fv_1", view: "fv-same" });
+  await host.settle();
+  const emitted = host.takeEmitted().map(([, m]) => m as J);
+  assert.equal(emitted.find((m) => m.id === 2 && m.error), undefined);
+  assert.equal(wire.opens.length, 2);
+
+  call(core, ui, 3, "farview.send", { view: "fv-same" }, Uint8Array.of(4, 2));
+  await host.settle();
+  const emitted2 = host.takeEmitted().map(([, m]) => m as J);
+  assert.equal(emitted2.find((m) => m.id === 3)?.error, undefined);
+  assert.deepEqual(wire.opens[1]!.got, [4, 2]);
+  core.close();
+});

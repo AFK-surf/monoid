@@ -90,14 +90,21 @@ function view(inner: Inner, c: Extract<FarviewCall, { kind: "view" }>, progress:
     const addr = yield* Effect.try({ try: () => StationAddr.parse(c.station), catch: asCoreError });
     let out: Queue.Queue<Uint8Array> | null = null;
     // What is said while no stream is open belongs to a conversation gone: the next open begins anew.
-    open.set(name, {
+    const callKey = `${at[0]}/${at[1]}`;
+    const entry: OpenFarview = {
       workspace: addr.workspace,
       authGen: inner.store.authGen.workspaceAuthGen(addr.workspace),
       send: (data) => {
         if (out !== null) Queue.offerUnsafe(out, data);
       },
-    });
-    yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
+    };
+    open.set(name, entry);
+    const release = () => {
+      if (open.get(name) === entry) open.delete(name);
+      if (inner.callCancels.get(callKey) === release) inner.callCancels.delete(callKey);
+    };
+    inner.callCancels.set(callKey, release);
+    yield* Effect.addFinalizer(() => Effect.sync(release));
     progress({ state: { phase: "connecting" } });
     let opens = 0;
 

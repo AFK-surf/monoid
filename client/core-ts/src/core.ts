@@ -216,6 +216,8 @@ export class Inner {
   router!: Router;
   /// The calls under way that a UI can stop, by `client/id`.
   calls = new Map<string, Fiber.Fiber<unknown, unknown>>();
+  /// Synchronous cleanup hooks for cancellable calls (e.g. releasing a view name before async fiber finalizers finish).
+  callCancels = new Map<string, () => void>();
   doing = new Doing();
   /// What is being written in each chat (composer.ts).
   composers!: Composers;
@@ -1025,6 +1027,11 @@ export class Core {
     for (const [key, fiber] of [...this.inner.calls]) {
       if (key.startsWith(`${client}/`)) {
         this.inner.calls.delete(key);
+        const onCancel = this.inner.callCancels.get(key);
+        if (onCancel) {
+          this.inner.callCancels.delete(key);
+          onCancel();
+        }
         this.inner.runner.interrupt(fiber);
       }
     }
@@ -1074,6 +1081,11 @@ export class Core {
         const fiber = inner.calls.get(key);
         if (fiber) {
           inner.calls.delete(key);
+          const onCancel = inner.callCancels.get(key);
+          if (onCancel) {
+            inner.callCancels.delete(key);
+            onCancel();
+          }
           inner.runner.interrupt(fiber);
         }
         return;
@@ -1218,6 +1230,7 @@ export class Core {
       Effect.onInterrupt(() =>
         Effect.sync(() => {
           inner.calls.delete(key);
+          inner.callCancels.delete(key);
           span.cancel();
           const cancelled = new CoreError("cancelled", t("core-misc.call.cancelled"));
           // Its resource ends with it: the page's progress counts it as failed.
@@ -1233,7 +1246,10 @@ export class Core {
       Effect.exit,
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
-          if (stoppable) inner.calls.delete(key);
+          if (stoppable) {
+            inner.calls.delete(key);
+            inner.callCancels.delete(key);
+          }
           const result: { ok: unknown } | { err: CoreError } =
             exit._tag === "Success" ? { ok: exit.value } : { err: failureOf(exit.cause) };
           if ("err" in result) failedIn(span, result.err);

@@ -1269,11 +1269,16 @@ test "the call itself failed: said with the core's words; 重新打开 there" {
 ///|
 test "auth_stale reopens screen.view automatically up to retry bound" {
   let r = screen_rig()
+  let v0 = text(Some(r.told("screen.view")[0]), "view")
   r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
   assert_eq(r.told("screen.view").length(), 2)
+  let v1 = text(Some(r.told("screen.view")[1]), "view")
+  assert_true(v1 != v0 && v1 == r.sess().view, msg="auth_stale retry must allocate a fresh view name")
   assert_true(r.t.find("无法打开此屏幕") is None)
   r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
   assert_eq(r.told("screen.view").length(), 3)
+  let v2 = text(Some(r.told("screen.view")[2]), "view")
+  assert_true(v2 != v1 && v2 != v0 && v2 == r.sess().view, msg="each retry must allocate a distinct view name")
   assert_true(r.t.find("无法打开此屏幕") is None)
   r.finish(error={ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" })
   assert_eq(r.told("screen.view").length(), 3)
@@ -1283,8 +1288,41 @@ test "auth_stale reopens screen.view automatically up to retry bound" {
 }
 
 ///|
+test "synchronous stream rejection leaves call zero so manual reopen works" {
+  let r = screen_rig()
+  let s = r.sess()
+  s.pause(s.src)
+  let opens : Ref[Int] = Ref(0)
+  let sync_fail : Ref[Bool] = Ref(true)
+  let base = s.src
+  let wrapped : Source = {
+    ..base,
+    stream: fn(name, params, bytes, on_value, on_done) {
+      if name == "screen.view" {
+        opens.val += 1
+        if sync_fail.val {
+          on_done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+          return 999
+        }
+      }
+      (base.stream)(name, params, bytes, on_value, on_done)
+    },
+  }
+  s.open(wrapped)
+  assert_eq(opens.val, 1)
+  assert_eq(s.call, 0, msg="synchronous rejection must not leave stale call id")
+  assert_eq(s.phase(), "failed")
+  sync_fail.val = false
+  s.open(wrapped)
+  assert_eq(opens.val, 2, msg="reopen after synchronous rejection must open a new stream")
+  assert_true(s.call != 0)
+  screen_done(r.t)
+}
+
+///|
 test "out of sight the view is let go of, the last frame kept; back in sight it opens again" {
   let r = screen_rig()
+  let v0 = text(Some(r.told("screen.view")[0]), "view")
   r.live()
   r.t.app_state(false, false)
   r.t.draw()
@@ -1293,6 +1331,8 @@ test "out of sight the view is let go of, the last frame kept; back in sight it 
   r.t.app_state(true, true)
   r.t.draw()
   assert_eq(r.told("screen.view").length(), 2)
+  let v1 = text(Some(r.told("screen.view")[1]), "view")
+  assert_true(v1 != v0 && v1 == r.sess().view, msg="reopen after pause must use a fresh view name")
   screen_done(r.t)
 }
 

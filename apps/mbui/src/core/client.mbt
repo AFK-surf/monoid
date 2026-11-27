@@ -969,10 +969,10 @@ fn Client::invalidate_scope_inner(self : Client, scope : AuthScope, mask : Bool)
   for id in stale_calls {
     let was_stream = self.progress.contains(id)
     self.call_auth_ctx.remove(id)
-    self.answer(id, Err(auth_stale_json()))
     if was_stream {
       (self.send)(Json::object({ "id": Json::number(id.to_double()), "cancel": Json::boolean(true) }).stringify())
     }
+    self.answer(id, Err(auth_stale_json()))
   }
   let subs = self.subs.values().to_array()
   for s in subs {
@@ -2869,8 +2869,8 @@ fn Client::take(self : Client, msg : Json) -> Unit {
                 _ => ()
               }
               if stale {
-                self.answer(id, Err(auth_stale_json()))
                 (self.send)(Json::object({ "id": Json::number(id.to_double()), "cancel": Json::boolean(true) }).stringify())
+                self.answer(id, Err(auth_stale_json()))
               } else {
                 self.version += 1
                 f(v, self.beside)

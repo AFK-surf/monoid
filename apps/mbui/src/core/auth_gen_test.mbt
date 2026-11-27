@@ -429,3 +429,84 @@ test "first_handshake completes on incremental boundary and subsequent full sync
   assert_true(c.receive("{\"id\":" + read_id.to_string() + ",\"ok\":{\"entries\":[]},\"conn\":100,\"authGen\":3}"))
   assert_true(read_got.val.has_prefix("ok:"), msg="pending read completes normally once core answers")
 }
+
+///|
+test "auth_stale stream invalidation sends cancel before on_done synchronously reopens" {
+  let (c, sent) = auth_client()
+  assert_true(
+    c.receive(
+      "{\"auth\":{\"conn\":10,\"global\":1,\"aggregate\":1,\"vaultGlobal\":1,\"scopes\":{\"wsA\":1},\"vaults\":{}}}",
+    ),
+  )
+
+  // Case 1: auth boundary invalidation (`invalidate_scope_inner`) sends cancel BEFORE on_done's synchronous reopen.
+  let reopened1 : Ref[Int] = Ref(0)
+  let id1 = c.stream(
+    "screen.view",
+    params={ "station": "wsA/st1", "screen": "desktop", "view": "v1" },
+    on_value=fn(_, _) {  },
+    on_done=fn(r) {
+      if r is Err(_) {
+        reopened1.val = c.stream(
+          "screen.view",
+          params={ "station": "wsA/st1", "screen": "desktop", "view": "v2" },
+          on_value=fn(_, _) {  },
+          on_done=fn(_) {  },
+        )
+      }
+    },
+  )
+  let before1 = sent.length()
+  assert_true(
+    c.receive(
+      "{\"auth\":{\"conn\":10,\"global\":1,\"aggregate\":2,\"workspace\":\"wsA\",\"authGen\":2}}",
+    ),
+  )
+  assert_true(reopened1.val > 0, msg="on_done should synchronously reopen stream")
+  let mut cancel1_idx = -1
+  let mut reopen1_idx = -1
+  for i = before1; i < sent.length(); i = i + 1 {
+    let s = sent[i].stringify()
+    if cancel1_idx < 0 && s.contains("\"cancel\":true") && s.contains("\"id\":" + id1.to_string()) {
+      cancel1_idx = i
+    }
+    if reopen1_idx < 0 && s.contains("\"call\":\"screen.view\"") && s.contains("\"id\":" + reopened1.val.to_string()) {
+      reopen1_idx = i
+    }
+  }
+  assert_true(cancel1_idx >= 0 && reopen1_idx >= 0 && cancel1_idx < reopen1_idx, msg="cancel must be sent before synchronous reopen on auth boundary")
+
+  // Case 2: stale progress frame in `Client::take` sends cancel BEFORE on_done's synchronous reopen.
+  let reopened2 : Ref[Int] = Ref(0)
+  let id2 = c.stream(
+    "screen.view",
+    params={ "station": "wsA/st1", "screen": "desktop", "view": "v3" },
+    on_value=fn(_, _) {  },
+    on_done=fn(r) {
+      if r is Err(_) {
+        reopened2.val = c.stream(
+          "screen.view",
+          params={ "station": "wsA/st1", "screen": "desktop", "view": "v4" },
+          on_value=fn(_, _) {  },
+          on_done=fn(_) {  },
+        )
+      }
+    },
+  )
+  let before2 = sent.length()
+  // Progress with mismatched authGen=1 while current wsA authGen=2 triggers stale stream rejection.
+  assert_true(c.receive("{\"id\":" + id2.to_string() + ",\"value\":{\"state\":{\"phase\":\"live\"}},\"conn\":10,\"authGen\":1}"))
+  assert_true(reopened2.val > 0, msg="on_done should synchronously reopen stream on stale progress")
+  let mut cancel2_idx = -1
+  let mut reopen2_idx = -1
+  for i = before2; i < sent.length(); i = i + 1 {
+    let s = sent[i].stringify()
+    if cancel2_idx < 0 && s.contains("\"cancel\":true") && s.contains("\"id\":" + id2.to_string()) {
+      cancel2_idx = i
+    }
+    if reopen2_idx < 0 && s.contains("\"call\":\"screen.view\"") && s.contains("\"id\":" + reopened2.val.to_string()) {
+      reopen2_idx = i
+    }
+  }
+  assert_true(cancel2_idx >= 0 && reopen2_idx >= 0 && cancel2_idx < reopen2_idx, msg="cancel must be sent before synchronous reopen on stale progress")
+}
