@@ -104,7 +104,9 @@ fn home_node(
           stint~,
         )
       } else {
-        @sfpages.chats_lists_node(l, src, workspace, frame, tips, stint)
+        @sfpages.chats_lists_node(l, src, workspace, frame, tips, stint, keep_rows=fn() {
+          app.nav.top() is Chat(_) && shown() && !app.nav.takes(serial)
+        })
       }
     })
   })
