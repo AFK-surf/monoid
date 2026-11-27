@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 123.44 |
 | [31e518d3a](https://github.com/AFK-surf/monoid/commit/31e518d3ac79355c27990842cea53f90e6273747) fix(mbui): isolate VaultItem plaintext, visibility | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 123.44 |
 | [cc78ae49e](https://github.com/AFK-surf/monoid/commit/cc78ae49ef4d463c7dbc41dc782e1d0424df4de1) feat(mbui): add project-grouped sticky section hea | 2.65 | 3.58 | 14.88 | 37.78 | 57.87 | 33.1 | 67.7 | 101.42 | 132.69 |
 | [3cf626007](https://github.com/AFK-surf/monoid/commit/3cf62600776cb0d2255954c70948689a826f4560) feat(station-main): wire all 8 CLI subcommands int | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [093dfc1e8](https://github.com/AFK-surf/monoid/commit/093dfc1e857bc1356a33a0fc0ed2531e693e9c37) feat(ui,app,core): overhaul liquid glass motion fo | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [537157a1e](https://github.com/AFK-surf/monoid/commit/537157a1ebf9f01912ae75640c9fb21eb66e2bd5) perf(station): crop a Mac video frame when the enc | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
-| [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.66 |
 | [31e518d3a](https://github.com/AFK-surf/monoid/commit/31e518d3ac79355c27990842cea53f90e6273747) fix(mbui): isolate VaultItem plaintext, visibility | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.62 |
 | [cc78ae49e](https://github.com/AFK-surf/monoid/commit/cc78ae49ef4d463c7dbc41dc782e1d0424df4de1) feat(mbui): add project-grouped sticky section hea | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.44 |
 | [3cf626007](https://github.com/AFK-surf/monoid/commit/3cf62600776cb0d2255954c70948689a826f4560) feat(station-main): wire all 8 CLI subcommands int | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.67 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.66 |
 | [093dfc1e8](https://github.com/AFK-surf/monoid/commit/093dfc1e857bc1356a33a0fc0ed2531e693e9c37) feat(ui,app,core): overhaul liquid glass motion fo | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.57 |
 | [537157a1e](https://github.com/AFK-surf/monoid/commit/537157a1ebf9f01912ae75640c9fb21eb66e2bd5) perf(station): crop a Mac video frame when the enc | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.69 |
-| [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.56 |
