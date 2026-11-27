@@ -746,6 +746,18 @@ let bar : BarModel = {
 }
 
 ///|
+/// Whether a finger is currently holding or dragging the bottom bar so it rises above its resting track (`bar_raise`).
+// kept across runs: put back in bar_reset
+let bar_raised : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether the bottom bar's expanded switcher panel or raised drag state currently occupies the space directly above
+/// its resting track (used by Home's bottom-left floating group pill to step aside cleanly).
+fn bar_obstructs_above() -> Bool {
+  bar.mode.get() || bar_raised.get()
+}
+
+///|
 /// As at the start (tests).
 fn bar_reset() -> Unit {
   let back_glide = fn(g : Glide, to : Double) {
@@ -753,6 +765,7 @@ fn bar_reset() -> Unit {
     g.start = 0.0
   }
   bar.mode.set(false)
+  bar_raised.set(false)
   bar.o.back(0.0, 260.0, 17.0)
   bar.k.back(1.0, 300.0, 30.0)
   bar.ball_held.put(0.0)
@@ -1328,8 +1341,10 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let w = told.width
   let row_top = bar_row_top(told.sets.length())
   let sliding = m.drag >= 0.0
+  let raised = m.holds || sliding
+  bar_raised.set(raised)
   // The bar rises while a finger has it, returning on release (taps never raise the bar).
-  m.up.go(if m.holds || sliding { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
+  m.up.go(if raised { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
   let prev_x = m.ball_x.value_at(at)
   let mut goal_x = m.ball_x.to
   if w > 0.0 {

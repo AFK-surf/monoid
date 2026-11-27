@@ -22,6 +22,7 @@ pub(all) struct ListsNodeFrame {
   at : @sf.ListAt
   watched : () -> Bool
   section_rows : () -> (Int, Int)
+  section_chrome_bottom : () -> Double
   section_chrome_suppress : () -> Bool
 }
 
@@ -956,16 +957,10 @@ fn chats_pane_node(
     list_place.set_sections(
       fn(k) { k.has_prefix("h/") },
       tail=fn(k) { k == "load_more" || k == "foot" },
-      top_edge=match frame.at {
-        Whole => frame.under
-        Side | Tape => frame.top
-      },
+      top_edge=frame.top,
       bottom_edge=frame.foot,
       rows=frame.section_rows,
-      air=match frame.at {
-        Whole => fn(_) { (frame.under)() - (frame.top)() }
-        Side | Tape => fn(_) { 0.0 }
-      },
+      air=fn(_) { 0.0 },
       chrome=fn(host, read_chrome) {
         section_chrome_node(host, read_chrome, frame, days, fn() { is_grouped.get() }, list_place, top_edge_key, bot_edge_key)
       },
@@ -1495,9 +1490,9 @@ fn sticky_heading_rules_node(
 /// - `Side | Tape`: opaque `[0, top_edge]` top-band mask when top headings are docked (prevents rows from peeking
 ///   behind the sidebar top band while leaving `scroll = 0` and tucked search untouched), and publishes boundary heading
 ///   keys for crisp 0.5pt sticky-row hairlines (zero floating pills over chat rows).
-/// - `Whole`: Apple iOS 26 Liquid Glass floating group indicator pill centered cleanly below the top glass bar once the
-///   active group's in-flow heading scrolls past `frame.under`, dissolving smoothly before the next in-flow heading
-///   approaches (zero opaque walls, zero bottom double-decker clutter); tapping opens an anchored native group-jump menu.
+/// - `Whole`: Apple iOS 26 Liquid Glass floating group indicator pill left-aligned cleanly above the bottom tab bar
+///   once the active group's in-flow heading scrolls past `frame.under`, keeping a full >=44pt touch target so taps
+///   never fall through to chat rows underneath; tapping opens the native group-jump sheet/menu.
 fn section_chrome_node(
   host : @view.View,
   read_chrome : () -> @view.SectionChrome[String],
@@ -1540,17 +1535,14 @@ fn section_chrome_node(
       |> ignore
     }
     Whole => {
-      // Geometry constants for the centered Liquid Glass floating group indicator pill:
-      // top gap under the top glass bar (`8pt`), minimum capsule height (`34pt`, scaling cleanly with text scale),
-      // and scroll-coupled enter/exit dissolve windows (`20pt` / `24pt`) keeping an `8pt` optical clearance before the
-      // next in-flow group heading arrives.
-      let pill_top_gap = 8.0
-      let pill_min_h = 34.0
-      let pill_vpad = 5.0
-      let pill_line_h_1x = 19.0
+      // Geometry constants for the bottom-left Liquid Glass floating group indicator pill:
+      // aligned flush with the bottom Liquid Glass tab bar's left inset (`22pt`), sitting cleanly above the tab bar
+      // (`frame.section_chrome_bottom()`), with a single-layer `>= 44pt` Liquid Glass capsule directly on the button
+      // so `Tree::covered_under` holds across row seams (zero `apart:` faults) and every touch gets a full 44pt target.
+      let pill_left_inset = 22.0
+      let pill_min_h = 44.0
+      let pill_vpad = 8.0
       let pill_fade_in_px = 20.0
-      let pill_fade_out_px = 24.0
-      let pill_exit_gap = 8.0
       let menu_serial : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
       let own_menu_drawn = fn() {
         let s = menu_serial.get()
@@ -1562,16 +1554,20 @@ fn section_chrome_node(
         }
         let c = read_chrome()
         guard c.active is Some(_) else { return 0.0 }
-        let pill_h = dmax(pill_min_h, (pill_line_h_1x * host.words_scale()).ceil() + pill_vpad * 2.0)
         let enter = clamp01((c.top_edge - c.active_bottom) / pill_fade_in_px)
-        let pill_bot = c.top_edge + pill_top_gap + pill_h
-        let exit = clamp01((c.next_top - (pill_bot + pill_exit_gap)) / pill_fade_out_px)
+        let exit = if c.next_top.is_inf() {
+          1.0
+        } else {
+          clamp01((c.next_top - c.top_edge - 12.0) / pill_fade_in_px)
+        }
         dmin(enter, exit)
       })
       host
-      .lies_along(Is(Start))
-      .lines_up(Is(Some(Middle)))
-      .padding(By(fn() { (16.0, (frame.under)() + pill_top_gap, 16.0, 0.0) }))
+      .lies_along(Is(End))
+      .lines_up(Is(Some(Start)))
+      .padding(By(fn() {
+        (pill_left_inset, 0.0, pill_left_inset, dmax(0.0, (frame.section_chrome_bottom)()))
+      }))
       |> ignore
       host.show(fn() { pill_vis.get() > 0.02 || own_menu_drawn() }, at_once=true, fn(slot) {
         slot
@@ -1621,7 +1617,7 @@ fn section_chrome_node(
               )
             })
             @signals.start_batch()
-            @sf.menu(items, from=Node(anchor), along=Middle, side=Bottom)
+            @sf.menu(items, from=Node(anchor), along=Start, side=Top)
             menu_serial.set(@sf.last_presented())
             @signals.end_batch()
           },
@@ -1630,10 +1626,10 @@ fn section_chrome_node(
             .row(Is(true))
             .lines_up(Is(Some(Middle)))
             .gap(Is(6.0))
-            .padding(Is((13.0, pill_vpad, 10.0, pill_vpad)))
+            .padding(Is((15.0, pill_vpad, 12.0, pill_vpad)))
+            .min_width(Is(Some(pill_min_h)))
             .max_width(Is(Some(220.0)))
             .shrink(Is(1.0))
-            .min_width(Is(Some(0.0)))
             |> ignore
             @sf.words_node(pill, name_label, fn() { proj_group_heading_style })
             .cuts(Is(true))
@@ -1642,7 +1638,7 @@ fn section_chrome_node(
             .min_width(Is(Some(0.0)))
             |> ignore
             @sf.words_node(pill, count_label, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
-            @sf.icon_node(pill, "chevron-down", 12.0, By(fn() { @sf.theme().p.muted })).shrink(Is(0.0)) |> ignore
+            @sf.icon_node(pill, "chevron-down", 13.0, By(fn() { @sf.theme().p.muted })).shrink(Is(0.0)) |> ignore
           },
         )
         btn

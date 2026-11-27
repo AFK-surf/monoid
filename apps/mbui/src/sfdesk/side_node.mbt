@@ -250,6 +250,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     at: list_at,
     watched: fn() { true },
     section_rows: fn() { if at().box.3 >= 720.0 { (2, 2) } else { (2, 1) } },
+    section_chrome_bottom: fn() { 0.0 },
     section_chrome_suppress: fn() { false },
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
