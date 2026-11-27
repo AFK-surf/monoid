@@ -269,3 +269,116 @@ pub fn search_chats(
     }
   }
 }
+
+/// Maximum JSON/Double wire-safe integer (`Number.MAX_SAFE_INTEGER = 2^53 - 1`).
+pub let MAX_SAFE_CONN_SEQ : Int64 = 9007199254740991L
+
+/// Maximum persisted disk `connSeq` (`MAX_SAFE_CONN_SEQ - 1_000_000_000L`), reserving 1 billion
+/// strictly monotonic in-process restart steps of headroom up to `MAX_SAFE_CONN_SEQ`.
+pub let MAX_PERSISTED_CONN_SEQ : Int64 = 9007199253740991L
+
+let MAX_SAFE_NOW_MS : Int64 = 8999999999999L
+
+/// Checked strictly monotonic `conn_seq` allocator within JSON-safe integer bounds `[1, MAX_SAFE_CONN_SEQ]`:
+/// - `floor` is the current OS process's last emitted `conn` (`g_last_device_conn_seq[0]`) and is NEVER silently dropped.
+/// - If `floor >= MAX_SAFE_CONN_SEQ`, no larger JSON-safe integer exists in this process -> `Err("conn_seq_exhausted")`.
+/// - Otherwise `persisted` is accepted only in `[1, MAX_PERSISTED_CONN_SEQ]`, guaranteeing
+///   `floor < next <= MAX_SAFE_CONN_SEQ` with zero `Int64` overflow and zero regression.
+pub fn next_monotonic_conn_seq_checked(
+  persisted : Int64,
+  now_ms : Int64 = 0L,
+  floor : Int64 = 0L,
+) -> Result[Int64, String] {
+  if floor >= MAX_SAFE_CONN_SEQ {
+    return Err("conn_seq_exhausted")
+  }
+  let safe_p = if persisted >= 1L && persisted <= MAX_PERSISTED_CONN_SEQ { persisted } else { 0L }
+  let safe_f = if floor > 0L { floor } else { 0L }
+  let base = if safe_p > safe_f { safe_p } else { safe_f }
+  let next_seq = base + 1L
+  let time_floor = if now_ms > 0L && now_ms <= MAX_SAFE_NOW_MS { now_ms * 1000L } else { 0L }
+  let res = if time_floor > next_seq { time_floor } else { next_seq }
+  Ok(res)
+}
+
+/// Backwards-compatible infallible wrapper over `next_monotonic_conn_seq_checked`
+/// (saturates at `MAX_SAFE_CONN_SEQ` if `floor >= MAX_SAFE_CONN_SEQ`).
+pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L, floor : Int64 = 0L) -> Int64 {
+  match next_monotonic_conn_seq_checked(persisted, now_ms=now_ms, floor=floor) {
+    Ok(v) => v
+    Err(_) => MAX_SAFE_CONN_SEQ
+  }
+}
+
+/// Parse a strict positive decimal integer string in `[1, MAX_PERSISTED_CONN_SEQ]`.
+/// Rejects decimals (`12.5`, `12.0`), signs, exponents, non-positive values, and `> MAX_PERSISTED_CONN_SEQ`.
+fn parse_safe_conn_digits(raw : String) -> Int64 {
+  let s = raw.trim()
+  let bs = s.to_bytes()
+  if bs.length() == 0 {
+    return 0L
+  }
+  let mut acc : Int64 = 0L
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    if b < 48 || b > 57 {
+      return 0L
+    }
+    let digit = (b - 48).to_int64()
+    if acc > (MAX_PERSISTED_CONN_SEQ - digit) / 10L {
+      return 0L
+    }
+    acc = acc * 10L + digit
+  }
+  if acc >= 1L && acc <= MAX_PERSISTED_CONN_SEQ { acc } else { 0L }
+}
+
+fn parse_safe_conn_json_num(n : Double, repr : String) -> Int64 {
+  if repr.length() > 0 {
+    return parse_safe_conn_digits(repr)
+  }
+  if !(n >= 1.0 && n <= 9007199253740991.0) {
+    return 0L
+  }
+  let iv = n.to_int64()
+  if iv.to_double() != n {
+    return 0L
+  }
+  if iv >= 1L && iv <= MAX_PERSISTED_CONN_SEQ { iv } else { 0L }
+}
+
+/// Parse a stored `conn_seq` JSON/integer string (`"42"`, `{"connSeq": 42}`, or `{"conn": 42}`).
+/// Strictly accepts `[1, MAX_PERSISTED_CONN_SEQ]`; rejects decimals, non-positive numbers,
+/// and values `> MAX_PERSISTED_CONN_SEQ` (including `9007199254740990`, `9007199254740991`, `Int64::MAX`).
+pub fn parse_conn_seq_raw(raw : String) -> Int64 {
+  let trimmed = raw.trim()
+  let direct = parse_safe_conn_digits(trimmed)
+  if direct > 0L {
+    return direct
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => parse_safe_conn_json_num(n, repr)
+    base_codec::JsonParseResult::Ok(j) => {
+      let num_field = match base_codec::json_get(j, "connSeq") {
+        Some(v) => Some(v)
+        None => base_codec::json_get(j, "conn")
+      }
+      match num_field {
+        Some(base_codec::Json::Num(n, repr)) => parse_safe_conn_json_num(n, repr)
+        _ => 0L
+      }
+    }
+    _ => 0L
+  }
+}
+
+/// Read `account_doc("conn_seq")`, compute strictly monotonic next `conn_seq`, persist back, and return it.
+pub fn load_and_bump_conn_seq(db : sql::Sql, now_ms : Int64 = 0L) -> Int64 {
+  let prev : Int64 = match get_account_doc(db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => parse_conn_seq_raw(raw)
+    _ => 0L
+  }
+  let next = next_monotonic_conn_seq(prev, now_ms=now_ms)
+  let _ = put_account_doc(db, "conn_seq", next.to_string())
+  next
+}

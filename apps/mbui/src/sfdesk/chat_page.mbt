@@ -187,11 +187,12 @@ fn stop_agents(src : Source, r : ChatRef, v : ChatView) -> Unit {
 fn archive_asked(src : Source, w : Workspace, r : ChatRef, v : ChatView, chat : Json?) -> Unit {
   if field(chat, "watch") is Some(Object(_)) {
     @sf.confirm(
-      @sf.t("web-pages.chat.archiveConfirm", args=[("title", v.title)]),
+      @sf.t("web-pages.chat.archiveConfirm"),
       text(field(chat, "watch"), "ask"),
       @sf.t("web-pages.chat.archive"),
       fn() { archive(src, w, r, v) },
       danger=true,
+      facts=[(@sf.t("common.confirmFact.chat"), v.title)],
     )
   } else {
     archive(src, w, r, v)

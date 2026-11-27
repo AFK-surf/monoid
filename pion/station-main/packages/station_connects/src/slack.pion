@@ -891,6 +891,56 @@ pub enum SlackPostOutcome {
 /// parts (`blocks: [{"type":"markdown","text":...}]`), completes upload and
 /// resolves `sharedTs` from `files[0].shares` / `files.info`. On 429, records
 /// throttle backoff and returns `RateLimited(wait_ms)` with `progress` intact.
+fn slack_card_blocks(card : base_codec::Json, thread : ThreadRef) -> Array[base_codec::Json] {
+  let blocks : Array[base_codec::Json] = []
+  let ctype = json_str_field(card, "type")
+  if ctype == "options" {
+    let elements : Array[base_codec::Json] = []
+    match base_codec::json_get(card, "options") {
+      Some(base_codec::Json::Arr(opts)) => {
+        for i in 0..<opts.length() {
+          let label = json_str_field(opts[i], "label")
+          if label.length() > 0 {
+            elements.push(
+              base_codec::json_obj([
+                ("type", base_codec::json_str("button")),
+                (
+                  "text",
+                  base_codec::json_obj([
+                    ("type", base_codec::json_str("plain_text")),
+                    ("text", base_codec::json_str(label)),
+                  ]),
+                ),
+                ("action_id", base_codec::json_str("card_option_" + i.to_string())),
+                ("value", base_codec::json_str(label)),
+              ]),
+            )
+          }
+        }
+      }
+      _ => ()
+    }
+    if elements.length() > 0 {
+      blocks.push(
+        base_codec::json_obj([
+          ("type", base_codec::json_str("actions")),
+          ("block_id", base_codec::json_str("card:" + thread.channel + "/" + thread.thread_ts)),
+          ("elements", base_codec::json_arr(elements)),
+        ]),
+      )
+    }
+  } else if ctype == "text" {
+    let ph = json_str_field(card, "placeholder")
+    let hint = if ph.length() > 0 { ph } else { "Reply in thread" }
+    blocks.push(slack_markdown_block("_" + hint + "_"))
+  } else if ctype == "login" {
+    let lid = json_str_field(card, "login")
+    let label = if lid.length() > 0 { "Login required: `" + lid + "`" } else { "Login required" }
+    blocks.push(slack_markdown_block(label))
+  }
+  blocks
+}
+
 pub fn SlackConnector::post_step(
   self : SlackConnector,
   transport : ConnectTransport,
@@ -898,6 +948,7 @@ pub fn SlackConnector::post_step(
   markdown : String,
   files : Array[OutboundFile],
   progress : SlackPostProgress,
+  card : Option[base_codec::Json] = None,
 ) -> SlackPostOutcome {
   let now = (transport.now_ms)()
   if !self.throttle.can_send(now) {
@@ -944,11 +995,31 @@ pub fn SlackConnector::post_step(
       parts.push(raw_parts[i])
     }
   }
+  let card_blocks = match card {
+    Some(c) => slack_card_blocks(c, thread)
+    None => []
+  }
+  if parts.length() == 0 && card_blocks.length() > 0 {
+    parts.push(" ")
+  }
 
   while progress.sent_parts < parts.length() {
     let part = parts[progress.sent_parts]
+    let is_last = progress.sent_parts + 1 == parts.length()
+    let blocks_opt : Option[String] = if is_last && card_blocks.length() > 0 {
+      let arr : Array[base_codec::Json] = []
+      if part.trim().length() > 0 {
+        arr.push(slack_markdown_block(part))
+      }
+      for bi in 0..<card_blocks.length() {
+        arr.push(card_blocks[bi])
+      }
+      Some(base_codec::json_stringify(base_codec::json_arr(arr)))
+    } else {
+      None
+    }
     let resp = (transport.fetch)(
-      slack_post_message_request(self.base_url, self.bot_token, thread, part),
+      slack_post_message_request(self.base_url, self.bot_token, thread, part, blocks_json=blocks_opt),
     )
     match parse_slack_api_response("chat.postMessage", resp) {
       SlackApiOutcome::Ok(j) => {
@@ -1036,9 +1107,10 @@ pub fn SlackConnector::post_message(
   thread : ThreadRef,
   markdown : String,
   files : Array[OutboundFile] = [],
+  card : Option[base_codec::Json] = None,
 ) -> Result[String, String] {
   let progress = SlackPostProgress::new()
-  match self.post_step(transport, thread, markdown, files, progress) {
+  match self.post_step(transport, thread, markdown, files, progress, card=card) {
     SlackPostOutcome::Posted(ts) => Ok(ts)
     SlackPostOutcome::RateLimited(w) => Err("slack rate_limited; retry in " + w.to_string() + "ms")
     SlackPostOutcome::Failed(e) => Err(e)

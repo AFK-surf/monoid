@@ -21,6 +21,36 @@ struct MarksWanted {
   threads : Array[Int]
 }
 
+struct PendingWireEvent {
+  json : String
+  bytes : Option[Bytes]
+  is_handshake : Bool
+}
+
+struct WorkspaceLockSlot {
+  mut lock_state : Option[lock::LockState]
+  mut lock_root : Option[String]
+  mut lock_kept_entries : Array[form::Json]
+  mut lock_kept_aside : Array[form::Json]
+  mut lock_seen : Option[base_codec::Json]
+  mut lock_corrupt : Bool
+  mut lock_effective : Option[views::EffectiveLockState]
+}
+
+fn empty_lock_slot() -> WorkspaceLockSlot {
+  WorkspaceLockSlot::{
+    lock_state: None,
+    lock_root: None,
+    lock_kept_entries: [],
+    lock_kept_aside: [],
+    lock_seen: None,
+    lock_corrupt: false,
+    lock_effective: None,
+  }
+}
+
+let PENDING_WIRE_MAX : Int = 256
+
 pub struct ClientCore {
   pub mut workspace : String
   pub station : String
@@ -31,16 +61,23 @@ pub struct ClientCore {
   pub events : StationEvents
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
+  pub auth : AuthGenTracker
   pub doing : DoingTracker
   pub composers : ComposerManager
   extra_events : Map[String, StationEvents]
   extra_sync : Map[String, SyncScheduler]
+  extra_locks : Map[String, WorkspaceLockSlot]
   marks_wanted : Map[String, MarksWanted]
   mut live : Bool
   pub router : protocol::Slice1Router
   pub mut rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
   pending_dirty_rows : Array[(String, String)]
+  mut wire_sink : Option[(String, Option[Bytes]) -> Unit]
+  pending_wire_events : Array[PendingWireEvent]
+  lock_digest_by_ws : Map[String, String]
+  lock_sec_digest_by_ws : Map[String, String]
+  mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub login_flow : views::LoginFlowMachine
@@ -86,6 +123,7 @@ pub struct ClientCore {
   mut person_lock_entries : Array[base_codec::Json]
   mut lock_seen : Option[base_codec::Json]
   mut lock_corrupt : Bool
+  mut lock_read_pending : Bool
   mut lock_effective : Option[views::EffectiveLockState]
   mut viewer_sub : String
   mut viewer_role : String
@@ -103,12 +141,18 @@ pub fn ClientCore::new(
   db : sql::Sql,
   transport : StationTransport,
   on_frame_wake : () -> Unit,
+  conn_seq : Option[Int64] = None,
 ) -> ClientCore {
   let frame_outbox : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(on_frame_wake)
   let md_store = store::MdStore::new(db, station)
   let events = StationEvents::new(workspace, station, db, frame_outbox, transport)
   let local_outbox = LocalOutbox::new(station, db, frame_outbox, transport)
   let sync = SyncScheduler::new(workspace, station, events, transport)
+  let auth = match conn_seq {
+    Some(c) => AuthGenTracker::new(conn_seq=c)
+    None => AuthGenTracker::open_with_db(db)
+  }
+  auth.ensure_workspace(workspace)
   let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
   let core = ClientCore::{
     workspace: workspace,
@@ -120,16 +164,23 @@ pub fn ClientCore::new(
     events: events,
     local_outbox: local_outbox,
     sync: sync,
+    auth: auth,
     doing: DoingTracker::new(),
     composers: ComposerManager::new(db),
     extra_events: Map::new(),
     extra_sync: Map::new(),
+    extra_locks: Map::new(),
     marks_wanted: Map::new(),
     live: false,
     router: router,
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
     pending_dirty_rows: [],
+    wire_sink: None,
+    pending_wire_events: [],
+    lock_digest_by_ws: Map::new(),
+    lock_sec_digest_by_ws: Map::new(),
+    on_runtime_boundary: None,
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     login_flow: views::LoginFlowMachine::new(),
@@ -181,6 +232,7 @@ pub fn ClientCore::new(
     person_lock_entries: [],
     lock_seen: None,
     lock_corrupt: false,
+    lock_read_pending: false,
     lock_effective: None,
     viewer_sub: "",
     viewer_role: "member",
@@ -192,6 +244,9 @@ pub fn ClientCore::new(
   }
   router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
     core.evaluate_view_topic(id, topic)
+  })
+  let _ = auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    core.handle_auth_boundary(ev)
   })
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
@@ -229,6 +284,10 @@ fn ClientCore::wire_station_hooks(
 ) -> Unit {
   let rt = self.rt
   let local_outbox = self.local_outbox
+  let target_ws = events.workspace
+  self.auth.ensure_workspace(target_ws)
+  events.set_auth_tracker(self.auth)
+  sync.set_auth_tracker(self.auth)
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
       local_outbox.reconcile_entry_in_burst(b, th, n, ck, station=Some(station))
@@ -243,17 +302,16 @@ fn ClientCore::wire_station_hooks(
           k(effect::Exit::Succeeded(()))
         })
       })
-      let _ = rt.fork_quiet_named("initial-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-        sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
-          k(effect::Exit::Succeeded(()))
-        })
-      })
+      sync.schedule_lock_refresh(rt)
       local_outbox.flush_station_offline(rt, station)
     },
     fn(lock_payload : base_codec::Json) -> Unit {
-      self.handle_lock_event(lock_payload)
+      let _ = self.handle_lock_event_for_workspace(target_ws, lock_payload, sync_opt=Some(sync), station=station)
     },
   )
+  events.set_lock_apply_hook(fn(lock_payload : base_codec::Json) -> Result[Unit, String] {
+    self.handle_lock_event_for_workspace(target_ws, lock_payload, sync_opt=Some(sync), station=station)
+  })
   events.set_missed_hook(fn() -> Unit {
     let _ = rt.fork_quiet_named("missed-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
       sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
@@ -261,11 +319,7 @@ fn ClientCore::wire_station_hooks(
       })
     })
     self.schedule_marks_read(station, sync, [], [], true)
-    let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    sync.schedule_lock_refresh(rt)
   })
   events.set_marks_applied_hook(fn(
     payload : base_codec::Json,
@@ -662,14 +716,33 @@ fn ClientCore::sync_viewer_marks_from_payload(
   }
 }
 
+fn ClientCore::resolve_station_workspace(
+  self : ClientCore,
+  station : String,
+  explicit_ws : String = "",
+) -> String {
+  if explicit_ws.length() > 0 {
+    return explicit_ws
+  }
+  let pref = station_workspace_prefix(station)
+  if pref.length() > 0 {
+    return pref
+  }
+  self.workspace
+}
+
 /// Attach a station-specific `StationTransport` to `local_outbox`, `StationEvents`, and `SyncScheduler`,
-/// restarting SSE + sync on the new transport (supporting both the default station and extra stations)
-/// and automatically flushing any queued or transiently `unreached` backlog targeting that station.
+/// binding extra stations to their own workspace (explicit `workspace` -> `station_workspace_prefix` ->
+/// `self.workspace`), restarting SSE + sync on the new transport, and automatically flushing any queued
+/// or transiently `unreached` backlog targeting that station.
 pub fn ClientCore::attach_station_transport(
   self : ClientCore,
   station : String,
   transport : StationTransport,
+  workspace : String = "",
 ) -> Unit {
+  let target_ws = self.resolve_station_workspace(station, explicit_ws=workspace)
+  self.auth.ensure_workspace(target_ws)
   self.local_outbox.register_station_transport(station, transport)
   if station == self.station {
     self.sync.set_transport(transport)
@@ -678,30 +751,57 @@ pub fn ClientCore::attach_station_transport(
       self.events.start(self.rt)
     }
   } else {
+    let mut reuse_existing = false
     match (self.extra_events.get(station), self.extra_sync.get(station)) {
       (Some(ev), Some(sy)) => {
-        sy.set_transport(transport)
-        ev.set_transport(transport, rt=Some(self.rt))
-        if self.live && !ev.is_running() {
-          ev.start(self.rt)
+        if ev.workspace == target_ws && sy.workspace == target_ws {
+          reuse_existing = true
+          sy.set_transport(transport)
+          ev.set_transport(transport, rt=Some(self.rt))
+          if self.live && !ev.is_running() {
+            ev.start(self.rt)
+          }
+        } else {
+          ev.stop()
+          ev.reset_state()
+          sy.bump_epoch()
         }
       }
-      _ => {
-        let ev = StationEvents::new(self.workspace, station, self.db, self.outbox, transport)
-        ev.viewer_email = self.events.viewer_email
-        ev.viewer_selves = self.events.viewer_selves
-        let sy = SyncScheduler::new(self.workspace, station, ev, transport)
-        self.wire_station_hooks(station, ev, sy)
-        self.extra_events.set(station, ev)
-        self.extra_sync.set(station, sy)
-        if self.live {
-          ev.start(self.rt)
-        }
+      _ => ()
+    }
+    if !reuse_existing {
+      let ev = StationEvents::new(target_ws, station, self.db, self.outbox, transport)
+      ev.viewer_email = self.events.viewer_email
+      ev.viewer_selves = self.events.viewer_selves
+      let sy = SyncScheduler::new(target_ws, station, ev, transport)
+      self.wire_station_hooks(station, ev, sy)
+      self.extra_events.set(station, ev)
+      self.extra_sync.set(station, sy)
+      if self.live {
+        ev.start(self.rt)
       }
     }
   }
   if self.local_outbox.has_unreached_for_station(station) {
     self.local_outbox.flush_station_offline(self.rt, station)
+  }
+}
+
+/// Look up the `SyncScheduler` bound to `station` (primary or extra attached station).
+pub fn ClientCore::station_sync(self : ClientCore, station : String) -> Option[SyncScheduler] {
+  if station == self.station {
+    Some(self.sync)
+  } else {
+    self.extra_sync.get(station)
+  }
+}
+
+/// Look up the `StationEvents` bound to `station` (primary or extra attached station).
+pub fn ClientCore::station_events(self : ClientCore, station : String) -> Option[StationEvents] {
+  if station == self.station {
+    Some(self.events)
+  } else {
+    self.extra_events.get(station)
   }
 }
 
@@ -711,6 +811,7 @@ pub fn ClientCore::detach_station_transport(self : ClientCore, station : String)
   self.local_outbox.unregister_station_transport(station)
   if station == self.station {
     self.events.stop()
+    self.events.reset_state()
     let off = core_offline_transport()
     self.events.set_transport(off)
     self.sync.set_transport(off)
@@ -718,11 +819,18 @@ pub fn ClientCore::detach_station_transport(self : ClientCore, station : String)
     match self.extra_events.get(station) {
       Some(ev) => {
         ev.stop()
+        ev.reset_state()
         self.extra_events.remove(station)
       }
       None => ()
     }
-    self.extra_sync.remove(station)
+    match self.extra_sync.get(station) {
+      Some(sy) => {
+        sy.bump_epoch()
+        self.extra_sync.remove(station)
+      }
+      None => ()
+    }
   }
 }
 
@@ -731,8 +839,9 @@ pub fn ClientCore::register_station_transport(
   self : ClientCore,
   station : String,
   transport : StationTransport,
+  workspace : String = "",
 ) -> Unit {
-  self.attach_station_transport(station, transport)
+  self.attach_station_transport(station, transport, workspace=workspace)
 }
 
 /// Unregister a station-specific `StationTransport` when a station disconnects.
@@ -757,11 +866,19 @@ pub fn ClientCore::start(self : ClientCore) -> Unit {
 pub fn ClientCore::stop(self : ClientCore) -> Unit {
   self.live = false
   self.local_outbox.set_online(false)
+  self.sync.bump_epoch()
   self.events.stop()
   let ks = self.extra_events.keys()
   for i in 0..<ks.length() {
     match self.extra_events.get(ks[i]) {
       Some(ev) => ev.stop()
+      None => ()
+    }
+  }
+  let sks = self.extra_sync.keys()
+  for i in 0..<sks.length() {
+    match self.extra_sync.get(sks[i]) {
+      Some(sy) => sy.bump_epoch()
       None => ()
     }
   }
@@ -1251,10 +1368,51 @@ pub fn ClientCore::set_on_prefs_saved(
   self.on_prefs_saved = Some(hook)
 }
 
-/// Routine workspace switch (A -> B): updates `self.workspace`.
+/// Routine workspace switch (A -> B): updates `self.workspace` and swaps the active
+/// per-workspace lock slot without altering any attached station's own workspace binding.
 pub fn ClientCore::switch_workspace(self : ClientCore, ws : String) -> Unit {
-  if ws.length() > 0 {
-    self.workspace = ws
+  if ws.length() == 0 {
+    return
+  }
+  self.auth.ensure_workspace(ws)
+  if ws == self.workspace {
+    return
+  }
+  if !self.lock_read_pending {
+    self.extra_locks.set(self.workspace, WorkspaceLockSlot::{
+      lock_state: self.lock_state,
+      lock_root: self.lock_root,
+      lock_kept_entries: self.lock_kept_entries,
+      lock_kept_aside: self.lock_kept_aside,
+      lock_seen: self.lock_seen,
+      lock_corrupt: self.lock_corrupt,
+      lock_effective: self.lock_effective,
+    })
+  }
+  self.workspace = ws
+  match self.extra_locks.get(ws) {
+    Some(slot) => {
+      self.extra_locks.remove(ws)
+      self.lock_state = slot.lock_state
+      self.lock_root = slot.lock_root
+      self.lock_kept_entries = slot.lock_kept_entries
+      self.lock_kept_aside = slot.lock_kept_aside
+      self.lock_seen = slot.lock_seen
+      self.lock_corrupt = slot.lock_corrupt
+      self.lock_read_pending = false
+      self.lock_effective = slot.lock_effective
+    }
+    None => {
+      self.lock_state = None
+      self.lock_root = None
+      self.lock_kept_entries = []
+      self.lock_kept_aside = []
+      self.lock_seen = None
+      self.lock_corrupt = false
+      self.lock_read_pending = false
+      self.lock_effective = None
+      self.restore_lock_state()
+    }
   }
 }
 
@@ -1265,7 +1423,7 @@ pub fn ClientCore::set_db_account_sub(self : ClientCore, sub : String) -> Unit {
   }
 }
 
-fn station_workspace_prefix(addr : String) -> String {
+pub fn station_workspace_prefix(addr : String) -> String {
   match addr.index_of("/") {
     idx if idx > 0 => addr.slice(0, idx)
     _ => ""
@@ -2198,6 +2356,188 @@ pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Arra
   self.router.refresh_topic_name(topic_name)
 }
 
+/// Refresh all active subscriptions matching `topic_name`, returning `(Topic, CoreEvent)` pairs
+/// so outbound callers can stamp exact `WireOutGen` envelopes.
+pub fn ClientCore::refresh_topic_with_topics(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(protocol::Topic, protocol::CoreEvent)] {
+  self.router.refresh_topic_with_topics(topic_name)
+}
+
+/// Refresh all active subscriptions matching `topic_name` and encode each with unified `WireOutGen`.
+pub fn ClientCore::refresh_topic_wire(
+  self : ClientCore,
+  topic_name : String,
+) -> Array[(String, Option[Bytes])] {
+  let pairs = self.router.refresh_topic_with_topics(topic_name)
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<pairs.length() {
+    let (topic, ev) = pairs[i]
+    out.push(self.encode_sub_event(topic, ev))
+  }
+  out
+}
+
+/// Register a real host outbound wire sink (used by `core_runtime`).
+/// When registered, outbound wire frames go directly to the host sink and NEVER accumulate
+/// in `pending_wire_events`.
+pub fn ClientCore::set_wire_sink(
+  self : ClientCore,
+  sink : (String, Option[Bytes]) -> Unit,
+) -> Unit {
+  self.wire_sink = Some(sink)
+  if self.pending_wire_events.length() > 0 {
+    let drained : Array[PendingWireEvent] = []
+    for i in 0..<self.pending_wire_events.length() {
+      drained.push(self.pending_wire_events[i])
+    }
+    self.pending_wire_events.clear()
+    for i in 0..<drained.length() {
+      sink(drained[i].json, drained[i].bytes)
+    }
+  }
+}
+
+/// Emit one outbound wire frame directly to the host sink if registered, or buffer it in
+/// bounded `pending_wire_events` (`<= 256`) in headless unit-test mode, NEVER evicting the
+/// latest `{"id":0,"auth":...}` handshake frame (tracked via explicit `is_handshake` flag).
+pub fn ClientCore::emit_wire_out(
+  self : ClientCore,
+  json_text : String,
+  bytes : Option[Bytes] = None,
+  is_handshake : Bool = false,
+) -> Unit {
+  match self.wire_sink {
+    Some(sink) => sink(json_text, bytes)
+    None => {
+      self.pending_wire_events.push(PendingWireEvent::{
+        json: json_text,
+        bytes: bytes,
+        is_handshake: is_handshake,
+      })
+      while self.pending_wire_events.length() > PENDING_WIRE_MAX {
+        let mut latest_hs_idx = -1
+        for i in 0..<self.pending_wire_events.length() {
+          if self.pending_wire_events[i].is_handshake {
+            latest_hs_idx = i
+          }
+        }
+        let drop_idx = if latest_hs_idx == 0 && self.pending_wire_events.length() > 1 { 1 } else { 0 }
+        let trimmed : Array[PendingWireEvent] = []
+        for i in 0..<self.pending_wire_events.length() {
+          if i != drop_idx {
+            trimmed.push(self.pending_wire_events[i])
+          }
+        }
+        self.pending_wire_events.clear()
+        for i in 0..<trimmed.length() {
+          self.pending_wire_events.push(trimmed[i])
+        }
+      }
+    }
+  }
+}
+
+pub fn ClientCore::drain_pending_wire_events(self : ClientCore) -> Array[(String, Option[Bytes])] {
+  let out : Array[(String, Option[Bytes])] = []
+  for i in 0..<self.pending_wire_events.length() {
+    let ev = self.pending_wire_events[i]
+    out.push((ev.json, ev.bytes))
+  }
+  self.pending_wire_events.clear()
+  out
+}
+
+pub fn ClientCore::pending_wire_event_count(self : ClientCore) -> Int {
+  self.pending_wire_events.length()
+}
+
+/// Emit the authoritative `{"id": 0, "auth": {"conn": N, ...}}` handshake/boundary snapshot.
+pub fn ClientCore::emit_auth_handshake(self : ClientCore) -> String {
+  let json_text = base_codec::json_stringify(self.auth.handshake_json())
+  self.emit_wire_out(json_text, is_handshake=true)
+  json_text
+}
+
+/// Encode any subscription `protocol::CoreEvent` with the single unified `WireOutGen` envelope
+/// (`conn`, plus `authGen` for non-device-global topics and `vaultGen` for vault topics).
+pub fn ClientCore::encode_sub_event(
+  self : ClientCore,
+  topic : protocol::Topic,
+  ev : protocol::CoreEvent,
+) -> (String, Option[Bytes]) {
+  let gen = self.auth.wire_out_gen(topic)
+  protocol::encode_sub_event_with_auth(ev, gen)
+}
+
+pub fn ClientCore::set_on_runtime_boundary(
+  self : ClientCore,
+  cb : (AuthBoundaryEvent) -> Unit,
+) -> Unit {
+  self.on_runtime_boundary = Some(cb)
+}
+
+/// Build the full `WireOutGen` envelope for a raw JSON `subscribe` request whose full parse failed
+/// (`Invalid`), preserving `conn` + `authGen` + `vaultGen` whenever `subscribe.topic` is recognizable.
+pub fn ClientCore::wire_out_gen_for_raw_subscribe(
+  self : ClientCore,
+  raw : base_codec::Json,
+) -> protocol::WireOutGen {
+  match base_codec::json_get(raw, "subscribe") {
+    Some(base_codec::Json::Obj(fs)) => {
+      let mut tname = ""
+      let params : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "topic" {
+          match v {
+            base_codec::Json::Str(s) => { tname = s }
+            _ => ()
+          }
+        } else {
+          params.push((k, v))
+        }
+      }
+      if tname.length() > 0 {
+        return self.auth.wire_out_gen(protocol::Topic::{ name: tname, params: params })
+      }
+    }
+    _ => ()
+  }
+  protocol::WireOutGen::{ conn: self.auth.conn_seq(), auth_gen: None, vault_gen: None }
+}
+
+fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  // 1. Always emit the authoritative `{id: 0, auth: ...}` boundary snapshot first.
+  let _ = self.emit_auth_handshake()
+  // 2. Purge affected `kept` cache & reset cached `last_value` on active subs strictly per `auth.matches_topic`.
+  let matches = fn(t : protocol::Topic) -> Bool {
+    self.auth.matches_topic(t, ev)
+  }
+  self.router.invalidate_kept_where(matches)
+  self.router.invalidate_sub_cache_where(matches)
+  // 3. Re-anchor affected active subscriptions in `self.router` immediately (never freeze subs!).
+  let subs = self.router.active_subs_snapshot()
+  for i in 0..<subs.length() {
+    let (sid, st) = subs[i]
+    if matches(st) {
+      match self.router.refresh_sub_force(sid) {
+        Some((topic, sev)) => {
+          let (j, b) = self.encode_sub_event(topic, sev)
+          self.emit_wire_out(j, bytes=b)
+        }
+        None => ()
+      }
+    }
+  }
+  // 4. Notify runtime host (`core_runtime`) to re-anchor `runtime_subs` and scrub `kept_vals`.
+  match self.on_runtime_boundary {
+    Some(cb) => cb(ev)
+    None => ()
+  }
+}
+
 fn lock_aside_most() -> Int { 256 }
 
 fn lock_entry_hash(e : form::Json, c : lock::Crypto) -> String {
@@ -2254,10 +2594,14 @@ fn lock_same_hash_seq(a : Array[form::Json], b : Array[form::Json], c : lock::Cr
   true
 }
 
-/// Persist lock state into `workspace_pref(self.workspace, "lock")` using the exact TS schema
-/// (`client/core-ts/src/views/lock.ts:1249`): `{ head: { seq, hash, genesis }, entries, aside?, seen? }`.
-fn ClientCore::persist_lock_state(self : ClientCore) -> Result[Unit, String] {
-  let head_j = match self.lock_state {
+fn serialize_lock_pref_json(
+  state : Option[lock::LockState],
+  root : Option[String],
+  kept_entries : Array[form::Json],
+  kept_aside : Array[form::Json],
+  seen : Option[base_codec::Json],
+) -> Option[String] {
+  let head_j = match state {
     Some(st) =>
     base_codec::json_obj([
       ("seq", base_codec::json_num(st.seq)),
@@ -2265,60 +2609,79 @@ fn ClientCore::persist_lock_state(self : ClientCore) -> Result[Unit, String] {
       ("genesis", base_codec::json_str(st.genesis)),
     ])
     None =>
-    match self.lock_root {
+    match root {
       Some(g) =>
       base_codec::json_obj([
         ("seq", base_codec::json_int(-1)),
         ("hash", base_codec::json_str("")),
         ("genesis", base_codec::json_str(g)),
       ])
-      None => return Ok(())
+      None => return None
     }
   }
   let entries_j : Array[base_codec::Json] = []
-  for i in 0..<self.lock_kept_entries.length() {
-    entries_j.push(form_to_codec(self.lock_kept_entries[i]))
+  for i in 0..<kept_entries.length() {
+    entries_j.push(form_to_codec(kept_entries[i]))
   }
   let fields : Array[(String, base_codec::Json)] = [
     ("head", head_j),
     ("entries", base_codec::json_arr(entries_j)),
   ]
-  if self.lock_kept_aside.length() > 0 {
+  if kept_aside.length() > 0 {
     let aside_j : Array[base_codec::Json] = []
-    for i in 0..<self.lock_kept_aside.length() {
-      aside_j.push(form_to_codec(self.lock_kept_aside[i]))
+    for i in 0..<kept_aside.length() {
+      aside_j.push(form_to_codec(kept_aside[i]))
     }
     fields.push(("aside", base_codec::json_arr(aside_j)))
   }
-  match self.lock_seen {
+  match seen {
     Some(seen_v) => fields.push(("seen", seen_v))
     None => ()
   }
-  match store::put_workspace_pref(self.db, self.workspace, "lock", base_codec::json_stringify(base_codec::json_obj(fields))) {
+  Some(base_codec::json_stringify(base_codec::json_obj(fields)))
+}
+
+/// Persist lock state into `workspace_pref(target_ws, "lock")` using the exact TS schema
+/// (`client/core-ts/src/views/lock.ts:1249`): `{ head: { seq, hash, genesis }, entries, aside?, seen? }`.
+fn ClientCore::persist_lock_state_for_workspace(
+  self : ClientCore,
+  target_ws : String,
+  state : Option[lock::LockState],
+  root : Option[String],
+  kept_entries : Array[form::Json],
+  kept_aside : Array[form::Json],
+  seen : Option[base_codec::Json],
+) -> Result[Unit, String] {
+  let raw = match serialize_lock_pref_json(state, root, kept_entries, kept_aside, seen) {
+    Some(s) => s
+    None => return Ok(())
+  }
+  match store::put_workspace_pref(self.db, target_ws, "lock", raw) {
     sql::SqlResult::Ok(_) => Ok(())
     sql::SqlResult::Err(e) => {
       let msg = "failed to persist lock state: " + e.to_string()
-      self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+      self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
       Err(msg)
     }
   }
 }
 
-fn ClientCore::mark_lock_corrupt(self : ClientCore, detail : String) -> Unit {
-  self.lock_corrupt = true
-  self.outbox.tell(CoreEvent::LockRejected(self.workspace, "corrupt persisted lock state; refusing TOFU reset (" + detail + ")"))
-}
-
-fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
-  let raw = match store::get_workspace_pref(self.db, self.workspace, "lock") {
-    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else { return }
-    _ => return
+fn ClientCore::load_lock_slot_from_db(self : ClientCore, target_ws : String) -> Result[WorkspaceLockSlot, String] {
+  let slot = empty_lock_slot()
+  let mark_corrupt = fn(detail : String) -> Unit {
+    slot.lock_corrupt = true
+    self.outbox.tell(CoreEvent::LockRejected(target_ws, "corrupt persisted lock state; refusing TOFU reset (" + detail + ")"))
+  }
+  let raw = match store::get_workspace_pref(self.db, target_ws, "lock") {
+    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else { return Ok(slot) }
+    sql::SqlResult::Ok(None) => return Ok(slot)
+    sql::SqlResult::Err(e) => return Err("failed to read persisted lock state: " + e.to_string())
   }
   let doc = match base_codec::json_parse(raw) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(e) => {
-      self.mark_lock_corrupt("invalid json: " + e)
-      return
+      mark_corrupt("invalid json: " + e)
+      return Ok(slot)
     }
   }
   let root : String = match base_codec::json_get(doc, "head") {
@@ -2326,37 +2689,37 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
       // Valid TS unlocked workspace record: `{"head": null, "entries": [], "seen": [...]}` (`views/lock.ts:1249`).
       match base_codec::json_get(doc, "entries") {
         None => {
-          self.lock_seen = base_codec::json_get(doc, "seen")
-          return
+          slot.lock_seen = base_codec::json_get(doc, "seen")
+          return Ok(slot)
         }
         Some(base_codec::Json::Arr(xs)) => {
           if xs.length() == 0 {
-            self.lock_seen = base_codec::json_get(doc, "seen")
-            return
+            slot.lock_seen = base_codec::json_get(doc, "seen")
+            return Ok(slot)
           }
-          self.mark_lock_corrupt("head is null with non-empty entries")
-          return
+          mark_corrupt("head is null with non-empty entries")
+          return Ok(slot)
         }
         _ => {
-          self.mark_lock_corrupt("head is null with non-array entries")
-          return
+          mark_corrupt("head is null with non-array entries")
+          return Ok(slot)
         }
       }
     }
     Some(head_j) =>
     match proto_str(head_j, "genesis") {
       Some(g) => if g.length() > 0 { g } else {
-        self.mark_lock_corrupt("empty head.genesis")
-        return
+        mark_corrupt("empty head.genesis")
+        return Ok(slot)
       }
       None => {
-        self.mark_lock_corrupt("missing head.genesis")
-        return
+        mark_corrupt("missing head.genesis")
+        return Ok(slot)
       }
     }
     None => {
-      self.mark_lock_corrupt("missing head")
-      return
+      mark_corrupt("missing head")
+      return Ok(slot)
     }
   }
   let kept_entries : Array[form::Json] = []
@@ -2368,8 +2731,8 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
     }
     None => ()
     _ => {
-      self.mark_lock_corrupt("entries is not an array")
-      return
+      mark_corrupt("entries is not an array")
+      return Ok(slot)
     }
   }
   let kept_aside : Array[form::Json] = []
@@ -2381,14 +2744,14 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
     }
     None => ()
     _ => {
-      self.mark_lock_corrupt("aside is not an array")
-      return
+      mark_corrupt("aside is not an array")
+      return Ok(slot)
     }
   }
-  self.lock_seen = base_codec::json_get(doc, "seen")
+  slot.lock_seen = base_codec::json_get(doc, "seen")
   if kept_entries.length() == 0 {
-    self.lock_root = Some(root)
-    return
+    slot.lock_root = Some(root)
+    return Ok(slot)
   }
   let all : Array[form::Json] = []
   for i in 0..<kept_entries.length() {
@@ -2399,31 +2762,78 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
   }
   match verify_workspace_lock(all, root, votes=lock::Votes::Roles, now=None) {
     Ok(v) => {
-      if v.state.ws != self.workspace || v.state.genesis != root {
-        self.mark_lock_corrupt("persisted chain workspace/genesis mismatch")
-        return
+      if v.state.ws != target_ws || v.state.genesis != root {
+        mark_corrupt("persisted chain workspace/genesis mismatch")
+        return Ok(slot)
       }
-      self.lock_root = Some(root)
-      self.lock_state = Some(v.state)
-      self.lock_kept_entries = v.chain.entries
-      self.lock_kept_aside = kept_aside
+      slot.lock_root = Some(root)
+      slot.lock_state = Some(v.state)
+      slot.lock_kept_entries = v.chain.entries
+      slot.lock_kept_aside = kept_aside
+      // Seed canonical lock digests from SQLite at startup without bumping `authGen` / `vaultGen`.
+      let (full_dig, sec_dig) = canonical_lock_digest(v.state)
+      self.lock_digest_by_ws.set(target_ws, full_dig)
+      self.lock_sec_digest_by_ws.set(target_ws, sec_dig)
       let now_secs = self.rt.now().to_double() / 1000.0
-      match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
+      match views::effective_state(target_ws, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
         Ok(eff) => {
-          self.lock_effective = Some(eff)
+          slot.lock_effective = Some(eff)
         }
         Err(_) => ()
       }
+      Ok(slot)
     }
     Err(why) => {
-      self.mark_lock_corrupt("persisted chain verification failed: " + why)
+      mark_corrupt("persisted chain verification failed: " + why)
+      Ok(slot)
+    }
+  }
+}
+
+/// Restore or look up an extra workspace's lock slot. On transient SQLite `Err`, NEVER cache an
+/// empty unpinned slot so a future retry reads the true persisted pin from SQLite.
+fn ClientCore::get_or_restore_extra_lock(self : ClientCore, target_ws : String) -> Result[WorkspaceLockSlot, String] {
+  match self.extra_locks.get(target_ws) {
+    Some(slot) => Ok(slot)
+    None =>
+    match self.load_lock_slot_from_db(target_ws) {
+      Ok(loaded) => {
+        self.extra_locks.set(target_ws, loaded)
+        Ok(loaded)
+      }
+      Err(msg) => Err(msg)
+    }
+  }
+}
+
+fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
+  match self.load_lock_slot_from_db(self.workspace) {
+    Ok(slot) => {
+      self.lock_state = slot.lock_state
+      self.lock_root = slot.lock_root
+      self.lock_kept_entries = slot.lock_kept_entries
+      self.lock_kept_aside = slot.lock_kept_aside
+      self.lock_seen = slot.lock_seen
+      self.lock_corrupt = slot.lock_corrupt
+      self.lock_read_pending = false
+      self.lock_effective = slot.lock_effective
+    }
+    Err(_) => {
+      self.lock_read_pending = true
     }
   }
 }
 
 /// Pin this workspace's lock genesis hash and persist it to SQLite `workspace_pref(ws, "lock")`.
-/// Once pinned to `G` (or if persisted state is corrupt), any attempt to re-pin is rejected.
+/// Once pinned to `G` (or if persisted state is corrupt or unreadable), any attempt to re-pin is rejected.
 pub fn ClientCore::pin_lock_root(self : ClientCore, genesis : String) -> Unit {
+  if self.lock_read_pending {
+    self.restore_lock_state()
+    if self.lock_read_pending {
+      self.outbox.tell(CoreEvent::LockRejected(self.workspace, "persisted lock state unreadable; refusing TOFU pin"))
+      return
+    }
+  }
   if self.lock_corrupt {
     self.outbox.tell(CoreEvent::LockRejected(self.workspace, "corrupt persisted lock state; refusing TOFU reset"))
     return
@@ -2439,8 +2849,12 @@ pub fn ClientCore::pin_lock_root(self : ClientCore, genesis : String) -> Unit {
       }
     }
     None => {
-      self.lock_root = Some(genesis)
-      let _ = self.persist_lock_state()
+      match self.persist_lock_state_for_workspace(self.workspace, None, Some(genesis), [], [], self.lock_seen) {
+        Ok(_) => {
+          self.lock_root = Some(genesis)
+        }
+        Err(_) => ()
+      }
     }
   }
 }
@@ -2455,6 +2869,20 @@ pub fn ClientCore::pinned_lock_root(self : ClientCore) -> Option[String] {
 
 pub fn ClientCore::lock_kept_entries(self : ClientCore) -> Array[form::Json] {
   self.lock_kept_entries
+}
+
+pub fn ClientCore::lock_kept_entries_for(self : ClientCore, workspace : String) -> Array[form::Json] {
+  if workspace.length() == 0 || workspace == self.workspace {
+    if self.lock_read_pending {
+      self.restore_lock_state()
+    }
+    self.lock_kept_entries
+  } else {
+    match self.get_or_restore_extra_lock(workspace) {
+      Ok(sl) => sl.lock_kept_entries
+      Err(_) => []
+    }
+  }
 }
 
 pub fn ClientCore::lock_kept_aside(self : ClientCore) -> Array[form::Json] {
@@ -2499,25 +2927,83 @@ pub fn ClientCore::person_lock_kept_entries(self : ClientCore) -> Array[base_cod
 
 /// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary),
 /// enforcing genesis root pinning, fork-choice merge (`lock::lock_chain` + `ASIDE_MOST = 256`),
-/// anti-rollback protection, and TS-compatible `workspace_pref(ws, "lock")` persistence.
+/// anti-rollback protection, and persist-first TS-compatible `workspace_pref(ws, "lock")` persistence
+/// (memory & `authGen`/`vaultGen` commit ONLY after SQLite write returns `Ok`).
 pub fn ClientCore::apply_lock_chain(
   self : ClientCore,
   entries : Array[form::Json],
   root_hash : String,
   now : Option[Double] = None,
+  workspace : String = "",
 ) -> Result[VerifiedWorkspaceLock, String] {
+  let target_ws = if workspace.length() > 0 { workspace } else { self.workspace }
+  self.apply_lock_chain_for_workspace(target_ws, entries, root_hash, now=now)
+}
+
+fn ClientCore::apply_lock_chain_for_workspace(
+  self : ClientCore,
+  target_ws : String,
+  entries : Array[form::Json],
+  root_hash : String,
+  now : Option[Double] = None,
+) -> Result[VerifiedWorkspaceLock, String] {
+  let is_primary = target_ws == self.workspace
+  let extra_slot_opt : Option[WorkspaceLockSlot] = if is_primary {
+    if self.lock_read_pending {
+      self.restore_lock_state()
+      if self.lock_read_pending {
+        let msg = "persisted lock state unreadable; refusing lock update"
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        return Err(msg)
+      }
+    }
+    None
+  } else {
+    match self.get_or_restore_extra_lock(target_ws) {
+      Ok(sl) => Some(sl)
+      Err(msg) => {
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        return Err(msg)
+      }
+    }
+  }
+  let cur_corrupt = match extra_slot_opt {
+    Some(sl) => sl.lock_corrupt
+    None => self.lock_corrupt
+  }
+  let cur_root = match extra_slot_opt {
+    Some(sl) => sl.lock_root
+    None => self.lock_root
+  }
+  let cur_state = match extra_slot_opt {
+    Some(sl) => sl.lock_state
+    None => self.lock_state
+  }
+  let cur_kept_entries = match extra_slot_opt {
+    Some(sl) => sl.lock_kept_entries
+    None => self.lock_kept_entries
+  }
+  let cur_kept_aside = match extra_slot_opt {
+    Some(sl) => sl.lock_kept_aside
+    None => self.lock_kept_aside
+  }
+  let cur_seen = match extra_slot_opt {
+    Some(sl) => sl.lock_seen
+    None => self.lock_seen
+  }
+
   // Law 0: Never degrade to TOFU when persisted lock state is corrupt.
-  if self.lock_corrupt {
+  if cur_corrupt {
     let msg = "corrupt persisted lock state; refusing TOFU reset"
-    self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+    self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
     return Err(msg)
   }
   // Law 1: Genesis root pinning (anti-hijack). Once pinned to `G`, never accept any other root.
-  match self.lock_root {
+  match cur_root {
     Some(pinned) => {
       if pinned != root_hash {
         let msg = "lock root mismatch: pinned to " + pinned + ", got " + root_hash
-        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
         return Err(msg)
       }
     }
@@ -2525,20 +3011,20 @@ pub fn ClientCore::apply_lock_chain(
   }
   if entries.length() == 0 {
     let msg = "empty lock chain"
-    self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+    self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
     return Err(msg)
   }
 
   let c = native_lock_crypto()
   let kept_hashes : Map[String, Bool] = Map::new()
-  for i in 0..<self.lock_kept_entries.length() {
-    let h = lock_entry_hash(self.lock_kept_entries[i], c)
+  for i in 0..<cur_kept_entries.length() {
+    let h = lock_entry_hash(cur_kept_entries[i], c)
     if h.length() > 0 {
       kept_hashes.set(h, true)
     }
   }
-  for i in 0..<self.lock_kept_aside.length() {
-    let h = lock_entry_hash(self.lock_kept_aside[i], c)
+  for i in 0..<cur_kept_aside.length() {
+    let h = lock_entry_hash(cur_kept_aside[i], c)
     if h.length() > 0 {
       kept_hashes.set(h, true)
     }
@@ -2564,19 +3050,19 @@ pub fn ClientCore::apply_lock_chain(
   // Re-delivering the current high-water head (e.g. `[e2]` with `max_incoming_seq == cur_seq`)
   // is a benign duplicate and returns `Ok` silently without emitting `LockRejected` or `LockUpdated`.
   if fresh.length() == 0 {
-    match self.lock_state {
+    match cur_state {
       Some(cur_st) => {
         let cur_seq = cur_st.seq.to_int()
         if max_incoming_seq < cur_seq {
           let msg = "lock rollback rejected: incoming max seq " + max_incoming_seq.to_string() + " < held seq " + cur_seq.to_string()
-          self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
           return Err(msg)
         }
-        return verify_workspace_lock(self.lock_kept_entries, root_hash, votes=lock::Votes::Roles, now=now)
+        return verify_workspace_lock(cur_kept_entries, root_hash, votes=lock::Votes::Roles, now=now)
       }
       None => {
         let msg = "no valid lock entries"
-        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
         return Err(msg)
       }
     }
@@ -2584,11 +3070,11 @@ pub fn ClientCore::apply_lock_chain(
 
   // Law 2b: Merge kept entries + kept aside + fresh entries and run `lock::lock_chain` fork choice.
   let all : Array[form::Json] = []
-  for i in 0..<self.lock_kept_entries.length() {
-    all.push(self.lock_kept_entries[i])
+  for i in 0..<cur_kept_entries.length() {
+    all.push(cur_kept_entries[i])
   }
-  for i in 0..<self.lock_kept_aside.length() {
-    all.push(self.lock_kept_aside[i])
+  for i in 0..<cur_kept_aside.length() {
+    all.push(cur_kept_aside[i])
   }
   for i in 0..<fresh.length() {
     all.push(fresh[i])
@@ -2596,18 +3082,18 @@ pub fn ClientCore::apply_lock_chain(
 
   match verify_workspace_lock(all, root_hash, votes=lock::Votes::Roles, now=now) {
     Err(why) => {
-      self.outbox.tell(CoreEvent::LockRejected(self.workspace, why))
+      self.outbox.tell(CoreEvent::LockRejected(target_ws, why))
       Err(why)
     }
     Ok(v) => {
-      if v.state.ws != self.workspace {
-        let msg = "lock workspace mismatch: expected " + self.workspace + ", got " + v.state.ws
-        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+      if v.state.ws != target_ws {
+        let msg = "lock workspace mismatch: expected " + target_ws + ", got " + v.state.ws
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
         return Err(msg)
       }
       if v.state.genesis != root_hash {
         let msg = "lock genesis mismatch: expected " + root_hash + ", got " + v.state.genesis
-        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
         return Err(msg)
       }
 
@@ -2632,25 +3118,25 @@ pub fn ClientCore::apply_lock_chain(
       }
 
       // Align with `lock-keep.ts:89`: held chain entries may only leave for a rules-beaten branch.
-      for i in 0..<self.lock_kept_entries.length() {
-        let e = self.lock_kept_entries[i]
+      for i in 0..<cur_kept_entries.length() {
+        let e = cur_kept_entries[i]
         let h = lock_entry_hash(e, c)
         if on_set.get(h).is_none() && !is_aside(e) {
           let msg = "the chain held does not hold by the rules"
-          self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
           return Err(msg)
         }
       }
 
       // Retain aside entries up to ASIDE_MOST (256), pruning descendants of dropped entries (`lock-keep.ts:91-104`).
       let old_aside : Array[form::Json] = []
-      for i in 0..<self.lock_kept_aside.length() {
-        if is_aside(self.lock_kept_aside[i]) {
-          old_aside.push(self.lock_kept_aside[i])
+      for i in 0..<cur_kept_aside.length() {
+        if is_aside(cur_kept_aside[i]) {
+          old_aside.push(cur_kept_aside[i])
         }
       }
-      for i in 0..<self.lock_kept_entries.length() {
-        let e = self.lock_kept_entries[i]
+      for i in 0..<cur_kept_entries.length() {
+        let e = cur_kept_entries[i]
         let h = lock_entry_hash(e, c)
         if on_set.get(h).is_none() && is_aside(e) {
           old_aside.push(e)
@@ -2718,34 +3204,79 @@ pub fn ClientCore::apply_lock_chain(
       // If we already hold a lock state and NONE of the fresh incoming entries entered the active
       // chain or aside (e.g. forged signatures `NotValid` OR spoofed `root: G` carrying a foreign
       // chain `NoParent`), emit LockRejected and return Err — NEVER emit LockUpdated!
-      let active_same = lock_same_hash_seq(v.chain.entries, self.lock_kept_entries, c)
-      let aside_same = lock_same_hash_seq(final_aside, self.lock_kept_aside, c)
-      if self.lock_state.is_some() && active_same && aside_same {
+      let active_same = lock_same_hash_seq(v.chain.entries, cur_kept_entries, c)
+      let aside_same = lock_same_hash_seq(final_aside, cur_kept_aside, c)
+      if cur_state.is_some() && active_same && aside_same {
         let msg = "incoming lock entries rejected (" + fresh.length().to_string() + " unaccepted, " + v.rejected_count.to_string() + " invalid)"
-        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
         return Err(msg)
       }
 
-      self.lock_root = Some(v.state.genesis)
-      self.lock_state = Some(v.state)
-      self.lock_kept_entries = v.chain.entries
-      self.lock_kept_aside = final_aside
       let now_secs = match now {
         Some(t) => t
         None => self.rt.now().to_double() / 1000.0
       }
-      match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, c) {
-        Ok(eff) => {
-          self.lock_effective = Some(eff)
-        }
-        Err(_) => ()
+      let eff_opt : Option[views::EffectiveLockState] = match views::effective_state(target_ws, v.chain.entries, [], [], now_secs, c) {
+        Ok(eff) => Some(eff)
+        Err(_) => None
       }
-      match self.persist_lock_state() {
+
+      // Persist to SQLite FIRST before mutating in-memory lock state, digests, or bumping authGen/vaultGen.
+      // If SQLite fails, memory stays at the prior committed state so retrying the same head succeeds cleanly.
+      match self.persist_lock_state_for_workspace(target_ws, Some(v.state), Some(v.state.genesis), v.chain.entries, final_aside, cur_seen) {
         Ok(_) => ()
         Err(msg) => return Err(msg)
       }
+
+      match extra_slot_opt {
+        Some(sl) => {
+          sl.lock_root = Some(v.state.genesis)
+          sl.lock_state = Some(v.state)
+          sl.lock_kept_entries = v.chain.entries
+          sl.lock_kept_aside = final_aside
+          match eff_opt {
+            Some(eff) => { sl.lock_effective = Some(eff) }
+            None => ()
+          }
+        }
+        None => {
+          self.lock_root = Some(v.state.genesis)
+          self.lock_state = Some(v.state)
+          self.lock_kept_entries = v.chain.entries
+          self.lock_kept_aside = final_aside
+          match eff_opt {
+            Some(eff) => { self.lock_effective = Some(eff) }
+            None => ()
+          }
+        }
+      }
+      // Full-set canonical lock digest (disabled + rp_id + origins + sorted members + devices +
+      // sign_keys + passkeys + signed + persons + gateways + cloud_keys + moved + stations,
+      // excluding volatile `head`/`seq`).
+      // Cold-start first verified lock seeds the digest without spuriously bumping `authGen`/`vaultGen`;
+      // NEVER derive `revoked` from `lock.members`.
+      let (new_full, new_sec) = canonical_lock_digest(v.state)
+      let prev_full = self.lock_digest_by_ws.get(target_ws)
+      let prev_sec = self.lock_sec_digest_by_ws.get(target_ws)
+      self.lock_digest_by_ws.set(target_ws, new_full)
+      self.lock_sec_digest_by_ws.set(target_ws, new_sec)
+      let full_changed = match prev_full {
+        Some(pf) => pf != new_full
+        None => false
+      }
+      let sec_changed = match prev_sec {
+        Some(ps) => ps != new_sec
+        None => false
+      }
+      if full_changed {
+        if sec_changed {
+          let _ = self.auth.bump_workspace_and_vault(target_ws)
+        } else {
+          let _ = self.auth.bump_workspace(target_ws)
+        }
+      }
       self.outbox.tell(CoreEvent::LockUpdated(
-        self.workspace,
+        target_ws,
         v.state.head,
         v.state.seq,
         v.state.members.length(),
@@ -2759,24 +3290,25 @@ pub fn ClientCore::current_lock(self : ClientCore) -> Option[lock::LockState] {
   self.lock_state
 }
 
-/// Build the structured `lock.status` JSON payload for this workspace.
-/// Law 3 (workspace isolation): requesting a different workspace MUST NOT leak this workspace's lock state.
+/// Build the structured `lock.status` JSON payload for `workspace` (defaulting to `self.workspace`).
+/// Law 3 (workspace isolation): requesting a different workspace MUST NOT leak another workspace's lock state.
 pub fn ClientCore::lock_status_json(self : ClientCore, workspace : Option[String] = None) -> base_codec::Json {
-  match workspace {
-    Some(ws) => {
-      if ws.length() > 0 && ws != self.workspace {
-        return base_codec::json_obj([
-          ("workspace", base_codec::json_str(ws)),
-          ("locked", base_codec::json_bool(false)),
-        ])
-      }
-    }
-    None => ()
+  let target_ws = match workspace {
+    Some(ws) => if ws.length() > 0 { ws } else { self.workspace }
+    None => self.workspace
   }
-  match self.lock_state {
+  let state_opt = if target_ws == self.workspace {
+    self.lock_state
+  } else {
+    match self.extra_locks.get(target_ws) {
+      Some(sl) => sl.lock_state
+      None => None
+    }
+  }
+  match state_opt {
     None =>
     base_codec::json_obj([
-      ("workspace", base_codec::json_str(self.workspace)),
+      ("workspace", base_codec::json_str(target_ws)),
       ("locked", base_codec::json_bool(false)),
     ])
     Some(st) => {
@@ -2810,20 +3342,43 @@ pub fn ClientCore::open_job_count(self : ClientCore) -> Int {
 }
 
 fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) -> Unit {
+  let _ = self.handle_lock_event_for_workspace(self.workspace, payload, sync_opt=Some(self.sync), station=self.station)
+}
+
+fn ClientCore::handle_lock_event_for_workspace(
+  self : ClientCore,
+  target_ws : String,
+  payload : base_codec::Json,
+  sync_opt : Option[SyncScheduler] = None,
+  station : String = "",
+) -> Result[Unit, String] {
+  let _ = station
   match proto_str(payload, "workspace") {
     Some(ws) => {
-      if ws.length() > 0 && ws != self.workspace {
-        return
+      if ws.length() > 0 && ws != target_ws {
+        return Ok(())
       }
     }
     None => ()
   }
   let raw_entries = match base_codec::json_get(payload, "entries") {
     Some(base_codec::Json::Arr(xs)) => xs
-    _ => return
+    _ => []
   }
   if raw_entries.length() == 0 {
-    return
+    // Real station SSE `event: lock` notification (`station/src/mesh/lock-events.ts:27`) carries
+    // `{ workspace, head }` without `entries`: trigger coalesced ungated `GET /lock` retry loop.
+    if base_codec::json_get(payload, "head").is_some() {
+      let target_sync : Option[SyncScheduler] = match sync_opt {
+        Some(sy) => Some(sy)
+        None => if target_ws == self.workspace { Some(self.sync) } else { None }
+      }
+      match target_sync {
+        Some(sy) => sy.schedule_lock_refresh(self.rt)
+        None => ()
+      }
+    }
+    return Ok(())
   }
   let form_entries : Array[form::Json] = []
   for i in 0..<raw_entries.length() {
@@ -2841,13 +3396,32 @@ fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) 
     Some(hj) => proto_str(hj, "genesis")
     None => None
   }
+  let existing_root = if target_ws == self.workspace {
+    if self.lock_read_pending {
+      self.restore_lock_state()
+      if self.lock_read_pending {
+        let msg = "persisted lock state unreadable; refusing lock event"
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        return Err(msg)
+      }
+    }
+    self.lock_root
+  } else {
+    match self.get_or_restore_extra_lock(target_ws) {
+      Ok(sl) => sl.lock_root
+      Err(msg) => {
+        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        return Err(msg)
+      }
+    }
+  }
   let root = match proto_str(payload, "root") {
     Some(r) => if r.length() > 0 { r } else { "" }
     None =>
     match head_genesis {
       Some(g) => if g.length() > 0 { g } else { "" }
       None =>
-      match self.lock_root {
+      match existing_root {
         Some(r) => r
         None => {
           // Derive genesis root hash from seq=0 genesis entry on initial fetch/event
@@ -2870,9 +3444,12 @@ fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) 
     }
   }
   if root.length() == 0 {
-    return
+    return Err("missing lock root")
   }
-  let _ = self.apply_lock_chain(form_entries, root)
+  match self.apply_lock_chain_for_workspace(target_ws, form_entries, root) {
+    Ok(_) => Ok(())
+    Err(msg) => Err(msg)
+  }
 }
 
 /// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).
@@ -4214,14 +4791,36 @@ pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Op
     match protocol::wire_error_id(raw) {
       Some(id) => {
         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_message", message: msg })
-        Some(protocol::encode_core_event(ev))
+        if base_codec::json_get(raw, "subscribe").is_some() {
+          Some(protocol::encode_sub_event_with_auth(ev, self.wire_out_gen_for_raw_subscribe(raw)))
+        } else {
+          Some(protocol::encode_core_event(ev))
+        }
       }
       None => None
     }
-    protocol::ParseRequestResult::Ok(req) =>
-    match self.handle_request(req) {
-      Some(ev) => Some(protocol::encode_core_event(ev))
-      None => None
+    protocol::ParseRequestResult::Ok(req) => {
+      let sub_topic_opt : Option[protocol::Topic] = match req {
+        protocol::CoreRequest::Subscribe(_, topic, _, _, _) => Some(topic)
+        protocol::CoreRequest::Unsubscribe(id, _, _) => self.router.active_sub_topic(id)
+        _ => None
+      }
+      match self.handle_request(req) {
+        Some(ev) =>
+        match sub_topic_opt {
+          Some(topic) => Some(self.encode_sub_event(topic, ev))
+          None =>
+          match ev {
+            protocol::CoreEvent::Unsubscribed(_, _) =>
+            Some(protocol::encode_sub_event_with_auth(
+              ev,
+              protocol::WireOutGen::{ conn: self.auth.conn_seq(), auth_gen: None, vault_gen: None },
+            ))
+            _ => Some(protocol::encode_core_event(ev))
+          }
+        }
+        None => None
+      }
     }
   }
 }

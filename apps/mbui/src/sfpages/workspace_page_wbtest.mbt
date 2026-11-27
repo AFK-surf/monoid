@@ -198,7 +198,7 @@ test "moving a person out, on every screen: the panel closes for the asking (a s
     let t = ws_opened(screen, "ana@example.com", fn(s) { ws_changing(s, calls) })
     ws_press(t, Button, "移出 workspace")
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("将 ana@example.com 移出「星火工作室」？") is Some(_), msg="\{at}: \{t.drawn_text()}")
+    assert_true(t.find("移出成员") is Some(_) && t.find("ana@example.com") is Some(_) && t.find("星火工作室") is Some(_), msg="\{at}: \{t.drawn_text()}")
     // (the panel's roles gone with it: the asking in its place)
     assert_true(t.query(Button, label="成员") is None, msg=at)
     assert_eq(calls.filter(fn(c) { c.0 == "workspace.removeMember" }).length(), 0, msg=at)
@@ -230,7 +230,7 @@ test "a person's role being set: their roles not picked again meanwhile; moving 
   assert_eq(calls.filter(fn(c) { c.0 == "workspace.setRole" }).length(), 0)
   ws_press(t, Button, "移出 workspace")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("将 ana@example.com 移出「星火工作室」？") is Some(_))
+  assert_true(t.find("移出成员") is Some(_) && t.find("ana@example.com") is Some(_) && t.find("星火工作室") is Some(_))
   @sf.presenters_reset()
 }
 

@@ -125,7 +125,7 @@ test "a row swiped on 小屏 waiting for its whole row 1 s late, something else 
     t.run_for(press_step_ms)
     put_up_other(t)
     t.run_for(late + come_ms)
-    assert_true(t.find("归档「" + title + "」？") is None, msg="\{what}: asked")
+    assert_true(t.find("归档对话") is None, msg="\{what}: asked")
     assert_eq(named(calls, "chat.archive").length(), 0, msg="\{what}: archived")
     // (back where it rests: its title where it was)
     let (x2, _) = t.find(title).unwrap()

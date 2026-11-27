@@ -1821,3 +1821,34 @@ test("a_microphones_calls_are_checked", () => {
   const [frames] = readClientFrames(join([micOnFrame(true), micFrame(new Uint8Array([1, 2]), 7)]));
   assert.deepEqual(frames, [{ micOn: true }, { mic: { flags: 0, epoch: 7, data: new Uint8Array([1, 2]) } }]);
 });
+
+test("cancelling_a_screen_view_releases_its_name_synchronously_for_immediate_reopen", async () => {
+  const { host, core, ui, views } = await viewing(1);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "same-v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  assert.equal(views.length, 1);
+
+  // Two concurrent uncancelled views of the same name still fail with invalid_params.
+  call(core, ui, 2, "screen.view", { station: "ws/st", screen: "desktop", view: "same-v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  said(host, log);
+  assert.equal(log.find((m) => m.id === 2)?.error?.code, "invalid_params");
+
+  // Cancelling id=1 and synchronously opening id=3 with the same view name (before async interruption settles) succeeds.
+  core.receive(ui, { kind: "cancel", id: 1, cancel: true });
+  call(core, ui, 3, "screen.view", { station: "ws/st", screen: "desktop", view: "same-v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  said(host, log);
+  assert.equal(log.find((m) => m.id === 3 && m.error), undefined, "immediate reopen after cancel must not fail with already open");
+  assert.equal(views.length, 2);
+
+  // The cancelled fiber's finalizer must not remove the replacement entry from `open`.
+  views[1]!.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(64, 1))]));
+  await host.settle();
+  call(core, ui, 4, "screen.control", { view: "same-v", control: false });
+  await host.settle();
+  said(host, log);
+  assert.equal(log.find((m) => m.id === 4)?.error, undefined, "follow-up RPC must still find replacement view");
+  core.close();
+});

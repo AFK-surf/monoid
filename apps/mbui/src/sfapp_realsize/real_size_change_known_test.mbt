@@ -3502,7 +3502,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-station-move-all station/archiving": (0, 0, 0, 0, 0, 0),
   "phone settings-station-move-all stationMove to= module=/moving": (2, 0, 7, 0, 0, 0),
   "phone settings-station-move-all screens/screen": (0, 0, 0, 0, 0, 0),
-  "phone settings-station-move-all stationNet/sample": (0, 0, 7, 0, 0, 0),
+  // Raised 2026-11-27: move-all confirm now displays the live target StationInfoCard with network status.
+  "phone settings-station-move-all stationNet/sample": (0, 0, 17, 1, 0, 0),
   "phone settings-station-move-all resources/sample": (0, 0, 7, 0, 0, 0),
   "phone settings-station-move-section connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-station-move-section vaults/item": (0, 0, 0, 0, 0, 0),
@@ -3655,6 +3656,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide settings-station-move-all vaults/item": (0, 0, 0, 0, 0, 0),
   "wide settings-station-move-all profiles/quota": (0, 0, 0, 0, 0, 0),
   "wide settings-station-move-all profiles/down": (0, 0, 22, 2, 0, 0),
+  // Raised 2026-11-27: move-all confirm now displays the live target StationInfoCard with network status.
+  "wide settings-station-move-all stationNet/sample": (0, 0, 14, 1, 0, 0),
   "wide settings-station-move-section station/updating": (0, 0, 0, 0, 0, 0),
   "wide settings-station-move-section station/session": (0, 0, 0, 0, 0, 0),
   "wide settings-station-move-section station/quota": (0, 0, 0, 0, 0, 0),

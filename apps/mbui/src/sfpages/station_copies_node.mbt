@@ -473,8 +473,8 @@ pub fn backup_node(
                           @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Delete") }, fn() {
                             let sname = @signals.untracked(fn() { text(sv(), "name") })
                             @sf.confirm(
-                              @sf.t("web-pages.stations.copies.s3DeleteTitle", args=[("name", sname)]),
-                              @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
+                              @sf.t("web-pages.stations.copies.s3DeleteTitle"),
+                              @sf.t("web-pages.stations.copies.s3DeleteBody"),
                               @sf.t("web-pages.stations.copies.s3Delete"),
                               fn() {
                                 let kept = draft_s3.untracked().filter(fn(item) { text(Some(item), "id") != sid })
@@ -482,6 +482,7 @@ pub fn backup_node(
                                 s3_dirty.set(true)
                               },
                               danger=true,
+                              facts=[(@sf.t("common.confirmFact.backupTarget"), sname)],
                             )
                           }, tone=Ghost, disabled=fn() { applying.get() })
                           |> ignore
@@ -1310,9 +1311,10 @@ pub fn station_backup_node(
                       @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Delete") }, fn() {
                         let sname = @signals.untracked(fn() { text(sv(), "name") })
                         @sf.confirm(
-                          @sf.t("web-pages.stations.copies.s3DeleteTitle", args=[("name", sname)]),
-                          @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
+                          @sf.t("web-pages.stations.copies.s3DeleteTitle"),
+                          @sf.t("web-pages.stations.copies.s3DeleteBody"),
                           @sf.t("web-pages.stations.copies.s3Delete"),
+                          facts=[(@sf.t("common.confirmFact.backupTarget"), sname)],
                           fn() {
                             let kept : Array[Json] = []
                             for item in items(@signals.untracked(backup), "s3") {
@@ -1722,9 +1724,10 @@ fn copies_generated_key_dialog(core : Core, keys : Array[(String, String)]) -> U
 /// `copies.restore` of `copy` (CopyOffer), passing `fromS3` for S3/R2 offers or `fromStation` for peer station offers.
 pub fn copies_restore_confirm(core : Core, address : String, copy : Json?, on_restored? : () -> Unit) -> Unit {
   @sf.confirm(
-    @sf.t("web-pages.stations.copies.restoreTitle", args=[("name", text(copy, "name"))]),
-    @sf.t("web-pages.stations.copies.restoreBody", args=[("name", text(copy, "name"))]),
+    @sf.t("web-pages.stations.copies.restoreTitle"),
+    @sf.t("web-pages.stations.copies.restoreBody"),
     @sf.t("web-pages.stations.copies.restore"),
+    facts=[(@sf.t("common.confirmFact.backupSource"), text(copy, "name"))],
     fn() {
       let from_s3 = text(copy, "fromS3")
       let params : Array[(String, Json)] = [

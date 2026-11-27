@@ -609,7 +609,7 @@ test "a chat keeping watch is archived only once asked, in the core's words" {
   let (lx, ly) = t.find_last("归档").unwrap()
   t.tap(lx, ly)
   assert_eq(named(calls, "chat.archive").length(), 0)
-  assert_true(t.find("归档「盯着 CI，绿了告诉我」？") is Some(_))
+  assert_true(t.find("归档对话") is Some(_) && t.find("盯着 CI，绿了告诉我") is Some(_))
   assert_true(t.find("「主干构建」仍在监控。归档会停止监控。") is Some(_))
   // its 归档, beside 取消
   let (cx, cy, cw, ch) = t.rect_of("取消").unwrap()
@@ -738,7 +738,7 @@ test "a finger swiping a chat at work asks before archiving it, in the core's wo
   t.drag(x + 190.0, y, x + 10.0, y)
   t.run_for(@ui.move_most_ms)
   assert_eq(named(calls, "chat.archive").length(), 0)
-  assert_true(t.find("归档「整理发布清单」？") is Some(_))
+  assert_true(t.find("归档对话") is Some(_) && t.find("整理发布清单") is Some(_))
   assert_true(t.find("此对话正在进行中。归档后，agent 完成当前回复即停止，等待中的任务也会停止。") is Some(_))
   let (cx, cy, cw, ch) = t.rect_of("取消").unwrap()
   t.tap(cx + cw + 40.0, cy + ch / 2.0)
@@ -759,7 +759,7 @@ test "a finger swiping a chat keeping watch asks before archiving it" {
   let (x, y) = t.find("盯着 CI，绿了告诉我").unwrap()
   t.drag(x + 190.0, y, x + 10.0, y)
   assert_eq(named(calls, "chat.archive").length(), 0)
-  assert_true(t.find("归档「盯着 CI，绿了告诉我」？") is Some(_))
+  assert_true(t.find("归档对话") is Some(_) && t.find("盯着 CI，绿了告诉我") is Some(_))
   assert_true(t.find("「主干构建」仍在监控。归档会停止监控。") is Some(_))
   let (cx, cy, cw, ch) = t.rect_of("取消").unwrap()
   t.tap(cx + cw + 40.0, cy + ch / 2.0)
@@ -912,7 +912,7 @@ test "a finger swiping a chat someone else started asks first, archiving it bein
   t.drag(x + 190.0, y, x + 10.0, y)
   t.run_for(@ui.move_most_ms)
   assert_eq(named(calls, "chat.archive").length(), 0)
-  assert_true(t.find("归档「和 Ana 一起看新版的引导页」？") is Some(_))
+  assert_true(t.find("归档对话") is Some(_) && t.find("和 Ana 一起看新版的引导页") is Some(_))
   assert_true(t.find("这是Ana发起的对话。归档后，workspace 里所有人的列表都不再显示它，agent 也不再接收新消息。") is Some(_))
   // 取消: nothing archived, the row where it rests
   t.tap_text("取消")
@@ -924,7 +924,7 @@ test "a finger swiping a chat someone else started asks first, archiving it bein
   t.drag(x + 190.0, y, x + 10.0, y)
   t.run_for(@ui.move_most_ms)
   assert_eq(named(calls, "chat.archive").length(), 1)
-  assert_true(t.find("归档「首页的列表改成按天分组」？") is None)
+  assert_true(t.find("归档对话") is None)
 }
 
 ///|

@@ -1583,3 +1583,83 @@ test "step_sweep atomically renames to tombstone before yielding so concurrent p
   expect(flat_done && flat_yields >= 3, "RemoveTreeCursor yielded mid-flat-dir per file budget")
   expect(!(fs.exists)("/flat"), "flat dir completely deleted")
 }
+
+test "w17b2_shared_clone_packs_and_preview_frame_reader" {
+  // #8900 + #8901: is_temp_pack_name, packs_counted, prune_stale_temp_packs_in, keep_shared_clone_packs
+  expect(is_temp_pack_name(".tmp-12345-pack-abc.pack"), "pack-objects temp pack")
+  expect(is_temp_pack_name("tmp_pack_xyz"), "index-pack temp pack")
+  expect(!is_temp_pack_name("pack-deadbeef.pack"), "normal pack not temp")
+
+  let now = 10L * DAY_MS
+  let mem = MemFs::new(now)
+  let fs = mem.to_port()
+  mem.put_dir("/data/repos/r1/.git/objects/pack")
+  mem.put_file("/data/repos/r1/.git/objects/pack/pack-1.pack", "x", now)
+  mem.put_file("/data/repos/r1/.git/objects/pack/pack-2.pack", "x", now)
+  mem.put_file("/data/repos/r1/.git/objects/pack/pack-2.keep", "k", now)
+  mem.put_file("/data/repos/r1/.git/objects/pack/.tmp-99-pack-old.pack", "t", now - 2L * DAY_MS)
+  mem.put_file("/data/repos/r1/.git/objects/pack/tmp_pack_fresh", "t", now - 1000L)
+  expect(packs_counted(fs, "/data/repos/r1") == 1, "only unkept pack-*.pack counted")
+
+  let gone = prune_stale_temp_packs_in(fs, "/data/repos/r1", now, DAY_MS)
+  expect(gone.length() == 1 && gone[0] == ".tmp-99-pack-old.pack", "pruned only day-old temp pack")
+
+  let git_calls : Array[String] = []
+  let ok = keep_shared_clone_packs(
+    fs,
+    "r1",
+    "/data/repos/r1",
+    true,
+    fn(_dir : String, args : Array[String], _timeout : Int64, _bg : Bool) -> (Bool, String) {
+      git_calls.push(args.join(" "))
+      if args.length() >= 3 && args[2] == "--get-all" {
+        (true, "false\nfalse\n")
+      } else {
+        (true, "")
+      }
+    },
+    now,
+  )
+  expect(ok, "keep_shared_clone_packs succeeded")
+  // Duplicate config values triggered --replace-all, followed by foreground gc --auto --quiet
+  let last_call = git_calls[git_calls.length() - 1]
+  expect(last_call.contains("gc.autoDetach=false") && last_call.contains("gc --auto --quiet"), "ran foreground gc")
+
+  // R1: Upkeep::run_round wires keep_all_shared_clone_packs and skips failed clones on non-daily rounds
+  let upkeep = Upkeep::new("/data", 42, fs)
+  let gc_runs = [0]
+  let hooks = UpkeepHooks::{
+    ..empty_upkeep_hooks(),
+    repo_git: Some(fn(_dir : String, args : Array[String], _timeout : Int64, _bg : Bool) -> (Bool, String) {
+      if args.length() >= 3 && args[2] == "--get-all" {
+        (true, if args[3] == "gc.auto" { "0\n" } else { "false\n" })
+      } else {
+        gc_runs[0] = gc_runs[0] + 1
+        (false, "timeout")
+      }
+    }),
+  }
+  let _ = upkeep.run_round(now, hooks) // daily round: runs gc, records failure
+  expect(gc_runs[0] == 1 && upkeep.gc_failed.contains("/data/repos/r1"), "daily round ran gc and recorded failure")
+  let _ = upkeep.run_round(now + 60000L, hooks) // non-daily round: skips failed clone
+  expect(gc_runs[0] == 1, "non-daily round skipped failed clone")
+  let _ = upkeep.run_round(now + REPO_BRANCHES_EVERY_MS + 1000L, hooks) // next daily round: retries
+  expect(gc_runs[0] == 2, "next daily round retried failed clone")
+
+  // #9070: PreviewFrameReader single-join + EOF-inside-frame detection
+  let pr = PreviewFrameReader::new()
+  let hdr = Bytes::new(5)
+  hdr[0] = 2.to_byte()
+  hdr[4] = 5.to_byte()
+  expect(match pr.feed(hdr) { Ok(f) => f.length() == 0, Err(_) => false }, "header buffered")
+  expect(pr.finish() is Err(_), "EOF inside frame is error")
+  expect(match pr.feed("hel".to_bytes()) { Ok(f) => f.length() == 0, Err(_) => false }, "part 1")
+  match pr.feed("lo".to_bytes()) {
+    Ok(frames) => {
+      expect(frames.length() == 1 && frames[0].0 == 2 && frames[0].1.to_string() == "hello", "joined frame")
+      expect(pr.join_alloc_bytes == 5L, "joined once at exact size")
+    }
+    Err(e) => panic(e)
+  }
+  expect(pr.finish() is Ok(_), "EOF between frames is ok")
+}

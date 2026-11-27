@@ -918,7 +918,7 @@ fn sec_member_panel(
   about : String,
   from : @sf.Anchor,
 ) -> Unit {
-  @sf.panel_nodes(name, from~, description=about, fn(v, close) {
+  @sf.panel_nodes(@sf.t("web-pages.security.memberDevicesTitle"), from~, fn(v, close) {
     let now = fn() { items(lock(), "members").iter().find_first(fn(x) { text(Some(x), "sub") == sub }) }
     let last : Ref[Json] = Ref(was)
     let shown = fn() {
@@ -931,9 +931,12 @@ fn sec_member_panel(
       }
     }
     v.reacts(fn() { lock() is Some(_) && now() is None }, fn(gone) { if gone { close() } })
-    // (who they are, over their devices: a sheet says it under its title (its description); a popover beside the row,
-    // which says none, in its body)
-    @sf.panel_popover_note_node(v, fn() { about })
+    @sf.dialog_facts_card_node(v, [
+      (@sf.t("common.confirmFact.member"), name),
+    ])
+    if about != "" {
+      @sf.panel_note_node(v, fn() { about })
+    }
     @sf.group_node(v, fn(g) {
       // (each by its id: what a row reads once as it is made, which machine it is, stays its own)
       g.each(fn() { sec_devices_of(Some(shown())) }, fn(d) { text(Some(d), "id") }, fn(row, d) {
@@ -1212,10 +1215,11 @@ fn open_block_node(parent : @view.View, core : Core, ws : () -> String, draft : 
 /// 移除「…」？: a device taken out of the lock, said what that means first.
 pub fn remove_dialog(core : Core, ws : String, device : String, name : String) -> Unit {
   @sf.confirm(
-    @sf.t("web-pages.security.removeTitle", args=[("name", name)]),
+    @sf.t("web-pages.security.removeTitle"),
     @sf.t("web-pages.security.removeBody"),
     @sf.t("web-pages.security.remove"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.device"), name)],
     fn() {
       lock_call(core, ws, "removeDevice", @sf.t("web-pages.security.remove"), [("device", device)], done=@sf.t("web-pages.security.removed"))
     },

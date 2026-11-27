@@ -2290,7 +2290,7 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
   }
   let resub = "{\"id\":51,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-biz\"},\"keyed\":true,\"have\":\"" + v_tok + "\"}"
   match core.handle_wire(resub) {
-    Some((txt, _)) => debug_assert(txt == "{\"id\":51,\"same\":true}", "resubscribe with matching have returns same:true")
+    Some((txt, _)) => debug_assert(txt == "{\"id\":51,\"same\":true,\"conn\":1,\"authGen\":1}", "resubscribe with matching have returns same:true with WireOutGen")
     None => debug_assert(false, "expected same:true")
   }
   core.stop()

@@ -532,6 +532,8 @@ pub fn build_codex_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String
 pub let AGY_SKILL_BUDGET : Int = 20000
 pub let AGY_TOOL_BUDGET : Int = 22000
 pub let AGY_TOOL_CEILING : Int = 31000
+pub let AGY_REPO_RULES_TOOLS : String = "run_command|read_file|write_file|edit_file|view_file|grep_search|find_by_name|list_dir"
+pub let AGY_HOOK_SECONDS : Int = 10
 
 pub fn agy_scrubbed() -> Array[String] {
   [
@@ -544,7 +546,97 @@ pub fn agy_scrubbed() -> Array[String] {
     "AGY_ADC_AUTH",
     "AGY_ACCOUNT",
     "STILLFAIL_REPO_RULES",
+    "STILLFAIL_AGY_STATE_DIR",
   ]
+}
+
+/// Build the `stillfail` hooks value (`PostToolUse`, flat `PostInvocation`, flat `Stop`)
+/// 1:1 aligned byte-for-byte with `station/src/agents/agy.ts:539-543`.
+pub fn agy_stillfail_hooks_json(
+  node : String,
+  repo_hook_file : String,
+  stop_hook_file : String,
+  os_name : String,
+) -> base_codec::Json {
+  let repo_cmd = agy_hook_command(node, repo_hook_file, os_name)
+  let stop_cmd = agy_hook_command(node, stop_hook_file, os_name)
+  json_obj([
+    (
+      "PostToolUse",
+      json_arr([
+        json_obj([
+          ("matcher", json_str(AGY_REPO_RULES_TOOLS)),
+          (
+            "hooks",
+            json_arr([
+              json_obj([
+                ("type", json_str("command")),
+                ("command", json_str(repo_cmd)),
+                ("timeout", json_int(AGY_HOOK_SECONDS)),
+              ]),
+            ]),
+          ),
+        ]),
+      ]),
+    ),
+    (
+      "PostInvocation",
+      json_arr([
+        json_obj([
+          ("type", json_str("command")),
+          ("command", json_str(repo_cmd)),
+          ("timeout", json_int(AGY_HOOK_SECONDS)),
+        ]),
+      ]),
+    ),
+    (
+      "Stop",
+      json_arr([
+        json_obj([
+          ("type", json_str("command")),
+          ("command", json_str(stop_cmd)),
+          ("timeout", json_int(AGY_HOOK_SECONDS)),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+/// Build the `{ "stillfail": ... }` hooks object written to `<gemini-dir>/config/hooks.json`.
+pub fn agy_hooks_json(
+  node : String,
+  repo_hook_file : String,
+  stop_hook_file : String,
+  os_name : String,
+) -> base_codec::Json {
+  json_obj([("stillfail", agy_stillfail_hooks_json(node, repo_hook_file, stop_hook_file, os_name))])
+}
+
+/// Merge `stillfail` hooks into an existing `<gemini-dir>/config/hooks.json` while preserving
+/// all other top-level keys (`station/src/agents/agy.ts:528-545`).
+pub fn merge_agy_hooks_json(
+  existing_raw : Option[String],
+  node : String,
+  repo_hook_file : String,
+  stop_hook_file : String,
+  os_name : String,
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match existing_raw {
+    Some(raw) => match json_parse_opt(raw) {
+      Some(base_codec::Json::Obj(entries)) => {
+        for i in 0..<entries.length() {
+          if entries[i].0 != "stillfail" {
+            out.push(entries[i])
+          }
+        }
+      }
+      _ => ()
+    }
+    None => ()
+  }
+  out.push(("stillfail", agy_stillfail_hooks_json(node, repo_hook_file, stop_hook_file, os_name)))
+  json_obj(out)
 }
 
 pub fn agy_home(home : String, sep : String) -> String {
@@ -646,6 +738,12 @@ pub fn build_agy_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] 
   env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
   if opts.instructions == "" || opts.text_only {
     env = env_set(env, "STILLFAIL_REPO_RULES", "0")
+  }
+  if !opts.text_only && !opts.probe {
+    let run_id = (opts.next_uuid)()
+    if run_id != "" {
+      env = env_set(env, "STILLFAIL_AGY_STATE_DIR", agy_state_dir(opts.data_dir, opts.key, run_id, opts.sep))
+    }
   }
   let opening_meta = if opts.instructions == "" {
     "{}"
@@ -788,6 +886,40 @@ pub fn copilot_rules(instructions : String) -> String {
   } else {
     instructions + "\n\n" + suffix
   }
+}
+
+/// Extract usable chat model IDs from GitHub Copilot's model catalog JSON (`888341385d` #9022).
+/// GitHub omits `policy` for many available models (e.g. `gemini-4-hydrogen`); only a stated
+/// non-null `policy` whose `state` is not `"enabled"` excludes a chat model.
+pub fn copilot_chat_models(body : base_codec::Json) -> Array[String] {
+  let data = match json_get_arr(body, "data") {
+    Some(arr) => arr
+    None => return []
+  }
+  let out : Array[String] = []
+  for i in 0..<data.length() {
+    let m = data[i]
+    let policy_ok = match json_get_field(m, "policy") {
+      None => true
+      Some(base_codec::Json::Null) => true
+      Some(pol) => opt_str_eq(json_get_str(pol, "state"), Some("enabled"))
+    }
+    if !policy_ok {
+      continue
+    }
+    let is_chat = match json_get_field(m, "capabilities") {
+      Some(cap) => opt_str_eq(json_get_str(cap, "type"), Some("chat"))
+      None => false
+    }
+    if !is_chat {
+      continue
+    }
+    match json_get_str(m, "id") {
+      Some(id) => out.push(id)
+      None => ()
+    }
+  }
+  out
 }
 
 pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {

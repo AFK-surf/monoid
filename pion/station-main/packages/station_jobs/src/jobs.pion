@@ -1720,3 +1720,114 @@ pub fn preview_frame_decode(frame : Bytes) -> Option[(Int, Bytes)] {
   }
   Some((kind, payload))
 }
+
+fn join_preview_parts_exact(parts : Array[Bytes], total : Int) -> Bytes {
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    let n = p.length()
+    for j in 0..<n {
+      out[off + j] = p[j]
+    }
+    off = off + n
+  }
+  out
+}
+
+/// Single-join streaming 5-byte `[kind: u8, len: u32be]` reader for `station/src/jobs/preview.ts`
+/// `FrameReader` (`#9070`): joins multi-chunk frame bodies once at exact size and detects EOF inside a frame.
+pub struct PreviewFrameReader {
+  header : Bytes
+  mut header_bytes : Int
+  mut body_len : Int
+  mut body_left : Int
+  body_parts : Array[Bytes]
+  pub mut join_alloc_bytes : Int64
+}
+
+pub fn PreviewFrameReader::new() -> PreviewFrameReader {
+  PreviewFrameReader::{
+    header: Bytes::new(5),
+    header_bytes: 0,
+    body_len: 0,
+    body_left: 0,
+    body_parts: [],
+    join_alloc_bytes: 0L,
+  }
+}
+
+pub fn PreviewFrameReader::feed(
+  self : PreviewFrameReader,
+  chunk : Bytes,
+) -> Result[Array[(Int, Bytes)], String] {
+  let frames : Array[(Int, Bytes)] = []
+  let mut at = 0
+  let clen = chunk.length()
+  while at < clen {
+    if self.header_bytes < 5 {
+      let need = 5 - self.header_bytes
+      let avail = clen - at
+      let got = if avail < need { avail } else { need }
+      for i in 0..<got {
+        self.header[self.header_bytes + i] = chunk[at + i]
+      }
+      self.header_bytes = self.header_bytes + got
+      at = at + got
+      if self.header_bytes < 5 {
+        return Ok(frames)
+      }
+      let len = ((self.header[1].to_int() & 0xFF) << 24) |
+      ((self.header[2].to_int() & 0xFF) << 16) |
+      ((self.header[3].to_int() & 0xFF) << 8) |
+      (self.header[4].to_int() & 0xFF)
+      if len < 0 || len > PREVIEW_MAX_FRAME {
+        return Err("frame too long")
+      }
+      self.body_len = len
+      self.body_left = len
+    }
+    if self.body_left == 0 {
+      let kind = self.header[0].to_int() & 0xFF
+      self.header_bytes = 0
+      self.body_parts.clear()
+      frames.push((kind, Bytes::new(0)))
+      continue
+    }
+    let avail = clen - at
+    let take = if avail < self.body_left { avail } else { self.body_left }
+    let part = if at == 0 && take == clen { chunk } else { chunk.slice(at, at + take) }
+    at = at + take
+    self.body_left = self.body_left - take
+    if self.body_left > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      return Ok(frames)
+    }
+    let payload = if self.body_parts.length() > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      self.join_alloc_bytes = self.join_alloc_bytes + self.body_len.to_int64()
+      let joined = join_preview_parts_exact(self.body_parts, self.body_len)
+      self.body_parts.clear()
+      joined
+    } else {
+      part
+    }
+    let kind = self.header[0].to_int() & 0xFF
+    self.header_bytes = 0
+    frames.push((kind, payload))
+  }
+  Ok(frames)
+}
+
+/// Signal EOF on the preview stream: returns `Ok(())` between frames or `Err(...)` inside an incomplete frame.
+pub fn PreviewFrameReader::finish(self : PreviewFrameReader) -> Result[Unit, String] {
+  if self.header_bytes == 0 {
+    Ok(())
+  } else {
+    Err("the stream ended inside a frame")
+  }
+}

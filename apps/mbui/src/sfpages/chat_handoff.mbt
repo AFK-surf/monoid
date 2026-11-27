@@ -60,9 +60,8 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
   let shown = Ref(true)
   let shut_by : Ref[() -> Unit] = Ref(fn() {  })
   let lines = [
-    @sf.t("web-pages.chat.handoff.running", args=[("from", from)]),
-    @sf.t("web-pages.chat.handoff.backup", args=[("from", from)]),
-    @sf.t("web-pages.chat.handoff.files", args=[("from", from), ("station", to.name)]),
+    @sf.t("web-pages.chat.handoff.running"),
+    @sf.t("web-pages.chat.handoff.files"),
   ]
   let go = fn() {
     if src.read_only {
@@ -114,13 +113,17 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
     })
   }
   open_dialog_nodes(
-    @sf.t("web-pages.chat.handoff.title", args=[("station", to.name)]),
+    @sf.t("web-pages.chat.handoff.title"),
     fn(v, _) {
+      station_info_card_node(v, [
+        station_info_from_source(src, r.station, from, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+        station_info_from_source(src, to.address, to.name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
+      ])
       for line in lines {
         @sf.words_node(v, fn() { line }, fn() { st_memory }) |> ignore
       }
       v.show(fn() { running.get() }, fn(n) {
-        @sf.words_node(n, fn() { @sf.t("web-pages.chat.handoff.doing", args=[("station", to.name)]) }, fn() {
+        @sf.words_node(n, fn() { @sf.t("web-pages.chat.handoff.doing") }, fn() {
           st_memory
         })
         |> ignore

@@ -337,7 +337,7 @@ test "the workspace left: asked first, then another workspace's Home at once whi
   t.tap_text("退出此 workspace")
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
-  assert_true(t.find("退出「星火工作室」？") is Some(_), msg=t.drawn_text())
+  assert_true(t.find("退出工作区") is Some(_) && t.find("星火工作室") is Some(_), msg=t.drawn_text())
   let (x, y) = words_node(t, "退出").unwrap()
   t.tap(x, y)
   t.frame()
@@ -735,7 +735,7 @@ test "Comma: a connect's page says Comma's words, no way of making sessions and 
   t.tap_text("删除连接")
   t.run_for(@ui.move_most_ms)
   assert_true(
-    t.find("Comma 连接将断开。如需在 Comma 中也移除这台设备，请到 Comma 的 still.fail 插件页或 Comma for Teams 的 still.fail 页面操作。") is Some(_),
+    t.find("断开 Comma 连接；如需移除设备，请在 Comma 的 still.fail 页面操作。") is Some(_),
     msg=t.words().map(fn(x) { x.0 }).join("|"),
   )
   assert_true(t.find("Slack") is None)
@@ -1244,7 +1244,7 @@ test "an API key can be disabled and enabled again from its page" {
   open_setting("profile:ws1/st1#k2")
   t.draw()
   t.run_for(@ui.move_most_ms)
-  let log = t.drive("tap icon:more\nuntil 停用\ntap =停用\nuntil 停用「备用 key」？\ntap =停用\n")
+  let log = t.drive("tap icon:more\nuntil 停用\ntap =停用\nuntil 停用账号\nuntil 备用 key\ntap =停用\n")
   assert_true(log.contains("EXIT 0"), msg=log.join("\n"))
   t.draw()
   assert_true(named(calls, "profile.put").iter().any(fn(c) { !flag(field(Some(c.params), "input"), "enabled") }))
@@ -1275,7 +1275,7 @@ test "a copy of another station's profile is paused here from its page and used 
   assert_true(log.contains("EXIT 0"), msg=log.join("\n"))
   assert_true(t.find("重命名") is None, msg="a copy is renamed on its host")
   assert_true(t.find("删除") is None, msg="a copy is taken away by its host, not deleted here")
-  let on = t.drive("tap =停用\nuntil 停用「maple@example.com」？\nuntil 分享它的 station 不受影响\ntap =停用\n")
+  let on = t.drive("tap =停用\nuntil 停用账号\nuntil maple@example.com\nuntil 分享它的 station 不受影响\ntap =停用\n")
   assert_true(on.contains("EXIT 0"), msg=on.join("\n"))
   t.draw()
   assert_true(named(calls, "profile.put").iter().any(fn(c) { text(Some(c.params), "id") == "bx" && !flag(field(Some(c.params), "input"), "enabled") }))

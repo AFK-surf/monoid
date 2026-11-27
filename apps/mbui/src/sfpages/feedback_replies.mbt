@@ -86,13 +86,18 @@ fn feedback_report(src : Source, r : ChatRef, id : String) -> Json? {
 pub fn open_feedback(src : Source, r : ChatRef, id : String) -> Unit {
   let report = fn() { feedback_report(src, r, id) }
   let first = report()
-  let title = match first {
+  let summary = match first {
     Some(f) => text(Some(f), "label") + " · " + text(Some(f), "title")
     None => ""
   }
   @sf.panel_nodes(
-    title,
-    fn(v, close) { feedback_body(v, src, r, report, close) },
+    @sf.t("web-main.feedback.detailTitle"),
+    fn(v, close) {
+      if summary != "" {
+        @sf.dialog_facts_card_node(v, [("", summary)])
+      }
+      feedback_body(v, src, r, report, close)
+    },
     from=Unanchored,
     description=@sf.t("web-main.feedback.lead"),
     foot=fn(v, _) { feedback_foot(v, src, r, id, report) },

@@ -1575,3 +1575,279 @@ pub fn pack_avcc_nalus(nalus : Array[Bytes]) -> Bytes {
   }
   out
 }
+
+// ============================================================================
+// Single-join streamed frame readers (`farview-screen.ts` & `video-encode.ts`, `#9070`)
+// ============================================================================
+
+pub let MAX_FRAME_LINE_BYTES : Int = 8 * 1024 * 1024
+pub let MAX_FRAME_BINARY_BYTES : Int = 64 * 1024 * 1024
+
+fn join_browser_parts_exact(parts : Array[Bytes], total : Int) -> Bytes {
+  let out = Bytes::new(total)
+  let mut off = 0
+  let mut i = 0
+  while i < parts.length() {
+    let p = parts[i]
+    let n = p.length()
+    let mut j = 0
+    while j < n {
+      out[off + j] = p[j]
+      j = j + 1
+    }
+    off = off + n
+    i = i + 1
+  }
+  out
+}
+
+pub enum FarviewLinkEvent {
+  Message(base_codec::Json)
+  Frame(base_codec::Json, Bytes)
+}
+
+/// Single-join streaming reader for Farview `FrameLink` (newline-delimited JSON headers +
+/// exact binary payloads, `#9070`): never concatenates carry buffers on every chunk.
+pub struct FarviewFrameLinkReader {
+  line_parts : Array[Bytes]
+  mut line_bytes : Int
+  mut pending_header : Option[base_codec::Json]
+  mut pending_total : Int
+  mut pending_left : Int
+  pending_parts : Array[Bytes]
+  pub mut closed : Bool
+  pub mut join_alloc_bytes : Int64
+}
+
+pub fn FarviewFrameLinkReader::new() -> FarviewFrameLinkReader {
+  FarviewFrameLinkReader::{
+    line_parts: [],
+    line_bytes: 0,
+    pending_header: None,
+    pending_total: 0,
+    pending_left: 0,
+    pending_parts: [],
+    closed: false,
+    join_alloc_bytes: 0L,
+  }
+}
+
+pub fn FarviewFrameLinkReader::close(self : FarviewFrameLinkReader) -> Unit {
+  self.closed = true
+  self.line_parts.clear()
+  self.line_bytes = 0
+  self.pending_header = None
+  self.pending_total = 0
+  self.pending_left = 0
+  self.pending_parts.clear()
+}
+
+pub fn FarviewFrameLinkReader::feed(
+  self : FarviewFrameLinkReader,
+  chunk : Bytes,
+) -> Result[Array[FarviewLinkEvent], String] {
+  let out : Array[FarviewLinkEvent] = []
+  let mut at = 0
+  let clen = chunk.length()
+  while !self.closed && at < clen {
+    match self.pending_header {
+      Some(hdr) => {
+        let avail = clen - at
+        let take = if avail < self.pending_left { avail } else { self.pending_left }
+        let part = if at == 0 && take == clen { chunk } else { chunk.slice(at, at + take) }
+        at = at + take
+        self.pending_left = self.pending_left - take
+        if self.pending_left > 0 {
+          if take > 0 {
+            self.pending_parts.push(part)
+          }
+          return Ok(out)
+        }
+        let data = if self.pending_parts.length() > 0 {
+          if take > 0 {
+            self.pending_parts.push(part)
+          }
+          self.join_alloc_bytes = self.join_alloc_bytes + self.pending_total.to_int64()
+          let joined = join_browser_parts_exact(self.pending_parts, self.pending_total)
+          self.pending_parts.clear()
+          joined
+        } else {
+          part
+        }
+        self.pending_header = None
+        self.pending_total = 0
+        out.push(FarviewLinkEvent::Frame(hdr, data))
+        continue
+      }
+      None => ()
+    }
+    let mut nl = -1
+    let mut i = at
+    while i < clen {
+      if (chunk[i].to_int() & 0xFF) == 10 {
+        nl = i
+        break
+      }
+      i = i + 1
+    }
+    if nl < 0 {
+      let rest_len = clen - at
+      if self.line_bytes + rest_len > MAX_FRAME_LINE_BYTES {
+        self.close()
+        return Err("frame line too large")
+      }
+      if rest_len > 0 {
+        self.line_parts.push(if at == 0 { chunk } else { chunk.slice(at, clen) })
+        self.line_bytes = self.line_bytes + rest_len
+      }
+      return Ok(out)
+    }
+    let part_len = nl - at
+    let total_line_len = self.line_bytes + part_len
+    if total_line_len > MAX_FRAME_LINE_BYTES {
+      self.close()
+      return Err("frame line too large")
+    }
+    let line = if self.line_parts.length() == 0 {
+      chunk.slice(at, nl).to_string()
+    } else {
+      if part_len > 0 {
+        self.line_parts.push(chunk.slice(at, nl))
+      }
+      self.join_alloc_bytes = self.join_alloc_bytes + total_line_len.to_int64()
+      let joined = join_browser_parts_exact(self.line_parts, total_line_len)
+      self.line_parts.clear()
+      self.line_bytes = 0
+      joined.to_string()
+    }
+    at = nl + 1
+    let msg = match base_codec::json_parse(line) {
+      base_codec::JsonParseResult::Ok(v) => v
+      base_codec::JsonParseResult::Err(e) => {
+        self.close()
+        return Err("invalid frame header json: " + e)
+      }
+    }
+    match json_int64_field(msg, "bytes") {
+      Some(b64) => {
+        if b64 < 0L || b64 > MAX_FRAME_BINARY_BYTES.to_int64() {
+          self.close()
+          return Err("frame binary too large")
+        }
+        let n = b64.to_int()
+        if n == 0 {
+          out.push(FarviewLinkEvent::Frame(msg, Bytes::new(0)))
+        } else {
+          self.pending_header = Some(msg)
+          self.pending_total = n
+          self.pending_left = n
+          self.pending_parts.clear()
+        }
+      }
+      None => out.push(FarviewLinkEvent::Message(msg))
+    }
+  }
+  Ok(out)
+}
+
+/// Single-join streaming 5-byte `[kind: u8, len: u32be]` reader for `HelperVideoEncoder` (`#9070`).
+pub struct HelperVideoEncoderReader {
+  header : Bytes
+  mut header_bytes : Int
+  mut body_len : Int
+  mut body_left : Int
+  body_parts : Array[Bytes]
+  pub mut closed : Bool
+  pub mut join_alloc_bytes : Int64
+}
+
+pub fn HelperVideoEncoderReader::new() -> HelperVideoEncoderReader {
+  HelperVideoEncoderReader::{
+    header: Bytes::new(5),
+    header_bytes: 0,
+    body_len: 0,
+    body_left: 0,
+    body_parts: [],
+    closed: false,
+    join_alloc_bytes: 0L,
+  }
+}
+
+pub fn HelperVideoEncoderReader::close(self : HelperVideoEncoderReader) -> Unit {
+  self.closed = true
+  self.body_parts.clear()
+  self.header_bytes = 0
+  self.body_len = 0
+  self.body_left = 0
+}
+
+/// Maximum allowed payload size for a single helper video encoder frame (16 MiB).
+pub let MAX_VIDEO_ENCODER_FRAME_BYTES : Int = 16 * 1024 * 1024
+
+pub fn HelperVideoEncoderReader::feed(
+  self : HelperVideoEncoderReader,
+  chunk : Bytes,
+) -> Result[Array[(Int, Bytes)], String] {
+  let frames : Array[(Int, Bytes)] = []
+  let mut at = 0
+  let clen = chunk.length()
+  while !self.closed && at < clen {
+    if self.header_bytes < 5 {
+      let need = 5 - self.header_bytes
+      let avail = clen - at
+      let got = if avail < need { avail } else { need }
+      let mut i = 0
+      while i < got {
+        self.header[self.header_bytes + i] = chunk[at + i]
+        i = i + 1
+      }
+      self.header_bytes = self.header_bytes + got
+      at = at + got
+      if self.header_bytes < 5 {
+        return Ok(frames)
+      }
+      self.body_len = ((self.header[1].to_int() & 0xFF) << 24) |
+      ((self.header[2].to_int() & 0xFF) << 16) |
+      ((self.header[3].to_int() & 0xFF) << 8) |
+      (self.header[4].to_int() & 0xFF)
+      if self.body_len < 0 || self.body_len > MAX_VIDEO_ENCODER_FRAME_BYTES {
+        let bad_len = self.body_len
+        self.close()
+        return Err("video encoder frame length out of bounds (" + bad_len.to_string() + " bytes)")
+      }
+      self.body_left = self.body_len
+    }
+    if self.body_left == 0 {
+      let kind = self.header[0].to_int() & 0xFF
+      self.header_bytes = 0
+      frames.push((kind, Bytes::new(0)))
+      continue
+    }
+    let avail = clen - at
+    let take = if avail < self.body_left { avail } else { self.body_left }
+    let part = if at == 0 && take == clen { chunk } else { chunk.slice(at, at + take) }
+    at = at + take
+    self.body_left = self.body_left - take
+    if self.body_left > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      return Ok(frames)
+    }
+    let payload = if self.body_parts.length() > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      self.join_alloc_bytes = self.join_alloc_bytes + self.body_len.to_int64()
+      let joined = join_browser_parts_exact(self.body_parts, self.body_len)
+      self.body_parts.clear()
+      joined
+    } else {
+      part
+    }
+    let kind = self.header[0].to_int() & 0xFF
+    self.header_bytes = 0
+    frames.push((kind, payload))
+  }
+  Ok(frames)
+}

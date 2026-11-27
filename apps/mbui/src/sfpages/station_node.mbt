@@ -2544,10 +2544,11 @@ fn software_row_node(
             Some(
               @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
                 confirm(
-                  @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
-                  @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeDisableAsk"),
+                  @sf.t("web-main.versions.runtimeDisableNote"),
                   @sf.t("web-main.versions.runtimeDisable"),
                   fn() { set_enabled_with(scoped_call, false) },
+                  facts=[(@sf.t("common.confirmFact.runtime"), name)],
                 )
               }),
             )
@@ -2556,11 +2557,12 @@ fn software_row_node(
             Some(
               @sf.menu_item_of(@sf.t("web-main.versions.runtimeUninstall"), danger=true, fn() {
                 confirm(
-                  @sf.t("web-main.versions.runtimeUninstallAsk", args=[("name", name)]),
-                  @sf.t("web-main.versions.runtimeUninstallNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeUninstallAsk"),
+                  @sf.t("web-main.versions.runtimeUninstallNote"),
                   @sf.t("web-main.versions.runtimeUninstall"),
                   fn() { scoped_call("software.uninstall", [("id", str(id))]) },
                   danger=true,
+                  facts=[(@sf.t("common.confirmFact.runtime"), name)],
                 )
               }),
             )
@@ -2736,12 +2738,13 @@ fn software_earlier(v : Json?) -> Array[String] {
 /// updating by itself; said, `call` puts it back.
 fn software_back_ask(v : Json?, version : String, call : (String, Array[(String, Json)]) -> Unit) -> Unit {
   confirm(
-    @sf.t("web-main.versions.backAsk", args=[("version", version)]),
+    @sf.t("web-main.versions.backAsk"),
     @sf.t(if flag(v, "auto") { "web-main.versions.backNoteAuto" } else { "web-main.versions.backNote" }, args=[
       ("version", version),
       ("current", text(v, "shownText")),
     ]),
     @sf.t("web-main.versions.backDo"),
+    facts=[(@sf.t("common.confirmFact.version"), version)],
     fn() { call("software.update", [("id", str("station")), ("to", str(version))]) },
   )
 }

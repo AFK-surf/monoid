@@ -391,20 +391,24 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   move_press(t, "全部迁移")
   move_audit(t, "")
   // (how many, and on the same line how many cannot move)
-  assert_true(move_said(t, "全部迁移到 Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
+  assert_true(move_said(t, "全部迁移") && move_said(t, "Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
   move_pick(t, "全部迁移")
   let asked = move_calls(calls, "move.start")
   assert_eq(asked.length(), 1)
   assert_eq((text(Some(asked[0]), "station"), text(Some(asked[0]), "to"), flag(Some(asked[0]), "all")), ("ws1/st1", "st2", true))
-  // (its ⋯: 全部迁回 alone)
+  // (its ⋯: 全部迁回 alone; choosing it steps into confirm inside the menu with a back button)
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
   assert_true(move_said(t, "全部迁回"), msg=move_all_words(t))
+  t.click(MenuItem, label="全部迁回")
+  t.run_for(@ui.move_most_ms)
+  move_audit(t, "all-back")
+  assert_true(move_said(t, "返回") && move_said(t, "Maple") && move_said(t, "Willow"), msg=move_all_words(t))
   // (the fixture's mode puts it up too: what the sweeps see)
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-all")
   move_audit(t, "")
-  assert_true(move_said(t, "全部迁移到 Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
+  assert_true(move_said(t, "全部迁移") && move_said(t, "Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
   // all of it there: 移出 workspace, asked as the station's ⋯ asks it
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move")
@@ -414,7 +418,7 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   move_audit(t, "done")
   assert_true(!move_said(t, "全部迁移") && move_said(t, "移出 workspace"), msg=move_all_words(t))
   move_press(t, "移出 workspace")
-  assert_true(move_said(t, "移除「Willow」？"), msg=move_all_words(t))
+  assert_true(move_said(t, "移除 Station") && move_said(t, "Willow"), msg=move_all_words(t))
 }
 
 ///|

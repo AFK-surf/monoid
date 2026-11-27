@@ -200,6 +200,7 @@ test "events_log_held_waits_and_handover" {
     spare: None,
     held_keys: ["s1"],
     supports_live_rates: true,
+    overview_patch: false,
   })
   assert(opened.resumed)
   assert(opt_str_eq(opened.head, "deadbeef.2"))
@@ -1090,4 +1091,141 @@ test "r8_runtime_compat_threads_chats_and_p2_checks" {
     Err(_) => true
     Ok(_) => false
   })
+}
+
+test "overview_debounce_memo_patch_and_legacy_counts_coalesce" {
+  // #8864 + #8966: overview_comparable_memo & changed_keys_from_memos with copies normalization.
+  let ov1 = base_codec::json_obj([
+    ("machine", base_codec::json_obj([("cpu", base_codec::json_int(10))])),
+    ("counts", base_codec::json_obj([("sessions", base_codec::json_int(1)), ("running", base_codec::json_int(0)), ("warm", base_codec::json_int(0))])),
+    ("disk", base_codec::json_obj([("freeBytes", base_codec::json_int64(5000000000L)), ("totalBytes", base_codec::json_int64(100000000000L))])),
+    ("copies", base_codec::json_obj([("to", base_codec::json_int(10)), ("chats", base_codec::json_int(2)), ("keepers", base_codec::json_arr([base_codec::json_obj([("id", base_codec::json_str("k1")), ("to", base_codec::json_int(10)), ("at", base_codec::json_int64(600000L))])]))])),
+  ])
+  let ov2 = base_codec::json_obj([
+    ("machine", base_codec::json_obj([("cpu", base_codec::json_int(99))])),
+    ("counts", base_codec::json_obj([("sessions", base_codec::json_int(1)), ("running", base_codec::json_int(1)), ("warm", base_codec::json_int(0))])),
+    ("disk", base_codec::json_obj([("freeBytes", base_codec::json_int64(5000000000L)), ("totalBytes", base_codec::json_int64(100000000000L))])),
+    ("copies", base_codec::json_obj([("to", base_codec::json_int(12)), ("chats", base_codec::json_int(5)), ("keepers", base_codec::json_arr([base_codec::json_obj([("id", base_codec::json_str("k1")), ("to", base_codec::json_int(12)), ("at", base_codec::json_int64(700000L))])]))])),
+  ])
+  let m1 = overview_comparable_memo(ov1, None)
+  let m2 = overview_comparable_memo(ov2, m1.disk)
+  let diff_keys = changed_keys_from_memos(m1, m2)
+  assert(diff_keys.length() == 1 && diff_keys[0] == "counts")
+  let fallback_keys = overview_changed_keys(m1.text, m2.text)
+  assert(fallback_keys.length() == 1 && fallback_keys[0] == "counts")
+
+  // #9013 + #9020: per-device overview-patch streaming.
+  let hub = EventsHub::new("abcd0001", EventKeeps::default())
+  let dev_patch = Viewer::{ ..Viewer::owner("u@example.com", "ws-1"), device: Some("dev-patch") }
+  let dev_legacy = Viewer::{ ..Viewer::owner("u@example.com", "ws-1"), device: Some("dev-legacy") }
+  let c_patch = hub.open_stream(dev_patch, Lang::Zh, EventsOpenOptions::{
+    host: false, since: None, brief: false, running: false, spare: None, held_keys: [], supports_live_rates: true, overview_patch: true,
+  })
+  let c_legacy = hub.open_stream(dev_legacy, Lang::Zh, EventsOpenOptions::{
+    host: false, since: None, brief: false, running: false, spare: None, held_keys: [], supports_live_rates: true, overview_patch: false,
+  })
+
+  // Initial broadcast sends full `overview` to both devices.
+  hub.overview_changed("init")
+  let st1 = hub.flush_overviews(1000L, fn(_v : Viewer, _l : Lang, _r : OverviewRound) -> Option[base_codec::Json] { Some(ov1) })
+  assert(st1.pushed == 2 && st1.patched == 0 && st1.initial == 2)
+  match hub.get_client(c_patch.client_id) {
+    Some(c) => {
+      let frames = c.drain_outbox()
+      assert(frames.length() == 1 && frames[0].index_of("event: overview\n") >= 0)
+    }
+    None => panic("missing patch client")
+  }
+  match hub.get_client(c_legacy.client_id) {
+    Some(c) => {
+      let frames = c.drain_outbox()
+      assert(frames.length() == 1 && frames[0].index_of("event: overview\n") >= 0)
+    }
+    None => panic("missing legacy client")
+  }
+
+  // #8864: overview_soon debounces within OVERVIEW_SOON_MS (10s).
+  match hub.overview_soon("processes", 2000L) {
+    Some(w) => assert(w == 9000L)
+    None => panic("expected debounce wait")
+  }
+  assert(hub.fire_overview_soon(11000L))
+
+  // #9020 + #9059: counts-only change sends `overview-patch` to opted-in client and defers legacy client to 30s.
+  let st2 = hub.flush_overviews(11000L, fn(_v : Viewer, _l : Lang, _r : OverviewRound) -> Option[base_codec::Json] { Some(ov2) })
+  assert(st2.pushed == 1 && st2.patched == 1 && st2.suppressed == 1)
+  match hub.get_client(c_patch.client_id) {
+    Some(c) => {
+      let frames = c.drain_outbox()
+      assert(frames.length() == 1 && frames[0].index_of("event: overview-patch\n") >= 0 && frames[0].index_of("\"counts\"") >= 0 && frames[0].index_of("\"machine\"") >= 0)
+    }
+    None => panic("missing patch client")
+  }
+  match hub.get_client(c_legacy.client_id) {
+    Some(c) => assert(c.drain_outbox().length() == 0)
+    None => panic("missing legacy client")
+  }
+  match hub.next_overview_counts_due_at() {
+    Some(due) => assert(due == 31000L)
+    None => panic("expected legacy counts due timestamp")
+  }
+  assert(!hub.fire_due_legacy_counts(30999L))
+  assert(hub.fire_due_legacy_counts(31000L))
+  let st3 = hub.flush_overviews(31000L, fn(_v : Viewer, _l : Lang, _r : OverviewRound) -> Option[base_codec::Json] { Some(ov2) })
+  assert(st3.pushed == 1 && st3.patched == 0)
+  match hub.get_client(c_legacy.client_id) {
+    Some(c) => {
+      let frames = c.drain_outbox()
+      assert(frames.length() == 1 && frames[0].index_of("event: overview\n") >= 0)
+    }
+    None => panic("missing legacy client")
+  }
+}
+
+test "waiting_tracker_incremental_and_skills_routes" {
+  // #9038: WaitingTracker seeds once, then uses O(1) single-session lookups.
+  let full_scans = [0]
+  let single_seeks = [0]
+  let rows_map : Map[String, WaitingSessionInfo] = Map::new()
+  rows_map.set("s1", WaitingSessionInfo::{ key: "s1", title: Some("T1"), need: Some("need1"), ended_at: 200L })
+  rows_map.set("s2", WaitingSessionInfo::{ key: "s2", title: Some("T2"), need: Some("need2"), ended_at: 100L })
+  let tracker = WaitingTracker::new(WaitingStorePort::{
+    waiting_for_people: fn(since : Int64, limit : Int) -> Array[WaitingSessionInfo] {
+      full_scans[0] = full_scans[0] + 1
+      let all : Array[WaitingSessionInfo] = []
+      match rows_map.get("s1") { Some(r) => if r.ended_at >= since { all.push(r) }, None => () }
+      match rows_map.get("s2") { Some(r) => if r.ended_at >= since { all.push(r) }, None => () }
+      match rows_map.get("s3") { Some(r) => if r.ended_at >= since { all.push(r) }, None => () }
+      let sorted = sort_waiting_desc(all)
+      let out : Array[WaitingSessionInfo] = []
+      let mut i = 0
+      while i < sorted.length() && i < limit {
+        out.push(sorted[i])
+        i = i + 1
+      }
+      out
+    },
+    waiting_for_person_of: Some(fn(k : String, since : Int64) -> Option[WaitingSessionInfo] {
+      single_seeks[0] = single_seeks[0] + 1
+      match rows_map.get(k) {
+        Some(r) => if r.ended_at >= since { Some(r) } else { None }
+        None => None
+      }
+    }),
+  })
+  let r1 = tracker.read(50L, 10)
+  assert(r1.length() == 2 && full_scans[0] == 1 && single_seeks[0] == 0)
+  rows_map.set("s3", WaitingSessionInfo::{ key: "s3", title: Some("T3"), need: Some("need3"), ended_at: 300L })
+  tracker.note("session", Some("s3"))
+  let r2 = tracker.read(50L, 10)
+  assert(r2.length() == 3 && r2[0].key == "s3" && full_scans[0] == 1 && single_seeks[0] == 1)
+  tracker.note("sessionRemoved", Some("s2"))
+  let r3 = tracker.read(50L, 10)
+  assert(r3.length() == 2 && full_scans[0] == 1)
+
+  // #9028: GET /skills and GET /sessions/:key/skills route dispatch.
+  let api = AdminApi::new(ApiHost::stub(), SeenStore::empty(), "0.1.9000")
+  let viewer = Viewer::owner("a@example.com", "ws-1")
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/skills?runtime=claude", [], ""), viewer, 1000L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/s-1/skills", [], ""), viewer, 1000L)).status == 200)
 }

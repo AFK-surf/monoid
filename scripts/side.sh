@@ -10,7 +10,7 @@
 #   sh scripts/side.sh core-ts   one part's
 set -u
 cd "$(dirname "$0")/.."
-parts=${*:-core-ts station rust locks locks-moved locks-as-moved rigs rigs-as-moved move cloud}
+parts=${*:-core-ts station station-pion rust locks locks-moved locks-as-moved rigs rigs-as-moved move cloud}
 status=0
 for part in $parts; do
   echo "· side: $part"
@@ -22,8 +22,23 @@ for part in $parts; do
     # Real browser/WASM mesh, on a machine with Chrome (CHROME_BIN can name it).
     browser-mesh) (cd client/core-ts && pnpm side:browser) || status=1 ;;
     # The station's of real processes and the file system as they take their time (station/side): a lock across
-    # processes, logs followed by fs.watch, two endpoints on one station's key at a real iroh-relay.
-    station) (cd station && pnpm test:side) || status=1 ;;
+    # processes, logs followed by fs.watch, two endpoints on one station's key at a real iroh-relay, and iOS Simulators.
+    # The full Pion station E2E files run separately under `station-pion` below so side-mac stays within its budget.
+    # Keep the native parts list in sync with `station/package.json` `test:side`.
+    station) (
+      cd station && set --
+      for f in side/*.test.ts; do
+        case $f in side/pion-station-*.test.ts) ;; *) set -- "$@" "$f" ;; esac
+      done
+      node ../scripts/native.ts run mesh runner archive-rs reader iroh-relay mesh-relay -- \
+        node --import ./test/setup-env.mjs --test --test-concurrency=1 "$@"
+    ) || status=1 ;;
+    # The full Pion station's real-machine E2E suite (station/side/pion-station-*.test.ts), using the prebuilt
+    # `station-pion` binary via scripts/native.ts instead of compiling from scratch inside each run.
+    station-pion) (
+      cd station && node ../scripts/native.ts run mesh runner archive-rs reader launcher station-pion -- \
+        node --import ./test/setup-env.mjs --test --test-concurrency=1 side/pion-station-*.test.ts
+    ) || status=1 ;;
     # The native parts' tests of real processes' timing (#[ignore = "side: …"]): a handover with no gap on real ports,
     # restarts' backoff, a signal that leaves a grandchild be.
     rust) for crate in launcher runner; do (cd station/native/$crate && cargo test --locked -- --ignored) || status=1; done ;;

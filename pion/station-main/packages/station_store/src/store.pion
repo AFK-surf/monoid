@@ -1029,3 +1029,488 @@ pub fn Store::search_chat_threads(
   }
   Ok((matched, total))
 }
+
+// ── Local status waitingForPeople incremental queries (`#9038`) ──
+
+pub let WAITING_FOR_PEOPLE_SQL : String =
+"SELECT s.key AS key, s.title, t.need, t.ended_at FROM sessions s INDEXED BY sessions_live " +
+"JOIN turns t ON t.rowid = (SELECT u.rowid FROM turns u INDEXED BY turns_by_session WHERE u.session_key = s.key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1) " +
+"WHERE s.archived_at IS NULL AND t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision') " +
+"AND NOT EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL) " +
+"ORDER BY t.ended_at DESC LIMIT ?2"
+
+pub let WAITING_FOR_PERSON_OF_SQL : String =
+"SELECT s.key AS key, s.title, t.need, t.ended_at FROM sessions s " +
+"JOIN turns t ON t.rowid = (SELECT u.rowid FROM turns u INDEXED BY turns_by_session WHERE u.session_key = s.key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1) " +
+"WHERE s.key = ?1 AND s.archived_at IS NULL AND t.ended_at >= ?2 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision') " +
+"AND NOT EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL) " +
+"LIMIT 1"
+
+pub struct WaitingPersonRow {
+  pub key : String
+  pub title : Option[String]
+  pub need : Option[String]
+  pub ended_at : Int64
+}
+
+pub fn Store::waiting_for_people(
+  self : Store,
+  since : Int64,
+  limit : Int,
+) -> Result[Array[WaitingPersonRow], sql_db::SqlError] {
+  match self.db.all(WAITING_FOR_PEOPLE_SQL, [sql_db::int64_to_json(since), base_codec::json_int(limit)]) {
+    Ok(rows) => {
+      let out : Array[WaitingPersonRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(WaitingPersonRow::{
+          key: row_str(r, "key", ""),
+          title: row_str_opt(r, "title"),
+          need: row_str_opt(r, "need"),
+          ended_at: row_i64(r, "ended_at", 0.to_int64()),
+        })
+      }
+      Ok(out)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// O(1) primary-key check matching `waiting_for_people` (`#9038`).
+pub fn Store::waiting_for_person_of(
+  self : Store,
+  key : String,
+  since : Int64,
+) -> Result[Option[WaitingPersonRow], sql_db::SqlError] {
+  match self.db.first(WAITING_FOR_PERSON_OF_SQL, [base_codec::json_str(key), sql_db::int64_to_json(since)]) {
+    Ok(Some(r)) => Ok(Some(WaitingPersonRow::{
+      key: row_str(r, "key", ""),
+      title: row_str_opt(r, "title"),
+      need: row_str_opt(r, "need"),
+      ended_at: row_i64(r, "ended_at", 0.to_int64()),
+    }))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// Marks pending deliveries for `keys` delivered at `now_ms`, returning the keys whose rows actually changed
+/// so callers can emit `"session"` store changes (`#9038`).
+pub fn Store::delivered_there(
+  self : Store,
+  keys : Array[String],
+  now_ms : Int64,
+) -> Result[Array[String], sql_db::SqlError] {
+  with_write_tx(self.db, "st_delivered_there", fn(t : sql_db::Db) -> Result[Array[String], sql_db::SqlError] {
+    let changed : Array[String] = []
+    for i in 0..<keys.length() {
+      let k = keys[i]
+      match t.run(
+        "UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL",
+        [base_codec::json_str(k), sql_db::int64_to_json(now_ms)],
+      ) {
+        Ok(n) => if n > 0 { changed.push(k) }
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(changed)
+  })
+}
+
+// ── Borrowed-profile O(1) witness queries & tracker (`#9025`) ──
+
+pub let LIVE_ON_PROFILE_SQL : String =
+"SELECT key FROM sessions INDEXED BY sessions_live_profile WHERE archived_at IS NULL AND profile = ?1 AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = sessions.key) LIMIT ?2"
+
+pub let LIVE_WITNESSES_ON_PROFILES_SQL : String =
+"SELECT p.value AS profile, (SELECT s.key FROM sessions s INDEXED BY sessions_live_profile WHERE s.archived_at IS NULL AND s.profile = p.value AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = s.key) LIMIT 1) AS key FROM json_each(?1) p"
+
+pub let LIVE_PROFILE_OF_SESSION_SQL : String =
+"SELECT s.profile AS profile FROM sessions s WHERE s.key = ?1 AND s.archived_at IS NULL AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = s.key) LIMIT 1"
+
+pub fn Store::live_sessions_on(
+  self : Store,
+  pid : String,
+  most : Int,
+) -> Result[Array[String], sql_db::SqlError] {
+  match self.db.all(LIVE_ON_PROFILE_SQL, [base_codec::json_str(pid), base_codec::json_int(most)]) {
+    Ok(rows) => {
+      let out : Array[String] = []
+      for i in 0..<rows.length() {
+        let k = row_str(rows[i], "key", "")
+        if k.length() > 0 {
+          out.push(k)
+        }
+      }
+      Ok(out)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// One live, non-handed-over witness session key for each profile in `pids` via `sessions_live_profile` (`#9025`).
+pub fn Store::live_witnesses_on_profiles(
+  self : Store,
+  pids : Array[String],
+) -> Result[Map[String, String], sql_db::SqlError] {
+  let out : Map[String, String] = Map::new()
+  if pids.length() == 0 {
+    return Ok(out)
+  }
+  let uniq : Array[base_codec::Json] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<pids.length() {
+    let p = pids[i]
+    if !seen.contains(p) {
+      seen.set(p, true)
+      uniq.push(base_codec::json_str(p))
+    }
+  }
+  let arr_json = base_codec::json_stringify(base_codec::json_arr(uniq))
+  match self.db.all(LIVE_WITNESSES_ON_PROFILES_SQL, [base_codec::json_str(arr_json)]) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let p = row_str(rows[i], "profile", "")
+        match row_str_opt(rows[i], "key") {
+          Some(k) => if p.length() > 0 && k.length() > 0 { out.set(p, k) }
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Profile id of `key` when currently live (unarchived and not handed away), or `None` (`#9025`).
+pub fn Store::live_profile_of(
+  self : Store,
+  key : String,
+) -> Result[Option[String], sql_db::SqlError] {
+  match self.db.first(LIVE_PROFILE_OF_SESSION_SQL, [base_codec::json_str(key)]) {
+    Ok(Some(r)) => match row_str_opt(r, "profile") {
+      Some(p) => if p.length() > 0 { Ok(Some(p)) } else { Ok(None) }
+      None => Ok(None)
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// O(1) borrowed-profile witness tracker (`station/src/move/station.ts` `#usesMayEnd`, `#9025`):
+/// maintains one known live witness session key per borrowed profile, skipping `pending`-only updates
+/// and self-healing witnesses via O(1) `live_profile_of` PK seeks.
+pub struct BorrowedProfileTracker {
+  witness : Map[String, Option[String]]
+  witness_pids : Array[String]
+  dirty_keys : Array[String]
+}
+
+pub fn BorrowedProfileTracker::new() -> BorrowedProfileTracker {
+  BorrowedProfileTracker::{ witness: Map::new(), witness_pids: [], dirty_keys: [] }
+}
+
+pub fn BorrowedProfileTracker::note_change(
+  self : BorrowedProfileTracker,
+  change_type : String,
+  session_key : String,
+  is_pending_only : Bool,
+) -> Unit {
+  if change_type == "session" && is_pending_only {
+    return ()
+  }
+  if change_type == "session" || change_type == "sessionRemoved" || change_type == "moved" {
+    let mut exists = false
+    for i in 0..<self.dirty_keys.length() {
+      if self.dirty_keys[i] == session_key {
+        exists = true
+        break
+      }
+    }
+    if !exists {
+      self.dirty_keys.push(session_key)
+    }
+  }
+}
+
+/// Reconcile dirty keys and self-heal tracked witnesses against `store`; returns the borrowed
+/// profile ids that currently have NO live sessions (unused).
+pub fn BorrowedProfileTracker::reconcile_unused(
+  self : BorrowedProfileTracker,
+  borrowed_pids : Array[String],
+  store : Store,
+) -> Result[Array[String], sql_db::SqlError] {
+  let borrowed_set : Map[String, Bool] = Map::new()
+  for i in 0..<borrowed_pids.length() {
+    borrowed_set.set(borrowed_pids[i], true)
+  }
+  // Drop profiles no longer borrowed.
+  let kept_pids : Array[String] = []
+  for i in 0..<self.witness_pids.length() {
+    let pid = self.witness_pids[i]
+    if borrowed_set.contains(pid) {
+      kept_pids.push(pid)
+    } else {
+      let _ = self.witness.remove(pid)
+    }
+  }
+  self.witness_pids.clear()
+  for i in 0..<kept_pids.length() {
+    self.witness_pids.push(kept_pids[i])
+  }
+  if borrowed_pids.length() == 0 {
+    self.dirty_keys.clear()
+    return Ok([])
+  }
+
+  let recheck : Map[String, Bool] = Map::new()
+  let recheck_list : Array[String] = []
+  let add_recheck = fn(pid : String) -> Unit {
+    if !recheck.contains(pid) {
+      recheck.set(pid, true)
+      recheck_list.push(pid)
+    }
+  }
+  for i in 0..<borrowed_pids.length() {
+    let pid = borrowed_pids[i]
+    if !self.witness.contains(pid) {
+      add_recheck(pid)
+    }
+  }
+
+  let checked : Map[String, Bool] = Map::new()
+  for i in 0..<self.dirty_keys.length() {
+    let k = self.dirty_keys[i]
+    checked.set(k, true)
+    let now_pid = match store.live_profile_of(k) {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    match now_pid {
+      Some(pid) => {
+        if borrowed_set.contains(pid) {
+          if !self.witness.contains(pid) {
+            self.witness_pids.push(pid)
+          }
+          self.witness.set(pid, Some(k))
+          let _ = recheck.remove(pid)
+        }
+      }
+      None => ()
+    }
+    for wi in 0..<self.witness_pids.length() {
+      let pid = self.witness_pids[wi]
+      match self.witness.get(pid) {
+        Some(Some(w)) => {
+          let still_same = match now_pid {
+            Some(np) => np == pid
+            None => false
+          }
+          if w == k && !still_same {
+            add_recheck(pid)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  self.dirty_keys.clear()
+
+  // Self-heal: verify each tracked witness via O(1) PK seek.
+  for wi in 0..<self.witness_pids.length() {
+    let pid = self.witness_pids[wi]
+    if recheck.contains(pid) {
+      continue
+    }
+    match self.witness.get(pid) {
+      Some(Some(w)) => {
+        if !checked.contains(w) {
+          let live_p = match store.live_profile_of(w) {
+            Ok(p) => p
+            Err(e) => return Err(e)
+          }
+          let ok_same = match live_p {
+            Some(lp) => lp == pid
+            None => false
+          }
+          if !ok_same {
+            add_recheck(pid)
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+
+  let to_query : Array[String] = []
+  for i in 0..<recheck_list.length() {
+    let pid = recheck_list[i]
+    if recheck.contains(pid) {
+      to_query.push(pid)
+    }
+  }
+  if to_query.length() > 0 {
+    let found = match store.live_witnesses_on_profiles(to_query) {
+      Ok(m) => m
+      Err(e) => return Err(e)
+    }
+    for i in 0..<to_query.length() {
+      let pid = to_query[i]
+      if !self.witness.contains(pid) {
+        self.witness_pids.push(pid)
+      }
+      self.witness.set(pid, found.get(pid))
+    }
+  }
+
+  let unused : Array[String] = []
+  for i in 0..<borrowed_pids.length() {
+    let pid = borrowed_pids[i]
+    match self.witness.get(pid) {
+      Some(Some(_)) => ()
+      _ => unused.push(pid)
+    }
+  }
+  Ok(unused)
+}
+
+pub fn BorrowedProfileTracker::witness_of(self : BorrowedProfileTracker, pid : String) -> Option[String] {
+  match self.witness.get(pid) {
+    Some(w) => w
+    None => None
+  }
+}
+
+// ── Pending Handed tokens for stop-before-turn-start (`#8915`) ──
+
+pub struct HandedToken {
+  pub thread : Int64
+  pub n : Int64
+  pub apart : Bool
+}
+
+pub let HAS_PENDING_MESSAGE_SQL : String =
+"SELECT 1 FROM deliveries d INDEXED BY deliveries_pending " +
+"JOIN entries m ON m.thread = d.thread AND m.n = d.n AND m.kind = 'message' " +
+"JOIN threads t ON t.id = d.thread " +
+"JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session " +
+"WHERE d.session = ?1 AND d.delivered_at IS NULL LIMIT 1"
+
+pub let HAS_PENDING_LETTER_SQL : String =
+"SELECT 1 FROM letter_deliveries d INDEXED BY letter_deliveries_pending " +
+"JOIN letters l ON l.thread = d.thread AND l.n = d.n " +
+"JOIN threads t ON t.id = d.thread " +
+"JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session " +
+"WHERE d.session = ?1 AND d.delivered_at IS NULL LIMIT 1"
+
+pub let PENDING_HANDED_MESSAGES_SQL : String =
+"SELECT d.thread, d.n, m.at FROM deliveries d INDEXED BY deliveries_pending " +
+"JOIN entries m ON m.thread = d.thread AND m.n = d.n AND m.kind = 'message' " +
+"JOIN threads t ON t.id = d.thread " +
+"JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session " +
+"WHERE d.session = ?1 AND d.delivered_at IS NULL ORDER BY d.rowid LIMIT ?2"
+
+pub let PENDING_HANDED_LETTERS_SQL : String =
+"SELECT d.thread, d.n, l.at FROM letter_deliveries d INDEXED BY letter_deliveries_pending " +
+"JOIN letters l ON l.thread = d.thread AND l.n = d.n " +
+"JOIN threads t ON t.id = d.thread " +
+"JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session " +
+"WHERE d.session = ?1 AND d.delivered_at IS NULL ORDER BY d.rowid LIMIT ?2"
+
+pub fn Store::has_pending(self : Store, session : String) -> Result[Bool, sql_db::SqlError] {
+  match self.db.first(HAS_PENDING_MESSAGE_SQL, [base_codec::json_str(session)]) {
+    Ok(Some(_)) => return Ok(true)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match self.db.first(HAS_PENDING_LETTER_SQL, [base_codec::json_str(session)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// Snapshot pending message and letter `HandedToken`s merged by `at` ascending, bounded to `limit` (`#8915`).
+pub fn Store::pending_handed(
+  self : Store,
+  session : String,
+  limit : Int = 1000,
+) -> Result[Array[HandedToken], sql_db::SqlError] {
+  if limit <= 0 {
+    return Ok([])
+  }
+  let said = match self.db.all(PENDING_HANDED_MESSAGES_SQL, [base_codec::json_str(session), base_codec::json_int(limit)]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let letters = match self.db.all(PENDING_HANDED_LETTERS_SQL, [base_codec::json_str(session), base_codec::json_int(limit)]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[HandedToken] = []
+  let mut i = 0
+  let mut j = 0
+  while out.length() < limit && (i < said.length() || j < letters.length()) {
+    let take_msg = if j >= letters.length() {
+      true
+    } else if i < said.length() {
+      row_i64(said[i], "at", 0.to_int64()) <= row_i64(letters[j], "at", 0.to_int64())
+    } else {
+      false
+    }
+    if take_msg {
+      let r = said[i]
+      out.push(HandedToken::{
+        thread: row_i64(r, "thread", 0.to_int64()),
+        n: row_i64(r, "n", 0.to_int64()),
+        apart: false,
+      })
+      i = i + 1
+    } else {
+      let r = letters[j]
+      out.push(HandedToken::{
+        thread: row_i64(r, "thread", 0.to_int64()),
+        n: row_i64(r, "n", 0.to_int64()),
+        apart: true,
+      })
+      j = j + 1
+    }
+  }
+  Ok(out)
+}
+
+/// Mark a batch of snapshotted `HandedToken`s delivered for `session` (`#8915`).
+pub fn Store::mark_handed_delivered(
+  self : Store,
+  session : String,
+  handed : Array[HandedToken],
+  at_ms : Int64,
+) -> Result[Int, sql_db::SqlError] {
+  if handed.length() == 0 {
+    return Ok(0)
+  }
+  with_write_tx(self.db, "st_mark_handed_delivered", fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    let mut updated = 0
+    for i in 0..<handed.length() {
+      let h = handed[i]
+      let sql = if h.apart {
+        "UPDATE letter_deliveries SET delivered_at = ?1 WHERE thread = ?2 AND n = ?3 AND session = ?4 AND delivered_at IS NULL"
+      } else {
+        "UPDATE deliveries SET delivered_at = ?1 WHERE thread = ?2 AND n = ?3 AND session = ?4 AND delivered_at IS NULL"
+      }
+      match t.run(
+        sql,
+        [
+          sql_db::int64_to_json(at_ms),
+          sql_db::int64_to_json(h.thread),
+          sql_db::int64_to_json(h.n),
+          base_codec::json_str(session),
+        ],
+      ) {
+        Ok(c) => updated = updated + c
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(updated)
+  })
+}

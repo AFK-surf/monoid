@@ -142,8 +142,9 @@ priv enum Shows {
   Pick(String, Array[Choice], String, (String) -> Unit, @ui.Along, @ui.Side, Bool)
   /// a small panel, or with nothing that opened it a dialog (PanelOf)
   Panel(PanelOf)
-  /// a confirm: its title, what it does, a warning, its action, whether that cannot be undone, what goes on once said
-  Confirm(String, String, String, String, Bool, () -> Unit)
+  /// a confirm: its title, what it does, a warning, its action, whether that cannot be undone, what goes on once said,
+  /// key-value facts for a11y and compact menu popovers, and an optional custom body card rendered in centered/sheet confirms
+  Confirm(String, String, String, String, Bool, () -> Unit, Array[(String, String)], ((@view.View) -> Unit)?)
   /// a question: its title, the line at first, its placeholder, its action, the hint under it, whether a secret,
   /// whether an empty line can be said, what goes on with the line (trimmed)
   Ask(String, String, String, String, String, Bool, Bool, (String) -> Unit)
@@ -288,6 +289,7 @@ priv struct MenuConfirm {
   action : String
   danger : Bool
   run : () -> Unit
+  facts : Array[(String, String)]
 }
 
 ///|
@@ -527,16 +529,10 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
       return
     }
     // (a confirm from a sheet menu: a page of that sheet with `<` back to the menu; cancel closes the menu sheet)
-    (Some(old), Confirm(title, words, warning, action, danger, run)) if menu_can_push_sheet(old) => {
+    (Some(old), Confirm(title, words, warning, action, danger, run, facts, body)) if menu_can_push_sheet(old) => {
       let serial = old.serial
       let next_n = old.steps_made + 1
-      let a11y_desc = if warning == "" {
-        words
-      } else if words == "" {
-        warning
-      } else {
-        words + "\n" + warning
-      }
+      let a11y_desc = confirm_description(facts, words, warning)
       let page = sheet_nodes_panel(title, 0.0, fn(col, _close) {
         sheet_confirm_node(
           col,
@@ -546,6 +542,8 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
           danger,
           fn() { dismissed_now(serial) },
           fn() { confirm_menu_run(serial, next_n, run) },
+          facts~,
+          body?,
         )
       })
       panel_page(old, page, from, gone, is_confirm=true, a11y_description=a11y_desc)
@@ -566,8 +564,8 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
       menu_push(old, pick_menu_items(choices, chosen, choose), title, gone, extras=pick_menu_extras(choices))
       return
     }
-    (Some(old), Confirm(title, words, warning, action, danger, run)) if menu_can_push_popover(old) => {
-      menu_push_confirm(old, title, words, warning, action, danger, run, gone)
+    (Some(old), Confirm(title, words, warning, action, danger, run, facts, _)) if menu_can_push_popover(old) => {
+      menu_push_confirm(old, title, words, warning, action, danger, run, gone, facts~)
       return
     }
     _ => ()
@@ -1168,9 +1166,11 @@ pub fn confirm(
   run : () -> Unit,
   danger? : Bool = false,
   warning? : String = "",
+  facts? : Array[(String, String)] = [],
+  body? : (@view.View) -> Unit,
   from? : Anchor = Unanchored,
 ) -> Unit {
-  present(Confirm(title, words, warning, action, danger, run), from)
+  present(Confirm(title, words, warning, action, danger, run, facts, body), from)
 }
 
 ///|
@@ -1483,6 +1483,7 @@ fn menu_push_confirm(
   danger : Bool,
   run : () -> Unit,
   gone : () -> Unit,
+  facts? : Array[(String, String)] = [],
 ) -> Unit {
   presented_last.val = p.serial
   p.open = true
@@ -1499,6 +1500,7 @@ fn menu_push_confirm(
     action,
     danger,
     run: fn() { confirm_menu_run(serial, level_n, run) },
+    facts,
   }
   @view.transition(fn() {
     match steps_reshaping.get(p.serial) {
@@ -1754,7 +1756,7 @@ fn small_as_popover(shows : Shows, from : Anchor, held : Bool, win_h : Double) -
     Pick(_, choices, _, _, _, _, search) =>
       choices.length() <= small_popover_menu_most && pick_menu_of(choices, search)
     Panel(x) => x.popover && !x.stage && !x.form && !x.nodes.steps && !x.grows && from != Unanchored
-    Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) => false
+    Confirm(_, _, _, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) => false
   }
 }
 
@@ -1832,7 +1834,7 @@ fn how_of(shows : Shows, from : Anchor, held : Bool, sheet : Bool, win_h : Doubl
     (true, _) => if small_as_popover(shows, from, held, win_h) { AsPopover } else { AsSheet }
     (false, Shows::Panel(x)) if from == Unanchored || x.form => AsDialog
     (false, Shows::Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) | Shows::Panel(_)) => AsPopover
-    (false, Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
+    (false, Confirm(_, _, _, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
   }
 }
 

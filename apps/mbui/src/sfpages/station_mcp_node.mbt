@@ -315,7 +315,7 @@ fn mcp_station_card_node(
                   return
                 }
                 @sf.confirm(
-                  @sf.t("web-pages.stations.mcpDeleteTitle", args=[("name", name)]),
+                  @sf.t("web-pages.stations.mcpDeleteTitle"),
                   @sf.t("web-pages.stations.mcpDeleteBody"),
                   @sf.t("web-pages.stations.mcpDelete"),
                   fn() {
@@ -330,6 +330,7 @@ fn mcp_station_card_node(
                     )
                   },
                   danger=true,
+                  facts=[(@sf.t("common.confirmFact.mcp"), name)],
                 )
               }
               row.on_menu(fn(m) {
@@ -622,7 +623,7 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
               return
             }
             @sf.confirm(
-              @sf.t("web-pages.stations.mcpDeleteTitle", args=[("name", edit_name)]),
+              @sf.t("web-pages.stations.mcpDeleteTitle"),
               @sf.t("web-pages.stations.mcpDeleteBody"),
               @sf.t("web-pages.stations.mcpDelete"),
               fn() {
@@ -638,6 +639,7 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
                 shut()
               },
               danger=true,
+              facts=[(@sf.t("common.confirmFact.mcp"), edit_name)],
             )
           },
           tone=Danger,

@@ -181,6 +181,8 @@ pub fn handle_events_route(
       } else {
         None
       }
+      let overview_patch = opt_str_eq(r.param("overviewPatch"), "1") &&
+      supports_all_runtimes(client_runtimes(r), client_profile_services(r))
       let opts = EventsOpenOptions::{
         host: opt_str_eq(r.param("host"), "1"),
         since: r.param("since"),
@@ -189,6 +191,7 @@ pub fn handle_events_route(
         spare: spare,
         held_keys: if running { (host.held_sessions)() } else { [] },
         supports_live_rates: true,
+        overview_patch: overview_patch,
       }
       let opened = hub.open_stream(r.viewer, r.lang, opts)
       station_http::HandlerAction::UpgradeSse(opened.headers)
@@ -363,6 +366,11 @@ pub fn dispatch_core_route(
     return Some(call_with_json(host, "hub.dev.inject", r, []))
   }
 
+  // GET /skills (Composer `/` slash skills before a session exists, `#9028`)
+  if m == "GET" && n == 1 && segs[0] == "skills" {
+    return Some(call_read(host, "skills", r, base_codec::json_obj([])))
+  }
+
   // Sessions routes
   if n >= 1 && segs[0] == "sessions" {
     if m == "GET" && n == 1 {
@@ -388,7 +396,8 @@ pub fn dispatch_core_route(
         act == "transcript" ||
         act == "widget-state" ||
         act == "peek" ||
-        act == "open" {
+        act == "open" ||
+        act == "skills" {
           return Some(call_read(host, "session." + act, r, base_codec::json_obj([("key", base_codec::json_str(key))])))
         }
         return None

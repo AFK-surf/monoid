@@ -598,7 +598,7 @@ pub fn stop_sharing_many(
     return
   }
   @sf.confirm(
-    @sf.t("web-pages.profiles.batch.stopTitle", args=[("n", shared.length().to_string())]),
+    @sf.t("web-pages.profiles.batch.stopTitle"),
     @sf.t("web-pages.profiles.batch.stopBody"),
     @sf.t("web-pages.profiles.batch.stop"),
     fn() {
@@ -624,6 +624,7 @@ pub fn stop_sharing_many(
       })
     },
     danger=true,
+    facts=[(@sf.t("common.confirmFact.count"), shared.length().to_string())],
   )
 }
 
@@ -692,9 +693,13 @@ pub fn move_profiles_many(
                   @sf.t("web-pages.profiles.manage.moveConfirmBody", args=[("station", target_name)])
                 }
                 @sf.confirm(
-                  @sf.t("web-pages.profiles.manage.moveConfirmTitle", args=[("n", to_move.length().to_string()), ("station", target_name)]),
+                  @sf.t("web-pages.profiles.manage.moveConfirmTitle"),
                   body,
                   @sf.t("web-pages.profiles.manage.moveAction"),
+                  facts=[
+                    (@sf.t("common.confirmFact.count"), to_move.length().to_string()),
+                    (@sf.t("common.confirmFact.targetStation"), target_name),
+                  ],
                   fn() {
                     if !@signals.untracked(still_here) {
                       return
@@ -821,9 +826,12 @@ pub fn delete_profiles_many(
     @sf.t("web-pages.profiles.manage.deleteBody", args=[("n", deletable.length().to_string()), ("list", list_text)])
   }
   @sf.confirm(
-    @sf.t("web-pages.profiles.manage.deleteTitle", args=[("n", deletable.length().to_string())]),
+    @sf.t("web-pages.profiles.manage.deleteTitle"),
     body,
     @sf.t("web-pages.profiles.manage.delete"),
+    facts=[
+      (@sf.t("common.confirmFact.count"), deletable.length().to_string()),
+    ],
     fn() {
       if !@signals.untracked(still_here) {
         return

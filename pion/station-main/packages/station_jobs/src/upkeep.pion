@@ -11,6 +11,7 @@
 
 import "base_codec"
 import "nodepath"
+import "station_sessions"
 
 pub let MIB : Int64 = (1024 * 1024).to_int64()
 pub let ROTATE_COPY_CHUNK : Int64 = MIB
@@ -1123,6 +1124,10 @@ pub struct UpkeepHooks {
   pub on_repo_branches : Option[(Int64) -> Unit]
   pub on_orphan_rooms : Option[(Int64) -> Unit]
   pub disk_probe : Option[(String) -> ParsedDisk]
+  /// Optional git runner for shared clone pack upkeep (`#8900`, `#8901`).
+  pub repo_git : Option[(String, Array[String], Int64, Bool) -> (Bool, String)]
+  /// Optional probe returning true when clones/worktrees are actively running (`#8900`).
+  pub clones_active : Option[() -> Bool]
 }
 
 pub fn empty_upkeep_hooks() -> UpkeepHooks {
@@ -1134,6 +1139,8 @@ pub fn empty_upkeep_hooks() -> UpkeepHooks {
     on_repo_branches: None,
     on_orphan_rooms: None,
     disk_probe: None,
+    repo_git: None,
+    clones_active: None,
   }
 }
 
@@ -1258,6 +1265,7 @@ pub struct Upkeep {
   pub mut state_loaded : Bool
   pub mut last_repo_branches_at : Option[Int64]
   pub mut last_orphan_rooms_at : Option[Int64]
+  pub gc_failed : Map[String, Bool]
 }
 
 pub fn Upkeep::new(data_dir : String, pid : Int, fs : FsPort) -> Upkeep {
@@ -1268,6 +1276,7 @@ pub fn Upkeep::new(data_dir : String, pid : Int, fs : FsPort) -> Upkeep {
     state_loaded: false,
     last_repo_branches_at: None,
     last_orphan_rooms_at: None,
+    gc_failed: Map::new(),
   }
 }
 
@@ -1546,6 +1555,25 @@ pub fn Upkeep::step_upkeep(
         }
       }
 
+      match cur.hooks.repo_git {
+        Some(git_fn) => {
+          let active_fn = match cur.hooks.clones_active {
+            Some(f) => f
+            None => fn() -> Bool { false }
+          }
+          keep_all_shared_clone_packs(
+            self.fs,
+            self.data_dir,
+            due_branches,
+            cur.now_ms,
+            self.gc_failed,
+            active_fn,
+            git_fn,
+          )
+        }
+        None => ()
+      }
+
       let due_orphans = match self.last_orphan_rooms_at {
         None => true
         Some(last) => cur.now_ms - last >= ORPHAN_ROOM_EVERY_MS
@@ -1624,5 +1652,275 @@ pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> 
     repo_bundles_pruned: 0,
     job_states_pruned: 0,
     state_persisted: false,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared clone git maintenance suppression, foreground gc, and stale temp packs (`#8900`, `#8901`)
+// ---------------------------------------------------------------------------
+
+pub let REPO_GC_TIMEOUT_MS : Int64 = (30 * 60000).to_int64()
+pub let REPO_GIT_TERM_GRACE_MS : Int64 = 10000.to_int64()
+pub let GC_LOOSE_MOST : Int = 6700
+pub let GC_PACKS_MOST : Int = 50
+
+/// Written into every shared clone's config when it is cloned (`#8900`, `#8901`).
+/// Delegates to `station_sessions::shared_repo_clone_config_args` as the single source of truth.
+pub fn shared_repo_clone_config_args() -> Array[String] {
+  station_sessions::shared_repo_clone_config_args()
+}
+
+/// Config `(key, value)` pairs kept in every shared clone (`#8900`, `#8901`).
+/// Delegates to `station_sessions::shared_repo_config_pairs` as the single source of truth.
+pub fn shared_repo_config_pairs() -> Array[(String, String)] {
+  station_sessions::shared_repo_config_pairs()
+}
+
+/// Matches `.tmp-<digits>-pack*` (pack-objects) and `tmp_*` (index-pack) files left by killed repacks (`#8901`).
+pub fn is_temp_pack_name(name : String) -> Bool {
+  if name.starts_with("tmp_") {
+    return true
+  }
+  if !name.starts_with(".tmp-") {
+    return false
+  }
+  let rest = name.slice(5, name.length())
+  let mut i = 0
+  while i < rest.length() {
+    let c = rest.code_unit_at(i) & 0xFF
+    if c >= 48 && c <= 57 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  i > 0 && rest.slice(i, rest.length()).starts_with("-pack")
+}
+
+/// Counts `pack-*.pack` files in `<repo>/.git/objects/pack` without a matching `.keep` file (`#8900`, `#8901`).
+/// Temporary packs from a killed repack are excluded so they never force a 30-minute gc every round.
+pub fn packs_counted(fs : FsPort, repo_path : String) -> Int {
+  let pack_dir = nodepath::join(fs.sep, [repo_path, ".git", "objects", "pack"])
+  let names = match (fs.read_dir)(pack_dir) {
+    Some(ns) => ns
+    None => return 0
+  }
+  let kept : Map[String, Bool] = Map::new()
+  for i in 0..<names.length() {
+    let n = names[i]
+    if n.ends_with(".keep") {
+      kept.set(n.slice(0, n.length() - 5), true)
+    }
+  }
+  let mut count = 0
+  for i in 0..<names.length() {
+    let n = names[i]
+    if n.starts_with("pack-") && n.ends_with(".pack") {
+      let stem = n.slice(0, n.length() - 5)
+      if !kept.contains(stem) {
+        count = count + 1
+      }
+    }
+  }
+  count
+}
+
+fn path_within_root(path : String, root : String, sep : String) -> Bool {
+  if path == root {
+    return true
+  }
+  let prefix = if root.ends_with(sep) { root } else { root + sep }
+  path.starts_with(prefix)
+}
+
+/// Removes temporary pack files in `<repo>/.git/objects/pack` untouched for `max_age_ms` (`#8901`),
+/// never following a symlink or a `.git/objects` resolving outside `repo_path`.
+pub fn prune_stale_temp_packs_in(
+  fs : FsPort,
+  repo_path : String,
+  now_ms : Int64,
+  max_age_ms : Int64 = DAY_MS,
+) -> Array[String] {
+  let pack_path = nodepath::join(fs.sep, [repo_path, ".git", "objects", "pack"])
+  match (fs.lstat)(pack_path) {
+    Some(st) => if !st.is_dir() || st.is_symlink() { return [] }
+    None => return []
+  }
+  let real_repo = match (fs.realpath)(repo_path) {
+    Some(r) => r
+    None => return []
+  }
+  let real_pack = match (fs.realpath)(pack_path) {
+    Some(r) => r
+    None => return []
+  }
+  if !path_within_root(real_pack, real_repo, fs.sep) {
+    return []
+  }
+  let names = match (fs.read_dir)(real_pack) {
+    Some(ns) => ns
+    None => return []
+  }
+  let gone : Array[String] = []
+  for i in 0..<names.length() {
+    let name = names[i]
+    if !is_temp_pack_name(name) {
+      continue
+    }
+    let full = nodepath::join(fs.sep, [real_pack, name])
+    match (fs.lstat)(full) {
+      Some(st) => {
+        if !st.is_file() || st.is_symlink() {
+          continue
+        }
+        if now_ms - st.mtime_ms < max_age_ms {
+          continue
+        }
+        if (fs.remove_file)(full) {
+          gone.push(name)
+        }
+      }
+      None => ()
+    }
+  }
+  // Sort ascending
+  let mut si = 1
+  while si < gone.length() {
+    let cur = gone[si]
+    let mut pos = si
+    while pos > 0 && gone[pos - 1] > cur {
+      gone[pos] = gone[pos - 1]
+      pos = pos - 1
+    }
+    gone[pos] = cur
+    si = si + 1
+  }
+  gone
+}
+
+fn non_empty_trimmed_lines(text : String) -> Array[String] {
+  let raw = text.split("\n")
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    let line = raw[i]
+    let clean = if line.ends_with("\r") { line.slice(0, line.length() - 1) } else { line }
+    let t = clean.trim()
+    if t.length() > 0 {
+      out.push(t)
+    }
+  }
+  out
+}
+
+/// Keeps a shared clone's git auto-maintenance off (`--get-all` + `--replace-all` for
+/// `maintenance.auto=false`, `gc.auto=0`, `gc.autoDetach=false`), prunes day-old temp packs on `daily`,
+/// and runs foreground backgrounded `git gc --auto --quiet` when `daily` or `packs_counted > 50` (`#8900`, `#8901`).
+pub fn keep_shared_clone_packs(
+  fs : FsPort,
+  _repo_name : String,
+  repo_path : String,
+  daily : Bool,
+  git : (String, Array[String], Int64, Bool) -> (Bool, String),
+  now_ms : Int64,
+) -> Bool {
+  let pairs = shared_repo_config_pairs()
+  for i in 0..<pairs.length() {
+    let (key, expected) = pairs[i]
+    let (ok_get, stdout) = git(repo_path, ["config", "--local", "--get-all", key], 15000L, false)
+    let lines = non_empty_trimmed_lines(stdout)
+    if ok_get && lines.length() == 1 && lines[0] == expected {
+      continue
+    }
+    let _ = git(repo_path, ["config", "--local", "--replace-all", key, expected], 15000L, false)
+  }
+  if daily {
+    let _ = prune_stale_temp_packs_in(fs, repo_path, now_ms, DAY_MS)
+  }
+  if !daily && packs_counted(fs, repo_path) <= GC_PACKS_MOST {
+    return true
+  }
+  let (gc_ok, _) = git(
+    repo_path,
+    [
+      "-c",
+      "gc.auto=" + GC_LOOSE_MOST.to_string(),
+      "-c",
+      "gc.autoPackLimit=" + GC_PACKS_MOST.to_string(),
+      "-c",
+      "gc.autoDetach=false",
+      "-c",
+      "maintenance.auto=false",
+      "gc",
+      "--auto",
+      "--quiet",
+    ],
+    REPO_GC_TIMEOUT_MS,
+    true,
+  )
+  gc_ok
+}
+
+/// Runs `keep_shared_clone_packs` for every shared clone under `<data>/repos`, skipping clones in
+/// `failed` on non-daily rounds so a slow machine never repacks endlessly (`#8900`, `#8901`).
+pub fn keep_all_shared_clone_packs(
+  fs : FsPort,
+  data_dir : String,
+  daily : Bool,
+  now_ms : Int64,
+  failed : Map[String, Bool],
+  clones_active : () -> Bool,
+  git : (String, Array[String], Int64, Bool) -> (Bool, String),
+) -> Unit {
+  if clones_active() {
+    return ()
+  }
+  let real_data = match (fs.realpath)(data_dir) {
+    Some(r) => r
+    None => return ()
+  }
+  let repos_path = nodepath::join(fs.sep, [real_data, "repos"])
+  let real_repos = match (fs.realpath)(repos_path) {
+    Some(r) => r
+    None => return ()
+  }
+  if !path_within_root(real_repos, real_data, fs.sep) {
+    return ()
+  }
+  let names = match (fs.read_dir)(real_repos) {
+    Some(ns) => ns
+    None => return ()
+  }
+  for i in 0..<names.length() {
+    if clones_active() {
+      return ()
+    }
+    let name = names[i]
+    if name.starts_with(".") {
+      continue
+    }
+    let repo_path = nodepath::join(fs.sep, [real_repos, name])
+    match (fs.lstat)(repo_path) {
+      Some(st) => if !st.is_dir() || st.is_symlink() { continue }
+      None => continue
+    }
+    let real_repo = match (fs.realpath)(repo_path) {
+      Some(r) => r
+      None => continue
+    }
+    if !path_within_root(real_repo, real_data, fs.sep) {
+      continue
+    }
+    if (fs.stat)(nodepath::join(fs.sep, [real_repo, ".git"])) is None {
+      continue
+    }
+    if !daily && failed.contains(real_repo) {
+      continue
+    }
+    let ok = keep_shared_clone_packs(fs, name, real_repo, daily, git, now_ms)
+    if ok {
+      let _ = failed.remove(real_repo)
+    } else {
+      failed.set(real_repo, true)
+    }
   }
 }

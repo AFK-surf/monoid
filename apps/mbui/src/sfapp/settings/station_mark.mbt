@@ -225,7 +225,8 @@ pub fn open_mark_pick(
   }
   // (a sheet of its own with touch, a dialog with keyboard and mouse: the presenters'; its grid scrolls in what is left)
   @sf.panel_nodes(
-    fill("android-settings.station.emojiTitle", [("name", name)]),
+    tr("android-settings.station.emojiTitle"),
+    description=name,
     fn(v, close) {
       let close = fn() {
         st.up.val = false

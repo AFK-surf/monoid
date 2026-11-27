@@ -826,13 +826,7 @@ fn menu_node_by(
             let (_, lv_title, lv_kind, _) = cur_level()
             match lv_kind {
               MenuConfirmLevel(c) => {
-                let desc = if c.warning == "" {
-                  c.words
-                } else if c.words == "" {
-                  c.warning
-                } else {
-                  c.words + "\n" + c.warning
-                }
+                let desc = confirm_description(c.facts, c.words, c.warning)
                 Some(@view.said(Dialog, label=title_plain(lv_title), description=desc))
               }
               MenuItems(_, _) => Some(@view.said(@view.Role::Menu, label=title_plain(lv_title)))
@@ -1088,7 +1082,15 @@ fn menu_confirm_level_node(
         |> ignore
       })
       |> ignore
-      // Body + optional warning: symmetric `text_in` (16pt) full-width, 8pt below title, 6pt between body and warning
+      // Verification facts card (concentric `row_corner` at `panel_pad` from menu edges, text aligned with `text_in`)
+      if c.facts.iter().any(fn(kv) { kv.1 != "" }) {
+        sc.box(fn(facts_wrap) {
+          facts_wrap.padding(Is((panel_pad, @ui.Space::px(S2), panel_pad, 0.0))) |> ignore
+          confirm_facts_card_node(facts_wrap, c.facts, 0.0, row_corner, fn() { 1.0 }, compact=true)
+        })
+        |> ignore
+      }
+      // Body + optional warning: symmetric `text_in` (16pt) full-width, 8pt below title/facts, 6pt between body and warning
       if c.words != "" || c.warning != "" {
         sc.box(fn(body_box) {
           body_box.padding(Is((text_in, @ui.Space::px(S2), text_in, 0.0))).gap(Is(6.0)) |> ignore

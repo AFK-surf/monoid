@@ -412,10 +412,11 @@ fn archive_restore_from(core : Core, v : Json?) -> Unit {
 fn archive_delete_from(core : Core, v : Json?) -> Unit {
   let title = text(v, "title")
   @sf.confirm(
-    @sf.t("android-misc.archive.deleteTitle", args=[("title", title)]),
+    @sf.t("android-misc.archive.deleteTitle"),
     @sf.t("android-misc.archive.deleteText"),
     @sf.t("common.delete"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.chat"), title)],
     fn() {
       @settings.act(
         core,

@@ -39,9 +39,10 @@ pub fn lock_call(
 /// itself: its page's and its list card's 保护).
 pub fn join_dialog(core : Core, ws : String, station : String, name : String) -> Unit {
   @sf.confirm(
-    @sf.t("web-pages.security.joinTitle", args=[("name", name)]),
+    @sf.t("web-pages.security.joinTitle"),
     @sf.t("web-pages.security.joinBody"),
     @sf.t("web-pages.security.join"),
+    facts=[(@sf.t("common.confirmFact.station"), name)],
     fn() {
       lock_call(
         core,

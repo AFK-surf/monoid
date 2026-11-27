@@ -1,0 +1,2916 @@
+// SQLite-backed & in-memory VaultStore for vaults, items, boxes, standalone KeyAsks (#9017),
+// and workspace-vault discovery + JoinAsks / JoinDismisses (#9083),
+// aligned 1:1 with `station/src/vault/store.ts`.
+// Uses `sql_db::Db::tx` exclusively (zero raw transaction SQL outside `sql_db`).
+// Propagates all DB errors via `Result` (never silently swallowing into `false`/`[]`).
+
+import "base_codec"
+import "form"
+import "sql_db"
+import "station_rules_bridge"
+
+pub let DELETED_WRITE : String = "vault was deleted during the write"
+
+pub fn is_deleted_vault_write(msg : String) -> Bool {
+  msg.contains(DELETED_WRITE)
+}
+
+pub let VAULT_STORE_SCHEMA : String =
+"CREATE TABLE IF NOT EXISTS vaults (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  id TEXT NOT NULL,\n" +
+"  seq INTEGER NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, id)\n" +
+");\n" +
+"CREATE TABLE IF NOT EXISTS vault_items (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  vault TEXT NOT NULL,\n" +
+"  id TEXT NOT NULL,\n" +
+"  version INTEGER NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, vault, id)\n" +
+");\n" +
+"CREATE TABLE IF NOT EXISTS vault_boxes (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  device TEXT NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, device)\n" +
+");\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_lookup (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  sub TEXT NOT NULL,\n" +
+"  vault TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, sub, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_invalid (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_backfill (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_duplicates_v2 (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_audit_v2 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_type_audit_v3 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_nul_v4 (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_nul_audit_v4 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE INDEX IF NOT EXISTS vaults_workspace_active ON vaults (ws, id DESC)\n" +
+"  WHERE json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true';\n" +
+"CREATE TABLE IF NOT EXISTS vault_asks (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  vault TEXT NOT NULL,\n" +
+"  device TEXT NOT NULL,\n" +
+"  box TEXT NOT NULL,\n" +
+"  at INTEGER NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, vault, device)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE INDEX IF NOT EXISTS vault_asks_vault_at ON vault_asks (ws, vault, at DESC, device);\n" +
+"CREATE TABLE IF NOT EXISTS vault_joins (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  vault TEXT NOT NULL,\n" +
+"  sub TEXT NOT NULL,\n" +
+"  at INTEGER NOT NULL,\n" +
+"  state TEXT NOT NULL,\n" +
+"  body TEXT,\n" +
+"  joined_up_to INTEGER NOT NULL DEFAULT -1,\n" +
+"  dismiss_up_to INTEGER NOT NULL DEFAULT -1,\n" +
+"  dismiss_body TEXT,\n" +
+"  PRIMARY KEY (ws, vault, sub)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE INDEX IF NOT EXISTS vault_joins_vault_at ON vault_joins (ws, vault, state, at DESC, sub);\n" +
+"CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss ON vault_joins (ws, vault, sub) WHERE dismiss_body IS NOT NULL;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_add AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) BEGIN INSERT INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 ON CONFLICT(ws, vault) DO NOTHING; INSERT INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' ON CONFLICT(ws, sub, vault) DO NOTHING; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_change AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR CASE WHEN json_valid(OLD.body) AND json_valid(NEW.body) THEN json_extract(OLD.body, '$.members') IS NOT json_extract(NEW.body, '$.members') ELSE OLD.body IS NOT NEW.body END) AND (EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; INSERT INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) ON CONFLICT(ws, vault) DO NOTHING; DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); INSERT INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) ON CONFLICT(ws, sub, vault) DO NOTHING; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_drop AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_type_add_v3 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_invalid WHERE ws = NEW.ws AND vault = NEW.id) AND (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 BEGIN DELETE FROM vault_member_invalid WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_type_change_v3 AFTER UPDATE ON vaults WHEN OLD.body IS NOT NEW.body AND (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) IS NOT (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) AND (EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; INSERT OR IGNORE INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws); DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); INSERT OR IGNORE INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_add_v2 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_change_v2 AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.body IS NOT NEW.body) AND (EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_duplicates_v2 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT NEW.ws, NEW.id WHERE EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws) AND (CASE WHEN json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_drop_v2 AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = OLD.ws AND vault = OLD.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_add_v4 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_nul_v4 SELECT NEW.ws, NEW.id WHERE (CASE WHEN instr(NEW.body, '\\u0000') > 0 AND json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_change_v4 AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.body IS NOT NEW.body) AND (EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_nul_v4 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_nul_v4 SELECT NEW.ws, NEW.id WHERE EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws) AND (CASE WHEN instr(NEW.body, '\\u0000') > 0 AND json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_drop_v4 AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = OLD.ws AND vault = OLD.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.vault AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_item_deleted_update BEFORE UPDATE ON vault_items WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.vault AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_stays_deleted_insert BEFORE INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.id AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) AND (CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') IS NOT 'true' ELSE 1 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_stays_deleted BEFORE UPDATE OF body ON vaults WHEN (CASE WHEN json_valid(OLD.body) THEN json_type(OLD.body, '$.deleted') = 'true' ELSE 0 END) AND (CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') IS NOT 'true' ELSE 1 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_items_insert AFTER INSERT ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_items WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_items_update AFTER UPDATE OF body ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_items WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_insert AFTER INSERT ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_asks WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_update AFTER UPDATE OF body ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_asks WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_insert AFTER INSERT ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_update AFTER UPDATE OF body ON vaults WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;\n"
+
+pub let MEMBER_VAULTS_SQL : String =
+"SELECT v.body FROM vault_member_lookup m CROSS JOIN vaults v ON v.ws = m.ws AND v.id = m.vault WHERE m.ws = ? AND m.sub = ? ORDER BY m.vault"
+
+pub let ACTIVE_WORKSPACE_VAULTS_SQL : String =
+"SELECT id, body FROM vaults WHERE ws = ? AND json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true' ORDER BY id DESC LIMIT ?"
+
+pub let ACTIVE_WORKSPACE_VAULTS_BEFORE_SQL : String =
+"SELECT id, body FROM vaults WHERE ws = ? AND json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true' AND id < ? ORDER BY id DESC LIMIT ?"
+
+pub struct JsonSnapshot {
+  pub value : form::Json
+  pub body : String
+}
+
+pub struct JoinSnapshot {
+  pub value : Option[form::Json]
+  pub body : Option[String]
+  pub joined_up_to : Int64
+  pub dismiss_up_to : Int64
+  pub dismiss : Option[form::Json]
+  pub dismiss_body : Option[String]
+}
+
+pub struct ApproveJoinSpec {
+  pub sub : String
+  pub at : Int64
+  pub device : String
+  pub box_key : String
+  pub sig : String
+}
+
+pub enum VaultWriteResult {
+  Saved
+  Conflict
+  JoinCancelled
+  DeletedWrite
+  DbError(String)
+}
+
+pub struct CancelledCursor {
+  pub vault : String
+  pub at : Int64
+  pub sub : String
+}
+
+pub struct DismissCursor {
+  pub vault : String
+  pub sub : String
+}
+
+pub struct JoinsPage {
+  pub joins : Array[form::Json]
+  pub next_cancelled_cursor : Option[CancelledCursor]
+}
+
+pub struct DismissesPage {
+  pub dismisses : Array[form::Json]
+  pub next_cursor : Option[DismissCursor]
+}
+
+pub struct OwnJoins {
+  pub joins : Array[form::Json]
+  pub dismisses : Array[form::Json]
+}
+
+struct MemAskRow {
+  ws : String
+  vault : String
+  device : String
+  box_key : String
+  at : Int64
+  body : String
+}
+
+struct MemJoinRow {
+  ws : String
+  vault : String
+  sub : String
+  mut at : Int64
+  mut state : String
+  mut body : Option[String]
+  mut joined_up_to : Int64
+  mut dismiss_up_to : Int64
+  mut dismiss_body : Option[String]
+}
+
+struct MemVaultData {
+  vaults : Map[String, (String, String, Int64, String)]
+  member_lookup : Map[String, Map[String, Bool]]
+  boxes : Map[String, String]
+  asks : Map[String, MemAskRow]
+  joins : Map[String, MemJoinRow]
+}
+
+fn MemVaultData::new() -> MemVaultData {
+  MemVaultData::{
+    vaults: Map::new(),
+    member_lookup: Map::new(),
+    boxes: Map::new(),
+    asks: Map::new(),
+    joins: Map::new(),
+  }
+}
+
+fn mem_k2(a : String, b : String) -> String {
+  a + "\x00" + b
+}
+
+fn mem_k3(a : String, b : String, c : String) -> String {
+  a + "\x00" + b + "\x00" + c
+}
+
+fn mem_reindex_vault_members(m : MemVaultData, ws : String, vid : String, old_body : Option[String], new_body : Option[String]) -> Unit {
+  match old_body {
+    Some(ob) => match parse_form_json(ob) {
+      Some(ov) => match form::json_field(Some(ov), "members") {
+        Some(form::Json::Arr(ms)) => {
+          for i in 0..<ms.length() {
+            match ms[i] {
+              form::Json::Str(sub) => {
+                match m.member_lookup.get(mem_k2(ws, sub)) {
+                  Some(set) => set.remove(vid)
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    None => ()
+  }
+  match new_body {
+    Some(nb) => match parse_form_json(nb) {
+      Some(nv) => match form::json_field(Some(nv), "members") {
+        Some(form::Json::Arr(ms)) => {
+          for i in 0..<ms.length() {
+            match ms[i] {
+              form::Json::Str(sub) => {
+                let mk = mem_k2(ws, sub)
+                match m.member_lookup.get(mk) {
+                  Some(set) => set.set(vid, true)
+                  None => {
+                    let set : Map[String, Bool] = Map::new()
+                    set.set(vid, true)
+                    m.member_lookup.set(mk, set)
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    None => ()
+  }
+}
+
+/// Pluggable SQL database port so `VaultStore` compiles cleanly under `pionc test` without C SQLite FFI
+/// while `VaultStore::new(db)` binds directly to `sql_db::Db` in production binaries.
+pub struct VaultDbPort {
+  pub exec : (String) -> Result[Unit, sql_db::SqlError]
+  pub run : (String, Array[base_codec::Json]) -> Result[Int, sql_db::SqlError]
+  pub first : (String, Array[base_codec::Json]) -> Result[Option[Map[String, base_codec::Json]], sql_db::SqlError]
+  pub all : (String, Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError]
+  pub tx : ((VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError]
+  pub read_tx : ((VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError]
+}
+
+pub fn sql_db_vault_port(db : sql_db::Db) -> VaultDbPort {
+  VaultDbPort::{
+    exec: fn(sql : String) -> Result[Unit, sql_db::SqlError] { db.exec(sql) },
+    run: fn(sql : String, params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] { db.run(sql, params) },
+    first: fn(sql : String, params : Array[base_codec::Json]) -> Result[Option[Map[String, base_codec::Json]], sql_db::SqlError] { db.first(sql, params) },
+    all: fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] { db.all(sql, params) },
+    tx: fn(f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] {
+      db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] { f(sql_db_vault_port(txdb)) })
+    },
+    read_tx: fn(f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] {
+      db.deferred_tx_err(
+        fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+        fn() -> Result[Unit, sql_db::SqlError] { f(sql_db_vault_port(db)) },
+      )
+    },
+  }
+}
+
+/// Pure-Pion `VaultStore` with pluggable SQLite (`VaultStore::new`) or in-memory (`VaultStore::in_memory`) storage.
+pub struct VaultStore {
+  db : Option[VaultDbPort]
+  mem : Option[MemVaultData]
+  mut ver : Int64
+}
+
+pub fn VaultStore::new_with_port(port : VaultDbPort) -> Result[VaultStore, String] {
+  match (port.exec)(VAULT_STORE_SCHEMA) {
+    Ok(_) => Ok(VaultStore::{ db: Some(port), mem: None, ver: 0L })
+    Err(e) => Err(e.message)
+  }
+}
+
+pub fn VaultStore::new(db : sql_db::Db) -> Result[VaultStore, String] {
+  VaultStore::new_with_port(sql_db_vault_port(db))
+}
+
+pub fn VaultStore::in_memory() -> VaultStore {
+  VaultStore::{ db: None, mem: Some(MemVaultData::new()), ver: 0L }
+}
+
+pub fn VaultStore::version(self : VaultStore) -> Int64 {
+  self.ver
+}
+
+fn form_to_json_string(v : form::Json) -> String {
+  base_codec::json_stringify(station_rules_bridge::form_to_base(v))
+}
+
+fn parse_form_json(raw : String) -> Option[form::Json] {
+  match form::parse_json(raw) {
+    Ok(j) => Some(j)
+    Err(_) => None
+  }
+}
+
+fn row_str(row : Map[String, base_codec::Json], col : String) -> Option[String] {
+  match row.get(col) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn row_i64(row : Map[String, base_codec::Json], col : String) -> Int64 {
+  match row.get(col) {
+    Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
+      Some(v) => v
+      None => n.to_int64()
+    }
+    _ => 0L
+  }
+}
+
+fn json_str_f(v : form::Json, k : String) -> String {
+  match form::json_field(Some(v), k) {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn json_i64_f(v : form::Json, k : String) -> Int64 {
+  match form::json_field(Some(v), k) {
+    Some(form::Json::Num(n)) => n.to_int64()
+    _ => 0L
+  }
+}
+
+fn json_is_deleted(v : form::Json) -> Bool {
+  match form::json_field(Some(v), "deleted") {
+    Some(form::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn vault_has_wrapped_key(v : form::Json, device : String, box_key : String) -> Bool {
+  match form::json_field(Some(v), "keys") {
+    Some(form::Json::Arr(ks)) => {
+      for i in 0..<ks.length() {
+        let cert = form::json_field(Some(ks[i]), "cert")
+        let d = match form::json_field(cert, "device") {
+          Some(form::Json::Str(s)) => s
+          _ => ""
+        }
+        let b = match form::json_field(cert, "box") {
+          Some(form::Json::Str(s)) => s
+          _ => ""
+        }
+        if d == device && b == box_key {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+fn mem_delete_vault_children(m : MemVaultData, ws : String, id : String) -> Unit {
+  let ask_keys = m.asks.keys()
+  for i in 0..<ask_keys.length() {
+    match m.asks.get(ask_keys[i]) {
+      Some(a) => if a.ws == ws && a.vault == id { m.asks.remove(ask_keys[i]) }
+      None => ()
+    }
+  }
+  let join_keys = m.joins.keys()
+  for i in 0..<join_keys.length() {
+    match m.joins.get(join_keys[i]) {
+      Some(j) => if j.ws == ws && j.vault == id { m.joins.remove(join_keys[i]) }
+      None => ()
+    }
+  }
+}
+
+pub fn VaultStore::vault(self : VaultStore, ws : String, id : String) -> Result[Option[form::Json], String] {
+  match self.vault_snapshot(ws, id) {
+    Ok(Some(s)) => Ok(Some(s.value))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn VaultStore::vault_snapshot(self : VaultStore, ws : String, id : String) -> Result[Option[JsonSnapshot], String] {
+  match self.mem {
+    Some(m) => match m.vaults.get(mem_k2(ws, id)) {
+      Some((_, _, _, b)) => match parse_form_json(b) {
+        Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+        None => Err("corrupt vault json")
+      }
+      None => Ok(None)
+    }
+    None => match self.db {
+      Some(db) => match (db.first)("SELECT body FROM vaults WHERE ws = ? AND id = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(Some(row)) => match row_str(row, "body") {
+          Some(b) => match parse_form_json(b) {
+            Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+            None => Err("corrupt vault json")
+          }
+          None => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+/// Whether `sub` is a member of an active (non-deleted) vault `id` in `ws` (`Secrets.inVault` #9017).
+pub fn VaultStore::in_vault(self : VaultStore, ws : String, sub : String, id : String) -> Bool {
+  let v = match self.vault(ws, id) {
+    Ok(Some(v)) => v
+    _ => return false
+  }
+  if json_is_deleted(v) {
+    return false
+  }
+  match form::json_field(Some(v), "members") {
+    Some(form::Json::Arr(ms)) => {
+      for i in 0..<ms.length() {
+        match ms[i] {
+          form::Json::Str(s) => if s == sub { return true }
+          _ => ()
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+pub fn VaultStore::vaults(self : VaultStore, ws : String) -> Result[Array[form::Json], String] {
+  match self.mem {
+    Some(m) => {
+      let pairs : Array[(String, String)] = []
+      let ks = m.vaults.keys()
+      for i in 0..<ks.length() {
+        match m.vaults.get(ks[i]) {
+          Some((vws, vid, _, body)) => if vws == ws { pairs.push((vid, body)) }
+          None => ()
+        }
+      }
+      let mut si = 1
+      while si < pairs.length() {
+        let cur = pairs[si]
+        let mut sj = si - 1
+        while sj >= 0 && pairs[sj].0 > cur.0 {
+          pairs[sj + 1] = pairs[sj]
+          sj = sj - 1
+        }
+        pairs[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      for i in 0..<pairs.length() {
+        match parse_form_json(pairs[i].1) {
+          Some(v) => out.push(v)
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    None => match self.db {
+      Some(db) => match (db.all)("SELECT body FROM vaults WHERE ws = ? ORDER BY id", [base_codec::json_str(ws)]) {
+        Ok(rows) => {
+          let out : Array[form::Json] = []
+          for i in 0..<rows.length() {
+            match row_str(rows[i], "body") {
+              Some(b) => match parse_form_json(b) {
+                Some(v) => out.push(v)
+                None => ()
+              }
+              None => ()
+            }
+          }
+          Ok(out)
+        }
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+fn is_well_formed_utf16(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let b0 = s.code_unit_at(i)
+    if b0 == 0xED && i + 2 < n {
+      let b1 = s.code_unit_at(i + 1)
+      if b1 >= 0xA0 && b1 <= 0xBF {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn vault_members_complete_db(db : VaultDbPort, ws : String) -> Result[Bool, sql_db::SqlError] {
+  match (db.first)(
+    "SELECT b.done, a.done AS audited, t.done AS type_audited, n.done AS nul_audited FROM vault_member_backfill b LEFT JOIN vault_member_audit_v2 a ON a.ws = b.ws LEFT JOIN vault_member_type_audit_v3 t ON t.ws = b.ws LEFT JOIN vault_member_nul_audit_v4 n ON n.ws = b.ws WHERE b.ws = ?",
+    [base_codec::json_str(ws)],
+  ) {
+    Ok(Some(row)) => {
+      Ok(row_i64(row, "done") == 1L && row_i64(row, "audited") == 1L && row_i64(row, "type_audited") == 1L && row_i64(row, "nul_audited") == 1L)
+    }
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+let VAULT_MEMBERS_INVALID_SQL : String =
+"SELECT 1 FROM vault_member_invalid i CROSS JOIN vaults v ON v.ws = i.ws AND v.id = i.vault WHERE i.ws = ? UNION ALL SELECT 1 FROM vault_member_duplicates_v2 d CROSS JOIN vaults v ON v.ws = d.ws AND v.id = d.vault WHERE d.ws = ? UNION ALL SELECT 1 FROM vault_member_nul_v4 n CROSS JOIN vaults v ON v.ws = n.ws AND v.id = n.vault WHERE n.ws = ? LIMIT 1"
+
+fn has_invalid_vault_members_db(db : VaultDbPort, ws : String) -> Result[Bool, sql_db::SqlError] {
+  match (db.first)(VAULT_MEMBERS_INVALID_SQL, [base_codec::json_str(ws), base_codec::json_str(ws), base_codec::json_str(ws)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// Backfill up to `limit` vaults for `ws` into `vault_member_lookup` and its v2/v3/v4 audit tables
+/// (1:1 with `backfillVaultMembers` in `station/src/vault/member-index.ts:167`).
+/// Returns `Ok(true)` once backfill and all audits are complete.
+pub fn VaultStore::backfill_vault_members(
+  self : VaultStore,
+  ws : String,
+  limit : Int = 32,
+) -> Result[Bool, String] {
+  if self.mem is Some(_) {
+    return Ok(true)
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  let mut all_done = false
+  let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+    let ws_j = base_codec::json_str(ws)
+    for sql in [
+      "INSERT OR IGNORE INTO vault_member_backfill (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_audit_v2 (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_type_audit_v3 (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_nul_audit_v4 (ws, after_id, done) VALUES (?, NULL, 0)",
+    ] {
+      match (txdb.run)(sql, [ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let read_cursor = fn(tbl : String) -> Result[(Option[String], Bool), sql_db::SqlError] {
+      match (txdb.first)("SELECT after_id, done FROM " + tbl + " WHERE ws = ?", [ws_j]) {
+        Ok(Some(row)) => Ok((row_str(row, "after_id"), row_i64(row, "done") != 0L))
+        Ok(None) => Ok((None, false))
+        Err(e) => Err(e)
+      }
+    }
+    let (st_after, st_done) = match read_cursor("vault_member_backfill") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (au_after, au_done) = match read_cursor("vault_member_audit_v2") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (ty_after, ty_done) = match read_cursor("vault_member_type_audit_v3") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (nu_after, nu_done) = match read_cursor("vault_member_nul_audit_v4") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if st_done && au_done && ty_done && nu_done {
+      all_done = true
+      return Ok(())
+    }
+    let opt_eq = fn(a : Option[String], b : Option[String]) -> Bool {
+      match (a, b) {
+        (None, None) => true
+        (Some(x), Some(y)) => x == y
+        _ => false
+      }
+    }
+    let audit_batch = !au_done && (st_done || opt_eq(st_after, au_after))
+    let after = if !st_done { st_after } else if !au_done { au_after } else if !ty_done { ty_after } else { nu_after }
+    let type_batch = !ty_done && opt_eq(ty_after, after)
+    let nul_batch = !nu_done && opt_eq(nu_after, after)
+    let rows = match after {
+      None => match (txdb.all)("SELECT id FROM vaults WHERE ws = ? ORDER BY id LIMIT ?", [ws_j, base_codec::json_int(limit)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      Some(aid) => match (txdb.all)("SELECT id FROM vaults WHERE ws = ? AND id > ? ORDER BY id LIMIT ?", [ws_j, base_codec::json_str(aid), base_codec::json_int(limit)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+    }
+    let ids : Array[String] = []
+    for i in 0..<rows.length() {
+      match row_str(rows[i], "id") {
+        Some(id) => ids.push(id)
+        None => ()
+      }
+    }
+    let done = ids.length() < limit
+    let last_id : Option[String] = if ids.length() > 0 { Some(ids[ids.length() - 1]) } else { None }
+    let next_cursor_j = fn(fallback : Option[String]) -> base_codec::Json {
+      match last_id {
+        Some(id) => base_codec::json_str(id)
+        None => match fallback {
+          Some(fb) => base_codec::json_str(fb)
+          None => base_codec::Json::Null
+        }
+      }
+    }
+    let done_j = base_codec::json_int(if done { 1 } else { 0 })
+    if !st_done {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_invalid SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_lookup SELECT v.ws, m.value, v.id FROM vaults v JOIN json_each(CASE WHEN (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN v.body ELSE '{\"members\":[]}' END, '$.members') m WHERE v.ws = ? AND v.id = ? AND m.type = 'text'",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_backfill SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(st_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if audit_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)("DELETE FROM vault_member_duplicates_v2 WHERE ws = ? AND vault = ?", [ws_j, id_j]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN EXISTS (SELECT 1 FROM json_each(v.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_audit_v2 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(au_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if type_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        if st_done {
+          match (txdb.run)(
+            "INSERT OR IGNORE INTO vault_member_lookup SELECT v.ws, m.value, v.id FROM vaults v JOIN json_each(CASE WHEN (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN v.body ELSE '{\"members\":[]}' END, '$.members') m WHERE v.ws = ? AND v.id = ? AND m.type = 'text'",
+            [ws_j, id_j],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        match (txdb.run)(
+          "DELETE FROM vault_member_invalid WHERE ws = ? AND vault = ? AND EXISTS (SELECT 1 FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1)",
+          [ws_j, id_j, ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        if st_done {
+          match (txdb.run)(
+            "INSERT OR IGNORE INTO vault_member_invalid SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0",
+            [ws_j, id_j],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_type_audit_v3 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(ty_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if nul_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)("DELETE FROM vault_member_nul_v4 WHERE ws = ? AND vault = ?", [ws_j, id_j]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_nul_v4 SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN instr(v.body, '\\u0000') > 0 AND json_valid(v.body) THEN EXISTS (SELECT 1 FROM json_each(v.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_nul_audit_v4 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(nu_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    all_done = (st_done || done) && (au_done || (audit_batch && done)) && (ty_done || (type_batch && done)) && (nu_done || (nul_batch && done))
+    Ok(())
+  })
+  match tx_res {
+    Ok(_) => Ok(all_done)
+    Err(e) => Err(e.message)
+  }
+}
+
+/// Candidate vaults for `sub` (1:1 with `VaultStore.memberVaults` in `station/src/vault/store.ts:143`):
+/// uses `vault_member_lookup` ONLY when `sub` is well-formed UTF-16, the workspace has >32 vaults,
+/// backfill + v2/v3/v4 audits are complete, and no invalid/duplicate/NUL markers exist; otherwise
+/// falls back to scanning `vaults(ws)` in the same snapshot so pre-existing Node vaults are never lost.
+pub fn VaultStore::member_vaults(self : VaultStore, ws : String, sub : String) -> Result[Array[form::Json], String] {
+  match self.mem {
+    Some(m) => {
+      let ids : Array[String] = match m.member_lookup.get(mem_k2(ws, sub)) {
+        Some(set) => set.keys()
+        None => []
+      }
+      let mut si = 1
+      while si < ids.length() {
+        let cur = ids[si]
+        let mut sj = si - 1
+        while sj >= 0 && ids[sj] > cur {
+          ids[sj + 1] = ids[sj]
+          sj = sj - 1
+        }
+        ids[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      for i in 0..<ids.length() {
+        match m.vaults.get(mem_k2(ws, ids[i])) {
+          Some((_, _, _, body)) => match parse_form_json(body) {
+            Some(v) => out.push(v)
+            None => ()
+          }
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    None => match self.db {
+      Some(db) => {
+        if !is_well_formed_utf16(sub) {
+          return self.vaults(ws)
+        }
+        match (db.first)("SELECT 1 FROM vaults WHERE ws = ? LIMIT 1 OFFSET 32", [base_codec::json_str(ws)]) {
+          Ok(None) => return self.vaults(ws)
+          Ok(Some(_)) => ()
+          Err(e) => return Err(e.message)
+        }
+        let mut out : Array[form::Json] = []
+        let tx_res = (db.read_tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+          let complete = match vault_members_complete_db(txdb, ws) {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+          let invalid = if complete {
+            match has_invalid_vault_members_db(txdb, ws) {
+              Ok(b) => b
+              Err(e) => return Err(e)
+            }
+          } else {
+            true
+          }
+          let rows = if !complete || invalid {
+            match (txdb.all)("SELECT body FROM vaults WHERE ws = ? ORDER BY id", [base_codec::json_str(ws)]) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          } else {
+            match (txdb.all)(MEMBER_VAULTS_SQL, [base_codec::json_str(ws), base_codec::json_str(sub)]) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          }
+          let parsed : Array[form::Json] = []
+          for i in 0..<rows.length() {
+            match row_str(rows[i], "body") {
+              Some(b) => match parse_form_json(b) {
+                Some(v) => parsed.push(v)
+                None => ()
+              }
+              None => ()
+            }
+          }
+          out = parsed
+          Ok(())
+        })
+        match tx_res {
+          Ok(_) => Ok(out)
+          Err(e) => Err(e.message)
+        }
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+/// Active workspace vaults in `ws`, newest ULID first, read directly via `vaults_workspace_active` partial index
+/// with bounded keyset pagination (0 TEMP B-TREE, never scanning personal or deleted vaults).
+pub fn VaultStore::active_workspace_vaults(
+  self : VaultStore,
+  ws : String,
+  limit : Int,
+  max_scan : Int = 64,
+  accept : Option[(form::Json) -> Bool] = None,
+) -> Result[Array[form::Json], String] {
+  if limit <= 0 {
+    return Ok([])
+  }
+  let cap_scan = if max_scan < limit { limit } else { max_scan }
+  match self.mem {
+    Some(m) => {
+      let active : Array[(String, form::Json)] = []
+      let ks = m.vaults.keys()
+      for i in 0..<ks.length() {
+        match m.vaults.get(ks[i]) {
+          Some((vws, vid, _, body)) => {
+            if vws == ws {
+              match parse_form_json(body) {
+                Some(v) => {
+                  if json_str_f(v, "scope") == "workspace" && !json_is_deleted(v) {
+                    active.push((vid, v))
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      let mut si = 1
+      while si < active.length() {
+        let cur = active[si]
+        let mut sj = si - 1
+        while sj >= 0 && active[sj].0 < cur.0 {
+          active[sj + 1] = active[sj]
+          sj = sj - 1
+        }
+        active[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      let mut scanned = 0
+      for i in 0..<active.length() {
+        if out.length() >= limit || scanned >= cap_scan {
+          break
+        }
+        scanned = scanned + 1
+        let v = active[i].1
+        let ok = match accept {
+          Some(f) => f(v)
+          None => true
+        }
+        if ok {
+          out.push(v)
+        }
+      }
+      return Ok(out)
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  let out : Array[form::Json] = []
+  let mut scanned = 0
+  let mut cursor_id : Option[String] = None
+  while out.length() < limit && scanned < cap_scan {
+    let want = limit - out.length()
+    let min_batch = if want > 8 { want } else { 8 }
+    let rem_scan = cap_scan - scanned
+    let batch = if min_batch < rem_scan { min_batch } else { rem_scan }
+    if batch <= 0 {
+      break
+    }
+    let rows = match cursor_id {
+      None => match (db.all)(ACTIVE_WORKSPACE_VAULTS_SQL, [base_codec::json_str(ws), base_codec::json_int(batch)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      Some(cid) => match (db.all)(ACTIVE_WORKSPACE_VAULTS_BEFORE_SQL, [base_codec::json_str(ws), base_codec::json_str(cid), base_codec::json_int(batch)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+    }
+    if rows.length() == 0 {
+      break
+    }
+    scanned = scanned + rows.length()
+    cursor_id = row_str(rows[rows.length() - 1], "id")
+    for i in 0..<rows.length() {
+      match row_str(rows[i], "body") {
+        Some(b) => match parse_form_json(b) {
+          Some(v) => {
+            let ok = match accept {
+              Some(f) => f(v)
+              None => true
+            }
+            if ok {
+              out.push(v)
+              if out.length() >= limit {
+                break
+              }
+            }
+          }
+          None => ()
+        }
+        None => ()
+      }
+    }
+    if rows.length() < batch {
+      break
+    }
+  }
+  Ok(out)
+}
+
+pub fn VaultStore::put_vault(self : VaultStore, v : form::Json) -> Result[Unit, String] {
+  let ws = json_str_f(v, "ws")
+  let id = json_str_f(v, "id")
+  let seq = json_i64_f(v, "seq")
+  let body = form_to_json_string(v)
+  let deleted = json_is_deleted(v)
+  self.ver = self.ver + 1L
+  match self.mem {
+    Some(m) => {
+      let key = mem_k2(ws, id)
+      let mut old_body : Option[String] = None
+      match m.vaults.get(key) {
+        Some((_, _, _, old_b)) => {
+          old_body = Some(old_b)
+          match parse_form_json(old_b) {
+            Some(ov) => if json_is_deleted(ov) && !deleted { return Err(DELETED_WRITE) }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      m.vaults.set(key, (ws, id, seq, body))
+      mem_reindex_vault_members(m, ws, id, old_body, Some(body))
+      if deleted {
+        mem_delete_vault_children(m, ws, id)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  if !deleted {
+    match (db.run)(
+      "INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET seq = excluded.seq, body = excluded.body",
+      [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_int64(seq), base_codec::json_str(body)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+  } else {
+    match (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+      match (txdb.run)(
+        "INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET seq = excluded.seq, body = excluded.body",
+        [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_int64(seq), base_codec::json_str(body)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (txdb.run)("DELETE FROM vault_items WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (txdb.run)("DELETE FROM vault_asks WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (txdb.run)("DELETE FROM vault_joins WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+  }
+}
+
+pub fn VaultStore::put_vault_if(self : VaultStore, v : form::Json, previous : Option[String]) -> VaultWriteResult {
+  self.put_vault_checked(v, previous)
+}
+
+/// Atomic vault CAS write with optional join-request approval precondition (`approve_join`, requiring exact
+/// `(sub, at, device, box, sig)` match + wrapped key for the stored ask's `(device, box)`) and newly-added member
+/// `vault_joins` admission watermark update (`joined_up_to = MAX(joined_up_to, vault_joins.at)`).
+pub fn VaultStore::put_vault_checked(
+  self : VaultStore,
+  v : form::Json,
+  previous : Option[String],
+  added_subs : Array[String] = [],
+  approve_join : Option[ApproveJoinSpec] = None,
+  is_valid_ask : Option[(form::Json) -> Bool] = None,
+  is_active_dismiss : Option[(form::Json) -> Bool] = None,
+  prune_key_pairs : Array[(String, String)] = [],
+  prune_removed_devices : Array[String] = [],
+) -> VaultWriteResult {
+  let ws = json_str_f(v, "ws")
+  let id = json_str_f(v, "id")
+  let seq = json_i64_f(v, "seq")
+  let body = form_to_json_string(v)
+  let deleted = json_is_deleted(v)
+  match self.mem {
+    Some(m) => {
+      match approve_join {
+        Some(aj) => {
+          let row_opt = m.joins.get(mem_k3(ws, id, aj.sub))
+          let mut ask_ok_now = false
+          let mut dismissed = false
+          match row_opt {
+            Some(row) => {
+              if row.state == "pending" && row.at == aj.at && row.at > row.joined_up_to {
+                match row.body {
+                  Some(b) => {
+                    if b != "" {
+                      match parse_form_json(b) {
+                        Some(ask) => {
+                          let ask_dev = json_str_f(ask, "device")
+                          let ask_box = json_str_f(ask, "box")
+                          let ask_sig = match form::json_field(form::json_field(Some(ask), "sig"), "sig") {
+                            Some(form::Json::Str(s)) => s
+                            _ => ""
+                          }
+                          let matches_ask = ask_dev == aj.device && ask_box == aj.box_key && ask_sig == aj.sig
+                          let has_key = vault_has_wrapped_key(v, ask_dev, ask_box)
+                          let valid = match is_valid_ask {
+                            Some(f) => f(ask)
+                            None => true
+                          }
+                          ask_ok_now = matches_ask && has_key && valid
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                  None => ()
+                }
+                if ask_ok_now {
+                  match row.dismiss_body {
+                    Some(db) => {
+                      if db != "" && row.at <= row.dismiss_up_to {
+                        match parse_form_json(db) {
+                          Some(d) => {
+                            dismissed = match is_active_dismiss {
+                              Some(f) => f(d)
+                              None => true
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                    }
+                    None => ()
+                  }
+                }
+              }
+            }
+            None => ()
+          }
+          if !ask_ok_now || dismissed {
+            return VaultWriteResult::JoinCancelled
+          }
+        }
+        None => ()
+      }
+      self.ver = self.ver + 1L
+      let key = mem_k2(ws, id)
+      let mut old_body : Option[String] = None
+      match previous {
+        None => {
+          if m.vaults.contains(key) {
+            return VaultWriteResult::Conflict
+          }
+        }
+        Some(prev_b) => {
+          match m.vaults.get(key) {
+            Some((_, _, _, cur_b)) => {
+              if cur_b != prev_b {
+                return VaultWriteResult::Conflict
+              }
+              old_body = Some(cur_b)
+              match parse_form_json(cur_b) {
+                Some(ov) => if json_is_deleted(ov) && !deleted { return VaultWriteResult::DeletedWrite }
+                None => ()
+              }
+            }
+            None => return VaultWriteResult::Conflict
+          }
+        }
+      }
+      m.vaults.set(key, (ws, id, seq, body))
+      mem_reindex_vault_members(m, ws, id, old_body, Some(body))
+      if deleted {
+        mem_delete_vault_children(m, ws, id)
+      } else {
+        for i in 0..<added_subs.length() {
+          match m.joins.get(mem_k3(ws, id, added_subs[i])) {
+            Some(row) => if row.at > row.joined_up_to { row.joined_up_to = row.at }
+            None => ()
+          }
+        }
+        for i in 0..<prune_key_pairs.length() {
+          let (dev, box_k) = prune_key_pairs[i]
+          let ak = mem_k3(ws, id, dev)
+          match m.asks.get(ak) {
+            Some(ar) => if ar.box_key == box_k { m.asks.remove(ak) }
+            None => ()
+          }
+        }
+        for i in 0..<prune_removed_devices.length() {
+          m.asks.remove(mem_k3(ws, id, prune_removed_devices[i]))
+        }
+      }
+      return VaultWriteResult::Saved
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return VaultWriteResult::DbError("vault store closed")
+  }
+  let do_save = fn(d : VaultDbPort) -> Result[Bool, sql_db::SqlError] {
+    match previous {
+      None => match (d.run)(
+        "INSERT INTO vaults (ws, id, seq, body) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ?)",
+        [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_int64(seq), base_codec::json_str(body), base_codec::json_str(ws), base_codec::json_str(id)],
+      ) {
+        Ok(n) => Ok(n > 0)
+        Err(e) => Err(e)
+      }
+      Some(prev_body) => match (d.run)(
+        "UPDATE vaults SET seq = ?, body = ? WHERE ws = ? AND id = ? AND body = ?",
+        [base_codec::json_int64(seq), base_codec::json_str(body), base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(prev_body)],
+      ) {
+        Ok(n) => Ok(n > 0)
+        Err(e) => Err(e)
+      }
+    }
+  }
+  let needs_tx = deleted || !(approve_join is None) || added_subs.length() > 0 || prune_key_pairs.length() > 0 || prune_removed_devices.length() > 0
+  if !needs_tx {
+    self.ver = self.ver + 1L
+    return match do_save(db) {
+      Ok(true) => VaultWriteResult::Saved
+      Ok(false) => VaultWriteResult::Conflict
+      Err(e) => if is_deleted_vault_write(e.message) { VaultWriteResult::DeletedWrite } else { VaultWriteResult::DbError(e.message) }
+    }
+  }
+  self.ver = self.ver + 1L
+  let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+    match approve_join {
+      Some(aj) => {
+        let row_opt = match (txdb.first)(
+          "SELECT body, at, joined_up_to, dismiss_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ? AND state = 'pending' AND at = ? AND at > joined_up_to",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(aj.sub), base_codec::json_int64(aj.at)],
+        ) {
+          Ok(r) => r
+          Err(e) => return Err(e)
+        }
+        let mut ask_ok_now = false
+        let mut dismissed = false
+        match row_opt {
+          Some(row) => {
+            match row_str(row, "body") {
+              Some(b) => {
+                if b != "" {
+                  match parse_form_json(b) {
+                    Some(ask) => {
+                      let ask_dev = json_str_f(ask, "device")
+                      let ask_box = json_str_f(ask, "box")
+                      let ask_sig = match form::json_field(form::json_field(Some(ask), "sig"), "sig") {
+                        Some(form::Json::Str(s)) => s
+                        _ => ""
+                      }
+                      let matches_ask = ask_dev == aj.device && ask_box == aj.box_key && ask_sig == aj.sig
+                      let has_key = vault_has_wrapped_key(v, ask_dev, ask_box)
+                      let valid = match is_valid_ask {
+                        Some(f) => f(ask)
+                        None => true
+                      }
+                      ask_ok_now = matches_ask && has_key && valid
+                    }
+                    None => ()
+                  }
+                }
+              }
+              None => ()
+            }
+            if ask_ok_now {
+              let row_at = row_i64(row, "at")
+              let d_up_to = row_i64(row, "dismiss_up_to")
+              match row_str(row, "dismiss_body") {
+                Some(dbody) => {
+                  if dbody != "" && row_at <= d_up_to {
+                    match parse_form_json(dbody) {
+                      Some(d) => {
+                        dismissed = match is_active_dismiss {
+                          Some(f) => f(d)
+                          None => true
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+        if !ask_ok_now || dismissed {
+          return Err(sql_db::sql_error(-1001, "join_cancelled"))
+        }
+      }
+      None => ()
+    }
+    match do_save(txdb) {
+      Ok(true) => ()
+      Ok(false) => return Err(sql_db::sql_error(-1002, "conflict"))
+      Err(e) => return Err(e)
+    }
+    if deleted {
+      match (txdb.run)("DELETE FROM vault_items WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (txdb.run)("DELETE FROM vault_asks WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (txdb.run)("DELETE FROM vault_joins WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    } else {
+      for i in 0..<added_subs.length() {
+        match (txdb.run)(
+          "UPDATE vault_joins SET joined_up_to = CASE WHEN at > joined_up_to THEN at ELSE joined_up_to END WHERE ws = ? AND vault = ? AND sub = ?",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(added_subs[i])],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      for i in 0..<prune_key_pairs.length() {
+        let (dev, box_k) = prune_key_pairs[i]
+        match (txdb.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ? AND box = ?",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(dev), base_codec::json_str(box_k)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      for i in 0..<prune_removed_devices.length() {
+        match (txdb.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(prune_removed_devices[i])],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    Ok(())
+  })
+  match tx_res {
+    Ok(_) => VaultWriteResult::Saved
+    Err(e) => {
+      if e.code == -1001 {
+        VaultWriteResult::JoinCancelled
+      } else if e.code == -1002 {
+        VaultWriteResult::Conflict
+      } else if is_deleted_vault_write(e.message) {
+        VaultWriteResult::DeletedWrite
+      } else {
+        VaultWriteResult::DbError(e.message)
+      }
+    }
+  }
+}
+
+pub fn VaultStore::forget_vault(self : VaultStore, ws : String, id : String) -> Result[Unit, String] {
+  self.ver = self.ver + 1L
+  match self.mem {
+    Some(m) => {
+      let key = mem_k2(ws, id)
+      let old_body = match m.vaults.get(key) {
+        Some((_, _, _, b)) => Some(b)
+        None => None
+      }
+      mem_reindex_vault_members(m, ws, id, old_body, None)
+      mem_delete_vault_children(m, ws, id)
+      m.vaults.remove(key)
+      return Ok(())
+    }
+    None => ()
+  }
+  match self.db {
+    Some(db) => {
+      let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+        let p = [base_codec::json_str(ws), base_codec::json_str(id)]
+        match (txdb.run)("DELETE FROM vault_items WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vault_asks WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vault_joins WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vaults WHERE ws = ? AND id = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        Ok(())
+      })
+      match tx_res {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    }
+    None => Err("vault store closed")
+  }
+}
+
+pub fn VaultStore::box_cert(self : VaultStore, ws : String, device : String) -> Result[Option[form::Json], String] {
+  match self.box_snapshot(ws, device) {
+    Ok(Some(s)) => Ok(Some(s.value))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn VaultStore::box_snapshot(self : VaultStore, ws : String, device : String) -> Result[Option[JsonSnapshot], String] {
+  match self.mem {
+    Some(m) => match m.boxes.get(mem_k2(ws, device)) {
+      Some(b) => match parse_form_json(b) {
+        Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+        None => Err("corrupt box cert json")
+      }
+      None => Ok(None)
+    }
+    None => match self.db {
+      Some(db) => match (db.first)("SELECT body FROM vault_boxes WHERE ws = ? AND device = ?", [base_codec::json_str(ws), base_codec::json_str(device)]) {
+        Ok(Some(row)) => match row_str(row, "body") {
+          Some(b) => match parse_form_json(b) {
+            Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+            None => Err("corrupt box cert json")
+          }
+          None => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+pub fn VaultStore::put_box(self : VaultStore, cert : form::Json) -> Result[Unit, String] {
+  let ws = json_str_f(cert, "ws")
+  let device = json_str_f(cert, "device")
+  let body = form_to_json_string(cert)
+  self.ver = self.ver + 1L
+  match self.mem {
+    Some(m) => {
+      m.boxes.set(mem_k2(ws, device), body)
+      return Ok(())
+    }
+    None => ()
+  }
+  match self.db {
+    Some(db) => match (db.run)(
+      "INSERT INTO vault_boxes (ws, device, body) VALUES (?, ?, ?) ON CONFLICT (ws, device) DO UPDATE SET body = excluded.body",
+      [base_codec::json_str(ws), base_codec::json_str(device), base_codec::json_str(body)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+    None => Err("vault store closed")
+  }
+}
+
+pub fn VaultStore::put_box_if(self : VaultStore, cert : form::Json, previous : Option[String]) -> Result[Bool, String] {
+  let ws = json_str_f(cert, "ws")
+  let device = json_str_f(cert, "device")
+  let body = form_to_json_string(cert)
+  self.ver = self.ver + 1L
+  match self.mem {
+    Some(m) => {
+      let key = mem_k2(ws, device)
+      match previous {
+        None => {
+          if m.boxes.contains(key) {
+            return Ok(false)
+          }
+          m.boxes.set(key, body)
+          return Ok(true)
+        }
+        Some(prev) => {
+          match m.boxes.get(key) {
+            Some(cur) => {
+              if cur != prev {
+                return Ok(false)
+              }
+              m.boxes.set(key, body)
+              return Ok(true)
+            }
+            None => return Ok(false)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  match previous {
+    None => match (db.run)(
+      "INSERT INTO vault_boxes (ws, device, body) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vault_boxes WHERE ws = ? AND device = ?)",
+      [base_codec::json_str(ws), base_codec::json_str(device), base_codec::json_str(body), base_codec::json_str(ws), base_codec::json_str(device)],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+    Some(prev) => match (db.run)(
+      "UPDATE vault_boxes SET body = ? WHERE ws = ? AND device = ? AND body = ?",
+      [base_codec::json_str(body), base_codec::json_str(ws), base_codec::json_str(device), base_codec::json_str(prev)],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+  }
+}
+
+// ── Per-vault KeyAsks (#9017 + #9083 batched PK & split-range cursor) ──
+
+pub fn VaultStore::ask_snapshot(self : VaultStore, ws : String, vault : String, device : String) -> Result[Option[JsonSnapshot], String] {
+  match self.mem {
+    Some(m) => match m.asks.get(mem_k3(ws, vault, device)) {
+      Some(row) => match parse_form_json(row.body) {
+        Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: row.body }))
+        None => Err("corrupt key ask json")
+      }
+      None => Ok(None)
+    }
+    None => match self.db {
+      Some(db) => match (db.first)(
+        "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?",
+        [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(device)],
+      ) {
+        Ok(Some(row)) => match row_str(row, "body") {
+          Some(b) => match parse_form_json(b) {
+            Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+            None => Err("corrupt key ask json")
+          }
+          None => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+pub fn VaultStore::put_ask(self : VaultStore, ask : form::Json) -> Result[Unit, String] {
+  let ws = json_str_f(ask, "ws")
+  let vault = json_str_f(ask, "vault")
+  let device = json_str_f(ask, "device")
+  let box_k = json_str_f(ask, "box")
+  let at = json_i64_f(ask, "at")
+  let body = form_to_json_string(ask)
+  match self.mem {
+    Some(m) => {
+      m.asks.set(mem_k3(ws, vault, device), MemAskRow::{ ws: ws, vault: vault, device: device, box_key: box_k, at: at, body: body })
+      return Ok(())
+    }
+    None => ()
+  }
+  match self.db {
+    Some(db) => match (db.run)(
+      "INSERT INTO vault_asks (ws, vault, device, box, at, body) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (ws, vault, device) DO UPDATE SET box = excluded.box, at = excluded.at, body = excluded.body",
+      [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(device), base_codec::json_str(box_k), base_codec::json_int64(at), base_codec::json_str(body)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+    None => Err("vault store closed")
+  }
+}
+
+pub fn VaultStore::put_ask_if(
+  self : VaultStore,
+  ask : form::Json,
+  vault_body : String,
+  previous : Option[String],
+) -> Result[Bool, String] {
+  let ws = json_str_f(ask, "ws")
+  let vault = json_str_f(ask, "vault")
+  let device = json_str_f(ask, "device")
+  let box_k = json_str_f(ask, "box")
+  let at = json_i64_f(ask, "at")
+  let body = form_to_json_string(ask)
+  match self.mem {
+    Some(m) => {
+      match m.vaults.get(mem_k2(ws, vault)) {
+        Some((_, _, _, cur_vb)) => if cur_vb != vault_body { return Ok(false) }
+        None => return Ok(false)
+      }
+      let key = mem_k3(ws, vault, device)
+      match previous {
+        None => {
+          if m.asks.contains(key) {
+            return Ok(false)
+          }
+        }
+        Some(prev) => match m.asks.get(key) {
+          Some(cur) => if cur.body != prev { return Ok(false) }
+          None => return Ok(false)
+        }
+      }
+      m.asks.set(key, MemAskRow::{ ws: ws, vault: vault, device: device, box_key: box_k, at: at, body: body })
+      return Ok(true)
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  match previous {
+    None => match (db.run)(
+      "INSERT INTO vault_asks (ws, vault, device, box, at, body) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?) AND NOT EXISTS (SELECT 1 FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?)",
+      [
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(device),
+        base_codec::json_str(box_k), base_codec::json_int64(at), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(device),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+    Some(prev) => match (db.run)(
+      "UPDATE vault_asks SET box = ?, at = ?, body = ? WHERE ws = ? AND vault = ? AND device = ? AND body = ? AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)",
+      [
+        base_codec::json_str(box_k), base_codec::json_int64(at), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(device), base_codec::json_str(prev),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+  }
+}
+
+pub fn VaultStore::prune_asks(
+  self : VaultStore,
+  ws : String,
+  vault : String,
+  keys : Array[(String, String)],
+  removed_devices : Array[String] = [],
+) -> Result[Unit, String] {
+  match self.mem {
+    Some(m) => {
+      for i in 0..<keys.length() {
+        let (dev, box_k) = keys[i]
+        let k = mem_k3(ws, vault, dev)
+        match m.asks.get(k) {
+          Some(r) => if r.box_key == box_k { m.asks.remove(k) }
+          None => ()
+        }
+      }
+      for i in 0..<removed_devices.length() {
+        m.asks.remove(mem_k3(ws, vault, removed_devices[i]))
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match self.db {
+    Some(db) => {
+      for i in 0..<keys.length() {
+        let (dev, box_k) = keys[i]
+        match (db.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ? AND box = ?",
+          [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(dev), base_codec::json_str(box_k)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+      for i in 0..<removed_devices.length() {
+        match (db.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?",
+          [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(removed_devices[i])],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+      Ok(())
+    }
+    None => Err("vault store closed")
+  }
+}
+
+/// Explicit per-vault key asks, newest first per vault.
+/// When `devices` is `Some`, probes PRIMARY KEY `(ws, vault, device)` in batches of 256 (0 revoked rows scanned).
+/// When `devices` is `None`, uses split-range keyset cursor on `vault_asks_vault_at`.
+pub fn VaultStore::asks_for_vaults(
+  self : VaultStore,
+  ws : String,
+  vault_ids : Array[String],
+  limit : Int,
+  devices : Option[Array[String]] = None,
+  per_vault : Int = 64,
+  per_vault_scan : Int = 128,
+  max_scan : Int = 512,
+  max_devices : Int = 2048,
+  accept : Option[(form::Json) -> Bool] = None,
+) -> Result[Array[form::Json], String] {
+  if vault_ids.length() == 0 || limit <= 0 {
+    return Ok([])
+  }
+  let pv = if per_vault < limit { per_vault } else { limit }
+  let pv_scan = if per_vault_scan > pv { per_vault_scan } else { pv }
+  let m_scan = if max_scan > pv_scan { max_scan } else { pv_scan }
+  let out : Array[form::Json] = []
+  match self.mem {
+    Some(m) => {
+      let mut total_scanned = 0
+      for vi in 0..<vault_ids.length() {
+        if out.length() >= limit || total_scanned >= m_scan {
+          break
+        }
+        let vault = vault_ids[vi]
+        let rem_lim = limit - out.length()
+        let want = if pv < rem_lim { pv } else { rem_lim }
+        let matched : Array[(Int64, String, String)] = []
+        match devices {
+          Some(devs) => {
+            if devs.length() == 0 {
+              return Ok([])
+            }
+            let cap_devs = if max_devices > 256 { max_devices } else { 256 }
+            let dev_lim = if devs.length() < cap_devs { devs.length() } else { cap_devs }
+            let mut vault_scanned = 0
+            for di in 0..<dev_lim {
+              if vault_scanned >= pv_scan || total_scanned >= m_scan {
+                break
+              }
+              match m.asks.get(mem_k3(ws, vault, devs[di])) {
+                Some(r) => {
+                  matched.push((r.at, r.device, r.body))
+                  vault_scanned = vault_scanned + 1
+                  total_scanned = total_scanned + 1
+                }
+                None => ()
+              }
+            }
+          }
+          None => {
+            let ks = m.asks.keys()
+            for ki in 0..<ks.length() {
+              match m.asks.get(ks[ki]) {
+                Some(r) => if r.ws == ws && r.vault == vault { matched.push((r.at, r.device, r.body)) }
+                None => ()
+              }
+            }
+          }
+        }
+        let mut si = 1
+        while si < matched.length() {
+          let cur = matched[si]
+          let mut sj = si - 1
+          while sj >= 0 && (matched[sj].0 < cur.0 || (matched[sj].0 == cur.0 && matched[sj].1 > cur.1)) {
+            matched[sj + 1] = matched[sj]
+            sj = sj - 1
+          }
+          matched[sj + 1] = cur
+          si = si + 1
+        }
+        let mut taken = 0
+        for mi in 0..<matched.length() {
+          match parse_form_json(matched[mi].2) {
+            Some(a) => {
+              let ok = match accept {
+                Some(f) => f(a)
+                None => true
+              }
+              if ok {
+                out.push(a)
+                taken = taken + 1
+                if taken >= want || out.length() >= limit {
+                  break
+                }
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      return Ok(out)
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  match devices {
+    Some(devs) => {
+      if devs.length() == 0 {
+        return Ok([])
+      }
+      let cap_devs = if max_devices > 256 { max_devices } else { 256 }
+      let dev_limit = if devs.length() < cap_devs { devs.length() } else { cap_devs }
+      let chunks : Array[String] = []
+      let mut ci = 0
+      while ci < dev_limit {
+        let arr : Array[base_codec::Json] = []
+        let end = if ci + 256 < dev_limit { ci + 256 } else { dev_limit }
+        let mut k = ci
+        while k < end {
+          arr.push(base_codec::json_str(devs[k]))
+          k = k + 1
+        }
+        chunks.push(base_codec::json_stringify(base_codec::json_arr(arr)))
+        ci = end
+      }
+      let mut total_scanned = 0
+      for vi in 0..<vault_ids.length() {
+        if out.length() >= limit || total_scanned >= m_scan {
+          break
+        }
+        let vault = vault_ids[vi]
+        let rem_lim = limit - out.length()
+        let want = if pv < rem_lim { pv } else { rem_lim }
+        let matched : Array[(Int64, String, String)] = []
+        let mut vault_scanned = 0
+        for ch_i in 0..<chunks.length() {
+          if vault_scanned >= pv_scan || total_scanned >= m_scan {
+            break
+          }
+          let rows = match (db.all)(
+            "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?))",
+            [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(chunks[ch_i])],
+          ) {
+            Ok(rs) => rs
+            Err(e) => return Err(e.message)
+          }
+          if rows.length() == 0 {
+            continue
+          }
+          let r1 = pv_scan - vault_scanned
+          let r2 = m_scan - total_scanned
+          let mut take_rows = rows.length()
+          if r1 < take_rows {
+            take_rows = r1
+          }
+          if r2 < take_rows {
+            take_rows = r2
+          }
+          for ri in 0..<take_rows {
+            let r = rows[ri]
+            let at = row_i64(r, "at")
+            let dev = match row_str(r, "device") {
+              Some(s) => s
+              None => ""
+            }
+            let b = match row_str(r, "body") {
+              Some(s) => s
+              None => ""
+            }
+            matched.push((at, dev, b))
+          }
+          vault_scanned = vault_scanned + take_rows
+          total_scanned = total_scanned + take_rows
+        }
+        if matched.length() == 0 {
+          continue
+        }
+        let mut si = 1
+        while si < matched.length() {
+          let cur = matched[si]
+          let mut sj = si - 1
+          while sj >= 0 && (matched[sj].0 < cur.0 || (matched[sj].0 == cur.0 && matched[sj].1 > cur.1)) {
+            matched[sj + 1] = matched[sj]
+            sj = sj - 1
+          }
+          matched[sj + 1] = cur
+          si = si + 1
+        }
+        let mut taken = 0
+        for mi in 0..<matched.length() {
+          match parse_form_json(matched[mi].2) {
+            Some(a) => {
+              let ok = match accept {
+                Some(f) => f(a)
+                None => true
+              }
+              if ok {
+                out.push(a)
+                taken = taken + 1
+                if taken >= want || out.length() >= limit {
+                  break
+                }
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      return Ok(out)
+    }
+    None => ()
+  }
+  let mut total_scanned = 0
+  for vi in 0..<vault_ids.length() {
+    if out.length() >= limit || total_scanned >= m_scan {
+      break
+    }
+    let vault = vault_ids[vi]
+    let rem_lim = limit - out.length()
+    let want = if pv < rem_lim { pv } else { rem_lim }
+    let mut taken = 0
+    let mut vault_scanned = 0
+    let mut cursor_at : Option[Int64] = None
+    let mut cursor_dev = ""
+    while taken < want && vault_scanned < pv_scan && total_scanned < m_scan {
+      let mut batch = want - taken
+      if pv_scan - vault_scanned < batch {
+        batch = pv_scan - vault_scanned
+      }
+      if m_scan - total_scanned < batch {
+        batch = m_scan - total_scanned
+      }
+      if batch <= 0 {
+        break
+      }
+      let rows : Array[Map[String, base_codec::Json]] = match cursor_at {
+        None => match (db.all)(
+          "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+          [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_int(batch)],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(e.message)
+        }
+        Some(cat) => {
+          let same = match (db.all)(
+            "SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT ?",
+            [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_int64(cat), base_codec::json_str(cursor_dev), base_codec::json_int(batch)],
+          ) {
+            Ok(rs) => rs
+            Err(e) => return Err(e.message)
+          }
+          if same.length() < batch {
+            let older = match (db.all)(
+              "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT ?",
+              [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_int64(cat), base_codec::json_int(batch - same.length())],
+            ) {
+              Ok(rs) => rs
+              Err(e) => return Err(e.message)
+            }
+            for oi in 0..<older.length() {
+              same.push(older[oi])
+            }
+            same
+          } else {
+            same
+          }
+        }
+      }
+      if rows.length() == 0 {
+        break
+      }
+      vault_scanned = vault_scanned + rows.length()
+      total_scanned = total_scanned + rows.length()
+      let last = rows[rows.length() - 1]
+      cursor_at = Some(row_i64(last, "at"))
+      cursor_dev = match row_str(last, "device") {
+        Some(s) => s
+        None => ""
+      }
+      for ri in 0..<rows.length() {
+        match row_str(rows[ri], "body") {
+          Some(b) => match parse_form_json(b) {
+            Some(a) => {
+              let ok = match accept {
+                Some(f) => f(a)
+                None => true
+              }
+              if ok {
+                out.push(a)
+                taken = taken + 1
+                if taken >= want || out.length() >= limit {
+                  break
+                }
+              }
+            }
+            None => ()
+          }
+          None => ()
+        }
+      }
+      if rows.length() < batch {
+        break
+      }
+    }
+  }
+  Ok(out)
+}
+
+// ── Workspace-vault JoinAsks & JoinDismisses (#9083) ──
+
+pub fn VaultStore::join_snapshot(self : VaultStore, ws : String, vault : String, sub : String) -> Result[Option[JoinSnapshot], String] {
+  match self.mem {
+    Some(m) => match m.joins.get(mem_k3(ws, vault, sub)) {
+      Some(row) => {
+        let value = match row.body {
+          Some(b) => if b != "" { parse_form_json(b) } else { None }
+          None => None
+        }
+        let dismiss = match row.dismiss_body {
+          Some(b) => if b != "" { parse_form_json(b) } else { None }
+          None => None
+        }
+        Ok(Some(JoinSnapshot::{
+          value: value,
+          body: row.body,
+          joined_up_to: row.joined_up_to,
+          dismiss_up_to: row.dismiss_up_to,
+          dismiss: dismiss,
+          dismiss_body: row.dismiss_body,
+        }))
+      }
+      None => Ok(None)
+    }
+    None => match self.db {
+      Some(db) => match (db.first)(
+        "SELECT body, joined_up_to, dismiss_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?",
+        [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub)],
+      ) {
+        Ok(Some(row)) => {
+          let body = row_str(row, "body")
+          let value = match body {
+            Some(b) => if b != "" { parse_form_json(b) } else { None }
+            None => None
+          }
+          let dismiss_body = row_str(row, "dismiss_body")
+          let dismiss = match dismiss_body {
+            Some(b) => if b != "" { parse_form_json(b) } else { None }
+            None => None
+          }
+          Ok(Some(JoinSnapshot::{
+            value: value,
+            body: body,
+            joined_up_to: row_i64(row, "joined_up_to"),
+            dismiss_up_to: row_i64(row, "dismiss_up_to"),
+            dismiss: dismiss,
+            dismiss_body: dismiss_body,
+          }))
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+pub fn VaultStore::put_join_if(
+  self : VaultStore,
+  join_rec : form::Json,
+  vault_body : String,
+  previous_body : Option[String],
+  row_exists : Bool,
+  reset_joined_floor : Bool = false,
+) -> Result[Bool, String] {
+  let ws = json_str_f(join_rec, "ws")
+  let vault = json_str_f(join_rec, "vault")
+  let sub = json_str_f(join_rec, "sub")
+  let at = json_i64_f(join_rec, "at")
+  let state = json_str_f(join_rec, "state")
+  let body = form_to_json_string(join_rec)
+  match self.mem {
+    Some(m) => {
+      match m.vaults.get(mem_k2(ws, vault)) {
+        Some((_, _, _, cur_vb)) => if cur_vb != vault_body { return Ok(false) }
+        None => return Ok(false)
+      }
+      let key = mem_k3(ws, vault, sub)
+      if !row_exists {
+        if m.joins.contains(key) {
+          return Ok(false)
+        }
+        m.joins.set(key, MemJoinRow::{
+          ws: ws, vault: vault, sub: sub, at: at, state: state, body: Some(body),
+          joined_up_to: -1L, dismiss_up_to: -1L, dismiss_body: None,
+        })
+        return Ok(true)
+      }
+      let row = match m.joins.get(key) {
+        Some(r) => r
+        None => return Ok(false)
+      }
+      match previous_body {
+        None => if !(row.body is None) { return Ok(false) }
+        Some(prev) => match row.body {
+          Some(cur) => if cur != prev { return Ok(false) }
+          None => return Ok(false)
+        }
+      }
+      row.at = at
+      row.state = state
+      row.body = Some(body)
+      if reset_joined_floor {
+        row.joined_up_to = -1L
+      }
+      return Ok(true)
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  if !row_exists {
+    return match (db.run)(
+      "INSERT INTO vault_joins (ws, vault, sub, at, state, body) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?) AND NOT EXISTS (SELECT 1 FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?)",
+      [
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+        base_codec::json_int64(at), base_codec::json_str(state), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+  }
+  match previous_body {
+    None => match (db.run)(
+      "UPDATE vault_joins SET at = ?, state = ?, body = ? WHERE ws = ? AND vault = ? AND sub = ? AND body IS NULL AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)",
+      [
+        base_codec::json_int64(at), base_codec::json_str(state), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+    Some(prev) => {
+      let sql = if reset_joined_floor {
+        "UPDATE vault_joins SET at = ?, state = ?, body = ?, joined_up_to = -1 WHERE ws = ? AND vault = ? AND sub = ? AND body = ? AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)"
+      } else {
+        "UPDATE vault_joins SET at = ?, state = ?, body = ? WHERE ws = ? AND vault = ? AND sub = ? AND body = ? AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)"
+      }
+      match (db.run)(sql, [
+        base_codec::json_int64(at), base_codec::json_str(state), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub), base_codec::json_str(prev),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+      ]) {
+        Ok(n) => Ok(n > 0)
+        Err(e) => Err(e.message)
+      }
+    }
+  }
+}
+
+pub fn VaultStore::put_join_dismiss_if(
+  self : VaultStore,
+  dismiss : form::Json,
+  vault_body : String,
+  previous_dismiss_up_to : Option[Int64],
+  previous_dismiss_body : Option[String] = None,
+  allow_replace_invalid : Bool = false,
+) -> Result[Bool, String] {
+  let ws = json_str_f(dismiss, "ws")
+  let vault = json_str_f(dismiss, "vault")
+  let sub = json_str_f(dismiss, "sub")
+  let up_to = json_i64_f(dismiss, "upTo")
+  let body = form_to_json_string(dismiss)
+  match self.mem {
+    Some(m) => {
+      match m.vaults.get(mem_k2(ws, vault)) {
+        Some((_, _, _, cur_vb)) => if cur_vb != vault_body { return Ok(false) }
+        None => return Ok(false)
+      }
+      let key = mem_k3(ws, vault, sub)
+      match previous_dismiss_up_to {
+        None => {
+          if m.joins.contains(key) {
+            return Ok(false)
+          }
+          m.joins.set(key, MemJoinRow::{
+            ws: ws, vault: vault, sub: sub, at: 0L, state: "none", body: None,
+            joined_up_to: -1L, dismiss_up_to: up_to, dismiss_body: Some(body),
+          })
+          return Ok(true)
+        }
+        Some(prev_up) => {
+          let row = match m.joins.get(key) {
+            Some(r) => r
+            None => return Ok(false)
+          }
+          if row.dismiss_up_to != prev_up {
+            return Ok(false)
+          }
+          if allow_replace_invalid {
+            match previous_dismiss_body {
+              Some(prev_db) => {
+                match row.dismiss_body {
+                  Some(cur_db) => if cur_db != prev_db { return Ok(false) }
+                  None => return Ok(false)
+                }
+                row.dismiss_up_to = up_to
+                row.dismiss_body = Some(body)
+                return Ok(true)
+              }
+              None => ()
+            }
+          }
+          if !(up_to > row.dismiss_up_to || row.dismiss_body is None) {
+            return Ok(false)
+          }
+          row.dismiss_up_to = up_to
+          row.dismiss_body = Some(body)
+          return Ok(true)
+        }
+      }
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  match previous_dismiss_up_to {
+    None => match (db.run)(
+      "INSERT INTO vault_joins (ws, vault, sub, at, state, body, dismiss_up_to, dismiss_body) SELECT ?, ?, ?, 0, 'none', NULL, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?) AND NOT EXISTS (SELECT 1 FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?)",
+      [
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+        base_codec::json_int64(up_to), base_codec::json_str(body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+        base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e.message)
+    }
+    Some(prev_up) => {
+      if allow_replace_invalid {
+        match previous_dismiss_body {
+          Some(prev_db) => {
+            return match (db.run)(
+              "UPDATE vault_joins SET dismiss_up_to = ?, dismiss_body = ? WHERE ws = ? AND vault = ? AND sub = ? AND dismiss_up_to = ? AND dismiss_body = ? AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)",
+              [
+                base_codec::json_int64(up_to), base_codec::json_str(body),
+                base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+                base_codec::json_int64(prev_up), base_codec::json_str(prev_db),
+                base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+              ],
+            ) {
+              Ok(n) => Ok(n > 0)
+              Err(e) => Err(e.message)
+            }
+          }
+          None => ()
+        }
+      }
+      match (db.run)(
+        "UPDATE vault_joins SET dismiss_up_to = ?, dismiss_body = ? WHERE ws = ? AND vault = ? AND sub = ? AND dismiss_up_to = ? AND (? > dismiss_up_to OR dismiss_body IS NULL) AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)",
+        [
+          base_codec::json_int64(up_to), base_codec::json_str(body),
+          base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(sub),
+          base_codec::json_int64(prev_up), base_codec::json_int64(up_to),
+          base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(vault_body),
+        ],
+      ) {
+        Ok(n) => Ok(n > 0)
+        Err(e) => Err(e.message)
+      }
+    }
+  }
+}
+
+fn find_vault_idx(vault_ids : Array[String], target : String) -> Int {
+  for i in 0..<vault_ids.length() {
+    if vault_ids[i] == target {
+      return i
+    }
+  }
+  0
+}
+
+/// Signed workspace-vault join records (`pending` and `cancelled`) with independent per-state quotas
+/// and scan budgets on `vault_joins_vault_at`, plus resumable keyset cursor for `cancelled` tombstones.
+pub fn VaultStore::joins_for_vaults(
+  self : VaultStore,
+  ws : String,
+  vault_ids : Array[String],
+  limit : Int,
+  per_vault : Int = 64,
+  per_vault_cancelled : Int = 64,
+  cancelled_limit : Int = 64,
+  per_vault_scan : Int = 128,
+  max_scan : Int = 512,
+  cancelled_max_scan : Int = 512,
+  cancelled_after : Option[CancelledCursor] = None,
+  accept : Option[(form::Json, Int64, Option[form::Json]) -> Bool] = None,
+) -> Result[JoinsPage, String] {
+  if vault_ids.length() == 0 || limit <= 0 {
+    return Ok(JoinsPage::{ joins: [], next_cancelled_cursor: None })
+  }
+  let pv = if per_vault < limit { per_vault } else { limit }
+  let pvc = if per_vault_cancelled < cancelled_limit { per_vault_cancelled } else { cancelled_limit }
+  let pv_scan = if per_vault_scan > pv { per_vault_scan } else { pv }
+  let m_scan = if max_scan > pv_scan { max_scan } else { pv_scan }
+  let cm_scan = if cancelled_max_scan > pv_scan { cancelled_max_scan } else { pv_scan }
+  let out : Array[form::Json] = []
+
+  match self.mem {
+    Some(m) => {
+      let mem_scan_state = fn(
+        state : String,
+        pv_cap : Int,
+        state_limit : Int,
+        state_max_scan : Int,
+        after : Option[CancelledCursor],
+      ) -> Option[CancelledCursor] {
+        let mut state_emitted = 0
+        let mut state_scanned = 0
+        let mut next_cursor : Option[CancelledCursor] = None
+        let mut last_visited : Option[CancelledCursor] = None
+        let mut exhausted = false
+        let start_idx = match after {
+          Some(a) => find_vault_idx(vault_ids, a.vault)
+          None => 0
+        }
+        let mut vi = start_idx
+        while vi < vault_ids.length() {
+          let vault = vault_ids[vi]
+          if state_emitted >= state_limit {
+            break
+          }
+          if state_scanned >= state_max_scan {
+            exhausted = true
+            break
+          }
+          let rem_state = state_limit - state_emitted
+          let want = if pv_cap < rem_state { pv_cap } else { rem_state }
+          let rows : Array[MemJoinRow] = []
+          let ks = m.joins.keys()
+          for ki in 0..<ks.length() {
+            match m.joins.get(ks[ki]) {
+              Some(r) => {
+                if r.ws == ws && r.vault == vault && r.state == state {
+                  let after_ok = match after {
+                    Some(a) => {
+                      if vi == start_idx && a.vault == vault {
+                        r.at < a.at || (r.at == a.at && r.sub > a.sub)
+                      } else {
+                        true
+                      }
+                    }
+                    None => true
+                  }
+                  if after_ok {
+                    rows.push(r)
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          let mut si = 1
+          while si < rows.length() {
+            let cur = rows[si]
+            let mut sj = si - 1
+            while sj >= 0 && (rows[sj].at < cur.at || (rows[sj].at == cur.at && rows[sj].sub > cur.sub)) {
+              rows[sj + 1] = rows[sj]
+              sj = sj - 1
+            }
+            rows[sj + 1] = cur
+            si = si + 1
+          }
+          let mut taken = 0
+          let mut vault_scanned = 0
+          for i in 0..<rows.length() {
+            if taken >= want || vault_scanned >= pv_scan || state_scanned >= state_max_scan {
+              if state_scanned >= state_max_scan {
+                exhausted = true
+              }
+              break
+            }
+            let r = rows[i]
+            vault_scanned = vault_scanned + 1
+            state_scanned = state_scanned + 1
+            last_visited = Some(CancelledCursor::{ vault: vault, at: r.at, sub: r.sub })
+            let b = match r.body {
+              Some(s) => if s != "" { s } else { continue }
+              None => continue
+            }
+            let a = match parse_form_json(b) {
+              Some(v) => v
+              None => continue
+            }
+            let d = match r.dismiss_body {
+              Some(db) => if db != "" { parse_form_json(db) } else { None }
+              None => None
+            }
+            let ok = match accept {
+              Some(f) => f(a, r.joined_up_to, d)
+              None => true
+            }
+            if !ok {
+              continue
+            }
+            out.push(a)
+            taken = taken + 1
+            state_emitted = state_emitted + 1
+            if state_emitted >= state_limit {
+              if i + 1 < rows.length() || vi + 1 < vault_ids.length() {
+                next_cursor = Some(CancelledCursor::{ vault: vault, at: r.at, sub: r.sub })
+              }
+              break
+            }
+          }
+          if !(next_cursor is None) {
+            break
+          }
+          if state_scanned >= state_max_scan {
+            exhausted = true
+            break
+          }
+          vi = vi + 1
+        }
+        if next_cursor is None && exhausted {
+          next_cursor = last_visited
+        }
+        next_cursor
+      }
+      let _ = mem_scan_state("pending", pv, limit, m_scan, None)
+      let next_cancelled = mem_scan_state("cancelled", pvc, cancelled_limit, cm_scan, cancelled_after)
+      return Ok(JoinsPage::{ joins: out, next_cancelled_cursor: next_cancelled })
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  let scan_state = fn(
+    state : String,
+    pv_cap : Int,
+    state_limit : Int,
+    state_max_scan : Int,
+    after : Option[CancelledCursor],
+  ) -> Result[Option[CancelledCursor], String] {
+    let mut state_emitted = 0
+    let mut state_scanned = 0
+    let mut next_cursor : Option[CancelledCursor] = None
+    let mut last_visited : Option[CancelledCursor] = None
+    let mut exhausted = false
+    let start_idx = match after {
+      Some(a) => find_vault_idx(vault_ids, a.vault)
+      None => 0
+    }
+    let mut vi = start_idx
+    while vi < vault_ids.length() {
+      let vault = vault_ids[vi]
+      if state_emitted >= state_limit {
+        break
+      }
+      if state_scanned >= state_max_scan {
+        exhausted = true
+        break
+      }
+      let rem_state = state_limit - state_emitted
+      let want = if pv_cap < rem_state { pv_cap } else { rem_state }
+      let mut taken = 0
+      let mut vault_scanned = 0
+      let mut cursor_at : Option[Int64] = None
+      let mut cursor_sub = ""
+      match after {
+        Some(a) => if vi == start_idx && a.vault == vault { cursor_at = Some(a.at); cursor_sub = a.sub }
+        None => ()
+      }
+      while taken < want && vault_scanned < pv_scan && state_scanned < state_max_scan {
+        let mut batch = want - taken + 1
+        if pv_scan - vault_scanned < batch {
+          batch = pv_scan - vault_scanned
+        }
+        if state_max_scan - state_scanned < batch {
+          batch = state_max_scan - state_scanned
+        }
+        if batch <= 0 {
+          exhausted = true
+          break
+        }
+        let rows : Array[Map[String, base_codec::Json]] = match cursor_at {
+          None => match (db.all)(
+            "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? ORDER BY at DESC, sub ASC LIMIT ?",
+            [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(state), base_codec::json_int(batch)],
+          ) {
+            Ok(rs) => rs
+            Err(e) => return Err(e.message)
+          }
+          Some(cat) => {
+            let same = match (db.all)(
+              "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? AND at = ? AND sub > ? ORDER BY at DESC, sub ASC LIMIT ?",
+              [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(state), base_codec::json_int64(cat), base_codec::json_str(cursor_sub), base_codec::json_int(batch)],
+            ) {
+              Ok(rs) => rs
+              Err(e) => return Err(e.message)
+            }
+            if same.length() < batch {
+              let older = match (db.all)(
+                "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? AND at < ? ORDER BY at DESC, sub ASC LIMIT ?",
+                [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(state), base_codec::json_int64(cat), base_codec::json_int(batch - same.length())],
+              ) {
+                Ok(rs) => rs
+                Err(e) => return Err(e.message)
+              }
+              for oi in 0..<older.length() {
+                same.push(older[oi])
+              }
+              same
+            } else {
+              same
+            }
+          }
+        }
+        if rows.length() == 0 {
+          break
+        }
+        let mut hit_vault_cap = false
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          let r_at = row_i64(r, "at")
+          let r_sub = match row_str(r, "sub") {
+            Some(s) => s
+            None => ""
+          }
+          vault_scanned = vault_scanned + 1
+          state_scanned = state_scanned + 1
+          cursor_at = Some(r_at)
+          cursor_sub = r_sub
+          last_visited = Some(CancelledCursor::{ vault: vault, at: r_at, sub: r_sub })
+          let b = match row_str(r, "body") {
+            Some(s) => if s != "" { s } else { continue }
+            None => continue
+          }
+          let a = match parse_form_json(b) {
+            Some(v) => v
+            None => continue
+          }
+          let d = match row_str(r, "dismiss_body") {
+            Some(dbody) => if dbody != "" { parse_form_json(dbody) } else { None }
+            None => None
+          }
+          let joined_up = row_i64(r, "joined_up_to")
+          let ok = match accept {
+            Some(f) => f(a, joined_up, d)
+            None => true
+          }
+          if !ok {
+            continue
+          }
+          out.push(a)
+          taken = taken + 1
+          state_emitted = state_emitted + 1
+          if state_emitted >= state_limit {
+            if i + 1 < rows.length() || vi + 1 < vault_ids.length() {
+              next_cursor = Some(CancelledCursor::{ vault: vault, at: r_at, sub: r_sub })
+            }
+            break
+          }
+          if taken >= want {
+            hit_vault_cap = true
+            break
+          }
+        }
+        if !(next_cursor is None) || hit_vault_cap {
+          break
+        }
+        if rows.length() < batch {
+          break
+        }
+      }
+      if !(next_cursor is None) {
+        break
+      }
+      if state_scanned >= state_max_scan {
+        exhausted = true
+        break
+      }
+      vi = vi + 1
+    }
+    if next_cursor is None && exhausted {
+      next_cursor = last_visited
+    }
+    Ok(next_cursor)
+  }
+
+  match scan_state("pending", pv, limit, m_scan, None) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match scan_state("cancelled", pvc, cancelled_limit, cm_scan, cancelled_after) {
+    Ok(next_cancelled) => Ok(JoinsPage::{ joins: out, next_cancelled_cursor: next_cancelled })
+    Err(e) => Err(e)
+  }
+}
+
+/// Signed admin join-dismiss records via partial index `vault_joins_vault_dismiss`, with resumable cursor.
+pub fn VaultStore::join_dismisses_for_vaults(
+  self : VaultStore,
+  ws : String,
+  vault_ids : Array[String],
+  limit : Int,
+  after_vault : Option[String] = None,
+  after_sub : Option[String] = None,
+  max_scan : Int = 256,
+  accept : Option[(form::Json) -> Bool] = None,
+) -> Result[DismissesPage, String] {
+  if vault_ids.length() == 0 || limit <= 0 {
+    return Ok(DismissesPage::{ dismisses: [], next_cursor: None })
+  }
+  let m_scan = if max_scan > limit { max_scan } else { limit }
+  let out : Array[form::Json] = []
+  let start_idx = match after_vault {
+    Some(av) => find_vault_idx(vault_ids, av)
+    None => 0
+  }
+  match self.mem {
+    Some(m) => {
+      let mut total_scanned = 0
+      let mut next_cursor : Option[DismissCursor] = None
+      let mut last_visited : Option[DismissCursor] = None
+      let mut exhausted_budget = false
+      let mut vi = start_idx
+      while vi < vault_ids.length() {
+        let vault = vault_ids[vi]
+        if out.length() >= limit {
+          break
+        }
+        if total_scanned >= m_scan {
+          exhausted_budget = true
+          break
+        }
+        let rows : Array[(String, String)] = []
+        let ks = m.joins.keys()
+        for ki in 0..<ks.length() {
+          match m.joins.get(ks[ki]) {
+            Some(r) => {
+              if r.ws == ws && r.vault == vault {
+                match r.dismiss_body {
+                  Some(db) => {
+                    if db != "" {
+                      let after_ok = match (after_vault, after_sub) {
+                        (Some(av), Some(asub)) => if vi == start_idx && av == vault { r.sub > asub } else { true }
+                        _ => true
+                      }
+                      if after_ok {
+                        rows.push((r.sub, db))
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        let mut si = 1
+        while si < rows.length() {
+          let cur = rows[si]
+          let mut sj = si - 1
+          while sj >= 0 && rows[sj].0 > cur.0 {
+            rows[sj + 1] = rows[sj]
+            sj = sj - 1
+          }
+          rows[sj + 1] = cur
+          si = si + 1
+        }
+        for i in 0..<rows.length() {
+          if total_scanned >= m_scan {
+            exhausted_budget = true
+            break
+          }
+          let (r_sub, db) = rows[i]
+          total_scanned = total_scanned + 1
+          last_visited = Some(DismissCursor::{ vault: vault, sub: r_sub })
+          let d = match parse_form_json(db) {
+            Some(v) => v
+            None => continue
+          }
+          let ok = match accept {
+            Some(f) => f(d)
+            None => true
+          }
+          if !ok {
+            continue
+          }
+          out.push(d)
+          if out.length() >= limit {
+            if i + 1 < rows.length() || vi + 1 < vault_ids.length() {
+              next_cursor = Some(DismissCursor::{ vault: vault, sub: r_sub })
+            }
+            break
+          }
+        }
+        if !(next_cursor is None) || exhausted_budget {
+          break
+        }
+        vi = vi + 1
+      }
+      if next_cursor is None && exhausted_budget {
+        next_cursor = last_visited
+      }
+      return Ok(DismissesPage::{ dismisses: out, next_cursor: next_cursor })
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  let mut total_scanned = 0
+  let mut next_cursor : Option[DismissCursor] = None
+  let mut last_visited : Option[DismissCursor] = None
+  let mut exhausted_budget = false
+  let mut vi = start_idx
+  while vi < vault_ids.length() {
+    let vault = vault_ids[vi]
+    if out.length() >= limit {
+      break
+    }
+    if total_scanned >= m_scan {
+      exhausted_budget = true
+      break
+    }
+    let mut cursor_sub : Option[String] = None
+    match (after_vault, after_sub) {
+      (Some(av), Some(asub)) => if vi == start_idx && av == vault { cursor_sub = Some(asub) }
+      _ => ()
+    }
+    while out.length() < limit {
+      if total_scanned >= m_scan {
+        exhausted_budget = true
+        break
+      }
+      let rem_out = limit - out.length() + 1
+      let rem_scan = m_scan - total_scanned
+      let batch = if rem_out < rem_scan { rem_out } else { rem_scan }
+      if batch <= 0 {
+        exhausted_budget = true
+        break
+      }
+      let rows = match cursor_sub {
+        None => match (db.all)(
+          "SELECT sub, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_dismiss WHERE ws = ? AND vault = ? AND dismiss_body IS NOT NULL ORDER BY sub ASC LIMIT ?",
+          [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_int(batch)],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(e.message)
+        }
+        Some(csub) => match (db.all)(
+          "SELECT sub, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_dismiss WHERE ws = ? AND vault = ? AND dismiss_body IS NOT NULL AND sub > ? ORDER BY sub ASC LIMIT ?",
+          [base_codec::json_str(ws), base_codec::json_str(vault), base_codec::json_str(csub), base_codec::json_int(batch)],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(e.message)
+        }
+      }
+      if rows.length() == 0 {
+        break
+      }
+      let mut emitted_in_batch = 0
+      let mut last_visited_sub = match cursor_sub {
+        Some(s) => s
+        None => ""
+      }
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let r_sub = match row_str(r, "sub") {
+          Some(s) => s
+          None => ""
+        }
+        total_scanned = total_scanned + 1
+        last_visited_sub = r_sub
+        last_visited = Some(DismissCursor::{ vault: vault, sub: r_sub })
+        let dbody = match row_str(r, "dismiss_body") {
+          Some(s) => if s != "" { s } else { continue }
+          None => continue
+        }
+        let d = match parse_form_json(dbody) {
+          Some(v) => v
+          None => continue
+        }
+        let ok = match accept {
+          Some(f) => f(d)
+          None => true
+        }
+        if !ok {
+          continue
+        }
+        if out.length() >= limit {
+          let cs = match cursor_sub {
+            Some(s) => s
+            None => ""
+          }
+          next_cursor = Some(DismissCursor::{ vault: vault, sub: cs })
+          break
+        }
+        out.push(d)
+        emitted_in_batch = emitted_in_batch + 1
+        cursor_sub = Some(r_sub)
+        if out.length() >= limit {
+          if i + 1 < rows.length() || vi + 1 < vault_ids.length() {
+            next_cursor = Some(DismissCursor::{ vault: vault, sub: r_sub })
+          }
+          break
+        }
+      }
+      if !(next_cursor is None) {
+        break
+      }
+      if emitted_in_batch == 0 {
+        cursor_sub = Some(last_visited_sub)
+      }
+      if rows.length() < batch {
+        break
+      }
+    }
+    if !(next_cursor is None) || exhausted_budget {
+      break
+    }
+    vi = vi + 1
+  }
+  if next_cursor is None && exhausted_budget {
+    next_cursor = last_visited
+  }
+  Ok(DismissesPage::{ dismisses: out, next_cursor: next_cursor })
+}
+
+/// Direct O(1) PK lookup of `sub`'s own active join state on each discoverable workspace vault.
+pub fn VaultStore::own_joins_for_vaults(
+  self : VaultStore,
+  ws : String,
+  vault_ids : Array[String],
+  sub : String,
+) -> Result[OwnJoins, String] {
+  let joins : Array[form::Json] = []
+  let dismisses : Array[form::Json] = []
+  match self.mem {
+    Some(m) => {
+      for i in 0..<vault_ids.length() {
+        match m.joins.get(mem_k3(ws, vault_ids[i], sub)) {
+          Some(row) => {
+            match row.body {
+              Some(b) => if b != "" && row.at > row.joined_up_to {
+                match parse_form_json(b) {
+                  Some(j) => joins.push(j)
+                  None => ()
+                }
+              }
+              None => ()
+            }
+            match row.dismiss_body {
+              Some(db) => if db != "" {
+                match parse_form_json(db) {
+                  Some(d) => dismisses.push(d)
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+      return Ok(OwnJoins::{ joins: joins, dismisses: dismisses })
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  for i in 0..<vault_ids.length() {
+    match (db.first)(
+      "SELECT at, body, joined_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?",
+      [base_codec::json_str(ws), base_codec::json_str(vault_ids[i]), base_codec::json_str(sub)],
+    ) {
+      Ok(Some(row)) => {
+        let at = row_i64(row, "at")
+        let joined_up = row_i64(row, "joined_up_to")
+        match row_str(row, "body") {
+          Some(b) => if b != "" && at > joined_up {
+            match parse_form_json(b) {
+              Some(j) => joins.push(j)
+              None => ()
+            }
+          }
+          None => ()
+        }
+        match row_str(row, "dismiss_body") {
+          Some(dbody) => if dbody != "" {
+            match parse_form_json(dbody) {
+              Some(d) => dismisses.push(d)
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e.message)
+    }
+  }
+  Ok(OwnJoins::{ joins: joins, dismisses: dismisses })
+}

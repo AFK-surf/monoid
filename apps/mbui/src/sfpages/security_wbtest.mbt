@@ -198,7 +198,7 @@ test "protecting a station keeps its button and label, with the spinner inside a
     tap_words(idle, "保护")
     idle.frame()
     assert_true(@sf.presenting(), msg=at)
-    assert_true(idle.find("保护 Maple？") is Some(_), msg=at)
+    assert_true(idle.find("保护 Station") is Some(_) && idle.find("Maple") is Some(_), msg=at)
     @sf.close_presented()
 
     let busy = setting_tester(Security, w, platform~, mode="settings-security-protecting")
@@ -321,7 +321,7 @@ test "安全, at each width and with either hand: another device of one's own ta
     let at = "\{w} platform \{platform}"
     removed_from_menu(t, w, "林的 MacBook Pro")
     assert_true(@sf.presenting(), msg=at)
-    assert_true(t.find("移除「林的 MacBook Pro · still.fail 桌面版」？") is Some(_), msg=at)
+    assert_true(t.find("移除受信任设备") is Some(_) && t.find("林的 MacBook Pro · still.fail 桌面版") is Some(_), msg=at)
     assert_true(t.find("该设备将无法再访问受保护的 station，重新批准后才能使用") is Some(_), msg=at)
     @sf.close_presented()
     t.frame()

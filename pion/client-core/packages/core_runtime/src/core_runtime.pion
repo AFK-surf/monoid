@@ -17,6 +17,7 @@ import "views"
 extern "C" fn mb_core_emit(json : Ptr, len : Int64, bytes : Ptr, blen : Int64) -> Int
 extern "C" fn pion_core_wall_now_ms() -> Int64
 extern "C" fn pion_core_utc_offset_min(ms : Int64) -> Int
+extern "C" fn pion_core_log_warn(msg : Ptr, len : Int64) -> Unit
 
 struct AccountInfo {
   sub : String
@@ -41,6 +42,7 @@ struct RuntimeSession {
   station_online : Map[String, Bool]
   runtime_subs : Array[RuntimeSub]
   kept_vals : Map[String, base_codec::Json]
+  kept_topics : Map[String, protocol::Topic]
   kept_order : Array[String]
   md_stores : Map[String, store::MdStore]
   mesh_transports : Map[String, sync::MeshStationTransport]
@@ -52,6 +54,14 @@ struct RuntimeSession {
 }
 
 let g_session : Array[Option[RuntimeSession]] = [None]
+let g_last_device_conn_seq : Array[Int64] = [0L]
+let g_last_conn_seq_persist_err : Array[Option[String]] = [None]
+
+fn log_runtime_warn(msg : String) -> Unit {
+  let bs = msg.to_bytes()
+  pion_core_log_warn(bytes_data_ptr(bs), bs.length().to_int64())
+  let _ = bs.length()
+}
 
 fn bytes_to_str(b : Bytes) -> String {
   let sb = StringBuilder::new()
@@ -197,9 +207,10 @@ fn emit_topic_refresh(
   topic_name : String,
   changed_keys : Option[Array[(String, String)]] = None,
 ) -> Unit {
-  let deltas = sess.core.refresh_topic(topic_name)
+  let deltas = sess.core.refresh_topic_with_topics(topic_name)
   for i in 0..<deltas.length() {
-    let (dj, db) = protocol::encode_core_event(deltas[i])
+    let (topic, ev) = deltas[i]
+    let (dj, db) = sess.core.encode_sub_event(topic, ev)
     emit_wire(dj, payload=db)
   }
   for i in 0..<sess.runtime_subs.length() {
@@ -216,18 +227,18 @@ fn emit_topic_refresh(
               if sub.keyed {
                 let ops = protocol::diff_keyed(prev_val, new_val, protocol::spec_for_topic(topic_name))
                 if ops.length() > 0 {
-                  let (dj, db) = protocol::encode_core_event(protocol::CoreEvent::Delta(sub.id, ops, None, false))
+                  let (dj, db) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Delta(sub.id, ops, None, false))
                   emit_wire(dj, payload=db)
                 }
               } else {
-                let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+                let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
                 emit_wire(vj, payload=vb)
               }
             }
           }
           None => {
             sub.last_val = Some(new_val)
-            let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+            let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
             emit_wire(vj, payload=vb)
           }
         }
@@ -364,11 +375,17 @@ fn flush_session_md_stores(sess : RuntimeSession) -> Unit {
   }
 }
 
-fn kept_put(sess : RuntimeSession, tok : String, v : base_codec::Json) -> Unit {
-  let existed = sess.kept_vals.get(tok).is_some()
-  sess.kept_vals.set(tok, v)
+fn runtime_kept_key(topic : protocol::Topic, tok : String) -> String {
+  protocol::topic_key(topic) + "\u{01}" + tok
+}
+
+fn kept_put(sess : RuntimeSession, tok : String, topic : protocol::Topic, v : base_codec::Json) -> Unit {
+  let k = runtime_kept_key(topic, tok)
+  let existed = sess.kept_vals.get(k).is_some()
+  sess.kept_vals.set(k, v)
+  sess.kept_topics.set(k, topic)
   if !existed {
-    sess.kept_order.push(tok)
+    sess.kept_order.push(k)
     while sess.kept_vals.length() > 64 && sess.kept_order.length() > 0 {
       let oldest = sess.kept_order[0]
       let next_ord : Array[String] = []
@@ -380,6 +397,53 @@ fn kept_put(sess : RuntimeSession, tok : String, v : base_codec::Json) -> Unit {
         sess.kept_order.push(next_ord[i])
       }
       sess.kept_vals.remove(oldest)
+      sess.kept_topics.remove(oldest)
+    }
+  }
+}
+
+fn kept_purge_where(sess : RuntimeSession, pred : (protocol::Topic) -> Bool) -> Unit {
+  let next_ord : Array[String] = []
+  for i in 0..<sess.kept_order.length() {
+    let k = sess.kept_order[i]
+    let drop = match sess.kept_topics.get(k) {
+      Some(t) => pred(t)
+      None => true
+    }
+    if drop {
+      sess.kept_vals.remove(k)
+      sess.kept_topics.remove(k)
+    } else {
+      next_ord.push(k)
+    }
+  }
+  sess.kept_order.clear()
+  for i in 0..<next_ord.length() {
+    sess.kept_order.push(next_ord[i])
+  }
+}
+
+fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEvent) -> Unit {
+  kept_purge_where(sess, fn(t : protocol::Topic) -> Bool {
+    sess.core.auth.matches_topic(t, ev)
+  })
+  for i in 0..<sess.runtime_subs.length() {
+    let sub = sess.runtime_subs[i]
+    if sess.core.auth.matches_topic(sub.topic, ev) {
+      sub.last_val = None
+      match evaluate_runtime_topic(sess, sub.id, sub.topic) {
+        Some(sev) => {
+          match sev {
+            protocol::CoreEvent::Value(_, new_val, _) => {
+              sub.last_val = Some(new_val)
+            }
+            _ => ()
+          }
+          let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
+          emit_wire(j, payload=b)
+        }
+        None => ()
+      }
     }
   }
 }
@@ -434,10 +498,21 @@ fn encode_account_db_name(sub : String) -> String {
   sb.to_string()
 }
 
-/// Read one JSON document from host storage (`storage.get`) synchronously during startup.
-fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json] {
+enum StorageRead {
+  Found(base_codec::Json)
+  Absent
+  ReadError(String)
+}
+
+/// Read one JSON document from host storage (`storage.get`) synchronously during startup,
+/// strictly distinguishing confirmed `Absent` (`{"none": true}`), valid `Found(Json)`, and
+/// `ReadError` (I/O failure, timeout, empty payload, or corrupt JSON) so callers never
+/// overwrite unreadable/damaged device records (such as TS `device/auth` `capRev:*` entries).
+fn read_storage_json_state(sh : shell::Shell, key : String) -> StorageRead {
   let done_flag : Array[Bool] = [false]
   let raw_out : Array[Option[Bytes]] = [None]
+  let none_out : Array[Bool] = [false]
+  let err_out : Array[Option[String]] = [None]
   let _ = sh.rt.fork_quiet_named("startup:storage.get", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
     sh.call_k(
       "storage.get",
@@ -445,9 +520,13 @@ fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json
       fn(ex : effect::Exit[shell::Answer]) -> Unit {
         match ex {
           effect::Exit::Succeeded(ans) => {
-            raw_out[0] = ans.bytes
+            match base_codec::json_get(ans.json, "none") {
+              Some(base_codec::Json::Bool(true)) => { none_out[0] = true }
+              _ => { raw_out[0] = ans.bytes }
+            }
           }
-          _ => ()
+          effect::Exit::Failed(e) => { err_out[0] = Some("storage.get failed for " + key + ": " + effect_err_msg(e)) }
+          effect::Exit::Interrupted => { err_out[0] = Some("storage.get interrupted for " + key) }
         }
         done_flag[0] = true
         fk(effect::Exit::Succeeded(()))
@@ -455,17 +534,35 @@ fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json
     )
   })
   let _ = shell_native::drain_until(sh, fn() -> Bool { done_flag[0] }, timeout_ms=2000.to_int64())
+  if !done_flag[0] {
+    return StorageRead::ReadError("storage.get timed out for " + key)
+  }
+  match err_out[0] {
+    Some(msg) => return StorageRead::ReadError(msg)
+    None => ()
+  }
+  if none_out[0] {
+    return StorageRead::Absent
+  }
   match raw_out[0] {
     Some(bs) => {
       if bs.length() == 0 {
-        return None
+        return StorageRead::ReadError("empty storage payload for " + key)
       }
       match base_codec::json_parse(bytes_to_str(bs)) {
-        base_codec::JsonParseResult::Ok(j) => Some(j)
-        base_codec::JsonParseResult::Err(_) => None
+        base_codec::JsonParseResult::Ok(j) => StorageRead::Found(j)
+        base_codec::JsonParseResult::Err(e) => StorageRead::ReadError("corrupt storage json for " + key + ": " + e)
       }
     }
-    None => None
+    None => StorageRead::ReadError("storage.get returned neither bytes nor none for " + key)
+  }
+}
+
+/// Read one JSON document from host storage (`storage.get`) synchronously during startup.
+fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json] {
+  match read_storage_json_state(sh, key) {
+    StorageRead::Found(j) => Some(j)
+    _ => None
   }
 }
 
@@ -949,7 +1046,151 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     None
   }
-  let core = sync::ClientCore::new(default_ws, default_st, rt, acct.db, transport, fn() -> Unit {})
+  // Fail-open device-level `connSeq` high-water mark (`device/conn_seq_floor`), aligned 1:1 with
+  // TS `client/core-ts/src/core.ts:406-414` (`Effect.ignore(flushTable("auth"))`):
+  // - In-process restart monotonicity (`apps/mbui/src/core/client.mbt` `min_restart_conn`) is
+  //   strictly guaranteed by `g_last_device_conn_seq[0]`; cold processes start with `min_restart_conn == 0`.
+  // - `parse_conn_seq_raw` rejects decimals, non-positive values, and `>= MAX_SAFE_CONN_SEQ` (`Int64::MAX`),
+  //   preventing wraparound overflow.
+  // - `device/auth` corrupt / `ReadError` / non-object: ALWAYS preserved byte-for-byte untouched (protects
+  //   TS `capRev:*`), never fatal-bricks startup; repairs/writes `device/conn_seq_floor` and proceeds.
+  // - `device/conn_seq_floor` corrupt / decimal / out-of-range: Pion-owned file, so warn and overwrite-repair
+  //   from `max(other valid high-water marks + 1, g_last_device_conn_seq + 1, now_ms * 1000L)`.
+  // - Storage write failures (disk full / read-only): warn and continue fail-open with in-memory floor + wall clock.
+  let parse_conn_read = fn(st : StorageRead) -> Int64 {
+    match st {
+      StorageRead::Found(j) => store::parse_conn_seq_raw(base_codec::json_stringify(j))
+      _ => 0L
+    }
+  }
+  let floor_read = read_storage_json_state(sh, "device/conn_seq_floor")
+  let auth_read = read_storage_json_state(sh, "device/auth")
+
+  let floor_conn : Int64 = match floor_read {
+    StorageRead::Absent => 0L
+    StorageRead::ReadError(reason) => {
+      log_runtime_warn("device/conn_seq_floor unreadable (" + reason + "); repairing from valid high-water marks")
+      0L
+    }
+    StorageRead::Found(fj) => {
+      let v = store::parse_conn_seq_raw(base_codec::json_stringify(fj))
+      if v <= 0L {
+        // Do not misreport our own in-process headroom (`MAX_PERSISTED_CONN_SEQ < g_last_device_conn_seq <= MAX_SAFE_CONN_SEQ`) as corruption.
+        if g_last_device_conn_seq[0] <= store::MAX_PERSISTED_CONN_SEQ {
+          log_runtime_warn("device/conn_seq_floor has invalid/out-of-range connSeq; repairing from valid high-water marks")
+        }
+        0L
+      } else {
+        v
+      }
+    }
+  }
+
+  let auth_conn = parse_conn_read(auth_read)
+  let file_conn = parse_conn_read(read_storage_json_state(sh, "conn_seq"))
+  let legacy_conn = parse_conn_read(read_storage_json_state(sh, "device/conn_seq"))
+  let mut storage_device_conn = if auth_conn >= floor_conn { auth_conn } else { floor_conn }
+  if file_conn > storage_device_conn {
+    storage_device_conn = file_conn
+  }
+  if legacy_conn > storage_device_conn {
+    storage_device_conn = legacy_conn
+  }
+  let db_conn : Int64 = match store::get_account_doc(acct.db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => store::parse_conn_seq_raw(raw)
+    _ => 0L
+  }
+  let prev_device_conn = if storage_device_conn >= db_conn { storage_device_conn } else { db_conn }
+  let device_conn_seq = match store::next_monotonic_conn_seq_checked(
+    prev_device_conn,
+    now_ms=pion_core_wall_now_ms(),
+    floor=g_last_device_conn_seq[0],
+  ) {
+    Ok(v) => v
+    Err(_) => {
+      // Only reachable if a single OS process exhausts all 1B headroom steps up to `MAX_SAFE_CONN_SEQ`.
+      // Never emit a regressing `conn` (host `min_restart_conn` would reject it); instruct full app restart
+      // (a cold OS process starts with `g_last_device_conn_seq[0] == 0` and automatically repairs disk).
+      let err_msg = "connection sequence exhausted; restart the app to continue"
+      g_last_conn_seq_persist_err[0] = Some(err_msg)
+      log_runtime_warn(err_msg)
+      acct.db.close()
+      shell_native::stop()
+      emit_fatal(err_msg)
+      return 0
+    }
+  }
+
+  let mut persist_err : Option[String] = None
+  let floor_doc = base_codec::json_obj([("connSeq", base_codec::json_int64(device_conn_seq))])
+  // Always persist (or overwrite-repair) `device/conn_seq_floor` FIRST on every startup;
+  // on disk-full/read-only failure, log warning and proceed fail-open.
+  match write_storage_json(sh, "device/conn_seq_floor", floor_doc) {
+    Ok(_) => ()
+    Err(e) => {
+      let err_msg = "device/conn_seq_floor persist failed (continuing fail-open): " + e
+      persist_err = Some(err_msg)
+      log_runtime_warn(err_msg)
+    }
+  }
+  // When `device/auth` is writable (`Absent` or `Found(Obj)`), merge-write `device/auth`
+  // preserving all sibling fields (such as TS `capRev:*`); when `device/auth` is unreadable/corrupt
+  // or non-object, preserve `device/auth` byte-for-byte untouched and continue using `device/conn_seq_floor`.
+  match auth_read {
+    StorageRead::Absent => {
+      match write_storage_json(sh, "device/auth", floor_doc) {
+        Ok(_) => ()
+        Err(e) => {
+          let err_msg = "device/auth persist failed (continuing fail-open): " + e
+          persist_err = Some(err_msg)
+          log_runtime_warn(err_msg)
+        }
+      }
+    }
+    StorageRead::Found(base_codec::Json::Obj(pairs)) => {
+      let merged_auth_fields : Array[(String, base_codec::Json)] = []
+      for i in 0..<pairs.length() {
+        let (k, v) = pairs[i]
+        if k != "connSeq" {
+          merged_auth_fields.push((k, v))
+        }
+      }
+      merged_auth_fields.push(("connSeq", base_codec::json_int64(device_conn_seq)))
+      match write_storage_json(sh, "device/auth", base_codec::json_obj(merged_auth_fields)) {
+        Ok(_) => ()
+        Err(e) => {
+          let err_msg = "device/auth merge-write failed (continuing fail-open): " + e
+          persist_err = Some(err_msg)
+          log_runtime_warn(err_msg)
+        }
+      }
+    }
+    StorageRead::Found(_) => {
+      log_runtime_warn("device/auth is non-object JSON; preserving device/auth untouched and continuing via device/conn_seq_floor")
+    }
+    StorageRead::ReadError(reason) => {
+      log_runtime_warn("device/auth unreadable/corrupt (" + reason + "); preserving device/auth untouched and continuing via device/conn_seq_floor")
+    }
+  }
+  g_last_device_conn_seq[0] = device_conn_seq
+  g_last_conn_seq_persist_err[0] = persist_err
+  match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      let err_msg = "conn_seq sqlite mirror failed: " + e.to_string()
+      g_last_conn_seq_persist_err[0] = Some(err_msg)
+      log_runtime_warn(err_msg)
+    }
+  }
+  let core = sync::ClientCore::new(
+    default_ws,
+    default_st,
+    rt,
+    acct.db,
+    transport,
+    fn() -> Unit {},
+    conn_seq=Some(device_conn_seq),
+  )
   core.utc_offset_min = pion_core_utc_offset_min(pion_core_wall_now_ms())
   // Seed SQLite `account_doc("prefs")` from host `device/prefs` on first boot if SQLite prefs are empty.
   match store::get_device_prefs(acct.db) {
@@ -1013,6 +1254,7 @@ pub extern "C" fn pion_core_runtime_start(
     station_online: Map::new(),
     runtime_subs: [],
     kept_vals: Map::new(),
+    kept_topics: Map::new(),
     kept_order: [],
     md_stores: Map::new(),
     mesh_transports: Map::new(),
@@ -1022,7 +1264,15 @@ pub extern "C" fn pion_core_runtime_start(
     device_app: "desktop",
     device_locale: "",
   }
+  core.set_wire_sink(fn(j : String, b : Option[Bytes]) -> Unit {
+    emit_wire(j, payload=b)
+  })
+  core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
+    handle_runtime_auth_boundary(sess, ev)
+  })
   g_session[0] = Some(sess)
+  // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
+  let _ = core.emit_auth_handshake()
   1
 }
 
@@ -1433,7 +1683,11 @@ pub extern "C" fn pion_core_runtime_send(
       match protocol::wire_error_id(raw) {
         Some(err_id) => {
           let ev = protocol::CoreEvent::Err(err_id, protocol::CoreError::{ code: "bad_message", message: msg })
-          let (out_j, out_b) = protocol::encode_core_event(ev)
+          let (out_j, out_b) = if base_codec::json_get(raw, "subscribe").is_some() {
+            protocol::encode_sub_event_with_auth(ev, sess.core.wire_out_gen_for_raw_subscribe(raw))
+          } else {
+            protocol::encode_core_event(ev)
+          }
           emit_wire(out_j, payload=out_b)
         }
         None => ()
@@ -1461,23 +1715,28 @@ pub extern "C" fn pion_core_runtime_send(
               if !replaced {
                 sess.runtime_subs.push(RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt })
               }
-              let out_ev = match (have, val_opt) {
-                (Some(tok), Some(cur_val)) => match sess.kept_vals.get(tok) {
-                  Some(prev_val) => {
-                    if protocol::json_equal(prev_val, cur_val) {
-                      protocol::CoreEvent::Same(id)
-                    } else if keyed {
-                      let ops = protocol::diff_keyed(prev_val, cur_val, protocol::spec_for_topic(topic.name))
-                      protocol::CoreEvent::Delta(id, ops, None, true)
-                    } else {
-                      ev
+              let allow_kept = !protocol::is_sensitive_topic(topic) && !sync::is_vault_topic(topic.name)
+              let out_ev = if allow_kept {
+                match (have, val_opt) {
+                  (Some(tok), Some(cur_val)) => match sess.kept_vals.get(runtime_kept_key(topic, tok)) {
+                    Some(prev_val) => {
+                      if protocol::json_equal(prev_val, cur_val) {
+                        protocol::CoreEvent::Same(id)
+                      } else if keyed {
+                        let ops = protocol::diff_keyed(prev_val, cur_val, protocol::spec_for_topic(topic.name))
+                        protocol::CoreEvent::Delta(id, ops, None, true)
+                      } else {
+                        ev
+                      }
                     }
+                    None => ev
                   }
-                  None => ev
+                  _ => ev
                 }
-                _ => ev
+              } else {
+                ev
               }
-              let (out_j, out_b) = protocol::encode_core_event(out_ev)
+              let (out_j, out_b) = sess.core.encode_sub_event(topic, out_ev)
               emit_wire(out_j, payload=out_b)
               let _ = drain_and_emit(sess)
               flush_session_md_stores(sess)
@@ -1494,14 +1753,23 @@ pub extern "C" fn pion_core_runtime_send(
             Some(removed) => {
               sess.core.close_chat_sub_snapshot(id)
               if keep {
-                match removed.last_val {
-                  Some(v) => {
-                    let tok = protocol::value_token(v)
-                    kept_put(sess, tok, v)
-                    let (uj, ub) = protocol::encode_core_event(protocol::CoreEvent::Unsubscribed(id, Some(tok)))
-                    emit_wire(uj, payload=ub)
+                let allow_keep = !protocol::is_sensitive_topic(removed.topic) && !sync::is_vault_topic(removed.topic.name)
+                if allow_keep {
+                  match removed.last_val {
+                    Some(v) => {
+                      let tok = protocol::value_token(v)
+                      kept_put(sess, tok, removed.topic, v)
+                      let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, Some(tok)))
+                      emit_wire(uj, payload=ub)
+                    }
+                    None => {
+                      let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, None))
+                      emit_wire(uj, payload=ub)
+                    }
                   }
-                  None => ()
+                } else {
+                  let (uj, ub) = sess.core.encode_sub_event(removed.topic, protocol::CoreEvent::Unsubscribed(id, None))
+                  emit_wire(uj, payload=ub)
                 }
               }
               let _ = drain_and_emit(sess)
@@ -1521,9 +1789,15 @@ pub extern "C" fn pion_core_runtime_send(
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
-            let target_ws = match opt_str_param(params, "workspace") {
-              Some(w) => if w.length() > 0 { w } else { sess.core.workspace }
-              None => sess.core.workspace
+            let explicit_ws = match opt_str_param(params, "workspace") {
+              Some(w) => w
+              None => ""
+            }
+            let target_ws = if explicit_ws.length() > 0 {
+              explicit_ws
+            } else {
+              let pref = sync::station_workspace_prefix(target_st)
+              if pref.length() > 0 { pref } else { sess.core.workspace }
             }
             let peer_opt = match opt_str_param(params, "peerId") {
               Some(p) => if p.length() > 0 { Some(p) } else { None }
@@ -1575,7 +1849,7 @@ pub extern "C" fn pion_core_runtime_send(
                   relays,
                   get_cred,
                   get_lock_carry=Some(fn() -> sync::MeshLockCarry {
-                    sync::mesh_lock_carry_for_core(core_ref)
+                    sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
                   }),
                 )
                 match sess.mesh_transports.get(target_st) {
@@ -1587,7 +1861,7 @@ pub extern "C" fn pion_core_runtime_send(
                 }
                 let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
                 sess.mesh_transports.set(target_st, ctrl)
-                sess.core.attach_station_transport(target_st, tr)
+                sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
                 mode = "mesh"
               }
               None => {
@@ -1668,9 +1942,25 @@ pub extern "C" fn pion_core_runtime_send(
         }
         _ => None
       }
+      let sub_topic_opt : Option[protocol::Topic] = match req {
+        protocol::CoreRequest::Subscribe(_, topic, _, _, _) => Some(topic)
+        protocol::CoreRequest::Unsubscribe(id, _, _) => sess.core.router.active_sub_topic(id)
+        _ => None
+      }
       match sess.core.handle_request(req) {
         Some(ev) => {
-          let (out_j, out_b) = protocol::encode_core_event(ev)
+          let (out_j, out_b) = match sub_topic_opt {
+            Some(topic) => sess.core.encode_sub_event(topic, ev)
+            None =>
+            match ev {
+              protocol::CoreEvent::Unsubscribed(_, _) =>
+              protocol::encode_sub_event_with_auth(
+                ev,
+                protocol::WireOutGen::{ conn: sess.core.auth.conn_seq(), auth_gen: None, vault_gen: None },
+              )
+              _ => protocol::encode_core_event(ev)
+            }
+          }
           emit_wire(out_j, payload=out_b)
         }
         None => ()

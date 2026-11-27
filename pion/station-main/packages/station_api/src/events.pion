@@ -1,6 +1,7 @@
 // SSE `GET /events` hub, `heldWaits` backpressure buffering, `overviewComparable` disk hysteresis,
+// per-device `OverviewKeyMemo` / `overview-patch` incremental streaming, legacy 30s counts-only coalescing,
 // `eventsHandoverFile` cross-handover serialization/restoration, and disconnect cleanup
-// (`station/src/api/events.ts`).
+// (`station/src/api/events.ts`: `#8864`, `#8966`, `#9013`, `#9020`, `#9059`).
 
 import "base_codec"
 import "http1"
@@ -11,6 +12,10 @@ pub let EVENTS_HEAD_HEADER : String = "stillfail-head"
 pub let EVENTS_FOLLOWS_HEADER : String = "stillfail-follows"
 pub let EVENTS_LIVE_RATES_HEADER : String = "stillfail-live-rates"
 pub let EVENTS_SPARED_HEADER : String = "stillfail-spared"
+
+pub let OVERVIEW_SOON_MS : Int64 = 10000L
+pub let OVERVIEW_VIEWER_BATCH : Int = 4
+pub let OVERVIEW_COUNTS_ONLY_LEGACY_MS : Int64 = 30000L
 
 pub let LOW_DISK_BYTES : Int64 = 10737418240L
 pub let LOW_DISK_STEP : Int64 = 536870912L
@@ -32,6 +37,19 @@ pub fn viewer_key(viewer : Viewer, lang : Lang) -> String {
   viewer.email + "\u{0}" + viewer.workspace + "\u{0}" + lang.code()
 }
 
+pub fn viewer_device_str(viewer : Viewer) -> String {
+  match viewer.device {
+    Some(d) => d
+    None => ""
+  }
+}
+
+/// Per-device overview identity (`#9013`): per-device fields (`device`, `lockDevice`, `lockId`) belong
+/// to each device alone.
+pub fn overview_key(viewer : Viewer, lang : Lang) -> String {
+  viewer.email + "\u{0}" + viewer.workspace + "\u{0}" + lang.code() + "\u{0}" + viewer_device_str(viewer)
+}
+
 /// Whether `to` matches a stream belonging to `(viewer, lang)`.
 pub fn is_event_for(
   to : EventTarget,
@@ -51,6 +69,14 @@ pub fn is_event_for(
   match to.viewer {
     Some(vk) => {
       if vk != viewer_key(viewer, lang) {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.device {
+    Some(dev) => {
+      if dev != viewer_device_str(viewer) {
         return false
       }
     }
@@ -159,6 +185,53 @@ pub fn is_event_for(
   true
 }
 
+// ---------------------------------------------------------------------------
+// Overview Comparable, DiskBucket, OverviewMemo, OverviewKeyMemo, Patch (`#8864`, `#8966`, `#9013`, `#9020`)
+// ---------------------------------------------------------------------------
+
+pub struct DiskBucket {
+  pub regime : String
+  pub index : Int64
+  pub total : Int64
+}
+
+pub struct OverviewMemo {
+  pub text : String
+  pub disk : Option[DiskBucket]
+  pub keys : Option[Map[String, (Int, Int)]]
+  pub order : Array[String]
+}
+
+pub struct OverviewKeyMemo {
+  pub key_values : Option[Map[String, String]]
+  pub order : Array[String]
+  pub whole : Option[String]
+  pub disk : Option[DiskBucket]
+  pub has_machine : Bool
+  pub at : Int64
+}
+
+fn sort_strings_asc(arr : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < arr.length() {
+    out.push(arr[i])
+    i = i + 1
+  }
+  let mut si = 1
+  while si < out.length() {
+    let cur = out[si]
+    let mut pos = si
+    while pos > 0 && out[pos - 1] > cur {
+      out[pos] = out[pos - 1]
+      pos = pos - 1
+    }
+    out[pos] = cur
+    si = si + 1
+  }
+  out
+}
+
 fn pct_disk_step(total : Int64) -> Int64 {
   let one_pct = total / 100L
   if one_pct < PCT_DISK_MIN_STEP {
@@ -170,7 +243,22 @@ fn pct_disk_step(total : Int64) -> Int64 {
   }
 }
 
-fn parse_prev_disk_bucket(previous : Option[String]) -> Option[(String, Int64, Int64)] {
+fn disk_bucket_of(free_str : String, total : Int64) -> Option[DiskBucket] {
+  let colon = free_str.index_of(":")
+  if colon <= 0 || colon + 1 >= free_str.length() {
+    return None
+  }
+  let regime = free_str.slice(0, colon)
+  if regime != "low" && regime != "pct" {
+    return None
+  }
+  match base_codec::parse_int64_str(free_str.slice(colon + 1, free_str.length())) {
+    Some(idx) => Some(DiskBucket::{ regime: regime, index: idx, total: total })
+    None => None
+  }
+}
+
+pub fn previous_disk_bucket(previous : Option[String]) -> Option[DiskBucket] {
   match previous {
     None => None
     Some(prev_str) => {
@@ -190,52 +278,252 @@ fn parse_prev_disk_bucket(previous : Option[String]) -> Option[(String, Int64, I
         Some(t) => t
         None => 0L
       }
-      let colon = fb.index_of(":")
-      if colon <= 0 || colon + 1 >= fb.length() {
-        return None
-      }
-      let regime = fb.slice(0, colon)
-      if regime != "low" && regime != "pct" {
-        return None
-      }
-      match base_codec::parse_int64_str(fb.slice(colon + 1, fb.length())) {
-        Some(idx) => Some((regime, idx, total))
-        None => None
-      }
+      disk_bucket_of(fb, total)
     }
   }
 }
 
-fn disk_step_bucket(regime : String, free : Int64, step : Int64, previous : Option[String]) -> String {
-  match parse_prev_disk_bucket(previous) {
-    Some((prev_regime, prev_idx, prev_total)) => {
-      if prev_regime == regime {
+fn disk_step_bucket_with_prev(
+  regime : String,
+  free : Int64,
+  step : Int64,
+  total : Int64,
+  prev : Option[DiskBucket],
+) -> (String, Option[DiskBucket]) {
+  match prev {
+    Some(p) => {
+      if p.regime == regime {
         let prev_step = if regime == "low" {
           LOW_DISK_STEP
-        } else if prev_total > 0L {
-          pct_disk_step(prev_total)
+        } else if p.total > 0L {
+          pct_disk_step(p.total)
         } else {
           0L
         }
         if prev_step == step {
           let margin = step / DISK_HYSTERESIS_DIVISOR
-          if free > prev_idx * step - margin && free < (prev_idx + 1L) * step + margin {
-            return regime + ":" + prev_idx.to_string()
+          if free > p.index * step - margin && free < (p.index + 1L) * step + margin {
+            let label = regime + ":" + p.index.to_string()
+            return (label, disk_bucket_of(label, total))
           }
         }
       }
     }
     None => ()
   }
-  regime + ":" + (free / step).to_string()
+  let idx = free / step
+  let label = regime + ":" + idx.to_string()
+  (label, disk_bucket_of(label, total))
 }
 
-/// Normalize overview JSON for `overviewTold` deduplication (`station/src/api/events.ts` `overviewComparable`):
-/// strips volatile `machine`, process `rssMb`, and buckets `disk.freeBytes` with hysteresis.
-pub fn overview_comparable(value : base_codec::Json, previous : Option[String]) -> String {
+fn normalize_disk_value(
+  v : base_codec::Json,
+  prev_disk : Option[DiskBucket],
+) -> (base_codec::Json, Option[DiskBucket]) {
+  match v {
+    base_codec::Json::Obj(dfields) => {
+      let total = match json_int64_field(v, "totalBytes") {
+        Some(t) => t
+        None => 0L
+      }
+      match json_int64_field(v, "freeBytes") {
+        Some(free) => {
+          let (bucket, told) = if free <= LOW_DISK_BYTES {
+            disk_step_bucket_with_prev("low", free, LOW_DISK_STEP, total, prev_disk)
+          } else if total > 0L && free * 10L <= total {
+            disk_step_bucket_with_prev("pct", free, pct_disk_step(total), total, prev_disk)
+          } else {
+            ("ok", None)
+          }
+          let next_d : Array[(String, base_codec::Json)] = []
+          let mut di = 0
+          while di < dfields.length() {
+            let (dk, dv) = dfields[di]
+            if dk == "freeBytes" {
+              next_d.push((dk, base_codec::json_str(bucket)))
+            } else {
+              next_d.push((dk, dv))
+            }
+            di = di + 1
+          }
+          (base_codec::json_obj(next_d), told)
+        }
+        None => {
+          let told = match json_str_field(v, "freeBytes") {
+            Some(s) => disk_bucket_of(s, total)
+            None => None
+          }
+          (v, told)
+        }
+      }
+    }
+    _ => (v, None)
+  }
+}
+
+fn normalize_processes_value(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Arr(procs) => {
+      let next_p : Array[base_codec::Json] = []
+      let mut pi = 0
+      while pi < procs.length() {
+        match procs[pi] {
+          base_codec::Json::Obj(pfields) => {
+            let clean : Array[(String, base_codec::Json)] = []
+            let mut fi = 0
+            while fi < pfields.length() {
+              let (pk, pv) = pfields[fi]
+              if pk != "rssMb" {
+                clean.push((pk, pv))
+              }
+              fi = fi + 1
+            }
+            next_p.push(base_codec::json_obj(clean))
+          }
+          other => next_p.push(other)
+        }
+        pi = pi + 1
+      }
+      base_codec::json_arr(next_p)
+    }
+    _ => v
+  }
+}
+
+fn normalize_copy_target(item : base_codec::Json, head_to : Int64) -> base_codec::Json {
+  match item {
+    base_codec::Json::Obj(fields) => {
+      let rest : Array[(String, base_codec::Json)] = []
+      let mut t_to : Option[Int64] = None
+      let mut t_at : Option[base_codec::Json] = None
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "to" {
+          t_to = match v {
+            base_codec::Json::Num(d, _) => Some(d.to_int64())
+            _ => None
+          }
+        } else if k == "at" {
+          t_at = Some(v)
+        } else {
+          rest.push((k, v))
+        }
+        i = i + 1
+      }
+      let synced = match t_to {
+        Some(n) => if head_to > 0L { n >= head_to } else { n == head_to }
+        None => false
+      }
+      let at_val = match t_at {
+        Some(base_codec::Json::Num(d, _)) => base_codec::json_int64(d.to_int64() / COPIES_AT_STEP_MS)
+        Some(other) => other
+        None => base_codec::json_null()
+      }
+      rest.push(("synced", base_codec::json_bool(synced)))
+      rest.push(("at", at_val))
+      base_codec::json_obj(rest)
+    }
+    _ => item
+  }
+}
+
+fn normalize_copies_value(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Obj(fields) => {
+      let head_to = match json_int64_field(v, "to") {
+        Some(n) => n
+        None => 0L
+      }
+      let mut chats_val : Option[base_codec::Json] = None
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, fv) = fields[i]
+        if k == "to" {
+          i = i + 1
+          continue
+        }
+        if k == "chats" {
+          chats_val = Some(fv)
+          i = i + 1
+          continue
+        }
+        if k == "keepers" {
+          match fv {
+            base_codec::Json::Arr(items) => {
+              let norm_k : Array[base_codec::Json] = []
+              let mut ki = 0
+              while ki < items.length() {
+                norm_k.push(normalize_copy_target(items[ki], head_to))
+                ki = ki + 1
+              }
+              out.push((k, base_codec::json_arr(norm_k)))
+            }
+            _ => out.push((k, fv))
+          }
+        } else if k == "backup" {
+          match fv {
+            base_codec::Json::Obj(bfields) => {
+              let next_b : Array[(String, base_codec::Json)] = []
+              let mut bi = 0
+              while bi < bfields.length() {
+                let (bk, bv) = bfields[bi]
+                if bk == "s3" {
+                  match bv {
+                    base_codec::Json::Arr(items) => {
+                      let norm_s3 : Array[base_codec::Json] = []
+                      let mut si = 0
+                      while si < items.length() {
+                        norm_s3.push(normalize_copy_target(items[si], head_to))
+                        si = si + 1
+                      }
+                      next_b.push((bk, base_codec::json_arr(norm_s3)))
+                    }
+                    _ => next_b.push((bk, bv))
+                  }
+                } else {
+                  next_b.push((bk, bv))
+                }
+                bi = bi + 1
+              }
+              out.push((k, base_codec::json_obj(next_b)))
+            }
+            _ => out.push((k, fv))
+          }
+        } else {
+          out.push((k, fv))
+        }
+        i = i + 1
+      }
+      out.push(("hasData", base_codec::json_bool(head_to > 0L)))
+      let has_chats = match chats_val {
+        Some(base_codec::Json::Num(d, _)) => base_codec::json_bool(d > 0.0)
+        Some(other) => other
+        None => base_codec::json_null()
+      }
+      out.push(("hasChats", has_chats))
+      base_codec::json_obj(out)
+    }
+    _ => v
+  }
+}
+
+/// Normalize overview JSON with an already-parsed previous disk bucket, recording `[start, end)`
+/// value offsets per top-level key so `changed_keys_from_memos` needs zero re-parsing (`#8966`).
+pub fn overview_comparable_memo(
+  value : base_codec::Json,
+  prev_disk : Option[DiskBucket],
+) -> OverviewMemo {
   match value {
     base_codec::Json::Obj(fields) => {
-      let out : Array[(String, base_codec::Json)] = []
+      let keys : Map[String, (Int, Int)] = Map::new()
+      let order : Array[String] = []
+      let sb = StringBuilder::new()
+      sb.write_string("{")
+      let mut offset = 1
+      let mut told : Option[DiskBucket] = None
+      let mut wrote = 0
       let mut i = 0
       while i < fields.length() {
         let (k, v) = fields[i]
@@ -243,79 +531,437 @@ pub fn overview_comparable(value : base_codec::Json, previous : Option[String]) 
           i = i + 1
           continue
         }
-        if k == "disk" {
-          match v {
-            base_codec::Json::Obj(dfields) => {
-              match json_int64_field(v, "freeBytes") {
-                Some(free) => {
-                  let total = match json_int64_field(v, "totalBytes") {
-                    Some(t) => t
-                    None => 0L
-                  }
-                  let bucket = if free <= LOW_DISK_BYTES {
-                    disk_step_bucket("low", free, LOW_DISK_STEP, previous)
-                  } else if total > 0L && free * 10L <= total {
-                    disk_step_bucket("pct", free, pct_disk_step(total), previous)
-                  } else {
-                    "ok"
-                  }
-                  let next_d : Array[(String, base_codec::Json)] = []
-                  let mut di = 0
-                  while di < dfields.length() {
-                    let (dk, dv) = dfields[di]
-                    if dk == "freeBytes" {
-                      next_d.push((dk, base_codec::json_str(bucket)))
-                    } else {
-                      next_d.push((dk, dv))
-                    }
-                    di = di + 1
-                  }
-                  out.push((k, base_codec::json_obj(next_d)))
-                }
-                None => out.push((k, v))
-              }
-            }
-            _ => out.push((k, v))
-          }
+        let norm_v = if k == "disk" {
+          let (dv, d_bucket) = normalize_disk_value(v, prev_disk)
+          told = d_bucket
+          dv
         } else if k == "processes" {
-          match v {
-            base_codec::Json::Arr(procs) => {
-              let next_p : Array[base_codec::Json] = []
-              let mut pi = 0
-              while pi < procs.length() {
-                match procs[pi] {
-                  base_codec::Json::Obj(pfields) => {
-                    let clean : Array[(String, base_codec::Json)] = []
-                    let mut fi = 0
-                    while fi < pfields.length() {
-                      let (pk, pv) = pfields[fi]
-                      if pk != "rssMb" {
-                        clean.push((pk, pv))
-                      }
-                      fi = fi + 1
-                    }
-                    next_p.push(base_codec::json_obj(clean))
-                  }
-                  other => next_p.push(other)
-                }
-                pi = pi + 1
-              }
-              out.push((k, base_codec::json_arr(next_p)))
-            }
-            _ => out.push((k, v))
-          }
+          normalize_processes_value(v)
+        } else if k == "copies" {
+          normalize_copies_value(v)
         } else {
-          out.push((k, v))
+          v
+        }
+        let serialized = base_codec::json_stringify(norm_v)
+        let prefix = base_codec::json_stringify(base_codec::json_str(k)) + ":"
+        if wrote > 0 {
+          sb.write_string(",")
+          offset = offset + 1
+        }
+        let start = offset + prefix.length()
+        let end = start + serialized.length()
+        sb.write_string(prefix)
+        sb.write_string(serialized)
+        keys.set(k, (start, end))
+        order.push(k)
+        offset = end
+        wrote = wrote + 1
+        i = i + 1
+      }
+      sb.write_string("}")
+      OverviewMemo::{ text: sb.to_string(), disk: told, keys: Some(keys), order: order }
+    }
+    _ => OverviewMemo::{
+      text: base_codec::json_stringify(value),
+      disk: None,
+      keys: None,
+      order: [],
+    }
+  }
+}
+
+/// Normalize overview JSON for `overviewTold` deduplication (`station/src/api/events.ts` `overviewComparable`):
+/// strips volatile `machine`, process `rssMb`, healthy `copies` progress, and buckets `disk.freeBytes` with hysteresis.
+pub fn overview_comparable(value : base_codec::Json, previous : Option[String]) -> String {
+  overview_comparable_memo(value, previous_disk_bucket(previous)).text
+}
+
+/// Changed top-level keys between two `OverviewMemo`s without re-parsing (`#8966`).
+pub fn changed_keys_from_memos(prev : OverviewMemo, next : OverviewMemo) -> Array[String] {
+  match (prev.keys, next.keys) {
+    (Some(pk), Some(nk)) => {
+      let changed : Array[String] = []
+      let mut i = 0
+      while i < prev.order.length() {
+        let key = prev.order[i]
+        match (pk.get(key), nk.get(key)) {
+          (Some((as_, ae)), Some((bs, be))) => {
+            if ae - as_ != be - bs || prev.text.slice(as_, ae) != next.text.slice(bs, be) {
+              changed.push(key)
+            }
+          }
+          _ => changed.push(key)
         }
         i = i + 1
       }
-      base_codec::json_stringify(base_codec::json_obj(out))
+      let mut j = 0
+      while j < next.order.length() {
+        let key = next.order[j]
+        if !pk.contains(key) {
+          changed.push(key)
+        }
+        j = j + 1
+      }
+      sort_strings_asc(changed)
+    }
+    _ => overview_changed_keys(prev.text, next.text)
+  }
+}
+
+/// Top-level keys whose serialized value differs between two comparable overview snapshots (`#8864`).
+pub fn overview_changed_keys(previous : String, next : String) -> Array[String] {
+  let pa = match base_codec::json_parse(previous) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return ["?"]
+  }
+  let pb = match base_codec::json_parse(next) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return ["?"]
+  }
+  match (pa, pb) {
+    (base_codec::Json::Obj(af), base_codec::Json::Obj(bf)) => {
+      let amap : Map[String, String] = Map::new()
+      let bmap : Map[String, String] = Map::new()
+      let all_keys : Array[String] = []
+      let mut i = 0
+      while i < af.length() {
+        let (k, v) = af[i]
+        amap.set(k, base_codec::json_stringify(v))
+        if !contains_str(all_keys, k) {
+          all_keys.push(k)
+        }
+        i = i + 1
+      }
+      let mut j = 0
+      while j < bf.length() {
+        let (k, v) = bf[j]
+        bmap.set(k, base_codec::json_stringify(v))
+        if !contains_str(all_keys, k) {
+          all_keys.push(k)
+        }
+        j = j + 1
+      }
+      let changed : Array[String] = []
+      let mut ki = 0
+      while ki < all_keys.length() {
+        let k = all_keys[ki]
+        let same = match (amap.get(k), bmap.get(k)) {
+          (Some(va), Some(vb)) => va == vb
+          _ => false
+        }
+        if !same {
+          changed.push(k)
+        }
+        ki = ki + 1
+      }
+      sort_strings_asc(changed)
+    }
+    _ => ["$"]
+  }
+}
+
+/// Build a lightweight per-device comparable memo storing each top-level key's serialized JSON (`#9013`, `#9020`).
+pub fn build_overview_key_memo(
+  value : base_codec::Json,
+  prev_disk : Option[DiskBucket],
+  at : Int64,
+) -> OverviewKeyMemo {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let kv : Map[String, String] = Map::new()
+      let order : Array[String] = []
+      let mut told : Option[DiskBucket] = None
+      let mut has_machine = false
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "machine" {
+          has_machine = true
+          i = i + 1
+          continue
+        }
+        let norm_v = if k == "disk" {
+          let (dv, d_bucket) = normalize_disk_value(v, prev_disk)
+          told = d_bucket
+          dv
+        } else if k == "processes" {
+          normalize_processes_value(v)
+        } else if k == "copies" {
+          normalize_copies_value(v)
+        } else {
+          v
+        }
+        let serialized = base_codec::json_stringify(norm_v)
+        if !kv.contains(k) {
+          order.push(k)
+        }
+        kv.set(k, serialized)
+        i = i + 1
+      }
+      OverviewKeyMemo::{
+        key_values: Some(kv),
+        order: order,
+        whole: None,
+        disk: told,
+        has_machine: has_machine,
+        at: at,
+      }
+    }
+    _ => OverviewKeyMemo::{
+      key_values: None,
+      order: [],
+      whole: Some(base_codec::json_stringify(value)),
+      disk: None,
+      has_machine: false,
+      at: at,
+    }
+  }
+}
+
+pub fn memo_to_text(memo : OverviewKeyMemo) -> String {
+  match memo.key_values {
+    None => match memo.whole {
+      Some(w) => w
+      None => "null"
+    }
+    Some(kv) => {
+      let sb = StringBuilder::new()
+      sb.write_string("{")
+      let mut i = 0
+      while i < memo.order.length() {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        let key = memo.order[i]
+        sb.write_string(base_codec::json_stringify(base_codec::json_str(key)))
+        sb.write_string(":")
+        match kv.get(key) {
+          Some(v) => sb.write_string(v)
+          None => sb.write_string("null")
+        }
+        i = i + 1
+      }
+      sb.write_string("}")
+      sb.to_string()
+    }
+  }
+}
+
+pub fn memos_equal(a : OverviewKeyMemo, b : OverviewKeyMemo) -> Bool {
+  match (a.key_values, b.key_values) {
+    (Some(akv), Some(bkv)) => {
+      if a.order.length() != b.order.length() {
+        return false
+      }
+      let mut i = 0
+      while i < a.order.length() {
+        let key = a.order[i]
+        if key != b.order[i] {
+          return false
+        }
+        match (akv.get(key), bkv.get(key)) {
+          (Some(av), Some(bv)) => if av != bv { return false }
+          _ => return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    _ => memo_to_text(a) == memo_to_text(b)
+  }
+}
+
+pub fn changed_keys_from_key_memos(prev : OverviewKeyMemo, next : OverviewKeyMemo) -> Array[String] {
+  match (prev.key_values, next.key_values) {
+    (Some(pkv), Some(nkv)) => {
+      let changed : Array[String] = []
+      let mut i = 0
+      while i < prev.order.length() {
+        let key = prev.order[i]
+        let same = match (pkv.get(key), nkv.get(key)) {
+          (Some(pv), Some(nv)) => pv == nv
+          _ => false
+        }
+        if !same {
+          changed.push(key)
+        }
+        i = i + 1
+      }
+      let mut j = 0
+      while j < next.order.length() {
+        let key = next.order[j]
+        if !pkv.contains(key) {
+          changed.push(key)
+        }
+        j = j + 1
+      }
+      sort_strings_asc(changed)
+    }
+    _ => overview_changed_keys(memo_to_text(prev), memo_to_text(next))
+  }
+}
+
+/// Serialize the exact raw `overview` JSON reusing unchanged key JSON strings already produced in `memo` (`#9013`).
+pub fn serialize_raw_overview(value : base_codec::Json, memo : Option[OverviewKeyMemo]) -> String {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let kv_opt = match memo {
+        Some(m) => m.key_values
+        None => None
+      }
+      let sb = StringBuilder::new()
+      sb.write_string("{")
+      let mut i = 0
+      while i < fields.length() {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        let (k, v) = fields[i]
+        let serialized = if k != "machine" && k != "disk" && k != "processes" && k != "copies" {
+          match kv_opt {
+            Some(kv) => match kv.get(k) {
+              Some(s) => s
+              None => base_codec::json_stringify(v)
+            }
+            None => base_codec::json_stringify(v)
+          }
+        } else {
+          base_codec::json_stringify(v)
+        }
+        sb.write_string(base_codec::json_stringify(base_codec::json_str(k)))
+        sb.write_string(":")
+        sb.write_string(serialized)
+        i = i + 1
+      }
+      sb.write_string("}")
+      sb.to_string()
     }
     _ => base_codec::json_stringify(value)
   }
 }
 
-/// Active SSE client subscription with `heldWaits` backpressure queue.
+fn is_overview_refresh_key(k : String) -> Bool {
+  k == "machine" || k == "disk" || k == "processes" || k == "copies"
+}
+
+/// Serialize a top-level `overview-patch` (`{"set":{...},"del":[...]}`) between `prev_memo` and `next_memo` (`#9020`).
+/// Always refreshes raw values of normalized/stripped keys (`machine`, `disk`, `processes`, `copies`).
+pub fn serialize_overview_patch(
+  value : base_codec::Json,
+  prev_memo : OverviewKeyMemo,
+  next_memo : OverviewKeyMemo,
+  changed_keys : Array[String],
+) -> Option[String] {
+  let fields = match value {
+    base_codec::Json::Obj(f) => f
+    _ => return None
+  }
+  let (pkv, nkv) = match (prev_memo.key_values, next_memo.key_values) {
+    (Some(p), Some(n)) => (p, n)
+    _ => return None
+  }
+  let src_map : Map[String, base_codec::Json] = Map::new()
+  let mut fi = 0
+  while fi < fields.length() {
+    let (k, v) = fields[fi]
+    src_map.set(k, v)
+    fi = fi + 1
+  }
+
+  let del_keys : Array[String] = []
+  let mut pi = 0
+  while pi < prev_memo.order.length() {
+    let k = prev_memo.order[pi]
+    if !nkv.contains(k) {
+      del_keys.push(k)
+    }
+    pi = pi + 1
+  }
+  if prev_memo.has_machine && !next_memo.has_machine {
+    del_keys.push("machine")
+  }
+  let sorted_del = sort_strings_asc(del_keys)
+
+  let set_keys : Array[String] = []
+  let mut ci = 0
+  while ci < changed_keys.length() {
+    let k = changed_keys[ci]
+    if nkv.contains(k) && !contains_str(set_keys, k) {
+      set_keys.push(k)
+    }
+    ci = ci + 1
+  }
+  let refresh_keys = ["machine", "disk", "processes", "copies"]
+  let mut ri = 0
+  while ri < refresh_keys.length() {
+    let rk = refresh_keys[ri]
+    if src_map.contains(rk) && !contains_str(set_keys, rk) {
+      set_keys.push(rk)
+    }
+    ri = ri + 1
+  }
+  let sorted_set = sort_strings_asc(set_keys)
+
+  let set_parts : Array[String] = []
+  let mut si = 0
+  while si < sorted_set.length() {
+    let k = sorted_set[si]
+    let serialized = if is_overview_refresh_key(k) {
+      match src_map.get(k) {
+        Some(v) => Some(base_codec::json_stringify(v))
+        None => None
+      }
+    } else {
+      nkv.get(k)
+    }
+    match serialized {
+      Some(s) => set_parts.push(base_codec::json_stringify(base_codec::json_str(k)) + ":" + s)
+      None => ()
+    }
+    si = si + 1
+  }
+
+  if set_parts.length() == 0 && sorted_del.length() == 0 {
+    return None
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("{")
+  let mut wrote = false
+  if set_parts.length() > 0 {
+    sb.write_string("\"set\":{")
+    let mut j = 0
+    while j < set_parts.length() {
+      if j > 0 {
+        sb.write_string(",")
+      }
+      sb.write_string(set_parts[j])
+      j = j + 1
+    }
+    sb.write_string("}")
+    wrote = true
+  }
+  if sorted_del.length() > 0 {
+    if wrote {
+      sb.write_string(",")
+    }
+    let del_json : Array[base_codec::Json] = []
+    let mut dj = 0
+    while dj < sorted_del.length() {
+      del_json.push(base_codec::json_str(sorted_del[dj]))
+      dj = dj + 1
+    }
+    sb.write_string("\"del\":")
+    sb.write_string(base_codec::json_stringify(base_codec::json_arr(del_json)))
+  }
+  sb.write_string("}")
+  Some(sb.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// SSE Client & EventsHub
+// ---------------------------------------------------------------------------
+
+/// Active SSE client subscription with `heldWaits` backpressure queue and `overviewPatch` opt-in.
 pub struct SseClient {
   pub id : Int
   pub viewer : Viewer
@@ -323,6 +969,7 @@ pub struct SseClient {
   pub host : Bool
   pub running : Bool
   pub spare : Option[Array[String]]
+  pub overview_patch : Bool
   /// Buffered live events per session key while initial `heldNow` snapshot is in flight.
   pub held_waits_keys : Array[String]
   pub held_waits_msgs : Array[Array[base_codec::Json]]
@@ -360,6 +1007,7 @@ pub struct EventsOpenOptions {
   pub spare : Option[Array[String]]
   pub held_keys : Array[String]
   pub supports_live_rates : Bool
+  pub overview_patch : Bool
 }
 
 /// Result returned when opening an SSE stream on `EventsHub`.
@@ -371,13 +1019,41 @@ pub struct EventsOpenResult {
   pub initial_frames : Array[String]
 }
 
-/// Pure-Pion SSE hub managing clients, resumable `EventLog`, `heldWaits`, and handover state.
+/// Summary returned by `EventsHub::flush_overviews` (`#8864`, `#8966`, `#9013`, `#9020`, `#9059`).
+pub struct OverviewFlushStats {
+  pub mode : String
+  pub triggers : Array[String]
+  pub pushed : Int
+  pub patched : Int
+  pub suppressed : Int
+  pub initial : Int
+  pub bytes : Int
+  pub changed_keys : Array[String]
+}
+
+/// Pure-Pion SSE hub managing clients, resumable `EventLog`, `heldWaits`, per-device overview memos,
+/// incremental `overview-patch`, legacy 30s counts-only coalescing, and handover state.
 pub struct EventsHub {
   pub mut log : EventLog
   clients : Array[SseClient]
   mut next_id : Int
   mut overview_keys : Array[String]
   mut overview_vals : Array[String]
+  mut overview_told_taken_at : Int64
+  overview_memo : Map[String, OverviewKeyMemo]
+  overview_memo_keys : Array[String]
+  overview_told_seq : Map[String, Int64]
+  overview_told_seq_keys : Array[String]
+  mut overview_full_sent_at : Map[String, Int64]
+  overview_counts_due : Map[String, Int64]
+  overview_counts_due_keys : Array[String]
+  mut overview_missed : Map[String, Array[Int]]
+  mut dirty_overview : Bool
+  dirty_overview_reasons : Array[String]
+  dirty_overview_of : Array[String]
+  mut overview_told_at : Int64
+  mut overview_soon_due_at : Option[Int64]
+  overview_soon_reasons : Array[String]
   mut shared_initialized : Bool
   mut handed : Bool
   mut last_opened : Option[EventsOpenResult]
@@ -392,6 +1068,21 @@ pub fn EventsHub::new(run : String, keeps : EventKeeps) -> EventsHub {
     next_id: 1,
     overview_keys: [],
     overview_vals: [],
+    overview_told_taken_at: -1000000000000L,
+    overview_memo: Map::new(),
+    overview_memo_keys: [],
+    overview_told_seq: Map::new(),
+    overview_told_seq_keys: [],
+    overview_full_sent_at: Map::new(),
+    overview_counts_due: Map::new(),
+    overview_counts_due_keys: [],
+    overview_missed: Map::new(),
+    dirty_overview: false,
+    dirty_overview_reasons: [],
+    dirty_overview_of: [],
+    overview_told_at: -1000000000000L,
+    overview_soon_due_at: None,
+    overview_soon_reasons: [],
     shared_initialized: true,
     handed: false,
     last_opened: None,
@@ -412,6 +1103,21 @@ pub fn EventsHub::with_visibility(
     next_id: 1,
     overview_keys: [],
     overview_vals: [],
+    overview_told_taken_at: -1000000000000L,
+    overview_memo: Map::new(),
+    overview_memo_keys: [],
+    overview_told_seq: Map::new(),
+    overview_told_seq_keys: [],
+    overview_full_sent_at: Map::new(),
+    overview_counts_due: Map::new(),
+    overview_counts_due_keys: [],
+    overview_missed: Map::new(),
+    dirty_overview: false,
+    dirty_overview_reasons: [],
+    dirty_overview_of: [],
+    overview_told_at: -1000000000000L,
+    overview_soon_due_at: None,
+    overview_soon_reasons: [],
     shared_initialized: true,
     handed: false,
     last_opened: None,
@@ -447,10 +1153,10 @@ pub fn EventsHub::get_client(self : EventsHub, id : Int) -> Option[SseClient] {
   None
 }
 
-fn EventsHub::delete_overview_told(self : EventsHub, vk : String) -> Unit {
+fn EventsHub::delete_overview_told(self : EventsHub, ok : String) -> Unit {
   let mut i = 0
   while i < self.overview_keys.length() {
-    if self.overview_keys[i] == vk {
+    if self.overview_keys[i] == ok {
       let last = self.overview_keys.length() - 1
       if i < last {
         self.overview_keys[i] = self.overview_keys[last]
@@ -464,23 +1170,23 @@ fn EventsHub::delete_overview_told(self : EventsHub, vk : String) -> Unit {
   }
 }
 
-pub fn EventsHub::set_overview_told(self : EventsHub, vk : String, comparable : String) -> Unit {
+pub fn EventsHub::set_overview_told(self : EventsHub, ok : String, comparable : String) -> Unit {
   let mut i = 0
   while i < self.overview_keys.length() {
-    if self.overview_keys[i] == vk {
+    if self.overview_keys[i] == ok {
       self.overview_vals[i] = comparable
       return ()
     }
     i = i + 1
   }
-  self.overview_keys.push(vk)
+  self.overview_keys.push(ok)
   self.overview_vals.push(comparable)
 }
 
-pub fn EventsHub::get_overview_told(self : EventsHub, vk : String) -> Option[String] {
+pub fn EventsHub::get_overview_told(self : EventsHub, ok : String) -> Option[String] {
   let mut i = 0
   while i < self.overview_keys.length() {
-    if self.overview_keys[i] == vk {
+    if self.overview_keys[i] == ok {
       return Some(self.overview_vals[i])
     }
     i = i + 1
@@ -488,7 +1194,550 @@ pub fn EventsHub::get_overview_told(self : EventsHub, vk : String) -> Option[Str
   None
 }
 
-/// Open a new SSE stream for `(viewer, lang)` with full resume / `missed` / `heldWaits` semantics.
+fn EventsHub::set_overview_memo(self : EventsHub, ok : String, memo : OverviewKeyMemo) -> Unit {
+  if !self.overview_memo.contains(ok) {
+    self.overview_memo_keys.push(ok)
+  }
+  self.overview_memo.set(ok, memo)
+}
+
+fn EventsHub::delete_overview_memo(self : EventsHub, ok : String) -> Unit {
+  if self.overview_memo.contains(ok) {
+    let _ = self.overview_memo.remove(ok)
+    let _ = remove_str_from(self.overview_memo_keys, ok)
+  }
+}
+
+fn EventsHub::set_overview_told_seq(self : EventsHub, ok : String, seq : Int64) -> Unit {
+  if !self.overview_told_seq.contains(ok) {
+    self.overview_told_seq_keys.push(ok)
+  }
+  self.overview_told_seq.set(ok, seq)
+}
+
+fn EventsHub::delete_overview_told_seq(self : EventsHub, ok : String) -> Unit {
+  if self.overview_told_seq.contains(ok) {
+    let _ = self.overview_told_seq.remove(ok)
+    let _ = remove_str_from(self.overview_told_seq_keys, ok)
+  }
+}
+
+fn EventsHub::clear_overview_counts_later(self : EventsHub, ok_opt : Option[String]) -> Unit {
+  match ok_opt {
+    Some(ok) => {
+      if self.overview_counts_due.contains(ok) {
+        let _ = self.overview_counts_due.remove(ok)
+        let _ = remove_str_from(self.overview_counts_due_keys, ok)
+      }
+    }
+    None => {
+      while self.overview_counts_due_keys.length() > 0 {
+        match self.overview_counts_due_keys.pop() {
+          Some(k) => {
+            let _ = self.overview_counts_due.remove(k)
+          }
+          None => ()
+        }
+      }
+    }
+  }
+}
+
+fn EventsHub::defer_legacy_counts(self : EventsHub, ok : String, due_at : Int64) -> Unit {
+  match self.overview_counts_due.get(ok) {
+    Some(existing) => {
+      if existing <= due_at {
+        return ()
+      }
+    }
+    None => self.overview_counts_due_keys.push(ok)
+  }
+  self.overview_counts_due.set(ok, due_at)
+}
+
+/// Earliest due timestamp among deferred legacy counts-only overview pushes (`#9059`).
+pub fn EventsHub::next_overview_counts_due_at(self : EventsHub) -> Option[Int64] {
+  let mut earliest : Option[Int64] = None
+  let mut i = 0
+  while i < self.overview_counts_due_keys.length() {
+    match self.overview_counts_due.get(self.overview_counts_due_keys[i]) {
+      Some(at) => {
+        match earliest {
+          None => earliest = Some(at)
+          Some(e) => if at < e { earliest = Some(at) }
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  earliest
+}
+
+/// Mark due deferred legacy counts-only devices dirty for the next `flush_overviews` (`#9059`).
+pub fn EventsHub::fire_due_legacy_counts(self : EventsHub, now : Int64) -> Bool {
+  if !self.in_use() || self.handed {
+    self.clear_overview_counts_later(None)
+    return false
+  }
+  let due : Array[String] = []
+  let mut i = 0
+  while i < self.overview_counts_due_keys.length() {
+    let k = self.overview_counts_due_keys[i]
+    match self.overview_counts_due.get(k) {
+      Some(at) => if at <= now { due.push(k) }
+      None => ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < due.length() {
+    let k = due[j]
+    self.clear_overview_counts_later(Some(k))
+    push_unique_str(self.dirty_overview_of, k)
+    j = j + 1
+  }
+  if due.length() > 0 {
+    push_unique_str(self.dirty_overview_reasons, "countsLegacy")
+    true
+  } else {
+    false
+  }
+}
+
+/// Mark one overview key dirty while keeping `dirty_overview_of` bounded when no `flush_overviews`
+/// consumer is attached (pruning keys without an active client once the list grows past 512).
+fn EventsHub::mark_dirty_overview_of(self : EventsHub, ok : String) -> Unit {
+  if self.dirty_overview_of.length() >= 512 {
+    let active : Map[String, Bool] = Map::new()
+    let mut ci = 0
+    while ci < self.clients.length() {
+      active.set(overview_key(self.clients[ci].viewer, self.clients[ci].lang), true)
+      ci = ci + 1
+    }
+    let kept : Array[String] = []
+    let mut di = 0
+    while di < self.dirty_overview_of.length() {
+      let k = self.dirty_overview_of[di]
+      if active.contains(k) {
+        kept.push(k)
+      }
+      di = di + 1
+    }
+    self.dirty_overview_of.clear()
+    let mut ki = 0
+    while ki < kept.length() && ki < 1023 {
+      self.dirty_overview_of.push(kept[ki])
+      ki = ki + 1
+    }
+  }
+  push_unique_str(self.dirty_overview_of, ok)
+}
+
+/// Mark broadcast overview dirty immediately (`#8864`).
+pub fn EventsHub::overview_changed(self : EventsHub, reason : String = "direct") -> Unit {
+  self.dirty_overview = true
+  push_unique_str(self.dirty_overview_reasons, reason)
+  let mut i = 0
+  while i < self.overview_soon_reasons.length() {
+    push_unique_str(self.dirty_overview_reasons, self.overview_soon_reasons[i])
+    i = i + 1
+  }
+  self.overview_soon_reasons.clear()
+  self.overview_soon_due_at = None
+}
+
+/// Background overview change (`#8864`): marks dirty immediately when quiet, or coalesces a burst
+/// until `overview_told_at + OVERVIEW_SOON_MS`. Returns `Some(wait_ms)` when debounced, `None` when immediate.
+pub fn EventsHub::overview_soon(self : EventsHub, reason : String, now : Int64) -> Option[Int64] {
+  push_unique_str(self.overview_soon_reasons, reason)
+  match self.overview_soon_due_at {
+    Some(due) => {
+      let rem = due - now
+      return Some(if rem > 0L { rem } else { 0L })
+    }
+    None => ()
+  }
+  let wait = self.overview_told_at + OVERVIEW_SOON_MS - now
+  if wait <= 0L {
+    self.overview_changed(reason)
+    return None
+  }
+  self.overview_soon_due_at = Some(now + wait)
+  Some(wait)
+}
+
+/// Fire a pending debounced `overview_soon` timer when `now >= due_at` (`#8864`).
+pub fn EventsHub::fire_overview_soon(self : EventsHub, now : Int64) -> Bool {
+  match self.overview_soon_due_at {
+    Some(due) => {
+      if now >= due {
+        self.overview_soon_due_at = None
+        self.dirty_overview = true
+        let mut i = 0
+        while i < self.overview_soon_reasons.length() {
+          push_unique_str(self.dirty_overview_reasons, self.overview_soon_reasons[i])
+          i = i + 1
+        }
+        self.overview_soon_reasons.clear()
+        return true
+      }
+      false
+    }
+    None => false
+  }
+}
+
+pub fn EventsHub::is_overview_dirty(self : EventsHub) -> Bool {
+  self.dirty_overview || self.dirty_overview_of.length() > 0
+}
+
+fn EventsHub::emit_overview(
+  self : EventsHub,
+  value : base_codec::Json,
+  prev_memo : Option[OverviewKeyMemo],
+  next_memo : OverviewKeyMemo,
+  changed_keys : Option[Array[String]],
+  ok : String,
+  vk : String,
+  device : String,
+  round_now : Int64,
+  missed_ids : Array[Int],
+) -> (Int, Bool) {
+  if !self.in_use() || self.handed {
+    return (0, false)
+  }
+  let n = self.log.next_seq()
+  self.set_overview_told_seq(ok, n)
+  let to = EventTarget::{ ..EventTarget::everyone(), viewer: Some(vk), device: Some(device) }
+  let can_patch = !(prev_memo is None) && !(changed_keys is None)
+  let patch_clients : Array[SseClient] = []
+  let full_clients : Array[SseClient] = []
+  let mut i = 0
+  while i < self.clients.length() {
+    let c = self.clients[i]
+    if !c.closed && is_event_for(to, c.viewer, c.lang, self.seen_store, self.in_vault) {
+      let mut is_missed = false
+      let mut mi = 0
+      while mi < missed_ids.length() {
+        if missed_ids[mi] == c.id {
+          is_missed = true
+          break
+        }
+        mi = mi + 1
+      }
+      if can_patch && c.overview_patch && !is_missed {
+        patch_clients.push(c)
+      } else {
+        full_clients.push(c)
+      }
+    }
+    i = i + 1
+  }
+  let mut bytes = 0
+  let mut patched = false
+  if patch_clients.length() > 0 {
+    match (prev_memo, changed_keys) {
+      (Some(pm), Some(ck)) => {
+        match serialize_overview_patch(value, pm, next_memo, ck) {
+          Some(patch_json) => {
+            let patch_sse = "id: " + self.log.run + "." + n.to_string() + "\nevent: overview-patch\ndata: " + patch_json + "\n\n"
+            let mut pi = 0
+            while pi < patch_clients.length() {
+              patch_clients[pi].push_raw(patch_sse)
+              pi = pi + 1
+            }
+            bytes = bytes + patch_json.to_bytes().length()
+            patched = true
+            self.clear_overview_counts_later(Some(ok))
+          }
+          None => {
+            let mut pi = 0
+            while pi < patch_clients.length() {
+              full_clients.push(patch_clients[pi])
+              pi = pi + 1
+            }
+          }
+        }
+      }
+      _ => {
+        let mut pi = 0
+        while pi < patch_clients.length() {
+          full_clients.push(patch_clients[pi])
+          pi = pi + 1
+        }
+      }
+    }
+  }
+  if full_clients.length() > 0 {
+    let raw_json = serialize_raw_overview(value, Some(next_memo))
+    let full_sse = "id: " + self.log.run + "." + n.to_string() + "\nevent: overview\ndata: " + raw_json + "\n\n"
+    let mut fi = 0
+    while fi < full_clients.length() {
+      full_clients[fi].push_raw(full_sse)
+      fi = fi + 1
+    }
+    bytes = bytes + raw_json.to_bytes().length()
+    self.overview_full_sent_at.set(ok, round_now)
+    self.clear_overview_counts_later(Some(ok))
+  }
+  (bytes, patched)
+}
+
+/// Flush pending dirty overviews across connected devices (`#8864`, `#8966`, `#9013`, `#9020`, `#9059`).
+pub fn EventsHub::flush_overviews(
+  self : EventsHub,
+  now : Int64,
+  build_fn : (Viewer, Lang, OverviewRound) -> Option[base_codec::Json],
+) -> OverviewFlushStats {
+  let overview = self.dirty_overview
+  let reasons : Array[String] = []
+  let mut ri = 0
+  while ri < self.dirty_overview_reasons.length() {
+    reasons.push(self.dirty_overview_reasons[ri])
+    ri = ri + 1
+  }
+  let dirty_of : Array[String] = []
+  let mut oi = 0
+  while oi < self.dirty_overview_of.length() {
+    dirty_of.push(self.dirty_overview_of[oi])
+    oi = oi + 1
+  }
+  self.dirty_overview = false
+  self.dirty_overview_reasons.clear()
+  self.dirty_overview_of.clear()
+
+  if overview {
+    self.overview_told_at = now
+    if !(self.overview_soon_due_at is None) {
+      self.overview_soon_due_at = None
+      let mut si = 0
+      while si < self.overview_soon_reasons.length() {
+        push_unique_str(reasons, self.overview_soon_reasons[si])
+        si = si + 1
+      }
+      self.overview_soon_reasons.clear()
+    }
+  }
+
+  let mode = if overview { "broadcast" } else { "viewer" }
+  let triggers = if reasons.length() > 0 {
+    sort_strings_asc(reasons)
+  } else {
+    [if overview { "direct" } else { "resume" }]
+  }
+  if (!overview && dirty_of.length() == 0) || !self.in_use() || self.handed {
+    return OverviewFlushStats::{
+      mode: mode,
+      triggers: triggers,
+      pushed: 0,
+      patched: 0,
+      suppressed: 0,
+      initial: 0,
+      bytes: 0,
+      changed_keys: [],
+    }
+  }
+
+  let seen_ok : Array[String] = []
+  let targets : Array[(Viewer, Lang, String)] = []
+  let mut ci = 0
+  while ci < self.clients.length() {
+    let c = self.clients[ci]
+    if !c.closed {
+      let ok = overview_key(c.viewer, c.lang)
+      if (overview || contains_str(dirty_of, ok)) && !contains_str(seen_ok, ok) {
+        seen_ok.push(ok)
+        targets.push((c.viewer, c.lang, ok))
+      }
+    }
+    ci = ci + 1
+  }
+
+  let round = OverviewRound::new()
+  let changed_keys : Array[String] = []
+  let mut pushed = 0
+  let mut patched = 0
+  let mut suppressed = 0
+  let mut initial = 0
+  let mut total_bytes = 0
+
+  let mut ti = 0
+  while ti < targets.length() {
+    let (viewer, lang, ok) = targets[ti]
+    let missed_ids = match self.overview_missed.get(ok) {
+      Some(ids) => {
+        let _ = self.overview_missed.remove(ok)
+        ids
+      }
+      None => []
+    }
+    match build_fn(viewer, lang, round) {
+      None => ()
+      Some(value) => {
+        let vk = viewer_key(viewer, lang)
+        let dev = viewer_device_str(viewer)
+        let prev_memo = self.overview_memo.get(ok)
+        let prev_text = match prev_memo {
+          Some(_) => None
+          None => match self.get_overview_told(ok) {
+            Some(t) => Some(t)
+            None => self.get_overview_told(vk)
+          }
+        }
+        let prev_disk = match prev_memo {
+          Some(pm) => pm.disk
+          None => previous_disk_bucket(prev_text)
+        }
+        let next = build_overview_key_memo(value, prev_disk, now)
+        let mut unchanged = false
+        let mut next_text : Option[String] = None
+        match prev_memo {
+          Some(pm) => unchanged = memos_equal(pm, next)
+          None => match prev_text {
+            Some(pt) => {
+              let nt = memo_to_text(next)
+              next_text = Some(nt)
+              unchanged = pt == nt
+            }
+            None => ()
+          }
+        }
+        if unchanged {
+          self.set_overview_memo(ok, next)
+          self.delete_overview_told(ok)
+          self.clear_overview_counts_later(Some(ok))
+          suppressed = suppressed + 1
+          if missed_ids.length() > 0 && self.overview_told_seq.contains(ok) {
+            let active : Array[SseClient] = []
+            let mut mi = 0
+            while mi < missed_ids.length() {
+              match self.get_client(missed_ids[mi]) {
+                Some(mc) => if !mc.closed { active.push(mc) }
+                None => ()
+              }
+              mi = mi + 1
+            }
+            if active.length() > 0 {
+              let n = self.log.next_seq()
+              let raw_json = serialize_raw_overview(value, Some(next))
+              let sse = "id: " + self.log.run + "." + n.to_string() + "\nevent: overview\ndata: " + raw_json + "\n\n"
+              let mut ai = 0
+              while ai < active.length() {
+                active[ai].push_raw(sse)
+                ai = ai + 1
+              }
+              self.overview_full_sent_at.set(ok, now)
+            }
+          }
+          ti = ti + 1
+          continue
+        }
+
+        let device_changed_keys : Option[Array[String]] = match prev_memo {
+          Some(pm) => Some(changed_keys_from_key_memos(pm, next))
+          None => match prev_text {
+            Some(pt) => {
+              let nt = match next_text {
+                Some(s) => s
+                None => memo_to_text(next)
+              }
+              Some(overview_changed_keys(pt, nt))
+            }
+            None => {
+              initial = initial + 1
+              None
+            }
+          }
+        }
+
+        // Legacy counts-only 30s coalescing (`#9059`).
+        let mut deferred = false
+        match device_changed_keys {
+          Some(dck) => {
+            if dck.length() == 1 && dck[0] == "counts" && missed_ids.length() == 0 {
+              let to = EventTarget::{ ..EventTarget::everyone(), viewer: Some(vk), device: Some(dev) }
+              let mut match_count = 0
+              let mut has_patch = false
+              let mut k = 0
+              while k < self.clients.length() {
+                let c = self.clients[k]
+                if !c.closed && is_event_for(to, c.viewer, c.lang, self.seen_store, self.in_vault) {
+                  match_count = match_count + 1
+                  if c.overview_patch {
+                    has_patch = true
+                  }
+                }
+                k = k + 1
+              }
+              if match_count > 0 && !has_patch {
+                match self.overview_full_sent_at.get(ok) {
+                  Some(last_full) => {
+                    let due_at = last_full + OVERVIEW_COUNTS_ONLY_LEGACY_MS
+                    if due_at > now {
+                      self.defer_legacy_counts(ok, due_at)
+                      suppressed = suppressed + 1
+                      deferred = true
+                    }
+                  }
+                  None => ()
+                }
+              }
+            }
+          }
+          None => ()
+        }
+        if deferred {
+          ti = ti + 1
+          continue
+        }
+
+        match device_changed_keys {
+          Some(dck) => {
+            let mut dk = 0
+            while dk < dck.length() {
+              push_unique_str(changed_keys, dck[dk])
+              dk = dk + 1
+            }
+          }
+          None => ()
+        }
+        self.set_overview_memo(ok, next)
+        self.delete_overview_told(ok)
+        let (delivered_bytes, was_patched) = self.emit_overview(
+          value,
+          prev_memo,
+          next,
+          device_changed_keys,
+          ok,
+          vk,
+          dev,
+          now,
+          missed_ids,
+        )
+        pushed = pushed + 1
+        if was_patched {
+          patched = patched + 1
+        }
+        total_bytes = total_bytes + delivered_bytes
+      }
+    }
+    ti = ti + 1
+  }
+
+  OverviewFlushStats::{
+    mode: mode,
+    triggers: triggers,
+    pushed: pushed,
+    patched: patched,
+    suppressed: suppressed,
+    initial: initial,
+    bytes: total_bytes,
+    changed_keys: sort_strings_asc(changed_keys),
+  }
+}
+
+/// Open a new SSE stream for `(viewer, lang)` with full resume / `missed` / `heldWaits` / `overviewPatch` semantics.
 pub fn EventsHub::open_stream(
   self : EventsHub,
   viewer : Viewer,
@@ -525,6 +1774,7 @@ pub fn EventsHub::open_stream(
     host: opts.host,
     running: opts.running,
     spare: opts.spare,
+    overview_patch: opts.overview_patch,
     held_waits_keys: waits_keys,
     held_waits_msgs: waits_msgs,
     outbox: [],
@@ -539,11 +1789,12 @@ pub fn EventsHub::open_stream(
       ("shared", base_codec::json_bool(true)),
     ]),
   )
-  let vk = viewer_key(viewer, lang)
-  let resumes = match opts.since {
-    Some(s) => self.shared_initialized && self.log.has(s)
-    None => false
+  let ok = overview_key(viewer, lang)
+  let since_n : Option[Int64] = match opts.since {
+    Some(s) => if self.shared_initialized { self.log.seq_of(s) } else { None }
+    None => None
   }
+  let resumes = !(since_n is None)
   match opts.since {
     Some(_) => {
       if !resumes {
@@ -553,7 +1804,11 @@ pub fn EventsHub::open_stream(
     None => ()
   }
   if !resumes {
-    self.delete_overview_told(vk)
+    self.delete_overview_told(ok)
+    self.delete_overview_memo(ok)
+    self.delete_overview_told_seq(ok)
+    let _ = self.overview_full_sent_at.remove(ok)
+    self.clear_overview_counts_later(Some(ok))
     client.push_raw("id: " + self.log.at() + "\n\n")
   } else {
     match opts.since {
@@ -569,9 +1824,35 @@ pub fn EventsHub::open_stream(
       }
       None => ()
     }
+    self.mark_dirty_overview_of(ok)
+    match (self.overview_told_seq.get(ok), since_n) {
+      (Some(told_seq), Some(sn)) => {
+        if told_seq > sn {
+          match self.overview_missed.get(ok) {
+            Some(arr) => {
+              if arr.length() >= 256 {
+                let kept : Array[Int] = []
+                let mut ai = 0
+                while ai < arr.length() {
+                  if !(self.get_client(arr[ai]) is None) {
+                    kept.push(arr[ai])
+                  }
+                  ai = ai + 1
+                }
+                kept.push(cid)
+                self.overview_missed.set(ok, kept)
+              } else {
+                arr.push(cid)
+              }
+            }
+            None => self.overview_missed.set(ok, [cid])
+          }
+        }
+      }
+      _ => ()
+    }
   }
   let head = if resumes { Some(self.log.at()) } else { None }
-  // Self-heal `shared_initialized` on open (equivalent to `prepareShared`) so subsequent streams can resume.
   self.shared_initialized = true
   self.clients.push(client)
 
@@ -752,6 +2033,7 @@ pub fn EventsHub::disconnect(self : EventsHub, client_id : Int) -> Bool {
   let mut i = 0
   while i < self.clients.length() {
     if self.clients[i].id == client_id {
+      let ok = overview_key(self.clients[i].viewer, self.clients[i].lang)
       self.clients[i].closed = true
       self.clients[i].held_waits_keys.clear()
       self.clients[i].held_waits_msgs.clear()
@@ -760,6 +2042,24 @@ pub fn EventsHub::disconnect(self : EventsHub, client_id : Int) -> Bool {
         self.clients[i] = self.clients[last]
       }
       let _ = self.clients.pop()
+      let mut still_has_ok = false
+      let mut j = 0
+      while j < self.clients.length() {
+        if !self.clients[j].closed && overview_key(self.clients[j].viewer, self.clients[j].lang) == ok {
+          still_has_ok = true
+          break
+        }
+        j = j + 1
+      }
+      if !still_has_ok {
+        self.clear_overview_counts_later(Some(ok))
+      }
+      if self.clients.length() == 0 {
+        self.overview_full_sent_at = Map::new()
+        self.overview_missed = Map::new()
+        self.dirty_overview_of.clear()
+        self.clear_overview_counts_later(None)
+      }
       return true
     }
     i = i + 1
@@ -767,31 +2067,85 @@ pub fn EventsHub::disconnect(self : EventsHub, client_id : Int) -> Bool {
   false
 }
 
-/// Serialize `EventsHub` state for `eventsHandoverFile` (`<data>/run/events.json`).
-pub fn EventsHub::serialize_handover(self : EventsHub, pid : Int, now : Int64) -> String {
-  let ov_arr : Array[base_codec::Json] = []
+fn nul_segment_count(s : String) -> Int {
+  let b = s.to_bytes()
+  let mut count = 1
   let mut i = 0
-  while i < self.overview_keys.length() {
-    ov_arr.push(
-      base_codec::json_arr([
-        base_codec::json_str(self.overview_keys[i]),
-        base_codec::json_str(self.overview_vals[i]),
-      ]),
-    )
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 0 {
+      count = count + 1
+    }
     i = i + 1
   }
-  let payload = base_codec::json_obj([
+  count
+}
+
+/// Serialize `EventsHub` state for `eventsHandoverFile` (`<data>/run/events.json`, `#9013`).
+pub fn EventsHub::serialize_handover(self : EventsHub, pid : Int, now : Int64) -> String {
+  let active : Array[String] = []
+  let mut ci = 0
+  while ci < self.clients.length() {
+    if !self.clients[ci].closed {
+      push_unique_str(active, overview_key(self.clients[ci].viewer, self.clients[ci].lang))
+    }
+    ci = ci + 1
+  }
+  let ov_arr : Array[base_codec::Json] = []
+  let kept_keys : Array[String] = []
+  let mut mi = 0
+  while mi < self.overview_memo_keys.length() {
+    let k = self.overview_memo_keys[mi]
+    match self.overview_memo.get(k) {
+      Some(memo) => {
+        if contains_str(active, k) || now - memo.at <= KEPT_MS {
+          ov_arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(memo_to_text(memo))]))
+          kept_keys.push(k)
+        }
+      }
+      None => ()
+    }
+    mi = mi + 1
+  }
+  let mut i = 0
+  while i < self.overview_keys.length() {
+    let k = self.overview_keys[i]
+    if !self.overview_memo.contains(k) {
+      // Drop legacy device-less `viewerKey` entries (only 3 NUL segments) and expired untouched entries (`#9013`).
+      if nul_segment_count(k) >= 4 && (contains_str(active, k) || now - self.overview_told_taken_at <= KEPT_MS) {
+        ov_arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(self.overview_vals[i])]))
+        kept_keys.push(k)
+      }
+    }
+    i = i + 1
+  }
+  let seq_arr : Array[base_codec::Json] = []
+  let mut si = 0
+  while si < self.overview_told_seq_keys.length() {
+    let k = self.overview_told_seq_keys[si]
+    if contains_str(kept_keys, k) {
+      match self.overview_told_seq.get(k) {
+        Some(seq) => seq_arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_int64(seq)]))
+        None => ()
+      }
+    }
+    si = si + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [
     ("pid", base_codec::json_int(pid)),
     ("at", base_codec::json_int64(now)),
     ("log", self.log.kept_snapshot().to_json()),
     ("overviews", base_codec::json_arr(ov_arr)),
     ("shared", base_codec::json_obj([("rows", base_codec::json_arr([])), ("until", base_codec::json_int64(now + KEPT_MS))])),
-  ])
-  base_codec::json_stringify(payload)
+  ]
+  if seq_arr.length() > 0 {
+    fields.push(("overviewSeqs", base_codec::json_arr(seq_arr)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
 }
 
 /// Restore `EventsHub` from `eventsHandoverFile` JSON:
-/// verifies PID (when `expected_pid` is given), `KEPT_MS` freshness, and drops legacy unscoped `screens` entries.
+/// verifies PID (when `expected_pid` is given), `KEPT_MS` freshness, restores `overviewSeqs`,
+/// and drops legacy unscoped `screens` entries.
 pub fn EventsHub::take_up_handover(
   self : EventsHub,
   text : String,
@@ -825,7 +2179,6 @@ pub fn EventsHub::take_up_handover(
     Some(l) => l
     None => return Err("missing log")
   }
-  // Drop legacy unscoped `screens` entries before restoring log.
   let filtered_log_json = filter_legacy_screens_from_log(log_json)
   let restored_log = match EventLog::from_json(filtered_log_json, now, self.log.keeps) {
     Ok(l) => l
@@ -834,6 +2187,23 @@ pub fn EventsHub::take_up_handover(
   self.log = restored_log
   self.overview_keys.clear()
   self.overview_vals.clear()
+  self.overview_told_taken_at = at
+  while self.overview_memo_keys.length() > 0 {
+    match self.overview_memo_keys.pop() {
+      Some(k) => { let _ = self.overview_memo.remove(k) }
+      None => ()
+    }
+  }
+  while self.overview_told_seq_keys.length() > 0 {
+    match self.overview_told_seq_keys.pop() {
+      Some(k) => { let _ = self.overview_told_seq.remove(k) }
+      None => ()
+    }
+  }
+  self.overview_full_sent_at = Map::new()
+  self.overview_missed = Map::new()
+  self.dirty_overview_of.clear()
+  self.clear_overview_counts_later(None)
   match base_codec::json_get(parsed, "overviews") {
     Some(base_codec::Json::Arr(items)) => {
       let mut i = 0
@@ -845,6 +2215,28 @@ pub fn EventsHub::take_up_handover(
                 (base_codec::Json::Str(k), base_codec::Json::Str(v)) => {
                   self.overview_keys.push(k)
                   self.overview_vals.push(v)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(parsed, "overviewSeqs") {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Num(d, _)) => {
+                  self.set_overview_told_seq(k, d.to_int64())
                 }
                 _ => ()
               }

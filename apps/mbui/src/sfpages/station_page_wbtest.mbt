@@ -1370,7 +1370,7 @@ test "the station goes back to an earlier release: picked from its menu, asked, 
     t.tap_text("0.1.1276")
     t.draw()
     presented_in(t)
-    assert_true(t.find("退回到 0.1.1276？") is Some(_), msg=at)
+    assert_true(t.find("退回旧版本") is Some(_) && t.find("0.1.1276") is Some(_), msg=at)
     assert_eq(calls.length(), 0, msg="\{at}: asked first")
     assert_eq(t.audit(), [], msg="\{at}: asked")
     t.click(Button, label="退回")
@@ -1728,7 +1728,7 @@ test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, dele
     presented_in(t)
     t.click(Button, label="删除")
     presented_in(t)
-    assert_true(t.find("删除「github」？") is Some(_), msg="confirm shown: \{w}")
+    assert_true(t.find("删除 MCP 服务") is Some(_) && t.find("github") is Some(_), msg="confirm shown: \{w}")
     let confirm_dels = t.all(Button, label="删除")
     let (cx, cy, cw, ch) = confirm_dels[confirm_dels.length() - 1].rect
     t.tap(cx + cw / 2.0, cy + ch / 2.0)

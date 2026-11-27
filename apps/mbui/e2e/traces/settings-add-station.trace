@@ -121,7 +121,7 @@
 {"step":"now tap =从 workspace 移除","w":1794099215946.861}
 {"step":"now tap =从 workspace 移除","acted":true,"w":1794099215946.969}
 {"step":"wait 300","w":1794099215964.002}
-{"step":"now until 移除「e2e-080726-b」","w":1794099216280.3}
+{"step":"now until 移除 Station","w":1794099216280.3}
 {"step":"tap =移除 station","w":1794099216280.332}
 {"step":"tap =移除 station","acted":true,"w":1794099216280.416}
 {"out":{"id":32,"call":"workspace.removeStation","params":{"workspace":"01M6WAAH2DP72DPMV55PP3WSST","station":"15d9dec7f8e0b87a1a52b4662b41009eb51bbff885bdc6a686a8a4a72fb48624","account":"alice"}},"w":1794099216296.972}

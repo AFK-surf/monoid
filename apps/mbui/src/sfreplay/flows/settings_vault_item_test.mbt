@@ -46,7 +46,8 @@ test "85-vault-item" {
     // 删除 at the sheet's foot, in reach however tall what it holds
     f.tap("=删除")
     f.run_to(@sf.presented_rest)
-    f.see("删除「e2e-080726」")
+    f.see("删除密钥")
+    f.check(f.t.find("e2e-080726") is Some(_), "target secret name not shown in verification card")
     f.tap("=删除")
     // the page goes back once the station has deleted it
     f.answered("vault.deleteItem", 1)

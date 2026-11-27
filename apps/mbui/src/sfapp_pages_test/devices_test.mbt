@@ -109,7 +109,7 @@ test "a device of the viewer's station that only runs tasks: 免批准 theirs to
   let (x, y) = t.find("移除设备").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("移除「开发板」？") is Some(_))
+  assert_true(t.find("移除设备") is Some(_) && t.find("开发板") is Some(_))
   let (x, y) = t.find_last("移除设备").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)

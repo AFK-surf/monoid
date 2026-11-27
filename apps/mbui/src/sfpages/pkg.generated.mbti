@@ -633,6 +633,13 @@ pub fn station_archiving_node(@view.View, @settings.Core, () -> @settings.Here, 
 
 pub fn station_figures(@ui.Ctx, @sfbase.Source, @json.Json?) -> Unit
 
+#callsite(autofill(loc))
+pub fn station_info_card_node(@view.View, Array[StationInfoItem], inset_out? : Bool, loc~ : SourceLoc) -> Unit
+
+pub fn station_info_from_core(@settings.Core, String, String, row? : () -> @json.Json?, role? : String, show? : StationInfoShow, note? : String) -> StationInfoItem
+
+pub fn station_info_from_source(@sfbase.Source, String, String, role? : String, show? : StationInfoShow, note? : String) -> StationInfoItem
+
 pub fn station_node(@view.View, @settings.Core, () -> @settings.Here, String, on_back~ : () -> Unit, frame~ : () -> @sf.PageFrame, said? : (@sf.PageSaid) -> Unit, width? : () -> Double, tips? : @sf.TipLayer, stint? : () -> Int32) -> Unit
 
 pub fn station_page(@ui.Ctx, @settings.Core, @settings.Here, @sf.PageFrame, String) -> Unit
@@ -894,6 +901,29 @@ pub(all) struct StationAgentGroup {
   station : String
   agents : Array[@sfbase.Agent]
 } derive(Eq)
+
+pub(all) struct StationInfoItem {
+  role : String
+  address : String
+  name : String
+  row : () -> @json.Json?
+  net : (() -> @json.Json?)?
+  cpu_busy : (() -> Bool)?
+  show : StationInfoShow
+  note : String
+}
+
+pub(all) struct StationInfoShow {
+  state : Bool
+  host : Bool
+  meters : Bool
+  net : Bool
+  version : Bool
+}
+pub fn StationInfoShow::brief() -> Self
+pub fn StationInfoShow::compact() -> Self
+pub fn StationInfoShow::detail() -> Self
+pub fn StationInfoShow::target() -> Self
 
 // Type aliases
 

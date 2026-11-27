@@ -1,0 +1,338 @@
+// Real SQLite integration self-test for `VaultStore::new(db)` (`sql_db::Db`).
+// Exercises live SQLite DDL, Node-era pre-existing vault migration & backfill compatibility,
+// gated `vault_member_add/change/drop` triggers, `approveJoin` + `prune_asks` atomic CAS transactions,
+// transactional `forget_vault`, and `EXPLAIN QUERY PLAN` (0 `TEMP B-TREE`) against `:memory:`.
+
+import "base_codec"
+import "form"
+import "sql_db"
+
+fn check_plan_no_temp_btree(
+  db : sql_db::Db,
+  label : String,
+  sql : String,
+  params : Array[base_codec::Json],
+  expect_index : String,
+) -> Result[Unit, String] {
+  let rows = match db.all("EXPLAIN QUERY PLAN " + sql, params) {
+    Ok(r) => r
+    Err(e) => return Err(label + ": EXPLAIN failed: " + e.message)
+  }
+  let mut combined = ""
+  for i in 0..<rows.length() {
+    match rows[i].get("detail") {
+      Some(base_codec::Json::Str(s)) => combined = combined + s + " | "
+      _ => ()
+    }
+  }
+  if combined.contains("TEMP B-TREE") {
+    return Err(label + ": unexpected TEMP B-TREE in query plan: " + combined)
+  }
+  if expect_index.length() > 0 && !combined.contains(expect_index) {
+    return Err(label + ": expected index " + expect_index + " in query plan: " + combined)
+  }
+  Ok(())
+}
+
+/// Run real SQLite `VaultStore` integration, migration & query-plan verification against `:memory:`.
+pub fn run_vault_sqlite_selftest() -> Result[Unit, String] {
+  let db = match sql_db::Db::create(":memory:") {
+    Ok(d) => d
+    Err(e) => return Err("Db::create failed: " + e.message)
+  }
+  let ws = "ws_sqlite_real"
+  let vid_ws = "v_01JSQLITE00000000000000W"
+
+  // 0. Simulate Node-era database with 40 pre-existing vaults (> 32 OFFSET threshold) BEFORE installing Pion schema!
+  match db.exec(
+    "CREATE TABLE IF NOT EXISTS vaults (ws TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (ws, id));",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("create legacy vaults table failed: " + e.message)
+  }
+  for i in 0..<40 {
+    let pid = "v_01JLEGACY0000000000" + (1000 + i).to_string()
+    let is_bob = i < 5
+    let body = if is_bob {
+      "{\"v\":1,\"ws\":\"" + ws + "\",\"id\":\"" + pid + "\",\"seq\":0,\"owner\":\"alice\",\"name\":\"L\",\"members\":[\"alice\",\"bob\"],\"epoch\":0,\"keys\":[],\"at\":50}"
+    } else {
+      "{\"v\":1,\"ws\":\"" + ws + "\",\"id\":\"" + pid + "\",\"seq\":0,\"owner\":\"alice\",\"name\":\"L\",\"members\":[\"alice\"],\"epoch\":0,\"keys\":[],\"at\":50}"
+    }
+    match db.run(
+      "INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, 0, ?)",
+      [base_codec::json_str(ws), base_codec::json_str(pid), base_codec::json_str(body)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err("insert legacy vault failed: " + e.message)
+    }
+  }
+
+  // Install Pion VaultStore schema on top of existing Node-era vaults.
+  let store = match VaultStore::new(db) {
+    Ok(s) => s
+    Err(e) => return Err("VaultStore::new failed: " + e)
+  }
+
+  // BEFORE backfill: `member_vaults` MUST fall back to scanning `vaults(ws)` and return all 40 candidates
+  // (never empty `[]` that would hide Node-era vaults!).
+  let pre_backfill = match store.member_vaults(ws, "bob") {
+    Ok(v) => v
+    Err(e) => return Err("pre-backfill member_vaults failed: " + e)
+  }
+  if pre_backfill.length() != 40 {
+    return Err("expected pre-backfill fallback to return all 40 vaults, got " + pre_backfill.length().to_string())
+  }
+
+  // Run batched backfill until complete (1:1 with `backfillVaultMembers`).
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 10 {
+    done = match store.backfill_vault_members(ws, limit=16) {
+      Ok(b) => b
+      Err(e) => return Err("backfill_vault_members failed: " + e)
+    }
+    steps = steps + 1
+  }
+  if !done {
+    return Err("backfill_vault_members did not finish in 10 batches")
+  }
+
+  // AFTER backfill: `member_vaults(ws, "bob")` uses `vault_member_lookup` and returns ONLY bob's 5 vaults!
+  let bob_after_bf = match store.member_vaults(ws, "bob") {
+    Ok(v) => v
+    Err(e) => return Err("post-backfill member_vaults(bob) failed: " + e)
+  }
+  if bob_after_bf.length() != 5 {
+    return Err("expected 5 bob vaults after backfill, got " + bob_after_bf.length().to_string())
+  }
+
+  // 1. Insert 1 active workspace vault for alice (triggers `vault_member_add`)
+  let ws_v0 = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid_ws)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Shared")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(500.0)),
+  ])
+  match store.put_vault(ws_v0) {
+    Ok(_) => ()
+    Err(e) => return Err("put ws vault failed: " + e)
+  }
+  let active_ws = match store.active_workspace_vaults(ws, 64) {
+    Ok(v) => v
+    Err(e) => return Err("active_workspace_vaults failed: " + e)
+  }
+  if active_ws.length() != 1 {
+    return Err("expected 1 active workspace vault")
+  }
+
+  // 2. Verify `EXPLAIN QUERY PLAN` uses indexes with 0 TEMP B-TREE on all hot queries.
+  match check_plan_no_temp_btree(
+    db, "member_vaults", MEMBER_VAULTS_SQL,
+    [base_codec::json_str(ws), base_codec::json_str("alice")],
+    "USING PRIMARY KEY (ws=? AND sub=?)",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check_plan_no_temp_btree(
+    db, "active_workspace_vaults",
+    ACTIVE_WORKSPACE_VAULTS_SQL,
+    [base_codec::json_str(ws), base_codec::json_int(64)],
+    "vaults_workspace_active",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check_plan_no_temp_btree(
+    db, "joins_pending",
+    "SELECT body, at, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND state = 'pending' ORDER BY at DESC, sub ASC LIMIT ?",
+    [base_codec::json_str(ws), base_codec::json_str(vid_ws), base_codec::json_int(64)],
+    "vault_joins_vault_at",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check_plan_no_temp_btree(
+    db, "join_dismisses",
+    "SELECT dismiss_body, sub FROM vault_joins WHERE ws = ? AND vault = ? AND dismiss_body IS NOT NULL ORDER BY sub ASC LIMIT ?",
+    [base_codec::json_str(ws), base_codec::json_str(vid_ws), base_codec::json_int(64)],
+    "SEARCH vault_joins USING",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check_plan_no_temp_btree(
+    db, "asks_for_vault",
+    "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+    [base_codec::json_str(ws), base_codec::json_str(vid_ws), base_codec::json_int(64)],
+    "vault_asks_vault_at",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 3. Atomic `approveJoin` + `prune_key_pairs` CAS transaction on real SQLite:
+  let v0_body = match store.vault_snapshot(ws, vid_ws) {
+    Ok(Some(s)) => s.body
+    _ => return Err("missing v0 snapshot")
+  }
+  let bob_join = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid_ws)),
+    ("sub", form::Json::Str("bob")), ("device", form::Json::Str("dev_bob")),
+    ("box", form::Json::Str("x25519:bob")), ("state", form::Json::Str("pending")), ("at", form::Json::Num(600.0)),
+    ("sig", form::Json::Obj([("sig", form::Json::Str("sig_bob_1"))])),
+  ])
+  match store.put_join_if(bob_join, v0_body, None, false) {
+    Ok(true) => ()
+    _ => return Err("put_join_if failed")
+  }
+  let bob_ask = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid_ws)),
+    ("device", form::Json::Str("dev_bob")), ("box", form::Json::Str("x25519:bob")), ("at", form::Json::Num(605.0)),
+  ])
+  match store.put_ask(bob_ask) {
+    Ok(_) => ()
+    Err(e) => return Err("put_ask failed: " + e)
+  }
+  let bob_cert = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str("dev_bob")), ("box", form::Json::Str("x25519:bob")),
+    ("at", form::Json::Num(550.0)),
+  ])
+  let ws_v1 = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid_ws)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Shared")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", bob_cert), ("wrapped", form::Json::Str("AAAA"))])])),
+    ("at", form::Json::Num(700.0)),
+  ])
+  let bad_approve = ApproveJoinSpec::{ sub: "bob", at: 600L, device: "dev_bob", box_key: "x25519:bob", sig: "wrong_sig" }
+  match store.put_vault_checked(ws_v1, Some(v0_body), added_subs=["bob"], approve_join=Some(bad_approve), prune_key_pairs=[("dev_bob", "x25519:bob")]) {
+    VaultWriteResult::JoinCancelled => ()
+    _ => return Err("expected JoinCancelled for wrong sig on real SQLite")
+  }
+  let ok_approve = ApproveJoinSpec::{ sub: "bob", at: 600L, device: "dev_bob", box_key: "x25519:bob", sig: "sig_bob_1" }
+  match store.put_vault_checked(ws_v1, Some(v0_body), added_subs=["bob"], approve_join=Some(ok_approve), prune_key_pairs=[("dev_bob", "x25519:bob")]) {
+    VaultWriteResult::Saved => ()
+    _ => return Err("expected Saved for matching approveJoin on real SQLite")
+  }
+  // Verify trigger `vault_member_change` added vid_ws to bob's 5 legacy vaults (= 6) and ask was pruned atomically!
+  let bob_vs2 = match store.member_vaults(ws, "bob") {
+    Ok(v) => v
+    Err(e) => return Err("member_vaults(bob) after approve failed: " + e)
+  }
+  if bob_vs2.length() != 6 {
+    return Err("expected bob to have 6 vaults via vault_member_change trigger, got " + bob_vs2.length().to_string())
+  }
+  match store.ask_snapshot(ws, vid_ws, "dev_bob") {
+    Ok(None) => ()
+    _ => return Err("expected bob ask pruned inside same CAS tx")
+  }
+  match store.join_snapshot(ws, vid_ws, "bob") {
+    Ok(Some(js)) => if js.joined_up_to < 600L { return Err("expected joined_up_to >= 600 after approve") }
+    _ => return Err("expected bob join row with joined_up_to after approve")
+  }
+
+  // 3b. P2-1: KeyAsk-only CAS update (no approve_join, no added_subs, not deleted) MUST enter tx
+  //     and prune `prune_key_pairs` atomically, and roll back vault write if ask-prune fails!
+  let v1_body = match store.vault_snapshot(ws, vid_ws) {
+    Ok(Some(s)) => s.body
+    _ => return Err("missing v1 snapshot")
+  }
+  let rebox_ask = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid_ws)),
+    ("device", form::Json::Str("dev_rebox")), ("box", form::Json::Str("x25519:rebox")), ("at", form::Json::Num(710.0)),
+  ])
+  match store.put_ask(rebox_ask) {
+    Ok(_) => ()
+    Err(e) => return Err("put_ask(rebox) failed: " + e)
+  }
+  let rebox_cert = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str("dev_rebox")), ("box", form::Json::Str("x25519:rebox")),
+    ("at", form::Json::Num(705.0)),
+  ])
+  let ws_v1_rebox = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid_ws)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Shared")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([
+      form::Json::Obj([("cert", bob_cert), ("wrapped", form::Json::Str("AAAA"))]),
+      form::Json::Obj([("cert", rebox_cert), ("wrapped", form::Json::Str("BBBB"))]),
+    ])),
+    ("at", form::Json::Num(720.0)),
+  ])
+  // Inject a DB failure specifically on `DELETE FROM vault_asks` via a trigger -> vault write MUST roll back!
+  match db.exec("CREATE TEMP TRIGGER fail_ask_prune BEFORE DELETE ON vault_asks BEGIN SELECT RAISE(ABORT, 'injected_prune_err'); END;") {
+    Ok(_) => ()
+    Err(e) => return Err("create fail_ask_prune trigger failed: " + e.message)
+  }
+  match store.put_vault_checked(ws_v1_rebox, Some(v1_body), prune_key_pairs=[("dev_rebox", "x25519:rebox")]) {
+    VaultWriteResult::DbError(_) => ()
+    _ => return Err("expected DbError when ask-prune fails inside CAS tx")
+  }
+  // Vault body MUST still be v1_body (rolled back) and rebox_ask MUST still exist!
+  match store.vault_snapshot(ws, vid_ws) {
+    Ok(Some(s)) => if s.body != v1_body { return Err("vault write was not rolled back on ask-prune failure") }
+    _ => return Err("missing vault snapshot after rollback")
+  }
+  match db.exec("DROP TRIGGER temp.fail_ask_prune;") {
+    Ok(_) => ()
+    Err(e) => return Err("drop fail_ask_prune trigger failed: " + e.message)
+  }
+  match store.put_vault_checked(ws_v1_rebox, Some(v1_body), prune_key_pairs=[("dev_rebox", "x25519:rebox")]) {
+    VaultWriteResult::Saved => ()
+    _ => return Err("expected Saved for KeyAsk-only rebox CAS update")
+  }
+  match store.ask_snapshot(ws, vid_ws, "dev_rebox") {
+    Ok(None) => ()
+    _ => return Err("expected dev_rebox ask pruned by KeyAsk-only CAS update")
+  }
+
+  // 4. Delete vault -> triggers wipe `vault_asks`/`vault_joins`, `in_vault` returns false,
+  //    and partial index `vaults_workspace_active` excludes the deleted vault; then `forget_vault`
+  //    triggers `vault_member_drop` (bob drops back to 5 vaults).
+  let ws_v2_del = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid_ws)),
+    ("seq", form::Json::Num(2.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Shared")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(1.0)), ("keys", form::Json::Arr([])), ("deleted", form::Json::Bool(true)),
+    ("at", form::Json::Num(800.0)),
+  ])
+  match store.put_vault(ws_v2_del) {
+    Ok(_) => ()
+    Err(e) => return Err("put deleted vault failed: " + e)
+  }
+  if store.in_vault(ws, "bob", vid_ws) {
+    return Err("expected in_vault(bob) == false after delete")
+  }
+  match store.join_snapshot(ws, vid_ws, "bob") {
+    Ok(None) => ()
+    _ => return Err("expected vault_deleted_joins_update trigger to wipe bob join row")
+  }
+  let active_after = match store.active_workspace_vaults(ws, 64) {
+    Ok(v) => v
+    Err(e) => return Err("active_workspace_vaults after delete failed: " + e)
+  }
+  if active_after.length() != 0 {
+    return Err("expected 0 active workspace vaults after delete")
+  }
+  match store.forget_vault(ws, vid_ws) {
+    Ok(_) => ()
+    Err(e) => return Err("forget_vault failed: " + e)
+  }
+  let bob_after_forget = match store.member_vaults(ws, "bob") {
+    Ok(v) => v
+    Err(e) => return Err("member_vaults(bob) after forget_vault failed: " + e)
+  }
+  if bob_after_forget.length() != 5 {
+    return Err("expected bob to drop back to 5 vaults after vault_member_drop trigger, got " + bob_after_forget.length().to_string())
+  }
+  Ok(())
+}

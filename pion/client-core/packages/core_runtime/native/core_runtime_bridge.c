@@ -7,10 +7,17 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "core_api.h"
+
+void pion_core_log_warn(const char *msg, int64_t len) {
+    if (msg != NULL && len > 0) {
+        fprintf(stderr, "[pion-core] %.*s\n", (int)len, msg);
+    }
+}
 
 int64_t pion_core_wall_now_ms(void) {
     struct timespec ts;
@@ -156,10 +163,12 @@ static void bridge_on_start(const char *data_dir, const char *cloud_origin, int 
     atomic_store(&g_bridge_active, 1);
     int64_t dlen = data_dir != NULL ? (int64_t)strlen(data_dir) : 0;
     int64_t clen = cloud_origin != NULL ? (int64_t)strlen(cloud_origin) : 0;
-    (void)pion_core_runtime_start(data_dir, dlen, cloud_origin, clen, (int32_t)beta);
-    bsh_on_wake(bridge_on_shell_wake, NULL);
-    bsh_on_say(bridge_on_shell_say, NULL);
-    bsh_on_media(bridge_on_shell_media, NULL);
+    int32_t ok = pion_core_runtime_start(data_dir, dlen, cloud_origin, clen, (int32_t)beta);
+    if (ok != 0) {
+        bsh_on_wake(bridge_on_shell_wake, NULL);
+        bsh_on_say(bridge_on_shell_say, NULL);
+        bsh_on_media(bridge_on_shell_media, NULL);
+    }
 }
 
 static void bridge_on_send(const char *json, size_t len, const uint8_t *bytes, size_t blen, void *user_ctx) {

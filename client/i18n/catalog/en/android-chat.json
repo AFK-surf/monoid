@@ -27,7 +27,7 @@
   "android-chat.pdf.quote.page": "{name}, page {page}",
   "android-chat.pdf.quote.pages": "{name}, pages {from}–{to}",
   "android-chat.station.details": "Station details",
-  "android-chat.archive.ask": "Archive “{title}”?",
+  "android-chat.archive.ask": "Archive chat",
   "android-chat.archive.named": "Archive “{title}”",
   "android-chat.archive.verb": "archive",
   "android-chat.archived.undo": "Undo",
@@ -195,7 +195,7 @@
   "android-chat.new.machine.own": "Run by still.fail",
   "android-chat.new.machine.search": "Search titles or folders",
   "android-chat.new.machine.text": "Claude Code and Codex sessions run in a terminal. Preview one, then continue it in its original folder; the terminal session is left as it was.",
-  "android-chat.new.machine.title": "Continue a session on {station}",
+  "android-chat.new.machine.title": "Continue session",
   "android-chat.new.model": "Model",
   "android-chat.new.noModels": "No models · View profiles",
   "android-chat.new.offline.text": "Open {app} on a machine and it will connect to this workspace.",
@@ -348,5 +348,6 @@
   "android-chat.file.install": "Install",
   "android-chat.file.installFailed": "Couldn't install: {error}",
   "android-chat.file.allowInstall": "Allow {app} to install apps, then tap Install again",
-  "android-chat.history.received.jobMessage": "Message from job {name}"
+  "android-chat.history.received.jobMessage": "Message from job {name}",
+  "android-chat.new.machine.detailTitle": "Session details"
 }

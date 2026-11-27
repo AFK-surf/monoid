@@ -2524,3 +2524,121 @@ pub fn ask_screen_service_script(binary : String, on : Bool, user_sid : Option[S
   " -ArgumentList " + args + " -WindowStyle Hidden -PassThru -Wait" + verb +
   " -ErrorAction Stop\r\n  exit $p.ExitCode\r\n} catch {\r\n  $e = $_.Exception; while ($e -and -not ($e -is [ComponentModel.Win32Exception])) { $e = $e.InnerException }\r\n  if ($e -and $e.NativeErrorCode -eq 1223) { exit 4 }\r\n  exit 5\r\n}"
 }
+
+// ---------------------------------------------------------------------------
+// Single-join streamed HelperView frame reader (`station/src/screens/desktop.ts`, `#8986`)
+// ---------------------------------------------------------------------------
+
+pub let MAX_HELPER_FRAME : Int = 64 * 1024 * 1024
+
+/// Accumulates 5-byte `[kind: u8, len: u32be]` helper frame pieces and joins multi-chunk payloads
+/// once at exact size upon completion; single-chunk frames avoid intermediate copies (`#8986`).
+pub struct HelperFrameReader {
+  header : Bytes
+  mut header_bytes : Int
+  mut body_len : Int
+  mut body_left : Int
+  body_parts : Array[Bytes]
+  pub mut ended : Bool
+  pub mut join_alloc_bytes : Int64
+}
+
+pub fn HelperFrameReader::new() -> HelperFrameReader {
+  HelperFrameReader::{
+    header: Bytes::new(5),
+    header_bytes: 0,
+    body_len: 0,
+    body_left: 0,
+    body_parts: [],
+    ended: false,
+    join_alloc_bytes: 0L,
+  }
+}
+
+pub fn HelperFrameReader::close(self : HelperFrameReader) -> Unit {
+  self.ended = true
+  self.body_parts.clear()
+  self.header_bytes = 0
+  self.body_len = 0
+  self.body_left = 0
+}
+
+fn join_bytes_exact(parts : Array[Bytes], total_len : Int) -> Bytes {
+  let out = Bytes::new(total_len)
+  let mut off = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    let n = p.length()
+    for j in 0..<n {
+      out[off + j] = p[j]
+    }
+    off = off + n
+  }
+  out
+}
+
+pub fn HelperFrameReader::feed(
+  self : HelperFrameReader,
+  chunk : Bytes,
+) -> Result[Array[(Int, Bytes)], String] {
+  let frames : Array[(Int, Bytes)] = []
+  let mut at = 0
+  let clen = chunk.length()
+  while !self.ended && at < clen {
+    if self.header_bytes < 5 {
+      let need = 5 - self.header_bytes
+      let avail = clen - at
+      let got = if avail < need { avail } else { need }
+      for i in 0..<got {
+        self.header[self.header_bytes + i] = chunk[at + i]
+      }
+      self.header_bytes = self.header_bytes + got
+      at = at + got
+      if self.header_bytes < 5 {
+        return Ok(frames)
+      }
+      let len = ((self.header[1].to_int() & 0xFF) << 24) |
+      ((self.header[2].to_int() & 0xFF) << 16) |
+      ((self.header[3].to_int() & 0xFF) << 8) |
+      (self.header[4].to_int() & 0xFF)
+      if len < 0 || len > MAX_HELPER_FRAME {
+        self.close()
+        return Err("helper frame too large (" + len.to_string() + " bytes)")
+      }
+      self.body_len = len
+      self.body_left = len
+    }
+    if self.body_left == 0 {
+      let kind = self.header[0].to_int() & 0xFF
+      self.header_bytes = 0
+      frames.push((kind, Bytes::new(0)))
+      continue
+    }
+    let avail = clen - at
+    let take = if avail < self.body_left { avail } else { self.body_left }
+    let part = if at == 0 && take == clen { chunk } else { chunk.slice(at, at + take) }
+    at = at + take
+    self.body_left = self.body_left - take
+    if self.body_left > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      return Ok(frames)
+    }
+    let payload = if self.body_parts.length() > 0 {
+      if take > 0 {
+        self.body_parts.push(part)
+      }
+      self.join_alloc_bytes = self.join_alloc_bytes + self.body_len.to_int64()
+      let joined = join_bytes_exact(self.body_parts, self.body_len)
+      self.body_parts.clear()
+      joined
+    } else {
+      part
+    }
+    let kind = self.header[0].to_int() & 0xFF
+    self.header_bytes = 0
+    frames.push((kind, payload))
+  }
+  Ok(frames)
+}

@@ -803,10 +803,11 @@ test "wide: the machine's sessions open in a dialog in the window's middle, not 
   t.frame()
   t.click(Button, label="继续 Willow 终端中的会话")
   t.run_for(@ui.move_most_ms)
-  let (tx, ty) = match t.find("继续 Willow 上的会话") {
+  let (tx, ty) = match t.find("继续会话") {
     Some(at) => at
     None => fail("no dialog")
   }
+  assert_true(t.find("Willow") is Some(_), msg="station shown in subtitle")
   assert_true(t.find("整理构建脚本") is Some(_), msg="its session listed")
   assert_true(t.find("3 小时前") is Some(_), msg="how long ago, at its line's end")
   // over them, found by: a search, the folder they ran in
@@ -2122,7 +2123,7 @@ test "wide: the workspace's page as on a phone: its name its title, who you are 
   t.run_for(@ui.move_most_ms)
   t.tap_text("退出此 workspace")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("退出「星火工作室」？") is Some(_), msg="asked again")
+  assert_true(t.find("退出工作区") is Some(_) && t.find("星火工作室") is Some(_), msg="asked again")
 }
 
 ///|

@@ -3273,8 +3273,36 @@ fn fx_station(address : String) -> Json {
       ("acceptAutoChats", Json::boolean(true)),
       ("link", obj([("state", str(if up { "online" } else { "offline" }))])),
       // (away, as Willow away says it)
-      ("stateText", str(if up { "" } else { "2 天前在线" })),
+      ("stateText", str(if up { "空闲" } else { "2 天前在线" })),
       ("problems", if up { [] } else { [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])] }),
+      ..if up {
+        [
+          (
+            "host",
+            obj([
+              ("identity", str(if id == "st3" { "Intel i7 · 32 GB · Windows 11" } else { "Apple M3 · 24 GB · macOS 26" })),
+              (
+                "meters",
+                [
+                  meter("CPU", 88, "ok", "空闲 88%", "88", "%", "CPU 空闲率", "负载 0.4", title_short="CPU 空闲"),
+                  meter("内存", 67, "ok", "剩 16 G", "16", "GB", "可用内存", "总内存 24 GB", total_short="总 24 GB"),
+                  meter("磁盘", 64, "ok", "剩 640 G", "640", "GB", "可用磁盘", "总磁盘 1 TB", total_short="总 1 TB"),
+                ],
+              ),
+            ]),
+          ),
+          (
+            "net",
+            obj([
+              ("path", str("直连")),
+              ("via", str("direct")),
+              ("rtt", obj([("text", str("18 ms")), ("level", str("ok"))])),
+            ]),
+          ),
+        ]
+      } else {
+        []
+      },
       ("runtimes", []),
       ("models", []),
       (

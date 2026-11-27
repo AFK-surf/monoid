@@ -1655,9 +1655,16 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
           fn() { @sf.t("web-pages.devices.remove") },
           fn() {
             close()
-            confirm(@sf.t("web-pages.devices.removeAsk", args=[("name", text(first, "name"))]), @sf.t("web-pages.devices.removeNote"), @sf.t("web-pages.devices.remove"), danger=true, fn() {
-              act(core, @sf.t("web-pages.devices.remove"), "device.remove", obj([("workspace", str(here.workspace)), ("station", str(station)), ("device", str(id))]), done=@sf.t("web-pages.devices.removed"))
-            })
+            confirm(
+              @sf.t("web-pages.devices.removeAsk"),
+              @sf.t("web-pages.devices.removeNote"),
+              @sf.t("web-pages.devices.remove"),
+              danger=true,
+              facts=[(@sf.t("common.confirmFact.device"), text(first, "name"))],
+              fn() {
+                act(core, @sf.t("web-pages.devices.remove"), "device.remove", obj([("workspace", str(here.workspace)), ("station", str(station)), ("device", str(id))]), done=@sf.t("web-pages.devices.removed"))
+              },
+            )
           },
           tone=Danger,
         )
@@ -1667,16 +1674,17 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
   } else {
     None
   }
-  @sf.panel_nodes(text(first, "name"), from~, foot?, fn(v, close) {
+  @sf.panel_nodes(@sf.t("web-pages.devices.detailTitle"), from~, foot?, fn(v, close) {
     // taken off meanwhile (here or elsewhere): the panel goes
     v.reacts(fn() { d() is None }, fn(gone) {
       if gone {
         close()
       }
     })
-    // what it is, a row each, named at its start and said at its end: its kind, its address (pressed, copied), the
+    // what it is, a row each, named at its start and said at its end: its name, kind, address (pressed, copied), the
     // station it is on (pressed, that station's page), whose it is, and which chats may use it
     @sf.panel_group_node(v, fn() { "" }, fn(g) {
+      @sf.panel_row_node(g, fn() { @sf.t("web-pages.devices.label.name") }, fn() {  }, note=fn() { text(d(), "name") })
       @sf.panel_row_node(g, fn() { @sf.t("web-pages.devices.label.kind") }, fn() {  }, note=fn() {
         let model = text(d(), "model")
         let k = text(d(), "kind")
@@ -1758,9 +1766,19 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
               if !flag(@signals.untracked(d), "mine") || flag(now, "whole") || via != "rig" {
                 return
               }
-              confirm(device_chat_title(now), "", @sf.t("web-pages.rigs.revoke"), danger=true, fn() {
-                act(core, @sf.t("web-pages.rigs.revoke"), "rig.revoke", obj([("workspace", str(here.workspace)), ("rig", str(station)), ("request", str(text(now, "request"))), ("station", str(text(now, "station")))]))
-              })
+              confirm(
+                @sf.t("web-pages.devices.revokeTitle"),
+                "",
+                @sf.t("web-pages.rigs.revoke"),
+                danger=true,
+                facts=[
+                  (@sf.t("common.confirmFact.chat"), device_chat_title(now)),
+                  (@sf.t("common.confirmFact.device"), text(first, "name")),
+                ],
+                fn() {
+                  act(core, @sf.t("web-pages.rigs.revoke"), "rig.revoke", obj([("workspace", str(here.workspace)), ("rig", str(station)), ("request", str(text(now, "request"))), ("station", str(text(now, "station")))]))
+                },
+              )
             },
             note=fn() {
               if flag(r(), "whole") {

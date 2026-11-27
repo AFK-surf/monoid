@@ -65,6 +65,7 @@ fn make_profile(
     share_workspaces: [],
     withheld: [],
     max_concurrent_sessions: max_sessions,
+    direct_quota: false,
   }
 }
 
@@ -103,6 +104,7 @@ fn make_opts(
     mcp_url: mcp_url,
     route: "route-1",
     text_only: false,
+    probe: false,
     is_root: is_root,
     has_keychain: false,
     os_name: "linux",
@@ -991,4 +993,678 @@ test "review R2: invalid UUID rejection, byte-for-byte session_instructions pari
     Ok(_) => panic("resumed hermes without transcript header must fail")
     Err(_) => ()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Wave 17B-3: 1:1 parity tests for all 8 commits
+// ---------------------------------------------------------------------------
+
+test "wave17b3: runtime uninstall planner and updates state machine (#8861)" {
+  let host_unix = UninstallHost::{
+    os_name: "linux",
+    sep: "/",
+    home: Some("/home/tester"),
+    node_exec: "/opt/stillfail/node/bin/node",
+    exists: fn(p : String) -> Bool {
+      p == "/usr/local/bin/npm" || p == "/opt/node22/bin/npm"
+    },
+    is_symlink: fn(p : String) -> Bool {
+      p == "/home/tester/.local/bin/claude"
+    },
+    realpath: fn(p : String) -> Option[String] {
+      if p == "/home/tester/.local/bin/claude" {
+        Some("/home/tester/.local/share/claude/versions/2.1.0")
+      } else if p == "/usr/local/bin/vp" {
+        Some("/opt/vp/bin/vp")
+      } else {
+        None
+      }
+    },
+    find_command: fn(cmd : String) -> Option[FoundCommand] {
+      if cmd == "brew" {
+        Some(FoundCommand::{ on_path: "/opt/homebrew/bin/brew", real: "/opt/homebrew/bin/brew" })
+      } else if cmd == "npm" {
+        Some(FoundCommand::{ on_path: "/usr/bin/npm", real: "/usr/bin/npm" })
+      } else if cmd == "vp" {
+        Some(FoundCommand::{ on_path: "/usr/local/bin/vp", real: "/opt/vp/bin/vp" })
+      } else {
+        None
+      }
+    },
+    winget_command: fn() -> String { "winget.exe" },
+  }
+
+  // 1. npm global prefix uses that Node's own npm + --prefix
+  match how_to_uninstall(
+    RuntimeKind::Codex,
+    FoundCommand::{ on_path: "/usr/local/bin/codex", real: "/opt/node22/lib/node_modules/@openai/codex/bin/codex" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "/opt/node22/bin/npm", "must use own Node npm")
+      expect(h.args.length() == 5 && h.args[0] == "uninstall" && h.args[1] == "-g" && h.args[2] == "@openai/codex" && h.args[3] == "--prefix" && h.args[4] == "/opt/node22", "npm uninstall args")
+    }
+    UninstallPlan::Unable(u) => panic("expected npm how, got unable: " + u.key)
+  }
+
+  // 2. Homebrew Caskroom (--cask) & Cellar formula
+  match how_to_uninstall(
+    RuntimeKind::Claude,
+    FoundCommand::{ on_path: "/opt/homebrew/bin/claude", real: "/opt/homebrew/Caskroom/claude-code@latest/2.0/claude" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "/opt/homebrew/bin/brew", "brew program")
+      expect(h.args.length() == 3 && h.args[0] == "uninstall" && h.args[1] == "--cask" && h.args[2] == "claude-code@latest", "brew cask uninstall")
+    }
+    UninstallPlan::Unable(u) => panic("expected brew cask how, got unable: " + u.key)
+  }
+  match how_to_uninstall(
+    RuntimeKind::Codex,
+    FoundCommand::{ on_path: "/opt/homebrew/bin/codex", real: "/opt/homebrew/Cellar/codex/0.1.0/bin/codex" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.args.length() == 2 && h.args[0] == "uninstall" && h.args[1] == "codex", "brew formula uninstall")
+    }
+    UninstallPlan::Unable(u) => panic("expected brew cellar how, got unable: " + u.key)
+  }
+
+  // 3. Vite+ shim on Unix
+  match how_to_uninstall(
+    RuntimeKind::Dsh,
+    FoundCommand::{ on_path: "/usr/local/bin/dsh", real: "/opt/vp/bin/vp" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "/usr/local/bin/vp", "vp program")
+      expect(h.args.length() == 3 && h.args[0] == "uninstall" && h.args[1] == "-g" && h.args[2] == "@deepseek-ai/dsh", "vp uninstall args")
+    }
+    UninstallPlan::Unable(u) => panic("expected vp how, got unable: " + u.key)
+  }
+
+  // 4. Devin native installer vs unknown location
+  match how_to_uninstall(
+    RuntimeKind::Devin,
+    FoundCommand::{ on_path: "/home/tester/.local/bin/devin", real: "/home/tester/.local/share/devin/cli/_versions/1.0/devin" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "/home/tester/.local/bin/devin" && h.args.length() == 2 && h.args[0] == "uninstall" && h.args[1] == "--force", "devin uninstall --force")
+    }
+    UninstallPlan::Unable(u) => panic("expected devin how, got unable: " + u.key)
+  }
+
+  // 5. Claude native installer removes versions dir + ONLY symlinks pointing into it (preserves non-symlink onPath)
+  match how_to_uninstall(
+    RuntimeKind::Claude,
+    FoundCommand::{ on_path: "/usr/local/bin/claude", real: "/home/tester/.local/share/claude/versions/2.1.0" },
+    host_unix,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "/opt/stillfail/node/bin/node", "claude native uses node_exec")
+      expect(h.args.length() == 4, "must include -e, script, versions dir, and 1 symlink only")
+      expect(h.args[2] == "/home/tester/.local/share/claude/versions", "versions dir")
+      expect(h.args[3] == "/home/tester/.local/bin/claude", "only symlink into versions removed")
+    }
+    UninstallPlan::Unable(u) => panic("expected claude native how, got unable: " + u.key)
+  }
+
+  // 6. Unremovable runtimes return explicit Unable i18n keys
+  match how_to_uninstall(RuntimeKind::Hermes, FoundCommand::{ on_path: "/usr/bin/hermes", real: "/usr/bin/hermes" }, host_unix) {
+    UninstallPlan::Unable(u) => expect(u.key == "station.updates.uninstallHermes", "hermes unable key")
+    UninstallPlan::How(_) => panic("hermes must be unable")
+  }
+  match how_to_uninstall(RuntimeKind::Agy, FoundCommand::{ on_path: "/usr/bin/agy", real: "/usr/bin/agy" }, host_unix) {
+    UninstallPlan::Unable(u) => expect(u.key == "station.updates.uninstallAgy", "agy unable key")
+    UninstallPlan::How(_) => panic("agy must be unable")
+  }
+  match how_to_uninstall(RuntimeKind::Pi, FoundCommand::{ on_path: "/usr/bin/pi", real: "/home/tester/.pi/bin/pi" }, host_unix) {
+    UninstallPlan::Unable(u) => expect(u.key == "station.updates.uninstallPi", "pi installer unable key")
+    UninstallPlan::How(_) => panic("pi installer must be unable")
+  }
+  match how_to_uninstall(
+    RuntimeKind::Codex,
+    FoundCommand::{ on_path: "/usr/bin/codex", real: "/home/tester/.codex/packages/standalone/releases/1.0/codex" },
+    host_unix,
+  ) {
+    UninstallPlan::Unable(u) => expect(u.key == "station.updates.uninstallCodexStandalone", "codex standalone unable key")
+    UninstallPlan::How(_) => panic("codex standalone must be unable")
+  }
+
+  // 7. Windows shimUninstall (winget, vp.exe, npm .cmd)
+  let host_win = UninstallHost::{
+    os_name: "win32",
+    sep: "\\",
+    home: Some("C:\\Users\\tester"),
+    node_exec: "C:\\node\\node.exe",
+    exists: fn(p : String) -> Bool {
+      p == "C:\\npm\\node_modules\\@openai\\codex" || p == "C:\\npm\\npm.cmd" || p == "C:\\vp\\vp.exe"
+    },
+    is_symlink: fn(_p : String) -> Bool { false },
+    realpath: fn(_p : String) -> Option[String] { None },
+    find_command: fn(_c : String) -> Option[FoundCommand] { None },
+    winget_command: fn() -> String { "winget.exe" },
+  }
+  match how_to_uninstall(
+    RuntimeKind::Codex,
+    FoundCommand::{ on_path: "C:\\Users\\t\\codex.exe", real: "C:\\Users\\t\\AppData\\Local\\Microsoft\\WinGet\\Packages\\OpenAI.Codex_Microsoft.Winget.Source_8wekyb3d8bbwe\\codex.exe" },
+    host_win,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "winget.exe" && h.args[0] == "uninstall" && h.args[2] == "OpenAI.Codex", "winget uninstall")
+    }
+    UninstallPlan::Unable(u) => panic("expected winget how: " + u.key)
+  }
+  match how_to_uninstall(
+    RuntimeKind::Codex,
+    FoundCommand::{ on_path: "C:\\npm\\codex.cmd", real: "C:\\npm\\codex.cmd" },
+    host_win,
+  ) {
+    UninstallPlan::How(h) => {
+      expect(h.program == "C:\\npm\\npm.cmd" && h.args[4] == "C:\\npm", "windows npm .cmd uninstall")
+    }
+    UninstallPlan::Unable(u) => panic("expected win npm.cmd how: " + u.key)
+  }
+
+  // 8. SDK uninstall plan
+  match sdk_uninstall_plan(RuntimeKind::Copilot, "/data/sdks/copilot", Some("/opt/node/bin/npm"), Some("/opt/node/bin")) {
+    UninstallPlan::How(h) => {
+      expect(h.args[0] == "uninstall" && h.args[3] == "/data/sdks/copilot" && h.args[4] == "@microsoft/copilot-sdk", "sdk uninstall args")
+    }
+    UninstallPlan::Unable(_) => panic("expected sdk uninstall how")
+  }
+
+  // 9. RuntimeUpdatesManager refusals, uninstallable flag, and stillInstalled failure
+  let mgr = RuntimeUpdatesManager::new()
+  expect(!mgr.station.is_uninstallable(), "station itself is never uninstallable")
+  let cl = match mgr.find_runtime("claude") {
+    Some(it) => it
+    None => panic("claude item missing")
+  }
+  expect(!cl.is_uninstallable(), "uninstalled runtime is not uninstallable")
+  match mgr.begin_uninstall("claude", 1000L, fn(_k : RuntimeKind) -> Int { 0 }) {
+    Err(UninstallRefusal::NotInstalled(_)) => ()
+    _ => panic("must refuse uninstall when not installed")
+  }
+  cl.installed = true
+  cl.uninstall = Some(UninstallHow::{ program: "npm", args: ["uninstall", "-g", "@anthropic-ai/claude-code"], node_bin: None })
+  expect(cl.is_uninstallable(), "installed + has how => uninstallable")
+
+  // Active turns refusal
+  match mgr.begin_uninstall("claude", 1000L, fn(_k : RuntimeKind) -> Int { 2 }) {
+    Err(UninstallRefusal::ActiveTurns(_, cnt)) => expect(cnt == 2, "must report 2 active turns")
+    _ => panic("must refuse uninstall while turns are running")
+  }
+  // Station busy refusal
+  mgr.station.updating = Some(500L)
+  match mgr.begin_uninstall("claude", 1000L, fn(_k : RuntimeKind) -> Int { 0 }) {
+    Err(UninstallRefusal::StationBusy(_)) => ()
+    _ => panic("must refuse uninstall while station is updating")
+  }
+  mgr.station.updating = None
+
+  // Begin uninstall succeeds, marks progress = uninstalling, blocks concurrent uninstall
+  match mgr.begin_uninstall("claude", 1000L, fn(_k : RuntimeKind) -> Int { 0 }) {
+    Ok(_) => expect(opt_str_eq(cl.progress_key, Some("station.updates.uninstalling")), "progress must be uninstalling")
+    Err(r) => panic("expected ok begin_uninstall, got " + uninstall_refusal_key(r))
+  }
+  match mgr.begin_uninstall("claude", 1001L, fn(_k : RuntimeKind) -> Int { 0 }) {
+    Err(UninstallRefusal::Busy(_)) => ()
+    _ => panic("must refuse concurrent uninstall")
+  }
+
+  // Finish uninstall: command exited 0 but runtime still found => stillInstalled
+  let _ = mgr.finish_uninstall("claude", true, None, None, true, Some("2.1.0"), Some("/usr/local/bin/claude"), cl.uninstall, None)
+  expect(opt_str_eq(cl.failed_key, Some("station.updates.stillInstalled")), "must report stillInstalled when still found")
+
+  // Finish uninstall cleanly: installed=false, failed=None
+  let _ = mgr.begin_uninstall("claude", 2000L, fn(_k : RuntimeKind) -> Int { 0 })
+  let _ = mgr.finish_uninstall("claude", true, None, None, false, None, None, None, None)
+  expect(!cl.installed && cl.failed_key.is_none() && !cl.is_uninstallable(), "cleanly uninstalled")
+}
+
+test "wave17b3: disabledRuntimes policy and profile filtering (#8793)" {
+  let norm = normalize_disabled_runtime_names(["pi", "claude", "unknown", "pi", "codex"])
+  expect(norm.length() == 3 && norm[0] == "claude" && norm[1] == "codex" && norm[2] == "pi", "canonical order and dedup")
+
+  let t1 = match apply_disabled_runtime_toggle([], "agy", false) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect(t1.length() == 1 && t1[0] == "agy", "disable agy")
+  let t2 = match apply_disabled_runtime_toggle(t1, "claude", false) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect(t2.length() == 2 && t2[0] == "claude" && t2[1] == "agy", "ordered claude then agy")
+  let t3 = match apply_disabled_runtime_toggle(t2, "claude", true) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect(t3.length() == 1 && t3[0] == "agy", "re-enable claude")
+  match apply_disabled_runtime_toggle(t3, "not-a-runtime", false) {
+    Err(e) => expect(e == "station.runtimes.badSettings", "reject unknown runtime")
+    Ok(_) => panic("unknown runtime must fail")
+  }
+
+  let p_api = Profile::{
+    ..Profile::default("p-api", Some(RuntimeKind::Claude), "/homes/api"),
+    access_kind: AccessKind::ApiProvider,
+    access_provider: Some("anthropic"),
+  }
+  let eff = effective_profile_runtimes(p_api, ["claude"])
+  expect(p_api.runtime.is_some(), "profile.runtime metadata stays intact")
+  let mut has_claude = false
+  for i in 0..<eff.length() {
+    if runtime_kind_eq(eff[i], RuntimeKind::Claude) {
+      has_claude = true
+    }
+  }
+  expect(!has_claude, "disabled runtime removed from effective_profile_runtimes")
+
+  let signals = PoolSignals::{
+    now_ms: 1000L,
+    health_fn: fn(_id : String) -> ProfileHealth { ProfileHealth::ok([]) },
+    load_fn: fn(_id : String) -> Int { 0 },
+    local_active_fn: fn(_id : String) -> Int { 0 },
+    remote_active_fn: fn(_id : String) -> Int { 0 },
+    last_picked_fn: fn(_id : String) -> Int64 { 0L },
+    max_sessions_fn: fn(_id : String) -> Option[Int] { None },
+  }
+  match pick_profile_for_workspace_checked([p_api], RuntimeKind::Claude, ["claude"], None, None, None, signals, false) {
+    Err(e) => expect(str_starts_with(e, "station.runtime.disabled:"), "pick_profile_for_workspace_checked refuses disabled runtime")
+    Ok(_) => panic("must refuse disabled runtime")
+  }
+}
+
+test "wave17b3: Antigravity directQuota defaults off unless explicitly true (#8859)" {
+  expect(!agy_quota_uses_direct(None), "default directQuota is false")
+  expect(!agy_quota_uses_direct(Some(false)), "explicit false is false")
+  expect(agy_quota_uses_direct(Some(true)), "explicit true is true")
+
+  let p_agy_default = Profile::{
+    ..Profile::default("p-agy", Some(RuntimeKind::Agy), "/homes/agy"),
+    access_kind: AccessKind::Subscription,
+  }
+  expect(!agy_direct_quota_enabled(p_agy_default), "Agy profile defaults direct_quota=false")
+  expect(opt_bool_eq(agy_direct_quota_view(p_agy_default), Some(false)), "overview view shows directQuota: false")
+
+  let p_agy_on = Profile::{ ..p_agy_default, direct_quota: true }
+  expect(agy_direct_quota_enabled(p_agy_on), "Agy profile with direct_quota=true enabled")
+  expect(opt_bool_eq(agy_direct_quota_view(p_agy_on), Some(true)), "overview view shows directQuota: true")
+
+  let p_claude = Profile::{ ..p_agy_on, runtime: Some(RuntimeKind::Claude) }
+  expect(!agy_direct_quota_enabled(p_claude), "non-Agy profile never enables agy directQuota")
+  expect(agy_direct_quota_view(p_claude).is_none(), "non-Agy profile omits directQuota in overview")
+
+  // Save persistence: only true is persisted; false/absent omitted; existing true preserved when omitted
+  expect(agy_direct_quota_for_save(None, None).is_none(), "default omitted on save")
+  expect(agy_direct_quota_for_save(Some(false), Some(true)).is_none(), "turning off removes field")
+  expect(opt_bool_eq(agy_direct_quota_for_save(Some(true), None), Some(true)), "turning on writes true")
+  expect(opt_bool_eq(agy_direct_quota_for_save(None, Some(true)), Some(true)), "existing true preserved")
+}
+
+test "wave17b3: Copilot chatModels includes models without policy (#9022)" {
+  let payload = "{\"data\":[" +
+  "{\"id\":\"gemini-4-hydrogen\",\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"gpt-5-null-policy\",\"policy\":null,\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"claude-enabled\",\"policy\":{\"state\":\"enabled\"},\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"claude-disabled\",\"policy\":{\"state\":\"disabled\"},\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"claude-unconfigured\",\"policy\":{\"state\":\"unconfigured\"},\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"empty-policy-obj\",\"policy\":{},\"capabilities\":{\"type\":\"chat\"}}," +
+  "{\"id\":\"embed-model\",\"capabilities\":{\"type\":\"embeddings\"}}" +
+  "]}"
+  let parsed = match json_parse_opt(payload) {
+    Some(v) => v
+    None => panic("invalid test json")
+  }
+  let models = copilot_chat_models(parsed)
+  expect(models.length() == 3, "expected 3 usable chat models, got " + models.length().to_string())
+  expect(models[0] == "gemini-4-hydrogen", "missing policy included")
+  expect(models[1] == "gpt-5-null-policy", "null policy included")
+  expect(models[2] == "claude-enabled", "enabled policy included")
+}
+
+test "wave17b3: runner json sentinel removed last and endRunner waits on exiting runner (#8954)" {
+  let paths = RunnerPaths::for_id("/data/station", "agy-chat1", "/")
+  let order : Array[(String, Bool)] = []
+  paths.remove_with(fn(p : String, is_sock : Bool) -> Unit {
+    order.push((nodepath::basename("/", p), is_sock))
+  })
+  expect(order.length() == 4, "must remove 4 files")
+  expect(order[0].0 == "agy-chat1.out" && !order[0].1, "1st: .out")
+  expect(order[1].0 == "agy-chat1.err" && !order[1].1, "2nd: .err")
+  expect(order[2].0 == "agy-chat1.sock" && order[2].1, "3rd: .sock (socket)")
+  expect(order[3].0 == "agy-chat1.json" && !order[3].1, "4th (LAST): .json sentinel")
+
+  let info = RunnerInfo::{
+    id: "agy-chat1",
+    runner_pid: 4242,
+    pid: 4243,
+    pgid: 4243,
+    started_at: 10000L,
+    program: "agy",
+    args: ["acp"],
+    socket: paths.sock,
+    keeps: true,
+    pty: false,
+  }
+
+  // Case 1: Stale reused PID (os_start_time_ms > started_at + STARTED_SLACK_MS) returns immediately without waiting
+  let mut listening_called = false
+  let stale_res = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    None,
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool { true },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L + STARTED_SLACK_MS + 1L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool {
+        listening_called = true
+        true
+      },
+      group_alive: fn(_pg : Int) -> Bool { true },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { () },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  expect(!listening_called && !stale_res.ended_listening && !stale_res.waited_exiting && stale_res.wait_polls == 0, "stale reused PID skips listening_soon and returns immediately")
+
+  // Case 2: Live runner whose socket is already unlinked while exiting => waits for pid exit, returns ended_listening=false, waited_exiting=true
+  let mut alive_checks = 0
+  let exiting_res = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    None,
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool {
+        alive_checks = alive_checks + 1
+        alive_checks <= 3
+      },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { false },
+      group_alive: fn(_pg : Int) -> Bool { false },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { panic("must not signal non-listening runner") },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { () },
+      send_done: fn() -> Unit { panic("must not send done to non-listening runner") },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  expect(!exiting_res.ended_listening && exiting_res.waited_exiting && exiting_res.wait_polls == 2, "must wait on exiting runner until pid goes away")
+
+  // Case 3: Live listening runner whose socket closes mid-TERM skips KILL
+  let mut live_polls = 0
+  let listen_res = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    Some((4242, 10000L)),
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool {
+        live_polls = live_polls + 1
+        live_polls <= 1
+      },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { true },
+      group_alive: fn(_pg : Int) -> Bool { true },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { true },
+      wait_kill_or_close: fn() -> Unit { () },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  // Case 4: Live listening runner with !sock_closed and !group_alive still waits up to 1s without sending KILL
+  let mut wait_kill_called = false
+  let listen_no_kill = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    Some((4242, 10000L)),
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool { false },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { true },
+      group_alive: fn(_pg : Int) -> Bool { false },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { wait_kill_called = true },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  // Note: pid_alive returned false above; test with pid_alive true on live check then false on poll
+  let _ = listen_no_kill
+  let mut p_calls = 0
+  let listen_wait_only = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    Some((4242, 10000L)),
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool {
+        p_calls = p_calls + 1
+        p_calls <= 1
+      },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { true },
+      group_alive: fn(_pg : Int) -> Bool { false },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { wait_kill_called = true },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  expect(
+    listen_wait_only.ended_listening && listen_wait_only.sent_term && !listen_wait_only.sent_kill && wait_kill_called && listen_wait_only.sent_done,
+    "!sock_closed must still wait up to 1s even when group_alive is false",
+  )
+}
+
+test "wave17b3: stuck process stop-grace and ACP silent-turn stall guard (#9057)" {
+  // 1. OwnProcessStopGuard: first abort arms STOP_GRACE_MS (30s), timeout kills, exit outcome is Aborted
+  let sg = OwnProcessStopGuard::new(RuntimeKind::Claude)
+  sg.busy = true
+  match sg.abort(1000L) {
+    AbortAction::SendCancelAndArm(dl) => expect(dl == 1000L + STOP_GRACE_MS, "first abort arms 30s grace")
+    _ => panic("expected SendCancelAndArm")
+  }
+  expect(sg.tick(1000L + STOP_GRACE_MS - 1L).is_none(), "before grace expires: no kill")
+  expect(sg.tick(1000L + STOP_GRACE_MS).is_some(), "at grace expiry: kills process")
+  match sg.on_exited("SIGTERM", "") {
+    Some(TurnOutcome::Aborted) => ()
+    _ => panic("exit during stop_asked must return Aborted")
+  }
+
+  // 2. Second stop kills immediately
+  let sg2 = OwnProcessStopGuard::new(RuntimeKind::Pi)
+  sg2.busy = true
+  let _ = sg2.abort(5000L)
+  match sg2.abort(5100L) {
+    AbortAction::KillImmediately(why) => expect(why == "asked to stop again", "second stop kills immediately")
+    _ => panic("expected KillImmediately")
+  }
+
+  // 3. Adopted session with aborting=true re-arms STOP_GRACE_MS
+  let sg3 = OwnProcessStopGuard::new(RuntimeKind::Dsh)
+  sg3.busy = true
+  sg3.aborting = true
+  match sg3.adopted(9000L) {
+    Some(dl) => expect(dl == 9000L + STOP_GRACE_MS && sg3.stop_asked, "adopted re-arms stop grace")
+    None => panic("expected stop grace on adopted aborting session")
+  }
+
+  // 4. AcpTurnGuard: silent turn stalls after ACP_STALL_MS (15m) with FailureReason::Network
+  let acp = AcpTurnGuard::new(RuntimeKind::Agy)
+  let _ = acp.on_prompt(10000L)
+  expect(acp.tick(10000L + ACP_STALL_MS - 1L).is_none(), "no stall before 15m")
+  // Output resets deadline
+  let _ = acp.on_output_heard(10000L + 60000L)
+  expect(acp.tick(10000L + ACP_STALL_MS).is_none(), "output reset deadline")
+  // Open tool call seeded from snapshot holds off stall
+  let seed_json = match json_parse_opt("{\"live\":{\"open\":[\"call:t1\"]},\"children\":[[\"c1\",{\"live\":{\"open\":[\"call:sub1\"]}}]]}") {
+    Some(v) => v
+    None => panic("bad seed json")
+  }
+  acp.seed_from_state(seed_json)
+  expect(acp.open_calls.length() == 2, "seeded main + subagent tool calls")
+  let _ = acp.on_output_heard(20000L)
+  expect(acp.stall_deadline_at.is_none(), "open tool calls hold off stall deadline")
+  acp.on_live_tool_end("call:t1")
+  acp.on_live_tool_end("sub:c1:call:sub1")
+  // Background tasks also hold off stall
+  acp.on_live_tasks(1)
+  let _ = acp.on_output_heard(30000L)
+  expect(acp.stall_deadline_at.is_none(), "background tasks hold off stall")
+  acp.on_live_tasks(0)
+  let _ = acp.on_output_heard(40000L)
+  expect(acp.tick(40000L + ACP_STALL_MS).is_some(), "silent 15m with no tool/bg kills process")
+  match acp.on_exited("SIGTERM", "") {
+    Some(TurnOutcome::Failed(FailureReason::Network, msg)) => {
+      expect(str_contains(msg, "15 minutes"), "stalled ACP turn fails with Network reason")
+    }
+    _ => panic("expected Failed(Network) for stalled ACP turn")
+  }
+}
+
+test "wave17b3: Agy Stop hook, background eviction guard, and stateDir removal race (#9058, #9120)" {
+  // 1. agy_scrubbed includes STILLFAIL_AGY_STATE_DIR; build_agy_launch sets it for normal sessions and omits for text_only
+  expect(arr_contains_str(agy_scrubbed(), "STILLFAIL_AGY_STATE_DIR"), "STILLFAIL_AGY_STATE_DIR scrubbed")
+  let p_agy = Profile::{
+    ..Profile::default("p-agy-bg", Some(RuntimeKind::Agy), "/homes/agy"),
+    access_kind: AccessKind::Subscription,
+  }
+  let opts_norm = test_opts("chat:agy-bg", p_agy, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
+  let spec_norm = match build_agy_launch(opts_norm) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  match env_get(spec_norm.env, "STILLFAIL_AGY_STATE_DIR") {
+    Some(dir) => expect(str_contains(dir, "/run/agy-state/agy-"), "normal agy launch sets STILLFAIL_AGY_STATE_DIR")
+    None => panic("normal agy launch must set STILLFAIL_AGY_STATE_DIR")
+  }
+  let opts_text = OpenOptions::{ ..opts_norm, text_only: true }
+  let spec_text = match build_agy_launch(opts_text) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(env_get(spec_text.env, "STILLFAIL_AGY_STATE_DIR").is_none(), "text_only agy omits STILLFAIL_AGY_STATE_DIR")
+  let opts_probe = OpenOptions::{ ..opts_norm, probe: true }
+  let spec_probe = match build_agy_launch(opts_probe) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(env_get(spec_probe.env, "STILLFAIL_AGY_STATE_DIR").is_none(), "probe agy omits STILLFAIL_AGY_STATE_DIR")
+
+  // 2. agy_stillfail_hooks_json matches Node JSON.stringify(next.stillfail) byte-for-byte (flat PostInvocation & Stop),
+  //    and merge_agy_hooks_json preserves unrelated top-level keys in hooks.json.
+  let got_stillfail = json_stringify(
+    agy_stillfail_hooks_json("/opt/node", "/opt/repo-rules-hook.mjs", "/opt/agy-stop-hook.mjs", "linux"),
+  )
+  let expected_stillfail = "{\"PostToolUse\":[{\"matcher\":\"run_command|read_file|write_file|edit_file|view_file|grep_search|find_by_name|list_dir\",\"hooks\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/repo-rules-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}]}],\"PostInvocation\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/repo-rules-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}],\"Stop\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/agy-stop-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}]}"
+  expect(got_stillfail == expected_stillfail, "stillfail hooks JSON must match Node agy.ts:539-543 byte-for-byte, got: " + got_stillfail)
+  let merged_hooks = merge_agy_hooks_json(
+    Some("{\"customHook\":{\"foo\":1},\"stillfail\":{\"old\":true}}"),
+    "/opt/node",
+    "/opt/repo-rules-hook.mjs",
+    "/opt/agy-stop-hook.mjs",
+    "linux",
+  )
+  expect(json_get_field(merged_hooks, "customHook").is_some(), "merge_agy_hooks_json preserves existing non-stillfail keys")
+  expect(
+    match json_get_field(merged_hooks, "stillfail") {
+      Some(sf) => json_stringify(sf) == expected_stillfail
+      None => false
+    },
+    "merge_agy_hooks_json replaces stillfail key with exact Node structure",
+  )
+
+  // 3. parse_agy_stop_hook_payload validates hookEventName, conversationId, fullyIdle
+  match parse_agy_stop_hook_payload("{\"hookEventName\":\"Stop\",\"conversationId\":\"conv_123\",\"fullyIdle\":false}") {
+    Some((cid, idle)) => expect(cid == "conv_123" && !idle, "valid Stop payload")
+    None => panic("expected valid Stop payload")
+  }
+  expect(parse_agy_stop_hook_payload("{\"hookEventName\":\"Stop\",\"conversationId\":\"../bad\",\"fullyIdle\":false}").is_none(), "reject traversal conversationId")
+
+  // 4. find_agy_state_dir picks newest mtime
+  let found_dir = find_agy_state_dir(
+    "/data",
+    "agy-chat1",
+    "conv_123",
+    "/",
+    fn(_p : String) -> Array[String] { ["run-old", "run-new"] },
+    fn(f : String) -> Option[Int64] {
+      if str_contains(f, "run-old") { Some(100L) } else if str_contains(f, "run-new") { Some(500L) } else { None }
+    },
+  )
+  expect(opt_str_eq(found_dir, Some("/data/run/agy-state/agy-chat1/run-new")), "find_agy_state_dir picks newest mtime")
+
+  // 5. AgyStateTracker sync_holding re-read race guard + holding_since preservation + snapshot/restore (#9058)
+  let tr = AgyStateTracker::new("conv_123", Some("/data/run/agy-state/agy-chat1/run-1"))
+  let mut reads = 0
+  // First read sees fullyIdle: false; re-read after attaching watcher sees fullyIdle: true => never misses transition!
+  let changed_race = tr.sync_holding(
+    "/",
+    fn(_f : String) -> Option[String] {
+      reads = reads + 1
+      if reads == 1 {
+        Some("{\"fullyIdle\":false,\"at\":1000}")
+      } else {
+        Some("{\"fullyIdle\":true,\"at\":1005}")
+      }
+    },
+    1010L,
+    true,
+  )
+  expect(reads == 2 && !tr.holding && !tr.watching && !changed_race, "re-read after watch catches immediate fullyIdle: true")
+
+  // Steady fullyIdle: false holds session & keeps watcher open & preserves holding_since
+  let changed1 = tr.sync_holding("/", fn(_f : String) -> Option[String] { Some("{\"fullyIdle\":false,\"at\":2000}") }, 2010L, true)
+  expect(changed1 && tr.holding && tr.watching && tr.background().length() == 1, "holding=true exposes background task")
+  let changed2 = tr.sync_holding("/", fn(_f : String) -> Option[String] { Some("{\"fullyIdle\":false,\"at\":3000}") }, 3010L, true)
+  expect(!changed2 && tr.holding, "consecutive fullyIdle: false keeps holding")
+  match tr.holding_since {
+    Some(ts) => expect(ts == 2000L, "holding_since preserved across consecutive stops")
+    None => panic("expected holding_since")
+  }
+  // Snapshot & restore roundtrip
+  let snap = tr.snapshot_json()
+  let tr_restored = AgyStateTracker::new("conv_123", None)
+  tr_restored.restore_from_snapshot(snap)
+  expect(tr_restored.holding && opt_str_eq(tr_restored.state_dir, Some("/data/run/agy-state/agy-chat1/run-1")), "snapshot restores stateDir and holding")
+
+  // 6. Shared in-flight stateDir removal across exited(), settled(), and dispose() (#9120)
+  let r1 = match tr.on_exited() {
+    Some((rid, dir)) => {
+      expect(dir == "/data/run/agy-state/agy-chat1/run-1", "exited starts removing stateDir")
+      rid
+    }
+    None => panic("exited must start removal")
+  }
+  expect(tr.holding, "exited keeps holding intact so actor sees died background work")
+  expect(tr.has_pending_settle(), "settled() must wait on in-flight stateDir removal")
+  // dispose() called while removal is still in-flight MUST share the same rid (never return None early!)
+  match tr.on_dispose() {
+    Some((rid2, _)) => expect(rid2 == r1, "dispose shares in-flight removal id with exited")
+    None => panic("dispose must join in-flight removal")
+  }
+  expect(tr.complete_remove_state_dir(r1), "complete removal")
+  expect(!tr.has_pending_settle() && tr.removed_dirs.length() == 1, "settled clears after removal finishes")
+
+  // 7. Crash-recovery set_state_dir after exited() triggers removal, but after handover/detach does NOT (#9120)
+  let tr_crash = AgyStateTracker::new("conv_crash", None)
+  let _ = tr_crash.on_exited()
+  match tr_crash.set_state_dir("/data/run/agy-state/agy-c/late") {
+    Some((rid_late, dir_late)) => {
+      expect(dir_late == "/data/run/agy-state/agy-c/late", "late set_state_dir after exit triggers removal")
+      expect(tr_crash.complete_remove_state_dir(rid_late), "late removal completes")
+    }
+    None => panic("late set_state_dir after exit must remove dir")
+  }
+  let tr_handover = AgyStateTracker::new("conv_ho", None)
+  tr_handover.on_handover_or_detach()
+  expect(tr_handover.set_state_dir("/data/run/agy-state/agy-h/keep").is_none(), "handover/detach keeps stateDir alive")
 }

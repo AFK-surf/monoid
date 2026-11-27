@@ -24,6 +24,8 @@ pub fn confirm_node(
   cancel : () -> Unit,
   confirm : () -> Unit,
   warning? : String = "",
+  facts? : Array[(String, String)] = [],
+  body? : (@view.View) -> Unit,
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
   dims? : () -> Bool = fn() { true },
@@ -31,7 +33,7 @@ pub fn confirm_node(
 ) -> Unit {
   // (a press outside an alert does not close it: confirm_dialog's outside=false)
   dialog_layer_node(parent, open, cancel, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {
-    confirm_panel(across, layer, look, veil, title, words, warning, action, danger, cancel, confirm) |> ignore
+    confirm_panel(across, layer, look, veil, title, words, warning, facts, body, action, danger, cancel, confirm) |> ignore
     // (the focus on its own ground as it opens, as confirm_dialog's (an overlay that traps it, with no stop of its own:
     // the layer's own), Space doing nothing there, Enter its default's: its action unless `danger`; back to what had it
     // as it goes)
@@ -231,6 +233,8 @@ fn confirm_panel(
   title : () -> String,
   words : () -> String,
   warning : String,
+  facts : Array[(String, String)],
+  body : ((@view.View) -> Unit)?,
   action : () -> String,
   danger : Bool,
   cancel : () -> Unit,
@@ -251,7 +255,7 @@ fn confirm_panel(
     .alpha(By(fn() { look().alpha }))
     .scale(By(fn() { look().sx }))
     .offset(By(fn() { (look().dx, look().dy) }))
-    .says(By(fn() { Some(@view.said(Dialog, label=title(), description=if warning == "" { words() } else { words() + "\n" + warning })) }))
+    .says(By(fn() { Some(@view.said(Dialog, label=title(), description=confirm_description(facts, words(), warning))) }))
     |> ignore
     corner_card_node(d, fn() { dialog_r }, inset=fn() { dialog_pad })
     // (all it holds as far in as its look says, past its own ground, edge and shadow: each part of it, its title, its
@@ -265,14 +269,24 @@ fn confirm_panel(
       |> ignore
     })
     |> ignore
-    d.box(fn(t) {
+    match body {
+      Some(draw) =>
+        d.box(fn(wrap) {
+          let mx = panel_card_in - dialog_pad
+          wrap.margin(Is((mx, @ui.Space::px(S1), mx, 0.0))).alpha(By(words_in)) |> ignore
+          draw(wrap)
+        })
+        |> ignore
+      None =>
+        confirm_facts_card_node(d, facts, panel_card_in - dialog_pad, dialog_card_corner, words_in, top_gap=true)
+    }
+    d.show(fn() { words() != "" }, at_once=true, fn(t) {
       t
       .words(By(words), look=toast_words_look(Meta, L6, 400, true))
       .ink(By(overlay_muted_ink))
       .alpha(By(words_in))
       |> ignore
     })
-    |> ignore
     if warning != "" {
       d.box(fn(t) {
         t
@@ -324,6 +338,149 @@ let confirm_ground_ms : Double = 180.0
 ///|
 /// Over its title (confirm_box's pt=S7).
 let confirm_top : Double = 28.0
+
+///|
+/// Accessible description combining verification facts, body copy, and optional warning.
+fn confirm_description(facts : Array[(String, String)], words : String, warning : String) -> String {
+  let parts : Array[String] = []
+  for kv in facts {
+    let (k, v) = kv
+    if v != "" {
+      if k != "" {
+        parts.push(k + ": " + v)
+      } else {
+        parts.push(v)
+      }
+    }
+  }
+  if words != "" {
+    parts.push(words)
+  }
+  if warning != "" {
+    parts.push(warning)
+  }
+  parts.join("\n")
+}
+
+///|
+/// Renders the key-value fact rows inside a verification card.
+#callsite(autofill(loc))
+fn dialog_facts_rows_node(card : @view.View, shown : Array[(String, String)], loc~ : SourceLoc) -> Unit {
+  for kv in shown {
+    let (k, v) = kv
+    if k == "" {
+      words_node(loc~, card, fn() { v }, fn() { dialog_facts_hero }) |> ignore
+    } else {
+      card.box(made_for=loc, fn(line) {
+        style_node(line, fn() { dialog_facts_kv })
+        line.wraps(Is(Some(2.0))) |> ignore
+        words_node(loc~, line, fn() { k }, fn() { dialog_facts_key }).shrink(Is(0.0)) |> ignore
+        words_node(loc~, line, fn() { v }, fn() { dialog_facts_val }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      })
+      |> ignore
+    }
+  }
+}
+
+///|
+/// Internal verification card builder used by `confirm_panel`, `sheet_confirm_node`, and `menu_confirm_level_node`
+/// with explicit horizontal inset/bleed `mx`, concentric corner radius `radius`, and optional fade `alpha`.
+#callsite(autofill(loc))
+fn confirm_facts_card_node(
+  parent : @view.View,
+  facts : Array[(String, String)],
+  mx : Double,
+  radius : Double,
+  alpha : () -> Double,
+  compact? : Bool = false,
+  top_gap? : Bool = false,
+  loc~ : SourceLoc,
+) -> Unit {
+  let shown = facts.filter(fn(kv) { kv.1 != "" })
+  if shown.is_empty() {
+    return
+  }
+  parent.box(made_for=loc, fn(card) {
+    style_node(card, fn() {
+      let base = if compact { dialog_facts_popover_card } else { dialog_facts_card }
+      let with_top = if top_gap { base.then(dialog_facts_top_gap) } else { base }
+      if mx != 0.0 {
+        with_top.then(@ui.style(mx=room(mx)))
+      } else {
+        with_top
+      }
+    })
+    card.radius(Is(radius)).alpha(By(alpha)) |> ignore
+    if !compact {
+      card.min_height(Is(Some(dialog_card_corner * 2.0))) |> ignore
+    }
+    dialog_facts_rows_node(loc~, card, shown)
+  })
+  |> ignore
+}
+
+///|
+/// A quiet concentric verification card (`bg=A(Fg,O5)`, `dialog_card_corner` in dialogs/sheets or `row_corner` in
+/// anchored popovers) listing key-value facts `(label, value)` people must verify before acting, keeping dialog and
+/// sheet titles fixed and short while making variable-length identity details scannable.
+#callsite(autofill(loc))
+pub fn dialog_facts_card_node(
+  parent : @view.View,
+  facts : Array[(String, String)],
+  inset_out? : Bool = true,
+  loc~ : SourceLoc,
+) -> Unit {
+  let shown = facts.filter(fn(kv) { kv.1 != "" })
+  if shown.is_empty() {
+    return
+  }
+  parent.box(made_for=loc, fn(card) {
+    let small = in_small_panel_node(card)
+    style_node(card, fn() {
+      if small {
+        dialog_facts_popover_card
+      } else if inset_out {
+        dialog_facts_card.then(panel_card_out_node(card))
+      } else {
+        dialog_facts_card
+      }
+    })
+    card.radius(Is(if small { row_corner } else { dialog_card_corner })) |> ignore
+    if !small {
+      card.min_height(Is(Some(dialog_card_corner * 2.0))) |> ignore
+    }
+    dialog_facts_rows_node(loc~, card, shown)
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_card : @ui.Style = @ui.css("w=Full px=S4 py=S3 gap=S1_5 bg=A(Fg,O5) clip justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_popover_card : @ui.Style = @ui.css("w=Full py=S2_5 gap=S1_5 bg=A(Fg,O5) clip").then(@ui.style(px=room(text_in - panel_pad)))
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_top_gap : @ui.Style = @ui.css("mt=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))))
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_val : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg)
+
+///|
+// kept across runs: a value (no field of it changes)
+let dialog_facts_hero : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Fg, w=Full)
 
 ///|
 /// `colour` as far in as `t` (0 to 1): its alpha so much of its own.

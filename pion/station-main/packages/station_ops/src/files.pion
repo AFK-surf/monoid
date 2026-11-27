@@ -194,6 +194,166 @@ pub fn rename_retrying(
   Ok(())
 }
 
+/// Chunk size used for streaming cross-device file copies (256 KiB).
+pub let MOVE_FILE_CHUNK_BYTES : Int = 262144
+
+/// Streaming raw-byte copy port used by `move_file` on cross-device (`EXDEV`) fallback so
+/// large uploads never load the whole file into memory or convert binary bytes to UTF-8 text.
+pub struct StreamCopyPort {
+  pub read_chunk : (String, Int64, Int) -> Result[Bytes, FsErr]
+  pub write_chunk : (String, Bytes, Int, Bool) -> Result[Unit, FsErr]
+}
+
+/// Production `StreamCopyPort` backed directly by `station_sys` positioned raw-byte I/O.
+pub fn os_stream_copy_port() -> StreamCopyPort {
+  StreamCopyPort::{
+    read_chunk: fn(path : String, offset : Int64, max_len : Int) -> Result[Bytes, FsErr] {
+      match station_sys::read_range_meta(path, offset, max_len.to_int64()) {
+        Ok((bytes, _, _)) => Ok(bytes)
+        Err(code) => {
+          if code == -2 {
+            Err(FsErr::NotFound)
+          } else if code == -3 {
+            Err(FsErr::PermissionDenied("EACCES"))
+          } else {
+            Err(FsErr::Other("read_range_meta failed (" + code.to_string() + ")"))
+          }
+        }
+      }
+    },
+    write_chunk: fn(path : String, data : Bytes, mode : Int, append : Bool) -> Result[Unit, FsErr] {
+      if station_sys::write_file_mode(path, data, mode=mode, append=append) {
+        Ok(())
+      } else {
+        Err(FsErr::Other("write_file_mode failed: " + path))
+      }
+    },
+  }
+}
+
+/// In-memory `StreamCopyPort` backed by `MemFs` for deterministic multi-chunk streaming tests.
+pub fn MemFs::stream_copy_port(self : MemFs) -> StreamCopyPort {
+  StreamCopyPort::{
+    read_chunk: fn(path : String, offset : Int64, max_len : Int) -> Result[Bytes, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let data = self.entries[idx].data
+      let off = offset.to_int()
+      if off < 0 || off >= data.length() {
+        return Ok(Bytes::new(0))
+      }
+      Ok(ops_slice_bytes(data, off, max_len))
+    },
+    write_chunk: fn(path : String, data : Bytes, mode : Int, append : Bool) -> Result[Unit, FsErr] {
+      let norm = mem_norm(path)
+      let idx = self.find_idx(norm)
+      if !append || idx < 0 {
+        self.put_file(norm, data, mode=mode)
+        return Ok(())
+      }
+      let prev = self.entries[idx].data
+      let combined = Bytes::new(prev.length() + data.length())
+      for i in 0..<prev.length() {
+        combined[i] = prev[i]
+      }
+      for i in 0..<data.length() {
+        combined[prev.length() + i] = data[i]
+      }
+      self.entries[idx].data = combined
+      Ok(())
+    },
+  }
+}
+
+/// Whether an `FsErr` indicates a cross-device rename (`EXDEV`, `#8940`).
+pub fn fs_err_is_exdev(e : FsErr) -> Bool {
+  match e {
+    FsErr::CrossDevice(_) => true
+    _ => false
+  }
+}
+
+/// Move `from` to `to`, falling back across disks on `EXDEV` (`station/src/ops/files.ts` `moveFile`, `#8940`):
+/// streams raw bytes in `MOVE_FILE_CHUNK_BYTES` (256 KiB) chunks beside `to` as
+/// `.moving-<nonce>-<basename>`, best-effort restores mtime, renames into place,
+/// and only then removes `from` (cleaning up the temp copy on error).
+pub fn move_file(
+  fs : OpsFs,
+  stream : StreamCopyPort,
+  from : String,
+  to : String,
+  nonce : String,
+  set_times : Option[(String, Int64) -> Result[Unit, FsErr]] = None,
+  sep : String = "/",
+  chunk_bytes : Int = MOVE_FILE_CHUNK_BYTES,
+) -> Result[Unit, FsErr] {
+  match (fs.rename)(from, to) {
+    Ok(_) => return Ok(())
+    Err(e) => if !fs_err_is_exdev(e) { return Err(e) }
+  }
+  let meta = match (fs.stat)(from) {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  let dir = nodepath::dirname(sep, to)
+  let base = nodepath::basename(sep, to)
+  let part = nodepath::join(sep, [dir, ".moving-" + nonce + "-" + base])
+  let step = if chunk_bytes > 0 { chunk_bytes } else { MOVE_FILE_CHUNK_BYTES }
+  let mut offset = 0L
+  let mut first = true
+  while true {
+    let chunk = match (stream.read_chunk)(from, offset, step) {
+      Ok(b) => b
+      Err(e) => {
+        let _ = (fs.remove)(part)
+        return Err(e)
+      }
+    }
+    if chunk.length() == 0 {
+      if first {
+        match (stream.write_chunk)(part, Bytes::new(0), meta.mode, false) {
+          Ok(_) => ()
+          Err(e) => {
+            let _ = (fs.remove)(part)
+            return Err(e)
+          }
+        }
+      }
+      break
+    }
+    match (stream.write_chunk)(part, chunk, meta.mode, !first) {
+      Ok(_) => ()
+      Err(e) => {
+        let _ = (fs.remove)(part)
+        return Err(e)
+      }
+    }
+    first = false
+    offset = offset + chunk.length().to_int64()
+    if chunk.length() < step {
+      break
+    }
+  }
+  match set_times {
+    Some(f) => {
+      // Best-effort: FUSE/CIFS mounts may refuse utimes; move succeeds anyway.
+      let _ = f(part, meta.mtime_ms)
+    }
+    None => ()
+  }
+  match (fs.rename)(part, to) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (fs.remove)(part)
+      return Err(e)
+    }
+  }
+  let _ = (fs.remove)(from)
+  Ok(())
+}
+
 /// Write `data` atomically to `path` with mode 0600: write to `<path>.<pid>.<seq>.tmp`
 /// and rename into place (retrying transient lock errors), removing temp file on failure.
 pub fn write_private(

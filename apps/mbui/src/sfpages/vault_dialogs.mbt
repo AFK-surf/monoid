@@ -399,10 +399,11 @@ pub fn vault_editor_dialog(
             fn() {
               guard !@signals.untracked(is_revoked) else { return }
               confirm(
-                @sf.t("web-pages.vault.deleteTitle", args=[("name", text(was, "name"))]),
+                @sf.t("web-pages.vault.deleteItemTitle"),
                 @sf.t("web-pages.vault.deleteBody"),
                 @sf.t("common.delete"),
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.secret"), text(was, "name"))],
                 fn() {
                   guard !@signals.untracked(is_revoked) else { return }
                   dismiss_editor()
@@ -922,9 +923,10 @@ pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit
               let who = @signals.untracked(title)
               confirm(
                 @sf.t("web-pages.vault.members.removeTitle"),
-                @sf.t("web-pages.vault.members.removeBody", args=[("name", who)]),
+                @sf.t("web-pages.vault.members.removeBody"),
                 @sf.t("web-pages.vault.members.remove"),
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.member"), who)],
                 fn() {
                   vault_act(
                     core,
@@ -1071,17 +1073,16 @@ pub fn vault_devices_dialog(core : Core, here : Here, vault_id : String) -> Unit
     .find_first(fn(r) { text(Some(r), "id") == vault_id })
   }
   let initial_name = text(@signals.untracked(rv), "name")
-  let title = if initial_name != "" {
-    @sf.t("web-pages.vault.devicesDialog.title", args=[("name", initial_name)])
-  } else {
-    @sf.t("web-pages.vault.devicesDialog.titleFallback")
-  }
+  let title = @sf.t("web-pages.vault.devicesDialog.title")
   let pending = fn() { items(rv(), "pendingDevices") }
   let authorized = fn() { items(rv(), "authorizedDevices") }
   let can_give = fn() { vault_can_manage(rv()) && flag(rv(), "keyed") }
   open_dialog_nodes(
     title,
     fn(v, _) {
+      if initial_name != "" {
+        @sf.dialog_facts_card_node(v, [(@sf.t("common.confirmFact.vault"), initial_name)])
+      }
       v.show(fn() { !pending().is_empty() }, fn(sec) {
         @sf.style_node(sec, fn() { vd_dev_section })
         @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.pendingTitle") }, fn() {

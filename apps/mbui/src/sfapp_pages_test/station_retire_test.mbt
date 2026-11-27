@@ -113,7 +113,7 @@ test "迁移 once the chats are moved: 移出 workspace, asked as the ⋯'s 移�
   assert_true(!retire_said(t, "2 个账号没移过去"))
   assert_true(retire_said(t, "移连接") && !retire_said(t, "完成"), msg=t.words().map(fn(x) { x.0 }).join("|"))
   retire_press(t, "移出 workspace")
-  assert_true(retire_said(t, "移除「Willow」？"), msg=t.words().map(fn(x) { x.0 }).join("|"))
+  assert_true(retire_said(t, "移除 Station") && retire_said(t, "Willow"), msg=t.words().map(fn(x) { x.0 }).join("|"))
   retire_press(t, "移除 station")
   let asked = retire_calls(calls, "workspace.removeStation")
   assert_eq(asked.length(), 1)
@@ -174,7 +174,7 @@ test "its panel (opened over its page, as a press of 迁走聊天并移出工作
   let t = retire_tester(calls, "settings-station-retire-panel")
   assert_eq(t.audit(), [])
   // Maple the one up, chosen; each kind counted and named
-  for w in ["迁走 Willow 的聊天", "迁到", "Maple", "一起迁到 Maple", "聊天", "594 个", "其中 525 个已归档", "连接", "5 个", "账号", "9 个", "无法迁移的", "正在运行的任务和服务", "6 个", "station 外的工作目录", "聊天迁过去，文件留在原处", "3 个", "开始迁移"] {
+  for w in ["迁走聊天", "Willow", "迁到", "Maple", "一起迁到 Maple", "聊天", "594 个", "其中 525 个已归档", "连接", "5 个", "账号", "9 个", "无法迁移的", "正在运行的任务和服务", "6 个", "station 外的工作目录", "聊天迁过去，文件留在原处", "3 个", "开始迁移"] {
     assert_true(retire_said(t, w), msg=w + ": " + t.words().map(fn(x) { x.0 }).join("|"))
   }
   // (which they are: three at most, then 等; none cut short, none past two lines)

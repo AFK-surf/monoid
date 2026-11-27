@@ -575,13 +575,13 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
   let remove = fn() {
     let (title, words) = if machine {
       (
-        @sf.t("web-pages.profiles.disableConfirm", args=[("name", text(p, "name"))]),
-        @sf.t("web-pages.profiles.disableBody", args=[("name", @sf.product()), ("runtime", @settings.runtime_label(text(p, "runtime")))]),
+        @sf.t("web-pages.profiles.disableConfirm"),
+        @sf.t("web-pages.profiles.disableBody", args=[("runtime", @settings.runtime_label(text(p, "runtime")))]),
       )
     } else {
-      (@sf.t("web-pages.archive.deleteConfirm", args=[("title", text(p, "name"))]), @sf.t("web-pages.profiles.deleteBody", args=[("name", @sf.product())]))
+      (@sf.t("web-pages.profiles.deleteConfirm"), @sf.t("web-pages.profiles.deleteBody"))
     }
-    confirm(title, words, item, danger=true, fn() {
+    confirm(title, words, item, danger=true, facts=[(@sf.t("common.confirmFact.account"), text(p, "name"))], fn() {
       // closed where its page was pushed on the stack; in the profiles' place it stays on the place, which moves on to
       // the first left once the station has dropped it (places.mbt place_route)
       @sfbase.close_page(Setting(@settings.Route::Profile(address, id))) |> ignore
@@ -645,7 +645,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
     items.push(Some(@sf.menu_item_of(label, icon="power", disabled=is_doing(core, ["profile.put"], on), fn() {
       if enabled {
         let words = @sf.t(if copy { "web-pages.profiles.disableCopyBody" } else { "web-pages.profiles.disableKeyBody" })
-        confirm(@sf.t("web-pages.profiles.disableConfirm", args=[("name", text(p, "name"))]), words, label, danger=true, change)
+        confirm(@sf.t("web-pages.profiles.disableConfirm"), words, label, danger=true, facts=[(@sf.t("common.confirmFact.account"), text(p, "name"))], change)
       } else {
         change()
       }
@@ -1572,10 +1572,11 @@ fn profile_station_rows_node(
             }
             if !next {
               confirm(
-                @sf.t("web-pages.profiles.disableConfirm", args=[("name", text(@signals.untracked(p), "name"))]),
+                @sf.t("web-pages.profiles.disableConfirm"),
                 @sf.t("web-pages.profiles.disableCopyBody"),
                 label,
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.account"), text(@signals.untracked(p), "name"))],
                 change,
               )
             } else {

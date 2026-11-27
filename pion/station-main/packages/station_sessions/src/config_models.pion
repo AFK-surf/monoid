@@ -884,3 +884,44 @@ pub fn safe_clone_url(url : String) -> String {
     url
   }
 }
+
+/// Single source of truth for git config `(key, value)` pairs kept in every shared clone (`#8900`, `#8901`).
+pub fn shared_repo_config_pairs() -> Array[(String, String)] {
+  [
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+    ("gc.autoDetach", "false"),
+  ]
+}
+
+/// Git config arguments written into every shared clone in `<data>/repos` (`#8900`, `#8901`).
+pub fn shared_repo_clone_config_args() -> Array[String] {
+  let pairs = shared_repo_config_pairs()
+  let out : Array[String] = []
+  for i in 0..<pairs.length() {
+    let (k, v) = pairs[i]
+    out.push("--config")
+    out.push(k + "=" + v)
+  }
+  out
+}
+
+/// Builds the full `git` argv for cloning a shared repository into `<data>/repos` (`#8900`, `#8901`).
+pub fn shared_clone_git_args(url : String, dest : String) -> Array[String] {
+  let out : Array[String] = [
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "protocol.file.allow=never",
+    "clone",
+    "--quiet",
+  ]
+  let cfg = shared_repo_clone_config_args()
+  for i in 0..<cfg.length() {
+    out.push(cfg[i])
+  }
+  out.push("--")
+  out.push(url)
+  out.push(dest)
+  out
+}

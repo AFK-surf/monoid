@@ -83,7 +83,7 @@
 {"step":"tap icon:trash","w":1794103890023.398}
 {"step":"tap icon:trash","acted":true,"w":1794103890023.509}
 {"step":"wait 150","w":1794103890038.732}
-{"step":"now until 删除「照片-082940.jpg」？","w":1794103890200.206}
+{"step":"now until 删除文件","w":1794103890200.206}
 {"step":"tap =删除","w":1794103890200.281}
 {"step":"tap =删除","acted":true,"w":1794103890200.408}
 {"out":{"id":29,"call":"drive.remove","params":{"station":"01M6WEPVRNJNW4JT9BP3ZCMPTP/f3370c54636dfc1a8ed06e9c1cd960ed49ffc1bd13998150a516ee656b3a3ca7","root":"/test-station/home/e2e-082940","path":"照片-082940.jpg","permanent":true}},"w":1794103890203.373}

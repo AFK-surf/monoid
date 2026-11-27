@@ -140,7 +140,7 @@ test "a finger swiping a row over a late whole row: let go before it is answered
   let (x, y) = t.find("和 Ana 一起看新版的引导页").unwrap()
   let start = t.time()
   t.drag(x + 190.0, y, x + 10.0, y)
-  let asks = ["归档「和 Ana 一起看新版的引导页」？", "这是Ana发起的对话。归档后，workspace 里所有人的列表都不再显示它，agent 也不再接收新消息。"]
+  let asks = ["归档对话", "这是Ana发起的对话。归档后，workspace 里所有人的列表都不再显示它，agent 也不再接收新消息。"]
   whole_from(words_over(t, start, late + @ui.move_most_ms, asks), asks, late, late, "someone else's")
   assert_eq(named(calls, "chat.archive").length(), 0)
   t.tap_text("取消")
@@ -151,7 +151,7 @@ test "a finger swiping a row over a late whole row: let go before it is answered
   t.drag(x + 190.0, y, x + 10.0, y)
   t.run_for(late + @ui.move_most_ms * 2.0)
   assert_eq(named(calls, "chat.archive").length(), 1)
-  assert_true(t.find("归档「首页的列表改成按天分组」？") is None)
+  assert_true(t.find("归档对话") is None)
 }
 
 ///|

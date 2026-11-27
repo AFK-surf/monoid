@@ -199,6 +199,9 @@ pub struct Profile {
   pub share_workspaces : Array[String]
   pub withheld : Array[String]
   pub max_concurrent_sessions : Option[Int]
+  /// Whether an Antigravity CLI subscription profile may call Google's Cloud Code API directly
+  /// beside `agy -p /usage` (`f5bbb1cbf3` #8859: defaults to `false` unless explicitly turned on).
+  pub direct_quota : Bool
 }
 
 pub fn Profile::default(id : String, runtime : Option[RuntimeKind], home : String) -> Profile {
@@ -223,6 +226,7 @@ pub fn Profile::default(id : String, runtime : Option[RuntimeKind], home : Strin
     share_workspaces: [],
     withheld: [],
     max_concurrent_sessions: None,
+    direct_quota: false,
   }
 }
 
@@ -243,6 +247,7 @@ pub struct OpenOptions {
   pub mcp_url : String
   pub route : String
   pub text_only : Bool
+  pub probe : Bool
   pub is_root : Bool
   pub has_keychain : Bool
   pub os_name : String
@@ -344,6 +349,7 @@ pub fn OpenOptions::new(
     mcp_url: mcp_url,
     route: "route-1",
     text_only: false,
+    probe: false,
     is_root: false,
     has_keychain: false,
     os_name: "linux",

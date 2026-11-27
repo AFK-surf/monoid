@@ -9,6 +9,11 @@ base_codec = { workspace = true }
 builders_core = { workspace = true }
 host_shim = { workspace = true }
 js_json = { workspace = true }
+lock = { workspace = true }
+sql_db = { workspace = true }
+sqlite_ffi = { workspace = true }
+station_rules_bridge = { workspace = true }
 station_sys = { workspace = true }
 form = { workspace = true }
+history = { workspace = true }
 vault = { workspace = true }

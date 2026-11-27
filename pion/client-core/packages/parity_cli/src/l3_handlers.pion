@@ -880,6 +880,21 @@ pub fn handle_l3_op(
     }
     return Some(ok_resp(base_codec::json_bool(true)))
   }
+  if op == "core.reopen" {
+    let ws = match j_os(args, "workspace") { Some(s) => s; None => sess.core.workspace }
+    let st = match j_os(args, "station") { Some(s) => s; None => sess.core.station }
+    sess.core.stop()
+    let tr = sync::StationTransport::{
+      request_k: fn(_m : String, _p : String, _h : Array[(String, String)], _b : Bytes, k : (effect::Exit[sync::HttpReply]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      },
+      stream_k: fn(_p : String, _h : Array[(String, String)], _c : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    sess.core = sync::ClientCore::new(ws, st, sess.rt, sess.db, tr, fn() -> Unit {})
+    return Some(ok_resp(base_codec::json_obj([("conn", base_codec::json_int64(sess.core.auth.conn_seq()))])))
+  }
   if op == "core.wire" {
     let raw_str = match base_codec::json_get(args, "rawText") {
       Some(base_codec::Json::Str(s)) => s
@@ -896,10 +911,10 @@ pub fn handle_l3_op(
     }
   }
   if op == "core.refreshTopic" {
-    let evs = sess.core.router.refresh_topic_name(j_s(args, "topic"))
+    let frames = sess.core.refresh_topic_wire(j_s(args, "topic"))
     let out : Array[base_codec::Json] = []
-    for i in 0..<evs.length() {
-      let (s, _) = protocol::encode_core_event(evs[i])
+    for i in 0..<frames.length() {
+      let (s, _) = frames[i]
       match base_codec::json_parse(s) {
         base_codec::JsonParseResult::Ok(j) => out.push(j)
         base_codec::JsonParseResult::Err(_) => ()

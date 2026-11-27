@@ -90,8 +90,8 @@ priv struct ScreenSess {
   mut revoked : Bool
   station : String
   screen : String
-  /// the name the core knows this view by (unique among this app's views)
-  view : String
+  /// the name the core knows this view by (fresh per `open()`, unique among this app's views)
+  mut view : String
   /// the core's latest state of the view (ScreenViewState, whole each time); None before the first
   mut state : Json?
   /// each state taken that changed more than where the station's pointer is (ScreenSess::take): what reads the state
@@ -310,7 +310,6 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
   match screens_open.get(key) {
     Some(s) => s
     None => {
-      screens_made.val += 1
       let s : ScreenSess = {
         src,
         account,
@@ -319,7 +318,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         revoked: false,
         station,
         screen,
-        view: "mbui-\{screens_made.val}",
+        view: "",
         state: None,
         said: @signals.signal(0),
         cursor_said: @signals.signal(0),
@@ -1028,7 +1027,10 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   }
   self.failure.set(None)
   self.finished.set(false)
-  // (a call of its own: the part in sight told it again)
+  // (a call of its own: fresh view name so pause/reopen never collides with an unwinding view in core)
+  screens_made.val += 1
+  let view = "mbui-\{screens_made.val}"
+  self.view = view
   self.looked = ""
   // (input waits for the view opened again to say it is live: the state before is the last one's)
   self.heard = false
@@ -1053,7 +1055,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   let params : Map[String, Json] = {
     "station": Json::string(self.station),
     "screen": Json::string(self.screen),
-    "view": Json::string(self.view),
+    "view": Json::string(view),
     "codecs": Json::array(codecs),
     "maxWidth": Json::number(mw.to_double()),
     "maxHeight": Json::number(mh.to_double()),
@@ -1089,12 +1091,21 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   }
   let me = self
   let in_open = Ref(true)
-  self.call = (src.stream)(
+  let done = Ref(false)
+  let id = (src.stream)(
     "screen.view",
     Json::object(params),
     None,
-    fn(value, bytes) { me.take(value, bytes) },
+    fn(value, bytes) {
+      if me.view == view && (in_open.val || me.call != 0) {
+        me.take(value, bytes)
+      }
+    },
     fn(r) {
+      if me.view != view || (!in_open.val && me.call == 0) {
+        return
+      }
+      done.val = true
       me.call = 0
       me.audio_ready.set(false)
       match me.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () }
@@ -1114,6 +1125,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     },
   )
   in_open.val = false
+  if !done.val && self.view == view {
+    self.call = id
+  }
 }
 
 ///|

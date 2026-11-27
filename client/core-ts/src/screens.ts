@@ -858,7 +858,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
     };
     const isViewDenied = () => denied || inner.stations.isDenied("screens", station);
-    open.set(name, {
+    const callKey = `${at[0]}/${at[1]}`;
+    const entry: Open = {
       station,
       workspace: ofAddress(station),
       authGen: inner.store.authGen.workspaceAuthGen(ofAddress(station)),
@@ -933,8 +934,14 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         tell();
         if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
       },
-    });
-    yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
+    };
+    open.set(name, entry);
+    const release = () => {
+      if (open.get(name) === entry) open.delete(name);
+      if (inner.callCancels.get(callKey) === release) inner.callCancels.delete(callKey);
+    };
+    inner.callCancels.set(callKey, release);
+    yield* Effect.addFinalizer(() => Effect.sync(release));
 
     // If the station already explicitly refused GET /screens (401/403) in this auth generation, fail closed immediately.
     if (isViewDenied()) {

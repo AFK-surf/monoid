@@ -1,0 +1,680 @@
+// Runtime uninstall planning & updates state machine (`09aa2b9d5e` #8861) and
+// station-level `disabledRuntimes` policy (`56d3d84e5b` #8793), 1:1 aligned with
+// `station/src/updates/runtimes.ts`, `station/src/updates/updates.ts`,
+// `station/src/accounts/index.ts`, and `station/src/sessions/config.ts`.
+
+import "base_codec"
+import "nodepath"
+
+pub let CLAUDE_VERSIONS_MARKER : String = "/.local/share/claude/versions/"
+
+pub let REMOVE_CLAUDE_NODE_SCRIPT : String = "const fs=require('fs');const [dir,...links]=process.argv.slice(1);for(const l of links)fs.rmSync(l,{force:true});fs.rmSync(dir,{recursive:true,force:true})"
+
+/// A command found on the station's PATH along with its resolved realpath.
+pub struct FoundCommand {
+  pub on_path : String
+  pub real : String
+}
+
+/// How a runtime is updated or uninstalled from the machine.
+pub struct UninstallHow {
+  pub program : String
+  pub args : Array[String]
+  pub node_bin : Option[String]
+}
+
+/// Why a runtime cannot be uninstalled from the station UI, as an i18n key + args.
+pub struct UninstallUnable {
+  pub key : String
+  pub args : Array[(String, String)]
+}
+
+pub enum UninstallPlan {
+  How(UninstallHow)
+  Unable(UninstallUnable)
+}
+
+/// Pure dependency-injected host filesystem/command lookup for uninstall planning.
+pub struct UninstallHost {
+  pub os_name : String
+  pub sep : String
+  pub home : Option[String]
+  pub node_exec : String
+  pub exists : (String) -> Bool
+  pub is_symlink : (String) -> Bool
+  pub realpath : (String) -> Option[String]
+  pub find_command : (String) -> Option[FoundCommand]
+  pub winget_command : () -> String
+}
+
+pub fn runtime_package(kind : RuntimeKind) -> String {
+  match kind {
+    RuntimeKind::Claude => "@anthropic-ai/claude-code"
+    RuntimeKind::Codex => "@openai/codex"
+    RuntimeKind::Dsh => "@deepseek-ai/dsh"
+    RuntimeKind::Grok => "@xai-org/grok-build"
+    RuntimeKind::Cursor => "@cursor/sdk"
+    RuntimeKind::Devin => "devin"
+    RuntimeKind::Hermes => "hermes"
+    RuntimeKind::Agy => "agy"
+    RuntimeKind::Pi => "@mariozechner/pi-coding-agent"
+    RuntimeKind::Copilot => "@microsoft/copilot-sdk"
+  }
+}
+
+fn normalize_slashes(path : String, sep : String) -> String {
+  if sep == "\\" {
+    str_replace_all(path, "\\", "/")
+  } else {
+    path
+  }
+}
+
+fn exe_name(os_name : String, name : String) -> String {
+  if os_name == "win32" { name + ".exe" } else { name }
+}
+
+/// The global prefix npm installed `found` in (`.../lib/node_modules/...` -> `...`),
+/// preserving the host path separators (`real_path` has the same byte length).
+pub fn npm_prefix_of(found : FoundCommand, real_path : String) -> Option[String] {
+  let at = str_index_of(real_path, "/lib/node_modules/", 0)
+  if at < 0 {
+    None
+  } else {
+    Some(str_slice_bytes(found.real, 0, at))
+  }
+}
+
+/// Find the npm binary belonging to the Node where `found` is installed, else beside `on_path`, else on PATH.
+pub fn npm_of(found : FoundCommand, real_path : String, host : UninstallHost, name : String) -> Result[String, UninstallUnable] {
+  match npm_prefix_of(found, real_path) {
+    Some(prefix) => {
+      let own = nodepath::join(host.sep, [prefix, "bin", "npm"])
+      if (host.exists)(own) {
+        return Ok(own)
+      }
+    }
+    None => ()
+  }
+  let beside = nodepath::join(host.sep, [nodepath::dirname(host.sep, found.on_path), "npm"])
+  if (host.exists)(beside) {
+    return Ok(beside)
+  }
+  match (host.find_command)("npm") {
+    Some(f) => Ok(f.on_path)
+    None => Err(UninstallUnable::{ key: "station.updates.noNpm", args: [("name", name)] })
+  }
+}
+
+/// Find Homebrew on PATH, else Unable(`station.updates.noBrew`).
+pub fn brew_of(host : UninstallHost, name : String) -> Result[String, UninstallUnable] {
+  match (host.find_command)("brew") {
+    Some(f) => Ok(f.on_path)
+    None => Err(UninstallUnable::{ key: "station.updates.noBrew", args: [("name", name)] })
+  }
+}
+
+fn is_brew_tag_byte(b : Int) -> Bool {
+  (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95 || b == 46 || b == 45
+}
+
+fn is_valid_brew_pkg(name : String) -> Bool {
+  let rest = if str_starts_with(name, "claude-code") {
+    str_slice_bytes(name, 11, name.to_bytes().length())
+  } else if str_starts_with(name, "codex") {
+    str_slice_bytes(name, 5, name.to_bytes().length())
+  } else {
+    return false
+  }
+  if rest == "" {
+    return true
+  }
+  if !str_starts_with(rest, "@") || rest.to_bytes().length() < 2 {
+    return false
+  }
+  let raw = rest.to_bytes()
+  for i in 1..<raw.length() {
+    if !is_brew_tag_byte(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+/// Extract a Homebrew cask or formula package name from `real_path` after `marker`
+/// (`/Caskroom/` or `/Cellar/`), validating `^(claude-code|codex)(@[\w.-]+)?$`, else `fallback`.
+pub fn brew_package_in(real_path : String, marker : String, fallback : String) -> String {
+  let at = str_index_of(real_path, marker, 0)
+  if at < 0 {
+    return fallback
+  }
+  let tail = str_slice_bytes(real_path, at + marker.to_bytes().length(), real_path.to_bytes().length())
+  let slash = str_index_of(tail, "/", 0)
+  let name = if slash < 0 { tail } else { str_slice_bytes(tail, 0, slash) }
+  if is_valid_brew_pkg(name) { name } else { fallback }
+}
+
+/// Extract a winget package ID from a Windows winget installation realpath
+/// (`.../Microsoft/WinGet/Packages/<PackageId>_.../...`).
+pub fn winget_package_in(real_path : String) -> Option[String] {
+  let lower = ascii_lower(real_path)
+  let marker = "/microsoft/winget/packages/"
+  let at = str_index_of(lower, marker, 0)
+  if at < 0 {
+    return None
+  }
+  let start = at + marker.to_bytes().length()
+  let tail = str_slice_bytes(real_path, start, real_path.to_bytes().length())
+  let slash = str_index_of(tail, "/", 0)
+  let folder = if slash < 0 { tail } else { str_slice_bytes(tail, 0, slash) }
+  if folder == "" {
+    return None
+  }
+  let under = str_index_of(folder, "_", 0)
+  let id = if under > 0 { str_slice_bytes(folder, 0, under) } else { folder }
+  if id == "" { None } else { Some(id) }
+}
+
+pub enum ShimUninstallResult {
+  Found(UninstallHow)
+  NoNpm
+  NoneMatch
+}
+
+/// Windows package-manager shim uninstall (`winget`, `vp.exe`, npm `.cmd`); always `NoneMatch` on Unix.
+pub fn shim_uninstall(found : FoundCommand, pkg : String, host : UninstallHost) -> ShimUninstallResult {
+  if host.os_name != "win32" {
+    return ShimUninstallResult::NoneMatch
+  }
+  let real_norm = normalize_slashes(found.real, host.sep)
+  match winget_package_in(real_norm) {
+    Some(wg) => {
+      return ShimUninstallResult::Found(UninstallHow::{
+        program: (host.winget_command)(),
+        args: ["uninstall", "--id", wg, "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements"],
+        node_bin: None,
+      })
+    }
+    None => ()
+  }
+  let dir = nodepath::dirname(host.sep, found.on_path)
+  let vp_exe = nodepath::join(host.sep, [dir, "vp.exe"])
+  if (host.exists)(vp_exe) {
+    return ShimUninstallResult::Found(UninstallHow::{
+      program: vp_exe,
+      args: ["uninstall", "-g", pkg],
+      node_bin: None,
+    })
+  }
+  if str_ends_with(ascii_lower(found.on_path), ".cmd") {
+    let pkg_parts = pkg.split("/")
+    let mod_parts : Array[String] = [dir, "node_modules"]
+    for i in 0..<pkg_parts.length() {
+      mod_parts.push(pkg_parts[i])
+    }
+    let pkg_dir = nodepath::join(host.sep, mod_parts)
+    if (host.exists)(pkg_dir) {
+      let own_npm = nodepath::join(host.sep, [dir, "npm.cmd"])
+      if (host.exists)(own_npm) {
+        return ShimUninstallResult::Found(UninstallHow::{
+          program: own_npm,
+          args: ["uninstall", "-g", pkg, "--prefix", dir],
+          node_bin: None,
+        })
+      }
+      match (host.find_command)("npm") {
+        Some(f) => {
+          return ShimUninstallResult::Found(UninstallHow::{
+            program: f.on_path,
+            args: ["uninstall", "-g", pkg, "--prefix", dir],
+            node_bin: None,
+          })
+        }
+        None => return ShimUninstallResult::NoNpm
+      }
+    }
+  }
+  ShimUninstallResult::NoneMatch
+}
+
+/// Claude Code native installer uninstall: removes `~/.local/share/claude/versions` and ONLY
+/// symlinks pointing into it (never removes a user's non-symlink launcher).
+pub fn claude_native_uninstall(found : FoundCommand, real_path : String, host : UninstallHost) -> UninstallHow {
+  let at = str_index_of(real_path, CLAUDE_VERSIONS_MARKER, 0)
+  let versions = str_slice_bytes(found.real, 0, at + CLAUDE_VERSIONS_MARKER.to_bytes().length() - 1)
+  let places : Array[String] = [found.on_path]
+  match host.home {
+    Some(h) => {
+      if h != "" {
+        let local_bin = nodepath::join(host.sep, [h, ".local", "bin", exe_name(host.os_name, "claude")])
+        if !arr_contains_str(places, local_bin) {
+          places.push(local_bin)
+        }
+      }
+    }
+    None => ()
+  }
+  let prefix_norm = normalize_slashes(versions, host.sep) + "/"
+  let args : Array[String] = ["-e", REMOVE_CLAUDE_NODE_SCRIPT, versions]
+  for i in 0..<places.length() {
+    let p = places[i]
+    if (host.is_symlink)(p) {
+      match (host.realpath)(p) {
+        Some(rp) => {
+          if str_starts_with(normalize_slashes(rp, host.sep), prefix_norm) {
+            args.push(p)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  UninstallHow::{ program: host.node_exec, args: args, node_bin: None }
+}
+
+/// Plan how a CLI runtime installed at `found` is uninstalled (`station/src/updates/runtimes.ts` `howToUninstallSoon`).
+pub fn how_to_uninstall(kind : RuntimeKind, found : FoundCommand, host : UninstallHost) -> UninstallPlan {
+  let real_path = normalize_slashes(found.real, host.sep)
+  let name = runtime_label(kind)
+  let elsewhere = UninstallPlan::Unable(UninstallUnable::{
+    key: "station.updates.uninstallElsewhere",
+    args: [("name", name), ("path", real_path)],
+  })
+  if runtime_kind_eq(kind, RuntimeKind::Hermes) {
+    return UninstallPlan::Unable(UninstallUnable::{ key: "station.updates.uninstallHermes", args: [] })
+  }
+  if runtime_kind_eq(kind, RuntimeKind::Agy) {
+    return UninstallPlan::Unable(UninstallUnable::{
+      key: "station.updates.uninstallAgy",
+      args: [("path", real_path)],
+    })
+  }
+  if runtime_kind_eq(kind, RuntimeKind::Devin) {
+    if str_contains(real_path, "/devin/cli/_versions/") {
+      return UninstallPlan::How(UninstallHow::{
+        program: found.on_path,
+        args: ["uninstall", "--force"],
+        node_bin: None,
+      })
+    }
+    return elsewhere
+  }
+  if runtime_kind_eq(kind, RuntimeKind::Pi) && !str_contains(real_path, "/lib/node_modules/") {
+    return UninstallPlan::Unable(UninstallUnable::{
+      key: "station.updates.uninstallPi",
+      args: [("path", real_path)],
+    })
+  }
+  let pkg = runtime_package(kind)
+  match shim_uninstall(found, pkg, host) {
+    ShimUninstallResult::NoNpm => {
+      return UninstallPlan::Unable(UninstallUnable::{ key: "station.updates.noNpm", args: [("name", name)] })
+    }
+    ShimUninstallResult::Found(how) => return UninstallPlan::How(how)
+    ShimUninstallResult::NoneMatch => ()
+  }
+  if nodepath::basename("/", real_path) == "vp" {
+    let beside = nodepath::join(host.sep, [nodepath::dirname(host.sep, found.on_path), "vp"])
+    let mut vp : Option[String] = match (host.realpath)(beside) {
+      Some(rp) => if normalize_slashes(rp, host.sep) == real_path { Some(beside) } else { None }
+      None => None
+    }
+    if vp.is_none() {
+      match (host.find_command)("vp") {
+        Some(other) => {
+          if normalize_slashes(other.real, host.sep) == real_path {
+            vp = Some(other.on_path)
+          }
+        }
+        None => ()
+      }
+    }
+    match vp {
+      Some(v) => {
+        return UninstallPlan::How(UninstallHow::{
+          program: v,
+          args: ["uninstall", "-g", pkg],
+          node_bin: None,
+        })
+      }
+      None => {
+        return UninstallPlan::Unable(UninstallUnable::{ key: "station.updates.noVp", args: [("name", name)] })
+      }
+    }
+  }
+  let npm_only = runtime_kind_eq(kind, RuntimeKind::Dsh) ||
+  runtime_kind_eq(kind, RuntimeKind::Grok) ||
+  runtime_kind_eq(kind, RuntimeKind::Pi)
+  let formula = if runtime_kind_eq(kind, RuntimeKind::Claude) { "claude-code" } else { "codex" }
+  if !npm_only && str_contains(real_path, "/Caskroom/") {
+    return match brew_of(host, name) {
+      Ok(b) => UninstallPlan::How(UninstallHow::{
+        program: b,
+        args: ["uninstall", "--cask", brew_package_in(real_path, "/Caskroom/", formula)],
+        node_bin: None,
+      })
+      Err(u) => UninstallPlan::Unable(u)
+    }
+  }
+  if !npm_only && str_contains(real_path, "/Cellar/") {
+    return match brew_of(host, name) {
+      Ok(b) => UninstallPlan::How(UninstallHow::{
+        program: b,
+        args: ["uninstall", brew_package_in(real_path, "/Cellar/", formula)],
+        node_bin: None,
+      })
+      Err(u) => UninstallPlan::Unable(u)
+    }
+  }
+  if str_contains(real_path, "/node_modules/") {
+    let prefix = match npm_prefix_of(found, real_path) {
+      Some(p) => p
+      None => {
+        return UninstallPlan::Unable(UninstallUnable::{
+          key: "station.updates.npmRootUnknown",
+          args: [("path", real_path)],
+        })
+      }
+    }
+    return match npm_of(found, real_path, host, name) {
+      Ok(npm_bin) => UninstallPlan::How(UninstallHow::{
+        program: npm_bin,
+        args: ["uninstall", "-g", pkg, "--prefix", prefix],
+        node_bin: None,
+      })
+      Err(u) => UninstallPlan::Unable(u)
+    }
+  }
+  if runtime_kind_eq(kind, RuntimeKind::Claude) && str_contains(real_path, CLAUDE_VERSIONS_MARKER) {
+    return UninstallPlan::How(claude_native_uninstall(found, real_path, host))
+  }
+  if runtime_kind_eq(kind, RuntimeKind::Codex) && str_contains(real_path, "/packages/standalone/releases/") {
+    return UninstallPlan::Unable(UninstallUnable::{
+      key: "station.updates.uninstallCodexStandalone",
+      args: [("path", real_path)],
+    })
+  }
+  elsewhere
+}
+
+/// Plan uninstall for SDK-based runtimes (`cursor`, `copilot`) installed in a dedicated npm prefix.
+pub fn sdk_uninstall_plan(
+  kind : RuntimeKind,
+  prefix : String,
+  npm_program : Option[String],
+  node_bin : Option[String],
+) -> UninstallPlan {
+  match npm_program {
+    Some(npm_bin) => UninstallPlan::How(UninstallHow::{
+      program: npm_bin,
+      args: ["uninstall", "-g", "--prefix", prefix, runtime_package(kind)],
+      node_bin: node_bin,
+    })
+    None => UninstallPlan::Unable(UninstallUnable::{
+      key: "station.updates.noNpm",
+      args: [("name", runtime_label(kind))],
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Updates Manager Uninstall State Machine (`station/src/updates/updates.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct RuntimeSoftwareItem {
+  pub id : String
+  pub is_station : Bool
+  pub mut installed : Bool
+  pub mut version : Option[String]
+  pub mut latest : Option[String]
+  pub mut updatable : Bool
+  pub mut uninstall : Option[UninstallHow]
+  pub mut unremovable : Option[UninstallUnable]
+  pub mut at : Option[String]
+  pub mut updating : Option[Int64]
+  pub mut progress_key : Option[String]
+  pub mut failed_key : Option[String]
+  pub mut failed_text : Option[String]
+}
+
+pub fn RuntimeSoftwareItem::empty(id : String, is_station : Bool) -> RuntimeSoftwareItem {
+  RuntimeSoftwareItem::{
+    id: id,
+    is_station: is_station,
+    installed: false,
+    version: None,
+    latest: None,
+    updatable: false,
+    uninstall: None,
+    unremovable: None,
+    at: None,
+    updating: None,
+    progress_key: None,
+    failed_key: None,
+    failed_text: None,
+  }
+}
+
+pub fn RuntimeSoftwareItem::is_uninstallable(self : RuntimeSoftwareItem) -> Bool {
+  !self.is_station && self.installed && self.uninstall.is_some()
+}
+
+pub enum UninstallRefusal {
+  Closed
+  NoSuchItem(String)
+  Busy(String)
+  StationBusy(String)
+  NotInstalled(String)
+  Unremovable(UninstallUnable)
+  ActiveTurns(String, Int)
+}
+
+pub fn uninstall_refusal_key(r : UninstallRefusal) -> String {
+  match r {
+    UninstallRefusal::Closed => "updates are closed"
+    UninstallRefusal::NoSuchItem(_) => "station.updates.noSuchItem"
+    UninstallRefusal::Busy(_) => "station.updates.uninstallBusy"
+    UninstallRefusal::StationBusy(_) => "station.updates.stationBusyUninstall"
+    UninstallRefusal::NotInstalled(_) => "station.updates.uninstallNotInstalled"
+    UninstallRefusal::Unremovable(u) => u.key
+    UninstallRefusal::ActiveTurns(_, _) => "station.updates.uninstallTurns"
+  }
+}
+
+pub struct RuntimeUpdatesManager {
+  pub mut closed : Bool
+  pub station : RuntimeSoftwareItem
+  pub runtimes : Array[RuntimeSoftwareItem]
+}
+
+pub fn RuntimeUpdatesManager::new() -> RuntimeUpdatesManager {
+  let kinds = runtime_kinds()
+  let items : Array[RuntimeSoftwareItem] = []
+  for i in 0..<kinds.length() {
+    items.push(RuntimeSoftwareItem::empty(runtime_kind_to_str(kinds[i]), false))
+  }
+  RuntimeUpdatesManager::{
+    closed: false,
+    station: RuntimeSoftwareItem::empty("station", true),
+    runtimes: items,
+  }
+}
+
+pub fn RuntimeUpdatesManager::find_runtime(self : RuntimeUpdatesManager, id : String) -> Option[RuntimeSoftwareItem] {
+  for i in 0..<self.runtimes.length() {
+    if self.runtimes[i].id == id {
+      return Some(self.runtimes[i])
+    }
+  }
+  None
+}
+
+/// Begin uninstalling runtime `id` (`Updates.uninstall` in `station/src/updates/updates.ts`).
+/// Enforces all 7 guards: closed, valid runtime id, item not busy, station not busy,
+/// installed, uninstallable, and zero active turns on `kind` (`running_on`).
+pub fn RuntimeUpdatesManager::begin_uninstall(
+  self : RuntimeUpdatesManager,
+  id : String,
+  now_ms : Int64,
+  running_on : (RuntimeKind) -> Int,
+) -> Result[UninstallHow, UninstallRefusal] {
+  if self.closed {
+    return Err(UninstallRefusal::Closed)
+  }
+  let kind = match runtime_kind_from_str(id) {
+    Some(k) => k
+    None => return Err(UninstallRefusal::NoSuchItem(id))
+  }
+  let item = match self.find_runtime(id) {
+    Some(it) => it
+    None => return Err(UninstallRefusal::NoSuchItem(id))
+  }
+  let name = runtime_label(kind)
+  if item.updating.is_some() {
+    return Err(UninstallRefusal::Busy(name))
+  }
+  if self.station.updating.is_some() {
+    return Err(UninstallRefusal::StationBusy(name))
+  }
+  if !item.installed {
+    return Err(UninstallRefusal::NotInstalled(name))
+  }
+  let how = match item.uninstall {
+    Some(h) => h
+    None => {
+      let u = match item.unremovable {
+        Some(un) => un
+        None => UninstallUnable::{
+          key: "station.updates.uninstallElsewhere",
+          args: [("name", name), ("path", match item.at { Some(p) => p, None => "" })],
+        }
+      }
+      return Err(UninstallRefusal::Unremovable(u))
+    }
+  }
+  let turns = running_on(kind)
+  if turns > 0 {
+    return Err(UninstallRefusal::ActiveTurns(name, turns))
+  }
+  item.updating = Some(now_ms)
+  item.progress_key = Some("station.updates.uninstalling")
+  item.failed_key = None
+  item.failed_text = None
+  Ok(how)
+}
+
+/// Complete uninstall after running the uninstall command and re-reading the runtime (`uninstallRuntime`).
+/// If the command succeeded (`exec_ok == true`) yet the runtime is still found on PATH, marks
+/// `failed_key = Some("station.updates.stillInstalled")`.
+pub fn RuntimeUpdatesManager::finish_uninstall(
+  self : RuntimeUpdatesManager,
+  id : String,
+  exec_ok : Bool,
+  exec_err_key : Option[String],
+  exec_err_text : Option[String],
+  reread_installed : Bool,
+  reread_version : Option[String],
+  reread_at : Option[String],
+  reread_uninstall : Option[UninstallHow],
+  reread_unremovable : Option[UninstallUnable],
+) -> Bool {
+  let item = match self.find_runtime(id) {
+    Some(it) => it
+    None => return false
+  }
+  item.updating = None
+  item.progress_key = None
+  item.installed = reread_installed
+  item.version = reread_version
+  item.at = reread_at
+  item.uninstall = reread_uninstall
+  item.unremovable = reread_unremovable
+  if !exec_ok {
+    item.failed_key = exec_err_key
+    item.failed_text = exec_err_text
+  } else if reread_installed {
+    item.failed_key = Some("station.updates.stillInstalled")
+    item.failed_text = None
+  } else {
+    item.failed_key = None
+    item.failed_text = None
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// Station-level `disabledRuntimes` policy (`56d3d84e5b` #8793)
+// ---------------------------------------------------------------------------
+
+/// Normalize a list of raw runtime names into canonical `runtime_kinds()` order,
+/// deduplicating and dropping unknown runtime strings.
+pub fn normalize_disabled_runtimes(raw : Array[String]) -> Array[RuntimeKind] {
+  let all = runtime_kinds()
+  let out : Array[RuntimeKind] = []
+  for i in 0..<all.length() {
+    let k = all[i]
+    let ks = runtime_kind_to_str(k)
+    if arr_contains_str(raw, ks) {
+      out.push(k)
+    }
+  }
+  out
+}
+
+pub fn normalize_disabled_runtime_names(raw : Array[String]) -> Array[String] {
+  let kinds = normalize_disabled_runtimes(raw)
+  let out : Array[String] = []
+  for i in 0..<kinds.length() {
+    out.push(runtime_kind_to_str(kinds[i]))
+  }
+  out
+}
+
+/// Apply `PUT /runtimes { runtime, enabled }` to the current `disabledRuntimes` list,
+/// returning the canonical ordered list (empty means omit `disabledRuntimes` from `config.json`).
+pub fn apply_disabled_runtime_toggle(
+  current : Array[String],
+  runtime_str : String,
+  enabled : Bool,
+) -> Result[Array[String], String] {
+  let target = match runtime_kind_from_str(runtime_str) {
+    Some(k) => runtime_kind_to_str(k)
+    None => return Err("station.runtimes.badSettings")
+  }
+  let next : Array[String] = []
+  for i in 0..<current.length() {
+    if current[i] != target {
+      next.push(current[i])
+    }
+  }
+  if !enabled {
+    next.push(target)
+  }
+  Ok(normalize_disabled_runtime_names(next))
+}
+
+pub fn is_runtime_disabled(runtime : RuntimeKind, disabled : Array[String]) -> Bool {
+  arr_contains_str(disabled, runtime_kind_to_str(runtime))
+}
+
+/// Refuse if `runtime` is disabled on this station (`station.runtime.disabled`).
+pub fn check_runtime_enabled(runtime : RuntimeKind, disabled : Array[String]) -> Result[Unit, String] {
+  if is_runtime_disabled(runtime, disabled) {
+    Err("station.runtime.disabled:" + runtime_label(runtime))
+  } else {
+    Ok(())
+  }
+}
+
+/// Compute effective enabled runtimes for a profile while keeping `profile.runtime` metadata intact
+/// (`station/src/sessions/config.ts` `hubConfig`).
+pub fn effective_profile_runtimes(p : Profile, disabled : Array[String]) -> Array[RuntimeKind] {
+  let all = profile_runtimes(p)
+  let out : Array[RuntimeKind] = []
+  for i in 0..<all.length() {
+    if !is_runtime_disabled(all[i], disabled) {
+      out.push(all[i])
+    }
+  }
+  out
+}

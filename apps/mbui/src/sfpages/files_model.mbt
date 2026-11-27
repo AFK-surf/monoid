@@ -544,10 +544,13 @@ pub fn remove_entries(src : Source, st : DvStation, items : Array[(DriveAt, DvEn
 ///|
 /// What is asked before something goes for good (Confirm): the one, the folder, or how many; 删除 does it.
 fn ask_remove(src : Source, asking : Array[(DriveAt, DvEntry)]) -> Unit {
-  let title = match asking {
+  let (title, facts) = match asking {
     [(_, e)] =>
-      @sf.t(if e.dir { "web-pages.drive.deleteFolderAsk" } else { "web-pages.drive.deleteAsk" }, args=[("name", e.name)])
-    many => @sf.t("web-pages.drive.deleteManyAsk", args=[("n", many.length().to_string())])
+      (
+        @sf.t(if e.dir { "web-pages.drive.deleteFolderAsk" } else { "web-pages.drive.deleteAsk" }),
+        [(@sf.t(if e.dir { "common.confirmFact.folder" } else { "common.confirmFact.file" }), e.name)],
+      )
+    many => (@sf.t("web-pages.drive.deleteManyAsk"), [(@sf.t("common.confirmFact.count"), many.length().to_string())])
   }
   let words = if asking.iter().any(fn(x) { x.1.dir }) {
     @sf.t("web-pages.drive.deleteFolderText")
@@ -569,7 +572,7 @@ fn ask_remove(src : Source, asking : Array[(DriveAt, DvEntry)]) -> Unit {
         act_said(what),
       )
     }
-  }, danger=true)
+  }, danger=true, facts~)
 }
 
 ///|

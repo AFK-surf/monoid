@@ -649,6 +649,77 @@ pub fn is_sensitive_topic(t : Topic) -> Bool {
   false
 }
 
+/// Device-global and transport-only topics exempt from `(account, workspace)` `authGen`
+/// (1:1 with `client/core-ts/src/topic-policy.ts:244-256` `DEVICE_GLOBAL_TOPICS` and
+/// `apps/mbui/src/core/client.mbt:117-122`).
+/// Note: `downloads` is NOT device-global (carries user file data).
+pub fn is_device_global_topic(name : String) -> Bool {
+  name == "releases" ||
+  name == "fonts" ||
+  name == "changelog" ||
+  name == "prefs" ||
+  name == "doing" ||
+  name == "adbShare" ||
+  name == "link" ||
+  name == "connection" ||
+  name == "way" ||
+  name == "net"
+}
+
+/// Vault-scoped topics requiring `vaultGen` on every outbound wire frame
+/// (1:1 with `apps/mbui/src/core/client.mbt` and `client/core-ts/src/auth-gen.ts`).
+pub fn is_vault_topic(name : String) -> Bool {
+  name == "vaults" || name == "vaultItems" || name == "vaultUses"
+}
+
+/// Cross-workspace aggregate topics tracked under `aggregateAuthGen`
+/// (1:1 with `apps/mbui/src/core/client.mbt` and `client/core-ts/src/auth-gen.ts`).
+pub fn is_aggregate_topic(name : String) -> Bool {
+  name == "workspaces" || name == "lockPrompts" || name == "downloads"
+}
+
+/// Extract the workspace id a topic belongs to, 1:1 with `apps/mbui/src/core/client.mbt:81-102`
+/// and `client/core-ts/src/auth-gen.ts` (`topicScopeOf`).
+/// Never guesses a workspace for parameterless topics.
+pub fn topic_workspace(t : Topic) -> Option[String] {
+  match t.param("workspace") {
+    Some(base_codec::Json::Str(w)) => if w.length() > 0 { return Some(w) }
+    _ => ()
+  }
+  match t.param("scope") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { return Some(s) }
+    _ => ()
+  }
+  match t.param("station") {
+    Some(base_codec::Json::Str(st)) =>
+    if st.length() > 0 {
+      match st.index_of("/") {
+        idx if idx > 0 => return Some(st.slice(0, idx))
+        _ => return Some(st)
+      }
+    }
+    _ => ()
+  }
+  None
+}
+
+/// Extract the vault id a vault topic belongs to (`apps/mbui/src/core/client.mbt:105-114`).
+pub fn topic_vault_id(t : Topic) -> Option[String] {
+  match t.param("vault") {
+    Some(base_codec::Json::Str(v)) => if v.length() > 0 { Some(v) } else { None }
+    _ => None
+  }
+}
+
+/// Unified outbound generation envelope stamped onto every subscription wire frame
+/// (`Value`, `Delta`, `Same`, `Unsubscribed`, `Waiting`, sub `Err`), matching
+/// `apps/mbui/src/core/client.mbt` `msg_stale_for` 1:1.
+pub struct WireOutGen {
+  pub conn : Int64
+  pub auth_gen : Option[Int]
+  pub vault_gen : Option[Int]
+}
+
 pub enum CoreRequest {
   Call(Int64, String, base_codec::Json, Option[Bytes])
   Subscribe(Int64, Topic, Bool, Option[Int64], Option[String])
@@ -800,6 +871,87 @@ pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
   }
 }
 
+fn append_wire_out_gen(fields : Array[(String, base_codec::Json)], gen : WireOutGen) -> Unit {
+  fields.push(("conn", base_codec::json_int64(gen.conn)))
+  match gen.auth_gen {
+    Some(ag) => fields.push(("authGen", base_codec::json_int(ag)))
+    None => ()
+  }
+  match gen.vault_gen {
+    Some(vg) => fields.push(("vaultGen", base_codec::json_int(vg)))
+    None => ()
+  }
+}
+
+/// Unified outbound subscription frame encoder stamping `conn` (always), `authGen` (all
+/// non-device-global topics), and `vaultGen` (all vault topics) onto `Value`, `Delta`, `Same`,
+/// `Unsubscribed`, `Waiting`, and subscription `Err` frames (`apps/mbui/src/core/client.mbt`).
+pub fn encode_sub_event_with_auth(ev : CoreEvent, gen : WireOutGen) -> (String, Option[Bytes]) {
+  match ev {
+    CoreEvent::Value(id, v, bytes) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("value", v),
+      ]
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), bytes)
+    }
+    CoreEvent::Delta(id, ops, from_id, kept) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("delta", base_codec::json_arr(ops)),
+      ]
+      match from_id {
+        Some(f) => fields.push(("from", base_codec::json_int64(f)))
+        None => ()
+      }
+      if kept {
+        fields.push(("kept", base_codec::json_bool(true)))
+      }
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    CoreEvent::Waiting(id) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("waiting", base_codec::json_bool(true)),
+      ]
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    CoreEvent::Same(id) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("same", base_codec::json_bool(true)),
+      ]
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    CoreEvent::Unsubscribed(id, token) => {
+      let v = match token {
+        Some(t) => base_codec::json_str(t)
+        None => base_codec::json_null()
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("v", v),
+      ]
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    CoreEvent::Err(id, err) => {
+      let ej = base_codec::json_obj([("code", base_codec::json_str(err.code)), ("message", base_codec::json_str(err.message))])
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("error", ej),
+      ]
+      append_wire_out_gen(fields, gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    other => encode_core_event(other)
+  }
+}
+
 // ── Slice 1 local read-only router ──
 
 fn encode_entry(e : store::Entry) -> base_codec::Json {
@@ -880,6 +1032,7 @@ pub struct ActiveSub {
 }
 
 struct KeptSub {
+  topic : Topic
   value : base_codec::Json
   token : String
 }
@@ -927,8 +1080,80 @@ pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[Strin
   }
 }
 
+pub fn Slice1Router::active_sub_topic(self : Slice1Router, id : Int64) -> Option[Topic] {
+  match self.subs.get(id) {
+    Some(s) => Some(s.topic)
+    None => None
+  }
+}
+
+pub fn Slice1Router::active_subs_snapshot(self : Slice1Router) -> Array[(Int64, Topic)] {
+  let out : Array[(Int64, Topic)] = []
+  for i in 0..<self.sub_ids.length() {
+    let sid = self.sub_ids[i]
+    match self.subs.get(sid) {
+      Some(s) => out.push((sid, s.topic))
+      None => ()
+    }
+  }
+  out
+}
+
 pub fn Slice1Router::kept_count(self : Slice1Router) -> Int {
   self.kept_order.length()
+}
+
+/// Remove all `kept` and `kept_by_token` entries matching `pred` (used on auth/vault boundaries).
+pub fn Slice1Router::invalidate_kept_where(self : Slice1Router, pred : (Topic) -> Bool) -> Unit {
+  let next_order : Array[String] = []
+  for i in 0..<self.kept_order.length() {
+    let tk = self.kept_order[i]
+    match self.kept.get(tk) {
+      Some(entry) =>
+      if pred(entry.topic) {
+        self.kept.remove(tk)
+      } else {
+        next_order.push(tk)
+      }
+      None => ()
+    }
+  }
+  self.kept_order.clear()
+  for i in 0..<next_order.length() {
+    self.kept_order.push(next_order[i])
+  }
+  let next_tok_order : Array[String] = []
+  for i in 0..<self.kept_token_order.length() {
+    let ck = self.kept_token_order[i]
+    match self.kept_by_token.get(ck) {
+      Some(entry) =>
+      if pred(entry.topic) {
+        self.kept_by_token.remove(ck)
+      } else {
+        next_tok_order.push(ck)
+      }
+      None => ()
+    }
+  }
+  self.kept_token_order.clear()
+  for i in 0..<next_tok_order.length() {
+    self.kept_token_order.push(next_tok_order[i])
+  }
+}
+
+/// Clear `last_value` and `last_token` on active subscriptions matching `pred` so boundary
+/// re-anchoring emits a full fresh `Value` (or `Waiting`) under the new generation.
+pub fn Slice1Router::invalidate_sub_cache_where(self : Slice1Router, pred : (Topic) -> Bool) -> Unit {
+  for i in 0..<self.sub_ids.length() {
+    match self.subs.get(self.sub_ids[i]) {
+      Some(sub) =>
+      if pred(sub.topic) {
+        sub.last_value = None
+        sub.last_token = None
+      }
+      None => ()
+    }
+  }
 }
 
 fn kept_token_composite_key(tk : String, token : String) -> String {
@@ -952,7 +1177,7 @@ fn Slice1Router::remember_kept(self : Slice1Router, topic : Topic, tk : String, 
   if is_sensitive_topic(topic) {
     return
   }
-  let entry = KeptSub::{ value: value, token: token }
+  let entry = KeptSub::{ topic: topic, value: value, token: token }
   if self.kept.get(tk).is_none() {
     self.kept_order.push(tk)
   }
@@ -1552,6 +1777,49 @@ pub fn Slice1Router::refresh_topic_name(self : Slice1Router, topic_name : String
   out
 }
 
+/// Refresh all active subscriptions matching `topic_name`, returning `(Topic, CoreEvent)` pairs
+/// so callers can stamp exact `WireOutGen` envelopes on every outbound frame.
+pub fn Slice1Router::refresh_topic_with_topics(self : Slice1Router, topic_name : String) -> Array[(Topic, CoreEvent)] {
+  let out : Array[(Topic, CoreEvent)] = []
+  for i in 0..<self.sub_ids.length() {
+    let sid = self.sub_ids[i]
+    match self.subs.get(sid) {
+      Some(sub) => {
+        if sub.topic.name == topic_name {
+          match self.refresh_sub(sid) {
+            Some(ev) => out.push((sub.topic, ev))
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+/// Force re-evaluation of an active subscription (clearing cached `last_value`/`last_token` first),
+/// returning a fresh `Value`, `Waiting`, or `Err` paired with its `Topic` for boundary re-anchoring.
+pub fn Slice1Router::refresh_sub_force(self : Slice1Router, id : Int64) -> Option[(Topic, CoreEvent)] {
+  let sub = match self.subs.get(id) {
+    Some(s) => s
+    None => return None
+  }
+  sub.last_value = None
+  sub.last_token = None
+  match self.evaluate_topic_value(id, sub.topic) {
+    CoreEvent::Value(_, next_val, bytes) => {
+      let next_tok = value_token(next_val)
+      sub.last_value = Some(next_val)
+      sub.last_token = Some(next_tok)
+      Some((sub.topic, CoreEvent::Value(id, next_val, bytes)))
+    }
+    CoreEvent::Waiting(_) => Some((sub.topic, CoreEvent::Waiting(id)))
+    CoreEvent::Err(_, err) => Some((sub.topic, CoreEvent::Err(id, err)))
+    _ => None
+  }
+}
+
 fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
   let req_station = match opt_str_field(params, "station") {
     Some(s) => if s.length() > 0 { s } else { self.md_store.station }
@@ -1936,12 +2204,11 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             return Some(CoreEvent::Value(id, payload, bytes))
           }
           // 2. `have` exact match -> `same: true`, or diff against matching `(topic_key, token)` kept.
+          //    Requires a live kept entry so `invalidate_kept_where` on auth/vault boundaries never
+          //    returns `same: true` against a pre-boundary `have` token.
           let mut kept_ops_opt : Option[Array[base_codec::Json]] = None
           match have {
             Some(h) => {
-              if h == tok {
-                return Some(CoreEvent::Same(id))
-              }
               let comp_key = kept_token_composite_key(tk, h)
               let prev_entry_opt : Option[KeptSub] = match kept_opt {
                 Some(k) => if k.token == h { Some(k) } else { self.kept_by_token.get(comp_key) }
@@ -1949,6 +2216,9 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
               }
               match prev_entry_opt {
                 Some(k) => {
+                  if h == tok {
+                    return Some(CoreEvent::Same(id))
+                  }
                   let spec = if keyed { spec_for_topic(topic.name) } else { None }
                   let ops = diff_keyed(k.value, payload, spec)
                   if ops.length() == 0 {

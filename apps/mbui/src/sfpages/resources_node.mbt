@@ -807,10 +807,15 @@ fn rs_end_node(e : @view.View, core : Core, p : () -> Json?, g : () -> Json?, ro
       let pid = number(p(), "pid")
       let gv = g()
       @sf.confirm(
-        @sf.t("web-main.resources.endTitle", args=[("name", name), ("pid", pid.to_int().to_string())]),
-        @sf.t("web-main.resources.endBody", args=[("chat", text(gv, "title"))]),
+        @sf.t("web-main.resources.endTitle"),
+        @sf.t("web-main.resources.endBody"),
         @sf.t("web-main.resources.end"),
         danger=true,
+        facts=[
+          (@sf.t("common.confirmFact.process"), name),
+          (@sf.t("common.confirmFact.pid"), pid.to_int().to_string()),
+          (@sf.t("common.confirmFact.chat"), text(gv, "title")),
+        ],
         fn() { rs_end_now(core, gv, pid, name) },
       )
     }, size=rs_end_size)

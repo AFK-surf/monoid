@@ -228,7 +228,7 @@ test "an own preset's ⋯ in the picker deletes it, asked first, without going i
     assert_eq(faults, [])
     menu_press(t, "删除")
     t.run_for(@ui.move_most_ms)
-    assert_true(shows_start(t, "删除预设「still.fail 开发」"), msg=runs(t))
+    assert_true(shows(t, "删除预设") && shows(t, "still.fail 开发"), msg=runs(t))
     assert_true(named(calls, "preset.delete").is_empty())
     press(t, "删除")
     t.run_for(@ui.move_most_ms)
@@ -1270,7 +1270,7 @@ test "preset picker delete stays in preset panel, backs to menu, cancels back to
     t.run_for(@ui.move_most_ms)
     menu_press(t, "删除")
     t.run_for(@ui.move_most_ms)
-    assert_true(shows_start(t, "删除预设「still.fail 开发」"), msg="wide \{wide}: inline confirm visible")
+    assert_true(shows(t, "删除预设") && shows(t, "still.fail 开发"), msg="wide \{wide}: inline confirm visible")
     assert_true(shows(t, "新预设"), msg="wide \{wide}: preset panel stays open behind inline confirm")
     // `<` returns to ⋯ menu
     press(t, @sf.t("common.back"))

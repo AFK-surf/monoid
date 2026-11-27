@@ -1,0 +1,1159 @@
+// First-class immutable authorization capabilities (`AuthCapability`, `WorkspaceCapability`,
+// `VaultCapability`, `CompositeCapability`), monotonic `AuthGenTracker` (persisted `conn_seq`,
+// per-workspace `authGen` and per-vault `vaultGen`, `on_boundary`), full-set canonical lock
+// digest (`canonical_lock_digest`, excluding volatile `head`/`seq`), and the single fail-open
+// `guarded_read_k` async I/O boundary primitive.
+//
+// Strictly aligned with:
+// - `client/core-ts/src/topic-policy.ts` (`DEVICE_GLOBAL_TOPICS`)
+// - `client/core-ts/src/auth-gen.ts` (`AuthGenTracker`, `AuthCapability`, `WorkspaceCapability`, `VaultCapability`, `CompositeCapability`)
+// - `apps/mbui/src/core/client.mbt` (`take_auth`, `msg_stale_for`, `current_auth_gen`, `current_vault_gen`)
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "protocol"
+import "sql"
+import "store"
+
+let g_next_tracker_owner_id : Array[Int64] = [1L]
+
+fn alloc_tracker_owner_id() -> Int64 {
+  let id = g_next_tracker_owner_id[0]
+  g_next_tracker_owner_id[0] = id + 1L
+  id
+}
+
+/// Device-global and transport-only topics exempt from `(account, workspace)` `authGen`
+/// (1:1 with `client/core-ts/src/topic-policy.ts:244-256` and `apps/mbui/src/core/client.mbt:117-122`).
+pub fn is_device_global_topic(topic_name : String) -> Bool {
+  protocol::is_device_global_topic(topic_name)
+}
+
+/// Vault-scoped topics requiring `vaultGen` on every outbound subscription frame.
+pub fn is_vault_topic(topic_name : String) -> Bool {
+  protocol::is_vault_topic(topic_name)
+}
+
+/// Cross-workspace aggregate topics tracked under `aggregateAuthGen`.
+pub fn is_aggregate_topic(topic_name : String) -> Bool {
+  protocol::is_aggregate_topic(topic_name)
+}
+
+/// Extract the workspace id a topic belongs to (1:1 with `apps/mbui/src/core/client.mbt:81-102`).
+pub fn topic_workspace(topic : protocol::Topic) -> Option[String] {
+  protocol::topic_workspace(topic)
+}
+
+/// Extract the vault id a vault topic belongs to (1:1 with `apps/mbui/src/core/client.mbt:105-114`).
+pub fn topic_vault_id(topic : protocol::Topic) -> Option[String] {
+  protocol::topic_vault_id(topic)
+}
+
+pub enum AuthBoundaryEvent {
+  Global(Int, Int)
+  Workspace(String, Int)
+  Vault(String, String, Int)
+  VaultWorkspace(String, Int)
+  WorkspaceAndVault(String, Int, Int)
+  VaultAll(Int)
+}
+
+struct BoundaryListener {
+  id : Int
+  cb : (AuthBoundaryEvent) -> Unit
+}
+
+/// Monotonic authorization and vault generation tracker with unique `owner_id` (so capabilities
+/// from one tracker instance fail-closed when checked against another tracker instance).
+pub struct AuthGenTracker {
+  pub owner_id : Int64
+  conn_seq : Int64
+  mut global_gen : Int
+  mut aggregate_auth_gen : Int
+  mut vault_global_gen : Int
+  ws_gens : Map[String, Int]
+  vault_ws_gens : Map[String, Int]
+  vault_ws_all_gens : Map[String, Int]
+  vault_item_gens : Map[String, Int]
+  locked_vaults : Map[String, Bool]
+  listeners : Array[BoundaryListener]
+  mut next_listener_id : Int
+}
+
+pub fn AuthGenTracker::new(conn_seq : Int64 = 1L) -> AuthGenTracker {
+  let eff_conn = if conn_seq > 0L { conn_seq } else { 1L }
+  AuthGenTracker::{
+    owner_id: alloc_tracker_owner_id(),
+    conn_seq: eff_conn,
+    global_gen: 1,
+    aggregate_auth_gen: 1,
+    vault_global_gen: 1,
+    ws_gens: Map::new(),
+    vault_ws_gens: Map::new(),
+    vault_ws_all_gens: Map::new(),
+    vault_item_gens: Map::new(),
+    locked_vaults: Map::new(),
+    listeners: [],
+    next_listener_id: 1,
+  }
+}
+
+/// Construct an `AuthGenTracker` whose `conn_seq` is durably read from and incremented in
+/// SQLite `account_doc("conn_seq")` (`max(persisted + 1, now_ms * 1000)` when `now_ms > 0`).
+pub fn AuthGenTracker::open_with_db(db : sql::Sql, now_ms : Int64 = 0L) -> AuthGenTracker {
+  let conn = store::load_and_bump_conn_seq(db, now_ms=now_ms)
+  AuthGenTracker::new(conn_seq=conn)
+}
+
+/// Construct an `AuthGenTracker` backed by device-level monotonic `conn_seq` storage
+/// (independent of any per-account SQLite DB, resilient to account switches and read-only DBs).
+pub fn AuthGenTracker::open_with_device(
+  load_persisted : () -> Int64,
+  save_persisted : (Int64) -> Unit,
+  now_ms : Int64 = 0L,
+  floor : Int64 = 0L,
+) -> AuthGenTracker {
+  let prev = load_persisted()
+  let next = store::next_monotonic_conn_seq(prev, now_ms=now_ms, floor=floor)
+  save_persisted(next)
+  AuthGenTracker::new(conn_seq=next)
+}
+
+pub fn AuthGenTracker::conn_seq(self : AuthGenTracker) -> Int64 {
+  self.conn_seq
+}
+
+pub fn AuthGenTracker::global_gen(self : AuthGenTracker) -> Int {
+  self.global_gen
+}
+
+pub fn AuthGenTracker::aggregate_auth_gen(self : AuthGenTracker) -> Int {
+  if self.aggregate_auth_gen > self.global_gen {
+    self.aggregate_auth_gen
+  } else {
+    self.global_gen
+  }
+}
+
+pub fn AuthGenTracker::vault_global_gen(self : AuthGenTracker) -> Int {
+  self.vault_global_gen
+}
+
+/// Register a workspace at baseline generation (`1`, or `global_gen` if higher) without bumping.
+pub fn AuthGenTracker::ensure_workspace(self : AuthGenTracker, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  if self.ws_gens.get(ws).is_none() {
+    self.ws_gens.set(ws, self.global_gen)
+  }
+  if self.vault_ws_gens.get(ws).is_none() {
+    self.vault_ws_gens.set(ws, self.vault_global_gen)
+  }
+}
+
+pub fn AuthGenTracker::workspace_auth_gen(self : AuthGenTracker, ws : String) -> Int {
+  let g = match self.ws_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  if g > self.global_gen { g } else { self.global_gen }
+}
+
+pub fn AuthGenTracker::vault_workspace_gen(self : AuthGenTracker, ws : String) -> Int {
+  let g = match self.vault_ws_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  let all_g = match self.vault_ws_all_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  let max_ws = if g > all_g { g } else { all_g }
+  if max_ws > self.vault_global_gen { max_ws } else { self.vault_global_gen }
+}
+
+/// Vault generation for one `(ws, vault_id)` (`auth-gen.ts:539-554`):
+/// Single-vault bumps (`bump_vault(ws, v1)`) advance ONLY `vault_item_gens[ws/v1]` and `vault_ws_gens[ws]`
+/// (for the `vaults` summary topic) WITHOUT falsely invalidating unaffected sibling vault `v2`!
+/// Whole-workspace vault bumps (`bump_vault(ws)` / `bump_workspace_and_vault(ws)`) advance `vault_ws_all_gens[ws]`.
+pub fn AuthGenTracker::vault_gen(self : AuthGenTracker, ws : String, vault_id : String) -> Int {
+  if vault_id.length() == 0 {
+    return self.vault_workspace_gen(ws)
+  }
+  let all_g = match self.vault_ws_all_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  let floor_g = if all_g > self.vault_global_gen { all_g } else { self.vault_global_gen }
+  let key = ws + "/" + vault_id
+  let item_g = match self.vault_item_gens.get(key) {
+    Some(v) => v
+    None => 1
+  }
+  if item_g > floor_g { item_g } else { floor_g }
+}
+
+pub fn AuthGenTracker::is_vault_locked(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String = "",
+) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  match self.locked_vaults.get(ws) {
+    Some(true) => return true
+    _ => ()
+  }
+  if vault_id.length() > 0 {
+    match self.locked_vaults.get(ws + "/" + vault_id) {
+      Some(true) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+/// Subscribe to generation boundary notifications (`bump_*` / `lock_vault` / `unlock_vault`).
+pub fn AuthGenTracker::on_boundary(
+  self : AuthGenTracker,
+  cb : (AuthBoundaryEvent) -> Unit,
+) -> Int {
+  let id = self.next_listener_id
+  self.next_listener_id += 1
+  self.listeners.push(BoundaryListener::{ id: id, cb: cb })
+  id
+}
+
+pub fn AuthGenTracker::off_boundary(self : AuthGenTracker, id : Int) -> Unit {
+  let kept : Array[BoundaryListener] = []
+  for i in 0..<self.listeners.length() {
+    if self.listeners[i].id != id {
+      kept.push(self.listeners[i])
+    }
+  }
+  self.listeners.clear()
+  for i in 0..<kept.length() {
+    self.listeners.push(kept[i])
+  }
+}
+
+fn AuthGenTracker::notify(self : AuthGenTracker, ev : AuthBoundaryEvent) -> Unit {
+  let snap : Array[(AuthBoundaryEvent) -> Unit] = []
+  for i in 0..<self.listeners.length() {
+    snap.push(self.listeners[i].cb)
+  }
+  for i in 0..<snap.length() {
+    (snap[i])(ev)
+  }
+}
+
+/// Advance `authGen` for one workspace and `aggregateAuthGen`, notifying `on_boundary` listeners.
+pub fn AuthGenTracker::bump_workspace(self : AuthGenTracker, ws : String) -> Int {
+  let next = self.workspace_auth_gen(ws) + 1
+  self.ws_gens.set(ws, next)
+  let next_agg = self.aggregate_auth_gen() + 1
+  self.aggregate_auth_gen = if next > next_agg { next } else { next_agg }
+  self.notify(AuthBoundaryEvent::Workspace(ws, next))
+  next
+}
+
+/// Advance `vaultGen` for one vault (`ws/vault_id`) or all vaults of `ws` without bumping
+/// non-vault workspace `authGen`. Single-vault bump advances `ws/vault_id` and `vaults` aggregate
+/// `ws` WITHOUT touching sibling vaults (`ws/v2`) (`client/core-ts/src/auth-gen.ts:539-554`).
+pub fn AuthGenTracker::bump_vault(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String = "",
+) -> Int {
+  if vault_id.length() > 0 {
+    let key = ws + "/" + vault_id
+    let cur_item = self.vault_gen(ws, vault_id)
+    let cur_ws = self.vault_workspace_gen(ws)
+    let max_seen = if cur_item > cur_ws { cur_item } else { cur_ws }
+    let next = max_seen + 1
+    self.vault_item_gens.set(key, next)
+    self.vault_ws_gens.set(ws, next)
+    self.notify(AuthBoundaryEvent::Vault(ws, vault_id, next))
+    next
+  } else {
+    let mut max_g = self.vault_workspace_gen(ws)
+    let prefix = ws + "/"
+    let ks = self.vault_item_gens.keys()
+    for i in 0..<ks.length() {
+      if ks[i].starts_with(prefix) {
+        match self.vault_item_gens.get(ks[i]) {
+          Some(v) => if v > max_g { max_g = v }
+          None => ()
+        }
+      }
+    }
+    let next = max_g + 1
+    self.vault_ws_gens.set(ws, next)
+    self.vault_ws_all_gens.set(ws, next)
+    for i in 0..<ks.length() {
+      if ks[i].starts_with(prefix) {
+        self.vault_item_gens.set(ks[i], next)
+      }
+    }
+    self.notify(AuthBoundaryEvent::VaultWorkspace(ws, next))
+    next
+  }
+}
+
+/// Atomically advance BOTH `authGen(ws)` and `vaultGen(ws)` in a single boundary notification
+/// (used on member/device lock security-boundary transitions).
+pub fn AuthGenTracker::bump_workspace_and_vault(
+  self : AuthGenTracker,
+  ws : String,
+) -> (Int, Int) {
+  let next_ag = self.workspace_auth_gen(ws) + 1
+  self.ws_gens.set(ws, next_ag)
+  let next_agg = self.aggregate_auth_gen() + 1
+  self.aggregate_auth_gen = if next_ag > next_agg { next_ag } else { next_agg }
+
+  let mut max_vg = self.vault_workspace_gen(ws)
+  let prefix = ws + "/"
+  let vks = self.vault_item_gens.keys()
+  for i in 0..<vks.length() {
+    if vks[i].starts_with(prefix) {
+      match self.vault_item_gens.get(vks[i]) {
+        Some(v) => if v > max_vg { max_vg = v }
+        None => ()
+      }
+    }
+  }
+  let next_vg = max_vg + 1
+  self.vault_ws_gens.set(ws, next_vg)
+  self.vault_ws_all_gens.set(ws, next_vg)
+  for i in 0..<vks.length() {
+    if vks[i].starts_with(prefix) {
+      self.vault_item_gens.set(vks[i], next_vg)
+    }
+  }
+  self.notify(AuthBoundaryEvent::WorkspaceAndVault(ws, next_ag, next_vg))
+  (next_ag, next_vg)
+}
+
+/// Advance global `authGen` and global `vaultGen` across all workspaces and vaults.
+pub fn AuthGenTracker::bump_all(self : AuthGenTracker) -> (Int, Int) {
+  let mut max_ag = self.aggregate_auth_gen()
+  let wks = self.ws_gens.keys()
+  for i in 0..<wks.length() {
+    match self.ws_gens.get(wks[i]) {
+      Some(v) => if v > max_ag { max_ag = v }
+      None => ()
+    }
+  }
+  let next_ag = max_ag + 1
+  self.global_gen = next_ag
+  self.aggregate_auth_gen = next_ag
+  for i in 0..<wks.length() {
+    self.ws_gens.set(wks[i], next_ag)
+  }
+
+  let mut max_vg = self.vault_global_gen
+  let vwks = self.vault_ws_gens.keys()
+  for i in 0..<vwks.length() {
+    match self.vault_ws_gens.get(vwks[i]) {
+      Some(v) => if v > max_vg { max_vg = v }
+      None => ()
+    }
+  }
+  let vwaks = self.vault_ws_all_gens.keys()
+  for i in 0..<vwaks.length() {
+    match self.vault_ws_all_gens.get(vwaks[i]) {
+      Some(v) => if v > max_vg { max_vg = v }
+      None => ()
+    }
+  }
+  let viks = self.vault_item_gens.keys()
+  for i in 0..<viks.length() {
+    match self.vault_item_gens.get(viks[i]) {
+      Some(v) => if v > max_vg { max_vg = v }
+      None => ()
+    }
+  }
+  let next_vg = max_vg + 1
+  self.vault_global_gen = next_vg
+  for i in 0..<vwks.length() {
+    self.vault_ws_gens.set(vwks[i], next_vg)
+  }
+  for i in 0..<vwaks.length() {
+    self.vault_ws_all_gens.set(vwaks[i], next_vg)
+  }
+  for i in 0..<viks.length() {
+    self.vault_item_gens.set(viks[i], next_vg)
+  }
+  self.notify(AuthBoundaryEvent::Global(next_ag, next_vg))
+  (next_ag, next_vg)
+}
+
+/// Lock a vault (or all vaults of `ws`) and bump its `vaultGen` without bumping non-vault `authGen`.
+pub fn AuthGenTracker::lock_vault(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String = "",
+) -> Int {
+  let key = if vault_id.length() > 0 { ws + "/" + vault_id } else { ws }
+  self.locked_vaults.set(key, true)
+  self.bump_vault(ws, vault_id=vault_id)
+}
+
+/// Unlock a vault (or all vaults of `ws`) and bump its `vaultGen` without bumping non-vault `authGen`.
+pub fn AuthGenTracker::unlock_vault(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String = "",
+) -> Int {
+  if vault_id.length() > 0 {
+    self.locked_vaults.remove(ws + "/" + vault_id)
+  } else {
+    self.locked_vaults.remove(ws)
+    let prefix = ws + "/"
+    let ks = self.locked_vaults.keys()
+    for i in 0..<ks.length() {
+      if ks[i].starts_with(prefix) {
+        self.locked_vaults.remove(ks[i])
+      }
+    }
+  }
+  self.bump_vault(ws, vault_id=vault_id)
+}
+
+/// Effective `authGen` for `topic` (`0` for device-global topics),
+/// 1:1 with `apps/mbui/src/core/client.mbt` `current_auth_gen`.
+pub fn AuthGenTracker::auth_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
+  if is_device_global_topic(topic.name) {
+    return 0
+  }
+  if is_aggregate_topic(topic.name) {
+    return self.aggregate_auth_gen()
+  }
+  match protocol::topic_workspace(topic) {
+    Some(ws) =>
+    if ws == "all" || ws == "*" {
+      self.global_gen
+    } else {
+      self.workspace_auth_gen(ws)
+    }
+    None => self.global_gen
+  }
+}
+
+/// Effective `vaultGen` for `topic` (`0` for non-vault topics).
+pub fn AuthGenTracker::vault_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
+  if !is_vault_topic(topic.name) {
+    return 0
+  }
+  match (protocol::topic_workspace(topic), protocol::topic_vault_id(topic)) {
+    (Some(ws), Some(vid)) => self.vault_gen(ws, vid)
+    (Some(ws), None) => self.vault_workspace_gen(ws)
+    _ => self.vault_global_gen
+  }
+}
+
+/// Build the unified `WireOutGen` envelope for any subscription topic
+/// (1:1 with `apps/mbui/src/core/client.mbt` `msg_stale_for`).
+pub fn AuthGenTracker::wire_out_gen(
+  self : AuthGenTracker,
+  topic : protocol::Topic,
+) -> protocol::WireOutGen {
+  if is_device_global_topic(topic.name) {
+    return protocol::WireOutGen::{
+      conn: self.conn_seq,
+      auth_gen: None,
+      vault_gen: None,
+    }
+  }
+  let ag = self.auth_gen_of(topic)
+  if is_vault_topic(topic.name) {
+    protocol::WireOutGen::{
+      conn: self.conn_seq,
+      auth_gen: Some(ag),
+      vault_gen: Some(self.vault_gen_of(topic)),
+    }
+  } else {
+    protocol::WireOutGen::{
+      conn: self.conn_seq,
+      auth_gen: Some(ag),
+      vault_gen: None,
+    }
+  }
+}
+
+/// Whether `topic` is affected by `event` (1:1 with `client/core-ts/src/auth-gen.ts:430` and
+/// `apps/mbui/src/core/client.mbt:199`).
+pub fn AuthGenTracker::matches_topic(
+  self : AuthGenTracker,
+  topic : protocol::Topic,
+  event : AuthBoundaryEvent,
+) -> Bool {
+  let _ = self
+  if is_device_global_topic(topic.name) {
+    return false
+  }
+  match event {
+    AuthBoundaryEvent::Global(_, _) => true
+    AuthBoundaryEvent::VaultAll(_) => is_vault_topic(topic.name)
+    AuthBoundaryEvent::Workspace(ws, _) | AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) => {
+      if is_aggregate_topic(topic.name) {
+        return true
+      }
+      match protocol::topic_workspace(topic) {
+        Some(tws) => tws == ws
+        None => false
+      }
+    }
+    AuthBoundaryEvent::VaultWorkspace(ws, _) => {
+      if !is_vault_topic(topic.name) {
+        return false
+      }
+      match protocol::topic_workspace(topic) {
+        Some(tws) => tws == ws
+        None => false
+      }
+    }
+    AuthBoundaryEvent::Vault(ws, vid, _) => {
+      if !is_vault_topic(topic.name) {
+        return false
+      }
+      match protocol::topic_workspace(topic) {
+        Some(tws) =>
+        if tws != ws {
+          false
+        } else if topic.name == "vaults" {
+          true
+        } else {
+          match protocol::topic_vault_id(topic) {
+            Some(tv) => tv == vid
+            None => false
+          }
+        }
+        None => false
+      }
+    }
+  }
+}
+
+fn sort_strings_ac(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j] > cur {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+/// Build the full authoritative handshake/boundary snapshot frame:
+/// `{"id": 0, "auth": {"conn": N, "global": G, "aggregate": A, "vaultGlobal": VG, "scopes": {...}, "workspaces": {...}, "vaults": {...}}}`
+/// Compatible with both `apps/mbui/src/core/client.mbt` (`scopes` + `vaults`) and `workspaces` consumers.
+pub fn AuthGenTracker::handshake_json(self : AuthGenTracker) -> base_codec::Json {
+  let ws_keys = self.ws_gens.keys()
+  sort_strings_ac(ws_keys)
+  let scope_fields : Array[(String, base_codec::Json)] = []
+  let ws_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    let g = self.workspace_auth_gen(ws)
+    scope_fields.push((ws, base_codec::json_int(g)))
+    ws_fields.push((ws, base_codec::json_int(g)))
+  }
+  let vault_keys : Array[String] = []
+  let push_vault_key = fn(k : String) -> Unit {
+    for j in 0..<vault_keys.length() {
+      if vault_keys[j] == k {
+        return
+      }
+    }
+    vault_keys.push(k)
+  }
+  let vw_ks = self.vault_ws_gens.keys()
+  for i in 0..<vw_ks.length() {
+    push_vault_key(vw_ks[i])
+  }
+  let vwa_ks = self.vault_ws_all_gens.keys()
+  for i in 0..<vwa_ks.length() {
+    push_vault_key(vwa_ks[i])
+  }
+  let vi_ks = self.vault_item_gens.keys()
+  for i in 0..<vi_ks.length() {
+    push_vault_key(vi_ks[i])
+  }
+  sort_strings_ac(vault_keys)
+  let vault_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<vault_keys.length() {
+    let k = vault_keys[i]
+    let vg = match k.index_of("/") {
+      idx if idx > 0 => self.vault_gen(k.slice(0, idx), k.slice(idx + 1, k.length()))
+      _ => self.vault_workspace_gen(k)
+    }
+    vault_fields.push((k, base_codec::json_int(vg)))
+  }
+  let auth_obj = base_codec::json_obj([
+    ("conn", base_codec::json_int64(self.conn_seq)),
+    ("global", base_codec::json_int(self.global_gen)),
+    ("aggregate", base_codec::json_int(self.aggregate_auth_gen())),
+    ("vaultGlobal", base_codec::json_int(self.vault_global_gen)),
+    ("scopes", base_codec::json_obj(scope_fields)),
+    ("workspaces", base_codec::json_obj(ws_fields)),
+    ("vaults", base_codec::json_obj(vault_fields)),
+  ])
+  base_codec::json_obj([
+    ("id", base_codec::json_int(0)),
+    ("auth", auth_obj),
+  ])
+}
+
+// ── First-class immutable capabilities (fail-closed across tracker instances) ──
+
+/// Immutable workspace-scoped authorization capability anchored to an `AuthGenTracker` `owner_id`.
+pub struct WorkspaceCapability {
+  pub owner_id : Int64
+  pub workspace : String
+  pub auth_gen : Int
+  pub vault_global_gen : Int
+  pub ws_vault_gen : Option[Int]
+  pub track_vault_global : Bool
+  pub sub : Option[String]
+}
+
+pub fn WorkspaceCapability::is_valid(
+  self : WorkspaceCapability,
+  tracker : AuthGenTracker,
+  current_sub : Option[String] = None,
+) -> Bool {
+  if self.owner_id != tracker.owner_id {
+    return false
+  }
+  if tracker.workspace_auth_gen(self.workspace) != self.auth_gen {
+    return false
+  }
+  if self.track_vault_global && tracker.vault_global_gen() != self.vault_global_gen {
+    return false
+  }
+  match self.ws_vault_gen {
+    Some(vg) => if tracker.vault_workspace_gen(self.workspace) != vg { return false }
+    None => ()
+  }
+  match (self.sub, current_sub) {
+    (Some(expected), Some(actual)) => if expected != actual { return false }
+    (Some(_), None) => return false
+    _ => ()
+  }
+  true
+}
+
+/// Immutable `(workspace, vault_id)` capability anchored to an `AuthGenTracker` `owner_id`.
+pub struct VaultCapability {
+  pub owner_id : Int64
+  pub workspace : String
+  pub vault_id : String
+  pub auth_gen : Int
+  pub vault_gen : Int
+  pub vault_global_gen : Int
+  pub sub : Option[String]
+}
+
+pub fn VaultCapability::is_valid(
+  self : VaultCapability,
+  tracker : AuthGenTracker,
+  current_sub : Option[String] = None,
+) -> Bool {
+  if self.owner_id != tracker.owner_id {
+    return false
+  }
+  if tracker.workspace_auth_gen(self.workspace) != self.auth_gen {
+    return false
+  }
+  if tracker.vault_gen(self.workspace, self.vault_id) != self.vault_gen {
+    return false
+  }
+  if tracker.vault_global_gen() != self.vault_global_gen {
+    return false
+  }
+  match (self.sub, current_sub) {
+    (Some(expected), Some(actual)) => if expected != actual { return false }
+    (Some(_), None) => return false
+    _ => ()
+  }
+  true
+}
+
+/// Immutable composite capability valid iff every constituent workspace & vault capability
+/// is valid against `tracker` (and matches `owner_id`). Copies input arrays on construction
+/// so caller-side array mutation cannot alter verification results.
+pub struct CompositeCapability {
+  pub owner_id : Int64
+  workspaces : Array[WorkspaceCapability]
+  vaults : Array[VaultCapability]
+}
+
+pub fn CompositeCapability::new(
+  owner_id : Int64,
+  workspaces : Array[WorkspaceCapability],
+  vaults : Array[VaultCapability],
+) -> CompositeCapability {
+  let ws_copy : Array[WorkspaceCapability] = []
+  for i in 0..<workspaces.length() {
+    ws_copy.push(workspaces[i])
+  }
+  let v_copy : Array[VaultCapability] = []
+  for i in 0..<vaults.length() {
+    v_copy.push(vaults[i])
+  }
+  CompositeCapability::{
+    owner_id: owner_id,
+    workspaces: ws_copy,
+    vaults: v_copy,
+  }
+}
+
+pub fn CompositeCapability::workspace_count(self : CompositeCapability) -> Int {
+  self.workspaces.length()
+}
+
+pub fn CompositeCapability::vault_count(self : CompositeCapability) -> Int {
+  self.vaults.length()
+}
+
+pub fn CompositeCapability::is_valid(
+  self : CompositeCapability,
+  tracker : AuthGenTracker,
+  current_sub : Option[String] = None,
+) -> Bool {
+  if self.owner_id != tracker.owner_id {
+    return false
+  }
+  for i in 0..<self.workspaces.length() {
+    if !self.workspaces[i].is_valid(tracker, current_sub=current_sub) {
+      return false
+    }
+  }
+  for i in 0..<self.vaults.length() {
+    if !self.vaults[i].is_valid(tracker, current_sub=current_sub) {
+      return false
+    }
+  }
+  true
+}
+
+/// Immutable authorization snapshot factory anchored to a single `AuthGenTracker` instance.
+/// Derive scoped `WorkspaceCapability`, `VaultCapability`, or `CompositeCapability` from it.
+pub struct AuthCapability {
+  pub owner_id : Int64
+  pub conn_seq : Int64
+  pub global_gen : Int
+  pub vault_global_gen : Int
+  ws_gens : Map[String, Int]
+  vault_ws_gens : Map[String, Int]
+  vault_ws_all_gens : Map[String, Int]
+  vault_item_gens : Map[String, Int]
+}
+
+pub fn AuthCapability::capture(tracker : AuthGenTracker) -> AuthCapability {
+  let ws_copy : Map[String, Int] = Map::new()
+  let wks = tracker.ws_gens.keys()
+  for i in 0..<wks.length() {
+    let k = wks[i]
+    ws_copy.set(k, tracker.workspace_auth_gen(k))
+  }
+  let vws_copy : Map[String, Int] = Map::new()
+  let vwks = tracker.vault_ws_gens.keys()
+  for i in 0..<vwks.length() {
+    let k = vwks[i]
+    vws_copy.set(k, tracker.vault_workspace_gen(k))
+  }
+  let vws_all_copy : Map[String, Int] = Map::new()
+  let vwak = tracker.vault_ws_all_gens.keys()
+  for i in 0..<vwak.length() {
+    let k = vwak[i]
+    match tracker.vault_ws_all_gens.get(k) {
+      Some(v) => vws_all_copy.set(k, if v > tracker.vault_global_gen { v } else { tracker.vault_global_gen })
+      None => ()
+    }
+  }
+  let vi_copy : Map[String, Int] = Map::new()
+  let viks = tracker.vault_item_gens.keys()
+  for i in 0..<viks.length() {
+    let k = viks[i]
+    match tracker.vault_item_gens.get(k) {
+      Some(v) => vi_copy.set(k, if v > tracker.vault_global_gen { v } else { tracker.vault_global_gen })
+      None => ()
+    }
+  }
+  AuthCapability::{
+    owner_id: tracker.owner_id,
+    conn_seq: tracker.conn_seq,
+    global_gen: tracker.global_gen,
+    vault_global_gen: tracker.vault_global_gen,
+    ws_gens: ws_copy,
+    vault_ws_gens: vws_copy,
+    vault_ws_all_gens: vws_all_copy,
+    vault_item_gens: vi_copy,
+  }
+}
+
+pub fn AuthCapability::workspace(
+  self : AuthCapability,
+  ws : String,
+  track_vault_global : Bool = false,
+  track_ws_vault : Bool = false,
+  sub : Option[String] = None,
+) -> WorkspaceCapability {
+  let ag = match self.ws_gens.get(ws) {
+    Some(v) => if v > self.global_gen { v } else { self.global_gen }
+    None => self.global_gen
+  }
+  let ws_vg : Option[Int] = if track_ws_vault {
+    let v = match self.vault_ws_gens.get(ws) {
+      Some(x) => if x > self.vault_global_gen { x } else { self.vault_global_gen }
+      None => self.vault_global_gen
+    }
+    Some(v)
+  } else {
+    None
+  }
+  WorkspaceCapability::{
+    owner_id: self.owner_id,
+    workspace: ws,
+    auth_gen: ag,
+    vault_global_gen: self.vault_global_gen,
+    ws_vault_gen: ws_vg,
+    track_vault_global: track_vault_global,
+    sub: sub,
+  }
+}
+
+pub fn AuthCapability::vault(
+  self : AuthCapability,
+  ws : String,
+  vault_id : String,
+  sub : Option[String] = None,
+) -> VaultCapability {
+  let ag = match self.ws_gens.get(ws) {
+    Some(v) => if v > self.global_gen { v } else { self.global_gen }
+    None => self.global_gen
+  }
+  let ws_all_vg = match self.vault_ws_all_gens.get(ws) {
+    Some(v) => if v > self.vault_global_gen { v } else { self.vault_global_gen }
+    None => self.vault_global_gen
+  }
+  let item_vg = match self.vault_item_gens.get(ws + "/" + vault_id) {
+    Some(v) => if v > ws_all_vg { v } else { ws_all_vg }
+    None => ws_all_vg
+  }
+  VaultCapability::{
+    owner_id: self.owner_id,
+    workspace: ws,
+    vault_id: vault_id,
+    auth_gen: ag,
+    vault_gen: item_vg,
+    vault_global_gen: self.vault_global_gen,
+    sub: sub,
+  }
+}
+
+pub fn AuthCapability::composite(
+  self : AuthCapability,
+  workspaces : Array[WorkspaceCapability],
+  vaults : Array[VaultCapability],
+) -> CompositeCapability {
+  CompositeCapability::new(self.owner_id, workspaces, vaults)
+}
+
+pub fn AuthGenTracker::capture(self : AuthGenTracker) -> AuthCapability {
+  AuthCapability::capture(self)
+}
+
+pub fn AuthGenTracker::capture_workspace(
+  self : AuthGenTracker,
+  ws : String,
+  track_vault_global : Bool = false,
+  track_ws_vault : Bool = false,
+  sub : Option[String] = None,
+) -> WorkspaceCapability {
+  self.capture().workspace(
+    ws,
+    track_vault_global=track_vault_global,
+    track_ws_vault=track_ws_vault,
+    sub=sub,
+  )
+}
+
+pub fn AuthGenTracker::capture_vault(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String,
+  sub : Option[String] = None,
+) -> VaultCapability {
+  self.capture().vault(ws, vault_id, sub=sub)
+}
+
+// ── Full-set canonical lock digest (no lock_revoked) ──
+
+fn sort_keyed_json(xs : Array[(String, base_codec::Json)]) -> Array[base_codec::Json] {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j].0 > cur.0 {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i].1)
+  }
+  out
+}
+
+fn ac_opt_str_json(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+/// Compute full-set structured canonical JSON lock digests `(full_digest, security_boundary_digest)`
+/// from a verified `lock::LockState`:
+/// - Uses `base_codec::json_stringify` over sorted canonical tuple arrays (eliminating delimiter ambiguity).
+/// - Covers `disabled`, `rp_id`, sorted `origins`, sorted `members(sub, email, role)`, sorted `devices`
+///   (with `sign_key`, `own`, `exp`, `by`, and sorted `endpoints`), sorted `sign_keys`, sorted `passkeys`
+///   (with `own`), sorted `signed`, sorted `persons`, sorted `gateways`, canonical `cloud_keys`, `moved`,
+///   and sorted `stations` (in `full_digest`).
+/// - Strictly EXCLUDES volatile `head` / `seq` so non-boundary updates never cause spurious bumps.
+/// - NEVER derives `revoked` from `lock.members` (newcomers awaiting approval and migrated members
+///   are legitimately absent from `lock.members`).
+pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
+  let origins_copy : Array[String] = []
+  for i in 0..<st.origins.length() {
+    origins_copy.push(st.origins[i])
+  }
+  sort_strings_ac(origins_copy)
+  let origins_j : Array[base_codec::Json] = []
+  for i in 0..<origins_copy.length() {
+    origins_j.push(base_codec::json_str(origins_copy[i]))
+  }
+
+  let members_k : Array[(String, base_codec::Json)] = []
+  let ms = st.members.entries()
+  for i in 0..<ms.length() {
+    let (sub, m) = ms[i]
+    members_k.push((
+      sub,
+      base_codec::json_arr([
+        base_codec::json_str(sub),
+        base_codec::json_str(m.email),
+        base_codec::json_str(m.role),
+      ]),
+    ))
+  }
+
+  let devices_k : Array[(String, base_codec::Json)] = []
+  let ds = st.devices.entries()
+  for i in 0..<ds.length() {
+    let (id, d) = ds[i]
+    let exp_j = match d.exp {
+      Some(e) => base_codec::json_int64(e.to_int64())
+      None => base_codec::json_null()
+    }
+    let eps : Array[String] = []
+    match d.endpoints {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          eps.push(xs[j])
+        }
+        sort_strings_ac(eps)
+      }
+      None => ()
+    }
+    let eps_j : Array[base_codec::Json] = []
+    for j in 0..<eps.length() {
+      eps_j.push(base_codec::json_str(eps[j]))
+    }
+    devices_k.push((
+      id,
+      base_codec::json_arr([
+        base_codec::json_str(id),
+        base_codec::json_str(d.sub),
+        base_codec::json_str(d.kind),
+        ac_opt_str_json(d.sign_key),
+        base_codec::json_bool(d.own),
+        exp_j,
+        ac_opt_str_json(d.by),
+        base_codec::json_arr(eps_j),
+      ]),
+    ))
+  }
+
+  let sign_keys_k : Array[(String, base_codec::Json)] = []
+  let sks = st.sign_keys.entries()
+  for i in 0..<sks.length() {
+    let (dev_id, keys) = sks[i]
+    let kcopy : Array[String] = []
+    for j in 0..<keys.length() {
+      kcopy.push(keys[j])
+    }
+    sort_strings_ac(kcopy)
+    let kj : Array[base_codec::Json] = []
+    for j in 0..<kcopy.length() {
+      kj.push(base_codec::json_str(kcopy[j]))
+    }
+    sign_keys_k.push((
+      dev_id,
+      base_codec::json_arr([base_codec::json_str(dev_id), base_codec::json_arr(kj)]),
+    ))
+  }
+
+  let passkeys_k : Array[(String, base_codec::Json)] = []
+  let ps = st.passkeys.entries()
+  for i in 0..<ps.length() {
+    let (id, p) = ps[i]
+    passkeys_k.push((
+      id,
+      base_codec::json_arr([
+        base_codec::json_str(id),
+        base_codec::json_str(p.sub),
+        base_codec::json_str(p.key),
+        base_codec::json_bool(p.own),
+      ]),
+    ))
+  }
+
+  let signed_k : Array[(String, base_codec::Json)] = []
+  let sg = st.signed.entries()
+  for i in 0..<sg.length() {
+    let (k, v) = sg[i]
+    signed_k.push((k, base_codec::json_arr([base_codec::json_str(k), base_codec::json_bool(v)])))
+  }
+
+  let persons_k : Array[(String, base_codec::Json)] = []
+  let prs = st.persons.entries()
+  for i in 0..<prs.length() {
+    let (sub, person_hash) = prs[i]
+    persons_k.push((sub, base_codec::json_arr([base_codec::json_str(sub), base_codec::json_str(person_hash)])))
+  }
+
+  let gateways_k : Array[(String, base_codec::Json)] = []
+  let gws = st.gateways.entries()
+  for i in 0..<gws.length() {
+    let (g, enabled) = gws[i]
+    gateways_k.push((g, base_codec::json_arr([base_codec::json_str(g), base_codec::json_bool(enabled)])))
+  }
+
+  let cloud_keys_s = match form::canonical(st.cloud_keys) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+
+  let stations_k : Array[(String, base_codec::Json)] = []
+  let ss = st.stations.entries()
+  for i in 0..<ss.length() {
+    let (id, s) = ss[i]
+    stations_k.push((id, base_codec::json_arr([base_codec::json_str(id), base_codec::json_str(s.key)])))
+  }
+
+  let sec_json = base_codec::json_arr([
+    base_codec::json_bool(st.disabled),
+    base_codec::json_str(st.rp_id),
+    base_codec::json_arr(origins_j),
+    base_codec::json_arr(sort_keyed_json(members_k)),
+    base_codec::json_arr(sort_keyed_json(devices_k)),
+    base_codec::json_arr(sort_keyed_json(sign_keys_k)),
+    base_codec::json_arr(sort_keyed_json(passkeys_k)),
+    base_codec::json_arr(sort_keyed_json(signed_k)),
+    base_codec::json_arr(sort_keyed_json(persons_k)),
+    base_codec::json_arr(sort_keyed_json(gateways_k)),
+    base_codec::json_str(cloud_keys_s),
+    ac_opt_str_json(st.moved),
+  ])
+  let sec_digest = base_codec::json_stringify(sec_json)
+  let full_digest = base_codec::json_stringify(base_codec::json_arr([
+    sec_json,
+    base_codec::json_arr(sort_keyed_json(stations_k)),
+  ]))
+  (full_digest, sec_digest)
+}
+
+// ── Single fail-open `guarded_read_k` boundary primitive ──
+
+fn guarded_read_attempt_k[T, R](
+  tracker : AuthGenTracker,
+  workspace : String,
+  io_k : (WorkspaceCapability, (effect::Exit[T]) -> Unit) -> Unit,
+  commit : (WorkspaceCapability, T) -> Result[R, String],
+  k : (effect::Exit[R]) -> Unit,
+  attempt : Int,
+  max_retries : Int,
+  on_exhausted_stale : Option[() -> Unit],
+) -> Unit {
+  let cap = tracker.capture_workspace(workspace)
+  io_k(cap, fn(ex : effect::Exit[T]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(raw) => {
+        if !cap.is_valid(tracker) {
+          if attempt < max_retries {
+            guarded_read_attempt_k(
+              tracker,
+              workspace,
+              io_k,
+              commit,
+              k,
+              attempt + 1,
+              max_retries,
+              on_exhausted_stale,
+            )
+            return
+          }
+          match on_exhausted_stale {
+            Some(resched) => resched()
+            None => ()
+          }
+          k(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+          return
+        }
+        match commit(cap, raw) {
+          Ok(res) => k(effect::Exit::Succeeded(res))
+          Err(msg) => k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+        }
+      }
+    }
+  })
+}
+
+/// Unified fail-open boundary primitive for station async reads and SQLite commits:
+/// 1. Captures a fresh `WorkspaceCapability` before entering I/O.
+/// 2. Re-validates `cap.is_valid(tracker)` AFTER I/O returns, before `commit`.
+/// 3. On concurrent `authGen` change (`auth_stale`), retries up to `max_retries` (default `2`)
+///    with a fresh capability and invokes `on_exhausted_stale` if retries exhaust so sync
+///    pipelines never freeze permanently.
+pub fn guarded_read_k[T, R](
+  tracker : AuthGenTracker,
+  workspace : String,
+  io_k : (WorkspaceCapability, (effect::Exit[T]) -> Unit) -> Unit,
+  commit : (WorkspaceCapability, T) -> Result[R, String],
+  k : (effect::Exit[R]) -> Unit,
+  max_retries : Int = 2,
+  on_exhausted_stale : Option[() -> Unit] = None,
+) -> Unit {
+  guarded_read_attempt_k(
+    tracker,
+    workspace,
+    io_k,
+    commit,
+    k,
+    0,
+    if max_retries < 0 { 0 } else { max_retries },
+    on_exhausted_stale,
+  )
+}

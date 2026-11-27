@@ -25,12 +25,22 @@ fn sheet_panel_now(p : Presented) -> PanelOf {
 fn sheet_shows_panel(p : Presented) -> PanelOf {
   let serial = p.serial
   match p.shows {
-    Confirm(title, words, warning, action, danger, run) =>
+    Confirm(title, words, warning, action, danger, run, facts, body) =>
       sheet_nodes_panel(title, 0.0, fn(col, close) {
-        sheet_confirm_node(col, words, warning, action, danger, fn() { dismissed_now(serial) }, fn() {
-          close()
-          run()
-        })
+        sheet_confirm_node(
+          col,
+          words,
+          warning,
+          action,
+          danger,
+          fn() { dismissed_now(serial) },
+          fn() {
+            close()
+            run()
+          },
+          facts~,
+          body?,
+        )
       })
     Ask(title, value, placeholder, action, hint, secret, empty, run) =>
       sheet_nodes_panel(title, 0.0, fn(col, close) {
@@ -123,11 +133,27 @@ fn sheet_confirm_node(
   danger : Bool,
   cancel : () -> Unit,
   confirm : () -> Unit,
+  facts? : Array[(String, String)] = [],
+  body? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   col.box(made_for=loc, fn(b) {
     style_node(b, fn() { sheet_says_at.then(panel_words_in_node(col)) })
-    words_node(b, fn() { words }, fn() { sheet_lead }) |> ignore
+    let at = panel_in_of(col)
+    match body {
+      Some(draw) =>
+        b.box(fn(wrap) {
+          let mx = panel_card_in - at.sides - at.words
+          wrap.margin(Is((mx, 0.0, mx, 0.0))) |> ignore
+          draw(wrap)
+        })
+        |> ignore
+      None =>
+        confirm_facts_card_node(b, facts, panel_card_in - at.sides - at.words, dialog_card_corner, fn() { 1.0 })
+    }
+    if words != "" {
+      words_node(b, fn() { words }, fn() { sheet_lead }) |> ignore
+    }
     if warning != "" {
       words_node(b, fn() { warning }, fn() { sheet_warning }) |> ignore
     }

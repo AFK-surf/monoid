@@ -530,9 +530,9 @@ pub fn concentric_capsule_pad(@view.View, Double, Double) -> Double
 #callsite(autofill(loc))
 pub fn concentric_radius_node(@view.View, () -> Double, extra_inset? : () -> Double, loc~ : SourceLoc) -> Unit
 
-pub fn confirm(String, String, String, () -> Unit, danger? : Bool, warning? : String, from? : Anchor) -> Unit
+pub fn confirm(String, String, String, () -> Unit, danger? : Bool, warning? : String, facts? : Array[(String, String)], body? : (@view.View) -> Unit, from? : Anchor) -> Unit
 
-pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> String, Bool, () -> Unit, () -> Unit, warning? : String, shown? : () -> Unit, gone? : () -> Unit, dims? : () -> Bool, covered? : () -> Bool) -> Unit
+pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> String, Bool, () -> Unit, () -> Unit, warning? : String, facts? : Array[(String, String)], body? : (@view.View) -> Unit, shown? : () -> Unit, gone? : () -> Unit, dims? : () -> Bool, covered? : () -> Bool) -> Unit
 
 pub let confirm_w : Double
 
@@ -684,6 +684,9 @@ pub fn detail_page_node(@view.View, () -> String, (@view.View) -> Unit, on_back~
 pub let dialog_close : Double
 
 pub fn dialog_corner_foot(Double) -> @ui.Style
+
+#callsite(autofill(loc))
+pub fn dialog_facts_card_node(@view.View, Array[(String, String)], inset_out? : Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn dialog_foot_rows_node(@view.View, @ui.Style, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit

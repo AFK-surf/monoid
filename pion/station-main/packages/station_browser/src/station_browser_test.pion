@@ -1170,3 +1170,45 @@ test "psl: R2 WHATWG ends-in-a-number invalid IPv4 hosts fail-closed and xn--zz.
   assert_eq_str(normalize_host("xn--zz.com"), "xn--zz.com")
   assert_eq_opt_str(registrable_domain("xn--zz.com"), Some("xn--zz.com"))
 }
+
+test "w17b2_single_join_farview_and_video_encoder_readers" {
+  // #9070: FarviewFrameLinkReader joins multi-chunk lines and binary payloads once
+  let link = FarviewFrameLinkReader::new()
+  let e1 = match link.feed("{\"bytes\":".to_bytes()) { Ok(v) => v, Err(e) => panic(e) }
+  assert_true(e1.length() == 0)
+  let e2 = match link.feed("4}\nhe".to_bytes()) { Ok(v) => v, Err(e) => panic(e) }
+  assert_true(e2.length() == 0)
+  let e3 = match link.feed("lo".to_bytes()) { Ok(v) => v, Err(e) => panic(e) }
+  assert_true(e3.length() == 1)
+  match e3[0] {
+    FarviewLinkEvent::Frame(_, data) => assert_eq_str(data.to_string(), "helo")
+    _ => panic("expected Frame")
+  }
+  assert_true(link.join_alloc_bytes == 15L) // 11-byte line + 4-byte binary
+
+  // #9070: HelperVideoEncoderReader single-join 5-byte frame
+  let enc = HelperVideoEncoderReader::new()
+  let h = Bytes::new(5)
+  h[0] = 3.to_byte()
+  h[4] = 4.to_byte()
+  assert_true(match enc.feed(h) { Ok(v) => v.length() == 0, Err(_) => false })
+  assert_true(match enc.feed("ab".to_bytes()) { Ok(v) => v.length() == 0, Err(_) => false })
+  let out = match enc.feed("cd".to_bytes()) { Ok(v) => v, Err(e) => panic(e) }
+  assert_true(out.length() == 1 && out[0].0 == 3 && out[0].1.to_string() == "abcd")
+  assert_true(enc.join_alloc_bytes == 4L)
+
+  // R1 regression: 32-bit signed negative length (0x80000000) and > 16 MiB length fail closed
+  let neg = HelperVideoEncoderReader::new()
+  let bad_neg = Bytes::new(5)
+  bad_neg[0] = 1.to_byte()
+  bad_neg[1] = 0x80.to_byte()
+  assert_true(neg.feed(bad_neg) is Err(_))
+  assert_true(neg.closed)
+
+  let big = HelperVideoEncoderReader::new()
+  let bad_big = Bytes::new(5)
+  bad_big[0] = 1.to_byte()
+  bad_big[1] = 0x02.to_byte() // 32 MiB > 16 MiB
+  assert_true(big.feed(bad_big) is Err(_))
+  assert_true(big.closed)
+}

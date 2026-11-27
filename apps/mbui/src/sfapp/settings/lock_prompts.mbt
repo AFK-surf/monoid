@@ -206,7 +206,7 @@ let pair_column : @ui.Style = @ui.css("w=Full gap=S3")
 ///|
 /// Whose device it is and what.
 // kept across runs: a value (no field of it changes)
-let pair_body : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
+let pair_body : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))), w=Full)
 
 ///|
 /// Concentric quiet verification card (`bg=A(Fg,O5)`, `card_radius`, `panel_card_in` from panel edges)
@@ -226,7 +226,7 @@ let pair_meta_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let pair_meta_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+let pair_meta_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))))
 
 ///|
 // kept across runs: a value (no field of it changes)

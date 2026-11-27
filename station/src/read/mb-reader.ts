@@ -1172,6 +1172,7 @@ export class MbProcess extends EventEmitter {
   /// Ends it now, not waiting for its end (the station's process is ending).
   kill() {
     this.#intentionalStop = true;
+    this.ref(false);
     if (!this.#exited) this.#child.kill("SIGKILL");
   }
 
@@ -1337,6 +1338,20 @@ export class MbBackfill extends EventEmitter {
 
   /// (a process keeps the station's event loop no more than the backfill it is)
   unref() {}
+
+  kill(): void {
+    if (this.#probeAbort !== null) {
+      const abort = this.#probeAbort;
+      this.#probeAbort = null;
+      this.#exited = true;
+      this.#pendingMessages.length = 0;
+      this.#give();
+      abort.abort();
+      this.emit("exit", 0);
+      return;
+    }
+    this.#process?.kill();
+  }
 
   terminate(): Promise<number> {
     if (this.#probeAbort !== null) {

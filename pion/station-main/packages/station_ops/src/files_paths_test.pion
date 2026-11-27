@@ -149,3 +149,65 @@ test "shell_path: probe_env strips secrets, parse_shell_path_output decodes base
     None => panic("expected parsed shell path dirs")
   }
 }
+
+test "move_file_handles_same_disk_and_exdev_fallback" {
+  let mem = MemFs::new()
+  // Binary payload containing NUL and high bytes (non-UTF8) to prove raw-byte streaming never corrupts
+  let raw = Bytes::new(10)
+  raw[0] = 0x00.to_byte()
+  raw[1] = 0xFF.to_byte()
+  raw[2] = 0xFE.to_byte()
+  raw[3] = 0x41.to_byte()
+  raw[4] = 0x00.to_byte()
+  raw[5] = 0x80.to_byte()
+  raw[6] = 0x7F.to_byte()
+  raw[7] = 0xC3.to_byte()
+  raw[8] = 0x28.to_byte()
+  raw[9] = 0x99.to_byte()
+  let _ = mem.put_file("/disk1/up.bin", raw, 384)
+  let base = mem.ops()
+  let base_stream = mem.stream_copy_port()
+  // Same-disk rename succeeds directly
+  assert_true(move_file(base, base_stream, "/disk1/up.bin", "/disk1/moved.bin", "abcd") is Ok(_), "same disk rename")
+  assert_true(base.exists("/disk1/moved.bin") && !base.exists("/disk1/up.bin"), "source moved")
+
+  // Cross-disk structured FsErr::CrossDevice triggers multi-chunk raw-byte stream copy -> utimes -> rename -> remove
+  let utimes_called = [false]
+  let chunks_read = [0]
+  let counted_stream = StreamCopyPort::{
+    read_chunk: fn(p : String, off : Int64, max_len : Int) -> Result[Bytes, FsErr] {
+      chunks_read[0] = chunks_read[0] + 1
+      (base_stream.read_chunk)(p, off, max_len)
+    },
+    write_chunk: base_stream.write_chunk,
+  }
+  let exdev_fs = OpsFs::{
+    ..base,
+    rename: fn(from : String, to : String) -> Result[Unit, FsErr] {
+      if from.starts_with("/disk1/") && to.starts_with("/disk2/") {
+        Err(FsErr::CrossDevice("EXDEV"))
+      } else {
+        (base.rename)(from, to)
+      }
+    },
+  }
+  let res = move_file(
+    exdev_fs,
+    counted_stream,
+    "/disk1/moved.bin",
+    "/disk2/final.bin",
+    "1234",
+    Some(fn(_p : String, _mt : Int64) -> Result[Unit, FsErr] {
+      utimes_called[0] = true
+      Err(FsErr::PermissionDenied("EPERM"))
+    }),
+    "/",
+    4, // force 3 chunks for 10 bytes
+  )
+  assert_true(res is Ok(_), "exdev fallback succeeds even when utimes fails")
+  assert_true(utimes_called[0], "utimes attempted")
+  assert_true(chunks_read[0] == 3, "streamed in multiple chunks")
+  assert_true(base.exists("/disk2/final.bin") && !base.exists("/disk1/moved.bin"), "moved across disks")
+  let moved_bytes = match (base.read_bytes)("/disk2/final.bin") { Ok(b) => b, Err(_) => panic("read moved") }
+  assert_true(moved_bytes.length() == 10 && moved_bytes[0] == 0x00.to_byte() && moved_bytes[1] == 0xFF.to_byte() && moved_bytes[9] == 0x99.to_byte(), "binary bytes preserved verbatim")
+}

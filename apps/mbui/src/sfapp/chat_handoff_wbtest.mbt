@@ -33,8 +33,8 @@ test "a chat whose station is away offers 在其他 station 接着做; Maple pic
   t.click(MenuItem, label="Maple")
   t.run_for(@ui.move_most_ms)
   for words in [
-    "在 Maple 上接着做", "Willow 可能还在运行。从现在起，新对话和 Willow 上的原对话各自继续，不会同步。", "新对话从 Willow 的备份开始。",
-    "Maple 有这个对话的消息，但没有 Willow 的工作目录：Willow 上的文件和没推送的提交都不在 Maple 上。",
+    "切换 Station", "Willow", "Maple", "从备份开启新对话，与原对话各自继续、不再同步。",
+    "仅保留聊天记录，原工作目录的文件和未推送提交不会带过去。",
   ] {
     assert_true(t.find(words) is Some(_), msg="\{words}: \{Repr(t.words().map(fn(w) { w.0 }))}")
   }
@@ -49,7 +49,7 @@ test "a chat whose station is away offers 在其他 station 接着做; Maple pic
   assert_true(number(p, "thread") > 0.0, msg="\{Repr(asked[0].params)}")
   assert_true(text(p, "key") != "", msg="\{Repr(asked[0].params)}")
   // (at work while Maple reads the backup: its words say so, 接着做 turning)
-  assert_true(t.find("正在 Maple 上打开新对话…可能需要几十秒。") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("正在打开新对话，可能需要几十秒…") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
   assert_true(app.nav.top() is Chat({ session: "s-c1", .. }))
   t.run_for(1500.0 + @ui.move_most_ms * 2.0)
   match app.nav.top() {
@@ -59,7 +59,7 @@ test "a chat whose station is away offers 在其他 station 接着做; Maple pic
     }
     _ => fail("not the new chat")
   }
-  assert_true(t.find("在 Maple 上接着做") is None)
+  assert_true(t.find("切换 Station") is None)
 }
 
 ///|

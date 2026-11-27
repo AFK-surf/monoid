@@ -314,6 +314,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-station-move-all station/host": 1,
   "phone settings-station-move-all station/decided": 1,
   "phone settings-station-move-all station/archiving": 1,
+  // Raised 2026-11-27: move-all confirm now displays the live target StationInfoCard with network status.
+  "phone settings-station-move-all stationNet/sample": 2,
   "phone settings-station-move-section station/host": 13,
   "phone settings-station-move-section stationMove to= module=/moving": 27,
   "phone settings-station-move-section stationNet/sample": 6,
@@ -913,6 +915,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-station-move-all station/host": 1,
   "wide settings-station-move-all station/decided": 1,
   "wide settings-station-move-all station/archiving": 1,
+  // Raised 2026-11-27: move-all confirm now displays the live target StationInfoCard with network status.
+  "wide settings-station-move-all stationNet/sample": 2,
   "wide settings-station-move-section station/host": 13,
   "wide settings-station-move-section stationMove to= module=/moving": 32,
   "wide settings-station-move-section screens/screen": 31,

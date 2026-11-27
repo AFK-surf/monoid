@@ -382,3 +382,98 @@ test "thumb_os_modes_hash_width_height_int64_small_bytes_and_async_mux" {
   }
   assert(decode_image_thumb_done(done_err) is Err(_))
 }
+
+test "w17b2_r1_skills_workspace_isolation_profiles_presets_and_site" {
+  let cfg = "{\"agentHome\":\"custom/agent\",\"profiles\":[{\"id\":\"p-claude\",\"home\":\"homes/claude\",\"machine\":true,\"runtimes\":[\"claude\"]},{\"id\":\"p-codex\",\"home\":\"/abs/codex\",\"runtimes\":[\"codex\"],\"withheld\":[\"ws-blocked\"]},{\"id\":\"p-agy1\",\"home\":\"agy1\",\"runtimes\":[\"agy\"]},{\"id\":\"p-agy2\",\"home\":\"agy2\",\"runtimes\":[\"agy\"],\"share\":{\"borrowed\":true,\"workspaces\":[\"ws-shared\"]}},{\"id\":\"p-disabled\",\"home\":\"dis\",\"enabled\":false,\"runtimes\":[\"codex\"]}],\"presets\":[]}"
+  let presets_json = "{\"presets\":[{\"id\":\"pr1\",\"name\":\"Backend\",\"dirs\":[{\"path\":\"/repos/backend\"},{\"path\":\"/remote/skip\",\"elsewhere\":\"tokyo\"},{\"path\":\"\"}]}]}"
+  let preset_copy_json = "{\"id\":\"pr-copy\",\"name\":\"CopyName\",\"dirs\":[{\"path\":\"/local/dir\"},{\"path\":\"/away/dir\",\"elsewhere\":\"other-st\"}]}"
+
+  // 1) Home workspace: relative agentHome & profile.home resolved under dataDir; runtime filtering works;
+  //    presets read from <agentHome(ws)>/presets.json and exclude `elsewhere` & empty path.
+  let home_claude = resolve_skills_context_from_json("/data", "/assets", Some(cfg), Some("ws-home"), "ws-home", Some("claude"), None, Some(presets_json), Some("pr1"), None)
+  assert(home_claude.workspace_skills_dir == Some("/data/custom/agent/skills"))
+  assert(home_claude.profile_home == Some("/data/homes/claude"))
+  assert(home_claude.profile_is_machine)
+  assert(home_claude.fallback_agy_homes.length() == 0)
+  assert(home_claude.preset_name == "Backend")
+  assert(home_claude.preset_dirs.length() == 1 && home_claude.preset_dirs[0] == "/repos/backend")
+  assert(home_claude.site_skills_dir == Some("/assets/skills"))
+
+  // 2) Runtime filtering: ?runtime=codex picks p-codex (NOT p-claude), allowed in non-home ws by default unless withheld.
+  let guest_codex = resolve_skills_context_from_json("/data", "/assets", Some(cfg), Some("ws-guest"), "ws-home", Some("codex"), None, None, None, None)
+  assert(guest_codex.workspace_skills_dir == Some("/data/custom/agent/workspaces/ws-guest/skills"))
+  assert(guest_codex.profile_home == Some("/abs/codex"))
+  assert(!guest_codex.profile_is_machine)
+
+  // 3) `withheld` blocks non-home ws-blocked for p-codex.
+  let blocked_codex = resolve_skills_context_from_json("/data", "", Some(cfg), Some("ws-blocked"), "ws-home", Some("codex"), None, None, None, None)
+  assert(blocked_codex.profile_home is None)
+  assert(blocked_codex.site_skills_dir is None)
+
+  // 4) `share.borrowed === true` with `share.workspaces` restricts p-agy2 to ws-shared only;
+  //    `fallback_agy_homes` only populated for runtime=agy and filtered by runtimes.includes("agy").
+  let agy_home = resolve_skills_context_from_json("/data", "", Some(cfg), Some("ws-home"), "ws-home", Some("agy"), None, None, None, None)
+  assert(agy_home.profile_home == Some("/data/agy1"))
+  assert(agy_home.fallback_agy_homes.length() == 1 && agy_home.fallback_agy_homes[0] == "/data/agy1")
+  let agy_shared = resolve_skills_context_from_json("/data", "", Some(cfg), Some("ws-shared"), "ws-home", Some("agy"), None, None, None, None)
+  assert(agy_shared.fallback_agy_homes.length() == 2 && agy_shared.fallback_agy_homes[1] == "/data/agy2")
+
+  // 5) Explicit `?profile=` exact match works (including disabled profile if allowedIn, never fabricates data/homes/<id>).
+  let explicit_prof = resolve_skills_context_from_json("/data", "", Some(cfg), Some("ws-guest"), "ws-home", Some("claude"), Some("p-disabled"), None, None, None)
+  assert(explicit_prof.profile_home == Some("/data/dis"))
+  let missing_home_cfg = "{\"profiles\":[{\"id\":\"p-nohome\",\"runtimes\":[\"claude\"]}]}"
+  let nohome_ctx = resolve_skills_context_from_json("/data", "", Some(missing_home_cfg), Some("ws-home"), "ws-home", Some("claude"), None, None, None, None)
+  assert(nohome_ctx.profile_home == Some("/data"))
+
+  // 6) Session `.stillfail-preset.json` copy excludes `elsewhere` and sets `preset_name`.
+  let copy_ctx = resolve_skills_context_from_json("/data", "", Some(cfg), Some("ws-home"), "ws-home", Some("claude"), None, None, None, Some(preset_copy_json))
+  assert(copy_ctx.preset_name == "CopyName")
+  assert(copy_ctx.preset_dirs.length() == 1 && copy_ctx.preset_dirs[0] == "/local/dir")
+
+  // 7) Traversal workspace id is rejected (None).
+  let bad_ctx = resolve_skills_context_from_json("/data", "", Some(cfg), Some("../escape"), "ws-home", Some("claude"), None, None, None, None)
+  assert(bad_ctx.workspace_skills_dir is None)
+}
+
+test "w17b2_r3_skills_derives_runtimes_from_real_config_json_and_disabled_runtimes" {
+  // Real config.json profiles use singular `"runtime"` (no `"runtimes"` array) and optional `"access"`
+  let real_cfg = "{\"profiles\":[{\"id\":\"p-codex\",\"runtime\":\"codex\",\"home\":\"homes/cx\",\"access\":{\"kind\":\"subscription\"}},{\"id\":\"p-agy\",\"runtime\":\"agy\",\"home\":\"homes/ag\",\"access\":{\"kind\":\"subscription\"}}]}"
+
+  // 1) `?runtime=codex` derives codex from `"runtime": "codex"` and collects `<home>/skills`
+  let cx_ctx = resolve_skills_context_from_json("/data", "", Some(real_cfg), Some("ws-home"), "ws-home", Some("codex"), None, None, None, None)
+  assert(cx_ctx.profile_home == Some("/data/homes/cx"))
+  let files : Map[String, String] = Map::new()
+  let dirs : Map[String, Array[String]] = Map::new()
+  dirs.set("/data/homes/cx/skills", ["cx-skill"])
+  dirs.set("/data/homes/cx/skills/cx-skill", ["SKILL.md"])
+  files.set("/data/homes/cx/skills/cx-skill/SKILL.md", "---\nname: cx-skill\ndescription: codex agent skill\n---\n")
+  let sfs = station_sessions::SkillFs::{
+    list_dir: fn(d : String) -> Array[String] { match dirs.get(d) { Some(a) => a, None => [] } },
+    is_file: fn(p : String) -> Bool { files.contains(p) },
+    is_dir: fn(p : String) -> Bool { dirs.contains(p) },
+    read_head: fn(p : String, _lim : Int) -> Option[String] { files.get(p) },
+    canonical: fn(p : String) -> String { p },
+  }
+  let resolved = station_sessions::collect_skills(sfs, station_sessions::CollectSkillsOptions::{
+    runtime: Some("codex"),
+    profile_home: cx_ctx.profile_home,
+    profile_is_machine: cx_ctx.profile_is_machine,
+    fallback_agy_homes: cx_ctx.fallback_agy_homes,
+    cwd: None,
+    workspace_skills_dir: None,
+    preset_dirs: [],
+    site_skills_dir: None,
+    home_dir: "/data",
+  })
+  assert(resolved.length() == 1 && resolved[0].name == "cx-skill")
+
+  // 2) Top-level `"disabledRuntimes": ["codex"]` filters out the codex profile
+  let disabled_cfg = "{\"disabledRuntimes\":[\"codex\"],\"profiles\":[{\"id\":\"p-codex\",\"runtime\":\"codex\",\"home\":\"homes/cx\",\"access\":{\"kind\":\"subscription\"}}]}"
+  let disabled_ctx = resolve_skills_context_from_json("/data", "", Some(disabled_cfg), Some("ws-home"), "ws-home", Some("codex"), None, None, None, None)
+  assert(disabled_ctx.profile_home is None)
+
+  // 3) `"runtime": "agy"` without `"runtimes"` array is collected into `fallback_agy_homes`
+  let agy_ctx = resolve_skills_context_from_json("/data", "", Some(real_cfg), Some("ws-home"), "ws-home", Some("agy"), None, None, None, None)
+  assert(agy_ctx.profile_home == Some("/data/homes/ag"))
+  assert(agy_ctx.fallback_agy_homes.length() == 1 && agy_ctx.fallback_agy_homes[0] == "/data/homes/ag")
+}

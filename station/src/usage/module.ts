@@ -102,10 +102,7 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       return true;
     }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
-    yield* Effect.tryPromise({
-      try: () => retireByProgram(store, { mode: "usage-retire", options: { binary, config: readers, logAt: "readers" } }, path),
-      catch: (error) => error,
-    });
+    yield* retireByProgram(store, { mode: "usage-retire", options: { binary, config: readers, logAt: "readers" } }, path);
     return true;
   }).pipe(Effect.catch((error) => Effect.sync(() => {
     log.warn("usage", stopped ? "the old usage statistics could not be removed" : "the old usage statistics' writers could not be stopped", { error: (error as Error).message });
@@ -115,32 +112,79 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
 
 /// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired statistics freed, then the old
 /// calls taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old
-/// days came in.
-async function retireByProgram(store: StationStore, mb: string | MbBackfillSelection, path: string): Promise<void> {
-  const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
-  // (one that cannot start says so, then ends: its end fails what was asked)
-  program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
-  const ask = (message: object) => new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
-    const exit = (code: number) => reject(new Error(`usage retirement stopped (exit ${code})`));
-    program.once("exit", exit);
-    program.once("message", (answer: { done: boolean; error?: string }) => {
-      program.off("exit", exit);
-      if (answer.error) reject(new Error(answer.error)); else resolve(answer);
-    });
-    program.postMessage(message);
-  });
-  try {
-    while (!(await ask({ drop: true })).done);
-    let filled = false;
-    for (;;) {
-      const started = performance.now();
-      if ((await ask({})).done) break;
-      filled = true;
-      await wall.sleep(Math.max(200, (performance.now() - started) * 9));
-    }
-    // The days before the quarters began have just come in: pages open now read them again.
-    if (filled) store.usageChanged([], undefined, true);
-  } finally { await program.terminate(); }
+/// days came in. Owned by `acquireUseRelease` so interrupting the fiber on shutdown terminates and reaps the child
+/// process before the scope closes.
+function retireByProgram(store: StationStore, mb: string | MbBackfillSelection, path: string) {
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () => {
+        const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
+        // (one that cannot start says so, then ends: its end fails what was asked)
+        program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
+        return program;
+      },
+      catch: (error) => error,
+    }),
+    (program) => Effect.tryPromise({
+      try: async (signal) => {
+        const ask = (message: object) => new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
+          if (signal.aborted) { reject(new Error("usage retirement aborted")); return; }
+          const onAbort = () => {
+            program.off("exit", exit);
+            program.off("message", onMessage);
+            reject(new Error("usage retirement aborted"));
+          };
+          const exit = (code: number) => {
+            signal.removeEventListener("abort", onAbort);
+            program.off("message", onMessage);
+            reject(new Error(`usage retirement stopped (exit ${code})`));
+          };
+          const onMessage = (answer: { done: boolean; error?: string }) => {
+            signal.removeEventListener("abort", onAbort);
+            program.off("exit", exit);
+            if (answer.error) reject(new Error(answer.error)); else resolve(answer);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          program.once("exit", exit);
+          program.once("message", onMessage);
+          program.postMessage(message);
+        });
+        while (!(await ask({ drop: true })).done);
+        let filled = false;
+        for (;;) {
+          const started = performance.now();
+          if ((await ask({})).done) break;
+          filled = true;
+          const pause = Math.max(200, (performance.now() - started) * 9);
+          await new Promise<void>((resolve, reject) => {
+            if (signal.aborted) { reject(new Error("usage retirement aborted")); return; }
+            const stop = wall.after(pause, () => {
+              signal.removeEventListener("abort", onAbort);
+              resolve();
+            });
+            const onAbort = () => {
+              stop();
+              reject(new Error("usage retirement aborted"));
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+        // The days before the quarters began have just come in: pages open now read them again.
+        if (filled) store.usageChanged([], undefined, true);
+      },
+      catch: (error) => error,
+    }),
+    (program) => Effect.promise(async () => {
+      const terminated = program.terminate();
+      // Give SIGTERM 2 s to exit cleanly, escalate to SIGKILL, and bound the final wait so a stuck child
+      // (uninterruptible I/O or inherited pipe) can never block station shutdown forever.
+      const exited = await wall.within(2_000, terminated, "usage retirement SIGTERM timed out").then(() => true, () => false);
+      if (!exited) {
+        program.kill();
+        await wall.within(1_000, terminated, "usage retirement SIGKILL timed out").catch(() => {});
+      }
+    }),
+  );
 }
 
 /// Retry temporary installation or cleanup failures after stopping the old writers.

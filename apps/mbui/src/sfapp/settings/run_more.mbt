@@ -192,8 +192,8 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
     None
   }
   @sf.panel_nodes(
-    fill("android-chat.new.machine.title", [("station", shown)]),
-    description=tr("android-chat.new.machine.text"),
+    tr("android-chat.new.machine.title"),
+    description=if shown != "" { shown + " · " + tr("android-chat.new.machine.text") } else { tr("android-chat.new.machine.text") },
     from=Unanchored,
     wide=true,
     tall=0.75,
@@ -415,10 +415,14 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
     "" => runtime_label(runtime)
     m => m
   }
+  let session_title = first_text(sv, ["title", "first"], "")
   @sf.panel_go_nodes(
-    first_text(sv, ["title", "first"], ""),
+    tr("android-chat.new.machine.detailTitle"),
     description=text(sv, "meta"),
     fn(v, close) {
+      if session_title != "" {
+        @sf.dialog_facts_card_node(v, [("", session_title)])
+      }
       v.box(fn(main) {
         @sf.style_node(main, fn() { @sf.panel_words_in_node(main).then(machine_said_box) })
         main.pick(fn() { said.get() is Some(_) }, fn(p, read) {

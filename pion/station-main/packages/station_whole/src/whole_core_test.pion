@@ -11,6 +11,7 @@ import "jscase"
 import "station_api"
 import "station_http"
 import "station_jobs"
+import "station_ops"
 import "station_rules_bridge"
 import "station_screens"
 import "station_sessions"
@@ -74,7 +75,13 @@ struct TestClock {
   mut now_ms : Int64
 }
 
-fn make_test_core(data_dir : String, drive_dir : String, rng : DetRng, clock : TestClock) -> WholeCore {
+fn make_test_core(
+  data_dir : String,
+  drive_dir : String,
+  rng : DetRng,
+  clock : TestClock,
+  config_fs : Option[station_ops::OpsFs] = None,
+) -> WholeCore {
   let mem_fs = station_screens::MemDriveFs::new()
   mem_fs.put_dir(data_dir)
   mem_fs.put_dir(drive_dir)
@@ -105,6 +112,7 @@ fn make_test_core(data_dir : String, drive_dir : String, rng : DetRng, clock : T
     None,
     clock_fn,
     held_rig=false,
+    config_fs=config_fs,
   )
 }
 
@@ -938,6 +946,364 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
     }
   }
   wc_assert(found_sw, "sess-rt-switch must appear in exported snapshots")
+
+  core.shutdown_pre_handover()
+}
+
+test "wave17b3 E2E: disabledRuntimes ConfigFile load, hot-reload, PUT /runtimes, localized errors, and corrupt/unreadable fail-closed" {
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let rng = DetRng::{ counter: 173 }
+  let data_dir = "/tmp/stillfail-w17b3-disabled-rt-e2e"
+  let drive_dir = "/tmp/stillfail-w17b3-drive"
+  let cfg_path = data_dir + "/config.json"
+
+  // Seed config.json in station_ops::MemFs before opening WholeCore
+  let mem_cfg = station_ops::MemFs::new()
+  let seeded = "{\n  \"otherKey\": 123,\n  \"disabledRuntimes\": [\n    \"agy\"\n  ]\n}\n"
+  let _ = mem_cfg.put_text(cfg_path, seeded, 384)
+  let ops_fs = mem_cfg.ops()
+
+  let core = make_test_core(data_dir, drive_dir, rng, clock, config_fs=Some(ops_fs))
+  // Release pre-handover read-only gate for live API test
+  core.api.read_only_handover = false
+  core.ready = true
+
+  // Opening WholeCore with ConfigFile automatically loaded disabledRuntimes=["agy"]
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "WholeCore open must load disabledRuntimes=[agy] from ConfigFile",
+  )
+
+  let owner_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::{
+      email: "owner@example.com",
+      sub: "u-owner",
+      name: "Owner",
+      workspace: "ws-home",
+      home: true,
+      role: "owner",
+      device: None,
+    },
+    "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  )
+  let member_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::{
+      email: "member@example.com",
+      sub: "u-member",
+      name: "Member",
+      workspace: "ws-home",
+      home: true,
+      role: "member",
+      device: None,
+    },
+    "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  )
+  let hdrs = [
+    http1::Header::{ name: "stillfail-core", value: "0.1.99999" },
+    http1::Header::{ name: "stillfail-runtimes", value: "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi,copilot" },
+    http1::Header::{ name: "stillfail-profile-services", value: "1" },
+    http1::Header::{ name: "stillfail-lang", value: "en" },
+  ]
+
+  // 1. GET /overview reflects disabledRuntimes loaded from ConfigFile
+  let ov_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "GET",
+    "/overview",
+    hdrs,
+    Bytes::new(0),
+    1700000000100L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(ov_act) == 200, "GET /overview status 200")
+  wc_assert(
+    wc_response_body(ov_act).contains("\"disabledRuntimes\":[\"agy\"]"),
+    "overview must expose disabledRuntimes=[\"agy\"], got: " + wc_response_body(ov_act),
+  )
+
+  // 2. POST /sessions (hub.session.create) refuses disabled runtime "agy" with localized message
+  let create_agy_body = "{\"key\":\"chat-agy-1\",\"runtime\":\"agy\",\"profile\":\"p1\"}"
+  let cr_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "POST",
+    "/sessions",
+    hdrs,
+    create_agy_body.to_bytes(),
+    1700000000200L,
+    wc_empty_status,
+  )
+  let expected_disabled_en = station_ops::tr(
+    station_ops::Lang::En,
+    "station.runtime.disabled",
+    [("runtime", "Antigravity CLI")],
+  )
+  wc_assert(wc_response_status(cr_act) == 400, "hub.session.create for disabled runtime must return 400")
+  wc_assert(
+    wc_response_body(cr_act).contains(expected_disabled_en) && !wc_response_body(cr_act).contains("station.runtime.disabled"),
+    "must return localized station.runtime.disabled, got: " + wc_response_body(cr_act),
+  )
+
+  // 3. PUT /runtimes as non-manager returns 403 with localized station.runtimes.managersOnly
+  let put_claude_off = "{\"runtime\":\"claude\",\"enabled\":false}"
+  let mem_act = core.api.handle_authenticated_api_with_status(
+    member_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    put_claude_off.to_bytes(),
+    1700000000300L,
+    wc_empty_status,
+  )
+  let expected_mgr_en = station_ops::tr(station_ops::Lang::En, "station.runtimes.managersOnly", [])
+  wc_assert(wc_response_status(mem_act) == 403, "non-manager PUT /runtimes must return 403")
+  wc_assert(
+    wc_response_body(mem_act).contains(expected_mgr_en) && !wc_response_body(mem_act).contains("station.runtimes.managersOnly"),
+    "must return localized managersOnly, got: " + wc_response_body(mem_act),
+  )
+
+  // 4. PUT /runtimes with bad body returns 400 with localized station.runtimes.badSettings
+  let bad_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    "{\"runtime\":\"claude\",\"enabled\":\"nope\"}".to_bytes(),
+    1700000000350L,
+    wc_empty_status,
+  )
+  let expected_bad_en = station_ops::tr(station_ops::Lang::En, "station.runtimes.badSettings", [])
+  wc_assert(wc_response_status(bad_act) == 400, "bad PUT /runtimes body must return 400")
+  wc_assert(
+    wc_response_body(bad_act).contains(expected_bad_en) && !wc_response_body(bad_act).contains("station.runtimes.badSettings"),
+    "must return localized badSettings, got: " + wc_response_body(bad_act),
+  )
+
+  // 5. PUT /runtimes as owner disables claude -> returns overview with ["claude","agy"] and persists 2-space config.json
+  let put_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    put_claude_off.to_bytes(),
+    1700000000400L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(put_act) == 200, "owner PUT /runtimes must return 200")
+  wc_assert(
+    wc_response_body(put_act).contains("\"disabledRuntimes\":[\"claude\",\"agy\"]"),
+    "overview must list [claude, agy]",
+  )
+  match ops_fs.read_text(cfg_path) {
+    Ok(s) => {
+      wc_assert(
+        s.contains("  \"otherKey\": 123") && s.contains("  \"disabledRuntimes\": [\n    \"claude\",\n    \"agy\"\n  ]"),
+        "config.json must preserve otherKey and write 2-space pretty JSON, got: " + s,
+      )
+    }
+    Err(_) => wc_assert(false, "config.json must be readable after PUT /runtimes")
+  }
+
+  // 6. Re-enable both runtimes -> deletes disabledRuntimes key from config.json and allows POST /sessions
+  let _ = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    "{\"runtime\":\"claude\",\"enabled\":true}".to_bytes(),
+    1700000000500L,
+    wc_empty_status,
+  )
+  let _ = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    "{\"runtime\":\"agy\",\"enabled\":true}".to_bytes(),
+    1700000000550L,
+    wc_empty_status,
+  )
+  match ops_fs.read_text(cfg_path) {
+    Ok(s) => {
+      wc_assert(
+        s.contains("  \"otherKey\": 123") && !s.contains("disabledRuntimes"),
+        "empty disabledRuntimes must delete key from config.json, got: " + s,
+      )
+    }
+    Err(_) => wc_assert(false, "config.json readable after re-enable")
+  }
+  let ok_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "POST",
+    "/sessions",
+    hdrs,
+    create_agy_body.to_bytes(),
+    1700000000600L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(ok_act) == 200, "POST /sessions must succeed once runtime re-enabled")
+
+  // 7. P1-B hot reload: external edit to config.json updates agents.disabled_runtimes via fs_watch + ConfigFile::listen
+  let cfg_file = match core.config_file {
+    Some(c) => c
+    None => panic("expected core.config_file to be initialized")
+  }
+  cfg_file.enable_virtual_watch()
+  let _ = mem_cfg.put_text(cfg_path, "{\n  \"otherKey\": 123,\n  \"disabledRuntimes\": [\n    \"codex\"\n  ]\n}\n", 384)
+  // Unrelated filename event must NOT trigger reload
+  let ignored = cfg_file.on_fs_event(station_sys::FsChangeKind::Change, "other.json")
+  wc_assert(!ignored, "unrelated filename event must not trigger config reload")
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 0,
+    "unrelated filename event must leave agents.disabled_runtimes untouched",
+  )
+  // Matching config.json change event must hot-reload via ConfigFile::listen
+  let triggered = cfg_file.on_fs_event(station_sys::FsChangeKind::Change, "config.json")
+  wc_assert(triggered, "config.json Change event must trigger reload")
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "codex",
+    "ConfigFile::listen must sync agents.disabled_runtimes to [codex]",
+  )
+  let ov_hot = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "GET",
+    "/overview",
+    hdrs,
+    Bytes::new(0),
+    1700000000650L,
+    wc_empty_status,
+  )
+  wc_assert(
+    wc_response_body(ov_hot).contains("\"disabledRuntimes\":[\"codex\"]"),
+    "overview after hot reload must expose [codex]",
+  )
+
+  // 8. P1-A corrupt JSON fail-closed: PUT /runtimes refuses and leaves file byte-for-byte intact & memory unchanged
+  let corrupt_raw = "{not valid json"
+  let _ = mem_cfg.put_text(cfg_path, corrupt_raw, 384)
+  let corrupt_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    put_claude_off.to_bytes(),
+    1700000000700L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(corrupt_act) == 400, "corrupt config.json must reject PUT /runtimes with 400")
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "codex",
+    "corrupt config.json must leave agents.disabled_runtimes untouched",
+  )
+  match ops_fs.read_text(cfg_path) {
+    Ok(s) => wc_assert(s == corrupt_raw, "corrupt config.json must remain byte-for-byte intact, got: " + s)
+    Err(_) => wc_assert(false, "corrupt config.json must still exist")
+  }
+
+  // 9. P1-A non-object JSON fail-closed: PUT /runtimes refuses and leaves file byte-for-byte intact
+  let arr_raw = "[1, 2, 3]\n"
+  let _ = mem_cfg.put_text(cfg_path, arr_raw, 384)
+  let arr_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    put_claude_off.to_bytes(),
+    1700000000750L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(arr_act) == 400, "non-object config.json must reject PUT /runtimes with 400")
+  match ops_fs.read_text(cfg_path) {
+    Ok(s) => wc_assert(s == arr_raw, "non-object config.json must remain byte-for-byte intact")
+    Err(_) => wc_assert(false, "non-object config.json must still exist")
+  }
+
+  core.shutdown_pre_handover()
+}
+
+test "wave17b3 P1-A: unreadable config.json fails closed without overwriting disk or mutating memory" {
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let rng = DetRng::{ counter: 174 }
+  let data_dir = "/tmp/stillfail-w17b3-unreadable"
+  let drive_dir = "/tmp/stillfail-w17b3-unreadable-drive"
+  let cfg_path = data_dir + "/config.json"
+
+  let mem_cfg = station_ops::MemFs::new()
+  let initial_raw = "{\n  \"secret\": \"keep-me\",\n  \"disabledRuntimes\": [\n    \"agy\"\n  ]\n}\n"
+  let _ = mem_cfg.put_text(cfg_path, initial_raw, 384)
+  let base_ops = mem_cfg.ops()
+
+  let mut deny_reads = false
+  let mut write_calls = 0
+  let guarded_ops = station_ops::OpsFs::{
+    read_bytes: fn(p : String) -> Result[Bytes, station_ops::FsErr] {
+      if deny_reads && p == cfg_path {
+        Err(station_ops::FsErr::PermissionDenied("EACCES: permission denied"))
+      } else {
+        (base_ops.read_bytes)(p)
+      }
+    },
+    write_bytes: fn(p : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
+      write_calls = write_calls + 1
+      (base_ops.write_bytes)(p, data, mode)
+    },
+    stat: base_ops.stat,
+    lstat: base_ops.lstat,
+    readlink: base_ops.readlink,
+    realpath: base_ops.realpath,
+    mkdir_p: base_ops.mkdir_p,
+    rename: base_ops.rename,
+    remove: base_ops.remove,
+    truncate: base_ops.truncate,
+    readdir: base_ops.readdir,
+    rotate_in_place_native: base_ops.rotate_in_place_native,
+  }
+
+  let core = make_test_core(data_dir, drive_dir, rng, clock, config_fs=Some(guarded_ops))
+  core.api.read_only_handover = false
+  core.ready = true
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "initial load reads [agy]",
+  )
+
+  // Now simulate config.json becoming unreadable (EACCES)
+  deny_reads = true
+  let owner_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::{
+      email: "owner@example.com",
+      sub: "u-owner",
+      name: "Owner",
+      workspace: "ws-home",
+      home: true,
+      role: "owner",
+      device: None,
+    },
+    "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  )
+  let hdrs = [
+    http1::Header::{ name: "stillfail-core", value: "0.1.99999" },
+    http1::Header::{ name: "stillfail-runtimes", value: "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi,copilot" },
+    http1::Header::{ name: "stillfail-profile-services", value: "1" },
+  ]
+  let put_act = core.api.handle_authenticated_api_with_status(
+    owner_peer,
+    "PUT",
+    "/runtimes",
+    hdrs,
+    "{\"runtime\":\"claude\",\"enabled\":false}".to_bytes(),
+    1700000000100L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(put_act) == 500, "unreadable config.json must fail closed with 500")
+  wc_assert(write_calls == 0, "unreadable config.json must never invoke write_bytes")
+  wc_assert(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "unreadable config.json must not mutate agents.disabled_runtimes",
+  )
+  match base_ops.read_text(cfg_path) {
+    Ok(s) => wc_assert(s == initial_raw, "disk config.json must remain byte-for-byte untouched")
+    Err(_) => wc_assert(false, "disk config.json still present")
+  }
 
   core.shutdown_pre_handover()
 }

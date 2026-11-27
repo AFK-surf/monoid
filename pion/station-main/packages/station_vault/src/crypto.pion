@@ -1,0 +1,579 @@
+// Vault record cryptographic validation, canonical X25519 box key verification,
+// standalone per-vault `KeyAsk` (#9017), and workspace-vault `JoinAsk` / `JoinDismiss` (#9083),
+// aligned 1:1 with `station/src/vault/crypto.ts`.
+
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "station_rules_bridge"
+import "vault"
+
+pub let TAG_BOX : String = "stillfail-vault-box/1"
+pub let TAG_ASK : String = "stillfail-vault-ask/1"
+pub let TAG_JOIN : String = "stillfail-vault-join/1"
+pub let TAG_JOIN_DISMISS : String = "stillfail-vault-join-dismiss/1"
+pub let TAG_VAULT : String = "stillfail-vault/1"
+pub let TAG_ITEM : String = "stillfail-vault-item/1"
+pub let TAG_GRANT : String = "stillfail-vault-grant/1"
+
+let MAX_SAFE_INT_DOUBLE : Double = 9007199254740991.0
+
+fn is_lower_hex_exact(s : String, n : Int) -> Bool {
+  if s.length() != n {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_b64url_chars(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || (n % 4) == 1 {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn is_vault_id(s : String) -> Bool {
+  if !s.starts_with("v_") || s.length() != 28 {
+    return false
+  }
+  let mut i = 2
+  while i < 28 {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90 && c != 73 && c != 76 && c != 79 && c != 85)
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn is_box_key_format(s : String) -> Bool {
+  s.starts_with("x25519:") && is_lower_hex_exact(s.slice(7, s.length()), 64)
+}
+
+/// Whether a 32-byte little-endian X25519 u-coordinate is in canonical range `[0, 2^255 - 19)`.
+pub fn is_canonical_x25519(raw : Bytes) -> Bool {
+  if raw.length() != 32 {
+    return false
+  }
+  let b31 = raw[31].to_int() & 0xFF
+  if (b31 & 0x80) != 0 {
+    return false
+  }
+  if b31 == 0x7F {
+    let mut all_ff = true
+    let mut i = 1
+    while i <= 30 {
+      if (raw[i].to_int() & 0xFF) != 0xFF {
+        all_ff = false
+        break
+      }
+      i = i + 1
+    }
+    if all_ff && (raw[0].to_int() & 0xFF) >= 0xED {
+      return false
+    }
+  }
+  true
+}
+
+/// Whether `pub_key` is a usable canonical X25519 box public key (rejecting malformed or non-canonical encodings
+/// and low-order/all-zero shared secrets so HKDF binds the exact public key bytes used by `openSeal`).
+pub fn usable_box_key(pub_key : String) -> Bool {
+  if !is_box_key_format(pub_key) {
+    return false
+  }
+  let raw = match crypto::hex_to_bytes(pub_key.slice(7, pub_key.length())) {
+    Some(b) => b
+    None => return false
+  }
+  if !is_canonical_x25519(raw) {
+    return false
+  }
+  let probe = Bytes::new(32)
+  for i in 0..<32 {
+    probe[i] = 9 as Byte
+  }
+  match crypto::x25519(probe, raw) {
+    Ok(shared) => {
+      for i in 0..<shared.length() {
+        if (shared[i].to_int() & 0xFF) != 0 {
+          return true
+        }
+      }
+      false
+    }
+    Err(_) => false
+  }
+}
+
+fn has_exact_keys(entries : Array[(String, form::Json)], allowed : Array[String]) -> Bool {
+  if entries.length() != allowed.length() {
+    return false
+  }
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<entries.length() {
+    let k = entries[i].0
+    if seen.contains(k) {
+      return false
+    }
+    let mut ok = false
+    for j in 0..<allowed.length() {
+      if allowed[j] == k {
+        ok = true
+        break
+      }
+    }
+    if !ok {
+      return false
+    }
+    seen.set(k, true)
+  }
+  true
+}
+
+fn is_nonneg_safe_int(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Num(n)) => n >= 0.0 && n <= MAX_SAFE_INT_DOUBLE && n == n.floor()
+    _ => false
+  }
+}
+
+/// Strict fixed-shape canonical signature check (`sigShapeOk` in `station/src/vault/crypto.ts`).
+pub fn sig_shape_ok(sig : Option[form::Json]) -> Bool {
+  let entries = match sig {
+    Some(form::Json::Obj(m)) => m
+    _ => return false
+  }
+  if !has_exact_keys(entries, ["key", "alg", "sig"]) {
+    return false
+  }
+  let key = match form::json_obj_get(entries, "key") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let alg = match form::json_obj_get(entries, "alg") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let sig_s = match form::json_obj_get(entries, "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  if key.length() > 200 || sig_s.length() > 256 {
+    return false
+  }
+  if alg == "Ed25519" {
+    key.starts_with("ed25519:") && is_lower_hex_exact(key.slice(8, key.length()), 64) && is_lower_hex_exact(sig_s, 128)
+  } else if alg == "ES256" {
+    key.starts_with("p256:") && is_b64url_chars(key.slice(5, key.length())) && is_b64url_chars(sig_s)
+  } else {
+    false
+  }
+}
+
+fn strip_sig(o : form::Json) -> form::Json {
+  match o {
+    form::Json::Obj(entries) => {
+      let rest : Array[(String, form::Json)] = []
+      for i in 0..<entries.length() {
+        if entries[i].0 != "sig" {
+          rest.push(entries[i])
+        }
+      }
+      form::Json::Obj(rest)
+    }
+    _ => o
+  }
+}
+
+/// Verify `obj`'s `sig` over `"<tag>\0"` || `sha256(canonical(without_sig(obj)))`.
+pub fn record_signed_ok(
+  obj : form::Json,
+  tag : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Bool {
+  let sig = match form::json_field(Some(obj), "sig") {
+    Some(s) => s
+    None => return false
+  }
+  let text = match form::canonical(strip_sig(obj)) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  station_rules_bridge::record_sig_valid_with(sig, tag, text, verify_fn)
+}
+
+/// Convert `lock::LockState` into `vault::LockView`.
+pub fn lock_view_of(l : lock::LockState) -> vault::LockView {
+  let members : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let roles : form::OrderedMap[String] = form::OrderedMap::new()
+  let m_entries = l.members.entries()
+  for i in 0..<m_entries.length() {
+    let (sub, m) = m_entries[i]
+    members.set(sub, true)
+    roles.set(sub, m.role)
+  }
+  let devices : form::OrderedMap[vault::Device] = form::OrderedMap::new()
+  let d_entries = l.devices.entries()
+  for i in 0..<d_entries.length() {
+    let (id, d) = d_entries[i]
+    devices.set(id, vault::Device::{
+      sub: d.sub,
+      kind: d.kind,
+      sign_key: d.sign_key,
+      own: d.own,
+    })
+  }
+  vault::LockView::{
+    ws: l.ws,
+    members: members,
+    roles: roles,
+    devices: devices,
+    sign_keys: l.sign_keys,
+  }
+}
+
+fn str_in_list(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+/// Why a standalone per-vault `KeyAsk` record is invalid for `lock`, or `None` when valid (1:1 with `askOk`).
+pub fn ask_ok(
+  l : vault::LockView,
+  raw : form::Json,
+  ever : Bool = false,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Option[String] {
+  let entries = match raw {
+    form::Json::Obj(m) => m
+    _ => return Some("a key ask is an object")
+  }
+  if !has_exact_keys(entries, ["v", "ws", "vault", "device", "box", "at", "sig"]) {
+    return Some("a key ask is {v: 1, ws, vault, device, box, at, sig}")
+  }
+  let v_ok = match form::json_obj_get(entries, "v") {
+    Some(form::Json::Num(n)) => n == 1.0
+    _ => false
+  }
+  let ws_ok = match form::json_obj_get(entries, "ws") {
+    Some(form::Json::Str(s)) => s == l.ws
+    _ => false
+  }
+  if !v_ok || !ws_ok {
+    return Some("a key ask is {v: 1, ws, vault, device, box, at, sig} of this workspace")
+  }
+  match form::json_obj_get(entries, "vault") {
+    Some(form::Json::Str(vid)) => if !is_vault_id(vid) { return Some("a key ask's vault is v_<ULID>") }
+    _ => return Some("a key ask's vault is v_<ULID>")
+  }
+  let device = match form::json_obj_get(entries, "device") {
+    Some(form::Json::Str(d)) => {
+      if !is_lower_hex_exact(d, 64) {
+        return Some("a key ask's device is a 32-byte hex id")
+      }
+      d
+    }
+    _ => return Some("a key ask's device is a 32-byte hex id")
+  }
+  match form::json_obj_get(entries, "box") {
+    Some(form::Json::Str(b)) => if !is_box_key_format(b) { return Some("a key ask's box is an x25519 key") }
+    _ => return Some("a key ask's box is an x25519 key")
+  }
+  if !is_nonneg_safe_int(form::json_obj_get(entries, "at")) {
+    return Some("a key ask's at is a whole number")
+  }
+  let sig_opt = form::json_obj_get(entries, "sig")
+  if !sig_shape_ok(sig_opt) {
+    return Some("a key ask's sig is invalid")
+  }
+  let d = match l.devices.get(device) {
+    Some(dev) => {
+      if dev.kind != "app" || !l.members.contains(dev.sub) {
+        return Some("the key ask's device is not an app device in the lock")
+      }
+      dev
+    }
+    None => return Some("the key ask's device is not an app device in the lock")
+  }
+  if !ever && !d.own {
+    return Some("the key ask's device was put in the lock by someone else, not its person")
+  }
+  let sig_key = match form::json_field(sig_opt, "key") {
+    Some(form::Json::Str(k)) => k
+    _ => ""
+  }
+  let had = match l.sign_keys.get(device) {
+    Some(xs) => xs
+    None => []
+  }
+  let cur_match = match d.sign_key {
+    Some(sk) => sk == sig_key
+    None => false
+  }
+  if !cur_match && !(ever && str_in_list(had, sig_key)) {
+    return Some("a key ask is signed by its own device's key")
+  }
+  if !record_signed_ok(raw, TAG_ASK, verify_fn=verify_fn) {
+    return Some("the key ask's signature is invalid")
+  }
+  None
+}
+
+/// Why a standalone workspace-vault `JoinAsk` record is invalid for `lock`, or `None` when valid (1:1 with `joinAskOk`).
+pub fn join_ask_ok(
+  l : vault::LockView,
+  raw : form::Json,
+  ever : Bool = false,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Option[String] {
+  let entries = match raw {
+    form::Json::Obj(m) => m
+    _ => return Some("a join ask is an object")
+  }
+  if !has_exact_keys(entries, ["v", "ws", "vault", "sub", "device", "box", "state", "at", "sig"]) {
+    return Some("a join ask is {v: 1, ws, vault, sub, device, box, state, at, sig}")
+  }
+  let v_ok = match form::json_obj_get(entries, "v") {
+    Some(form::Json::Num(n)) => n == 1.0
+    _ => false
+  }
+  let ws_ok = match form::json_obj_get(entries, "ws") {
+    Some(form::Json::Str(s)) => s == l.ws
+    _ => false
+  }
+  if !v_ok || !ws_ok {
+    return Some("a join ask is of this workspace")
+  }
+  match form::json_obj_get(entries, "vault") {
+    Some(form::Json::Str(vid)) => if !is_vault_id(vid) { return Some("a join ask's vault is v_<ULID>") }
+    _ => return Some("a join ask's vault is v_<ULID>")
+  }
+  let sub = match form::json_obj_get(entries, "sub") {
+    Some(form::Json::Str(s)) => {
+      if s == "" || form::utf16_len(s) > 200 {
+        return Some("a join ask's sub is invalid")
+      }
+      s
+    }
+    _ => return Some("a join ask's sub is invalid")
+  }
+  let device = match form::json_obj_get(entries, "device") {
+    Some(form::Json::Str(d)) => {
+      if !is_lower_hex_exact(d, 64) {
+        return Some("a join ask's device is a 32-byte hex id")
+      }
+      d
+    }
+    _ => return Some("a join ask's device is a 32-byte hex id")
+  }
+  match form::json_obj_get(entries, "box") {
+    Some(form::Json::Str(b)) => if !usable_box_key(b) { return Some("a join ask's box is a usable x25519 key") }
+    _ => return Some("a join ask's box is a usable x25519 key")
+  }
+  match form::json_obj_get(entries, "state") {
+    Some(form::Json::Str(st)) => {
+      if st != "pending" && st != "cancelled" {
+        return Some("a join ask's state is pending or cancelled")
+      }
+    }
+    _ => return Some("a join ask's state is pending or cancelled")
+  }
+  if !is_nonneg_safe_int(form::json_obj_get(entries, "at")) {
+    return Some("a join ask's at is a whole number")
+  }
+  let sig_opt = form::json_obj_get(entries, "sig")
+  if !sig_shape_ok(sig_opt) {
+    return Some("a join ask's sig is invalid")
+  }
+  let d = match l.devices.get(device) {
+    Some(dev) => {
+      if dev.kind != "app" || dev.sub != sub || !l.members.contains(dev.sub) {
+        return Some("the join ask's device is not an app device of that member in the lock")
+      }
+      dev
+    }
+    None => return Some("the join ask's device is not an app device of that member in the lock")
+  }
+  if !ever && !d.own {
+    return Some("the join ask's device was put in the lock by someone else, not its person")
+  }
+  let sig_key = match form::json_field(sig_opt, "key") {
+    Some(form::Json::Str(k)) => k
+    _ => ""
+  }
+  let had = match l.sign_keys.get(device) {
+    Some(xs) => xs
+    None => []
+  }
+  let cur_match = match d.sign_key {
+    Some(sk) => sk == sig_key
+    None => false
+  }
+  if !cur_match && !(ever && str_in_list(had, sig_key)) {
+    return Some("a join ask is signed by its own device's key")
+  }
+  if !record_signed_ok(raw, TAG_JOIN, verify_fn=verify_fn) {
+    return Some("the join ask's signature is invalid")
+  }
+  None
+}
+
+/// Why an admin's signed `JoinDismiss` is invalid for `lock` and `vault_obj`, or `None` when valid (1:1 with `joinDismissOk`).
+pub fn join_dismiss_ok(
+  l : vault::LockView,
+  vault_obj : form::Json,
+  raw : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Option[String] {
+  let is_ws = match form::json_field(Some(vault_obj), "scope") {
+    Some(form::Json::Str(s)) => s == "workspace"
+    _ => false
+  }
+  let is_del = match form::json_field(Some(vault_obj), "deleted") {
+    Some(form::Json::Bool(true)) => true
+    _ => false
+  }
+  if !is_ws || is_del {
+    return Some("join dismiss applies only to active workspace vaults")
+  }
+  let entries = match raw {
+    form::Json::Obj(m) => m
+    _ => return Some("a join dismiss is an object")
+  }
+  if !has_exact_keys(entries, ["v", "ws", "vault", "sub", "upTo", "at", "sig"]) {
+    return Some("a join dismiss is {v: 1, ws, vault, sub, upTo, at, sig}")
+  }
+  let v_ok = match form::json_obj_get(entries, "v") {
+    Some(form::Json::Num(n)) => n == 1.0
+    _ => false
+  }
+  let ws_ok = match form::json_obj_get(entries, "ws") {
+    Some(form::Json::Str(s)) => s == l.ws
+    _ => false
+  }
+  let vid = match form::json_field(Some(vault_obj), "id") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  let vault_ok = match form::json_obj_get(entries, "vault") {
+    Some(form::Json::Str(s)) => s == vid && vid != ""
+    _ => false
+  }
+  if !v_ok || !ws_ok || !vault_ok {
+    return Some("a join dismiss is for this workspace vault")
+  }
+  match form::json_obj_get(entries, "sub") {
+    Some(form::Json::Str(s)) => if s == "" || form::utf16_len(s) > 200 { return Some("a join dismiss's sub is invalid") }
+    _ => return Some("a join dismiss's sub is invalid")
+  }
+  if !is_nonneg_safe_int(form::json_obj_get(entries, "upTo")) {
+    return Some("a join dismiss's upTo is a whole number")
+  }
+  if !is_nonneg_safe_int(form::json_obj_get(entries, "at")) {
+    return Some("a join dismiss's at is a whole number")
+  }
+  let sig_opt = form::json_obj_get(entries, "sig")
+  if !sig_shape_ok(sig_opt) {
+    return Some("a join dismiss's sig is invalid")
+  }
+  let sig_key = match form::json_field(sig_opt, "key") {
+    Some(form::Json::Str(k)) => k
+    _ => ""
+  }
+  let signer_sub = match vault::signer_of(l, sig_key) {
+    Some((sub, _)) => sub
+    None => return Some("only a managing member of the vault may dismiss join requests")
+  }
+  let mut in_members = false
+  match form::json_field(Some(vault_obj), "members") {
+    Some(form::Json::Arr(ms)) => {
+      for i in 0..<ms.length() {
+        match ms[i] {
+          form::Json::Str(s) => if s == signer_sub { in_members = true; break }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  if !in_members {
+    return Some("only a managing member of the vault may dismiss join requests")
+  }
+  let role_ok = match l.roles.get(signer_sub) {
+    Some(r) => r == "owner" || r == "admin"
+    None => false
+  }
+  if !role_ok {
+    return Some("only a workspace owner or admin may dismiss join requests")
+  }
+  if !record_signed_ok(raw, TAG_JOIN_DISMISS, verify_fn=verify_fn) {
+    return Some("the join dismiss's signature is invalid")
+  }
+  None
+}
+
+/// Sign a vault record object (`fields` without `sig`) using Ed25519 under `tag`.
+pub fn sign_record_ed25519(
+  seed : Bytes,
+  pub_hex : String,
+  fields : Array[(String, form::Json)],
+  tag : String,
+) -> Result[form::Json, String] {
+  let unsigned = form::Json::Obj(fields)
+  let text = match form::canonical(unsigned) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let digest = crypto::sha256(text.to_bytes())
+  let prefix = (tag + "\x00").to_bytes()
+  let msg = Bytes::new(prefix.length() + digest.length())
+  for i in 0..<prefix.length() {
+    msg[i] = prefix[i]
+  }
+  for i in 0..<digest.length() {
+    msg[prefix.length() + i] = digest[i]
+  }
+  let sig_bytes = match crypto::ed25519_sign(seed, msg) {
+    Ok(b) => b
+    Err(_) => return Err("ed25519 sign failed")
+  }
+  let out : Array[(String, form::Json)] = []
+  for i in 0..<fields.length() {
+    out.push(fields[i])
+  }
+  out.push((
+    "sig",
+    form::Json::Obj([
+      ("key", form::Json::Str("ed25519:" + pub_hex)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str(crypto::bytes_to_hex(sig_bytes))),
+    ]),
+  ))
+  Ok(form::Json::Obj(out))
+}

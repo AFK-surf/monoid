@@ -17,6 +17,7 @@ import "form"
 import "http1"
 import "sql_db"
 import "station_api"
+import "station_drivers"
 import "station_http"
 import "station_ops"
 import "station_rules_bridge"
@@ -24,6 +25,235 @@ import "station_screens"
 import "station_sessions"
 import "station_store"
 import "station_sys"
+
+fn api_lang_to_ops(lang : station_api::Lang) -> station_ops::Lang {
+  match lang {
+    station_api::Lang::En => station_ops::Lang::En
+    station_api::Lang::Zh => station_ops::Lang::Zh
+  }
+}
+
+fn config_error_to_api_error(e : station_ops::ConfigError) -> station_api::ApiError {
+  match e {
+    station_ops::ConfigError::InvalidJson(inv) => station_api::ApiError::new(400, inv.message)
+    station_ops::ConfigError::CheckFailed(msg) => station_api::ApiError::new(400, msg)
+    station_ops::ConfigError::Io(fs_err) => station_api::ApiError::new(500, station_ops::fs_err_msg(fs_err))
+  }
+}
+
+/// Shared production handler for `PUT /runtimes` (`accounts.runtimes.put`, `56d3d84e5b` #8793):
+/// - Enforces manager role (403 via `station_ops::tr("station.runtimes.managersOnly")`).
+/// - Validates `{ runtime, enabled: bool }` (400 via `station_ops::tr("station.runtimes.badSettings")`).
+/// - Reloads & atomically writes `config.json` via `station_ops::ConfigFile::update` (2-space
+///   formatted JSON, preserving other keys, deleting `disabledRuntimes` when empty, refusing to
+///   overwrite unreadable/malformed/non-object config files).
+/// - Updates `agents.disabled_runtimes` ONLY AFTER disk write commits.
+pub fn handle_accounts_runtimes_put_with(
+  agents : WholeAgents,
+  cfg_opt : Option[station_ops::ConfigFile],
+  cfg_open_err : Option[station_ops::ConfigError],
+  body : base_codec::Json,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+  build_ov : (station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError],
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let ops_lang = api_lang_to_ops(lang)
+  let is_manager = viewer.role == "owner" || viewer.role == "admin"
+  if !is_manager {
+    return Err(station_api::ApiError::new(403, station_ops::tr(ops_lang, "station.runtimes.managersOnly")))
+  }
+  let rt_opt = json_field_str(body, "runtime")
+  let en_opt = json_field_bool(body, "enabled")
+  let (rt, en) = match (rt_opt, en_opt) {
+    (Some(r), Some(b)) => (r, b)
+    _ => return Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.runtimes.badSettings")))
+  }
+  // Validate runtime name before touching config file.
+  match station_drivers::apply_disabled_runtime_toggle([], rt, en) {
+    Ok(_) => ()
+    Err(_) => return Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.runtimes.badSettings")))
+  }
+  let cfg = match cfg_opt {
+    Some(c) => c
+    None => match cfg_open_err {
+      Some(err) => return Err(config_error_to_api_error(err))
+      None => return Err(station_api::ApiError::new(500, "config file is not configured"))
+    }
+  }
+  // Fail closed on unreadable or malformed disk config BEFORE attempting any write
+  // (explicitly probe `read_text` so `chmod 0000` with unchanged mtime/size/ino cannot bypass stamp caching).
+  match cfg.fs.read_text(cfg.path) {
+    Ok(_) => ()
+    Err(station_ops::FsErr::NotFound) => ()
+    Err(e) => return Err(config_error_to_api_error(station_ops::ConfigError::Io(e)))
+  }
+  match cfg.reload_now() {
+    Ok(_) => ()
+    Err(e) => return Err(config_error_to_api_error(e))
+  }
+  match cfg.invalid {
+    Some(inv) => return Err(station_api::ApiError::new(400, inv.message))
+    None => ()
+  }
+  // Reject non-object root JSON so we never wipe a non-object config file.
+  match cfg.value {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(station_api::ApiError::new(400, "config.json root must be a JSON object"))
+  }
+  let mut applied_next : Array[String] = []
+  let written = match cfg.update(fn(raw : base_codec::Json) -> base_codec::Json {
+    let cur = disabled_runtimes_from_json(raw)
+    let next = match station_drivers::apply_disabled_runtime_toggle(cur, rt, en) {
+      Ok(v) => v
+      Err(_) => cur
+    }
+    applied_next = next
+    let out_fields : Array[(String, base_codec::Json)] = []
+    match raw {
+      base_codec::Json::Obj(existing) => {
+        for i in 0..<existing.length() {
+          if existing[i].0 != "disabledRuntimes" {
+            out_fields.push(existing[i])
+          }
+        }
+      }
+      _ => ()
+    }
+    if next.length() > 0 {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<next.length() {
+        arr.push(base_codec::json_str(next[i]))
+      }
+      out_fields.push(("disabledRuntimes", base_codec::json_arr(arr)))
+    }
+    base_codec::json_obj(out_fields)
+  }) {
+    Ok(v) => v
+    Err(e) => return Err(config_error_to_api_error(e))
+  }
+  // Only after atomic disk write commits, synchronize in-memory `agents.disabled_runtimes`.
+  let _ = applied_next
+  agents.set_disabled_runtimes(disabled_runtimes_from_json(written))
+  build_ov(viewer, lang)
+}
+
+/// Shared production handler for `POST /sessions` (`hub.session.create`):
+/// refuses disabled runtimes with HTTP 400 and localized `station_ops::tr("station.runtime.disabled")`.
+pub fn handle_hub_session_create_with(
+  agents : WholeAgents,
+  body : base_codec::Json,
+  req : station_api::ApiRequest,
+  now_ms : Int64,
+  create_fn : (String, String, Option[String], String, String, Option[String], String) -> Result[(String, Int64), String],
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let key = match json_field_str(body, "key") {
+    Some(k) => if k.length() > 0 { k } else { "c-" + now_ms.to_string() }
+    None => "c-" + now_ms.to_string()
+  }
+  let connect = match json_field_str(body, "connect") {
+    Some(c) => if c.length() > 0 { c } else { "chat" }
+    None => "chat"
+  }
+  let title = json_field_str(body, "title")
+  let runtime = match json_field_str(body, "runtime") {
+    Some(r) => if r.length() > 0 { r } else { "claude" }
+    None => "claude"
+  }
+  let profile = match json_field_str(body, "profile") {
+    Some(p) => if p.length() > 0 { p } else { "default" }
+    None => "default"
+  }
+  let model = json_field_str(body, "model")
+  let workspace_dir = match json_field_str(body, "workspace") {
+    Some(w) => if w.length() > 0 { w } else { agents.config.data_dir }
+    None => agents.config.data_dir
+  }
+  match agents.check_runtime_enabled_tr(runtime, lang=api_lang_to_ops(req.lang)) {
+    Ok(_) => ()
+    Err(msg) => return Err(station_api::ApiError::new(400, msg))
+  }
+  match create_fn(key, connect, title, runtime, profile, model, workspace_dir) {
+    Ok((_, tid)) => Ok(
+      base_codec::json_obj([
+        ("key", base_codec::json_str(key)),
+        ("thread", base_codec::json_int64(tid)),
+      ]),
+    )
+    Err(e) => Err(station_api::ApiError::new(500, e))
+  }
+}
+
+fn build_whole_overview(
+  whole_store : WholeStore,
+  agents : WholeAgents,
+  station_id_str : String,
+  home_ws_str : String,
+  viewer_drive_roots : Array[String],
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let mut total_sess = 0
+  let mut running_sess = 0
+  let mut warm_sess = 0
+  match whole_store.require_open() {
+    Ok(st) => {
+      match st.db.all(
+        "SELECT key, running FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
+        [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
+      ) {
+        Ok(rows) => {
+          total_sess = rows.length()
+          for i in 0..<rows.length() {
+            let k = match rows[i].get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let is_run = match rows[i].get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
+            if is_run {
+              running_sess = running_sess + 1
+            } else if agents.hub.actors.get(k).is_some() {
+              warm_sess = warm_sess + 1
+            }
+          }
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, "overview query failed: " + e.message))
+      }
+    }
+    Err(_) => ()
+  }
+  let base_in = station_api::OverviewInput::minimal()
+  let input = station_api::OverviewInput::{
+    cloud: Some(station_api::StatusCloudState::{
+      origin: None,
+      workspace: Some(viewer.workspace),
+      workspace_name: Some(viewer.workspace),
+      station: Some(station_id_str),
+      removed_at: None,
+    }),
+    reached: true,
+    built_at: base_in.built_at,
+    connects: base_in.connects,
+    profiles: base_in.profiles,
+    mcp_servers: base_in.mcp_servers,
+    backup_s3: base_in.backup_s3,
+    agent_env: base_in.agent_env,
+    total_sessions: total_sess,
+    running_sessions: running_sess,
+    warm_sessions: warm_sess,
+    auto_archive_days: base_in.auto_archive_days,
+    slack_archive_days: base_in.slack_archive_days,
+    auto_archive_reviewed: base_in.auto_archive_reviewed,
+    accept_auto_chats: base_in.accept_auto_chats,
+    disabled_runtimes: agents.disabled_runtimes,
+    disk_free_bytes: base_in.disk_free_bytes,
+    disk_total_bytes: base_in.disk_total_bytes,
+    afresh_when_cold: base_in.afresh_when_cold,
+    afresh_above: base_in.afresh_above,
+    diagnostics_logs: base_in.diagnostics_logs,
+    search_personal: base_in.search_personal,
+    has_spotlight: base_in.has_spotlight,
+    drive_roots: viewer_drive_roots,
+    drive_home: base_in.drive_home,
+  }
+  Ok(station_api::build_overview(input, viewer, lang))
+}
 
 /// Authenticated caller identity established by the transport/mesh layer.
 pub enum PeerIdentity {
@@ -139,6 +369,521 @@ fn drive_error_response(e : station_screens::DriveError) -> station_http::HttpRe
     None => ()
   }
   station_api::json_status(status, base_codec::json_obj(fields))
+}
+
+struct WholeSkillsContext {
+  workspace_skills_dir : Option[String]
+  profile_home : Option[String]
+  profile_is_machine : Bool
+  fallback_agy_homes : Array[String]
+  preset_dirs : Array[String]
+  preset_name : String
+  site_skills_dir : Option[String]
+}
+
+fn build_whole_skill_fs(agents : WholeAgents) -> station_sessions::SkillFs {
+  station_sessions::SkillFs::{
+    list_dir: fn(d : String) -> Array[String] {
+      match (agents.jobs.fs.read_dir)(d) {
+        Some(items) => items
+        None => []
+      }
+    },
+    is_file: fn(p : String) -> Bool {
+      match (agents.jobs.fs.stat)(p) {
+        Some(st) => st.is_file()
+        None => false
+      }
+    },
+    is_dir: fn(p : String) -> Bool {
+      match (agents.jobs.fs.stat)(p) {
+        Some(st) => st.is_dir()
+        None => false
+      }
+    },
+    read_head: fn(p : String, limit : Int) -> Option[String] {
+      match (agents.jobs.fs.read_range)(p, 0L, limit.to_int64()) {
+        Some(b) => Some(b.to_string())
+        None => None
+      }
+    },
+    canonical: fn(p : String) -> String {
+      match (agents.jobs.fs.realpath)(p) {
+        Some(r) => r
+        None => p
+      }
+    },
+  }
+}
+
+fn under_data_dir(data_dir : String, raw : String) -> String {
+  if raw.length() == 0 {
+    return data_dir
+  }
+  if raw.starts_with("/") || raw.starts_with("\\") {
+    return raw
+  }
+  if raw.length() >= 3 {
+    let c0 = raw.code_unit_at(0)
+    let c1 = raw.code_unit_at(1)
+    let c2 = raw.code_unit_at(2)
+    let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+    if is_alpha && c1 == 58 && (c2 == 47 || c2 == 92) {
+      return raw
+    }
+  }
+  nodepath::join("/", [data_dir, raw])
+}
+
+fn json_str_arr_has(arr : Array[base_codec::Json], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    match arr[i] {
+      base_codec::Json::Str(s) => if s == target { return true }
+      _ => ()
+    }
+  }
+  false
+}
+
+/// 1:1 with Node `station/src/sessions/config.ts` `allowedIn(profile, ws, home)`:
+/// - Borrowed profiles (`share.borrowed === true` with `share.workspaces` array) are allowed ONLY in `share.workspaces`.
+/// - All other profiles are allowed in EVERY workspace by default, except those explicitly listed in `withheld`.
+fn profile_allowed_in_ws(prof : base_codec::Json, ws : Option[String], home_ws : Option[String]) -> Bool {
+  let eff_ws : Option[String] = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { home_ws }
+    None => home_ws
+  }
+  match base_codec::json_get(prof, "share") {
+    Some(share) => {
+      let is_borrowed = match json_field_bool(share, "borrowed") {
+        Some(true) => true
+        _ => false
+      }
+      if is_borrowed {
+        match base_codec::json_get(share, "workspaces") {
+          Some(base_codec::Json::Arr(only)) => {
+            match eff_ws {
+              Some(at) => if !json_str_arr_has(only, at) { return false }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let ws_str = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { None }
+    None => None
+  }
+  match (ws_str, home_ws) {
+    (None, _) => true
+    (_, None) => true
+    (Some(w), Some(h)) => {
+      if w == h {
+        return true
+      }
+      match base_codec::json_get(prof, "withheld") {
+        Some(base_codec::Json::Arr(wh)) => !json_str_arr_has(wh, w)
+        _ => true
+      }
+    }
+  }
+}
+
+fn parse_driver_profile_for_skills(prof : base_codec::Json, data_dir : String) -> station_drivers::Profile {
+  let id = match json_field_str(prof, "id") {
+    Some(s) => s
+    None => ""
+  }
+  let rt = match json_field_str(prof, "runtime") {
+    Some(s) => station_drivers::runtime_kind_from_str(s)
+    None => None
+  }
+  let home = match json_field_str(prof, "home") {
+    Some(s) => under_data_dir(data_dir, s)
+    None => under_data_dir(data_dir, "")
+  }
+  let mut access_kind = station_drivers::AccessKind::Env
+  let mut access_key = ""
+  let mut access_provider : Option[String] = None
+  let mut access_endpoint : Option[String] = None
+  let mut access_protocol : Option[String] = None
+  let mut access_service : Option[String] = None
+  let mut access_login = false
+  match base_codec::json_get(prof, "access") {
+    Some(acc) => {
+      match json_field_str(acc, "kind") {
+        Some(k) => access_kind = station_drivers::access_kind_from_str(k)
+        None => ()
+      }
+      match json_field_str(acc, "key") {
+        Some(k) => access_key = k
+        None => ()
+      }
+      access_provider = json_field_str(acc, "provider")
+      access_endpoint = json_field_str(acc, "endpoint")
+      access_protocol = json_field_str(acc, "protocol")
+      access_service = json_field_str(acc, "service")
+      match json_field_bool(acc, "login") {
+        Some(b) => access_login = b
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let base = station_drivers::Profile::default(id, rt, home)
+  station_drivers::Profile::{
+    ..base,
+    enabled: match json_field_bool(prof, "enabled") {
+      Some(b) => b
+      None => true
+    },
+    machine: match json_field_bool(prof, "machine") {
+      Some(b) => b
+      None => false
+    },
+    access_kind: access_kind,
+    access_key: access_key,
+    access_provider: access_provider,
+    access_endpoint: access_endpoint,
+    access_protocol: access_protocol,
+    access_service: access_service,
+    access_login: access_login,
+  }
+}
+
+/// 1:1 with Node `hubConfig` (`station/src/sessions/config.ts:134-136`):
+/// derives supported runtimes from raw `config.json` via `station_drivers::profile_runtimes`
+/// (with compatibility fallback for pre-derived `"runtimes"` arrays) and filters out top-level `disabledRuntimes`.
+fn profile_has_runtime(
+  prof : base_codec::Json,
+  data_dir : String,
+  disabled_runtimes : Map[String, Bool],
+  rt : String,
+) -> Bool {
+  if disabled_runtimes.contains(rt) {
+    return false
+  }
+  let derived = station_drivers::profile_runtimes(parse_driver_profile_for_skills(prof, data_dir))
+  for i in 0..<derived.length() {
+    if station_drivers::runtime_kind_to_str(derived[i]) == rt {
+      return true
+    }
+  }
+  if derived.length() == 0 {
+    match base_codec::json_get(prof, "runtimes") {
+      Some(base_codec::Json::Arr(rts)) => return json_str_arr_has(rts, rt)
+      _ => ()
+    }
+  }
+  false
+}
+
+/// Extract local preset directory paths from a JSON `dirs` array, excluding entries with non-empty `elsewhere` or empty `path`.
+fn parse_preset_dirs(dirs_json : Option[base_codec::Json]) -> Array[String] {
+  let out : Array[String] = []
+  match dirs_json {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let d = arr[i]
+        let elsewhere = match json_field_str(d, "elsewhere") {
+          Some(e) => e
+          None => ""
+        }
+        if elsewhere.length() > 0 {
+          continue
+        }
+        match json_field_str(d, "path") {
+          Some(p) => if p.length() > 0 { out.push(p) }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Parse `<workspace>/.stillfail-preset.json` (1:1 with Node `presetCopyOf` in `station/src/sessions/presets.ts`).
+/// Returns `Some((name, local_dirs))` when valid `{id, name, dirs}`.
+fn parse_preset_copy_json(raw : String) -> Option[(String, Array[String])] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match (json_field_str(j, "id"), json_field_str(j, "name")) {
+        (Some(_), Some(name)) => Some((name, parse_preset_dirs(base_codec::json_get(j, "dirs"))))
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Look up preset `wanted_id` in `<agentHome(ws)>/presets.json` (1:1 with Node `Presets.get` in `station/src/sessions/presets.ts`).
+/// Returns `Some((name, local_dirs))` on exact `id` match.
+fn lookup_preset_in_file_json(raw : String, wanted_id : String) -> Option[(String, Array[String])] {
+  if wanted_id.length() == 0 {
+    return None
+  }
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "presets") {
+        Some(base_codec::Json::Arr(arr)) => {
+          for i in 0..<arr.length() {
+            let p = arr[i]
+            match (json_field_str(p, "id"), json_field_str(p, "name")) {
+              (Some(id), Some(name)) => {
+                if id == wanted_id {
+                  return Some((name, parse_preset_dirs(base_codec::json_get(p, "dirs"))))
+                }
+              }
+              _ => ()
+            }
+          }
+          None
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn resolve_skills_context_from_json(
+  data_dir : String,
+  assets_dir : String,
+  config_raw : Option[String],
+  ws : Option[String],
+  home_ws : String,
+  runtime : Option[String],
+  profile_id : Option[String],
+  presets_file_raw : Option[String],
+  preset_id : Option[String],
+  preset_copy_raw : Option[String],
+) -> WholeSkillsContext {
+  let home_opt : Option[String] = if home_ws.length() > 0 { Some(home_ws) } else { None }
+  let mut agent_home = under_data_dir(data_dir, "agent")
+  let mut profile_home : Option[String] = None
+  let mut profile_is_machine = false
+  let fallback_agy_homes : Array[String] = []
+  let preset_dirs : Array[String] = []
+  let mut preset_name = ""
+
+  match config_raw {
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(cfg) => {
+          match json_field_str(cfg, "agentHome") {
+            Some(ah) => if ah.length() > 0 { agent_home = under_data_dir(data_dir, ah) }
+            None => ()
+          }
+          let disabled_runtimes : Map[String, Bool] = Map::new()
+          match base_codec::json_get(cfg, "disabledRuntimes") {
+            Some(base_codec::Json::Arr(drs)) => {
+              for i in 0..<drs.length() {
+                match drs[i] {
+                  base_codec::Json::Str(s) => if s.length() > 0 { disabled_runtimes.set(s, true) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          match base_codec::json_get(cfg, "profiles") {
+            Some(base_codec::Json::Arr(profs)) => {
+              // 1:1 with Node `pickProfileFor`:
+              // 1) `allowed` = enabled !== false && allowedIn(p, ws, home)
+              let allowed : Array[base_codec::Json] = []
+              for i in 0..<profs.length() {
+                let prof = profs[i]
+                let enabled = match base_codec::json_get(prof, "enabled") {
+                  Some(base_codec::Json::Bool(false)) => false
+                  _ => true
+                }
+                if enabled && profile_allowed_in_ws(prof, ws, home_opt) {
+                  allowed.push(prof)
+                }
+              }
+              // 2) `fallbackAgyHomes` only when runtime === "agy", filtered to derived runtimes including "agy"
+              if runtime == Some("agy") {
+                for i in 0..<allowed.length() {
+                  let prof = allowed[i]
+                  if profile_has_runtime(prof, data_dir, disabled_runtimes, "agy") {
+                    let h = match json_field_str(prof, "home") {
+                      Some(s) => s
+                      None => ""
+                    }
+                    fallback_agy_homes.push(under_data_dir(data_dir, h))
+                  }
+                }
+              }
+              // 3) Exact `profileId` match across all profiles passing `allowedIn`, else first in `allowed` matching `runtime`
+              let mut picked : Option[base_codec::Json] = None
+              match profile_id {
+                Some(pid) => {
+                  if pid.length() > 0 {
+                    for i in 0..<profs.length() {
+                      let prof = profs[i]
+                      match json_field_str(prof, "id") {
+                        Some(id) => {
+                          if id == pid && profile_allowed_in_ws(prof, ws, home_opt) {
+                            picked = Some(prof)
+                            break
+                          }
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                }
+                None => ()
+              }
+              if picked is None {
+                match runtime {
+                  Some(rt) => {
+                    for i in 0..<allowed.length() {
+                      let prof = allowed[i]
+                      if profile_has_runtime(prof, data_dir, disabled_runtimes, rt) {
+                        picked = Some(prof)
+                        break
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+              match picked {
+                Some(prof) => {
+                  let h = match json_field_str(prof, "home") {
+                    Some(s) => s
+                    None => ""
+                  }
+                  profile_home = Some(under_data_dir(data_dir, h))
+                  profile_is_machine = match json_field_bool(prof, "machine") {
+                    Some(b) => b
+                    None => false
+                  }
+                }
+                None => ()
+              }
+            }
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+
+  // Preset resolution: session copy (`.stillfail-preset.json`) takes precedence when supplied;
+  // otherwise look up `preset_id` inside `<agentHome(ws)>/presets.json`.
+  match preset_copy_raw {
+    Some(raw) => {
+      match parse_preset_copy_json(raw) {
+        Some((name, dirs)) => {
+          preset_name = name
+          for i in 0..<dirs.length() {
+            preset_dirs.push(dirs[i])
+          }
+        }
+        None => ()
+      }
+    }
+    None => {
+      match (presets_file_raw, preset_id) {
+        (Some(raw), Some(wanted)) => {
+          match lookup_preset_in_file_json(raw, wanted) {
+            Some((name, dirs)) => {
+              preset_name = name
+              for i in 0..<dirs.length() {
+                preset_dirs.push(dirs[i])
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+
+  let ws_skills_dir : Option[String] = match station_sessions::workspace_skills_dir(agent_home, ws, home_opt) {
+    Ok(d) => Some(d)
+    Err(_) => None
+  }
+  let site_skills_dir : Option[String] = if assets_dir.length() > 0 {
+    Some(assets_dir + "/skills")
+  } else {
+    None
+  }
+  WholeSkillsContext::{
+    workspace_skills_dir: ws_skills_dir,
+    profile_home: profile_home,
+    profile_is_machine: profile_is_machine,
+    fallback_agy_homes: fallback_agy_homes,
+    preset_dirs: preset_dirs,
+    preset_name: preset_name,
+    site_skills_dir: site_skills_dir,
+  }
+}
+
+fn resolve_skills_context(
+  agents : WholeAgents,
+  ws : Option[String],
+  home_ws : String,
+  runtime : Option[String],
+  profile_id : Option[String],
+  preset_id : Option[String],
+  session_workspace_for_preset : Option[String],
+) -> WholeSkillsContext {
+  let config_raw = (agents.jobs.fs.read_file)(agents.config.data_dir + "/config.json")
+  let home_opt : Option[String] = if home_ws.length() > 0 { Some(home_ws) } else { None }
+  let mut agent_home = under_data_dir(agents.config.data_dir, "agent")
+  match config_raw {
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(cfg) => {
+          match json_field_str(cfg, "agentHome") {
+            Some(ah) => if ah.length() > 0 { agent_home = under_data_dir(agents.config.data_dir, ah) }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let preset_copy_raw : Option[String] = match session_workspace_for_preset {
+    Some(sw) => if sw.length() > 0 { (agents.jobs.fs.read_file)(sw + "/.stillfail-preset.json") } else { None }
+    None => None
+  }
+  let presets_file_raw : Option[String] = match preset_id {
+    Some(pid) => {
+      if pid.length() > 0 && preset_copy_raw is None {
+        match station_sessions::workspace_agent_home_path(agent_home, ws, home_opt) {
+          Ok(ws_ah) => (agents.jobs.fs.read_file)(ws_ah + "/presets.json")
+          Err(_) => None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  resolve_skills_context_from_json(
+    agents.config.data_dir,
+    agents.config.assets_dir,
+    config_raw,
+    ws,
+    home_ws,
+    runtime,
+    profile_id,
+    presets_file_raw,
+    preset_id,
+    preset_copy_raw,
+  )
 }
 
 /// Build a real `station_api::SeenStore` backed directly by `WholeStore`'s SQLite database.
@@ -299,6 +1044,8 @@ pub fn WholeApi::new(
   drive_protected : Array[String] = [],
   drive_fs : Option[station_screens::DriveFs] = None,
   thumb_port : Option[station_screens::ThumbPort] = None,
+  config_file : Option[station_ops::ConfigFile] = None,
+  config_open_err : Option[station_ops::ConfigError] = None,
 ) -> WholeApi {
   let effective_fs = match drive_fs {
     Some(f) => f
@@ -545,6 +1292,109 @@ pub fn WholeApi::new(
         None => return Err(station_api::ApiError::new(404, "no job " + id))
       }
     }
+    if op == "skills" {
+      let rt = station_sessions::normalize_skill_runtime(req.param("runtime"))
+      let viewer_ws : Option[String] = if req.viewer.workspace.length() > 0 {
+        Some(req.viewer.workspace)
+      } else {
+        None
+      }
+      let preset_arg = req.param("preset")
+      let profile_arg = req.param("profile")
+      let ctx = resolve_skills_context(agents, viewer_ws, home_ws_str, rt, profile_arg, preset_arg, None)
+      let skill_fs = build_whole_skill_fs(agents)
+      let resolved = station_sessions::collect_skills(
+        skill_fs,
+        station_sessions::CollectSkillsOptions::{
+          runtime: rt,
+          profile_home: ctx.profile_home,
+          profile_is_machine: ctx.profile_is_machine,
+          fallback_agy_homes: ctx.fallback_agy_homes,
+          cwd: None,
+          workspace_skills_dir: ctx.workspace_skills_dir,
+          preset_dirs: ctx.preset_dirs,
+          site_skills_dir: ctx.site_skills_dir,
+          home_dir: agents.config.data_dir,
+        },
+      )
+      let listed = station_sessions::ListedSkills::{
+        runtime: rt,
+        skills: station_sessions::to_listed_skills(resolved, ctx.preset_name),
+      }
+      return Ok(listed.to_json())
+    }
+    if op == "session.skills" {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let key = match json_field_str(args, "key") {
+        Some(k) => k
+        None => return Err(station_api::ApiError::new(400, "missing session key"))
+      }
+      let row = match st.get_session(key) {
+        Ok(Some(r)) => r
+        Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + key))
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+      if !station_api::sees_workspace(req.viewer, row.ws) {
+        return Err(station_api::ApiError::new(404, "unknown session " + key))
+      }
+      let skill_fs = build_whole_skill_fs(agents)
+      let has_custom_cwd = match row.cwd {
+        Some(c) => c.length() > 0
+        None => false
+      }
+      let cwd = match row.cwd {
+        Some(c) => if c.length() > 0 { c } else { row.workspace }
+        None => row.workspace
+      }
+      let rt = station_sessions::normalize_skill_runtime(Some(row.runtime))
+      let row_profile : Option[String] = if row.profile.length() > 0 { Some(row.profile) } else { None }
+      let preset_ws : Option[String] = if has_custom_cwd { None } else { Some(row.workspace) }
+      let ctx = resolve_skills_context(agents, row.ws, home_ws_str, rt, row_profile, None, preset_ws)
+      let ws_skills_dir : Option[String] = if has_custom_cwd { None } else { ctx.workspace_skills_dir }
+      let resolved = station_sessions::collect_skills(
+        skill_fs,
+        station_sessions::CollectSkillsOptions::{
+          runtime: rt,
+          profile_home: ctx.profile_home,
+          profile_is_machine: ctx.profile_is_machine,
+          fallback_agy_homes: ctx.fallback_agy_homes,
+          cwd: Some(cwd),
+          workspace_skills_dir: ws_skills_dir,
+          preset_dirs: ctx.preset_dirs,
+          site_skills_dir: ctx.site_skills_dir,
+          home_dir: agents.config.data_dir,
+        },
+      )
+      let mut place = ctx.preset_name
+      if place.length() == 0 {
+        match st.db.first(
+          "SELECT t.project FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ?1 ORDER BY ts.joined_at DESC LIMIT 1",
+          [base_codec::json_str(key)],
+        ) {
+          Ok(Some(proj_row)) => {
+            match proj_row.get("project") {
+              Some(base_codec::Json::Str(p)) => if p.length() > 0 { place = p }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
+      }
+      if place.length() == 0 {
+        match row.cwd {
+          Some(c) => if c.length() > 0 { place = nodepath::basename("/", c) }
+          None => ()
+        }
+      }
+      let listed = station_sessions::ListedSkills::{
+        runtime: rt,
+        skills: station_sessions::to_listed_skills(resolved, place),
+      }
+      return Ok(listed.to_json())
+    }
     Err(station_api::ApiError::new(404, "unsupported read op: " + op))
   }
 
@@ -716,6 +1566,7 @@ pub fn WholeApi::new(
           let ev_target = station_api::EventTarget::{
             lang: None,
             viewer: None,
+            device: None,
             email: None,
             workspace: Some(req.viewer.workspace),
             subs: None,
@@ -772,49 +1623,48 @@ pub fn WholeApi::new(
       }
     }
     if op == "hub.session.create" {
-      let key = match json_field_str(body, "key") {
-        Some(k) => if k.length() > 0 { k } else { "c-" + now_ms.to_string() }
-        None => "c-" + now_ms.to_string()
-      }
-      let connect = match json_field_str(body, "connect") {
-        Some(c) => if c.length() > 0 { c } else { "chat" }
-        None => "chat"
-      }
-      let title = json_field_str(body, "title")
-      let runtime = match json_field_str(body, "runtime") {
-        Some(r) => if r.length() > 0 { r } else { "claude" }
-        None => "claude"
-      }
-      let profile = match json_field_str(body, "profile") {
-        Some(p) => if p.length() > 0 { p } else { "default" }
-        None => "default"
-      }
-      let model = json_field_str(body, "model")
-      let workspace_dir = match json_field_str(body, "workspace") {
-        Some(w) => if w.length() > 0 { w } else { agents.config.data_dir }
-        None => agents.config.data_dir
-      }
-      match agents.create_session(
-        whole_store,
-        key,
-        connect,
-        title,
-        Some(req.viewer.email),
-        runtime,
-        profile,
-        model,
-        workspace_dir,
-        Some(req.viewer.workspace),
+      return handle_hub_session_create_with(
+        agents,
+        body,
+        req,
         now_ms,
-      ) {
-        Ok((_, tid)) => return Ok(
-          base_codec::json_obj([
-            ("key", base_codec::json_str(key)),
-            ("thread", base_codec::json_int64(tid)),
-          ]),
-        )
-        Err(e) => return Err(station_api::ApiError::new(500, e))
-      }
+        fn(
+          key : String,
+          connect : String,
+          title : Option[String],
+          runtime : String,
+          profile : String,
+          model : Option[String],
+          workspace_dir : String,
+        ) -> Result[(String, Int64), String] {
+          agents.create_session(
+            whole_store,
+            key,
+            connect,
+            title,
+            Some(req.viewer.email),
+            runtime,
+            profile,
+            model,
+            workspace_dir,
+            Some(req.viewer.workspace),
+            now_ms,
+          )
+        },
+      )
+    }
+    if op == "accounts.runtimes.put" {
+      return handle_accounts_runtimes_put_with(
+        agents,
+        config_file,
+        config_open_err,
+        body,
+        req.viewer,
+        req.lang,
+        fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, v, l)
+        },
+      )
     }
     if op == "hub.session.archive.POST" && params.length() >= 1 {
       let key = params[0]
@@ -849,71 +1699,11 @@ pub fn WholeApi::new(
   ws_roots.set(auth_policy.home_workspace, drive_roots)
 
   let overview_fn = fn(viewer : station_api::Viewer, lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-    let mut total_sess = 0
-    let mut running_sess = 0
-    let mut warm_sess = 0
-    match whole_store.require_open() {
-      Ok(st) => {
-        match st.db.all(
-          "SELECT key, running FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
-          [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
-        ) {
-          Ok(rows) => {
-            total_sess = rows.length()
-            for i in 0..<rows.length() {
-              let k = match rows[i].get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-              let is_run = match rows[i].get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
-              if is_run {
-                running_sess = running_sess + 1
-              } else if agents.hub.actors.get(k).is_some() {
-                warm_sess = warm_sess + 1
-              }
-            }
-          }
-          Err(e) => return Err(station_api::ApiError::new(500, "overview query failed: " + e.message))
-        }
-      }
-      Err(_) => ()
-    }
     let viewer_drive_roots = match ws_roots.get(viewer.workspace) {
       Some(r) => r
       None => []
     }
-    let base_in = station_api::OverviewInput::minimal()
-    let input = station_api::OverviewInput::{
-      cloud: Some(station_api::StatusCloudState::{
-        origin: None,
-        workspace: Some(viewer.workspace),
-        workspace_name: Some(viewer.workspace),
-        station: Some(station_id_str),
-        removed_at: None,
-      }),
-      reached: true,
-      built_at: base_in.built_at,
-      connects: base_in.connects,
-      profiles: base_in.profiles,
-      mcp_servers: base_in.mcp_servers,
-      backup_s3: base_in.backup_s3,
-      agent_env: base_in.agent_env,
-      total_sessions: total_sess,
-      running_sessions: running_sess,
-      warm_sessions: warm_sess,
-      auto_archive_days: base_in.auto_archive_days,
-      slack_archive_days: base_in.slack_archive_days,
-      auto_archive_reviewed: base_in.auto_archive_reviewed,
-      accept_auto_chats: base_in.accept_auto_chats,
-      disabled_runtimes: base_in.disabled_runtimes,
-      disk_free_bytes: base_in.disk_free_bytes,
-      disk_total_bytes: base_in.disk_total_bytes,
-      afresh_when_cold: base_in.afresh_when_cold,
-      afresh_above: base_in.afresh_above,
-      diagnostics_logs: base_in.diagnostics_logs,
-      search_personal: base_in.search_personal,
-      has_spotlight: base_in.has_spotlight,
-      drive_roots: viewer_drive_roots,
-      drive_home: base_in.drive_home,
-    }
-    Ok(station_api::build_overview(input, viewer, lang))
+    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, viewer, lang)
   }
 
   let host_sample_fn = fn(_lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {

@@ -33,7 +33,8 @@ test "80-add-station" {
     f.run_to(@sf.presented_rest)
     f.tap("=从 workspace 移除")
     f.run_to(@sf.presented_rest)
-    f.see("移除「e2e-080726-b」")
+    f.see("移除 Station")
+    f.check(f.t.find("e2e-080726-b") is Some(_), "target station name not shown in verification card")
     f.tap("=移除 station")
     // said as the cloud answers (its toast's time its own: looked at as it shows), the page going back
     f.see("已移除 station")

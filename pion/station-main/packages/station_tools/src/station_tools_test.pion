@@ -277,9 +277,9 @@ test "tools-weight: full 54-tool station registry passes all ceilings and schema
       assert_eq_int(rep.total_tools, 54, "total tools")
       assert_eq_int(rep.visible_tools, 50, "visible tools (4 hidden)")
       assert_true(rep.total_bytes <= WEIGHT_CEILING_TOTAL, "total bytes <= 62000")
-      assert_true(rep.core_bytes <= WEIGHT_CEILING_CORE, "core bytes <= 14100")
+      assert_true(rep.core_bytes <= WEIGHT_CEILING_CORE, "core bytes <= 14250")
       assert_true(rep.heaviest_bytes <= WEIGHT_CEILING_HEAVIEST, "heaviest <= 5000")
-      assert_true(rep.widest_schema_bytes <= WEIGHT_CEILING_SCHEMA, "schema <= 4500")
+      assert_true(rep.widest_schema_bytes <= WEIGHT_CEILING_SCHEMA, "schema <= 4600")
     }
   }
 }

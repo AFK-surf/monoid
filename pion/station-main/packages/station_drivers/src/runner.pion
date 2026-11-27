@@ -293,6 +293,134 @@ pub fn RunnerAdoptionMachine::orphan_agent_runners(self : RunnerAdoptionMachine)
 }
 
 // ---------------------------------------------------------------------------
+// Runner sentinel removal order & `endRunner` exiting-runner wait (`6d2dde849a` #8954)
+// ---------------------------------------------------------------------------
+
+/// Files owned by a single runner under `<data>/run/runners/<id>.{out,err,sock,json}`.
+pub struct RunnerPaths {
+  pub out : String
+  pub err : String
+  pub sock : String
+  pub json : String
+}
+
+pub fn RunnerPaths::for_id(data : String, id : String, sep : String) -> RunnerPaths {
+  let dir = runners_dir(data, sep)
+  RunnerPaths::{
+    out: nodepath::join(sep, [dir, id + ".out"]),
+    err: nodepath::join(sep, [dir, id + ".err"]),
+    sock: nodepath::join(sep, [dir, id + ".sock"]),
+    json: nodepath::join(sep, [dir, id + ".json"]),
+  }
+}
+
+/// Reference contract port of `station/native/runner/src/main.rs` (`Paths::remove_with`):
+/// remove `.out`, `.err`, and `.sock` strictly BEFORE removing the `.json` ownership sentinel
+/// checked by `live_runner` (`6d2dde849a` #8954), so a successor runner started under the same
+/// id never has its freshly created `.out`/`.err` unlinked out from under it.
+pub fn RunnerPaths::remove_with(self : RunnerPaths, unlink : (String, Bool) -> Unit) -> Unit {
+  unlink(self.out, false)
+  unlink(self.err, false)
+  unlink(self.sock, true)
+  unlink(self.json, false)
+}
+
+/// Pure DI ops for `end_runner_with` (`station/src/agents/process.ts` `endRunner`).
+pub struct EndRunnerOps {
+  pub pid_alive : (Int) -> Bool
+  pub os_start_time_ms : (Int) -> Option[Int64]
+  pub listening_soon : (RunnerInfo) -> Bool
+  pub group_alive : (Int) -> Bool
+  pub send_signal : (String, Bool) -> Unit
+  pub wait_term_or_close : () -> Bool // true if socket already closed/destroyed
+  pub wait_kill_or_close : () -> Unit
+  pub send_done : () -> Unit
+  pub poll_sleep_step : () -> Unit
+}
+
+pub struct EndRunnerOutcome {
+  pub ended_listening : Bool
+  pub waited_exiting : Bool
+  pub sent_term : Bool
+  pub sent_kill : Bool
+  pub sent_done : Bool
+  pub wait_polls : Int
+}
+
+/// 1:1 aligned with `station/src/agents/process.ts` `endRunner` (`6d2dde849a` #8954):
+/// - Verifies `info.id == id` and optional `only` `(runner_pid, started_at)`.
+/// - Checks `is_runner_live` BEFORE `listening_soon` so stale/reused PIDs return immediately.
+/// - When listening: sends `TERM`, waits for exit/socket-close/grace, escalates to `KILL` only if
+///   socket is not closed and `group_alive(pgid)`, sends `done`, then waits for `pid_alive` to clear.
+/// - When live but NOT listening (socket already unlinked while exiting): still waits for `pid_alive`
+///   to clear (max 300 polls) so `.json` sentinel finishes unlinking before a successor starts, and
+///   returns `ended_listening: false, waited_exiting: true`.
+pub fn end_runner_with(
+  info_opt : Option[RunnerInfo],
+  id : String,
+  only : Option[(Int, Int64)],
+  ops : EndRunnerOps,
+) -> EndRunnerOutcome {
+  let empty = EndRunnerOutcome::{
+    ended_listening: false,
+    waited_exiting: false,
+    sent_term: false,
+    sent_kill: false,
+    sent_done: false,
+    wait_polls: 0,
+  }
+  let info = match info_opt {
+    Some(r) => r
+    None => return empty
+  }
+  if info.id != id {
+    return empty
+  }
+  match only {
+    Some((only_pid, only_started)) => {
+      if info.runner_pid != only_pid || info.started_at != only_started {
+        return empty
+      }
+    }
+    None => ()
+  }
+  if !is_runner_live(info, (ops.pid_alive)(info.runner_pid), (ops.os_start_time_ms)(info.runner_pid)) {
+    return empty
+  }
+  let listening = (ops.listening_soon)(info)
+  let mut sent_term = false
+  let mut sent_kill = false
+  let mut sent_done = false
+  if listening {
+    (ops.send_signal)("TERM", true)
+    sent_term = true
+    let sock_closed = (ops.wait_term_or_close)()
+    if !sock_closed && (ops.group_alive)(info.pgid) {
+      (ops.send_signal)("KILL", true)
+      sent_kill = true
+    }
+    if !sock_closed {
+      (ops.wait_kill_or_close)()
+    }
+    (ops.send_done)()
+    sent_done = true
+  }
+  let mut polls = 0
+  while polls < 300 && (ops.pid_alive)(info.runner_pid) {
+    (ops.poll_sleep_step)()
+    polls = polls + 1
+  }
+  EndRunnerOutcome::{
+    ended_listening: listening,
+    waited_exiting: !listening,
+    sent_term: sent_term,
+    sent_kill: sent_kill,
+    sent_done: sent_done,
+    wait_polls: polls,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // No-keychain & Machine logins
 // ---------------------------------------------------------------------------
 

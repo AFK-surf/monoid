@@ -144,7 +144,7 @@ test "图标: on each screen the icons' side, its field, the colours with the ma
     let run = mark_open(platform=s.0, wide=s.1)
     let t = run.t
     let about = "platform \{s.0}, wide \{s.1}"
-    for w in ["为 Willow 选择图标", "图标", "Emoji", "搜索图标"] {
+    for w in ["选择图标", "Willow", "图标", "Emoji", "搜索图标"] {
       assert_true(t.find(w) is Some(_), msg="\{about}: \{w}")
     }
     // (the side over the field, the colours under it, the grid under them)
@@ -346,7 +346,7 @@ test "上传图片: the picker answering after the sheet has closed and opened f
     mark_close(t)
     mark_again(run, name="Maple", emoji="🌲")
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("为 Maple 选择图标") is Some(_), msg=about)
+    assert_true(t.find("选择图标") is Some(_) && t.find("Maple") is Some(_), msg=about)
     // (one too large, read; then one put up as it is)
     answer(Some(b"BM not one put up as it is"))
     t.draw()

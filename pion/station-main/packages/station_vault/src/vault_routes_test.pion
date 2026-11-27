@@ -1,0 +1,872 @@
+// Deterministic unit tests for #9017 (standalone KeyAsk decoupled from BoxCert)
+// and #9083 (workspace vault discovery, join requests, reactive member management,
+// canonical X25519 box keys, and bounded SQLite query plans).
+
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "sql_db"
+
+struct TestSigner {
+  seed : Bytes
+  pub_hex : String
+  key_id : String
+  device_id : String
+  box_pub : String
+}
+
+fn make_test_signer(seed_byte : Int) -> TestSigner {
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = seed_byte as Byte
+  }
+  let pk = match crypto::ed25519_public_key(seed) {
+    Ok(b) => b
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let pub_hex = crypto::bytes_to_hex(pk)
+  let box_sec = Bytes::new(32)
+  for i in 0..<32 {
+    box_sec[i] = ((seed_byte * 7 + i + 1) & 0xFF) as Byte
+  }
+  let bpub = match crypto::x25519_public_key(box_sec) {
+    Ok(b) => "x25519:" + crypto::bytes_to_hex(b)
+    Err(_) => panic("x25519_public_key failed")
+  }
+  let dev_id = crypto::bytes_to_hex(seed)
+  TestSigner::{
+    seed: seed,
+    pub_hex: pub_hex,
+    key_id: "ed25519:" + pub_hex,
+    device_id: dev_id,
+    box_pub: bpub,
+  }
+}
+
+fn sign_as(s : TestSigner, fields : Array[(String, form::Json)], tag : String) -> form::Json {
+  match sign_record_ed25519(s.seed, s.pub_hex, fields, tag) {
+    Ok(j) => j
+    Err(e) => panic(e)
+  }
+}
+
+fn make_test_lock(ws : String, alice : TestSigner, bob : TestSigner, carol : TestSigner) -> lock::LockState {
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  members.set("alice", lock::Member::{ sub: "alice", email: "alice@x.test", role: "owner" })
+  members.set("bob", lock::Member::{ sub: "bob", email: "bob@x.test", role: "member" })
+  members.set("carol", lock::Member::{ sub: "carol", email: "carol@x.test", role: "admin" })
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  devices.set(alice.device_id, lock::Device::{
+    id: alice.device_id, sub: "alice", kind: "app", label: "Alice Mac",
+    sign_key: Some(alice.key_id), endpoints: Some([alice.device_id]), exp: None, by: None, own: true,
+  })
+  devices.set(bob.device_id, lock::Device::{
+    id: bob.device_id, sub: "bob", kind: "app", label: "Bob Phone",
+    sign_key: Some(bob.key_id), endpoints: Some([bob.device_id]), exp: None, by: None, own: true,
+  })
+  devices.set(carol.device_id, lock::Device::{
+    id: carol.device_id, sub: "carol", kind: "app", label: "Carol Mac",
+    sign_key: Some(carol.key_id), endpoints: Some([carol.device_id]), exp: None, by: None, own: true,
+  })
+  lock::LockState::{
+    ws: ws,
+    seq: 0.0,
+    head: "",
+    genesis: "",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: members,
+    devices: devices,
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+}
+
+fn make_viewer(ws : String, sub : String, role : String, dev : String) -> VaultViewer {
+  VaultViewer::{ sub: sub, workspace: ws, role: role, device: dev, lock_base: None, lock_proof: None }
+}
+
+fn unwrap_ok[T](r : Result[T, String]) -> T {
+  match r {
+    Ok(v) => v
+    Err(e) => panic("unexpected Err: " + e)
+  }
+}
+
+fn form_arr_len(j : form::Json, key : String) -> Int {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Arr(xs)) => xs.length()
+    _ => -1
+  }
+}
+
+fn form_str_is(j : form::Json, key : String, want : String) -> Bool {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Str(s)) => s == want
+    _ => false
+  }
+}
+
+fn pad_ulid_suffix(n : Int) -> String {
+  let digits = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+  let d2 = (n / 1024) % 32
+  let d1 = (n / 32) % 32
+  let d0 = n % 32
+  let sb = StringBuilder::new()
+  sb.write_byte(digits.code_unit_at(d2) as Byte)
+  sb.write_byte(digits.code_unit_at(d1) as Byte)
+  sb.write_byte(digits.code_unit_at(d0) as Byte)
+  sb.to_string()
+}
+
+fn pad_hex_dev(prefix : String, n : Int) -> String {
+  let hex = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  sb.write_string(prefix)
+  let zeros = 64 - prefix.length() - 8
+  for _i in 0..<zeros {
+    sb.write_string("0")
+  }
+  let mut k = 7
+  while k >= 0 {
+    let nib = (n >> (k * 4)) & 0xF
+    sb.write_byte(hex.code_unit_at(nib) as Byte)
+    k = k - 1
+  }
+  sb.to_string()
+}
+
+test "#9017: standalone signed KeyAsk isolates per-vault asks from BoxCert, enforces schema/auth/privacy, and prunes on keying or deletion" {
+  let ws = "ws_ask_test"
+  let alice = make_test_signer(11)
+  let bob = make_test_signer(12)
+  let carol = make_test_signer(13)
+  let store = VaultStore::in_memory()
+  let state = make_test_lock(ws, alice, bob, carol)
+  let events : Array[VaultRouteEvent] = []
+  let ctx = VaultRouteCtx::{
+    store: store,
+    lock_of: fn(w : String) -> Option[lock::LockState] { if w == ws { Some(state) } else { None } },
+    on_event: Some(fn(ev : VaultRouteEvent) -> Unit { events.push(ev) }),
+    before_write: None,
+    boxed: None,
+    verify_fn: None,
+  }
+  let v1_id = "v_01HZZZZZZZZZZZZZZZZZZZZZZ1"
+  let v2_id = "v_01HZZZZZZZZZZZZZZZZZZZZZZ2"
+  let alice_cert = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(alice.device_id)), ("box", form::Json::Str(alice.box_pub)),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_BOX)
+  let v_ab = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(v1_id)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("AB")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", alice_cert), ("wrapped", form::Json::Str("AAAA"))])])),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_VAULT)
+  let v_ac = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(v2_id)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("AC")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("carol")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", alice_cert), ("wrapped", form::Json::Str("AAAA"))])])),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_VAULT)
+  let v_alice = make_viewer(ws, "alice", "owner", alice.device_id)
+  let v_bob = make_viewer(ws, "bob", "member", bob.device_id)
+  let v_carol = make_viewer(ws, "carol", "admin", carol.device_id)
+  assert(handle_put_vault(ctx, v_alice, v_ab).status == 200)
+  assert(handle_put_vault(ctx, v_alice, v_ac).status == 200)
+
+  let make_ask = fn(vid : String, at : Double, signer : TestSigner, tag : String) -> form::Json {
+    sign_as(signer, [
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid)),
+      ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+      ("at", form::Json::Num(at)),
+    ], tag)
+  }
+
+  // 1. Valid KeyAsk accepted, broadcast ONLY to vault members, visible only to them.
+  let ev_before = events.length()
+  let good = make_ask(v1_id, 1500.0, bob, TAG_ASK)
+  assert(ask_ok(lock_view_of(state), good) is None)
+  let put1 = handle_put_ask(ctx, v_bob, good)
+  assert(put1.status == 200)
+  assert(events.length() == ev_before + 1)
+  assert(events[ev_before].event == "vault-ask")
+  match events[ev_before].target.vault {
+    Some(vid) => assert(vid == v1_id)
+    None => panic("expected vault target on vault-ask SSE")
+  }
+  assert(form_arr_len(handle_get_asks(ctx, v_alice).body, "asks") == 1)
+  assert(form_arr_len(handle_get_asks(ctx, v_carol).body, "asks") == 0)
+
+  // 2. Monotonic idempotency: older `at` returns existing ask with 0 rebroadcast.
+  let ev_before2 = events.length()
+  let put_old = handle_put_ask(ctx, v_bob, make_ask(v1_id, 1499.0, bob, TAG_ASK))
+  assert(put_old.status == 200)
+  assert(events.length() == ev_before2)
+
+  // 3. Wrong device caller rejected 403; non-member vault rejected 404.
+  assert(handle_put_ask(ctx, v_alice, make_ask(v1_id, 1600.0, bob, TAG_ASK)).status == 403)
+  assert(handle_put_ask(ctx, v_bob, make_ask(v2_id, 1600.0, bob, TAG_ASK)).status == 404)
+
+  // 4. Domain separation (TAG_BOX), extra field, uppercase sig, float `at`, bad vault id all rejected 400 vault_invalid.
+  let bad_tag = make_ask(v1_id, 1700.0, bob, TAG_BOX)
+  assert(handle_put_ask(ctx, v_bob, bad_tag).status == 400)
+  let bad_extra = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v1_id)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(1700.0)), ("extra", form::Json::Str("junk")),
+  ], TAG_ASK)
+  assert(handle_put_ask(ctx, v_bob, bad_extra).status == 400)
+  let bad_float = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v1_id)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(1500.5)),
+    ("sig", match form::json_field(Some(good), "sig") { Some(s) => s None => form::Json::Null }),
+  ])
+  assert(handle_put_ask(ctx, v_bob, bad_float).status == 400)
+
+  // 4b. Invalidated higher-at ask (rotated signing key) filtered out by GET and replaced by lower-at compliant ask.
+  let old_signer = make_test_signer(99)
+  let stale_high = make_ask(v1_id, 9999.0, old_signer, TAG_ASK)
+  assert(store.put_ask(stale_high) is Ok(_))
+  assert(form_arr_len(handle_get_asks(ctx, v_alice).body, "asks") == 0)
+  let clean_lower = make_ask(v1_id, 1550.0, bob, TAG_ASK)
+  assert(handle_put_ask(ctx, v_bob, clean_lower).status == 200)
+  assert(form_arr_len(handle_get_asks(ctx, v_alice).body, "asks") == 1)
+
+  // 5. Keying Bob's device via PUT /vault/vaults prunes ask; re-asking for already-keyed box is 200 no-op with 0 store & 0 broadcast.
+  let bob_cert = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(1500.0)),
+  ], TAG_BOX)
+  let v_ab_keyed = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(v1_id)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("AB")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([
+      form::Json::Obj([("cert", alice_cert), ("wrapped", form::Json::Str("AAAA"))]),
+      form::Json::Obj([("cert", bob_cert), ("wrapped", form::Json::Str("BBBB"))]),
+    ])),
+    ("at", form::Json::Num(1600.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(ctx, v_alice, v_ab_keyed).status == 200)
+  assert(unwrap_ok(store.ask_snapshot(ws, v1_id, bob.device_id)) is None)
+  let ev_before3 = events.length()
+  assert(handle_put_ask(ctx, v_bob, make_ask(v1_id, 1800.0, bob, TAG_ASK)).status == 200)
+  assert(unwrap_ok(store.ask_snapshot(ws, v1_id, bob.device_id)) is None)
+  assert(events.length() == ev_before3)
+
+  // 6. Deleting vault wipes vault_asks via trigger, `in_vault` returns false, further asks rejected 404.
+  assert(store.in_vault(ws, "bob", v1_id))
+  let v_ab_del = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(v1_id)),
+    ("seq", form::Json::Num(2.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("AB")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(1.0)), ("keys", form::Json::Arr([])), ("deleted", form::Json::Bool(true)),
+    ("at", form::Json::Num(1900.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(ctx, v_alice, v_ab_del).status == 200)
+  assert(!store.in_vault(ws, "bob", v1_id))
+  assert(handle_put_ask(ctx, v_bob, make_ask(v1_id, 2000.0, bob, TAG_ASK)).status == 404)
+
+  // 7. Bounded batched PK probes (>256 active devices) ignore revoked asks + EXPLAIN QUERY PLAN uses vault_asks_vault_at with 0 TEMP B-TREE.
+  for i in 0..<400 {
+    let rev_dev = pad_hex_dev("f", i)
+    let fake_ask = form::Json::Obj([
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v2_id)),
+      ("device", form::Json::Str(rev_dev)), ("box", form::Json::Str(bob.box_pub)),
+      ("at", form::Json::Num((9000 + i).to_double())),
+      ("sig", form::Json::Obj([("key", form::Json::Str(bob.key_id)), ("alg", form::Json::Str("Ed25519")), ("sig", form::Json::Str(pad_hex_dev("0", 0) + pad_hex_dev("0", 0)))])),
+    ])
+    let _ = store.put_ask(fake_ask)
+  }
+  let valid_v2_ask = sign_as(carol, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v2_id)),
+    ("device", form::Json::Str(carol.device_id)), ("box", form::Json::Str(carol.box_pub)),
+    ("at", form::Json::Num(1200.0)),
+  ], TAG_ASK)
+  assert(store.put_ask(valid_v2_ask) is Ok(_))
+  let active300 : Array[String] = [carol.device_id]
+  for i in 0..<299 {
+    active300.push(pad_hex_dev("c", i))
+  }
+  let found_asks = unwrap_ok(store.asks_for_vaults(ws, [v2_id], 64, devices=Some(active300)))
+  assert(found_asks.length() == 1)
+  assert(VAULT_STORE_SCHEMA.contains("CREATE INDEX IF NOT EXISTS vault_asks_vault_at"))
+  assert(VAULT_STORE_SCHEMA.contains("vault_deleted_asks_insert"))
+}
+
+test "#9083: workspace vault discovery, join requests, canonical X25519, atomic approval, demoted-admin dismiss, and bounded quotas" {
+  let ws = "ws_join_test"
+  let alice = make_test_signer(21)
+  let bob = make_test_signer(22)
+  let carol = make_test_signer(23)
+  let store = VaultStore::in_memory()
+  let state = make_test_lock(ws, alice, bob, carol)
+  let events : Array[VaultRouteEvent] = []
+  let ctx = VaultRouteCtx::{
+    store: store,
+    lock_of: fn(w : String) -> Option[lock::LockState] { if w == ws { Some(state) } else { None } },
+    on_event: Some(fn(ev : VaultRouteEvent) -> Unit { events.push(ev) }),
+    before_write: None,
+    boxed: None,
+    verify_fn: None,
+  }
+  let v_alice = make_viewer(ws, "alice", "owner", alice.device_id)
+  let v_bob = make_viewer(ws, "bob", "member", bob.device_id)
+  let v_carol = make_viewer(ws, "carol", "admin", carol.device_id)
+
+  let ws_vid = "v_01HZZZZZZZZZZZZZZZZZZZZZZW"
+  let personal_vid = "v_01HZZZZZZZZZZZZZZZZZZZZZZP"
+  let ws_vault = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+  ], TAG_VAULT)
+  let personal_vault = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(personal_vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Alice Private")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+  ], TAG_VAULT)
+  assert(store.put_vault(ws_vault) is Ok(_))
+  assert(store.put_vault(personal_vault) is Ok(_))
+
+  // 1. Discovery returns minimal metadata only (no keys/members), omits personal vault; Alice sees no `discoverable` key.
+  let bob_get = handle_get_vaults(ctx, v_bob)
+  assert(bob_get.status == 200)
+  assert(form_arr_len(bob_get.body, "vaults") == 0)
+  assert(form_arr_len(bob_get.body, "discoverable") == 1)
+  match form::json_field(Some(bob_get.body), "discoverable") {
+    Some(form::Json::Arr(ds)) => {
+      assert(form_str_is(ds[0], "id", ws_vid))
+      assert(form_str_is(ds[0], "scope", "workspace"))
+      assert(form::json_field(Some(ds[0]), "keys") is None)
+      assert(form::json_field(Some(ds[0]), "members") is None)
+    }
+    _ => panic("expected discoverable array")
+  }
+  let alice_get = handle_get_vaults(ctx, v_alice)
+  assert(form::json_field(Some(alice_get.body), "discoverable") is None)
+  assert(form_arr_len(handle_get_discover(ctx, v_bob).body, "discoverable") == 1)
+
+  // 2. Unjoined admin Carol cannot self-insert via direct PUT or read via self-forged /latest witness; cross-scope rejected.
+  let carol_self = sign_as(carol, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("carol")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("carol")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(110.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(ctx, v_carol, carol_self).status == 404)
+  let carol_forged_latest = sign_as(carol, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("carol")), ("name", form::Json::Str("Fake")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("carol")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+  ], TAG_VAULT)
+  assert(form_arr_len(handle_post_vaults_latest(ctx, v_carol, form::Json::Obj([("held", form::Json::Arr([carol_forged_latest]))])).body, "vaults") == 0)
+  let cross_scope = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Personal")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+  ], TAG_VAULT)
+  assert(form_arr_len(handle_post_vaults_latest(ctx, v_bob, form::Json::Obj([("held", form::Json::Arr([cross_scope]))])).body, "vaults") == 0)
+
+  // 2b. Lagging station catchup via ?copy=1 signed by current workspace admin succeeds.
+  let lag_store = VaultStore::in_memory()
+  assert(lag_store.put_vault(ws_vault) is Ok(_))
+  let lag_ctx = VaultRouteCtx::{ store: lag_store, lock_of: ctx.lock_of, on_event: None, before_write: None, boxed: None, verify_fn: None }
+  let carol_seq2 = sign_as(carol, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(2.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("carol"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(120.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(lag_ctx, v_bob, carol_seq2, query=[("copy", "1")]).status == 200)
+
+  // 3. Non-canonical X25519 keys (high bit set or >= 2^255 - 19) rejected by usable_box_key and PUT /vault/boxes.
+  assert(usable_box_key(bob.box_pub))
+  let canon_raw = match crypto::hex_to_bytes(bob.box_pub.slice(7, bob.box_pub.length())) {
+    Some(b) => b
+    None => panic("hex")
+  }
+  let hb = Bytes::new(32)
+  for i in 0..<32 {
+    hb[i] = canon_raw[i]
+  }
+  hb[31] = ((hb[31].to_int() & 0xFF) | 0x80) as Byte
+  let high_bit_pub = "x25519:" + crypto::bytes_to_hex(hb)
+  assert(!usable_box_key(high_bit_pub))
+  let ge_p = Bytes::new(32)
+  for i in 0..<32 {
+    ge_p[i] = 0xFF as Byte
+  }
+  ge_p[31] = 0x7F as Byte
+  ge_p[0] = 0xED as Byte
+  assert(!usable_box_key("x25519:" + crypto::bytes_to_hex(ge_p)))
+  let bad_box_cert = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(high_bit_pub)),
+    ("at", form::Json::Num(198.0)),
+  ], TAG_BOX)
+  assert(handle_put_box(ctx, v_bob, bad_box_cert).status == 400)
+
+  // 4. Dismiss-before-ask tombstone (`body = NULL`, `state = 'none'`) works on PUT/GET without errors.
+  let early_dismiss = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("upTo", form::Json::Num(150.0)), ("at", form::Json::Num(150.0)),
+  ], TAG_JOIN_DISMISS)
+  assert(handle_put_join_dismiss(ctx, v_alice, early_dismiss).status == 200)
+  let j0 = handle_get_joins(ctx, v_alice)
+  assert(j0.status == 200 && form_arr_len(j0.body, "joins") == 0 && form_arr_len(j0.body, "dismisses") == 1)
+
+  // 5. PUT /vault/joins pending requires BoxCert (409 vault_box_missing), then succeeds.
+  let bob_join1 = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("device", form::Json::Str(bob.device_id)),
+    ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("pending")), ("at", form::Json::Num(200.0)),
+  ], TAG_JOIN)
+  let no_box = handle_put_join(ctx, v_bob, bob_join1)
+  assert(no_box.status == 409 && form_str_is(no_box.body, "code", "vault_box_missing"))
+  let bob_cert = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(199.0)),
+  ], TAG_BOX)
+  assert(handle_put_box(ctx, v_bob, bob_cert).status == 200)
+  assert(handle_put_join(ctx, v_bob, bob_join1).status == 200)
+  assert(form_arr_len(handle_get_joins(ctx, v_alice).body, "joins") == 1)
+  assert(form_arr_len(handle_get_joins(ctx, v_bob).body, "joins") == 1)
+  assert(form_arr_len(handle_get_joins(ctx, v_carol).body, "joins") == 0)
+
+  // 6. Bob cancels -> Alice receives signed cancelled tombstone; partial approveJoin rejected 400; stale approve fails 409 join_cancelled.
+  let bob_cancel = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("device", form::Json::Str(bob.device_id)),
+    ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("cancelled")), ("at", form::Json::Num(201.0)),
+  ], TAG_JOIN)
+  assert(handle_put_join(ctx, v_bob, bob_cancel).status == 200)
+  let alice_canc = handle_get_joins(ctx, v_alice)
+  assert(form_arr_len(alice_canc.body, "joins") == 1)
+
+  let add_bob_nokey = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(150.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(ctx, v_alice, add_bob_nokey, query=[("approveJoinSub", "bob"), ("approveJoinAt", "200")]).status == 400)
+
+  let add_bob_keyed = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", bob_cert), ("wrapped", form::Json::Str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))])])),
+    ("at", form::Json::Num(150.0)),
+  ], TAG_VAULT)
+  let j1_sig = match form::json_field(form::json_field(Some(bob_join1), "sig"), "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  let stale_app = handle_put_vault(ctx, v_alice, add_bob_keyed, query=[
+    ("approveJoinSub", "bob"), ("approveJoinAt", "200"),
+    ("approveJoinDevice", bob.device_id), ("approveJoinBox", bob.box_pub), ("approveJoinSig", j1_sig),
+  ])
+  assert(stale_app.status == 409 && form_str_is(stale_app.body, "code", "join_cancelled"))
+
+  // 7. Bob re-applies with faster client clock (at=999999 > vault.at=150); exact 5-param approve succeeds!
+  let bob_join_fast = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("device", form::Json::Str(bob.device_id)),
+    ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("pending")), ("at", form::Json::Num(999999.0)),
+  ], TAG_JOIN)
+  assert(handle_put_join(ctx, v_bob, bob_join_fast).status == 200)
+  let jf_sig = match form::json_field(form::json_field(Some(bob_join_fast), "sig"), "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  assert(handle_put_vault(ctx, v_alice, add_bob_nokey, query=[
+    ("approveJoinSub", "bob"), ("approveJoinAt", "999999"),
+    ("approveJoinDevice", bob.device_id), ("approveJoinBox", bob.box_pub), ("approveJoinSig", jf_sig),
+  ]).status == 400)
+  let wrong_sig = handle_put_vault(ctx, v_alice, add_bob_keyed, query=[
+    ("approveJoinSub", "bob"), ("approveJoinAt", "999999"),
+    ("approveJoinDevice", bob.device_id), ("approveJoinBox", bob.box_pub), ("approveJoinSig", j1_sig),
+  ])
+  assert(wrong_sig.status == 409 && form_str_is(wrong_sig.body, "code", "join_cancelled"))
+  assert(handle_put_vault(ctx, v_alice, add_bob_keyed, query=[
+    ("approveJoinSub", "bob"), ("approveJoinAt", "999999"),
+    ("approveJoinDevice", bob.device_id), ("approveJoinBox", bob.box_pub), ("approveJoinSig", jf_sig),
+  ]).status == 200)
+
+  // 8. Removing Bob: `vault-discover` emitted AFTER `vault-gone`, offline Bob gets latest via Alice's witness, and old ask never resurrects.
+  let remove_bob = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(2.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(1.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(160.0)),
+  ], TAG_VAULT)
+  let ev_start = events.length()
+  assert(handle_put_vault(ctx, v_alice, remove_bob).status == 200)
+  let mut gone_idx = -1
+  let mut disc_idx = -1
+  for i in ev_start..<events.length() {
+    if events[i].event == "vault-gone" {
+      gone_idx = i
+    } else if events[i].event == "vault-discover" {
+      disc_idx = i
+    }
+  }
+  assert(gone_idx >= 0 && disc_idx > gone_idx)
+  let bob_latest = handle_post_vaults_latest(ctx, v_bob, form::Json::Obj([("held", form::Json::Arr([add_bob_keyed]))]))
+  assert(bob_latest.status == 200 && form_arr_len(bob_latest.body, "vaults") == 1)
+  assert(form_arr_len(handle_get_joins(ctx, v_alice).body, "joins") == 0)
+  assert(form_arr_len(handle_get_joins(ctx, v_bob).body, "joins") == 0)
+
+  // 9. Demoted admin's dismiss stops suppressing Bob's ask, and remaining admin can replace it at LOWER upTo (1000001 < 2000000).
+  let add_carol = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(ws_vid)),
+    ("seq", form::Json::Num(3.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Team Vault")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("carol")])),
+    ("epoch", form::Json::Num(1.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(170.0)),
+  ], TAG_VAULT)
+  assert(handle_put_vault(ctx, v_alice, add_carol).status == 200)
+  let bob_join3 = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("device", form::Json::Str(bob.device_id)),
+    ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("pending")), ("at", form::Json::Num(1000001.0)),
+  ], TAG_JOIN)
+  assert(handle_put_join(ctx, v_bob, bob_join3).status == 200)
+  let carol_dismiss = sign_as(carol, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("upTo", form::Json::Num(2000000.0)), ("at", form::Json::Num(2000000.0)),
+  ], TAG_JOIN_DISMISS)
+  assert(handle_put_join_dismiss(ctx, v_carol, carol_dismiss).status == 200)
+  assert(form_arr_len(handle_get_joins(ctx, v_alice).body, "joins") == 0)
+  // Demote Carol -> her dismiss is inactive, Alice sees Bob's ask and replaces dismiss at lower upTo=1000001.
+  state.members.set("carol", lock::Member::{ sub: "carol", email: "carol@x.test", role: "member" })
+  assert(form_arr_len(handle_get_joins(ctx, v_alice).body, "joins") == 1)
+  let alice_redismiss = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+    ("sub", form::Json::Str("bob")), ("upTo", form::Json::Num(1000001.0)), ("at", form::Json::Num(1000002.0)),
+  ], TAG_JOIN_DISMISS)
+  assert(handle_put_join_dismiss(ctx, v_alice, alice_redismiss).status == 200)
+  match unwrap_ok(store.join_snapshot(ws, ws_vid, "bob")) {
+    Some(s) => assert(s.dismiss_up_to == 1000001L)
+    None => panic("expected bob join snapshot")
+  }
+  assert(form_arr_len(handle_get_joins(ctx, v_alice).body, "joins") == 0)
+
+  // 10. Discovery ignores 80 personal vaults & returns newest workspace vault; dismiss pagination works past 64.
+  for i in 0..<80 {
+    let pid = "v_01HZZZZZZZZZZZZZZZZZZ" + pad_ulid_suffix(i)
+    let pv = sign_as(alice, [
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(pid)),
+      ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("P")),
+      ("members", form::Json::Arr([form::Json::Str("alice")])),
+      ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num((100 + i).to_double())),
+    ], TAG_VAULT)
+    let _ = store.put_vault(pv)
+  }
+  let newer_ws_id = "v_01JZZZZZZZZZZZZZZZZZZZZZ99"
+  let newer_ws = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(newer_ws_id)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Newer Team")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(300.0)),
+  ], TAG_VAULT)
+  assert(store.put_vault(newer_ws) is Ok(_))
+  let disc_many = handle_get_discover(ctx, v_bob)
+  match form::json_field(Some(disc_many.body), "discoverable") {
+    Some(form::Json::Arr(ds)) => assert(form_str_is(ds[0], "id", newer_ws_id))
+    _ => panic("expected discoverable")
+  }
+
+  for i in 0..<68 {
+    let u = "user_" + pad_ulid_suffix(i)
+    let dm = sign_as(alice, [
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(ws_vid)),
+      ("sub", form::Json::Str(u)), ("upTo", form::Json::Num((500 + i).to_double())), ("at", form::Json::Num((500 + i).to_double())),
+    ], TAG_JOIN_DISMISS)
+    assert(handle_put_join_dismiss(ctx, v_alice, dm).status == 200)
+  }
+  let p1 = handle_get_joins(ctx, v_alice)
+  assert(form_arr_len(p1.body, "dismisses") == 64)
+  let next_c = match form::json_field(Some(p1.body), "nextDismissCursor") {
+    Some(c) => c
+    None => panic("expected nextDismissCursor")
+  }
+  let p2 = handle_get_joins(ctx, v_alice, query=[
+    ("dismissAfterVault", json_str_f(next_c, "vault")),
+    ("dismissAfterSub", json_str_f(next_c, "sub")),
+  ])
+  assert(form_arr_len(p2.body, "dismisses") >= 5)
+  let budget_res = unwrap_ok(store.join_dismisses_for_vaults(ws, [ws_vid], 64, max_scan=10, accept=Some(fn(_d : form::Json) -> Bool { false })))
+  assert(budget_res.dismisses.length() == 0 && !(budget_res.next_cursor is None))
+
+  // 11. Separate per-state quotas: pending max_scan exhaustion never starves cancelled tombstones + nextCancelledCursor paginates.
+  let starv_store = VaultStore::in_memory()
+  let v_ids = [
+    "v_01JSTARVE00000000000000000",
+    "v_01JSTARVE00000000000000001",
+    "v_01JSTARVE00000000000000002",
+    "v_01JSTARVE00000000000000003",
+  ]
+  for vi in 0..<v_ids.length() {
+    let vid = v_ids[vi]
+    let sv = sign_as(alice, [
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid)),
+      ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("S")),
+      ("scope", form::Json::Str("workspace")),
+      ("members", form::Json::Arr([form::Json::Str("alice")])),
+      ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+    ], TAG_VAULT)
+    assert(starv_store.put_vault(sv) is Ok(_))
+    let vb = match unwrap_ok(starv_store.vault_snapshot(ws, vid)) {
+      Some(s) => s.body
+      None => panic("snap")
+    }
+    for i in 0..<128 {
+      let pa = sign_as(bob, [
+        ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid)),
+        ("sub", form::Json::Str("pend_" + i.to_string())), ("device", form::Json::Str(bob.device_id)),
+        ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("pending")), ("at", form::Json::Num((5000 + i).to_double())),
+      ], TAG_JOIN)
+      let _ = starv_store.put_join_if(pa, vb, None, false)
+    }
+  }
+  let v0_body = match unwrap_ok(starv_store.vault_snapshot(ws, v_ids[0])) {
+    Some(s) => s.body
+    None => panic("snap0")
+  }
+  for i in 0..<3 {
+    let ca = sign_as(bob, [
+      ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v_ids[0])),
+      ("sub", form::Json::Str("canc_ok_" + i.to_string())), ("device", form::Json::Str(bob.device_id)),
+      ("box", form::Json::Str(bob.box_pub)), ("state", form::Json::Str("cancelled")), ("at", form::Json::Num((8000 + i).to_double())),
+    ], TAG_JOIN)
+    let _ = starv_store.put_join_if(ca, v0_body, None, false)
+  }
+  let res1 = unwrap_ok(starv_store.joins_for_vaults(
+    ws, v_ids, 128,
+    per_vault=64, per_vault_cancelled=64, cancelled_limit=2,
+    per_vault_scan=128, max_scan=512, cancelled_max_scan=512,
+    accept=Some(fn(a : form::Json, _j : Int64, _d : Option[form::Json]) -> Bool { json_str_f(a, "state") == "cancelled" }),
+  ))
+  assert(res1.joins.length() == 2)
+  let c_cur = match res1.next_cancelled_cursor {
+    Some(c) => c
+    None => panic("expected next_cancelled_cursor")
+  }
+  let res2 = unwrap_ok(starv_store.joins_for_vaults(
+    ws, v_ids, 128,
+    per_vault=64, per_vault_cancelled=64, cancelled_limit=2,
+    per_vault_scan=128, max_scan=512, cancelled_max_scan=512,
+    cancelled_after=Some(c_cur),
+    accept=Some(fn(a : form::Json, _j : Int64, _d : Option[form::Json]) -> Bool { json_str_f(a, "state") == "cancelled" }),
+  ))
+  assert(res2.joins.length() == 1 && res2.next_cancelled_cursor is None)
+
+  // Verify schema exports all required partial indexes and triggers.
+  assert(VAULT_STORE_SCHEMA.contains("CREATE INDEX IF NOT EXISTS vaults_workspace_active"))
+  assert(VAULT_STORE_SCHEMA.contains("CREATE INDEX IF NOT EXISTS vault_joins_vault_at"))
+  assert(VAULT_STORE_SCHEMA.contains("CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss"))
+  assert(VAULT_STORE_SCHEMA.contains("vault_deleted_joins_insert"))
+  assert(VAULT_STORE_SCHEMA.contains("CREATE TABLE IF NOT EXISTS vault_member_lookup"))
+}
+
+test "P1-1: vault_supersedes matches history::supersedes + mbt_str_cmp on same seq/epoch regardless of at" {
+  let ws = "ws_sup"
+  let alice = make_test_signer(31)
+  let bob = make_test_signer(32)
+  let carol = make_test_signer(33)
+  let vid = "v_01HZZZZZZZZZZZZZZZZZZZZS7P"
+  // Same seq=1, epoch=0, deleted=false; `form::mbt_str_cmp` compares UTF-16 length FIRST, then UTF-16 code units.
+  // v_high_at has LARGER numeric at=1000 but shorter canonical UTF-16 length (`"name":"A"`);
+  // v_low_at has SMALLER numeric at=200 but longer canonical UTF-16 length (`"name":"ZZZZZZZZ"`).
+  // Node & Pion rules MUST both pick v_low_at by `mbt_str_cmp(canonical)`, NOT larger numeric `at`!
+  let v_high_at = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("A")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(1000.0)),
+  ], TAG_VAULT)
+  let v_low_at = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("ZZZZZZZZ")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(200.0)),
+  ], TAG_VAULT)
+  // Verify antisymmetry and that canonical winner wins in BOTH insertion orders!
+  let low_wins = vault_supersedes(v_low_at, v_high_at)
+  let high_wins = vault_supersedes(v_high_at, v_low_at)
+  assert(low_wins && !high_wins)
+
+  let state = make_test_lock(ws, alice, bob, carol)
+  let v_alice = make_viewer(ws, "alice", "owner", alice.device_id)
+  let base_v = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Init")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(50.0)),
+  ], TAG_VAULT)
+
+  // Order 1: high_at first, then low_at (via ?copy=1) -> winner is v_low_at
+  let s1 = VaultStore::in_memory()
+  let c1 = VaultRouteCtx::{ store: s1, lock_of: fn(_w : String) -> Option[lock::LockState] { Some(state) }, on_event: None, before_write: None, boxed: None, verify_fn: None }
+  assert(handle_put_vault(c1, v_alice, base_v).status == 200)
+  assert(handle_put_vault(c1, v_alice, v_high_at, query=[("copy", "1")]).status == 200)
+  assert(handle_put_vault(c1, v_alice, v_low_at, query=[("copy", "1")]).status == 200)
+  let w1 = match unwrap_ok(s1.vault(ws, vid)) {
+    Some(v) => v
+    None => panic("expected w1")
+  }
+  assert(form_str_is(w1, "name", "ZZZZZZZZ"))
+
+  // Order 2: low_at first, then high_at -> winner is STILL v_low_at
+  let s2 = VaultStore::in_memory()
+  let c2 = VaultRouteCtx::{ store: s2, lock_of: fn(_w : String) -> Option[lock::LockState] { Some(state) }, on_event: None, before_write: None, boxed: None, verify_fn: None }
+  assert(handle_put_vault(c2, v_alice, base_v).status == 200)
+  assert(handle_put_vault(c2, v_alice, v_low_at, query=[("copy", "1")]).status == 200)
+  assert(handle_put_vault(c2, v_alice, v_high_at, query=[("copy", "1")]).status == 200)
+  let w2 = match unwrap_ok(s2.vault(ws, vid)) {
+    Some(v) => v
+    None => panic("expected w2")
+  }
+  assert(form_str_is(w2, "name", "ZZZZZZZZ"))
+}
+
+test "P2-4..P2-8: proof-verified viewer, box hooks/SSE, latest validation, before_write/conflict, and DB 500 propagation" {
+  let ws = "ws_sec_p2"
+  let alice = make_test_signer(41)
+  let bob = make_test_signer(42)
+  let carol = make_test_signer(43)
+  let store = VaultStore::in_memory()
+  let state = make_test_lock(ws, alice, bob, carol)
+  let events : Array[VaultRouteEvent] = []
+  let mut allow_write = true
+  let mut allow_boxed = true
+  let ctx = VaultRouteCtx::{
+    store: store,
+    lock_of: fn(w : String) -> Option[lock::LockState] { if w == ws { Some(state) } else { None } },
+    on_event: Some(fn(ev : VaultRouteEvent) -> Unit { events.push(ev) }),
+    before_write: Some(fn() -> Bool { allow_write }),
+    boxed: Some(fn(_l : lock::LockState, _c : form::Json) -> Bool { allow_boxed }),
+    verify_fn: None,
+  }
+  let v_alice = make_viewer(ws, "alice", "owner", alice.device_id)
+  let v_bob = make_viewer(ws, "bob", "member", bob.device_id)
+
+  // P2-4: Forged lock_base/lock_proof on viewer is rejected 403 (never trusted blindly)
+  let forged_viewer = VaultViewer::{
+    sub: "alice", workspace: ws, role: "owner", device: pad_hex_dev("9", 1),
+    lock_base: Some(alice.device_id),
+    lock_proof: Some(pad_hex_dev("a", 0) + pad_hex_dev("b", 0)),
+  }
+  let alice_box1 = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(alice.device_id)), ("box", form::Json::Str(alice.box_pub)),
+    ("at", form::Json::Num(100.0)),
+  ], TAG_BOX)
+  assert(handle_put_box(ctx, forged_viewer, alice_box1).status == 403)
+
+  // P2-5: handle_put_box emits vault-box, calls boxed (503 vault_busy on false), and overwrites equal `at`
+  allow_boxed = false
+  let busy_box = handle_put_box(ctx, v_alice, alice_box1)
+  assert(busy_box.status == 503 && form_str_is(busy_box.body, "code", "vault_busy"))
+  allow_boxed = true
+  let ev_n = events.length()
+  assert(handle_put_box(ctx, v_alice, alice_box1).status == 200)
+  assert(events.length() == ev_n + 1 && events[ev_n].event == "vault-box")
+  // Equal `at=100` with different box overwrites (`>` not `>=`)
+  let alice_box_eq = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(alice.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(100.0)),
+  ], TAG_BOX)
+  assert(handle_put_box(ctx, v_alice, alice_box_eq).status == 200)
+  match unwrap_ok(store.box_cert(ws, alice.device_id)) {
+    Some(c) => assert(form_str_is(c, "box", bob.box_pub))
+    None => panic("expected overwritten box cert")
+  }
+
+  // P2-6: handle_post_vaults_latest rejects non-array and >256 with 400 vault_invalid, processes 100 items without truncation
+  assert(handle_post_vaults_latest(ctx, v_bob, form::Json::Obj([("held", form::Json::Str("bad"))])).status == 400)
+  let too_many : Array[form::Json] = []
+  for _i in 0..<257 {
+    too_many.push(form::Json::Null)
+  }
+  assert(handle_post_vaults_latest(ctx, v_bob, form::Json::Obj([("held", form::Json::Arr(too_many))])).status == 400)
+  let hundred : Array[form::Json] = []
+  for _i in 0..<100 {
+    hundred.push(form::Json::Null)
+  }
+  assert(handle_post_vaults_latest(ctx, v_bob, form::Json::Obj([("held", form::Json::Arr(hundred))])).status == 200)
+
+  // P2-7: before_write returning false -> 503 vault_handover; workspace_check_lock with genesis == ""
+  allow_write = false
+  let ho = handle_put_box(ctx, v_alice, alice_box1)
+  assert(ho.status == 503 && form_str_is(ho.body, "code", "vault_handover"))
+  allow_write = true
+  let vid = "v_01HZZZZZZZZZZZZZZZZZZZZP27"
+  let v0 = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("WS")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)), ("keys", form::Json::Arr([])), ("at", form::Json::Num(100.0)),
+  ], TAG_VAULT)
+  assert(workspace_check_lock(state, None, v0).genesis == "")
+  assert(handle_put_vault(ctx, v_alice, v0).status == 200)
+
+  // P2-8: DB error propagation -> HTTP 500 vault_error (never silently converted to 200 empty)
+  let io_err = sql_db::SqlError::{ code: 10, message: "disk I/O error" }
+  let failing_port = VaultDbPort::{
+    exec: fn(_sql : String) -> Result[Unit, sql_db::SqlError] { Ok(()) },
+    run: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] { Err(io_err) },
+    first: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Option[Map[String, base_codec::Json]], sql_db::SqlError] { Err(io_err) },
+    all: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] { Err(io_err) },
+    tx: fn(_f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] { Err(io_err) },
+    read_tx: fn(_f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] { Err(io_err) },
+  }
+  let bad_store = unwrap_ok(VaultStore::new_with_port(failing_port))
+  let bad_ctx = VaultRouteCtx::{
+    store: bad_store, lock_of: ctx.lock_of, on_event: None, before_write: None, boxed: None, verify_fn: None,
+  }
+  let err_get = handle_get_vaults(bad_ctx, v_alice)
+  assert(err_get.status == 500 && form_str_is(err_get.body, "code", "vault_error"))
+  let err_disc = handle_get_discover(bad_ctx, v_bob)
+  assert(err_disc.status == 500 && form_str_is(err_disc.body, "code", "vault_error"))
+  let err_asks = handle_get_asks(bad_ctx, v_alice)
+  assert(err_asks.status == 500 && form_str_is(err_asks.body, "code", "vault_error"))
+  let err_joins = handle_get_joins(bad_ctx, v_alice)
+  assert(err_joins.status == 500 && form_str_is(err_joins.body, "code", "vault_error"))
+}

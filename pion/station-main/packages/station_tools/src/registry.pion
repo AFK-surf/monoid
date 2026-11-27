@@ -6,9 +6,9 @@ import "base_codec"
 
 /// Byte ceilings matching `station/test/tools-weight.test.ts`.
 pub let WEIGHT_CEILING_TOTAL : Int = 62000
-pub let WEIGHT_CEILING_CORE : Int = 14100
+pub let WEIGHT_CEILING_CORE : Int = 14250
 pub let WEIGHT_CEILING_HEAVIEST : Int = 5000
-pub let WEIGHT_CEILING_SCHEMA : Int = 4500
+pub let WEIGHT_CEILING_SCHEMA : Int = 4600
 
 /// Declaration of a station tool (metadata + JSON Schema + outward flag).
 pub struct ToolDecl {

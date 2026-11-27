@@ -1852,3 +1852,108 @@ test "R5 #2: untraversable parent dir (chmod 0000: bytes=null, lstat(path)=null,
     _ => assert_true(false)
   }
 }
+
+test "#9067: waiting moved station grant_keys uses pinned chain cloud_keys and broken lock.json returns null" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  // Put a distinct fake key in control-plane state to prove waiting never trusts control-plane grant_keys.
+  let st = sample_cloud_state("ws_wait_gk")
+  st.grant_keys = base_codec::json_obj([
+    ("keys", base_codec::json_arr([base_codec::json_obj([("kid", base_codec::json_str("k-plane-fake"))])])),
+  ])
+  let _ = write_state("/d", st, fs)
+  let store = CloudStore::open("/d", fs)
+
+  let owner_id = "ed25519:" + test_owner_pub
+  let pgen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(test_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+  ])
+  let root_hash = hash_of_entry(pgen)
+
+  // Genesis with pinned cloud_keys = [{kid: "k-chain"}]
+  let gen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_wait_gk")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("owner", form::Json::Str("u1")),
+      ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+      ("rp_id", form::Json::Str("app.still.fail")),
+      ("cloud_keys", form::Json::Obj([
+        ("keys", form::Json::Arr([form::Json::Obj([("kid", form::Json::Str("k-chain"))])])),
+      ])),
+      ("members", form::Json::Arr([
+        form::Json::Obj([
+          ("sub", form::Json::Str("u1")),
+          ("email", form::Json::Str("u1@x")),
+          ("role", form::Json::Str("owner")),
+        ]),
+      ])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(test_owner_pub)),
+          ("sub", form::Json::Str("u1")),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Mac")),
+          ("sign_key", form::Json::Str(owner_id)),
+        ]),
+      ])),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([
+          ("key", form::Json::Str(test_station_pub)),
+          ("name", form::Json::Str("st1")),
+        ]),
+      ])),
+      ("gateways", form::Json::Arr([])),
+    ])),
+  ])
+  let gen_h = hash_of_entry(gen)
+  let mv_entry = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_wait_gk")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(gen_h)),
+    ("at", form::Json::Num(1700000010.0)),
+    ("kind", form::Json::Str("moved")),
+    ("body", form::Json::Obj([("root", form::Json::Str(root_hash))])),
+  ])
+  match store.take_lock([gen, mv_entry], Some(1700000020.0)) {
+    Ok(n) => assert_true(n == 2)
+    Err(_) => assert_true(false)
+  }
+
+  // Waiting state: grant_keys must return pinned chain cloud_keys ("k-chain"), NOT null and NOT "k-plane-fake".
+  match store.locked(1700000020.0, ws=None) {
+    Some(eff) => assert_true(eff.waiting)
+    None => assert_true(false)
+  }
+  let gk = store.grant_keys(1700000020.0, ws=None)
+  let gk_str = base_codec::json_stringify(gk)
+  assert_true(gk_str.contains("k-chain"))
+  assert_true(!gk_str.contains("k-plane-fake"))
+
+  // Broken lock.json must fail closed with null grant_keys.
+  let _ = (fs.write_private_text)("/d/mesh/lock.json", "{broken json")
+  let broken = CloudStore::open("/d", fs)
+  match broken.grant_keys(1700000020.0, ws=None) {
+    base_codec::Json::Null => ()
+    _ => assert_true(false)
+  }
+}

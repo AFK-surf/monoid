@@ -547,10 +547,52 @@ fn station_move_menu(v : Json?, ask : (Bool) -> Unit) -> Array[@sf.MenuItem?] {
 pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back : Bool) -> Unit {
   let all = field(v, if back { "allBack" } else { "allMove" })
   let to = text(v, "to")
+  let to_name = match text(v, "toName") {
+    "" => to
+    n => n
+  }
+  let to_addr = if to.contains("/") || to == "" { to } else { @sfbase.workspace_of(address) + "/" + to }
+  let from_name = {
+    let ws = @sfbase.workspace_of(address)
+    let live = if ws == "" {
+      None
+    } else {
+      let (_, params) = @sfbase.station_rows_ask(ws)
+      find_station_row((core.topic)("stations", params).get().value, address)
+    }
+    match text(live, "name") {
+      "" => @settings.station_name(address)
+      n => n
+    }
+  }
+  let action = @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" })
+  let summary = text(all, "text")
+  let facts = if back {
+    [
+      (@sf.t("common.confirmFact.sourceStation"), to_name),
+      (@sf.t("common.confirmFact.targetStation"), from_name),
+    ]
+  } else {
+    [
+      (@sf.t("common.confirmFact.sourceStation"), from_name),
+      (@sf.t("common.confirmFact.targetStation"), to_name),
+    ]
+  }
+  let stations = if back {
+    [
+      station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+      station_info_from_core(core, address, from_name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
+    ]
+  } else {
+    [
+      station_info_from_core(core, address, from_name, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+      station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
+    ]
+  }
   @sf.confirm(
-    text(all, "title"),
-    text(all, "text"),
-    @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" }),
+    action,
+    summary,
+    action,
     fn() {
       if back {
         @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))
@@ -558,6 +600,8 @@ pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back :
         @settings.act(core, @sf.t("web-pages.stations.move.all"), "move.start", obj([("station", str(address)), ("to", str(to)), ("all", Json::boolean(true))]))
       }
     },
+    facts~,
+    body=fn(w) { station_info_card_node(w, stations, inset_out=false) },
   )
 }
 

@@ -1,0 +1,1789 @@
+// Focused unit & integration tests for Slice 2A:
+// 1. First-class immutable `AuthCapability` / `WorkspaceCapability` / `VaultCapability` /
+//    `CompositeCapability` + `AuthGenTracker` (unique `owner_id`, monotonic `conn_seq`,
+//    single-vault isolation, `lock_vault`/`unlock_vault`, `on_boundary`/`off_boundary`,
+//    `AuthBoundaryEvent::Global`, topic-policy 1:1 parity).
+// 2. Unified outbound `WireOutGen` envelope (`conn`, `authGen`, `vaultGen`) across `Value` /
+//    `Delta` / `Same` / `Unsubscribed` / `Waiting` / recognizable subscribe `Err` frames,
+//    `{"id":0,"auth":...}` handshake, `on_boundary` clearing `Slice1Router.kept` and re-anchoring
+//    active subs without freezing, host `wire_sink` keeping `pending_wire_events == 0`, and
+//    headless bounded `pending_wire_events <= 256` never evicting latest `{id:0,auth}`.
+// 3. Full-set `canonical_lock_digest` (cold-start seed without spurious bump, startup DB seed
+//    without bump, station-only change bumps `authGen` only, security-boundary changes including
+//    `devices`/`endpoints`/`sign_keys`/`gateways`/`cloud_keys` bump `authGen` + `vaultGen`,
+//    and newcomer absent from `lock.members` never triggers revocation).
+// 4. Single fail-open `guarded_read_k` (bounded retry up to 2 on `auth_stale`, convergence with
+//    fresh capability, `on_exhausted_stale` reschedule without freezing sync, wired into
+//    `SyncScheduler` including idle prefetch while `fetch_lock_k` stays ungated by `authGen`,
+//    and `StationEvents` `stream_epoch` gating).
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "mesh"
+import "outbox"
+import "protocol"
+import "shell"
+import "sql"
+import "store"
+
+struct CapSimEnv {
+  rt : effect::Runtime
+  sim_db : SimAccountDb
+  sh : shell::Shell
+  db : sql::Sql
+}
+
+fn CapSimEnv::new() -> CapSimEnv {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-auth-cap") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open failed: " + e.to_string())
+  }
+  CapSimEnv::{ rt: rt, sim_db: sim_db, sh: sh, db: db }
+}
+
+fn cap_json_int_eq(raw : String, key : String, want : Int) -> Bool {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) =>
+    match base_codec::json_get(j, key) {
+      Some(base_codec::Json::Num(n, _)) => n.to_int() == want
+      _ => false
+    }
+    _ => false
+  }
+}
+
+fn cap_json_has_field(raw : String, key : String) -> Bool {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => base_codec::json_get(j, key).is_some()
+    _ => false
+  }
+}
+
+test "auth_cap 1: immutable AuthCapability cross-tracker fail-closed, persisted/device connSeq monotonicity, single-vault isolation, and topic-policy 1:1" {
+  let env = CapSimEnv::new()
+
+  // 1a. Persistent monotonic `connSeq` in SQLite `account_doc("conn_seq")`: 1 -> 2 -> 3 across restarts
+  let t1 = AuthGenTracker::open_with_db(env.db)
+  debug_assert(t1.conn_seq() == 1L, "first open starts at connSeq = 1")
+  let t2 = AuthGenTracker::open_with_db(env.db)
+  debug_assert(t2.conn_seq() == 2L, "second open increments connSeq to 2")
+  let t3 = AuthGenTracker::open_with_db(env.db)
+  debug_assert(t3.conn_seq() == 3L, "third open increments connSeq to 3")
+  debug_assert(t1.owner_id != t2.owner_id && t2.owner_id != t3.owner_id, "every tracker has a unique owner_id")
+
+  // 1b. Device-level `connSeq`: strictly monotonic across same-ms calls and read-only storage fallback
+  let persisted = [0L]
+  let d1 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { persisted[0] },
+    fn(v : Int64) -> Unit { persisted[0] = v },
+    now_ms=1700000001000L,
+  )
+  let d2 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { persisted[0] },
+    fn(v : Int64) -> Unit { persisted[0] = v },
+    now_ms=1700000001000L,
+    floor=d1.conn_seq(),
+  )
+  let d3 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { 0L },
+    fn(_v : Int64) -> Unit {},
+    now_ms=1700000001000L,
+    floor=d2.conn_seq(),
+  )
+  debug_assert(d1.conn_seq() >= 1700000001000000L, "d1 anchored at wall-clock microseconds")
+  debug_assert(d2.conn_seq() > d1.conn_seq(), "d2 strictly > d1 within same ms")
+  debug_assert(d3.conn_seq() > d2.conn_seq(), "d3 strictly > d2 via in-process floor even when persistence fails")
+
+  // 1c. Cross-tracker fail-closed capability verification
+  t1.ensure_workspace("ws-a")
+  t2.ensure_workspace("ws-a")
+  let snap1 = AuthCapability::capture(t1)
+  let ws_cap = snap1.workspace("ws-a", sub=Some("alice"))
+  debug_assert(ws_cap.is_valid(t1, current_sub=Some("alice")), "ws_cap valid on owning tracker")
+  debug_assert(!ws_cap.is_valid(t1, current_sub=Some("bob")), "ws_cap fails closed on sub mismatch")
+  debug_assert(!ws_cap.is_valid(t2, current_sub=Some("alice")), "ws_cap fails closed across different tracker owner_id")
+
+  let v_cap1 = snap1.vault("ws-a", "v-1", sub=Some("alice"))
+  let v_cap2 = snap1.vault("ws-a", "v-2", sub=Some("alice"))
+  debug_assert(v_cap1.is_valid(t1, current_sub=Some("alice")), "vault_cap valid on owning tracker")
+  debug_assert(!v_cap1.is_valid(t2, current_sub=Some("alice")), "vault_cap fails closed across tracker instances")
+
+  let comp = snap1.composite([ws_cap], [v_cap1])
+  debug_assert(comp.is_valid(t1, current_sub=Some("alice")), "composite cap valid before bump")
+  debug_assert(!comp.is_valid(t2, current_sub=Some("alice")), "composite cap fails closed across trackers")
+
+  // 1d. Single-vault lock/unlock isolates sibling vault v-2 and non-vault ws_cap
+  let _ = t1.lock_vault("ws-a", vault_id="v-1")
+  debug_assert(t1.is_vault_locked("ws-a", vault_id="v-1"), "v-1 marked locked")
+  debug_assert(!t1.is_vault_locked("ws-a", vault_id="v-2"), "sibling v-2 stays unlocked")
+  debug_assert(ws_cap.is_valid(t1, current_sub=Some("alice")), "lock_vault does not invalidate non-vault ws_cap")
+  debug_assert(!v_cap1.is_valid(t1, current_sub=Some("alice")), "lock_vault invalidates v-1 cap")
+  debug_assert(v_cap2.is_valid(t1, current_sub=Some("alice")), "lock_vault(v-1) MUST NOT invalidate sibling vault v-2")
+  debug_assert(!comp.is_valid(t1, current_sub=Some("alice")), "composite cap fails closed when vault part invalidates")
+
+  let _ = t1.unlock_vault("ws-a", vault_id="v-1")
+  debug_assert(!t1.is_vault_locked("ws-a", vault_id="v-1"), "v-1 unlocked")
+  let v_cap1_after = t1.capture_vault("ws-a", "v-1")
+  debug_assert(v_cap1_after.vault_gen == 3, "vault_gen incremented 1 -> 2 (lock) -> 3 (unlock)")
+  debug_assert(v_cap1_after.is_valid(t1), "fresh vault_cap valid after unlock")
+
+  // 1e. `on_boundary` / `off_boundary` and `AuthBoundaryEvent::Global`
+  let seen_events : Array[String] = []
+  let lid = t1.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    match ev {
+      AuthBoundaryEvent::Workspace(w, g) => seen_events.push("ws:" + w + ":" + g.to_string())
+      AuthBoundaryEvent::Global(ag, vg) => seen_events.push("global:" + ag.to_string() + ":" + vg.to_string())
+      _ => seen_events.push("other")
+    }
+  })
+  let _ = t1.bump_workspace("ws-a")
+  debug_assert(!ws_cap.is_valid(t1, current_sub=Some("alice")), "bump_workspace invalidates old ws_cap")
+  debug_assert(!v_cap1_after.is_valid(t1), "bump_workspace also invalidates vault_cap")
+
+  let (ag_all, vg_all) = t1.bump_all()
+  debug_assert(ag_all >= 3 && vg_all >= 4, "bump_all advances both global authGen and vaultGen")
+  debug_assert(seen_events.length() == 2, "listener saw workspace + global boundary events")
+  debug_assert(seen_events[0] == "ws:ws-a:2", "workspace boundary payload matches")
+  debug_assert(seen_events[1] == "global:" + ag_all.to_string() + ":" + vg_all.to_string(), "global boundary payload matches")
+
+  t1.off_boundary(lid)
+  let _ = t1.bump_workspace("ws-a")
+  debug_assert(seen_events.length() == 2, "off_boundary stops further callbacks")
+
+  // 1f. Exact 1:1 `is_device_global_topic`, `is_vault_topic`, `is_aggregate_topic`, `topic_workspace`, `topic_vault_id`
+  let device_globals = [
+    "releases", "fonts", "changelog", "prefs", "doing", "adbShare",
+    "link", "connection", "way", "net",
+  ]
+  for i in 0..<device_globals.length() {
+    debug_assert(is_device_global_topic(device_globals[i]), "must be device-global: " + device_globals[i])
+  }
+  let scoped = ["downloads", "chats", "chat", "workspaces", "workspace", "workspaceMarks", "profiles", "settings", "lock", "vaults", "accounts", "search"]
+  for i in 0..<scoped.length() {
+    debug_assert(!is_device_global_topic(scoped[i]), "must NOT be device-global: " + scoped[i])
+  }
+  debug_assert(is_vault_topic("vaults") && is_vault_topic("vaultItems") && is_vault_topic("vaultUses"), "vault topics recognized")
+  debug_assert(!is_vault_topic("chats") && !is_vault_topic("prefs") && !is_vault_topic("vaultApprovals"), "non-vault topics excluded")
+  debug_assert(is_aggregate_topic("workspaces") && is_aggregate_topic("lockPrompts") && is_aggregate_topic("downloads"), "aggregate topics recognized")
+  let t_chat = protocol::Topic::{ name: "chat", params: [("station", base_codec::json_str("ws-x/st-1"))] }
+  let chat_ws_ok = match topic_workspace(t_chat) {
+    Some(w) => w == "ws-x"
+    None => false
+  }
+  debug_assert(chat_ws_ok, "topic_workspace extracts ws prefix from station")
+  let t_vault = protocol::Topic::{ name: "vaultItems", params: [("workspace", base_codec::json_str("ws-x")), ("vault", base_codec::json_str("v-9"))] }
+  let vault_ws_ok = match topic_workspace(t_vault) {
+    Some(w) => w == "ws-x"
+    None => false
+  }
+  let vault_id_ok = match topic_vault_id(t_vault) {
+    Some(v) => v == "v-9"
+    None => false
+  }
+  debug_assert(vault_ws_ok && vault_id_ok, "topic_workspace + topic_vault_id exact")
+}
+
+test "auth_cap 2: WireOutGen stamps all sub frames, on_boundary clears kept & re-anchors active subs, host sink has 0 buildup, headless never evicts handshake" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-wire", "ws-wire/st-1", env.rt, env.db, station.transport(), fn() -> Unit {}, conn_seq=Some(42L))
+
+  let sink_frames : Array[String] = []
+  core.set_wire_sink(fn(j : String, _b : Option[Bytes]) -> Unit {
+    sink_frames.push(j)
+  })
+  debug_assert(core.pending_wire_event_count() == 0, "pending_wire_events drained on sink attach")
+
+  // Startup authoritative handshake
+  let hs = core.emit_auth_handshake()
+  debug_assert(sink_frames.length() == 1 && sink_frames[0] == hs, "handshake delivered directly to host sink")
+  debug_assert(core.pending_wire_event_count() == 0, "pending_wire_events stays 0 with host sink")
+  debug_assert(
+    hs.contains("\"id\":0") &&
+    hs.contains("\"conn\":42") &&
+    hs.contains("\"global\":1") &&
+    hs.contains("\"aggregate\":1") &&
+    hs.contains("\"vaultGlobal\":1") &&
+    hs.contains("\"scopes\":{") &&
+    hs.contains("\"workspaces\":{") &&
+    hs.contains("\"vaults\":{"),
+    "handshake JSON carries full client.mbt envelope",
+  )
+
+  // Device-global topic (`prefs`): `conn` only, no `authGen`/`vaultGen`
+  match core.handle_wire("{\"id\":10,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}") {
+    Some((txt, _)) => {
+      debug_assert(cap_json_int_eq(txt, "conn", 42), "prefs Value has conn:42")
+      debug_assert(!cap_json_has_field(txt, "authGen"), "prefs Value omits authGen")
+      debug_assert(!cap_json_has_field(txt, "vaultGen"), "prefs Value omits vaultGen")
+    }
+    None => debug_assert(false, "expected prefs Value")
+  }
+  let prefs_tok = match core.handle_wire("{\"id\":10,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => {
+      debug_assert(cap_json_int_eq(txt, "conn", 42) && !cap_json_has_field(txt, "authGen"), "prefs Unsubscribed has conn:42 only")
+      match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") { Some(base_codec::Json::Str(v)) => v; _ => "" }
+        _ => ""
+      }
+    }
+    None => ""
+  }
+  debug_assert(prefs_tok.length() > 0, "got prefs keep token")
+  match core.handle_wire("{\"id\":11,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true,\"have\":\"" + prefs_tok + "\"}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"same\":true") && cap_json_int_eq(txt, "conn", 42) && !cap_json_has_field(txt, "authGen"), "prefs Same has conn:42 only")
+    }
+    None => debug_assert(false, "expected prefs Same")
+  }
+
+  // Workspace topic (`settings`): `conn` + `authGen` (no `vaultGen`), also test `kept` cleared on boundary
+  match core.handle_wire("{\"id\":19,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-wire\"},\"keyed\":true}") {
+    Some((txt, _)) => {
+      debug_assert(cap_json_int_eq(txt, "conn", 42) && cap_json_int_eq(txt, "authGen", 1) && !cap_json_has_field(txt, "vaultGen"), "settings Value stamped")
+    }
+    None => debug_assert(false, "expected settings Value")
+  }
+  let settings_tok = match core.handle_wire("{\"id\":19,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => {
+      debug_assert(cap_json_int_eq(txt, "conn", 42) && cap_json_int_eq(txt, "authGen", 1), "settings Unsubscribed stamped")
+      match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") { Some(base_codec::Json::Str(v)) => v; _ => "" }
+        _ => ""
+      }
+    }
+    None => ""
+  }
+  debug_assert(settings_tok.length() > 0 && core.router.kept_count() >= 1, "settings kept before boundary")
+
+  // Active workspace + vault subscriptions before boundary
+  let _ = core.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-wire\"},\"keyed\":true}")
+  match core.handle_wire("{\"id\":30,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-wire\"},\"keyed\":true}") {
+    Some((txt, _)) => {
+      debug_assert(cap_json_int_eq(txt, "conn", 42) && cap_json_int_eq(txt, "authGen", 1) && cap_json_int_eq(txt, "vaultGen", 1), "vaults Value has conn+authGen+vaultGen")
+    }
+    None => debug_assert(false, "expected vaults Value")
+  }
+
+  // Boundary (`bump_workspace_and_vault`): emits new `{id:0,auth}`, clears ws-wire `kept`, re-anchors #20 & #30 without freezing!
+  let before_cnt = sink_frames.length()
+  let _ = core.auth.bump_workspace_and_vault("ws-wire")
+  debug_assert(core.pending_wire_event_count() == 0, "sink keeps pending_wire_events at 0 across boundary")
+  let mut saw_hs2 = false
+  let mut saw_settings_g2 = false
+  let mut saw_vaults_g2 = false
+  for i in before_cnt..<sink_frames.length() {
+    let f = sink_frames[i]
+    if f.contains("\"id\":0") && f.contains("\"auth\":{") && f.contains("\"ws-wire\":2") {
+      saw_hs2 = true
+    }
+    if cap_json_int_eq(f, "id", 20) && cap_json_int_eq(f, "authGen", 2) && f.contains("\"value\"") {
+      saw_settings_g2 = true
+    }
+    if cap_json_int_eq(f, "id", 30) && cap_json_int_eq(f, "authGen", 2) && cap_json_int_eq(f, "vaultGen", 2) && f.contains("\"value\"") {
+      saw_vaults_g2 = true
+    }
+  }
+  debug_assert(saw_hs2, "boundary emitted updated {id:0, auth} snapshot")
+  debug_assert(saw_settings_g2, "boundary re-anchored active settings sub at authGen:2")
+  debug_assert(saw_vaults_g2, "boundary re-anchored active vaults sub at authGen:2, vaultGen:2")
+
+  // Old kept token for `settings` was purged by `on_boundary` -> resubscribe with old `have` returns full `value`, NOT `same:true`
+  match core.handle_wire("{\"id\":21,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-wire\"},\"keyed\":true,\"have\":\"" + settings_tok + "\"}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"value\"") && !txt.contains("\"same\":true"), "purged kept token returns fresh value, not same:true")
+      debug_assert(cap_json_int_eq(txt, "authGen", 2), "fresh value carries new authGen:2")
+    }
+    None => debug_assert(false, "expected fresh settings value")
+  }
+
+  // Active sub #20 continues receiving live updates after boundary (never frozen)
+  let _ = env.db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("ws-wire/st-1"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"st-1\",\"name\":\"St1\",\"automaticDecisions\":{\"enabled\":true}}"),
+    base_codec::json_int64(2000L),
+  ])
+  let live_wire = core.refresh_topic_wire("settings")
+  debug_assert(live_wire.length() >= 1, "active sub produces live updates after boundary")
+  debug_assert(cap_json_int_eq(live_wire[0].0, "authGen", 2) && cap_json_int_eq(live_wire[0].0, "conn", 42), "live delta carries authGen:2 + conn:42")
+
+  // Recognizable invalid subscribe error frame stamps full `conn` + `authGen` + `vaultGen`
+  match core.handle_wire("{\"id\":701,\"subscribe\":{\"topic\":\"vaultItems\",\"workspace\":\"ws-wire\",\"vault\":123}}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"error\""), "invalid subscribe emits error frame")
+      debug_assert(cap_json_int_eq(txt, "conn", 42), "invalid subscribe carries conn:42")
+      debug_assert(cap_json_int_eq(txt, "authGen", 2), "invalid subscribe carries authGen:2")
+      debug_assert(cap_json_int_eq(txt, "vaultGen", 2), "invalid subscribe carries vaultGen:2")
+    }
+    None => debug_assert(false, "expected invalid subscribe error frame")
+  }
+
+  // Headless `pending_wire_events` bounded <= 256 and NEVER evicts latest `{"id":0,"auth":...}` handshake
+  let core_hl = ClientCore::new("ws-evict", "ws-evict/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let hl_hs = core_hl.emit_auth_handshake()
+  for i in 0..<280 {
+    core_hl.emit_wire_out("{\"id\":" + (i + 1).to_string() + ",\"delta\":[]}")
+  }
+  let drained = core_hl.drain_pending_wire_events()
+  debug_assert(drained.length() == 256, "pending_wire_events bounded to 256")
+  let mut kept_hs = false
+  for i in 0..<drained.length() {
+    if drained[i].0 == hl_hs {
+      kept_hs = true
+      break
+    }
+  }
+  debug_assert(kept_hs, "latest {id:0, auth} handshake MUST NEVER be evicted from pending_wire_events")
+  core_hl.stop()
+  core.stop()
+}
+
+test "auth_cap 3: full-set canonical_lock_digest seeds cleanly on cold/warm start, splits station vs security bumps, covers endpoints/sign_keys/gateways/cloud_keys, never derives revoked" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+
+  let alice_seed = make_seed(11)
+  let bob_seed = make_seed(22)
+  let alice_key = ed25519_key_id(alice_seed)
+  let bob_key = ed25519_key_id(bob_seed)
+  let alice_dev_id = hex_64("a")
+  let bob_dev_id = hex_64("b")
+
+  let g_signed = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-ldig")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      (
+        "body",
+        form::Json::Obj([
+          ("owner", form::Json::Str("alice")),
+          ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+          ("rp_id", form::Json::Str("app.still.fail")),
+          ("cloud_keys", form::Json::Obj([])),
+          (
+            "members",
+            form::Json::Arr([
+              form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))]),
+              form::Json::Obj([("sub", form::Json::Str("bob")), ("email", form::Json::Str("bob@example.com")), ("role", form::Json::Str("admin"))]),
+            ]),
+          ),
+          (
+            "devices",
+            form::Json::Arr([
+              form::Json::Obj([("id", form::Json::Str(alice_dev_id)), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Alice Mac")), ("sign_key", form::Json::Str(alice_key))]),
+              form::Json::Obj([("id", form::Json::Str(bob_dev_id)), ("sub", form::Json::Str("bob")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Bob Linux")), ("sign_key", form::Json::Str(bob_key))]),
+            ]),
+          ),
+          ("passkeys", form::Json::Arr([])),
+          ("stations", form::Json::Arr([])),
+          ("gateways", form::Json::Arr([])),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(e) => panic("genesis sign: " + e)
+  }
+  let root_hash = match lock::entry_hash(g_signed, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root hash") }
+
+  // 3a. Cold-start first valid lock chain seeds digest WITHOUT spuriously bumping authGen/vaultGen
+  let core1 = ClientCore::new("ws-ldig", "ws-ldig/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  match core1.apply_lock_chain([g_signed], root_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply genesis failed: " + e)
+  }
+  debug_assert(core1.auth.workspace_auth_gen("ws-ldig") == 1, "cold-start first lock MUST NOT spuriously bump authGen")
+  debug_assert(core1.auth.vault_workspace_gen("ws-ldig") == 1, "cold-start first lock MUST NOT spuriously bump vaultGen")
+  core1.stop()
+
+  // 3b. Warm restart on persisted DB as a newcomer ("charlie", absent from lock.members) -> no bump, SafeModeView works
+  let core2 = ClientCore::new("ws-ldig", "ws-ldig/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  core2.set_viewer("charlie@example.com", sub="charlie", role="member")
+  debug_assert(core2.auth.workspace_auth_gen("ws-ldig") == 1, "warm startup lock seed MUST NOT spuriously bump authGen")
+  debug_assert(core2.auth.vault_workspace_gen("ws-ldig") == 1, "warm startup lock seed MUST NOT spuriously bump vaultGen")
+  let sm = core2.current_safe_mode_view()
+  debug_assert(sm.locked, "newcomer sees workspace locked state cleanly")
+
+  // 3c. Station-only change -> bumps authGen ONLY (vaultGen unchanged)
+  let st_add = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-ldig")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_hash)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("c"))), ("name", form::Json::Str("Tokyo Station"))])),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(e) => panic("station entry sign: " + e)
+  }
+  let h1 = match lock::entry_hash(st_add, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h1") }
+  match core2.apply_lock_chain([g_signed, st_add], root_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply station add failed: " + e)
+  }
+  debug_assert(core2.auth.workspace_auth_gen("ws-ldig") == 2, "station change bumps authGen 1 -> 2")
+  debug_assert(core2.auth.vault_workspace_gen("ws-ldig") == 1, "station-only change keeps vaultGen at 1")
+
+  // 3d. Device removal -> security boundary changes -> bumps BOTH authGen AND vaultGen
+  let dev_rm = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-ldig")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("device.remove")),
+      ("body", form::Json::Obj([("id", form::Json::Str(bob_dev_id))])),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(e) => panic("device_remove sign: " + e)
+  }
+  match core2.apply_lock_chain([g_signed, st_add, dev_rm], root_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device_remove failed: " + e)
+  }
+  debug_assert(core2.auth.workspace_auth_gen("ws-ldig") == 3, "device removal bumps authGen 2 -> 3")
+  debug_assert(core2.auth.vault_workspace_gen("ws-ldig") == 2, "device removal bumps vaultGen 1 -> 2")
+
+  // 3e. `canonical_lock_digest` covers `device.endpoints`, `gateways`, `cloud_keys`, and `sign_keys`
+  let make_st = fn(eps : Array[form::Json], gws : Array[form::Json], cks : Array[(String, form::Json)]) -> lock::LockState {
+    let g = match sign_lock_entry(
+      alice_seed,
+      form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("ws-dig")),
+        ("seq", form::Json::Num(0.0)),
+        ("prev", form::Json::Null),
+        ("at", form::Json::Num(1790000000.0)),
+        ("kind", form::Json::Str("genesis")),
+        ("body", form::Json::Obj([
+          ("owner", form::Json::Str("alice")),
+          ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+          ("rp_id", form::Json::Str("app.still.fail")),
+          ("cloud_keys", form::Json::Obj(cks)),
+          ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+          ("devices", form::Json::Arr([form::Json::Obj([
+            ("id", form::Json::Str(hex_64("a"))),
+            ("sub", form::Json::Str("alice")),
+            ("kind", form::Json::Str("app")),
+            ("label", form::Json::Str("Mac")),
+            ("sign_key", form::Json::Str(alice_key)),
+            ("endpoints", form::Json::Arr(eps)),
+          ])])),
+          ("passkeys", form::Json::Arr([])),
+          ("stations", form::Json::Arr([])),
+          ("gateways", form::Json::Arr(gws)),
+        ])),
+      ]),
+    ) {
+      Ok(e) => e
+      Err(e) => panic("sign: " + e)
+    }
+    let root = match lock::entry_hash(g, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root hash") }
+    match verify_workspace_lock([g], root) { Ok(v) => v.state; Err(e) => panic("verify: " + e) }
+  }
+  let ep1 = hex_64("1")
+  let ep2 = hex_64("2")
+  let gw1 = hex_64("3")
+  let gw2 = hex_64("4")
+  let ck1 = ed25519_key_id(make_seed(78))
+  let ck2 = ed25519_key_id(make_seed(79))
+  let base_st = make_st([form::Json::Str(ep1)], [form::Json::Str(gw1)], [("k1", form::Json::Str(ck1))])
+  let (full_base, sec_base) = canonical_lock_digest(base_st)
+  let (_, sec_ep) = canonical_lock_digest(make_st([form::Json::Str(ep1), form::Json::Str(ep2)], [form::Json::Str(gw1)], [("k1", form::Json::Str(ck1))]))
+  let (_, sec_gw) = canonical_lock_digest(make_st([form::Json::Str(ep1)], [form::Json::Str(gw2)], [("k1", form::Json::Str(ck1))]))
+  let (_, sec_ck) = canonical_lock_digest(make_st([form::Json::Str(ep1)], [form::Json::Str(gw1)], [("k1", form::Json::Str(ck2))]))
+  debug_assert(sec_ep != sec_base, "device.endpoints change MUST alter canonical_lock_digest")
+  debug_assert(sec_gw != sec_base, "gateways change MUST alter canonical_lock_digest")
+  debug_assert(sec_ck != sec_base, "cloud_keys change MUST alter canonical_lock_digest")
+  base_st.sign_keys.set("alice", [alice_key, "ed25519:extra-sign-key"])
+  let (full_sk, sec_sk) = canonical_lock_digest(base_st)
+  debug_assert(full_sk != full_base && sec_sk != sec_base, "sign_keys mutation MUST alter canonical_lock_digest")
+  core2.stop()
+}
+
+test "auth_cap 4: fail-open guarded_read_k retries bounded on auth_stale, reschedules on exhaustion, and fetch_lock_k stays ungated by authGen" {
+  let rt = effect::Runtime::new()
+  let tracker = AuthGenTracker::new()
+  tracker.ensure_workspace("ws-g")
+
+  // 4a. Concurrent `authGen` bump mid-I/O -> retries with fresh capability and converges without writing stale result
+  let io_attempts = [0]
+  let committed = [0]
+  let final_res = [-1]
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    guarded_read_k(
+      tracker,
+      "ws-g",
+      fn(cap : WorkspaceCapability, io_k : (effect::Exit[Int]) -> Unit) -> Unit {
+        io_attempts[0] = io_attempts[0] + 1
+        if io_attempts[0] == 1 {
+          let _ = tracker.bump_workspace("ws-g")
+        }
+        io_k(effect::Exit::Succeeded(cap.auth_gen * 100))
+      },
+      fn(cap : WorkspaceCapability, v : Int) -> Result[Int, String] {
+        committed[0] = committed[0] + 1
+        debug_assert(cap.auth_gen == 2, "commit only runs under converged fresh cap authGen=2")
+        Ok(v + 1)
+      },
+      fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(r) => { final_res[0] = r }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(io_attempts[0] == 2, "fail-open guarded_read_k retried once on auth_stale")
+  debug_assert(committed[0] == 1, "stale first result was NOT committed; converged second result committed once")
+  debug_assert(final_res[0] == 201, "converged with fresh cap value")
+
+  // 4b. Exhausted retries (3 consecutive bumps > max_retries=2) -> invokes `on_exhausted_stale` reschedule, 0 commits
+  let ex_attempts = [0]
+  let ex_committed = [0]
+  let ex_rescheduled = [0]
+  let ex_failed_stale = [false]
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    guarded_read_k(
+      tracker,
+      "ws-g",
+      fn(_cap : WorkspaceCapability, io_k : (effect::Exit[Int]) -> Unit) -> Unit {
+        ex_attempts[0] = ex_attempts[0] + 1
+        let _ = tracker.bump_workspace("ws-g")
+        io_k(effect::Exit::Succeeded(1))
+      },
+      fn(_cap : WorkspaceCapability, v : Int) -> Result[Int, String] {
+        ex_committed[0] = ex_committed[0] + 1
+        Ok(v)
+      },
+      fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => { ex_failed_stale[0] = true }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      on_exhausted_stale=Some(fn() -> Unit {
+        ex_rescheduled[0] = ex_rescheduled[0] + 1
+      }),
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(ex_attempts[0] == 3, "initial attempt + max_retries=2 = 3 total attempts")
+  debug_assert(ex_committed[0] == 0, "stale results never committed when exhausted")
+  debug_assert(ex_rescheduled[0] == 1, "on_exhausted_stale triggered to reschedule pipeline fail-open")
+  debug_assert(ex_failed_stale[0], "exhausted guarded_read_k fails with auth_stale")
+
+  // 4c. SyncScheduler `fetch_lock_k` is NOT blocked by concurrent `authGen` bumps
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let lock_calls = [0]
+  let tr = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        lock_calls[0] = lock_calls[0] + 1
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      }
+    },
+    stream_k: station.transport().stream_k,
+  }
+  let core = ClientCore::new("ws-lock-open", "ws-lock-open/st-1", env.rt, env.db, tr, fn() -> Unit {})
+  let _ = core.auth.bump_workspace("ws-lock-open")
+  let lock_ok = [false]
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_lock_k(effect::priority_shown(), fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { lock_ok[0] = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(lock_calls[0] == 1 && lock_ok[0], "fetch_lock_k runs ungated by authGen")
+  core.stop()
+}
+
+test "auth_cap 5: StationEvents SSE WorkspaceCapability guard allows event:lock, drops stale data without advancing cursor, and converges after reconnect" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-sse-cap", "ws-sse-cap/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+
+  let lock_seen = [0]
+  core.events.set_hooks(
+    fn(_b : sql::Burst, _th : Int, _n : Int, _ck : String) -> Unit {},
+    fn(_b : sql::Burst, _cid : String, _ck : String) -> Unit {},
+    fn() -> Unit {},
+    fn(_payload : base_codec::Json) -> Unit {
+      lock_seen[0] = lock_seen[0] + 1
+    },
+  )
+
+  let sse_paths = fn() -> Array[String] {
+    let out : Array[String] = []
+    for i in 0..<station.requests_seen.length() {
+      if station.requests_seen[i].starts_with("SSE ") {
+        out.push(station.requests_seen[i])
+      }
+    }
+    out
+  }
+
+  core.events.start(env.rt)
+  env.rt.advance(10)
+  debug_assert(sse_paths().length() == 1 && sse_paths()[0] == "SSE /events", "initial SSE stream opened")
+
+  // 1. Valid event under authGen=1 commits to SQLite and advances resume cursor to "ev-1"
+  station.push_sse("id: ev-1\nevent: thread\ndata: {\"workspace\":\"ws-sse-cap\",\"id\":7,\"entries\":[{\"n\":1,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"ok-g1\",\"at\":100}]}\n\n")
+  let _ = env.rt.run_ready()
+  let cursor_after_1 = match core.events.last_id() { Some(c) => c; None => "" }
+  debug_assert(cursor_after_1 == "ev-1", "cursor advanced to ev-1 on valid batch")
+  let entries_1 = match env.sim_db.entries.get("ws-sse-cap/st-1 7") { Some(xs) => xs.length(); None => 0 }
+  debug_assert(entries_1 == 1, "first valid SSE entry committed")
+
+  // 2. Bump workspace authGen (1 -> 2) while SSE stream is open!
+  let _ = core.auth.bump_workspace("ws-sse-cap")
+
+  // 3. `event: lock` control event ({workspace, head} notification) on the SAME open stream MUST STILL be delivered
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-sse-cap\",\"head\":{\"seq\":1,\"hash\":\"h1\"}}\n\n")
+  let _ = env.rt.run_ready()
+  debug_assert(lock_seen[0] == 1, "event:lock control event allowed through on stale SSE stream")
+  debug_assert(sse_paths().length() == 1, "event:lock alone did not abort open stream")
+
+  // 4. Stale data event on the SAME open stream MUST be dropped (0 SQLite writes), cursor MUST stay "ev-1",
+  //    and stream MUST abort + schedule reconnect with `?since=ev-1`
+  station.push_sse("id: ev-stale\nevent: thread\ndata: {\"workspace\":\"ws-sse-cap\",\"id\":7,\"entries\":[{\"n\":2,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"stale-g1\",\"at\":200}]}\n\n")
+  let _ = env.rt.run_ready()
+  let entries_after_stale = match env.sim_db.entries.get("ws-sse-cap/st-1 7") { Some(xs) => xs.length(); None => 0 }
+  debug_assert(entries_after_stale == 1, "stale SSE data event MUST NOT be written to SQLite")
+  let cursor_after_stale = match core.events.last_id() { Some(c) => c; None => "" }
+  debug_assert(cursor_after_stale == "ev-1", "stale SSE data event MUST NOT advance resume cursor")
+
+  // 5. Advance virtual clock past reconnect backoff (2000ms) + connect handshake (5ms)
+  env.rt.advance(2200)
+  env.rt.advance(10)
+  let paths_after = sse_paths()
+  debug_assert(paths_after.length() == 2, "SSE stream reconnected after stale data drop")
+  debug_assert(paths_after[1] == "SSE /events?since=ev-1", "reconnected stream resumes from unadvanced cursor ev-1")
+
+  // 6. Push fresh data event under new stream_cap (authGen=2) -> commits cleanly & advances cursor to "ev-2"
+  station.push_sse("id: ev-2\nevent: thread\ndata: {\"workspace\":\"ws-sse-cap\",\"id\":7,\"entries\":[{\"n\":2,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"fresh-g2\",\"at\":300}]}\n\n")
+  let _ = env.rt.run_ready()
+  let entries_after_reconn = match env.sim_db.entries.get("ws-sse-cap/st-1 7") { Some(xs) => xs.length(); None => 0 }
+  debug_assert(entries_after_reconn == 2, "reconnected stream commits data under new authGen=2")
+  let cursor_after_2 = match core.events.last_id() { Some(c) => c; None => "" }
+  debug_assert(cursor_after_2 == "ev-2", "cursor advances to ev-2 after convergence")
+
+  core.stop()
+}
+
+test "auth_cap 6: multi-workspace attached station binds to its own workspace for SyncScheduler and lock routing" {
+  let env = CapSimEnv::new()
+  let st_a = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-A", "ws-A/st-a", env.rt, env.db, st_a.transport(), fn() -> Unit {})
+
+  let b_calls = [0]
+  let bump_ws_a_on_call = [true]
+  let bump_ws_b_on_call = [false]
+  let tr_b = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/chats" {
+        b_calls[0] = b_calls[0] + 1
+        if bump_ws_a_on_call[0] {
+          bump_ws_a_on_call[0] = false
+          let _ = core.auth.bump_workspace("ws-A")
+        } else if bump_ws_b_on_call[0] {
+          bump_ws_b_on_call[0] = false
+          let _ = core.auth.bump_workspace("ws-B")
+        }
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+      }
+    },
+    stream_k: st_a.transport().stream_k,
+  }
+
+  // Attach `ws-B/st-b` while `core.workspace == "ws-A"`
+  core.attach_station_transport("ws-B/st-b", tr_b)
+  let sy_b = match core.station_sync("ws-B/st-b") {
+    Some(s) => s
+    None => panic("expected extra SyncScheduler for ws-B/st-b")
+  }
+  let ev_b = match core.station_events("ws-B/st-b") {
+    Some(e) => e
+    None => panic("expected extra StationEvents for ws-B/st-b")
+  }
+  debug_assert(sy_b.workspace == "ws-B" && ev_b.workspace == "ws-B", "extra station bound to ws-B, NOT self.workspace ws-A")
+
+  // 6a. Mid-flight bump of ws-A MUST NOT trigger auth_stale retry on st-b (bound to ws-B)
+  let ok1 = [false]
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_b.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => { ok1[0] = true }; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(ok1[0] && b_calls[0] == 1, "bumping ws-A did not invalidate ws-B/st-b read (1 attempt)")
+
+  // 6b. Mid-flight bump of ws-B MUST trigger auth_stale retry on st-b and converge
+  bump_ws_b_on_call[0] = true
+  let ok2 = [false]
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_b.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => { ok2[0] = true }; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(ok2[0] && b_calls[0] == 3, "bumping ws-B triggered guarded_read_k retry on ws-B/st-b (1 + 2 = 3 calls)")
+
+  // 6c. Lock updates routed through `ws-B/st-b` MUST update ws-B's lock & advance ws-B's authGen (leaving ws-A untouched!)
+  let alice_seed = make_seed(61)
+  let alice_key = ed25519_key_id(alice_seed)
+  let ws_a_gen_before = core.auth.workspace_auth_gen("ws-A")
+  let ws_b_gen_before = core.auth.workspace_auth_gen("ws-B")
+  let g_b = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-B")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(alice_key))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root_b = match lock::entry_hash(g_b, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root_b") }
+  let st_b_add = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-B")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_b)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("d"))), ("name", form::Json::Str("B Station"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+
+  ev_b.notify_lock_payload(base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-B")),
+    ("root", base_codec::json_str(root_b)),
+    ("entries", base_codec::json_arr([form_to_codec(g_b)])),
+  ]))
+  debug_assert(core.auth.workspace_auth_gen("ws-B") == ws_b_gen_before, "cold-start ws-B lock seeds without bump")
+  ev_b.notify_lock_payload(base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-B")),
+    ("root", base_codec::json_str(root_b)),
+    ("entries", base_codec::json_arr([form_to_codec(g_b), form_to_codec(st_b_add)])),
+  ]))
+  debug_assert(core.auth.workspace_auth_gen("ws-B") == ws_b_gen_before + 1, "ws-B/st-b lock update advances ws-B authGen")
+  debug_assert(core.auth.workspace_auth_gen("ws-A") == ws_a_gen_before, "ws-B/st-b lock update MUST NOT touch ws-A authGen")
+  debug_assert(core.lock_kept_entries_for("ws-B").length() == 2, "ws-B kept lock entries stored independently")
+  debug_assert(core.lock_kept_entries_for("ws-A").length() == 0, "ws-A kept lock entries remain isolated")
+  core.stop()
+}
+
+test "auth_cap 7: apply_lock_chain persists to SQLite FIRST; write failure leaves memory & authGen untouched and retry succeeds" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_pref_write = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_pref_write[0] && op == "sql.run" {
+        match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => {
+            if s.contains("workspace_pref") {
+              return shell::AskResult::Err(shell::ShellError::{ message: "injected sqlite disk full" })
+            }
+          }
+          _ => ()
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-lock-persist-first") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open: " + e.to_string())
+  }
+  let st = SimStation::new(rt)
+  let core = ClientCore::new("ws-pf", "ws-pf/st-1", rt, db, st.transport(), fn() -> Unit {})
+
+  let seed = make_seed(71)
+  let key_id = ed25519_key_id(seed)
+  let g = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-pf")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root = match lock::entry_hash(g, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let e1 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-pf")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("e"))), ("name", form::Json::Str("PF Station"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+
+  // Initial genesis commits cleanly
+  match core.apply_lock_chain([g], root) {
+    Ok(_) => ()
+    Err(e) => panic("genesis failed: " + e)
+  }
+  debug_assert(core.auth.workspace_auth_gen("ws-pf") == 1, "genesis seeded at authGen=1")
+
+  // Inject SQLite write failure on seq=1 -> MUST return Err and leave in-memory lock & authGen untouched!
+  fail_pref_write[0] = true
+  let failed_ok = match core.apply_lock_chain([g, e1], root) {
+    Err(_) => true
+    Ok(_) => false
+  }
+  debug_assert(failed_ok, "apply_lock_chain returns Err when SQLite persist fails")
+  let seq_after_err = match core.current_lock() { Some(s) => s.seq.to_int(); None => -1 }
+  debug_assert(seq_after_err == 0, "in-memory lock_state MUST remain at seq=0 after SQLite write failure")
+  debug_assert(core.lock_kept_entries().length() == 1, "in-memory kept entries MUST remain at length 1")
+  debug_assert(core.auth.workspace_auth_gen("ws-pf") == 1, "authGen MUST NOT bump when SQLite persist fails")
+
+  // Recover SQLite and retry EXACT same chain/head -> MUST succeed, persist, update memory, and bump authGen!
+  fail_pref_write[0] = false
+  match core.apply_lock_chain([g, e1], root) {
+    Ok(v) => debug_assert(v.state.seq.to_int() == 1, "retry converged to seq=1")
+    Err(e) => panic("retry after SQLite recovery should succeed: " + e)
+  }
+  let seq_after_retry = match core.current_lock() { Some(s) => s.seq.to_int(); None => -1 }
+  debug_assert(seq_after_retry == 1, "in-memory lock_state updated to seq=1 after retry")
+  debug_assert(core.auth.workspace_auth_gen("ws-pf") == 2, "authGen bumped 1 -> 2 after retry persisted")
+  core.stop()
+}
+
+test "auth_cap 8: SyncScheduler pending_refresh converges across 4+ consecutive authGen bumps and stops immediately on transport_epoch change" {
+  let env = CapSimEnv::new()
+  let base_st = SimStation::new(env.rt)
+
+  // 8a. fetch_snapshot_k experiences 4 consecutive mid-flight authGen bumps (> max_retries=2) ->
+  //     reschedules continuously via pending_refresh and converges on attempt 5!
+  let snap_calls = [0]
+  let idle_calls = [0]
+  let tracker_holder : Array[Option[AuthGenTracker]] = [None]
+  let tr_conv = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/chats" {
+        snap_calls[0] = snap_calls[0] + 1
+        if snap_calls[0] <= 4 {
+          match tracker_holder[0] {
+            Some(t) => { let _ = t.bump_workspace("ws-sched") }
+            None => ()
+          }
+        }
+        let body = "{\"chats\":[{\"id\":\"c-snap\",\"thread\":11,\"title\":\"Snap Gen " + snap_calls[0].to_string() + "\"}]}"
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body.to_bytes() }))
+      } else if method_s == "GET" && path == "/threads/12/entries" {
+        idle_calls[0] = idle_calls[0] + 1
+        if idle_calls[0] <= 4 {
+          match tracker_holder[0] {
+            Some(t) => { let _ = t.bump_workspace("ws-sched") }
+            None => ()
+          }
+        }
+        let body = "{\"chats\":[{\"id\":\"c-idle\",\"thread\":12,\"title\":\"Idle Gen " + idle_calls[0].to_string() + "\"}]}"
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body.to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  let core = ClientCore::new("ws-sched", "ws-sched/st-1", env.rt, env.db, tr_conv, fn() -> Unit {})
+  tracker_holder[0] = Some(core.auth)
+
+  let snap_res = [-1]
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => { snap_res[0] = n }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(snap_calls[0] == 5, "fetch_snapshot_k ran 5 attempts across 4 consecutive bumps (batch 1: 3 + batch 2: 2)")
+  debug_assert(snap_res[0] >= 1, "fetch_snapshot_k converged and committed snapshot")
+  debug_assert(!core.sync.has_pending_refresh("snapshot"), "pending_refresh cleared after convergence")
+  let snap_row_ok = match env.sim_db.chats.get("ws-sched/st-1:0:c-snap") {
+    Some(r) => r.json.contains("Snap Gen 5")
+    None => false
+  }
+  debug_assert(snap_row_ok, "SQLite holds converged attempt-5 snapshot (no stale write)")
+
+  // 8b. prefetch_idle_k experiences 4 consecutive mid-flight authGen bumps -> converges on attempt 5!
+  let idle_res = [-1]
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.prefetch_idle_k(12, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => { idle_res[0] = n }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(idle_calls[0] == 5, "prefetch_idle_k ran 5 attempts across 4 consecutive bumps")
+  debug_assert(idle_res[0] >= 1, "prefetch_idle_k converged and committed")
+  let idle_row_ok = match env.sim_db.chats.get("ws-sched/st-1:0:c-idle") {
+    Some(r) => r.json.contains("Idle Gen 5")
+    None => false
+  }
+  debug_assert(idle_row_ok, "SQLite holds converged attempt-5 idle prefetch")
+
+  // 8c. When `transport_epoch` changes mid-flight, rescheduling stops IMMEDIATELY with 0 writes
+  let ep_calls = [0]
+  let ep_failed = [false]
+  let sync_holder : Array[Option[SyncScheduler]] = [Some(core.sync)]
+  let tr_ep = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/chats" {
+        ep_calls[0] = ep_calls[0] + 1
+        let _ = core.auth.bump_workspace("ws-sched")
+        if ep_calls[0] == 2 {
+          match sync_holder[0] {
+            Some(sy) => sy.bump_epoch()
+            None => ()
+          }
+        }
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[{\"id\":\"c-never\",\"thread\":99}]}".to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_ep)
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")) => { ep_failed[0] = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(ep_calls[0] == 2 && ep_failed[0], "transport_epoch change halted retries/reschedule immediately at attempt 2")
+  debug_assert(env.sim_db.chats.get("ws-sched/st-1:0:c-never").is_none(), "aborted transport_epoch read wrote nothing to SQLite")
+  debug_assert(!core.sync.has_pending_refresh("snapshot"), "pending_refresh cleared on bump_epoch")
+  core.stop()
+}
+
+test "auth_cap 9: cross-ws identical-payload kept isolation, CompositeCapability copy isolation, structured JSON canonical_lock_digest, matches_topic 1:1, and device/auth connSeq" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-x", "ws-x/st-1", env.rt, env.db, station.transport(), fn() -> Unit {}, conn_seq=Some(77L))
+
+  // 9a. Cross-workspace identical-payload kept isolation on Slice1Router:
+  //     ws-x and ws-y both have empty `settings` -> identical payload & identical value token.
+  //     Bumping ws-x purges ONLY ws-x's `(topic_key, token)`; ws-x cannot hit ws-y's entry, while ws-y still hits `same:true`.
+  let _ = core.handle_wire("{\"id\":1,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-x\"},\"keyed\":true}")
+  let tok_x = match core.handle_wire("{\"id\":1,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => match base_codec::json_parse(txt) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") { Some(base_codec::Json::Str(v)) => v; _ => "" }
+      _ => ""
+    }
+    None => ""
+  }
+  let _ = core.handle_wire("{\"id\":2,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-y\"},\"keyed\":true}")
+  let tok_y = match core.handle_wire("{\"id\":2,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => match base_codec::json_parse(txt) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") { Some(base_codec::Json::Str(v)) => v; _ => "" }
+      _ => ""
+    }
+    None => ""
+  }
+  debug_assert(tok_x.length() > 0 && tok_x == tok_y, "ws-x and ws-y produced identical payload token")
+  let _ = core.auth.bump_workspace("ws-x")
+  match core.handle_wire("{\"id\":3,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-x\"},\"keyed\":true,\"have\":\"" + tok_x + "\"}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && !txt.contains("\"same\":true"), "bumped ws-x MUST NOT hit ws-y's kept entry")
+    None => debug_assert(false, "expected ws-x fresh value")
+  }
+  match core.handle_wire("{\"id\":4,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-y\"},\"keyed\":true,\"have\":\"" + tok_y + "\"}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"same\":true"), "unbumped ws-y still hits its own kept entry")
+    None => debug_assert(false, "expected ws-y same:true")
+  }
+
+  // 9b. CompositeCapability defensive copy isolation
+  let t = AuthGenTracker::new()
+  t.ensure_workspace("ws-c")
+  let snap = t.capture()
+  let ws_arr : Array[WorkspaceCapability] = [snap.workspace("ws-c")]
+  let v_arr : Array[VaultCapability] = [snap.vault("ws-c", "v-1")]
+  let comp = snap.composite(ws_arr, v_arr)
+  ws_arr.clear()
+  v_arr.clear()
+  debug_assert(comp.workspace_count() == 1 && comp.vault_count() == 1, "clearing caller arrays MUST NOT mutate CompositeCapability")
+  debug_assert(comp.is_valid(t), "CompositeCapability valid before bump")
+  let _ = t.bump_workspace("ws-c")
+  debug_assert(!comp.is_valid(t), "CompositeCapability still checks copied workspace cap and fails closed after bump")
+
+  // 9c. `matches_topic` 1:1 alignment with auth-gen.ts:430 & client.mbt:199 + `handshake_json` `vault_ws_all_gens`
+  let ev_ws_a = AuthBoundaryEvent::Workspace("ws-a", 2)
+  debug_assert(!t.matches_topic(protocol::Topic::{ name: "workspaceMarks", params: [] }, ev_ws_a), "workspaceMarks NOT matched by single-ws bump")
+  debug_assert(!t.matches_topic(protocol::Topic::{ name: "chats", params: [("scope", base_codec::json_str("all"))] }, ev_ws_a), "chats scope:all NOT matched by single-ws bump")
+  debug_assert(t.matches_topic(protocol::Topic::{ name: "workspaces", params: [] }, ev_ws_a), "aggregate workspaces matched by single-ws bump")
+  debug_assert(t.matches_topic(protocol::Topic::{ name: "lockPrompts", params: [] }, ev_ws_a), "aggregate lockPrompts matched by single-ws bump")
+  debug_assert(t.matches_topic(protocol::Topic::{ name: "downloads", params: [] }, ev_ws_a), "aggregate downloads matched by single-ws bump")
+  let _ = t.bump_vault("ws-vault-all")
+  let hs_str = base_codec::json_stringify(t.handshake_json())
+  debug_assert(hs_str.contains("\"ws-vault-all\":2"), "handshake_json reflects vault_ws_all_gens")
+
+  // 9d. Structured JSON `canonical_lock_digest`: delimiter immunity + `signed`, `origins`, `rp_id`, `Device.by`
+  let seed = make_seed(81)
+  let key_id = ed25519_key_id(seed)
+  let make_lock_st = fn(rp_id : String, origins : Array[form::Json]) -> lock::LockState {
+    let g = match sign_lock_entry(
+      seed,
+      form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("ws-json-dig")),
+        ("seq", form::Json::Num(0.0)),
+        ("prev", form::Json::Null),
+        ("at", form::Json::Num(1790000000.0)),
+        ("kind", form::Json::Str("genesis")),
+        ("body", form::Json::Obj([
+          ("owner", form::Json::Str("alice:owner|1")),
+          ("origins", form::Json::Arr(origins)),
+          ("rp_id", form::Json::Str(rp_id)),
+          ("cloud_keys", form::Json::Obj([])),
+          ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice:owner|1")), ("email", form::Json::Str("a@b.c")), ("role", form::Json::Str("owner"))])])),
+          ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice:owner|1")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+          ("passkeys", form::Json::Arr([])),
+          ("stations", form::Json::Arr([])),
+          ("gateways", form::Json::Arr([])),
+        ])),
+      ]),
+    ) { Ok(e) => e; Err(e) => panic(e) }
+    let root = match lock::entry_hash(g, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+    match verify_workspace_lock([g], root) { Ok(v) => v.state; Err(e) => panic(e) }
+  }
+  let st_base = make_lock_st("app.still.fail", [form::Json::Str("https://app.still.fail")])
+  let (f_base, s_base) = canonical_lock_digest(st_base)
+  debug_assert(s_base.starts_with("[") && f_base.starts_with("["), "canonical_lock_digest emits structured JSON arrays")
+  let (_, s_rp) = canonical_lock_digest(make_lock_st("other.still.fail", [form::Json::Str("https://app.still.fail")]))
+  let (_, s_orig) = canonical_lock_digest(make_lock_st("app.still.fail", [form::Json::Str("https://app.still.fail"), form::Json::Str("https://beta.still.fail")]))
+  debug_assert(s_rp != s_base, "rp_id change alters structured canonical_lock_digest")
+  debug_assert(s_orig != s_base, "origins change alters structured canonical_lock_digest")
+  st_base.signed.set("ed25519:extra-signer", true)
+  let (_, s_signed) = canonical_lock_digest(st_base)
+  debug_assert(s_signed != s_base, "signed map change alters structured canonical_lock_digest")
+
+  // 9e. TS `device/auth` `{"connSeq": N}` parsing
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9876543210,\"capRev:ws-1\":\"v1\"}") == 9876543210L, "parses TS device/auth connSeq")
+  debug_assert(store::parse_conn_seq_raw("{\"conn\":42}") == 42L, "parses legacy conn field")
+  debug_assert(store::parse_conn_seq_raw("77") == 77L, "parses plain integer string")
+  core.stop()
+}
+
+test "auth_cap 10: real SSE event:lock {workspace, head} triggers ungated GET /lock, and same-chunk lock+data segments validate cap" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+
+  let seed = make_seed(91)
+  let key_id = ed25519_key_id(seed)
+  let g0 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root = match lock::entry_hash(g0, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let e1 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("c"))), ("name", form::Json::Str("Station 1"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h1 = match lock::entry_hash(e1, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h1") }
+  let e2 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("d"))), ("name", form::Json::Str("Station 2"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h2 = match lock::entry_hash(e2, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h2") }
+
+  // Seed genesis on station before start
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(0)), ("hash", base_codec::json_str(root)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0)])),
+  ]))
+  let core = ClientCore::new("ws-evlock", "ws-evlock/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  core.start()
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 1, "initial genesis seeded at authGen=1")
+
+  // 10a. Real station SSE `event: lock` with `{workspace, head}` (NO `entries`) triggers ungated GET /lock
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(1)), ("hash", base_codec::json_str(h1)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-evlock\",\"head\":{\"seq\":1,\"hash\":\"" + h1 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 2, "SSE {workspace, head} notification triggered GET /lock and bumped authGen 1 -> 2")
+  let seq1 = match core.current_lock() { Some(st) => st.seq.to_int(); None => -1 }
+  debug_assert(seq1 == 1, "lock state updated to seq=1 from GET /lock")
+
+  // 10b. Even on an ALREADY stale SSE stream (stream_cap=1, authGen=2), another `{workspace, head}` notification
+  //      STILL triggers ungated GET /lock and bumps authGen 2 -> 3!
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(2)), ("hash", base_codec::json_str(h2)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2)])),
+  ]))
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-evlock\",\"head\":{\"seq\":2,\"hash\":\"" + h2 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 3, "second SSE {workspace, head} on stale stream STILL triggered GET /lock and bumped authGen 2 -> 3")
+  core.stop()
+
+  // 10c. Same-chunk segmentation (Codex P2 #1): ONE SSE chunk carrying
+  //      [event: thread (valid ev-before), event: lock (inline entry bumping authGen), event: thread (stale ev-after)]
+  //      MUST commit ev-before (cursor="ev-before"), apply lock (bumping authGen), drop ev-after (0 writes, cursor stays "ev-before"),
+  //      and reconnect with `?since=ev-before`!
+  let env2 = CapSimEnv::new()
+  let st2 = SimStation::new(env2.rt)
+  let core2 = ClientCore::new("ws-evlock", "ws-evlock/st-2", env2.rt, env2.db, st2.transport(), fn() -> Unit {})
+  match core2.apply_lock_chain([g0], root) { Ok(_) => (); Err(e) => panic(e) }
+  core2.events.start(env2.rt)
+  env2.rt.advance(20)
+  let inline_lock_json = base_codec::json_stringify(base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-evlock")),
+    ("root", base_codec::json_str(root)),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  let combined_chunk =
+  "id: ev-before\nevent: thread\ndata: {\"workspace\":\"ws-evlock\",\"id\":9,\"entries\":[{\"n\":1,\"thread\":9,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"pre-lock\",\"at\":100}]}\n\n" +
+  "event: lock\ndata: " + inline_lock_json + "\n\n" +
+  "id: ev-after\nevent: thread\ndata: {\"workspace\":\"ws-evlock\",\"id\":9,\"entries\":[{\"n\":2,\"thread\":9,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"post-lock-stale\",\"at\":200}]}\n\n"
+  st2.push_sse(combined_chunk)
+  let _ = env2.rt.run_ready()
+  debug_assert(core2.auth.workspace_auth_gen("ws-evlock") == 2, "inline lock inside combined chunk bumped authGen 1 -> 2")
+  let n_entries = match env2.sim_db.entries.get("ws-evlock/st-2 9") { Some(xs) => xs.length(); None => 0 }
+  debug_assert(n_entries == 1, "pre-lock event committed while post-lock stale event in SAME chunk was dropped")
+  let cur_id = match core2.events.last_id() { Some(c) => c; None => "" }
+  debug_assert(cur_id == "ev-before", "resume cursor advanced to ev-before and NOT ev-after")
+  env2.rt.advance(2200)
+  env2.rt.advance(10)
+  let mut saw_reconn = false
+  for i in 0..<st2.requests_seen.length() {
+    if st2.requests_seen[i] == "SSE /events?since=ev-before" {
+      saw_reconn = true
+    }
+  }
+  debug_assert(saw_reconn, "same-chunk stale post-lock data triggered reconnect from ?since=ev-before")
+  core2.stop()
+}
+
+test "auth_cap 11: transient SQLite lock read error never caches empty slot or overwrites existing pin, and queued SyncScheduler task respects enqueue_epoch" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_pref_read = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_pref_read[0] && op == "sql.all" {
+        match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => {
+            if s.contains("workspace_pref") {
+              return shell::AskResult::Err(shell::ShellError::{ message: "injected sqlite busy on read" })
+            }
+          }
+          _ => ()
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-lock-read-err") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open: " + e.to_string())
+  }
+  let st = SimStation::new(rt)
+
+  // Build valid genesis pinned to root_good and forged/evil genesis root_evil for ws-B
+  let seed_good = make_seed(101)
+  let seed_evil = make_seed(102)
+  let key_good = ed25519_key_id(seed_good)
+  let key_evil = ed25519_key_id(seed_evil)
+  let make_gen = fn(s : Bytes, kid : String) -> form::Json {
+    match sign_lock_entry(
+      s,
+      form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("ws-B")),
+        ("seq", form::Json::Num(0.0)),
+        ("prev", form::Json::Null),
+        ("at", form::Json::Num(1790000000.0)),
+        ("kind", form::Json::Str("genesis")),
+        ("body", form::Json::Obj([
+          ("owner", form::Json::Str("alice")),
+          ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+          ("rp_id", form::Json::Str("app.still.fail")),
+          ("cloud_keys", form::Json::Obj([])),
+          ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+          ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(kid))])])),
+          ("passkeys", form::Json::Arr([])),
+          ("stations", form::Json::Arr([])),
+          ("gateways", form::Json::Arr([])),
+        ])),
+      ]),
+    ) { Ok(e) => e; Err(e) => panic(e) }
+  }
+  let g_good = make_gen(seed_good, key_good)
+  let g_evil = make_gen(seed_evil, key_evil)
+  let root_good = match lock::entry_hash(g_good, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root_good") }
+  let root_evil = match lock::entry_hash(g_evil, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root_evil") }
+  let e1_good = match sign_lock_entry(
+    seed_good,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-B")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_good)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("f"))), ("name", form::Json::Str("Good Station"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+
+  // Persist real pinned lock for ws-B in SQLite
+  let seeder = ClientCore::new("ws-B", "ws-B/st-b", rt, db, st.transport(), fn() -> Unit {})
+  match seeder.apply_lock_chain([g_good], root_good) { Ok(_) => (); Err(e) => panic(e) }
+  seeder.stop()
+
+  // 11a. Extra workspace transient read error: MUST refuse evil chain without caching empty slot!
+  let core_a = ClientCore::new("ws-A", "ws-A/st-a", rt, db, st.transport(), fn() -> Unit {})
+  fail_pref_read[0] = true
+  let err_during_busy = match core_a.apply_lock_chain([g_evil], root_evil, workspace="ws-B") {
+    Err(_) => true
+    Ok(_) => false
+  }
+  debug_assert(err_during_busy, "transient SQLite read error refuses lock write for extra workspace ws-B")
+
+  // Recover SQLite read: next attempt MUST load real pinned root_good from SQLite and reject root_evil!
+  fail_pref_read[0] = false
+  let evil_rejected_after_recover = match core_a.apply_lock_chain([g_evil], root_evil, workspace="ws-B") {
+    Err(msg) => msg.contains("mismatch")
+    Ok(_) => false
+  }
+  debug_assert(evil_rejected_after_recover, "after read recovery, true pinned root_good is loaded and rejects root_evil")
+  match core_a.apply_lock_chain([g_good, e1_good], root_good, workspace="ws-B") {
+    Ok(v) => debug_assert(v.state.seq.to_int() == 1, "valid extension on root_good succeeds after read recovery")
+    Err(e) => panic("valid extension should succeed: " + e)
+  }
+  debug_assert(core_a.auth.workspace_auth_gen("ws-B") == 2, "valid extension bumped ws-B authGen after recovery")
+  core_a.stop()
+
+  // 11b. Queued SyncScheduler task respects enqueue_epoch (Codex P2 #2):
+  //      Fill width=1 lane with a delayed task, enqueue a second task at epoch 1, call bump_epoch()
+  //      BEFORE the queued task is dequeued -> queued task MUST fail with transport_epoch_changed and 0 HTTP calls!
+  let blocker_done : effect::Deferred[HttpReply] = effect::Deferred::new()
+  let req_paths : Array[String] = []
+  let tr_q = StationTransport::{
+    request_k: fn(_m : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      req_paths.push(path)
+      if path == "/chats" {
+        blocker_done.wait_k(rk)
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: st.transport().stream_k,
+  }
+  let outbox_q : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+  let ev_q = StationEvents::new("ws-q", "ws-q/st-q", db, outbox_q, tr_q)
+  let sy_q = SyncScheduler::new("ws-q", "ws-q/st-q", ev_q, tr_q, width=1, urgent_room=0)
+  let queued_aborted = [false]
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_q.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // Lane width=1 is now occupied by /chats. Enqueue thread:55 at epoch 1, then bump_epoch() BEFORE releasing lane!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_q.fetch_thread_k(55, effect::priority_shown(), false, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")) => { queued_aborted[0] = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  sy_q.bump_epoch()
+  let _ = blocker_done.succeed(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() })
+  let _ = rt.run_ready()
+  debug_assert(queued_aborted[0], "queued task aborted with transport_epoch_changed on dequeue after bump_epoch")
+  debug_assert(req_paths.length() == 1 && req_paths[0] == "/chats", "aborted queued task NEVER issued HTTP request for /threads/55/entries")
+}
+
+test "auth_cap 12: SSE event:lock {workspace, head} retries on transient 500 & SQLite persist failure with backoff, and halts on transport swap" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_pref_write = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_pref_write[0] && op == "sql.run" {
+        match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => {
+            if s.contains("workspace_pref") {
+              return shell::AskResult::Err(shell::ShellError::{ message: "injected sqlite disk busy on lock persist" })
+            }
+          }
+          _ => ()
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-lock-retry") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open: " + e.to_string())
+  }
+  let base_st = SimStation::new(rt)
+
+  let seed = make_seed(121)
+  let key_id = ed25519_key_id(seed)
+  let g0 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root = match lock::entry_hash(g0, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let e1 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("b"))), ("name", form::Json::Str("Retry Station 1"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h1 = match lock::entry_hash(e1, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h1") }
+  let e2 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("c"))), ("name", form::Json::Str("Retry Station 2"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h2 = match lock::entry_hash(e2, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h2") }
+
+  let lock_http_calls = [0]
+  let fail_500_count = [0]
+  let current_lock_body = [base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(0)), ("hash", base_codec::json_str(root)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0)])),
+  ]))]
+  let tr_retry = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        lock_http_calls[0] = lock_http_calls[0] + 1
+        if fail_500_count[0] > 0 {
+          fail_500_count[0] = fail_500_count[0] - 1
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 500, headers: [], body: "server error".to_bytes() }))
+        } else {
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: current_lock_body[0].to_bytes() }))
+        }
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+
+  let core = ClientCore::new("ws-lret", "ws-lret/st-1", rt, db, tr_retry, fn() -> Unit {})
+  core.start()
+  rt.advance(20)
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 1, "genesis seeded at authGen=1")
+
+  // 12a. Round 1: SSE `{workspace, head}` triggers GET /lock -> first attempt returns HTTP 500,
+  //      backoff 100ms -> second attempt succeeds, persists seq=1, and bumps authGen 1 -> 2!
+  current_lock_body[0] = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(1)), ("hash", base_codec::json_str(h1)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  fail_500_count[0] = 1
+  let calls_before_1 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":1,\"hash\":\"" + h1 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_1 + 1, "first GET /lock attempt ran and hit 500")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 1, "authGen unchanged after HTTP 500")
+  debug_assert(core.sync.has_pending_lock_refresh(), "pending_lock_refresh stays true after HTTP 500")
+  rt.advance(110)
+  debug_assert(lock_http_calls[0] == calls_before_1 + 2, "backoff retry ran second GET /lock")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 2, "second GET /lock converged and bumped authGen 1 -> 2")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "pending_lock_refresh cleared on success")
+
+  // 12b. Round 2: SSE `{workspace, head}` triggers GET /lock -> HTTP 200 but SQLite persist fails!
+  //      fetch_lock_k MUST treat apply/persist failure as Exit::Failed and retry after backoff ->
+  //      once SQLite recovers, second attempt succeeds and bumps authGen 2 -> 3!
+  current_lock_body[0] = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(2)), ("hash", base_codec::json_str(h2)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2)])),
+  ]))
+  fail_pref_write[0] = true
+  let calls_before_2 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":2,\"hash\":\"" + h2 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_2 + 1, "first GET /lock ran and failed on SQLite persist")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 2, "authGen unchanged after SQLite persist failure")
+  debug_assert(core.sync.has_pending_lock_refresh(), "pending_lock_refresh stays true after SQLite persist failure")
+  fail_pref_write[0] = false
+  rt.advance(110)
+  debug_assert(lock_http_calls[0] == calls_before_2 + 2, "backoff retry ran second GET /lock after SQLite recovery")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 3, "retry persisted seq=2 and bumped authGen 2 -> 3")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "pending_lock_refresh cleared after SQLite recovery")
+
+  // 12c. Transport swap (`set_transport`) during backoff immediately stops lock retry loop!
+  fail_500_count[0] = 10
+  let calls_before_3 = lock_http_calls[0]
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":3,\"hash\":\"h3\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(lock_http_calls[0] == calls_before_3 + 1 && core.sync.has_pending_lock_refresh(), "entered backoff on 500")
+  let new_tr_calls = [0]
+  let tr_swapped = StationTransport::{
+    request_k: fn(_m : String, _p : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      new_tr_calls[0] = new_tr_calls[0] + 1
+      rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_swapped)
+  debug_assert(!core.sync.has_pending_lock_refresh(), "set_transport cleared pending_lock_refresh immediately")
+  rt.advance(5000)
+  debug_assert(lock_http_calls[0] == calls_before_3 + 1 && new_tr_calls[0] == 0, "prior retry loop stopped completely after transport swap")
+
+  // 12d. Strict transient whitelist: forged/invalid lock chain AND corrupt JSON MUST stop after 1 attempt (0 retries)!
+  let forged_calls = [0]
+  let forged_body = [base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(3)), ("hash", base_codec::json_str("forged-h3")), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([
+      form_to_codec(g0),
+      base_codec::json_obj([
+        ("v", base_codec::json_int(1)),
+        ("ws", base_codec::json_str("ws-lret")),
+        ("seq", base_codec::json_int(1)),
+        ("prev", base_codec::json_str(root)),
+        ("at", base_codec::json_int(1790000099)),
+        ("kind", base_codec::json_str("station")),
+        ("body", base_codec::json_obj([("key", base_codec::json_str(hex_64("e"))), ("name", base_codec::json_str("Forged"))])),
+        ("sig", base_codec::json_str("not-a-valid-signature")),
+      ]),
+    ])),
+  ]))]
+  let tr_forged = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        forged_calls[0] = forged_calls[0] + 1
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: forged_body[0].to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_forged)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(forged_calls[0] == 1, "forged/invalid lock chain attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "forged/invalid lock chain halted immediately with 0 retries")
+  rt.advance(60000)
+  debug_assert(forged_calls[0] == 1, "forged/invalid lock chain never triggered retry polling over 60s")
+
+  // Corrupt/truncated JSON (even if parser mentions 'eof') MUST also stop after 1 attempt (0 retries)!
+  forged_body[0] = "{\"entries\":[{\"v\":1"
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(forged_calls[0] == 2, "corrupt JSON lock response attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "corrupt JSON lock response halted immediately with 0 retries")
+  rt.advance(60000)
+  debug_assert(forged_calls[0] == 2, "corrupt JSON never triggered retry polling over 60s")
+
+  // 12e. Bounded exponential backoff cap: persistent HTTP 503 runs at most 1 initial + 5 retries = 6 calls
+  //      (100ms, 500ms, 2000ms, 8000ms, 30000ms), then stops cleanly instead of polling forever!
+  let cap_calls = [0]
+  let tr_cap = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        cap_calls[0] = cap_calls[0] + 1
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 503, headers: [], body: "unavailable".to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_cap)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(cap_calls[0] == 1, "initial 503 attempt = 1")
+  rt.advance(100)
+  debug_assert(cap_calls[0] == 2, "retry #1 at 100ms")
+  rt.advance(500)
+  debug_assert(cap_calls[0] == 3, "retry #2 at 500ms")
+  rt.advance(2000)
+  debug_assert(cap_calls[0] == 4, "retry #3 at 2000ms")
+  rt.advance(8000)
+  debug_assert(cap_calls[0] == 5, "retry #4 at 8000ms")
+  rt.advance(30000)
+  debug_assert(cap_calls[0] == 6, "retry #5 at 30000ms")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "bounded backoff stopped cleanly after 5 retries")
+  rt.advance(120000)
+  debug_assert(cap_calls[0] == 6, "0 extra retries after bounded backoff cap exhausted")
+
+  // 12f. Safe-integer `parse_conn_seq_raw` & `next_monotonic_conn_seq_checked` bounds:
+  //      separate disk cap (`MAX_PERSISTED_CONN_SEQ`) vs wire cap (`MAX_SAFE_CONN_SEQ`) + exhaustion guard.
+  debug_assert(store::parse_conn_seq_raw("42") == 42L, "plain integer parsed")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199253740991}") == store::MAX_PERSISTED_CONN_SEQ, "MAX_PERSISTED_CONN_SEQ accepted")
+  debug_assert(store::parse_conn_seq_raw("12.5") == 0L, "decimal string rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.5}") == 0L, "decimal JSON connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.0}") == 0L, "float-formatted JSON connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":0}") == 0L, "zero connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":-7}") == 0L, "negative connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740990}") == 0L, "above MAX_PERSISTED_CONN_SEQ rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740991}") == 0L, "MAX_SAFE_CONN_SEQ rejected as stored value")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9223372036854775807}") == 0L, "Int64::MAX rejected as stored value")
+  debug_assert(store::parse_conn_seq_raw("9223372036854775807") == 0L, "raw Int64::MAX rejected")
+  let safe_from_ovf = store::next_monotonic_conn_seq(9223372036854775807L, now_ms=1790000000000L, floor=10L)
+  debug_assert(safe_from_ovf >= 1790000000000000L && safe_from_ovf <= store::MAX_SAFE_CONN_SEQ, "next_monotonic_conn_seq never overflows on Int64::MAX")
+  // Two consecutive in-process allocations starting from persisted = MAX_PERSISTED_CONN_SEQ:
+  let r1 = match store::next_monotonic_conn_seq_checked(store::MAX_PERSISTED_CONN_SEQ, now_ms=0L, floor=0L) {
+    Ok(v) => v
+    Err(e) => panic("expected Ok r1: " + e)
+  }
+  debug_assert(r1 == 9007199253740992L, "1st restart from MAX_PERSISTED_CONN_SEQ yields +1 in headroom zone")
+  let r2 = match store::next_monotonic_conn_seq_checked(store::parse_conn_seq_raw(r1.to_string()), now_ms=0L, floor=r1) {
+    Ok(v) => v
+    Err(e) => panic("expected Ok r2: " + e)
+  }
+  debug_assert(r2 == 9007199253740993L && r2 > r1, "2nd in-process restart strictly increments from floor even when disk > MAX_PERSISTED_CONN_SEQ")
+  // Exhausted in-process floor == MAX_SAFE_CONN_SEQ returns Err("conn_seq_exhausted") (never regresses!)
+  let exhausted = match store::next_monotonic_conn_seq_checked(0L, now_ms=1790000000000L, floor=store::MAX_SAFE_CONN_SEQ) {
+    Err("conn_seq_exhausted") => true
+    _ => false
+  }
+  debug_assert(exhausted, "floor == MAX_SAFE_CONN_SEQ returns Err(conn_seq_exhausted) instead of regressing")
+  // Cold process (`floor == 0L`) facing disk `MAX_SAFE_CONN_SEQ` recovers cleanly!
+  let cold_recover = match store::next_monotonic_conn_seq_checked(store::parse_conn_seq_raw("9007199254740991"), now_ms=1790000000000L, floor=0L) {
+    Ok(v) => v == 1790000000000000L
+    Err(_) => false
+  }
+  debug_assert(cold_recover, "cold startup (floor=0) recovers cleanly from over-limit disk MAX_SAFE_CONN_SEQ")
+
+  // 12g. Structured `LockFetchOutcome` + `mesh::mesh_error_of` + `EffectError::IoError`:
+  //      SSE stays connected and pushes `{workspace, head}`; GET /lock returns localized mesh errors
+  //      (`The server didn't respond`, `The server's response was cut off mid-line.`, Chinese msg)
+  //      and `EffectError::IoError("io reset")` -> scheduler MUST retry and converge `authGen` 3 -> 4;
+  //      then `mesh::MeshError("credential_refused", "connection timeout refused", "")` MUST halt in 1 attempt (0 retries)!
+  let e3 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lret")),
+      ("seq", form::Json::Num(3.0)),
+      ("prev", form::Json::Str(h2)),
+      ("at", form::Json::Num(1790000030.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("d"))), ("name", form::Json::Str("Retry Station 3"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h3 = match lock::entry_hash(e3, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h3") }
+  let body_seq3 = base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(3)), ("hash", base_codec::json_str(h3)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2), form_to_codec(e3)])),
+  ]))
+  let mesh_calls = [0]
+  let tr_mesh_errs = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        mesh_calls[0] = mesh_calls[0] + 1
+        let n = mesh_calls[0]
+        if n == 1 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "The server didn't respond", "").to_effect_error()))
+        } else if n == 2 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "The server's response was cut off mid-line.", "").to_effect_error()))
+        } else if n == 3 {
+          rk(effect::Exit::Failed(mesh::MeshError::new("mesh", "服务器未响应", "").to_effect_error()))
+        } else if n == 4 {
+          rk(effect::Exit::Failed(effect::EffectError::IoError("io reset")))
+        } else {
+          rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body_seq3.to_bytes() }))
+        }
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_mesh_errs)
+  // SSE remains connected without reconnecting; push `{workspace, head}` notification directly!
+  base_st.push_sse("event: lock\ndata: {\"workspace\":\"ws-lret\",\"head\":{\"seq\":3,\"hash\":\"" + h3 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  let _ = rt.run_ready()
+  debug_assert(mesh_calls[0] == 1 && core.sync.has_pending_lock_refresh(), "mesh no_reply scheduled backoff retry #1")
+  rt.advance(100)
+  debug_assert(mesh_calls[0] == 2 && core.sync.has_pending_lock_refresh(), "mesh reply_cut scheduled backoff retry #2")
+  rt.advance(500)
+  debug_assert(mesh_calls[0] == 3 && core.sync.has_pending_lock_refresh(), "localized zh mesh error scheduled backoff retry #3")
+  rt.advance(2000)
+  debug_assert(mesh_calls[0] == 4 && core.sync.has_pending_lock_refresh(), "EffectError::IoError scheduled backoff retry #4")
+  rt.advance(8000)
+  debug_assert(mesh_calls[0] == 5 && !core.sync.has_pending_lock_refresh(), "5th call converged and cleared pending_lock_refresh")
+  debug_assert(core.auth.workspace_auth_gen("ws-lret") == 4, "lock persisted and bumped authGen 3 -> 4 after structured mesh/IoError retries")
+
+  // Non-transient `mesh::MeshError` (`credential_refused`) MUST halt in 1 attempt (0 retries) even if message contains 'timeout'!
+  let cred_calls = [0]
+  let tr_cred_refused = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        cred_calls[0] = cred_calls[0] + 1
+        rk(effect::Exit::Failed(mesh::MeshError::new("credential_refused", "connection timeout refused", "").to_effect_error()))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_cred_refused)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(cred_calls[0] == 1, "credential_refused attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "credential_refused halted immediately with 0 retries despite 'timeout' text")
+  rt.advance(60000)
+  debug_assert(cred_calls[0] == 1, "0 extra retries after credential_refused over 60s")
+  core.stop()
+}

@@ -838,10 +838,11 @@ fn vault_delete_ask(core : Core, ws : String, rv : Json?) -> Unit {
     @sf.t("web-pages.vault.deleteVaultEmpty")
   }
   confirm(
-    @sf.t("web-pages.vault.deleteTitle", args=[("name", text(rv, "name"))]),
+    @sf.t("web-pages.vault.deleteTitle"),
     body,
     @sf.t("common.delete"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.vault"), text(rv, "name"))],
     fn() { vault_act(core, ws, "delete", [("vault", str(id))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t("web-pages.vault.deleted")) },
   )
 }

@@ -535,7 +535,7 @@ test "vault devices row opens per-device dialog, authorizes single device by exa
   presented_in(t)
   assert_true(@sf.presenting())
   assert_eq(calls.filter(fn(c) { c.0 == "vault.addDevice" }).length(), 0)
-  for words in ["Workspace 密钥库 的设备", "待授权设备", "Pixel 9 · still.fail Android", "核对码 K7M-4PX", "已授权设备", "林的 MacBook Pro · still.fail（本机）", "Ana 的 MacBook Air · still.fail"] {
+  for words in ["密钥库设备", "Workspace 密钥库", "待授权设备", "Pixel 9 · still.fail Android", "核对码 K7M-4PX", "已授权设备", "林的 MacBook Pro · still.fail（本机）", "Ana 的 MacBook Air · still.fail"] {
     assert_true(t.find(words) is Some(_), msg="missing: \{words}")
   }
   let faults = t.audit()
@@ -1585,7 +1585,7 @@ test "PR-B0: unlisted secret private name and stacked delete confirm disappear o
   t.click(Button, label="删除")
   t.draw()
   presented_in(t)
-  assert_true(t.find("删除「" + private_name + "」") is Some(_), msg="Delete confirm dialog should be stacked over editor")
+  assert_true(t.find("删除密钥") is Some(_) && t.find(private_name) is Some(_), msg="Delete confirm dialog should be stacked over editor")
   vault_open.set(false)
   t.draw()
   assert_false(@sf.presenting(), msg="Both delete confirm and editor must drop immediately on lock")

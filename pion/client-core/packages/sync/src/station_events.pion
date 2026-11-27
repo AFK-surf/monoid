@@ -698,10 +698,13 @@ pub struct StationEvents {
   mut on_chat_client_key : (sql::Burst, String, String) -> Unit
   mut on_connected : () -> Unit
   mut on_lock_payload : (base_codec::Json) -> Unit
+  mut on_lock_apply : Option[(base_codec::Json) -> Result[Unit, String]]
   mut on_missed : () -> Unit
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
+  mut auth : Option[AuthGenTracker]
+  mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
   mut active_cancel : Option[() -> Unit]
@@ -737,14 +740,36 @@ pub fn StationEvents::new(
     on_chat_client_key: fn(_b : sql::Burst, _cid : String, _ck : String) -> Unit {},
     on_connected: fn() -> Unit {},
     on_lock_payload: fn(_j : base_codec::Json) -> Unit {},
+    on_lock_apply: None,
     on_missed: fn() -> Unit {},
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
+    auth: None,
+    stream_epoch: 1L,
     stream_fiber: None,
     active_stream_fiber: None,
     active_cancel: None,
   }
+}
+
+pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTracker) -> Unit {
+  self.auth = Some(tracker)
+}
+
+/// Reset all in-memory stream state (`sessions`, `jobs`, `dirty_threads`, `last_event_id`)
+/// and bump `stream_epoch` so late callbacks from prior streams are discarded.
+pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
+  self.stream_epoch += 1L
+  self.last_event_id = None
+  self.attempts = 0
+  self.sessions.clear()
+  self.session_order.clear()
+  self.jobs.clear()
+  self.job_order.clear()
+  self.dirty_threads.clear()
+  self.resync_needed = 0
+  self.marks_dirty_count = 0
 }
 
 pub fn StationEvents::set_missed_hook(self : StationEvents, cb : () -> Unit) -> Unit {
@@ -762,9 +787,29 @@ pub fn StationEvents::set_marks_applied_hook(
   self.on_marks_applied = cb
 }
 
+pub fn StationEvents::set_lock_apply_hook(
+  self : StationEvents,
+  cb : (base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_lock_apply = Some(cb)
+}
+
+pub fn StationEvents::notify_lock_payload_result(
+  self : StationEvents,
+  payload : base_codec::Json,
+) -> Result[Unit, String] {
+  match self.on_lock_apply {
+    Some(cb) => cb(payload)
+    None => {
+      let cb = self.on_lock_payload
+      cb(payload)
+      Ok(())
+    }
+  }
+}
+
 pub fn StationEvents::notify_lock_payload(self : StationEvents, payload : base_codec::Json) -> Unit {
-  let cb = self.on_lock_payload
-  cb(payload)
+  let _ = self.notify_lock_payload_result(payload)
 }
 
 pub fn StationEvents::set_thread_dirty_hook(self : StationEvents, cb : (Int) -> Unit) -> Unit {
@@ -896,6 +941,7 @@ pub fn StationEvents::set_hooks(
   self.on_chat_client_key = on_chat_client_key
   self.on_connected = on_connected
   self.on_lock_payload = on_lock_payload
+  self.on_lock_apply = None
 }
 
 pub fn StationEvents::connection_state(self : StationEvents) -> ConnectionState {
@@ -2463,16 +2509,11 @@ fn StationEvents::apply_one_sse_event(
     }
   }
   if ev_name == "lock" {
-    match base_codec::json_get(payload, "entries") {
-      Some(base_codec::Json::Arr(xs)) => {
-        if xs.length() == 0 {
-          return sql::SqlResult::Ok(0)
-        }
-        lock_payloads.push(payload)
-        return sql::SqlResult::Ok(1)
-      }
-      _ => return sql::SqlResult::Ok(0)
+    if is_actionable_lock_payload(payload) {
+      lock_payloads.push(payload)
+      return sql::SqlResult::Ok(1)
     }
+    return sql::SqlResult::Ok(0)
   }
   if ev_name == "overview" {
     let raw = base_codec::json_stringify(payload)
@@ -2812,8 +2853,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         self.outbox.tell(pending_events[i])
       }
       for i in 0..<lock_payloads.length() {
-        let cb = self.on_lock_payload
-        cb(lock_payloads[i])
+        let _ = self.notify_lock_payload_result(lock_payloads[i])
       }
       for i in 0..<marks_dirty.length() {
         self.marks_dirty_count += 1
@@ -2862,6 +2902,116 @@ fn StationEvents::schedule_reconnect_k(self : StationEvents, rt : effect::Runtim
   })
 }
 
+/// Whether an SSE `event: lock` payload carries either inline lock entries (`entries: [...]`)
+/// or a real station change notification (`{ workspace, head }` per `station/src/mesh/lock-events.ts:27`).
+/// Empty `{}` and `{"entries":[]}` payloads are silently ignored without triggering `LockRejected`.
+fn is_actionable_lock_payload(payload : base_codec::Json) -> Bool {
+  match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => {
+      if xs.length() > 0 {
+        return true
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_get(payload, "head").is_some()
+}
+
+fn StationEvents::dispatch_lock_sse_event(self : StationEvents, ev : wire::Event) -> Unit {
+  if ev.data.length() == 0 {
+    return
+  }
+  let payload = match base_codec::json_parse(ev.data) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return
+  }
+  match j_opt_str(payload, "workspace") {
+    Some(ws) => {
+      if ws.length() > 0 && ws != self.workspace {
+        return
+      }
+    }
+    None => ()
+  }
+  if !is_actionable_lock_payload(payload) {
+    return
+  }
+  let _ = self.notify_lock_payload_result(payload)
+}
+
+/// Process a parsed SSE chunk segmented at `event: lock` boundaries under `stream_cap`:
+/// - `event: lock` control frames are ALWAYS dispatched immediately (never blocked by `authGen`),
+///   including both inline `entries` and real station `{workspace, head}` notifications.
+/// - Non-`lock` data segments before and after any `event: lock` are validated against
+///   `stream_cap.is_valid(tracker)` right before commit: if `stream_cap` is stale (including
+///   when an earlier `event: lock` in the SAME chunk bumped `authGen`), subsequent data events
+///   are dropped with 0 SQLite writes and without advancing `last_event_id`, returning `Ok(false)`
+///   so the stream immediately reconnects with a fresh `WorkspaceCapability`.
+fn StationEvents::process_sse_chunk_with_cap(
+  self : StationEvents,
+  evs : Array[wire::Event],
+  stream_cap : Option[WorkspaceCapability],
+) -> Result[Bool, String] {
+  let is_stale = fn() -> Bool {
+    match (self.auth, stream_cap) {
+      (Some(tracker), Some(cap)) => !cap.is_valid(tracker)
+      _ => false
+    }
+  }
+  let has_meaningful_data = fn(seg : Array[wire::Event]) -> Bool {
+    for i in 0..<seg.length() {
+      if seg[i].data.length() > 0 || seg[i].id.is_some() {
+        return true
+      }
+    }
+    false
+  }
+  let segment : Array[wire::Event] = []
+  let mut need_reconnect = false
+  let flush_segment = fn() -> Result[Unit, String] {
+    if segment.length() == 0 {
+      return Ok(())
+    }
+    if need_reconnect || is_stale() {
+      if has_meaningful_data(segment) {
+        need_reconnect = true
+      }
+      segment.clear()
+      return Ok(())
+    }
+    match self.apply_sse_batch(segment) {
+      sql::SqlResult::Ok(_) => {
+        segment.clear()
+        Ok(())
+      }
+      sql::SqlResult::Err(e) => {
+        segment.clear()
+        Err(e.to_string())
+      }
+    }
+  }
+  for i in 0..<evs.length() {
+    let ev = evs[i]
+    if ev.name == "lock" {
+      match flush_segment() {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      self.dispatch_lock_sse_event(ev)
+    } else if need_reconnect {
+      if ev.data.length() > 0 || ev.id.is_some() {
+        need_reconnect = true
+      }
+    } else {
+      segment.push(ev)
+    }
+  }
+  match flush_segment() {
+    Ok(_) => Ok(!need_reconnect)
+    Err(e) => Err(e)
+  }
+}
+
 fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : (effect::Exit[Unit]) -> Unit) -> Unit {
   if self.stopped || effect::is_interrupted() {
     self.set_state(ConnectionState::Disconnected("stopped"))
@@ -2875,6 +3025,11 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     Some(eid) => "/events?since=" + encode_uri_component(eid)
     None => "/events"
   }
+  let my_epoch = self.stream_epoch
+  let stream_cap : Option[WorkspaceCapability] = match self.auth {
+    Some(tracker) => Some(tracker.capture_workspace(self.workspace))
+    None => None
+  }
   let parser = wire::Sse::new()
   let mut marked_connected = false
   let aborted : Array[Bool] = [false]
@@ -2885,7 +3040,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       path,
       headers,
       fn(chunk : Bytes) -> Unit {
-        if aborted[0] || self.stopped {
+        if aborted[0] || self.stopped || self.stream_epoch != my_epoch {
           return
         }
         if !marked_connected {
@@ -2897,9 +3052,9 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
         }
         match parser.feed(chunk) {
           wire::FeedResult::Ok(evs) => {
-            match self.apply_sse_batch(evs) {
-              sql::SqlResult::Ok(_) => ()
-              sql::SqlResult::Err(_) => {
+            match self.process_sse_chunk_with_cap(evs, stream_cap) {
+              Ok(true) => ()
+              Ok(false) | Err(_) => {
                 // Immediately cancel the underlying old stream so no further chunks arrive or advance
                 // `last_event_id`, and wake the outer `stream_fiber` to reconnect via `?since=`.
                 aborted[0] = true
@@ -2931,6 +3086,10 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     self.active_stream_fiber = Some(child)
   }
   done_sig.wait_k(fn(wex : effect::Exit[Bool]) -> Unit {
+    if self.stream_epoch != my_epoch {
+      k(effect::Exit::Interrupted)
+      return
+    }
     self.active_stream_fiber = None
     self.active_cancel = None
     if self.stopped || effect::is_interrupted() {
@@ -2972,6 +3131,7 @@ pub fn StationEvents::set_transport(
   if was_running {
     self.stop()
   }
+  self.stream_epoch += 1L
   self.transport = transport
   self.attempts = 0
   if was_running {
@@ -2989,6 +3149,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
     None => ()
   }
   self.stopped = false
+  self.state = ConnectionState::Connecting
   let f = rt.fork_quiet_named("station-events:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     self.stream_loop_k(rt, k)
   })
@@ -2998,6 +3159,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
 /// Stop the `/events` stream fiber and immediately cancel any active underlying stream & backoff sleep.
 pub fn StationEvents::stop(self : StationEvents) -> Unit {
   self.stopped = true
+  self.stream_epoch += 1L
   self.cancel_active_stream()
   match self.stream_fiber {
     Some(f) => {

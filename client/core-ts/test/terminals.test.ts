@@ -494,4 +494,30 @@ test("r15: live terminal aborts immediately on authGen boundary, new-terminal ta
       core.close();
     }
   });
+
+  await t.test("cancel releases terminal view name synchronously for immediate same-name reopen", async () => {
+    const wire = terminalWire();
+    const { host, core } = await started(withTerminals(), 0, wire.make);
+    try {
+      const ui = core.connect();
+      call(core, ui, 60, "terminal.view", { station: S, terminal: "term-1", view: "tv-same", cols: 80, rows: 24, control: true });
+      await host.settle();
+      assert.equal(wire.opens.length, 1);
+
+      core.receive(ui, { kind: "cancel", id: 60, cancel: true });
+      call(core, ui, 61, "terminal.view", { station: S, terminal: "term-1", view: "tv-same", cols: 80, rows: 24, control: true });
+      await host.settle();
+      const msgs = host.takeEmitted().map(([, m]) => m as { id?: number; error?: { code?: string } });
+      assert.equal(msgs.find((m) => m.id === 61 && m.error), undefined, "immediate reopen after cancel must not fail");
+      assert.equal(wire.opens.length, 2);
+
+      // Follow-up input still reaches the replacement view after the old fiber unwinds.
+      call(core, ui, 62, "terminal.resize", { view: "tv-same", cols: 100, rows: 30 });
+      await host.settle();
+      const msgs2 = host.takeEmitted().map(([, m]) => m as { id?: number; error?: { code?: string } });
+      assert.equal(msgs2.find((m) => m.id === 62)?.error, undefined);
+    } finally {
+      core.close();
+    }
+  });
 });

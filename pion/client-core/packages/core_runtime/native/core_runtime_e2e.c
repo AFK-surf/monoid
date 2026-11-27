@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "core_api.h"
@@ -23,7 +24,7 @@ extern int mb_core_deliver_media(
     const uint8_t *bytes,
     size_t len);
 
-#define MAX_MSGS 128
+#define MAX_MSGS 256
 
 typedef struct recorded_msg {
     char *json;
@@ -85,6 +86,14 @@ static void send_json(const char *s) {
     mb_core_send(s, strlen(s), NULL, 0);
 }
 
+static long long extract_conn_seq(const char *json) {
+    const char *p = strstr(json, "\"conn\":");
+    if (p == NULL) {
+        return -1;
+    }
+    return strtoll(p + 7, NULL, 10);
+}
+
 static int extract_v_token(const char *json, char *out, size_t out_cap) {
     const char *p = strstr(json, "\"v\":\"");
     if (p == NULL) {
@@ -141,6 +150,44 @@ int main(void) {
     int next_idx = 0;
     recorded_msg_t *m = NULL;
 
+    // 0. Startup authoritative auth handshake (`{"id":0,"auth":{"conn":N,"scopes":{...},"workspaces":{...},"vaults":{...}}}`)
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #0 startup auth handshake -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL);
+    assert(strstr(m->json, "\"auth\":{") != NULL);
+    long long conn1 = extract_conn_seq(m->json);
+    assert(conn1 > 0);
+    char conn1_kv[64];
+    snprintf(conn1_kv, sizeof(conn1_kv), "\"conn\":%lld", conn1);
+    assert(strstr(m->json, conn1_kv) != NULL);
+    assert(strstr(m->json, "\"scopes\":{") != NULL);
+    assert(strstr(m->json, "\"workspaces\":{") != NULL);
+    assert(strstr(m->json, "\"vaults\":{") != NULL);
+    // Verify atomic TS-compatible device/auth file was persisted at `data_dir/device%2Fauth` with `"connSeq":<conn1>`
+    char dev_auth_path[256];
+    snprintf(dev_auth_path, sizeof(dev_auth_path), "%s/device%%2Fauth", data_dir);
+    FILE *dev_auth_f = fopen(dev_auth_path, "r");
+    assert(dev_auth_f != NULL);
+    char dev_auth_buf[512];
+    size_t dev_auth_n = fread(dev_auth_buf, 1, sizeof(dev_auth_buf) - 1, dev_auth_f);
+    fclose(dev_auth_f);
+    dev_auth_buf[dev_auth_n] = '\0';
+    char conn1_auth_kv[64];
+    snprintf(conn1_auth_kv, sizeof(conn1_auth_kv), "\"connSeq\":%lld", conn1);
+    assert(strstr(dev_auth_buf, conn1_auth_kv) != NULL);
+    // Verify authoritative `device/conn_seq_floor` was ALSO persisted on first startup!
+    char floor_path[256];
+    snprintf(floor_path, sizeof(floor_path), "%s/device%%2Fconn_seq_floor", data_dir);
+    {
+        FILE *ff = fopen(floor_path, "r");
+        assert(ff != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, ff);
+        fclose(ff);
+        fbuf[fn] = '\0';
+        assert(strstr(fbuf, conn1_auth_kv) != NULL);
+    }
+
     // 1. settings.set + settings.get (real SQLite `workspace_pref`)
     send_json("{\"id\":1,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"dark\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -191,9 +238,11 @@ int main(void) {
     assert(strstr(m->json, "\"queued\":true") != NULL && strstr(m->json, "ck-e2e-1") != NULL);
 
     // Verify `rt.now()` persisted real Unix epoch milliseconds (> 1700000000000) into outbox `createdAt` (never monotonic uptime)!
+    // Also verify `WireOutGen`: non-device-global `chat` carries `conn:<conn1>` + `authGen:1` (no `vaultGen`).
     send_json("{\"id\":19,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #19 subscribe chat (outbox epoch check) -> %s\n", m->json);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
     const char *ca = strstr(m->json, "\"createdAt\":");
     assert(ca != NULL);
     long long created_at_ms = strtoll(ca + 12, NULL, 10);
@@ -250,10 +299,12 @@ int main(void) {
     assert(strstr(m->json, "\"id\":12") != NULL && strstr(m->json, "\"read\":5") != NULL);
 
     // 5. Subscription keyed delta + keep/have token (`v` -> `same: true` -> `delta + kept: true`)
+    // Verify `WireOutGen` on device-global topic `prefs`: MUST carry `conn:<conn1>` and MUST NOT carry `authGen` or `vaultGen`.
     send_json("{\"id\":20,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 subscribe prefs -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"value\"") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL && strstr(m->json, "\"vaultGen\"") == NULL);
 
     // Mutate while subscribed -> expect Call OK + live pushed Delta on sub 20!
     send_json("{\"id\":21,\"call\":\"prefs.set\",\"params\":{\"reader\":{\"size\":18}}}");
@@ -262,21 +313,23 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 live delta -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "18") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
 
-    // Unsubscribe with keep: true -> receive `v` token
+    // Unsubscribe with keep: true -> receive `v` token (stamped with `conn:<conn1>`)
     send_json("{\"id\":20,\"unsubscribe\":true,\"keep\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 unsubscribe keep -> %s\n", m->json);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
     char token[128];
     assert(extract_v_token(m->json, token, sizeof(token)));
 
-    // Re-subscribe with `have: token` when unchanged -> expect `same: true`
+    // Re-subscribe with `have: token` when unchanged -> expect `same: true` + `conn:<conn1>`
     char resub_same[256];
     snprintf(resub_same, sizeof(resub_same), "{\"id\":22,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true,\"have\":\"%s\"}", token);
     send_json(resub_same);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #22 resubscribe have (unchanged) -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":22") != NULL && strstr(m->json, "\"same\":true") != NULL);
+    assert(strstr(m->json, "\"id\":22") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
 
     // Unsubscribe 22 without keep, mutate, then re-subscribe with old `have: token` -> expect `delta` + `kept: true`
     send_json("{\"id\":22,\"unsubscribe\":true}");
@@ -297,14 +350,17 @@ int main(void) {
     send_json("{\"id\":24,\"unsubscribe\":true}");
 
     // 5b. Runtime-evaluated topic (`workspaceMarks`) live subscription + keep/have -> same + live delta on prefs.set
+    // Verify `WireOutGen`: aggregate `workspaceMarks` carries `conn:<conn1>` + `authGen:1` (no `vaultGen`).
     send_json("{\"id\":25,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #25 subscribe workspaceMarks -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":25") != NULL && strstr(m->json, "\"value\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
 
     send_json("{\"id\":25,\"unsubscribe\":true,\"keep\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #25 unsubscribe workspaceMarks keep -> %s\n", m->json);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
     char wm_token[128];
     assert(extract_v_token(m->json, wm_token, sizeof(wm_token)));
 
@@ -313,7 +369,7 @@ int main(void) {
     send_json(wm_resub);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #26 resubscribe workspaceMarks have (unchanged) -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"same\":true") != NULL);
+    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
 
     // Mutate prefs (`badgeKinds.on = false`) while subscribed to workspaceMarks -> expect Call OK + live delta on id 26!
     send_json("{\"id\":27,\"call\":\"prefs.set\",\"params\":{\"badgeKinds\":{\"on\":false}}}");
@@ -322,7 +378,58 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #26 workspaceMarks live delta -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL && strstr(m->json, "\"set\":false") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
     send_json("{\"id\":26,\"unsubscribe\":true}");
+
+    // 5b2. Vault topic `vaults` MUST carry `conn:<conn1>` + `authGen:1` + `vaultGen:1`!
+    send_json("{\"id\":28,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-default\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #28 subscribe vaults -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":28") != NULL && strstr(m->json, "\"value\"") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\":1") != NULL);
+    send_json("{\"id\":28,\"unsubscribe\":true}");
+
+    // 5b3. Real `ws/st` address subscription + cross-workspace identical-payload `(topic_key, token)` kept isolation
+    // + invalid subscribe error frame (all stamped with `conn:<conn1>`).
+    send_json("{\"id\":29,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-default/st-local\",\"thread\":42},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #29 subscribe chat (real ws/st) -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":29") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
+    send_json("{\"id\":29,\"unsubscribe\":true}");
+
+    // Cross-workspace identical-payload `kept` cache isolation in `core_runtime`:
+    // `chats` for `ws-keep-a` and `ws-keep-b` produce identical empty payloads & identical `v` tokens.
+    // Keeping `ws-keep-b` MUST NOT allow `ws-keep-a` to hit `same:true` with `ws-keep-b`'s token!
+    send_json("{\"id\":291,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-b\",\"mine\":false},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":291") != NULL && strstr(m->json, "\"value\"") != NULL);
+    send_json("{\"id\":291,\"unsubscribe\":true,\"keep\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    char wsb_tok[128];
+    assert(extract_v_token(m->json, wsb_tok, sizeof(wsb_tok)));
+    char cross_ws_sub[256];
+    snprintf(cross_ws_sub, sizeof(cross_ws_sub),
+             "{\"id\":292,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-a\",\"mine\":false},\"keyed\":true,\"have\":\"%s\"}",
+             wsb_tok);
+    send_json(cross_ws_sub);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #292 cross-ws have token -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":292") != NULL && strstr(m->json, "\"value\"") != NULL && strstr(m->json, "\"same\":true") == NULL);
+    send_json("{\"id\":292,\"unsubscribe\":true}");
+    char same_ws_sub[256];
+    snprintf(same_ws_sub, sizeof(same_ws_sub),
+             "{\"id\":293,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-b\",\"mine\":false},\"keyed\":true,\"have\":\"%s\"}",
+             wsb_tok);
+    send_json(same_ws_sub);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #293 same-ws have token -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":293") != NULL && strstr(m->json, "\"same\":true") != NULL);
+    send_json("{\"id\":293,\"unsubscribe\":true}");
+
+    send_json("{\"id\":98,\"subscribe\":123}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #98 invalid subscribe error -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":98") != NULL && strstr(m->json, "\"error\"") != NULL && strstr(m->json, conn1_kv) != NULL);
 
     // 5c. W28a real runtime topic projectors (status, lockPrompts, notices, notify, doing, lock),
     // `chat {session, compact}`, and `auth.complete {query}` (zero verifier/code/error_description leak)
@@ -420,8 +527,40 @@ int main(void) {
     send_json("{\"id\":99,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     assert(atomic_load(&g_ctx.post_stop_count) == 0);
 
+    // Inject a sibling TS field (`capRev:ws-1`) into `device/auth` before restart and prove
+    // restart merges `"connSeq":<conn2>` while preserving existing fields!
+    {
+        FILE *f = fopen(dev_auth_path, "w");
+        assert(f != NULL);
+        fprintf(f, "{\"connSeq\":%lld,\"capRev:ws-1\":\"keep-me\"}", conn1);
+        fclose(f);
+    }
+
     atomic_store(&g_ctx.stopped, 0);
     mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    // Restart handshake MUST strictly increment device-level `connSeq` (`conn2 > conn1`)!
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart auth handshake -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn2 = extract_conn_seq(m->json);
+    assert(conn2 > conn1);
+    char conn2_kv[64];
+    snprintf(conn2_kv, sizeof(conn2_kv), "\"conn\":%lld", conn2);
+    assert(strstr(m->json, conn2_kv) != NULL);
+    // Verify `device/auth` preserved `"capRev:ws-1":"keep-me"` and updated `"connSeq":<conn2>`!
+    {
+        FILE *f = fopen(dev_auth_path, "r");
+        assert(f != NULL);
+        char buf2[512];
+        size_t n2 = fread(buf2, 1, sizeof(buf2) - 1, f);
+        fclose(f);
+        buf2[n2] = '\0';
+        char conn2_auth_kv[64];
+        snprintf(conn2_auth_kv, sizeof(conn2_auth_kv), "\"connSeq\":%lld", conn2);
+        assert(strstr(buf2, conn2_auth_kv) != NULL);
+        assert(strstr(buf2, "\"capRev:ws-1\":\"keep-me\"") != NULL);
+    }
+
     send_json("{\"id\":40,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #40 settings.get after restart -> %s\n", m->json);
@@ -432,7 +571,206 @@ int main(void) {
     printf("[core_runtime_e2e] #41 prefs.get after restart -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":41") != NULL && strstr(m->json, "\"appearance\":\"light\"") != NULL && strstr(m->json, "\"size\":18") != NULL);
 
+    // Post-restart subscription MUST carry `conn:<conn2>` (strictly monotonic across restarts)!
+    send_json("{\"id\":42,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #42 subscribe prefs after restart -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":42") != NULL && strstr(m->json, conn2_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
+    send_json("{\"id\":42,\"unsubscribe\":true}");
+
     mb_core_stop();
+
+    // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),
+    //    and `connSeq` MUST persist to `device/conn_seq_floor` and stay strictly monotonic across restarts!
+    {
+        FILE *f = fopen(dev_auth_path, "w");
+        assert(f != NULL);
+        fputs("{corrupt-ts-device-auth capRev:ws-99", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart #3 (corrupt device/auth) handshake -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn3 = extract_conn_seq(m->json);
+    assert(conn3 > conn2);
+    // Verify `device/auth` was NOT overwritten!
+    {
+        FILE *f = fopen(dev_auth_path, "r");
+        assert(f != NULL);
+        char buf3[512];
+        size_t n3 = fread(buf3, 1, sizeof(buf3) - 1, f);
+        fclose(f);
+        buf3[n3] = '\0';
+        assert(strcmp(buf3, "{corrupt-ts-device-auth capRev:ws-99") == 0);
+    }
+    // Verify `device/conn_seq_floor` was persisted at `data_dir/device%2Fconn_seq_floor` with `"connSeq":<conn3>`!
+    {
+        FILE *f = fopen(floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char conn3_kv[64];
+        snprintf(conn3_kv, sizeof(conn3_kv), "\"connSeq\":%lld", conn3);
+        assert(strstr(fbuf, conn3_kv) != NULL);
+    }
+    mb_core_stop();
+
+    // Restart #4 while `device/auth` is still corrupt -> reads `device/conn_seq_floor` and increments `conn4 > conn3`!
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart #4 (floor recovery) handshake -> %s\n", m->json);
+    long long conn4 = extract_conn_seq(m->json);
+    assert(conn4 > conn3);
+    mb_core_stop();
+
+    // 9. Fail-open connSeq recovery aligned with TS `core.ts:406-414` + safe-integer overflow protection:
+    //    9a. Cold directory (NO `device/conn_seq_floor`) with corrupt `device/auth` MUST preserve
+    //        `device/auth` byte-for-byte untouched AND start normally (no fatal brick!), writing a
+    //        valid safe integer to `device/conn_seq_floor`.
+    char cold_dir[160];
+    snprintf(cold_dir, sizeof(cold_dir), "%s_cold", data_dir);
+    assert(mkdir(cold_dir, 0700) == 0);
+    char cold_auth_path[256];
+    snprintf(cold_auth_path, sizeof(cold_auth_path), "%s/device%%2Fauth", cold_dir);
+    {
+        FILE *f = fopen(cold_auth_path, "w");
+        assert(f != NULL);
+        fputs("{corrupt-ts-cold capRev:ws-cold", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9a cold corrupt device/auth fail-open -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_cold = extract_conn_seq(m->json);
+    assert(conn_cold > conn4 && conn_cold <= 9007199254740991LL);
+    // Verify `device/auth` is preserved byte-for-byte and `device/conn_seq_floor` was written with `conn_cold`.
+    {
+        FILE *f = fopen(cold_auth_path, "r");
+        assert(f != NULL);
+        char cbuf[256];
+        size_t cn = fread(cbuf, 1, sizeof(cbuf) - 1, f);
+        fclose(f);
+        cbuf[cn] = '\0';
+        assert(strcmp(cbuf, "{corrupt-ts-cold capRev:ws-cold") == 0);
+    }
+    char cold_floor_path[256];
+    snprintf(cold_floor_path, sizeof(cold_floor_path), "%s/device%%2Fconn_seq_floor", cold_dir);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char cold_kv[64];
+        snprintf(cold_kv, sizeof(cold_kv), "\"connSeq\":%lld", conn_cold);
+        assert(strstr(fbuf, cold_kv) != NULL);
+    }
+    mb_core_stop();
+
+    //    9b. Corrupt `device/conn_seq_floor` containing a decimal (`12.5`) MUST be rejected,
+    //        overwritten/repaired with a valid safe integer, and emit a valid `auth` handshake.
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":12.5}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9b decimal floor repair -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_dec = extract_conn_seq(m->json);
+    assert(conn_dec > conn_cold && conn_dec <= 9007199254740991LL);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char dec_kv[64];
+        snprintf(dec_kv, sizeof(dec_kv), "\"connSeq\":%lld", conn_dec);
+        assert(strstr(fbuf, dec_kv) != NULL);
+    }
+    mb_core_stop();
+
+    //    9c. Corrupt `device/conn_seq_floor` containing `Int64::MAX` (`9223372036854775807`) or
+    //        over-limit `9007199254740991` MUST be rejected without overflow wraparound,
+    //        overwritten/repaired with a valid safe integer, and an immediate 2nd restart MUST
+    //        still increment strictly monotonically (`conn_ovf2 > conn_ovf`).
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":9223372036854775807}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9c Int64::MAX overflow floor repair -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_ovf = extract_conn_seq(m->json);
+    assert(conn_ovf > conn_dec && conn_ovf <= 9007199254740991LL);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char ovf_kv[64];
+        snprintf(ovf_kv, sizeof(ovf_kv), "\"connSeq\":%lld", conn_ovf);
+        assert(strstr(fbuf, ovf_kv) != NULL);
+    }
+    mb_core_stop();
+
+    // Immediate 2nd in-process restart after repair: strictly monotonic `conn_ovf2 > conn_ovf`
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9c2 post-repair 2nd restart -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_ovf2 = extract_conn_seq(m->json);
+    assert(conn_ovf2 > conn_ovf && conn_ovf2 <= 9007199254740991LL);
+    mb_core_stop();
+
+    //    9d. Pre-seeded disk boundary `MAX_PERSISTED_CONN_SEQ` (`9007199253740991`):
+    //        two consecutive in-process restarts MUST emit strictly monotonic `9007199253740992`
+    //        and `9007199253740993` without dropping the in-process `floor`!
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":9007199253740991}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9d boundary restart #1 -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_r1 = extract_conn_seq(m->json);
+    assert(conn_r1 == 9007199253740992LL);
+    mb_core_stop();
+
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9d boundary restart #2 -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_r2 = extract_conn_seq(m->json);
+    assert(conn_r2 == 9007199253740993LL && conn_r2 > conn_r1);
+    mb_core_stop();
+
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",
            g_ctx.count, atomic_load(&g_ctx.post_stop_count));
     return 0;

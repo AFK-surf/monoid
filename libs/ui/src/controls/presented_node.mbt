@@ -241,7 +241,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             },
           )
         }
-        Confirm(title, words, warning, action, danger, run) =>
+        Confirm(title, words, warning, action, danger, run, facts, body) =>
           confirm_node(
             row,
             open,
@@ -252,6 +252,8 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             fn() { dismissed_now(serial) },
             fn() { done(run) },
             warning~,
+            facts~,
+            body?,
             shown~,
             gone~,
             dims~,

@@ -106,6 +106,10 @@ pub fn HelperAppState::should_revive(self : HelperAppState, now : Int64) -> Bool
 pub let GRANTS_AGAIN_MS : Int64 = (3 * 60_000).to_int64()
 pub let GRANTS_FRESH_MS : Int64 = 2_000.to_int64()
 pub let GRANTS_SHOWN_MS : Int64 = 30_000.to_int64()
+/// Cached screen grants stay fresh for optimistic macOS `Desktop.open` this long (`#9062`).
+pub let OPEN_GRANTS_TTL_MS : Int64 = 30_000.to_int64()
+pub let ACCESS_FRESH_MS : Int64 = 2_000.to_int64()
+pub let FAILED_BACKOFF_MS : Int64 = 5_000.to_int64()
 pub let LOCAL_NETWORK_SETTINGS_URL : String = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork"
 
 pub enum GrantId {
@@ -436,6 +440,51 @@ pub fn HelperGrantsState::learn_lan(self : HelperGrantsState, lan : Option[Grant
   self.lan = lan
 }
 
+/// Whether the last successful look is newer than `max_age_ms` with no failed look or invalidation since (`#9062`).
+pub fn HelperGrantsState::fresh(
+  self : HelperGrantsState,
+  now : Int64,
+  max_age_ms : Int64 = GRANTS_FRESH_MS,
+) -> Bool {
+  if self.status is None || !(self.unanswered_key is None) {
+    return false
+  }
+  let age = now - self.checked_at
+  age >= 0L && age < max_age_ms
+}
+
+/// Marks the cached look stale without discarding `status` (`#9062`).
+pub fn HelperGrantsState::invalidate(self : HelperGrantsState) -> Unit {
+  self.checked_at = (-1000000000).to_int64()
+}
+
+/// Called when Helper emits a `"grants"` event or restarts (`onBack`), invalidating the fresh cache (`#9062`).
+pub fn HelperGrantsState::on_grants_event(self : HelperGrantsState) -> Unit {
+  self.invalidate()
+}
+
+pub fn HelperGrantsState::on_helper_back(self : HelperGrantsState) -> Unit {
+  self.invalidate()
+}
+
+/// Whether macOS `Desktop.open` may skip `refresh(true)` and connect optimistically (`#9062`).
+pub fn desktop_open_optimistic(
+  grants : HelperGrantsState,
+  synthetic : Bool,
+  now : Int64,
+) -> Bool {
+  if !grants.fresh(now, OPEN_GRANTS_TTL_MS) {
+    return false
+  }
+  if synthetic {
+    return true
+  }
+  match grants.status {
+    Some(s) => s.capture && s.control
+    None => false
+  }
+}
+
 pub fn HelperGrantsState::state_of(self : HelperGrantsState, grant : GrantId) -> GrantState {
   match grant {
     GrantId::LocalNetwork => match self.lan {
@@ -589,18 +638,35 @@ pub struct FolderAccess {
   pub state : GrantState
 }
 
+pub fn folder_grant_names() -> Array[String] {
+  ["documents", "desktop", "downloads", "removable", "network"]
+}
+
 pub struct HelperFilesState {
   pub home : String
   pub grant_of : Map[String, String]
+  pub grant_of_keys : Array[String]
   pub states : Map[String, GrantState]
+  pub checked_at : Map[String, Int64]
+  pub mut failed_at : Int64
 }
 
 pub fn HelperFilesState::new(home : String) -> HelperFilesState {
   HelperFilesState::{
     home: home,
     grant_of: Map::new(),
+    grant_of_keys: [],
     states: Map::new(),
+    checked_at: Map::new(),
+    failed_at: (-1000000000).to_int64(),
   }
+}
+
+fn HelperFilesState::set_grant_of(self : HelperFilesState, top : String, grant : String) -> Unit {
+  if !self.grant_of.contains(top) {
+    self.grant_of_keys.push(top)
+  }
+  self.grant_of.set(top, grant)
 }
 
 fn ascii_lower_str(s : String) -> String {
@@ -657,6 +723,18 @@ pub fn HelperFilesState::confirm_path(self : HelperFilesState, path : String) ->
   let low = ascii_lower_str(path)
   let hlow = ascii_lower_str(self.home)
   let mut changed = false
+  for i in 0..<self.grant_of_keys.length() {
+    let top = self.grant_of_keys[i]
+    match self.grant_of.get(top) {
+      Some(grant) => {
+        let tlow = ascii_lower_str(top)
+        if (low == tlow || low.starts_with(tlow + "/")) && self.learn(grant, GrantState::Granted) {
+          changed = true
+        }
+      }
+      None => ()
+    }
+  }
   let pairs : Array[(String, String)] = [
     (hlow + "/documents", "documents"),
     (hlow + "/desktop", "desktop"),
@@ -673,6 +751,99 @@ pub fn HelperFilesState::confirm_path(self : HelperFilesState, path : String) ->
   changed
 }
 
+/// Sync folder grant states from `HelperGrants`' latest status snapshot (`#8868`).
+pub fn HelperFilesState::sync_grants(self : HelperFilesState, status : HelperStatus) -> Bool {
+  self.failed_at = (-1000000000).to_int64()
+  let mut changed = false
+  let all_granted = match status.files.get("all") {
+    Some(s) => s == "granted"
+    None => false
+  }
+  let names = folder_grant_names()
+  for i in 0..<names.length() {
+    let grant = names[i]
+    let raw_opt = if all_granted { Some("granted") } else { status.files.get(grant) }
+    match raw_opt {
+      Some(raw) => {
+        if raw == "granted" || raw == "denied" || raw == "unknown" {
+          if self.learn(grant, parse_grant_state(raw)) {
+            changed = true
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  changed
+}
+
+/// Returns the subset of `tops` that need a fresh `files.access` check at `now`, skipping
+/// already-granted folders, recently checked folders (`< ACCESS_FRESH_MS`), and respecting
+/// `FAILED_BACKOFF_MS` after a failed helper query (`#8868`).
+pub fn HelperFilesState::tops_needing_refresh(
+  self : HelperFilesState,
+  tops : Array[String],
+  now : Int64,
+) -> Array[String] {
+  if now - self.failed_at < FAILED_BACKOFF_MS {
+    return []
+  }
+  let asking : Array[String] = []
+  for i in 0..<tops.length() {
+    let t = tops[i]
+    let already_granted = match self.known(t) {
+      Some(acc) => grant_state_name(acc.state) == "granted"
+      None => false
+    }
+    if already_granted {
+      continue
+    }
+    match self.checked_at.get(t) {
+      Some(last) => if now - last < ACCESS_FRESH_MS { continue }
+      None => ()
+    }
+    asking.push(t)
+  }
+  asking
+}
+
+/// Records the reply of a `files.access` query (`#8868`).
+pub fn HelperFilesState::record_access_reply(
+  self : HelperFilesState,
+  tops : Array[String],
+  items : Array[(String, String, GrantState)],
+  now : Int64,
+) -> Bool {
+  self.failed_at = (-1000000000).to_int64()
+  for i in 0..<tops.length() {
+    self.checked_at.set(tops[i], now)
+  }
+  let mut changed = false
+  for i in 0..<items.length() {
+    let (path, grant, state) = items[i]
+    self.set_grant_of(path, grant)
+    self.checked_at.set(path, now)
+    if self.learn(grant, state) {
+      changed = true
+    }
+  }
+  changed
+}
+
+pub fn HelperFilesState::record_access_failure(self : HelperFilesState, now : Int64) -> Unit {
+  self.failed_at = now
+}
+
+/// Called when Helper comes back: clears failure backoff and returns known `grant_of` tops to re-check (`#8868`).
+pub fn HelperFilesState::on_helper_back(self : HelperFilesState) -> Array[String] {
+  self.failed_at = (-1000000000).to_int64()
+  let out : Array[String] = []
+  for i in 0..<self.grant_of_keys.length() {
+    out.push(self.grant_of_keys[i])
+  }
+  out
+}
+
 pub fn HelperFilesState::learn_refusal(
   self : HelperFilesState,
   code : String,
@@ -686,7 +857,7 @@ pub fn HelperFilesState::learn_refusal(
   match (grant, state) {
     (Some(g), Some(st)) => {
       match top {
-        Some(t) => if t != "" { self.grant_of.set(t, g) }
+        Some(t) => if t != "" { self.set_grant_of(t, g) }
         None => ()
       }
       self.learn(g, parse_grant_state(st))

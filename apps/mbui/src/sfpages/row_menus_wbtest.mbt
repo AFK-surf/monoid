@@ -163,7 +163,7 @@ test "an archived chat's row: its menu opens it and restores it; 删除 after a 
     menu_shows(t, ["打开对话", "恢复对话", "删除"], at="\{at} 整理上个月的发票")
     t.tap_text("删除")
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("删除「整理上个月的发票」？") is Some(_), msg="\{at}: asked first: \{words_said(t)}")
+    assert_true(t.find("删除归档对话") is Some(_) && t.find("整理上个月的发票") is Some(_), msg="\{at}: asked first: \{words_said(t)}")
     t.key(@ui.key_escape)
     t.run_for(@ui.move_most_ms)
     // 恢复对话: as its 恢复 does (chat.archive, archived false)

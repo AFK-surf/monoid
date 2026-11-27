@@ -299,7 +299,8 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
-    open.set(name, {
+    const callKey = `${at[0]}/${at[1]}`;
+    const entry: Open = {
       station,
       workspace: addr.workspace,
       authGen: startAuthGen,
@@ -331,8 +332,14 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
           markDenied();
         }
       },
-    });
-    yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
+    };
+    open.set(name, entry);
+    const release = () => {
+      if (open.get(name) === entry) open.delete(name);
+      if (inner.callCancels.get(callKey) === release) inner.callCancels.delete(callKey);
+    };
+    inner.callCancels.set(callKey, release);
+    yield* Effect.addFinalizer(() => Effect.sync(release));
     const unsubBoundary = inner.store.authGen.onBoundary(() => {
       if (isAuthStale()) markAuthStale();
     });

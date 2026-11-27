@@ -1241,6 +1241,11 @@ pub struct ConnectsOsRuntime {
   group_utf8_decoders : Map[String, Utf8ChunkDecoder]
   pending_feishu_refresh : Map[Int64, String]
   pending_async_calls : Map[Int64, String]
+  pending_feishu_catchup : Map[String, Bool]
+  feishu_status_lines : Map[String, station_connects::StatusLineState]
+  mut feishu_threads_dir : Option[String]
+  mut on_comma_read_file : Option[(String, station_connects::CommaReadFileReq) -> Result[base_codec::Json, String]]
+  mut on_comma_connected : Option[(String) -> Unit]
   mut stopped : Bool
 }
 
@@ -1262,6 +1267,11 @@ pub fn ConnectsOsRuntime::new(
     group_utf8_decoders: Map::new(),
     pending_feishu_refresh: Map::new(),
     pending_async_calls: Map::new(),
+    pending_feishu_catchup: Map::new(),
+    feishu_status_lines: Map::new(),
+    feishu_threads_dir: None,
+    on_comma_read_file: None,
+    on_comma_connected: None,
     stopped: false,
   }
   bridge.hub.set_router(
@@ -1270,6 +1280,178 @@ pub fn ConnectsOsRuntime::new(
     },
   )
   rt
+}
+
+pub fn ConnectsOsRuntime::set_on_comma_read_file(
+  self : ConnectsOsRuntime,
+  cb : (String, station_connects::CommaReadFileReq) -> Result[base_codec::Json, String],
+) -> Unit {
+  self.on_comma_read_file = Some(cb)
+}
+
+pub fn ConnectsOsRuntime::set_on_comma_connected(
+  self : ConnectsOsRuntime,
+  cb : (String) -> Unit,
+) -> Unit {
+  self.on_comma_connected = Some(cb)
+}
+
+pub fn ConnectsOsRuntime::set_feishu_threads_dir(
+  self : ConnectsOsRuntime,
+  dir : String,
+) -> Unit {
+  if dir.length() > 0 {
+    self.feishu_threads_dir = Some(dir)
+  }
+}
+
+fn ConnectsOsRuntime::feishu_threads_file_path(self : ConnectsOsRuntime, connect_id : String) -> Option[String] {
+  match self.feishu_threads_dir {
+    Some(dir) => Some(dir + "/feishu-threads-" + connect_id + ".json")
+    None => None
+  }
+}
+
+fn ConnectsOsRuntime::load_feishu_threads_state(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  f : station_connects::FeishuConnector,
+) -> Unit {
+  match self.feishu_threads_file_path(connect_id) {
+    Some(p) => match self.bridge.fs.read_text(p) {
+      Ok(raw) => f.threads.load_json_string(raw)
+      Err(_) => ()
+    }
+    None => ()
+  }
+}
+
+fn ConnectsOsRuntime::save_feishu_threads_state(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  f : station_connects::FeishuConnector,
+) -> Unit {
+  match self.feishu_threads_file_path(connect_id) {
+    Some(p) => {
+      let tmp = p + ".tmp"
+      match (self.bridge.fs.write_bytes)(tmp, f.threads.to_json_string().to_bytes(), 384) {
+        Ok(_) => {
+          let _ = (self.bridge.fs.rename)(tmp, p)
+        }
+        Err(_) => ()
+      }
+    }
+    None => ()
+  }
+}
+
+/// Applies a Feishu status-line update gated by `feishu_should_open_status_card` (#9052).
+/// Returns `true` if a status card should be opened/updated, `false` if skipped or cleared.
+pub fn ConnectsOsRuntime::feishu_apply_status_line(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  thread_key : String,
+  status : String,
+  is_idle : Bool,
+) -> Bool {
+  let k = connect_id + ":" + thread_key
+  let st = match self.feishu_status_lines.get(k) {
+    Some(s) => s
+    None => {
+      let s = station_connects::StatusLineState::new()
+      self.feishu_status_lines.set(k, s)
+      s
+    }
+  }
+  if status.trim().length() == 0 {
+    st.say("")
+    return false
+  }
+  let should_open = self.feishu_should_open_status_card(connect_id, status, is_idle, st)
+  if !should_open {
+    if is_idle {
+      st.say("")
+    }
+    return false
+  }
+  st.say(status)
+  true
+}
+
+pub fn ConnectsOsRuntime::comma_ids(self : ConnectsOsRuntime) -> Array[String] {
+  let out : Array[String] = []
+  let keys = self.connectors.keys()
+  for i in 0..<keys.length() {
+    match self.connectors.get(keys[i]) {
+      Some(ConnectorEntry::Comma(_)) => out.push(keys[i])
+      _ => ()
+    }
+  }
+  out
+}
+
+pub fn ConnectsOsRuntime::comma_on_fresh_event(self : ConnectsOsRuntime, connect_id : String) -> Unit {
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Comma(c)) => c.unread_retry.on_fresh_event()
+    _ => ()
+  }
+}
+
+pub fn ConnectsOsRuntime::comma_on_build_result(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  unread_count : Int,
+  read_failed : Bool,
+  now_ms : Int64,
+) -> Option[Int64] {
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Comma(c)) => c.unread_retry.on_build_result(unread_count, read_failed, now_ms)
+    _ => None
+  }
+}
+
+pub fn ConnectsOsRuntime::comma_poll_unread_due(self : ConnectsOsRuntime, now_ms : Int64) -> Array[String] {
+  let due : Array[String] = []
+  let keys = self.connectors.keys()
+  for i in 0..<keys.length() {
+    let cid = keys[i]
+    match self.connectors.get(cid) {
+      Some(ConnectorEntry::Comma(c)) => {
+        if c.unread_retry.is_due(now_ms) {
+          due.push(cid)
+        }
+      }
+      _ => ()
+    }
+  }
+  due
+}
+
+pub fn ConnectsOsRuntime::running_count(self : ConnectsOsRuntime) -> Int {
+  if self.stopped { 0 } else { self.running_connects.length() }
+}
+
+pub fn ConnectsOsRuntime::has_connect(self : ConnectsOsRuntime, connect_id : String) -> Bool {
+  self.connectors.contains(connect_id)
+}
+
+pub fn ConnectsOsRuntime::feishu_should_open_status_card(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  status : String,
+  is_idle : Bool,
+  state : station_connects::StatusLineState,
+) -> Bool {
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Feishu(f)) => station_connects::feishu_should_open_status_card(
+      status,
+      is_idle,
+      state,
+      fn(ts : String) -> Bool { f.is_called(ts) },
+      fn(ts : String) -> Bool { f.is_heard(ts) },
+    )
+    _ => false
+  }
 }
 
 pub fn ConnectsOsRuntime::is_stopped(self : ConnectsOsRuntime) -> Bool {
@@ -1454,17 +1636,24 @@ pub fn ConnectsOsRuntime::start_connect(
         }
       }
     }
-    ConnectorEntry::Feishu(f) => match f.connect(tr) {
-      Ok(h) => {
-        self.running_connects.set(connect_id, true)
-        self.ws_to_connect.set(h, connect_id)
-        self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
-        let _ = self.arm_ws_next(h)
-        Ok(())
-      }
-      Err(e) => {
-        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
-        Err(e)
+    ConnectorEntry::Feishu(f) => {
+      self.load_feishu_threads_state(connect_id, f)
+      match f.connect(tr) {
+        Ok(h) => {
+          self.running_connects.set(connect_id, true)
+          self.ws_to_connect.set(h, connect_id)
+          self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+          // Schedule non-blocking bounded reconnect catch-up (#6911) on next `tick`.
+          if f.threads.conversations(connect_id).length() > 0 {
+            self.pending_feishu_catchup.set(connect_id, true)
+          }
+          let _ = self.arm_ws_next(h)
+          Ok(())
+        }
+        Err(e) => {
+          self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
+          Err(e)
+        }
       }
     }
     ConnectorEntry::Comma(c) => match c.connect(tr) {
@@ -1682,6 +1871,23 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
           station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
           station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
         }
+        // Hold reconnect cursor before delivery (`taking` / `commit_taking`, #6911) and track
+        // `was_called` for status-card gating (#9052).
+        let now_ms = (self.bridge.now_fn)()
+        let (feishu_chat, feishu_mid, feishu_addressed) = match ev {
+          station_connects::ChatEvent::Message(m) => (m.channel, m.ts, m.addressed)
+          station_connects::ChatEvent::OwnNotice(m) => (m.channel, m.ts, false)
+          station_connects::ChatEvent::Changed(c, _, ts, _) => (c, ts, false)
+          station_connects::ChatEvent::Stop(c, _, ts, _) => (c, ts, false)
+          station_connects::ChatEvent::LoginCode(c, _, _, _, _) => (c, "", false)
+        }
+        if feishu_addressed && feishu_mid.length() > 0 {
+          f.was_called(feishu_mid)
+        }
+        // `#6911`: advance reconnect cursor using the Feishu message's `create_time` (m.at),
+        // falling back to local `now_ms` only when `create_time` is absent/zero.
+        let event_ms = if f.last_event_create_time_ms > 0L { f.last_event_create_time_ms } else { now_ms }
+        let hold_tok = f.threads.taking(connect_id, feishu_chat, feishu_mid, event_ms)
         let delivered = if self.is_connect_running(connect_id) {
           (self.callbacks.on_event)(connect_id, plat, ev)
         } else {
@@ -1689,6 +1895,8 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
         }
         if delivered && self.is_connect_running(connect_id) {
           let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+          f.threads.commit_taking(hold_tok)
+          self.save_feishu_threads_state(connect_id, f)
         }
         true
       }
@@ -1726,6 +1934,15 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
       _ => true
     }
     ConnectorEntry::Comma(c) => match c.handle_frame(tr, frame) {
+      station_connects::CommaStep::Connected(_) => {
+        if c.unread_retry.rebuild_if_unread() {
+          match self.on_comma_connected {
+            Some(cb) => cb(connect_id)
+            None => ()
+          }
+        }
+        true
+      }
       station_connects::CommaStep::TaskPut(batch) => {
         let mut all_delivered = self.is_connect_running(connect_id)
         if all_delivered {
@@ -1746,6 +1963,16 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
         }
         if all_delivered && self.is_connect_running(connect_id) {
           c.commit_put(tr, batch)
+        }
+        true
+      }
+      station_connects::CommaStep::TaskReadFile(req) => {
+        match self.on_comma_read_file {
+          Some(cb) => match cb(connect_id, req) {
+            Ok(res) => c.respond_read_file(tr, req.req_id, res)
+            Err(err) => c.respond_error(tr, req.req_id, err)
+          }
+          None => c.respond_error(tr, req.req_id, "task.read_file is not something this station does in this workspace")
         }
         true
       }
@@ -1956,6 +2183,7 @@ pub fn ConnectsOsRuntime::send_message(
   markdown : String,
   files : Array[station_connects::OutboundFile] = [],
   post_key : String = "",
+  card : Option[base_codec::Json] = None,
 ) -> Result[String, String] {
   if self.stopped {
     return Err("connects runtime is stopped")
@@ -1966,14 +2194,11 @@ pub fn ConnectsOsRuntime::send_message(
   }
   let tr = self.bridge.transport(async_ws_writes=true)
   match entry {
-    ConnectorEntry::Slack(s) => s.post_message(tr, thread, markdown, files=files)
-    ConnectorEntry::Feishu(f) => {
-      let reply_root = if thread.thread_ts.length() > 0 { Some(thread.thread_ts) } else { None }
-      f.post_text(tr, thread.channel, reply_root, markdown)
-    }
+    ConnectorEntry::Slack(s) => s.post_message(tr, thread, markdown, files=files, card=card)
+    ConnectorEntry::Feishu(f) => f.post_thread_text(tr, thread, markdown, card=card)
     ConnectorEntry::Comma(c) => {
       let pk = if post_key.length() > 0 { post_key } else { thread.channel + "/" + thread.thread_ts }
-      c.send_post(tr, thread, markdown, pk, files=files)
+      c.send_post(tr, thread, markdown, pk, files=files, card=card)
     }
     ConnectorEntry::Group(g) => g.post_message(tr, thread, markdown, files=files)
   }
@@ -2023,6 +2248,19 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
       Some(ConnectorEntry::Feishu(f)) => {
         f.dedupe.prune(now_ms)
         f.parts.drop_before(now_ms - 60000L)
+        if self.pending_feishu_catchup.contains(cid) && self.is_connect_running(cid) {
+          self.pending_feishu_catchup.remove(cid)
+          let tr = self.bridge.transport(async_ws_writes=true)
+          let plat = match f.domain {
+            station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
+            station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
+          }
+          let _ = f.catch_up(cid, tr, fn(ev : station_connects::ChatEvent) -> Bool {
+            (self.callbacks.on_event)(cid, plat, ev)
+          })
+          self.save_feishu_threads_state(cid, f)
+          actions.push(cid + ":feishu_catch_up")
+        }
         if f.tokens.cached(now_ms) is None && f.machine.is_connected() {
           let req = station_connects::feishu_tenant_token_request(
             f.tokens.base_url,
@@ -2076,6 +2314,7 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
       }
       Some(ConnectorEntry::Comma(c)) => {
         c.dedupe.prune(now_ms)
+        let _ = c.poll_expired_asks(now_ms)
         match c.machine.tick(now_ms) {
           station_connects::SocketAction::SendPing => {
             match c.ws_handle {

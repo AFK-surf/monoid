@@ -115,7 +115,7 @@ test "a whole station made one that only runs tasks from its ⋯, asked first wi
   let (x, y) = t.find("改为只执行任务").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("把「Willow」改为只执行任务？") is Some(_))
+  assert_true(t.find("仅运行任务") is Some(_) && t.find("Willow") is Some(_))
   let (x, y) = t.find_last("改为只执行任务").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
@@ -167,7 +167,7 @@ test "a station's mode changing: under way in its page's head, 改为只执行�
   let (x, y) = t.find("改为只执行任务").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("把「Willow」改为只执行任务？") is None, msg="pressed again while it goes")
+  assert_true(t.find("仅运行任务") is None, msg="pressed again while it goes")
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
   // build-box's page: its 改为完整 station pressed none while it goes
@@ -177,7 +177,7 @@ test "a station's mode changing: under way in its page's head, 改为只执行�
   let (x, y) = t.find("改为完整 station").unwrap()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("把「build-box」改为完整 station？") is None)
+  assert_true(t.find("转为完整 Station") is None)
   assert_eq(calls.filter(fn(m) { m.name == "rig.setMode" }).length(), 0)
 }
 

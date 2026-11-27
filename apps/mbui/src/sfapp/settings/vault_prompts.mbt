@@ -248,7 +248,7 @@ let key_ask_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let key_ask_kv_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+let key_ask_kv_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -267,7 +267,7 @@ let key_ask_scope : @ui.Style = @ui.css("w=Full gap=S1")
 ///|
 /// Field caption label inside the verification block.
 // kept across runs: a value (no field of it changes)
-let key_ask_label : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)
+let key_ask_label : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))), w=Full)
 
 ///|
 /// Requesting device name highlighted prominently in the body so users read it carefully.
@@ -282,7 +282,7 @@ let key_ask_code : @ui.TextStyle = @ui.text_style(size=Heading, weight=Bold, col
 ///|
 /// Which device asks what (14 in the muted).
 // kept across runs: a value (no field of it changes)
-let key_ask_body : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
+let key_ask_body : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))), w=Full)
 
 ///|
 /// The workspace and vault it asks the key to (16 semibold).

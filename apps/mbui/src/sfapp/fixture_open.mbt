@@ -552,6 +552,7 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
     @settings.fixture_machine_sessions(settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }))
   }
   if mode == "chat-station-sheet" {
+    @sf.set_words(fill)
     @sfpages.ref_panel_put(src, "ws1/st1:s-c1", "ws1/st1", "ref-发布清单.md", "发布清单.md")
   }
   // a new workspace over Home: nothing typed yet; and named, an invite code typed that still.fail cloud found wrong
