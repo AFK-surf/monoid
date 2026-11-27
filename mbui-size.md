@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
 | [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
 | [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 2.65 | 3.59 | 14.9 | 37.87 | 57.96 | 33.2 | 67.77 | 101.91 | 136.35 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.6 | 115.56 |
 | [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 129.36 |
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
-| [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.41 |
 | [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.61 |
 | [554dfc3e0](https://github.com/AFK-surf/monoid/commit/554dfc3e067544e3c911965dd49a52ec1d934588) test(station): retry the temp directory removal in | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.31 |
 | [d63accfe9](https://github.com/AFK-surf/monoid/commit/d63accfe908b7b0bb3454206879d453e4015c7f9) perf(station): speed up timeline reads via direct  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.59 |
 | [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.74 |
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
-| [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
