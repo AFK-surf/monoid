@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [36bef9f96](https://github.com/AFK-surf/monoid/commit/36bef9f96a1e71d686c5c71fe550e82cd7ec0dfc) fix(station): end a turn that stays silent after i | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 108.89 | 125.14 |
 | [0c05c70eb](https://github.com/AFK-surf/monoid/commit/0c05c70ebc24863896e6e66b029a60309712c263) feat(mbui): migrate profiles/stations places to pi | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 108.89 | 125.14 |
 | [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 2.67 | 3.61 | 14.99 | 38.02 | 58.24 | 33.33 | 67.99 | 108.89 | 125.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.61 | 115.48 |
 | [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
 | [be4a9e8eb](https://github.com/AFK-surf/monoid/commit/be4a9e8eb72735551e96495fa6d12a247039a6e9) feat(ui): let the reader's layout choose the colum | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
-| [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.7 | 131.79 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.64 |
 | [36bef9f96](https://github.com/AFK-surf/monoid/commit/36bef9f96a1e71d686c5c71fe550e82cd7ec0dfc) fix(station): end a turn that stays silent after i | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.82 |
 | [0c05c70eb](https://github.com/AFK-surf/monoid/commit/0c05c70ebc24863896e6e66b029a60309712c263) feat(mbui): migrate profiles/stations places to pi | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
 | [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.82 |
 | [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.57 |
 | [be4a9e8eb](https://github.com/AFK-surf/monoid/commit/be4a9e8eb72735551e96495fa6d12a247039a6e9) feat(ui): let the reader's layout choose the colum | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.74 |
-| [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
