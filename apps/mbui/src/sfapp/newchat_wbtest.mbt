@@ -818,7 +818,8 @@ test "many stations on wide screen: centered table auto-focuses search, filters 
       .map(fn(n) { n.label })
     }
     let tap_col = fn(col : String) {
-      guard t3.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == col && !n.hidden }) is Some(b) else {
+      let want = @sf.t("web-main.resources.by", args=[("column", col)])
+      guard t3.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == want && !n.hidden }) is Some(b) else {
         @halt.saying("missing column header " + col)
       }
       t3.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)

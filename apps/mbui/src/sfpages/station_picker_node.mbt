@@ -12,19 +12,19 @@ let station_table_from : Int = 6
 ///|
 /// Table column widths (pt) shared strictly between header cells and data cells.
 /// Sized to accommodate both Chinese and English column headers alongside the permanent 12pt sort indicator slot.
-let sp_col_running_w : Double = 72.0
+let sp_col_running_w : Double = 66.0
 
 ///|
-let sp_col_cpu_w : Double = 56.0
+let sp_col_cpu_w : Double = 50.0
 
 ///|
-let sp_col_mem_w : Double = 74.0
+let sp_col_mem_w : Double = 68.0
 
 ///|
-let sp_col_disk_w : Double = 68.0
+let sp_col_disk_w : Double = 62.0
 
 ///|
-let sp_col_net_w : Double = 128.0
+let sp_col_net_w : Double = 116.0
 
 ///|
 let sp_mark_size : Double = 16.0
@@ -1061,7 +1061,7 @@ let sp_cell_station : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_cell_num : @ui.Style = @ui.css("row pr=S1_5 gap=S1_25 align=ACenter justify=JEnd")
+let sp_cell_num : @ui.Style = @ui.css("row pr=S1 gap=S1_25 align=ACenter justify=JEnd")
 
 ///|
 // kept across runs: a value (no field of it changes)

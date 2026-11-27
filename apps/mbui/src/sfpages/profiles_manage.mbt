@@ -1296,7 +1296,6 @@ pub fn profiles_manage_node(
           }
         })
       })
-  let first_item = v.selected(fn() { table_items.keys().get(0) })
   // Narrow layout: delegates directly to `narrow_page_node` (full-page scroll + floating dock)
   s.narrow_blocks(
     fn() {
@@ -1342,7 +1341,7 @@ pub fn profiles_manage_node(
         "table-head" =>
           pm_narrow_head_block(b, all_selected, on_toggle_all, master_disabled, sort_state, on_sort)
         k if k.has_prefix("g/") =>
-          pm_narrow_group_block(b, table_items, first_item, fn() { k })
+          pm_narrow_group_block(b, table_items, fn() { k })
         k if k.has_prefix("r/") =>
           pm_narrow_row_block(b, core, table_items, fn() { k }, batch, stations_list, open_single_policy, loading_key, tips)
         _ => ()
@@ -1359,7 +1358,7 @@ pub fn profiles_manage_node(
     },
     make_reused=fn(b, kind, key) {
       if kind == 1 {
-        pm_narrow_group_block(b, table_items, first_item, key)
+        pm_narrow_group_block(b, table_items, key)
       } else {
         pm_narrow_row_block(b, core, table_items, key, batch, stations_list, open_single_policy, loading_key, tips)
       }
@@ -1709,7 +1708,6 @@ fn pm_narrow_head_block(
 fn pm_narrow_group_block(
   b : @view.View,
   table_items : @signals.KeyedList[String, (String, PmTableItem)],
-  first_item : (String) -> Bool,
   key : () -> String,
 ) -> Unit {
   let title = fn() {
@@ -1723,7 +1721,7 @@ fn pm_narrow_group_block(
     card.box(fn(row) {
       row
       .width_share(Is(1.0))
-      .padding(By(fn() { (18.0, if first_item(key()) { 8.0 } else { 14.0 }, 12.0, 2.0) }))
+      .padding(Is((18.0, 12.0, 12.0, 2.0)))
       |> ignore
       @sf.words_node(row, title, fn() { @sf.theme().chat_list.heading_words }) |> ignore
     })

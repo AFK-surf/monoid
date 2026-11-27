@@ -429,7 +429,7 @@ pub fn data_table_node(
     outer.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     let (card_pad_x, card_ends) = if is_card {
       let (pad, corner) = list_card_in(outer)
-      let ends = if in_pane_node(outer) { card_pad - wide_row_over } else { pad }
+      let ends = pad
       outer.radius(Is(corner)).ground(By(fn() { @ui.tree_theme().color(Card) })).clips(Is(true)) |> ignore
       corner_card_node(outer, fn() { corner }, inset=fn() { pad })
       (pad, ends)
@@ -523,21 +523,12 @@ pub fn data_table_node(
                 card_ends + extra
               }
             }
-            let first_key = host.selected(fn() { keys().get(0) })
             let wrap_group = fn(slot : @view.View, k_fn : () -> String, make_grp : (@view.View, () -> String) -> Unit) {
               slot.grow(Is(1.0)) |> ignore
               if is_card {
-                slot.padding(By(fn() {
-                  let top = if first_key(k_fn()) { 8.0 } else { 14.0 }
-                  (18.0 + card_pad_x, top, 18.0 + card_pad_x, 4.0)
-                }))
-                |> ignore
+                slot.padding(Is((18.0 + card_pad_x, 12.0, 18.0 + card_pad_x, 4.0))) |> ignore
               } else {
-                slot.padding(By(fn() {
-                  let top = if first_key(k_fn()) { 6.0 } else { 12.0 }
-                  (8.0, top, 8.0, 4.0)
-                }))
-                |> ignore
+                slot.padding(Is((8.0, 10.0, 8.0, 4.0))) |> ignore
               }
               slot.box(fn(g) {
                 g.width_share(Is(1.0)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
@@ -672,11 +663,11 @@ let dt_sort_btn_card_end : @ui.Style = @ui.css("row px=S1_5 gap=S0_5 align=ACent
 
 ///|
 // kept across runs: a value (no field of it changes)
-let dt_sort_btn_plain_start : @ui.Style = @ui.css("row px=S1_5 py=S0_5 gap=S0_5 align=ACenter justify=JStart radius=Full")
+let dt_sort_btn_plain_start : @ui.Style = @ui.css("row px=S1 py=S0_5 gap=S0_5 align=ACenter justify=JStart radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let dt_sort_btn_plain_end : @ui.Style = @ui.css("row px=S1_5 py=S0_5 gap=S0_5 align=ACenter justify=JEnd radius=Full")
+let dt_sort_btn_plain_end : @ui.Style = @ui.css("row px=S1 py=S0_5 gap=S0_5 align=ACenter justify=JEnd radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
