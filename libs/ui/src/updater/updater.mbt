@@ -1,7 +1,7 @@
 // High-level auto-updater API wrapping `@hostapi` native update primitives.
 
 ///|
-#derive(Eq)
+#derive(Eq, Debug)
 pub(all) enum UpdatePhase {
   Idle
   Waiting
@@ -14,7 +14,7 @@ pub(all) enum UpdatePhase {
 }
 
 ///|
-#derive(Eq)
+#derive(Eq, Debug)
 pub(all) struct UpdateStatus {
   phase : UpdatePhase
   percent : Int

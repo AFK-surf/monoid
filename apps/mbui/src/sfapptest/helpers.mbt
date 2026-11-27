@@ -108,10 +108,11 @@ pub fn shows(t : @ui.Tester, words : String) -> Bool {
 
 ///|
 pub fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit {
-  let (x, y, w, h) = match t.query(role, label~) {
-    Some(n) => n.rect
-    None => @halt.saying("pressed: no \{Repr(role)} labeled \{label}")
+  let found = t.all(role, label~)
+  if found.length() != 1 {
+    @halt.saying("pressed: expected 1 \{Repr(role)} labeled \{label}, got \{found.length()}:\n\{t.semantics_dump()}")
   }
+  let (x, y, w, h) = found[0].rect
   let at = t.time() + tap_step_ms
   t.advance(tap_step_ms)
   t.touch_raw(0, 9, x + w / 2.0, y + h / 2.0, at)
