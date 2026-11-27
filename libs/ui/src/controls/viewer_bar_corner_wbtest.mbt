@@ -94,14 +94,20 @@ test "viewer_bar_node: left back pill (16pt) and right tools pill (18pt) are ful
     let glass = t.drawn_glass_corners().filter(fn(g) { g.3 >= 30.0 && g.3 <= 40.0 })
     assert_eq(
       glass.length(),
-      2,
-      msg="platform=\{platform} corner=\{corner} inset=\{inset}: expected 2 bar pills, got \{Repr(glass)}",
+      3,
+      msg="platform=\{platform} corner=\{corner} inset=\{inset}: expected 3 bar pills (back, title, tools), got \{Repr(glass)}",
     )
-    let left_pill = if glass[0].0 < glass[1].0 { glass[0] } else { glass[1] }
-    let right_pill = if glass[0].0 < glass[1].0 { glass[1] } else { glass[0] }
+    glass.sort_by(fn(a, b) { a.0.compare(b.0) })
+    let left_pill = glass[0]
+    let title_pill = glass[1]
+    let right_pill = glass[2]
     assert_true(
       (left_pill.3 - 32.0).abs() < 0.01 && (left_pill.4 - 16.0).abs() < 0.01,
       msg="platform=\{platform} corner=\{corner} inset=\{inset}: back pill must be 32pt full capsule (r=16), got \{Repr(left_pill)}",
+    )
+    assert_true(
+      title_pill.3 >= 36.0 && title_pill.3 <= 40.0 && title_pill.4 >= title_pill.3 / 2.0,
+      msg="platform=\{platform} corner=\{corner} inset=\{inset}: title pill must be 36-40pt full capsule, got \{Repr(title_pill)}",
     )
     assert_true(
       (right_pill.3 - 36.0).abs() < 0.01 && (right_pill.4 - 18.0).abs() < 0.01,

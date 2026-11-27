@@ -1125,7 +1125,7 @@ int main(void) {
               dg ? 32.0 / 255.0 : 252.0 / 255.0,
               dg ? 32.0 / 255.0 : 253.0 / 255.0, -19);
       ad[MB_INST + 4] = 16;
-      ad[MB_INST + 6] = 1.0;
+      ad[MB_INST + 6] = (!dg && ci == 1) ? -1.0 : 1.0;  // ci==1 tests clear-invert opt-in
       ad[MB_INST + 7] = 2.0;
       ad[MB_INST + 11] = 0x67 / 255.0;
       ad[MB_INST + 12] = 0.0;
@@ -1176,8 +1176,9 @@ int main(void) {
         CHECK(g_lum > 0.55);
         CHECK(n_lum < 0.25);
       } else if (ci == 3) {
-        CHECK(g_lum >= 0.55 && g_lum <= 0.78);
-        CHECK(n_lum < 0.25);
+        // Dark glass over pure white: same-polarity densified dark glass + light ink (never flips to light gray / black ink)
+        CHECK(g_lum >= 0.25 && g_lum <= 0.48);
+        CHECK(n_lum > 0.80);
       } else if (ci == 4) {
         CHECK(g_lum > 0.55);
         CHECK(n_lum < 0.25);
@@ -1204,7 +1205,7 @@ int main(void) {
         rect_at(ahov + MB_INST, 8, 6, 84, 68, 6,
                 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
         ahov[MB_INST + 4] = 16;
-        ahov[MB_INST + 6] = 1.0;
+        ahov[MB_INST + 6] = -1.0;  // clear-invert opt-in
         ahov[MB_INST + 7] = 2.0;
         ahov[MB_INST + 11] = 0x67 / 255.0;
         ahov[MB_INST + 12] = 0.0;
@@ -1239,7 +1240,7 @@ int main(void) {
       }
     }
 
-    // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
+    // Clear-invert mode (slot 6 < 0): no thick fog blur (fogT = 0, darkDens = baseDens), stays clear like plain dark glass
     double fg[3 * MB_INST];
     double fog_peaks[2] = {0.0, 0.0};
     for (int adaptive_on = 0; adaptive_on <= 1; adaptive_on++) {
@@ -1251,7 +1252,7 @@ int main(void) {
               adaptive_on ? 252.0 / 255.0 : 32.0 / 255.0,
               adaptive_on ? 253.0 / 255.0 : 32.0 / 255.0, -20);
       fg[2 * MB_INST + 4] = 16;
-      fg[2 * MB_INST + 6] = 1.0;
+      fg[2 * MB_INST + 6] = adaptive_on ? -1.0 : 1.0;
       fg[2 * MB_INST + 7] = 1.0;
       fg[2 * MB_INST + 11] = 0x67 / 255.0;
       fg[2 * MB_INST + 12] = 0.0;
@@ -1268,10 +1269,9 @@ int main(void) {
       fog_peaks[adaptive_on] = (0.2126 * sp[0] + 0.7152 * sp[1] + 0.0722 * sp[2]) / 255.0;
       free(px_fg);
     }
-    printf("gles_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
+    printf("gles_render: wave7 clear_invert stripe peak plain_dark=%.3f clear_invert=%.3f\n",
            fog_peaks[0], fog_peaks[1]);
-    CHECK(fog_peaks[1] < fog_peaks[0] - 0.08);
-    CHECK(fog_peaks[1] <= 0.30);
+    CHECK(fabs(fog_peaks[1] - fog_peaks[0]) < 0.08);
 
     // Test A: wide 84x16pt adaptive capsule over deep navy #173255 with centered 16x10pt pure white "{less}" block
     // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
@@ -1280,7 +1280,7 @@ int main(void) {
     rect_at(ta + MB_INST, 42, 31, 16, 10, 0, 1.0, 1.0, 1.0, 0);
     rect_at(ta + 2 * MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
     ta[2 * MB_INST + 4] = 8.0;
-    ta[2 * MB_INST + 6] = 1.0;
+    ta[2 * MB_INST + 6] = -1.0;  // clear-invert opt-in
     ta[2 * MB_INST + 7] = 2.0;
     ta[2 * MB_INST + 11] = 0x67 / 255.0;
     ta[2 * MB_INST + 12] = 0.0;
@@ -1307,7 +1307,7 @@ int main(void) {
     double ta_g = (0.2126 * ta_gp[0] + 0.7152 * ta_gp[1] + 0.0722 * ta_gp[2]) / 255.0;
     double ta_n = (0.2126 * ta_np[0] + 0.7152 * ta_np[1] + 0.0722 * ta_np[2]) / 255.0;
     printf("gles_render: wave7 testA wide_less glass=%.3f ink=%.3f\n", ta_g, ta_n);
-    CHECK(ta_g < 0.28);
+    CHECK(ta_g < 0.35);
     CHECK(ta_n > 0.80);
     free(px_ta);
 
@@ -1317,7 +1317,7 @@ int main(void) {
     rect_at(tb, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
     rect_at(tb + MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -22);
     tb[MB_INST + 4] = 8.0;
-    tb[MB_INST + 6] = 1.0;
+    tb[MB_INST + 6] = -1.0;  // clear-invert opt-in
     tb[MB_INST + 7] = 2.0;
     tb[MB_INST + 11] = 0x67 / 255.0;
     tb[MB_INST + 12] = 0.0;
@@ -1374,7 +1374,7 @@ int main(void) {
       prev_n = cn;
     }
     printf("gles_render: wave7 testB f26_dark glass=%.3f ink=%.3f settling=%d\n", prev_g, prev_n, gl_adaptive_settling());
-    CHECK(prev_g < 0.28);
+    CHECK(prev_g < 0.35);
     CHECK(prev_n > 0.85);
 
     // Schmitt hysteresis: bg=0.40 (in [0.36, 0.46]) for 25 frames stays dark
@@ -1385,7 +1385,7 @@ int main(void) {
     double hyst_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
     free(px_tb);
     printf("gles_render: wave7 testB hyst_0.40 glass=%.3f ink=%.3f\n", hyst_g, hyst_n);
-    CHECK(hyst_g < 0.40);
+    CHECK(hyst_g < 0.48);
     CHECK(hyst_n > 0.80);
 
     // Return to bright bg=0.95: frame 1 intermediate, +26 frames settles back to light and stops settling
@@ -1441,7 +1441,7 @@ int main(void) {
         rect_at(tc + MB_INST, 0, 0, 184, 300, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
         rect_at(tc + 2 * MB_INST, 40, 128, 320, 44, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -23);
         tc[2 * MB_INST + 4] = 22.0;
-        tc[2 * MB_INST + 6] = 1.0;
+        tc[2 * MB_INST + 6] = -1.0;  // clear-invert opt-in
         tc[2 * MB_INST + 7] = 2.0;
         tc[2 * MB_INST + 11] = 0x67 / 255.0;
         tc[2 * MB_INST + 12] = 0.0;
@@ -2644,103 +2644,130 @@ int main(void) {
           free(upx);
         }
 
-        // The capsule under bare words (kind 2, slot 23 their box, as the tree's bare_text_veil puts it): over the
-        // split the worst of what is behind them leaves their ink far short of 4.5:1, so it shows, opposite their ink,
-        // where no glyph is (x=300 over the dark side); over one quiet colour it is not there at all
+        // Capsule-free bare text (kind 7, a[23] < 0, no kind 2 veil):
+        // Over solid dark -> white ink; over solid light -> dark ink; over split -> uniform single ink, zero veil capsule;
+        // Over time (slot 6 = who): smoothly eases ink over ~90ms without jumping and stops settling once landed.
         {
-          double vl[6 * MB_INST];
-          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
-          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
-          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
-          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150, 10);
-          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
-          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          double bt[5 * MB_INST];
+          memcpy(bt, wt, 5 * MB_INST * sizeof(double));
+          for (int i = 0; i < 5; i++) { bt[i * MB_INST + 18] = 400.0; bt[i * MB_INST + 19] = 120.0; }
+          // Split backdrop: no capsule at gap (x=300 over dark side), both glyphs share uniform ink
           glass_forget();
-          gl_present(vl, 6, 0.10, 0.10, 0.10);
+          gl_present(bt, 5, 0.10, 0.10, 0.10);
           unsigned char *vpx = pixels_of_fb(wt_fb);
           unsigned char *gap = vpx + (row * fb_w + 300) * 4;
           unsigned char *ink_l = vpx + (row * fb_w + 70) * 4, *ink_r = vpx + (row * fb_w + 330) * 4;
-          printf("gles_render: bare veil over the split: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", gap[0], gap[1], gap[2],
-                 ink_l[0], ink_l[1], ink_l[2], ink_r[0], ink_r[1], ink_r[2]);
-          CHECK(gap[0] >= 150);
-          CHECK(ink_l[0] == ink_r[0] && ink_l[0] <= 40);
+          printf("gles_render: bare text capsule-free over split: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n",
+                 gap[0], gap[1], gap[2], ink_l[0], ink_l[1], ink_l[2], ink_r[0], ink_r[1], ink_r[2]);
+          CHECK(gap[0] <= 40);  // no light capsule drawn behind gap
+          CHECK(ink_l[0] == ink_r[0] && ink_l[1] == ink_r[1] && ink_l[2] == ink_r[2]);
           free(vpx);
-          // mostly dark behind with a bright part (the mean on the dark side): the words keep their own dark ink, not
-          // turned to light (which the bright part would leave short), their light ground under them instead
-          rect_at(vl, 0, 0, 110, 120, 0, 0.96, 0.96, 0.96, 0);
-          rect_at(vl + MB_INST, 110, 0, 290, 120, 0, 0.10, 0.10, 0.10, 0);
-          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+
+          // Temporal easing: solid dark (white ink) -> solid light (dark ink) eases smoothly over frames
+          gl_set_fixed_dt(1.0 / 60.0);
+          rect_at(bt, 0, 0, 200, 120, 0, 0.10, 0.10, 0.10, 0);
+          for (int i = 0; i < 5; i++) { bt[i * MB_INST + 18] = 400.0; bt[i * MB_INST + 19] = 120.0; }
+          bt[3 * MB_INST + 6] = 7.0; bt[4 * MB_INST + 6] = 7.0;
           glass_forget();
-          gl_present(vl, 6, 0.10, 0.10, 0.10);
-          unsigned char *kpx = pixels_of_fb(wt_fb);
-          unsigned char *kg = kpx + (row * fb_w + 300) * 4;
-          unsigned char *kl = kpx + (row * fb_w + 70) * 4, *kr = kpx + (row * fb_w + 330) * 4;
-          printf("gles_render: bare veil mostly dark: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", kg[0], kg[1], kg[2], kl[0],
-                 kl[1], kl[2], kr[0], kr[1], kr[2]);
-          CHECK(kl[0] == kr[0] && kl[0] <= 40);
-          CHECK(kg[0] >= 150);
-          free(kpx);
-          memcpy(vl, wt, 2 * MB_INST * sizeof(double));
-          // one quiet colour behind: not there (the gaps exactly as drawn with no ground at all)
-          rect_at(vl, 0, 0, 200, 120, 0, 0.10, 0.10, 0.10, 0);
-          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
-          unsigned char *qpx[2];
-          for (int pass = 0; pass < 2; pass++) {
-            vl[3 * MB_INST + 11] = pass == 0 ? 1.0 : 0.0;
-            glass_forget();
-            gl_present(vl, 6, 0.10, 0.10, 0.10);
-            qpx[pass] = pixels_of_fb(wt_fb);
+          gl_present(bt, 5, 0.10, 0.10, 0.10);
+          unsigned char *t0 = pixels_of_fb(wt_fb);
+          int start_ink = t0[(row * fb_w + 70) * 4];
+          free(t0);
+          // Switch backdrop to solid light
+          rect_at(bt, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 0);
+          rect_at(bt + MB_INST, 200, 0, 200, 120, 0, 0.96, 0.96, 0.96, 0);
+          for (int i = 0; i < 5; i++) { bt[i * MB_INST + 18] = 400.0; bt[i * MB_INST + 19] = 120.0; }
+          int seen[40], settling_mid = 0;
+          for (int fr = 0; fr < 40; fr++) {
+            gl_present(bt, 5, 0.96, 0.96, 0.96);
+            unsigned char *tp = pixels_of_fb(wt_fb);
+            seen[fr] = tp[(row * fb_w + 70) * 4];
+            free(tp);
+            if (fr == 6) settling_mid = gl_adaptive_settling();
           }
-          unsigned char *qg = qpx[0] + (row * fb_w + 300) * 4, *qn = qpx[1] + (row * fb_w + 300) * 4;
-          unsigned char *qg2 = qpx[0] + (row * fb_w + 120) * 4, *qn2 = qpx[1] + (row * fb_w + 120) * 4;
-          printf("gles_render: bare veil over one colour: gap=(%d,%d,%d)/(%d,%d,%d) none=(%d,%d,%d)/(%d,%d,%d)\n", qg[0], qg[1],
-                 qg[2], qg2[0], qg2[1], qg2[2], qn[0], qn[1], qn[2], qn2[0], qn2[1], qn2[2]);
-          CHECK(qg[0] == qn[0] && qg2[0] == qn2[0]);
-          free(qpx[0]);
-          free(qpx[1]);
+          for (int fr = 0; fr < 30; fr++) gl_present(bt, 5, 0.96, 0.96, 0.96);
+          int settling_after = gl_adaptive_settling();
+          gl_set_fixed_dt(0.0);
+          printf("gles_render: bare text 90ms ease: start=%d f0=%d f5=%d f39=%d settling=%d/%d\n",
+                 start_ink, seen[0], seen[5], seen[39], settling_mid, settling_after);
+          CHECK(start_ink >= 220);
+          CHECK(seen[0] < start_ink - 5 && seen[0] > seen[39] + 20);
+          CHECK(seen[5] < seen[0] && seen[39] <= 45);
+          CHECK(settling_mid == 1 && settling_after == 0);
+        }
 
-          // Over time (whose in slot 6, as the tree's bare_text_who puts it): quiet first, then the split comes under
-          // them at once: their capsule eases in over frames (none jumping all the way), the frames asked for while it
-          // does, and lands where it is drawn with no state at all; then none asked for
-          {
-            gl_set_fixed_dt(1.0 / 60.0);
-            glass_forget();
-            vl[3 * MB_INST + 11] = 1.0;
-            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
-            gl_present(vl, 6, 0.10, 0.10, 0.10);
-            unsigned char *t0 = pixels_of_fb(wt_fb);
-            int quiet = t0[(row * fb_w + 300) * 4];
-            free(t0);
-            rect_at(vl, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 0);
-            for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
-            int seen[40], monotone = 1, settling_mid = 0;
-            for (int fr = 0; fr < 40; fr++) {
-              gl_present(vl, 6, 0.10, 0.10, 0.10);
-              unsigned char *tp = pixels_of_fb(wt_fb);
-              seen[fr] = tp[(row * fb_w + 300) * 4];
-              free(tp);
-              if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
-              if (fr == 10) settling_mid = gl_adaptive_settling();
-            }
+        // Apple .soft progressive blur (kind 5, a[22] = -1.0, col.a = 0.96):
+        // Same-polarity backdrop -> matches dark ground; opposite-polarity white -> dissolves smoothly at top, fades at bottom.
+        // Plus P1-1 regression: more_contrast dark glass (tint_a = 0.52 -> is_dark == 2) over white must densify!
+        {
+          double ap[2 * MB_INST];
+          memset(ap, 0, sizeof(ap));
+          rect_at(ap, 0, 0, 400, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(ap + MB_INST, 0, 0, 400, 68.0, 5, 0.08, 0.08, 0.08, -56);
+          ap[MB_INST + 6] = 1.0; ap[MB_INST + 7] = 12.0; ap[MB_INST + 11] = 0.96; ap[MB_INST + 15] = 1.0;
+          ap[MB_INST + 22] = -1.0; ap[MB_INST + 54] = 68.0; ap[MB_INST + 55] = 20.0;
+          for (int i = 0; i < 2; i++) { ap[i * MB_INST + 18] = 400.0; ap[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(ap, 2, 0.08, 0.08, 0.08);
+          unsigned char *px_same = pixels_of_fb(wt_fb);
+          unsigned char *ps = px_same + ((fb_h - 1 - 16) * fb_w + 200) * 4;
+          int same_r = ps[0];
+          free(px_same);
 
-            for (int fr = 0; fr < 30; fr++) gl_present(vl, 6, 0.10, 0.10, 0.10);
-            int settling_after = gl_adaptive_settling();
-            // what it lands at: drawn with no state (whose 0)
-            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
-            glass_forget();
-            gl_present(vl, 6, 0.10, 0.10, 0.10);
-            unsigned char *tz = pixels_of_fb(wt_fb);
-            int landed = tz[(row * fb_w + 300) * 4];
-            free(tz);
-            gl_set_fixed_dt(0.0);
-            printf("gles_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
-                   quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
-            CHECK(seen[0] > quiet && seen[0] < landed - 40);
-            CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
-            CHECK(monotone);
-            CHECK(abs(seen[39] - landed) <= 2);
-            CHECK(settling_mid == 1 && settling_after == 0);
-          }
+          rect_at(ap, 0, 0, 400, 120, 0, 1.0, 1.0, 1.0, 0);
+          for (int i = 0; i < 2; i++) { ap[i * MB_INST + 18] = 400.0; ap[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(ap, 2, 1.0, 1.0, 1.0);
+          unsigned char *px_opp = pixels_of_fb(wt_fb);
+          unsigned char *po_top = px_opp + ((fb_h - 1 - 10) * fb_w + 200) * 4;
+          unsigned char *po_bot = px_opp + ((fb_h - 1 - 65) * fb_w + 200) * 4;
+          int opp_top_r = po_top[0], opp_bot_r = po_bot[0];
+          free(px_opp);
+          printf("gles_render: soft_prog_blur dark_on_dark=%d dark_on_white_top=%d bot=%d\n",
+                 same_r, opp_top_r, opp_bot_r);
+          CHECK(abs(same_r - 20) <= 3);
+          CHECK(opp_top_r <= 45);
+          CHECK(opp_bot_r >= 225);
+
+          // P1-1 regression: more_contrast dark glass (tint_a = 0.52 -> is_dark == 2) over white
+          double mc[2 * MB_INST];
+          memset(mc, 0, sizeof(mc));
+          rect_at(mc, 0, 0, 400, 120, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(mc + MB_INST, 120, 20, 160, 80, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -57);
+          mc[MB_INST + 4] = 20.0; mc[MB_INST + 6] = 1.0; mc[MB_INST + 7] = 2.0;
+          mc[MB_INST + 11] = 0.52; mc[MB_INST + 12] = 0.0; mc[MB_INST + 13] = 10.0;
+          mc[MB_INST + 14] = -1.0; mc[MB_INST + 15] = 1.0;
+          for (int i = 0; i < 2; i++) { mc[i * MB_INST + 18] = 400.0; mc[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(mc, 2, 1.0, 1.0, 1.0);
+          unsigned char *px_mc = pixels_of_fb(wt_fb);
+          int mc_r = px_mc[((fb_h - 1 - 60) * fb_w + 200) * 4];
+          free(px_mc);
+          printf("gles_render: dark_more_contrast_white r=%d (must densify <= 112)\n", mc_r);
+          CHECK(mc_r >= 60 && mc_r <= 112);
+
+          // P1-1 / R4 multi-frame easing regression: is_dark == 2 (tint_a = 0.52) switching dark -> white eases smoothly
+          // instead of snapping, and converges to densified dark glass with settling == 0.
+          gl_set_fixed_dt(1.0 / 60.0);
+          rect_at(mc, 0, 0, 400, 120, 0, 0.05, 0.05, 0.05, 0);
+          glass_forget();
+          gl_present(mc, 2, 0.05, 0.05, 0.05);
+          rect_at(mc, 0, 0, 400, 120, 0, 1.0, 1.0, 1.0, 0);
+          gl_present(mc, 2, 1.0, 1.0, 1.0);
+          CHECK(gl_adaptive_settling() == 1);
+          unsigned char *px_mc1 = pixels_of_fb(wt_fb);
+          int mc_f1 = px_mc1[((fb_h - 1 - 60) * fb_w + 200) * 4];
+          free(px_mc1);
+          for (int k = 0; k < 40; k++) gl_present(mc, 2, 1.0, 1.0, 1.0);
+          unsigned char *px_mc40 = pixels_of_fb(wt_fb);
+          int mc_f40 = px_mc40[((fb_h - 1 - 60) * fb_w + 200) * 4];
+          free(px_mc40);
+          printf("gles_render: dark_more_contrast_ease f1=%d f40=%d settling=%d\n",
+                 mc_f1, mc_f40, gl_adaptive_settling());
+          CHECK(mc_f40 < mc_f1 - 3);
+          CHECK(mc_f40 >= 60 && mc_f40 <= 112);
+          CHECK(gl_adaptive_settling() == 0);
+          gl_set_fixed_dt(0.0);
         }
 
         // Vertical split multiline bare kind==7: same column, top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
@@ -3011,7 +3038,7 @@ int main(void) {
           double ld_p[3 * MB_INST];
           rect_at(ld_p, 0, 0, 400, 120, 0, 0.08, 0.08, 0.08, 0);
           rect_at(ld_p + MB_INST, 150, 20, 100, 36, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -57);
-          ld_p[MB_INST + 4] = 18.0; ld_p[MB_INST + 6] = 1.0; ld_p[MB_INST + 7] = 1.2;
+          ld_p[MB_INST + 4] = 18.0; ld_p[MB_INST + 6] = -1.0; ld_p[MB_INST + 7] = 1.2;
           ld_p[MB_INST + 11] = 0x67 / 255.0; ld_p[MB_INST + 12] = 0.6; ld_p[MB_INST + 13] = 14.0;
           ld_p[MB_INST + 14] = -1.0; ld_p[MB_INST + 15] = 1.0;
           ld_p[MB_INST + 21] = 20.0; ld_p[MB_INST + 22] = 0.06; ld_p[MB_INST + 23] = 0.0;
@@ -4351,7 +4378,7 @@ int main(void) {
     } p0_cases[5] = {
       {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  34,  34,  34, 3},
       {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0,  58,  59,  62, 3},
-      {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 174, 174, 174, 4},
+      {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0,  90,  90,  90, 6},
       {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 88, 205, 255, 4},
       {"pure_clear",    0.0, 1.0, 64.0/255.0,            1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
     };
@@ -6143,21 +6170,23 @@ int main(void) {
       gl_present(dk, 4, 1.0, 1.0, 1.0);
       CHECK(gl_adaptive_settling() == 0);
 
-      // Flip backdrop white -> black: frame 1 must immediately settle (settling == 0) and match frame 20
+      // Flip backdrop white -> black: same-polarity dark (is_dark=1) eases smoothly over ~70ms and settles within 30 frames
       rect_at(dk, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
       gl_present(dk, 4, 0.0, 0.0, 0.0);
+      CHECK(gl_adaptive_settling() == 1);
+      for (int k = 0; k < 30; k++) gl_present(dk, 4, 0.0, 0.0, 0.0);
       CHECK(gl_adaptive_settling() == 0);
-      unsigned char *px_f1 = pixels_of_fb(surface);
-      for (int k = 0; k < 20; k++) gl_present(dk, 4, 0.0, 0.0, 0.0);
-      unsigned char *px_f20 = pixels_of_fb(surface);
-      CHECK(memcmp(px_f1, px_f20, (size_t)fb_w * fb_h * 4) == 0);
-      free(px_f1); free(px_f20);
+      unsigned char *px_f30 = pixels_of_fb(surface);
+      for (int k = 0; k < 5; k++) gl_present(dk, 4, 0.0, 0.0, 0.0);
+      unsigned char *px_f35 = pixels_of_fb(surface);
+      CHECK(memcmp(px_f30, px_f35, (size_t)fb_w * fb_h * 4) == 0);
+      free(px_f30); free(px_f35);
 
-      // Mode switch 1 -> 2 (0x67 -> 0xA8) and 2 -> 1 over white backdrop: atomic on frame 1 with settling == 0
+      // Mode switch 1 -> 2 (0x67 -> 0xA8, high opacity snaps on frame 1) and 2 -> 1 (eases smoothly) over white backdrop
       rect_at(dk, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
-      gl_present(dk, 4, 1.0, 1.0, 1.0);
+      for (int k = 0; k < 30; k++) gl_present(dk, 4, 1.0, 1.0, 1.0);
       CHECK(gl_adaptive_settling() == 0);
-      dk[MB_INST + 11] = 0xA8 / 255.0; // is_dark = 2
+      dk[MB_INST + 11] = 0xE8 / 255.0; // near-solid (>= 0.88) snaps on frame 1
       gl_present(dk, 4, 1.0, 1.0, 1.0);
       CHECK(gl_adaptive_settling() == 0);
       unsigned char *px_m2_f1 = pixels_of_fb(surface);
@@ -6167,12 +6196,9 @@ int main(void) {
       free(px_m2_f1); free(px_m2_f10);
       dk[MB_INST + 11] = 0x67 / 255.0; // back to is_dark = 1
       gl_present(dk, 4, 1.0, 1.0, 1.0);
+      CHECK(gl_adaptive_settling() == 1);
+      for (int k = 0; k < 30; k++) gl_present(dk, 4, 1.0, 1.0, 1.0);
       CHECK(gl_adaptive_settling() == 0);
-      unsigned char *px_m1_f1 = pixels_of_fb(surface);
-      for (int k = 0; k < 10; k++) gl_present(dk, 4, 1.0, 1.0, 1.0);
-      unsigned char *px_m1_f10 = pixels_of_fb(surface);
-      CHECK(memcmp(px_m1_f1, px_m1_f10, (size_t)fb_w * fb_h * 4) == 0);
-      free(px_m1_f1); free(px_m1_f10);
 
       // Light-mode consecutive active scroll skips readback while scrolling, resumes on first idle frame & converges <= 4 frames
       glass_forget();
@@ -6300,14 +6326,13 @@ int main(void) {
         size_t in_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 19 * S) * 4;
         size_t dn_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 75 * S) * 4;
         size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 84 * S) * 4;
-        CHECK(px1[dg_off] < 70 && px1[in_off] > 200);
-        // Dark slot over black backdrop has target=0.0 (latch=64), whereas light slot settles toward 1.0:
-        // dark neutral ink & kind==0 highlight on exposed dark region must stay unlifted (<90) and <=1 LSB vs frame 30.
+        CHECK(px1[dg_off] < 90 && px1[in_off] > 200);
+        // Dark slot over black backdrop eases smoothly toward 0.0 (latch=64), never inverting dark neutral ink or highlight.
         CHECK(px1[dn_off] < 90 && px1[hl_off] < 90);
-        CHECK(abs((int)px1[dg_off] - (int)px30[dg_off]) <= 1);
+        CHECK(px30[dg_off] < 70 && px30[in_off] > 200);
         CHECK(abs((int)px1[in_off] - (int)px30[in_off]) <= 1);
         CHECK(abs((int)px1[dn_off] - (int)px30[dn_off]) <= 1);
-        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 8);
         free(px1); free(px30);
       }
       // Shared-capture (same tid, Glass::sharing()) concentric identical-box light-then-dark overlap:
@@ -6343,7 +6368,7 @@ int main(void) {
         size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 56 * S) * 4;
         CHECK(px1[dn_off] < 90 && px1[hl_off] < 90);
         CHECK(abs((int)px1[dn_off] - (int)px30[dn_off]) <= 1);
-        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 8);
         free(px1); free(px30);
       }
       // Interleaved shared-capture (Glass::sharing()) order:
@@ -6363,9 +6388,9 @@ int main(void) {
         rect_at(iv + 2 * MB_INST, 67, 22, 1, 16, 0, 0.15, 0.15, 0.15, 0);
         iv[2 * MB_INST + 11] = 0.20;
         iv[2 * MB_INST + 21] = 50.0; iv[2 * MB_INST + 22] = 30.0; iv[2 * MB_INST + 23] = -40.0;
-        // 3: narrow concentric light glass [34, 66] sharing tid=-61
+        // 3: narrow concentric light glass [34, 66] sharing tid=-61 (clear-invert opt-in)
         rect_at(iv + 3 * MB_INST, 34, 10, 32, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -61);
-        iv[3 * MB_INST + 4] = 16.0; iv[3 * MB_INST + 6] = 1.0; iv[3 * MB_INST + 7] = 1.0;
+        iv[3 * MB_INST + 4] = 16.0; iv[3 * MB_INST + 6] = -1.0; iv[3 * MB_INST + 7] = 1.0;
         iv[3 * MB_INST + 11] = 0x67 / 255.0; iv[3 * MB_INST + 13] = 4.0; iv[3 * MB_INST + 14] = -1.0; iv[3 * MB_INST + 15] = 1.0;
         // 4: dark neutral ink [46, 54] drawn AFTER light glass inside [34, 66]
         rect_at(iv + 4 * MB_INST, 46, 24, 8, 12, 7, 0.20, 0.20, 0.20, 0);
@@ -6380,7 +6405,7 @@ int main(void) {
         size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + (size_t)lround(67.5 * S)) * 4;
         size_t li_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 50 * S) * 4;
         CHECK(px1[hl_off] < 90);
-        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 8);
         // Ink drawn after light glass advanced to the settling light slot: moves smoothly from mid-settle to lifted (>180)
         CHECK(px30[li_off] > 180 && abs((int)px30[li_off] - (int)px1[li_off]) > 20);
         free(px1); free(px30);
@@ -6921,7 +6946,7 @@ int main(void) {
     th[4 * MB_INST + 21] = 100.0; th[4 * MB_INST + 22] = 60.0; th[4 * MB_INST + 23] = -48.0;
     // Capsule B over opaque pure black stage: (220, 36, 160, 48), center (300, 60)
     rect_at(th + 5 * MB_INST, 220, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -382);
-    th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = 1.0; th[5 * MB_INST + 7] = 2.0;
+    th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = -1.0; th[5 * MB_INST + 7] = 2.0;
     th[5 * MB_INST + 11] = 0x67 / 255.0; th[5 * MB_INST + 12] = 0.0; th[5 * MB_INST + 13] = 14.0;
     th[5 * MB_INST + 14] = -1.0; th[5 * MB_INST + 15] = 1.0;
     // Capsule B text (kind==7, 0x18181BFF) at center (256, 60)
@@ -6937,7 +6962,7 @@ int main(void) {
     th[8 * MB_INST + 11] = 0.70;
     // Capsule C over 70% dark scrim on kind==9 hole: (20, 160, 160, 50), center (100, 185)
     rect_at(th + 9 * MB_INST, 20, 160, 160, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -383);
-    th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = 1.0; th[9 * MB_INST + 7] = 2.0;
+    th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = -1.0; th[9 * MB_INST + 7] = 2.0;
     th[9 * MB_INST + 11] = 0x67 / 255.0; th[9 * MB_INST + 12] = 0.0; th[9 * MB_INST + 13] = 14.0;
     th[9 * MB_INST + 14] = -1.0; th[9 * MB_INST + 15] = 1.0;
     // Capsule C dark adaptive text (kind==7, #1A1A1A) at center (100, 185)

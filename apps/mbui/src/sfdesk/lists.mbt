@@ -56,7 +56,7 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
   let jobs = fn() { foot_jobs_of(src, workspace) }
   o.show(at_once=true, fn() { trouble() is Some(_) || jobs() > 0 }, fn(band) {
     @sf.style_node(band, fn() { foot_band })
-    band.adaptive_ink(Is(true)).fades(Is((0.0, 14.0, 0.0, 0.0))) |> ignore
+    band.fades(Is((0.0, 14.0, 0.0, 0.0))) |> ignore
     band.box(fn(scrim) {
       scrim
       .over(Is(true))

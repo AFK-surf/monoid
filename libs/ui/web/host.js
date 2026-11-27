@@ -531,15 +531,9 @@
     }
     return vec3(out_c);
   }
-  // (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of
-  // grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground
-  // (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)
+  // (the ink bare words of ink rgb take over r, what is behind them: unified single ink by trimmed mean r.x)
   vec3 vs_bare_ink_pick(vec3 rgb, vec3 r) {
-    vec3 ink = vs_bare_ink_for(rgb, r.x);
-    if ((vs_luma(ink) < 0.5) == (vs_luma(rgb) < 0.5)) return ink;
-    float yi = vs_wcag_luma(ink);
-    float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
-    return cr >= 4.5 ? ink : rgb;
+    return vs_bare_ink_for(rgb, r.x);
   }
 `;
   const VS = `#version 300 es
@@ -613,7 +607,7 @@
         if (d <= 2.0) {
           vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
           int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
-          bool slot_dark = (code >= 48 && code <= 208);
+          bool slot_dark = (code >= 48 && code <= 95);
           bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);
           bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
           bool in_cur = ((u_ad_cur & (1 << i)) != 0);
@@ -634,7 +628,7 @@
             float d = length(diff);
             vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
             int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
-            bool slot_dark = (code >= 48 && code <= 208);
+            bool slot_dark = (code >= 48 && code <= 95);
             bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);
             bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
             bool in_cur = ((u_ad_cur & (1 << i)) != 0);
@@ -655,34 +649,12 @@
     capCenter = ac;
     capHalf = vec2(0.0);
     float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), prefer_dark ? 0.0 : 1.0);
-    return vec3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);
+    float fbLatch = prefer_dark ? (64.0 / 255.0) : 0.0;
+    return vec3(1.0 - smoothstep(0.06, 0.34, bgL), bgL, fbLatch);
   }
   ${BARE_INK_GLSL}
   vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
     return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));
-  }
-  // (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)
-  vec3 vs_bare_tone(vec2 ac, vec2 hh) {
-    vec3 tone = vec3(0.0, 0.0, 0.0);
-    for (int ix = -2; ix <= 2; ix++) {
-      tone += vs_backdrop(vec2(ac.x + float(ix) * (hh.x * 0.38), ac.y));
-    }
-    return tone * 0.2;
-  }
-  // (the capsule under bare words of ink col, their box ac ± h, as its state st has it (VEIL_FS: how far it shows, r;
-  // which side of grey the words are, g: 1 dark), or worked out now where it has none: the blurred backdrop's own
-  // colour pulled to the side opposite the words' ink, as opaque as the worst of what is behind them leaves them
-  // short of 4.5:1, from none there to all of it at 2:1)
-  vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h, vec4 st) {
-    vec2 hh = max(h, vec2(1.0));
-    if (st.a < 0.5) {
-      vec3 r = vs_backdrop_wcag_range(ac, hh);
-      vec3 ink = vs_bare_ink_pick(col.rgb, r);
-      float yi = vs_wcag_luma(ink);
-      float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
-      st = vec4(1.0 - smoothstep(2.0, 4.5, cr), vs_luma(ink) < 0.5 ? 1.0 : 0.0, 0.0, 1.0);
-    }
-    return vec4(mix(vs_bare_tone(ac, hh), vec3(st.g), mix(0.62, 0.72, st.g)), col.a * st.r * mix(0.72, 0.86, st.g));
   }
   // (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state
   // says (st.g, eased over time: VEIL_FS), or picked now where they have none)
@@ -707,11 +679,7 @@
     if (origL >= 0.5) {
       if (capHalf.x <= 0.0) return rgb;
       int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));
-      if (code < 48 || code > 208) return rgb;
-      if (code >= 96) {
-        float darkL = clamp(1.0 - origL, 0.06, 0.10);
-        return vec3(darkL);
-      }
+      if (code < 48 || code > 95) return rgb;
       float bgL = capsuleBgL;
       if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {
         vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
@@ -746,9 +714,17 @@
       float liftW = smoothstep(0.03, 0.08, bgL);
       return mix(rgb, max(rgb, vec3(0.95)), liftW);
     }
-    float inkT = smoothstep(0.0, 1.0, capsuleDarkT);
-    float lightL = clamp(1.06 - origL, 0.68, 0.98);
-    return mix(rgb, vec3(lightL), inkT);
+    int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));
+    if (code >= 160) {
+      float inkT = smoothstep(0.0, 1.0, capsuleDarkT);
+      float lightL = clamp(1.06 - origL, 0.68, 0.98);
+      return mix(rgb, vec3(lightL), inkT);
+    }
+    if (origL > 0.16) {
+      float darkT = smoothstep(0.0, 1.0, capsuleDarkT);
+      return mix(rgb, min(rgb, vec3(0.20)), darkT);
+    }
+    return rgb;
   }
   #endif
   out vec2 v_pos; out vec2 v_cpos;
@@ -784,12 +760,12 @@
         v_color.rgb = a_pad.w < 0.0
           ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))
           : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
-      } else if (kind == 2 && a_pad.w < 0.0) {
-        v_color = vs_bare_veil_at(a_color, a_pad.yz, vs_bare_half(-a_pad.w), vs_bare_state(a_p.z));
       } else if (kind == 0 && a_pad.w < 0.0) {
         float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
         vec2 capCenter, capHalf;
-        float darkT = vs_ad_sample_ink(a_pad.yz, a_rect.xy + a_rect.zw * 0.5, -a_pad.w * 0.5, false, capCenter, capHalf).x;
+        vec3 cap = vs_ad_sample_ink(a_pad.yz, a_rect.xy + a_rect.zw * 0.5, -a_pad.w * 0.5, false, capCenter, capHalf);
+        int code = int(floor(clamp(cap.z, 0.0, 1.0) * 255.0 + 0.5));
+        float darkT = (code >= 160) ? cap.x : 0.0;
         if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
           v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
           v_color.a = mix(a_color.a, (a_color.a >= 0.75) ? a_color.a : min(a_color.a * 1.45, 0.28), darkT);
@@ -1284,7 +1260,7 @@
     float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
     return (hi * 256.0 + lo) / 65535.0;
   }
-  float ad_sample(vec2 ac, float fallback_r, bool is_dark_glass, float tint_a) {
+  vec2 ad_sample(vec2 ac, float fallback_r, bool is_dark_glass, float tint_a) {
     if (u_ad_n > 0) {
       int best = -1;
       float best_d = 1e9;
@@ -1294,7 +1270,7 @@
         if (d <= 2.0 && d < best_d) {
           vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
           int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
-          bool slot_dark = (code >= 48 && code <= 208);
+          bool slot_dark = (code >= 48 && code <= 95);
           if (slot_dark != is_dark_glass) continue;
           best = i; best_d = d;
         }
@@ -1309,7 +1285,7 @@
             if (d < best_d) {
               vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
               int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
-              bool slot_dark = (code >= 48 && code <= 208);
+              bool slot_dark = (code >= 48 && code <= 95);
               if (slot_dark != is_dark_glass) continue;
               best = i; best_d = d;
             }
@@ -1318,19 +1294,16 @@
       }
       if (best >= 0) {
         vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
-        if (is_dark_glass) {
-          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
-          if (code >= 48 && code <= 208) return (code >= 96) ? 1.0 : 0.0;
-        }
-        return mb_unpack16(px.rg);
+        return vec2(mb_unpack16(px.rg), 1.0);
       }
     }
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), is_dark_glass ? 0.0 : 1.0);
-    if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);
     float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));
     float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
+    if (is_dark_glass) return vec2(smoothstep(0.08, 0.42, bgL) * (1.0 - extra), 0.0);
     float c_eq = mix(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));
-    return 1.0 - smoothstep(0.12, 0.21, c_eq * c_eq);
+    float effBgL = c_eq * c_eq;
+    return vec2((1.0 - smoothstep(0.06, 0.34, effBgL)) * (1.0 - extra), 0.0);
   }
   #endif
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
@@ -1622,6 +1595,7 @@
         glintFaceGain = mix(0.14, 0.25, clearVeil);
         glintVib = mix(2.4, 1.5, clearVeil);
       } else if (is_adaptive) {
+        bool is_inverting = (v_p.z < 0.0);
         #if MB_LIQUID_SINGLE
         vec2 ac = v_rect.xy + v_rect.zw * 0.5;
         float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;
@@ -1629,14 +1603,16 @@
         vec2 ac = (u_gb.xy + u_gb.zw) * 0.5;
         float ar = max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0) * 0.5;
         #endif
-        float val = ad_sample(ac, ar, is_dark, col.a);
+        vec2 ad = ad_sample(ac, ar, is_dark, col.a);
+        float val = ad.x;
+        bool ad_slotted = (ad.y > 0.5);
         if (u_through > 0.5) val *= bgA;
         float baseDens = mix(0.404, col.a, smoothstep(0.405, 0.46, col.a));
         if (is_dark) {
           float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
-          float brightT = val * solidFade * (1.0 - extra);
-          fogT = brightT;
-          brightTSaved = brightT;
+          float denseT = val * solidFade;
+          fogT = denseT * 0.65;
+          brightTSaved = 0.0;
           regExtra = extra;
           float darkPow = pow(extra, 1.00);
           float darkCPow = pow(extra, 1.05);
@@ -1645,21 +1621,21 @@
           float darkTrans = mix(0.59, 0.0, darkPow);
           float darkLift = mix(0.55, 0.0, extra);
           float darkChroma = mix(1.05, 0.0, darkCPow);
-          emission = mix(darkEm, vec3(0.495), brightT);
-          transmittance = mix(darkTrans, 0.187, brightT);
-          lift = mix(darkLift, 0.04, brightT);
-          chromaGain = mix(darkChroma, 0.45, brightT);
-          darkAdGlareW = (1.0 - brightT) * (1.0 - extra);
+          emission = darkEm;
+          transmittance = mix(darkTrans, min(darkTrans, 0.24), denseT);
+          lift = mix(darkLift, 0.10, denseT);
+          chromaGain = mix(darkChroma, 0.55, denseT);
+          darkAdGlareW = (1.0 - extra);
           contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
           glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
-        } else {
+        } else if (is_inverting && ad_slotted) {
           float darkMix = val * solidFade;
-          fogT = darkMix;
+          fogT = 0.0;
           darkMixSaved = darkMix;
           float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
           float lightPow = pow(extra, 1.35);
           float lightBaseDens = mix(0.525, 1.0, lightPow);
-          float darkDens = max(baseDens, mix(baseDens, 0.64, darkMix));
+          float darkDens = baseDens;
           float darkExtra = clamp((darkDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
           regExtra = mix(extra, darkExtra, darkMix);
           float darkPow = pow(darkExtra, 1.00);
@@ -1674,6 +1650,24 @@
           chromaGain = mix(mix(1.00, 0.0, lightPow), mix(1.05, 0.0, darkCPow), darkMix);
           contourStr = mix(0.43, 0.88, darkMix);
           contourDirAmt = mix(0.77, 1.0, darkMix);
+          bevelShadowStr = 0.036;
+          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+        } else {
+          float denseT = val * solidFade;
+          fogT = denseT * 0.60;
+          darkMixSaved = 0.0;
+          float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
+          regExtra = extra;
+          float lightPow = pow(extra, 1.35);
+          float lightBaseDens = mix(0.525, 1.0, lightPow);
+          float lightDens = mix(lightBaseDens, max(lightBaseDens, 0.74), denseT);
+          float lightLift = mix(0.04, 0.14, smoothstep(0.0, 0.16, extra)) * (1.0 - smoothstep(0.40, 0.95, extra));
+          emission = mix(vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0), col.rgb, extra) * lightDens;
+          transmittance = 1.0 - lightDens;
+          lift = lightLift * (1.0 - 0.5 * denseT);
+          chromaGain = mix(mix(1.00, 0.0, lightPow), 0.55, denseT);
+          contourStr = 0.43;
+          contourDirAmt = 0.77;
           bevelShadowStr = 0.036;
           glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
         }
@@ -1828,7 +1822,7 @@
       float baseLum = Lt + (Lc - Lt) * darkKneeW + (max(transmittance - Dc, 0.0) - Lt) * lightKneeW;
       float darkKS = pow(kDenom, -0.075);
       float kneeScale = 1.0 + (darkKS - 1.0) * darkKneeW + (dInv - 1.0) * lightKneeW;
-      vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z * kneeScale);
+      vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * abs(v_p.z) * kneeScale);
       if (darkAdGlareW > 0.001) {
         if (baseLum > 0.18) {
           float over = baseLum - 0.18;
@@ -2266,14 +2260,12 @@
       // the foot and right less), 0.5 wide
       bool prog_glass = (v_pad.z < -0.5);
       vec3 g3 = backdrop(p);
-      float fr_s = fade_r * fade_r * (3.0 - 2.0 * fade_r);
-      float ps = prog_glass ? fr_s : 1.0;
-      float ts = prog_glass ? fr_s : 1.0;
+      float u_soft = smoothstep(0.0, 0.82, fade_r);
+      float soft_w = pow(u_soft, 1.35);
+      float ps = prog_glass ? soft_w : 1.0;
       float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
-      float bg_diff = (prog_glass && col.a > 0.001) ? smoothstep(0.22, 0.72, abs(luma(col.rgb) - luma(g3))) : 0.0;
-      float base_a = (prog_glass && col.a > 0.001) ? mix(col.a, min(0.86, col.a + 0.34), bg_diff) : col.a;
-      float ta = prog_glass ? (base_a * ts) : col.a;
       g3 = max(mix(vec3(luma(g3)), g3, sat), 0.0);
+      float ta = prog_glass ? (col.a * soft_w) : col.a;
       g3 = g3 * (1.0 - ta) + col.rgb * ta;
       if (v_c2.x + v_c2.y + v_c2.z > 0.0) {
         float edge = clamp(0.5 + (d + 0.5) * u_scale, 0.0, 1.0);
@@ -2447,7 +2439,8 @@
       float sig1 = pow(sp, 1.0 / kf);
       // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from
       // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost
-      float rs = r * r;
+      float u_b = smoothstep(0.08, 0.92, r);
+      float rs = u_b * u_b;
       float target_px = sp * rs;
       if (target_px <= sig1 || kf <= 1.05) {
         vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;
@@ -2555,9 +2548,9 @@
     o = s / wsum;
   }`;
 
-  // The state of bare words over time (veil*): each its slot's texel, how far its capsule shows (r) and which side of
-  // grey its words are (g: 1 dark), eased towards what is behind them now (as the vertex shader works it out where
-  // they have no state: vs_bare_veil_at) over u_param.w seconds; a slot new takes it at once (a = 1: kept).
+  // The state of bare words over time (veil*): each its slot's texel, easing which side of
+  // grey its words are (g: 1 dark) towards what is behind them now over u_param.w seconds;
+  // a slot new takes it at once (a = 1: kept). Bare text is capsule-free (r unused).
   const VEIL_FS = `#version 300 es
   precision highp float;
   precision highp int;
@@ -2614,8 +2607,10 @@
   }
   void main() {
     float is_dark = u_param.x;
-    bool is_through = u_param.y > 1.5;
-    float is_new = u_param.y - (is_through ? 2.0 : 0.0);
+    bool is_inverting = u_param.y > 3.5;
+    float p1 = u_param.y - (is_inverting ? 4.0 : 0.0);
+    bool is_through = p1 > 1.5;
+    float is_new = p1 - (is_through ? 2.0 : 0.0);
     float dt = u_param.z;
     float hole_y = (is_dark > 0.5) ? 0.0 : 1.0;
     vec2 c = u_box.xy, h = u_box.zw;
@@ -2638,31 +2633,31 @@
     vec4 prev = texelFetch(u_prev, ivec2(sid, 0), 0);
     float prevT = mb_unpack16(prev.rg);
     float latch, target;
-    if (is_dark > 1.5) {
-      target = 0.0;
+    float slot_tint_a = (is_dark > 0.5) ? max(is_dark - (is_dark > 1.5 ? 2.0 : 1.0), 0.0) : max(-is_dark, 0.0);
+    if (is_dark > 0.5) {
+      float baseDens = mix(0.404, slot_tint_a, smoothstep(0.405, 0.46, slot_tint_a));
+      float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
+      target = smoothstep(0.08, 0.42, bgL) * (1.0 - extra);
       latch = 64.0 / 255.0;
-    } else if (is_dark > 0.5) {
-      int code = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));
-      bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);
-      bool prev_on = had_dark && (code >= 96);
-      bool on = prev_on ? (bgL > 0.20) : (bgL >= 0.26);
-      target = on ? 1.0 : 0.0;
-      latch = on ? (128.0 / 255.0) : (64.0 / 255.0);
     } else {
-      float tint_a = max(-is_dark, 0.0);
-      float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));
+      float baseDens = mix(0.404, slot_tint_a, smoothstep(0.405, 0.46, slot_tint_a));
       float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
       float c_eq = mix(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));
       float effBgL = c_eq * c_eq;
-      int pcode = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));
-      bool prev_dark = (is_new <= 0.5) && (pcode > 208);
-      bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);
-      target = on ? 1.0 : 0.0;
       float q = floor(extra * 46.0 + 0.5);
-      latch = on ? ((255.0 - q) / 255.0) : (q / 255.0);
+      if (is_inverting) {
+        int pcode = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));
+        bool prev_dark = (is_new <= 0.5) && (pcode > 208);
+        bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);
+        target = on ? 1.0 : 0.0;
+        latch = on ? ((255.0 - q) / 255.0) : ((160.0 + q) / 255.0);
+      } else {
+        target = (1.0 - smoothstep(0.06, 0.34, effBgL)) * (1.0 - extra);
+        latch = q / 255.0;
+      }
     }
     float nextT;
-    if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0 || (is_dark <= 0.5 && -is_dark >= 0.88)) nextT = target;
+    if (is_new > 0.5 || dt >= 1.0 || slot_tint_a >= 0.88) nextT = target;
     else if (dt <= 0.0) nextT = prevT;
     else {
       nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
@@ -3069,7 +3064,7 @@
       const b = i * INST;
       const bk = Math.round(f32[b + 5]);
       if ((bk === 5 || bk === 6) && f32[b + 20] < 0 && f32[b + 20] !== tid) break;
-      if (bk !== 2 || f32[b + 23] >= 0 || f32[b + 6] >= 0) continue;
+      if (bk !== 7 || f32[b + 23] >= 0 || f32[b + 6] >= 0) continue;
       const sl = Math.round(-f32[b + 6]) - 1;
       if (sl < 0 || sl >= VEIL_MAX) continue;
       const v = veil.slots[sl];
@@ -3177,6 +3172,7 @@
           cx: (m.gb[0] + m.gb[2]) * 0.5, cy: (m.gb[1] + m.gb[3]) * 0.5,
           hx: Math.max((m.gb[2] - m.gb[0]) * 0.5, 1.0), hy: Math.max((m.gb[3] - m.gb[1]) * 0.5, 1.0),
           isDark: (f32[a + 11] >= 0.05 && lum < 0.35) ? (f32[a + 11] > 0.42 ? 2 : 1) : 0,
+          isInverting: f32[a + 6] < 0 ? 1 : 0,
           tintA: Math.min(Math.max(f32[a + 11], 0), 1),
         });
       }
@@ -3194,6 +3190,7 @@
           cx: f32[b] + f32[b + 2] * 0.5, cy: f32[b + 1] + f32[b + 3] * 0.5,
           hx: Math.max(f32[b + 2] * 0.5, 1.0), hy: Math.max(f32[b + 3] * 0.5, 1.0),
           isDark: (f32[b + 11] >= 0.05 && lum < 0.35) ? (f32[b + 11] > 0.42 ? 2 : 1) : 0,
+          isInverting: f32[b + 6] < 0 ? 1 : 0,
           tintA: Math.min(Math.max(f32[b + 11], 0), 1),
         });
       }
@@ -3206,8 +3203,8 @@
         const s = adSlots[i];
         if (s.active && s.seenSerial === serial && ((s.isDark > 0) === (it.isDark > 0)) && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
           sid = i;
-          if (s.isDark !== it.isDark || Math.abs(s.tintA - it.tintA) > 0.002 || s.through !== curThrough) {
-            s.isDark = it.isDark; s.tintA = it.tintA; s.through = curThrough; modeChanged = true;
+          if (s.isDark !== it.isDark || s.isInverting !== it.isInverting || Math.abs(s.tintA - it.tintA) > 0.002 || s.through !== curThrough) {
+            s.isDark = it.isDark; s.isInverting = it.isInverting; s.tintA = it.tintA; s.through = curThrough; modeChanged = true;
           }
           break;
         }
@@ -3233,9 +3230,10 @@
           }
           isNew = 1;
           const s = adSlots[sid];
-          s.active = true; s.isDark = it.isDark; s.through = curThrough; s.tintA = it.tintA; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
-        } else if (adSlots[sid].isDark !== it.isDark || Math.abs(adSlots[sid].tintA - it.tintA) > 0.002 || adSlots[sid].through !== curThrough) {
+          s.active = true; s.isDark = it.isDark; s.isInverting = it.isInverting; s.through = curThrough; s.tintA = it.tintA; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
+        } else if (adSlots[sid].isDark !== it.isDark || adSlots[sid].isInverting !== it.isInverting || Math.abs(adSlots[sid].tintA - it.tintA) > 0.002 || adSlots[sid].through !== curThrough) {
           adSlots[sid].isDark = it.isDark;
+          adSlots[sid].isInverting = it.isInverting;
           adSlots[sid].through = curThrough;
           adSlots[sid].tintA = it.tintA;
           modeChanged = true;
@@ -3247,12 +3245,12 @@
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
-        if (isNew || s.isDark > 0 || s.tintA >= 0.88) s.settleLeft = 0;
+        if (isNew || s.tintA >= 0.88) s.settleLeft = 0;
         else if (slotChanged) s.settleLeft = AD_SETTLE_SEC;
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
         s.lastBd = curBd;
         s.updatedSerial = serial;
-        pend.push({ sid, isNew, isDark: s.isDark, through: s.through, tintA: s.tintA, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
+        pend.push({ sid, isNew, isDark: s.isDark, isInverting: s.isInverting, through: s.through, tintA: s.tintA, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
     return pend;
@@ -3325,7 +3323,7 @@
     for (const p of pend) {
       gl.scissor(p.sid, 0, 1, 1);
       gl.uniform4f(ADU.u_box, p.cx, p.cy, p.hx, p.hy);
-      gl.uniform4f(ADU.u_param, p.isDark > 0 ? p.isDark : -p.tintA, p.isNew + (p.through ? 2.0 : 0.0), dt, p.sid);
+      gl.uniform4f(ADU.u_param, p.isDark > 0 ? (p.isDark + p.tintA) : -p.tintA, p.isNew + (p.through ? 2.0 : 0.0) + (p.isInverting ? 4.0 : 0.0), dt, p.sid);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     adCur = nxt;
@@ -4625,9 +4623,9 @@
         const s = adSlots[i];
         if (s.active && s.settleLeft > 0) dirty.push([s.cx - s.hx - 4, s.cy - s.hy - 4, s.hx * 2 + 8, s.hy * 2 + 8]);
       }
-      // (a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+      // (bare adaptive words easing: only their own box, no capsule pad)
       for (const v of veil.slots) {
-        if (v.who !== 0 && v.settleLeft > 0) dirty.push([v.cx - v.hx - 16, v.cy - v.hy - 10, v.hx * 2 + 32, v.hy * 2 + 20]);
+        if (v.who !== 0 && v.settleLeft > 0) dirty.push([v.cx - v.hx - 2, v.cy - v.hy - 2, v.hx * 2 + 4, v.hy * 2 + 4]);
       }
     }
     if (whole) {

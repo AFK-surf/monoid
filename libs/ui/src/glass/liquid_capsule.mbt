@@ -391,7 +391,9 @@ pub fn liquid_lift_shell_decorate(
           Some(sf) => { ..base, solid: sf() }
           None => base
         }
-        Some(resolved.at_strength(k))
+        let g = resolved.at_strength(k)
+        // Preserve liquid `rim_back` opt-in adaptive-invert flag across strength transitions.
+        Some(if resolved.liquid && resolved.rim_back > 0.5 { { ..g, rim_back: resolved.rim_back } } else { g })
       }
     }),
     loc~,

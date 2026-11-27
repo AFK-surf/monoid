@@ -927,7 +927,8 @@ fn player_surface_glass(ink : () -> MediaInk, spot : (Double, Double)?) -> @ui.G
   if player_is_picture_ink(k) {
     @glass.liquid_viewer_dark_glass(spot~, solid=k.ground, sharing=true)
   } else {
-    @glass.liquid_floating_glass(spot~, solid=k.ground, sharing=true)
+    // Opt into clear polarity-inverting adaptive liquid glass via `rim_back: 1.0` (unused on liquid).
+    { ..@glass.liquid_floating_glass(spot~, solid=k.ground, sharing=true), adaptive: true, rim_back: 1.0 }
   }
 }
 
@@ -2709,23 +2710,6 @@ fn phone_player_node(
       .alpha(By(fn() { shown(top) }))
       .hides(By(fn() { away() || pn.faded.get() }))
       |> ignore
-      let edge_h = fn(_ : @view.View) {
-        if away() || pn.faded.get() {
-          0.0
-        } else {
-          (viewer_host().room)().0 + top_bar_h() + 12.0
-        }
-      }
-      @glass.liquid_scroll_edge_node(
-        top,
-        edge_h,
-        edge_h,
-        side=Top,
-        bg=fn() { ink().stage },
-        shield=false,
-        pure=true,
-      )
-      |> ignore
       top.box(fn(r) { r.height(By(fn() { Some((viewer_host().room)().0) })) |> ignore }) |> ignore
       top.box(fn(place) {
         place
@@ -2791,7 +2775,7 @@ fn phone_player_node(
             })
           })
           |> ignore
-          // middle: bare adaptive-ink title, with static playlist position on a quiet second line
+          // middle: floating liquid glass title capsule, with optional playlist position on a quiet second line
           row.box(fn(mid) {
             mid
             .grow(Is(1.0))
@@ -2800,33 +2784,56 @@ fn phone_player_node(
             .min_height(Is(Some(phone_top_pill_h)))
             .lines_up(Is(Some(Middle)))
             .lies_along(Is(Middle))
-            .adaptive_ink(Is(true))
             |> ignore
-            mid.box(fn(nm) {
-              nm
-              .words(By(fn() { file.name }))
-              .words_look(By(fn() {
-                let (px, line) = @ui.tree_theme().text_size(Ui)
-                { size: px, weight: 600, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-              }))
-              .cuts(Is(true))
-              .allow_ellipsis(Is(true))
-              .min_width(Is(Some(0.0)))
-              .max_width(Is(Some(1.0e9)), within=true)
-              .ink(By(fn() { ink().text }))
-              .says(By(fn() { Some(@view.said(@view.Role::Text, label=file.name)) }))
+            mid.show(at_once=true, fn() { file.name != "" || pn.pl.which() != "" }, fn(pill_host) {
+              pill_host.min_width(Is(Some(0.0))).max_width(Is(Some(1.0e9)), within=true) |> ignore
+              pill_host.box(fn(pill) {
+                pill
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .min_height(Is(Some(phone_top_pill_h)))
+                .padding(Is((16.0, 4.0, 16.0, 4.0)))
+                .radius(Is(phone_top_pill_h / 2.0))
+                .min_width(Is(Some(0.0)))
+                .max_width(Is(Some(1.0e9)), within=true)
+                |> ignore
+                @glass.liquid_capsule_decorate(
+                  pill,
+                  glass=fn(spot) { player_surface_glass(ink, spot) },
+                  active=fn() { !away() && shown(top) > 0.001 },
+                  shadow=glass_control_shadow,
+                  solid_edge=fn() { player_solid_edge(ink) },
+                  clips=true,
+                )
+                |> ignore
+                pill.box(fn(nm) {
+                  nm
+                  .words(By(fn() { file.name }))
+                  .words_look(By(fn() {
+                    let (px, line) = @ui.tree_theme().text_size(Ui)
+                    { size: px, weight: 600, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+                  }))
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
+                  .min_width(Is(Some(0.0)))
+                  .max_width(Is(Some(1.0e9)), within=true)
+                  .ink(By(fn() { ink().text }))
+                  .says(By(fn() { Some(@view.said(@view.Role::Text, label=file.name)) }))
+                  |> ignore
+                })
+                |> ignore
+                pill.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
+                  w
+                  .row(Is(true))
+                  .lines_up(Is(Some(Middle)))
+                  .clips(Is(true))
+                  .min_width(Is(Some(0.0)))
+                  .max_width(Is(Some(1.0e9)), within=true)
+                  |> ignore
+                  said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
+                })
+              })
               |> ignore
-            })
-            |> ignore
-            mid.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
-              w
-              .row(Is(true))
-              .lines_up(Is(Some(Middle)))
-              .clips(Is(true))
-              .min_width(Is(Some(0.0)))
-              .max_width(Is(Some(1.0e9)), within=true)
-              |> ignore
-              said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
             })
           })
           |> ignore
@@ -2878,7 +2885,21 @@ fn phone_player_node(
           .presses(Is(false))
           |> ignore
           w.box(fn(inner) {
-            inner.row(Is(true)).lines_up(Is(Some(Middle))).adaptive_ink(Is(true)) |> ignore
+            inner
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .padding(Is((10.0, 4.0, 10.0, 4.0)))
+            .radius(Is(1.0e6))
+            |> ignore
+            @glass.liquid_capsule_decorate(
+              inner,
+              glass=fn(spot) { player_surface_glass(ink, spot) },
+              active=fn() { !away() && shown(top) > 0.001 },
+              shadow=glass_control_shadow,
+              solid_edge=fn() { player_solid_edge(ink) },
+              clips=true,
+            )
+            |> ignore
             player_wait_node(inner, pn, Meta, fn() { ink().muted }) |> ignore
           })
           |> ignore

@@ -75,61 +75,9 @@ fn bare_text_ink(hw : Double, hh : Double) -> Double {
 }
 
 ///|
-/// How far the capsule under bare adaptive words reaches past them (across, down), in points, and its edge (a
-/// shadow's sigma: as sharp as a box's, a capsule, not a haze spreading out).
-let bare_veil_pad : (Double, Double) = (12.0, 5.0)
-
-///|
-let bare_veil_soft : Double = 0.5
-
-///|
-/// Under bare adaptive words (a block of node `id` drawn at x, y, w × h, as opaque as `a`), a capsule (kind 2, its
-/// edge sharp: bare_veil_soft) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it
-/// the blurred backdrop's own colour pulled to the side opposite the words' ink (the frost it is drawn on, thicker
-/// there) and an opacity rising as the worst of what is behind them leaves the words less than 4.5:1 (none above it),
-/// so over a busy backdrop a capsule fades in and out with it as it moves, and over a quiet one there is none, eased
-/// over time where the host keeps their state (bare_text_who). None for a block with no words.
-fn Ctx::bare_text_veil(
-  self : Ctx,
-  id : @view.NodeId,
-  block : FixedArray[Double],
-  x : Double,
-  y : Double,
-  w : Double,
-  h : Double,
-  a : Double,
-) -> Unit {
-  let n = block.length() / inst_size
-  let mut first = -1
-  for i in 0..<n {
-    if block[i * inst_size + 5] == 1.0 {
-      first = i
-      break
-    }
-  }
-  guard first >= 0 && w > 0.0 && h > 0.0 else { return }
-  let g = first * inst_size
-  let byte = fn(v : Double) { (dmin(dmax(v, 0.0), 1.0) * 255.0).round().to_int64() }
-  let ink = (byte(block[g + 8]) << 24) | (byte(block[g + 9]) << 16) | (byte(block[g + 10]) << 8) | 0xFFL
-  let (px, py) = bare_veil_pad
-  let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
-  inst_owners.painting = -1
-  inst_owners.tree_painting = Some(id)
-  let vh = h + 2.0 * py
-  self.push_inst(x - px, y - py, w + 2.0 * px, vh, vh / 2.0, 2.0, 0.0, bare_veil_soft, ink, a, 0.0, 0.0, 0.0, 0.0)
-  inst_owners.painting = was
-  inst_owners.tree_painting = was_tree
-  let b = (self.ninst - 1) * inst_size
-  self.inst[b + 21] = x + w / 2.0
-  self.inst[b + 22] = y + h / 2.0
-  self.inst[b + 23] = bare_text_ink(w / 2.0, h / 2.0)
-  self.inst[b + 6] = bare_text_who(id)
-}
-
-///|
-/// Slot 6 of bare adaptive words and their capsule: whose they are (their node's index and 1), the same frame after
-/// frame, so the host keeps their state over time (how far their capsule shows, which side of grey they are) and eases
-/// it as what is behind them changes rather than jumping; the host puts its slot there in its place (-(slot + 1)).
+/// Slot 6 of bare adaptive words: whose they are (their node's index and 1), the same frame after frame, so the host
+/// keeps their ink state over time (which side of grey they are) and eases it as what is behind them changes rather
+/// than jumping; the host puts its slot there in its place (-(slot + 1)).
 fn bare_text_who(id : @view.NodeId) -> Double {
   (id.at % 8388607 + 1).to_double()
 }
@@ -417,8 +365,9 @@ fn effective_glass(gl : Glass, contrast : Bool) -> Glass {
   let refraction = if gl.liquid { gl.refraction * (1.0 - 0.55 * f) } else { gl.refraction }
   let rim = if gl.liquid { dmin(1.0, gl.rim * 1.25 + 0.12) } else { gl.rim }
   let rim_edge = if !gl.liquid { dmin(1.0, gl.rim_edge + 0.15) } else { gl.rim_edge }
+  let rim_back = if gl.liquid { 0.0 } else { gl.rim_back }
   let chroma = if gl.liquid && gl.droplet_role == 0 { 0.0 } else { gl.chroma }
-  { ..gl, tint, blur, refraction, rim, rim_edge, chroma }
+  { ..gl, tint, blur, refraction, rim, rim_edge, rim_back, chroma }
 }
 
 ///|
@@ -468,6 +417,12 @@ fn Ctx::glass_inst(
   } else {
     dmax(gl.blur, 0.0)
   }
+  let sat_slot = if gl.liquid {
+    // Liquid glass reuses unused `rim_back > 0.5` as opt-in clear polarity-inverting adaptive mode.
+    if gl.adaptive && gl.rim_back > 0.5 { -gl.saturation.abs() } else { gl.saturation.abs() }
+  } else {
+    gl.saturation
+  }
   self.push_inst(
     x,
     y,
@@ -475,7 +430,7 @@ fn Ctx::glass_inst(
     h,
     radius,
     kind,
-    gl.saturation,
+    sat_slot,
     blur_slot,
     gl.tint,
     1.0,
@@ -492,7 +447,13 @@ fn Ctx::glass_inst(
   let b = (self.ninst - 1) * inst_size
   let a = self.inst
   a[b + 21] = if gl.refraction > 0.0 { gl.refraction } else { 0.0 }
-  a[b + 22] = if gl.liquid { gl.chroma } else if gl.progressive { -1.0 } else { 0.0 }
+  a[b + 22] = if gl.liquid {
+    gl.chroma
+  } else if gl.progressive {
+    -1.0
+  } else {
+    0.0
+  }
   a[b + 23] = gl.merge
 }
 

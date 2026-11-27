@@ -364,7 +364,7 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
     let cur = bottom_prog()
     assert_eq(cur.length(), 1, msg="\{phase}: expected strictly 1 bottom progressive blur, got \{cur.length()}")
     assert_true(cur[0][15] > 0.99, msg="\{phase}: expected full alpha > 0.99, got \{cur[0][15]}")
-    assert_eq(cur[0][11], 0.0, msg="\{phase}: expected zero tint alpha")
+    assert_true(cur[0][11] > 0.9, msg="\{phase}: expected Apple .soft tint alpha > 0.9")
     assert_eq(cur[0][6], 1.0, msg="\{phase}: expected saturation 1.0")
   }
   check_single("closed")

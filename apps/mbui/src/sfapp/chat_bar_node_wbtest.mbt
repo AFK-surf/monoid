@@ -940,12 +940,11 @@ test "小屏顶栏：长标题展开到第 2 行时，渐进模糊随第 2 行�
   t.run_for(@ui.move_most_ms)
   let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: long_title, station_name: "Willow" }
   assert_eq(bar_extra_target(bar_ref), 0.0)
-  // Collapsed: the scrim ends 16pt past the bar's foot
+  // Collapsed: the scrim ends 28pt past the bar's foot (Apple iOS 27 .soft feather), keeping the status bar at fade_r = 1.0
   guard bar_scrim_of(t) is Some((bot0, fade0)) else { fail("no collapsed scrim") }
   let foot0 = bar_foot_at(390.0)
-  assert_true((bot0 - (foot0 + 16.0)).abs() < 0.5, msg="collapsed scrim foot \{bot0} vs bar foot \{foot0} + 16")
-  // (collapsed, its fade the whole scrim as before: nothing of it changed)
-  assert_true((fade0 - bot0).abs() < 0.5, msg="collapsed fade \{fade0} spans the scrim \{bot0}")
+  assert_true((bot0 - (foot0 + 28.0)).abs() < 0.5, msg="collapsed scrim foot \{bot0} vs bar foot \{foot0} + 28")
+  assert_true((fade0 - (bot0 - 47.0)).abs() < 0.5, msg="collapsed fade \{fade0} spans bar+28 below status bar (bot \{bot0})")
   let row1_words = t.words().filter(fn(w) { w.2 < 100.0 && w.1 > 44.0 && w.5 > 0.5 && w.0 == long_title })
   guard row1_words.length() > 0 else { fail("Row 1 title expected") }
   t.tap(row1_words[0].1 + 20.0, row1_words[0].2 + row1_words[0].4 / 2.0)
@@ -957,7 +956,7 @@ test "小屏顶栏：长标题展开到第 2 行时，渐进模糊随第 2 行�
   guard bar_scrim_of(t) is Some((bot1, fade1)) else { fail("no expanded scrim") }
   assert_true(bot_mid > bot0 + 1.0 && bot_mid < bot1 - 1.0, msg="mid-expand scrim foot \{bot0} < \{bot_mid} < \{bot1}")
   let foot1 = foot0 + extra
-  assert_true((bot1 - (foot1 + 16.0)).abs() < 0.5, msg="expanded scrim foot \{bot1} vs bar foot \{foot1} + 16")
+  assert_true((bot1 - (foot1 + 28.0)).abs() < 0.5, msg="expanded scrim foot \{bot1} vs bar foot \{foot1} + 28")
   let title_bot = row2_title_bot(t, long_title)
   let ramp = bar_scrim_ramp(t, title_bot)
   assert_true(
@@ -991,7 +990,7 @@ test "小屏顶栏：放不下 3 字而自动展开到第 2 行时，第 2 行�
   assert_true(extra > 30.0, msg="must auto-expand on mount")
   guard bar_scrim_of(t) is Some((bot, fade)) else { fail("no scrim") }
   let foot = bar_foot_at(230.0) + extra
-  assert_true((bot - (foot + 16.0)).abs() < 0.5, msg="scrim foot \{bot} vs bar foot \{foot} + 16")
+  assert_true((bot - (foot + 28.0)).abs() < 0.5, msg="scrim foot \{bot} vs bar foot \{foot} + 28")
   let title_bot = row2_title_bot(t, tight_title)
   let ramp = bar_scrim_ramp(t, title_bot)
   assert_true(ramp >= 0.44, msg="Row 2 title foot \{title_bot} under scrim \{bot} (fade \{fade}): ramp \{ramp} < 0.44")
@@ -1066,13 +1065,13 @@ test "小屏聊天条：仅后台任务时不显示 web 胶囊，ⓘ 对话信�
 }
 
 ///|
-test "小屏顶栏：默认纯光学渐进模糊（kind=5, tint=0, sat=1.0, slot22=-1）并在 MBUI_GLASS=solid 下退化为 kind=0" {
-  let (t, _) = chat_bar_node_tester("纯渐进模糊验证")
+test "小屏顶栏：默认 Apple .soft 渐进模糊（kind=5, tint>0.9, sat=1.0, slot22=-1）并在 MBUI_GLASS=solid 下退化为 kind=0" {
+  let (t, _) = chat_bar_node_tester("渐进模糊验证")
   let top_prog = t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[1] < 20.0 })
   assert_true(top_prog.length() >= 1, msg="expected top progressive scroll-edge blur")
   let p = top_prog[0]
-  assert_eq(p[11], 0.0, msg="expected zero tint alpha on pure progressive blur")
-  assert_eq(p[6], 1.0, msg="expected saturation 1.0 on pure progressive blur")
+  assert_true(p[11] > 0.9, msg="expected Apple .soft tint alpha > 0.9 on app chrome progressive blur")
+  assert_eq(p[6], 1.0, msg="expected saturation 1.0 on progressive blur")
   assert_eq(p[22], -1.0, msg="expected slot 22 == -1.0 progressive marker")
   @ui.set_glass_solid(Some(true))
   t.draw()

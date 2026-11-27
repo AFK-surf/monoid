@@ -187,10 +187,12 @@ pub fn liquid_capsule_glass(solid? : Int64 = clear) -> @paint.Glass {
 /// across the host node's `View::fades` band (`blur=8.5`, `progressive=true`),
 /// degrading to a solid `bg` alpha fade under `MBUI_GLASS=solid`.
 ///
-/// When `pure=true` (default across all scroll-edge bars), emits zero tint (`tint=clear`, `saturation=1.0`) so
-/// scrolled photos/videos/cards are never washed out by a light/dark scrim veil; bare text/icons rely on
-/// `View::adaptive_ink` for contrast. When `pure=false` (explicit low-level opt-in), applies a 50% `bg` tint veil.
-pub fn liquid_scroll_edge_glass(bg? : Int64 = clear, pure? : Bool = true) -> @paint.Glass {
+/// When `pure=true`, retained as a library-level zero-tint pure progressive blur API (`tint=clear`, `saturation=1.0`)
+/// for callers that want backdrop blur without any page-ground tint.
+/// When `pure=false` (default across app chrome bars), emits Apple iOS 27 `.soft` scroll-edge progressive blur
+/// (`tint=alpha(resolved, 0.96)`, `saturation=1.0`, `progressive=true`), smoothly dissolving scrolled content into the
+/// page ground across the bar height.
+pub fn liquid_scroll_edge_glass(bg? : Int64 = clear, pure? : Bool = false) -> @paint.Glass {
   let resolved = if bg != clear {
     bg
   } else if is_dark() {
@@ -198,13 +200,23 @@ pub fn liquid_scroll_edge_glass(bg? : Int64 = clear, pure? : Bool = true) -> @pa
   } else {
     0xFFFFFFFFL
   }
-  @paint.Glass::frosted(
-    blur=8.5,
-    tint=if pure { clear } else { alpha(resolved, 0.50) },
-    solid=resolved,
-    saturation=if pure { 1.0 } else { 1.25 },
-    progressive=true,
-  )
+  if pure {
+    @paint.Glass::frosted(
+      blur=8.5,
+      tint=clear,
+      solid=resolved,
+      saturation=1.0,
+      progressive=true,
+    )
+  } else {
+    @paint.Glass::frosted(
+      blur=8.5,
+      tint=alpha(resolved, 0.96),
+      solid=resolved,
+      saturation=1.0,
+      progressive=true,
+    )
+  }
 }
 
 ///|

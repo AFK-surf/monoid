@@ -1060,14 +1060,16 @@ int main(void) {
           CHECK(g_lum > 0.75);
           CHECK(n_lum < 0.25);
         } else if (ci == 1) {
-          CHECK(g_lum < 0.20);
-          CHECK(n_lum > 0.80);
+          // Same-polarity light glass over pure black: densifies light, dark ink stays dark (never inverts)
+          CHECK(g_lum > 0.65);
+          CHECK(n_lum < 0.25);
         } else if (ci == 2) {
           CHECK(g_lum > 0.55);
           CHECK(n_lum < 0.25);
         } else if (ci == 3) {
-          CHECK(g_lum >= 0.55 && g_lum <= 0.78);
-          CHECK(n_lum < 0.25);
+          // Same-polarity dark glass over pure white: densifies dark, white ink stays white (never inverts)
+          CHECK(g_lum >= 0.25 && g_lum <= 0.42);
+          CHECK(n_lum > 0.85);
         } else if (ci == 4) {
           CHECK(g_lum > 0.55);
           CHECK(n_lum < 0.25);
@@ -1094,7 +1096,7 @@ int main(void) {
           rect_at(ahov + MB_INST, 100, 80, 200, 140, 6,
                   253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
           ahov[MB_INST + 4] = 28;
-          ahov[MB_INST + 6] = 1.0;
+          ahov[MB_INST + 6] = -1.0;
           ahov[MB_INST + 7] = 2.0;
           ahov[MB_INST + 11] = 0x67 / 255.0;
           ahov[MB_INST + 12] = 0.0;
@@ -1131,7 +1133,7 @@ int main(void) {
         }
       }
 
-      // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
+      // Clear inverting adaptive light glass (a[6] < 0) over black stays clear (fogT=0, darkDens=baseDens) without thick frost
       double fg[3 * MB_INST];
       double fog_peaks[2] = {0.0, 0.0};
       for (int adaptive_on = 0; adaptive_on <= 1; adaptive_on++) {
@@ -1140,7 +1142,7 @@ int main(void) {
         rect_at(fg + MB_INST, 80, 164, 240, 2, 0, 1.0, 1.0, 1.0, 0);
         rect_at(fg + 2 * MB_INST, 100, 80, 200, 140, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -20);
         fg[2 * MB_INST + 4] = 28;
-        fg[2 * MB_INST + 6] = 1.0;
+        fg[2 * MB_INST + 6] = adaptive_on ? -1.0 : 1.0;
         fg[2 * MB_INST + 7] = 1.0;
         fg[2 * MB_INST + 11] = 0x67 / 255.0;
         fg[2 * MB_INST + 12] = 0.0;
@@ -1150,7 +1152,6 @@ int main(void) {
         fg[2 * MB_INST + 21] = 0.0;
         fg[2 * MB_INST + 22] = 0.0;
         fg[2 * MB_INST + 23] = 0.0;
-        // Over black, light tint with adaptive_on triggers fogT=1.0; compare against non-adaptive dark tint
         if (adaptive_on) {
           fg[2 * MB_INST + 8] = 253.0 / 255.0;
           fg[2 * MB_INST + 9] = 252.0 / 255.0;
@@ -1165,10 +1166,9 @@ int main(void) {
         fog_peaks[adaptive_on] = (0.2126 * sp[2] + 0.7152 * sp[1] + 0.0722 * sp[0]) / 255.0;
         free(px_fg);
       }
-      printf("apple_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
+      printf("apple_render: wave7 clear_invert stripe peak plain_dark=%.3f clear_invert=%.3f\n",
              fog_peaks[0], fog_peaks[1]);
-      CHECK(fog_peaks[1] < fog_peaks[0] - 0.08);
-      CHECK(fog_peaks[1] <= 0.30);
+      CHECK(fabs(fog_peaks[1] - fog_peaks[0]) < 0.05);
 
       // Test A: wide 320x36pt adaptive capsule over deep navy #173255 with centered 60x24pt pure white "{less}" block
       // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
@@ -1177,7 +1177,7 @@ int main(void) {
       rect_at(ta + MB_INST, 170, 138, 60, 24, 0, 1.0, 1.0, 1.0, 0);
       rect_at(ta + 2 * MB_INST, 40, 132, 320, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
       ta[2 * MB_INST + 4] = 18.0;
-      ta[2 * MB_INST + 6] = 1.0;
+      ta[2 * MB_INST + 6] = -1.0;
       ta[2 * MB_INST + 7] = 2.0;
       ta[2 * MB_INST + 11] = 0x67 / 255.0;
       ta[2 * MB_INST + 12] = 0.0;
@@ -1206,7 +1206,7 @@ int main(void) {
       double ta_g = (0.2126 * ta_gp[2] + 0.7152 * ta_gp[1] + 0.0722 * ta_gp[0]) / 255.0;
       double ta_n = (0.2126 * ta_np[2] + 0.7152 * ta_np[1] + 0.0722 * ta_np[0]) / 255.0;
       printf("apple_render: wave7 testA wide_less glass=%.3f ink=%.3f\n", ta_g, ta_n);
-      CHECK(ta_g < 0.28);
+      CHECK(ta_g < 0.35);
       CHECK(ta_n > 0.80);
       free(px_ta);
 
@@ -1216,7 +1216,7 @@ int main(void) {
       rect_at(tb, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
       rect_at(tb + MB_INST, 40, 132, 320, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -22);
       tb[MB_INST + 4] = 18.0;
-      tb[MB_INST + 6] = 1.0;
+      tb[MB_INST + 6] = -1.0;
       tb[MB_INST + 7] = 2.0;
       tb[MB_INST + 11] = 0x67 / 255.0;
       tb[MB_INST + 12] = 0.0;
@@ -1279,7 +1279,7 @@ int main(void) {
         prev_n = cn;
       }
       printf("apple_render: wave7 testB f26_dark glass=%.3f ink=%.3f settling=%d\n", prev_g, prev_n, mb_render_adaptive_settling());
-      CHECK(prev_g < 0.28);
+      CHECK(prev_g < 0.35);
       CHECK(prev_n > 0.85);
 
       // Schmitt hysteresis: bg=0.40 (in [0.36, 0.46]) for 25 frames stays dark
@@ -1294,7 +1294,7 @@ int main(void) {
       double hyst_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
       free(px_tb);
       printf("apple_render: wave7 testB hyst_0.40 glass=%.3f ink=%.3f\n", hyst_g, hyst_n);
-      CHECK(hyst_g < 0.40);
+      CHECK(hyst_g < 0.48);
       CHECK(hyst_n > 0.80);
 
       // Return to bright bg=0.95: frame 1 intermediate, +26 frames settles back to light and stops settling
@@ -1365,7 +1365,7 @@ int main(void) {
         rect_at(tc + MB_INST, 0, 0, 184, 300, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
         rect_at(tc + 2 * MB_INST, 40, 128, 320, 44, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -23);
         tc[2 * MB_INST + 4] = 22.0;
-        tc[2 * MB_INST + 6] = 1.0;
+        tc[2 * MB_INST + 6] = -1.0;
         tc[2 * MB_INST + 7] = 2.0;
         tc[2 * MB_INST + 11] = 0x67 / 255.0;
         tc[2 * MB_INST + 12] = 0.0;
@@ -2407,60 +2407,8 @@ int main(void) {
           CHECK(upx[il] == upx[ir] && upx[il + 1] == upx[ir + 1] && upx[il + 2] == upx[ir + 2]);
           free(upx);
 
-          // Over time (the words' and their capsule's whose in slot 6, as the tree's bare_text_who puts it): quiet
-          // first, then the split comes under them at once: their capsule eases in over frames, the frames asked for
-          // while it does, and lands where it is drawn with no state; then none asked for
-          double vl[6 * MB_INST];
-          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
-          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
-          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
-          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150.0, 10.0);
-          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
-          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
-          rect_at(vl, 0, 0, 200, 300, 0, 0.10, 0.10, 0.10, 0);
-          int ig = (40 * wcw + 600) * 4;
-          mb_render_set_fixed_dt(1.0 / 60.0);
-          glass_forget();
-          mb_host_render_dirty(0, 0, 400, 300);
-          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
-          present_drain();
-          uint8_t *q0 = read_texture(canvas, &wcw, &wch);
-          int quiet = q0[ig + 2];
-          free(q0);
-          rect_at(vl, 0, 0, 200, 300, 0, 0.96, 0.96, 0.96, 0);
-          int seen[40], monotone = 1, settling_mid = 0;
-          for (int fr = 0; fr < 40; fr++) {
-            mb_host_render_dirty(0, 0, 400, 300);
-            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
-            present_drain();
-            uint8_t *tp = read_texture(canvas, &wcw, &wch);
-            seen[fr] = tp[ig + 2];
-            free(tp);
-            if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
-            if (fr == 10) settling_mid = mb_render_adaptive_settling();
-          }
-          for (int fr = 0; fr < 30; fr++) {
-            mb_host_render_dirty(0, 0, 400, 300);
-            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
-            present_drain();
-          }
-          int settling_after = mb_render_adaptive_settling();
-          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
-          glass_forget();
-          mb_host_render_dirty(0, 0, 400, 300);
-          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
-          present_drain();
-          uint8_t *tz = read_texture(canvas, &wcw, &wch);
-          int landed = tz[ig + 2];
-          free(tz);
-          mb_render_set_fixed_dt(0.0);
-          printf("apple_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
-                 quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
-          CHECK(seen[0] > quiet && seen[0] < landed - 40);
-          CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
-          CHECK(monotone);
-          CHECK(abs(seen[39] - landed) <= 2);
-          CHECK(settling_mid == 1 && settling_after == 0);
+          // (Old kind == 2 bare capsule easing removed: bare adaptive text is capsule-free;
+          //  bare kind == 7 ink polarity easing and settling are verified in the capsule-free test below.)
         }
         // Vertical split multiline bare kind==7: top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
         // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
@@ -2738,7 +2686,7 @@ int main(void) {
           double ld_p[3 * MB_INST];
           rect_at(ld_p, 0, 0, 400, 300, 0, 0.08, 0.08, 0.08, 0);
           rect_at(ld_p + MB_INST, 150, 20, 100, 36, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -57);
-          ld_p[MB_INST + 4] = 18.0; ld_p[MB_INST + 6] = 1.0; ld_p[MB_INST + 7] = 1.2;
+          ld_p[MB_INST + 4] = 18.0; ld_p[MB_INST + 6] = -1.0; ld_p[MB_INST + 7] = 1.2;
           ld_p[MB_INST + 11] = 0x67 / 255.0; ld_p[MB_INST + 12] = 0.6; ld_p[MB_INST + 13] = 14.0;
           ld_p[MB_INST + 14] = -1.0; ld_p[MB_INST + 15] = 1.0;
           ld_p[MB_INST + 21] = 20.0; ld_p[MB_INST + 22] = 0.06; ld_p[MB_INST + 23] = 0.0;
@@ -3650,7 +3598,7 @@ int main(void) {
       } p0_cases[5] = {
         {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  34,  34,  34, 3},
         {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  58,  59,  62, 3},
-        {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 174, 174, 174, 4},
+        {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0,  90,  90,  90, 4},
         {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 88, 205, 255, 4},
         {"pure_clear",    0.0, 1.0, 64.0/255.0,               1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
       };
@@ -5396,14 +5344,19 @@ int main(void) {
         present_drain();
         CHECK(mb_render_adaptive_settling() == 0);
 
-        // Flip white -> black: frame 1 must immediately settle and match frame 15
+        // Flip white -> black: same-polarity dark glass eases smoothly over 70ms tau and settles within 26 frames
         rect_at(dk, 0, 0, 400, 300, 0, 0.0, 0.0, 0.0, 0);
         mb_render_present(dk, 4, 0.0, 0.0, 0.0);
         present_drain();
+        CHECK(mb_render_adaptive_settling() == 1);
+        for (int k = 0; k < 26; k++) {
+          mb_render_present(dk, 4, 0.0, 0.0, 0.0);
+          present_drain();
+        }
         CHECK(mb_render_adaptive_settling() == 0);
         int pw = 0, ph = 0;
         uint8_t *px1 = read_texture(canvas, &pw, &ph);
-        for (int k = 0; k < 15; k++) {
+        for (int k = 0; k < 5; k++) {
           mb_render_present(dk, 4, 0.0, 0.0, 0.0);
           present_drain();
         }
@@ -5411,11 +5364,11 @@ int main(void) {
         CHECK(memcmp(px1, px15, (size_t)pw * ph * 4) == 0);
         free(px1); free(px15);
 
-        // 1 <-> 2 mode switch over white backdrop
+        // 1 <-> 2 mode switch over white backdrop: near-opaque dark glass (tint_a >= 0.88) snaps immediately (settling == 0)
         rect_at(dk, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
         mb_render_present(dk, 4, 1.0, 1.0, 1.0); present_drain();
-        CHECK(mb_render_adaptive_settling() == 0);
-        dk[MB_INST + 11] = 0xA8 / 255.0;
+        CHECK(mb_render_adaptive_settling() == 1);
+        dk[MB_INST + 11] = 0xE8 / 255.0;
         mb_render_present(dk, 4, 1.0, 1.0, 1.0); present_drain();
         CHECK(mb_render_adaptive_settling() == 0);
         uint8_t *m2_1 = read_texture(canvas, &pw, &ph);
@@ -5785,9 +5738,9 @@ int main(void) {
           rect_at(th + 4 * MB_INST, 104, 52, 60, 16, 0, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0);
           th[4 * MB_INST + 4] = 8.0;
           th[4 * MB_INST + 21] = 100.0; th[4 * MB_INST + 22] = 60.0; th[4 * MB_INST + 23] = -48.0;
-          // Capsule B over opaque pure black stage: (220, 36, 160, 48), center (300, 60)
+          // Capsule B over opaque pure black stage (clear inverting): (220, 36, 160, 48), center (300, 60)
           rect_at(th + 5 * MB_INST, 220, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -382);
-          th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = 1.0; th[5 * MB_INST + 7] = 2.0;
+          th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = -1.0; th[5 * MB_INST + 7] = 2.0;
           th[5 * MB_INST + 11] = 0x67 / 255.0; th[5 * MB_INST + 12] = 0.0; th[5 * MB_INST + 13] = 14.0;
           th[5 * MB_INST + 14] = -1.0; th[5 * MB_INST + 15] = 1.0;
           // Capsule B text (kind==7, 0x18181BFF) at center (256, 60)
@@ -5801,9 +5754,9 @@ int main(void) {
           // 70% dark scrim (rgba(0,0,0,0.70)) over bottom-left kind==9 hole: (10, 150, 180, 70)
           rect_at(th + 8 * MB_INST, 10, 150, 180, 70, 0, 0.0, 0.0, 0.0, 0);
           th[8 * MB_INST + 11] = 0.70;
-          // Capsule C over 70% dark scrim on kind==9 hole: (20, 160, 160, 50), center (100, 185)
+          // Capsule C over 70% dark scrim on kind==9 hole (clear inverting): (20, 160, 160, 50), center (100, 185)
           rect_at(th + 9 * MB_INST, 20, 160, 160, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -383);
-          th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = 1.0; th[9 * MB_INST + 7] = 2.0;
+          th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = -1.0; th[9 * MB_INST + 7] = 2.0;
           th[9 * MB_INST + 11] = 0x67 / 255.0; th[9 * MB_INST + 12] = 0.0; th[9 * MB_INST + 13] = 14.0;
           th[9 * MB_INST + 14] = -1.0; th[9 * MB_INST + 15] = 1.0;
           // Capsule C dark adaptive text (kind==7, #1A1A1A) at center (100, 185)
@@ -5966,6 +5919,147 @@ int main(void) {
     CHECK(same_as_shown(f, 1, 0.1, 0.2, 0.3) == 0);
 
     last_inst = NULL;
+  }
+  @autoreleasepool {
+    // Same-polarity adaptive glass, adaptive progressive blur (a[22] = -2.0), and capsule-free bare adaptive text
+    mb_render_set_size(400, 300, 2);
+    uint8_t solid16[16 * 16];
+    memset(solid16, 255, sizeof(solid16));
+    mb_atlas_upload(0, 16, 16, 16, 16, solid16);
+
+    // 1) Same-polarity light adaptive glass (a[6]=+1.0) over pure black: densifies light, muted gray ink deepens, cr >= 4.5
+    {
+      double sl[3 * MB_INST];
+      rect_at(sl, 0, 0, 400, 300, 0, 0.0, 0.0, 0.0, 0);
+      rect_at(sl + MB_INST, 100, 80, 200, 100, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -401);
+      sl[MB_INST + 4] = 24.0; sl[MB_INST + 6] = 1.0; sl[MB_INST + 7] = 2.0;
+      sl[MB_INST + 11] = 0x67 / 255.0; sl[MB_INST + 12] = 0.0; sl[MB_INST + 13] = 14.0;
+      sl[MB_INST + 14] = -1.0; sl[MB_INST + 15] = 1.0;
+      // Muted gray glyph (origL=0.40) inside same-polarity light glass: deepens toward <= 0.20, never inverts white
+      rect_at(sl + 2 * MB_INST, 140, 122, 16, 16, 7, 0.40, 0.40, 0.40, 0);
+      sl[2 * MB_INST + 12] = 16.0; sl[2 * MB_INST + 13] = 16.0; sl[2 * MB_INST + 14] = 16.0; sl[2 * MB_INST + 15] = 16.0;
+      sl[2 * MB_INST + 21] = 200.0; sl[2 * MB_INST + 22] = 130.0; sl[2 * MB_INST + 23] = 50.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(sl, 3, 0.0, 0.0, 0.0);
+      present_drain();
+      int aw = 0, ah = 0;
+      uint8_t *px = read_texture(canvas, &aw, &ah);
+      uint8_t *gp = px + (260 * aw + 460) * 4;
+      uint8_t *tp = px + (260 * aw + 296) * 4;
+      double gl = wcag_luma_u8(gp[2], gp[1], gp[0]);
+      double tl = wcag_luma_u8(tp[2], tp[1], tp[0]);
+      double cr = ((gl > tl ? gl : tl) + 0.05) / ((gl > tl ? tl : gl) + 0.05);
+      double t_srgb = (0.2126 * tp[2] + 0.7152 * tp[1] + 0.0722 * tp[0]) / 255.0;
+      printf("apple_render: same_polarity_light_on_black glass=(%d,%d,%d) muted_ink=(%d,%d,%d) cr=%.2f\n",
+             gp[2], gp[1], gp[0], tp[2], tp[1], tp[0], cr);
+      CHECK(gp[2] >= 170);
+      CHECK(t_srgb <= 0.25);
+      CHECK(cr >= 4.5);
+      free(px);
+    }
+
+    // 2) Apple .soft progressive blur (kind == 5, a[22] = -1.0, col.a = 0.96):
+    //    same-polarity dark bg -> matches dark theme ground; white bg -> smoothly dissolves to dark at top and 0% at bottom.
+    //    Plus Opus P1-1 regression: is_dark == 2 (tint_a = 0.52, more_contrast dark glass) over white genuinely densifies!
+    {
+      double pb[2 * MB_INST];
+      // Dark bg + pure progressive blur
+      rect_at(pb, 0, 0, 400, 300, 0, 0.07, 0.07, 0.07, 0);
+      rect_at(pb + MB_INST, 0, 0, 400, 100, 5, 0.07, 0.07, 0.07, -402);
+      pb[MB_INST + 6] = 1.0; pb[MB_INST + 7] = 8.5; pb[MB_INST + 11] = 0.0; pb[MB_INST + 15] = 1.0;
+      pb[MB_INST + 22] = -1.0; pb[MB_INST + 54] = 100.0; pb[MB_INST + 55] = 100.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(pb, 2, 0.07, 0.07, 0.07);
+      present_drain();
+      int aw = 0, ah = 0;
+      uint8_t *px_pure = read_texture(canvas, &aw, &ah);
+      uint8_t pure_y = px_pure[(40 * aw + 400) * 4 + 2];
+
+      // Dark bg + Apple .soft progressive blur (a[22] = -1.0, col.a = 0.96)
+      pb[MB_INST + 11] = 0.96; pb[MB_INST + 22] = -1.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(pb, 2, 0.07, 0.07, 0.07);
+      present_drain();
+      uint8_t *px_same = read_texture(canvas, &aw, &ah);
+      uint8_t same_y = px_same[(40 * aw + 400) * 4 + 2];
+
+      // White bg + Apple .soft progressive blur (a[22] = -1.0, dark tint col.a = 0.96)
+      rect_at(pb, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(pb, 2, 1.0, 1.0, 1.0);
+      present_drain();
+      uint8_t *px_opp = read_texture(canvas, &aw, &ah);
+      uint8_t opp_top = px_opp[(20 * aw + 400) * 4 + 2];
+      uint8_t opp_bot = px_opp[(196 * aw + 400) * 4 + 2];
+      printf("apple_render: soft_prog_blur pure_dark=%d soft_dark=%d soft_white_top=%d soft_white_bot=%d\n",
+             pure_y, same_y, opp_top, opp_bot);
+      CHECK(abs((int)same_y - (int)pure_y) <= 2);
+      CHECK(opp_top <= 45);
+      CHECK(opp_bot >= 245);
+      free(px_pure); free(px_same); free(px_opp);
+
+      // P1-1 regression: more_contrast dark glass (tint_a = 0.52 -> is_dark == 2) over white backdrop must densify
+      double mc[2 * MB_INST];
+      rect_at(mc, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(mc + MB_INST, 100, 80, 200, 100, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -404);
+      mc[MB_INST + 4] = 24.0; mc[MB_INST + 6] = 1.0; mc[MB_INST + 7] = 2.0;
+      mc[MB_INST + 11] = 0.52; mc[MB_INST + 12] = 0.0; mc[MB_INST + 13] = 10.0;
+      mc[MB_INST + 14] = -1.0; mc[MB_INST + 15] = 1.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(mc, 2, 1.0, 1.0, 1.0);
+      present_drain();
+      uint8_t *px_mc = read_texture(canvas, &aw, &ah);
+      uint8_t mc_r = px_mc[(260 * aw + 400) * 4 + 2];
+      printf("apple_render: dark_more_contrast_white r=%d (must densify <= 112)\n", mc_r);
+      CHECK(mc_r >= 60 && mc_r <= 112);
+      free(px_mc);
+    }
+
+    // 3) Capsule-free bare adaptive text (kind == 7, a[23] < 0, a[6] > 0): 90ms easing with zero kind == 2 capsule
+    {
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      double bt[3 * MB_INST];
+      rect_at(bt, 0, 0, 400, 300, 0, 0.0, 0.0, 0.0, 0);
+      rect_at(bt + MB_INST, 0, 0, 400, 100, 5, 0.0, 0.0, 0.0, -403);
+      bt[MB_INST + 6] = 1.0; bt[MB_INST + 7] = 8.5; bt[MB_INST + 11] = 0.0; bt[MB_INST + 15] = 1.0;
+      bt[MB_INST + 22] = -1.0; bt[MB_INST + 54] = 100.0; bt[MB_INST + 55] = 100.0;
+      rect_at(bt + 2 * MB_INST, 160, 20, 16, 16, 7, 0.1, 0.1, 0.1, 0);
+      bt[2 * MB_INST + 6] = 77.0;
+      bt[2 * MB_INST + 12] = 16.0; bt[2 * MB_INST + 13] = 16.0; bt[2 * MB_INST + 14] = 16.0; bt[2 * MB_INST + 15] = 16.0;
+      bt[2 * MB_INST + 21] = 168.0; bt[2 * MB_INST + 22] = 28.0; bt[2 * MB_INST + 23] = -(40.0 * 4096.0 + 10.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(bt, 3, 0.0, 0.0, 0.0);
+      present_drain();
+      int aw = 0, ah = 0;
+      uint8_t *px0 = read_texture(canvas, &aw, &ah);
+      int y0 = px0[(56 * aw + 336) * 4 + 2];
+      // Switch backdrop to white -> frame 1 eases (intermediate), frame 35 settles dark
+      rect_at(bt, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(bt, 3, 1.0, 1.0, 1.0);
+      present_drain();
+      uint8_t *px1 = read_texture(canvas, &aw, &ah);
+      int y1 = px1[(56 * aw + 336) * 4 + 2];
+      for (int s = 0; s < 35; s++) {
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(bt, 3, 1.0, 1.0, 1.0);
+        present_drain();
+      }
+      uint8_t *pxn = read_texture(canvas, &aw, &ah);
+      int yn = pxn[(56 * aw + 336) * 4 + 2];
+      printf("apple_render: bare_text_no_capsule dark_bg=%d white_f1=%d white_settled=%d\n", y0, y1, yn);
+      CHECK(y0 >= 220);
+      CHECK(y1 < y0 - 15 && y1 > yn + 15);
+      CHECK(yn <= 40);
+      free(px0); free(px1); free(pxn);
+      mb_render_set_fixed_dt(0.0);
+    }
   }
   @autoreleasepool {
     // the reflection of what is outside liquid glass (glass_reflect_cases.h)

@@ -411,11 +411,9 @@ test "wide 1280x800 shows inline fits attrs; tight 768x900 hides fits attrs befo
   assert_true(cp_find_word(t_wide, "#ui-review") is Some(_))
   assert_true(cp_find_word(t_wide, "#ios") is Some(_))
   assert_eq(t_wide.audit(), [])
-  // the folder mark and the words over the chat under the glass bar take their ink from what is behind them (bare
-  // adaptive ink: slot 23 below 0), as the title's beside them does; the title here has none of its own
+  // App chrome top bar uses Apple iOS 27 .soft scroll-edge backdrop + stable theme ink (no bare adaptive ink).
   let bare = t_wide.drawn_instances().filter(fn(a) { a.length() > 23 && a[23] < 0.0 })
-  assert_true(bare.iter().any(fn(a) { a[5] == 11.0 }), msg="folder mark not adaptive")
-  assert_true(bare.iter().any(fn(a) { a[5] != 11.0 }), msg="project words not adaptive")
+  assert_eq(bare.length(), 0, msg="app chrome top bar should not emit bare adaptive ink")
   // the project's hover ground is a capsule (its corners at least half its height), not a rounded square
   let capsules = fn() {
     t_wide.drawn_instances().filter(fn(a) { a[5] == 0.0 && a[3] >= 30.0 && a[4] * 2.0 >= a[3] - 1.0 }).length()

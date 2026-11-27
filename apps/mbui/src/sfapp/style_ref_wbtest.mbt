@@ -177,16 +177,17 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
   // The rail's workspace letter bare at rest, its ring only pointed at.
   // The folded rail rests on the page's ground, with no line or shadow of its own.
+  // iOS 27.0 .soft scroll-edge backdrop (tint 0.96, +24/28pt feather) on narrow page_node and shell bars.
   inspect(out.to_string(), content=(
-    #|settings narrow 116777:56ee14b1
-    #|station narrow 97469:2987ccf7
-    #|me-reading narrow 31397:fa2b2609
+    #|settings narrow 116621:253ff792
+    #|station narrow 97537:f5db366e
+    #|me-reading narrow 31241:283e468f
     #|settings wide 217828:d983f8a4
     #|station wide 289720:3ed0807e
     #|me-reading wide 212547:7254168f
-    #|settings-dark narrow 117012:c3e49cc1
-    #|station-dark narrow 97277:c47c7a1e
-    #|me-reading-dark narrow 31529:73f4c577
+    #|settings-dark narrow 116861:6467579b
+    #|station-dark narrow 97348:b7570077
+    #|me-reading-dark narrow 31378:c97f29cc
     #|settings-dark wide 217742:aa543119
     #|station-dark wide 289372:3f320694
     #|me-reading-dark wide 212527:a243b99d

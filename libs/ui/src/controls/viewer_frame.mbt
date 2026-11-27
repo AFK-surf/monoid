@@ -71,10 +71,8 @@ pub fn viewer_frame_act_node(
     room.over(Is(true)) |> ignore
     room.pick(fn() { layout(width()) is Small }, fn(p, small) {
       if small {
-        // (the window's whole, floating liquid glass action pill over a soft bottom scroll-edge)
+        // (the window's whole, floating liquid glass action pill with no full-width scrim)
         p.over(Is(true)).lies_along(Is(End)) |> ignore
-        let foot_h = fn(_ : @view.View) { vfr_act_in * 2.0 + button_height() + (viewer_host().room)().1 + 12.0 }
-        @glass.liquid_scroll_edge_node(p, foot_h, foot_h, side=Bottom, bg=fn() { ink().ground }, shield=false, pure=true) |> ignore
         p.box(fn(band) {
           let pill_pad = 4.0
           band

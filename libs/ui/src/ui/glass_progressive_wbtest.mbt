@@ -206,3 +206,27 @@ test "View::fades tail (< 0.2 opacity) does not occlude hits underneath glass ov
   t.tap(100.0, 92.0)
   assert_eq(tail_hits.val, 1)
 }
+
+///|
+test "transform_insts scaling preserves kind 5 progressive blur marker slot 22 == -1.0" {
+  let prog = Glass::frosted(blur=8.5, tint=0x141519F5, solid=0x141519FF, saturation=1.0, progressive=true)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(scaled) {
+      scaled.scale(Is(0.4)).width(Is(Some(200.0))).height(Is(Some(80.0))) |> ignore
+      scaled.box(fn(host) {
+        host.width(Is(Some(200.0))).height(Is(Some(80.0))).fades(Is((0.0, 0.0, 0.0, 40.0))) |> ignore
+        host.box(fn(fill) {
+          fill.width_share(Is(1.0)).height_share(Is(1.0)).glass(Is(Some(prog))) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let insts = t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 })
+  assert_eq(insts.length(), 1)
+  assert_true(gp_approx(insts[0][22], -1.0), msg="expected slot 22 preserved at -1.0 under scale 0.4, got \{insts[0][22]}")
+}

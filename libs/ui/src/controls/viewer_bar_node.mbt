@@ -84,24 +84,6 @@ pub fn viewer_bar_node(
       |> ignore
       // (the app's own top row while the window has none of the system's: not full screen)
       b.moves_window(By(@ui.window_inset_now)) |> ignore
-      // Progressive blur soft scroll-edge backdrop (zero hidden glass when bar is fully hidden)
-      let edge_h = fn(s : @view.View) {
-        if hidden() && !gone.goes(s) {
-          0.0
-        } else {
-          viewer_bar_h + bar_over() + top() + 12.0
-        }
-      }
-      @glass.liquid_scroll_edge_node(
-        b,
-        edge_h,
-        edge_h,
-        side=Top,
-        bg=fn() { ink().ground },
-        shield=false,
-        pure=true,
-      )
-      |> ignore
       // (its ground on under the status bar where the system's bars are over the window: a tablet's)
       b.box(fn(s) { s.height(By(fn() { Some(top()) })) |> ignore }) |> ignore
       // (what the window's buttons take of each side, the system's at its left (a Mac's), the app's at its right
@@ -135,9 +117,9 @@ pub fn viewer_bar_node(
           .basis(By(fn() { if held() { None } else { Some(dmax(0.0, right_edge() - left_edge())) } }))
           .grow(By(fn() { if held() { 0.0 } else { 1.0 } }))
           // (short of room, what it was given for the other side's buttons given back first, before the name is cut;
-          // a way back in it gives way as the name does)
+          // a way back in it keeps room for its chevron + short label so the middle title pill truncates first)
           .shrink(By(fn() { if held() || back() != "" { 1.0 } else { viewer_side_gives } }))
-          .min_width(Is(Some(0.0)))
+          .min_width(By(fn() { Some(if back() != "" { 72.0 } else { 0.0 }) }))
           |> ignore
           // (no way back where there is nowhere to go back to: a page alone in a window of its own, whose window's own
           // close closes it; its room kept, the name in the middle as ever)
@@ -145,7 +127,11 @@ pub fn viewer_bar_node(
         })
         |> ignore
         row.pick(at_once=true, held, fn(slot, is_held) {
-          slot.shrink(Is(1.0)).min_width(Is(Some(0.0))).grow(Is(if is_held { 1.0 } else { 0.0 })) |> ignore
+          slot
+          .shrink(Is(if is_held { 1.0 } else { 8.0 }))
+          .min_width(Is(Some(0.0)))
+          .grow(Is(if is_held { 1.0 } else { 0.0 }))
+          |> ignore
           match middle {
             // what stands in the name's place (a screen's tabs): grown between the way back and the tools
             Some(made) if is_held => {
@@ -153,43 +139,57 @@ pub fn viewer_bar_node(
               made(slot)
             }
             _ => {
-              // the middle, as wide as what it says, the sides kept for the way back and the tools
-              let middle = slot.box(fn(m) {
-                m
-                .lines_up(Is(Some(Middle)))
-                .max_width(By(fn() {
-                  Some(dmax(viewer_none, width() - (left_edge() + right_edge() + 2.0 * @ui.Space::px(S4))))
-                }))
-                .shrink(Is(1.0))
-                .min_width(Is(Some(0.0)))
-                .adaptive_ink(Is(true))
-                |> ignore
-                m.box(fn(n) {
-                  n
-                  .words(By(name))
-                  .words_look(By(fn() { bar_words(Ui, L6, 600) }))
-                  .cuts(Is(true))
-                  .allow_ellipsis(Is(true))
+              // the middle: floating liquid glass title capsule (hidden when both name and meta are empty)
+              slot.show(at_once=true, fn() { name() != "" || meta() != "" }, fn(pill_slot) {
+                pill_slot.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                let middle = pill_slot.box(fn(m) {
+                  m
+                  .lines_up(Is(Some(Middle)))
+                  .lies_along(Is(Middle))
+                  .min_height(Is(Some(36.0)))
+                  .padding(Is((12.0, 2.0, 12.0, 2.0)))
+                  .radius(Is(1.0e6))
+                  .max_width(By(fn() {
+                    Some(dmax(viewer_none, width() - (left_edge() + right_edge() + 2.0 * @ui.Space::px(S4))))
+                  }))
+                  .shrink(Is(1.0))
                   .min_width(Is(Some(0.0)))
-                  .ink(By(fn() { ink().ink }))
-                  .says(By(fn() { Some(@view.said(@view.Role::Text, label=name())) }))
                   |> ignore
-                })
-                |> ignore
-                m.show(fn() { meta() != "" }, fn(l) {
-                  l
-                  .words(By(meta))
-                  .words_look(By(fn() { bar_words(Caption, L4, 400) }))
-                  .cuts(Is(true))
-                  .allow_ellipsis(Is(true))
-                  .min_width(Is(Some(0.0)))
-                  .ink(By(fn() { ink().muted }))
-                  .says(By(fn() { Some(@view.said(@view.Role::Text, label=meta())) }))
+                  @glass.liquid_capsule_decorate(
+                    m,
+                    glass=fn(_) { viewer_bar_pill_glass(ink()) },
+                    shadow=glass_control_shadow,
+                    solid_edge=@glass.liquid_solid_edge,
+                    clips=true,
+                  )
                   |> ignore
+                  m.box(fn(n) {
+                    n
+                    .words(By(name))
+                    .words_look(By(fn() { bar_words(Ui, if meta() != "" { L5 } else { L6 }, 600) }))
+                    .cuts(Is(true))
+                    .allow_ellipsis(Is(true))
+                    .min_width(Is(Some(0.0)))
+                    .ink(By(fn() { ink().ink }))
+                    .says(By(fn() { Some(@view.said(@view.Role::Text, label=name())) }))
+                    |> ignore
+                  })
+                  |> ignore
+                  m.show(fn() { meta() != "" }, fn(l) {
+                    l
+                    .words(By(meta))
+                    .words_look(By(fn() { bar_words(Caption, L4, 400) }))
+                    .cuts(Is(true))
+                    .allow_ellipsis(Is(true))
+                    .min_width(Is(Some(0.0)))
+                    .ink(By(fn() { ink().muted }))
+                    .says(By(fn() { Some(@view.said(@view.Role::Text, label=meta())) }))
+                    |> ignore
+                  })
                 })
+                // (where the file is, over its name while the pointer is there)
+                tip_node(tips, middle, title, within=true) |> ignore
               })
-              // (where the file is, over its name while the pointer is there)
-              tip_node(tips, middle, title, within=true) |> ignore
             }
           }
         })
@@ -342,7 +342,8 @@ fn viewer_bar_pill_glass(k : ViewerInk, spot? : (Double, Double)? = None) -> @ui
   if lum < 0.35 {
     { ..@glass.liquid_viewer_dark_glass(spot~, solid=k.ground, sharing=true), adaptive: true }
   } else {
-    { ..@glass.liquid_viewer_clear_glass(spot~, solid=k.ground, sharing=true), adaptive: true }
+    // Opt into clear polarity-inverting adaptive liquid glass via `rim_back: 1.0` (unused on liquid).
+    { ..@glass.liquid_viewer_clear_glass(spot~, solid=k.ground, sharing=true), adaptive: true, rim_back: 1.0 }
   }
 }
 

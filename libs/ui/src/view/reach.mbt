@@ -159,11 +159,12 @@ fn Tree::fades_ramp_at(self : Tree, id : NodeId, x : Double, y : Double) -> Doub
 }
 
 ///|
-/// Whether node `id`, drawn at opacity `a`, covers what is drawn under it at window point `(x, y)`: requires
-/// `Node::covers(a)` and that ancestor `View::fades` bands have not faded it below 0.2 opacity at `(x, y)`
-/// (keeping top-bar body taps occluded while letting extended soft-edge fade tails pass through).
+/// Whether node `id`, drawn at opacity `a`, covers what is drawn under it for pointer hit-testing at window point
+/// `(x, y)`: requires `Node::covers(a)` and that ancestor `View::fades` bands have not faded it below 0.38 opacity
+/// at `(x, y)` (keeping top-bar body taps occluded while letting the +24/+28pt extended soft-edge fade tail below
+/// the bar pass clicks through to underlying messages and action links).
 fn Tree::covers_at(self : Tree, id : NodeId, a : Double, x : Double, y : Double) -> Bool {
-  self.nodes[id.at].covers(a) && self.fades_ramp_at(id, x, y) >= 0.2
+  self.nodes[id.at].covers(a) && self.fades_ramp_at(id, x, y) >= 0.38
 }
 
 ///|
@@ -237,7 +238,8 @@ pub fn Tree::covered_under(self : Tree, under : NodeId, over : NodeId, part : (D
     if c.id != top_id && !self.holds(top_id, c.id) {
       return
     }
-    if self.covers_at(c.id, a, (px0 + px1) * 0.5, (py0 + py1) * 0.5) &&
+    if self.nodes[c.id.at].covers(a) &&
+      self.fades_ramp_at(c.id, (px0 + px1) * 0.5, (py0 + py1) * 0.5) >= 0.2 &&
       x <= px0 + 0.5 &&
       y <= py0 + 0.5 &&
       x + c.w * s >= px1 - 0.5 &&

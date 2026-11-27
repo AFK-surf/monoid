@@ -214,12 +214,12 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
   // Progressive scroll-edge blur (`narrow_bar_scrim_node`): keep collapsed bars on their full-height fade (matching #8101),
   // and smoothly narrow the bottom fade band to 52pt as Row 2 or breadcrumbs open so the full-blur plateau follows the
   // descended title down while leaving the first message 16pt past the foot clear (smoothstep has zero slope at ramp=1).
-  let collapsed_h = fn(s : @view.View) { status_top_now(s.window_w()) + bar_h + 16.0 }
+  let collapsed_h = fn(s : @view.View) { status_top_now(s.window_w()) + bar_h + 28.0 }
   let extra_h = fn(s : @view.View) { state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() }
   narrow_bar_scrim_node(g, fn(s) { collapsed_h(s) + extra_h(s) }, fn(s) {
-    let base = collapsed_h(s)
+    let base = bar_h + 28.0
     let extra : Double = extra_h(s)
-    let expanded_fade = @sf.dmin(base + extra, 52.0)
+    let expanded_fade = @sf.dmin(collapsed_h(s) + extra, 52.0)
     base + (expanded_fade - base) * bar_clamp01(extra / 24.0)
   })
   g.reacts(can_toggle, fn(ok) {
@@ -406,7 +406,6 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
                   { size: th.t.title, weight: 600, line: chat_title_line, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
                 }))
                 .ink(By(fn() { @sf.theme().p.text }))
-                .adaptive_ink(Is(true))
                 |> ignore
               })
               p2.reacts(fn() { (rr2.tall(t2), can_toggle()) }, fn(cur) {
@@ -522,7 +521,6 @@ fn bar_middle_node(
             { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
           }))
           .ink(By(fn() { @sf.theme().p.text }))
-          .adaptive_ink(Is(true))
           .fit_whole(By(fn() { !expanded() }))
           .cuts(Is(true))
           .allow_ellipsis(Is(true))
@@ -871,7 +869,6 @@ fn bar_small_breadcrumb_node(s : @view.View, openers : () -> Array[@sfbase.Opene
   .gap(Is(4.0))
   .lines_up(Is(Some(Middle)))
   .min_height(Is(Some(36.0)))
-  .adaptive_ink(Is(true))
   |> ignore
   @sf.icon_node(s, "spawned", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
   s.pick(at_once=true, key_of, fn(bc, _) {

@@ -1388,10 +1388,12 @@ fn Ctx::transform_insts(
         a[b + 6] = a[b + 6] * sm
         a[b + 7] = a[b + 7] * sm
       }
-      // a rect's or frosted glass's notch (scene.mbt)
+      // a rect's or frosted glass's notch (scene.mbt); preserve progressive blur marker (kind 5, slot 22 < 0)
       if a[b + 5] == 0.0 || a[b + 5] == 5.0 {
         a[b + 21] = a[b + 21] * sm
-        a[b + 22] = a[b + 22] * sm
+        if !(a[b + 5] == 5.0 && a[b + 22] < 0.0) {
+          a[b + 22] = a[b + 22] * sm
+        }
         a[b + 23] = a[b + 23] * sm
       }
     }

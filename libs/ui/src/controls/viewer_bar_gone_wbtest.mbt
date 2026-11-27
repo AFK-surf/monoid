@@ -16,8 +16,8 @@ test "the viewer's bar going up out of the way: drawn higher each frame as it is
   @ui.set_view_app(fn(root) { viewer_bar_test_node(root, ink, fn() { hidden.get() }) })
   t.check_looks(false)
   t.draw()
-  // (the bar's glass, across the window: where its top is drawn)
-  let top = fn() { t.drawn_glass().filter(fn(g) { g.2 >= 1000.0 }).map(fn(g) { g.1 }) }
+  // (the bar's floating liquid glass pills: where the back pill's top is drawn)
+  let top = fn() { t.drawn_glass().filter(fn(g) { g.4 == 6 && g.0 < 100.0 }).map(fn(g) { g.1 }) }
   let rest = top()
   assert_true(rest.length() == 1, msg="\{Repr(t.drawn_glass())}")
   // (told to go: built for that)

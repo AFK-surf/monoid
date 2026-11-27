@@ -401,7 +401,7 @@ fn wide_bar_breadcrumb(
   row.show(fn() { openers().length() > 0 }, at_once=true, fn(wrap) {
     wrap.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
     wrap.pick(at_once=true, key_of, fn(bc, _) {
-      bc.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)).adaptive_ink(Is(true)) |> ignore
+      bc.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
       let list = @signals.untracked(openers)
       let n = list.length()
       guard n > 0 else { return }
@@ -546,7 +546,7 @@ fn wide_bar_title(
     // (42% of the bar at most, 80 at least; giving way with ⌘F's field once the people have left, down to 4 of its
     // letters)
     @sf.style_node(t, fn() { chat_title_room.then(@ui.style(max_w=Fixed(dmax(chat_title_least, across() * chat_title_part)))) }, in_row=true)
-    t.shrink(Is(1.0)).adaptive_ink(Is(true)) |> ignore
+    t.shrink(Is(1.0)) |> ignore
     @sf.words_node(
       t,
       title,
@@ -558,7 +558,6 @@ fn wide_bar_title(
   })
   |> ignore
   row.show(fn() { renaming() != "" || failed() is Some(_) }, along_row=true, fn(d) {
-    d.adaptive_ink(Is(true)) |> ignore
     @sfpages.doing_mark_node(d, fn() { renaming() != "" }, failed, size=wide_doing_mark)
     @sf.tip_node(
       tips,

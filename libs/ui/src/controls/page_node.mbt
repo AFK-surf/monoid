@@ -758,8 +758,8 @@ fn narrow_page_node(
       bar.over(Is(true)).lies_along(Is(Start)) |> ignore
       top_scroll_edge_node(
         bar,
-        fn(s) { frame().top + back_bar_h(s) },
-        fn(s) { back_bar_h(s) },
+        fn(s) { frame().top + back_bar_h(s) + 24.0 },
+        fn(s) { back_bar_h(s) + 24.0 },
         bg=fn() { theme().p.bg },
         shield=true,
       )
@@ -823,12 +823,11 @@ fn narrow_page_node(
               .lies_along(Is(Middle))
               |> ignore
               mid.box(fn(w) {
-                w.adaptive_ink(Is(true)) |> ignore
                 styled_words(w, title, fn() { nav_title_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
               })
               |> ignore
               mid.show(fn() { small() != "" }, fn(sub) {
-                sub.clips(Is(true)).min_width(Is(Some(0.0))).adaptive_ink(Is(true)) |> ignore
+                sub.clips(Is(true)).min_width(Is(Some(0.0))) |> ignore
                 styled_words(sub, small, fn() { nav_sub_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
               })
             })

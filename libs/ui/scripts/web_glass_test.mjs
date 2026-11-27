@@ -1433,7 +1433,7 @@ function runGlassVectorsInPage() {
       th[4 * INST + 4] = 8;
       th[4 * INST + 21] = 100; th[4 * INST + 22] = 60; th[4 * INST + 23] = -48;
       rect(th, 5 * INST, 220, 36, 160, 48, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
-      th[5 * INST + 4] = 24; th[5 * INST + 6] = 1; th[5 * INST + 7] = 2;
+      th[5 * INST + 4] = 24; th[5 * INST + 6] = -1; th[5 * INST + 7] = 2;
       th[5 * INST + 12] = 0; th[5 * INST + 13] = 14; th[5 * INST + 14] = -1; th[5 * INST + 15] = 1;
       rect(th, 6 * INST, 244, 50, 24, 20, 10, 24 / 255, 24 / 255, 27 / 255, 1, 0);
       th[6 * INST + 4] = 6;
@@ -1444,7 +1444,7 @@ function runGlassVectorsInPage() {
       th[7 * INST + 21] = 300; th[7 * INST + 22] = 60; th[7 * INST + 23] = -48;
       rect(th, 8 * INST, 10, 150, 180, 70, 0, 0, 0, 0, 0.70, 0);
       rect(th, 9 * INST, 20, 160, 160, 50, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
-      th[9 * INST + 4] = 24; th[9 * INST + 6] = 1; th[9 * INST + 7] = 2;
+      th[9 * INST + 4] = 24; th[9 * INST + 6] = -1; th[9 * INST + 7] = 2;
       th[9 * INST + 12] = 0; th[9 * INST + 13] = 14; th[9 * INST + 14] = -1; th[9 * INST + 15] = 1;
       rect(th, 10 * INST, 88, 175, 24, 20, 10, 26 / 255, 26 / 255, 26 / 255, 1, 0);
       th[10 * INST + 4] = 6;
@@ -1466,6 +1466,133 @@ function runGlassVectorsInPage() {
         bGlA: bGl[3], bGlL: lumN(bGl), bTxL: lumN(bTx), bBrL: lumN(bBr),
         cTxL: lumN(cTx),
       };
+    }
+    // 1. Same-polarity light adaptive glass (a[6] = +1.0) on pure black stays bright & densified,
+    //    dark neutral ink (0.11) & muted gray ink (0.38) stay dark (never flipped white) with CR >= 4.5.
+    {
+      const sp = new Float64Array(4 * INST);
+      rect(sp, 0, 0, 0, 200, 120, 0, 0, 0, 0, 1, 0);
+      rect(sp, INST, 20, 20, 160, 80, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      sp[INST + 4] = 20; sp[INST + 6] = 1.0; sp[INST + 7] = 2.0;
+      sp[INST + 12] = 0; sp[INST + 13] = 10; sp[INST + 14] = -1; sp[INST + 15] = 1;
+      // Primary dark neutral ink (0.11) at (60, 60)
+      rect(sp, 2 * INST, 48, 50, 24, 20, 10, 0.11, 0.11, 0.11, 1, 0);
+      sp[2 * INST + 4] = 6;
+      sp[2 * INST + 12] = 0.1; sp[2 * INST + 13] = 0.5; sp[2 * INST + 14] = 0.9; sp[2 * INST + 15] = 0.5;
+      sp[2 * INST + 21] = 100; sp[2 * INST + 22] = 60; sp[2 * INST + 23] = 40;
+      // Muted gray ink (0.38) at (100, 60)
+      rect(sp, 3 * INST, 88, 50, 24, 20, 10, 0.38, 0.38, 0.38, 1, 0);
+      sp[3 * INST + 4] = 6;
+      sp[3 * INST + 12] = 0.1; sp[3 * INST + 13] = 0.5; sp[3 * INST + 14] = 0.9; sp[3 * INST + 15] = 0.5;
+      sp[3 * INST + 21] = 100; sp[3 * INST + 22] = 60; sp[3 * INST + 23] = 40;
+      H.renderInit(200, 120, 1);
+      H.present(sp, 4, 0, 0, 0);
+      const shot = H.renderPixels();
+      const rgbAt = (x, y) => { const i = (y * shot.w + x) * 4; return [shot.px[i], shot.px[i + 1], shot.px[i + 2]]; };
+      const wcagL = (c) => {
+        const ch = c.map((u) => { const s = u / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); });
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+      };
+      const lumN = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+      const gC = rgbAt(144, 60), pC = rgbAt(60, 60), mC = rgbAt(100, 60);
+      const gW = wcagL(gC), mW = wcagL(mC);
+      const mutedCr = (Math.max(gW, mW) + 0.05) / (Math.min(gW, mW) + 0.05);
+      roi.same_polarity_light_on_black = {
+        glassL: lumN(gC), inkL: lumN(pC), mutedL: lumN(mC), mutedCr,
+      };
+    }
+    // 2. Apple .soft progressive blur (kind == 5, a[22] = -1.0, col.a = 0.96) + Opus P1-1 dark more_contrast (tint_a = 0.52):
+    {
+      const ap = new Float64Array(2 * INST);
+      rect(ap, 0, 0, 0, 400, 120, 0, 0.08, 0.08, 0.08, 1, 0);
+      rect(ap, INST, 0, 0, 400, 68, 5, 0.08, 0.08, 0.08, 0.96, tid--);
+      ap[INST + 6] = 1.0; ap[INST + 7] = 12.0; ap[INST + 15] = 1.0;
+      ap[INST + 22] = -1.0; ap[INST + 54] = 68.0; ap[INST + 55] = 20.0;
+      H.renderInit(400, 120, 1);
+      H.present(ap, 2, 0.08, 0.08, 0.08);
+      let shot = H.renderPixels();
+      const sameR = shot.px[(16 * shot.w + 200) * 4];
+      rect(ap, 0, 0, 0, 400, 120, 0, 1.0, 1.0, 1.0, 1, 0);
+      ap[INST + 20] = tid--;
+      H.present(ap, 2, 1.0, 1.0, 1.0);
+      shot = H.renderPixels();
+      const oppTopR = shot.px[(10 * shot.w + 200) * 4];
+      const oppBotR = shot.px[(65 * shot.w + 200) * 4];
+
+      // P1-1 regression: more_contrast dark glass (tint_a = 0.52 -> is_dark == 2) over white must densify
+      const mc = new Float64Array(2 * INST);
+      rect(mc, 0, 0, 0, 400, 120, 0, 1.0, 1.0, 1.0, 1, 0);
+      rect(mc, INST, 120, 20, 160, 80, 6, 32 / 255, 32 / 255, 32 / 255, 0.52, tid--);
+      mc[INST + 4] = 20; mc[INST + 6] = 1.0; mc[INST + 7] = 2.0;
+      mc[INST + 12] = 0; mc[INST + 13] = 10; mc[INST + 14] = -1; mc[INST + 15] = 1;
+      H.present(mc, 2, 1.0, 1.0, 1.0);
+      shot = H.renderPixels();
+      const mcR = shot.px[(60 * shot.w + 200) * 4];
+      roi.adaptive_prog_blur = { sameR, oppTopR, oppBotR, mcR };
+    }
+    // 3. Capsule-free bare text (kind == 7, a[23] < 0, no kind == 2 veil):
+    //    over split -> uniform single ink, zero veil capsule; temporal dark->light eases over ~90ms.
+    {
+      H.renderInit(400, 120, 1);
+      const shaped = new Float64Array(32);
+      const nShaped = H.shape('█', 20, 700, 0, shaped);
+      const gKey = shaped[0];
+      const gOut = new Float64Array(8);
+      H.glyph(gKey, gOut);
+      H.glyphPut(gKey, 16, 16);
+      const gw = Math.max(4, Math.round(gOut[2]));
+      const gh = Math.max(4, Math.round(gOut[3]));
+      const bareInk = (hw, hh) => -(Math.floor(hw) + Math.floor(hh) / 4096.0);
+      const bt = new Float64Array(5 * INST);
+      // Split: left 0.96, right 0.10
+      rect(bt, 0, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 1, 0);
+      rect(bt, INST, 200, 0, 200, 120, 0, 0.10, 0.10, 0.10, 1, 0);
+      // Pure progressive donor covering top bar
+      rect(bt, 2 * INST, 0, 0, 400, 68, 5, 1, 1, 1, 0, tid--);
+      bt[2 * INST + 6] = 1; bt[2 * INST + 7] = 4; bt[2 * INST + 15] = 1;
+      bt[2 * INST + 22] = -1; bt[2 * INST + 54] = 68; bt[2 * INST + 55] = 20;
+      // Left glyph at (70, 20) and right glyph at (330, 20), sharing box center (200, 20), half (150, 10)
+      rect(bt, 3 * INST, 70 - gw / 2, 20 - gh / 2, gw, gh, 7, 0.11, 0.11, 0.11, 1, 0);
+      bt[3 * INST + 12] = 16; bt[3 * INST + 13] = 16; bt[3 * INST + 14] = gw; bt[3 * INST + 15] = gh;
+      bt[3 * INST + 21] = 200; bt[3 * INST + 22] = 20; bt[3 * INST + 23] = bareInk(150, 10);
+      rect(bt, 4 * INST, 330 - gw / 2, 20 - gh / 2, gw, gh, 7, 0.11, 0.11, 0.11, 1, 0);
+      bt[4 * INST + 12] = 16; bt[4 * INST + 13] = 16; bt[4 * INST + 14] = gw; bt[4 * INST + 15] = gh;
+      bt[4 * INST + 21] = 200; bt[4 * INST + 22] = 20; bt[4 * INST + 23] = bareInk(150, 10);
+      H.present(bt, 5, 0.10, 0.10, 0.10);
+      let shot = H.renderPixels();
+      const gapR = shot.px[(20 * shot.w + 300) * 4];
+      const inkLR = shot.px[(20 * shot.w + 70) * 4];
+      const inkRR = shot.px[(20 * shot.w + 330) * 4];
+
+      // Temporal 90ms easing: solid dark -> solid light with deterministic 16.67ms steps
+      const origNow = performance.now.bind(performance);
+      let fakeNow = 10000;
+      performance.now = () => fakeNow;
+      let startInk = 0, f0Ink = 0, f5Ink = 0, f39Ink = 0;
+      try {
+        rect(bt, 0, 0, 0, 200, 120, 0, 0.10, 0.10, 0.10, 1, 0);
+        rect(bt, INST, 200, 0, 200, 120, 0, 0.10, 0.10, 0.10, 1, 0);
+        bt[3 * INST + 6] = 7.0; bt[4 * INST + 6] = 7.0;
+        H.present(bt, 5, 0.10, 0.10, 0.10);
+        shot = H.renderPixels();
+        startInk = shot.px[(20 * shot.w + 70) * 4];
+        rect(bt, 0, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 1, 0);
+        rect(bt, INST, 200, 0, 200, 120, 0, 0.96, 0.96, 0.96, 1, 0);
+        for (let fr = 0; fr < 40; fr++) {
+          fakeNow += 16.6667;
+          H.present(bt, 5, 0.96, 0.96, 0.96);
+          if (fr === 0 || fr === 5 || fr === 39) {
+            shot = H.renderPixels();
+            const v = shot.px[(20 * shot.w + 70) * 4];
+            if (fr === 0) f0Ink = v;
+            else if (fr === 5) f5Ink = v;
+            else f39Ink = v;
+          }
+        }
+      } finally {
+        performance.now = origNow;
+      }
+      roi.bare_text_capsule_free = { nShaped, gw, gh, gapR, inkLR, inkRR, startInk, f0Ink, f5Ink, f39Ink };
     }
   }
   return { gl: H.renderInfo(), out, roi };
@@ -1651,7 +1778,7 @@ for (const v of results.out) {
   } else if (v.name === 'dark_1b1c1f') {
     check(v.r >= 53 && v.r <= 63 && v.g >= 54 && v.g <= 64 && v.b >= 57 && v.b <= 67, `${v.name} out of (58,59,62)+/-5`);
   } else if (v.name === 'dark_ad_white') {
-    check(v.r >= 166 && v.r <= 182 && v.g >= 166 && v.g <= 182 && v.b >= 166 && v.b <= 182, `${v.name} out of (174,174,174)+/-8`);
+    check(v.r >= 82 && v.r <= 98 && v.g >= 82 && v.g <= 98 && v.b >= 82 && v.b <= 98, `${v.name} out of (90,90,90)+/-8`);
   } else if (v.name === 'light_blue') {
     const mx = Math.max(v.r, v.g, v.b), mn = Math.min(v.r, v.g, v.b);
     const sat = mx > 0 ? (mx - mn) / mx : 0;
@@ -1854,6 +1981,30 @@ for (const t of roi.v11_top) {
     check(th.bGlA === 255 && th.bGlL < 0.35, `v10_through_hole_adaptive_ink_b_gl=${JSON.stringify(th)}`);
     check(th.bTxL > 0.75 && th.bBrL > 0.75, `v10_through_hole_adaptive_ink_b_ink=${JSON.stringify(th)}`);
     check(th.cTxL > 0.75, `v10_through_hole_adaptive_ink_c_scrim70=${JSON.stringify(th)}`);
+  }
+  {
+    const sp = roi.same_polarity_light_on_black;
+    console.log(`web_glass_test: same_polarity_light_on_black glass=${sp.glassL.toFixed(3)} ink=${sp.inkL.toFixed(3)} muted=${sp.mutedL.toFixed(3)} muted_cr=${sp.mutedCr.toFixed(2)}`);
+    check(sp.glassL > 0.62, `same_polarity_light_on_black_glass=${JSON.stringify(sp)}`);
+    check(sp.inkL < 0.25, `same_polarity_light_on_black_ink=${JSON.stringify(sp)}`);
+    check(sp.mutedL < 0.35 && sp.mutedCr >= 4.5, `same_polarity_light_on_black_muted=${JSON.stringify(sp)}`);
+  }
+  {
+    const ap = roi.adaptive_prog_blur;
+    console.log(`web_glass_test: soft_prog_blur sameR=${ap.sameR} oppTopR=${ap.oppTopR} oppBotR=${ap.oppBotR} dark_mc_r=${ap.mcR}`);
+    check(Math.abs(ap.sameR - 20) <= 3, `soft_prog_blur_same=${JSON.stringify(ap)}`);
+    check(ap.oppTopR <= 45, `soft_prog_blur_oppTop=${JSON.stringify(ap)}`);
+    check(ap.oppBotR >= 225, `soft_prog_blur_oppBot=${JSON.stringify(ap)}`);
+    check(ap.mcR >= 60 && ap.mcR <= 112, `dark_more_contrast_white=${JSON.stringify(ap)}`);
+  }
+  {
+    const bt = roi.bare_text_capsule_free;
+    console.log(`web_glass_test: bare_text_capsule_free gap=${bt.gapR} ink=${bt.inkLR}/${bt.inkRR} ease=${bt.startInk}->${bt.f0Ink}->${bt.f5Ink}->${bt.f39Ink}`);
+    check(bt.gapR <= 40, `bare_text_capsule_free_no_veil=${JSON.stringify(bt)}`);
+    check(bt.inkLR === bt.inkRR, `bare_text_capsule_free_uniform=${JSON.stringify(bt)}`);
+    check(bt.startInk >= 220, `bare_text_capsule_free_start=${JSON.stringify(bt)}`);
+    check(bt.f0Ink < bt.startInk - 5 && bt.f0Ink > bt.f39Ink + 20, `bare_text_capsule_free_f0=${JSON.stringify(bt)}`);
+    check(bt.f5Ink < bt.f0Ink && bt.f39Ink <= 45, `bare_text_capsule_free_converge=${JSON.stringify(bt)}`);
   }
 }
 if (failed) process.exit(1);

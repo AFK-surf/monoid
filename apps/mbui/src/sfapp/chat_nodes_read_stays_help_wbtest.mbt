@@ -307,9 +307,15 @@ fn rs_bar(t : @ui.Tester, h : Double) -> Double? {
       d.x < gx + gw &&
       d.x + d.w > gx &&
       (d.glass is Some(_) || d.ground != 0L) {
+      // Progressive scroll-edge scrims extend a translucent feather tail below the bar's covered foot
+      // (+28pt narrow / +16pt wide); measure the bar's actual covered foot rather than the fade tail's zero tip.
+      let foot = match d.glass {
+        Some(g) if g.progressive => d.y + d.h - (if d.w < 500.0 { 28.0 } else { 16.0 })
+        _ => d.y + d.h
+      }
       match at {
-        Some(b) if b >= d.y + d.h => ()
-        _ => at = Some(d.y + d.h)
+        Some(b) if b >= foot => ()
+        _ => at = Some(foot)
       }
     }
   }

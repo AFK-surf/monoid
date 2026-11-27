@@ -368,14 +368,14 @@ test "bare adaptive text takes one box behind it for all its glyphs: its own, tw
   // (one box a text, every glyph of it the same: none sampled round itself, bare_text_ink)
   assert_true(bare.length() >= 10, msg="glyphs: \{bare.length()}")
   assert_eq(boxes.length(), 2, msg="\{Repr(boxes)}")
-  // (a capsule under each text, its box the text's, and the text's whose with it in slot 6: the host's state of them
-  // over time, bare_text_who)
+  // (no kind 2 capsule veil is emitted under bare adaptive text; each text keeps its own bare_text_who in slot 6 for
+  // 90ms host ink easing)
   let capsules = t.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 2.0 && a[23] < 0.0 })
-  assert_eq(capsules.length(), 2, msg="\{capsules.length()} capsules")
-  for c in capsules {
-    assert_true(c[6] > 0.0, msg="capsule whose \{c[6]}")
-    assert_true(boxes.contains((c[21], c[22], c[23])), msg="capsule box \{c[21]},\{c[22]}")
-    assert_true(bare.iter().all(fn(g) { (g[21], g[22], g[23]) != (c[21], c[22], c[23]) || g[6] == c[6] }), msg="whose of its words")
+  assert_eq(capsules.length(), 0, msg="\{capsules.length()} capsules")
+  for b in boxes {
+    let glyphs = bare.filter(fn(g) { (g[21], g[22], g[23]) == b })
+    assert_true(glyphs.length() > 0 && glyphs[0][6] > 0.0, msg="bare who \{glyphs[0][6]}")
+    assert_true(glyphs.iter().all(fn(g) { g[6] == glyphs[0][6] }), msg="consistent bare_text_who per text")
   }
   // (each its text's box: its centre, half its width and height)
   for i, w in t.words().filter(fn(w) { w.0 == "调研 nomofu" || w.0 == "句库输入法" }) {

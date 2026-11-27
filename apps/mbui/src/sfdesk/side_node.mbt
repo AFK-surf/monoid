@@ -330,7 +330,7 @@ fn lists_band_node(
       }
       @sf.mix(bg, a.band, @sf.theme().p.sidebar)
     }
-    band.adaptive_ink(Is(true)).fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
+    band.fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
     // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
     // tall as their row however short the band's own top is (no buttons at its left: a Windows window), not folded;
     // reuse this over-box for the pure progressive-blur scroll-edge fill so zero extra nodes are added)

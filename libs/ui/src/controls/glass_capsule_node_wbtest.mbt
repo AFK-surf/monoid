@@ -185,10 +185,11 @@ test "viewer_bar_node uses progressive scroll edge and floating adaptive liquid 
     assert_no_nested_glass(t, "viewer_bar_node with tools dark=\{dark} solid=\{solid}")
     let liquid_insts = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 6.0 })
     let adaptive_count = liquid_insts.filter(fn(a) { a[14] < -0.5 }).length()
-    let expected_liquid = if solid { 0 } else { 2 }
-    // Bare title (`middle`) emits negative-slot-23 adaptive kind == 7 text (a[23] < 0); back pill emits positive (a[23] > 0).
+    let expected_liquid = if solid { 0 } else { 3 }
+    // Floating title capsule uses capsule ink (a[23] > 0), with zero bare adaptive text (a[23] < 0) and zero scroll-edge scrims.
     let bare_text_count = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] < 0.0 }).length()
     let cap_text_count = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] > 0.0 }).length()
+    let scroll_edge_count = t.drawn_glass().filter(fn(g) { g.4 == 5 }).length()
     // `back_node` uses intentional optical 6pt/12pt icon-label padding which triggers rule 4 under solid hairline border.
     let audits = t.audit().filter(fn(a) { !(solid && a.has_prefix("rule 4:")) })
     assert_eq(
@@ -197,10 +198,11 @@ test "viewer_bar_node uses progressive scroll edge and floating adaptive liquid 
         solid,
         liquid_insts.length(),
         adaptive_count,
-        if solid { bare_text_count == 0 && cap_text_count == 0 } else { bare_text_count > 0 && cap_text_count > 0 },
+        scroll_edge_count,
+        if solid { bare_text_count == 0 && cap_text_count == 0 } else { bare_text_count == 0 && cap_text_count > 0 },
         audits,
       ),
-      (dark, solid, expected_liquid, expected_liquid, true, []),
+      (dark, solid, expected_liquid, expected_liquid, 0, true, []),
     )
     // Hide bar and let animation complete: zero hidden glass instances at rest
     @ui.view_tree().unwrap().event(t.time(), fn() { hidden.set(true) })
@@ -208,7 +210,7 @@ test "viewer_bar_node uses progressive scroll edge and floating adaptive liquid 
     assert_eq(t.drawn_glass().length(), 0)
     @ui.set_glass_solid(None)
   }
-  // When tools are empty, only the back pill emits kind == 6 (tools pill is gone_empty, title is bare adaptive text)
+  // When tools are empty, back pill + title pill emit kind == 6 (tools pill is gone_empty, zero bare adaptive text)
   let ink : ViewerInk = {
     ground: 0x222222FFL,
     ink: 0xFFFFFFFFL,
@@ -228,11 +230,11 @@ test "viewer_bar_node uses progressive scroll edge and floating adaptive liquid 
   t.draw()
   assert_no_nested_glass(t, "viewer_bar_node empty tools")
   let liquid_empty = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 6.0 })
-  assert_eq(liquid_empty.length(), 1)
-  assert_eq(liquid_empty.filter(fn(a) { a[14] < -0.5 }).length(), 1)
+  assert_eq(liquid_empty.length(), 2)
+  assert_eq(liquid_empty.filter(fn(a) { a[14] < -0.5 }).length(), 2)
   let bare_text_empty = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] < 0.0 }).length()
   let cap_text_empty = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] > 0.0 }).length()
-  assert_true(bare_text_empty > 0 && cap_text_empty > 0)
+  assert_true(bare_text_empty == 0 && cap_text_empty > 0)
   assert_eq(t.audit(), [])
   @ui.view_tree().unwrap().event(t.time(), fn() { hidden.set(true) })
   t.run_for(viewer_bar_ms + 50.0)

@@ -104,6 +104,7 @@ struct MBAdSlot {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  int is_inverting;
   int through;
   float tint_a;
   uintptr_t last_bd;
@@ -331,7 +332,7 @@ static const char *shader_src =
     "      if (d <= 2.0) {\n"
     "        float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "        int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
-    "        bool slot_dark = (code >= 48 && code <= 208);\n"
+    "        bool slot_dark = (code >= 48 && code <= 95);\n"
     "        bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);\n"
     "        bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
     "        bool in_cur = ((ad_cur & (1 << i)) != 0);\n"
@@ -352,7 +353,7 @@ static const char *shader_src =
     "          float d = length(diff);\n"
     "          float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "          int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
-    "          bool slot_dark = (code >= 48 && code <= 208);\n"
+    "          bool slot_dark = (code >= 48 && code <= 95);\n"
     "          bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);\n"
     "          bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
     "          bool in_cur = ((ad_cur & (1 << i)) != 0);\n"
@@ -373,7 +374,8 @@ static const char *shader_src =
     "  capCenter = ac;\n"
     "  capHalf = float2(0.0, 0.0);\n"
     "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)), prefer_dark ? 0.0 : 1.0);\n"
-    "  return float3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);\n"
+    "  float fbLatch = prefer_dark ? (64.0 / 255.0) : 0.0;\n"
+    "  return float3(1.0 - smoothstep(0.06, 0.34, bgL), bgL, fbLatch);\n"
     "}\n"
     "float mb_srgb_to_lin(float c) {\n"
     "  return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);\n"
@@ -431,26 +433,12 @@ static const char *shader_src =
     "  }\n"
     "  return float3(out_c, out_c, out_c);\n"
     "}\n"
-    "// (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of\n"
-    "// grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground\n"
-    "// (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)\n"
+    "// (the ink bare words of ink rgb take over r, what is behind them: unified single ink by trimmed mean r.x)\n"
     "float3 mb_bare_ink_pick(float3 rgb, float3 r) {\n"
-    "  float3 ink = mb_bare_ink_for(rgb, r.x);\n"
-    "  if ((luma(ink) < 0.5) == (luma(rgb) < 0.5)) return ink;\n"
-    "  float yi = mb_wcag_luma(ink);\n"
-    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
-    "  return cr >= 4.5 ? ink : rgb;\n"
+    "  return mb_bare_ink_for(rgb, r.x);\n"
     "}\n"
     "float3 mb_bare_adaptive_ink_at(float3 rgb, float2 ac, float2 h) {\n"
     "  return mb_bare_ink_pick(rgb, mb_backdrop_wcag_range(ac, max(h, float2(1.0, 1.0))));\n"
-    "}\n"
-    "// (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)\n"
-    "float3 mb_bare_tone(float2 ac, float2 hh) {\n"
-    "  float3 tone = float3(0.0, 0.0, 0.0);\n"
-    "  for (int ix = -2; ix <= 2; ix++) {\n"
-    "    tone += backdrop(float2(ac.x + float(ix) * (hh.x * 0.38), ac.y));\n"
-    "  }\n"
-    "  return tone * 0.2;\n"
     "}\n"
     "// (what bare words of ink rgb in box ac ± hh want of their state: how far their capsule shows, the worst of what is\n"
     "// behind them leaving them short of 4.5:1, from none there to all of it at 2:1; which side of grey they are, 1 dark)\n"
@@ -460,13 +448,6 @@ static const char *shader_src =
     "  float yi = mb_wcag_luma(ink);\n"
     "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
     "  return float2(1.0 - smoothstep(2.0, 4.5, cr), luma(ink) < 0.5 ? 1.0 : 0.0);\n"
-    "}\n"
-    "// (the capsule under bare words of ink col, their box ac ± h, as its state st has it (fveil), or worked out now where\n"
-    "// it has none (st.a 0): the blurred backdrop's own colour pulled to the side opposite the words' ink)\n"
-    "float4 mb_bare_veil_at(float4 col, float2 ac, float2 h, float4 st) {\n"
-    "  float2 hh = max(h, float2(1.0, 1.0));\n"
-    "  if (st.a < 0.5) st = float4(mb_bare_want(col.rgb, ac, hh), 0.0, 1.0);\n"
-    "  return float4(lerp(mb_bare_tone(ac, hh), float3(st.g, st.g, st.g), lerp(0.62, 0.72, st.g)), col.a * st.r * lerp(0.72, 0.86, st.g));\n"
     "}\n"
     "// (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state\n"
     "// says (st.g, eased over time: fveil), or picked now where they have none)\n"
@@ -479,9 +460,9 @@ static const char *shader_src =
     "float4 mb_bare_state(float pz) {\n"
     "  return pz < 0.0 ? veil_tex.Load(int3((int)(-pz + 0.5) - 1, 0, 0)) : float4(0.0, 0.0, 0.0, 0.0);\n"
     "}\n"
-    "// The state of bare words over time (veil_run_updates): each its slot's texel, how far its capsule shows (r) and\n"
-    "// which side of grey its words are (g: 1 dark), eased towards what is behind them now (mb_bare_want) over vparam.w\n"
-    "// seconds; a slot new takes it at once (a = 1: kept).\n"
+    "// The state of bare words over time (veil_run_updates): each its slot's texel, easing\n"
+    "// which side of grey its words are (g: 1 dark) towards what is behind them now (mb_bare_want) over vparam.w\n"
+    "// seconds; a slot new takes it at once (a = 1: kept). Bare text is capsule-free (r unused).\n"
     "float4 fveil(float4 pos : SV_Position) : SV_Target {\n"
     "  float2 want = mb_bare_want(vink.rgb, vbox.xy, max(vbox.zw, float2(1.0, 1.0)));\n"
     "  float4 prev = prev_veil.Load(int3((int)(vparam.z + 0.5), 0, 0));\n"
@@ -504,11 +485,7 @@ static const char *shader_src =
     "  if (origL >= 0.5) {\n"
     "    if (capHalf.x <= 0.0) return rgb;\n"
     "    int code = int(floor(saturate(capsuleLatch) * 255.0 + 0.5));\n"
-    "    if (code < 48 || code > 208) return rgb;\n"
-    "    if (code >= 96) {\n"
-    "      float darkL = clamp(1.0 - origL, 0.06, 0.10);\n"
-    "      return float3(darkL, darkL, darkL);\n"
-    "    }\n"
+    "    if (code < 48 || code > 95) return rgb;\n"
     "    float bgL = capsuleBgL;\n"
     "    [branch] if (origL < 0.94 && guvc.z > guvc.x && guvc.w > guvc.y) {\n"
     "      float2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
@@ -543,9 +520,17 @@ static const char *shader_src =
     "    float liftW = smoothstep(0.03, 0.08, bgL);\n"
     "    return lerp(rgb, max(rgb, float3(0.95, 0.95, 0.95)), liftW);\n"
     "  }\n"
-    "  float inkT = smoothstep(0.0, 1.0, capsuleDarkT);\n"
-    "  float lightL = clamp(1.06 - origL, 0.68, 0.98);\n"
-    "  return lerp(rgb, float3(lightL, lightL, lightL), inkT);\n"
+    "  int code = int(floor(saturate(capsuleLatch) * 255.0 + 0.5));\n"
+    "  if (code >= 160) {\n"
+    "    float inkT = smoothstep(0.0, 1.0, capsuleDarkT);\n"
+    "    float lightL = clamp(1.06 - origL, 0.68, 0.98);\n"
+    "    return lerp(rgb, float3(lightL, lightL, lightL), inkT);\n"
+    "  }\n"
+    "  if (origL > 0.16) {\n"
+    "    float darkT = smoothstep(0.0, 1.0, capsuleDarkT);\n"
+    "    return lerp(rgb, min(rgb, float3(0.20, 0.20, 0.20)), darkT);\n"
+    "  }\n"
+    "  return rgb;\n"
     "}\n"
     "VOut vmain(VIn I) {\n"
     "  uint vid = I.vid;\n"
@@ -577,12 +562,12 @@ static const char *shader_src =
     "      col.rgb = I.pd.w < 0.0\n"
     "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
     "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
-    "    } else if (kind == 2 && I.pd.w < 0.0) {\n"
-    "      col = mb_bare_veil_at(col, I.pd.yz, mb_bare_half(-I.pd.w), mb_bare_state(I.p.z));\n"
     "    } else if (kind == 0 && I.pd.w < 0.0) {\n"
     "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "      float2 capCenter, capHalf;\n"
-    "      float darkT = ad_sample_ink(I.pd.yz, I.rect.xy + I.rect.zw * 0.5, -I.pd.w * 0.5, false, capCenter, capHalf).x;\n"
+    "      float3 cap = ad_sample_ink(I.pd.yz, I.rect.xy + I.rect.zw * 0.5, -I.pd.w * 0.5, false, capCenter, capHalf);\n"
+    "      int code = int(floor(saturate(cap.z) * 255.0 + 0.5));\n"
+    "      float darkT = (code >= 160) ? cap.x : 0.0;\n"
     "      if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
     "        col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
     "        col.a = lerp(col.a, (col.a >= 0.75) ? col.a : min(col.a * 1.45, 0.28), darkT);\n"
@@ -699,7 +684,7 @@ static const char *shader_src =
     "  }\n"
     "  return float2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);\n"
     "}\n"
-    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass, float tint_a) {\n"
+    "float2 ad_sample(float2 ac, float fallback_r, bool is_dark_glass, float tint_a) {\n"
     "  int ad_n = int(gad_meta.x + 0.5);\n"
     "  [branch] if (ad_n > 0) {\n"
     "    int best = -1;\n"
@@ -710,7 +695,7 @@ static const char *shader_src =
     "      if (d <= 2.0 && d < best_d) {\n"
     "        float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "        int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
-    "        bool slot_dark = (code >= 48 && code <= 208);\n"
+    "        bool slot_dark = (code >= 48 && code <= 95);\n"
     "        if (slot_dark != is_dark_glass) continue;\n"
     "        best = i; best_d = d;\n"
     "      }\n"
@@ -725,7 +710,7 @@ static const char *shader_src =
     "          if (d < best_d) {\n"
     "            float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "            int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
-    "            bool slot_dark = (code >= 48 && code <= 208);\n"
+    "            bool slot_dark = (code >= 48 && code <= 95);\n"
     "            if (slot_dark != is_dark_glass) continue;\n"
     "            best = i; best_d = d;\n"
     "          }\n"
@@ -734,19 +719,16 @@ static const char *shader_src =
     "    }\n"
     "    if (best >= 0) {\n"
     "      float4 px = ad_tex.Load(int3(best, 0, 0));\n"
-    "      if (is_dark_glass) {\n"
-    "        int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
-    "        if (code >= 48 && code <= 208) return (code >= 96) ? 1.0 : 0.0;\n"
-    "      }\n"
-    "      return mb_unpack16(px.rg);\n"
+    "      return float2(mb_unpack16(px.rg), 1.0);\n"
     "    }\n"
     "  }\n"
     "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)), is_dark_glass ? 0.0 : 1.0);\n"
-    "  if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);\n"
     "  float baseDens = lerp(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
     "  float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
+    "  if (is_dark_glass) return float2(smoothstep(0.08, 0.42, bgL) * (1.0 - extra), 0.0);\n"
     "  float c_eq = lerp(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));\n"
-    "  return 1.0 - smoothstep(0.12, 0.21, c_eq * c_eq);\n"
+    "  float effBgL = c_eq * c_eq;\n"
+    "  return float2((1.0 - smoothstep(0.06, 0.34, effBgL)) * (1.0 - extra), 0.0);\n"
     "}\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
     "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts\n"
@@ -1079,6 +1061,7 @@ static const char *shader_src =
     "      glintVib = lerp(2.4, 1.5, clearVeil);\n"
     "    } else {\n"
     "      [branch] if (is_adaptive) {\n"
+    "        bool is_inverting = (I.prm.z < 0.0);\n"
     "#if ONE_KIND == 13\n"
     "        float2 ac = I.rect.xy + I.rect.zw * 0.5;\n"
     "        float ar = max(min(I.rect.z, I.rect.w) * 0.5, 1.0) * 0.5;\n"
@@ -1086,14 +1069,16 @@ static const char *shader_src =
     "        float2 ac = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((ggb.xy + ggb.zw) * 0.5);\n"
     "        float ar = ((k <= 0.0) ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(ggb.z - ggb.x, ggb.w - ggb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
-    "        float val = ad_sample(ac, ar, is_dark, col.a);\n"
+    "        float2 ad = ad_sample(ac, ar, is_dark, col.a);\n"
+    "        float val = ad.x;\n"
+    "        bool ad_slotted = (ad.y > 0.5);\n"
     "        if (gmisc.y > 0.5) val *= bgA;\n"
     "        float baseDens = lerp(0.404, col.a, smoothstep(0.405, 0.46, col.a));\n"
     "        if (is_dark) {\n"
     "          float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
-    "          float brightT = val * solidFade * (1.0 - extra);\n"
-    "          fogT = brightT;\n"
-    "          brightTSaved = brightT;\n"
+    "          float denseT = val * solidFade;\n"
+    "          fogT = denseT * 0.65;\n"
+    "          brightTSaved = 0.0;\n"
     "          regExtra = extra;\n"
     "          float darkPow = pow(extra, 1.00);\n"
     "          float darkCPow = pow(extra, 1.05);\n"
@@ -1103,21 +1088,21 @@ static const char *shader_src =
     "          float darkTrans = lerp(0.59, 0.0, darkPow);\n"
     "          float darkLift = lerp(0.55, 0.0, extra);\n"
     "          float darkChroma = lerp(1.05, 0.0, darkCPow);\n"
-    "          emission = lerp(darkEm, float3(0.495, 0.495, 0.495), brightT);\n"
-    "          transmittance = lerp(darkTrans, 0.187, brightT);\n"
-    "          lift = lerp(darkLift, 0.04, brightT);\n"
-    "          chromaGain = lerp(darkChroma, 0.45, brightT);\n"
-    "          darkAdGlareW = (1.0 - brightT) * (1.0 - extra);\n"
+    "          emission = darkEm;\n"
+    "          transmittance = lerp(darkTrans, min(darkTrans, 0.24), denseT);\n"
+    "          lift = lerp(darkLift, 0.10, denseT);\n"
+    "          chromaGain = lerp(darkChroma, 0.55, denseT);\n"
+    "          darkAdGlareW = (1.0 - extra);\n"
     "          contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
-    "        } else {\n"
+    "        } else if (is_inverting && ad_slotted) {\n"
     "          float darkMix = val * solidFade;\n"
-    "          fogT = darkMix;\n"
+    "          fogT = 0.0;\n"
     "          darkMixSaved = darkMix;\n"
     "          float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
     "          float lightPow = pow(extra, 1.35);\n"
     "          float lightBaseDens = lerp(0.525, 1.0, lightPow);\n"
-    "          float darkDens = max(baseDens, lerp(baseDens, 0.64, darkMix));\n"
+    "          float darkDens = baseDens;\n"
     "          float darkExtra = saturate((darkDens - 0.404) / (1.0 - 0.404));\n"
     "          regExtra = lerp(extra, darkExtra, darkMix);\n"
     "          float darkPow = pow(darkExtra, 1.00);\n"
@@ -1133,6 +1118,24 @@ static const char *shader_src =
     "          chromaGain = lerp(lerp(1.00, 0.0, lightPow), lerp(1.05, 0.0, darkCPow), darkMix);\n"
     "          contourStr = lerp(0.43, 0.88, darkMix);\n"
     "          contourDirAmt = lerp(0.77, 1.0, darkMix);\n"
+    "          bevelShadowStr = 0.036;\n"
+    "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
+    "        } else {\n"
+    "          float denseT = val * solidFade;\n"
+    "          fogT = denseT * 0.60;\n"
+    "          darkMixSaved = 0.0;\n"
+    "          float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
+    "          regExtra = extra;\n"
+    "          float lightPow = pow(extra, 1.35);\n"
+    "          float lightBaseDens = lerp(0.525, 1.0, lightPow);\n"
+    "          float lightDens = lerp(lightBaseDens, max(lightBaseDens, 0.74), denseT);\n"
+    "          float lightLift = lerp(0.04, 0.14, smoothstep(0.0, 0.16, extra)) * (1.0 - smoothstep(0.40, 0.95, extra));\n"
+    "          emission = lerp(float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0), col.rgb, extra) * lightDens;\n"
+    "          transmittance = 1.0 - lightDens;\n"
+    "          lift = lightLift * (1.0 - 0.5 * denseT);\n"
+    "          chromaGain = lerp(lerp(1.00, 0.0, lightPow), 0.55, denseT);\n"
+    "          contourStr = 0.43;\n"
+    "          contourDirAmt = 0.77;\n"
     "          bevelShadowStr = 0.036;\n"
     "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "        }\n"
@@ -1289,7 +1292,7 @@ static const char *shader_src =
     "    float baseLum = Lt + (Lc - Lt) * darkKneeW + (max(transmittance - Dc, 0.0) - Lt) * lightKneeW;\n"
     "    float darkKS = pow(kDenom, -0.075);\n"
     "    float kneeScale = 1.0 + (darkKS - 1.0) * darkKneeW + (dInv - 1.0) * lightKneeW;\n"
-    "    float3 chromaVec = (refractColor - Y.xxx) * (chromaGain * I.prm.z * kneeScale);\n"
+    "    float3 chromaVec = (refractColor - Y.xxx) * (chromaGain * abs(I.prm.z) * kneeScale);\n"
     "    if (darkAdGlareW > 0.001) {\n"
     "      if (baseLum > 0.18) {\n"
     "        float over = baseLum - 0.18;\n"
@@ -1715,14 +1718,12 @@ static const char *shader_src =
     "    // the foot and right less), 0.5 wide\n"
     "    float3 g3 = backdrop(p);\n"
     "    float lg = luma(g3);\n"
-    "    float fr_s = fade_r * fade_r * (3.0 - 2.0 * fade_r);\n"
-    "    float ps = prog_glass ? fr_s : 1.0;\n"
-    "    float ts = prog_glass ? fr_s : 1.0;\n"
+    "    float u_soft = smoothstep(0.0, 0.82, fade_r);\n"
+    "    float soft_w = pow(u_soft, 1.35);\n"
+    "    float ps = prog_glass ? soft_w : 1.0;\n"
     "    float sat = prog_glass ? lerp(1.0, I.prm.z, ps) : I.prm.z;\n"
-    "    float bg_diff = (prog_glass && col.a > 0.001) ? smoothstep(0.22, 0.72, abs(luma(col.rgb) - lg)) : 0.0;\n"
-    "    float base_a = (prog_glass && col.a > 0.001) ? lerp(col.a, min(0.86, col.a + 0.34), bg_diff) : col.a;\n"
-    "    float ta = prog_glass ? (base_a * ts) : col.a;\n"
     "    g3 = max(lerp(float3(lg, lg, lg), g3, sat), 0.0);\n"
+    "    float ta = prog_glass ? (col.a * soft_w) : col.a;\n"
     "    g3 = g3 * (1.0 - ta) + col.rgb * ta;\n"
     "    if (I.c2.x + I.c2.y + I.c2.z > 0.0) {\n"
     "      float edge = saturate(0.5 + (d + 0.5) * scale);\n"
@@ -1843,8 +1844,10 @@ static const char *ad_src =
     "}\n"
     "float4 fad(float4 pos : SV_Position) : SV_Target {\n"
     "  float is_dark = u_param.x;\n"
-    "  bool is_through = u_param.y > 1.5;\n"
-    "  float is_new = u_param.y - (is_through ? 2.0 : 0.0);\n"
+    "  bool is_inverting = u_param.y > 3.5;\n"
+    "  float p1 = u_param.y - (is_inverting ? 4.0 : 0.0);\n"
+    "  bool is_through = p1 > 1.5;\n"
+    "  float is_new = p1 - (is_through ? 2.0 : 0.0);\n"
     "  float dt = u_param.z;\n"
     "  float hole_y = (is_dark > 0.5) ? 0.0 : 1.0;\n"
     "  float2 c = u_box.xy, h = u_box.zw;\n"
@@ -1867,31 +1870,31 @@ static const char *ad_src =
     "  float4 prev = prev_ad.Load(int3(sid, 0, 0));\n"
     "  float prevT = mb_unpack16(prev.rg);\n"
     "  float latch, target;\n"
-    "  if (is_dark > 1.5) {\n"
-    "    target = 0.0;\n"
+    "  float slot_tint_a = (is_dark > 0.5) ? max(is_dark - (is_dark > 1.5 ? 2.0 : 1.0), 0.0) : max(-is_dark, 0.0);\n"
+    "  if (is_dark > 0.5) {\n"
+    "    float baseDens = lerp(0.404, slot_tint_a, smoothstep(0.405, 0.46, slot_tint_a));\n"
+    "    float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
+    "    target = smoothstep(0.08, 0.42, bgL) * (1.0 - extra);\n"
     "    latch = 64.0 / 255.0;\n"
-    "  } else if (is_dark > 0.5) {\n"
-    "    int code = int(floor(saturate(prev.b) * 255.0 + 0.5));\n"
-    "    bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);\n"
-    "    bool prev_on = had_dark && (code >= 96);\n"
-    "    bool on = prev_on ? (bgL > 0.20) : (bgL >= 0.26);\n"
-    "    target = on ? 1.0 : 0.0;\n"
-    "    latch = on ? (128.0 / 255.0) : (64.0 / 255.0);\n"
     "  } else {\n"
-    "    float tint_a = max(-is_dark, 0.0);\n"
-    "    float baseDens = lerp(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
+    "    float baseDens = lerp(0.404, slot_tint_a, smoothstep(0.405, 0.46, slot_tint_a));\n"
     "    float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
     "    float c_eq = lerp(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));\n"
     "    float effBgL = c_eq * c_eq;\n"
-    "    int pcode = int(floor(saturate(prev.b) * 255.0 + 0.5));\n"
-    "    bool prev_dark = (is_new <= 0.5) && (pcode > 208);\n"
-    "    bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);\n"
-    "    target = on ? 1.0 : 0.0;\n"
     "    float q = floor(extra * 46.0 + 0.5);\n"
-    "    latch = on ? ((255.0 - q) / 255.0) : (q / 255.0);\n"
+    "    if (is_inverting) {\n"
+    "      int pcode = int(floor(saturate(prev.b) * 255.0 + 0.5));\n"
+    "      bool prev_dark = (is_new <= 0.5) && (pcode > 208);\n"
+    "      bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);\n"
+    "      target = on ? 1.0 : 0.0;\n"
+    "      latch = on ? ((255.0 - q) / 255.0) : ((160.0 + q) / 255.0);\n"
+    "    } else {\n"
+    "      target = (1.0 - smoothstep(0.06, 0.34, effBgL)) * (1.0 - extra);\n"
+    "      latch = q / 255.0;\n"
+    "    }\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0 || (is_dark <= 0.5 && -is_dark >= 0.88)) nextT = target;\n"
+    "  if (is_new > 0.5 || dt >= 1.0 || slot_tint_a >= 0.88) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -1975,7 +1978,8 @@ static const char *prog_src =
     "  float sig1 = pow(sp, 1.0 / kf);\n"
     "  // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from\n"
     "  // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost\n"
-    "  float rs = r * r;\n"
+    "  float u_b = smoothstep(0.08, 0.92, r);\n"
+    "  float rs = u_b * u_b;\n"
     "  float target_px = sp * rs;\n"
     "  if (target_px <= sig1 || kf <= 1.05) {\n"
     "    float2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;\n"
@@ -2951,7 +2955,7 @@ static void ad_fill_gu(RenderWin *w) {
 }
 
 struct WinAdPend {
-  int sid, is_new, is_dark, through;
+  int sid, is_new, is_dark, is_inverting, through;
   float cx, cy, hx, hy, tint_a;
 };
 
@@ -2962,7 +2966,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
   int kind = (int)(a[5] + 0.5f);
   if (kind != 6) return 0;
   int merged_liquid = a[23] > 0.0f;
-  struct { float cx, cy, hx, hy; int is_dark; float tint_a; } items[MB_ADAPTIVE_MAX];
+  struct { float cx, cy, hx, hy; int is_dark; int is_inverting; float tint_a; } items[MB_ADAPTIVE_MAX];
   int ni = 0;
   if (merged_liquid) {
     int is_clear = (a[7] <= 0.1f && a[11] < 0.12f);
@@ -2974,6 +2978,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].hx = fmaxf((gu.gb[2] - gu.gb[0]) * 0.5f, 1.0f);
       items[ni].hy = fmaxf((gu.gb[3] - gu.gb[1]) * 0.5f, 1.0f);
       items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? (a[11] > 0.42f ? 2 : 1) : 0;
+      items[ni].is_inverting = (a[6] < 0.0f) ? 1 : 0;
       items[ni].tint_a = fminf(fmaxf(a[11], 0.0f), 1.0f);
       ni++;
     }
@@ -2992,6 +2997,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
       items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
       items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? (b[11] > 0.42f ? 2 : 1) : 0;
+      items[ni].is_inverting = (b[6] < 0.0f) ? 1 : 0;
       items[ni].tint_a = fminf(fmaxf(b[11], 0.0f), 1.0f);
       ni++;
     }
@@ -3005,9 +3011,10 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
-        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f ||
-            s->through != cur_through) {
+        if (s->is_dark != items[k].is_dark || s->is_inverting != items[k].is_inverting ||
+            fabsf(s->tint_a - items[k].tint_a) > 0.002f || s->through != cur_through) {
           s->is_dark = items[k].is_dark;
+          s->is_inverting = items[k].is_inverting;
           s->tint_a = items[k].tint_a;
           s->through = cur_through;
           mode_changed = 1;
@@ -3041,12 +3048,15 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
         memset(&w->ad_slots[sid], 0, sizeof w->ad_slots[sid]);
         w->ad_slots[sid].active = 1;
         w->ad_slots[sid].is_dark = items[k].is_dark;
+        w->ad_slots[sid].is_inverting = items[k].is_inverting;
         w->ad_slots[sid].through = cur_through;
         w->ad_slots[sid].tint_a = items[k].tint_a;
       } else if (w->ad_slots[sid].is_dark != items[k].is_dark ||
+                 w->ad_slots[sid].is_inverting != items[k].is_inverting ||
                  fabsf(w->ad_slots[sid].tint_a - items[k].tint_a) > 0.002f ||
                  w->ad_slots[sid].through != cur_through) {
         w->ad_slots[sid].is_dark = items[k].is_dark;
+        w->ad_slots[sid].is_inverting = items[k].is_inverting;
         w->ad_slots[sid].through = cur_through;
         w->ad_slots[sid].tint_a = items[k].tint_a;
         mode_changed = 1;
@@ -3062,7 +3072,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
-      if (is_new || s->is_dark > 0 || s->tint_a >= 0.88f) {
+      if (is_new || s->tint_a >= 0.88f) {
         s->settle_left = 0.0;
       } else if (slot_changed) {
         s->settle_left = MB_AD_SETTLE_SEC;
@@ -3072,7 +3082,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = {sid, is_new, s->is_dark, s->through, s->cx, s->cy, s->hx, s->hy, s->tint_a};
+      out[n_upd++] = {sid, is_new, s->is_dark, s->is_inverting, s->through, s->cx, s->cy, s->hx, s->hy, s->tint_a};
     }
   }
   return n_upd;
@@ -3152,8 +3162,8 @@ static void ad_run_updates(RenderWin *w, const WinAdPend *pend, int n_upd, doubl
     memcpy(u.map, gu.map, sizeof u.map);
     memcpy(u.uvc, gu.uvc, sizeof u.uvc);
     u.box[0] = pend[i].cx; u.box[1] = pend[i].cy; u.box[2] = pend[i].hx; u.box[3] = pend[i].hy;
-    u.param[0] = (pend[i].is_dark > 0) ? (float)pend[i].is_dark : -pend[i].tint_a;
-    u.param[1] = (float)pend[i].is_new + (pend[i].through ? 2.0f : 0.0f);
+    u.param[0] = (pend[i].is_dark > 0) ? ((float)pend[i].is_dark + pend[i].tint_a) : -pend[i].tint_a;
+    u.param[1] = (float)pend[i].is_new + (pend[i].through ? 2.0f : 0.0f) + (pend[i].is_inverting ? 4.0f : 0.0f);
     u.param[2] = (float)dt;
     u.param[3] = (float)pend[i].sid;
     ctx->UpdateSubresource(ad_cb, 0, NULL, &u, 0, 0);
@@ -3241,7 +3251,7 @@ static int veil_run_updates(RenderWin *w, const float *f, int32_t start, int32_t
     const float *b = f + (size_t)i * MB_INST;
     int bk = (int)(b[5] + 0.5f);
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != tid) break;
-    if (bk != 2 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
+    if (bk != 7 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
     int sl = (int)(-b[6] + 0.5f) - 1;
     if (sl < 0 || sl >= MB_VEIL_MAX) continue;
     MBVeilSlot *v = &w->veil_slots[sl];
@@ -3291,12 +3301,12 @@ static int veil_run_updates(RenderWin *w, const float *f, int32_t start, int32_t
 }
 
 extern "C" void mb_host_render_dirty(double x, double y, double w, double h);
-// (the dirty rect of a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+// (bare adaptive words easing: only their own box, no capsule pad)
 static void veil_settle_dirty(RenderWin *w) {
   for (int k = 0; k < MB_VEIL_MAX; k++) {
     MBVeilSlot *v = &w->veil_slots[k];
     if (v->who != 0.0f && v->settle_left > 0.0)
-      mb_host_render_dirty(v->cx - v->hx - 16.0, v->cy - v->hy - 10.0, v->hx * 2.0 + 32.0, v->hy * 2.0 + 20.0);
+      mb_host_render_dirty(v->cx - v->hx - 2.0, v->cy - v->hy - 2.0, v->hx * 2.0 + 4.0, v->hy * 2.0 + 4.0);
   }
 }
 

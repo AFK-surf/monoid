@@ -355,7 +355,8 @@ static void test_p0_liquid_glass_vectors(void) {
     } else if (i == 1) {
       CHECK(rgb[0] >= 53 && rgb[0] <= 63 && rgb[1] >= 54 && rgb[1] <= 64 && rgb[2] >= 57 && rgb[2] <= 67);
     } else if (i == 2) {
-      CHECK(rgb[0] >= 166 && rgb[0] <= 182 && rgb[1] >= 166 && rgb[1] <= 182 && rgb[2] >= 166 && rgb[2] <= 182);
+      // Dark glass over white: same-polarity densified dark glass (~90, never flipped to light gray 174)
+      CHECK(rgb[0] >= 82 && rgb[0] <= 98 && rgb[1] >= 82 && rgb[1] <= 98 && rgb[2] >= 82 && rgb[2] <= 98);
     } else if (i == 3) {
       double mx = (double)(rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]));
       double mn = (double)(rgb[0] < rgb[1] ? (rgb[0] < rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] < rgb[2] ? rgb[1] : rgb[2]));
@@ -421,7 +422,7 @@ static void test_p0_liquid_glass_vectors(void) {
     glass_free();
   }
 
-  // Stateful adaptive transition test 2: Dark adaptive (is_dark = 1) 1-frame atomic convergence + zero settle:
+  // Stateful adaptive transition test 2: Dark adaptive (is_dark = 1) same-polarity 70ms easing (latch == 64):
   {
     double inst[2 * MB_INST];
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
@@ -447,31 +448,35 @@ static void test_p0_liquid_glass_vectors(void) {
     CHECK(read_ad_bright_t(&frame0_t, &latch0) == 1);
     CHECK(read_offscreen_pixel_rgb(64, 64, rgb0) == 1);
     CHECK(frame0_t >= 0.98);
-    CHECK(latch0 == 128);
-    CHECK(rgb0[0] >= 166 && rgb0[0] <= 182 && rgb0[1] >= 166 && rgb0[1] <= 182 && rgb0[2] >= 166 && rgb0[2] <= 182);
+    CHECK(latch0 == 64);
+    CHECK(rgb0[0] >= 82 && rgb0[0] <= 98 && rgb0[1] >= 82 && rgb0[1] <= 98 && rgb0[2] >= 82 && rgb0[2] <= 98);
 
-    // Flip backdrop from white -> black: frame 1 must snap immediately (t <= 0.02, latch == 64, pixel 30..38, settling == 0).
+    // Flip backdrop from white -> black: frame 1 eases smoothly, converges after 45 frames (t <= 0.02, latch == 64, pixel 30..38).
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
-    if (rw) rw->ad_frame_serial++;
-    ad_cur_dt = 1.0 / 60.0;
-    CHECK(submit(inst, 2, 0.0, 0.0, 0.0) == 1);
-    ctx->Flush();
-    if (rw) ad_finalize_frame(rw, 1, rw->ad_frame_serial);
-    double frame1_t = -1.0;
-    uint8_t latch1 = 0, rgb1[3] = {0, 0, 0};
-    CHECK(read_ad_bright_t(&frame1_t, &latch1) == 1);
-    CHECK(read_offscreen_pixel_rgb(64, 64, rgb1) == 1);
-    printf("win_gpu: stateful_ad_dark frame0_t=%.4f latch0=%u frame1_t=%.4f latch1=%u rgb1=(%u,%u,%u) settling=%d\n",
-           frame0_t, latch0, frame1_t, latch1, rgb1[0], rgb1[1], rgb1[2], mb_render_adaptive_settling(0));
-    CHECK(frame1_t <= 0.02);
+    double frame1_t = -1.0, final_t = -1.0;
+    uint8_t latch1 = 0, rgb_end[3] = {0, 0, 0};
+    for (int f = 1; f <= 45; f++) {
+      if (rw) rw->ad_frame_serial++;
+      ad_cur_dt = 1.0 / 60.0;
+      CHECK(submit(inst, 2, 0.0, 0.0, 0.0) == 1);
+      ctx->Flush();
+      if (rw) ad_finalize_frame(rw, 1, rw->ad_frame_serial);
+      if (f == 1) CHECK(read_ad_bright_t(&frame1_t, &latch1) == 1);
+    }
+    CHECK(read_ad_bright_t(&final_t, &latch1) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, rgb_end) == 1);
+    printf("win_gpu: stateful_ad_dark frame0_t=%.4f latch0=%u frame1_t=%.4f final_t=%.4f latch1=%u rgb_end=(%u,%u,%u) settling=%d\n",
+           frame0_t, latch0, frame1_t, final_t, latch1, rgb_end[0], rgb_end[1], rgb_end[2], mb_render_adaptive_settling(0));
+    CHECK(frame1_t > 0.50 && frame1_t < 0.95);
+    CHECK(final_t <= 0.02);
     CHECK(latch1 == 64);
-    CHECK(rgb1[0] >= 30 && rgb1[0] <= 38 && rgb1[1] >= 30 && rgb1[1] <= 38 && rgb1[2] >= 30 && rgb1[2] <= 38);
+    CHECK(rgb_end[0] >= 30 && rgb_end[0] <= 38 && rgb_end[1] >= 30 && rgb_end[1] <= 38 && rgb_end[2] >= 30 && rgb_end[2] <= 38);
     CHECK(mb_render_adaptive_settling(0) == 0);
     ad_cur_dt = 0.0;
     glass_free();
   }
 
-  // Stateful adaptive test 3: Light adaptive opacity (glassFrost / Increase Contrast) suppresses white-on-light flip:
+  // Stateful adaptive test 3: Clear-invert light adaptive (a[6] = -1.0) opacity (glassFrost / Increase Contrast) suppresses white-on-light flip:
   // (a) Full dark backdrop with 0x67 flips dark (t >= 0.98), raising tint_a to 0.913 on the same slot snaps t <= 0.02 with settling == 0
   //     and keeps dark ink (kind 10) dark on bright frosted light glass;
   // (b) Fresh full dark capsule at 65% frost (0.752) stays light frosted glass + dark ink.
@@ -480,7 +485,7 @@ static void test_p0_liquid_glass_vectors(void) {
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.08, 0.08, 0.08, 1.0, 0.0);
     fill_p0_rect(inst + MB_INST, 16.0, 16.0, 96.0, 96.0, 6.0, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -50.0);
     inst[MB_INST + 4] = 16.0;
-    inst[MB_INST + 6] = 1.0;
+    inst[MB_INST + 6] = -1.0;  // clear-invert opt-in
     inst[MB_INST + 7] = 1.0;
     inst[MB_INST + 12] = 0.0;
     inst[MB_INST + 13] = 4.0;
@@ -541,6 +546,40 @@ static void test_p0_liquid_glass_vectors(void) {
     printf("win_gpu: light_frost_65 t=%.3f ink=(%u,%u,%u) gl=(%u,%u,%u)\n",
            t65, ink65[0], ink65[1], ink65[2], gl65[0], gl65[1], gl65[2]);
     CHECK(t65 <= 0.02 && ink65[0] < 65 && gl65[0] > 180);
+    ad_cur_dt = 0.0;
+    glass_free();
+  }
+
+  // Opus P1-1 regression: more_contrast dark glass (tint_a = 0.52 -> is_dark == 2) over white must densify (nextT > 0.5)
+  {
+    double inst[2 * MB_INST];
+    fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+    fill_p0_rect(inst + MB_INST, 16.0, 16.0, 96.0, 96.0, 6.0, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0.52, -51.0);
+    inst[MB_INST + 4] = 16.0;
+    inst[MB_INST + 6] = 1.0;
+    inst[MB_INST + 7] = 1.0;
+    inst[MB_INST + 12] = 0.0;
+    inst[MB_INST + 13] = 4.0;
+    inst[MB_INST + 14] = -1.0;
+    inst[MB_INST + 15] = 1.0;
+    glass_free();
+    ad_mode = 1;
+    ad_cur_dt = 1.0 / 60.0;
+    if (rw) {
+      rw->ad_frame_serial = 0;
+      memset(rw->ad_slots, 0, sizeof rw->ad_slots);
+    }
+    CHECK(submit(inst, 2, 1.0, 1.0, 1.0) == 1);
+    ctx->Flush();
+    double mc_t = -1.0;
+    uint8_t mc_latch = 0, mc_rgb[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&mc_t, &mc_latch) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, mc_rgb) == 1);
+    printf("win_gpu: dark_more_contrast_white t=%.4f latch=%u rgb=(%u,%u,%u)\n",
+           mc_t, mc_latch, mc_rgb[0], mc_rgb[1], mc_rgb[2]);
+    CHECK(mc_t > 0.50);
+    CHECK(mc_latch == 64);
+    CHECK(mc_rgb[0] >= 60 && mc_rgb[0] <= 112);
     ad_cur_dt = 0.0;
     glass_free();
   }
@@ -2316,7 +2355,7 @@ static void test_liquid_over_hole(void) {
     th[4 * MB_INST + 21] = 100.0; th[4 * MB_INST + 22] = 60.0; th[4 * MB_INST + 23] = -48.0;
     // Capsule B over opaque pure black stage: (220, 36, 160, 48), center (300, 60)
     fill_p0_rect(th + 5 * MB_INST, 220, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -394.0);
-    th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = 1.0; th[5 * MB_INST + 7] = 2.0;
+    th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = -1.0; th[5 * MB_INST + 7] = 2.0;
     th[5 * MB_INST + 12] = 0.0; th[5 * MB_INST + 13] = 14.0; th[5 * MB_INST + 14] = -1.0; th[5 * MB_INST + 15] = 1.0;
     // Capsule B icon (kind==10, 0x18181BFF) at center (256, 60)
     fill_p0_rect(th + 6 * MB_INST, 244, 50, 24, 20, 10, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 1.0, 0);
@@ -2331,14 +2370,91 @@ static void test_liquid_over_hole(void) {
     fill_p0_rect(th + 8 * MB_INST, 10, 150, 180, 70, 0, 0.0, 0.0, 0.0, 0.70, 0);
     // Capsule C over 70% dark scrim on kind==9 hole: (20, 160, 160, 50), center (100, 185)
     fill_p0_rect(th + 9 * MB_INST, 20, 160, 160, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -395.0);
-    th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = 1.0; th[9 * MB_INST + 7] = 2.0;
+    th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = -1.0; th[9 * MB_INST + 7] = 2.0;
     th[9 * MB_INST + 12] = 0.0; th[9 * MB_INST + 13] = 14.0; th[9 * MB_INST + 14] = -1.0; th[9 * MB_INST + 15] = 1.0;
     // Capsule C dark adaptive ink (kind==10, #1A1A1A) at center (100, 185)
     fill_p0_rect(th + 10 * MB_INST, 88, 175, 24, 20, 10, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 1.0, 0);
     th[10 * MB_INST + 4] = 6.0;
     th[10 * MB_INST + 12] = 0.1; th[10 * MB_INST + 13] = 0.5; th[10 * MB_INST + 14] = 0.9; th[10 * MB_INST + 15] = 0.5;
     th[10 * MB_INST + 21] = 100.0; th[10 * MB_INST + 22] = 185.0; th[10 * MB_INST + 23] = 50.0;
-    uint8_t *px_th = render_rgba_pixels_of(th, 11, 0.0, 0.0, 0.0, 2.0, TPW, TPH);
+    // Render via stateful submit() (ad_mode = 1) matching Apple/GLES live presentation so adaptive slots
+    // drive clear-invert (Capsule B/C) while unslotted stateless shots stay same-polarity.
+    D3D11_TEXTURE2D_DESC th_td = {};
+    th_td.Width = (UINT)TPW;
+    th_td.Height = (UINT)TPH;
+    th_td.MipLevels = th_td.ArraySize = 1;
+    th_td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    th_td.SampleDesc.Count = 1;
+    th_td.Usage = D3D11_USAGE_DEFAULT;
+    th_td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ID3D11Texture2D *th_tex = NULL;
+    ID3D11RenderTargetView *th_rtv = NULL;
+    CHECK(SUCCEEDED(dev->CreateTexture2D(&th_td, NULL, &th_tex)) && th_tex != NULL);
+    if (th_tex) CHECK(SUCCEEDED(dev->CreateRenderTargetView(th_tex, NULL, &th_rtv)) && th_rtv != NULL);
+    uint8_t *px_th = NULL;
+    if (th_tex && th_rtv) {
+      ID3D11RenderTargetView *saved_rtv = rtv;
+      ID3D11Texture2D *saved_off = off_target;
+      double saved_vw = vw, saved_vh = vh, saved_vscale = vscale;
+      int saved_fb_w = fb_w, saved_fb_h = fb_h, saved_ad_mode = ad_mode;
+      rtv = th_rtv;
+      off_target = th_tex;
+      vw = (double)TW;
+      vh = (double)TH;
+      vscale = 2.0;
+      fb_w = TPW;
+      fb_h = TPH;
+      off_ok = 0;
+      dirty_whole = 1;
+      glass_free();
+      ad_mode = 1;
+      ad_cur_dt = 1.0 / 60.0;
+      if (rw) {
+        rw->ad_frame_serial = 0;
+        memset(rw->ad_slots, 0, sizeof rw->ad_slots);
+      }
+      CHECK(submit(th, 11, 0.0, 0.0, 0.0) == 1);
+      ctx->Flush();
+      th_td.Usage = D3D11_USAGE_STAGING;
+      th_td.BindFlags = 0;
+      th_td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      ID3D11Texture2D *th_stg = NULL;
+      if (SUCCEEDED(dev->CreateTexture2D(&th_td, NULL, &th_stg)) && th_stg) {
+        ctx->CopyResource(th_stg, th_tex);
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        if (SUCCEEDED(ctx->Map(th_stg, 0, D3D11_MAP_READ, 0, &m))) {
+          px_th = (uint8_t *)malloc((size_t)TPW * (size_t)TPH * 4u);
+          if (px_th) {
+            for (int y = 0; y < TPH; y++) {
+              const uint8_t *s = (const uint8_t *)m.pData + (size_t)y * (size_t)m.RowPitch;
+              uint8_t *d = px_th + (size_t)y * (size_t)TPW * 4u;
+              for (int x = 0; x < TPW; x++, s += 4, d += 4) {
+                d[0] = s[2];
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = s[3];
+              }
+            }
+          }
+          ctx->Unmap(th_stg, 0);
+        }
+        th_stg->Release();
+      }
+      ad_cur_dt = 0.0;
+      ad_mode = saved_ad_mode;
+      glass_free();
+      rtv = saved_rtv;
+      off_target = saved_off;
+      vw = saved_vw;
+      vh = saved_vh;
+      vscale = saved_vscale;
+      fb_w = saved_fb_w;
+      fb_h = saved_fb_h;
+      off_ok = 0;
+      dirty_whole = 1;
+    }
+    if (th_rtv) th_rtv->Release();
+    if (th_tex) th_tex->Release();
     CHECK(px_th != NULL);
     if (px_th) {
       const uint8_t *a_gl = px_th + ((size_t)(60 * 2) * (size_t)TPW + 84u * 2u) * 4u;
@@ -2362,6 +2478,20 @@ static void test_liquid_over_hole(void) {
       CHECK(b_tx_l > 0.75 && b_br_l > 0.75);
       CHECK(c_tx_l > 0.75);
       free(px_th);
+    }
+    // Unslotted stateless fallback (ad_mode = -1): inverting light glass must stay same-polarity
+    // (light glass + dark ink) rather than dark glass + dark ink.
+    uint8_t *px_fb = render_rgba_pixels_of(th, 11, 0.0, 0.0, 0.0, 2.0, TPW, TPH);
+    CHECK(px_fb != NULL);
+    if (px_fb) {
+      const uint8_t *b_gl = px_fb + ((size_t)(60 * 2) * (size_t)TPW + 284u * 2u) * 4u;
+      const uint8_t *b_tx = px_fb + ((size_t)(60 * 2) * (size_t)TPW + 256u * 2u) * 4u;
+      double b_gl_l = (0.2126 * b_gl[0] + 0.7152 * b_gl[1] + 0.0722 * b_gl[2]) / 255.0;
+      double b_tx_l = (0.2126 * b_tx[0] + 0.7152 * b_tx[1] + 0.0722 * b_tx[2]) / 255.0;
+      printf("win_gpu: v10_unslotted_inverting_fallback stage=(gl=%.3f tx=%.3f)\n", b_gl_l, b_tx_l);
+      CHECK(b_gl_l > 0.50);
+      CHECK(b_tx_l < 0.25);
+      free(px_fb);
     }
   }
 }

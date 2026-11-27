@@ -512,21 +512,30 @@ fn top_bar_faults(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-test "a phone's bar along the top splits left and right into separate liquid glass capsules with bare title between them: pressed, lit, the audit clean" {
-  // Single video (no playlist): two symmetric 44×44 circular glass buttons, bare title between them.
+test "a phone's bar along the top splits left, centered title, and right into separate liquid glass capsules: pressed, lit, the audit clean" {
+  // Single video (no playlist): two symmetric 44×44 circular glass buttons with a floating glass title capsule strictly between them.
   let t1 = player_tester(true, "a-very-long-recording-name-for-narrow-phone-preview.mp4", [], [], [])
   t1.draw()
   let pills1 = t1
     .drawn_glass_corners()
     .filter(fn(r) { (r.3 - phone_top_pill_h).abs() < 0.5 && r.1 < 200.0 })
-  assert_eq(pills1.length(), 2, msg="single video top pills: \{Repr(pills1)}")
+  assert_eq(pills1.length(), 3, msg="single video top pills: \{Repr(pills1)}")
+  pills1.sort_by(fn(a, b) { a.0.compare(b.0) })
   let half = phone_top_pill_h / 2.0
-  for p in pills1 {
+  let left_pill = pills1[0]
+  let title_pill = pills1[1]
+  let right_pill = pills1[2]
+  for p in [left_pill, right_pill] {
     assert_true((p.2 - phone_top_pill_h).abs() < 0.5, msg="symmetric circle width: \{Repr(p)}")
     assert_eq(p.4, half)
   }
+  assert_eq(title_pill.4, half)
+  assert_true(
+    title_pill.0 >= left_pill.0 + left_pill.2 && title_pill.0 + title_pill.2 <= right_pill.0 + 0.5,
+    msg="title pill \{Repr(title_pill)} must sit between left \{Repr(left_pill)} and right \{Repr(right_pill)}",
+  )
   assert_eq(top_bar_faults(t1), [])
-  // Title sits strictly between the left and right glass buttons (not covered by either liquid glass capsule).
+  // Title text sits strictly inside the centered title capsule.
   let title_box = t1.rect_of("a-very-long").unwrap_or_else(fn() {
     match t1.all(Text, label="a-very-long-recording-name-for-narrow-phone-preview.mp4") {
       [n, ..] => n.rect
@@ -534,24 +543,26 @@ test "a phone's bar along the top splits left and right into separate liquid gla
     }
   })
   assert_true(title_box.2 > 0.0, msg="title drawn: \{Repr(title_box)}")
-  let left_pill = if pills1[0].0 < pills1[1].0 { pills1[0] } else { pills1[1] }
-  let right_pill = if pills1[0].0 < pills1[1].0 { pills1[1] } else { pills1[0] }
   assert_true(
-    title_box.0 >= left_pill.0 + left_pill.2 && title_box.0 + title_box.2 <= right_pill.0 + 0.5,
-    msg="bare title \{Repr(title_box)} must sit between left \{Repr(left_pill)} and right \{Repr(right_pill)}",
+    title_box.0 >= title_pill.0 && title_box.0 + title_box.2 <= title_pill.0 + title_pill.2 + 0.5,
+    msg="title \{Repr(title_box)} must sit inside title pill \{Repr(title_pill)}",
   )
-  // Playlist video: left 44×44 back circle + right 2-key capsule (选集 + 下载), concentric keys, title centered, audit clean.
+  // Playlist video: left 44×44 back circle + centered title capsule + right 2-key capsule (选集 + 下载), concentric keys, title centered, audit clean.
   let t = player_tester(true, "E2.mp4", ["E1.mp4", "E2.mp4", "E3.mp4"], [], [])
   t.draw()
   let pills = t
     .drawn_glass_corners()
     .filter(fn(r) { (r.3 - phone_top_pill_h).abs() < 0.5 && r.1 < 200.0 })
-  assert_eq(pills.length(), 2, msg="playlist top pills: \{Repr(pills)}")
-  let lp = if pills[0].0 < pills[1].0 { pills[0] } else { pills[1] }
-  let rp = if pills[0].0 < pills[1].0 { pills[1] } else { pills[0] }
+  assert_eq(pills.length(), 3, msg="playlist top pills: \{Repr(pills)}")
+  pills.sort_by(fn(a, b) { a.0.compare(b.0) })
+  let lp = pills[0]
+  let tp = pills[1]
+  let rp = pills[2]
   assert_true((lp.2 - phone_top_pill_h).abs() < 0.5, msg="left back circle: \{Repr(lp)}")
+  assert_true(tp.0 >= lp.0 + lp.2 && tp.0 + tp.2 <= rp.0 + 0.5, msg="playlist title pill between sides: \{Repr(tp)}")
   assert_true(rp.2 > phone_top_pill_h + 20.0 && rp.2 < 120.0, msg="right 2-key capsule: \{Repr(rp)}")
   assert_eq(lp.4, half)
+  assert_eq(tp.4, half)
   assert_eq(rp.4, half)
   // Short title stays horizontally centered on screen even with 2 right-side buttons
   let title_pl = t.rect_of("E2.mp4").unwrap()

@@ -75,15 +75,18 @@ test "player_node video controls use adaptive Floating glass in light mode and V
       let t = player_glass_tester(narrow, "video", dark, false)
       let glass = t.drawn_glass()
       let liquid = glass.filter(fn(g) { g.4 == 6 })
-      // Phone has left back glass button + right action glass button/pill + bottom card (3); desktop has viewer_bar pills + bottom control bar (>= 2).
-      let expected_min = if narrow { 3 } else { 2 }
+      // Phone has left back glass button + centered title glass pill + right action glass button/pill + bottom card (4);
+      // desktop has viewer_bar pills + bottom control bar (>= 3).
+      let expected_min = if narrow { 4 } else { 3 }
       assert_true(liquid.length() >= expected_min, msg="narrow=\{narrow} dark=\{dark} liquid=\{liquid.length()}")
       assert_no_nested_glass(t, "player_node narrow=\{narrow} dark=\{dark}")
       assert_true(has_outside_shadow(t), msg="narrow=\{narrow} dark=\{dark} outside shadow")
       if narrow {
-        // Bare adaptive ink is active on top-bar title glyphs (kind 7, slot 23 < 0) in GPU mode.
+        // Title sits inside a floating liquid glass capsule (zero bare adaptive ink, zero top scroll-edge scrim).
         let bare = t.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 7.0 && a[23] < 0.0 && a[1] < 100.0 })
-        assert_true(bare.length() > 0, msg="narrow dark=\{dark}: bare adaptive ink active on top bar title")
+        assert_eq(bare.length(), 0, msg="narrow dark=\{dark}: title uses floating glass pill, not bare adaptive ink")
+        let scroll_edges = glass.filter(fn(g) { g.4 == 5 })
+        assert_eq(scroll_edges.length(), 0, msg="narrow dark=\{dark}: media player emits zero full-width scroll-edge scrims")
       }
       // Dark mode video uses ViewerDark (blur = 4.0) with media_dark_text; light mode video uses adaptive Floating (blur = 1.2)
       // on player bars (desktop viewer_bar_node top pills use adaptive liquid_viewer_clear_glass blur = 4.0) with light ink.
@@ -162,9 +165,9 @@ test "player_node embedded mode emits zero liquid glass instances" {
 test "player_node hidden controls emit zero hidden glass instances" {
   // Phone playing: tap stage once to hide controls, wait past fade-out.
   let t = player_glass_tester(true, "video", true, false, pin=pinned(2000.0))
-  // Top scroll-edge (frosted) + left back glass button + right action glass pill + bottom card = 4.
+  // Left back glass button + centered title glass pill + right action glass pill + bottom card = 4 (no scroll-edge scrim).
   assert_eq(t.drawn_glass().length(), 4, msg="phone visible controls glass count")
-  assert_eq(t.drawn_glass().filter(fn(g) { g.4 == 6 }).length(), 3, msg="phone visible controls liquid glass count")
+  assert_eq(t.drawn_glass().filter(fn(g) { g.4 == 6 }).length(), 4, msg="phone visible controls liquid glass count")
   t.tap(195.0, 422.0)
   t.run_for(playing_for("k").media.times().1 + 600.0)
   assert_eq(t.drawn_glass().length(), 0, msg="phone hidden controls must emit zero glass")

@@ -947,8 +947,8 @@ fn place_top_bar_glass(
   v.box(fn(g) {
     narrow_bar_scrim_node(
       g,
-      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
-      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
+      fn(s) { top_bar_h_at(s.window_w()) + 28.0 },
+      fn(s) { top_bar_h_at(s.window_w()) - status_top_now(s.window_w()) + 28.0 },
     )
     g.box(fn(row) {
       row
@@ -969,13 +969,12 @@ fn place_top_bar_glass(
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
         .alpha(By(fn() { title_alpha(t) }))
-        .adaptive_ink(Is(true))
         |> ignore
         @sf.top_bar_title_node(t, fn() { place_label(place()) }) |> ignore
       })
       |> ignore
       row.show(fn() { actions() is Some(_) }, fn(a) {
-        a.row(Is(true)).shrink(Is(1.0)).alpha(By(fn() { title_alpha(a) })).adaptive_ink(Is(true)) |> ignore
+        a.row(Is(true)).shrink(Is(1.0)).alpha(By(fn() { title_alpha(a) })) |> ignore
         a.pick(
           fn() {
             match actions() {

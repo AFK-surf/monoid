@@ -155,9 +155,6 @@ pub fn chat_bar_project_attrs_node(
     .shrink(Is(0.0))
     .gap(Is(proj_s1_5))
     .lines_up(Is(Some(Middle)))
-    // (bare words and marks over the chat scrolled under the glass bar: their ink follows what is behind them, as the
-    // title's beside them does)
-    .adaptive_ink(Is(true))
     |> ignore
     let project_now = fn() {
       match view() {

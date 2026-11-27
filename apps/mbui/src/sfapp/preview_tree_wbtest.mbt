@@ -1730,12 +1730,28 @@ test "viewer on the tree, a wide window: a toast said as it shows (a call's answ
 }
 
 ///|
-/// The bar across the top of a wide window as it is drawn: its glass's top (the glass as wide as the window, at its
-/// top: the window's tree's, else an old view's), None where none is drawn.
+/// The bar across the top of a wide window as it is drawn: its top (the viewer bar's outer box holding its back label,
+/// as wide as the window, at its top: the window's tree's, else an old view's glass), None where none is drawn.
 fn wide_bar_top(t : @ui.Tester) -> Double? {
-  for d in @ui.view_tree().unwrap().drawn() {
-    if d.glass is Some(_) && d.w == 1280.0 && d.y <= 0.0 {
-      return Some(d.y)
+  let tree = @ui.view_tree().unwrap()
+  let back = match (viewer.get(), preview_src.val) {
+    (Some(v), Some(src)) => v.desk_back(src)
+    _ => ""
+  }
+  if back != "" {
+    let all = tree.drawn_held()
+    for e in all {
+      let (d, up, _) = e
+      if d.words == back && d.alpha > 0.0 {
+        let mut h = up
+        while h >= 0 {
+          let (hd, hu, _) = all[h]
+          if hd.w == 1280.0 && hd.h < 100.0 && hd.y <= 0.0 {
+            return Some(hd.y)
+          }
+          h = hu
+        }
+      }
     }
   }
   let mut out = None
