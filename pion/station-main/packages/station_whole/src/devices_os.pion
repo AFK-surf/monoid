@@ -78,7 +78,7 @@ fn dev_force_kill_proc_explicit_and_close(child : station_sys::ChildProcess, pgi
   // (never call blocking `proc_kill` / `taskkill`). On POSIX, if an explicitly stopped
   // leader exited before `SIGKILL`, signal `-pgid` at most once before `close()`.
   let mut did_pgid = pgid_killed
-  if !did_pgid && child.pid > 0 && station_sys::os_name() != "windows" {
+  if !did_pgid && child.pid > 0 && station_sys::os_name() != "win32" {
     did_pgid = true
     let _ = station_sys::proc_kill(child.pid, station_sys::SIG_KILL, true)
   }
@@ -89,7 +89,7 @@ fn dev_force_kill_proc_explicit_and_close(child : station_sys::ChildProcess, pgi
 fn dev_force_kill_pty_explicit_and_close(pty : station_sys::PtyHandle, pgid_killed : Bool) -> Bool {
   let _ = pty.kill(station_sys::SIG_KILL)
   let mut did_pgid = pgid_killed
-  if !did_pgid && pty.pid > 0 && station_sys::os_name() != "windows" {
+  if !did_pgid && pty.pid > 0 && station_sys::os_name() != "win32" {
     did_pgid = true
     let _ = station_sys::proc_kill(pty.pid, station_sys::SIG_KILL, true)
   }

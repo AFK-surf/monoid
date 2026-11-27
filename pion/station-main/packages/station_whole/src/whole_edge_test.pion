@@ -365,14 +365,50 @@ test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
   edge_assert(ov_hub.deferred_sys_dropped_count() == 1L)
   edge_assert(overflows.length() == 1 && overflows[0] == "deferred_sys:10")
   // Overflow deferred_done during `await_call` MUST return Err (never silently drop!)
+  let hi1 = EDGE_MUX_CALL_ID_BASE + 101L
+  let hi2 = EDGE_MUX_CALL_ID_BASE + 102L
+  let hi3 = EDGE_MUX_CALL_ID_BASE + 103L
   h.queue.clear()
-  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 101L, json: "{}", error: "", bytes: None }))
-  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 102L, json: "{}", error: "", bytes: None }))
-  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 103L, json: "{}", error: "", bytes: None }))
-  let ov_res = ov_hub.await_call(999999L, 500L, cancel_on_timeout=false)
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi1, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi2, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi3, json: "{}", error: "", bytes: None }))
+  let ov_res = ov_hub.await_call(EDGE_MUX_CALL_ID_BASE + 999L, 500L, cancel_on_timeout=false)
   edge_assert(ov_res is Err(_))
   edge_assert(ov_hub.deferred_done_dropped_count() == 1L)
-  edge_assert(overflows.length() == 2 && overflows[1] == "deferred_done:101")
+  edge_assert(overflows.length() == 2 && overflows[1] == "deferred_done:" + hi1.to_string())
+
+  // R5: `max_deferred_done = 1`, claim `hi1` (live count=0), then receive `hi2` while awaiting `hi3` -> 0 false overflow!
+  let cap1_hub = EdgeMuxHub::from_transport(h.hub.transport, max_deferred_done=1, max_deferred_sys=2)
+  let cap1_ov : Array[String] = []
+  cap1_hub.set_overflow_handler(fn(q : String, id : Int64) -> Unit { cap1_ov.push(q + ":" + id.to_string()) })
+  cap1_hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi1, json: "{\"v\":1}", error: "", bytes: None }))
+  edge_assert(cap1_hub.await_call(hi1, 100L, cancel_on_timeout=false) is Ok(_))
+  edge_assert(cap1_hub.deferred_done_count() == 0)
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi2, json: "{\"v\":2}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: hi3, json: "{\"v\":3}", error: "", bytes: None }))
+  edge_assert(cap1_hub.await_call(hi3, 100L, cancel_on_timeout=false) is Ok(_))
+  edge_assert(cap1_hub.deferred_done_dropped_count() == 0L && cap1_ov.length() == 0)
+
+  // R5: `as_mux_transport()` bridges `ShellMux` <-> `EdgeMuxHub` bidirectionally with 0 Sys loss
+  let bridged_mux = builders_core::ShellMux::new(cap1_hub.as_mux_transport(), start_stdin=false)
+  let mut bridged_sys = 0
+  cap1_hub.set_sys_router(fn(_id : Int64, _b : Bytes) -> Bool {
+    bridged_sys = bridged_sys + 1
+    true
+  })
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::Sys(555L, "sys".to_bytes()))
+  let low_cid = bridged_mux.call_async_raw(builders_core::MuxToken::Tagged(1, 1, 0L), "ws.close", "{\"id\":1}", None)
+  edge_assert(low_cid < EDGE_MUX_CALL_ID_BASE)
+  let mut saw_low = false
+  let _ = bridged_mux.step(
+    100L,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(_tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit { saw_low = true },
+  )
+  edge_assert(saw_low && bridged_sys == 1)
 }
 
 // ---------------------------------------------------------------------------

@@ -867,7 +867,7 @@ fn brw_force_kill_explicit_and_close(child : station_sys::ChildProcess, pgid_kil
   // leader exited before `SIGKILL`, signal `-pgid` at most once before `close()` so
   // `trap "" TERM` descendants cannot survive.
   let mut did_pgid = pgid_killed
-  if !did_pgid && child.pid > 0 && station_sys::os_name() != "windows" {
+  if !did_pgid && child.pid > 0 && station_sys::os_name() != "win32" {
     did_pgid = true
     let _ = station_sys::proc_kill(child.pid, station_sys::SIG_KILL, true)
   }

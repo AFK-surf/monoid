@@ -296,13 +296,21 @@ pub fn sfb1_hash_and_seal_file_streaming(
     }
     Ok(())
   }
+  let ro = match station_sys::file_open_ro(src_path) {
+    Ok(f) => f
+    Err(code) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("file_open_ro failed for " + src_path + " (code=" + code.to_string() + ")")
+    }
+  }
   while true {
-    match station_sys::read_range_meta(src_path, read_off, eff_chunk.to_int64()) {
+    match ro.pread(read_off, eff_chunk.to_int64()) {
       Err(code) => {
+        let _ = ro.close()
         let _ = station_sys::unlink(tmp)
-        return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+        return Err("file_pread failed for " + src_path + " (code=" + code.to_string() + ")")
       }
-      Ok((chunk, total_sz, _)) => {
+      Ok(chunk) => {
         if chunk.length() == 0 {
           break
         }
@@ -313,21 +321,21 @@ pub fn sfb1_hash_and_seal_file_streaming(
           Ok(emitted) => match write_emitted(emitted) {
             Ok(_) => ()
             Err(e) => {
+              let _ = ro.close()
               let _ = station_sys::unlink(tmp)
               return Err(e)
             }
           }
           Err(e) => {
+            let _ = ro.close()
             let _ = station_sys::unlink(tmp)
             return Err("sfb1 seal push failed: " + e)
           }
         }
-        if read_off >= total_sz {
-          break
-        }
       }
     }
   }
+  let _ = ro.close()
   match sealer.finish() {
     Ok(emitted) => match write_emitted(emitted) {
       Ok(_) => ()

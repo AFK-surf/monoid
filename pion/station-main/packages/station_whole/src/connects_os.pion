@@ -213,6 +213,7 @@ pub struct EdgeMuxHub {
   deferred_done : Map[Int64, (builders_core::MuxToken, host_shim::ShellDone)]
   deferred_done_order : Array[Int64]
   deferred_sys : Array[(Int64, Bytes)]
+  shell_mux_inbox : Array[host_shim::HostEvent]
   mut deferred_done_dropped : Int64
   mut deferred_sys_dropped : Int64
   mut on_overflow : Option[(String, Int64) -> Unit]
@@ -237,6 +238,7 @@ pub fn EdgeMuxHub::from_transport(
     deferred_done: Map::new(),
     deferred_done_order: [],
     deferred_sys: [],
+    shell_mux_inbox: [],
     deferred_done_dropped: 0L,
     deferred_sys_dropped: 0L,
     on_overflow: None,
@@ -275,6 +277,7 @@ pub fn EdgeMuxHub::new(
     deferred_done: hub.deferred_done,
     deferred_done_order: hub.deferred_done_order,
     deferred_sys: hub.deferred_sys,
+    shell_mux_inbox: hub.shell_mux_inbox,
     deferred_done_dropped: hub.deferred_done_dropped,
     deferred_sys_dropped: hub.deferred_sys_dropped,
     on_overflow: hub.on_overflow,
@@ -375,13 +378,44 @@ pub fn EdgeMuxHub::cancel(self : EdgeMuxHub, call_id : Int64) -> Unit {
   let _ = (self.transport.call_sync)("fetch.cancel", "{\"id\":" + call_id.to_string() + "}")
 }
 
+fn EdgeMuxHub::remove_deferred_done_id(self : EdgeMuxHub, id : Int64) -> Unit {
+  self.deferred_done.remove(id)
+  let next : Array[Int64] = []
+  for i in 0..<self.deferred_done_order.length() {
+    if self.deferred_done_order[i] != id {
+      next.push(self.deferred_done_order[i])
+    }
+  }
+  self.deferred_done_order.clear()
+  for i in 0..<next.length() {
+    self.deferred_done_order.push(next[i])
+  }
+}
+
+fn EdgeMuxHub::pop_shell_mux_inbox(self : EdgeMuxHub) -> Option[host_shim::HostEvent] {
+  if self.shell_mux_inbox.length() == 0 {
+    return None
+  }
+  let first = self.shell_mux_inbox[0]
+  let rest : Array[host_shim::HostEvent] = []
+  for i in 1..<self.shell_mux_inbox.length() {
+    rest.push(self.shell_mux_inbox[i])
+  }
+  self.shell_mux_inbox.clear()
+  for i in 0..<rest.length() {
+    self.shell_mux_inbox.push(rest[i])
+  }
+  Some(first)
+}
+
 fn EdgeMuxHub::buffer_deferred_done(
   self : EdgeMuxHub,
   tok : builders_core::MuxToken,
   done : host_shim::ShellDone,
 ) -> Unit {
   if !self.deferred_done.contains(done.id) {
-    while self.deferred_done_order.length() >= self.max_deferred_done {
+    // Prune any stale IDs no longer in `deferred_done`, then evict live oldest only if truly full.
+    while self.deferred_done.length() >= self.max_deferred_done && self.deferred_done_order.length() > 0 {
       let oldest = self.deferred_done_order[0]
       let rest : Array[Int64] = []
       for i in 1..<self.deferred_done_order.length() {
@@ -391,11 +425,13 @@ fn EdgeMuxHub::buffer_deferred_done(
       for i in 0..<rest.length() {
         self.deferred_done_order.push(rest[i])
       }
-      self.deferred_done.remove(oldest)
-      self.deferred_done_dropped = self.deferred_done_dropped + 1L
-      match self.on_overflow {
-        Some(cb) => cb("deferred_done", oldest)
-        None => ()
+      if self.deferred_done.contains(oldest) {
+        self.deferred_done.remove(oldest)
+        self.deferred_done_dropped = self.deferred_done_dropped + 1L
+        match self.on_overflow {
+          Some(cb) => cb("deferred_done", oldest)
+          None => ()
+        }
       }
     }
     self.deferred_done_order.push(done.id)
@@ -424,9 +460,16 @@ fn EdgeMuxHub::buffer_deferred_sys(self : EdgeMuxHub, ev_id : Int64, payload : B
 }
 
 /// Deliver an externally pumped `HostEvent` into the hub without nested `wait` calls.
+/// `ShellDone` events with `id < EDGE_MUX_CALL_ID_BASE` belong to external `ShellMux`
+/// callers bridged via `as_mux_transport()` and are queued in `shell_mux_inbox` unless
+/// explicitly claimed by `pending_tokens`.
 pub fn EdgeMuxHub::deliver_host_event(self : EdgeMuxHub, ev : host_shim::HostEvent) -> Unit {
   match ev {
     host_shim::HostEvent::ShellDone(done) => {
+      if done.id < EDGE_MUX_CALL_ID_BASE && !self.pending_tokens.contains(done.id) {
+        self.shell_mux_inbox.push(host_shim::HostEvent::ShellDone(done))
+        return
+      }
       let tok = match self.pending_tokens.get(done.id) {
         Some(t) => {
           self.pending_tokens.remove(done.id)
@@ -458,15 +501,55 @@ pub fn EdgeMuxHub::deliver_host_event(self : EdgeMuxHub, ev : host_shim::HostEve
     host_shim::HostEvent::StdinData(_) => {
       match self.stdin_router {
         Some(r) => r(ev)
-        None => ()
+        None => self.shell_mux_inbox.push(ev)
       }
     }
     host_shim::HostEvent::StdinEof => {
       match self.stdin_router {
         Some(r) => r(ev)
-        None => ()
+        None => self.shell_mux_inbox.push(ev)
       }
     }
+  }
+}
+
+/// Expose a bidirectional zero-loss `builders_core::MuxTransport` view backed by this
+/// single-owner `EdgeMuxHub`. `ShellMux::new(hub.as_mux_transport())` never touches raw
+/// `host_shim::wait`: `EdgeMuxHub` owns the sole underlying `wait`, routes all `Sys` and
+/// `id >= EDGE_MUX_CALL_ID_BASE` `ShellDone` events internally, and delivers all external
+/// `id < EDGE_MUX_CALL_ID_BASE` `ShellDone` + `Stdin` events to `ShellMux` without loss.
+pub fn EdgeMuxHub::as_mux_transport(self : EdgeMuxHub) -> builders_core::MuxTransport {
+  builders_core::MuxTransport::{
+    call_async: self.transport.call_async,
+    call_sync: self.transport.call_sync,
+    write_stdout_line: self.transport.write_stdout_line,
+    write_stdout_frame: self.transport.write_stdout_frame,
+    now_ms: self.transport.now_ms,
+    wall_ms: self.transport.wall_ms,
+    wait: fn(timeout_ms : Int64) -> Option[host_shim::HostEvent] {
+      match self.pop_shell_mux_inbox() {
+        Some(ev) => return Some(ev)
+        None => ()
+      }
+      if timeout_ms <= 0L {
+        let _ = self.pump_one(0L)
+        return self.pop_shell_mux_inbox()
+      }
+      let deadline = (self.now_fn)() + timeout_ms
+      while true {
+        match self.pop_shell_mux_inbox() {
+          Some(ev) => return Some(ev)
+          None => ()
+        }
+        let rem = deadline - (self.now_fn)()
+        if rem <= 0L {
+          return None
+        }
+        let slice = if rem > 50L { 50L } else { rem }
+        let _ = self.pump_one(slice)
+      }
+      None
+    },
   }
 }
 
@@ -542,7 +625,7 @@ pub fn EdgeMuxHub::await_call(
 ) -> Result[host_shim::ShellDone, String] {
   match self.deferred_done.get(call_id) {
     Some((_, done)) => {
-      self.deferred_done.remove(call_id)
+      self.remove_deferred_done_id(call_id)
       return Ok(done)
     }
     None => ()

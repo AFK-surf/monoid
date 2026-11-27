@@ -2076,6 +2076,55 @@ int main(void) {
 
         unlink(sym_p);
         unlink(sec_file);
+
+        // Single-open read-only handle (`sts_file_open_ro`/`pread`/`close`) tear-free across atomic rename
+        {
+            char fa[512], fb[512], fsym[512];
+            snprintf(fa, sizeof(fa), "%s/ro_a.bin", tmp_dir);
+            snprintf(fb, sizeof(fb), "%s/ro_b.bin", tmp_dir);
+            snprintf(fsym, sizeof(fsym), "%s/ro_sym.bin", tmp_dir);
+            const size_t sz = 512 * 1024;
+            uint8_t *buf_a = (uint8_t *)malloc(sz);
+            uint8_t *buf_b = (uint8_t *)malloc(sz);
+            assert(buf_a != NULL && buf_b != NULL);
+            memset(buf_a, 'A', sz);
+            memset(buf_b, 'B', sz);
+            assert(sts_write_file_atomic(fa, buf_a, (int64_t)sz, 0644) == 1);
+            assert(sts_write_file_atomic(fb, buf_b, (int64_t)sz, 0644) == 1);
+            assert(sts_symlink(fa, fsym, 0) == 1);
+
+            int64_t fsz = 0;
+            int32_t ferr = 0;
+            // Symlink rejected (-5), dir rejected (-4), ENOENT (-2)
+            assert(sts_file_open_ro(fsym, &fsz, &ferr) < 0 && ferr == -5);
+            assert(sts_file_open_ro(tmp_dir, &fsz, &ferr) < 0 && ferr == -4);
+            assert(sts_file_open_ro("/nonexistent_sts_ro_path_xyz", &fsz, &ferr) < 0 && ferr == -2);
+
+            int64_t fh = sts_file_open_ro(fa, &fsz, &ferr);
+            assert(fh > 0 && ferr == 0 && fsz == (int64_t)sz);
+            // Atomically replace `fa` with `fb` BEFORE reading from `fh`!
+            assert(sts_rename(fb, fa) == 1);
+            int64_t off = 0;
+            while (off < fsz) {
+                int64_t rlen = 0;
+                int32_t rerr = -1;
+                uint8_t *chunk = (uint8_t *)sts_file_pread(fh, off, 256 * 1024, &rlen, &rerr);
+                assert(chunk != NULL && rerr == 0 && rlen > 0);
+                for (int64_t k = 0; k < rlen; k++) {
+                    assert(chunk[k] == 'A');
+                }
+                sts_free(chunk);
+                off += rlen;
+            }
+            assert(off == fsz);
+            assert(sts_file_close(fh) == 1);
+            assert(sts_file_close(fh) == 0);
+            free(buf_a);
+            free(buf_b);
+            unlink(fsym);
+            unlink(fa);
+        }
+
         rmdir(tmp_dir);
     }
 
