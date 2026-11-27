@@ -312,3 +312,23 @@ pub fn rounded_rect_gap(
     -dmin(ox, oy) - ra - rb
   }
 }
+
+///|
+/// Measured iOS 27.0 `_UILiquidLensView` lift/unLift spring (`mass=1, k=631.654682, c=50.265482, ratio=1.0, response=0.25s`).
+// kept across runs: a constant value
+pub let liquid_lens_lift_spring : Spec = spring(ratio=1.0, stiffness=631.654682, threshold=0.001)
+
+///|
+/// Measured iOS 27.0 `_UIFlexInteraction` volume-preserving jelly deformation spring (`zeta=0.65, wn~=11.18 rad/s`).
+// kept across runs: a constant value
+pub let liquid_flex_spring : Spec = spring(ratio=0.65, stiffness=125.0, threshold=0.001)
+
+///|
+/// Measured iOS 27.0 edge-wall press-in flex spring (`zeta=0.70, k=180.0`).
+// kept across runs: a constant value
+pub let liquid_wall_flex_in_spring : Spec = spring(ratio=0.70, stiffness=180.0, threshold=0.001)
+
+///|
+/// Measured iOS 27.0 edge-wall release bounce-back spring (`zeta=0.62, k=180.0`).
+// kept across runs: a constant value
+pub let liquid_wall_flex_out_spring : Spec = spring(ratio=0.62, stiffness=180.0, threshold=0.001)

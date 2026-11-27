@@ -598,7 +598,7 @@ test "real slider, segmented, and tab lens controls emit exact drawlist slot 7 (
     t.release(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
     t.run_for(glass_springs_out)
   }
-  // 3. Real bottom tab lens overlay (liquid_lens_overlay_node default droplet_role=4) -> slot 7 == -64.0
+  // 3. Real bottom tab lens overlay (liquid_lens_overlay_node default droplet_role=4) -> slot 7 == -64.16 (role 4, 1.16x zoom)
   {
     let lens = @signals.signal(0.0)
     let t = glass_case(false, false, fn(page) {
@@ -618,12 +618,18 @@ test "real slider, segmented, and tab lens controls emit exact drawlist slot 7 (
     t.draw()
     let mut found = false
     for inst in t.drawn_instances() {
-      if inst[5] == 6.0 && (inst[7] - -64.0).abs() < 0.01 {
-        assert_true(inst[21] > 8.5 && inst[21] <= 9.01, msg="tab lens slot21=\{inst[21]}")
+      if inst[5] == 6.0 && (inst[7] - -64.16).abs() < 0.01 {
+        assert_true((inst[21] - 13.5).abs() < 0.01, msg="tab lens slot21=\{inst[21]}")
         found = true
       }
     }
-    assert_true(found, msg="real tab liquid_lens_overlay_node must emit slot 7 == -64.0")
+    assert_true(found, msg="real tab liquid_lens_overlay_node must emit slot 7 == -64.16 (role 4, 1.16x zoom)")
+    let g1 = liquid_tab_lens_glass(1.0)
+    assert_true((g1.refraction - 13.5).abs() < 0.001, msg="g1.refraction=\{g1.refraction}")
+    assert_true((g1.chroma - 0.04).abs() < 0.001, msg="g1.chroma=\{g1.chroma}")
+    assert_true((g1.zoom - 1.16).abs() < 0.001, msg="g1.zoom=\{g1.zoom}")
+    let g0 = liquid_tab_lens_glass(0.0)
+    assert_true(g0.refraction == 0.0 && g0.chroma == 0.0 && g0.zoom == 1.0, msg="g0=(\{g0.refraction}, \{g0.chroma}, \{g0.zoom})")
   }
   set_dark(None)
 }

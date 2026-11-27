@@ -128,9 +128,14 @@ pub fn tab_lens_surface_decorate(
 pub let tab_lens_raised : Raised = { sigma: 0.0, dy: 0.0, color: 0x00000000L }
 
 ///|
-/// Theme-aware outer shadow under the bottom bar's pressed lens: zeroed (`shadow_none`).
-pub fn tab_lens_raised_for(_dark : Bool) -> Raised {
-  tab_lens_raised
+/// Theme-aware outer shadow under the bottom bar's pressed lens: soft lifted drop shadow in Light mode
+/// (`sigma=7, dy=4, alpha=0x1C`, matching native iOS 27.0 droplet elevation) and zeroed (`tab_lens_raised`) in Dark.
+pub fn tab_lens_raised_for(dark : Bool) -> Raised {
+  if dark {
+    tab_lens_raised
+  } else {
+    { sigma: 7.0, dy: 4.0, color: 0x0000001CL }
+  }
 }
 
 ///|

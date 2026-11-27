@@ -671,7 +671,7 @@ test "bar: switching system theme light <-> dark or accent while mounted updates
 }
 
 ///|
-test "bar: pressed bottom tab lens (slot 7 == -64.0) emits no outer shadow in light or dark while regular bottom bar keeps its shadow" {
+test "bar: pressed bottom tab lens (slot 7 == -64.16) emits soft raised shadow in light and zero outer shadow in dark" {
   for dark in [false, true] {
     new_run()
     let src = fixture(if dark { "home-dark" } else { "home" })
@@ -689,16 +689,17 @@ test "bar: pressed bottom tab lens (slot 7 == -64.0) emits no outer shadow in li
     )
     let (xs, y) = bar_places_at()
     t.press_at(xs[0], y)
+    t.run_for(bar_hold_ms)
     t.run_for(@ui.move_most_ms)
     let mut saw_lens = false
     let mut lens_rect = (0.0, 0.0, 0.0, 0.0)
     for inst in t.drawn_instances() {
-      if inst[5] == 6.0 && (inst[7] - -64.0).abs() < 0.01 {
+      if inst[5] == 6.0 && (inst[7] - -64.16).abs() < 0.01 {
         saw_lens = true
         lens_rect = (inst[0], inst[1], inst[2], inst[3])
       }
     }
-    assert_true(saw_lens, msg="dark=\{dark}: pressed bottom tab must emit clear lens with slot 7 == -64.0")
+    assert_true(saw_lens, msg="dark=\{dark}: pressed bottom tab must emit clear lens with slot 7 == -64.16 (role 4, 1.16x zoom)")
     let pressed_shadows = t.drawn_shadows()
     assert_true(
       pressed_shadows.iter().any(fn(s) {
@@ -707,19 +708,142 @@ test "bar: pressed bottom tab lens (slot 7 == -64.0) emits no outer shadow in li
       }),
       msg="dark=\{dark}: regular bottom bar must keep its outer shadow while tab is pressed",
     )
-    assert_eq(
-      pressed_shadows.length(),
-      rest_shadows.length(),
-      msg="dark=\{dark}: pressing bottom tab lens must not add any outer shadow (rest=\{rest_shadows.length()}, pressed=\{pressed_shadows.length()})",
-    )
+    let expected_lens_shadow = @sf.tab_lens_raised_for(dark)
     let lens_has_shadow = pressed_shadows.iter().any(fn(s) {
       (s.0 - lens_rect.0).abs() < 1.0 &&
-      (s.1 - lens_rect.1).abs() < 1.0 &&
+      (s.1 - (lens_rect.1 + expected_lens_shadow.dy)).abs() < 1.0 &&
       (s.2 - lens_rect.2).abs() < 1.0 &&
-      (s.3 - lens_rect.3).abs() < 1.0
+      (s.3 - lens_rect.3).abs() < 1.0 &&
+      (s.5 - expected_lens_shadow.sigma).abs() < 0.01 &&
+      s.6 == expected_lens_shadow.color
     })
-    assert_true(!lens_has_shadow, msg="dark=\{dark}: pressed bottom tab lens must have no outer shadow")
+    if dark {
+      assert_eq(
+        pressed_shadows.length(),
+        rest_shadows.length(),
+        msg="dark=true: pressing bottom tab lens must not add any outer shadow (rest=\{rest_shadows.length()}, pressed=\{pressed_shadows.length()})",
+      )
+      assert_true(!lens_has_shadow, msg="dark=true: pressed bottom tab lens must have no outer shadow")
+    } else {
+      assert_eq(
+        pressed_shadows.length(),
+        rest_shadows.length() + 1,
+        msg="dark=false: pressing bottom tab lens must emit 1 soft raised shadow (rest=\{rest_shadows.length()}, pressed=\{pressed_shadows.length()})",
+      )
+      assert_true(lens_has_shadow, msg="dark=false: pressed bottom tab lens must match tab_lens_raised_for(false)")
+    }
     t.release(xs[0], y)
     t.run_for(@ui.move_most_ms)
   }
+}
+
+///|
+let bar_shadow_step_ms : Double = 1000.0 / 60.0
+
+///|
+test "bar: light tab lens outer shadow scales sigma, dy, and effective alpha continuously across lift and unlift" {
+  if @ui.test_at_a_rate() {
+    return
+  }
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, dark=false)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let rest_shadow_count = t.drawn_shadows().length()
+  let expected = @sf.tab_lens_raised_for(false)
+  let base_alpha = (expected.color & 0xFFL).to_double() / 255.0
+  let (xs, y) = bar_places_at()
+  // Trigger cross-tab tap in light mode so held lifts 0 -> 1 and settles back 1 -> 0
+  t.tap(xs[3], y)
+  let mut saw_mid_shadow = false
+  let mut max_sigma = 0.0
+  let mut max_dy = 0.0
+  let mut prev_sigma = 0.0
+  let mut prev_dy = 0.0
+  let mut prev_alpha = 0.0
+  for _ in 0..<48 {
+    t.run_for(bar_shadow_step_ms)
+    let h = dclamp(bar.held_at(t.time()), 0.0, 1.0)
+    let mut lens_rect : (Double, Double, Double, Double)? = None
+    for inst in t.drawn_instances() {
+      // Role 4 encodes -(64.0 + 0.16 * p) in slot 7, spanning [-64.16, -64.0] during lift/unlift
+      if inst[5] == 6.0 && inst[7] <= -63.99 && inst[7] >= -64.20 {
+        lens_rect = Some((inst[0], inst[1], inst[2], inst[3]))
+      }
+    }
+    let mut cur_sigma = 0.0
+    let mut cur_dy = 0.0
+    let mut cur_alpha = 0.0
+    match lens_rect {
+      Some(lr) =>
+        for inst in t.drawn_instances() {
+          if inst[5] == 2.0 &&
+            (inst[0] - lr.0).abs() < 1.0 &&
+            (inst[2] - lr.2).abs() < 1.0 &&
+            (inst[3] - lr.3).abs() < 1.0 {
+            cur_sigma = inst[7]
+            cur_dy = inst[1] - lr.1
+            cur_alpha = inst[11]
+          }
+        }
+      None => ()
+    }
+    if cur_alpha > 0.0 {
+      assert_true(
+        (cur_sigma - expected.sigma * h).abs() < 0.35,
+        msg="lens shadow sigma must scale with held: got=\{cur_sigma} expected=\{expected.sigma * h} h=\{h}",
+      )
+      assert_true(
+        (cur_dy - expected.dy * h).abs() < 0.6,
+        msg="lens shadow dy must scale with held: got=\{cur_dy} expected=\{expected.dy * h} h=\{h}",
+      )
+      assert_true(
+        cur_alpha <= base_alpha + 0.005,
+        msg="lens shadow alpha exceeded base: got=\{cur_alpha} base=\{base_alpha}",
+      )
+      if cur_sigma > 0.4 && cur_sigma < expected.sigma - 0.6 && cur_dy > 0.2 && cur_dy < expected.dy - 0.4 {
+        saw_mid_shadow = true
+      }
+    }
+    if cur_sigma > max_sigma {
+      max_sigma = cur_sigma
+    }
+    if cur_dy > max_dy {
+      max_dy = cur_dy
+    }
+    // Adjacent 60fps frames must transition smoothly with no binary pop
+    assert_true(
+      (cur_alpha - prev_alpha).abs() <= base_alpha * 0.45 + 0.005,
+      msg="lens shadow alpha jumped between frames: prev=\{prev_alpha} cur=\{cur_alpha}",
+    )
+    if cur_alpha > 0.0 && prev_alpha > 0.0 {
+      assert_true(
+        (cur_sigma - prev_sigma).abs() <= 2.2,
+        msg="lens shadow sigma jumped between frames: prev=\{prev_sigma} cur=\{cur_sigma}",
+      )
+      assert_true(
+        (cur_dy - prev_dy).abs() <= 1.3,
+        msg="lens shadow dy jumped between frames: prev=\{prev_dy} cur=\{cur_dy}",
+      )
+    }
+    prev_sigma = cur_sigma
+    prev_dy = cur_dy
+    prev_alpha = cur_alpha
+  }
+  assert_true(saw_mid_shadow, msg="expected intermediate shadow sigma/dy frames during light lens lift/unlift")
+  assert_true(max_sigma > expected.sigma * 0.85, msg="peak lens shadow sigma too low: \{max_sigma}")
+  assert_true(max_dy > expected.dy * 0.85, msg="peak lens shadow dy too low: \{max_dy}")
+  // Settled back at rest: held <= 0.001 -> zero outer lens shadows remain (tab 3 may also close the `+` notch shadow)
+  t.run_for(@ui.move_most_ms)
+  assert_true(bar.held_at(t.time()) <= 0.001, msg="bar.held_at must settle back to 0 at rest")
+  let settled_shadows = t.drawn_shadows()
+  assert_true(
+    settled_shadows.length() <= rest_shadow_count,
+    msg="settled light tab bar must not retain extra shadows (rest=\{rest_shadow_count}, settled=\{settled_shadows.length()})",
+  )
+  assert_true(
+    !settled_shadows.iter().any(fn(s) { s.6 == expected.color }),
+    msg="settled light tab bar must leave zero outer lens shadows",
+  )
 }

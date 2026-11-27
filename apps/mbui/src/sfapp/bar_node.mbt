@@ -102,8 +102,15 @@ fn bar_part_told(p : BarPart) -> String {
     Ball =>
       spr_told(m.ball_x) +
       spr_told(m.ball_y) +
-      "\{m.ball_held.target()} \{m.ball_held.starts_at()} \{m.ball_held.ends_at()};" +
-      "\{m.tap_lens.starts_at()} \{m.tap_lens.ends_at()};" +
+      "\{m.ball_held_up.target()} \{m.ball_held_up.starts_at()} \{m.ball_held_up.ends_at()};" +
+      "\{m.ball_held_dn.target()} \{m.ball_held_dn.starts_at()} \{m.ball_held_dn.ends_at()};" +
+      "\{m.tap_lens_up.target()} \{m.tap_lens_up.starts_at()} \{m.tap_lens_up.ends_at()};" +
+      "\{m.tap_lens_dn.target()} \{m.tap_lens_dn.starts_at()} \{m.tap_lens_dn.ends_at()};" +
+      "\{m.flex_launch.target()} \{m.flex_launch.starts_at()} \{m.flex_launch.ends_at()};" +
+      "\{m.flex_brake.target()} \{m.flex_brake.starts_at()} \{m.flex_brake.ends_at()};" +
+      "\{m.flex_decay.target()} \{m.flex_decay.starts_at()} \{m.flex_decay.ends_at()};" +
+      "\{m.flex_drag.target()} \{m.flex_drag.starts_at()} \{m.flex_drag.ends_at()};" +
+      "\{m.flex_wall.target()} \{m.flex_wall.starts_at()} \{m.flex_wall.ends_at()};" +
       glide_told(m.ball_alpha) +
       glide_told(m.ball_scale)
     Tints => {
@@ -184,7 +191,10 @@ fn bar_ball_until() -> Double {
   let m = bar
   dmax(
     dmax(m.ball_x.end(), m.ball_y.end()),
-    dmax(dmax(m.ball_held.ends_at(), m.tap_lens.ends_at()), dmax(m.ball_scale.end(), m.ball_alpha.end())),
+    dmax(
+      dmax(dmax(m.ball_held_ends_at(), m.tap_lens_ends_at()), m.flex_ends_at()),
+      dmax(m.ball_scale.end(), m.ball_alpha.end()),
+    ),
   )
 }
 
@@ -617,11 +627,12 @@ fn bar_glass_capsule(
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     @sf.tab_bar_surface_decorate(g.radius(By(fn() { dmin(rad, h() / 2.0) })), fn() {
       bar_part_said(Notch)
+      bar_part_said(Ball)
       let until = dmax(
-        if bar.ball_held.target() > 0.01 {
+        if bar.ball_held_active {
           bar_ball_until()
         } else {
-          dmax(bar.ball_held.ends_at(), bar.tap_lens.ends_at())
+          dmax(dmax(bar.ball_held_ends_at(), bar.tap_lens_ends_at()), bar.flex_ends_at())
         },
         bar_k_until(),
       )
@@ -649,8 +660,8 @@ fn bar_glass_capsule(
 priv struct BallAt {
   cx : Double
   cy : Double
-  stretch : Double
-  lower : Double
+  sx : Double
+  sy : Double
   alpha : Double
   scale : Double
   held : Double
@@ -667,23 +678,25 @@ let ball_box_w : Double = 160.0
 let ball_box_h : Double = 96.0
 
 ///|
-/// The ball at moment `t`. Uses a bounded symmetric C-infinity squash-and-stretch (`16u / 3.5u`) instead of
-/// `@motion.speed_stretch` (whose linear +36pt elongation would overflow the narrow glass capsule on cross-tab flights).
+/// The ball at moment `t` with iOS 27.0 `_UIFlexInteraction` volume-preserving jelly scale (`sx`, `sy`).
 fn bar_ball_at(t : Double) -> BallAt {
   let m = bar
-  let (x, xv) = m.ball_x.at(t)
-  let u = xv.abs() / (xv.abs() + 950.0)
-  let stretch = u * 16.0
-  let lower = u * 3.5
+  let (x, _) = m.ball_x.at(t)
+  let flex = m.flex_at(t)
+  let (sx, sy) = if flex >= 0.0 {
+    (1.0 + flex, dmax(0.76, 1.0 - 1.38 * flex))
+  } else {
+    (dmax(0.81, 1.0 + flex), dmin(1.19, 1.0 - 1.12 * flex))
+  }
   {
     cx: x,
     cy: m.ball_y.at(t).0,
-    stretch,
-    lower,
+    sx,
+    sy,
     alpha: m.ball_alpha.at(t).0,
     scale: m.ball_scale.at(t).0,
     held: m.held_at(t),
-    drag_held: m.ball_held.value_at(t),
+    drag_held: m.ball_held_at(t),
     k: m.k_at(t),
     collapse: m.collapse_at(t),
   }
@@ -692,7 +705,7 @@ fn bar_ball_at(t : Double) -> BallAt {
 ///|
 /// How wide and high the ball `a` is drawn on the bar laid out as `l`: the pill as wide as its place and past it to
 /// the pill's inset at the bar's ends (ShellTabBar.kt pillWidthFor), `lens` its lens lifting out of it as it is held,
-/// taller than the bar and wider than a place (TabBarLens.kt lensSize, lensLiftedWidth); each stretched along its way.
+/// taller than the bar and wider than a place (TabBarLens.kt lensSize, lensLiftedWidth); scaled by `_UIFlexInteraction`.
 fn bar_ball_size(a : BallAt, l : BarLaid, lens : Bool, solid? : Bool = false) -> (Double, Double) {
   let iw = bar_item_w(l.w, a.k, l.items.length())
   let pw = iw + 2.0 * (tab_edge - pill_inset)
@@ -705,7 +718,13 @@ fn bar_ball_size(a : BallAt, l : BarLaid, lens : Bool, solid? : Bool = false) ->
     let up = if solid { 0.0 } else { dclamp(a.held, 0.0, 1.0) }
     (pw + (lw - pw) * up * 0.25, pill_h + (lh - pill_h) * up * 0.25)
   }
-  (w + a.stretch, dmax(8.0, h - a.lower))
+  if solid {
+    (w, h)
+  } else if lens {
+    (w * a.sx, dmax(8.0, h * a.sy))
+  } else {
+    (w * dmin(1.0, a.sx), dmax(8.0, h * dmax(1.0, a.sy)))
+  }
 }
 
 ///|
@@ -730,7 +749,8 @@ fn bar_ball_frame(a : BallAt, l : BarLaid, lens : Bool, solid? : Bool = false) -
       let lh = bar_track * lens_lift_h
       let lw = dmin(lh * lens_lift_aspect, iw * lens_lift_aspect)
       let lens_over = dmax(0.0, (lw - pw) / 2.0) * dclamp(a.held, 0.0, 1.0) +
-        12.0 * dclamp(a.drag_held, 0.0, 1.0)
+        12.0 * dclamp(a.drag_held, 0.0, 1.0) +
+        dmax(0.0, (sw_raw - lw) / 2.0)
       let min_x = 2.0 - lens_over
       let max_x = dmax(10.0, cap_w - 2.0 + lens_over)
       let left = dclamp(a.cx - sw_raw / 2.0, min_x, max_x - 8.0)
@@ -840,7 +860,7 @@ fn bar_lens_node(holder : @view.View) -> Unit {
     b.show(at_once=true, fn() { !b.glass_solid() }, fn(on) {
       on.over(Is(true)) |> ignore
       let held = fn(n : @view.View) {
-        bar.held_at(bar_moment(n, Ball, dmax(bar.ball_held.ends_at(), bar.tap_lens.ends_at())))
+        bar.held_at(bar_moment(n, Ball, dmax(dmax(bar.ball_held_ends_at(), bar.tap_lens_ends_at()), bar.flex_ends_at())))
       }
       bar_ball_capsule(
         on,
@@ -856,6 +876,18 @@ fn bar_lens_node(holder : @view.View) -> Unit {
         },
         fn(g) {
           @sf.tab_lens_surface_decorate(g, fn() { held(g) }) |> ignore
+          g
+          .shadow(By(fn() {
+            let h = dclamp(held(g), 0.0, 1.0)
+            if @sf.theme().dark || h <= 0.001 {
+              (0.0, 0.0, 0L)
+            } else {
+              let r = @sf.tab_lens_raised_for(false)
+              (r.sigma * h, r.dy * h, r.color)
+            }
+          }))
+          .shadow_outside(Is(true))
+          |> ignore
         },
       )
     })

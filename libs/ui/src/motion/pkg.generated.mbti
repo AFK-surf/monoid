@@ -193,6 +193,10 @@ pub let liquid_auto_split_spring : Spec
 
 pub fn liquid_bond_cross_time(Double, Double, (Double) -> Double, Bool, Double) -> Double?
 
+pub let liquid_flex_spring : Spec
+
+pub let liquid_lens_lift_spring : Spec
+
 pub let liquid_merge_spring : Spec
 
 pub let liquid_recoil_spring : Spec
@@ -202,6 +206,10 @@ pub let liquid_snap_back_spring : Spec
 pub let liquid_split_spring : Spec
 
 pub let liquid_toggle_spring : Spec
+
+pub let liquid_wall_flex_in_spring : Spec
+
+pub let liquid_wall_flex_out_spring : Spec
 
 pub fn list_keys(@ui.Ctx, String, Array[String], liftable? : (String) -> Bool) -> Int32
 

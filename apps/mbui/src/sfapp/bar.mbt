@@ -601,10 +601,12 @@ fn swap_at(s : Swap, o : Double, w : Double, k_now : Double, row_top : Double) -
 priv struct BarModel {
   /// the panel of the other bars open (or opening, or the finger's)
   mode : @signals.Signal[Bool]
-  /// how open the panel is (0 the bar, 1 the panel); the notch (1 open); the ball held
+  /// how open the panel is (0 the bar, 1 the panel); the notch (1 open); the ball held (lift/unlift pair)
   o : Spr
   k : Spr
-  ball_held : @motion.Way
+  ball_held_up : @motion.Way
+  ball_held_dn : @motion.Way
+  mut ball_held_active : Bool
   /// drawn up out from under a finger that has the bar (1), back as it lets go (bar_raise)
   up : Spr
   /// the bar shown, the ball shown and its size
@@ -616,8 +618,25 @@ priv struct BarModel {
   /// the ball: where across and down, on iOS 27.0 calibrated springs (zeta 0.85)
   ball_x : Spr
   ball_y : Spr
-  /// closed-form clear glass droplet pulse during cross-tab tap flight (@motion.Way impulse)
-  tap_lens : @motion.Way
+  /// closed-form clear glass droplet lift/unlift pair during cross-tab tap flight (`tap_lens_up - tap_lens_dn`)
+  tap_lens_up : @motion.Way
+  tap_lens_dn : @motion.Way
+  /// timestamp (ms) when finger hold/drag lens lift started (`-1.0` when not lifted), for `lensHangTime = 220ms`
+  mut lift_started_at : Double
+  /// closed-form `_UIFlexInteraction` volume-preserving jelly deformation channels (launch, brake, decay, drag, wall)
+  flex_launch : @motion.Way
+  flex_brake : @motion.Way
+  flex_decay : @motion.Way
+  flex_drag : @motion.Way
+  flex_wall : @motion.Way
+  /// scheduled fire timestamps (ms) for delayed launch/brake impulses (`-1.0` none) so interruption never inherits queued v0
+  mut flex_launch_fire_at : Double
+  mut flex_brake_fire_at : Double
+  /// gesture-event drag kinematics for real-time acceleration/deceleration flex (updated only in `bar_finger_at`)
+  mut drag_last_x : Double
+  mut drag_last_t : Double
+  mut drag_speed_ref : Double
+  mut drag_last_vx : Double
   /// target tab key armed by a finger tap on a non-active tab, cleared on consumption or any new gesture
   mut tap_pending_key : String
   mut active_was : String
@@ -656,9 +675,9 @@ priv struct BarModel {
 }
 
 ///|
-/// The ball's springs: down and up 300; across calibrated to measured Apple iOS 27.0 UITabBar
-/// (duration=0.40s, bounce=0.15 => zeta=0.85), using `ball_tap_k = 280.0` (~0.375s visual settle) and
-/// `ball_drag_k = 600.0` for 1:1 finger tracking.
+/// The ball's springs: down and up 300; across calibrated to measured Apple iOS 27.0 UITabBar:
+/// cross-tab tap uses `ball_tap_k = 280.0`, `ball_zeta = 0.85` (duration=0.40s, bounce=0.15);
+/// finger drag tracking matches measured 26.8pt steady lag at 339pt/s (`2*zeta/wn = 0.0796s`, ratio=1.0).
 let ball_down : Double = 300.0
 
 ///|
@@ -668,10 +687,110 @@ let ball_zeta : Double = 0.85
 let ball_tap_k : Double = 280.0
 
 ///|
-let ball_drag_k : Double = 600.0
+let ball_drag_k : Double = 631.654682
 
 ///|
-let ball_drag_damping : Double = 2.0 * 0.95 * ball_drag_k.sqrt()
+let ball_drag_damping : Double = 50.265482
+
+///|
+/// Minimum droplet hang time (`lensHangTime = 220ms`) matching measured iOS 27.0 `_UILiquidLensView`.
+let bar_lens_hang_ms : Double = 220.0
+
+///|
+/// Deterministic hyperbolic tangent via `@dmath.exp` (bit-identical across all targets/engines).
+fn bar_tanh(x : Double) -> Double {
+  if x >= 10.0 {
+    1.0
+  } else if x <= -10.0 {
+    -1.0
+  } else {
+    let e2 = @dmath.exp(2.0 * x)
+    (e2 - 1.0) / (e2 + 1.0)
+  }
+}
+
+///|
+/// Precomputed unit-velocity peak response of `liquid_flex_spring` (`ratio=0.65, stiffness=125.0`):
+/// `exp(-z * wn * tp) * sin(wd * tp) / wd` where `tp = atan2(sqrt(1 - z^2), z) / wd`.
+let bar_flex_unit_peak : Double = 0.04274538748148292
+
+///|
+/// Linear drag acceleration-to-flex impulse gain: a `339 pt/s` start or stop produces `±0.072` jelly amplitude
+/// (`sx ≈ 1.062 / 0.936` matching measured native iOS 27.0 slow drag), strictly invariant to touch sample rate.
+let bar_drag_flex_gain : Double = (0.072 / 339.0) / bar_flex_unit_peak
+
+///|
+/// Exact initial velocity `v0` (units/s) required for `liquid_flex_spring` (`ratio=0.65, k=125.0`) starting from `0`
+/// to reach first-peak amplitude `peak`.
+fn bar_flex_v0(peak : Double) -> Double {
+  peak / bar_flex_unit_peak
+}
+
+///|
+/// Current `(x, v)` of a possibly-delayed flex impulse `Way`, zeroing `v` before `fire_at` so interrupting before
+/// a delayed impulse fires never inherits its queued `v0` as a phantom impulse.
+fn bar_flex_state_at(w : @motion.Way, fire_at : Double, at : Double) -> (Double, Double) {
+  let (x, v) = w.at(at)
+  if at < fire_at {
+    (x, 0.0)
+  } else {
+    (x, v)
+  }
+}
+
+///|
+/// Moves any active residual oscillation on delayed channel `w` into the zero-delay `flex_decay` channel so
+/// re-scheduling `w` with a new `delay` never freezes ongoing decay, then schedules the new delayed impulse from `0`.
+fn BarModel::schedule_delayed_flex(
+  self : BarModel,
+  w : @motion.Way,
+  old_fire_at : Double,
+  delay : Double,
+  peak : Double,
+  at : Double,
+) -> Double {
+  let (old_x, old_v) = bar_flex_state_at(w, old_fire_at, at)
+  if old_x != 0.0 || old_v != 0.0 {
+    let (dx, dv) = self.flex_decay.at(at)
+    self.flex_decay.put(dx + old_x)
+    self.flex_decay.go(
+      0.0,
+      @motion.liquid_flex_spring,
+      at~,
+      velocity=dclamp(dv + old_v, -6.0, 6.0),
+    )
+  }
+  w.put(0.0)
+  w.go(0.0, @motion.liquid_flex_spring.delayed(delay), at~, velocity=bar_flex_v0(peak))
+  at + delay
+}
+
+///|
+/// Cancels a pending or active delayed flex channel `w`, folding any live oscillation into `flex_decay` without
+/// inheriting queued `v0` if `at < old_fire_at`.
+fn BarModel::cancel_delayed_flex(
+  self : BarModel,
+  w : @motion.Way,
+  old_fire_at : Double,
+  at : Double,
+) -> Double {
+  if old_fire_at < 0.0 {
+    return -1.0
+  }
+  let (old_x, old_v) = bar_flex_state_at(w, old_fire_at, at)
+  if old_x != 0.0 || old_v != 0.0 {
+    let (dx, dv) = self.flex_decay.at(at)
+    self.flex_decay.put(dx + old_x)
+    self.flex_decay.go(
+      0.0,
+      @motion.liquid_flex_spring,
+      at~,
+      velocity=dclamp(dv + old_v, -6.0, 6.0),
+    )
+  }
+  w.put(0.0)
+  -1.0
+}
 
 ///|
 /// The bar drawn up (bar_raise): its spring as stiff as the ball's going down, critically damped (it goes up and
@@ -703,12 +822,69 @@ fn bar_smoothstep(e0 : Double, e1 : Double, x : Double) -> Double {
 }
 
 ///|
+/// Finger hold/drag droplet lift intensity at moment `t` (`ball_held_up - ball_held_dn`, clamped to `[0, 1]`).
+fn BarModel::ball_held_at(self : BarModel, t : Double) -> Double {
+  dclamp(self.ball_held_up.value_at(t) - self.ball_held_dn.value_at(t), 0.0, 1.0)
+}
+
+///|
+/// Latest end timestamp (ms) of the finger hold/drag droplet lift/unlift pair.
+fn BarModel::ball_held_ends_at(self : BarModel) -> Double {
+  dmax(self.ball_held_up.ends_at(), self.ball_held_dn.ends_at())
+}
+
+///|
+/// Cross-tab tap droplet lift intensity at moment `t` (`tap_lens_up - tap_lens_dn`, clamped to `[0, 1]`).
+fn BarModel::tap_lens_at(self : BarModel, t : Double) -> Double {
+  dclamp(self.tap_lens_up.value_at(t) - self.tap_lens_dn.value_at(t), 0.0, 1.0)
+}
+
+///|
+/// Latest end timestamp (ms) of the cross-tab tap droplet lift/unlift pair.
+fn BarModel::tap_lens_ends_at(self : BarModel) -> Double {
+  dmax(self.tap_lens_up.ends_at(), self.tap_lens_dn.ends_at())
+}
+
+///|
 /// Effective lens intensity at moment `t`: smooth C-infinity probabilistic union of finger hold/drag lens and
 /// cross-tab tap flight droplet (no V-shaped kink where the two curves cross).
 fn BarModel::held_at(self : BarModel, t : Double) -> Double {
-  let a = dclamp(self.ball_held.value_at(t), 0.0, 1.0)
-  let b = dclamp(self.tap_lens.value_at(t), 0.0, 1.0)
+  let a = self.ball_held_at(t)
+  let b = self.tap_lens_at(t)
   a + b - a * b
+}
+
+///|
+/// Combined `_UIFlexInteraction` jelly deformation scalar `u` at moment `t` in `[-0.20, 0.20]`
+/// (`u > 0`: horizontal stretch + vertical flatten; `u < 0`: horizontal narrow + vertical bulge).
+fn BarModel::flex_at(self : BarModel, t : Double) -> Double {
+  let drag_u = bar_tanh(self.flex_drag.value_at(t) / 0.17) * 0.17
+  dclamp(
+    self.flex_launch.value_at(t) +
+    self.flex_brake.value_at(t) +
+    self.flex_decay.value_at(t) +
+    drag_u +
+    self.flex_wall.value_at(t),
+    -0.20,
+    0.20,
+  )
+}
+
+///|
+/// Latest end timestamp (ms) across all five jelly deformation channels.
+fn BarModel::flex_ends_at(self : BarModel) -> Double {
+  dmax(
+    dmax(dmax(self.flex_launch.ends_at(), self.flex_brake.ends_at()), self.flex_decay.ends_at()),
+    dmax(self.flex_drag.ends_at(), self.flex_wall.ends_at()),
+  )
+}
+
+///|
+/// Applies an immediate single-channel jelly impulse of peak `peak` onto `flex_drag` at `at` (C0-continuous).
+fn BarModel::pulse_flex_drag(self : BarModel, peak : Double, at : Double) -> Unit {
+  let (_, cur_fv) = self.flex_drag.at(at)
+  let v0 = dclamp(cur_fv + bar_flex_v0(peak), -6.0, 6.0)
+  self.flex_drag.go(0.0, @motion.liquid_flex_spring, at~, velocity=v0)
 }
 
 ///|
@@ -720,7 +896,9 @@ let bar : BarModel = {
   mode: @signals.signal(false, same=fn(a, b) { a == b }),
   o: spr(0.0, 260.0, 17.0, "bar/o"),
   k: spr(1.0, 300.0, 30.0, "bar/k"),
-  ball_held: @motion.Way::new(0.0),
+  ball_held_up: @motion.Way::new(0.0),
+  ball_held_dn: @motion.Way::new(0.0),
+  ball_held_active: false,
   up: spr(0.0, ball_down, raise_damping, "bar/up"),
   vis: glide(0.0),
   ball_alpha: glide(1.0),
@@ -728,7 +906,20 @@ let bar : BarModel = {
   tints: {},
   ball_x: spr(0.0, ball_tap_k, ball_damping(ball_tap_k), "bar/ball-x", rest=ball_rest_within),
   ball_y: spr(0.0, ball_down, ball_damping(ball_down), "bar/ball-y", rest=ball_rest_within),
-  tap_lens: @motion.Way::new(0.0),
+  tap_lens_up: @motion.Way::new(0.0),
+  tap_lens_dn: @motion.Way::new(0.0),
+  lift_started_at: -1.0,
+  flex_launch: @motion.Way::new(0.0),
+  flex_brake: @motion.Way::new(0.0),
+  flex_decay: @motion.Way::new(0.0),
+  flex_drag: @motion.Way::new(0.0),
+  flex_wall: @motion.Way::new(0.0),
+  flex_launch_fire_at: -1.0,
+  flex_brake_fire_at: -1.0,
+  drag_last_x: -1.0,
+  drag_last_t: -1.0,
+  drag_speed_ref: 0.0,
+  drag_last_vx: 0.0,
   tap_pending_key: "",
   active_was: "",
   drag: -1.0,
@@ -779,7 +970,9 @@ fn bar_reset() -> Unit {
   bar_raised.set(false)
   bar.o.back(0.0, 260.0, 17.0)
   bar.k.back(1.0, 300.0, 30.0)
-  bar.ball_held.put(0.0)
+  bar.ball_held_up.put(0.0)
+  bar.ball_held_dn.put(0.0)
+  bar.ball_held_active = false
   bar.up.back(0.0, ball_down, raise_damping)
   back_glide(bar.vis, 0.0)
   back_glide(bar.ball_alpha, 1.0)
@@ -787,7 +980,20 @@ fn bar_reset() -> Unit {
   bar.tints.clear()
   bar.ball_x.back(0.0, ball_tap_k, ball_damping(ball_tap_k))
   bar.ball_y.back(0.0, ball_down, ball_damping(ball_down))
-  bar.tap_lens.put(0.0)
+  bar.tap_lens_up.put(0.0)
+  bar.tap_lens_dn.put(0.0)
+  bar.lift_started_at = -1.0
+  bar.flex_launch.put(0.0)
+  bar.flex_brake.put(0.0)
+  bar.flex_decay.put(0.0)
+  bar.flex_drag.put(0.0)
+  bar.flex_wall.put(0.0)
+  bar.flex_launch_fire_at = -1.0
+  bar.flex_brake_fire_at = -1.0
+  bar.drag_last_x = -1.0
+  bar.drag_last_t = -1.0
+  bar.drag_speed_ref = 0.0
+  bar.drag_last_vx = 0.0
   bar.tap_pending_key = ""
   bar.active_was = ""
   bar.drag = -1.0
@@ -860,7 +1066,8 @@ fn BarModel::rest(self : BarModel) -> Double {
   for g in gs {
     e = dmax(e, g.end())
   }
-  e = dmax(e, dmax(self.ball_held.ends_at(), self.tap_lens.ends_at()))
+  e = dmax(e, dmax(self.ball_held_ends_at(), self.tap_lens_ends_at()))
+  e = dmax(e, self.flex_ends_at())
   e = dmax(e, dmax(self.bond_merge.ends_at(), self.bond_recoil.ends_at()))
   e = dmax(e, self.collapse.ends_at())
   e
@@ -891,8 +1098,23 @@ fn BarModel::jump(self : BarModel) -> Unit {
   for s in [self.o, self.k, self.up, self.ball_x, self.ball_y] {
     s.put(s.to)
   }
-  self.ball_held.put(self.ball_held.target())
-  self.tap_lens.put(0.0)
+  if self.ball_held_active {
+    self.ball_held_up.put(1.0)
+    self.ball_held_dn.put(0.0)
+  } else {
+    self.ball_held_up.put(0.0)
+    self.ball_held_dn.put(0.0)
+  }
+  self.tap_lens_up.put(0.0)
+  self.tap_lens_dn.put(0.0)
+  self.lift_started_at = -1.0
+  self.flex_launch.put(0.0)
+  self.flex_brake.put(0.0)
+  self.flex_decay.put(0.0)
+  self.flex_drag.put(0.0)
+  self.flex_wall.put(0.0)
+  self.flex_launch_fire_at = -1.0
+  self.flex_brake_fire_at = -1.0
   self.tap_pending_key = ""
   for g in [self.vis, self.ball_alpha, self.ball_scale, self.icon_swap] {
     g.snap(g.target)
@@ -1336,6 +1558,10 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     m.drag = -1.0
     m.drag_y = -1.0
     m.holds = false
+    m.drag_last_x = -1.0
+    m.drag_last_t = -1.0
+    m.drag_speed_ref = 0.0
+    m.drag_last_vx = 0.0
   }
   // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once.
   // By the icon drawn, not the action: 令 and ＋ draw the same ＋, which stays still as one gives way to the other.
@@ -1423,9 +1649,19 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   }
   if sliding {
     m.tap_pending_key = ""
-    m.tap_lens.go(0.0, @motion.snappy_damped, at~)
-    if m.ball_held.target() < 0.5 {
-      m.ball_held.go(1.0, @motion.backdrop_press_spring, at~)
+    if !m.ball_held_active {
+      // C0-continuous takeover if a cross-tab tap droplet is still active
+      let cur_h = m.held_at(at)
+      m.ball_held_up.put(cur_h)
+      m.ball_held_up.go(1.0, @motion.liquid_lens_lift_spring, at~)
+      m.ball_held_dn.put(0.0)
+      m.tap_lens_up.put(0.0)
+      m.tap_lens_dn.put(0.0)
+      m.flex_launch_fire_at = m.cancel_delayed_flex(m.flex_launch, m.flex_launch_fire_at, at)
+      m.flex_brake_fire_at = m.cancel_delayed_flex(m.flex_brake, m.flex_brake_fire_at, at)
+      m.lift_started_at = at
+      m.ball_held_active = true
+      m.pulse_flex_drag(0.045, at)
     }
   } else {
     if active_key != m.active_was {
@@ -1435,20 +1671,69 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
       if from_tap && m.placed && m.swap_at(at) is None {
         let trip = (goal_x - prev_x).abs()
         if trip > 4.0 {
-          let peak = dclamp(trip / 140.0, 0.55, 1.0)
-          let v0 = peak * 2.718281828459045 * 420.0.sqrt()
-          let (_, cur_v) = m.tap_lens.at(at)
-          m.tap_lens.go(0.0, @motion.snappy_damped, at~, velocity=dmax(cur_v, v0))
+          let hang_ms = dclamp(160.0 + trip * 0.25, 190.0, 240.0)
+          let cur_tap = m.tap_lens_at(at)
+          m.tap_lens_up.put(cur_tap)
+          m.tap_lens_up.go(1.0, @motion.liquid_lens_lift_spring, at~)
+          m.tap_lens_dn.put(0.0)
+          m.tap_lens_dn.go(1.0, @motion.liquid_lens_lift_spring.delayed(hang_ms), at~)
+          let scale = dclamp(trip / 200.0, 0.45, 1.0)
+          m.flex_launch_fire_at = m.schedule_delayed_flex(
+            m.flex_launch,
+            m.flex_launch_fire_at,
+            40.0,
+            0.16 * scale,
+            at,
+          )
+          let brake_delay = dclamp(190.0 + trip * 0.20, 210.0, 260.0)
+          m.flex_brake_fire_at = m.schedule_delayed_flex(
+            m.flex_brake,
+            m.flex_brake_fire_at,
+            brake_delay,
+            -0.16 * scale,
+            at,
+          )
         }
       }
     }
-    if m.ball_held.target() > 0.5 {
+    if m.ball_held_active {
+      m.ball_held_active = false
       if w <= 0.0 {
-        m.ball_held.put(0.0)
+        m.ball_held_up.put(0.0)
+        m.ball_held_dn.put(0.0)
+        m.lift_started_at = -1.0
+        m.flex_wall.put(0.0)
       } else {
+        let elapsed = if m.lift_started_at >= 0.0 {
+          dmax(0.0, at - m.lift_started_at)
+        } else {
+          bar_lens_hang_ms
+        }
+        let hang_left = dmax(0.0, bar_lens_hang_ms - elapsed)
         let dist = (goal_x - prev_x).abs()
-        let land_delay = if dist <= 4.0 { 0.0 } else { dclamp(dist / 2.2, 40.0, 140.0) }
-        m.ball_held.go(0.0, @motion.snappy_damped.delayed(land_delay), at~)
+        let land_delay = if dist <= 4.0 {
+          hang_left
+        } else {
+          dmax(hang_left, dclamp(dist / 2.2, 60.0, 180.0))
+        }
+        // Leave `ball_held_up` running so fast 40-100ms flicks finish lifting to 1.0 before unlifting
+        m.ball_held_dn.go(1.0, @motion.liquid_lens_lift_spring.delayed(land_delay), at~)
+        m.lift_started_at = -1.0
+        let last_vx = m.drag_last_vx
+        if dist > 8.0 || last_vx.abs() > 180.0 {
+          let peak = -dclamp((last_vx.abs() / 900.0 + dist / 240.0) * 0.14, 0.05, 0.16)
+          let brake_delay = dclamp(dist / 2.8, 30.0, 170.0)
+          m.flex_brake_fire_at = m.schedule_delayed_flex(
+            m.flex_brake,
+            m.flex_brake_fire_at,
+            brake_delay,
+            peak,
+            at,
+          )
+        } else {
+          m.pulse_flex_drag(-0.025, at)
+        }
+        m.flex_wall.go(0.0, @motion.liquid_wall_flex_out_spring, at~)
       }
     }
   }
@@ -1813,6 +2098,10 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   match how {
     Pressed => {
       m.tap_pending_key = ""
+      m.drag_last_x = px
+      m.drag_last_t = t
+      m.drag_speed_ref = 0.0
+      m.drag_last_vx = 0.0
       pressed()
       // a finger down on a place's tab, the panel shut: what the place opens on asked from now (sfbase's places_ahead)
       if !m.mode.get() && py >= l.row_top - 4.0 && l.items.length() > 0 {
@@ -1846,6 +2135,60 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
           m.schedule_bond(prev_k_end, at=t)
         }
       }
+      if m.holds {
+        if m.flex_wall.target() != 0.0 {
+          m.flex_wall.go(0.0, @motion.liquid_wall_flex_out_spring, at=t)
+        }
+      } else if l.items.length() > 0 {
+        let final_cs = bar_centres(l.w, m.k_end(), l.items.length())
+        let lo = final_cs[0]
+        let hi = final_cs[imin(l.items.length() - 1, final_cs.length() - 1)]
+        let over_edge = if px < lo {
+          lo - px
+        } else if px > hi {
+          px - hi
+        } else {
+          0.0
+        }
+        if m.drag_last_t >= 0.0 && t > m.drag_last_t {
+          let dt_s = (t - m.drag_last_t) / 1000.0
+          let vx = if dt_s < 0.002 {
+            m.drag_last_vx
+          } else {
+            dclamp((px - m.drag_last_x) / dt_s, -2400.0, 2400.0)
+          }
+          let spd = vx.abs()
+          let v_new = if spd <= 1.0 {
+            0.0
+          } else {
+            let alpha = 1.0 - @dmath.exp(-dt_s / 0.02)
+            m.drag_speed_ref + alpha * (spd - m.drag_speed_ref)
+          }
+          let delta_v = v_new - m.drag_speed_ref
+          m.drag_speed_ref = v_new
+          let dv_flex = delta_v * bar_drag_flex_gain
+          if (over_edge <= 0.0 || dv_flex < 0.0) && dv_flex.abs() > 0.00001 {
+            let (_, cur_fv) = m.flex_drag.at(t)
+            m.flex_drag.go(
+              0.0,
+              @motion.liquid_flex_spring,
+              at=t,
+              velocity=dclamp(cur_fv + dv_flex, -6.0, 6.0),
+            )
+          }
+          m.drag_last_vx = vx
+        }
+        if over_edge > 0.0 {
+          let wall_target = -0.18 * over_edge / (over_edge + 45.0)
+          if (wall_target - m.flex_wall.target()).abs() > 0.0005 {
+            m.flex_wall.go(wall_target, @motion.liquid_wall_flex_in_spring, at=t)
+          }
+        } else if m.flex_wall.target() != 0.0 {
+          m.flex_wall.go(0.0, @motion.liquid_wall_flex_out_spring, at=t)
+        }
+      }
+      m.drag_last_x = px
+      m.drag_last_t = t
       m.drag = px
       m.drag_y = if l.multi && m.holds && m.open {
         dclamp(py, over + bar_row / 2.0, l.row_top + bar_track / 2.0)
@@ -1857,6 +2200,10 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     // slides (iOS's tab bar), going nowhere till the finger moves; let go, as a drag ends
     Held => {
       m.tap_pending_key = ""
+      m.drag_last_x = px
+      m.drag_last_t = t
+      m.drag_speed_ref = 0.0
+      m.drag_last_vx = 0.0
       if !m.holds && py >= l.row_top - 4.0 {
         m.drag = px
         m.drag_y = -1.0
@@ -1867,6 +2214,14 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       m.tap_pending_key = ""
       let had = m.holds
       let final_cs = bar_centres(l.w, m.k_at(t), l.items.length())
+      let decayed_vx = if m.drag_last_t >= 0.0 {
+        m.drag_last_vx * @dmath.exp(-dmax(0.0, (t - m.drag_last_t) / 1000.0) / 0.08)
+      } else {
+        0.0
+      }
+      let vx_s = d.vx() * 1000.0
+      let best_vx = if vx_s.abs() > decayed_vx.abs() { vx_s } else { decayed_vx }
+      m.drag_last_vx = dclamp(best_vx, -2400.0, 2400.0)
       // (let go still moving across: the place it was going to, as it carried on (bar_flung); the ball, chasing the
       // finger, goes on there at the speed it had, never turned back short of it)
       let to_px = bar_flung(px, d.vx(), l.w)
@@ -1945,6 +2300,12 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   }
   // (what the finger did told at its moment: the ball, the lens, the places lit set out from then)
   bar_retell(t)
+  if how is (Ended | Tapped) {
+    m.drag_last_x = -1.0
+    m.drag_last_t = -1.0
+    m.drag_speed_ref = 0.0
+    m.drag_last_vx = 0.0
+  }
 }
 
 ///|
