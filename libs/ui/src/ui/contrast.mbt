@@ -393,8 +393,8 @@ fn inst_in_round(a : FixedArray[Double], at : Int, radii : Int, px : Double, py 
 }
 
 ///|
-/// Whether (`px`, `py`) is inside instance `b`'s rect, its corners each as round as it draws them (36-39), and inside
-/// what cuts it.
+/// Whether (`px`, `py`) is inside instance `b`'s drawn box and its clips. The renderer uses the radius of the
+/// point's quarter (36-39) and smooths that corner as far as the box has room for.
 fn in_inst(a : FixedArray[Double], b : Int, px : Double, py : Double) -> Bool {
   let x = a[b]
   let y = a[b + 1]
@@ -403,17 +403,16 @@ fn in_inst(a : FixedArray[Double], b : Int, px : Double, py : Double) -> Bool {
   if px < x || py < y || px > x + w || py > y + h || !in_inst_clip(a, b, px, py) {
     return false
   }
-  let most = dmin(w, h) / 2.0
-  let inside = fn(r : Double, cx : Double, cy : Double, left : Bool, top : Bool) {
-    let r = dmin(r, most)
-    let dx = if left { cx + r - px } else { px - (cx - r) }
-    let dy = if top { cy + r - py } else { py - (cy - r) }
-    dx <= 0.0 || dy <= 0.0 || dx * dx + dy * dy <= r * r
+  let hw = w / 2.0
+  let hh = h / 2.0
+  let dx = px - (x + hw)
+  let dy = py - (y + hh)
+  let r = if dy < 0.0 {
+    if dx < 0.0 { a[b + 36] } else { a[b + 37] }
+  } else {
+    if dx < 0.0 { a[b + 39] } else { a[b + 38] }
   }
-  inside(a[b + 36], x, y, true, true) &&
-  inside(a[b + 37], x + w, y, false, true) &&
-  inside(a[b + 38], x + w, y + h, false, false) &&
-  inside(a[b + 39], x, y + h, true, false)
+  r <= 0.0 || sd_box(dx, dy, hw, hh, r) <= 0.0
 }
 
 ///|
