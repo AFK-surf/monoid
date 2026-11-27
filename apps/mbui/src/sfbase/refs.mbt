@@ -894,8 +894,8 @@ pub fn refs_make_mark(
           let mark = text(Some(v), "mark")
           if mark != "" {
             refs_kept_put(mark, station, into~)
-            done(mark)
           }
+          done(mark)
         }
         Err(e) => failed(text(Some(e), "message"))
       }

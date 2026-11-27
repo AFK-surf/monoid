@@ -4214,21 +4214,30 @@ fn open_btw_new_chat(src : Source, r : ChatRef, v : ChatView?, w : Writing, ques
   composer_take_focus(drafts=new_chat_drafts)
   @sfbase.open_page(NewChat)
   let target = @signals.untracked(fn() { @sfbase.writing(src, new_chat_drafts + ws) })
+  let prefill = fn(mark : String) {
+    let lead = if mark != "" {
+      if question == "" { mark + " " } else { mark + " " + question }
+    } else {
+      question
+    }
+    if lead == "" {
+      return
+    }
+    // Read `target.text.get()` first so `writing_adopt` loads any persisted core draft before we prepend `lead`.
+    let adopted = @signals.untracked(fn() { target.text.get() })
+    let prev = if target.field.text() != "" { target.field.text() } else { adopted }
+    let next = if prev.trim(chars=" \t\n\r") == "" { lead } else { lead + "\n" + prev }
+    @sfbase.writing_set_text(src, target.key, next, caret=lead.length())
+  }
   @sfbase.refs_make_mark(
     src,
     ws,
     r.station,
     r.session,
     title,
-    fn(mark) {
-      let lead = if question == "" { mark + " " } else { mark + " " + question }
-      // Read `target.text.get()` first so `writing_adopt` loads any persisted core draft before we prepend `lead`.
-      let adopted = @signals.untracked(fn() { target.text.get() })
-      let prev = if target.field.text() != "" { target.field.text() } else { adopted }
-      let next = if prev.trim(chars=" \t\n\r") == "" { lead } else { lead + "\n" + prev }
-      @sfbase.writing_set_text(src, target.key, next, caret=lead.length())
-    },
+    fn(mark) { prefill(mark) },
     fn(why) {
+      prefill("")
       if why != "" {
         toast_later(why)
       }
