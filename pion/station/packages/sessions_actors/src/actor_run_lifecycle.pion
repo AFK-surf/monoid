@@ -746,7 +746,7 @@ pub fn ActorsGen::recover_k(
         if reserved {
           a.starting_turn = false
           if !self.gen.counters.sealed && !is_some(a.turn) {
-            self.drain_turn_queue(true)
+            self.drain_turn_queue(!a.paused_cap)
           }
         }
         tk(ex)
@@ -3123,7 +3123,7 @@ pub fn ActorsGen::called_k(
                             if reserved {
                               a.starting_turn = false
                               if !self.gen.counters.sealed && !is_some(a.turn) {
-                                self.drain_turn_queue(true)
+                                self.drain_turn_queue(!a.paused_cap)
                               }
                             }
                             tk(ex)

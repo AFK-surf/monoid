@@ -3540,7 +3540,6 @@ fn d103_prompted(s : NodeScript, parts : Array[String]) -> Bool {
 test "d103: notices refused by the account concurrency cap stay queued, gather, and are given once woken" {
   let s = r2_new()
   let a = s.actors.actor("s3", "claude")
-  a.notices.push("background job A finished")
   let mut capped = true
   let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
     if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {

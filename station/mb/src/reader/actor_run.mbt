@@ -236,7 +236,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           if reserved {
             a.starting_turn = false
             if a.turn is None {
-              self.drain_turn_queue()
+              self.drain_turn_queue(drain_cap=!a.paused_cap)
             }
           }
         }
@@ -757,7 +757,7 @@ async fn Actors::recover(self : Actors, a : Actor, slot_reserved? : Bool = false
       if reserved {
         a.starting_turn = false
         if a.turn is None {
-          self.drain_turn_queue()
+          self.drain_turn_queue(drain_cap=!a.paused_cap)
         }
       }
     }
@@ -848,7 +848,7 @@ async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
       if owned {
         a.starting_turn = false
         if a.turn is None {
-          self.drain_turn_queue()
+          self.drain_turn_queue(drain_cap=!a.paused_cap)
         }
       }
     }
