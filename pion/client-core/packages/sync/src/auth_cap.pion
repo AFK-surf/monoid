@@ -81,6 +81,7 @@ pub struct AuthGenTracker {
   listeners : Array[BoundaryListener]
   mut next_listener_id : Int
   mut station_ws_resolver : Option[(String) -> String]
+  mut default_workspace_resolver : Option[() -> String]
 }
 
 pub fn AuthGenTracker::new(conn_seq : Int64 = 1L) -> AuthGenTracker {
@@ -99,6 +100,7 @@ pub fn AuthGenTracker::new(conn_seq : Int64 = 1L) -> AuthGenTracker {
     listeners: [],
     next_listener_id: 1,
     station_ws_resolver: None,
+    default_workspace_resolver: None,
   }
 }
 
@@ -109,6 +111,27 @@ pub fn AuthGenTracker::set_station_ws_resolver(
   resolver : (String) -> String,
 ) -> Unit {
   self.station_ws_resolver = Some(resolver)
+}
+
+/// Register the active default workspace resolver so parameterless scoped topics (`chats`,
+/// `stations`, `profiles`, `usage`, `settings`, `fleet`, `search`, etc.) resolve to the EXACT
+/// same effective workspace as the topic projectors (`ClientCore::evaluate_view_topic`).
+pub fn AuthGenTracker::set_default_workspace_resolver(
+  self : AuthGenTracker,
+  resolver : () -> String,
+) -> Unit {
+  self.default_workspace_resolver = Some(resolver)
+}
+
+fn is_default_workspace_scoped_topic(name : String) -> Bool {
+  name == "chats" || name == "chat" || name == "chatRow" || name == "chatJobs" ||
+  name == "stations" || name == "profiles" || name == "profilesOverview" ||
+  name == "models" || name == "settings" || name == "stationUpdates" ||
+  name == "archive" || name == "fleet" || name == "usage" || name == "agentRates" ||
+  name == "railCard" || name == "longJobs" || name == "search" || name == "chatSearch" ||
+  name == "workspace" || name == "lock" || name == "vaults" || name == "vaultItems" ||
+  name == "vaultUses" || name == "vaultSecrets" || name == "vaultApprovals" ||
+  name == "draft"
 }
 
 fn AuthGenTracker::resolve_topic_workspace(
@@ -122,6 +145,35 @@ fn AuthGenTracker::resolve_topic_workspace(
   match topic.param("scope") {
     Some(base_codec::Json::Str(s)) => if s.length() > 0 { return Some(s) }
     _ => ()
+  }
+  if topic.name == "composer" {
+    match topic.param("key") {
+      Some(base_codec::Json::Str(k)) => {
+        if k.starts_with("new:") {
+          let ws = k.slice(4, k.length())
+          if ws.length() > 0 {
+            return Some(ws)
+          }
+        } else {
+          match draft_at_key(k) {
+            Some((st, _)) => {
+              match st.index_of("/") {
+                idx if idx > 0 => return Some(st.slice(0, idx))
+                _ => match self.station_ws_resolver {
+                  Some(resolve) => {
+                    let ws = resolve(st)
+                    if ws.length() > 0 { return Some(ws) }
+                  }
+                  None => ()
+                }
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
   }
   match topic.param("station") {
     Some(base_codec::Json::Str(st)) =>
@@ -139,6 +191,17 @@ fn AuthGenTracker::resolve_topic_workspace(
       }
     }
     _ => ()
+  }
+  if is_default_workspace_scoped_topic(topic.name) {
+    match self.default_workspace_resolver {
+      Some(get_def) => {
+        let def_ws = get_def()
+        if def_ws.length() > 0 {
+          return Some(def_ws)
+        }
+      }
+      None => ()
+    }
   }
   None
 }

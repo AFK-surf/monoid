@@ -21,7 +21,14 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { Effect } from "../../../client/core-ts/node_modules/effect/dist/index.js";
-import { MIGRATIONS, ensureSaid, ensureKept, ensureMdKept, ensureMoved } from "../../../client/core-ts/src/db/schema.ts";
+import {
+  MIGRATIONS,
+  ensureSaid,
+  ensureKept,
+  ensureMdKept,
+  ensureMoved,
+  ensureSharedSidecar,
+} from "../../../client/core-ts/src/db/schema.ts";
 import { Accounts } from "../../../client/core-ts/src/accounts.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -104,7 +111,53 @@ function createRealTsSchemaDb() {
   ensureKept(sqlShim);
   ensureMdKept(sqlShim);
   ensureMoved(sqlShim);
+  ensureSharedSidecar(sqlShim);
   return db;
+}
+
+function seedOptionalTablesForStation(db, ws, st, tag, otherSt = null) {
+  db.prepare("INSERT OR REPLACE INTO md_kept (station, key, of, size, used, json) VALUES (?, ?, ?, ?, ?, ?)").run(
+    st,
+    `md-${tag}`,
+    `chat-${tag}`,
+    12,
+    1000,
+    "{}",
+  );
+  db.prepare("INSERT OR REPLACE INTO log_use (kind, station, id, opened, evicted) VALUES (?, ?, ?, ?, ?)").run(
+    "chat",
+    st,
+    `chat-${tag}`,
+    1000,
+    0,
+  );
+  db.prepare(
+    "INSERT OR REPLACE INTO shared_sidecar (station, id, digest, said, named, quoted_only, local_admin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(st, `chat-${tag}`, `dig-${tag}`, null, null, 0, 0);
+  db.prepare("INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)").run(
+    st,
+    "read",
+    "10",
+    "1",
+  );
+  db.prepare(
+    "INSERT OR REPLACE INTO shared_meta (station, me, selves, lang, hidden_known, muted_known, no_route_build) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(st, "alice@still.fail", "[]", "zh", 0, 0, null);
+  // Seed workspace-level new-chat draft (`new:<ws>` -> station=ws, chat='new').
+  db.prepare("INSERT OR REPLACE INTO draft (station, chat, json) VALUES (?, ?, ?)").run(
+    ws,
+    "new",
+    JSON.stringify({ text: `new-chat-draft-${tag}` }),
+  );
+  if (otherSt) {
+    // Seed BOTH directions of `moved` (`station = st` AND `there_station = st`).
+    db.prepare(
+      "INSERT OR REPLACE INTO moved (station, session, there_station, thread, there, at, came) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(st, `mv-from-${tag}`, otherSt, 10, 20, 1000, 0);
+    db.prepare(
+      "INSERT OR REPLACE INTO moved (station, session, there_station, thread, there, at, came) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(otherSt, `mv-to-${tag}`, st, 20, 10, 1000, 1);
+  }
 }
 
 function seedAllTablesForStation(db, ws, st, tag) {
@@ -193,13 +246,18 @@ function seedAllTablesForStation(db, ws, st, tag) {
 test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dropped table with 0 SQL errors and preserves sibling/wildcard workspaces", async () => {
   const db = createRealTsSchemaDb();
   try {
-    // Seed ws-drop (canonical `ws-drop/st-1` + exclusive bare `st-drop-only`),
+    // Seed ws_drop (canonical `ws_drop/st-1` + exclusive bare `st-drop-only`),
     // wildcard-adjacent `wsXdrop` (testing non-LIKE `substr()` safety against `_`),
-    // and sibling `ws-keep` (`ws-keep/st-1` + shared bare `st-shared`).
+    // and sibling `ws-keep` (`ws-keep/st-1` + shared bare `st-shared`),
+    // across ALL base tables AND ALL optional Pion/TS `ensure_*` tables + `new:<ws>` draft!
     seedAllTablesForStation(db, "ws_drop", "ws_drop/st-1", "drop-canon");
+    seedOptionalTablesForStation(db, "ws_drop", "ws_drop/st-1", "drop-canon", "ws-keep/st-1");
     seedAllTablesForStation(db, "ws_drop", "st-drop-only", "drop-bare");
+    seedOptionalTablesForStation(db, "ws_drop", "st-drop-only", "drop-bare", "ws-keep/st-1");
     seedAllTablesForStation(db, "wsXdrop", "wsXdrop/st-1", "wildcard-neighbor");
+    seedOptionalTablesForStation(db, "wsXdrop", "wsXdrop/st-1", "wildcard-neighbor", "ws-keep/st-1");
     seedAllTablesForStation(db, "ws-keep", "ws-keep/st-1", "keep-canon");
+    seedOptionalTablesForStation(db, "ws-keep", "ws-keep/st-1", "keep-canon", "wsXdrop/st-1");
     db.prepare("INSERT OR REPLACE INTO station (address, kind, json, confirmed) VALUES (?, ?, ?, ?)").run(
       "st-shared",
       "overview",
@@ -209,12 +267,15 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
     db.prepare("INSERT OR REPLACE INTO draft (station, chat, json) VALUES (?, ?, ?)").run("st-shared", "c-shared", "{\"text\":\"keep\"}");
     db.prepare("INSERT OR REPLACE INTO account_doc (name, json, confirmed) VALUES (?, ?, ?)").run("me", "{\"workspaces\":[]}", 1000);
 
-    // Fetch exact SQL plan from Pion `sync::drop_workspace_sql_plan` and execute EVERY statement on real `node:sqlite`.
+    // Fetch exact SQL plan from Pion `sync::drop_workspace_sql_plan` INCLUDING all present optional tables
+    // and execute EVERY statement in ONE single SQLite transaction on real `node:sqlite`.
+    const optionalTables = ["md_kept", "log_use", "moved", "shared_sidecar", "shared_meta", "shared_mark"];
     const plan = await rpc.call("membership.dropSqlPlan", {
       workspace: "ws_drop",
       stations: ["ws_drop/st-1", "st-drop-only"],
+      optionalTables,
     });
-    assert.ok(Array.isArray(plan) && plan.length > 30, `expected full drop SQL plan, got ${plan.length}`);
+    assert.ok(Array.isArray(plan) && plan.length > 50, `expected full drop SQL plan, got ${plan.length}`);
 
     db.exec("BEGIN IMMEDIATE");
     for (const step of plan) {
@@ -222,17 +283,21 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
     }
     db.exec("COMMIT");
 
-    // 1. Verify EVERY single table has 0 rows remaining for `ws_drop`, `ws_drop/st-1`, and `st-drop-only`.
+    // 1. Verify EVERY single base & optional table has 0 rows remaining for `ws_drop`, `ws_drop/st-1`, and `st-drop-only`.
     assert.equal(db.prepare("SELECT count(*) AS c FROM workspace WHERE id = ?").get("ws_drop").c, 0);
     assert.equal(db.prepare("SELECT count(*) AS c FROM workspace_pref WHERE workspace = ?").get("ws_drop").c, 0);
     assert.equal(db.prepare("SELECT count(*) AS c FROM account_doc WHERE name = ?").get("usage:ws_drop").c, 0);
     assert.equal(db.prepare("SELECT count(*) AS c FROM account_doc WHERE name = ?").get("vaults:ws_drop").c, 0);
+    assert.equal(db.prepare("SELECT count(*) AS c FROM draft WHERE station = ? AND chat = 'new'").get("ws_drop").c, 0, "new:<ws> draft purged");
+    assert.equal(db.prepare("SELECT count(*) AS c FROM draft WHERE station = ? AND chat = 'new'").get("ws-keep").c, 1, "ws-keep new:<ws> draft preserved");
+    assert.equal(db.prepare("SELECT count(*) AS c FROM draft WHERE station = ? AND chat = 'new'").get("wsXdrop").c, 1, "wsXdrop new:<ws> draft preserved");
     assert.equal(db.prepare("SELECT count(*) AS c FROM station WHERE address IN (?, ?)").get("ws_drop/st-1", "st-drop-only").c, 0);
 
     const perStationTables = [
       "slack_app", "list", "chat", "session", "thread", "thread_member",
       "entry", "transcript", "job", "outbox", "pending", "first",
       "changing", "draft", "said",
+      "md_kept", "log_use", "shared_sidecar", "shared_meta", "shared_mark",
     ];
     for (const tbl of perStationTables) {
       const remDrop = db.prepare(`SELECT count(*) AS c FROM ${tbl} WHERE station IN (?, ?)`).get("ws_drop/st-1", "st-drop-only").c;
@@ -242,6 +307,21 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
       const remNeighbor = db.prepare(`SELECT count(*) AS c FROM ${tbl} WHERE station = ?`).get("wsXdrop/st-1").c;
       assert.ok(remNeighbor >= 1, `expected preserved row in ${tbl} for wildcard-neighbor wsXdrop/st-1`);
     }
+    // Verify BOTH `station` AND `there_station` sides of `moved` were purged for `ws_drop` while keeping `ws-keep <-> wsXdrop`!
+    assert.equal(
+      db.prepare("SELECT count(*) AS c FROM moved WHERE station IN (?, ?) OR there_station IN (?, ?)").get(
+        "ws_drop/st-1",
+        "st-drop-only",
+        "ws_drop/st-1",
+        "st-drop-only",
+      ).c,
+      0,
+      "moved rows referencing dropped stations on EITHER side must be purged",
+    );
+    assert.ok(
+      db.prepare("SELECT count(*) AS c FROM moved WHERE station = 'ws-keep/st-1' AND there_station = 'wsXdrop/st-1'").get().c >= 1,
+      "unrelated moved rows between surviving workspaces preserved",
+    );
 
     // 2. Verify `me`, `ws-keep`, `wsXdrop`, and `st-shared` remain 100% intact.
     assert.equal(db.prepare("SELECT count(*) AS c FROM account_doc WHERE name = 'me'").get().c, 1);
@@ -255,7 +335,8 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
 });
 
 test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (access_expires) loads cleanly in TS Accounts.load() and generates valid Crockford Base32 ULIDs", async () => {
-  // 1. Serialize via Pion `sync::serialize_stored_accounts`.
+  // 1. Serialize via Pion `sync::serialize_stored_accounts` with Unix epoch SECONDS `access_expires` & `session`.
+  const epochSec = 1795816600;
   const serialized = await rpc.call("membership.serializeAccounts", {
     accounts: [
       {
@@ -265,12 +346,14 @@ test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (acces
         picture: "https://img.example/a.png",
         access: "acc-tok-1",
         refresh: "ref-tok-1",
-        access_expires: 1795816600000,
+        access_expires: epochSec,
+        session: "sess-alice-1",
       },
     ],
   });
   assert.equal(serialized.length, 1);
-  assert.equal(serialized[0].access_expires, 1795816600000);
+  assert.equal(serialized[0].access_expires, epochSec);
+  assert.equal(serialized[0].session, "sess-alice-1");
   assert.equal("accessExpires" in serialized[0], false, "MUST NOT emit camelCase accessExpires");
 
   // 2. Feed Pion's exact serialized bytes directly into REAL TS `Accounts.load()` (`client/core-ts/src/accounts.ts:50-69` `readStored`).
@@ -283,7 +366,7 @@ test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (acces
   const accounts = await Effect.runPromise(Accounts.load(storageShim));
   assert.equal(accounts.isUnloaded(), false, "TS Accounts.load() must NOT mark Pion accounts as unloaded/corrupt");
   const listed = accounts.list();
-  assert.equal(listed.length, 1, "TS Accounts.load() must accept Pion serialized accounts with access_expires");
+  assert.equal(listed.length, 1, "TS Accounts.load() must accept Pion serialized accounts with epoch-second access_expires & session");
   assert.equal(listed[0].sub, "sub-alice");
   assert.equal(listed[0].email, "alice@still.fail");
 
@@ -307,14 +390,31 @@ test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (acces
   assert.equal(ulidRes.valid, true);
   assert.match(ulidRes.ulid, /^[0-9A-HJKMNP-TV-Z]{26}$/);
 
-  // 5. Verify strict `/v1/me` and `/v1/workspaces/<id>` rejection via Pion CLI.
-  const badMe = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { workspaces: [{ id: "ws-1", name: "OK", role: "owner" }, { bad: true }] },
+  // 5. Verify strict `/v1/me` (missing sub, bad role, duplicate ws id, bad elem) and `/v1/workspaces/<id>` rejection via Pion CLI.
+  const badMeElem = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "OK", role: "owner" }, { bad: true }] },
   });
-  assert.equal(badMe.ok, false);
+  assert.equal(badMeElem.ok, false);
+  const badMeNoSub = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { workspaces: [{ id: "ws-1", name: "OK", role: "owner" }] },
+  });
+  assert.equal(badMeNoSub.ok, false);
+  const badMeRole = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "OK", role: "superadmin" }] },
+  });
+  assert.equal(badMeRole.ok, false);
+  const badMeDup = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "A", role: "owner" }, { id: "ws-1", name: "B", role: "member" }] },
+  });
+  assert.equal(badMeDup.ok, false);
   const badWs = await rpc.call("membership.parseCloudWorkspaceStrict", {
     payload: { id: "ws-other", name: "Wrong", stations: [] },
     requestedWs: "ws-1",
   });
   assert.equal(badWs.ok, false);
+  const badWsStationPrefix = await rpc.call("membership.parseCloudWorkspaceStrict", {
+    payload: { id: "ws-1", name: "OK", stations: [{ id: "ws-2/st-evil", name: "Evil" }] },
+    requestedWs: "ws-1",
+  });
+  assert.equal(badWsStationPrefix.ok, false);
 });

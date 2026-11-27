@@ -243,7 +243,6 @@ test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential
   cs.start_events_ws(fn(ev : CloudEvent) -> Unit {
     match ev {
       CloudEvent::WorkspaceChanged(wid, _) => seen_events.push("ws:" + wid)
-      CloudEvent::StationStatusChanged(wid, sid, on) => seen_events.push("st:" + wid + "/" + sid + ":" + on.to_string())
       CloudEvent::WorkspacesChanged(_) => seen_events.push("workspaces")
       CloudEvent::Release => seen_events.push("release")
       CloudEvent::Relays => seen_events.push("relays")

@@ -24,6 +24,10 @@ struct AccountInfo {
   email : String
   name : String
   picture : String
+  access : String
+  refresh : String
+  access_expires : Int64
+  session : String
 }
 
 struct RuntimeSub {
@@ -599,6 +603,27 @@ fn write_storage_json(sh : shell::Shell, key : String, doc : base_codec::Json) -
 
 fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
   let out : Array[AccountInfo] = []
+  let sessions = sync::parse_stored_account_sessions(raw)
+  match sync::parse_stored_accounts_strict(raw) {
+    Some(strict_list) => {
+      for i in 0..<strict_list.length() {
+        let a = strict_list[i]
+        let sid = match sessions.get(a.sub) { Some(s) => s; None => "" }
+        out.push(AccountInfo::{
+          sub: a.sub,
+          email: a.email,
+          name: a.name,
+          picture: a.picture,
+          access: a.access,
+          refresh: a.refresh,
+          access_expires: a.access_expires,
+          session: sid,
+        })
+      }
+      return out
+    }
+    None => ()
+  }
   match raw {
     base_codec::Json::Arr(xs) => {
       for i in 0..<xs.length() {
@@ -613,24 +638,103 @@ fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
         if sub.length() == 0 {
           continue
         }
-        let email = match opt_str_param(a, "email") {
-          Some(s) => s
-          None => ""
+        let email = match opt_str_param(a, "email") { Some(s) => s; None => "" }
+        let name = match opt_str_param(a, "name") { Some(s) => s; None => email }
+        let picture = match opt_str_param(a, "picture") { Some(s) => s; None => "" }
+        let access = match opt_str_param(a, "access") { Some(s) => s; None => "" }
+        let refresh = match opt_str_param(a, "refresh") { Some(s) => s; None => "" }
+        let exp : Int64 = match base_codec::json_get(a, "access_expires") {
+          Some(base_codec::Json::Num(n, repr)) => if repr.length() > 0 && !repr.contains(".") {
+            match base_codec::parse_int64_str(repr) { Some(v) => v; None => n.to_int64() }
+          } else { n.to_int64() }
+          _ => 0L
         }
-        let name = match opt_str_param(a, "name") {
-          Some(s) => s
-          None => email
-        }
-        let picture = match opt_str_param(a, "picture") {
-          Some(s) => s
-          None => ""
-        }
-        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture })
+        let sid = match opt_str_param(a, "session") { Some(s) => s; None => "" }
+        out.push(AccountInfo::{
+          sub: sub,
+          email: email,
+          name: name,
+          picture: picture,
+          access: access,
+          refresh: refresh,
+          access_expires: exp,
+          session: sid,
+        })
       }
     }
     _ => ()
   }
   out
+}
+
+/// Shared production OAuth token refresh path conditioned on `(sub, expected_session, expected_refresh)`.
+/// Preserves all unrotated accounts + their `session` IDs and prevents stale 401s from kicking out new sessions!
+fn runtime_refresh_account_token(
+  sess : RuntimeSession,
+  sub : String,
+  on_done : (Result[String, String]) -> Unit,
+) -> Unit {
+  let cs = match sess.cloud {
+    Some(c) => c
+    None => {
+      on_done(Err("missing cloud client"))
+      return
+    }
+  }
+  let mut refresh_tok = ""
+  for i in 0..<sess.core.auth_store.accounts.length() {
+    if sess.core.auth_store.accounts[i].sub == sub {
+      refresh_tok = sess.core.auth_store.accounts[i].refresh
+      break
+    }
+  }
+  if refresh_tok.length() == 0 {
+    on_done(Err("missing refresh token"))
+    return
+  }
+  let expected_session = sess.core.account_sessions.get(sub)
+  let expected_refresh = Some(refresh_tok)
+  let now_ms = pion_core_wall_now_ms()
+  let _ = sess.core.rt.fork_quiet_named("auth-refresh:" + sub, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.refresh_token_k(refresh_tok, now_ms, fn(ex : effect::Exit[Result[sync::RefreshedTokens, sync::RefreshTokenError]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(Ok(tokens)) => {
+          match sess.core.apply_refreshed_tokens(
+            sub,
+            tokens,
+            expected_session=expected_session,
+            expected_refresh=expected_refresh,
+          ) {
+            Ok(access) => {
+              cs.set_origin_and_token("", access)
+              emit_topic_refresh(sess, "accounts")
+              on_done(Ok(access))
+            }
+            Err(msg) => on_done(Err(msg))
+          }
+        }
+        effect::Exit::Succeeded(Err(sync::RefreshTokenError::InvalidSession(_, msg))) => {
+          let invalidated = sess.core.invalidate_session(
+            sub,
+            expected_session=expected_session,
+            expected_refresh=expected_refresh,
+          )
+          if invalidated {
+            cs.clear_all_credentials()
+            cs.stop()
+            emit_topic_refresh(sess, "accounts")
+          }
+          on_done(Err(msg))
+        }
+        effect::Exit::Succeeded(Err(sync::RefreshTokenError::Transient(msg))) => {
+          on_done(Err(msg))
+        }
+        effect::Exit::Failed(e) => on_done(Err(effect_err_msg(e)))
+        effect::Exit::Interrupted => on_done(Err("interrupted"))
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
 }
 
 fn sess_lang(sess : RuntimeSession) -> String {
@@ -1050,8 +1154,9 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     offline_transport()
   }
+  let active_access = if accounts.length() > 0 { accounts[0].access } else { "" }
   let cloud_opt : Option[sync::CloudSync] = if origin.length() > 0 {
-    Some(sync::CloudSync::new(sh, acct.db, origin))
+    Some(sync::CloudSync::new(sh, acct.db, origin, token=active_access))
   } else {
     None
   }
@@ -1231,6 +1336,9 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_accounts_persisted(fn(accounts_doc : base_codec::Json) -> Result[Unit, String] {
     write_storage_json(sh, "accounts", accounts_doc)
   })
+  core.membership.set_host_pending_purges_reader(fn(key : String) -> Option[base_codec::Json] {
+    read_storage_json(sh, key)
+  })
   core.membership.set_host_pending_purges_hook(fn(key : String, doc : base_codec::Json) -> Result[Unit, String] {
     write_storage_json(sh, key, doc)
   })
@@ -1240,7 +1348,7 @@ pub extern "C" fn pion_core_runtime_start(
   }
   if accounts.length() > 0 {
     let a0 = accounts[0]
-    core.set_db_account_sub(a0.sub, host_purges_doc=host_purges_opt)
+    let _ = core.set_db_account_sub(a0.sub, host_purges_doc=host_purges_opt)
     core.set_viewer(a0.email, sub=a0.sub, role="owner")
     match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
       Some(pjson) => {
@@ -1250,14 +1358,17 @@ pub extern "C" fn pion_core_runtime_start(
     }
     for i in 0..<accounts.length() {
       let ai = accounts[i]
+      if ai.session.length() > 0 {
+        core.account_sessions.set(ai.sub, ai.session)
+      }
       core.auth_store.register_account(views::StoredAccount::{
         sub: ai.sub,
         email: ai.email,
         name: ai.name,
         picture: ai.picture,
-        access: "",
-        refresh: "",
-        access_expires: 0.to_int64(),
+        access: ai.access,
+        refresh: ai.refresh,
+        access_expires: ai.access_expires,
       })
     }
   } else {
@@ -1355,12 +1466,18 @@ pub extern "C" fn pion_core_runtime_start(
               Some(ctrl) => {
                 let dev_id = match ctrl.device_id() { Some(d) => d; None => "" }
                 if dev_id.length() > 0 {
+                  let captured_epoch = sess.core.membership.cred_epoch_of(ws)
                   let _ = sess.core.rt.fork_quiet_named("cred-refresh:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
                     cs.fetch_member_credential_k(
                       ws,
                       dev_id,
                       pion_core_wall_now_ms() / 1000L,
                       fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        if sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
+                          ctrl.drop_link(reason="cred_epoch_changed")
+                          fk(effect::Exit::Succeeded(()))
+                          return
+                        }
                         match ex {
                           effect::Exit::Succeeded(mc) => {
                             ctrl.refresh_credential_k(mc.credential, fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
@@ -1417,6 +1534,58 @@ pub extern "C" fn pion_core_runtime_start(
       None => ()
     }
   })
+  // Wire production CloudSync commit hooks, monotonic seq provider, cred_epoch guard, and
+  // real `/v1/events` WebSocket consumption when signed in with an access token.
+  match sess.cloud {
+    Some(cs) => {
+      cs.set_cred_epoch_getter(fn(ws : String) -> Int64 {
+        sess.core.membership.cred_epoch_of(ws)
+      })
+      cs.set_seq_provider(fn() -> Int64 {
+        sess.core.membership.next_cloud_seq()
+      })
+      cs.set_commit_hooks(
+        on_me_fetched=Some(fn(me : sync::CloudMe, req_seq : Int64) -> Unit {
+          match sess.core.commit_cloud_me(me, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+            Ok(true) => {
+              emit_topic_refresh(sess, "workspaces")
+              emit_topic_refresh(sess, "workspace")
+              emit_topic_refresh(sess, "stations")
+              emit_topic_refresh(sess, "chats")
+            }
+            _ => ()
+          }
+        }),
+        on_workspace_fetched=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64) -> Unit {
+          match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+            Ok(true) => {
+              emit_topic_refresh(sess, "workspace")
+              emit_topic_refresh(sess, "stations")
+              emit_topic_refresh(sess, "chats")
+            }
+            _ => ()
+          }
+        }),
+        on_workspace_revoked_err=Some(fn(wid : String, _herr : sync::CloudHttpError) -> Unit {
+          let _ = sess.core.drop_workspace(wid)
+          emit_topic_refresh(sess, "workspaces")
+          emit_topic_refresh(sess, "workspace")
+          emit_topic_refresh(sess, "stations")
+          emit_topic_refresh(sess, "chats")
+        }),
+        on_unauthorized_err=Some(fn(_herr : sync::CloudHttpError) -> Unit {
+          let active_sub = sess_viewer_sub(sess)
+          if active_sub.length() > 0 {
+            runtime_refresh_account_token(sess, active_sub, fn(_ : Result[String, String]) -> Unit {})
+          }
+        }),
+      )
+      if active_access.length() > 0 {
+        cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      }
+    }
+    None => ()
+  }
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
@@ -1485,6 +1654,12 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
     }
     None => {
       let created = sync::CloudSync::new(sess.sh, sess.db, req_origin, token=token)
+      created.set_cred_epoch_getter(fn(ws : String) -> Int64 {
+        sess.core.membership.cred_epoch_of(ws)
+      })
+      created.set_seq_provider(fn() -> Int64 {
+        sess.core.membership.next_cloud_seq()
+      })
       sess.cloud = Some(created)
       created
     }
@@ -1504,13 +1679,22 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
           effect::Exit::Succeeded(me) => {
             match sess.core.commit_cloud_me(me, req_seq=me_seq, now_ms=pion_core_wall_now_ms()) {
               Err(msg) => {
-                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
+                let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "cloud_error" }
+                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
                 let (out_j, out_b) = protocol::encode_core_event(ev)
                 emit_wire(out_j, payload=out_b)
                 fk(effect::Exit::Succeeded(()))
                 return
               }
-              Ok(_) => ()
+              Ok(false) => {
+                // Stale `/v1/me` discarded: suppress ALL side effects (do NOT update viewer or refresh topics!).
+                let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([("stale", base_codec::json_bool(true))]), None)
+                let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                emit_wire(out_j, payload=out_b)
+                fk(effect::Exit::Succeeded(()))
+                return
+              }
+              Ok(true) => ()
             }
             let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
               me.workspaces[0].role
@@ -1659,8 +1843,27 @@ fn evaluate_runtime_topic(
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
-    if !sess.core.can_read_chat(resolved_st, resolved_th, sess_param) {
+    // Authorize BOTH input AND final moved destination!
+    if !sess.core.can_read_station(st) || !sess.core.can_read_station(resolved_st) {
       return Some(protocol::CoreEvent::Waiting(id))
+    }
+    if !sess.core.can_read_chat(st, th_param, sess_param) ||
+    (resolved_st != st && !sess.core.can_read_chat(resolved_st, resolved_th, sess_param)) {
+      let reason = match sess.core.membership.station_unconfirmed_reason_of(resolved_st, fallback_ws=sess.core.workspace) {
+        Some(r) => Some(r)
+        None => sess.core.membership.station_unconfirmed_reason_of(st, fallback_ws=sess.core.workspace)
+      }
+      match reason {
+        Some("access_denied") => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+          code: "access_denied",
+          message: "station denied access after role downgrade",
+        }))
+        Some("offline") => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+          code: "station_offline",
+          message: "station offline while confirming downgraded access",
+        }))
+        _ => return Some(protocol::CoreEvent::Waiting(id))
+      }
     }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
@@ -1724,7 +1927,7 @@ fn evaluate_runtime_topic(
           if prefix.length() > 0 && !r.address.starts_with(prefix) {
             continue
           }
-          if !sess.core.can_read_station_list(r.address) {
+          if !sess.core.can_read_station_resource(r.address, "stations") {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {
@@ -1779,7 +1982,7 @@ fn evaluate_runtime_topic(
       for i in 0..<cloud_sts.length() {
         let cs = cloud_sts[i]
         let addr = sync::canonical_station(ws_scope, cs.id)
-        if !sess.core.can_read_station_list(addr) {
+        if addr.length() == 0 || !sess.core.can_read_station_resource(addr, "stations") {
           continue
         }
         seen.set(addr, true)
@@ -1972,6 +2175,28 @@ pub extern "C" fn pion_core_runtime_send(
             let _ = drain_and_emit(sess)
             return
           }
+          if call_name == "auth.refresh" {
+            let sub = match opt_str_param(params, "sub") {
+              Some(s) => if s.length() > 0 { s } else { sess_viewer_sub(sess) }
+              None => sess_viewer_sub(sess)
+            }
+            if sub.length() == 0 {
+              let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing sub" })
+              let (out_j, out_b) = protocol::encode_core_event(err_ev)
+              emit_wire(out_j, payload=out_b)
+              return
+            }
+            runtime_refresh_account_token(sess, sub, fn(res : Result[String, String]) -> Unit {
+              let ev = match res {
+                Ok(_) => protocol::CoreEvent::Ok(id, base_codec::json_obj([("ok", base_codec::json_bool(true))]), None)
+                Err(msg) => protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "auth_error", message: msg })
+              }
+              let (out_j, out_b) = protocol::encode_core_event(ev)
+              emit_wire(out_j, payload=out_b)
+            })
+            let _ = drain_and_emit(sess)
+            return
+          }
           if call_name == "station.connect" {
             let raw_target_st = match opt_str_param(params, "station") {
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
@@ -1995,7 +2220,18 @@ pub extern "C" fn pion_core_runtime_send(
               emit_wire(out_j, payload=out_b)
               return
             }
-            let target_st = sess.core.membership.bind_station(target_ws, raw_target_st)
+            let target_st = match sess.core.membership.bind_station_checked(target_ws, raw_target_st) {
+              Ok(canon) => canon
+              Err(msg) => {
+                let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "station_workspace_mismatch",
+                  message: msg,
+                })
+                let (out_j, out_b) = protocol::encode_core_event(err_ev)
+                emit_wire(out_j, payload=out_b)
+                return
+              }
+            }
             let _ = sess.core.membership.persist_station_bindings(sess.db)
             let peer_opt = match opt_str_param(params, "peerId") {
               Some(p) => if p.length() > 0 { Some(p) } else { None }
@@ -2024,6 +2260,7 @@ pub extern "C" fn pion_core_runtime_send(
                   None => ""
                 }
                 if static_cred.length() > 0 {
+                  // Only arms at initial `cred_epoch == 1`; NEVER re-arms stale static creds after epoch advance!
                   sess.core.membership.set_static_credential(target_ws, static_cred)
                 }
                 let cloud_ref = sess.cloud
@@ -2044,12 +2281,17 @@ pub extern "C" fn pion_core_runtime_send(
                       None => ()
                     }
                   }
+                  let captured_epoch = core_ref.membership.cred_epoch_of(target_ws)
                   match cloud_ref {
                     Some(cs) => cs.fetch_member_credential_k(
                       target_ws,
                       dev_id,
                       pion_core_wall_now_ms() / 1000.to_int64(),
                       fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        if core_ref.membership.cred_epoch_of(target_ws) != captured_epoch || !core_ref.can_read_workspace(target_ws) {
+                          ck(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+                          return
+                        }
                         match ex {
                           effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
                           effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))

@@ -466,7 +466,8 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
   if op == "membership.dropSqlPlan" {
     let ws = get_str(args, "workspace")
     let stations = get_str_arr(args, "stations")
-    let plan = sync::drop_workspace_sql_plan(ws, stations)
+    let opt_tables = get_str_arr(args, "optionalTables")
+    let plan = sync::drop_workspace_sql_plan(ws, stations, optional_tables=opt_tables)
     let out : Array[base_codec::Json] = []
     for i in 0..<plan.length() {
       let (stmt, params) = plan[i]
@@ -480,6 +481,7 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
   if op == "membership.serializeAccounts" {
     let arr = get_arr(args, "accounts")
     let list : Array[views::StoredAccount] = []
+    let sessions : Map[String, String] = Map::new()
     for i in 0..<arr.length() {
       let a = arr[i]
       let exp : Int64 = match base_codec::json_get(a, "access_expires") {
@@ -488,8 +490,13 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
         } else { n.to_int64() }
         _ => 0L
       }
+      let sub = get_str(a, "sub")
+      match get_opt_str(a, "session") {
+        Some(sid) => if sid.length() > 0 { sessions.set(sub, sid) }
+        None => ()
+      }
       list.push(views::StoredAccount::{
-        sub: get_str(a, "sub"),
+        sub: sub,
         email: get_str(a, "email"),
         name: get_str(a, "name"),
         picture: get_str(a, "picture"),
@@ -498,7 +505,8 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
         access_expires: exp,
       })
     }
-    return ok_resp(sync::serialize_stored_accounts(list))
+    let sess_opt : Option[Map[String, String]] = if sessions.keys().length() > 0 { Some(sessions) } else { None }
+    return ok_resp(sync::serialize_stored_accounts(list, sessions=sess_opt))
   }
   if op == "membership.generateUlid" {
     let now_ms : Int64 = match base_codec::json_get(args, "nowMs") {

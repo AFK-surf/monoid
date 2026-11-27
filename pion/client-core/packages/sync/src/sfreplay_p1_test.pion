@@ -807,8 +807,14 @@ test "sfreplay_p1: settings progressPrefs nested sub check & profiles canBatchSh
   sf_expect_str(st_match, "progressStrength", "remind")
   sf_expect_int(st_match, "progressSeq", 4)
 
-  // Another person's `progressPrefs` (`sub != viewer_sub`) MUST fall back to PROGRESS_DEFAULT!
-  core.set_viewer("bob@still.fail", sub="sub-bob", role="member")
+  // Another person's `progressPrefs` (`sub != viewer_sub`) MUST fall back to PROGRESS_DEFAULT
+  // (account DB remains immutably bound to `sub-alice`).
+  let _ = store::put_workspace_pref(
+    db,
+    "ws-1",
+    "progressPrefs",
+    "{\"sub\":\"sub-bob\",\"progress\":{\"minutes\":30,\"strength\":\"remind\",\"rev\":4,\"at\":1730000000000},\"owed\":[],\"met\":[]}",
+  )
   let st_other = sf_sub_val(core, 502L, "settings", [("scope", base_codec::json_str("ws-1"))])
   sf_expect_int(st_other, "progressMinutes", 10)
   sf_expect_str(st_other, "progressStrength", "require")
