@@ -8,12 +8,21 @@
 // workspace that moved under build 9040's rules (everything said in the logs) reads as it did, but for the web pages
 // that move shut out. What reads the chain itself (its seq, head) still reads the chain's.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { mock, test } from "node:test";
-import { LockRefusal, entryHash, fold, state4, state4Moved } from "../../shared/lock.ts";
-import { NOT_GIVEN, personChainsOf } from "../src/cloud/state.ts";
+import { LockRefusal, endpointBytes, entryHash, fold, state4, state4Moved } from "../../shared/lock.ts";
+import { Cloud, NOT_GIVEN, lockPath, personChainsOf, seenDevicesOf, writeState } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
-import { inLock, inLockBringing, lockHead, lockPartRoute, stillIn } from "../src/mesh/serve.ts";
-import { Log, WS, bring, dev, ed, handover, signed, station, viewerOf, world } from "./lock-moved-world.ts";
+import { Effect, Fiber } from "effect";
+import { accept } from "../src/mesh/accept.ts";
+import type { Admin } from "../src/api/admin.ts";
+import { answerBodies, answerPerson, bodiesSyncWith, personSyncWith } from "../src/mesh/person-sync.ts";
+import { ALPN, Reader, inLock, inLockBringing, lockHead, lockPartRoute, serve, stillIn } from "../src/mesh/serve.ts";
+import { GrantKey } from "./fake-control-plane.ts";
+import { Log, WS, WS2, bring, dev, ed, handover, signed, station, viewerOf, world } from "./lock-moved-world.ts";
+import { memoryMesh } from "./memory-mesh.ts";
 
 const NOW = 2_000_000;
 let clock = NOW;
@@ -259,4 +268,385 @@ test("a workspace that moved under build 9040's rules, everything said in its pe
   const doraLater = state4Moved(WS, [gd, movedD], chains, bodies, NOW + 86400).state;
   assert.equal(doraLater.devices.has(dora.id), false, "their page out at its exp");
   assert.equal(doraLater.members.has("dora"), true, "still a member, with no device in");
+});
+
+test("waiting moved station: grantKeys uses pinned chain cloud_keys, serve returns lock_station waiting without lock head or seenDevices write, and real client hello (person only) admits", async (t) => {
+  clock = NOW;
+  const grant = new GrantKey("k-chain");
+  const fakePlaneGrant = new GrantKey("k-plane-fake");
+  const w = world();
+  w.first = signed({ ...w.first, body: { ...(w.first.body as any), cloud_keys: { keys: [grant.jwk] } } } as any, w.alice.app.signer);
+  w.moved = signed({ v: 1, ws: WS, seq: 1, prev: entryHash(w.first), at: 1000, kind: "moved", body: { root: w.alice.genesis } }, w.alice.app.signer);
+  w.settings = { origins: ["https://app.still.fail"], rp_id: "app.still.fail", cloud_keys: { keys: [grant.jwk] } } as any;
+  handover(w);
+
+  const c = station(w);
+  // Overwrite control-plane grant_keys with a fake key to prove waiting never trusts the control plane.
+  writeState(c.data, {
+    origin: "https://app.still.fail", station: w.stations[0]!.hex, workspace: w.ws, workspace_name: "Team", name: "s0", relay_url: "", relay_urls: [],
+    grant_keys: { keys: [fakePlaneGrant.jwk] }, peers: w.stations.map((s, j) => ({ id: s.hex, name: `s${j}` })), revocations: [],
+  });
+  c.reload();
+  t.after(() => c.close());
+
+  assert.equal(c.waiting(), true);
+  assert.deepEqual(c.grantKeys(), { keys: [grant.jwk] }, "waiting station uses pinned chain cloud_keys, not null or control plane");
+
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [at, device] = await Promise.all([bind(), bind()]);
+  const timers: { ms: number; fire: () => void }[] = [];
+  t.mock.method(wall, "after", (ms: number, fire: () => void) => {
+    timers.push({ ms, fire });
+    return () => {};
+  });
+  const running = Effect.runFork(Effect.scoped(accept(at, { serve: (conn) => serve({ cloud: c, admin: undefined as unknown as Admin, up: () => true }, conn), closing: "station stopping" })));
+  t.after(async () => {
+    await Effect.runPromise(Fiber.interrupt(running));
+    await Promise.all([at.close(), device.close()]);
+  });
+
+  const dial = async (hello: Record<string, unknown>, waitClose = false) => {
+    const conn = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+    const stream = await conn.openBi();
+    await stream.write(Buffer.from(JSON.stringify(hello) + "\n"));
+    const reply = await new Reader(stream).line();
+    let closedWhy: string | null = null;
+    if (waitClose) {
+      while (timers.length > 0) timers.shift()!.fire();
+      closedWhy = await conn.closed();
+    } else {
+      conn.close(0, "done");
+    }
+    return { reply, closedWhy };
+  };
+  const credOf = (g: GrantKey, sub: string, role: string, ws = WS) =>
+    g.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub, email: `${sub}@x`, name: sub, ws, role, device: device.id(), sid: "s", iat: NOW, exp: NOW + 3600 });
+  const proofOf = (d: { base: { hex: string; sign: (b: Buffer) => string } }, ws = WS) => ({
+    device: d.base.hex,
+    proof: d.base.sign(endpointBytes(ws, device.id())),
+  });
+
+  // 1. Connecting without root log returns lock_station why=waiting, omits lock head, closes with reason "lock_station", and does not write seenDevices.
+  const { reply: refused, closedWhy } = await dial({ credential: credOf(grant, "alice", "owner"), protocol: 2, lock: { ...proofOf(w.alice.app), kind: "app", label: "Alice Mac" } }, true);
+  assert.equal(refused.code, "lock_station");
+  assert.equal(refused.why, "waiting");
+  assert.equal(refused.error, NOT_GIVEN);
+  assert.equal("lock" in refused, false, "waiting refusal must not expose lock head");
+  assert.match(String(closedWhy ?? ""), /lock_station/, `close reason should be lock_station, got ${closedWhy}`);
+  assert.equal(seenDevicesOf(c).of(WS, NOW, "alice", true).length, 0, "waiting refusal must not pollute seenDevices");
+
+  // 2. Unauthenticated / bad-credential hello carrying valid lock.person + lock.bodies must not exit waiting or pollute personChains/bodies.
+  const chainsBefore = personChainsOf(c).every().length;
+  const bodiesBefore = c.bodies(null).all().size;
+  const { reply: fakeRefused } = await dial({
+    credential: credOf(fakePlaneGrant, "alice", "owner"),
+    protocol: 2,
+    lock: { ...proofOf(w.alice.app), person: w.alice.entries, bodies: [...w.alice.bodies.values()] },
+  });
+  assert.equal(fakeRefused.code, undefined);
+  assert.match(String(fakeRefused.error ?? ""), /unknown credential key/i);
+  assert.equal(c.waiting(), true, "unauthenticated hello must not exit waiting");
+  assert.equal(personChainsOf(c).every().length, chainsBefore, "unauthenticated hello must not persist person chains");
+  assert.equal(c.bodies(null).all().size, bodiesBefore, "unauthenticated hello must not persist bodies");
+  assert.equal(seenDevicesOf(c).of(WS, NOW, "alice", true).length, 0);
+
+  // 3. Non-root member bringing only their own person log still gets lock_station waiting.
+  const { reply: bobRefused } = await dial({
+    credential: credOf(grant, "bob", "admin"),
+    protocol: 2,
+    lock: { ...proofOf(w.bob.app), person: w.bob.entries },
+  });
+  assert.equal(bobRefused.code, "lock_station");
+  assert.equal(bobRefused.why, "waiting");
+  assert.equal(c.waiting(), true);
+  assert.equal(seenDevicesOf(c).of(WS, NOW, "alice", true).length, 0);
+
+  // 4. Real client hello shape (only device+proof+person, no bodies) from root owner exits waiting via inLockBringing and admits.
+  const { reply: admitted } = await dial({
+    credential: credOf(grant, "alice", "owner"),
+    protocol: 2,
+    lock: { ...proofOf(w.alice.app), kind: "app", label: "Alice Mac", person: w.alice.entries },
+  });
+  assert.equal(admitted.ok, true);
+  assert.equal(c.waiting(), false);
+  assert.equal(seenDevicesOf(c).of(WS, NOW, "alice", true).length, 1, "admitted connection after exiting waiting records seenDevices");
+
+  // 5. After peer sync brings bodies, non-root member (bob) connects normally.
+  c.takeBodies(null, [...w.alice.bodies.values()]);
+  bring(c, w.bob);
+  const { reply: bobOk } = await dial({
+    credential: credOf(grant, "bob", "admin"),
+    protocol: 2,
+    lock: { ...proofOf(w.bob.app), person: w.bob.entries },
+  });
+  assert.equal(bobOk.ok, true);
+});
+
+test("exiting waiting re-verifies rotated cloud_keys before setting verified/seenDevices and leaks zero lock details even when device admission would fail", async (t) => {
+  clock = NOW;
+  const oldGrant = new GrantKey("k-old");
+  const newGrant = new GrantKey("k-new");
+  const w = world();
+  w.first = signed({ ...w.first, body: { ...(w.first.body as any), cloud_keys: { keys: [oldGrant.jwk] } } } as any, w.alice.app.signer);
+  w.moved = signed({ v: 1, ws: WS, seq: 1, prev: entryHash(w.first), at: 1000, kind: "moved", body: { root: w.alice.genesis } }, w.alice.app.signer);
+  w.settings = { origins: ["https://app.still.fail"], rp_id: "app.still.fail", cloud_keys: { keys: [newGrant.jwk] } } as any;
+  handover(w);
+
+  const c = station(w);
+  t.after(() => c.close());
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [at, device] = await Promise.all([bind(), bind()]);
+  t.after(async () => {
+    await Promise.all([at.close(), device.close()]);
+  });
+  void (async () => {
+    for (;;) {
+      const conn = await at.accept();
+      if (!conn) return;
+      void serve({ cloud: c, admin: undefined as unknown as Admin, up: () => true }, conn).catch(() => {});
+    }
+  })();
+
+  const dial = async (g: GrantKey, lock: Record<string, unknown>) => {
+    const conn = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+    const stream = await conn.openBi();
+    const credential = g.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub: "alice", email: "alice@x", name: "alice", ws: WS, role: "owner", device: device.id(), sid: "s", iat: NOW, exp: NOW + 3600 });
+    await stream.write(Buffer.from(JSON.stringify({ credential, protocol: 2, lock }) + "\n"));
+    const reply = await new Reader(stream).line();
+    conn.close(0, "done");
+    return reply;
+  };
+  const unapprovedDev = dev();
+  const unapprovedProof = { device: unapprovedDev.base.hex, proof: unapprovedDev.base.sign(endpointBytes(WS, device.id())) };
+
+  // Old key with an UNAPPROVED device brings root log + rotated `open` body:
+  // station exits waiting to newGrant, immediately re-verifies credential BEFORE verified/seenDevices/inLockBringing,
+  // and returns ONLY a plain credential error with ZERO lock metadata (no code, lock, person, entries, left, out).
+  const oldReply = await dial(oldGrant, { ...unapprovedProof, kind: "app", label: "Rogue", person: w.alice.entries, bodies: [...w.alice.bodies.values()] });
+  assert.notEqual(oldReply.ok, true, "old key must not be admitted once open rotated cloud_keys");
+  assert.match(String(oldReply.error ?? ""), /unknown credential key/i);
+  assert.equal(oldReply.code, undefined, "refusal must not be lock_unconfirmed");
+  assert.equal(oldReply.lock, undefined, "refusal must not leak lock head");
+  assert.equal(oldReply.person, undefined, "refusal must not leak person chains");
+  assert.equal(oldReply.entries, undefined, "refusal must not leak workspace entries");
+  assert.equal(oldReply.left, undefined, "refusal must not leak approvers");
+  assert.equal(oldReply.out, undefined, "refusal must not leak removal chain");
+  assert.equal(c.waiting(), false);
+  assert.equal(seenDevicesOf(c).of(WS, NOW, "alice", true).length, 0, "rejected old key must not write seenDevices");
+
+  // Reconnecting with newGrant on Alice's approved device succeeds.
+  const aliceProof = { device: w.alice.app.base.hex, proof: w.alice.app.base.sign(endpointBytes(WS, device.id())) };
+  const newReply = await dial(newGrant, { ...aliceProof, kind: "app", label: "Alice Mac", person: w.alice.entries });
+  assert.equal(newReply.ok, true);
+});
+
+test("waiting station with rotated cloud_keys recovers via peer personSyncWith/bodiesSyncWith and admits production new-key hellos", async (t) => {
+  clock = NOW;
+  const oldGrant = new GrantKey("k-old");
+  const newGrant = new GrantKey("k-new");
+  const w = world();
+  w.first = signed({ ...w.first, body: { ...(w.first.body as any), cloud_keys: { keys: [oldGrant.jwk] } } } as any, w.alice.app.signer);
+  w.moved = signed({ v: 1, ws: WS, seq: 1, prev: entryHash(w.first), at: 1000, kind: "moved", body: { root: w.alice.genesis } }, w.alice.app.signer);
+  w.settings = { origins: ["https://app.still.fail"], rp_id: "app.still.fail", cloud_keys: { keys: [newGrant.jwk] } } as any;
+  handover(w);
+  const newSt = ed();
+  w.alice.say("station", { key: newSt.hex });
+
+  // Existing protected peer station has full logs + bodies (including rotated open + newSt).
+  const peer = station(w);
+  for (const l of [w.alice, w.bob, w.carol]) bring(peer, l);
+  t.after(() => peer.close());
+
+  // Newly added station downloads moved lock.json and starts waiting with old moved-time keys.
+  const fresh = station(w);
+  writeState(fresh.data, {
+    origin: "https://app.still.fail", station: newSt.hex, workspace: WS, workspace_name: "Team", name: "new-s", relay_url: "", relay_urls: [],
+    grant_keys: { keys: [newGrant.jwk] }, peers: [], revocations: [],
+  });
+  fresh.reload();
+  t.after(() => fresh.close());
+  assert.equal(fresh.waiting(), true);
+
+  // Sync over peer RPC (`personSyncWith` + `bodiesSyncWith`) using station identity `newSt.hex` (no member credentials).
+  const call = async (_to: string, ws: string | null, req: any) => {
+    const id = ws ?? WS;
+    if (String(req?.method ?? "").startsWith("lock.person.")) return answerPerson(personChainsOf(peer), req, id);
+    return answerBodies(peer, req, id, newSt.hex);
+  };
+  await personSyncWith(personChainsOf(fresh), call, w.stations[0]!.hex, WS);
+  await bodiesSyncWith(fresh, call, w.stations[0]!.hex, WS);
+  assert.equal(fresh.waiting(), false, "peer sync brings fresh station out of waiting");
+
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [at, device] = await Promise.all([bind(), bind()]);
+  t.after(async () => {
+    await Promise.all([at.close(), device.close()]);
+  });
+  void (async () => {
+    for (;;) {
+      const conn = await at.accept();
+      if (!conn) return;
+      void serve({ cloud: fresh, admin: undefined as unknown as Admin, up: () => true }, conn).catch(() => {});
+    }
+  })();
+
+  // Both root owner and non-root member connect using ONLY newGrant and production hello shape (no `bodies`).
+  for (const [sub, role, log] of [["alice", "owner", w.alice], ["bob", "admin", w.bob]] as const) {
+    const conn = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+    const stream = await conn.openBi();
+    const credential = newGrant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub, email: `${sub}@x`, name: sub, ws: WS, role, device: device.id(), sid: "s", iat: NOW, exp: NOW + 3600 });
+    const proof = { device: log.app.base.hex, proof: log.app.base.sign(endpointBytes(WS, device.id())) };
+    await stream.write(Buffer.from(JSON.stringify({ credential, protocol: 2, lock: { ...proof, kind: "app", label: sub, person: log.entries } }) + "\n"));
+    const reply = await new Reader(stream).line();
+    conn.close(0, "done");
+    assert.equal(reply.ok, true, `${sub} with newGrant production hello should connect after peer sync`);
+  }
+});
+
+test("joined workspace leaving waiting into effective off while home is locked is refused on initial hello and mid-renewal (leftOut=home)", async (t) => {
+  clock = NOW;
+  const grant = new GrantKey("k-joined");
+  const wHome = world(WS);
+  wHome.first = signed({ ...wHome.first, body: { ...(wHome.first.body as any), cloud_keys: { keys: [grant.jwk] } } } as any, wHome.alice.app.signer);
+  wHome.moved = signed({ v: 1, ws: WS, seq: 1, prev: entryHash(wHome.first), at: 1000, kind: "moved", body: { root: wHome.alice.genesis } }, wHome.alice.app.signer);
+  wHome.settings = { origins: ["https://app.still.fail"], rp_id: "app.still.fail", cloud_keys: { keys: [grant.jwk] } } as any;
+  handover(wHome);
+
+  const wJoined = world(WS2);
+  wJoined.first = signed({ ...wJoined.first, body: { ...(wJoined.first.body as any), cloud_keys: { keys: [grant.jwk] } } } as any, wJoined.alice.app.signer);
+  wJoined.moved = signed({ v: 1, ws: WS2, seq: 1, prev: entryHash(wJoined.first), at: 1000, kind: "moved", body: { root: wJoined.alice.genesis } }, wJoined.alice.app.signer);
+  wJoined.settings = { origins: ["https://app.still.fail"], rp_id: "app.still.fail", cloud_keys: { keys: [grant.jwk] } } as any;
+  handover(wJoined);
+  wJoined.alice.say("off", {}, WS2);
+
+  const makeStation = () => {
+    const c = station(wHome);
+    for (const l of [wHome.alice, wHome.bob, wHome.carol]) bring(c, l, true, WS);
+    writeState(c.data, {
+      origin: "https://app.still.fail", station: wHome.stations[0]!.hex, workspace: WS, workspace_name: "Home", name: "s0", relay_url: "", relay_urls: [],
+      grant_keys: { keys: [grant.jwk] }, peers: [], revocations: [],
+      joined: [{ workspace: WS2, workspace_name: "Joined", name: "s0", peers: [], revocations: [] }],
+    });
+    c.reload();
+    c.takeLock([wJoined.first], WS2);
+    c.takeLock([wJoined.first, wJoined.moved], WS2, true);
+    t.after(() => c.close());
+    assert.equal(c.waiting(null), false, "home is locked and active");
+    assert.equal(c.waiting(WS2), true, "joined starts waiting");
+    return c;
+  };
+
+  const credFor = (devId: string, ws: string, sub: string, role: string) =>
+    grant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub, email: `${sub}@x`, name: sub, ws, role, device: devId, sid: "s", iat: NOW, exp: NOW + 3600 });
+
+  // 1. Initial hello on joined workspace bringing root log + off body: resolves joined to off -> leftOut === "home" -> refused!
+  {
+    const c1 = makeStation();
+    const mesh = memoryMesh();
+    const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+    const [at, device] = await Promise.all([bind(), bind()]);
+    t.after(async () => {
+      await Promise.all([at.close(), device.close()]);
+    });
+    void (async () => {
+      for (;;) {
+        const conn = await at.accept();
+        if (!conn) return;
+        void serve({ cloud: c1, admin: undefined as unknown as Admin, up: () => true }, conn).catch(() => {});
+      }
+    })();
+    const proofJoined = { device: wJoined.alice.app.base.hex, proof: wJoined.alice.app.base.sign(endpointBytes(WS2, device.id())) };
+    const conn1 = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+    const s1 = await conn1.openBi();
+    await s1.write(Buffer.from(JSON.stringify({
+      credential: credFor(device.id(), WS2, "alice", "owner"),
+      protocol: 2,
+      lock: { ...proofJoined, person: wJoined.alice.entries, bodies: [...wJoined.alice.bodies.values()] },
+    }) + "\n"));
+    const r1 = await new Reader(s1).line();
+    conn1.close(0, "done");
+    assert.notEqual(r1.ok, true, "initial hello must be refused when joined resolves to off under locked home");
+    assert.equal(r1.code, "lock_station");
+    assert.equal(r1.why, "home");
+    assert.equal(c1.leftOut(WS2), "home");
+  }
+
+  // 2. Separate fresh waiting fixture: transition joined from waiting -> off (leftOut === "home") DURING renewal!
+  {
+    const c2 = makeStation();
+    const mesh = memoryMesh();
+    const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+    const [at, device] = await Promise.all([bind(), bind()]);
+    t.after(async () => {
+      await Promise.all([at.close(), device.close()]);
+    });
+    void (async () => {
+      for (;;) {
+        const conn = await at.accept();
+        if (!conn) return;
+        void serve({ cloud: c2, admin: undefined as unknown as Admin, up: () => true }, conn).catch(() => {});
+      }
+    })();
+    const proofHome = { device: wHome.alice.app.base.hex, proof: wHome.alice.app.base.sign(endpointBytes(WS, device.id())) };
+    const proofJoined = { device: wJoined.alice.app.base.hex, proof: wJoined.alice.app.base.sign(endpointBytes(WS2, device.id())) };
+    const conn2 = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+    const s2 = await conn2.openBi();
+    const reader2 = new Reader(s2);
+    await s2.write(Buffer.from(JSON.stringify({ credential: credFor(device.id(), WS, "alice", "owner"), protocol: 2, lock: proofHome }) + "\n"));
+    assert.equal((await reader2.line()).ok, true);
+    assert.equal(c2.waiting(WS2), true, "WS2 is still waiting right before renewal triggers transition");
+    await s2.write(Buffer.from(JSON.stringify({
+      credential: credFor(device.id(), WS2, "alice", "owner"),
+      protocol: 2,
+      lock: { ...proofJoined, person: wJoined.alice.entries, bodies: [...wJoined.alice.bodies.values()] },
+    }) + "\n"));
+    const r2 = await reader2.line();
+    assert.notEqual(r2.ok, true, "renewal transitioning joined from waiting to leftOut=home must be refused");
+    assert.equal(c2.leftOut(WS2), "home");
+    // Original home connection remains alive and keeps its workspace/role after refused renewal.
+    await s2.write(Buffer.from(JSON.stringify({ credential: credFor(device.id(), WS, "alice", "owner"), protocol: 2, lock: proofHome }) + "\n"));
+    assert.equal((await reader2.line()).ok, true, "original home connection stays intact after refused renewal");
+    conn2.close(0, "done");
+  }
+});
+
+test("broken lock.json keeps grantKeys null and refuses serve admission", async (t) => {
+  clock = NOW;
+  const grant = new GrantKey("k1");
+  const w = world();
+  const c = station(w);
+  writeState(c.data, {
+    origin: "https://app.still.fail", station: w.stations[0]!.hex, workspace: w.ws, workspace_name: "Team", name: "s0", relay_url: "", relay_urls: [],
+    grant_keys: { keys: [grant.jwk] }, peers: [], revocations: [],
+  });
+  writeFileSync(lockPath(c.data), "{broken json");
+  c.close();
+  const broken = new Cloud(c.data, false);
+  t.after(() => broken.close());
+
+  assert.equal(broken.grantKeys(), null, "broken lock.json returns null grantKeys");
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [at, device] = await Promise.all([bind(), bind()]);
+  t.after(async () => {
+    await Promise.all([at.close(), device.close()]);
+  });
+  void (async () => {
+    for (;;) {
+      const conn = await at.accept();
+      if (!conn) return;
+      void serve({ cloud: broken, admin: undefined as unknown as Admin, up: () => true }, conn).catch(() => {});
+    }
+  })();
+  const conn = await device.connect({ id: at.id(), ips: [`127.0.0.1:${at.sockets()[0]!.split(":").at(-1)}`] }, ALPN);
+  const stream = await conn.openBi();
+  const credential = grant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub: "alice", email: "alice@x", name: "alice", ws: WS, role: "owner", device: device.id(), sid: "s", iat: NOW, exp: NOW + 3600 });
+  await stream.write(Buffer.from(JSON.stringify({ credential, protocol: 2 }) + "\n"));
+  const reply = await new Reader(stream).line();
+  conn.close(0, "done");
+  assert.notEqual(reply.ok, true);
+  assert.match(String(reply.error ?? ""), /unknown credential key/i);
 });

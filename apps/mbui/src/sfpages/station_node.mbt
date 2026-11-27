@@ -50,10 +50,22 @@ pub fn station_node(
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   // (one that only runs tasks is no station this device is linked to: its own page, station_rig.mbt)
   let rig = fn() { @settings.rig_at(core, here(), address) }
-  v.pick(fn() { (if rig() is Some(_) { None } else { listed() }, listed() == Some(true) && manager(), rig() is Some(_)) }, fn(p, k) {
+  let unprotected_blocked = fn() {
+    let sv = @settings.station_of(core, here(), address)
+    !flag(sv, "online") && flag(sv, "unprotected") && text(sv, "blocked") != ""
+  }
+  v.pick(fn() {
+    let is_rig = rig() is Some(_)
+    let found = if is_rig { None } else { listed() }
+    (found, found == Some(true) && manager(), is_rig, found == Some(true) && !is_rig && unprotected_blocked())
+  }, fn(p, k) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     if k.2 {
       rig_station_node(p, core, here, address, rig, on_back, frame, said, width, tips)
+      return
+    }
+    if k.3 {
+      station_unprotected_node(p, core, here, fn() { @settings.station_of(core, here(), address) }, k.1, on_back, frame, said, width, tips)
       return
     }
     match k.0 {
@@ -68,6 +80,88 @@ pub fn station_node(
       }
     }
   })
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_unprotected_actions : @ui.Style = @ui.css("w=Full align=ACenter gap=S2")
+
+///|
+/// Full-page security-mode guidance for an offline/blocked station not yet protected in a safe-mode workspace:
+/// replaces the generic offline head, tabs, and connection diagnostics with clear next steps (protect directly for a
+/// signing owner, or open Settings › Security), while keeping back navigation and the manager ⋯ menu.
+fn station_unprotected_node(
+  p : @view.View,
+  core : Core,
+  here : () -> Here,
+  s : () -> Json?,
+  manager : Bool,
+  on_back : () -> Unit,
+  frame : () -> PageFrame,
+  said : ((@sf.PageSaid) -> Unit)?,
+  width : (() -> Double)?,
+  tips : @sf.TipLayer,
+) -> Unit {
+  let id = fn() { text(s(), "id") }
+  let title = fn() {
+    match text(s(), "name") {
+      "" => @sf.t("android-misc.bar.place.stations")
+      name => name
+    }
+  }
+  let lead = fn() {
+    let name = text(s(), "name")
+    if flag(s(), "protect") {
+      @sf.t("web-pages.stations.unprotected.leadOwner", args=[("name", name)])
+    } else if role_of(core, here()) == "owner" {
+      @sf.t("web-pages.stations.unprotected.leadOwnerDevice", args=[("name", name)])
+    } else {
+      @sf.t("web-pages.stations.unprotected.leadMember", args=[("name", name)])
+    }
+  }
+  @sf.page_node(
+    p,
+    title,
+    fn() { ["unprotected"] },
+    fn(b, _key) {
+      @sf.waiting_page_node(b, "shield-check", fn() { @sf.t("web-pages.stations.unprotected.title") }, lead, fn(col) {
+        col.pick(fn() { flag(s(), "protect") }, fn(a, can_protect) {
+          @sf.style_node(a, fn() { st_unprotected_actions })
+          if can_protect {
+            let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", here().workspace), ("station", id())]) }
+            @sf.button_node(a, fn() { @sf.t("web-pages.security.joinShort") }, fn() {
+              let now = @signals.untracked(s)
+              join_dialog(core, @signals.untracked(here).workspace, text(now, "id"), text(now, "name"))
+            }, tone=Primary, busy=joining, disabled=joining)
+            |> ignore
+            @sf.button_node(a, fn() { @sf.t("web-pages.stations.unprotected.toSecurity") }, fn() { (core.push)(Security) }, tone=Ghost)
+            |> ignore
+          } else {
+            @sf.button_node(a, fn() { @sf.t("web-pages.stations.unprotected.toSecurity") }, fn() { (core.push)(Security) }, tone=Ghost)
+            |> ignore
+          }
+        })
+      })
+      |> ignore
+    },
+    on_back~,
+    frame~,
+    said?,
+    width?,
+    tips~,
+    actions=fn(a) {
+      if manager {
+        let on = fn() { [("station", id())] }
+        doing_mark_node(a, fn() { is_doing(core, ["workspace.renameStation", "workspace.removeStation", "rig.setMode"], on()) }, fn() {
+          failed_of(core, ["workspace.renameStation", "workspace.removeStation", "rig.setMode"], on())
+        }, tips~)
+        @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {
+          @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(s)), from=Node(m), along=End)
+        })
+        |> ignore
+      }
+    },
+  )
 }
 
 ///|

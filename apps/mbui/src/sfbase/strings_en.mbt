@@ -3649,4 +3649,9 @@ let en : Map[String, String] = {
   "web-main.projects.more_tags": "More tags",
   "web-main.projects.scope": "Scope",
   "core-misc.auth.stale": "Authorization or lock state changed; please retry",
+  "web-pages.stations.unprotected.title": "Station not in security mode",
+  "web-pages.stations.unprotected.leadOwner": "Security mode is on for this workspace. Add {name} to security mode to connect and use it; other protected stations will sync with it automatically.",
+  "web-pages.stations.unprotected.leadOwnerDevice": "Security mode is on for this workspace, so {name} cannot be used until it is protected. Open Settings › Security on a trusted app device to protect it.",
+  "web-pages.stations.unprotected.leadMember": "Security mode is on for this workspace, so {name} cannot be used until it is protected. Ask a workspace owner to protect it on a trusted device.",
+  "web-pages.stations.unprotected.toSecurity": "Open Settings › Security",
 }

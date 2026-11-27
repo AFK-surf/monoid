@@ -3620,4 +3620,9 @@ let zh : Map[String, String] = {
   "web-main.projects.more_tags": "更多标签",
   "web-main.projects.scope": "范围",
   "core-misc.auth.stale": "授权或锁定状态已变化，请重试",
+  "web-pages.stations.unprotected.title": "此 station 尚未加入安全模式",
+  "web-pages.stations.unprotected.leadOwner": "当前 workspace 已开启安全模式。「{name}」加入安全模式后才能连接和使用，其他受保护的 station 也会自动与它同步。",
+  "web-pages.stations.unprotected.leadOwnerDevice": "当前 workspace 已开启安全模式。「{name}」尚未受保护，暂无法连接。请使用你的受信任客户端设备打开「设置 › 安全」保护它。",
+  "web-pages.stations.unprotected.leadMember": "当前 workspace 已开启安全模式。「{name}」尚未受保护，暂无法连接。请联系 workspace 的 owner 在受信任设备上保护它。",
+  "web-pages.stations.unprotected.toSecurity": "前往设置 › 安全",
 }

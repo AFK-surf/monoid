@@ -3576,3 +3576,8 @@ web-main.projects.more_projects
 web-main.projects.more_tags
 web-main.projects.scope
 core-misc.auth.stale
+web-pages.stations.unprotected.title
+web-pages.stations.unprotected.leadOwner
+web-pages.stations.unprotected.leadOwnerDevice
+web-pages.stations.unprotected.leadMember
+web-pages.stations.unprotected.toSecurity

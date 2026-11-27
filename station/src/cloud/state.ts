@@ -969,7 +969,7 @@ export class Cloud {
 
   /// The credential keys that count in `ws`: its lock's once pinned, else the control plane's.
   grantKeys(ws?: string | null): any {
-    const l = this.locked(ws);
+    const l = this.rosterOf(ws);
     return l === null ? this.state?.grant_keys : (l.state?.cloud_keys ?? null);
   }
 

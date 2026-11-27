@@ -554,9 +554,10 @@ function waiting<A>(status: Status, place: Place, what: string, effect: Effect.E
 }
 
 /// Why a station takes none of the workspace's members for a security mode (its hello's `lock_station` `why`): the lock
-/// it joined with not brought yet, this workspace locked after it joined, or its own workspace locked and this one not.
+/// it joined with not brought yet, this workspace locked after it joined, its own workspace locked and this one not, or
+/// its moved lock waiting for the workspace's security mode state.
 function lockStationWords(why: unknown, reason: string): string {
-  if (why === "pending" || why === "unpinned" || why === "home") return t(`core-logic.mesh.lock_station.${why}`);
+  if (why === "pending" || why === "unpinned" || why === "home" || why === "waiting") return t(`core-logic.mesh.lock_station.${why}`);
   return t("core-logic.mesh.credential_refused_why", { reason });
 }
 

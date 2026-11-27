@@ -563,6 +563,10 @@ let fx_station_override : Ref[Bool] = Ref(false)
 let fx_unprotected : Ref[Bool] = Ref(false)
 
 ///|
+/// An unprotected station blocked from connecting until protected in safe mode (issue #9047).
+let fx_unprotected_blocked : Ref[Bool] = Ref(false)
+
+///|
 let fx_connect_stations : Map[String, Array[String]] = Map([])
 
 ///|
@@ -585,6 +589,7 @@ fn fixture_reset() -> Unit {
   fx_station_back.val = ""
   fx_station_override.val = false
   fx_unprotected.val = false
+  fx_unprotected_blocked.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
   fx.drive_kept = fx_drive_kept
@@ -1148,6 +1153,12 @@ pub fn fixture_page(mode : String) -> String {
     "settings-stations-add" => up("add", "", 0)
     // a station its workspace's safe mode does not name, which the viewer could protect: 保护 on its page and its card
     "settings-station-unprotected" | "settings-stations-unprotected" => fx_unprotected.val = true
+    // a newly added station not yet protected and blocked by safe mode: full-screen security-mode guidance
+    "settings-station-unprotected-blocked" => {
+      fx_unprotected.val = true
+      fx_unprotected_blocked.val = true
+      fx.willow_away = true
+    }
     // Profile's ＋ with more than one station online: which to add it on (pressed by the film's step)
     "settings-profiles-pick" => fx.mba_online = true
     // an account's page with the station it is on and its move to another, Maple up to take it: ChatGPT 团队, a
@@ -1456,7 +1467,7 @@ pub fn fixture_page(mode : String) -> String {
       "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
-    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" => "station:ws1/st1"
+    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" | "settings-station-unprotected-blocked" => "station:ws1/st1"
     "settings-stations-unprotected" => "stations"
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
@@ -2659,18 +2670,27 @@ fn fx_station(address : String) -> Json {
       ("profileStates", fx_station_profile_states(profiles)),
       ("link", obj([
         ("state", str(if fx.willow_away { "offline" } else { "online" })),
-        ..if fx.willow_away {
+        ..if fx_unprotected_blocked.val {
+          [("cause", str("lock")), ("message", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))]
+        } else if fx.willow_away {
           [("cause", str("unreached")), ("message", str("连接超时，未收到 station 响应"))]
         } else {
           []
         },
       ])),
-      ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ("stateText", str(if fx_unprotected_blocked.val { "安全模式拦截" } else if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ..if fx_unprotected_blocked.val {
+        [("blocked", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))]
+      } else {
+        []
+      },
       ("acceptAutoChats", Json::boolean(fx.accept_auto_chats)),
       (
         "problems",
         if fx.willow_incompatible {
           [obj([("key", str("incompatible")), ("level", str("amber")), ("text", str("版本不兼容：这台 station 和这个 still.fail 的版本不匹配，部分信息无法显示。请更新 still.fail 和这台 station。"))])]
+        } else if fx_unprotected_blocked.val {
+          [obj([("key", str("blocked")), ("level", str("amber")), ("text", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))])]
         } else if fx.willow_away {
           [obj([("key", str("away")), ("level", str("red")), ("text", str("无法连接：可能已离线，或受中继、防火墙影响"))])]
         } else {
@@ -2704,7 +2724,8 @@ fn fx_station(address : String) -> Json {
           Json::null()
         },
       ),
-      ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
+      ("unprotected", Json::boolean(fx_unprotected.val)),
+      ("protect", Json::boolean(fx_unprotected.val && (!fx.willow_away || fx_unprotected_blocked.val))),
       // the runtimes it runs, each with its models (its page's: the connect page asks whether one runs on its runtime)
       ("runtimes", [obj([("runtime", str("claude")), ("models", [str("claude-opus-5-5"), str("claude-sonnet-5")])])]),
       // what its profiles have turned on (Claude 主账号's: Opus 5.5 and Sonnet 5, on claude)
