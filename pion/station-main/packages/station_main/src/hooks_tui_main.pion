@@ -79,6 +79,52 @@ pub fn parse_stat_mtime_is_dir(raw : String) -> Option[(Double, Bool)] {
   Some((signed.to_double(), is_dir))
 }
 
+/// Parse permission bits (`mode & 0o777`) from `station_sys::lstat_raw` (`kind|size|exec|mtime_ms|dev|ino|mode`).
+pub fn parse_stat_mode(raw : String) -> Option[Int] {
+  let parts = raw.split("|")
+  if parts.length() < 7 {
+    return None
+  }
+  let mode_str = parts[6]
+  if mode_str.length() == 0 {
+    return None
+  }
+  let mut acc = 0
+  for i in 0..<mode_str.length() {
+    let c = mode_str.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  Some(acc & 511)
+}
+
+/// Parse `client/shell` `fs.meta` JSON reply (`{"value":{"mtime":...,"mtimeMs":...,"dir":...}}`)
+/// preserving sub-millisecond `mtime` parity with Node's `statSync(path).mtimeMs`.
+pub fn parse_fs_meta_reply(raw : String) -> Option[(Double, Bool)] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(top) => match base_codec::json_get(top, "value") {
+      Some(base_codec::Json::Obj(fs)) => {
+        let is_dir = match base_codec::json_obj_get(fs, "dir") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => false
+        }
+        let mtime = match base_codec::json_obj_get(fs, "mtime") {
+          Some(base_codec::Json::Num(n, _)) => n
+          _ => match base_codec::json_obj_get(fs, "mtimeMs") {
+            Some(base_codec::Json::Num(n, _)) => n
+            _ => return None
+          }
+        }
+        Some((mtime, is_dir))
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
 fn hooks_hex_byte(sb : StringBuilder, b : Int) -> Unit {
   let hex = "0123456789abcdef".to_bytes()
   sb.write_byte(hex[(b >> 4) & 0xF])
@@ -202,30 +248,54 @@ pub fn resolve_self_executable_with(
   }
 }
 
-/// When invoked in native `claude-tui <node> <runner> <claude> ...` mode (where `argv[1] == "claude-tui"`),
-/// replace `argv[2]` with the resolved absolute path of `stillfail-station-pion` so rewritten hook/MCP
-/// self-callbacks (`<abs-bin> claude-tui hook|mcp`) succeed from any working directory even when the caller
-/// passed a real Node binary as `argv[2]`. Absolute `.mjs` path invocations are left untouched.
+/// Normalize `claude-tui` `run`-mode argv before rewriting hooks/MCP callbacks:
+/// - In native `claude-tui <node> <runner> <claude> ...` mode (`argv[1] == "claude-tui"`),
+///   replace `argv[2]` with the resolved absolute path of `stillfail-station-pion` so callbacks
+///   (`<abs-bin> claude-tui hook|mcp`) succeed from any cwd even when the caller passed Node.
+/// - In `.mjs` path mode (`argv[1]` is a relative path like `./claude-tui.mjs`), resolve `argv[1]`
+///   against `cwd` + `realpath` so rewritten callbacks (`<node> <abs-claude-tui.mjs> hook|mcp`)
+///   succeed from any cwd, matching Node's `fileURLToPath(import.meta.url)`.
 pub fn rewrite_native_claude_tui_argv(
   argv : Array[String],
   self_exe : Option[String],
+  cwd : String = "",
+  sep : String = "/",
+  realpath_fn : (String) -> Option[String] = fn(_p : String) -> Option[String] { None },
 ) -> Result[Array[String], String] {
-  if argv.length() >= 5 && argv[1] == "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
-    let exe = match self_exe {
-      Some(p) => if p.length() > 0 { p } else {
-        return Err("claude-tui: failed to resolve absolute path of current executable")
+  if argv.length() >= 5 && argv[2] != "hook" && argv[2] != "mcp" {
+    if argv[1] == "claude-tui" {
+      let exe = match self_exe {
+        Some(p) => if p.length() > 0 { p } else {
+          return Err("claude-tui: failed to resolve absolute path of current executable")
+        }
+        None => return Err("claude-tui: failed to resolve absolute path of current executable")
       }
-      None => return Err("claude-tui: failed to resolve absolute path of current executable")
-    }
-    let out : Array[String] = []
-    for i in 0..<argv.length() {
-      if i == 2 {
-        out.push(exe)
-      } else {
-        out.push(argv[i])
+      let out : Array[String] = []
+      for i in 0..<argv.length() {
+        if i == 2 {
+          out.push(exe)
+        } else {
+          out.push(argv[i])
+        }
       }
+      return Ok(out)
     }
-    return Ok(out)
+    if !nodepath::is_absolute(sep, argv[1]) && cwd.length() > 0 {
+      let cand = nodepath::join(sep, [cwd, argv[1]])
+      let abs_script = match realpath_fn(cand) {
+        Some(r) => r
+        None => cand
+      }
+      let out : Array[String] = []
+      for i in 0..<argv.length() {
+        if i == 1 {
+          out.push(abs_script)
+        } else {
+          out.push(argv[i])
+        }
+      }
+      return Ok(out)
+    }
   }
   Ok(argv)
 }
@@ -252,9 +322,8 @@ fn hooks_append_bytes(dst : Array[Byte], src : Bytes) -> Unit {
   }
 }
 
-/// Read all bytes from stdin until EOF without size truncation (starts stdin reader thread only).
-fn hooks_read_stdin_all_standalone() -> String {
-  let _ = host_shim::start("", true)
+/// Read all bytes from stdin until EOF without size truncation (assumes `host_shim::start(..., true)` already ran).
+fn hooks_read_stdin_all_started() -> String {
   let chunks : Array[Bytes] = []
   let mut total = 0
   while true {
@@ -280,13 +349,29 @@ fn hooks_read_stdin_all_standalone() -> String {
   sb.to_string()
 }
 
-/// Run `repo-rules-hook` with 100% real `station_sys` and `host_shim` OS I/O.
+/// Read all bytes from stdin until EOF without size truncation (starts stdin reader thread only).
+fn hooks_read_stdin_all_standalone() -> String {
+  let _ = host_shim::start("", true)
+  hooks_read_stdin_all_started()
+}
+
+/// Run `repo-rules-hook` with 100% real `station_sys`, `client/shell` `fs.meta` (sub-millisecond
+/// `mtime` matching Node `statSync().mtimeMs`), and `host_shim` OS I/O.
 fn run_repo_rules_hook_os() -> Int {
   let is_win = station_sys::os_name() == "win32"
   let sep = if is_win { "\\" } else { "/" }
   let cwd = match station_sys::getcwd() {
     Some(c) => c
     None => "."
+  }
+  let shell_dir = station_sys::tmpdir() +
+  "/stillfail-repo-rules-shell-" +
+  host_shim::pid().to_string() +
+  "-" +
+  host_shim::wall_ms().to_string()
+  let shell_started = host_shim::start(shell_dir, true)
+  if !shell_started {
+    let _ = host_shim::start("", true)
   }
   let env = station_hooks_tui::RepoRulesEnv::{
     sep: sep,
@@ -302,6 +387,12 @@ fn run_repo_rules_hook_os() -> Int {
       }
     },
     stat: fn(path : String) -> Option[(Double, Bool)] {
+      if shell_started {
+        let req = base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(path))]))
+        // sync: short-lived CLI hook stat via client/shell fs.meta for fractional mtimeMs parity with Node statSync
+        let raw = host_shim::shell_sync("fs.meta", req)
+        return parse_fs_meta_reply(raw)
+      }
       match station_sys::stat_raw(path) {
         Some(raw) => parse_stat_mtime_is_dir(raw)
         None => None
@@ -321,7 +412,14 @@ fn run_repo_rules_hook_os() -> Int {
       if dir != "" && dir != "." && dir != path {
         let _ = station_sys::mkdir_p(dir)
       }
-      station_sys::write_file_atomic(path, content.to_bytes(), -1)
+      let mode = match station_sys::lstat_raw(path) {
+        Some(raw) => match parse_stat_mode(raw) {
+          Some(m) => m
+          None => -1
+        }
+        None => -1
+      }
+      station_sys::write_file_atomic(path, content.to_bytes(), mode)
     },
     remove_file: fn(path : String) -> Unit {
       let _ = station_sys::unlink(path)
@@ -329,12 +427,17 @@ fn run_repo_rules_hook_os() -> Int {
   }
   let io = station_hooks_tui::RepoRulesHookIo::{
     env: env,
-    read_stdin: hooks_read_stdin_all_standalone,
+    read_stdin: hooks_read_stdin_all_started,
     write_stdout: fn(s : String) -> Unit {
       let _ = host_shim::write_stdout(s.to_bytes())
     },
   }
-  station_hooks_tui::run_repo_rules_hook(io)
+  let rc = station_hooks_tui::run_repo_rules_hook(io)
+  if shell_started {
+    host_shim::stop()
+    let _ = station_sys::rmdir(shell_dir)
+  }
+  rc
 }
 
 /// Run `subagent-hook` with 100% real `host_shim` OS I/O.
@@ -961,7 +1064,13 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
     station_sys::realpath,
     station_sys::is_executable,
   )
-  let effective_argv = match rewrite_native_claude_tui_argv(argv, self_exe) {
+  let effective_argv = match rewrite_native_claude_tui_argv(
+    argv,
+    self_exe,
+    cwd=cur_cwd,
+    sep=sep,
+    realpath_fn=station_sys::realpath,
+  ) {
     Ok(a) => a
     Err(e) => {
       let _ = host_shim::write_stderr((e + "\n").to_bytes())

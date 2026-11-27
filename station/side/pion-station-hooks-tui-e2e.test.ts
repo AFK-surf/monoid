@@ -311,8 +311,14 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
   assert.equal(pa2.status, 0);
   assert.equal(pa2.stdout, na2.stdout, "Antigravity PostInvocation injectSteps must match Node byte-for-byte");
 
-  // (j) State file respects process umask (umask 077 -> 0600, matching Node 1:1)
+  // (j) State file respects process umask on create (077 -> 0600) and preserves mode on update under umask 022
   if (process.platform !== "win32") {
+    const sub2 = join(repo, "sub2");
+    mkdirSync(sub2, { recursive: true });
+    writeFileSync(join(sub2, "AGENTS.md"), "# Sub2 Rules\nFollow sub2.\n");
+    const sub2File = join(sub2, "a.ts");
+    writeFileSync(sub2File, "export const y = 2;\n");
+
     const sidUmaskNode = `e2e-rr-umask-n-${stamp}`;
     const sidUmaskPion = `e2e-rr-umask-p-${stamp}`;
     const stUmaskNode = trackRuleState(`${sidUmaskNode}-main`);
@@ -323,7 +329,54 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
     assert.equal(pu.status, 0, pu.stderr);
     assert.equal(statSync(stUmaskNode).mode & 0o777, 0o600, "Node state file under umask 077 must be 0600");
     assert.equal(statSync(stUmaskPion).mode & 0o777, 0o600, "Pion state file under umask 077 must be 0600");
+
+    // Update existing state file under looser umask 022: must preserve existing 0600 mode (matching Node)
+    const nu2 = runSyncWithInput("sh", ["-c", 'umask 022 && exec "$@"', "_", process.execPath, repoRulesMjs], payload(sidUmaskNode, sub2File), {}, repo);
+    const pu2 = runSyncWithInput("sh", ["-c", 'umask 022 && exec "$@"', "_", bin, "repo-rules-hook"], payload(sidUmaskPion, sub2File), {}, repo);
+    assert.equal(nu2.status, 0, nu2.stderr);
+    assert.equal(pu2.status, 0, pu2.stderr);
+    assert.equal(pu2.stdout, nu2.stdout);
+    assert.equal(statSync(stUmaskNode).mode & 0o777, 0o600, "Node update under umask 022 preserves 0600");
+    assert.equal(statSync(stUmaskPion).mode & 0o777, 0o600, "Pion update under umask 022 must preserve 0600");
   }
+
+  // (k) Node <-> Pion alternating pagination on a long (>20 KB) AGENTS.md using the SAME session_id:
+  // fractional mtimeMs parity ensures Node -> Pion -> Node reads all 3 pages to completion without resetting to page 1.
+  const longRepo = join(base, "long-repo");
+  mkdirSync(join(longRepo, ".git"), { recursive: true });
+  const longLines: string[] = [];
+  for (let i = 1; i <= 260; i++) {
+    longLines.push(`- Rule item ${String(i).padStart(3, "0")}: ${"R".repeat(72)}`);
+  }
+  writeFileSync(join(longRepo, "AGENTS.md"), `# Long Rules\n\n${longLines.join("\n")}\n`);
+  const longTarget = join(longRepo, "main.ts");
+  writeFileSync(longTarget, "export const z = 3;\n");
+
+  const sidAlt = `e2e-rr-alt-${stamp}`;
+  trackRuleState(`${sidAlt}-main`);
+  const altPayload = JSON.stringify({
+    hook_event_name: "PostToolUse",
+    session_id: sidAlt,
+    cwd: longRepo,
+    tool_input: { file_path: longTarget },
+  });
+
+  const alt1 = runSyncWithInput(process.execPath, [repoRulesMjs], altPayload, {}, longRepo);
+  const alt2 = runSyncWithInput(bin, ["repo-rules-hook"], altPayload, {}, longRepo);
+  const alt3 = runSyncWithInput(process.execPath, [repoRulesMjs], altPayload, {}, longRepo);
+  const alt4 = runSyncWithInput(bin, ["repo-rules-hook"], altPayload, {}, longRepo);
+  assert.equal(alt1.status, 0, alt1.stderr);
+  assert.equal(alt2.status, 0, alt2.stderr);
+  assert.equal(alt3.status, 0, alt3.stderr);
+  assert.equal(alt4.status, 0, alt4.stderr);
+  const ctx1 = (JSON.parse(alt1.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  const ctx2 = (JSON.parse(alt2.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  const ctx3 = (JSON.parse(alt3.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  assert.ok(ctx1.includes("lines 1 to "), "page 1 (Node) starts at line 1");
+  assert.ok(!ctx2.includes("lines 1 to "), "page 2 (Pion) must continue pagination rather than resetting to line 1");
+  assert.ok(ctx2.includes("[more of this file follows after your next tool call]"), "page 2 (Pion) has more");
+  assert.ok(ctx3.includes("the last of it"), "page 3 (Node) finishes the last page");
+  assert.equal(alt4.stdout, "", "page 4 (Pion) sees complete file with identical fractional mtimeMs");
 });
 
 test("2. subagent-hook: byte-for-byte Node parity across speaking tools, slack_api writes/reads, main agent, and invalid JSON", () => {
@@ -653,6 +706,7 @@ save();
 
 function runHook(payload) {
   const r = spawnSync(hookCmd.command, hookCmd.args, {
+    cwd: process.env.FAKE_CALLBACK_CWD || process.cwd(),
     input: JSON.stringify(payload),
     encoding: "utf8",
     env: process.env,
@@ -667,6 +721,7 @@ function runHook(payload) {
 function callToolsList() {
   return new Promise((resolve, reject) => {
     const p = spawn(mcpCmd.command, mcpCmd.args, {
+      cwd: process.env.FAKE_CALLBACK_CWD || process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
@@ -740,10 +795,10 @@ process.stdin.on("end", () => process.exit(0));
 
   // Keep bridge stdin OPEN until BOTH init AND result frames arrive on stdout (proving result came
   // from Stop / StopFailure hook, never from early stdin EOF close()), then end stdin for clean exit.
-  function runBridgeTurn(cmd: string, args: string[], extraEnv: Record<string, string>): Promise<AsyncRunResult> {
+  function runBridgeTurn(cmd: string, args: string[], extraEnv: Record<string, string>, spawnCwd: string = emptyCwd): Promise<AsyncRunResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(cmd, args, {
-        cwd: emptyCwd,
+        cwd: spawnCwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, ...baseEnv, ...extraEnv },
       });
@@ -860,8 +915,23 @@ process.stdin.on("end", () => process.exit(0));
   const pfr = JSON.parse(readFileSync(pionFailReport, "utf8")) as RunnerReport;
   assert.deepEqual(pfr.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop_failure"]);
 
+  // (c) Relative `./claude-tui.mjs` entry launched from `station/assets/agents`, with callbacks executed in `emptyCwd`
+  const pionRelReport = join(dir, "pion-rel-report.json");
+  const agentsDir = join(root, "station/assets/agents");
+  const pRelRes = await runBridgeTurn(
+    bin,
+    ["./claude-tui.mjs", process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: pionRelReport, FAKE_CALLBACK_CWD: emptyCwd },
+    agentsDir,
+  );
+  assert.equal(pRelRes.status, 0, `Pion relative ./claude-tui.mjs stderr: ${pRelRes.stderr}`);
+  assert.equal(pRelRes.stdout, nRes.stdout, "relative ./claude-tui.mjs stdout must match Node byte-for-byte");
+  const prel = JSON.parse(readFileSync(pionRelReport, "utf8")) as RunnerReport;
+  assert.equal(prel.mcpConfig.mcpServers.stillfail.args[0], claudeTuiMjs, "relative ./claude-tui.mjs must resolve to absolute script path");
+  assert.deepEqual(prel.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop"]);
+
   // Verify zero orphan processes across all Pion runs.
-  for (const pid of [pr.pid, pm.pid, pfr.pid]) {
+  for (const pid of [pr.pid, pm.pid, pfr.pid, prel.pid]) {
     let alive = true;
     try {
       process.kill(pid, 0);

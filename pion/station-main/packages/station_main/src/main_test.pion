@@ -654,8 +654,45 @@ test "hooks_tui_main resolves self executable path and rewrites native claude-tu
   match rewrite_native_claude_tui_argv(
     ["stillfail-station-pion", "/opt/assets/claude-tui.mjs", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
     Some("/opt/stillfail/stillfail-station-pion"),
+    cwd="/empty",
+    sep="/",
   ) {
-    Ok(a) => assert_str_eq(a[2], "/usr/local/bin/node")
+    Ok(a) => {
+      assert_str_eq(a[1], "/opt/assets/claude-tui.mjs")
+      assert_str_eq(a[2], "/usr/local/bin/node")
+    }
     Err(e) => panic("unexpected error: " + e)
   }
+
+  // Relative ./claude-tui.mjs path mode resolves against cwd + realpath
+  match rewrite_native_claude_tui_argv(
+    ["stillfail-station-pion", "./claude-tui.mjs", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+    Some("/opt/stillfail/stillfail-station-pion"),
+    cwd="/opt/station/assets/agents",
+    sep="/",
+    realpath_fn=fn(p : String) -> Option[String] {
+      if p == "/opt/station/assets/agents/claude-tui.mjs" {
+        Some("/real/station/assets/agents/claude-tui.mjs")
+      } else {
+        None
+      }
+    },
+  ) {
+    Ok(a) => {
+      assert_str_eq(a[1], "/real/station/assets/agents/claude-tui.mjs")
+      assert_str_eq(a[2], "/usr/local/bin/node")
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // parse_stat_mode and parse_fs_meta_reply preserve fractional mtime and permission bits
+  match parse_stat_mode("file|128|0|1700000000000|1|3|384") {
+    Some(m) => assert_true(m == 384, "0600 mode parsed")
+    None => panic("expected mode 384")
+  }
+  match parse_fs_meta_reply("{\"value\":{\"size\":12,\"mtimeMs\":1732678123456,\"mtime\":1732678123456.789,\"dir\":false}}") {
+    Some((mt, is_dir)) => assert_true(mt == 1732678123456.789 && !is_dir, "fractional mtime preserved")
+    None => panic("expected fractional mtime from fs.meta")
+  }
+  assert_true(parse_fs_meta_reply("{\"value\":null}") is None, "null fs.meta returns None")
 }
