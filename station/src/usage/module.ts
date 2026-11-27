@@ -116,11 +116,14 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
 /// process before the scope closes.
 function retireByProgram(store: StationStore, mb: string | MbBackfillSelection, path: string) {
   return Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
-      // (one that cannot start says so, then ends: its end fails what was asked)
-      program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
-      return program;
+    Effect.try({
+      try: () => {
+        const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
+        // (one that cannot start says so, then ends: its end fails what was asked)
+        program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
+        return program;
+      },
+      catch: (error) => error,
     }),
     (program) => Effect.tryPromise({
       try: async (signal) => {
