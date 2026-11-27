@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [487d6f517](https://github.com/AFK-surf/monoid/commit/487d6f5174104f7ce3174ec71e3bea12f0531996) feat(station-main): catch up 22 Node commits for o | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 | [a5422d092](https://github.com/AFK-surf/monoid/commit/a5422d092dc3e44a286b4e40ccc4638601073af1) refactor(ui): make ui/headless and ui/motion idiom | 2.7 | 3.66 | 15.19 | 38.24 | 58.92 | 33.5 | 68.55 | 103.94 | 134.47 |
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.49 | 68.52 | 103.09 | 125.09 |
-| [04a80feec](https://github.com/AFK-surf/monoid/commit/04a80feec38312ba0245b925de4f307305cfc6fb) fix(ui,mbui): dissolve outgoing sticky section hea | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 103.17 | 108.29 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [487d6f517](https://github.com/AFK-surf/monoid/commit/487d6f5174104f7ce3174ec71e3bea12f0531996) feat(station-main): catch up 22 Node commits for o | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.75 |
 | [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.66 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 0.59 | 0.78 | 3.02 | 4.05 | 7.52 | 2.23 | 6.31 | 57.69 |
 | [a5422d092](https://github.com/AFK-surf/monoid/commit/a5422d092dc3e44a286b4e40ccc4638601073af1) refactor(ui): make ui/headless and ui/motion idiom | 0.59 | 0.78 | 3.02 | 4.05 | 7.52 | 2.23 | 6.31 | 57.92 |
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.23 | 6.28 | 57.9 |
-| [04a80feec](https://github.com/AFK-surf/monoid/commit/04a80feec38312ba0245b925de4f307305cfc6fb) fix(ui,mbui): dissolve outgoing sticky section hea | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.23 | 6.28 | 57.97 |
