@@ -9,6 +9,7 @@ import "js_json"
 import "jscase"
 import "nodepath"
 import "sql_db"
+import "sqlite_ffi"
 import "sse"
 import "station_http"
 import "station_ops"
@@ -769,6 +770,217 @@ fn run_internal_replica_restore(argv : Array[String]) -> Int {
   }
 }
 
+fn check_external_connects_need_node(data : String, sep : String) -> Array[String] {
+  let reasons : Array[String] = []
+
+  // 1. Local `config.json` enabled connects (1:1 with `station/src/sessions/config.ts:174`).
+  let cfg_path = nodepath::join(sep, [data, "config.json"])
+  match station_sys::read_file_strict(cfg_path) {
+    Ok(raw) => match base_codec::json_parse(raw.to_string()) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let local_ext = enabled_external_connects_in_config(j)
+        for i in 0..<local_ext.length() {
+          reasons.push(local_ext[i])
+        }
+      }
+      _ => ()
+    }
+    Err(_) => ()
+  }
+
+  // 2. Cross-station receiver state `<data>/remote-connects.json`.
+  let remote_path = nodepath::join(sep, [data, "remote-connects.json"])
+  let remote_reason = match station_sys::read_file_strict(remote_path) {
+    Ok(raw) => remote_connects_file_needs_node(Some(raw.to_string()), false)
+    Err(station_sys::FileReadError::NotFound) => None
+    Err(_) => remote_connects_file_needs_node(None, true)
+  }
+  match remote_reason {
+    Some(r) => reasons.push(r)
+    None => ()
+  }
+
+  // 3. Read-only SQLite fallback check for active cross-station `@` sessions (immediately closes handle).
+  let db_path = nodepath::join(sep, [data, "stillfail.db"])
+  if station_sys::lstat_raw(db_path) is Some(_) {
+    match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY, 500) {
+      Ok(db) => {
+        match db.prepare("SELECT 1 FROM sessions WHERE connect LIKE '%@%' AND archived_at IS NULL LIMIT 1") {
+          Ok(stmt) => {
+            if stmt.step() == 100 {
+              reasons.push("db:remote-connect-sessions")
+            }
+            let _ = stmt.finalize()
+          }
+          Err(_) => ()
+        }
+        let _ = db.close()
+      }
+      Err(_) => ()
+    }
+  }
+
+  reasons
+}
+
+fn find_node_in_path(sep : String, os_name : String) -> Option[String] {
+  let path_env = station_sys::env_get("PATH")
+  let path_delim = if os_name == "win32" { ";" } else { ":" }
+  let bin_name = if os_name == "win32" { "node.exe" } else { "node" }
+  match path_env {
+    Some(p) => {
+      let dirs = p.split(path_delim)
+      for i in 0..<dirs.length() {
+        let d = dirs[i]
+        if d.length() == 0 {
+          continue
+        }
+        let cand = nodepath::join(sep, [d, bin_name])
+        if station_sys::is_executable(cand) {
+          return Some(cand)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+fn resolve_app_dir_for_fallback(argv : Array[String], sep : String, os_name : String) -> Option[String] {
+  match extract_app_dir_from_argv(argv) {
+    Some(d) => Some(d)
+    None => {
+      let argv0 = if argv.length() > 0 { argv[0] } else { "" }
+      let cwd = match station_sys::getcwd() {
+        Some(c) => c
+        None => "."
+      }
+      match resolve_self_executable_with(
+        argv0,
+        cwd,
+        station_sys::env_get("PATH"),
+        sep,
+        os_name,
+        station_sys::realpath,
+        station_sys::is_executable,
+      ) {
+        Some(exe) => {
+          let station_dir = nodepath::dirname(sep, exe)
+          let app_dir = nodepath::dirname(sep, station_dir)
+          if app_dir.length() > 0 { Some(app_dir) } else { None }
+        }
+        None => None
+      }
+    }
+  }
+}
+
+fn resolve_node_and_main_js(argv : Array[String], sep : String, os_name : String) -> Option[(String, String)] {
+  let app_dir_opt = resolve_app_dir_for_fallback(argv, sep, os_name)
+  let main_js = match app_dir_opt {
+    Some(app_dir) => {
+      let cand = nodepath::join(sep, [app_dir, "station", "main.js"])
+      if station_sys::lstat_raw(cand) is Some(_) { Some(cand) } else { None }
+    }
+    None => None
+  }
+  let main_js_path = match main_js {
+    Some(p) => p
+    None => return None
+  }
+  // Node resolution priority aligned with `station/native/launcher/src/main.rs:45-49` & `station_shim.mbt`:
+  // 1. `STILLFAIL_NODE`
+  // 2. `<app>/node/bin/node` (Unix) / `<app>/node/node.exe` (Windows)
+  // 3. `PATH` lookup
+  let node_bin = match station_sys::env_get("STILLFAIL_NODE") {
+    Some(v) => {
+      let t = v.trim()
+      if t.length() > 0 && station_sys::is_executable(t) { Some(t) } else { None }
+    }
+    None => None
+  }
+  let node_bin = match node_bin {
+    Some(p) => Some(p)
+    None => match app_dir_opt {
+      Some(app_dir) => {
+        let cand = if os_name == "win32" {
+          nodepath::join(sep, [app_dir, "node", "node.exe"])
+        } else {
+          nodepath::join(sep, [app_dir, "node", "bin", "node"])
+        }
+        if station_sys::is_executable(cand) { Some(cand) } else { None }
+      }
+      None => None
+    }
+  }
+  let node_bin = match node_bin {
+    Some(p) => Some(p)
+    None => find_node_in_path(sep, os_name)
+  }
+  match node_bin {
+    Some(nb) => Some((nb, main_js_path))
+    None => None
+  }
+}
+
+/// Entry gate executed BEFORE `host_shim::start`, BEFORE `ready`, BEFORE touching inherited launcher
+/// FDs (3/4/5), and BEFORE opening `stillfail.db` for writes: if this whole station has any enabled
+/// local external connects or cross-station remote-connect dependencies, either fail closed
+/// (`STILLFAIL_STATION_ENGINE_STRICT=1`) or seamlessly `exec_replace` in-place into Node `main.js`.
+fn maybe_handoff_external_connects_to_node(argv : Array[String]) -> Option[Int] {
+  let os_name = station_sys::os_name()
+  let sep = if os_name == "win32" { "\\" } else { "/" }
+  let home = station_sys::homedir()
+  let env_data = station_sys::env_get("STILLFAIL_DATA")
+  let data = match parse_daemon_run_args(argv, env_data, home, sep=sep) {
+    Ok(parsed) => parsed.data
+    Err(_) => station_ops::data_dir([], env_data, home, sep=sep)
+  }
+  let reasons = check_external_connects_need_node(data, sep)
+  if reasons.length() == 0 {
+    return None
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<reasons.length() {
+    if i > 0 {
+      sb.write_string(", ")
+    }
+    sb.write_string(reasons[i])
+  }
+  let reason_str = sb.to_string()
+  if is_engine_strict_env(station_sys::env_get("STILLFAIL_STATION_ENGINE_STRICT")) {
+    let _ = host_shim::write_stderr_line(
+      "pion whole station beta does not yet support enabled external connects ("
+      + reason_str
+      + "); keep engine=node until Wave 17B Hub delivery cutover",
+    )
+    return Some(1)
+  }
+  match resolve_node_and_main_js(argv, sep, os_name) {
+    Some((node_bin, main_js)) => {
+      let _ = host_shim::write_stderr_line(
+        "stillfail-station-pion: external connects active ("
+        + reason_str
+        + "); exec-replacing into Node station",
+      )
+      let child_argv : Array[String] = [node_bin, main_js]
+      for i in 1..<argv.length() {
+        child_argv.push(argv[i])
+      }
+      let rc = station_sys::exec_replace(node_bin, child_argv)
+      Some(rc)
+    }
+    None => {
+      let _ = host_shim::write_stderr_line(
+        "stillfail-station-pion: external connects active ("
+        + reason_str
+        + "), but Node station fallback (node / <app>/station/main.js) was not found",
+      )
+      Some(1)
+    }
+  }
+}
+
 fn should_run_whole_daemon(argv : Array[String]) -> Bool {
   for i in 1..<argv.length() {
     if argv[i] == "--whole-daemon" {
@@ -850,7 +1062,10 @@ fn main(_world : World) -> Unit {
     match find_main_subcommand(cli_args) {
       Some("run") => {
         let rc = if should_run_whole_daemon(argv) {
-          run_whole_daemon(argv)
+          match maybe_handoff_external_connects_to_node(argv) {
+            Some(handoff_rc) => handoff_rc
+            None => run_whole_daemon(argv)
+          }
         } else {
           run_rig_daemon(argv)
         }

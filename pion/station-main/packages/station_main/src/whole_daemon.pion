@@ -231,9 +231,10 @@ struct ConnectMeta {
   cwd : Option[String]
 }
 
-/// Identify all enabled external platform connects (`slack`, `feishu`, `comma`, `group`) in raw
-/// `config.json` (1:1 with Node nested schema: omitted/`null` `kind` defaults to `"slack"`,
-/// omitted `enabled` defaults to `true`). Non-external kinds and `enabled: false` entries are ignored.
+/// Identify all enabled external platform connects in raw `config.json` (1:1 with Node
+/// `station/src/sessions/config.ts:174`: omitted `enabled` defaults to `true`, and any `kind`
+/// other than `"feishu"` / `"comma"` / `"group"` — including omitted, `null`, `"chat"`, `"Slack"`,
+/// or non-string — is treated as `"slack"`). Only `enabled: false` entries are ignored.
 pub fn enabled_external_connects_in_config(cfg_raw : base_codec::Json) -> Array[String] {
   let out : Array[String] = []
   let items = match base_codec::json_get(cfg_raw, "connects") {
@@ -254,25 +255,81 @@ pub fn enabled_external_connects_in_config(cfg_raw : base_codec::Json) -> Array[
       continue
     }
     let kind = match base_codec::json_get(it, "kind") {
+      Some(base_codec::Json::Str("feishu")) => "feishu"
+      Some(base_codec::Json::Str("comma")) => "comma"
+      Some(base_codec::Json::Str("group")) => "group"
+      _ => "slack"
+    }
+    let cid = match base_codec::json_get(it, "id") {
       Some(base_codec::Json::Str(s)) => {
         let t = s.trim()
-        if t.length() == 0 { "slack" } else { t }
+        if t.length() > 0 { t } else { "(unnamed)" }
       }
-      Some(base_codec::Json::Null) | None => "slack"
-      _ => ""
+      _ => "(unnamed)"
     }
-    if kind == "slack" || kind == "feishu" || kind == "comma" || kind == "group" {
-      let cid = match base_codec::json_get(it, "id") {
-        Some(base_codec::Json::Str(s)) => {
-          let t = s.trim()
-          if t.length() > 0 { t } else { "(unnamed)" }
-        }
-        _ => "(unnamed)"
-      }
-      out.push(kind + ":" + cid)
-    }
+    out.push(kind + ":" + cid)
   }
   out
+}
+
+/// Pure classifier for `<data>/remote-connects.json`: returns `Some(reason)` whenever the file
+/// has any remote connect entries (`keys.length() > 0`) or is unreadable/corrupt (fail-safe).
+pub fn remote_connects_file_needs_node(
+  raw_opt : Option[String],
+  read_failed : Bool,
+) -> Option[String] {
+  if read_failed {
+    return Some("remote-connects.json(unreadable)")
+  }
+  match raw_opt {
+    None => None
+    Some(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
+        if entries.length() > 0 {
+          Some("remote-connects:" + entries.length().to_string())
+        } else {
+          None
+        }
+      }
+      _ => Some("remote-connects.json(corrupt)")
+    }
+  }
+}
+
+/// Aligned with `station/native/launcher/src/main.rs:68` (`STILLFAIL_STATION_ENGINE_STRICT`):
+/// returns `true` for `"1"` or `"true"`.
+pub fn is_engine_strict_env(raw_val : Option[String]) -> Bool {
+  match raw_val {
+    Some(s) => {
+      let t = s.trim()
+      t == "1" || t == "true" || t == "TRUE"
+    }
+    None => false
+  }
+}
+
+/// Extract `--app <dir>` or `--app=<dir>` from daemon `argv[1..]`.
+pub fn extract_app_dir_from_argv(argv : Array[String]) -> Option[String] {
+  let mut i = 1
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "--app" && i + 1 < argv.length() {
+      let v = argv[i + 1].trim()
+      if v.length() > 0 {
+        return Some(v)
+      }
+      i = i + 2
+    } else if a.starts_with("--app=") {
+      let v = a.slice(6, a.length()).trim()
+      if v.length() > 0 {
+        return Some(v)
+      }
+      i = i + 1
+    } else {
+      i = i + 1
+    }
+  }
+  None
 }
 
 pub enum ConnectInboundDecision {

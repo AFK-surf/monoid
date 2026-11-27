@@ -9012,4 +9012,220 @@ int32_t sts_resolve_host_for_tunnel_async(
     return 1;
 }
 
+#ifdef _WIN32
+#ifndef PROC_THREAD_ATTRIBUTE_JOB_LIST
+#define PROC_THREAD_ATTRIBUTE_JOB_LIST ((SIZE_T)0x0002000D)
+#endif
+
+typedef struct {
+    wchar_t *data;
+    size_t len;
+    size_t cap;
+} sts_wbuf_t;
+
+static int sts_wbuf_push(sts_wbuf_t *b, wchar_t c) {
+    if (b->len + 1 >= b->cap) {
+        size_t next_cap = b->cap == 0 ? 256 : b->cap * 2;
+        wchar_t *next = (wchar_t *)realloc(b->data, next_cap * sizeof(wchar_t));
+        if (next == NULL) return 0;
+        b->data = next;
+        b->cap = next_cap;
+    }
+    b->data[b->len++] = c;
+    b->data[b->len] = L'\0';
+    return 1;
+}
+
+static int sts_wbuf_append_arg(sts_wbuf_t *b, const wchar_t *arg) {
+    int need_quotes = arg[0] == L'\0';
+    for (const wchar_t *p = arg; !need_quotes && *p != L'\0'; p++) {
+        if (*p == L' ' || *p == L'\t' || *p == L'\n' || *p == L'\v' || *p == L'"') {
+            need_quotes = 1;
+        }
+    }
+    if (!need_quotes) {
+        for (const wchar_t *p = arg; *p != L'\0'; p++) {
+            if (!sts_wbuf_push(b, *p)) return 0;
+        }
+        return 1;
+    }
+    if (!sts_wbuf_push(b, L'"')) return 0;
+    size_t slashes = 0;
+    for (const wchar_t *p = arg; *p != L'\0'; p++) {
+        if (*p == L'\\') {
+            slashes++;
+        } else if (*p == L'"') {
+            for (size_t i = 0; i < slashes * 2 + 1; i++) {
+                if (!sts_wbuf_push(b, L'\\')) return 0;
+            }
+            slashes = 0;
+            if (!sts_wbuf_push(b, L'"')) return 0;
+        } else {
+            for (size_t i = 0; i < slashes; i++) {
+                if (!sts_wbuf_push(b, L'\\')) return 0;
+            }
+            slashes = 0;
+            if (!sts_wbuf_push(b, *p)) return 0;
+        }
+    }
+    for (size_t i = 0; i < slashes * 2; i++) {
+        if (!sts_wbuf_push(b, L'\\')) return 0;
+    }
+    return sts_wbuf_push(b, L'"');
+}
+#endif
+
+int32_t sts_exec_replace(
+    const char *program,
+    const uint8_t *argv_nul,
+    int64_t argv_len) {
+    if (program == NULL || program[0] == '\0' || argv_len < 0) {
+        return 127;
+    }
+    if (argv_len > 0 && argv_nul == NULL) {
+        return 127;
+    }
+
+    size_t total = (size_t)argv_len;
+    size_t argc = 0;
+    size_t pos = 0;
+    while (pos < total) {
+        const uint8_t *nul = (const uint8_t *)memchr(argv_nul + pos, '\0', total - pos);
+        if (nul == NULL) break;
+        argc++;
+        pos = (size_t)(nul - argv_nul) + 1;
+    }
+
+    size_t alloc_argc = argc > 0 ? argc : 1;
+    char **argv = (char **)malloc((alloc_argc + 1) * sizeof(char *));
+    if (argv == NULL) {
+        fprintf(stderr, "stillfail-station-pion: out of memory preparing exec\n");
+        return 127;
+    }
+    size_t idx = 0;
+    if (argc == 0) {
+        argv[idx++] = (char *)program;
+    } else {
+        pos = 0;
+        while (pos < total && idx < argc) {
+            const uint8_t *nul = (const uint8_t *)memchr(argv_nul + pos, '\0', total - pos);
+            if (nul == NULL) break;
+            argv[idx++] = (char *)(argv_nul + pos);
+            pos = (size_t)(nul - argv_nul) + 1;
+        }
+    }
+    argv[idx] = NULL;
+
+#ifdef _WIN32
+    wchar_t *wprog = utf8_to_wide(program);
+    if (wprog == NULL) {
+        free(argv);
+        fprintf(stderr, "stillfail-station-pion: invalid UTF-8 program path\n");
+        return 127;
+    }
+    sts_wbuf_t cmd = { NULL, 0, 0 };
+    for (size_t i = 0; i < idx; i++) {
+        if (i > 0 && !sts_wbuf_push(&cmd, L' ')) {
+            free(cmd.data);
+            free(wprog);
+            free(argv);
+            fprintf(stderr, "stillfail-station-pion: out of memory building command line\n");
+            return 127;
+        }
+        wchar_t *warg = utf8_to_wide(argv[i]);
+        int ok = warg != NULL && sts_wbuf_append_arg(&cmd, warg);
+        free(warg);
+        if (!ok) {
+            free(cmd.data);
+            free(wprog);
+            free(argv);
+            fprintf(stderr, "stillfail-station-pion: failed formatting Windows arguments\n");
+            return 127;
+        }
+    }
+    free(argv);
+
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (job == NULL) {
+        fprintf(stderr, "stillfail-station-pion: CreateJobObjectW failed (error %lu)\n", (unsigned long)GetLastError());
+        free(cmd.data);
+        free(wprog);
+        return 127;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli;
+    ZeroMemory(&jeli, sizeof(jeli));
+    jeli.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
+        fprintf(stderr, "stillfail-station-pion: SetInformationJobObject failed (error %lu)\n", (unsigned long)GetLastError());
+        CloseHandle(job);
+        free(cmd.data);
+        free(wprog);
+        return 127;
+    }
+
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    if (attr_size == 0) {
+        fprintf(stderr, "stillfail-station-pion: InitializeProcThreadAttributeList sizing failed (error %lu)\n", (unsigned long)GetLastError());
+        CloseHandle(job);
+        free(cmd.data);
+        free(wprog);
+        return 127;
+    }
+    LPPROC_THREAD_ATTRIBUTE_LIST attr_list = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+    if (attr_list == NULL || !InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size)) {
+        fprintf(stderr, "stillfail-station-pion: InitializeProcThreadAttributeList failed (error %lu)\n", (unsigned long)GetLastError());
+        free(attr_list);
+        CloseHandle(job);
+        free(cmd.data);
+        free(wprog);
+        return 127;
+    }
+    if (!UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof(HANDLE), NULL, NULL)) {
+        fprintf(stderr, "stillfail-station-pion: UpdateProcThreadAttribute(JOB_LIST) failed (error %lu)\n", (unsigned long)GetLastError());
+        DeleteProcThreadAttributeList(attr_list);
+        free(attr_list);
+        CloseHandle(job);
+        free(cmd.data);
+        free(wprog);
+        return 127;
+    }
+
+    STARTUPINFOEXW siex;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&siex, sizeof(siex));
+    siex.StartupInfo.cb = sizeof(siex);
+    siex.lpAttributeList = attr_list;
+    ZeroMemory(&pi, sizeof(pi));
+    BOOL created = CreateProcessW(
+        wprog, cmd.data, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &siex.StartupInfo, &pi);
+    DWORD create_err = created ? 0 : GetLastError();
+    DeleteProcThreadAttributeList(attr_list);
+    free(attr_list);
+    free(cmd.data);
+    free(wprog);
+    if (!created) {
+        fprintf(stderr, "stillfail-station-pion: CreateProcessW(%s) failed (error %lu)\n", program, (unsigned long)create_err);
+        CloseHandle(job);
+        return 127;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CloseHandle(job);
+    return (int32_t)code;
+#else
+    fflush(stdout);
+    fflush(stderr);
+    execv(program, argv);
+    int err = errno;
+    fprintf(stderr, "stillfail-station-pion: execv(%s) failed: %s\n", program, strerror(err));
+    free(argv);
+    return 127;
+#endif
+}
+
 #include "station_js_lower.h"

@@ -42,6 +42,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
 import { DeviceRegistry } from "../src/devices/registry.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
+import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
@@ -1755,14 +1756,42 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
   }
 });
 
-test("W17A.7: External connects fail-closed entry gate (running Node zero-disruption on SIGUSR2, cold refusal, disabled connects clean Pion boot & handover)", async () => {
+test("W17A.7: External connects entry gate & in-place exec_replace fallback (live Node SIGUSR2 + SIGKILL crash recovery, cold launcher, cross-station connect.event, STRICT=1 refusal, disabled connects clean Pion boot & handover)", async () => {
   const mesh = resolveMeshAddon();
   const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
 
-  // Mock Slack HTTP + Socket Mode WS server to verify 0 Pion connections and 0 ACKs!
+  async function peerRpc(
+    ep: Endpoint,
+    stationId: string,
+    addr: string,
+    workspace: string,
+    request: Record<string, unknown>,
+  ): Promise<any> {
+    const conn = await ep.connect({ id: stationId, relays: [], ips: [addr] }, PEER_BYTES_ALPN);
+    try {
+      const stream = await conn.openBi();
+      await stream.write(Buffer.from(JSON.stringify({ workspace, request }) + "\n"));
+      await stream.finish();
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const c = await stream.read();
+        if (c === null) break;
+        chunks.push(c);
+      }
+      const all = Buffer.concat(chunks);
+      const nl = all.indexOf(10);
+      const headerStr = (nl >= 0 ? all.subarray(0, nl) : all).toString("utf8").trim();
+      const parsed = JSON.parse(headerStr);
+      if ("error" in parsed) throw new Error(String(parsed.error));
+      return parsed;
+    } finally {
+      await conn.close(0, "done");
+    }
+  }
+
+  // Mock Slack HTTP + Socket Mode WS server.
   let slackHttpHits = 0;
   let slackWsConns = 0;
-  const slackAcks: string[] = [];
   const slackSrv = createHttpServer((req, res) => {
     slackHttpHits++;
     if (req.url?.includes("auth.test")) {
@@ -1786,21 +1815,14 @@ test("W17A.7: External connects fail-closed entry gate (running Node zero-disrup
     slackWss.handleUpgrade(req, socket, head, (ws) => {
       slackWsConns++;
       ws.send(JSON.stringify({ type: "hello", num_connections: slackWsConns }));
-      ws.on("message", (raw) => {
-        try {
-          const msg = JSON.parse(String(raw));
-          if (typeof msg.envelope_id === "string") slackAcks.push(msg.envelope_id);
-        } catch {}
-      });
     });
   });
   await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
   const slackPort = (slackSrv.address() as AddressInfo).port;
 
-  // --- Scenario 1: Running real Node station with enabled Slack connect -> switch `engine: "pion"` + `SIGUSR2` ---
-  // Pion MUST refuse BEFORE `ready`/DB/sockets; original Node station MUST stay alive with ZERO interruption!
+  // --- Scenario 1 (Opus R5 `node-crash`): Live Node + Slack -> flip `engine: "pion"` + `SIGUSR2` -> `SIGKILL` Node crash recovery ---
   {
-    const dir = freshDir("ext-gate-live-node");
+    const dir = freshDir("ext-gate-live-crash");
     const appDir = join(dir, "app");
     const dataDir = join(dir, "data");
     installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
@@ -1854,70 +1876,356 @@ test("W17A.7: External connects fail-closed entry gate (running Node zero-disrup
     launcher.stdout.on("data", (d) => logs.push(String(d)));
     launcher.stderr.on("data", (d) => logs.push(String(d)));
 
-    const nodePid = await until(
-      "running Node station pid + loopback",
+    const pid1 = await until(
+      "Scenario 1 initial Node pid",
       () => {
         const p = readHubPid(dataDir);
-        if (p > 0 && isAlive(p) && existsSync(join(dataDir, "stillfail.db"))) {
-          const port = readPorts(dataDir).admin ?? 0;
-          if (port > 0) return p;
-        }
-        return null;
+        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
       },
       30_000,
     );
-    const nodePort = readPorts(dataDir).admin!;
-    assert.equal((await httpCall(nodePort, "GET", "/healthz")).status, 200);
+    const port1 = readPorts(dataDir).admin!;
+    assert.equal((await httpCall(port1, "GET", "/healthz")).status, 200);
 
-    // Record DB state + mock Slack hit baseline BEFORE attempting cutover to Pion.
-    const dbCheck1 = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
-    const threadsBefore = (dbCheck1.prepare("SELECT COUNT(*) AS cnt FROM threads").get() as { cnt: number }).cnt;
-    const entriesBefore = (dbCheck1.prepare("SELECT COUNT(*) AS cnt FROM entries").get() as { cnt: number }).cnt;
-    dbCheck1.close();
-    const hitsBefore = slackHttpHits;
-    const wsBefore = slackWsConns;
-
-    // Flip config to `"engine": "pion"` (keeping enabled Slack connect) and trigger `SIGUSR2`!
+    // Flip to `"engine": "pion"` and send `SIGUSR2`: Pion MUST exec_replace in-place into Node!
     writeFileSync(join(dataDir, "config.json"), JSON.stringify({ ...enabledSlackCfg, engine: "pion" }));
     launcher.kill("SIGUSR2");
 
-    // Wait for Pion refusal message in launcher logs.
     await until(
-      "Pion fail-closed refusal logged on SIGUSR2",
-      () => logs.join("").includes("does not yet support enabled external connects (slack:slack-main)"),
+      "Scenario 1 exec_replace logged on SIGUSR2",
+      () => logs.join("").includes("external connects active (slack:slack-main); exec-replacing into Node station"),
       15_000,
     );
-
-    // Verify original Node station is STILL the exact same live PID serving `/healthz` + `/status` with ZERO interruption!
-    assert.equal(readHubPid(dataDir), nodePid, "original Node PID must remain active after Pion refusal");
-    assert.equal(isAlive(nodePid), true, "original Node process must remain alive");
-    assert.equal((await httpCall(nodePort, "GET", "/healthz")).status, 200);
+    const pid2 = await until(
+      "Scenario 1 exec-replaced Node pid2 after SIGUSR2",
+      () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
+      },
+      20_000,
+    );
+    const port2 = readPorts(dataDir).admin!;
+    assert.equal((await httpCall(port2, "GET", "/healthz")).status, 200);
 
     const clientEp = await bindClientEp(mesh);
     const jwt = signMemberJwt({ ws: "ws-gate", device: clientEp.id(), sub: "u-gate", email: "g@example.com", name: "Gate", role: "owner" });
-    const { conn } = await until("Node admin /admin/api/ways still serving", () =>
+    const { conn: conn2 } = await until("Scenario 1 Node admin /admin/api/ways after SIGUSR2", () =>
       openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
     );
-    const waysResp = await adminRequest(conn, "GET", "/admin/api/ways");
-    assert.equal(waysResp.status, 200);
-    conn.close(0, "done");
+    assert.equal((await adminRequest(conn2, "GET", "/admin/api/ways")).status, 200);
+    conn2.close(0, "done");
 
-    // 0 Pion Slack connections, 0 ACKs, 0 DB tampering!
-    assert.equal(slackHttpHits, hitsBefore, "Pion must NOT open any HTTP call to Slack when refused");
-    assert.equal(slackWsConns, wsBefore, "Pion must NOT open any WS to Slack when refused");
-    assert.equal(slackAcks.length, 0, "Pion must NOT send any Slack ACK");
-    const dbCheck2 = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
-    assert.equal((dbCheck2.prepare("SELECT COUNT(*) AS cnt FROM threads").get() as { cnt: number }).cnt, threadsBefore);
-    assert.equal((dbCheck2.prepare("SELECT COUNT(*) AS cnt FROM entries").get() as { cnt: number }).cnt, entriesBefore);
-    dbCheck2.close();
+    // Simulate sudden Node crash (`SIGKILL`): Launcher restarts Pion -> exec_replace back into Node within 10s (NO 5-failure give-up)!
+    process.kill(pid2, "SIGKILL");
+    const pid3 = await until(
+      "Scenario 1 Node pid3 recovered after SIGKILL crash",
+      () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && p !== pid2 && isAlive(p) ? p : null;
+      },
+      15_000,
+    );
+    const port3 = readPorts(dataDir).admin!;
+    await until("Scenario 1 /healthz 200 after SIGKILL recovery", async () => {
+      try {
+        const r = await httpCall(port3, "GET", "/healthz");
+        return r.status === 200 ? true : null;
+      } catch {
+        return null;
+      }
+    }, 10_000);
+    assert.equal(isAlive(pid3), true);
+    assert.equal(logs.join("").includes("giving up"), false, `launcher must NOT give up: ${logs.join("")}`);
 
     launcher.kill("SIGTERM");
-    await until("gate live-node launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+    await until("Scenario 1 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
   }
 
-  // --- Scenario 2: Cold start with enabled external connects (Slack omitted kind / Feishu / Comma / Group 64-hex) ---
+  // --- Scenario 2 (Opus R5 `cold-launcher`): Cold start via real Launcher with `"engine": "pion"` + enabled Slack ---
   {
-    const coldDir = freshDir("ext-gate-cold");
+    const dir = freshDir("ext-gate-cold-launcher");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+
+    writeFileSync(
+      join(dataDir, "config.json"),
+      JSON.stringify({
+        engine: "pion",
+        connects: [
+          {
+            id: "slack-cold",
+            bind: { runtime: "claude" },
+            slack: {
+              appToken: "xapp-1-w17a-cold",
+              botToken: "xoxb-w17a-cold",
+              baseUrl: `http://127.0.0.1:${slackPort}`,
+            },
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-cold-l",
+        workspace_name: "ColdLauncherWS",
+        station: stationId,
+        name: "cold-launcher-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const logs: string[] = [];
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...process.env,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+        STILLFAIL_READER_ENGINE: "mb",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(launcher);
+    launcher.stdout.on("data", (d) => logs.push(String(d)));
+    launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+    const nodePid = await until(
+      "Scenario 2 cold-launcher exec-replaced Node pid",
+      () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
+      },
+      30_000,
+    );
+    const port = readPorts(dataDir).admin!;
+    assert.equal((await httpCall(port, "GET", "/healthz")).status, 200);
+    assert.ok(
+      logs.join("").includes("external connects active (slack:slack-cold); exec-replacing into Node station"),
+      `expected cold-launcher exec_replace log, got: ${logs.join("")}`,
+    );
+    assert.equal(logs.join("").includes("giving up"), false);
+
+    const clientEp = await bindClientEp(mesh);
+    const jwt = signMemberJwt({ ws: "ws-cold-l", device: clientEp.id(), sub: "u-cl", email: "cl@example.com", name: "CL", role: "owner" });
+    const { conn } = await until("Scenario 2 Node admin /admin/api/ways", () =>
+      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
+    );
+    assert.equal((await adminRequest(conn, "GET", "/admin/api/ways")).status, 200);
+    conn.close(0, "done");
+    assert.equal(isAlive(nodePid), true);
+
+    launcher.kill("SIGTERM");
+    await until("Scenario 2 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+  }
+
+  // --- Scenario 3 (Astra R5 P1): Cross-station receiver (`connects: []` + `connect.event` -> `remote-connects.json`) -> `engine: "pion"` + `SIGUSR2` -> 2nd `connect.event` edit ---
+  {
+    const dir = freshDir("ext-gate-remote-connects");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+
+    const peerEp = await bindClientEp(mesh);
+    const peerId = peerEp.id();
+
+    // Mock cloud presence WS so Node's `cloud.peersCurrent` is true and accepts `stillfail/station/2` peer RPCs!
+    const cloudHttp = createHttpServer((_req, res) => {
+      res.writeHead(404).end();
+    });
+    const cloudWss = new WebSocketServer({ server: cloudHttp });
+    servers.push(cloudHttp, cloudWss);
+    cloudWss.on("connection", (wsSock) => {
+      wsSock.send(
+        JSON.stringify({
+          type: "state",
+          workspace: "ws-rem",
+          workspace_name: "RemWS",
+          name: "rem-receiver",
+          peers: [{ id: peerId, name: "peer-sender", relay: null }],
+          workspaces: [],
+          revocations: [],
+        }),
+      );
+    });
+    await new Promise<void>((r) => cloudHttp.listen(0, "127.0.0.1", () => r()));
+    const cloudPort = (cloudHttp.address() as AddressInfo).port;
+
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        origin: `http://127.0.0.1:${cloudPort}`,
+        workspace: "ws-rem",
+        workspace_name: "RemWS",
+        station: stationId,
+        name: "rem-receiver",
+        peers: [{ id: peerId, name: "peer-sender", relay: null }],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    // Pre-seed a Slack thread + message in `stillfail.db` (without `remote-connects.json` yet)
+    // so both `connect.event` edits persist directly without triggering outbound peer `connect.call` lookups.
+    {
+      const seed = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
+      const now = Date.now();
+      seed.db.prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_REM', 'C_REM', '100.001', 'RemoteThread', ?)").run(now);
+      seed.db.prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '100.001', 'person', 'U_REM', 'initial-remote-msg', ?)").run(now);
+      seed.close();
+    }
+
+    const udpPort = await pickFreeUdpPort();
+    const logs: string[] = [];
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...process.env,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+        STILLFAIL_READER_ENGINE: "mb",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(launcher);
+    launcher.stdout.on("data", (d) => logs.push(String(d)));
+    launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+    const pid1 = await until(
+      "Scenario 3 initial Node pid",
+      () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
+      },
+      30_000,
+    );
+
+    const described = {
+      kind: "slack",
+      workspace: "ws-rem",
+      mode: "multi-session",
+      requireMention: false,
+      bind: { runtime: "claude" },
+      botUserId: "UBOT_REM",
+      botName: "rembot",
+      identity: null,
+      platform: "slack",
+      team: "T_REM",
+      cards: true,
+      loginCards: false,
+      mention: ["<@", ">"],
+      link: null,
+      has: [],
+    };
+    const known = { id: "slack-remote", origin: peerId };
+
+    // 1st `connect.event`: Node learns the remote connect and writes `<data>/remote-connects.json`.
+    let lastEv1Err = "";
+    const ev1Resp = await until("Scenario 3 1st connect.event peer RPC", async () => {
+      try {
+        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem", {
+          method: "connect.event",
+          workspace: "ws-rem",
+          connect: known,
+          described,
+          event: {
+            type: "changed",
+            channel: "C_REM",
+            threadTs: "100.001",
+            ts: "100.001",
+            text: "first-remote-edit",
+          },
+        });
+      } catch (e) {
+        lastEv1Err = String(e);
+        return null;
+      }
+    }, 15_000).catch((err) => {
+      throw new Error(`${String(err)} (lastEv1Err=${lastEv1Err})`);
+    });
+    assert.deepEqual(ev1Resp.result, { ok: true });
+
+    await until("Scenario 3 remote-connects.json written by Node", () => {
+      const p = join(dataDir, "remote-connects.json");
+      if (!existsSync(p)) return null;
+      try {
+        const obj = JSON.parse(readFileSync(p, "utf8"));
+        return Object.keys(obj).length > 0 ? obj : null;
+      } catch {
+        return null;
+      }
+    }, 10_000);
+
+    // Flip `config.json` to `"engine": "pion"` (keeping `connects: []`!) and trigger `SIGUSR2`.
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    launcher.kill("SIGUSR2");
+
+    await until(
+      "Scenario 3 exec_replace logged for remote-connects.json",
+      () => logs.join("").includes("remote-connects:1") && logs.join("").includes("exec-replacing into Node station"),
+      15_000,
+    );
+    const pid2 = await until(
+      "Scenario 3 exec-replaced Node pid2 after SIGUSR2",
+      () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
+      },
+      20_000,
+    );
+    assert.equal((await httpCall(readPorts(dataDir).admin!, "GET", "/healthz")).status, 200);
+    assert.equal(isAlive(pid2), true);
+
+    // 2nd `connect.event` (edit) MUST succeed on the exec-replaced Node station and persist the edited text!
+    const ev2Resp = await until("Scenario 3 2nd connect.event edit peer RPC", async () => {
+      try {
+        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem", {
+          method: "connect.event",
+          workspace: "ws-rem",
+          connect: known,
+          described,
+          event: {
+            type: "changed",
+            channel: "C_REM",
+            threadTs: "100.001",
+            ts: "100.001",
+            text: "edited-remote-message-after-sigusr2",
+          },
+        });
+      } catch {
+        return null;
+      }
+    }, 15_000);
+    assert.deepEqual(ev2Resp.result, { ok: true });
+
+    launcher.kill("SIGTERM");
+    await until("Scenario 3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+    // Read back edited message via Node `Store.open`!
+    const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
+    const rows = verifyStore.db.prepare("SELECT text FROM entries WHERE text LIKE '%edited-remote-message-after-sigusr2%'").all() as { text: string }[];
+    verifyStore.close();
+    assert.ok(rows.length >= 1, "expected 2nd connect.event edited text persisted in stillfail.db");
+  }
+
+  // --- Scenario 4: `STILLFAIL_STATION_ENGINE_STRICT=1` cold refusal (omitted/null/"chat" Slack + Feishu + Comma + Group) ---
+  {
+    const coldDir = freshDir("ext-gate-strict");
     mkdirSync(join(coldDir, "mesh"), { recursive: true });
     const idRes = spawnSync(pionBin, ["id", "--data", coldDir], { encoding: "utf8" });
     assert.equal(idRes.status, 0, idRes.stderr);
@@ -1928,6 +2236,8 @@ test("W17A.7: External connects fail-closed entry gate (running Node zero-disrup
         engine: "pion",
         connects: [
           { id: "sl-omit", slack: { appToken: "xapp-1-t", botToken: "xoxb-t", baseUrl: `http://127.0.0.1:${slackPort}` } },
+          { id: "sl-null", kind: null },
+          { id: "sl-chat", kind: "chat" },
           { id: "fs-1", kind: "feishu", feishu: { appId: "cli_1", appSecret: "sec_1" } },
           { id: "cm-1", kind: "comma", comma: { server: "http://127.0.0.1:9", token: "tok" } },
           { id: "gr-1", kind: "group", group: { server: HEX32, key: HEX32, memberId: "m1" } },
@@ -1950,22 +2260,22 @@ test("W17A.7: External connects fail-closed entry gate (running Node zero-disrup
     const hitsBefore = slackHttpHits;
     const wsBefore = slackWsConns;
     const coldRun = spawnSync(pionBin, ["run", "--data", coldDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_STATION_ENGINE_STRICT: "1" },
       encoding: "utf8",
       timeout: 15_000,
     });
-    assert.notEqual(coldRun.status, 0, "cold start with enabled external connects must exit non-zero");
+    assert.notEqual(coldRun.status, 0, "STRICT=1 cold start with enabled external connects must exit non-zero");
     const combined = `${coldRun.stdout}\n${coldRun.stderr}`;
     assert.ok(
-      combined.includes("slack:sl-omit, feishu:fs-1, comma:cm-1, group:gr-1"),
-      `expected clear refusal naming all 4 connects, got: ${combined}`,
+      combined.includes("slack:sl-omit, slack:sl-null, slack:sl-chat, feishu:fs-1, comma:cm-1, group:gr-1"),
+      `expected STRICT refusal naming all 6 connects, got: ${combined}`,
     );
-    assert.equal(existsSync(join(coldDir, "stillfail.db")), false, "cold refusal must NOT create stillfail.db");
-    assert.equal(slackHttpHits, hitsBefore, "cold refusal must NOT contact mock Slack HTTP");
-    assert.equal(slackWsConns, wsBefore, "cold refusal must NOT open mock Slack WS");
+    assert.equal(existsSync(join(coldDir, "stillfail.db")), false, "STRICT refusal must NOT create stillfail.db");
+    assert.equal(slackHttpHits, hitsBefore, "STRICT refusal must NOT contact mock Slack HTTP");
+    assert.equal(slackWsConns, wsBefore, "STRICT refusal must NOT open mock Slack WS");
   }
 
-  // --- Scenario 3: Same station with external connects `enabled: false` -> clean Pion boot, handover & shutdown ---
+  // --- Scenario 5: No enabled connects & no `remote-connects.json` -> clean pure Pion `whole_daemon` boot, handover & shutdown ---
   {
     const dir = freshDir("ext-gate-disabled");
     const appDir = join(dir, "app");

@@ -320,6 +320,16 @@ int32_t sts_resolve_host_for_tunnel_async(
     const char *host,
     int32_t reject_loopback_or_unspec);
 
+// Replace the current process in-place:
+// - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).
+// - Windows: `CreateProcessW` with `bInheritHandles=TRUE` inside a `KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK`
+//   Job Object, waiting for exit and returning the child's exit code.
+// Returns 127 on failure (never returns on successful POSIX `execv`).
+int32_t sts_exec_replace(
+    const char *program,
+    const uint8_t *argv_nul,
+    int64_t argv_len);
+
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
 

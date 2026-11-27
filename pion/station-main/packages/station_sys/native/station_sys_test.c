@@ -2283,6 +2283,49 @@ int main(void) {
         printf("  [PASS] resolve_host_for_tunnel (0-FD user-space literal + async DNS worker)\n");
     }
 
+    {
+        // sts_exec_replace: verify Unix execv preserves inherited FD & exit code in forked child,
+        // and returns 127 on nonexistent binary without leaking FDs or threads.
+        int pfd[2];
+        assert(pipe(pfd) == 0);
+        assert(fcntl(pfd[0], F_SETFD, FD_CLOEXEC) == 0);
+        char script[128];
+        snprintf(script, sizeof(script), "printf 'EXEC_OK' >&%d; exit 42", pfd[1]);
+        uint8_t exec_args[256];
+        size_t pos = 0;
+        const char *a0 = "/bin/sh";
+        const char *a1 = "-c";
+        memcpy(exec_args + pos, a0, strlen(a0) + 1);
+        pos += strlen(a0) + 1;
+        memcpy(exec_args + pos, a1, strlen(a1) + 1);
+        pos += strlen(a1) + 1;
+        memcpy(exec_args + pos, script, strlen(script) + 1);
+        pos += strlen(script) + 1;
+
+        fflush(stdout);
+        fflush(stderr);
+        pid_t cpid = fork();
+        assert(cpid >= 0);
+        if (cpid == 0) {
+            close(pfd[0]);
+            (void)sts_exec_replace("/bin/sh", exec_args, (int64_t)pos);
+            _exit(99);
+        }
+        close(pfd[1]);
+        char buf[32] = "";
+        ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+        close(pfd[0]);
+        int st = 0;
+        assert(waitpid(cpid, &st, 0) == cpid);
+        assert(WIFEXITED(st) && WEXITSTATUS(st) == 42);
+        assert(n == 7 && memcmp(buf, "EXEC_OK", 7) == 0);
+
+        // Nonexistent binary returns 127 cleanly in-process.
+        const uint8_t bad_args[] = "/nonexistent/stillfail_no_such_bin\0";
+        assert(sts_exec_replace("/nonexistent/stillfail_no_such_bin", bad_args, (int64_t)(sizeof(bad_args) - 1)) == 127);
+        printf("  [PASS] sts_exec_replace (inherited FD + exit 42 + ENOENT 127)\n");
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 

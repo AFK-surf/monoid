@@ -814,7 +814,7 @@ test "decide_connect_inbound covers full multi/single-session, requireMention, e
   assert_true(decide_connect_inbound(false, true, false, true, login) is ConnectInboundDecision::RefuseNoAck, "LoginCode fails closed")
 }
 
-test "enabled_external_connects_in_config detects all enabled Slack/Feishu/Comma/Group entries and ignores disabled/empty" {
+test "enabled_external_connects_in_config aligns 1:1 with Node config.ts:174 and remote_connects/strict helpers" {
   let parse = fn(s : String) -> base_codec::Json {
     match base_codec::json_parse(s) {
       base_codec::JsonParseResult::Ok(j) => j
@@ -825,18 +825,51 @@ test "enabled_external_connects_in_config detects all enabled Slack/Feishu/Comma
   assert_true(enabled_external_connects_in_config(parse("{}")).length() == 0, "missing connects")
   assert_true(enabled_external_connects_in_config(parse("{\"connects\":[]}")).length() == 0, "empty connects")
 
-  // Disabled external connects + non-external kind -> empty list
-  let disabled_cfg = parse("{\"connects\":[{\"id\":\"s0\",\"enabled\":false,\"slack\":{\"appToken\":\"xapp-1\",\"botToken\":\"xoxb-1\"}},{\"id\":\"f0\",\"kind\":\"feishu\",\"enabled\":false},{\"id\":\"c0\",\"kind\":\"comma\",\"enabled\":false},{\"id\":\"g0\",\"kind\":\"group\",\"enabled\":false},{\"id\":\"web0\",\"kind\":\"chat\"}]}")
-  assert_true(enabled_external_connects_in_config(disabled_cfg).length() == 0, "disabled and non-external ignored")
+  // Disabled connects -> empty list
+  let disabled_cfg = parse("{\"connects\":[{\"id\":\"s0\",\"enabled\":false,\"slack\":{\"appToken\":\"xapp-1\",\"botToken\":\"xoxb-1\"}},{\"id\":\"f0\",\"kind\":\"feishu\",\"enabled\":false},{\"id\":\"c0\",\"kind\":\"comma\",\"enabled\":false},{\"id\":\"g0\",\"kind\":\"group\",\"enabled\":false}]}")
+  assert_true(enabled_external_connects_in_config(disabled_cfg).length() == 0, "disabled ignored")
 
-  // Omitted kind, null kind, explicit slack/feishu/comma/group -> all detected!
-  let enabled_cfg = parse("{\"connects\":[{\"id\":\"s-omit\"},{\"id\":\"s-null\",\"kind\":null},{\"id\":\"s-exp\",\"kind\":\"slack\",\"enabled\":true},{\"id\":\"f1\",\"kind\":\"feishu\"},{\"id\":\"cm1\",\"kind\":\"comma\"},{\"id\":\"g1\",\"kind\":\"group\",\"group\":{\"server\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}},{\"id\":\"s-off\",\"kind\":\"slack\",\"enabled\":false}]}")
+  // 1:1 with `station/src/sessions/config.ts:174`: any kind other than feishu/comma/group (omitted, null, "chat", "Slack", non-string) -> slack!
+  let enabled_cfg = parse("{\"connects\":[{\"id\":\"s-omit\"},{\"id\":\"s-null\",\"kind\":null},{\"id\":\"s-chat\",\"kind\":\"chat\"},{\"id\":\"s-cap\",\"kind\":\"Slack\"},{\"id\":\"s-num\",\"kind\":123},{\"id\":\"s-exp\",\"kind\":\"slack\",\"enabled\":true},{\"id\":\"f1\",\"kind\":\"feishu\"},{\"id\":\"cm1\",\"kind\":\"comma\"},{\"id\":\"g1\",\"kind\":\"group\",\"group\":{\"server\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}},{\"id\":\"s-off\",\"kind\":\"slack\",\"enabled\":false}]}")
   let found = enabled_external_connects_in_config(enabled_cfg)
-  assert_true(found.length() == 6, "expected 6 enabled external connects")
+  assert_true(found.length() == 9, "expected 9 enabled external connects")
   assert_str_eq(found[0], "slack:s-omit")
   assert_str_eq(found[1], "slack:s-null")
-  assert_str_eq(found[2], "slack:s-exp")
-  assert_str_eq(found[3], "feishu:f1")
-  assert_str_eq(found[4], "comma:cm1")
-  assert_str_eq(found[5], "group:g1")
+  assert_str_eq(found[2], "slack:s-chat")
+  assert_str_eq(found[3], "slack:s-cap")
+  assert_str_eq(found[4], "slack:s-num")
+  assert_str_eq(found[5], "slack:s-exp")
+  assert_str_eq(found[6], "feishu:f1")
+  assert_str_eq(found[7], "comma:cm1")
+  assert_str_eq(found[8], "group:g1")
+
+  // remote-connects.json classifier
+  assert_true(remote_connects_file_needs_node(None, false) is None, "missing remote-connects")
+  assert_true(remote_connects_file_needs_node(Some("{}"), false) is None, "empty remote-connects")
+  match remote_connects_file_needs_node(Some("{\"sl@peer1\":{\"station\":\"peer1\"}}"), false) {
+    Some(r) => assert_str_eq(r, "remote-connects:1")
+    None => panic("expected non-empty remote-connects")
+  }
+  match remote_connects_file_needs_node(Some("{bad json"), false) {
+    Some(r) => assert_str_eq(r, "remote-connects.json(corrupt)")
+    None => panic("expected corrupt remote-connects fail-safe")
+  }
+  match remote_connects_file_needs_node(None, true) {
+    Some(r) => assert_str_eq(r, "remote-connects.json(unreadable)")
+    None => panic("expected unreadable remote-connects fail-safe")
+  }
+
+  // strict env & --app extraction
+  assert_true(is_engine_strict_env(Some("1")), "strict 1")
+  assert_true(is_engine_strict_env(Some("true")), "strict true")
+  assert_true(!is_engine_strict_env(Some("0")), "strict 0 false")
+  assert_true(!is_engine_strict_env(None), "strict none false")
+  match extract_app_dir_from_argv(["bin", "run", "--app", "/opt/app", "--data", "/d"]) {
+    Some(d) => assert_str_eq(d, "/opt/app")
+    None => panic("expected --app value")
+  }
+  match extract_app_dir_from_argv(["bin", "run", "--app=/opt/app2"]) {
+    Some(d) => assert_str_eq(d, "/opt/app2")
+    None => panic("expected --app= value")
+  }
 }

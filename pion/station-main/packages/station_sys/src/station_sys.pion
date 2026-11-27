@@ -186,6 +186,7 @@ extern "C" fn sts_resolve_host_for_tunnel_async(
   host : Ptr,
   reject_loopback_or_unspec : Int,
 ) -> Int
+extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -1621,4 +1622,21 @@ pub fn resolve_host_for_tunnel_async(
   )
   let _ = host.length()
   ok != 0
+}
+
+/// Replace the current process in-place:
+/// - Unix: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited launcher FDs (3/4/5).
+/// - Windows: `CreateProcessW` with `bInheritHandles=TRUE` inside a `KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK`
+///   Job Object, waiting for exit and returning the child's exit code.
+/// Returns 127 on failure.
+pub fn exec_replace(program : String, argv : Array[String]) -> Int {
+  let raw = encode_nul_list(argv)
+  let rc = sts_exec_replace(
+    program.as_cstr(),
+    bytes_data_ptr(raw),
+    raw.length().to_int64(),
+  )
+  let _ = program.length()
+  let _ = raw.length()
+  rc
 }
