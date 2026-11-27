@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [073a8026e](https://github.com/AFK-surf/monoid/commit/073a8026e80c8c8cd2fe52b033b2e6775978588e) fix(station): prevent evicting idle agy sessions w | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [575cbdc10](https://github.com/AFK-surf/monoid/commit/575cbdc1071a70a38087e9e9fa5c6c45d7c08381) feat(station,core,mbui): invoke attached agent ski | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 | [3bb9a03a0](https://github.com/AFK-surf/monoid/commit/3bb9a03a01ff07c3712fd1a806ec539402ddfec9) fix(ui): support Shift+click range extension for t | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 | [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
-| [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [073a8026e](https://github.com/AFK-surf/monoid/commit/073a8026e80c8c8cd2fe52b033b2e6775978588e) fix(station): prevent evicting idle agy sessions w | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.77 |
 | [575cbdc10](https://github.com/AFK-surf/monoid/commit/575cbdc1071a70a38087e9e9fa5c6c45d7c08381) feat(station,core,mbui): invoke attached agent ski | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.77 |
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.41 |
 | [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.64 |
 | [3bb9a03a0](https://github.com/AFK-surf/monoid/commit/3bb9a03a01ff07c3712fd1a806ec539402ddfec9) fix(ui): support Shift+click range extension for t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.54 |
 | [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.41 |
-| [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.61 |
