@@ -102,10 +102,39 @@ fn kept_send_to_json(ks : station_api::KeptSend) -> base_codec::Json {
   ])
 }
 
-fn kept_send_from_json(v : base_codec::Json) -> Option[station_api::KeptSend] {
+/// Read and parse `<data_dir>/projects-info.json` strictly:
+/// - Missing file -> `Ok(empty map)`
+/// - Existing file with invalid JSON or non-object root -> `Err(...)` (NEVER silently wipes).
+pub fn read_projects_info_map(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+) -> Result[Array[(String, base_codec::Json)], String] {
+  let info_path = nodepath::join(fs.sep, [data_dir, "projects-info.json"])
+  match (fs.read_file)(info_path) {
+    None => Ok([])
+    Some(raw) => {
+      if raw.trim().length() == 0 {
+        return Ok([])
+      }
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
+          let out : Array[(String, base_codec::Json)] = []
+          for i in 0..<entries.length() {
+            out.push(entries[i])
+          }
+          Ok(out)
+        }
+        base_codec::JsonParseResult::Ok(_) => Err("corrupted projects-info.json: root must be a JSON object")
+        base_codec::JsonParseResult::Err(e) => Err("corrupted projects-info.json: " + e)
+      }
+    }
+  }
+}
+
+fn kept_send_from_json(v : base_codec::Json) -> Result[station_api::KeptSend, String] {
   let viewer = match json_opt_str(v, "viewer") {
     Some(s) => s
-    None => return None
+    None => return Err("missing keptSend viewer")
   }
   let workspace = match json_opt_str(v, "workspace") {
     Some(s) => s
@@ -113,11 +142,11 @@ fn kept_send_from_json(v : base_codec::Json) -> Option[station_api::KeptSend] {
   }
   let thread = match json_opt_int(v, "thread") {
     Some(t) => t
-    None => return None
+    None => return Err("missing keptSend thread")
   }
   let key = match json_opt_str(v, "key") {
     Some(s) => s
-    None => return None
+    None => return Err("missing keptSend key")
   }
   let at_ms = match json_opt_i64(v, "atMs") {
     Some(t) => t
@@ -133,26 +162,28 @@ fn kept_send_from_json(v : base_codec::Json) -> Option[station_api::KeptSend] {
   }
   let headers : Array[http1::Header] = []
   match base_codec::json_get(v, "headers") {
+    None => ()
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match items[i] {
           base_codec::Json::Arr(pair) => {
-            if pair.length() >= 2 {
-              match (pair[0], pair[1]) {
-                (base_codec::Json::Str(n), base_codec::Json::Str(hdr_val)) => {
-                  headers.push(http1::Header::{ name: n, value: hdr_val })
-                }
-                _ => ()
+            if pair.length() != 2 {
+              return Err("malformed keptSend header pair at index " + i.to_string())
+            }
+            match (pair[0], pair[1]) {
+              (base_codec::Json::Str(n), base_codec::Json::Str(hdr_val)) => {
+                headers.push(http1::Header::{ name: n, value: hdr_val })
               }
+              _ => return Err("malformed non-string keptSend header at index " + i.to_string())
             }
           }
-          _ => ()
+          _ => return Err("malformed non-pair keptSend header at index " + i.to_string())
         }
       }
     }
-    _ => ()
+    Some(_) => return Err("invalid non-array keptSend headers")
   }
-  Some(station_api::KeptSend::{
+  Ok(station_api::KeptSend::{
     viewer: viewer,
     workspace: workspace,
     thread: thread,
@@ -174,10 +205,10 @@ fn session_snap_to_json(s : station_sessions::HandoverSnapshot) -> base_codec::J
   ])
 }
 
-fn session_snap_from_json(v : base_codec::Json) -> Option[station_sessions::HandoverSnapshot] {
+fn session_snap_from_json(v : base_codec::Json) -> Result[station_sessions::HandoverSnapshot, String] {
   let key = match json_opt_str(v, "key") {
     Some(s) => s
-    None => return None
+    None => return Err("missing session snapshot key")
   }
   let runtime = match json_opt_str(v, "runtime") {
     Some(s) => s
@@ -191,12 +222,16 @@ fn session_snap_from_json(v : base_codec::Json) -> Option[station_sessions::Hand
     Some(b) => b
     None => false
   }
-  Some(station_sessions::HandoverSnapshot::{
+  let notices = match parse_str_array_field_strict(v, "notices") {
+    Ok(ns) => ns
+    Err(e) => return Err("session snapshot " + e)
+  }
+  Ok(station_sessions::HandoverSnapshot::{
     key: key,
     runtime: runtime,
     has_agent: has_agent,
     has_turn: has_turn,
-    notices: parse_str_array_field(v, "notices"),
+    notices: notices,
   })
 }
 
@@ -321,8 +356,8 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match kept_send_from_json(items[i]) {
-          Some(ks) => kept_sends.push(ks)
-          None => return Err("malformed keptSends item at index " + i.to_string())
+          Ok(ks) => kept_sends.push(ks)
+          Err(e) => return Err("malformed keptSends item at index " + i.to_string() + ": " + e)
         }
       }
     }
@@ -334,8 +369,8 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match session_snap_from_json(items[i]) {
-          Some(ss) => session_snapshots.push(ss)
-          None => return Err("malformed sessions item at index " + i.to_string())
+          Ok(ss) => session_snapshots.push(ss)
+          Err(e) => return Err("malformed sessions item at index " + i.to_string() + ": " + e)
         }
       }
     }

@@ -677,3 +677,97 @@ test "whole_core_r3_bounded_sql_like_strict_snapshot_idempotent_adopt_drive_mcp_
   )
   core.shutdown_pre_handover()
 }
+
+test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_info_strict" {
+  // 1. Nested array strict validation: `sessions[0].notices = [123]` and malformed `keptSends[0].headers`.
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"sessions\":[{\"key\":\"s1\",\"notices\":[123]}]}",
+    ).is_err(),
+    "non-string sessions[0].notices MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"viewer\":\"a@b\",\"thread\":1,\"key\":\"k1\",\"headers\":[[1,\"v\"]]}]}",
+    ).is_err(),
+    "non-string keptSends[0].headers pair MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"viewer\":\"a@b\",\"thread\":1,\"key\":\"k1\",\"headers\":\"bad\"}]}",
+    ).is_err(),
+    "non-array keptSends[0].headers MUST be rejected",
+  )
+
+  // 2. Prepared-but-not-started remote task: `job` MUST be `null`, `spec` includes `back` & `dir`,
+  //    and empty `work_dir` measures `bytes: 0` (excluding parent room metadata).
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let core = make_test_core("/mem/w15-r4/data", "/mem/w15-r4/drive", rng, clock)
+  let prep = core.remote.prepare_scoped(
+    station_jobs::RemotePrepareRequest::{
+      workspace: "ws-rig",
+      source_station: "peer-st-1",
+      source_session: "sess-r4",
+      key: "task-prep-1",
+      name: "prep-only",
+      command: "echo hi",
+      back_paths: ["out/a.txt"],
+      mirror_name: Some("repo-m1"),
+      screen: false,
+      small: true,
+    },
+    clock.now_ms,
+  )
+  wc_assert(prep.is_ok(), "prepare_scoped failed")
+  let list_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "task.list",
+    form::Json::Obj([("session", form::Json::Str("sess-r4"))]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("task.list failed: " + e)
+  }
+  wc_assert(list_s.contains("\"job\":null"), "unstarted task.list job MUST be null: " + list_s)
+  wc_assert(list_s.contains("\"back\":[\"out/a.txt\"]"), "task.list spec MUST include back: " + list_s)
+  wc_assert(list_s.contains("\"dir\":\"repo-m1\""), "task.list spec MUST include dir: " + list_s)
+  let get_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "task.get",
+    form::Json::Obj([
+      ("session", form::Json::Str("sess-r4")),
+      ("key", form::Json::Str("task-prep-1")),
+    ]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("task.get failed: " + e)
+  }
+  wc_assert(get_s.contains("\"job\":null"), "unstarted task.get job MUST be null: " + get_s)
+  let work_dir = core.remote.session_work_dir("ws-rig", "peer-st-1", "sess-r4", clock.now_ms)
+  let _ = (core.remote.fs.write_file_mode)(work_dir + "/../meta.json", "{\"meta\":12345}".to_bytes(), 384, false)
+  wc_assert(measure_dir_bytes(core.remote.fs, work_dir) == 0L, "empty work_dir must measure 0 bytes")
+  let sz_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "session.size",
+    form::Json::Obj([("session", form::Json::Str("sess-r4"))]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("session.size failed: " + e)
+  }
+  wc_assert(sz_s.contains("\"bytes\":0"), "empty session work_dir must report bytes:0: " + sz_s)
+
+  // 3. Corrupted `projects-info.json` MUST return Err (never silently wipe).
+  let _ = (core.agents.jobs.fs.mkdir_p)("/mem/w15-r4/data")
+  let _ = (core.agents.jobs.fs.write_file_mode)("/mem/w15-r4/data/projects-info.json", "{broken".to_bytes(), 384, false)
+  wc_assert(
+    read_projects_info_map(core.agents.jobs.fs, "/mem/w15-r4/data").is_err(),
+    "corrupted projects-info.json MUST fail loudly",
+  )
+  core.shutdown_pre_handover()
+}

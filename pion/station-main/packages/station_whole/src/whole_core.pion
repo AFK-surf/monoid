@@ -138,35 +138,138 @@ fn build_rig_request_obj(method : String, params : form::Json) -> form::Json {
 }
 
 fn remote_task_spec_form(t : station_jobs::RemoteTaskRecord) -> form::Json {
+  let back_arr : Array[form::Json] = []
+  for i in 0..<t.back_paths.length() {
+    back_arr.push(form::Json::Str(t.back_paths[i]))
+  }
   let fields : Array[(String, form::Json)] = [
     ("name", form::Json::Str(t.name)),
     ("command", form::Json::Str(t.command)),
+    ("back", form::Json::Arr(back_arr)),
     ("screen", form::Json::Bool(t.screen)),
     ("small", form::Json::Bool(t.small)),
   ]
   match t.mirror_name {
-    Some(m) => fields.push(("mirror", form::Json::Str(m)))
+    Some(m) => fields.push(("dir", form::Json::Str(m)))
     None => ()
   }
   form::Json::Obj(fields)
 }
 
-fn remote_task_job_form(t : station_jobs::RemoteTaskRecord) -> form::Json {
-  let fields : Array[(String, form::Json)] = [
-    ("key", form::Json::Str(t.key)),
-    ("name", form::Json::Str(t.name)),
-    ("state", form::Json::Str(station_jobs::remote_task_state_str(t.state))),
-    ("createdAt", form::Json::Num(t.created_at.to_double())),
-  ]
+/// Convert a `RemoteTaskRecord` + its backing `JobRecord` into wire `job` JSON.
+/// Returns `null` when the task has not yet started (`t.job_id is None`), matching
+/// `rig_helpers.pion:341-373`.
+fn remote_task_job_form(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> form::Json {
   match t.job_id {
-    Some(jid) => fields.push(("id", form::Json::Str(jid)))
+    None => form::Json::Null
+    Some(jid) => {
+      let fields : Array[(String, form::Json)] = [
+        ("id", form::Json::Str(jid)),
+        ("key", form::Json::Str(t.key)),
+        ("name", form::Json::Str(t.name)),
+        ("command", form::Json::Str(t.command)),
+        ("state", form::Json::Str(station_jobs::remote_task_state_str(t.state))),
+        ("createdAt", form::Json::Num(t.created_at.to_double())),
+        ("screen", form::Json::Bool(t.screen)),
+        ("small", form::Json::Bool(t.small)),
+      ]
+      match remote.jobs.get(jid) {
+        Some(j) => {
+          fields.push(("startedAt", form::Json::Num(j.started_at.to_double())))
+          match j.exit_code {
+            Some(c) => fields.push(("exitCode", form::Json::Num(c.to_double())))
+            None => ()
+          }
+          match j.ended_at {
+            Some(e) => fields.push(("endedAt", form::Json::Num(e.to_double())))
+            None => ()
+          }
+        }
+        None => {
+          match t.exit_code {
+            Some(c) => fields.push(("exitCode", form::Json::Num(c.to_double())))
+            None => ()
+          }
+        }
+      }
+      form::Json::Obj(fields)
+    }
+  }
+}
+
+fn task_notices_form(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> form::Json {
+  let out : Array[form::Json] = []
+  match t.job_id {
+    Some(jid) => {
+      match remote.jobs.get(jid) {
+        Some(j) => {
+          for i in 0..<j.notices.length() {
+            out.push(
+              form::Json::Obj([
+                ("at", form::Json::Num(j.notices[i].at.to_double())),
+                ("text", form::Json::Str(j.notices[i].text)),
+              ]),
+            )
+          }
+        }
+        None => ()
+      }
+    }
     None => ()
   }
-  match t.exit_code {
-    Some(c) => fields.push(("exitCode", form::Json::Num(c.to_double())))
-    None => ()
+  form::Json::Arr(out)
+}
+
+/// Recursively measure regular file bytes strictly inside `dir` (never includes parent metadata
+/// files; returns `0L` for an empty or missing directory).
+fn measure_dir_bytes(fs : station_jobs::FsPort, dir : String) -> Int64 {
+  match (fs.lstat)(dir) {
+    None => return 0L
+    Some(st) => {
+      if st.is_symlink() {
+        return 0L
+      }
+      if !st.is_dir() {
+        return st.size
+      }
+    }
   }
-  form::Json::Obj(fields)
+  let mut total = 0L
+  let stack : Array[String] = [dir]
+  let mut visited = 0
+  while stack.length() > 0 && visited < 4096 {
+    let cur = stack[stack.length() - 1]
+    let _ = stack.pop()
+    visited = visited + 1
+    match (fs.read_dir)(cur) {
+      Some(names) => {
+        for i in 0..<names.length() {
+          let child = nodepath::join(fs.sep, [cur, names[i]])
+          match (fs.lstat)(child) {
+            Some(cst) => {
+              if cst.is_symlink() {
+                continue
+              }
+              if cst.is_dir() {
+                stack.push(child)
+              } else if cst.size > 0L {
+                total = total + cst.size
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  total
 }
 
 fn mirror_to_form(m : station_jobs::MirrorRecord) -> form::Json {
@@ -611,7 +714,7 @@ pub fn WholeCore::handle_peer_rpc(
           form::Json::Obj([
             ("key", form::Json::Str(r.key)),
             ("spec", remote_task_spec_form(r)),
-            ("job", remote_task_job_form(r)),
+            ("job", remote_task_job_form(self.remote, r)),
           ]),
         )
       }
@@ -636,9 +739,9 @@ pub fn WholeCore::handle_peer_rpc(
           }
           let fields : Array[(String, form::Json)] = [
             ("key", form::Json::Str(rec.key)),
-            ("job", remote_task_job_form(rec)),
+            ("job", remote_task_job_form(self.remote, rec)),
             ("log", log_v),
-            ("notices", form::Json::Arr([])),
+            ("notices", task_notices_form(self.remote, rec)),
           ]
           if rec.push_ref is Some(_) {
             fields.push(("push", form::Json::Bool(true)))
@@ -660,9 +763,9 @@ pub fn WholeCore::handle_peer_rpc(
             Ok(text) => return Ok(
               form::Json::Obj([
                 ("key", form::Json::Str(rec.key)),
-                ("job", remote_task_job_form(rec)),
+                ("job", remote_task_job_form(self.remote, rec)),
                 ("log", form::Json::Str(text)),
-                ("notices", form::Json::Arr([])),
+                ("notices", task_notices_form(self.remote, rec)),
               ]),
             )
             Err(e) => return Err(e)
@@ -680,7 +783,7 @@ pub fn WholeCore::handle_peer_rpc(
         Ok(rec) => return Ok(
           form::Json::Obj([
             ("key", form::Json::Str(rec.key)),
-            ("job", remote_task_job_form(rec)),
+            ("job", remote_task_job_form(self.remote, rec)),
           ]),
         )
         Err(e) => return Err(e)
@@ -705,18 +808,24 @@ pub fn WholeCore::handle_peer_rpc(
       }
     }
     if method == "session.size" {
-      let (exists, bytes) = self.remote.session_work_size(workspace, peer_station, session)
+      let (exists, _) = self.remote.session_work_size(workspace, peer_station, session)
       let work_dir = if exists {
         self.remote.session_work_dir(workspace, peer_station, session, eff_now)
       } else {
         ""
+      }
+      // Measure ONLY the session's `work_dir` contents (excluding parent room metadata files).
+      let work_bytes = if exists && work_dir.length() > 0 {
+        measure_dir_bytes(self.remote.fs, work_dir)
+      } else {
+        0L
       }
       return Ok(
         form::Json::Obj([
           ("present", form::Json::Bool(exists)),
           ("pending", form::Json::Bool(false)),
           ("path", form::Json::Str(work_dir)),
-          ("bytes", form::Json::Num(bytes.to_double())),
+          ("bytes", form::Json::Num(work_bytes.to_double())),
           ("complete", form::Json::Bool(true)),
         ]),
       )

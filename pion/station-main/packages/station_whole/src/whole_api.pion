@@ -536,6 +536,10 @@ pub fn WholeApi::new(
         Ok(s) => s
         Err(e) => return Err(station_api::ApiError::new(503, e))
       }
+      let info_entries = match read_projects_info_map(agents.jobs.fs, agents.config.data_dir) {
+        Ok(m) => m
+        Err(e) => return Err(station_api::ApiError::new(500, e))
+      }
       match st.db.all(
         "SELECT t.project, COUNT(*) AS cnt FROM threads t" +
         " LEFT JOIN sessions h ON h.key = t.home" +
@@ -547,12 +551,53 @@ pub fn WholeApi::new(
         [base_codec::json_str(home_ws_str), base_codec::json_str(req.viewer.workspace)],
       ) {
         Ok(rows) => {
+          let seen_names : Map[String, Bool] = Map::new()
           let projs : Array[base_codec::Json] = []
           for i in 0..<rows.length() {
             let r = rows[i]
             let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
             let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
-            projs.push(base_codec::json_obj([("name", base_codec::json_str(name)), ("count", cnt)]))
+            seen_names.set(name, true)
+            let entry_key = req.viewer.workspace + ":" + name
+            let mut note_str = ""
+            let mut refs_arr : Array[String] = []
+            for j in 0..<info_entries.length() {
+              if info_entries[j].0 == entry_key {
+                match json_field_str(info_entries[j].1, "note") {
+                  Some(ns) => note_str = ns
+                  None => ()
+                }
+                refs_arr = parse_str_array_field(info_entries[j].1, "refs")
+                break
+              }
+            }
+            projs.push(
+              base_codec::json_obj([
+                ("name", base_codec::json_str(name)),
+                ("count", cnt),
+                ("note", base_codec::json_str(note_str)),
+                ("refs", json_str_array(refs_arr)),
+              ]),
+            )
+          }
+          let ws_prefix = req.viewer.workspace + ":"
+          for j in 0..<info_entries.length() {
+            let (ek, ev) = info_entries[j]
+            if ek.starts_with(ws_prefix) {
+              let pname = ek.slice(ws_prefix.length(), ek.length())
+              if pname.length() > 0 && seen_names.get(pname).is_none() {
+                let note_str = match json_field_str(ev, "note") { Some(ns) => ns, None => "" }
+                let refs_arr = parse_str_array_field(ev, "refs")
+                projs.push(
+                  base_codec::json_obj([
+                    ("name", base_codec::json_str(pname)),
+                    ("count", base_codec::json_int(0)),
+                    ("note", base_codec::json_str(note_str)),
+                    ("refs", json_str_array(refs_arr)),
+                  ]),
+                )
+              }
+            }
           }
           return Ok(base_codec::json_obj([("projects", base_codec::json_arr(projs))]))
         }
@@ -656,7 +701,9 @@ pub fn WholeApi::new(
             sees_ws: Some(Some(req.viewer.workspace)),
             sees_session: None,
           }
-          let _ = events.emit("thread", ev_payload, ev_target, now_ms, Some(tid.to_string()))
+          // Never coalesce incremental `"thread"` message frames by thread ID (aligned with
+          // `station/src/api/events.ts:1152`) so consecutive messages replay individually.
+          let _ = events.emit("thread", ev_payload, ev_target, now_ms, None)
           return Ok(
             base_codec::json_obj([
               ("thread", base_codec::json_int64(tid)),
@@ -815,8 +862,8 @@ pub fn WholeApi::new(
       return Ok(station_api::SearchResult::{ groups: [], building: false })
     }
     let eff_lim = if limit <= 0 { 20 } else if limit > 200 { 200 } else { limit }
-    let eff_off = if offset < 0 { 0 } else { offset }
-    let sql_limit = if eff_lim + eff_off > 200 { 200 } else { eff_lim + eff_off }
+    let eff_off = if offset < 0 { 0 } else if offset > 800 { 800 } else { offset }
+    let sql_limit = if eff_off + eff_lim + 1 > 1001 { 1001 } else { eff_off + eff_lim + 1 }
     let want_chat = if kinds.length() == 0 {
       true
     } else {
@@ -838,114 +885,142 @@ pub fn WholeApi::new(
     let arch_clause = if archived { "" } else { " AND t.archived_at IS NULL" }
     let docs : Array[station_api::SearchDoc] = []
     if want_chat {
-      let (t_like_sql, t_like_params) = build_like_clauses(
-        "COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')",
-        words,
-        3,
-      )
-      let t_params : Array[base_codec::Json] = [
-        base_codec::json_str(home_ws_str),
-        base_codec::json_str(asker.workspace),
-      ]
-      for pi in 0..<t_like_params.length() {
-        t_params.push(t_like_params[pi])
-      }
-      let t_lim_idx = 3 + t_like_params.length()
-      t_params.push(base_codec::json_int(sql_limit))
-      match st.db.all(
-        "SELECT t.id, t.title, t.project, t.created_at," +
-        " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-        "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-        " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
-        " WHERE CASE" +
-        "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-        "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-        "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-        arch_clause +
-        t_like_sql +
-        " ORDER BY t.created_at DESC LIMIT ?" + t_lim_idx.to_string(),
-        t_params,
-      ) {
-        Ok(rows) => {
-          for i in 0..<rows.length() {
-            let r = rows[i]
-            let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-            let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-            let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-            let at = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
-            let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-            docs.push(station_api::SearchDoc::{
-              key: "thread:" + tid.to_string(),
-              kind: "chat",
-              ws: doc_ws,
-              req_scope: None,
-              title: title,
-              body: title + " " + proj,
-              at: at,
-              ref_fields: [("thread", base_codec::json_int64(tid))],
-            })
-          }
+      let seen_tids : Map[String, Bool] = Map::new()
+      let run_chat_q = fn(col_expr : String) -> Result[Unit, station_api::ApiError] {
+        let (t_like_sql, t_like_params) = build_like_clauses(col_expr, words, 3)
+        let t_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<t_like_params.length() {
+          t_params.push(t_like_params[pi])
         }
-        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+        let t_lim_idx = 3 + t_like_params.length()
+        t_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT t.id, t.title, t.project, t.created_at," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          t_like_sql +
+          " ORDER BY t.created_at DESC LIMIT ?" + t_lim_idx.to_string(),
+          t_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              let r = rows[i]
+              let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let dkey = "thread:" + tid.to_string()
+              if seen_tids.get(dkey).is_some() {
+                continue
+              }
+              seen_tids.set(dkey, true)
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "chat",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: title + " " + proj,
+                at: at,
+                ref_fields: [("thread", base_codec::json_int64(tid))],
+              })
+            }
+            Ok(())
+          }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+      // Bounded title-hit query first, then bounded title+project body query (title hits never truncated by newer body hits).
+      match run_chat_q("COALESCE(t.title, '')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match run_chat_q("COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
       }
     }
     if want_msg {
-      let (e_like_sql, e_like_params) = build_like_clauses(
-        "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
-        words,
-        3,
-      )
-      let e_params : Array[base_codec::Json] = [
-        base_codec::json_str(home_ws_str),
-        base_codec::json_str(asker.workspace),
-      ]
-      for pi in 0..<e_like_params.length() {
-        e_params.push(e_like_params[pi])
-      }
-      let e_lim_idx = 3 + e_like_params.length()
-      e_params.push(base_codec::json_int(sql_limit))
-      match st.db.all(
-        "SELECT e.thread, e.n, e.text, e.at, t.title," +
-        " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-        "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-        " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
-        " WHERE e.kind = 'message' AND CASE" +
-        "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-        "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-        "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-        arch_clause +
-        e_like_sql +
-        " ORDER BY e.at DESC LIMIT ?" + e_lim_idx.to_string(),
-        e_params,
-      ) {
-        Ok(rows) => {
-          for i in 0..<rows.length() {
-            let r = rows[i]
-            let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-            let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
-            let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-            let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-            let at = match r.get("at") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
-            let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-            docs.push(station_api::SearchDoc::{
-              key: "msg:" + tid.to_string() + ":" + n.to_string(),
-              kind: "message",
-              ws: doc_ws,
-              req_scope: None,
-              title: title,
-              body: txt,
-              at: at,
-              ref_fields: [
-                ("thread", base_codec::json_int64(tid)),
-                ("n", base_codec::json_int64(n)),
-              ],
-            })
-          }
+      let seen_msgs : Map[String, Bool] = Map::new()
+      let run_msg_q = fn(col_expr : String) -> Result[Unit, station_api::ApiError] {
+        let (e_like_sql, e_like_params) = build_like_clauses(col_expr, words, 3)
+        let e_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<e_like_params.length() {
+          e_params.push(e_like_params[pi])
         }
-        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+        let e_lim_idx = 3 + e_like_params.length()
+        e_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT e.thread, e.n, e.text, e.at, t.title," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE e.kind = 'message' AND CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          e_like_sql +
+          " ORDER BY e.at DESC LIMIT ?" + e_lim_idx.to_string(),
+          e_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              let r = rows[i]
+              let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
+              let dkey = "msg:" + tid.to_string() + ":" + n.to_string()
+              if seen_msgs.get(dkey).is_some() {
+                continue
+              }
+              seen_msgs.set(dkey, true)
+              let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("at") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "message",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: txt,
+                at: at,
+                ref_fields: [
+                  ("thread", base_codec::json_int64(tid)),
+                  ("n", base_codec::json_int64(n)),
+                ],
+              })
+            }
+            Ok(())
+          }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+      // Bounded title-hit query first, then bounded body-hit query.
+      match run_msg_q("COALESCE(t.title, '')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match run_msg_q("COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
       }
     }
-    station_api::search_pick(docs, query, asker, Some(kinds), limit, offset)
+    station_api::search_pick(docs, query, asker, Some(kinds), eff_lim, eff_off)
   }
 
   let api_host = station_api::ApiHost::{
