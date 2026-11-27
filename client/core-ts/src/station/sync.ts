@@ -896,9 +896,12 @@ export class StationsSync {
       const cur = this.#capRevRecord(address, "screens");
       const rev = cur?.rev ?? 0;
       if (cur?.denied === true) {
-        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev, denied: false });
+        const nextRev = rev + 1;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: nextRev, denied: false });
+        capRev = nextRev;
+      } else {
+        capRev = rev;
       }
-      capRev = rev;
     }
     const stamped = {
       ...held,
@@ -957,9 +960,12 @@ export class StationsSync {
       const cur = this.#capRevRecord(address, "terminals");
       const rev = cur?.rev ?? 0;
       if (cur?.denied === true) {
-        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev, denied: false });
+        const nextRev = rev + 1;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: nextRev, denied: false });
+        capRev = nextRev;
+      } else {
+        capRev = rev;
       }
-      capRev = rev;
     }
     const stamped = {
       ...held,

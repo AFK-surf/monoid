@@ -1028,6 +1028,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
               let sent: ScreenAsk;
               if (takeReady !== null) {
                 yield* Effect.addFinalizer(() => Scope.close(takeReady.scope, Exit.void));
+                if (ready === takeReady) ready = null;
                 ({ socket, asked: sent } = takeReady);
               } else {
                 if (isViewDenied()) return { denied: true } as Outcome;
@@ -1322,9 +1323,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
 
         let misses = 0;
         for (;;) {
-          const takeReady = ready;
-          ready = null;
-          const outcome: Outcome = yield* attempt(takeReady);
+          const outcome: Outcome = yield* attempt(ready);
           if ("reopen" in outcome) {
             if (isViewDenied()) return;
             continue;

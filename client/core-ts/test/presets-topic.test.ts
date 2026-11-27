@@ -1271,7 +1271,8 @@ test("r12_pure_revocation_capRev_sync_403_multicore_merge_503_retry_and_reopen_h
   await run3.host.settle();
   assert.equal(svCount, 1);
   const origStorageSet = run3.host.storageSet.bind(run3.host);
-  run3.host.storageSet = (k, b) => (k === "device/auth" ? Effect.never : origStorageSet(k, b));
+  const writeGate = Deferred.makeUnsafe<void>();
+  run3.host.storageSet = (k, b) => (k === "device/auth" ? Effect.andThen(Deferred.await(writeGate), origStorageSet(k, b)) : origStorageSet(k, b));
   run3.host.takeEmitted();
   screensReply = 403;
   run3.core.inner.runner.fork(run3.core.inner.stations.readScreens(S));
@@ -1280,6 +1281,8 @@ test("r12_pure_revocation_capRev_sync_403_multicore_merge_503_retry_and_reopen_h
   const msgsSync = run3.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
   assert.ok(msgsSync.some((m) => m.id === 92 && m.value?.state?.phase === "denied"), `active viewer must abort synchronously even when flushTable hangs, got: ${JSON.stringify(msgsSync)}`);
   run3.host.storageSet = origStorageSet;
+  Deferred.doneUnsafe(writeGate, Effect.void);
+  await run3.host.settle();
 
   // 3c. Astra P1-4: reopen succeeds, then 403 fires during old attempt's teardown before next loop iteration -> new scope closed exactly once (0 leak).
   screensReply = 200;
@@ -1303,4 +1306,60 @@ test("r12_pure_revocation_capRev_sync_403_multicore_merge_503_retry_and_reopen_h
   const msgsHandoff = run3.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
   assert.ok(msgsHandoff.some((m) => m.id === 93 && m.value?.state?.phase === "denied"), "view must transition to phase: denied");
   run3.core.close();
+
+  // 4. Opus P1 (r13): 403 -> flush -> 200 recovery (rev+1, denied:false) -> flush -> restart Core
+  //    recovers cold-start known:true, confirmed:false, and subsequent repeated confirmations do 0 device/auth storageSet writes.
+  const rec = await started(said as never);
+  let rec403 = true;
+  stationLater(rec.host, (req) => {
+    if (rec403 && req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  rec.core.inner.runner.fork(rec.core.inner.stations.readScreens(S));
+  await rec.host.settle();
+  await Effect.runPromise(rec.core.inner.data.device.flushTable("auth"));
+  assert.equal(rec.core.inner.stations.isDenied("screens", S), true);
+
+  // Recover with 200: bumps rev+1 with denied:false so merge-before-write beats old {rev, denied:true}.
+  rec403 = false;
+  rec.core.inner.runner.fork(rec.core.inner.stations.readScreens(S));
+  await rec.host.settle();
+  await rec.host.time.pass(KEEP_MS + 1_000, 1_000);
+  await Effect.runPromise(rec.core.inner.data.written);
+  await Effect.runPromise(rec.core.inner.data.device.flushTable("auth"));
+
+  // Subsequent repeated SSE + GET confirmations MUST do 0 device/auth storageSet writes.
+  let authStorageWrites = 0;
+  const origRecSet = rec.host.storageSet.bind(rec.host);
+  rec.host.storageSet = (k, b) => {
+    if (k === "device/auth") authStorageWrites++;
+    return origRecSet(k, b);
+  };
+  for (let i = 0; i < 4; i++) {
+    rec.push("screens", { screens: [{ id: "desktop", kind: "desktop", title: `Recovered-${i}`, width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  }
+  rec.core.inner.runner.fork(rec.core.inner.stations.readScreens(S));
+  await rec.host.settle();
+  await Effect.runPromise(rec.core.inner.data.device.flushTable("auth"));
+  assert.equal(authStorageWrites, 0, "subsequent confirmations after recovery must perform 0 device/auth storageSet writes");
+  rec.host.storageSet = origRecSet;
+  const recDigest = rec.core.inner.store.authGen.workspaceDigest("ws")!;
+  rec.core.close();
+
+  // Restart Core: cold-start MUST show known:true, confirmed:false.
+  rec.host.onFetch(() => new Promise(() => {}));
+  rec.host.onFetchStream(() => Effect.never);
+  rec.host.takeEmitted();
+  const recRestart = await Core.create(rec.host, { clock: rec.host.time.clock, sample: 0 });
+  recRestart.inner.store.authGen.syncWorkspace("ws", recDigest);
+  const recUi = recRestart.connect();
+  const recVals = new Map<number, unknown>();
+  subscribe(recRestart, recUi, 1, { topic: "screens", station: S });
+  await rec.host.time.pass(100, 10);
+  apply(rec.host, recVals);
+  assert.equal(v(recVals, 1).known, true, "cold-start after 403 -> 200 recovery must restore known: true");
+  assert.equal(v(recVals, 1).confirmed, false);
+  recRestart.close();
 });
