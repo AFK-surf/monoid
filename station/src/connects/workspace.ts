@@ -9,13 +9,14 @@ import { dirname, join } from "node:path";
 import { Clock, Duration, Effect, Layer } from "effect";
 import type { Route } from "../api/admin.ts";
 import { error, input, ok, Refused, segment } from "../api/request.ts";
-import { type Inbox, Refused as Declined } from "../mesh/bus.ts";
+import { type Inbox, NoLink, Refused as Declined } from "../mesh/bus.ts";
+import { PeerGone, mayHaveRun } from "../mesh/peer.ts";
 import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { type ChatEvent, markNotice } from "../sessions/chat.ts";
 import type { ConnectKind } from "../sessions/config.ts";
-import type { Hub } from "../sessions/hub.ts";
+import { type Hub, Retiring } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
 import { isSlackWrite } from "../tools/mcp.ts";
@@ -56,12 +57,33 @@ export type WorkspaceConnectsDeps = {
   connectsReady?: () => Promise<void>;
   /// How long such a call waits at most (default 15 s).
   connectsReadyTimeoutMs?: number;
+  /// How long `connect.event` waits for a `message` event's `hub.receive` (which may download large thread
+  /// history/attachments) before acknowledging acceptance early so the caller never hits peer `ANSWER_MS` (default 5 s).
+  acceptWaitMs?: number;
   /// The Effect clock that bounds that wait (the timer ends once the connects are ready); without it, `sleep` does.
   clock?: Clock.Clock;
 };
 
 const DESCRIBE_TIMEOUT_MS = 1_500;
 const CONNECTS_READY_TIMEOUT_MS = 15_000;
+const ACCEPT_WAIT_MS = 5_000;
+
+/// Whether a failed `connect.event` forward may already have reached and begun executing on the target station.
+/// Never fail over to another station (or local fallback) when true: doing so spawns duplicate sessions across stations.
+export function mayHaveTaken(error: unknown): boolean {
+  if (error instanceof NoLink) return false;
+  if (error instanceof Declined) return error.message.startsWith("peer request timed out");
+  if (mayHaveRun(error) || error instanceof PeerGone) return true;
+  if (error instanceof Error) {
+    return (
+      error.message.startsWith("peer request timed out") ||
+      error.message === "the other station answered nothing" ||
+      error.message === "the other station took nothing for 30 s" ||
+      error.message === "the other station sent nothing for 30 s"
+    );
+  }
+  return false;
+}
 
 export class WorkspaceConnects {
   readonly remote: RemoteConnects;
@@ -343,6 +365,24 @@ export class WorkspaceConnects {
 
   // ── on the station a chat runs on ────────────────────────────────────────────────────────────────────────────
 
+  private async waitBounded(work: Promise<void>, ms: number): Promise<boolean> {
+    let finished = false;
+    let failed: { error: unknown } | null = null;
+    const settled = work.then(
+      () => { finished = true; },
+      (error) => { finished = true; failed = { error }; },
+    );
+    if (this.d.clock !== undefined || this.d.sleep === undefined) {
+      const eff = Effect.promise(() => settled).pipe(Effect.timeoutOption(Duration.millis(ms)));
+      await Effect.runPromise(this.d.clock !== undefined ? eff.pipe(Effect.provideService(Clock.Clock, this.d.clock)) : eff);
+    } else {
+      await Promise.race([settled, this.d.sleep(ms)]);
+    }
+    const err = failed as { error: unknown } | null;
+    if (err !== null) throw err.error;
+    return finished;
+  }
+
   /// An event of a connect of another station's for a chat here; or one kept on a station retired for one of its
   /// connects that moved here since (`kept`), taken as this station's connect's own (`moveAll`).
   private async taken(peer: string, request: Json, workspace: string | undefined): Promise<Json> {
@@ -358,6 +398,9 @@ export class WorkspaceConnects {
     if (known === null || typeof d?.kind !== "string" || typeof workspace !== "string" || d.workspace !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
     const id = localOf(known, this.d.here());
     if (this.entryOf(id) !== undefined) throw new Error("that connect runs on this station");
+    // Refuse before learning or accepting while handing this workspace's chats to another station, so the sender
+    // receives an explicit Refused error and can cleanly fail over.
+    if (this.d.hub().quietIn(workspace)) throw new Retiring();
     this.remote.learn(id, peer, d);
     const event = request.event as ChatEvent;
     // (its chat was handed from here to another station, and the connect's station not told yet, or the event already
@@ -368,12 +411,29 @@ export class WorkspaceConnects {
       await this.d.bus.ask(moved, { method: EVENT, workspace, connect: known, described: d, event });
       return { ok: true };
     }
-    await this.d.hub().receive(id, event);
-    // Its people and channel named here as there (the pages read them from this station's names book).
-    if (event.type === "message") {
+    if (event.type !== "message") {
+      await this.d.hub().receive(id, event);
+      return { ok: true };
+    }
+    const noteNames = () => {
+      // Its people and channel named here as there (the pages read them from this station's names book).
       const chat = this.remote.surface(id);
       chat?.knownPerson(event.message.user);
       chat?.knownChannel(event.message.channel);
+    };
+    // `hub.receive` on a `message` event may fetch thread history and download tens of MB of attachments over the mesh,
+    // exceeding peer RPC `ANSWER_MS` (30 s). Wait up to `acceptWaitMs` so fast completions and refusals return directly;
+    // if still downloading, acknowledge acceptance early and let `hub.inThread` finish serially in the background.
+    const work = this.d.hub().receive(id, event);
+    const waitMs = this.d.acceptWaitMs ?? ACCEPT_WAIT_MS;
+    const done = await this.waitBounded(work, waitMs);
+    if (done) {
+      noteNames();
+    } else {
+      log.info("connects", "remote message still downloading thread context/files; acknowledging acceptance early", { connect: id, channel: thread.channel, threadTs: thread.threadTs, waitMs });
+      void work.then(noteNames, (error) => {
+        log.warn("connects", "a remote message failed after acceptance", { connect: id, channel: thread.channel, threadTs: thread.threadTs, error: (error as Error).message });
+      });
     }
     return { ok: true };
   }
@@ -639,6 +699,11 @@ export class WorkspaceConnects {
             this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
             log.info("connects", "a new conversation runs on another station", { connect: id, station: want });
           } catch (e) {
+            if (mayHaveTaken(e)) {
+              this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
+              log.warn("connects", "a new conversation's hand-off was not confirmed in time; pinning to that station without local fallback", { connect: id, station: want, error: (e as Error).message });
+              throw e;
+            }
             log.warn("connects", "the connect's station for new conversations did not take one; it runs here", { connect: id, station: want, error: (e as Error).message });
             await hub.receive(id, event);
           }
@@ -693,6 +758,12 @@ export class WorkspaceConnects {
           this.rrCursor.set(id, (candidate.idx + 1) % pool.length);
           return;
         } catch (e) {
+          if (candidate.station !== here && mayHaveTaken(e)) {
+            this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, candidate.station);
+            this.rrCursor.set(id, (candidate.idx + 1) % pool.length);
+            log.warn("connects", "a new conversation's hand-off was not confirmed in time; pinning to that station without failing over", { connect: id, station: candidate.station, error: (e as Error).message });
+            throw e;
+          }
           log.warn("connects", "an allowlisted station for new conversations did not take one; trying next", { connect: id, station: candidate.station, error: (e as Error).message });
         } finally {
           this.addInflight(id, candidate.station, -1);

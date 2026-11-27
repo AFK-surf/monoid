@@ -5,6 +5,7 @@
 import "crypto"
 
 pub let RETRY_FAILED_NAME_MS : Int64 = 600000.to_int64()
+pub let CONNECT_ACCEPT_WAIT_MS : Int64 = 5000.to_int64()
 pub let CPU_FULL : Double = 0.9
 pub let LOAD_PER_CORE_FULL : Double = 1.5
 
@@ -172,6 +173,28 @@ pub fn ConnectWorkspace::thread_station(
   thread_ts : String,
 ) -> Option[String] {
   self.routes.get(route_key(connect_id, channel, thread_ts))
+}
+
+/// Handles a failed `connect.event` forward for a fresh conversation (1:1 with
+/// `station/src/connects/workspace.ts` `mayHaveTaken` failover guard).
+/// When `may_have_taken` is true (RPC timeout, connection drop, peer stop), pins
+/// the thread to `station` and returns `false` (do NOT fail over to another station
+/// or local fallback). When false (definite refusal / `NoLink`), leaves routing
+/// unset and returns `true` (safe to try the next candidate).
+pub fn ConnectWorkspace::on_forward_error(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+  station : String,
+  may_have_taken : Bool,
+) -> Bool {
+  if may_have_taken {
+    self.route_thread(connect_id, channel, thread_ts, Some(station))
+    false
+  } else {
+    true
+  }
 }
 
 /// Marks a thread as left (`chat_leave`): non-addressed messages will not wake

@@ -952,3 +952,19 @@ test "slack multi-edit dedupe: distinct edits deliver, same edit redelivery dedu
     _ => debug_assert(false, "second edit without uid must not be transport-deduped")
   }
 }
+
+test "ConnectWorkspace::on_forward_error pins thread and forbids failover when may_have_taken is true" {
+  let ws = ConnectWorkspace::new("host-h")
+  debug_assert(CONNECT_ACCEPT_WAIT_MS == i64(5000), "bounded accept wait matches TS 5s")
+  // Definite refusal (NoLink / Refused): leaves route unset and allows trying next candidate.
+  let retry_next = ws.on_forward_error("cl", "C1", "100.1", "st-1", false)
+  debug_assert(retry_next, "definite refusal must allow failover")
+  debug_assert(ws.thread_station("cl", "C1", "100.1") is None, "definite refusal must not pin thread")
+  // Ambiguous timeout / PeerGone: pins thread to st-1 and forbids failover to any other station.
+  let retry_ambiguous = ws.on_forward_error("cl", "C1", "100.1", "st-1", true)
+  debug_assert(!retry_ambiguous, "ambiguous error must forbid failover")
+  match ws.thread_station("cl", "C1", "100.1") {
+    Some(s) => debug_assert(s == "st-1", "ambiguous error must pin thread to attempted station")
+    None => debug_assert(false, "expected pinned station")
+  }
+}

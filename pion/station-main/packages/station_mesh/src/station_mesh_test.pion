@@ -729,3 +729,14 @@ test "ways validate_relay_url strictly validates IPv6 literals" {
   assert(validate_relay_url("https://[2001:db8::1]:8443/Relay") is Some(_))
   assert(validate_relay_url("https://[::1]/Relay") is Some(_))
 }
+
+test "peer_error_may_have_run distinguishes ambiguous post-send errors from definite refusals" {
+  assert(peer_error_may_have_run(PeerError::Timeout("peer request timed out")))
+  assert(peer_error_may_have_run(PeerError::PeerGone("gone")))
+  assert(peer_error_may_have_run(PeerError::PeerStopped("stopped")))
+  assert(peer_error_may_have_run(PeerError::Refused("peer request timed out; execution may have happened")))
+  assert(!peer_error_may_have_run(PeerError::Refused("retiring")))
+  assert(!peer_error_may_have_run(PeerError::NoLink("dial failed")))
+  assert(!peer_error_may_have_run(PeerError::NoBytes("chunks only")))
+  assert(!peer_error_may_have_run(PeerError::NotReady("mesh not ready")))
+}

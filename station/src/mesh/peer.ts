@@ -223,6 +223,12 @@ export class PeerGone extends Error {
   }
 }
 
+/// Marks an error thrown after the request was written to an open stream (excluding explicit peer `Refused` and
+/// `NoBytes`), so callers know the remote station may already have started executing it and must not fail over blindly.
+const MAY_HAVE_RUN = Symbol("peer-may-have-run");
+export const mayHaveRun = (error: unknown): boolean =>
+  error !== null && typeof error === "object" && (error as { [MAY_HAVE_RUN]?: boolean })[MAY_HAVE_RUN] === true;
+
 /// What a station's connections are closed with as its process stops or hands over to the next (mesh.ts `closing`; the
 /// front's, mb/src/front/mesh.mbt `part`, says the same words).
 export const STOPPING = "station stopping";
@@ -450,6 +456,14 @@ export function peerCall(
     let opened: Stream | null = null;
     let opening = false;
     let starved = false;
+    // Whether bytes of this request were written to the stream (once true, a non-Refused error is ambiguous).
+    let wrote = false;
+    const mark = <T>(e: T): T => {
+      if (wrote && !(e instanceof Refused) && !(e instanceof NoBytes) && e !== null && typeof e === "object") {
+        (e as { [MAY_HAVE_RUN]?: boolean })[MAY_HAVE_RUN] = true;
+      }
+      return e;
+    };
     // A connection gives each request a stream of its own, up to as many at once as its other end allows (QUIC's
     // MAX_STREAMS, 100 bidi by default); a stream counts until both its ends ended it. Once that many are held (answers
     // that never came, on a station of before that kept them open), no stream comes: every request on the connection
@@ -485,6 +499,7 @@ export function peerCall(
         const before = received(conn);
         const bytes = Buffer.from(JSON.stringify({ workspace: ws, request }));
         if (bytes.length > MAX_MESSAGE) throw new Error("peer request too large");
+        wrote = true;
         await stream.write(bytes);
         await stream.finish();
         const watched = watch(target, conn, before);
@@ -501,11 +516,13 @@ export function peerCall(
       const reader = new Reader(stream, MAX_MESSAGE);
       let answer: any;
       if (body === null) {
+        wrote = true;
         await stream.write(head);
         await stream.finish();
         const watched = watch(target, conn, before);
         answer = await Promise.race([reader.line(), watched.gone]).finally(watched.stop);
       } else {
+        wrote = true;
         await within(idleMs, stream.write(head), late);
         // A refusal can come before they all went (the other end read none of them): the rest is not sent.
         const answered = reader.line();
@@ -550,7 +567,7 @@ export function peerCall(
       const stream = opened as Stream | null;
       if (stream !== null && !(error instanceof Refused) && !(error instanceof NoBytes)) void stream.reset(STOPPED).catch(() => {});
       // (its connection found gone, by this request or another: said so, whatever the stream failed with as it closed)
-      if (failed !== null && found.has(failed)) throw error instanceof PeerGone ? error : new PeerGone();
+      if (failed !== null && found.has(failed)) throw mark(error instanceof PeerGone ? error : new PeerGone());
       // (no stream came in time on a connection that is there: it has none left to give, whatever its other end answers;
       // let go, so the next request dials anew, and what else waits on it fails now rather than at its own timeout)
       if (failed !== null && (opening || starved) && (error as Error)?.message === late && !failed.isClosed()) {
@@ -558,25 +575,25 @@ export function peerCall(
         found.add(failed);
         log.warn("mesh", "a station's connection gave no stream in time: closed", { peer: target.slice(0, 12) });
         failed.close(0, "no stream");
-        throw error;
+        throw mark(error);
       }
       // (its bytes not taken for IDLE_MS, its other end not there: gone, as `watch` finds a request's connection not
       // answering, never waited on to close below: a station killed closes only as QUIC gives the connection up, and a
       // move's pack, its station killed as it went, held the turn till that station came back, drill 3a 2026-11-16)
       if (failed !== null && (error as Error)?.message === STALLED && !failed.isClosed() && !(await there(failed))) {
         drop(target, failed);
-        throw new PeerGone();
+        throw mark(new PeerGone());
       }
       // (its connection closed by the other station's process stopping or handing over, with no answer: said so, and
       // let go at once, so the next request dials the process that answers now)
       if (failed !== null && !(error instanceof Refused) && !(error instanceof NoBytes) && (error as Error)?.message !== late && (await stoppedThere(failed))) {
         if (connections.get(target) === failed) connections.delete(target);
-        throw new PeerStopped();
+        throw mark(new PeerStopped());
       }
       if (!(error instanceof Refused) && !(error instanceof NoBytes) && failed !== null) void letGo(target, failed);
       // Not connected in time: the next request dials again rather than wait on this dial.
       if (failed === null && dialed !== null && dialing.get(target) === dialed) dialing.delete(target);
-      throw error;
+      throw mark(error);
     }
   };
   /// A station connected to this one: the connection kept to it, where it is not the same station's still (started
