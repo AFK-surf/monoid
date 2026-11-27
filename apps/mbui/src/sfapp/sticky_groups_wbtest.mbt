@@ -372,3 +372,48 @@ test "1.3x large font scale: small screen floating pill and large screen sticky 
   assert_eq(sticky_desk_audit(tl), [])
   tl.assert_idle()
 }
+
+///|
+test "desktop & medium push-out: outgoing Above/Below headings dissolve before clip edge with zero audit faults" {
+  // Desktop Side (1280x800): scroll into the exact push-out zone where monoid pushes board up and board pushes 未归类
+  // above top_edge (reproducing the mid-push clipped sliver state).
+  let t = sticky_tester("projects-sticky", 1280.0, 800.0, 0)
+  sticky_scroll_by(t, 150.0, 400.0, 456.0)
+  assert_eq(sticky_desk_audit(t), [])
+  // Once 未归类 is pushed >= 10pt above top_edge, its interactive foreground button dissolves cleanly (opacity -> 0,
+  // skipped by pointer hit-testing & semantics) so half-sliced glyphs never linger below 新建对话.
+  let uncat = t.semantics().iter().find_first(fn(s) {
+    !s.hidden && s.role is Button && s.expanded is Some(_) && s.label.has_prefix("未归类 ")
+  })
+  if uncat is Some(u) {
+    // Either fully gone from top stack or dissolved cleanly before glyphs cross top_edge
+    assert_true(
+      u.rect.1 >= 34.0 || u.rect.1 + u.rect.3 <= 48.0,
+      msg="outgoing Above heading 未归类 must not linger half-clipped under top band: y=\{u.rect.1}, h=\{u.rect.3}",
+    )
+  }
+  for w in t.words() {
+    if w.0 == "未归类" && w.2 < 52.0 {
+      assert_true(
+        w.5 <= 0.001,
+        msg="outgoing 未归类 glyphs crossing top_edge must be dissolved: y=\{w.2}, alpha=\{w.5}",
+      )
+    }
+  }
+  // Finish pushing 未归类 out -> board settles cleanly at slot 0, monoid below hairline
+  sticky_scroll_by(t, 150.0, 400.0, 64.0)
+  assert_eq(sticky_desk_audit(t), [])
+  let board_btn = t.semantics().iter().find_first(fn(s) {
+    !s.hidden && s.role is Button && s.expanded is Some(_) && s.label.has_prefix("board ")
+  })
+  assert_true(board_btn is Some(_), msg="board header must remain cleanly visible at slot 0 after push-out")
+  t.assert_idle()
+
+  // Medium Tape (800x800, fractional band_new_tape_over = 10.78): scroll across push-out with zero audit faults
+  let tm = sticky_tester("projects-sticky", 800.0, 800.0, 0)
+  sticky_scroll_by(tm, 150.0, 400.0, 456.0)
+  assert_eq(sticky_desk_audit(tm), [])
+  sticky_scroll_by(tm, 150.0, 400.0, 64.0)
+  assert_eq(sticky_desk_audit(tm), [])
+  tm.assert_idle()
+}
