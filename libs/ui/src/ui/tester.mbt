@@ -2655,7 +2655,7 @@ pub fn Tester::check_rows(self : Tester, top : Double, bottom : Double) -> Unit 
     Old(st) => st.count
     Tree(l) => l.count
   }
-  if last < count - 1 && end < bottom - 1.0e-2 {
+  if last < count - 1 && end < bottom - 0.01 {
     @halt.saying("row \{last}, the last in view, ends at \{end}, above the bottom \{bottom}")
   }
 }
