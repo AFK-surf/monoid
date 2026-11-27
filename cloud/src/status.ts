@@ -242,9 +242,12 @@ export class ServiceStatus extends DurableObject<Env> {
     };
     const refresh = (async () => {
       if (this.#changelogGen !== gen) return;
+      const prev = this.#responseCache.get(cacheKey);
       const result = await this.#buildChangelogResponse(channel, upstream, ttlSeconds, true);
       if (!result.ok) {
         console.error(`changelog background refresh ${result.file} failed:`, result.message);
+        backoff();
+      } else if (this.#responseCache.get(cacheKey) === prev) {
         backoff();
       }
     })()
@@ -304,6 +307,7 @@ export class ServiceStatus extends DurableObject<Env> {
     };
     const refresh = (async () => {
       if (this.#changelogGen !== gen) return;
+      const prev = this.#fixesCache;
       let failed = false;
       const { entries, expiresAt } = await this.#readChangelog(
         "beta",
@@ -326,6 +330,7 @@ export class ServiceStatus extends DurableObject<Env> {
           this.#fixesCache = { fixes, expiresAt, refreshAt };
         }
       }
+      if (this.#fixesCache === prev) backoff();
     })()
       .catch((error) => {
         console.error("changelog fixes background refresh failed:", error);
