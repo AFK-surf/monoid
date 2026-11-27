@@ -608,8 +608,7 @@ fn bar_glass_capsule(
         bar_k_until(),
       )
       let t = bar_moment(g, Ball, until)
-      let spot : (Double, Double)? = None
-      (spot, bar_merge_at(t))
+      (None, bar_merge_at(t))
     })
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
     // room as far as the notch is open then)
