@@ -1557,11 +1557,17 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
       }
       if !menu_items.is_empty() {
+        let has_screen_items = !others.is_empty() || !user_ids.is_empty() || can_browse
+        let has_term_items = !open_terms.is_empty() || can_term
         @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End, gone=release_once)
+        let menu_serial = @sf.last_presented()
         stop_watch.val = Some(
           @sfbase.watch_while_open(
-            fn() { flag(sub_s.get().value, "denied") || flag(sub_t.get().value, "denied") },
-            fn() { @sf.close_presented() },
+            fn() {
+              (has_screen_items && flag(sub_s.get().value, "denied")) ||
+              (has_term_items && flag(sub_t.get().value, "denied"))
+            },
+            fn() { @sf.close_presented_of(menu_serial) },
           ),
         )
       } else {

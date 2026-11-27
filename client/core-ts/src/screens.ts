@@ -634,7 +634,7 @@ type Next = { socket: WireSocket; scope: Scope.Closeable; asked: ScreenAsk };
 
 /// How a view's stream ended (`gone`: its screen went, a tab closed; `dropped`: the stream went, `seen` whether a frame
 /// came on it first), or why it could not open.
-type Outcome = { ended: string | null; gone?: true } | { reopen: Next } | { dropped: true; seen: boolean } | { failed: CoreError } | { denied: true } | { outdated: true };
+type Outcome = { ended: string | null; gone?: true } | { reopen: true } | { dropped: true; seen: boolean } | { failed: CoreError } | { denied: true } | { outdated: true };
 
 /// What a failure to open a view says the view is now: done for good (a phase), or worth trying again (null). The
 /// station's statuses: 404 no such screen, 400/415 no codec in common, 501 not supported here,
@@ -946,13 +946,30 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     }
 
     const confirmedScreens = () => (inner.stations.isConfirmed("screens", station) ? inner.stations.screens(station) : undefined);
-    const confirmedItem = (): J => confirmedScreens()?.screens.find((s) => get(s, "id") === c.screen);
+    const confirmedItem = (): J => confirmedScreens()?.screens.find((s) => get(s, "id") === c.screen && get(s, "opening") !== true);
+    const checkConfirmedTarget = (): Outcome | null => {
+      if (isViewDenied()) return { denied: true };
+      if (!inner.stations.isConfirmed("screens", station)) return { dropped: true, seen: false };
+      if (confirmedScreens()?.outdated) return { outdated: true };
+      const cur = confirmedItem();
+      if (cur === undefined) return { ended: t("core-views.screen.gone"), gone: true };
+      if (c.ask.peek && get(cur, "peek") !== true) {
+        markDenied();
+        return { denied: true };
+      }
+      return null;
+    };
 
     // Entire view lifecycle wrapped in a single scoped body raced against `deniedAbort`:
     // any 401/403 during readScreens, opening wait, first handshake, socket.tap, frame reading,
     // replacement handshake, or reconnect sleep immediately interrupts `runBody` and runs all finalizers.
     const runBody = Effect.scoped(
       Effect.gen(function* () {
+        // Hoisted above `attempt` so a replacement stream's scope is handed directly into `ready` before
+        // releasing `attempt`'s fallback finalizer — zero window where an interrupting 403 could leak it.
+        let ready: Next | null = null;
+        yield* Effect.addFinalizer(() => (ready === null ? Effect.void : Scope.close(ready.scope, Exit.void)));
+
         // Always confirm screens with the station in the current authGen before opening a stream (even when cold-start keeper cache has a row).
         // Transient failures (5xx) fall through to `attempt`, which retries confirmation before ever dispatching `requests.screenView`.
         if (!inner.stations.isConfirmed("screens", station)) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
@@ -1002,16 +1019,16 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         }
         tell();
 
-        /// One stream (`ready`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
+        /// One stream (`takeReady`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
         /// opened again, or fails.
-        const attempt = (ready: Next | null): Effect.Effect<Outcome> =>
+        const attempt = (takeReady: Next | null): Effect.Effect<Outcome> =>
           Effect.scoped(
             Effect.gen(function* () {
               let socket: WireSocket;
               let sent: ScreenAsk;
-              if (ready !== null) {
-                yield* Effect.addFinalizer(() => Scope.close(ready.scope, Exit.void));
-                ({ socket, asked: sent } = ready);
+              if (takeReady !== null) {
+                yield* Effect.addFinalizer(() => Scope.close(takeReady.scope, Exit.void));
+                ({ socket, asked: sent } = takeReady);
               } else {
                 if (isViewDenied()) return { denied: true } as Outcome;
                 // Enforce station confirmation in current authGen before ever calling `requests.screenView`.
@@ -1020,17 +1037,12 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                   if (isViewDenied()) return { denied: true } as Outcome;
                   if (readRes._tag === "Failure") {
                     const st = readRes.failure.status;
-                    if (st !== undefined && st >= 500 && st !== 501 && st !== 503) return { dropped: true, seen: false } as Outcome;
+                    if (st !== undefined && st >= 500 && st !== 501) return { dropped: true, seen: false } as Outcome;
                     return { failed: readRes.failure } as Outcome;
                   }
-                  if (!inner.stations.isConfirmed("screens", station)) return { dropped: true, seen: false } as Outcome;
                 }
-                if (confirmedScreens()?.outdated) return { outdated: true } as Outcome;
-                if (confirmedItem() === undefined) return { ended: t("core-views.screen.gone"), gone: true } as Outcome;
-                if (c.ask.peek && get(confirmedItem(), "peek") !== true) {
-                  markDenied();
-                  return { denied: true } as Outcome;
-                }
+                const blocked = checkConfirmedTarget();
+                if (blocked !== null) return blocked;
                 if (auto) wanted = may && names(get(confirmedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
                 sent = { ...bounds, control: wanted };
                 const opened = yield* Effect.result(inner.stations.requests.screenView(addr, c.screen, sent, ctx));
@@ -1082,7 +1094,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
               Effect.as(Deferred.await(again), { reopen: true } as const),
             );
             if ("reopen" in next) {
-              if (isViewDenied()) return { denied: true } as Outcome;
+              const blocked = checkConfirmedTarget();
+              if (blocked !== null) return blocked;
               // The next stream opened while this one stays: the station has a view of this client's all along.
               const scope = yield* Scope.make();
               let handedOff = false;
@@ -1097,8 +1110,10 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 yield* Scope.close(scope, Exit.void);
                 return { failed: opened.failure } as Outcome;
               }
+              // Hand ownership directly to outer `runBody`'s `ready` BEFORE clearing `handedOff` — zero leak window.
+              ready = { socket: opened.success, scope, asked: nextAsk };
               handedOff = true;
-              return { reopen: { socket: opened.success, scope, asked: nextAsk } } as Outcome;
+              return { reopen: true } as Outcome;
             }
             if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true, seen } as Outcome;
             reader.push(next.r.success);
@@ -1306,18 +1321,12 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       );
 
         let misses = 0;
-        let ready: Next | null = null;
-        // (one opened as the view ends: closed with it)
-        yield* Effect.addFinalizer(() => (ready === null ? Effect.void : Scope.close(ready.scope, Exit.void)));
         for (;;) {
-          const outcome: Outcome = yield* attempt(ready);
+          const takeReady = ready;
           ready = null;
+          const outcome: Outcome = yield* attempt(takeReady);
           if ("reopen" in outcome) {
-            if (isViewDenied()) {
-              yield* Scope.close(outcome.reopen.scope, Exit.void);
-              return;
-            }
-            ready = outcome.reopen;
+            if (isViewDenied()) return;
             continue;
           }
           if ("denied" in outcome || isViewDenied()) return;

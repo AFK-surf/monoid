@@ -238,9 +238,7 @@ pub fn watch_while_open(pred : () -> Bool, on_fire : () -> Unit) -> () -> Unit {
     stop()
   }
   fn() {
-    if active.val {
-      active.val = false
-      stop()
-    }
+    active.val = false
+    stop()
   }
 }

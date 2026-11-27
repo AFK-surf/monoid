@@ -836,14 +836,19 @@ export class StationsSync {
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
         if ((this.#screensConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
-        if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
-        const prevRev = this.#capRevRecord(address, "screens")?.rev ?? 0;
-        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: prevRev + 1, denied: true });
-        yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
-        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || (this.#screensConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        // Synchronously apply all in-memory revocation + notification BEFORE any async disk I/O so active viewers abort immediately,
+        // and fork durable `device/auth` flush so a slow/hanging storage write never blocks the `"screens"` single-flight slot.
         this.#screensDeniedGen.set(address, startGen);
         link.memory.clearKey("screens");
+        const prevRev = this.#capRevRecord(address, "screens")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: prevRev + 1, denied: true });
         this.onChange(address, "screens");
+        this.#core.runner.fork(
+          Effect.gen({ self: this }, function* () {
+            if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+            yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+          }),
+        );
         return;
       }
       if (this.#screensSeq.get(address) !== seq) return;
@@ -888,9 +893,12 @@ export class StationsSync {
     const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
     let capRev: number | undefined;
     if (!this.#core.data.device.isUnloaded("auth")) {
-      const nextRev = (this.#capRevRecord(address, "screens")?.rev ?? 0) + 1;
-      this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: nextRev, denied: false });
-      capRev = nextRev;
+      const cur = this.#capRevRecord(address, "screens");
+      const rev = cur?.rev ?? 0;
+      if (cur?.denied === true) {
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev, denied: false });
+      }
+      capRev = rev;
     }
     const stamped = {
       ...held,
@@ -916,14 +924,19 @@ export class StationsSync {
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
         if ((this.#terminalsConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
-        if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
-        const prevRev = this.#capRevRecord(address, "terminals")?.rev ?? 0;
-        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: prevRev + 1, denied: true });
-        yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
-        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || (this.#terminalsConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        // Synchronously apply all in-memory revocation + notification BEFORE any async disk I/O,
+        // and fork durable `device/auth` flush so a slow/hanging storage write never blocks the `"terminals"` single-flight slot.
         this.#terminalsDeniedGen.set(address, startGen);
         link.memory.clearKey("terminals");
+        const prevRev = this.#capRevRecord(address, "terminals")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: prevRev + 1, denied: true });
         this.onChange(address, "terminals");
+        this.#core.runner.fork(
+          Effect.gen({ self: this }, function* () {
+            if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+            yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+          }),
+        );
         return;
       }
       if (this.#terminalsSeq.get(address) !== seq) return;
@@ -941,9 +954,12 @@ export class StationsSync {
     const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
     let capRev: number | undefined;
     if (!this.#core.data.device.isUnloaded("auth")) {
-      const nextRev = (this.#capRevRecord(address, "terminals")?.rev ?? 0) + 1;
-      this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: nextRev, denied: false });
-      capRev = nextRev;
+      const cur = this.#capRevRecord(address, "terminals");
+      const rev = cur?.rev ?? 0;
+      if (cur?.denied === true) {
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev, denied: false });
+      }
+      capRev = rev;
     }
     const stamped = {
       ...held,
@@ -968,16 +984,15 @@ export class StationsSync {
     const held = this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return undefined;
     if (this.isConfirmed("terminals", address)) return held;
+    if (!this.#core.data.isStationWritable(address) || this.#core.data.device.isUnloaded("auth")) return undefined;
     const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
     const rec = this.#capRevRecord(address, "terminals");
     if (
-      !this.#core.data.isStationWritable(address) ||
       curDigest === undefined ||
       held.authDigest !== curDigest ||
-      rec === undefined ||
-      rec.denied !== false ||
+      rec?.denied === true ||
       typeof held.capRev !== "number" ||
-      held.capRev !== rec.rev
+      held.capRev !== (rec?.rev ?? 0)
     ) return undefined;
     return held;
   }
@@ -990,16 +1005,15 @@ export class StationsSync {
     const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return undefined;
     if (!this.isConfirmed("screens", address)) {
+      if (!this.#core.data.isStationWritable(address) || this.#core.data.device.isUnloaded("auth")) return undefined;
       const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
       const rec = this.#capRevRecord(address, "screens");
       if (
-        !this.#core.data.isStationWritable(address) ||
         curDigest === undefined ||
         held.authDigest !== curDigest ||
-        rec === undefined ||
-        rec.denied !== false ||
+        rec?.denied === true ||
         typeof held.capRev !== "number" ||
-        held.capRev !== rec.rev
+        held.capRev !== (rec?.rev ?? 0)
       ) return undefined;
     }
     const opening = this.#openingTabs.get(address);

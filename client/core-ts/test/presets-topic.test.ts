@@ -1005,26 +1005,33 @@ test("r11_capRev_survives_readonly_403_restart_and_500_deeplink_and_tap_abort_an
   await Effect.runPromise(first.core.inner.data.device.flushTable("auth"));
   first.core.close();
 
-  // Restart with network blocked so workspaceDigest is NOT seeded yet on initial subscribe, then seed it manually.
+  // Restart with network blocked and personal-lock storage reads delayed so workspaceDigest is NOT seeded yet on initial subscribe.
   const host = first.host;
   host.onFetch(() => new Promise(() => {}));
   host.onFetchStream(() => Effect.never);
   host.takeEmitted();
+  const lockGate = Deferred.makeUnsafe<void>();
+  const origStorageGet = host.storageGet.bind(host);
+  host.storageGet = (k) =>
+    k.startsWith("personal-lock-")
+      ? Effect.andThen(Deferred.await(lockGate), origStorageGet(k))
+      : origStorageGet(k);
   const cold = await Core.create(host, { clock: host.time.clock, sample: 0 });
-  // Ensure digest is not yet seeded for "ws" on cold start before cloud replies:
+  assert.equal(cold.inner.store.authGen.hasWorkspaceDigest("ws"), false, "cold start before personal-lock loads must not have workspaceDigest seeded yet");
   const coldUi = cold.connect();
   const coldVals = new Map<number, unknown>();
   subscribe(cold, coldUi, 1, { topic: "screens", station: S });
   subscribe(cold, coldUi, 2, { topic: "terminals", station: S });
   await host.time.pass(100, 10);
   apply(host, coldVals);
-  if (!cold.inner.store.authGen.hasWorkspaceDigest("ws")) {
-    assert.equal(v(coldVals, 1).known, false, "unseeded workspaceDigest starts as known: false");
-    assert.equal(v(coldVals, 2).known, false, "unseeded workspaceDigest starts as known: false");
-    cold.inner.store.authGen.syncWorkspace("ws", firstDigest);
-    await host.settle();
-    apply(host, coldVals);
-  }
+  assert.equal(v(coldVals, 1).known, false, "unseeded workspaceDigest MUST start as known: false");
+  assert.equal(v(coldVals, 2).known, false, "unseeded workspaceDigest MUST start as known: false");
+  // Release personal-lock load so Core naturally seeds workspaceDigest -> onWorkspaceDigestSeeded recomputes active subscriptions.
+  Deferred.doneUnsafe(lockGate, Effect.void);
+  host.storageGet = origStorageGet;
+  await host.settle();
+  apply(host, coldVals);
+  assert.equal(cold.inner.store.authGen.hasWorkspaceDigest("ws"), true, "workspaceDigest seeded after personal-lock loads");
   assert.equal(v(coldVals, 1).known, true, "once workspaceDigest is seeded, active screens subscription auto-recomputes to known: true");
   assert.equal(v(coldVals, 1).confirmed, false);
   assert.equal(v(coldVals, 2).known, true, "once workspaceDigest is seeded, active terminals subscription auto-recomputes to known: true");
@@ -1134,4 +1141,166 @@ test("r11_capRev_survives_readonly_403_restart_and_500_deeplink_and_tap_abort_an
   assert.ok(msgsTap.some((m) => m.id === 82 && m.value?.state?.phase === "denied"), `403 during socket.tap must enter phase: denied, got: ${JSON.stringify(msgsTap)}`);
   assert.equal(tapCanceled, 1, "socket scope must be closed immediately when 403 interrupts socket.tap");
   dl.core.close();
+});
+
+test("r12_pure_revocation_capRev_sync_403_multicore_merge_503_retry_and_reopen_handoff_zero_leak", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [{ id: "t-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] },
+  };
+
+  // 1. Opus P1: repeated SSE confirmations do NOT bump capRev or write device/auth, and cold start still shows known:true, confirmed:false.
+  const first = await started(said as never);
+  const authBefore = first.core.inner.data.device.get("auth", `capRev:${S}:screens`);
+  assert.equal(authBefore, undefined, "normal confirmation must not write capRev to device/auth");
+  await first.host.time.pass(KEEP_MS + 1_000, 1_000);
+  await Effect.runPromise(first.core.inner.data.written);
+  // Burst of SSE updates within KEEP_MS throttle window: disk row stays at capRev=0, device/auth stays untouched.
+  for (let i = 0; i < 5; i++) {
+    first.push("screens", { screens: [{ id: "desktop", kind: "desktop", title: `Live-${i}`, width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  }
+  await first.host.settle();
+  assert.equal(first.core.inner.data.device.get("auth", `capRev:${S}:screens`), undefined, "repeated confirmations must never write device/auth");
+  const digest1 = first.core.inner.store.authGen.workspaceDigest("ws")!;
+  first.core.close();
+
+  first.host.onFetch(() => new Promise(() => {}));
+  first.host.onFetchStream(() => Effect.never);
+  first.host.takeEmitted();
+  const restarted = await Core.create(first.host, { clock: first.host.time.clock, sample: 0 });
+  restarted.inner.store.authGen.syncWorkspace("ws", digest1);
+  const rUi = restarted.connect();
+  const rVals = new Map<number, unknown>();
+  subscribe(restarted, rUi, 1, { topic: "screens", station: S });
+  await first.host.time.pass(100, 10);
+  apply(first.host, rVals);
+  assert.equal(v(rVals, 1).known, true, "throttled disk row with capRev=0 must still show immediately on cold start");
+  assert.equal(v(rVals, 1).confirmed, false);
+  restarted.close();
+
+  // 2. Astra P1-2: two Cores sharing host storage write different station capRev:* keys -> merge-before-write preserves both.
+  const shared = await started(said as never);
+  const coreA = shared.core;
+  const coreB = await Core.create(shared.host, { clock: shared.host.time.clock, sample: 0 });
+  coreA.inner.data.device.put("auth", `capRev:${S}:screens`, { rev: 1, denied: true });
+  await Effect.runPromise(coreA.inner.data.device.flushTable("auth"));
+  coreB.inner.data.device.put("auth", "capRev:ws/st2:screens", { rev: 2, denied: true });
+  await Effect.runPromise(coreB.inner.data.device.flushTable("auth"));
+  const rawAuth = await Effect.runPromise(shared.host.storageGet("device/auth"));
+  assert.ok(rawAuth !== null);
+  const parsedAuth = JSON.parse(new TextDecoder().decode(rawAuth)) as Record<string, { rev: number; denied: boolean }>;
+  assert.deepEqual(parsedAuth[`capRev:${S}:screens`], { rev: 1, denied: true }, "Core B flush must preserve Core A's capRev entry");
+  assert.deepEqual(parsedAuth["capRev:ws/st2:screens"], { rev: 2, denied: true }, "Core B's own capRev entry must be persisted");
+  coreB.close();
+  coreA.close();
+
+  // 3. Astra P1-1 (sync 403 even when flushTable("auth") hangs) + P2-3 (503 retries as reconnecting, 0 screenView) + P1-4 (reopen handoff 0 leak).
+  let svCount = 0;
+  let newScopeClosed = 0;
+  let screenMode: "open-for-sync403" | "reopen-then-403" | "fail" = "fail";
+  let onOldFinalizer: (() => void) | null = null;
+  const wireFactory = (h: FakeHost): StationWire =>
+    Object.assign(new HostWire(h), {
+      screen: () => {
+        svCount++;
+        if (screenMode === "open-for-sync403") {
+          return Effect.gen(function* () {
+            const q = yield* Queue.unbounded<Uint8Array | null>();
+            return {
+              reply: { status: 200, headers: [["content-type", "application/x-stillfail-screen"]] as [string, string][], body: { take: Queue.take(q) }, via: null },
+              send: { write: () => Effect.void, finish: () => {} },
+            };
+          });
+        }
+        if (screenMode === "reopen-then-403") {
+          if (svCount === 2) {
+            return Effect.gen(function* () {
+              yield* Effect.addFinalizer(() => Effect.sync(() => { onOldFinalizer?.(); }));
+              const q = yield* Queue.unbounded<Uint8Array | null>();
+              return {
+                reply: { status: 200, headers: [["content-type", "application/x-stillfail-screen"]] as [string, string][], body: { take: Queue.take(q) }, via: null },
+                send: { write: () => Effect.void, finish: () => {} },
+              };
+            });
+          }
+          return Effect.gen(function* () {
+            yield* Effect.addFinalizer(() => Effect.sync(() => { newScopeClosed++; }));
+            const q = yield* Queue.unbounded<Uint8Array | null>();
+            return {
+              reply: { status: 200, headers: [["content-type", "application/x-stillfail-screen"]] as [string, string][], body: { take: Queue.take(q) }, via: null },
+              send: { write: () => Effect.void, finish: () => {} },
+            };
+          });
+        }
+        return Effect.fail(new CoreError("network", "unexpected screenView"));
+      },
+    });
+
+  const run3 = await started(said as never, 0, wireFactory);
+  const ui3 = run3.core.connect();
+  let screensReply: 503 | 403 | 200 = 503;
+  stationLater(run3.host, (req) => {
+    if (req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      if (screensReply === 503) return Promise.resolve(jsonResponse(503, { error: "service unavailable" }));
+      if (screensReply === 403) return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+
+  // 3a. Astra P2-3: GET /screens 503 on unconfirmed screen enters reconnecting (NOT denied) with 0 screenView calls.
+  const link3 = run3.core.inner.stations.link(S)!;
+  link3.memory.deletePrefix("screens");
+  run3.host.takeEmitted();
+  call(run3.core, ui3, 91, "screen.view", { station: S, screen: "desktop", view: "v-503", codecs: ["jpeg"] });
+  await run3.host.settle();
+  const msgs503 = run3.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgs503.some((m) => m.id === 91 && m.value?.state?.phase === "reconnecting"), `503 on GET /screens must enter reconnecting, got: ${JSON.stringify(msgs503)}`);
+  assert.equal(msgs503.some((m) => m.id === 91 && m.value?.state?.phase === "denied"), false, "503 on GET /screens must not be misclassified as denied");
+  assert.equal(svCount, 0, "0 screenView calls on 503");
+  run3.core.receive(ui3, { kind: "cancel", id: 91, cancel: true });
+  await run3.host.settle();
+
+  // 3b. Astra P1-1: even while storageSet("device/auth") hangs, 403 synchronously aborts active viewer to phase: "denied".
+  screensReply = 200;
+  run3.core.inner.runner.fork(run3.core.inner.stations.readScreens(S));
+  await run3.host.settle();
+  screenMode = "open-for-sync403";
+  call(run3.core, ui3, 92, "screen.view", { station: S, screen: "desktop", view: "v-sync403", codecs: ["jpeg"] });
+  await run3.host.settle();
+  assert.equal(svCount, 1);
+  const origStorageSet = run3.host.storageSet.bind(run3.host);
+  run3.host.storageSet = (k, b) => (k === "device/auth" ? Effect.never : origStorageSet(k, b));
+  run3.host.takeEmitted();
+  screensReply = 403;
+  run3.core.inner.runner.fork(run3.core.inner.stations.readScreens(S));
+  await run3.host.settle();
+  assert.equal(run3.core.inner.stations.isDenied("screens", S), true, "403 must synchronously mark denied even while flushTable hangs");
+  const msgsSync = run3.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgsSync.some((m) => m.id === 92 && m.value?.state?.phase === "denied"), `active viewer must abort synchronously even when flushTable hangs, got: ${JSON.stringify(msgsSync)}`);
+  run3.host.storageSet = origStorageSet;
+
+  // 3c. Astra P1-4: reopen succeeds, then 403 fires during old attempt's teardown before next loop iteration -> new scope closed exactly once (0 leak).
+  screensReply = 200;
+  run3.push("screens", { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  await run3.host.settle();
+  screenMode = "reopen-then-403";
+  call(run3.core, ui3, 93, "screen.view", { station: S, screen: "desktop", view: "v-handoff", codecs: ["jpeg"], control: false });
+  await run3.host.settle();
+  assert.equal(svCount, 2);
+  // When old stream's finalizer runs right after reopen hands off `ready`, fire a synchronous 403 denial:
+  onOldFinalizer = () => {
+    onOldFinalizer = null;
+    screensReply = 403;
+    run3.core.inner.runner.fork(run3.core.inner.stations.readScreens(S));
+  };
+  run3.host.takeEmitted();
+  call(run3.core, ui3, 94, "screen.control", { view: "v-handoff", control: true });
+  await run3.host.settle();
+  assert.equal(svCount, 3, "replacement handshake opened");
+  assert.equal(newScopeClosed, 1, "replacement scope must be closed exactly once with zero leak when 403 fires during handoff");
+  const msgsHandoff = run3.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgsHandoff.some((m) => m.id === 93 && m.value?.state?.phase === "denied"), "view must transition to phase: denied");
+  run3.core.close();
 });

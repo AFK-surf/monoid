@@ -128,6 +128,7 @@ class Device {
   readonly #unloaded = new Set<string>();
   /// Single-flight in-progress `reload` per table (owned by `#runner` so interrupting one waiter never cancels others).
   readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
+  #authWrittenOnce = false;
   /// Compact pre-merge recovery snapshot of disk `device/choice`, cleared once recovery & concurrent verifications end.
   #choiceRecovery: ChoiceRecoverySnapshot | null = null;
   readonly #tableSeq = new Map<string, number>();
@@ -264,16 +265,48 @@ class Device {
 
   /// A table's latest value written; `#dirty` is cleared only after `storageSet` succeeds (and no newer `put` occurred).
   /// Refuses to overwrite a table whose original persisted contents have not been read yet.
+  /// For `"auth"`, reads latest persisted `"device/auth"` first and merges monotonically so concurrent Cores never clobber each other's `connSeq` or `capRev:*` records.
   #write(table: string): Effect.Effect<void, HostError> {
-    return Effect.suspend(() => {
-      if (this.#unloaded.has(table)) return Effect.fail(new HostError(`device/${table} has not been read`));
+    return Effect.gen({ self: this }, function* () {
+      if (this.#unloaded.has(table)) return yield* Effect.fail(new HostError(`device/${table} has not been read`));
+      if (table === "auth" && (this.#authWrittenOnce || Object.keys(this.#tables.get("auth") ?? {}).some((k) => k.startsWith("capRev:")))) {
+        const diskRes = yield* Effect.result(this.#host.storageGet("device/auth"));
+        if (diskRes._tag === "Success" && diskRes.success !== null) {
+          const parsed = parseJson(diskRes.success);
+          if (isObject(parsed)) {
+            const disk = parsed as Record<string, unknown>;
+            const cur = this.#tables.get("auth") ?? {};
+            const merged: Record<string, unknown> = {};
+            for (const key of Object.keys(disk)) merged[key] = frozen(disk[key]);
+            for (const key of Object.keys(cur)) {
+              if (key === "connSeq") {
+                const dVal = Number(merged[key] ?? 0);
+                const mVal = Number(cur[key] ?? 0);
+                merged[key] = frozen(Math.max(Number.isFinite(dVal) ? dVal : 0, Number.isFinite(mVal) ? mVal : 0));
+              } else if (key.startsWith("capRev:")) {
+                const dRec = isObject(merged[key]) ? (merged[key] as Record<string, unknown>) : undefined;
+                const mRec = isObject(cur[key]) ? (cur[key] as Record<string, unknown>) : undefined;
+                const dRevRaw = Number(dRec?.rev ?? 0);
+                const mRevRaw = Number(mRec?.rev ?? 0);
+                const dRev = Number.isFinite(dRevRaw) ? dRevRaw : 0;
+                const mRev = Number.isFinite(mRevRaw) ? mRevRaw : 0;
+                if (dRec === undefined || mRev > dRev) merged[key] = cur[key];
+                else if (dRev > mRev) merged[key] = merged[key];
+                else if (dRec.denied === true || mRec?.denied === true) merged[key] = frozen({ rev: mRev, denied: true });
+                else merged[key] = cur[key];
+              } else {
+                merged[key] = cur[key];
+              }
+            }
+            this.#tables.set("auth", merged);
+          }
+        }
+      }
       const seq = this.#tableSeq.get(table) ?? 0;
       const bytes = toJsonBytes(this.#tables.get(table) ?? {});
-      return Effect.tap(this.#host.storageSet(`device/${table}`, bytes), () =>
-        Effect.sync(() => {
-          if ((this.#tableSeq.get(table) ?? 0) === seq) this.#dirty.delete(table);
-        }),
-      );
+      yield* this.#host.storageSet(`device/${table}`, bytes);
+      if (table === "auth") this.#authWrittenOnce = true;
+      if ((this.#tableSeq.get(table) ?? 0) === seq) this.#dirty.delete(table);
     });
   }
 
