@@ -329,11 +329,13 @@ test "PR-B3c r2 P1-5 & P2-A: exact AuthScope invalidation (Vault keeps pool, Wor
   t.run_for(@ui.move_most_ms)
   assert_true(@signals.untracked(fn() { app.nav.is_kept_left(chat_serial) }), msg="other-ws invalidation preserves ws chat")
   assert_true(@signals.untracked(fn() { app.nav.is_kept_left(about_serial) }), msg="other-ws invalidation preserves ws setting")
-  // 3. Workspace invalidation for `ws` evicts `ws`'s parked entries.
+  // 3. Workspace invalidation for `ws` evicts `ws`'s parked entries and clears `ws`'s cached explicit owner.
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.kept_left_invalidate_workspace(ws) })
   t.run_for(@ui.move_most_ms)
   assert_false(@signals.untracked(fn() { app.nav.is_kept_left(chat_serial) }), msg="ws invalidation evicts ws chat")
   assert_false(@signals.untracked(fn() { app.nav.is_kept_left(about_serial) }), msg="ws invalidation evicts ws setting")
+  // Re-confirm `ws` owner (simulating next authoritative `workspaces` snapshot after workspace auth boundary) before step 4.
+  @sfbase.workspace_owner_set(ws, "acct-1")
   // 4. Wide -> Narrow -> Wide resize on the SAME Nav/window evicts non-Chat settings and resets limits.
   @ui.view_tree().unwrap().event(t.time(), fn() { nav_over_home([Setting(About)]) })
   t.run_for(@ui.move_most_ms)
@@ -377,8 +379,33 @@ test "PR-B3c r2 P1-5 & P2-A: exact AuthScope invalidation (Vault keeps pool, Wor
 }
 
 ///|
-test "PR-B3c r3 P1-2 & P2-3: Workspace invalidation evicts own root shelf & cancels swap_out while preserving unrelated workspace via real Core client" {
+test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction, and real Core Workspace invalidation" {
   let (t, _src, ws, _chats) = b3c_open_wide(1280.0, 800.0, 0)
+  // Start at depth=1 root (`Place("stations")`, since `Home` on Large auto-pushes a Chat to depth=2)
+  // so `nav_root_kept` exercises the root-tab shelf for Files ("files-home"), Connects ("place/connects/"),
+  // and Profiles ("place/profiles/").
+  @ui.view_tree().unwrap().event(t.time(), fn() { app.nav.replace_above(0, [Place("stations")]) })
+  t.run_for(@ui.move_most_ms)
+  for pair in ([("files", Files), ("connects", Place("connects")), ("profiles", Place("profiles"))] : Array[(String, Page)]) {
+    let (label, page) = pair
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.nav_root_kept(page) })
+    t.run_for(@ui.move_most_ms)
+    let orig_serial = @signals.untracked(fn() { app.nav.top_stay().0 })
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.nav_root_kept(Place("stations")) })
+    t.run_for(@ui.move_most_ms)
+    assert_eq(
+      @signals.untracked(fn() { app.nav.shelved(page) }),
+      Some(orig_serial),
+      msg="root tab \{label} must park on root shelf",
+    )
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.nav_root_kept(page) })
+    t.run_for(@ui.move_most_ms)
+    assert_eq(
+      @signals.untracked(fn() { app.nav.top_stay().0 }),
+      orig_serial,
+      msg="returning to root tab \{label} must hot-return the exact same serial",
+    )
+  }
   // Put Place("usage") at root and shelve it via nav_root_kept(Place("stations")).
   @ui.view_tree().unwrap().event(t.time(), fn() { app.nav.replace_above(0, [Place("usage")]) })
   t.run_for(@ui.move_most_ms)
@@ -391,11 +418,21 @@ test "PR-B3c r3 P1-2 & P2-3: Workspace invalidation evicts own root shelf & canc
   t.run_for(@ui.move_most_ms)
   assert_eq(@signals.untracked(fn() { app.nav.shelved(Place("usage")) }), Some(usage_serial), msg="other-ws invalidation preserves ws shelf")
   // Start an in-flight tab swap out of Place("stations") -> Place("connects"), then invalidate `ws` mid-swap:
-  // both the already-shelved Place("usage") AND the in-flight swap_out Place("stations") must be evicted/not shelved!
+  // both the already-shelved Place("usage") AND the in-flight swap_out Place("stations") must be evicted SYNCHRONOUSLY
+  // before advancing the clock!
+  let had_swap_before = Ref(false)
+  let had_swap_after = Ref(true)
   @ui.view_tree().unwrap().event(t.time(), fn() {
     app.nav.replace_tab(Place("connects"), kept=true, dur=@ui.move_most_ms)
+    had_swap_before.val = app.nav.swapping_out_serial() is Some(_)
     @sfbase.kept_left_invalidate_workspace(ws)
+    had_swap_after.val = app.nav.swapping_out_serial() is Some(_)
   })
+  assert_true(had_swap_before.val, msg="in-flight swap_out must exist before invalidation")
+  assert_false(
+    had_swap_after.val,
+    msg="ws invalidation must synchronously remove matching in-flight swap_out before clock advances",
+  )
   t.run_for(@ui.move_most_ms)
   assert_true(@signals.untracked(fn() { app.nav.shelved(Place("usage")) }) is None, msg="ws invalidation evicts ws shelf entry")
   assert_true(
@@ -403,11 +440,16 @@ test "PR-B3c r3 P1-2 & P2-3: Workspace invalidation evicts own root shelf & canc
     msg="ws invalidation cancels shelving of in-flight swap_out root",
   )
   @ui.run_let_go()
-  // Real Core Client::receive auth boundary for Workspace("ws-other") preserves active workspace `ws-active` in
-  // `workspaces` topic without flashing None, and notifies on_auth_boundary(Workspace("ws-other")).
+  // Real Core Client::receive auth boundary for Workspace("ws-other") prunes `ws-other` from both `workspaces` and
+  // `ownedWorkspaces` without flashing None, synchronously clears `ws-other` explicit owner, and preserves `ws-active`.
   let c = @core.Client::new(fn(_) {  })
   let seen_scopes : Array[@core.AuthScope] = []
-  let _ = c.on_auth_boundary(fn(scope) { seen_scopes.push(scope) })
+  let _ = c.on_auth_boundary(fn(scope) {
+    seen_scopes.push(scope)
+    if scope is @core.AuthScope::Workspace(w) {
+      @sfbase.kept_left_invalidate_workspace(w)
+    }
+  })
   // Initial handshake establishes conn=1, global=1.
   c.receive("{\"auth\":{\"conn\":1,\"global\":1}}") |> ignore
   let sub = c.subscribe("workspaces")
@@ -419,6 +461,7 @@ test "PR-B3c r3 P1-2 & P2-3: Workspace invalidation evicts own root shelf & canc
         { "id": "ws-active", "name": "Active" },
         { "id": "ws-other", "name": "Other" },
       ],
+      "ownedWorkspaces": ["ws-active", "ws-other"],
     },
   ]
   c.receive(
@@ -431,13 +474,38 @@ test "PR-B3c r3 P1-2 & P2-3: Workspace invalidation evicts own root shelf & canc
   )
   |> ignore
   assert_true(sub.value is Some(_), msg="workspaces snapshot must be delivered to sub before auth boundary")
+  @sfbase.workspace_owners_sync_json(sub.value)
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-active"), Some("acct-1"), msg="ws-active owner synced before boundary")
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-other"), Some("acct-1"), msg="ws-other owner synced before boundary")
   // Dispatch real Workspace("ws-other") auth boundary through Client::receive.
   c.receive("{\"auth\":{\"conn\":1,\"global\":1,\"workspace\":\"ws-other\",\"authGen\":2}}") |> ignore
   assert_true(
     seen_scopes.iter().any(fn(s) { s is @core.AuthScope::Workspace("ws-other") }),
     msg="real Core Client must dispatch Workspace(ws-other) auth boundary",
   )
+  assert_true(
+    @sfbase.workspace_explicit_owner_of("ws-other") is None,
+    msg="Workspace(ws-other) boundary must synchronously invalidate ws-other explicit owner",
+  )
+  assert_eq(
+    @sfbase.workspace_explicit_owner_of("ws-active"),
+    Some("acct-1"),
+    msg="Workspace(ws-other) boundary must preserve ws-active explicit owner",
+  )
   let (remaining, _, _) = @sfbase.workspaces_of(sub.value)
   assert_eq(remaining.length(), 1, msg="Workspace(ws-other) invalidation must prune only ws-other and keep ws-active live")
   assert_eq(remaining[0].id, "ws-active", msg="ws-active must remain in workspaces snapshot without flashing None")
+  // Verify ownedWorkspaces was pruned too: re-syncing sub.value must NOT resurrect ws-other owner, while ws-active stays confirmed.
+  let raw_str = sub.value.unwrap().stringify()
+  assert_false(raw_str.contains("ws-other"), msg="pruned workspaces snapshot must not retain ws-other in workspaces or ownedWorkspaces")
+  @sfbase.workspace_owners_sync_json(sub.value)
+  assert_true(
+    @sfbase.workspace_explicit_owner_of("ws-other") is None,
+    msg="re-syncing pruned snapshot must not resurrect ws-other owner from stale ownedWorkspaces",
+  )
+  assert_eq(
+    @sfbase.workspace_explicit_owner_of("ws-active"),
+    Some("acct-1"),
+    msg="re-syncing pruned snapshot must preserve ws-active explicit owner",
+  )
 }

@@ -84,10 +84,39 @@ pub fn ActorsGen::on_live(self : ActorsGen, a : Actor, event : base_codec::Json)
         None => t.first_live_at = Some(self.gen.counters.now)
         Some(_) => ()
       }
+      t.last_live_at = self.gen.counters.now
       if kind == "start" &&
       opt_str_is(sessions_core::str_of(sessions_core::jget(event, "step")), "tool") {
         t.tools_count = t.tools_count + 1
         t.last_tool_at = self.gen.counters.now
+        match sessions_core::str_of(sessions_core::jget(event, "id")) {
+          Some(tid) => {
+            let mut open = false
+            for i in 0..<t.open_tools.length() {
+              if t.open_tools[i] == tid {
+                open = true
+                break
+              }
+            }
+            if !open {
+              t.open_tools.push(tid)
+            }
+          }
+          None => ()
+        }
+      } else if kind == live_wire::KIND_END {
+        match sessions_core::str_of(sessions_core::jget(event, "id")) {
+          Some(tid) => {
+            let kept : Array[String] = []
+            for i in 0..<t.open_tools.length() {
+              if t.open_tools[i] != tid {
+                kept.push(t.open_tools[i])
+              }
+            }
+            t.open_tools = kept
+          }
+          None => ()
+        }
       }
     }
     None => ()

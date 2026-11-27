@@ -39,7 +39,7 @@ fn timed_open(what : String, open : () -> Unit) -> () -> Unit {
 
 ///|
 /// The workspace a station's topics are asked of (settings' station_scope): its address's, `ws` for one without it.
-fn account_scope(ws : String, station : String) -> String {
+pub fn account_scope(ws : String, station : String) -> String {
   if station.contains("/") {
     @settings.workspace_of(station)
   } else {

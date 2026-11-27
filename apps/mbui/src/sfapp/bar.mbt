@@ -43,7 +43,7 @@ let act_gap : Double = 10.0
 ///|
 /// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
 /// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
-let lens_lift_h : Double = 1.28
+let lens_lift_h : Double = 1.16
 
 ///|
 let lens_lift_aspect : Double = 1.50
@@ -82,9 +82,20 @@ let closes : Double = 16.0
 let bar_hold_ms : Double = 200.0
 
 ///|
+/// Horizontal and bottom outer margin of the small-screen Liquid Glass bottom tab bar (also used to align
+/// bottom-left floating overlays flush with the bar and its scroll-collapsed orb).
+let bar_inset_edge : Double = 22.0
+
+///|
+/// Distance from the bottom of the window to the top edge of the small-screen Liquid Glass bottom tab bar.
+fn bar_top_from_foot() -> Double {
+  nav_foot() + bar_inset_edge + bar_track
+}
+
+///|
 /// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
 /// little air, and the action standing 32 over it).
-let bar_room : Double = 50.0 + 22.0 + 16.0 + 32.0
+let bar_room : Double = bar_track + bar_inset_edge + 16.0 + 32.0
 
 ///|
 /// The chats' family of places, whose pages have 令 in the notch.
@@ -746,6 +757,18 @@ let bar : BarModel = {
 }
 
 ///|
+/// Whether a finger is currently holding or dragging the bottom bar so it rises above its resting track (`bar_raise`).
+// kept across runs: put back in bar_reset
+let bar_raised : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether the bottom bar's expanded switcher panel or raised drag state currently occupies the space directly above
+/// its resting track (used by Home's bottom-left floating group pill to step aside cleanly).
+fn bar_obstructs_above() -> Bool {
+  bar.mode.get() || bar_raised.get()
+}
+
+///|
 /// As at the start (tests).
 fn bar_reset() -> Unit {
   let back_glide = fn(g : Glide, to : Double) {
@@ -753,6 +776,7 @@ fn bar_reset() -> Unit {
     g.start = 0.0
   }
   bar.mode.set(false)
+  bar_raised.set(false)
   bar.o.back(0.0, 260.0, 17.0)
   bar.k.back(1.0, 300.0, 30.0)
   bar.ball_held.put(0.0)
@@ -1328,8 +1352,10 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let w = told.width
   let row_top = bar_row_top(told.sets.length())
   let sliding = m.drag >= 0.0
+  let raised = m.holds || sliding
+  bar_raised.set(raised)
   // The bar rises while a finger has it, returning on release (taps never raise the bar).
-  m.up.go(if m.holds || sliding { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
+  m.up.go(if raised { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
   let prev_x = m.ball_x.value_at(at)
   let mut goal_x = m.ball_x.to
   if w > 0.0 {
@@ -1960,7 +1986,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
     .over(Is(true))
     .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
     .hides(By(fn() { @sfbase.first_page_waits.get() }))
-    .padding(By(fn() { (22.0, 0.0, 22.0, 22.0 + nav_foot()) }))
+    .padding(By(fn() { (bar_inset_edge, 0.0, bar_inset_edge, bar_inset_edge + nav_foot()) }))
     .presses(By(fn() {
       !@sfbase.first_page_waits.get() &&
       (match told() {

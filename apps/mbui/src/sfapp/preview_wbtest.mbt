@@ -389,7 +389,7 @@ test "a video's timeline dragged: paused, the player told a finger is on it, a s
     .drawn_rects()
     .iter()
     .any(fn(r) {
-      r.4 == @sf.media_dark_text &&
+      r.4 == @sf.media_ink(true).text &&
       r.3 >= 4.5 &&
       r.3 <= 10.5 &&
       (r.0 - x0).abs() < 0.5 &&

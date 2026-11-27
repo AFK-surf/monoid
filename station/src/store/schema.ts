@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 -- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
 CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
+-- Live sessions by profile (rows.ts LIVE_ON_PROFILE, LIVE_WITNESSES_ON_PROFILES): O(log N) covering seek per profile.
+CREATE INDEX IF NOT EXISTS sessions_live_profile ON sessions (profile, key) WHERE archived_at IS NULL;
 -- The sessions running (store.ts ANY_RUNNING, RUNNING_SESSIONS).
 CREATE INDEX IF NOT EXISTS sessions_running ON sessions (key) WHERE running = 1;
 -- The sessions someone started lately (store.ts modelsUsedBy: the models they chose, as a chat is opened for them).

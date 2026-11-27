@@ -229,7 +229,7 @@ if (process.argv[2] === "device") {
   // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
   // tell whose loop it was)
   heldProbe((ms) => appendFileSync(record, `${new Date().toISOString()} held: this device's process did nothing else for ${ms} ms\n`));
-  const { start } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);
+  const { start, ClientAuthTracker } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);
   // (`again`: the same device started anew, its data and what it sealed kept)
   if (process.argv[4] !== "again") rmSync(data, { recursive: true, force: true });
   mkdirSync(data, { recursive: true });
@@ -269,11 +269,48 @@ if (process.argv[2] === "device") {
   // (`handOverByTests`: the core offers `lock.handOver` to this driver, as no app's host does: views/lock.ts `handOver`;
   // `handOverAuto` but with E2E_HANDOVER=call, a chain handed over by itself as it is from HAND_OVER_FROM, e2e/locks-moved.ts)
   const options = { handOverByTests: true, handOverAuto: process.env.E2E_HANDOVER !== "call", ...(process.argv[5] === "page" ? { page: true, record } : process.argv[5] === "plain" ? { record } : { sealer, record }) };
-  const core = start(join(data, "core"), origin, (_c: number, json: string) => process.send!(json), undefined, options);
+  const auth = new ClientAuthTracker();
+  const pendingCalls: Record<string, unknown>[] = [];
+  const sendCall = (msg: Record<string, unknown>) => {
+    const name = msg.call as string;
+    if (msg.auth === undefined && auth.needsAuth(name)) {
+      if (!auth.ready) {
+        pendingCalls.push(msg);
+        return;
+      }
+      const callAuth = auth.callAuth(name, msg.params);
+      if (callAuth !== undefined) msg = { ...msg, auth: callAuth };
+    }
+    core.receive(client, JSON.stringify(msg));
+  };
+  const core = start(join(data, "core"), origin, (_c: number, json: string) => {
+    if (json.startsWith('{"id":0,"auth":')) {
+      try {
+        const parsed = JSON.parse(json);
+        if (auth.takeMessage(parsed) && auth.ready && pendingCalls.length > 0) {
+          for (const queued of pendingCalls.splice(0)) sendCall(queued);
+        }
+      } catch {}
+    }
+    process.send!(json);
+  }, undefined, options);
   const client = core.connect();
   process.on("message", (m: J) => {
-    if (m === "close") void within(core.close(), 4000).then(() => process.exit(0));
-    else core.receive(client, m);
+    if (m === "close") {
+      pendingCalls.length = 0;
+      void within(core.close(), 4000).then(() => process.exit(0));
+      return;
+    }
+    if (typeof m === "string") {
+      try {
+        const parsed = JSON.parse(m);
+        if (parsed && typeof parsed === "object" && typeof parsed.call === "string") {
+          sendCall(parsed as Record<string, unknown>);
+          return;
+        }
+      } catch {}
+    }
+    core.receive(client, m);
   });
   // (the driver gone without closing it, as when it fell: this device does not stay behind, holding its output open)
   process.on("disconnect", () => process.exit(0));

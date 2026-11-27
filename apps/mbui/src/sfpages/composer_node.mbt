@@ -2117,6 +2117,7 @@ fn composer_field_node(
   // under a modal/covering layer, or while a field, key catcher, or space-taking control holds focus); else what to
   // write, a new chat's its own as its spec says it)
   let written = placeholder.unwrap_or(fn() { @sf.t("web-main.composer.placeholder") })
+  let wid = @ui.current_window_id()
   // (nothing at all where it says nothing: a new chat's while it is away)
   let hint = fn() {
     let said = written()
@@ -2129,7 +2130,7 @@ fn composer_field_node(
       !w.field.parked() &&
       !@sf.soft_keyboard() &&
       !w.field.focused() {
-      match @settings.reachable_key_label(prefs(), "composer.focus", words) {
+      match @settings.reachable_key_label(prefs(), "composer.focus", words, window_id=wid) {
         "" => said
         key => @sf.t("web-main.composer.pressToTypeCjk", args=[("key", key)])
       }

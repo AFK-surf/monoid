@@ -4,12 +4,13 @@
 // old views' are), as they are now.
 
 ///|
-/// Node `v`'s ground as nav_ground_by has it: the pointer's ground in and out (lit_node), the selected one's (`lit`, the
-/// selected grey by default) while `on()`, each over nav_fade from the moment it changes.
+/// Node `v`'s ground as nav_ground_by has it: the pointer's ground in and out (lit_in_node: over it or over what it holds,
+/// a chip with a tip in its foot among them, so that going across those parts never lets it go out and in again), the
+/// selected one's (`lit`, the selected grey by default) while `on()`, each over nav_fade from the moment it changes.
 pub fn nav_ground_node(v : @view.View, on : () -> Bool, lit? : Int64) -> Unit {
   let hover = @motion.NodeWay::new(0.0)
   let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-  v.reacts(fn() { lit_node(v) }, fn(h) { hover.go_ms(v, if h { 1.0 } else { 0.0 }, dur_ms) })
+  v.reacts(fn() { lit_in_node(v) }, fn(h) { hover.go_ms(v, if h { 1.0 } else { 0.0 }, dur_ms) })
   v.reacts(on, fn(o) { chosen.go_ms(v, if o { 1.0 } else { 0.0 }, dur_ms) })
   v
   .focus_ring_theme()

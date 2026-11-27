@@ -450,6 +450,7 @@ pub fn ActorsGen::on_declared(self : ActorsGen, a : Actor, t : Turn, state : bas
   if opt_str_is(kind_of(Some(state)), "waiting") {
     let seconds = num_or(sessions_core::num_of(sessions_core::jget(state, "seconds")), 0.0)
     t.last_tool_at = self.gen.counters.now
+    self.cancel_steer_silent(a)
     self.arm_mid_wait(a, t.id, seconds, seconds * 1000.0)
     if !t.wait_watch {
       self.track_silent_wait(a, t)
@@ -476,6 +477,257 @@ pub fn ActorsGen::arm_mid_wait(
   a.mid_waiting_until = self.gen.counters.now + ms
   a.mid_waiting_seconds = seconds
   self.arm_actor_timer(a, "mid_wait", ms, ActorTimerAction::FireMidWait(wait, turn_id, seconds))
+}
+
+/// How long a turn steered to check its wait may stay silent before its runtime is taken as hung (1:1
+/// `actor_run.mbt` `steered_silent_ms`).
+pub let STEERED_SILENT_MS : Double = 900000.0
+
+/// 1:1 `actor_run.mbt` `steer_silent_clamp`: `ms` within 0 and `STEERED_SILENT_MS`.
+pub fn steer_silent_clamp(ms : Double) -> Double {
+  if ms < 0.0 {
+    0.0
+  } else if ms > STEERED_SILENT_MS {
+    STEERED_SILENT_MS
+  } else {
+    ms
+  }
+}
+
+/// 1:1 `actor_run.mbt` `arm_steer_silent`: `since`, when its silence is counted from.
+pub fn ActorsGen::arm_steer_silent(
+  self : ActorsGen,
+  a : Actor,
+  turn_id : String,
+  since : Double,
+  ms : Double,
+) -> Unit {
+  let ms = steer_silent_clamp(ms)
+  a.steer_silents = a.steer_silents + 1
+  let silent = a.steer_silents
+  a.steer_silent = Some(silent)
+  a.steer_silent_until = self.gen.counters.now + ms
+  a.steer_silent_since = since
+  // timer: a deadline for a runtime steered mid-turn, which may never answer its prompt again
+  self.arm_actor_timer(a, "steer_silent", ms, ActorTimerAction::FireSteerSilent(silent, turn_id))
+}
+
+/// 1:1 `actor_run.mbt` `steer_silent_left`.
+pub fn ActorsGen::steer_silent_left(self : ActorsGen, t : Turn, since : Double) -> Double {
+  let from = if t.last_live_at > since { t.last_live_at } else { since }
+  steer_silent_clamp(STEERED_SILENT_MS - (self.gen.counters.now - from))
+}
+
+/// 1:1 `actor_run.mbt` `fire_steer_silent`: whether it still stands after an await (not closed, still this one, the
+/// same turn with no state declared).
+fn ActorsGen::steer_silent_stands(self : ActorsGen, a : Actor, silent : Int, turn_id : String) -> Bool {
+  if self.closed(a) {
+    return false
+  }
+  let same = match a.steer_silent {
+    Some(s) => s == silent
+    None => false
+  }
+  if !same {
+    return false
+  }
+  match a.turn {
+    Some(t) => t.id == turn_id && !is_some(t.declared)
+    None => false
+  }
+}
+
+/// 1:1 `actor_run.mbt` `fire_steer_silent`: ends a turn steered to check its wait whose runtime has said nothing since
+/// for `STEERED_SILENT_MS`, no tool call begun since open and no watch running: failed, its process ended. Each await
+/// is followed by a look that it still stands (`steer_silent_stands`).
+pub fn ActorsGen::fire_steer_silent_k(
+  self : ActorsGen,
+  a : Actor,
+  silent : Int,
+  turn_id : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let same = match a.steer_silent {
+    Some(s) => s == silent
+    None => false
+  }
+  if !same {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let since = a.steer_silent_since
+  let ok = fn() -> Unit { k(effect::Exit::Succeeded(())) }
+  // (what is left to look at once nothing awaited is: open tool calls and how long it has been silent; `kill` when
+  // neither keeps it)
+  let still_due = fn(kill : () -> Unit) -> Unit {
+    match a.turn {
+      Some(t) => {
+        if t.open_tools.length() > 0 {
+          self.arm_steer_silent(a, turn_id, self.gen.counters.now, STEERED_SILENT_MS)
+          ok()
+          return
+        }
+        let left = self.steer_silent_left(t, since)
+        if left > 0.0 {
+          self.arm_steer_silent(a, turn_id, since, left)
+          ok()
+          return
+        }
+        kill()
+      }
+      None => ok()
+    }
+  }
+  self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+    match ex_h {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(true) => ok()
+      effect::Exit::Succeeded(false) => {
+        if !self.steer_silent_stands(a, silent, turn_id) {
+          ok()
+          return
+        }
+        if a.compacting {
+          self.cancel_steer_silent(a)
+          ok()
+          return
+        }
+        self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+          match ex_ar {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(archived) => {
+              if archived || a.compacting {
+                let mine = match a.steer_silent {
+                  Some(s) => s == silent
+                  None => false
+                }
+                if mine {
+                  self.cancel_steer_silent(a)
+                }
+                ok()
+                return
+              }
+              if !self.steer_silent_stands(a, silent, turn_id) {
+                ok()
+                return
+              }
+              self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+                match ex_lt {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(last) => {
+                    if !self.steer_silent_stands(a, silent, turn_id) {
+                      ok()
+                      return
+                    }
+                    let kill = fn() -> Unit {
+                      let was = a.agent
+                      self.busy_of_k(a, was, fn(ex_b : effect::Exit[Bool]) -> Unit {
+                        match ex_b {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(busy) => {
+                            if !still(a, was) || !self.steer_silent_stands(a, silent, turn_id) {
+                              ok()
+                              return
+                            }
+                            still_due(fn() -> Unit {
+                              let agent = match was {
+                                Some(g) => g
+                                None => {
+                                  self.cancel_steer_silent(a)
+                                  ok()
+                                  return
+                                }
+                              }
+                              if !busy {
+                                self.cancel_steer_silent(a)
+                                ok()
+                                return
+                              }
+                              self.cancel_steer_silent(a)
+                              self.log(
+                                a,
+                                "warn",
+                                "a turn steered after its wait said nothing since; ending its process",
+                                [
+                                  ("runtime", sessions_core::jstr(a.runtime)),
+                                  ("silentMs", sessions_core::jnum(STEERED_SILENT_MS)),
+                                ],
+                              )
+                              self.done_working(a)
+                              self.live_turn_ended_k(a, fn(ex_le : effect::Exit[Unit]) -> Unit {
+                                match ex_le {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(_) => {
+                                    let same_turn = match a.turn {
+                                      Some(t3) => t3.id == turn_id
+                                      None => false
+                                    }
+                                    if !self.is_current(a, agent.generation) || !same_turn {
+                                      ok()
+                                      return
+                                    }
+                                    self.on_turn_ended_k(
+                                      a,
+                                      agent.generation,
+                                      base_codec::json_obj([
+                                        ("kind", sessions_core::jstr("failed")),
+                                        ("reason", sessions_core::jstr("other")),
+                                        (
+                                          "message",
+                                          sessions_core::jstr(
+                                            "The runtime gave no sign of life for 15 minutes after it was asked to check its wait; its process was ended, and the next message starts a new one",
+                                          ),
+                                        ),
+                                        ("hung", sessions_core::jbool(true)),
+                                      ]),
+                                      k,
+                                    )
+                                  }
+                                }
+                              })
+                            })
+                          }
+                        }
+                      })
+                    }
+                    if !is_opt_json_false(sessions_core::jget(last, "waitWatch")) {
+                      self.store_k(a, "hasSessionActiveWatch", [sessions_core::jstr(a.key)], fn(
+                        ex_aw : effect::Exit[base_codec::Json],
+                      ) -> Unit {
+                        match ex_aw {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(v) => {
+                            if !self.steer_silent_stands(a, silent, turn_id) {
+                              ok()
+                              return
+                            }
+                            if sessions_core::truthy(v) {
+                              self.arm_steer_silent(a, turn_id, self.gen.counters.now, STEERED_SILENT_MS)
+                              ok()
+                            } else {
+                              still_due(kill)
+                            }
+                          }
+                        }
+                      })
+                    } else {
+                      still_due(kill)
+                    }
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
 }
 
 pub fn ActorsGen::wait_ms(self : ActorsGen, a : Actor, seconds : Double, ms : Double) -> Unit {
@@ -2893,6 +3145,8 @@ pub fn ActorsGen::begin_turn_k(
             tools_count: 0,
             last_tool_at: self.gen.counters.now,
             wait_watch: false,
+            last_live_at: self.gen.counters.now,
+            open_tools: [],
           })
           a.deferred_end = None
           a.warm = false
@@ -3523,6 +3777,11 @@ pub fn ActorsGen::fire_mid_wait_k(
                                                                         if t3.id == turn_id &&
                                                                         opt_str_is(kind_of(t3.declared), "waiting") {
                                                                           t3.declared = None
+                                                                          // (only tool calls begun after the steer hold its deadline, and only messages steered in after it are
+                                                                          // handed again if it is ended: 1:1 `actor_run.mbt` `fire_mid_wait`)
+                                                                          t3.open_tools = []
+                                                                          a.steer_silent_steered = a.steered.length()
+                                                                          self.arm_steer_silent(a, turn_id, self.gen.counters.now, STEERED_SILENT_MS)
                                                                           self.declare_turn_k(a, t3.id, None, k)
                                                                           return
                                                                         }
@@ -4763,7 +5022,65 @@ fn ActorsGen::on_turn_ended_tools_and_auth_k(
             }
           })
         }
-        None => after_lost_proc(effect::Exit::Succeeded(()))
+        None => {
+          let hung = is_opt_json_true(sessions_core::jget(outcome, "hung"))
+          if hung && is_some(a.agent) {
+            let agent = a.agent
+            self.set_agent(a, None)
+            self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
+              match ex_ep {
+                effect::Exit::Interrupted => after_lost_proc(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => after_lost_proc(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  // (what a person said while it was silent was steered into the process ended: handed again to the
+                  // next, `pump`; 1:1 `actor_run.mbt` `on_turn_ended`)
+                  let from = if a.steer_silent_steered > a.steered.length() {
+                    a.steered.length()
+                  } else {
+                    a.steer_silent_steered
+                  }
+                  let lost : Array[base_codec::Json] = []
+                  for i in from..<a.steered.length() {
+                    lost.push(a.steered[i])
+                  }
+                  a.steered = []
+                  a.steered_for = []
+                  a.unread = []
+                  a.unread_preparing = 0
+                  a.steer_silent_steered = 0
+                  let after_undel = fn(ex_mu : effect::Exit[Unit]) -> Unit {
+                    match ex_mu {
+                      effect::Exit::Interrupted => after_lost_proc(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => after_lost_proc(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(_) => {
+                        self.mirror(a)
+                        self.notify_store_k(a, after_lost_proc)
+                      }
+                    }
+                  }
+                  if lost.length() > 0 {
+                    self.store_k(
+                      a,
+                      "markUndelivered",
+                      [sessions_core::jstr(a.key), base_codec::json_arr(lost)],
+                      fn(ex_st : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_st {
+                          effect::Exit::Succeeded(_) => after_undel(effect::Exit::Succeeded(()))
+                          effect::Exit::Failed(e) => after_undel(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => after_undel(effect::Exit::Interrupted)
+                        }
+                      },
+                    )
+                  } else {
+                    after_undel(effect::Exit::Succeeded(()))
+                  }
+                }
+              }
+            })
+          } else {
+            after_lost_proc(effect::Exit::Succeeded(()))
+          }
+        }
       }
     }
     match (a.tools_lost, a.tools_lost_heard) {

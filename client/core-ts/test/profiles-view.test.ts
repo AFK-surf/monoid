@@ -320,7 +320,7 @@ test("the list's 多选 takes an account its station has alone and is up, sharin
     station(C, "Lab", false, [sub("away", "f@x.test")]),
   ]).items;
   const of = (title: string) => rows.find((r: any) => r.title === title);
-  const said = (r: any) => [r.canBatchShare, r.batchShareWhy ?? null, r.batchShareAllowAuto, r.shared];
+  const said = (r: any) => [r.canBatchShare, r.batchShareWhy ?? null, r.batchShareAllowAuto === true, r.shared === true];
   assert.deepEqual(said(of("a@x.test")), [true, null, true, false]);
   assert.deepEqual(said(of("b@x.test")), [true, null, true, true]);
   assert.deepEqual(said(of("c@x.test")).slice(0, 2), [false, "several"]);
@@ -328,6 +328,68 @@ test("the list's 多选 takes an account its station has alone and is up, sharin
   assert.deepEqual(said(of("f@x.test")).slice(0, 2), [false, "offline"]);
   // (a copy of Lab's, Lab away: the row is the copy's, not this station's to share)
   assert.deepEqual(said(of("e@x.test")).slice(0, 2), [false, "borrowed"]);
+});
+
+test("host share is authoritative over a stale copy listed first, and shareStationCount counts host + allowed workspace stations", () => {
+  const C = "c".repeat(64);
+  const sub = { email: "host@x.test", runtime: "claude" };
+  // Copy appears before host with a stale allow list and allowAuto: true; host restricts to [A, B] manually.
+  const view = workspaceProfiles([
+    station(B, "Laptop", true, [profile("copy", { ...sub, share: { id: "sh-1", role: "user", host: A, allow: [A, B, C], allowAuto: true, reachable: true } })]),
+    station(A, "Office", true, [profile("host", { ...sub, share: { id: "sh-1", role: "host", host: A, allow: [B] } })]),
+    station(C, "Lab", true, []),
+  ]);
+  assert.equal(view.items.length, 1);
+  const row = view.items[0];
+  assert.equal(row.shared, true);
+  assert.equal(row.shareAuto, undefined);
+  assert.equal(row.shareStationCount, 2, "includes host A plus allowed station B");
+  assert.deepEqual(row.allow, [B]);
+
+  // All-stations share (allow: null) and whitelist share (allowAuto: true) omit shareStationCount.
+  const allShare = workspaceProfiles([
+    station(A, "Office", true, [profile("host", { ...sub, share: { id: "sh-2", role: "host", host: A, allow: null } })]),
+    station(B, "Laptop", true, []),
+  ]).items[0];
+  assert.equal(allShare.shared, true);
+  assert.equal(allShare.shareAuto, undefined);
+  assert.equal(allShare.shareStationCount, undefined);
+
+  const autoShare = workspaceProfiles([
+    station(A, "Office", true, [profile("host", { ...sub, share: { id: "sh-3", role: "host", host: A, allow: [A, B], allowAuto: true } })]),
+    station(B, "Laptop", true, []),
+  ]).items[0];
+  assert.equal(autoShare.shared, true);
+  assert.equal(autoShare.shareAuto, true);
+  assert.equal(autoShare.shareStationCount, undefined);
+});
+
+test("separate logins of the same account on two stations never borrow each other's share policy", () => {
+  const C = "c".repeat(64);
+  const sub = { email: "dual@x.test", runtime: "codex" };
+  // Office is unshared (chosen as representative `p`), Laptop is independently signed in and shared with allowAuto.
+  const unsharedFirst = workspaceProfiles([
+    station(A, "Office", true, [profile("own-a", sub)]),
+    station(B, "Laptop", true, [profile("own-b", { ...sub, share: { id: "sh-b", role: "host", host: B, allow: [B, C], allowAuto: true } })]),
+    station(C, "Lab", true, []),
+  ]).items[0];
+  assert.equal(unsharedFirst.several, true);
+  assert.equal(unsharedFirst.canBatchShare, false);
+  assert.equal(unsharedFirst.batchShareWhy, "several");
+  assert.equal(unsharedFirst.shared, undefined, "must not borrow Laptop's share");
+  assert.equal(unsharedFirst.shareAuto, undefined);
+  assert.equal(unsharedFirst.shareStationCount, undefined);
+
+  // Office is manually shared, Laptop is allowAuto: representative reflects Office only and omits shareStationCount.
+  const manualFirst = workspaceProfiles([
+    station(A, "Office", true, [profile("own-a", { ...sub, share: { id: "sh-a", role: "host", host: A, allow: [A, C] } })]),
+    station(B, "Laptop", true, [profile("own-b", { ...sub, share: { id: "sh-b", role: "host", host: B, allowAuto: true } })]),
+    station(C, "Lab", true, []),
+  ]).items[0];
+  assert.equal(manualFirst.several, true);
+  assert.equal(manualFirst.shared, true);
+  assert.equal(manualFirst.shareAuto, undefined, "must not borrow Laptop's allowAuto");
+  assert.equal(manualFirst.shareStationCount, undefined, "several rows omit shareStationCount");
 });
 
 test("a pending copy names the station cut off from still.fail cloud instead of waiting on", () => {
@@ -574,4 +636,26 @@ test("colab service profile groups under Google without merging with Antigravity
   // Neither ok nor expired (needsFix) Colab profiles enter the Gemini overview pool.
   const ov = profilesOverview(view.items, () => null, 1_900_000_000_000, 480);
   assert.equal(ov.pools.find((p) => p.title === "Gemini"), undefined);
+});
+
+test("workspaceProfiles emits machine: true only for machine login profiles", () => {
+  const rows = workspaceProfiles([
+    station(A, "Office", true, [
+      profile("mach", { email: "m@x.test", runtime: "claude", machine: true }),
+      profile("norm", { email: "n@x.test", runtime: "claude", machine: false }),
+    ]),
+  ]).items;
+  const mach = rows.find((r: any) => r.profile.id === "mach");
+  const norm = rows.find((r: any) => r.profile.id === "norm");
+  assert.equal(mach.machine, true);
+  assert.equal("machine" in norm, false);
+});
+
+test("workspaceProfiles prioritizes offline over unsupported in batchShareWhy", () => {
+  const st = station(A, "Office", false, [profile("k1", { name: "Key A", access: { kind: "anthropic-api", key: "k", login: false } })]);
+  st.overview!.sharing = false;
+  const rows = workspaceProfiles([st]).items;
+  const row = rows.find((r: any) => r.profile.id === "k1");
+  assert.equal(row.canBatchShare, false);
+  assert.equal(row.batchShareWhy, "offline");
 });

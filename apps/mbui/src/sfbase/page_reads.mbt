@@ -189,16 +189,13 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         }),
       }
     }
-    // (and the Profile overview's pools where it shows them in the list's place: 概览 switched to)
-    Profiles("") =>
-      reads_of(
-        if @signals.untracked(fn() { @settings.profiles_narrow_overview.get() }) {
-          [stations, ("profiles", scope), ("profilesOverview", scope)]
-        } else {
-          [stations, ("profiles", scope)]
-        },
-      )
-    Profiles(address) => reads_of([stations, part(address, "profiles"), part(address, "machineLogins")])
+    Profiles("") => reads_of([stations, ("profiles", scope)])
+    ProfilesOverview => reads_of([("profiles", scope), ("profilesOverview", scope)])
+    ProfilesManage("") => reads_of([stations, ("profiles", scope)])
+    ProfilesManage(address) =>
+      reads_of([stations, station_ask(ws, address), ("workspace", { "workspace": Json::string(account_scope(ws, address)) })])
+    Profiles(address) =>
+      reads_of([stations, ("workspace", { "workspace": Json::string(account_scope(ws, address)) }), part(address, "profiles"), part(address, "machineLogins")])
     Profile(station, id) => reads_of(profile_page_asks(ws, station, id))
     Connects(_) => reads_of([("connects", { "scope": of, "mine": Json::boolean(false) }), stations])
     Connect(address, id) =>
@@ -303,9 +300,6 @@ pub fn page_reads(src : Source, ws : String, p : Page, wide : Bool) -> OpenReads
     }
     // (a place of the rail's that is a settings' page: that page's; the stations' and the profiles' with what is picked
     // in them are the wide frame's own, sfdesk's pane_opens)
-    // (小屏's Profile place on 概览: its pools as well)
-    Place("profiles") if !wide && @signals.untracked(fn() { @settings.profiles_place_overview.get() }) =>
-      reads_of([stations, ("profiles", { "scope": of }), ("profilesOverview", { "scope": of })])
     Place("remote") => {
       let terms_on = (src.asks_terminals)()
       {

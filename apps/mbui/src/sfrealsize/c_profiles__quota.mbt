@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"profiles","scope":"ws"}
   let messages =
-    #|[[{"path":["items",18,"profile","quota","windows",0,"left"],"set":96}]]
+    #|[[{"path":["items"],"key":["key"],"patch":"sub:codex:me@x.com","ops":[{"path":["profile","quota","windows",0,"left"],"set":96}]}]]
   put_changes(asked, "quota", messages)
 }

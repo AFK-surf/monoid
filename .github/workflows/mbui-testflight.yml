@@ -109,14 +109,30 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - run: bash apps/mbui/scripts/testflight-guard.sh checkout
-      - name: Runner image and iOS SDK 27.1 or later
+      - name: Runner compiler and iOS SDK 27.1 or later
         shell: bash
         run: |
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          set -o pipefail
+          cc=$(xcrun --sdk iphoneos clang++ --version)
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(xcrun --sdk iphoneos --find clang 2>/dev/null || true)
+            sdk_path=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
+            cc_args=(-E -x c -arch arm64 -)
+            [ -z "$sdk_path" ] || cc_args=(-E -x c -isysroot "$sdk_path" -arch arm64 -)
+            img="cc$({
+              [ -n "$cc_bin" ] && shasum -a 256 "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" "${cc_args[@]}" 2>/dev/null || true
+              xcrun --sdk iphoneos --show-sdk-build-version 2>/dev/null || true
+            } | shasum -a 256 | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=${cc%%$'\n'*})"
           v=$(xcrun --sdk iphoneos --show-sdk-version)
           echo "iOS SDK $v ($(xcodebuild -version | head -1))"
           case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
-      # (restored only: preview.yml's ios job, on main, saves them, keyed by runner ImageVersion)
+      # (restored only: preview.yml's ios job, on main, saves them, keyed by iphoneos compiler + SDK fingerprint)
       - uses: actions/cache/restore@v4
         id: store
         with:

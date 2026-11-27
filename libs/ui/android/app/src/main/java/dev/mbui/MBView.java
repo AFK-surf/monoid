@@ -412,7 +412,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
         @Override public void postMain(Runnable r) { Host.main.post(r); }
 
-        @Override public void postVsync() { postVsync.run(); }
+        @Override public void postVsync() { postVsync(0L); }
+
+        @Override public void postVsync(long gen) { MBView.this.postVsync(gen); }
 
         @Override public void atNextVsyncOnDrawing(Runnable r) {
             Host.main.post(() -> Choreographer.getInstance().postFrameCallback(t -> postToApp(r)));
@@ -1085,33 +1087,27 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     // ---- vsync ----
 
-    /** A vsync asked for (FramePacer's postVsync) told to the pacer as it comes, with its timelines where it has them. */
-    private final Choreographer.FrameCallback vsync = t -> pacer.vsyncCame(t, 0);
-    /** The vsync told with its frame's timelines (Timelines: Android 13's), made as first asked for. */
-    private Object vsyncTimed;
-    private final Runnable postVsync = () -> {
-        if (android.os.Build.VERSION.SDK_INT >= 33) Timelines.post(this);
-        else Choreographer.getInstance().postFrameCallback(vsync);
-    };
+    /** A vsync asked for (FramePacer's postVsync) told to the pacer as it comes, carrying its generation token. */
+    private void postVsync(long gen) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) Timelines.post(this, gen);
+        else Choreographer.getInstance().postFrameCallback(t -> pacer.vsyncCame(t, 0, gen));
+    }
 
     /** Android 13's vsync with its frame's timelines: a class of its own, loaded only there (older have no VsyncCallback). */
     private static final class Timelines {
-        static void post(MBView v) {
-            if (v.vsyncTimed == null) {
-                v.vsyncTimed = (Choreographer.VsyncCallback) d -> {
-                    long shows = d.getPreferredFrameTimeline().getExpectedPresentationTimeNanos();
-                    // the display's frame now, as far apart as its timelines are: the rate the app's frames are shown
-                    // at (since Android 16 the display's listener is told no change of rate unless it asks, so the
-                    // frame read as the view was shown, at 60 Hz, stayed while the display went to 120 as the app
-                    // moved); taken as the rate changes, not as the compositor's guess of it moves by a little
-                    Choreographer.FrameTimeline[] tl = d.getFrameTimelines();
-                    long period = tl.length > 1
-                            ? tl[1].getExpectedPresentationTimeNanos() - tl[0].getExpectedPresentationTimeNanos() : 0;
-                    if (period > 0 && Math.abs(period - v.pacer.framePeriod) * 16 > v.pacer.framePeriod) v.pacer.framePeriod = period;
-                    v.pacer.vsyncCame(d.getFrameTimeNanos(), shows);
-                };
-            }
-            Choreographer.getInstance().postVsyncCallback((Choreographer.VsyncCallback) v.vsyncTimed);
+        static void post(MBView v, long gen) {
+            Choreographer.getInstance().postVsyncCallback(d -> {
+                long shows = d.getPreferredFrameTimeline().getExpectedPresentationTimeNanos();
+                // the display's frame now, as far apart as its timelines are: the rate the app's frames are shown
+                // at (since Android 16 the display's listener is told no change of rate unless it asks, so the
+                // frame read as the view was shown, at 60 Hz, stayed while the display went to 120 as the app
+                // moved); taken as the rate changes, not as the compositor's guess of it moves by a little
+                Choreographer.FrameTimeline[] tl = d.getFrameTimelines();
+                long period = tl.length > 1
+                        ? tl[1].getExpectedPresentationTimeNanos() - tl[0].getExpectedPresentationTimeNanos() : 0;
+                if (period > 0 && Math.abs(period - v.pacer.framePeriod) * 16 > v.pacer.framePeriod) v.pacer.framePeriod = period;
+                v.pacer.vsyncCame(d.getFrameTimeNanos(), shows, gen);
+            });
         }
 
         static void postWake(MBView v, FramePacer.WakeReq req) {

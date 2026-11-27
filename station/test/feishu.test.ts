@@ -434,6 +434,52 @@ test("surface: a turn for a message that called nobody shows no card until the a
   }
 });
 
+test("surface: turns woken by no one's message here (a letter, a notice), after one an @ called, show no card and recall none (FB-61)", async () => {
+  const r = await surfaceRig();
+  try {
+    const cards = () => r.fake.calls("POST", "/open-apis/im/v1/messages").length;
+    const recalls = () => r.fake.calls("DELETE", /^\/open-apis\/im\/v1\/messages\//).length;
+    const here = { channel: "oc_g", threadTs: "om_a" };
+    r.fake.message({ id: "om_a", text: "带五个子会话干活", at: true });
+    await r.fake.until("heard", () => r.events.length === 1);
+    // Called by an @: its card at once, and it answered.
+    r.surface.working(here, "om_a", "正在思考…", null);
+    await r.fake.until("card at once", () => cards() === 1);
+    await r.surface.post(here, "开工", []);
+    await r.t.adjust(1000);
+    r.surface.working(here, "om_a", "", null);
+    await r.fake.until("done", () => r.fake.calls("PUT", /^\/open-apis\/cardkit\/v1\/cards\//).length === 1);
+    assert.equal(cards(), 2, "the card, and what it said");
+    // Woken again and again by what no one said here (a sub-chat's letter, a station notice, none at all), each doing
+    // more than think and read, each ending with chat_state alone: no card goes up, none is taken back.
+    for (const woke of ["letter-1", null, "om_notice", "letter-2", null]) {
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在思考…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在编辑文件…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在给另一个对话写信…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "", null);
+      await settle();
+    }
+    assert.equal(cards(), 2, "no card for a turn no one here called");
+    assert.equal(recalls(), 0, "nothing recalled: no 「消息已撤回」 left in the topic");
+    // Someone @s it again: its card at once as ever.
+    r.fake.answer("POST /open-apis/im/v1/messages", { code: 0, data: { message_id: "om_card2" } });
+    r.fake.message({ id: "om_c", text: "进度？", at: true });
+    await r.fake.until("heard again", () => r.events.length === 2);
+    await r.t.adjust(1000);
+    r.surface.working(here, "om_c", "正在思考…", null);
+    await r.fake.until("card at once again", () => cards() === 3);
+  } finally {
+    await r.close();
+  }
+});
+
 test("surface: the people in a group, by their name in it, kept a minute", async () => {
   const r = await surfaceRig();
   try {

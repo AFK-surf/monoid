@@ -48,15 +48,10 @@ let corners_everywhere_known : Map[String, Int] = {
   // sides and 26 round, its page shorter than its panel so it does not scroll and ends 23 over the panel's foot, where
   // the panel's 42 would want them 19. Where a page that does not fill its panel ends is its words' and the window's,
   // as 安全's and the account's above: gone as the page's height is any other (a gateway more or less, another window).
-  // A station's profiles in a 中屏 window (desk, desk-win; the rail's one besides it on the tape): the card of the
-  // logins already on Willow (Codex), 16 in from the panel's sides and 26 round (one corner on the Mac's, both on
-  // Windows'), its page shorter than its panel so it does not scroll and ends 37 over the panel's foot. Where a page that
-  // does not fill its panel ends is its words' and the window's, as the account's above: gone as the page's height is
-  // any other (a profile more or less, another window).
-  known["desk-zh settings-profiles-station"] = 1
-  known["desk-en settings-profiles-station"] = 1
-  known["desk-win-zh settings-profiles-station"] = 3
-  known["desk-win-en settings-profiles-station"] = 3
+  // A station's profiles in a 中屏 window (desk-win; the rail's one besides it on the tape): three-tier layout brings
+  // desk-zh/en down to 0 and desk-win-zh/en down from 3 to 1 (rail corner on tape).
+  known["desk-win-zh settings-profiles-station"] = 1
+  known["desk-win-en settings-profiles-station"] = 1
   known["touch-zh settings-new-profile-stations"] = 3
   known["touch-en settings-new-profile-stations"] = 3
   known
@@ -93,7 +88,7 @@ let corners_tape_rail : Array[String] = [
   "archived", "history", "history-details", "drive",
   "drive-roots", "drive-download", "drive-empty", "drive-failed", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
-  "files-transfers", "files-tree", "place-stations", "place-profiles",
+  "files-transfers", "files-tree", "place-stations", "place-profiles", "profiles-manage", "profiles-manage-station",
   // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
   "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",

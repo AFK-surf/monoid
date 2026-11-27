@@ -1193,6 +1193,8 @@ fn setting_kind(r : @settings.Route) -> String {
     Stations => "Stations"
     Station(_) => "Station"
     Profiles(_) => "Profiles"
+    ProfilesOverview => "ProfilesOverview"
+    ProfilesManage(_) => "ProfilesManage"
     Profile(_, _) => "Profile"
     Connects(_) => "Connects"
     Connect(_, _) => "Connect"
@@ -1462,19 +1464,26 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
 /// Default-deny: any unknown or sensitive `place/*` (e.g. `place/vault`, `place/vault-items`, `place/mcp`,
 /// `place/security`, `place/permissions`, `place/adb/*`, `place/profile-account/*`, `place/new-profile/*`) is rejected.
 fn shelf_kind_allowed(kind : String) -> Bool {
-  kind == "home" ||
-  kind == "place/files" ||
-  kind == "place/remote" ||
-  kind == "place/stations" ||
-  kind == "place/profiles" ||
-  kind == "place/connects" ||
-  kind == "place/usage" ||
-  kind == "place/archive" ||
-  kind == "place/changelog" ||
-  kind == "place/appearance" ||
-  kind == "place/about" ||
-  kind == "place/fonts" ||
-  kind == "place/shortcuts"
+  let k = if kind.has_suffix("/") && kind.length() > 1 {
+    kind.unsafe_substring(start=0, end=kind.length() - 1)
+  } else {
+    kind
+  }
+  k == "home" ||
+  k == "files-home" ||
+  k == "files" ||
+  k == "place/files" ||
+  k == "place/remote" ||
+  k == "place/stations" ||
+  k == "place/profiles" ||
+  k == "place/connects" ||
+  k == "place/usage" ||
+  k == "place/archive" ||
+  k == "place/changelog" ||
+  k == "place/appearance" ||
+  k == "place/about" ||
+  k == "place/fonts" ||
+  k == "place/shortcuts"
 }
 
 ///|
@@ -1530,6 +1539,8 @@ fn setting_way(r : @settings.Route) -> Array[@settings.Route] {
     MemoryDoc(a, _, _) => [Memories, Memory(a)]
     AutoCompletion => [AutoDecisions]
     AutoPolicy(_) => [AutoDecisions, AutoCompletion]
+    ProfilesOverview | ProfilesManage("") => [Profiles("")]
+    ProfilesManage(a) => [Stations, Station(a), Profiles(a)]
     _ => []
   }
 }
@@ -1833,6 +1844,8 @@ pub fn back_label(p : Page) -> String {
     // stations, a station's own page)
     Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
     Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
+    Setting(@settings.Route::ProfilesOverview) => @sf.t("web-pages.profiles.overview.title")
+    Setting(@settings.Route::ProfilesManage(_)) => @sf.t("web-pages.profiles.sharing.title")
     Place("remote") => @sf.t("web-main.rail.remote")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
@@ -1962,6 +1975,7 @@ pub fn kept_left_invalidate_global() -> Unit {
 pub fn kept_left_invalidate_workspace(ws : String) -> Unit {
   guard ws != "" else { return }
   kept_left_ws_gen[ws] = kept_left_ws_gen_of(ws) + 1
+  workspace_owner_invalidate(ws)
   let ws_serials : Map[Int, Bool] = Map([])
   for serial, id in entry_identities {
     if id.ws == ws {

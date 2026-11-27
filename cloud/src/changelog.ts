@@ -24,6 +24,13 @@ export interface ChangelogEntry {
   parts: Part[];
 }
 
+/** Compact fix record extracted from changelog entries for Directory.markFixed / fixedForStation. */
+export type ChangelogFix = { number: number; version: number; parts: Part[] };
+
+export function changelogFixesOf(entries: ChangelogEntry[]): ChangelogFix[] {
+  return entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts })));
+}
+
 /** The build each part has out on a channel (0.1.<n>: n), null where there is none to read. still.fail cloud is the one deployed: all of it. */
 export type Released = Record<Exclude<Part, "cloud">, number | null>;
 
@@ -41,7 +48,7 @@ export interface FixedReport {
   thread: string | null;
 }
 
-type PlatformReleases = Released & { macos: number | null; windows: number | null };
+export type PlatformReleases = Released & { macos: number | null; windows: number | null };
 
 type Bucket = ReleaseBucket | undefined;
 
@@ -52,31 +59,113 @@ type Bucket = ReleaseBucket | undefined;
 type Failed = (file: string, error: unknown) => void;
 const logged: Failed = (file, error) => console.error(`changelog ${file} unavailable:`, error);
 
+const DEFAULT_CACHE_SECONDS = 300;
+
+/** In-memory cache TTL in seconds for changelog and release feeds; unset or invalid falls back to 300, "0" disables caching. */
+export function changelogCacheSeconds(env?: Pick<Env, "CHANGELOG_CACHE_SECONDS">): number {
+  const raw = env?.CHANGELOG_CACHE_SECONDS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_CACHE_SECONDS;
+  const seconds = Number(raw);
+  return Number.isSafeInteger(seconds) ? seconds : DEFAULT_CACHE_SECONDS;
+}
+
+const CHANGELOG_HEADERS = {
+  "content-type": "application/json",
+  "cache-control": "public, max-age=300",
+  "referrer-policy": "no-referrer",
+  vary: "x-stillfail-channel",
+};
+
+const ETAG_TOKEN = /^"[0-9a-f]{16}"$/;
+
+/** Computes a strong 16-hex-char SHA-256 ETag (`"<16hex>"`) for a changelog response body. */
+export async function etagOf(body: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+  const bytes = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < 8; i++) hex += bytes[i]!.toString(16).padStart(2, "0");
+  return `"${hex}"`;
+}
+
+/** RFC 9110 weak ETag comparison for GET If-None-Match headers. */
+export function etagMatches(ifNoneMatch: string | null, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const target = etag.startsWith("W/") ? etag.slice(2) : etag;
+  for (const raw of ifNoneMatch.split(",")) {
+    const token = raw.trim();
+    if (!token) continue;
+    if (token === "*") return true;
+    const bare = token.startsWith("W/") ? token.slice(2) : token;
+    if (bare === target) return true;
+  }
+  return false;
+}
+
+function singleEtagToken(ifNoneMatch: string | null): string | null {
+  if (!ifNoneMatch || ifNoneMatch.includes(",")) return null;
+  const trimmed = ifNoneMatch.trim();
+  if (!trimmed || trimmed === "*") return null;
+  const bare = trimmed.startsWith("W/") ? trimmed.slice(2) : trimmed;
+  return ETAG_TOKEN.test(bare) ? bare : null;
+}
+
+// Pure-string bounded edge isolate cache (no I/O handles or Promises).
+const EDGE_CACHE_MAX = 8;
+const edgeChangelogCache = new Map<string, { etag: string; body: string }>();
+
+function putEdgeChangelog(cacheKey: string, etag: string, body: string): void {
+  edgeChangelogCache.delete(cacheKey);
+  edgeChangelogCache.set(cacheKey, { etag, body });
+  if (edgeChangelogCache.size > EDGE_CACHE_MAX) {
+    const oldest = edgeChangelogCache.keys().next().value;
+    if (oldest !== undefined) edgeChangelogCache.delete(oldest);
+  }
+}
+
+export type ReadReleaseFileResult =
+  | { ok: true; value: string | null; cacheable: boolean }
+  | { ok: false; error: unknown };
+
 /**
- * A file of the bucket; with `upstream` (RELEASES_UPSTREAM), one of still.fail's it lacks read there, as index.ts serves
- * it. One that cannot be read (`retryRead` failed twice, or still.fail's not reached) is null as one not there is, and
- * `failed` is told.
+ * Reads a file from the releases bucket or `upstream` (RELEASES_UPSTREAM) when shared.
+ * Distinguishes cacheable 404/missing (`cacheable: true`) from non-404 4xx responses such as 429 (`cacheable: false`)
+ * and transient R2/upstream 5xx/network failures (`ok: false`).
  */
-async function read(bucket: Bucket, key: string, upstream?: string, failed: Failed = logged): Promise<string | null> {
+export async function readReleaseFile(bucket: Bucket, key: string, upstream?: string): Promise<ReadReleaseFileResult> {
   const got = await retryRead(async () => {
     const object = await bucket?.get(key);
     return object ? await new Response(object.body).text() : null;
   });
-  if (!got.ok) {
-    failed(key, got.error);
-    return null;
-  }
-  if (got.value !== null) return got.value;
-  if (!upstream || !sharedRelease(key)) return null;
+  if (!got.ok) return { ok: false, error: got.error };
+  if (got.value !== null) return { ok: true, value: got.value, cacheable: true };
+  if (!upstream || !sharedRelease(key)) return { ok: true, value: null, cacheable: Boolean(bucket) };
   try {
     const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${key}`);
-    if (answer.ok) return await answer.text();
+    if (answer.ok) return { ok: true, value: await answer.text(), cacheable: true };
     await answer.body?.cancel().catch(() => {});
-    if (answer.status >= 500) failed(key, new Error(`upstream ${answer.status}`));
+    if (answer.status >= 500) return { ok: false, error: new Error(`upstream ${answer.status}`) };
+    return { ok: true, value: null, cacheable: answer.status === 404 };
   } catch (error) {
-    failed(key, new Error("upstream unreachable", { cause: error }));
+    return { ok: false, error: new Error("upstream unreachable", { cause: error }) };
   }
-  return null;
+}
+
+async function read(bucket: Bucket, key: string, upstream?: string, failed: Failed = logged): Promise<string | null> {
+  const result = await readReleaseFile(bucket, key, upstream);
+  if (!result.ok) {
+    failed(key, result.error);
+    return null;
+  }
+  return result.value;
+}
+
+export function parseChangelog(text: string | null): ChangelogEntry[] {
+  try {
+    const value = JSON.parse(text ?? "[]") as unknown;
+    return Array.isArray(value) ? (value as ChangelogEntry[]).filter((e) => Number.isSafeInteger(e?.version) && Array.isArray(e.text) && Array.isArray(e.parts)) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -98,12 +187,7 @@ export async function changelog(bucket: Bucket, channel: Channel = "beta", faile
 }
 
 async function entries(bucket: Bucket, key: string, failed: Failed = logged): Promise<ChangelogEntry[]> {
-  try {
-    const value = JSON.parse((await read(bucket, key, undefined, failed)) ?? "[]") as unknown;
-    return Array.isArray(value) ? (value as ChangelogEntry[]).filter((e) => Number.isSafeInteger(e?.version) && Array.isArray(e.text) && Array.isArray(e.parts)) : [];
-  } catch {
-    return [];
-  }
+  return parseChangelog(await read(bucket, key, undefined, failed));
 }
 
 /** n of a version said as 0.<m>.<n> (or a bare n). */
@@ -119,6 +203,18 @@ const json = (text: string | null): Record<string, unknown> => {
   }
 };
 
+export function parseReleased(station: string | null, android: string | null, mac: string | null, win: string | null, web: string | null): PlatformReleases {
+  const macos = build(json(mac).versionCode);
+  const windows = build(json(win).versionCode);
+  return {
+    station: build(json(station).build ?? json(station).version),
+    android: build(json(android).versionCode),
+    macos, windows,
+    desktop: macos !== null && windows !== null ? Math.min(macos, windows) : null,
+    web: build(json(web).build ?? json(web).version),
+  };
+}
+
 /**
  * What each part has out on a channel, from the feeds the updaters read (scripts/release.sh) and the web app's (deploy.py);
  * the station's from `upstream` where the bucket has none (monoid's cloud: its station is still.fail's, index.ts).
@@ -133,15 +229,7 @@ export async function released(bucket: Bucket, channel: Channel, upstream?: stri
     read(bucket, beta ? "win/beta/latest.json" : "win/latest.json", undefined, failed),
     read(bucket, beta ? "web-beta.json" : "web.json", undefined, failed),
   ]);
-  const macos = build(json(mac).versionCode);
-  const windows = build(json(win).versionCode);
-  return {
-    station: build(json(station).build ?? json(station).version),
-    android: build(json(android).versionCode),
-    macos, windows,
-    desktop: macos !== null && windows !== null ? Math.min(macos, windows) : null,
-    web: build(json(web).build ?? json(web).version),
-  };
+  return parseReleased(station, android, mac, win, web);
 }
 
 /** Whether all of a fix is out: each part it is in has released its version or a later one. */
@@ -153,27 +241,85 @@ const channelOf = (request: Request, env: Env): Channel => (new URL(request.url)
 
 /** GET /v1/changelog: { entries, released } on the channel of the host (or x-stillfail-channel). Anyone may read it. Unavailable while any of it cannot be read: a client keeps what a 200 says in place of what it has (client/core-ts/src/changelog.ts). */
 export async function serveChangelog(request: Request, env: Env): Promise<Response> {
+  const ttl = changelogCacheSeconds(env);
   const channel = channelOf(request, env);
+  const clientIfNoneMatch = request.headers.get("if-none-match");
+  const notModifiedHeaders = (etag: string) => ({
+    "cache-control": CHANGELOG_HEADERS["cache-control"],
+    "referrer-policy": CHANGELOG_HEADERS["referrer-policy"],
+    vary: CHANGELOG_HEADERS.vary,
+    etag,
+  });
+  if (ttl > 0 && env.SERVICE_STATUS) {
+    try {
+      const cacheKey = `${channel}\0${env.RELEASES_UPSTREAM ?? ""}`;
+      const edgeCached = edgeChangelogCache.get(cacheKey);
+      const knownEtag = edgeCached?.etag ?? singleEtagToken(clientIfNoneMatch);
+      const status = env.SERVICE_STATUS.getByName("primary");
+      const result = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, knownEtag);
+      if (!result.ok) return unavailable(result.file, new Error(result.message));
+      if ("notModified" in result && result.notModified) {
+        if (etagMatches(clientIfNoneMatch, result.etag)) {
+          return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
+        }
+        if (edgeCached && edgeCached.etag === result.etag) {
+          edgeChangelogCache.delete(cacheKey);
+          edgeChangelogCache.set(cacheKey, edgeCached);
+          return new Response(edgeCached.body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag: result.etag } });
+        }
+        // Defensive fallback: if DO returned notModified without a matching edge entry or client ETag match, fetch full body.
+        const full = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, null);
+        if (!full.ok) return unavailable(full.file, new Error(full.message));
+        if ("body" in full) {
+          if (full.etag) putEdgeChangelog(cacheKey, full.etag, full.body);
+          return new Response(full.body, { status: 200, headers: full.etag ? { ...CHANGELOG_HEADERS, etag: full.etag } : CHANGELOG_HEADERS });
+        }
+      } else if ("body" in result) {
+        if (result.etag) putEdgeChangelog(cacheKey, result.etag, result.body);
+        if (result.etag && etagMatches(clientIfNoneMatch, result.etag)) {
+          return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
+        }
+        return new Response(result.body, { status: 200, headers: result.etag ? { ...CHANGELOG_HEADERS, etag: result.etag } : CHANGELOG_HEADERS });
+      }
+    } catch (error) {
+      console.error("changelog cache unavailable:", error);
+    }
+  }
   let failure = null as { file: string; error: unknown } | null;
   const failed: Failed = (file, error) => {
     failure ??= { file, error };
   };
   const [list, have] = await Promise.all([changelog(env.RELEASES, channel, failed), released(env.RELEASES, channel, env.RELEASES_UPSTREAM, failed)]);
   if (failure) return unavailable(failure.file, failure.error);
-  return reply({ entries: list, released: have }, 200, { "cache-control": "public, max-age=300" });
+  const body = JSON.stringify({ entries: list, released: have });
+  const etag = await etagOf(body);
+  if (etagMatches(clientIfNoneMatch, etag)) {
+    return new Response(null, { status: 304, headers: notModifiedHeaders(etag) });
+  }
+  return new Response(body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag } });
 }
 
 /** Marks the reports the changelog fixes, and gives what has been fixed of a station's reports and is out on their channel. */
 export async function fixedFor(env: Env, station: string, told: string[]): Promise<FixedReport[]> {
   const dir = env.DIRECTORY.getByName("primary");
-  const entries = await changelog(env.RELEASES);
-  await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
-  if (told.length) await dir.toldFixed(station, told);
-  const reports = await dir.fixedUntold(station);
+  const ttl = changelogCacheSeconds(env);
+  const status = ttl > 0 && env.SERVICE_STATUS ? env.SERVICE_STATUS.getByName("primary") : null;
+  const fixes = status
+    ? await status.changelogFixes(ttl).catch(async (error) => {
+        console.error("changelog cache unavailable:", error);
+        return changelogFixesOf(await changelog(env.RELEASES));
+      })
+    : changelogFixesOf(await changelog(env.RELEASES));
+  const reports = await dir.fixedForStation(station, fixes, told);
   const have: Partial<Record<Channel, PlatformReleases>> = {};
   const fixed: FixedReport[] = [];
   for (const report of reports) {
-    have[report.channel] ??= await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
+    have[report.channel] ??= status
+      ? await status.releasedVersions(report.channel, env.RELEASES_UPSTREAM ?? null, ttl).catch((error) => {
+          console.error("changelog cache unavailable:", error);
+          return released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
+        })
+      : await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
     const { desktopPlatform, ...details } = report;
     const { macos, windows, ...parts } = have[report.channel]!;
     if (desktopPlatform === "macos") parts.desktop = macos;

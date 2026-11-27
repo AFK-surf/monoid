@@ -526,14 +526,31 @@ pub fn[P] Nav::evict_shelf(self : Nav[P], should_evict : (Int) -> Bool) -> Unit 
   if self.shelf.is_empty() {
     self.shelf.shrink_to_fit()
   }
+  let mut swap_removed = false
   match self.swap_out {
-    Some(was) if self.swap_kept && should_evict(was.serial) => self.swap_kept = false
+    Some(was) if should_evict(was.serial) => {
+      self.swap_out = None
+      self.swap_kept = false
+      was.shown_once = false
+      self.gone.push(was)
+      removed = true
+      swap_removed = true
+    }
     _ => ()
+  }
+  if swap_removed {
+    self.swap_told()
   }
   if removed {
     self.told()
     wake()
   }
+}
+
+///|
+/// Serial of the outgoing root page currently in an in-flight `replace_tab` cross-transition, if any.
+pub fn[P] Nav::swapping_out_serial(self : Nav[P]) -> Int? {
+  self.swap_out.map(fn(e) { e.serial })
 }
 
 ///|

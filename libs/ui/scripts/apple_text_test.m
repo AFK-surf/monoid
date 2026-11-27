@@ -296,8 +296,9 @@ static void rests_in_turn(void) {
   CHECK([got isEqualToString:@"0124" @"012" @"01"], "rests in the order %s", got.UTF8String);
 }
 
-// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead, their first phase where their keys put
-// them, the rest after): each phase of each taken drawn there, as the frames' thread draws it, to the byte.
+// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead): on first sight only the requested phase
+// is drawn ahead; once a glyph is requested at a second distinct phase (horizontal subpixel motion), the remaining
+// phases are queued and drawn byte-identical to foreground drawing.
 static void ahead_page(void) {
   NSString *page = @"文字渲染横向推入页面每个字形的四分之一像素相位Rendering every glyph's phases ahead 0123456789";
   int sizes[] = {13, 15, 17};
@@ -358,8 +359,11 @@ static BOOL drawn_eq(MBDrawn *d, MBDrawn *r) {
 }
 
 // Re-requesting glyphs after eviction/consumption, active single-phase re-request, same-batch double-phase re-request,
-// old MBAhead new-batch double-phase with duplicate key, and full-queue continuation for already-active entries.
+// old MBAhead new-batch double-phase with duplicate key, full-queue continuation, foreground rasterize lazy phases,
+// and non-blocking skip mask (including worker discard and empty-entry reclamation).
 static void ahead_rewarm(void) {
+  // Settle any face changes left over by earlier tests before exercising generation-based flushing.
+  mb_host_atlas_generation();
   ahead_ensure();
   drain_ahead_queues();
 
@@ -504,6 +508,81 @@ static void ahead_rewarm(void) {
     blocker.drawing = 0;
     for (MBAhead *d in dummies) [ahead_order removeObject:d];
     CHECK(ahead_order.count == 0, "rewarm 5: ahead_order not clean (%lu)", (unsigned long)ahead_order.count);
+  }
+
+  // 6. Foreground rasterize deferred batch prewarm: rasterize records pending glyphs without dispatching mid-frame;
+  // mb_text_flush_ahead / mb_host_atlas_generation dispatches remaining phases as one batch onto ahead_rest_q.
+  {
+    int k1 = key_of(@"批", 19, 0);
+    int k2 = key_of(@"刷", 19, 0);
+    CHECK(k1 >= 0 && k2 >= 0, "rewarm 6: no keys");
+    double out[8] = {0};
+    mb_host_glyph(k1 | (0 << 26), out);
+    mb_host_glyph(k2 | (2 << 26), out);
+    drain_ahead_queues();
+    CHECK(entries[k1].subs_queued == 0x1 && entries[k1].fg_queued == 1,
+          "rewarm 6: k1 mid-frame state wrong (subs=%u fg=%u)", entries[k1].subs_queued, entries[k1].fg_queued);
+    CHECK(entries[k2].subs_queued == 0x4 && entries[k2].fg_queued == 1,
+          "rewarm 6: k2 mid-frame state wrong (subs=%u fg=%u)", entries[k2].subs_queued, entries[k2].fg_queued);
+    CHECK(ahead_of[@(k1)] == nil && ahead_of[@(k2)] == nil,
+          "rewarm 6: foreground rasterize dispatched MBAhead mid-frame");
+
+    // Flush via frame-boundary hook (mb_host_atlas_generation calls mb_text_flush_ahead).
+    mb_host_atlas_generation();
+    drain_ahead_queues();
+    CHECK(entries[k1].subs_queued == SUB_ALL && entries[k1].fg_queued == 0, "rewarm 6: k1 not flushed");
+    CHECK(entries[k2].subs_queued == SUB_ALL && entries[k2].fg_queued == 0, "rewarm 6: k2 not flushed");
+    for (int s = 1; s < SUB_COUNT; s++) CHECK(drawn_ahead(k1, s) != nil, "rewarm 6: k1 phase %d missing", s);
+    CHECK(drawn_ahead(k1, 0) == nil, "rewarm 6: k1 phase 0 redrawn");
+    CHECK(drawn_ahead(k2, 0) != nil && drawn_ahead(k2, 1) != nil && drawn_ahead(k2, 3) != nil,
+          "rewarm 6: k2 remaining phases missing");
+    CHECK(drawn_ahead(k2, 2) == nil, "rewarm 6: k2 phase 2 redrawn");
+    CHECK(ahead_of[@(k1)] == nil && ahead_of[@(k2)] == nil, "rewarm 6: ahead_of not cleared");
+  }
+
+  // 7. Non-blocking skip mask: (a) drawn_ahead never blocks on an actively drawing phase and unskip works on re-request;
+  // (b) real worker draw_ahead discards its rendered bitmap when skip is set and leaves an idle entry reclaimable by
+  // drop_oldest_drawn.
+  {
+    int k = key_of(@"跳", 19, 0);
+    CHECK(k >= 0, "rewarm 7: no key");
+    MBAhead *a = [MBAhead new];
+    a.key = k;
+    a.cluster = texts[k];
+    a.font = (__bridge id)font_for(entries[k].size, entries[k].weight, entries[k].style);
+    a.style = entries[k].style;
+    a.dx = entries[k].dx;
+    a.scale = text_scale;
+    a.drawing = (uint8_t)(1 << 1);
+    a.drawn = [NSMutableArray arrayWithObjects:NSNull.null, NSNull.null, NSNull.null, NSNull.null, nil];
+    ahead_of[@(k)] = a;
+    [ahead_order addObject:a];
+
+    MBDrawn *d = drawn_ahead(k, 1);
+    CHECK(d == nil, "rewarm 7a: expected nil while drawing");
+    CHECK((a.skip & (1 << 1)) != 0, "rewarm 7a: skip bit not set");
+    CHECK(ahead_of[@(k)] == a, "rewarm 7a: MBAhead removed while drawing");
+
+    int32_t req[1] = {k | (1 << 26)};
+    mb_host_glyphs_ahead(req, 1);
+    CHECK((a.skip & (1 << 1)) == 0, "rewarm 7a: re-request did not clear skip bit");
+
+    // 7b. Real worker draw_ahead path with skip set: bitmap discarded, have stays 0, empty MBAhead reclaimed.
+    a.drawing = 0;
+    a.want = (uint8_t)(1 << 1);
+    a.first = (uint8_t)(1 << 1);
+    a.skip = (uint8_t)(1 << 1);
+    dispatch_sync(ahead_q, ^{
+      draw_ahead(a, YES);
+    });
+    CHECK(a.drawing == 0 && a.want == 0 && a.skip == 0 && a.have == 0,
+          "rewarm 7b: worker did not discard skipped phase (drawing=%u want=%u skip=%u have=%u)", a.drawing, a.want,
+          a.skip, a.have);
+    CHECK(a.drawn[1] == NSNull.null, "rewarm 7b: skipped bitmap stored in drawn[1]");
+    CHECK(ahead_of[@(k)] == a, "rewarm 7b: empty MBAhead unexpectedly removed before reclaim");
+    CHECK(drop_oldest_drawn(), "rewarm 7b: drop_oldest_drawn did not reclaim empty MBAhead");
+    CHECK(ahead_of[@(k)] == nil, "rewarm 7b: ahead_of still holds reclaimed MBAhead");
+    entries[k].subs_queued = 0;
   }
   printf("ahead_rewarm: ok\n");
 }

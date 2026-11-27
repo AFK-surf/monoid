@@ -1,11 +1,11 @@
 // Only the test bundler imports this entry. Production exports no fixture routes.
-import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
+import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus as ProductionServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
 import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
-export { LoginLimiter, ServiceStatus };
+export { LoginLimiter };
 
 /** Calls to an object that fail as Cloudflare's do when it moved the object, or says it is overloaded. */
 class Losing {
@@ -589,6 +589,66 @@ function withFailingBucket(env: Env): Env {
   return { ...env, RELEASES };
 }
 
+function withDynamicFailingBucket(env: Env): Env {
+  const bucket = env.RELEASES;
+  if (!bucket) return env;
+  const call = <A extends unknown[], T>(name: string, run: (...args: A) => Promise<T>) => async (...args: A): Promise<T> => {
+    const fails = bucketFails;
+    if (fails) {
+      bucketCalls.push(`${name} ${typeof args[0] === "string" ? args[0] : ""}`.trim());
+      if ((fails[name] ?? 0) > 0) {
+        fails[name]!--;
+        throw new Error(`${name}: We encountered an internal connectivity issue. Please try again. (10001)`);
+      }
+    }
+    return run(...args);
+  };
+  const RELEASES = {
+    head: call("head", (key: string) => bucket.head(key)),
+    get: call("get", (key: string, options?: R2GetOptions) => bucket.get(key, options)),
+    put: call("put", (key: string, value: ArrayBuffer | Uint8Array | ReadableStream, options?: R2PutOptions) => bucket.put(key, value, options)),
+    list: call("list", (options?: R2ListOptions) => bucket.list(options)),
+  } as unknown as R2Bucket;
+  return { ...env, RELEASES };
+}
+
+const statusLosing = new Losing();
+let changelogStats = { calls: 0, notModified: 0, full: 0 };
+
+export class ServiceStatus extends ProductionServiceStatus {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, withDynamicFailingBucket(env));
+  }
+  override invalidateChangelog(): void {
+    statusLosing.call();
+    return super.invalidateChangelog();
+  }
+  override async changelogResponse(
+    channel: Parameters<ProductionServiceStatus["changelogResponse"]>[0],
+    upstream: string | null,
+    ttlSeconds: number,
+    ifNoneMatch?: string | null,
+  ) {
+    statusLosing.call();
+    const result = await super.changelogResponse(channel, upstream, ttlSeconds, ifNoneMatch);
+    changelogStats.calls++;
+    if (result.ok && "notModified" in result && result.notModified) changelogStats.notModified++;
+    else if (result.ok) changelogStats.full++;
+    return result;
+  }
+  override changelogFixes(ttlSeconds: number) {
+    statusLosing.call();
+    return super.changelogFixes(ttlSeconds);
+  }
+  override releasedVersions(channel: Parameters<ProductionServiceStatus["releasedVersions"]>[0], upstream: string | null, ttlSeconds: number) {
+    statusLosing.call();
+    return super.releasedVersions(channel, upstream, ttlSeconds);
+  }
+  settled(): Promise<void> {
+    return this.settleChangelog();
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     env = withFailingBucket(withTestMail(env));
@@ -599,6 +659,20 @@ export default {
       bucketFails = (await readJson(request)) as Record<string, number>;
       bucketCalls = [];
       return reply({ calls });
+    }
+    if (path === "/__test/lose-status") {
+      const { times, overloaded } = (await readJson(request)) as { times?: number; overloaded?: boolean };
+      statusLosing.lose(Number(times ?? 0), Boolean(overloaded));
+      return reply({ armed: Number(times ?? 0) });
+    }
+    if (path === "/__test/changelog-stats") {
+      const stats = changelogStats;
+      changelogStats = { calls: 0, notModified: 0, full: 0 };
+      return reply(stats);
+    }
+    if (path === "/__test/status-settled") {
+      await (env.SERVICE_STATUS.getByName("primary") as unknown as { settled(): Promise<void> }).settled();
+      return reply({ ok: true });
     }
     if (path === "/__test/devices") return reply(deviceRequests);
     if (path === "/__test/sockets") {

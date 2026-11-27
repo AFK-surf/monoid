@@ -146,6 +146,10 @@ pub(all) enum Route {
   Station(String)
   /// the profiles, of every station ("") or of one
   Profiles(String)
+  /// workspace profiles overview (quota pools & alerts)
+  ProfilesOverview
+  /// profiles sharing management, workspace-wide ("") or one station
+  ProfilesManage(String)
   /// a profile's page: its station's address, its id
   Profile(String, String)
   /// the connects, of every station ("") or of one
@@ -546,7 +550,6 @@ let left_core : Ref[Core?] = Ref(None)
 pub fn left(route : Route) -> Unit {
   match route {
     Connects(_) => connects_mine.val = false
-    Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
     NewProfile(a) =>
       match left_core.val {
@@ -576,9 +579,6 @@ pub fn left(route : Route) -> Unit {
 ///|
 /// A place of the bottom bar's left the stack for good: what its page kept goes (Profile's 概览 its own).
 pub fn place_left(name : String) -> Unit {
-  if name == "profiles" {
-    profiles_place_overview.set(false)
-  }
   match route_of(name) {
     Some(r) => left(r)
     None => ()
@@ -589,8 +589,6 @@ pub fn place_left(name : String) -> Unit {
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
   local_said_kept.val = None
-  profiles_place_overview.set(false)
-  profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0
   vault_ask_reset()
@@ -667,7 +665,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | McpServers | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | Backup | StationBackup(_) | StationMove(_) | AutoDecisions | Progress | Usage | UsagePrices(_) | Shortcuts | Network | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | Projects | Project(_) | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | McpServers | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | Backup | StationBackup(_) | StationMove(_) | AutoDecisions | Progress | Usage | UsagePrices(_) | Shortcuts | Network | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | Projects | Project(_) | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfilesOverview | ProfilesManage(_) | ProfileAccount(_))
 }
 
 ///|
@@ -689,6 +687,8 @@ pub fn route_of(name : String) -> Route? {
     "vault-items" => Some(VaultItems)
     "stations" => Some(Stations)
     "profiles" => Some(Profiles(""))
+    "profiles-overview" => Some(ProfilesOverview)
+    "profiles-manage" => Some(ProfilesManage(""))
     "connects" => Some(Connects(""))
     "memories" => Some(Memories)
     "mcp" => Some(McpServers)
@@ -737,6 +737,7 @@ pub fn route_of(name : String) -> Route? {
             "memory" => Some(Memory(arg))
             "memory-doc" => Some(MemoryDoc(address, id, 0))
             "profiles" => Some(Profiles(arg))
+            "profiles-manage" => Some(ProfilesManage(arg))
             "profile" => Some(Profile(address, id))
             // (an account on several stations, by its key in the workspace's profiles)
             "profile-account" => Some(ProfileAccount(arg))

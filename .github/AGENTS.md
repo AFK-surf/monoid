@@ -22,11 +22,11 @@
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 35), JOB_END written by the
-  job's first step, less its 5 s of setting up (preview's ios 8). The units' stores of GitHub's Linux images are keyed by
-  their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the C standard headers it preprocesses,
-  not `linux-libc-dev`'s version, which moves weekly with the kernel), its Mac's
-  by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
-  of one clang and libc, each its own store, left a push's image's units hours behind main's.
+  job's first step, less its 5 s of setting up (preview's ios 8). The units' stores of GitHub's Linux and iOS (`xcode-27`)
+  images are keyed by their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the C standard headers it
+  preprocesses — plus the SDK build version on iOS — not `linux-libc-dev`'s version or `ImageVersion`): two compilers in
+  turn kept only the last run's units in one, while multiple runner images carrying the same clang and headers tore main's
+  store apart and left a push's image's units hours behind main's.
 - Use GitHub's standard `ubuntu-24.04` runners for Linux CI; do not use paid runners. The pipeline plans only
   missing native parts. `natives-build` splits heavy independent Rust builds (`shell-station` and `mesh`) onto separate
   VMs with per-target Cargo target and Zig caches (kept warm on main by `workflows/native-cargo-cache.yml`), and defers Linux readers to `natives-linux-readers` when

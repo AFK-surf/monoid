@@ -26,7 +26,7 @@ import {
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
   type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, type ProjectProposal, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, ownName, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, mergeProposalOutcome, normalizeProject, normalizeTags, optionsCard, parseThreadTags, parsed, proposalOf, stored, takeChars, toEntry, toJob, toMembership,
-  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
+  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, LIVE_PROFILE_OF_SESSION, LIVE_WITNESSES_ON_PROFILES, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
 import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addProjectColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
 import { OWNED_WS_SQL, activeConversationMembers, birthThreadsOf, conversationOf, membersOf, reanchorOnDeleteInTx, repairConversations, settleConversationInTx } from "./conversations.ts";
@@ -109,6 +109,13 @@ export const WAITING_FOR_PEOPLE = `SELECT s.key AS key, s.title, t.need, t.ended
   WHERE s.archived_at IS NULL AND t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision')
     AND NOT EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL)
   ORDER BY t.ended_at DESC LIMIT ?2`;
+/// Single-session O(1) primary-key check matching `WAITING_FOR_PEOPLE` (api/status.ts `WaitingTracker`): avoids
+/// rescanning every unarchived session on the main thread after each debounced session event.
+export const WAITING_FOR_PERSON_OF = `SELECT s.key AS key, s.title, t.need, t.ended_at FROM sessions s
+  JOIN turns t ON t.rowid = (SELECT u.rowid FROM turns u INDEXED BY turns_by_session WHERE u.session_key = s.key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1)
+  WHERE s.key = ?1 AND s.archived_at IS NULL AND t.ended_at >= ?2 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision')
+    AND NOT EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL)
+  LIMIT 1`;
 /// The closest failure in a notice's time window, breaking ties in listTurns' order.
 export const FAILED_TURN_NEAR = `SELECT * FROM turns INDEXED BY turns_by_end
   WHERE session_key = ?1 AND ended_at >= ?2 AND ended_at <= ?3 AND outcome = 'failed'
@@ -2858,8 +2865,17 @@ export class Store {
   /// (handed there, store/handover.ts `deliveries`): none of it is handed to their agent here again should they come
   /// back.
   deliveredThere(keys: readonly string[]): void {
-    this.#tx(() => {
-      for (const key of keys) this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
+    this.#with((changes) => {
+      const changed: string[] = [];
+      this.#tx(() => {
+        const now = this.now();
+        for (const key of keys) {
+          if (this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, now) > 0) {
+            changed.push(key);
+          }
+        }
+      });
+      for (const key of changed) changes.push({ type: "session", key });
     });
   }
 
@@ -4999,6 +5015,12 @@ export class Store {
     return this.#all(WAITING_FOR_PEOPLE, since, limit).map((r) => ({ key: r.key, title: r.title ?? null, need: r.need ?? null, endedAt: r.ended_at }));
   }
 
+  /// Whether one session `key` is waiting for a person right now (O(1) PK seek matching `waitingForPeople`).
+  waitingForPersonOf(key: string, since: number): { key: string; title: string | null; need: string | null; endedAt: number } | null {
+    const r = this.#one(WAITING_FOR_PERSON_OF, key, since);
+    return r === undefined ? null : { key: r.key, title: r.title ?? null, need: r.need ?? null, endedAt: r.ended_at };
+  }
+
   /// A session's latest turn and whether anything is undelivered, including orphaned deliveries, without counting them.
   workOf(key: string): WorkOf | undefined {
     return workOfRow(this.#one(WORK_OF_SESSION, key));
@@ -5228,6 +5250,24 @@ export class Store {
   /// another station lends this one is in use here (move/station.ts `move.uses`). By the index of those in sight.
   liveSessionsOn(pid: string, most: number): string[] {
     return (this.#all(LIVE_ON_PROFILE, pid, most) as { key: string }[]).map((r) => r.key);
+  }
+
+  /// One live, non-handed-over witness session key for each profile in `pids` that is currently in use here, via
+  /// `sessions_live_profile` covering-index seeks (move/station.ts `#usesMayEnd` and `move.uses`).
+  liveWitnessesOnProfiles(pids: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (pids.length === 0) return out;
+    const unique = [...new Set(pids)];
+    for (const r of this.#all(LIVE_WITNESSES_ON_PROFILES, JSON.stringify(unique)) as { profile: string; key: string | null }[]) {
+      if (typeof r.key === "string" && r.key !== "") out.set(r.profile, r.key);
+    }
+    return out;
+  }
+
+  /// Profile id of `key` when it is currently live (unarchived and not handed away), or null otherwise (O(1) PK seek).
+  liveProfileOf(key: string): string | null {
+    const r = this.#one(LIVE_PROFILE_OF_SESSION, key) as { profile: string | null } | undefined;
+    return typeof r?.profile === "string" && r.profile !== "" ? r.profile : null;
   }
 
   /// Of each of sessions `keys` that has had a job, its last job made (by the index) and where that stands (its end, or

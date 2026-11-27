@@ -8,5 +8,12 @@ cd "$(dirname "$0")/.."
 OUT=${TMPDIR:-/tmp}/framepacer.$$
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
-javac -d "$OUT" android/app/src/main/java/dev/mbui/FramePacer.java android/pacer/FramePacerTest.java
+javac -d "$OUT" \
+  android/app/src/main/java/dev/mbui/FrameScheduler.java \
+  android/app/src/main/java/dev/mbui/RateVoter.java \
+  android/app/src/main/java/dev/mbui/FrameTelemetry.java \
+  android/app/src/main/java/dev/mbui/FramePacer.java \
+  android/pacer/FramePacerTest.java \
+  android/pacer/FrameSchedulerPropertyTest.java
 java -cp "$OUT" dev.mbui.FramePacerTest android/pacer/devperf2-frames.txt
+java -cp "$OUT" dev.mbui.FrameSchedulerPropertyTest

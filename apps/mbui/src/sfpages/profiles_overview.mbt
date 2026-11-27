@@ -1430,11 +1430,7 @@ pub fn profiles_overview_node(
   on_back~ : () -> Unit,
   frame~ : () -> PageFrame,
   open_profile? : (String, String) -> Unit,
-  on_show_accounts? : () -> Unit,
-  tab_chosen? : () -> Int = fn() { 1 },
-  tabs_thumb? : @sf.SegThumb,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
-  bar_add? : Bool = true,
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
@@ -1473,7 +1469,6 @@ pub fn profiles_overview_node(
     out
   }, same=fn(a, b) { a == b })
   let pools = fn() { pools_now.get() }
-  let has_accounts_tab = on_show_accounts is Some(_)
   // (what it lists, each worked out once of the accounts for all that reads it, told only as it comes out otherwise: an
   // account's change that leaves a list as it was runs none of what shows it)
   let balance_now = @signals.computed(fn(_) { ov_balance_keys(list()) })
@@ -1513,9 +1508,6 @@ pub fn profiles_overview_node(
   // (its blocks, worked out once: what reads them is told only as one comes or goes)
   let blocks_now = @signals.computed(fn(_) {
     let out : Array[String] = []
-    if has_accounts_tab {
-      out.push("choice")
-    }
     if pools().length() > 0 || balance_keys().length() > 0 {
       out.push("pools")
     }
@@ -1526,36 +1518,17 @@ pub fn profiles_overview_node(
     }
     out
   })
-  let page_title = fn() {
-    if has_accounts_tab {
-      @sf.t("android-misc.bar.place.profiles")
-    } else if ov_en() {
-      "Overview"
-    } else {
-      "概览"
-    }
-  }
-  // (adding one as the accounts' list does, profiles_list_node: at its title's end where the frame does not name the
-  // page, else in the frame's bar)
-  let add = fn() { has_accounts_tab && @settings.place_action(core, here(), "profiles") is Some(_) }
-  let adding = fn(at : @view.View) {
-    match @settings.place_action(core, @signals.untracked(here), "profiles") {
-      Some(run) => run(Node(at))
-      None => ()
-    }
-  }
-  let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+  let page_title = fn() { @sf.t("web-pages.profiles.overview.title") }
   let has_pools = @signals.computed(fn(_) { !pools().is_empty() })
   let share_avail = profile_share_available(core, here, has_pools=fn() { has_pools.get() })
   let share_shown = fn() { !frame().named && share_avail.get() }
   let add_actions = fn(l : @view.View) {
     @sf.bar_actions_pill_node(
       l,
-      fn() { share_shown() || (add() && !frame().named) },
-      count=fn() { (if share_shown() { 1 } else { 0 }) + (if add() && !frame().named { 1 } else { 0 }) },
+      share_shown,
+      count=fn() { if share_shown() { 1 } else { 0 } },
       fn(g) {
         profile_share_node(g, core, here, fn() { !frame().named }, tips, has_pools=fn() { has_pools.get() })
-        g.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
       },
     )
   }
@@ -1564,9 +1537,6 @@ pub fn profiles_overview_node(
       f(
         fn(l) {
           profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
-          if bar_add {
-            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
-          }
         },
         fn(_) { @sf.button_height() },
       )
@@ -1585,24 +1555,9 @@ pub fn profiles_overview_node(
     make_reused=fn(b, kind, key) { ov_alert_block(b, core, open_profile, alerts, kind, key) },
     fn() { blocks_now.get() },
     fn(b, key) {
-      if key == "choice" {
-        @sf.page_choice_node(
-          b,
-          fn() { if ov_en() { ["Accounts", "Overview"] } else { ["账号", "概览"] } },
-          tab_chosen,
-          fn(i) {
-            if i == 0 {
-              match on_show_accounts {
-                Some(go) => go()
-                None => ()
-              }
-            }
-          },
-          thumb?=tabs_thumb,
-        )
-      } else if key == "pools" {
+      if key == "pools" {
         b.box(fn(sec) {
-          sec.padding(Is((0.0, 0.0, 0.0, if has_accounts_tab { 10.0 } else { 24.0 }))) |> ignore
+          sec.padding(Is((0.0, 0.0, 0.0, 24.0))) |> ignore
           ov_pools_card_node(sec, core, open_profile, pools, balance_keys, fn() { pool_share_open(core, fn() { here().workspace }) }, tips)
         })
         |> ignore

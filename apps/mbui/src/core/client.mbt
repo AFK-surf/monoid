@@ -161,6 +161,19 @@ fn prune_workspace_from_workspaces_json(v : Json?, ws : String) -> Json? {
               }
               _ => ()
             }
+            match m.get("ownedWorkspaces") {
+              Some(Array(owned)) => {
+                let kept_owned : Array[Json] = []
+                for item in owned {
+                  match item {
+                    String(id) if id == ws => ()
+                    _ => kept_owned.push(item)
+                  }
+                }
+                next_m["ownedWorkspaces"] = Json::array(kept_owned)
+              }
+              _ => ()
+            }
             out.push(Json::object(next_m))
           }
           other => out.push(other)

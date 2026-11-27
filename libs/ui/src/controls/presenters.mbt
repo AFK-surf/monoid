@@ -201,6 +201,8 @@ priv struct PanelNodes {
   /// in the middle of the window (a dialog) as tall as what it holds up to its share, whatever `hugs` says on 小屏
   /// (panel_nodes' `hugs_centred`)
   hugs_centred : Bool
+  /// beside what opened it on Medium/Large, hug content height up to `tall` when `hugs` is set (panel_nodes' `hugs_wide`)
+  hugs_wide : Bool
   /// what it holds goes in steps in it, each made as nodes (panel_nodes' `steps`: panel_go_nodes, panel_back)
   steps : Bool
   /// where it heads itself (PanelOf's `heads_itself`), on a sheet too (the reader's layout): else headed there as ever,
@@ -742,6 +744,7 @@ pub fn panel_nodes(
   offset? : Double = panel_offset,
   hugs? : Bool = false,
   hugs_centred? : Bool = false,
+  hugs_wide? : Bool = false,
   match_panel? : Int = 0,
   steps? : Bool = false,
   back? : () -> Unit,
@@ -776,7 +779,7 @@ pub fn panel_nodes(
       match_panel,
       scrolls_under,
       on_back: back,
-      nodes: { body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most, flush: false, head_end },
+      nodes: { body, foot, hugs, hugs_centred, hugs_wide, steps, sheet_heads: false, heads: heads_itself, top: top_share, most, flush: false, head_end },
     }),
     from,
     gone~,
@@ -834,6 +837,7 @@ pub fn panel_go_nodes(
               foot,
               hugs: n.hugs,
               hugs_centred: n.hugs_centred,
+              hugs_wide: n.hugs_wide,
               steps: true,
               sheet_heads: false,
               heads: false,

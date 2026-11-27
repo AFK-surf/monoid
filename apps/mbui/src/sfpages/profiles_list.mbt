@@ -23,12 +23,6 @@ pub fn profiles_list_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
-  bar_add? : Bool = true,
-  on_show_overview? : () -> Unit = fn() { @settings.profiles_narrow_overview.set(true) },
-  on_show_accounts? : () -> Unit = fn() {  },
-  tab_chosen? : () -> Int = fn() { 0 },
-  tabs_thumb? : @sf.SegThumb,
-  batch? : ProfilesBatch = ProfilesBatch::new(),
 ) -> Unit {
   let tips = match tips {
     Some(t) => t
@@ -88,68 +82,42 @@ pub fn profiles_list_node(
       []
     }
   }
-  // (多选: a workspace manager's, the accounts' rows as the workspace's list makes them, a station's own profile's
-  // that list's row of it on that station; read only while it is on)
-  let batch_rows_now : @signals.Computed[Array[Json]] = @signals.computed(fn(_) {
+  let manages = fn() {
     if only == "" {
-      rows_now.get()
+      flag(profiles().value, "manages")
     } else {
-      // (a station's own: whether it shares, as its overview says it; whether it is up, as its row says it)
-      let o = field(@settings.station_of(core, here(), only), "overview")
-      rows_now.get().map(fn(p) { profiles_batch_row(only, p, o, one()) })
-    }
-  }, same=jsons_same)
-  // (a workspace come into view: no 多选 begun in another)
-  v.reacts(fn() { here().workspace }, fn(_) { batch.stop() }, at_start=false)
-  let batch_rows = fn() { batch_rows_now.get() }
-  // (a manager's as the workspace's list says it; a station's own page's as the workspace does)
-  let batch_offered = fn() {
-    profiles_batch_offered(
-      fn() { if only == "" { flag(profiles().value, "manages") } else { @settings.manager_of(core, here()) == Some(true) } },
-      fn() { rows_now.get() },
-    )
-  }
-  let batch_stations = fn() {
-    match stations_topic().value {
-      Some(Array(a)) => a
-      _ => []
+      @settings.manager_of(core, here()) == Some(true)
     }
   }
-  let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
+  let add = fn() {
+    if only == "" {
+      @settings.place_action(core, here(), "profiles") is Some(_)
+    } else {
+      flag(one(), "online")
+    }
+  }
   let adding = fn(at : @view.View) {
-    match @settings.place_action(core, @signals.untracked(here), "profiles") {
-      Some(run) => run(Node(at))
-      None => ()
+    if only == "" {
+      match @settings.place_action(core, @signals.untracked(here), "profiles") {
+        Some(run) => run(Node(at))
+        None => ()
+      }
+    } else if @signals.untracked(fn() { flag(one(), "online") }) {
+      (core.push)(NewProfile(only))
     }
   }
-  let label = fn() { @sf.t("android-misc.bar.action.profiles") }
-  // (the subscriptions' allowances shared as a picture, the workspace's list's: share_quota.mbt)
-  let share_avail = profile_share_available(core, here)
+  // (the subscriptions' allowances shared as a picture, the workspace's list's: share_quota.mbt; has_pools=false)
+  let share_avail = profile_share_available(core, here, has_pools=fn() { false })
   let share_shown = fn() { only == "" && !frame().named && share_avail.get() }
-  // (its own 多选 where its frame does not name it; one that does says it in its bar: profiles_page_node's)
-  // (its entry stays while 多选 is on, pressed again to end it: what stands beside it never moves)
-  let select_shown = fn() { batch_offered() }
-  let select_here = fn() { select_shown() && !frame().named }
-  let select_label = fn() { @sf.t("web-pages.profiles.batch.select") }
   let actions = fn(l : @view.View) {
     @sf.bar_actions_pill_node(
       l,
-      fn() { share_shown() || select_here() || (add() && !frame().named) },
-      count=fn() {
-        (if share_shown() { 1 } else { 0 }) + (if select_here() { 1 } else { 0 }) + (if add() && !frame().named { 1 } else { 0 })
-      },
+      share_shown,
+      count=fn() { if share_shown() { 1 } else { 0 } },
       fn(g) {
         if only == "" {
-          profile_share_node(g, core, here, fn() { !frame().named }, Some(tips))
+          profile_share_node(g, core, here, fn() { !frame().named }, Some(tips), has_pools=fn() { false })
         }
-        g.show(select_here, fn(a) {
-          @sf.icon_button_node(a, "check-circle", select_label, fn() {
-            on_show_accounts()
-            batch.toggle()
-          }, tips~, on=fn() { batch.on.get() })
-          |> ignore
-        })
-        g.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
       },
     )
   }
@@ -158,16 +126,7 @@ pub fn profiles_list_node(
       f(
         fn(l) {
           if only == "" {
-            profile_share_node(l, core, here, fn() { true }, Some(tips), bar=true)
-          }
-          l.show(select_shown, fn(a) {
-            @sf.bar_icon_node(a, "check-circle", select_label, fn() {
-              on_show_accounts()
-              batch.toggle()
-            }, tips~)
-          })
-          if bar_add {
-            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+            profile_share_node(l, core, here, fn() { true }, Some(tips), bar=true, has_pools=fn() { false })
           }
         },
         fn(_) { @sf.button_height() },
@@ -175,11 +134,6 @@ pub fn profiles_list_node(
     None => ()
   }
   let wait = fn() { field(profiles().value, "wait") }
-  // (its frame, with the room 多选's bar takes at its foot while it is on: profiles_batch_room)
-  let framed = fn() {
-    let f = frame()
-    if batch.on.get() { { ..f, foot: f.foot + profiles_batch_room() } } else { f }
-  }
   @sf.page_node(
     v,
     fn() { @sf.t("android-misc.bar.place.profiles") },
@@ -192,16 +146,31 @@ pub fn profiles_list_node(
           Some(_) if list.length() == 0 && (flag(wait(), "reading") || items(wait(), "failing").length() > 0) => return ["waiting"]
           _ => ()
         }
-        // (none: said so; else 账号 | 概览 over them, the overview a page of its own: profiles_overview_node)
+        // Three-tier architecture: 1. Collection (Overview + Batch Management), 2. Add Profile (only when the frame
+        // does not own the bottom-bar ＋ action), 3. Individual accounts.
+        if list.length() > 0 {
+          out.push("collection")
+        }
+        if add() && !frame().named {
+          out.push("add")
+        }
         if list.length() == 0 {
           out.push("none")
-        } else {
-          out.push("tab")
         }
       } else {
         match one() {
           None => return ["waiting"]
-          Some(_) => if rows_now.get().length() == 0 { out.push("empty") }
+          Some(_) => {
+            if manages() && rows_now.get().length() > 0 {
+              out.push("station-sharing")
+            }
+            if add() {
+              out.push("add")
+            }
+            if rows_now.get().length() == 0 {
+              out.push("empty")
+            }
+          }
         }
       }
       out.append(parts.keys())
@@ -238,6 +207,55 @@ pub fn profiles_list_node(
               { reading: failing.length() == 0, text: "", failing }
             },
           )
+        "collection" => {
+          let summed = @signals.computed(fn(_) { profiles_side_summary(rows_now.get()) }, same=fn(a, b) { a.0 == b.0 && a.1 == b.1 })
+          let share_sum = @signals.computed(fn(_) { profiles_sharing_summary(rows_now.get()) }, same=fn(a, b) { a == b })
+          @sf.group_node(b, fn(g) {
+            g.pick(fn() { summed.get().1 == "amber" }, fn(x, amber) {
+              @sf.link_row_node(
+                x,
+                fn() { @sf.t("web-pages.profiles.overview.title") },
+                fn() { (core.push)(ProfilesOverview) },
+                note=fn() { if summed.get().1 == "red" { "" } else { summed.get().0 } },
+                trouble=fn() { if summed.get().1 == "red" { summed.get().0 } else { "" } },
+                lacks=amber,
+                lead=LeadLine(fn(l) { @sf.icon_node(l, "chart", pl_logo, By(fn() { @sf.theme().p.text })) |> ignore }),
+              )
+            })
+            g.show(manages, at_once=true, fn(x) {
+              @sf.link_row_node(
+                x,
+                fn() { @sf.t("web-pages.profiles.sharing.title") },
+                fn() { (core.push)(ProfilesManage("")) },
+                value=fn() { share_sum.get() },
+                lead=LeadLine(fn(l) { @sf.icon_node(l, "select-all", pl_logo, By(fn() { @sf.theme().p.text })) |> ignore }),
+              )
+            })
+          })
+        }
+        "station-sharing" =>
+          @sf.group_node(b, fn(g) {
+            @sf.link_row_node(
+              g,
+              fn() { @sf.t("web-pages.profiles.sharing.title") },
+              fn() { (core.push)(ProfilesManage(only)) },
+              lead=LeadLine(fn(l) { @sf.icon_node(l, "select-all", pl_logo, By(fn() { @sf.theme().p.text })) |> ignore }),
+            )
+          })
+        "add" => {
+          b.margin(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
+          @sf.group_node(b, fn(g) {
+            g.box(fn(anchor) {
+              @sf.link_row_node(
+                anchor,
+                fn() { @sf.t("web-pages.settings.profiles.add") },
+                fn() { adding(anchor) },
+                lead=LeadLine(fn(l) { @sf.icon_node(l, "plus", pl_logo, By(fn() { @sf.theme().p.text })) |> ignore }),
+              )
+            })
+            |> ignore
+          })
+        }
         "none" => {
           @sf.group_node(b, fn(g) {
             @sf.link_row_node(g, fn() { @sf.t("web-pages.settings.profiles.none") }, fn() {  }, goes=false)
@@ -268,20 +286,6 @@ pub fn profiles_list_node(
               }
             })
           })
-        "tab" =>
-          @sf.page_choice_node(
-            b,
-            fn() { if @sf.language() == "en" { ["Accounts", "Overview"] } else { ["账号", "概览"] } },
-            tab_chosen,
-            fn(i) {
-              if i == 1 {
-                on_show_overview()
-              } else if i == 0 {
-                on_show_accounts()
-              }
-            },
-            thumb?=tabs_thumb,
-          )
         "reading" =>
           @sf.group_node(b, fn(g) {
             g.box(fn(w) {
@@ -307,7 +311,7 @@ pub fn profiles_list_node(
           // workspace's: a group of keys holds several vendors'; the user, 2026-11-14 and 2026-11-26)
           @sf.section_heading_node(b, title)
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, batch, batch_rows, width?)
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, width?)
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
@@ -330,7 +334,7 @@ pub fn profiles_list_node(
       }
     },
     on_back~,
-    frame=framed,
+    frame~,
     actions~,
     said?,
     width?,
@@ -339,10 +343,8 @@ pub fn profiles_list_node(
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
     // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
     reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
-    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, batch, batch_rows, width?) },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, width?) },
   )
-  // (多选's bar at the page's foot, over the frame's room there)
-  profiles_batch_foot_node(v, core, batch, batch_rows, batch_stations, foot=fn() { frame().foot }, page=true, width?)
 }
 
 ///|
@@ -399,8 +401,6 @@ fn pl_row_block(
   parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
   key : () -> String,
-  batch : ProfilesBatch,
-  batch_rows : () -> Array[Json],
   width? : () -> Double,
 ) -> Unit {
   let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
@@ -420,24 +420,12 @@ fn pl_row_block(
   let row_now = @signals.computed(fn(_) { now.get().map(fn(n) { n.0 }) }, same=json_opt_same)
   b.grow(Is(1.0)) |> ignore
   // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
-  // (多选's row of it: the list's row as 多选 takes it, by its key; read only while 多选 is on)
-  let batch_row = @signals.computed(fn(_) {
-    if !batch.on.get() {
-      return None
-    }
-    let k = pl_key(only, row_now.get().unwrap_or(Json::null()))
-    batch_rows().iter().find_first(fn(r) { text(Some(r), "key") == k })
-  }, same=json_opt_same)
   @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
-    card.pick(fn() { batch.on.get() }, fn(c, picking) {
-      if picking {
-        profiles_batch_row_node(c, batch, fn() { batch_row.get() })
-      } else if only == "" {
-        pl_account_row_node(c, core, fn() { row_now.get() }, tips, width?)
-      } else {
-        pl_station_row_node(c, core, only, fn() { row_now.get() }, tips)
-      }
-    })
+    if only == "" {
+      pl_account_row_node(card, core, fn() { row_now.get() }, tips, width?)
+    } else {
+      pl_station_row_node(card, core, only, fn() { row_now.get() }, tips)
+    }
   })
 }
 
@@ -1100,170 +1088,3 @@ let pl_see_fix : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Acc
 /// A wait said on a card: its words a row's room in.
 // kept across runs: a value (no field of it changes)
 let pl_wait_room : @ui.Style = @ui.css("w=Full px=S4 py=S3")
-
-///|
-/// The workspace's Profile page in node `v`: its accounts' list or 概览 (`overview`, which of the two: the bottom bar's
-/// place keeps its own, a pushed page and 中屏's and 大屏's theirs), one page whichever it shows, so switching between
-/// them keeps the page, its frame's top bar and what it reads: the accounts and the stations held by the page itself
-/// (`src.owned_by`, let go with it), so neither is let go as one is made in the other's place; 概览 switched to once
-/// its pools are answered too (`@settings.overview_switch`), the list shown meanwhile.
-pub fn profiles_page_node(
-  v : @view.View,
-  src : Source,
-  core : Core,
-  here : () -> Here,
-  overview : @signals.Signal[Bool],
-  on_back~ : () -> Unit,
-  frame~ : () -> PageFrame,
-  said? : (@sf.PageSaid) -> Unit,
-  width? : () -> Double,
-  tips? : @sf.TipLayer,
-  bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
-  bar_add? : Bool = true,
-) -> Unit {
-  v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-  let held = src.owned_by(v)
-  let ws = @signals.untracked(here).workspace
-  let scope = { "scope": Json::string(ws) }
-  held.prefetch("profiles", scope) |> ignore
-  held.prefetch("stations", scope) |> ignore
-  let tab_pending : @signals.Signal[Int?] = @signals.signal(None)
-  let tab_chosen = fn() { tab_pending.get().unwrap_or(if overview.get() { 1 } else { 0 }) }
-  let switch_seq : Ref[Int] = Ref(0)
-  let pending_cancel : Ref[(() -> Unit)?] = Ref(None)
-  let cancel_switch = fn() {
-    switch_seq.val += 1
-    match pending_cancel.val {
-      Some(cancel) => {
-        pending_cancel.val = None
-        cancel()
-      }
-      None => ()
-    }
-    tab_pending.set(None)
-  }
-  v.on_leaving(cancel_switch) |> ignore
-  let tabs_thumb = @sf.SegThumb::new(v, tab_chosen)
-  // (the list's 多选, its bar's to begin: over as 概览 is shown)
-  let batch = ProfilesBatch::new()
-  v.reacts(fn() { overview.get() }, fn(shown) { if shown { batch.stop() } }, at_start=false)
-  // (hoisted to the page container so kept panes update the top bar reactively when waking without re-calling bar_actions;
-  // overview.get() short-circuits profilesOverview while on 账号)
-  match bar_actions {
-    Some(f) => {
-      let has_pools = @signals.computed(fn(_) {
-        overview.get() &&
-        !items((core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get().value, "pools").is_empty()
-      })
-      let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
-      let adding = fn(at : @view.View) {
-        match @settings.place_action(core, @signals.untracked(here), "profiles") {
-          Some(run) => run(Node(at))
-          None => ()
-        }
-      }
-      let label = fn() { @sf.t("android-misc.bar.action.profiles") }
-      // (多选 of the list's: on 概览 too, so the bar keeps its parts as the tabs switch, pressed there it shows the list
-      // with 多选 begun)
-      let select_shown = fn() {
-        let listed = fn() { (core.topic)("profiles", { "scope": Json::string(here().workspace) }).get().value }
-        profiles_batch_offered(fn() { flag(listed(), "manages") }, fn() { items(listed(), "items") })
-      }
-      let select = fn() {
-        cancel_switch()
-        if @signals.untracked(fn() { overview.get() }) {
-          overview.set(false)
-          batch.start()
-        } else {
-          batch.toggle()
-        }
-      }
-      f(
-        fn(l) {
-          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
-          l.show(select_shown, fn(a) {
-            @sf.bar_icon_node(a, "check-circle", fn() { @sf.t("web-pages.profiles.batch.select") }, select, tips?)
-          })
-          if bar_add {
-            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
-          }
-        },
-        fn(_) { @sf.button_height() },
-      )
-    }
-    None => ()
-  }
-  let show_overview = fn() {
-    if @signals.untracked(fn() { overview.get() }) {
-      cancel_switch()
-      return
-    }
-    cancel_switch()
-    let seq = switch_seq.val
-    tab_pending.set(Some(1))
-    let cancel = (@settings.overview_switch.val)(
-      ws,
-      fn() {
-        if switch_seq.val == seq {
-          pending_cancel.val = None
-          tab_pending.set(None)
-          overview.set(true)
-          @ui.after_drawn_frame(fn() { @sfbase.shown_read("profiles-list\u{1}" + ws) })
-        }
-      },
-      fn() {
-        if switch_seq.val == seq {
-          pending_cancel.val = None
-          tab_pending.set(None)
-        }
-      },
-    )
-    if switch_seq.val == seq && @signals.untracked(fn() { tab_pending.get() }) is Some(_) {
-      pending_cancel.val = Some(cancel)
-    }
-  }
-  v.each(fn() { [overview.get()] }, fn(x) { x }, keeps=fn() { [true, false] }, at_once=true, fn(p, shown_sig) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    if @signals.untracked(fn() { shown_sig.get() }) {
-      profiles_overview_node(
-        p,
-        core,
-        here,
-        on_back~,
-        frame~,
-        said?,
-        width?,
-        tips?,
-        bar_add~,
-        tab_chosen~,
-        tabs_thumb~,
-        on_show_accounts=fn() {
-          cancel_switch()
-          overview.set(false)
-        },
-      )
-      // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
-      @sfbase.shown_read("profiles-list\u{1}" + ws)
-    } else {
-      // (概览 once what it shows is answered, the list meanwhile: overview_switch; release the ahead read after the
-      // overview frame draws so both initial build and subsequent wake-ups hand over cleanly without leaking)
-      profiles_list_node(
-        p,
-        core,
-        here,
-        "",
-        on_back~,
-        frame~,
-        said?,
-        width?,
-        tips?,
-        bar_add~,
-        tab_chosen~,
-        tabs_thumb~,
-        batch~,
-        on_show_overview=show_overview,
-        on_show_accounts=cancel_switch,
-      )
-    }
-  })
-}

@@ -651,7 +651,6 @@ fn fixture_reset() -> Unit {
   fx.several = false
   fx.offer_quota = false
   fx.summary = false
-  profiles_narrow_overview.set(false)
   fx.profile_hosts = false
   fx.profile_unshareable = false
   fx.profile_one_owner = false
@@ -1128,9 +1127,10 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profiles-offer" => fx.offer_quota = true
     // (an account on several stations' own page: its members those of a profile's hosts)
     "settings-profile-account" => fx.profile_hosts = true
-    "settings-profiles-sum-a" => {
+    "settings-profiles-sum-a" | "settings-profiles-overview" => fx.summary = true
+    "settings-profiles-manage" => {
       fx.summary = true
-      profiles_narrow_overview.set(true)
+      fx.mba_online = true
     }
     "settings-stations-existing" => up("add-existing", "", 0)
     "settings-stations-command" => up("add-command", "", 0)
@@ -1434,7 +1434,9 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-long-name" => "profiles"
+    "settings-profiles-sum-a" | "settings-profiles-overview" => "profiles-overview"
+    "settings-profiles-manage" => "profiles-manage"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {

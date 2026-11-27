@@ -76,7 +76,6 @@ const OVER_DELTA: Record<string, number> = {
   "connect/session": 24,
   "connectCandidates/session": 24,
   "longJobs/down": 24,
-  "profiles/down": 16,
   "chatThings/thing": 16,
   "chatThings q/thing": 16,
   "driveBrowse phone/file": 16,
