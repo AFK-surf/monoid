@@ -616,8 +616,7 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 /// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
-  let mut all_loaded = true
-  let mut earlier_unloaded = false
+  let mut earlier_unloaded_empty = false
   let seen : Map[String, String] = Map([])
   let pending_owners : Map[String, Bool] = Map([])
   let pending_ws : Map[String, Bool] = Map([])
@@ -631,24 +630,38 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
     if owner == "" {
       continue
     }
+    let is_blocked = match field(s, "blocked") {
+      Some(String(b)) => b != ""
+      Some(True) => true
+      _ => false
+    }
+    if is_blocked {
+      loaded_owners[owner] = true
+      continue
+    }
     let acc_loaded = match field(s, "loaded") {
       Some(False) => false
       _ => true
     }
+    let ws_list = items(s, "workspaces")
     if !acc_loaded {
-      all_loaded = false
-      earlier_unloaded = true
       pending_owners[owner] = true
-      for w in items(s, "workspaces") {
+      if ws_list.is_empty() {
+        earlier_unloaded_empty = true
+      }
+      for w in ws_list {
         let id = text(Some(w), "id")
         if id != "" && !seen.contains(id) {
-          pending_ws[id] = true
+          match workspace_owners.get(id) {
+            Some(p) if p != owner && loaded_owners.contains(p) => pending_ws[id] = true
+            _ => seen[id] = owner
+          }
         }
       }
       continue
     }
     loaded_owners[owner] = true
-    for w in items(s, "workspaces") {
+    for w in ws_list {
       let id = text(Some(w), "id")
       if id != "" {
         match loaded_members.get(id) {
@@ -659,21 +672,23 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
             loaded_members[id] = m
           }
         }
-        if earlier_unloaded || pending_ws.contains(id) {
-          if !seen.contains(id) {
+        if !seen.contains(id) && !pending_ws.contains(id) {
+          if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
             pending_ws[id] = true
+          } else {
+            seen[id] = owner
           }
-        } else if !seen.contains(id) {
-          seen[id] = owner
         }
       }
     }
   }
+  workspace_owners_seen_snapshot.val = true
   let prev_pending_ws = workspace_pending_ws.keys().collect()
   workspace_pending_ws.clear()
   for id, _ in pending_ws {
     if !seen.contains(id) {
       workspace_pending_ws[id] = true
+      workspace_revoked.remove(id)
     }
   }
   workspace_pending_owners.clear()
@@ -688,15 +703,9 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   for id, m in loaded_members {
     workspace_loaded_members[id] = m
   }
-  if all_loaded {
-    workspace_owners_seen_snapshot.val = true
-  }
   for ws in workspace_owners.keys().collect() {
     if !seen.contains(ws) {
       let old_owner = workspace_owners.get(ws).unwrap_or("")
-      if pending_owners.contains(old_owner) {
-        continue
-      }
       workspace_owners.remove(ws)
       if !pending_ws.contains(ws) {
         workspace_revoked[ws] = true

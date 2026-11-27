@@ -365,6 +365,8 @@ pub fn screen_pane_node(
       return
     }
     if owner == "\u{3}revoked" {
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+      root.words(By(fn() { @sf.t("android-misc.screen.denied") })).ink(By(fn() { @sf.theme().p.muted })) |> ignore
       return
     }
     let s = screen_sess(src, station, screen)

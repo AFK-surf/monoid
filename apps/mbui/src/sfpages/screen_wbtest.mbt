@@ -3544,20 +3544,21 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   // Before workspaces snapshot arrives: Waiting, 0 screen.view RPCs!
   assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
   assert_eq(opens.val, 0, msg="Waiting child-process screen must emit 0 screen.view RPCs")
-  // Stale cached snapshot (loaded=false) carrying ws-1 -> acct-a MUST still stay Waiting with 0 screen.view RPCs!
-  let snap_stale : Json = Json::array([
+  // Offline cached snapshot (loaded=false, non-blocked) carrying ws-1 -> acct-a:
+  // aligned with Core recomputeOwners() so offline mesh works immediately (Matched, opens screen.view)!
+  let snap_offline : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
       "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
       "loaded": Json::boolean(false),
     }),
   ])
-  @sfbase.workspace_owners_sync_json(Some(snap_stale))
+  @sfbase.workspace_owners_sync_json(Some(snap_offline))
   t.draw()
   t.draw()
-  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting, msg="loaded=false cached snapshot must keep child-process screen Waiting")
-  assert_eq(opens.val, 0, msg="loaded=false cached snapshot must emit 0 screen.view RPCs")
-  // Snapshot arrives (loaded=true) with ws-1 -> acct-a: reactively wakes and opens screen.view!
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched, msg="offline cached snapshot must Match for mesh continuity")
+  assert_eq(opens.val, 1, msg="child-process screen must auto-wake and open once offline cached snapshot confirms ws-1 -> acct-a")
+  // Subsequent online snapshot (loaded=true) with same ws-1 -> acct-a: stays Matched, 0 redundant opens!
   let snap_a : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
@@ -3569,7 +3570,7 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   t.draw()
   t.draw()
   assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
-  assert_eq(opens.val, 1, msg="child-process screen must auto-wake and open once matching snapshot arrives")
+  assert_eq(opens.val, 1, msg="online confirmation of same owner must not reopen screen.view")
   @ui.run_let_go()
 }
 
@@ -3832,6 +3833,8 @@ test "child-process window for B Waits with 0 RPC when earlier A is loaded=false
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
   let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  assert_false(@sfbase.workspace_owners_synced(), msg="cold-start test must start before any workspaces snapshot")
   @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
   let opens = Ref(0)
   let src : Source = {
@@ -3975,5 +3978,268 @@ test "deferred screen_left_key after_drawn_frame closes when sole holder unmount
   t.draw()
   t.draw()
   assert_false(screens_open.contains(key), msg="screen must close cleanly when sole holder is removed")
+  @ui.run_let_go()
+}
+
+///|
+test "cloud offline cold start (all loaded=false with cached ws-1): main screen_node opens normally for mesh" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  let snap_offline : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_offline))
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-a"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:offline-1", title: "Offline", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1, msg="offline cached ws-1 must open screen.view immediately for mesh")
+  assert_true(screens_open.contains(key_a))
+  @ui.run_let_go()
+}
+
+///|
+test "blocked (NOT_BETA) account with loaded=false immediately revokes session/lease/stream and renders denied on remount" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  let snap_ok : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_ok))
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:blocked-1", title: "Blocked", until_gone: false }
+  let mounted = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { mounted.get() }, fn(q) {
+        q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(q, src, at, fn() { @sf.no_frame })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1)
+  assert_true(screens_open.contains(key_a))
+  let sess_a = screens_open.get(key_a).unwrap()
+  // Production NOT_BETA shape: loaded=false, workspaces=[], blocked="not beta"
+  let snap_blocked : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+      "blocked": Json::string("not beta"),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_blocked))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.workspace_is_revoked("ws-1"), msg="blocked account must immediately revoke ws-1")
+  assert_false(sess_a.is_active_principal(), msg="revoked session must fail is_active_principal")
+  assert_false(screens_open.contains(key_a), msg="blocked account session must be closed")
+  assert_false(screen_leases.contains(key_a), msg="blocked account lease must be removed")
+  assert_true(cancelled.val >= 1, msg="blocked account stream must be cancelled")
+  // Remounting normal screen_node emits 0 new RPCs and shows denied message (no blank dead-end)
+  mounted.set(false)
+  t.draw()
+  mounted.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1, msg="remounting revoked screen_node must emit 0 additional screen.view RPCs")
+  assert_true(t.find(@sf.t("android-misc.screen.denied")) is Some(_), msg="revoked screen_node must render denied message")
+  @ui.run_let_go()
+}
+
+///|
+test "active native route transitioning Owned(A) -> Pending synchronously cancels stream, flushes audio(0), clears frame, and blocks subsequent host deliveries" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let inputs = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:native-pending-1", title: "NativePending", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  let h = @hostapi.host()
+  let orig_audio_here = h.st_audio_here
+  let orig_audio = h.st_audio
+  let orig_direct = h.st_direct
+  let audio_packets = Ref(0)
+  let audio_flushes = Ref(0)
+  let routed_audio_true = Ref(0)
+  h.st_audio_here = fn() { 1 }
+  h.st_audio = fn(id, data) {
+    if data.length() > 0 {
+      audio_packets.val += 1
+    } else {
+      audio_flushes.val += 1
+    }
+    orig_audio(id, data)
+  }
+  h.st_direct = fn(id, route, after, what) {
+    if (what & 2) != 0 {
+      routed_audio_true.val += 1
+    }
+    orig_direct(id, route, after, what)
+  }
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  let sess_a = screens_open.get(key_a).unwrap()
+  sess_a.own_stream()
+  sess_a.heard = true
+  sess_a.frames = 5
+  sess_a.shown_any = true
+  let pcm_3840 = Bytes::make(3840, b'\x01')
+  sess_a.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+  sess_a.take({ "audio": { "n": 1.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 1)
+  assert_true(routed_audio_true.val >= 1)
+  // Reset counters before Owned(A) -> Pending transition
+  audio_packets.val = 0
+  audio_flushes.val = 0
+  routed_audio_true.val = 0
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  assert_true(cancelled.val >= 1, msg="Owned(A) -> Pending must synchronously cancel screen.view")
+  assert_false(screens_open.contains(key_a), msg="screens_open must be cleared on Owned(A) -> Pending")
+  assert_false(screen_leases.contains(key_a), msg="screen_leases must be cleared on Owned(A) -> Pending")
+  assert_true(audio_flushes.val >= 1, msg="Owned(A) -> Pending must flush st.audio(0)")
+  assert_eq(sess_a.frames, 0, msg="Owned(A) -> Pending must clear frames")
+  assert_false(sess_a.shown_any, msg="Owned(A) -> Pending must clear shown_any")
+  // Subsequent host audio/video deliveries & input RPCs on revoked sess_a must all be 0!
+  sess_a.take({ "audio": { "n": 2.0 } }, Some(pcm_3840))
+  sess_a.take({ "frame": { "ts": 200.0 } }, Some(Bytes::make(16, b'\x02')))
+  sess_a.input(src, Json::object({ "t": Json::string("click") }))
+  assert_eq(audio_packets.val, 0, msg="subsequent audio delivery after Pending revoke must be 0")
+  assert_eq(routed_audio_true.val, 0, msg="subsequent audio route after Pending revoke must be 0")
+  assert_eq(sess_a.frames, 0, msg="subsequent video frame after Pending revoke must be 0")
+  assert_eq(inputs.val, 0, msg="subsequent screen.input after Pending revoke must be 0")
+  h.st_audio_here = orig_audio_here
+  h.st_audio = orig_audio
+  h.st_direct = orig_direct
   @ui.run_let_go()
 }

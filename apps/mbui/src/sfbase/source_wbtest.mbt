@@ -126,20 +126,23 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   reset()
   accounts_subs_sync(["acct-a"])
   set_startup_window_owner(window_page_owner_of(encoded))
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="child-process window must Wait before workspaces snapshot, never fallback to subs[0]")
-  assert_false(window_here_owner_matches(0, "ws-1/st-1"))
-  // Stale cached workspaces snapshot with loaded=false must keep child-process window in Waiting!
-  let snap_stale : Json = Json::array([
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="child-process window must Wait before workspaces snapshot, never fallback to subs[0]")
+  assert_false(window_here_owner_matches(0, "ws-1/st-1", screen="browser:win-1"))
+  // Offline cached workspaces snapshot (loaded=false, non-blocked) carrying ws-1 -> acct-a:
+  // aligned with Core recomputeOwners() so offline/503 mesh remains usable (Matched, not stuck Waiting).
+  let snap_offline : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
       "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
       "loaded": Json::boolean(false),
     }),
   ])
-  workspace_owners_sync_json(Some(snap_stale))
-  assert_false(workspace_owners_synced(), msg="loaded=false snapshot must not mark workspace_owners_synced")
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="loaded=false cached snapshot must keep Waiting")
-  // Complete workspaces snapshot arrives (loaded=true) containing ws-1 -> acct-a: transitions to Matched!
+  workspace_owners_sync_json(Some(snap_offline))
+  assert_true(workspace_owners_synced(), msg="first valid workspaces snapshot marks workspace_owners_synced")
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"), msg="offline cached ws-1 must resolve to acct-a")
+  assert_false(workspace_is_pending("ws-1"), msg="Owned ws-1 must not also be Pending (strict 3-state mutual exclusion)")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="offline cached snapshot must Match for mesh continuity")
+  // Complete workspaces snapshot arrives (loaded=true) containing ws-1 -> acct-a: stays Matched!
   let snap_a : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
@@ -148,8 +151,8 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
     }),
   ])
   workspace_owners_sync_json(Some(snap_a))
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Matched, msg="child-process window must Match once snapshot confirms ws-1 -> acct-a")
-  assert_true(window_here_owner_matches(0, "ws-1/st-1"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="child-process window must Match once snapshot confirms ws-1 -> acct-a")
+  assert_true(window_here_owner_matches(0, "ws-1/st-1", screen="browser:win-1"))
   // Workspace switches to acct-b -> Denied!
   workspace_owner_set("ws-1", "acct-b")
   assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="child-process window must be Denied on owner mismatch")
@@ -194,9 +197,8 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   windows_here_opening_owner.val = None
   // Unknown secondary window id (`wid > 0`) -> Denied!
   assert_true(window_here_owner_state(999, "ws-1/st-1", screen="browser:win-1") == Denied, msg="unknown secondary window id must be Denied")
-  // Multi-account partial load: higher-priority A (loaded=false, cached ws-1) + lower-priority B (loaded=true, ws-1):
-  // B must NOT hijack ws-1 and B's child-process window must stay Waiting until A finishes loading;
-  // once A finishes loading with ws-1, B becomes Denied and A becomes Matched.
+  // Multi-account offline cache priority: higher-priority A (loaded=false, cached ws-1) + lower-priority B (loaded=true, ws-1):
+  // A owns ws-1 via offline cache (aligned with Core recomputeOwners), so B must NOT hijack ws-1 (B is Denied, A is Matched).
   reset()
   accounts_subs_sync(["acct-a", "acct-b"])
   set_startup_window_owner(Some("acct-b"))
@@ -213,9 +215,9 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
     }),
   ])
   workspace_owners_sync_json(Some(snap_partial))
-  assert_false(workspace_owners_synced(), msg="partial load must keep workspace_owners_synced false")
-  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="lower-priority loaded B must not hijack ws-1 cached under unloaded A")
-  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="child-process window for B must stay Waiting during partial load")
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"), msg="higher-priority A offline cache must own ws-1, never hijacked by B")
+  assert_false(workspace_is_pending("ws-1"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="lower-priority B must be Denied when higher-priority A owns ws-1")
   let snap_full : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
@@ -297,22 +299,92 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   workspace_owners_sync_json(Some(snap_b_loaded))
   assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="B must Match once earlier A finishes loading without ws-1")
-  // Astra P2: signed-out account A (absent from accounts) while B is loaded=false caching ws-1 -> A is Denied (not Waiting)!
+  // Astra P2: signed-out account (absent from accounts) while ws-1 is Pending -> Denied (not Waiting)!
   reset()
   accounts_subs_sync(["acct-a", "acct-b"])
-  workspace_owners_sync_json(Some(snap_full))
-  let snap_b_only_pending : Json = Json::array([
+  workspace_owners_sync_json(Some(snap_earlier_empty))
+  set_startup_window_owner(Some("acct-signed-out"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="signed-out account must be Denied even while ws-1 is pending")
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="loaded member B must remain Waiting while earlier A is unloaded-empty")
+  // Opus P1 (first account 503 does not disrupt later account C or A's own cached workspace):
+  reset()
+  accounts_subs_sync(["acct-a", "acct-c"])
+  let snap_ac_ok : Json = Json::array([
     Json::object({
-      "account": Json::object({ "sub": Json::string("acct-b") }),
-      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
-      "loaded": Json::boolean(false),
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-a") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-c") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-c") })]),
+      "loaded": Json::boolean(true),
     }),
   ])
-  workspace_owners_sync_json(Some(snap_b_only_pending))
+  workspace_owners_sync_json(Some(snap_ac_ok))
+  let revokes_ac = Ref(0)
+  let base_listeners_ac = workspace_owner_change_listeners.length()
+  on_workspace_owner_change(fn(ws, _old, _new) {
+    if ws == "ws-a" || ws == "ws-c" {
+      revokes_ac.val += 1
+    }
+  })
+  // A hits 503 with cached ws-a (or even empty cache []) -> C keeps ws-c with 0 revocations, A keeps ws-a with 0 revocations!
+  let snap_a_503_cached : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-a") })]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-c") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-c") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a_503_cached))
+  assert_eq(workspace_explicit_owner_of("ws-a"), Some("acct-a"), msg="A 503 with cached ws-a must keep Owned(A)")
+  assert_eq(workspace_explicit_owner_of("ws-c"), Some("acct-c"), msg="later account C must keep Owned(C) when A hits 503")
+  assert_false(workspace_is_pending("ws-a"))
+  assert_false(workspace_is_pending("ws-c"))
+  assert_eq(revokes_ac.val, 0, msg="0 revocations when A hits 503 with cached ws-a")
+  let snap_a_503_empty : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-c") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-c") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a_503_empty))
+  assert_eq(workspace_explicit_owner_of("ws-c"), Some("acct-c"), msg="confirmed owner C must keep Owned(C) even when earlier A has empty cache on 503")
+  assert_false(workspace_is_pending("ws-c"))
+  while workspace_owner_change_listeners.length() > base_listeners_ac {
+    workspace_owner_change_listeners.pop() |> ignore
+  }
+  // Astra P1-1: blocked (NOT_BETA) account with loaded=false and workspaces=[] MUST immediately revoke!
+  reset()
+  accounts_subs_sync(["acct-a"])
+  workspace_owners_sync_json(Some(snap_a))
+  let snap_blocked : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+      "blocked": Json::string("not beta"),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_blocked))
+  assert_true(workspace_is_revoked("ws-1"), msg="blocked account must immediately revoke ws-1")
+  assert_eq(workspace_explicit_owner_of("ws-1"), None)
+  assert_false(workspace_is_pending("ws-1"))
   set_startup_window_owner(Some("acct-a"))
-  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="signed-out A must be Denied even while B is pending")
-  set_startup_window_owner(Some("acct-b"))
-  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="pending B must remain Waiting")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="blocked account window must be Denied")
   // Opus P2: [A(loaded=true, ws-1), B(loaded=false, ws-1)] (A precedes B) -> A owns ws-1 with 0 revocations and !pending!
   reset()
   accounts_subs_sync(["acct-a", "acct-b"])
