@@ -73,6 +73,7 @@ const CHANGELOG_HEADERS = {
   "content-type": "application/json",
   "cache-control": "public, max-age=300",
   "referrer-policy": "no-referrer",
+  vary: "x-stillfail-channel",
 };
 
 const ETAG_TOKEN = /^"[0-9a-f]{16}"$/;
@@ -246,6 +247,7 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
   const notModifiedHeaders = (etag: string) => ({
     "cache-control": CHANGELOG_HEADERS["cache-control"],
     "referrer-policy": CHANGELOG_HEADERS["referrer-policy"],
+    vary: CHANGELOG_HEADERS.vary,
     etag,
   });
   if (ttl > 0 && env.SERVICE_STATUS) {
@@ -261,8 +263,11 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
           return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
         }
         if (edgeCached && edgeCached.etag === result.etag) {
+          edgeChangelogCache.delete(cacheKey);
+          edgeChangelogCache.set(cacheKey, edgeCached);
           return new Response(edgeCached.body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag: result.etag } });
         }
+        // Defensive fallback: if DO returned notModified without a matching edge entry or client ETag match, fetch full body.
         const full = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, null);
         if (!full.ok) return unavailable(full.file, new Error(full.message));
         if ("body" in full) {

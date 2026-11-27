@@ -232,12 +232,26 @@ export class ServiceStatus extends DurableObject<Env> {
   #refreshChangelogResponse(cacheKey: string, channel: Channel, upstream: string | null, ttlSeconds: number): void {
     if (this.#responseRefreshInFlight.has(cacheKey)) return;
     const gen = this.#changelogGen;
+    const backoff = () => {
+      if (this.#changelogGen !== gen) return;
+      const cached = this.#responseCache.get(cacheKey);
+      const now = clock.now();
+      if (cached && cached.expiresAt > now) {
+        cached.refreshAt = Math.min(cached.expiresAt, now + Math.max(1000, Math.floor((cached.expiresAt - now) / 2)));
+      }
+    };
     const refresh = (async () => {
       if (this.#changelogGen !== gen) return;
       const result = await this.#buildChangelogResponse(channel, upstream, ttlSeconds, true);
-      if (!result.ok) console.error(`changelog background refresh ${result.file} failed:`, result.message);
+      if (!result.ok) {
+        console.error(`changelog background refresh ${result.file} failed:`, result.message);
+        backoff();
+      }
     })()
-      .catch((error) => console.error("changelog background refresh failed:", error))
+      .catch((error) => {
+        console.error("changelog background refresh failed:", error);
+        backoff();
+      })
       .finally(() => {
         if (this.#responseRefreshInFlight.get(cacheKey) === refresh) this.#responseRefreshInFlight.delete(cacheKey);
       });
@@ -280,6 +294,14 @@ export class ServiceStatus extends DurableObject<Env> {
   #refreshChangelogFixes(ttlSeconds: number): void {
     if (this.#fixesRefreshInFlight) return;
     const gen = this.#changelogGen;
+    const backoff = () => {
+      if (this.#changelogGen !== gen) return;
+      const cached = this.#fixesCache;
+      const now = clock.now();
+      if (cached && cached.expiresAt > now) {
+        cached.refreshAt = Math.min(cached.expiresAt, now + Math.max(1000, Math.floor((cached.expiresAt - now) / 2)));
+      }
+    };
     const refresh = (async () => {
       if (this.#changelogGen !== gen) return;
       let failed = false;
@@ -292,7 +314,10 @@ export class ServiceStatus extends DurableObject<Env> {
         },
         true,
       );
-      if (failed) return;
+      if (failed) {
+        backoff();
+        return;
+      }
       const fixes = changelogFixesOf(entries);
       if (ttlSeconds > 0 && this.#changelogGen === gen && expiresAt !== null) {
         const now = clock.now();
@@ -302,7 +327,10 @@ export class ServiceStatus extends DurableObject<Env> {
         }
       }
     })()
-      .catch((error) => console.error("changelog fixes background refresh failed:", error))
+      .catch((error) => {
+        console.error("changelog fixes background refresh failed:", error);
+        backoff();
+      })
       .finally(() => {
         if (this.#fixesRefreshInFlight === refresh) this.#fixesRefreshInFlight = null;
       });

@@ -1084,3 +1084,73 @@ test("GET /v1/changelog refreshes proactively in background after 75% TTL while 
     await h.close();
   }
 });
+
+test("background refresh R2 failure keeps unexpired cache, backs off retries, and refreshes synchronously after hard expiry", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1395, commit: "m", at: 13, text: ["backoff v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1395 }));
+
+    // t=0: warm cache (expiresAt=30s, refreshAt=22.5s).
+    const warm = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(warm.status, 200);
+    assert.equal(warm.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(((await warm.json()) as any).entries[0].text[0], "backoff v1");
+
+    // Advance to t=23 (> 75% TTL, < 30s hard expiry) and fail all R2 reads.
+    assert.equal((await later(h, 23)).status, 200);
+    await h.failBucket({ get: 20 });
+
+    // First request at t=23 serves cached v1 immediately and triggers failing background refresh.
+    const first = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(first.status, 200);
+    assert.equal(((await first.json()) as any).entries[0].text[0], "backoff v1");
+    assert.equal((await h.fetch("/__test/status-settled")).status, 200);
+    const failedCalls = await h.failBucket({ get: 20 });
+    assert.ok(failedCalls.length > 0, "expected background refresh to attempt R2 reads");
+
+    // Subsequent request before backoff window (still at t=23 < 26.5s) serves v1 with 0 R2 calls.
+    const second = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(second.status, 200);
+    assert.equal(((await second.json()) as any).entries[0].text[0], "backoff v1");
+    assert.equal((await h.fetch("/__test/status-settled")).status, 200);
+    assert.deepEqual(await h.failBucket(), []);
+
+    // Update R2 to v2 and advance past hard expiry (t=31 > 30s): synchronously refreshes to v2.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1396, commit: "n", at: 14, text: ["backoff v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1396 }));
+    assert.equal((await later(h, 8)).status, 200);
+    const afterExpiry = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(afterExpiry.status, 200);
+    assert.equal(((await afterExpiry.json()) as any).entries[0].text[0], "backoff v2");
+  } finally {
+    await h.close();
+  }
+});
+
+test("GET /v1/changelog with ttl=0 direct R2 path returns strong ETag, Vary, and 304 on matching If-None-Match", async () => {
+  const h = await harness({ changelogCacheSeconds: 0 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1398, commit: "o", at: 15, text: ["direct r2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1398 }));
+
+    const first = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(first.status, 200);
+    const etag = first.headers.get("etag");
+    assert.ok(etag && /^"[0-9a-f]{16}"$/.test(etag), `expected strong 16-hex ETag, got ${etag}`);
+    assert.equal(first.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(((await first.json()) as any).entries[0].text[0], "direct r2");
+
+    const notMod = await h.fetch("/v1/changelog", {
+      headers: { "x-stillfail-channel": "beta", "if-none-match": etag },
+    });
+    assert.equal(notMod.status, 304);
+    assert.equal(notMod.headers.get("etag"), etag);
+    assert.equal(notMod.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(await notMod.text(), "");
+  } finally {
+    await h.close();
+  }
+});
