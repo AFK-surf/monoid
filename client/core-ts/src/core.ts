@@ -1451,7 +1451,7 @@ function roleRank(role: unknown): number {
   }
 }
 
-function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+function isCloudAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
   if (prevDigest === undefined) return false;
   let prev: unknown;
   try {
@@ -1460,11 +1460,41 @@ function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, u
     return true;
   }
   if (!Array.isArray(prev) || prev.length < 5) return true;
-  const [prevOwner, prevRole, prevMember, prevSafe, prevTrusted] = prev;
-  const [nextOwner, nextRole, nextMember, nextSafe, nextTrusted] = next;
+  const [prevOwner, prevRole, prevMember] = prev;
+  const [nextOwner, nextRole, nextMember] = next;
   if (prevOwner !== nextOwner) return true;
   if (prevMember === true && !nextMember) return true;
   if (roleRank(nextRole) < roleRank(prevRole)) return true;
+  return false;
+}
+
+function isCloudAuthUpgrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+  if (prevDigest === undefined) return false;
+  let prev: unknown;
+  try {
+    prev = JSON.parse(prevDigest);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(prev) || prev.length < 5) return false;
+  const [prevOwner, prevRole, prevMember] = prev;
+  const [nextOwner, nextRole, nextMember] = next;
+  if (prevOwner !== nextOwner) return false;
+  return (prevMember === false && nextMember === true) || roleRank(nextRole) > roleRank(prevRole);
+}
+
+function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+  if (isCloudAuthDowngrade(prevDigest, next)) return true;
+  if (prevDigest === undefined) return false;
+  let prev: unknown;
+  try {
+    prev = JSON.parse(prevDigest);
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(prev) || prev.length < 5) return true;
+  const [, , , prevSafe, prevTrusted] = prev;
+  const [, , , nextSafe, nextTrusted] = next;
   if (prevTrusted === true && !nextTrusted) return true;
   if (prevSafe === false && nextSafe === true) return true;
   return false;
@@ -1511,8 +1541,23 @@ export function syncWorkspaceAuth(inner: Inner, ws: string): void {
   const digest = JSON.stringify(nextTuple);
   const changed = inner.store.authGen.syncWorkspace(ws, digest, deps);
   if (changed) {
+    const wsKey = topicKey({ topic: "workspace", workspace: ws });
+    const prior = inner.pendingAuthConfirm.get(ws);
     if (isAuthDowngrade(prevDigest, nextTuple)) {
-      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set() });
+      const cloudDowngrade = isCloudAuthDowngrade(prevDigest, nextTuple);
+      // Lock-only downgrades (`safe: false -> true`, `trusted: true -> false`) keep cloud membership/role
+      // unchanged; pre-confirm `{ topic: "workspace" }` ONLY when no prior cloud downgrade is still unconfirmed,
+      // so `station`/`stations`/`lock` views immediately surface blocked/safe-mode states without ever bypassing
+      // an in-flight cloud downgrade gate, while keeping all station held data gated.
+      const preconfirm = !cloudDowngrade && (prior === undefined || prior.confirmedKeys.has(wsKey));
+      const confirmedKeys = preconfirm ? new Set<string>([wsKey]) : new Set<string>();
+      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys });
+      if (!preconfirm) inner.cloudSync?.refreshWorkspace(ws);
+      inner.stations?.refreshWorkspace(ws);
+    } else if (prior !== undefined && !prior.confirmedKeys.has(wsKey) && !isCloudAuthUpgrade(prevDigest, nextTuple)) {
+      // Preserve an unconfirmed cloud downgrade across a lock-only upgrade and re-fetch under the new gen.
+      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set<string>() });
+      inner.cloudSync?.refreshWorkspace(ws);
       inner.stations?.refreshWorkspace(ws);
     } else {
       inner.pendingAuthConfirm.delete(ws);

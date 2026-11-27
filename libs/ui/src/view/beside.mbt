@@ -585,6 +585,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       self.work.composed = self.work.composed + 1
       self.composed.push({ at, gen: n.gen })
       self.places_rev = self.places_rev + 1
+      self.touched(at, words=false)
       self.hits_bump()
     }
   }
@@ -631,6 +632,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
             self.work.composed = self.work.composed + 1
             self.composed.push({ at, gen: n.gen })
             self.places_rev = self.places_rev + 1
+            self.touched(at, words=false)
             self.hits_bump()
           }
         }
@@ -830,6 +832,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       self.work.composed = self.work.composed + 1
       self.composed.push({ at, gen: n.gen })
       self.places_rev = self.places_rev + 1
+      self.touched(at, words=false)
       self.hits_bump()
     }
     state[at] = 2

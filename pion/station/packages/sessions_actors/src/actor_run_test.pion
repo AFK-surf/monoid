@@ -1482,6 +1482,8 @@ test "r2 coverage: FB-44 on_turn_ended auth refusal retries on fallback profile 
     tools_count: 0,
     last_tool_at: 1000.0,
     wait_watch: false,
+    last_live_at: 1000.0,
+    open_tools: [],
   })
   let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
     if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
@@ -1672,6 +1674,8 @@ test "r2 coverage: suspend and recover lifecycle preserves resume state" {
     tools_count: 0,
     last_tool_at: 1000.0,
     wait_watch: false,
+    last_live_at: 1000.0,
+    open_tools: [],
   })
   a.phase = "running"
 
@@ -1905,6 +1909,8 @@ test "r3 rr4: stateForTurn with stateWrite answered stays recorded across close"
     tools_count: 0,
     last_tool_at: 0.0,
     wait_watch: false,
+    last_live_at: 0.0,
+    open_tools: [],
   })
   let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
     if f == "node.stateWrite" {
@@ -2048,6 +2054,8 @@ test "r3 coverage: FB-39 passive turn does not auto-retry on auth failure" {
     tools_count: 0,
     last_tool_at: 1000.0,
     wait_watch: false,
+    last_live_at: 1000.0,
+    open_tools: [],
   })
   let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
     if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" {
@@ -2093,6 +2101,8 @@ test "r3 coverage: FB-39 max_concurrent_turns queues auth_retry into queued_retr
     tools_count: 0,
     last_tool_at: 900.0,
     wait_watch: false,
+    last_live_at: 900.0,
+    open_tools: [],
   })
 
   // s1 fails with auth while slot is full -> queues into turn_wait_queue with queued_retry
@@ -2112,6 +2122,8 @@ test "r3 coverage: FB-39 max_concurrent_turns queues auth_retry into queued_retr
     tools_count: 0,
     last_tool_at: 1000.0,
     wait_watch: false,
+    last_live_at: 1000.0,
+    open_tools: [],
   })
 
   let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {

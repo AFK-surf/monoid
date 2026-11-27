@@ -811,22 +811,32 @@ fn narrow_made_as(
       made_at("stations", place, fn(p, core, here, frame, _stint, _acts, serial) {
         @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame~, shown=fn() { app.nav.shows(serial) })
       })
-    // (the workspace's: its list or 概览, one page; as a place of the bottom bar's, its own 概览 and its ＋ the bar's
-    // notch, none in its top bar, where its share stands by the settings: 2026-11-17 用户「放齿轮旁边」)
     Setting(Profiles("")) =>
       made("profiles/", fn(p, core, here, frame, _stint, acts) {
-        let overview = if place { @settings.profiles_place_overview } else { @settings.profiles_narrow_overview }
-        @sfpages.profiles_page_node(
+        @sfpages.profiles_list_node(
           p,
-          src,
           core,
           here,
-          overview,
+          "",
           on_back=core.pop,
           frame~,
           bar_actions?=if place { Some(acts) } else { None },
-          bar_add=false,
         )
+      })
+    Setting(ProfilesOverview) =>
+      made("profiles-overview", fn(p, core, here, frame, _stint, acts) {
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          on_back=core.pop,
+          frame~,
+          bar_actions?=if place { Some(acts) } else { None },
+        )
+      })
+    Setting(ProfilesManage(only)) =>
+      made("profiles-manage/" + only, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profiles_manage_node(p, src, core, here, only, on_back=core.pop, frame~)
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(p, core, here, frame, _stint, _acts) {

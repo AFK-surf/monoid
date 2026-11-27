@@ -1714,77 +1714,544 @@ test "a share following the whitelist says so on its page and opens following it
 }
 
 ///|
-test "多选 shares several accounts and sets their stations at once, and stops sharing those shared, once asked" {
+test "批量管理 shares several accounts, sets stations at once, stops sharing via more menu, edits single row without ticking, and clears hidden picks on filter switch" {
   for case in page_cases {
     let (w, platform) = case
     let at = "\{w} platform \{platform}"
-    let asked : Array[Json] = []
-    let t = setting_tester(Profiles(""), w, platform~, h=1400.0, over=fn(base) {
+    let asked : Array[(String, Json)] = []
+    let t = setting_tester(ProfilesManage(""), w, platform~, h=1400.0, over=fn(base) {
       let s = with_titled(with_share_auto(base), "cc", "lin@claude.example")
       { ..s, call: fn(name, params, done) {
-        if name == "profile.share" {
-          asked.push(params)
+        if name == "profile.share" || name == "profile.move" || name == "profile.check" || name == "profile.quota" || name == "profile.delete" {
+          asked.push((name, params))
           done(Ok(obj([])))
         } else {
           (s.call)(name, params, done)
         }
       } }
     })
-    t.click(Button, label="多选")
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("已选 0 项") is Some(_), msg=at)
-    // (each row named as it was out of 多选: its profile's name, not the account's title)
+    // Initially nothing selected: floating batch bar is hidden.
+    assert_true(t.find("已选 ") is None, msg="\{at}: bar hidden with 0 selected")
     assert_true(t.find("Claude 主账号") is Some(_) && t.find("lin@claude.example") is None, msg="\{at}: a row keeps its name")
-    assert_true(t.get(Button, label="分享与 station").disabled, msg="\{at}: nothing picked")
-    assert_true(t.get(Button, label="停止分享").disabled, msg=at)
-    // a key and the shared subscription: 分享与 station
-    t.tap_text("Claude 主账号")
-    t.tap_text("备用 key")
+    // 1. Clicking right policy button (a11y label includes account name) opens pick_stations without ticking the row;
+    //    both 取消 and 停止分享 are present when already shared (H1).
+    t.click(Button, label="Claude 主账号 · 所有 station")
+    presented_in(t)
+    assert_true(t.find("已选 ") is None, msg="\{at}: editing policy must not tick row")
+    assert_true(t.query(Button, label="取消") is Some(_), msg="\{at}: pick_stations keeps cancel alongside stop")
+    assert_true(t.query(Button, label="停止分享") is Some(_), msg="\{at}: pick_stations offers stop sharing when already shared")
+    t.click(Button, label="停止分享")
+    presented_in(t)
+    assert_true(t.find("停止分享此账号？") is Some(_), msg="\{at}: single stop confirmation")
+    t.click(Button, label="取消")
+    t.run_for(@motion.presence_out_ms)
+    // 2. Ticking checkboxes selects rows without opening pick_stations.
+    t.click(Checkbox, label="Claude 主账号")
+    t.click(Checkbox, label="备用 key")
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("已选 2 项") is Some(_), msg=at)
-    assert_false(t.get(Button, label="分享与 station").disabled, msg=at)
-    assert_false(t.get(Button, label="停止分享").disabled, msg=at)
+    assert_false(t.get(Button, label="共享").disabled, msg=at)
+    assert_true(t.query(Button, label="迁移") is Some(_), msg=at)
+    assert_true(t.query(Button, label="刷新") is Some(_), msg=at)
+    assert_true(t.query(Button, label="删除") is Some(_), msg=at)
+    assert_true(t.query(Button, label="更多操作") is Some(_), msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
-    t.click(Button, label="分享与 station")
+    // 3. Switching sharing filter to 未分享 prunes hidden shared selection (Claude 主账号) while keeping visible unshared (备用 key).
+    t.click(Button, label="全部共享")
+    presented_in(t)
+    t.click(MenuItemCheckbox, label="未分享")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("已选 1 项") is Some(_), msg="\{at}: switching filter clears hidden selections")
+    t.click(Button, label="未分享")
+    presented_in(t)
+    t.click(MenuItemCheckbox, label="手动")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Claude 主账号") is Some(_), msg="\{at}: 手动 filter includes all-stations shared row")
+    assert_true(t.find("已选 ") is None, msg="\{at}: switching to 手动 prunes 备用 key")
+    t.click(Button, label="手动")
+    presented_in(t)
+    t.click(MenuItemCheckbox, label="全部共享")
+    t.run_for(@ui.move_most_ms)
+    t.click(Checkbox, label="Claude 主账号")
+    t.click(Checkbox, label="备用 key")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("已选 2 项") is Some(_), msg=at)
+    // 4. Batch apply mixed policies opens neutral undecided state (H2): Primary disabled until user explicitly chooses.
+    t.click(Button, label="共享")
     presented_in(t)
     assert_true(t.find("将应用于 2 个 Profile") is Some(_), msg=at)
-    assert_true(t.find("将为未分享的账号开启分享，并统一设置可用 station") is Some(_), msg=at)
-    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg="\{at}: batch share defaults to whitelist")
+    assert_true(t.find("保存后将把所选账号统一更新为下方策略") is Some(_), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(Off), msg="\{at}: mixed selection starts neutral undecided")
+    assert_true(t.get(Button, label="完成").disabled, msg="\{at}: neutral undecided disables primary until user chooses")
+    t.click(Switch, label="跟随工作区白名单")
+    t.run_for(@ui.move_most_ms)
     assert_false(t.get(Button, label="完成").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="完成")
     t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 2, msg=at)
     for a in asked {
-      assert_eq(text(Some(a), "station"), "ws1/st1", msg=at)
-      assert_eq(field(Some(a), "allowAuto"), Some(Json::boolean(true)), msg=at)
+      assert_eq(a.0, "profile.share", msg=at)
+      assert_eq(text(Some(a.1), "station"), "ws1/st1", msg=at)
+      assert_eq(field(Some(a.1), "allowAuto"), Some(Json::boolean(true)), msg=at)
     }
-    assert_true(t.find("已更新 2 个 Profile") is Some(_) || t.query(Button, label="多选") is Some(_), msg="\{at}: done, 多选 over")
-    // stopping: only those shared asked, after a confirmation
-    t.click(Button, label="多选")
+    assert_true(t.find("已选 ") is None, msg="\{at}: selection cleared after batch update")
+    // 5. Batch stop sharing via ⋯ more menu asks confirmation and only stops shared rows.
+    t.click(Checkbox, label="Claude 主账号")
+    t.click(Checkbox, label="备用 key")
     t.run_for(@ui.move_most_ms)
-    t.tap_text("Claude 主账号")
-    t.tap_text("备用 key")
-    t.frame()
-    t.click(Button, label="停止分享")
+    t.click(Button, label="更多操作")
+    presented_in(t)
+    let menu_role : @ui.Role = if t.query(MenuItem, label="停止分享") is Some(_) { MenuItem } else { Button }
+    t.click(menu_role, label="停止分享")
     presented_in(t)
     assert_eq(asked.length(), 2, msg="\{at}: asked first")
     assert_true(t.find("停止分享 1 个账号？") is Some(_), msg="\{at}: the key not shared is left as it is")
-    // (the confirmation's own 停止分享: the last of them, over the bar's)
     let stops = t.all(Button, label="停止分享")
     let (x, y, bw, bh) = stops[stops.length() - 1].rect
     t.tap(x + bw / 2.0, y + bh / 2.0)
     t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 3, msg=at)
-    assert_eq(field(Some(asked[2]), "on"), Some(Json::boolean(false)), msg=at)
-    assert_eq(text(Some(asked[2]), "id"), "cc", msg=at)
+    assert_eq(field(Some(asked[2].1), "on"), Some(Json::boolean(false)), msg=at)
+    assert_eq(text(Some(asked[2].1), "id"), "cc", msg=at)
+    // 6. Direct batch refresh button calls profile.check (+ profile.quota only when supported).
+    t.click(Checkbox, label="Claude 主账号")
+    t.click(Checkbox, label="备用 key")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="刷新")
+    t.run_for(@motion.presence_out_ms)
+    assert_true(asked.iter().any(fn(a) { a.0 == "profile.check" && text(Some(a.1), "id") == "cc" }), msg=at)
+    assert_true(asked.iter().any(fn(a) { a.0 == "profile.quota" && text(Some(a.1), "id") == "cc" }), msg=at)
+    assert_true(asked.iter().any(fn(a) { a.0 == "profile.check" && text(Some(a.1), "id") == "k2" }), msg=at)
+    assert_false(asked.iter().any(fn(a) { a.0 == "profile.quota" && text(Some(a.1), "id") == "k2" }), msg="\{at}: must not send profile.quota when quota.state == unsupported")
+    // 7. Direct batch delete button shows danger confirmation with account & host names and calls profile.delete.
+    t.click(Checkbox, label="备用 key")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="删除")
+    presented_in(t)
+    assert_true(t.find("删除 1 个账号？") is Some(_), msg=at)
+    assert_true(t.find("备用 key (Willow)") is Some(_), msg=at)
+    let dels = t.all(Button, label="删除")
+    let (dx, dy, dw, dh) = dels[dels.length() - 1].rect
+    t.tap(dx + dw / 2.0, dy + dh / 2.0)
+    t.run_for(@motion.presence_out_ms)
+    assert_true(asked.iter().any(fn(a) { a.0 == "profile.delete" && text(Some(a.1), "id") == "k2" }), msg=at)
   }
 }
 
 ///|
+test "批量管理 station filter, batch move with machine skip and partial failure retention" {
+  let moves : Array[Json] = []
+  let t = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "stations" {
+          match v.value {
+            Some(Array(arr)) => {
+              let out = arr.map(fn(st) {
+                match st {
+                  Object(so) => {
+                    let sm = so.copy()
+                    sm["online"] = Json::boolean(true)
+                    Json::object(sm)
+                  }
+                  _ => st
+                }
+              })
+              { ..v, value: Some(Json::array(out)) }
+            }
+            _ => v
+          }
+        } else if name == "profiles" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").map(fn(r) {
+                if text(field(Some(r), "profile"), "id") == "k2" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      rm["machine"] = Json::boolean(true)
+                      Json::object(rm)
+                    }
+                    _ => r
+                  }
+                } else {
+                  r
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.move" {
+          moves.push(params)
+          if text(Some(params), "id") == "cc" {
+            done(Err(Json::object({ "message": Json::string("disk full") })))
+          } else {
+            done(Ok(obj([])))
+          }
+        } else {
+          (s.call)(name, params, done)
+        }
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  // Station dropdown filters by host station.
+  t.click(Button, label="全部 station")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="Maple")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("当前筛选下没有账号") is Some(_), msg="Maple has no profiles in fixture")
+  t.click(Button, label="Maple")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="全部 station")
+  t.run_for(@ui.move_most_ms)
+  // Select 2 movable (cc, cx) + 1 machine (ak): move dialog skips machine and moves remaining to Maple.
+  t.click(Checkbox, label="Claude 主账号")
+  t.click(Checkbox, label="备用 key")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="迁移")
+  presented_in(t)
+  assert_true(t.find("无法迁移") is Some(_) && t.find("自动跳过") is Some(_), msg="machine login skip note shown")
+  assert_true(t.find("当前所在") is Some(_), msg="Willow marked as current station")
+  t.click(Link, label="Maple")
+  presented_in(t)
+  assert_true(t.find("迁移 1 个账号到 Maple？") is Some(_), msg="move confirm counts movable rows")
+  t.click(Button, label="迁移")
+  t.run_for(@motion.presence_out_ms)
+  assert_eq(moves.length(), 1)
+  assert_eq(text(Some(moves[0]), "id"), "cc")
+  assert_eq(text(Some(moves[0]), "to"), "st2")
+  // Failed move retains failed selection for retry.
+  assert_true(t.find("已选 1 项") is Some(_), msg="failed row stays selected for retry")
+}
+
+///|
+test "批量管理 R2 regressions: SWR version -2 skipped, single-station empty profileGroups, unsupported+offline unselectable, and batch delete skips machine" {
+  // 1. SWR cache (version == -2) with allow: null must NOT open pick_stations; fresh version == 1 opens with custom allow.
+  let ver : @signals.Signal[Int] = @signals.signal(-2)
+  let t1 = setting_tester(ProfilesManage(""), 900.0, platform=0, h=1400.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "station" {
+          let cur_ver = ver.get()
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              match field(v.value, "overview") {
+                Some(Object(ov)) => {
+                  let ovm = ov.copy()
+                  let ps = items(Some(Json::object(ov)), "profiles").map(fn(p) {
+                    if text(Some(p), "id") == "cc" {
+                      match p {
+                        Object(po) => {
+                          let pm = po.copy()
+                          pm["share"] = if cur_ver < 0 {
+                            obj([("id", str("sh-1")), ("role", str("host")), ("host", str("st1"))])
+                          } else {
+                            obj([
+                              ("id", str("sh-1")),
+                              ("role", str("host")),
+                              ("host", str("st1")),
+                              ("allow", Json::array([str("st1")])),
+                            ])
+                          }
+                          Json::object(pm)
+                        }
+                        _ => p
+                      }
+                    } else {
+                      p
+                    }
+                  })
+                  ovm["profiles"] = Json::array(ps)
+                  m["overview"] = Json::object(ovm)
+                }
+                _ => ()
+              }
+              { ..v, value: Some(Json::object(m)), version: cur_ver }
+            }
+            _ => { ..v, version: cur_ver }
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t1.run_for(@ui.move_most_ms)
+  t1.click(Button, label="Claude 主账号 · 所有 station")
+  t1.run_for(@sf.open_hold_ms + 100.0)
+  assert_false(@sf.presenting(), msg="B1 SWR: version -2 cache must not open pick_stations")
+  ver.set(1)
+  t1.run_for(@ui.move_most_ms)
+  presented_in(t1)
+  assert_eq(t1.get(Switch, label="全部 station").check, Some(Off), msg="B1 SWR: fresh version 1 preserves custom allow")
+  t1.click(Button, label="取消")
+  t1.run_for(@motion.presence_out_ms)
+
+  // 2. Single-station profileGroups: [] with non-empty overview.profiles renders empty state (0 rows).
+  let t2 = setting_tester(ProfilesManage("ws1/st1"), 900.0, platform=0, h=800.0, over=fn(base) {
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        let v = base.topic(name, params).get().snapshot()
+        if name == "station" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              m["profileGroups"] = Json::array([])
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.query(Checkbox, label="Claude 主账号") is None, msg="H1: empty profileGroups must not fall back to overview.profiles")
+  assert_true(t2.find("暂无可管理的账号") is Some(_), msg="H1: empty profileGroups shows empty state")
+
+  // 3. unsupported + offline cannot be selected, and going offline clears selection.
+  let st1_online : @signals.Signal[Bool] = @signals.signal(true)
+  let t3 = setting_tester(ProfilesManage(""), 900.0, platform=0, h=1400.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        let on = st1_online.get()
+        if name == "stations" {
+          match v.value {
+            Some(Array(arr)) => {
+              let out = arr.map(fn(st) {
+                if text(Some(st), "station") == "ws1/st1" {
+                  match st {
+                    Object(so) => {
+                      let sm = so.copy()
+                      sm["online"] = Json::boolean(on)
+                      Json::object(sm)
+                    }
+                    _ => st
+                  }
+                } else {
+                  st
+                }
+              })
+              { ..v, value: Some(Json::array(out)) }
+            }
+            _ => v
+          }
+        } else if name == "profiles" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").map(fn(r) {
+                match r {
+                  Object(ro) => {
+                    let rm = ro.copy()
+                    rm["canBatchShare"] = Json::boolean(false)
+                    rm["batchShareWhy"] = str("unsupported")
+                    Json::object(rm)
+                  }
+                  _ => r
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t3.run_for(@ui.move_most_ms)
+  t3.click(Checkbox, label="Claude 主账号")
+  t3.run_for(@ui.move_most_ms)
+  assert_true(t3.find("已选 1 项") is Some(_), msg="H3: online unsupported row is selectable")
+  st1_online.set(false)
+  t3.run_for(@ui.move_most_ms)
+  assert_true(t3.find("已选 ") is None, msg="H3: going offline clears selection on unsupported row")
+  assert_true(t3.get(Checkbox, label="Claude 主账号").disabled, msg="H3: offline unsupported row checkbox is disabled")
+
+  // 4. Batch delete skips machine login and disables delete when only machine login is selected.
+  let deleted : Array[String] = []
+  let t4 = setting_tester(ProfilesManage(""), 900.0, platform=0, h=1400.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "profiles" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").map(fn(r) {
+                if text(field(Some(r), "profile"), "id") == "k2" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      rm["machine"] = Json::boolean(true)
+                      Json::object(rm)
+                    }
+                    _ => r
+                  }
+                } else {
+                  r
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.delete" {
+          deleted.push(text(Some(params), "id"))
+          done(Ok(obj([])))
+        } else {
+          (s.call)(name, params, done)
+        }
+      },
+    }
+  })
+  t4.run_for(@ui.move_most_ms)
+  t4.click(Checkbox, label="备用 key")
+  t4.run_for(@ui.move_most_ms)
+  assert_true(t4.get(Button, label="删除").disabled, msg="M1+M6: delete disabled when only machine login selected")
+  t4.click(Checkbox, label="Claude 主账号")
+  t4.run_for(@ui.move_most_ms)
+  t4.click(Button, label="删除")
+  presented_in(t4)
+  assert_true(t4.find("删除 1 个账号？") is Some(_), msg="M1+M6: confirm title counts only deletable rows")
+  assert_true(t4.find("跳过 1 个本机登录") is Some(_), msg="M1+M6: confirm body states skipped machine login")
+  let dels = t4.all(Button, label="删除")
+  let (dx, dy, dw, dh) = dels[dels.length() - 1].rect
+  t4.tap(dx + dw / 2.0, dy + dh / 2.0)
+  t4.run_for(@motion.presence_out_ms)
+  assert_eq(deleted, ["cc"], msg="M1+M6: only non-machine row deleted")
+}
+
+///|
+test "批量管理 B1 single-row authoritative read preserves allow, rejects error/missing without fallback, and H2 single custom row reuses it" {
+  let station_ready : @signals.Signal[Bool] = @signals.signal(false)
+  let station_err : @signals.Signal[Bool] = @signals.signal(false)
+  let t = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "station" {
+          if !station_ready.get() {
+            { ..v, value: None, error: None }
+          } else if station_err.get() {
+            { ..v, value: None, error: Some(Json::object({ "message": Json::string("unreachable") })) }
+          } else {
+            match v.value {
+              Some(Object(o)) => {
+                let m = o.copy()
+                match field(v.value, "overview") {
+                  Some(Object(ov)) => {
+                    let ovm = ov.copy()
+                    let ps = items(Some(Json::object(ov)), "profiles").map(fn(p) {
+                      if text(Some(p), "id") == "cc" {
+                        match p {
+                          Object(po) => {
+                            let pm = po.copy()
+                            pm["share"] = obj([
+                              ("id", str("sh-1")),
+                              ("role", str("host")),
+                              ("host", str("st1")),
+                              ("allow", Json::array([str("st1")])),
+                            ])
+                            Json::object(pm)
+                          }
+                          _ => p
+                        }
+                      } else {
+                        p
+                      }
+                    })
+                    ovm["profiles"] = Json::array(ps)
+                    m["overview"] = Json::object(ovm)
+                  }
+                  _ => ()
+                }
+                { ..v, value: Some(Json::object(m)) }
+              }
+              _ => v
+            }
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  // Click single row while station topic is pending: does NOT fall back after open_hold_ms.
+  t.click(Button, label="Claude 主账号 · 所有 station")
+  t.run_for(@sf.open_hold_ms + 100.0)
+  assert_false(@sf.presenting(), msg="B1: must not fall back to lightweight row on slow station read")
+  // When error arrives: shows toast and never opens dialog.
+  station_err.set(true)
+  station_ready.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="B1: error must not open station picker")
+  // Now answer cleanly with custom allow=[st1, st2] and test H2 (ticking 1 row + pressing 设置共享).
+  station_err.set(false)
+  t.click(Checkbox, label="Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="共享")
+  presented_in(t)
+  // Custom allow list [st1] must be preserved (Maple Off, All stations Off).
+  assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg="H2+B1: custom allow preserved, not broadened to all")
+  assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg="H2+B1: Maple stays excluded by custom allow")
+  t.click(Button, label="取消")
+  t.run_for(@motion.presence_out_ms)
+}
+
+///|
+test "H1 account detail pick_stations keeps cancel and never shows duplicate stop sharing" {
+  let t = setting_tester(Profile("ws1/st1", "cc"), 900.0, platform=0, h=1400.0, over=fn(base) { with_share_auto(base) })
+  t.run_for(@ui.move_most_ms)
+  t.click(Link, label="可用的 station")
+  presented_in(t)
+  assert_true(t.query(Button, label="取消") is Some(_), msg="H1: detail pick_stations keeps cancel")
+  assert_true(t.query(Button, label="停止分享") is None, msg="H1: detail pick_stations must not duplicate stop sharing")
+  t.click(Button, label="取消")
+  t.run_for(@motion.presence_out_ms)
+}
+
+///|
 /// The fixture's `profiles` rows with the account of profile `id` titled `title` (an account's email, not its profile's
-/// name), and that row made one 多选 cannot take on the workspace's list (signed in on several stations), as the core
-/// says it of one: `several`.
+/// name), and that row made one sharing management cannot edit directly on the workspace's list (`several`).
 fn with_titled(s : Source, id : String, title : String, several? : Bool = false) -> Source {
   fn shaped(v : Json, id : String, title : String, several : Bool) -> Json {
     match v {
@@ -1819,51 +2286,84 @@ fn with_titled(s : Source, id : String, title : String, several? : Bool = false)
 }
 
 ///|
-test "多选 is over as 概览 is shown, and a station's own page takes its account though the workspace's list cannot (signed in on several)" {
+test "single-station 批量管理 filters via profileGroups, handles deleted/offline/demotion, and role demotion auto-pops" {
   for case in page_cases {
     let (w, platform) = case
     let at = "\{w} platform \{platform}"
-    let t = setting_tester(Profiles(""), w, platform~, h=1400.0, over=fn(base) { with_share_auto(base) })
-    t.click(Button, label="多选")
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("已选 0 项") is Some(_), msg=at)
-    // (概览 shown, as its tab says it once its pools are read: the page's own signal, then back to 账号)
-    @settings.profiles_narrow_overview.set(true)
-    t.run_for(@ui.move_most_ms)
-    @settings.profiles_narrow_overview.set(false)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("已选 0 项") is None, msg="\{at}: 多选 over with 概览")
-    // a station's own page: its own profile, whatever the workspace's list says of the account
-    let one = setting_tester(Profiles("ws1/st1"), w, platform~, h=1400.0, over=fn(base) {
+    let one = setting_tester(ProfilesManage("ws1/st1"), w, platform~, h=1400.0, over=fn(base) {
       with_titled(with_share_auto(base), "cc", "Claude 主账号", several=true)
     })
-    one.click(Button, label="多选")
     one.run_for(@ui.move_most_ms)
-    one.tap_text("Claude 主账号")
+    one.click(Checkbox, label="Claude 主账号")
     one.run_for(@ui.move_most_ms)
     assert_true(one.find("已选 1 项") is Some(_), msg="\{at}: this station's own, taken here")
     assert_true(one.find("多台 station 独立登录，请点进分别设置") is None, msg=at)
     assert_eq(one.audit(), [], msg="\{at}: " + one.audit().join("; "))
   }
+  // H4: deleted station shows station-gone instead of spinning forever.
+  let gone = setting_tester(ProfilesManage("ws1/deleted-st"), 390.0, platform=2, h=844.0, over=fn(base) { with_share_auto(base) })
+  gone.run_for(@ui.move_most_ms)
+  assert_true(gone.find("该 station 已从工作区移除") is Some(_), msg="H4: deleted station shows clear message")
+  // Role demotion: manages flipping to false pops ProfilesManage automatically.
+  let manages : @signals.Signal[Bool] = @signals.signal(true)
+  let t = setting_tester(ProfilesManage(""), 390.0, platform=2, h=844.0, over=fn(base) {
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        let v = base.topic(name, params).get().snapshot()
+        if name == "profiles" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              m["manages"] = Json::boolean(manages.get())
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(ProfilesManage("")))
+  manages.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() != Setting(ProfilesManage("")), msg="losing manages pops ProfilesManage")
 }
 
 ///|
-test "profiles_batch_foot_node (page=true): liquid glass card with outside shadow, 1pt solid fallback, 0 corner faults, reverse-wrap height, and last row scrollable clear of bar" {
+test "批量管理 320px + 1.3x font scale in zh and en has zero truncation and zero audit faults" {
+  for lang in ["zh", "en"] {
+    let t = setting_tester(ProfilesManage(""), 320.0, platform=2, h=640.0, over=fn(base) { with_share_auto(base) })
+    @sf.set_language(Some(lang))
+    t.set_font_scale(1.3)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.fixed_outgrown(), [], msg="\{lang} outgrown: " + t.fixed_outgrown().join("; "))
+    assert_eq(t.squeeze_faults(), [], msg="\{lang} squeeze: " + t.squeeze_faults().join("; "))
+    assert_eq(t.words_over_now(), [], msg="\{lang} words_over: " + t.words_over_now().join("; "))
+    assert_eq(t.corner_faults(), [], msg="\{lang} corners: " + t.corner_faults().join("; "))
+  }
+  @sf.set_language(None)
+}
+
+///|
+test "profiles_batch_foot_node (page=true): liquid glass card with outside shadow, 1pt solid fallback, 0 corner faults, and last row scrollable clear of bar" {
   for dark in [false, true] {
     for case in [(900.0, 0), (390.0, 2)] {
       let (w, platform) = case
       let at = "dark=\{dark} w=\{w} platform=\{platform}"
-      let t = setting_tester(Profiles(""), w, platform~, h=640.0, over=fn(base) { with_share_auto(base) })
-      // Set dark after setting_tester (Tester::new calls reset_globals) and assert theme().dark actually matches
+      let t = setting_tester(ProfilesManage(""), w, platform~, h=640.0, over=fn(base) { with_share_auto(base) })
       @sf.set_dark(Some(dark))
       @ui.set_glass_solid(None)
       t.draw()
       assert_eq(@sf.theme().dark, dark, msg="\{at}: theme().dark must match")
-      t.click(Button, label="多选")
+      t.click(Checkbox, label="Claude 主账号")
       t.run_for(@ui.move_most_ms)
-      assert_true(t.find("已选 0 项") is Some(_), msg=at)
-      let share_btn = t.get(Button, label="分享与 station")
-      let stop_btn = t.get(Button, label="停止分享")
+      assert_true(t.find("已选 1 项") is Some(_), msg=at)
+      let share_btn = t.get(Button, label="共享")
+      let move_btn = t.get(Button, label="迁移")
       // Card sits at the bottom of the viewport
       let bar_glass = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 450.0 && g.2 > 200.0 })
       let bar_liquid = bar_glass.filter(fn(g) { g.4 == 6 })
@@ -1872,100 +2372,47 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
         .iter()
         .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && a[1] + a[3] > 450.0 && a[2] > 200.0 })
       assert_eq((at, bar_glass.length(), bar_liquid.length(), bar_shadow), (at, 1, 1, true))
-      // Direct 0 corner fault assertion on the batch bar card
       assert_eq(t.corner_faults(), [], msg="\{at}: corner faults")
-      // Buttons stay inside the glass card with proper concentric inset
       let g = bar_liquid[0]
       assert_true(
         share_btn.rect.0 >= g.0 + 4.0 &&
         share_btn.rect.1 + share_btn.rect.3 <= g.1 + g.3 - 4.0 &&
-        stop_btn.rect.0 >= g.0 + 4.0 &&
-        stop_btn.rect.1 + stop_btn.rect.3 <= g.1 + g.3 - 4.0,
-        msg="\{at}: buttons inside card g=\{Repr(g)} share=\{Repr(share_btn.rect)} stop=\{Repr(stop_btn.rect)}",
+        move_btn.rect.0 >= g.0 + 4.0 &&
+        move_btn.rect.1 + move_btn.rect.3 <= g.1 + g.3 - 4.0,
+        msg="\{at}: buttons inside card g=\{Repr(g)} share=\{Repr(share_btn.rect)} move=\{Repr(move_btn.rect)}",
       )
-      // On narrow 320pt at 1.3x font scale: reverse-wrap strictly puts primary button on the lower row,
-      // and scrolling in that same narrow wrapped state must bring the true last row ("使用此账号") completely above bar_top
       if w <= 390.0 {
         t.resize(320.0, 640.0)
         t.set_font_scale(1.3)
         t.run_for(@ui.move_most_ms)
-        let s2 = t.get(Button, label="分享与 station")
-        let st2 = t.get(Button, label="停止分享")
-        assert_true(
-          s2.rect.1 > st2.rect.1 + 1.0,
-          msg="\{at}: reverse-wrap must put primary strictly on lower row: share=\{Repr(s2.rect)} stop=\{Repr(st2.rect)}",
-        )
         assert_eq(t.corner_faults(), [], msg="\{at}: 320pt 1.3x corner faults")
         for _ in 0..<12 {
           t.wheel(160.0, 200.0, 200.0)
         }
         t.run_for(@ui.move_most_ms)
         let narrow_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 400.0 && gl.2 > 200.0 })[0].1
-        guard t.query(Button, label="使用此账号") is Some(last_btn) else {
-          fail("\{at}: narrow wrapped last row (使用此账号) not found after scrolling")
+        guard t.query(Checkbox, label="备用 key") is Some(last_cb) else {
+          fail("\{at}: narrow wrapped last row (备用 key) not found after scrolling")
         }
-        let cx = last_btn.rect.0 + last_btn.rect.2 / 2.0
-        let cy = last_btn.rect.1 + last_btn.rect.3 / 2.0
-        let cards = t
-          .boxes_held()
-          .filter(fn(b) {
-            b.bg != 0L && b.radius >= 8.0 && b.h < 400.0 && b.w > last_btn.rect.2 + 20.0 && b.x <= cx && cx <= b.x + b.w && b.y <= cy && cy <= b.y + b.h
-          })
-        guard cards.length() > 0 else {
-          fail("\{at}: narrow wrapped Codex last card enclosing 使用此账号 not found")
-        }
-        let mut last_card = cards[0]
-        for c in cards {
-          if c.h < last_card.h {
-            last_card = c
-          }
-        }
-        let card_bottom = last_card.y + last_card.h
         assert_true(
-          card_bottom > last_btn.rect.1 + last_btn.rect.3 + 10.0,
-          msg="\{at}: narrow Codex card bottom \{card_bottom} must include below-button lines past \{last_btn.rect.1 + last_btn.rect.3}",
-        )
-        assert_true(
-          card_bottom <= narrow_bar_top,
-          msg="\{at}: narrow wrapped Codex card bottom \{card_bottom} must be <= bar_top \{narrow_bar_top}",
+          last_cb.rect.1 + last_cb.rect.3 <= narrow_bar_top,
+          msg="\{at}: narrow wrapped last row bottom \{last_cb.rect.1 + last_cb.rect.3} must be <= bar_top \{narrow_bar_top}",
         )
         t.set_font_scale(1.0)
         t.resize(w, 640.0)
         t.run_for(@ui.move_most_ms)
       } else {
-        // Wide: scroll down and strictly assert the full Codex last card bottom clears bar_top
         for _ in 0..<12 {
           t.wheel(w / 2.0, 200.0, 200.0)
         }
         t.run_for(@ui.move_most_ms)
         let wide_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })[0].1
-        guard t.query(Button, label="使用此账号") is Some(last_btn) else {
-          fail("\{at}: wide last row (使用此账号) not found after scrolling")
+        guard t.query(Checkbox, label="备用 key") is Some(last_cb) else {
+          fail("\{at}: wide last row (备用 key) not found after scrolling")
         }
-        let cx = last_btn.rect.0 + last_btn.rect.2 / 2.0
-        let cy = last_btn.rect.1 + last_btn.rect.3 / 2.0
-        let cards = t
-          .boxes_held()
-          .filter(fn(b) {
-            b.bg != 0L && b.radius >= 8.0 && b.h < 400.0 && b.w > last_btn.rect.2 + 20.0 && b.x <= cx && cx <= b.x + b.w && b.y <= cy && cy <= b.y + b.h
-          })
-        guard cards.length() > 0 else {
-          fail("\{at}: wide Codex last card enclosing 使用此账号 not found")
-        }
-        let mut last_card = cards[0]
-        for c in cards {
-          if c.h < last_card.h {
-            last_card = c
-          }
-        }
-        let card_bottom = last_card.y + last_card.h
         assert_true(
-          card_bottom > last_btn.rect.1 + last_btn.rect.3 + 10.0,
-          msg="\{at}: wide Codex card bottom \{card_bottom} must include below-button lines past \{last_btn.rect.1 + last_btn.rect.3}",
-        )
-        assert_true(
-          card_bottom <= wide_bar_top,
-          msg="\{at}: wide Codex card bottom \{card_bottom} must be <= bar_top \{wide_bar_top}",
+          last_cb.rect.1 + last_cb.rect.3 <= wide_bar_top,
+          msg="\{at}: wide last row bottom \{last_cb.rect.1 + last_cb.rect.3} must be <= bar_top \{wide_bar_top}",
         )
       }
       // MBUI_GLASS=solid fallback: 0 glass + 1pt border
@@ -1985,4 +2432,546 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
   }
   @ui.set_glass_solid(None)
   @sf.set_dark(None)
+}
+
+///|
+test "批量管理键盘焦点可分别激活左侧勾选框与右侧策略按钮（无障碍标签含账号名）" {
+  let t = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=fn(base) { with_share_auto(base) })
+  // Focus checkbox and activate with Space
+  t.act(Checkbox, Focus, label="Claude 主账号")
+  t.frame()
+  t.key(@ui.key_space)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.get(Checkbox, label="Claude 主账号").check, Some(On), msg="Space toggles checkbox")
+  assert_true(t.find("已选 1 项") is Some(_), msg="keyboard selection updates batch bar")
+  // Focus sibling policy button (with account name in a11y label) and activate with Enter
+  t.act(Button, Focus, label="Claude 主账号 · 所有 station")
+  t.frame()
+  t.key(@ui.key_code_enter)
+  t.run_for(@motion.presence_in_ms)
+  assert_true(@sf.presenting(), msg="Enter on policy button opens station picker")
+}
+
+///|
+test "批量管理 R3 fixes: workspace None blocks confirm RPC, unchecked subscription refreshes quota, missing host unselectable, online null overview waits" {
+  // 1. Astra M2: missing host in non-empty stations roster is unselectable.
+  let row_missing : Json = obj([
+    ("key", str("k-miss")),
+    ("station", str("ws1/gone-st")),
+    ("batchShareWhy", str("")),
+  ])
+  let roster : Array[Json] = [obj([("station", str("ws1/st1")), ("online", Json::boolean(true))])]
+  assert_false(can_select_row(row_missing, stations=roster), msg="M2: host absent from roster must not be selectable")
+  // 2. Astra High: opening confirm then losing active workspace (workspace_in_view -> None) sends zero RPC.
+  let ws_gone : @signals.Signal[Bool] = @signals.signal(false)
+  let rpcs : Array[(String, String)] = []
+  let t = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "workspaces" && ws_gone.get() {
+          { ..v, value: Some(Json::array([])) }
+        } else if name == "profiles" {
+          // Strip quota from Claude subscription ("cc") to test Opus M1 (unchecked subscription still queries quota).
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").map(fn(r) {
+                if text(field(Some(r), "profile"), "id") == "cc" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      match field(Some(r), "profile") {
+                        Some(Object(po)) => {
+                          let pm = po.copy()
+                          pm.remove("quota")
+                          rm["profile"] = Json::object(pm)
+                        }
+                        _ => ()
+                      }
+                      Json::object(rm)
+                    }
+                    _ => r
+                  }
+                } else {
+                  r
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+      call: fn(name, params, done) {
+        rpcs.push((name, text(Some(params), "id")))
+        done(Ok(obj([])))
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  // Opus M1: unchecked subscription ("cc" without quota object) triggers BOTH profile.check and profile.quota.
+  t.click(Checkbox, label="Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="刷新")
+  t.run_for(@motion.presence_out_ms)
+  assert_true(rpcs.contains(("profile.check", "cc")), msg="Opus M1: sends profile.check for unchecked subscription")
+  assert_true(rpcs.contains(("profile.quota", "cc")), msg="Opus M1: sends profile.quota for unchecked subscription")
+  rpcs.clear()
+  // Astra High: open Delete confirm dialog, then active workspace becomes None -> clicking confirm sends zero RPC.
+  t.click(Checkbox, label="Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除")
+  presented_in(t)
+  ws_gone.set(true)
+  t.run_for(@ui.move_most_ms)
+  let dels = t.all(Button, label="删除")
+  let (dx, dy, dw, dh) = dels[dels.length() - 1].rect
+  t.tap(dx + dw / 2.0, dy + dh / 2.0)
+  t.run_for(@motion.presence_out_ms)
+  assert_eq(rpcs.length(), 0, msg="Astra High: workspace None must block confirm RPC")
+  // 3. Astra M3: online station with overview: null stays waiting (does not show empty state).
+  let t2 = setting_tester(ProfilesManage("ws1/st1"), 900.0, platform=0, h=800.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "station" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              m.remove("overview")
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find("暂无可管理共享的账号") is None, msg="Astra M3: online station with null overview must wait, not show empty")
+}
+
+///|
+test "profiles_manage table: master checkbox, filter-empty, conditional whitelist hint, and 320pt 1.3x en dock clearance" {
+  // 1. Wide workspace table: master select-all checkbox selects all selectable rows and flips label, then clears.
+  let empty_wl = fn(base : Source) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "stations" {
+          match v.value {
+            Some(Array(sts)) => {
+              let out = sts.map(fn(st) {
+                match st {
+                  Object(o) => {
+                    let m = o.copy()
+                    m["acceptAutoChats"] = Json::boolean(false)
+                    Json::object(m)
+                  }
+                  _ => st
+                }
+              })
+              { ..v, value: Some(Json::array(out)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  }
+  let t = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=empty_wl)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("账号") is Some(_), msg="table header shows 账号 column")
+  assert_true(t.find("Station") is Some(_), msg="wide table header shows Station column")
+  assert_true(t.find("状态") is Some(_), msg="wide table header shows 状态 column")
+  assert_true(t.find("共享") is Some(_), msg="table header shows 共享 column")
+  assert_true(t.find("白名单暂无 station") is None, msg="whitelist-empty hint hidden by default when no whitelist accounts exist")
+  t.click(Checkbox, label="全选")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Checkbox, label="取消全选") is Some(_), msg="master checkbox label flips to 取消全选 when all selectable rows picked")
+  assert_true(t.query(Button, label="共享") is Some(_), msg="floating batch dock appears with 共享 after select-all")
+  assert_true(t.query(Button, label="刷新") is Some(_), msg="floating batch dock shows direct 刷新 button")
+  assert_true(t.query(Button, label="删除") is Some(_), msg="floating batch dock shows direct 删除 button")
+  t.click(Checkbox, label="取消全选")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Checkbox, label="全选") is Some(_), msg="master checkbox resets to 全选 after toggling off")
+  assert_true(t.query(Button, label="刷新") is None, msg="floating batch dock hides when selection cleared")
+  // 2. Switching to 白名单 filter via sharing dropdown when whitelist is empty shows both filter-empty and the conditional whitelist hint.
+  t.click(Button, label="全部共享")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="白名单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("当前筛选下没有账号") is Some(_), msg="filter-empty shown when no rows match filter")
+  assert_true(t.find("白名单暂无 station") is Some(_), msg="conditional whitelist hint appears on 白名单 filter when whitelist is empty")
+  assert_true(t.query(Checkbox, label="全选") is None, msg="table header omitted when filtered list is empty")
+  // 3. Narrow 320pt 1.3x English: wrapped batch dock still clears the last scrolled row with 0 audit/corner faults.
+  let tn = setting_tester(ProfilesManage(""), 320.0, platform=2, h=640.0, over=fn(s) { with_share_auto(s) })
+  @sf.set_language(Some("en"))
+  tn.set_font_scale(1.3)
+  tn.run_for(@ui.move_most_ms)
+  tn.click(Checkbox, label="Claude 主账号")
+  tn.run_for(@ui.move_most_ms)
+  tn.click(Checkbox, label="ChatGPT 团队")
+  tn.run_for(@ui.move_most_ms)
+  assert_eq(tn.corner_faults(), [], msg="320pt 1.3x en corner faults")
+  assert_eq(tn.first_line_faults(), [], msg="320pt 1.3x en first_line faults")
+  assert_eq(tn.fixed_outgrown(), [], msg="320pt 1.3x en outgrown")
+  assert_eq(tn.squeeze_faults(), [], msg="320pt 1.3x en squeeze")
+  assert_eq(tn.words_over_now(), [], msg="320pt 1.3x en words_over")
+  for _ in 0..<14 {
+    tn.wheel(160.0, 200.0, 200.0)
+  }
+  tn.run_for(@ui.move_most_ms)
+  let dock_top = tn.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 400.0 && gl.2 > 180.0 })[0].1
+  guard tn.query(Checkbox, label="备用 key") is Some(last_cb) else {
+    @sf.set_language(None)
+    fail("320pt 1.3x en last row (备用 key) not found after scrolling")
+  }
+  assert_true(
+    last_cb.rect.1 + last_cb.rect.3 <= dock_top,
+    msg="320pt 1.3x en last row bottom \{last_cb.rect.1 + last_cb.rect.3} must be <= dock_top \{dock_top}",
+  )
+  @sf.set_language(None)
+  // 4. Wide table with an unshareable 2-line row (`why_text != ""`) has 0 first_line_faults.
+  let with_unshareable = fn(base : Source) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "profiles" {
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").map(fn(r) {
+                if text(field(Some(r), "profile"), "id") == "cc" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      rm["canBatchShare"] = Json::boolean(false)
+                      rm["batchShareWhy"] = Json::string("unshareable")
+                      Json::object(rm)
+                    }
+                    _ => r
+                  }
+                } else {
+                  r
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  }
+  let tw = setting_tester(ProfilesManage(""), 900.0, platform=0, h=800.0, over=with_unshareable)
+  tw.run_for(@ui.move_most_ms)
+  assert_eq(tw.first_line_faults(), [], msg="wide 2-line unshareable row first_line faults")
+  assert_eq(tw.corner_faults(), [], msg="wide 2-line unshareable row corner faults")
+}
+
+///|
+test "批量管理 status column (pm_status_of), health/type filters, and group filter auto-reset" {
+  @sfbase.reset()
+  @sf.set_words(@sfbase.fill)
+  // 1. Direct pm_status_of / pm_row_has_issue coverage across state, usable, look, scoped vs account-wide windows, and core level.
+  let state_red = obj([
+    ("usable", Json::boolean(false)),
+    ("state", obj([("text", str("需要登录")), ("tone", str("red"))])),
+  ])
+  assert_eq(pm_status_of(Some(state_red)), ("需要登录", "red"))
+  assert_true(pm_row_has_issue(state_red))
+
+  let unusable_no_state = obj([("usable", Json::boolean(false))])
+  assert_eq(pm_status_of(Some(unusable_no_state)), ("需关注", "red"))
+  assert_true(pm_row_has_issue(unusable_no_state))
+
+  let look_no_state = obj([("usable", Json::boolean(true)), ("look", Json::boolean(true))])
+  assert_eq(pm_status_of(Some(look_no_state)), ("需关注", "amber"))
+  assert_true(pm_row_has_issue(look_no_state))
+
+  // Scoped single-model window (Fable 0% red) is ignored when account-wide windows exist.
+  let with_scoped_fable = obj([
+    ("usable", Json::boolean(true)),
+    ("profile", obj([
+      ("quota", obj([
+        ("state", str("ok")),
+        ("windows", Json::array([
+          obj([("mark", str("5H")), ("left", Json::number(80.0)), ("level", str("ok"))]),
+          obj([("mark", str("W")), ("left", Json::number(60.0)), ("level", str("ok"))]),
+          obj([("mark", str("Fable")), ("scope", str("Fable")), ("left", Json::number(0.0)), ("level", str("red"))]),
+        ])),
+      ])),
+    ])),
+  ])
+  assert_eq(pm_status_of(Some(with_scoped_fable)), ("W 60%", "ok"))
+  assert_false(pm_row_has_issue(with_scoped_fable))
+
+  // When every window has a scope (e.g. Antigravity), fall back to all windows and obey core's red level.
+  let all_scoped = obj([
+    ("usable", Json::boolean(true)),
+    ("profile", obj([
+      ("quota", obj([
+        ("state", str("ok")),
+        ("windows", Json::array([
+          obj([("mark", str("Gemini 5H")), ("scope", str("Gemini")), ("left", Json::number(15.0)), ("level", str("amber"))]),
+          obj([("mark", str("Claude / GPT 5H")), ("scope", str("Claude / GPT")), ("left", Json::number(0.0)), ("level", str("red"))]),
+        ])),
+      ])),
+    ])),
+  ])
+  assert_eq(pm_status_of(Some(all_scoped)), ("5H 0%", "red"))
+  assert_true(pm_row_has_issue(all_scoped))
+
+  // Empty windows on a usable profile show 正常 (ok).
+  let empty_ws = obj([
+    ("usable", Json::boolean(true)),
+    ("profile", obj([("quota", obj([("state", str("ok")), ("windows", Json::array([]))]))])),
+  ])
+  assert_eq(pm_status_of(Some(empty_ws)), ("正常", "ok"))
+  assert_false(pm_row_has_issue(empty_ws))
+
+  // 2. Live UI: type dropdown filters by group and auto-resets to 全部类型 when that group disappears; status dropdown filters 正常 vs 需关注.
+  let drop_codex : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  let t = setting_tester(ProfilesManage(""), 1100.0, platform=0, h=800.0, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let v = s.topic(name, params).get().snapshot()
+        if name == "profiles" {
+          let hide = drop_codex.get()
+          match v.value {
+            Some(Object(o)) => {
+              let m = o.copy()
+              let its = items(v.value, "items").filter_map(fn(r) {
+                let pname = text(field(Some(r), "profile"), "name")
+                if hide && text(Some(r), "group") == "chatgpt" {
+                  None
+                } else if pname == "备用 key" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      rm["usable"] = Json::boolean(false)
+                      rm["state"] = obj([("text", str("key 已失效")), ("tone", str("red"))])
+                      Some(Json::object(rm))
+                    }
+                    _ => Some(r)
+                  }
+                } else if pname == "Claude 主账号" {
+                  match r {
+                    Object(ro) => {
+                      let rm = ro.copy()
+                      rm["usable"] = Json::boolean(true)
+                      rm["look"] = Json::boolean(false)
+                      rm.remove("state")
+                      match field(Some(r), "profile") {
+                        Some(Object(po)) => {
+                          let pm = po.copy()
+                          pm["quota"] = obj([
+                            ("state", str("ok")),
+                            ("windows", Json::array([obj([("mark", str("W")), ("left", Json::number(80.0)), ("level", str("ok"))])])),
+                          ])
+                          rm["profile"] = Json::object(pm)
+                        }
+                        _ => ()
+                      }
+                      Some(Json::object(rm))
+                    }
+                    _ => Some(r)
+                  }
+                } else {
+                  Some(r)
+                }
+              })
+              m["items"] = Json::array(its)
+              { ..v, value: Some(Json::object(m)) }
+            }
+            _ => v
+          }
+        } else {
+          v
+        }
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  // Filter by status = 需关注 shows 备用 key (key 已失效) and hides healthy Claude 主账号.
+  t.click(Button, label="全部状态")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="需关注")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("备用 key") is Some(_) && t.find("key 已失效") is Some(_), msg="需关注 filter keeps red row")
+  assert_true(t.find("Claude 主账号") is None, msg="需关注 filter hides healthy row")
+  t.click(Button, label="需关注")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="正常")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Claude 主账号") is Some(_), msg="正常 filter keeps healthy row")
+  assert_true(t.find("备用 key") is None, msg="正常 filter hides red row")
+  t.click(Button, label="正常")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="全部状态")
+  t.run_for(@ui.move_most_ms)
+  // Type dropdown filters to ChatGPT 订阅 and auto-resets to 全部类型 when its rows disappear.
+  t.click(Button, label="全部类型")
+  presented_in(t)
+  t.click(MenuItemCheckbox, label="ChatGPT 订阅")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("ChatGPT 团队") is Some(_), msg="type filter keeps ChatGPT row")
+  assert_true(t.find("Claude 主账号") is None, msg="type filter hides non-ChatGPT row")
+  drop_codex.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全部类型") is Some(_), msg="type filter auto-resets to 全部类型 when selected group disappears")
+  assert_true(t.find("Claude 主账号") is Some(_), msg="rows reappear after type filter auto-reset")
+}
+
+///|
+test "批量管理 set_max_sessions_many validation, skip, partial failure, still_here, and reactive wide-narrow dock resize" {
+  @sfbase.reset()
+  @sf.set_words(@sfbase.fill)
+  // 1. Direct parser checks matching ask_max_sessions.
+  assert_eq(parse_max_sessions(""), Some(Json::null()))
+  assert_eq(parse_max_sessions("  0  "), Some(Json::null()))
+  assert_eq(parse_max_sessions("5"), Some(Json::number(5.0)))
+  assert_eq(parse_max_sessions("-1"), None)
+  assert_eq(parse_max_sessions("abc"), None)
+  assert_eq(parse_max_sessions("00"), None)
+  assert_eq(parse_max_sessions("1234567890"), None)
+
+  // 2. Batch set_max_sessions_many via ⋯ menu: invalid input sends 0 RPCs; valid input skips unsupported API key row;
+  //    blank sends null; partial failure keeps failed selection; still_here=false suppresses toast.
+  let asked : Array[(String, Json)] = []
+  let fail_id : Ref[String] = Ref("")
+  let hold_cb : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let win_w : @signals.Signal[Double] = @signals.signal(1100.0, same=fn(a, b) { a == b })
+  let t = setting_tester(ProfilesManage(""), 1100.0, platform=0, h=800.0, width=fn() { win_w.get() }, over=fn(base) {
+    let s = with_share_auto(base)
+    {
+      ..s,
+      call: fn(name, params, done) {
+        if name == "profile.put" {
+          asked.push((name, params))
+          let id = text(Some(params), "id")
+          if fail_id.val == "HOLD" {
+            hold_cb.val = Some(done)
+          } else if fail_id.val != "" && id == fail_id.val {
+            done(Err(obj([("message", str("boom"))])))
+          } else {
+            done(Ok(obj([])))
+          }
+        } else {
+          (s.call)(name, params, done)
+        }
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  // Select subscription (Claude 主账号, supports cap) + API key (备用 key, unsupported).
+  t.click(Checkbox, label="Claude 主账号")
+  t.click(Checkbox, label="备用 key")
+  t.run_for(@ui.move_most_ms)
+
+  // 2a. Reactive wide -> narrow -> wide dock layout without rebuilding or leaving corner faults.
+  let clear_w = t.get(Button, label="清空").rect
+  let share_w = t.get(Button, label="共享").rect
+  assert_true((clear_w.1 - share_w.1).abs() < 8.0, msg="wide dock keeps 清空 and 共享 on one row")
+  assert_eq(t.corner_faults(), [], msg="wide dock 0 corner faults")
+  win_w.set(390.0)
+  t.resize(390.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  let clear_n = t.get(Button, label="清空").rect
+  let share_n = t.get(Button, label="共享").rect
+  assert_true(share_n.1 > clear_n.1 + 12.0, msg="narrow dock reactively flips to two rows on resize")
+  assert_eq(t.corner_faults(), [], msg="narrow dock after wide->narrow resize has 0 corner faults")
+  win_w.set(1100.0)
+  t.resize(1100.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  let clear_w2 = t.get(Button, label="清空").rect
+  let share_w2 = t.get(Button, label="共享").rect
+  assert_true((clear_w2.1 - share_w2.1).abs() < 8.0, msg="dock reactively flips back to one row on narrow->wide resize")
+  assert_eq(t.corner_faults(), [], msg="wide dock after narrow->wide resize has 0 corner faults")
+
+  // 2b. Invalid input "abc" shows invalid toast and sends 0 profile.put calls.
+  t.click(Button, label="更多操作")
+  presented_in(t)
+  t.click(MenuItem, label="并发上限")
+  presented_in(t)
+  assert_true(t.find("跳过 1 个不支持并发上限的账号") is Some(_), msg="dialog hint explains skipped unsupported row")
+  t.type_text("abc")
+  t.click(Button, label="保存")
+  t.run_for(@motion.presence_out_ms)
+  assert_eq(asked.length(), 0, msg="invalid cap must send 0 RPCs")
+  assert_eq(@sfbase.toast_words(), @sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"), msg="invalid cap emits invalid toast")
+
+  // 2c. Valid input "5" updates only eligible subscription row and reports skipped count.
+  t.click(Button, label="更多操作")
+  presented_in(t)
+  t.click(MenuItem, label="并发上限")
+  presented_in(t)
+  t.type_text("5")
+  t.click(Button, label="保存")
+  t.run_for(@motion.presence_out_ms)
+  assert_eq(asked.length(), 1, msg="only eligible profile receives profile.put")
+  assert_eq(text(Some(asked[0].1), "id"), "cc")
+  assert_eq(field(field(Some(asked[0].1), "input"), "maxConcurrentSessions"), Some(Json::number(5.0)))
+  assert_true(@sfbase.toast_words().contains("跳过 1 个不支持的账号"), msg="completion toast mentions skipped count: " + @sfbase.toast_words())
+  assert_true(t.find("已选 ") is None, msg="selection clears after full success")
+
+  // 2d. Input "0" clears to null, and partial failure keeps only the failed row ticked.
+  asked.clear()
+  fail_id.val = "cx"
+  t.click(Checkbox, label="Claude 主账号")
+  t.click(Checkbox, label="ChatGPT 团队")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多操作")
+  presented_in(t)
+  t.click(MenuItem, label="并发上限")
+  presented_in(t)
+  t.type_text("0")
+  t.click(Button, label="保存")
+  t.run_for(@motion.presence_out_ms)
+  assert_eq(asked.length(), 2, msg="both subscription rows receive profile.put")
+  assert_eq(field(field(Some(asked[0].1), "input"), "maxConcurrentSessions"), Some(Json::null()))
+  assert_true(t.find("已选 1 项") is Some(_), msg="partial failure retains failed selection")
+  assert_eq(t.get(Checkbox, label="ChatGPT 团队").check, Some(On), msg="failed row remains checked")
+  assert_eq(t.get(Checkbox, label="Claude 主账号").check, Some(Off), msg="succeeded row is unchecked")
+
+  // 2e. still_here turning false while in-flight suppresses completion toast.
+  fail_id.val = "HOLD"
+  t.click(Button, label="更多操作")
+  presented_in(t)
+  t.click(MenuItem, label="并发上限")
+  presented_in(t)
+  t.type_text("3")
+  t.click(Button, label="保存")
+  t.run_for(@motion.presence_out_ms)
+  t.click(Link, label="设置")
+  t.run_for(@ui.move_most_ms)
+  let toast_n_before = @signals.untracked(fn() { app.toast.get().n })
+  match hold_cb.val {
+    Some(cb) => cb(Ok(obj([])))
+    None => fail("expected held profile.put callback")
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@signals.untracked(fn() { app.toast.get().n }), toast_n_before, msg="completion after leaving page must not emit toast")
 }

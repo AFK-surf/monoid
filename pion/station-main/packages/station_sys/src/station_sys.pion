@@ -78,6 +78,15 @@ extern "C" fn sts_write_at(
   out_short : Ptr,
 ) -> Int
 extern "C" fn sts_sync_file(path : Ptr) -> Int
+extern "C" fn sts_file_open_ro(path : Ptr, out_size : Ptr, out_err : Ptr) -> Int64
+extern "C" fn sts_file_pread(
+  handle : Int64,
+  offset : Int64,
+  len : Int64,
+  out_len : Ptr,
+  out_err : Ptr,
+) -> Ptr
+extern "C" fn sts_file_close(handle : Int64) -> Int
 extern "C" fn sts_getuid() -> Int
 extern "C" fn sts_geteuid() -> Int
 extern "C" fn sts_write_file_mode(
@@ -1111,6 +1120,61 @@ pub fn sync_file(path : String) -> Result[Unit, Int] {
     return Err(rc)
   }
   Ok(())
+}
+
+/// Single-open read-only file handle (POSIX `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `S_ISREG`,
+/// Windows `FILE_FLAG_OPEN_REPARSE_POINT` + `FILE_TYPE_DISK` + non-surrogate check) for
+/// tear-free chunked streaming reads across concurrent atomic renames.
+pub struct ReadOnlyFile {
+  pub handle : Int64
+  pub size : Int64
+}
+
+pub fn file_open_ro(path : String) -> Result[ReadOnlyFile, Int] {
+  let out_size = ptr_alloc(8.to_int64())
+  let out_err = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_size, 0.to_int64(), 0.to_int64())
+  ptr_write_i64(out_err, 0.to_int64(), 0.to_int64())
+  let h = sts_file_open_ro(path.as_cstr(), out_size, out_err)
+  let _ = path.length()
+  let sz = ptr_read_i64(out_size, 0.to_int64())
+  let err = ptr_read_i32(out_err, 0.to_int64())
+  sts_free(out_size)
+  sts_free(out_err)
+  if h <= 0.to_int64() || err != 0 {
+    return Err(if err != 0 { err } else { -1 })
+  }
+  Ok(ReadOnlyFile::{ handle: h, size: sz })
+}
+
+pub fn ReadOnlyFile::pread(self : ReadOnlyFile, offset : Int64, len : Int64) -> Result[Bytes, Int] {
+  let out_len = ptr_alloc(8.to_int64())
+  let out_err = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  ptr_write_i64(out_err, 0.to_int64(), 0.to_int64())
+  let p = sts_file_pread(self.handle, offset, len, out_len, out_err)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  let err = ptr_read_i32(out_err, 0.to_int64())
+  sts_free(out_len)
+  sts_free(out_err)
+  if ptr_is_null(p) {
+    return Err(if err != 0 { err } else { -1 })
+  }
+  if err != 0 {
+    sts_free(p)
+    return Err(err)
+  }
+  if n <= 0.to_int64() {
+    sts_free(p)
+    return Ok(Bytes::new(0))
+  }
+  let out = bytes_from_ptr(p, n.to_int())
+  sts_free(p)
+  Ok(out)
+}
+
+pub fn ReadOnlyFile::close(self : ReadOnlyFile) -> Bool {
+  sts_file_close(self.handle) != 0
 }
 
 pub fn random_bytes(len : Int) -> Result[Bytes, String] {

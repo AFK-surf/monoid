@@ -646,18 +646,11 @@ pub fn invalidate_auth_scope(src : Source, matches : (String, Map[String, Json])
   last_said.val = last_said.val.filter(fn(l) {
     !(physical_equal(l.source, src) && matches(l.name, l.params))
   })
-  let gone = followed_topics.val.filter(fn(t) { physical_equal(t.source, src) && matches(t.name, t.params) })
-  if !gone.is_empty() {
-    followed_topics.val = followed_topics.val.filter(fn(t) {
-      !(physical_equal(t.source, src) && matches(t.name, t.params))
-    })
-    for t in gone {
-      if !t.independent {
-        topic_readers_drop(src, t.key)
-      }
-      t.holder.dispose()
-    }
-  }
+  // Never call `holder.dispose()` on a watched `FollowedTopic`: `Computed::dispose` unlinks its upstream
+  // `Sub.changes` without notifying downstream readers (`app_is` / `root.pick`), permanently freezing the UI.
+  // Dispose only unwatched followers; for live watched followers, bump `lifetime` after clearing caches so they
+  // re-evaluate immediately (dropping stale `last_said`) while staying subscribed to future core updates.
+  let watched = followed_invalidate_unwatched(src, matches)
   kept_forget_matching(src, fn(key) {
     match key.find("\u{1}") {
       Some(i) => {
@@ -673,6 +666,13 @@ pub fn invalidate_auth_scope(src : Source, matches : (String, Map[String, Json])
       None => matches(key, Map([]))
     }
   })
+  if !watched.is_empty() {
+    @signals.start_batch()
+    for t in watched {
+      t.lifetime.set(t.lifetime.untracked() + 1)
+    }
+    @signals.end_batch()
+  }
 }
 
 ///|
@@ -1195,6 +1195,7 @@ priv struct FollowedTopic {
   params : Map[String, Json]
   independent : Bool
   holder : @signals.Computed[TopicState]
+  lifetime : @signals.Signal[Int]
   token : Ref[Bool]
 }
 
@@ -1446,7 +1447,7 @@ fn followed_topic(
           None => read_topic_state(src, name, params)
         }
       })
-      followed_topics.val.push({ source: src, key, name, params: params.copy(), independent, holder, token })
+      followed_topics.val.push({ source: src, key, name, params: params.copy(), independent, holder, lifetime, token })
       holder
     }
   }
@@ -1586,4 +1587,35 @@ pub let answer_unread : (Result[Json, Json]) -> Unit = @settings.answer_unread
 /// Whether `done` is answer_unread: the call's answer read by nobody (a source's `call`, as it asks the core).
 pub fn unread_answer(done : (Result[Json, Json]) -> Unit) -> Bool {
   physical_equal(done, answer_unread)
+}
+
+///|
+/// Disposes and removes unwatched `FollowedTopic` entries matching `(src, matches)`, returning still-watched
+/// followers so `invalidate_auth_scope` can bump their `lifetime` signal without severing live reactive graphs.
+fn followed_invalidate_unwatched(src : Source, matches : (String, Map[String, Json]) -> Bool) -> Array[FollowedTopic] {
+  let unwatched : Array[FollowedTopic] = []
+  let watched : Array[FollowedTopic] = []
+  let kept : Array[FollowedTopic] = []
+  for t in followed_topics.val {
+    if physical_equal(t.source, src) && matches(t.name, t.params) {
+      if t.holder.watched() {
+        kept.push(t)
+        watched.push(t)
+      } else {
+        unwatched.push(t)
+      }
+    } else {
+      kept.push(t)
+    }
+  }
+  if !unwatched.is_empty() {
+    followed_topics.val = kept
+    for t in unwatched {
+      if !t.independent {
+        topic_readers_drop(src, t.key)
+      }
+      t.holder.dispose()
+    }
+  }
+  watched
 }

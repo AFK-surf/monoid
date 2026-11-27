@@ -177,12 +177,18 @@ export function workspaceProfiles(stations: J[]): J {
     // Keep the workspace's order as a pending copy arrives, so its row does not jump to a different position.
     const stationOrder = new Map<string, number>(stations.map((station, i) => [String(station.id), i]));
     places.sort((a, b) => (stationOrder.get(a.stationId) ?? 0) - (stationOrder.get(b.stationId) ?? 0));
-    const share = list.map(([, x]) => x.share).find((x) => isObject(x)) ?? null;
+    // When `editable` is true, `at` already selected an owning copy (`p`), so its share state must come from `p.share`
+    // alone (never a stale borrowed copy's share). When `!editable`, every member is a borrowed copy so take its share.
+    const share = editable ? (isObject(p.share) ? p.share : null) : (list.map(([, x]) => x.share).find((x) => isObject(x)) ?? null);
     // Each station once: two of its profiles signed in to the same account are one place it is signed in.
     const stationsOf = (ms: J[]): string[] => [...new Map(ms.map((m) => [m.stationId, m.stationName])).values()];
     const signedIn = stationsOf(members.filter(owns));
     const allow: string[] | null = share && Array.isArray(share.allow) ? share.allow : null;
     const host = share ? String(share.host) : String(s.id);
+    const shareStationCount =
+      editable && !several && share !== null && share.allowAuto !== true && Array.isArray(share.allow)
+        ? stations.filter((x) => String(x.id) === host || share.allow.includes(String(x.id))).length
+        : undefined;
     // Where it can be used: every station that has it, signed in or borrowing (how each has it is the account's page's,
     // who may borrow its sharing's).
     const availableAt = stationsOf(members.filter((m) => m.enabled));
@@ -194,7 +200,7 @@ export function workspaceProfiles(stations: J[]): J {
     // Whether the list's 多选 can share it or set its stations (`profile.share` on the row's station's profile), else why
     // not: a copy of another station's, one signed in on several (each set on its own page), its station sharing
     // nothing (one from before), down, or its kind of login that cannot be lent yet.
-    const batchWhy = !editable ? "borrowed" : several ? "several" : !canShare ? "unsupported" : !hostOnline ? "offline" : share === null && p.shareable === false ? "unshareable" : null;
+    const batchWhy = !editable ? "borrowed" : several ? "several" : !hostOnline ? "offline" : !canShare ? "unsupported" : share === null && p.shareable === false ? "unshareable" : null;
     const state = stateOf(usable, name(host), p, signedIn.length > 1 ? troubleOn(list, members) : null);
     // A station's warning stays on the account row. A working copy still supplies the pool.
     const working = state.look ? [...byStation.values()].find(({ i }) =>
@@ -211,11 +217,12 @@ export function workspaceProfiles(stations: J[]): J {
       // What it is called: a subscription, sign-in, or service account by the account signed in (what makes it one row: each station's
       // copy may be named otherwise), a key by its profile's name.
       title: (subscription || p.access?.kind === "service") && typeof p.email === "string" && p.email !== "" ? p.email : String(p.name ?? ""),
-      shared: share !== null,
-      shareAuto: share?.allowAuto === true,
+      ...(share !== null ? { shared: true } : {}),
+      ...(share?.allowAuto === true ? { shareAuto: true } : {}),
+      ...(shareStationCount === undefined ? {} : { shareStationCount }),
       canBatchShare: batchWhy === null,
       ...(batchWhy === null ? {} : { batchShareWhy: batchWhy }),
-      batchShareAllowAuto: s.overview?.shareAllowAuto === true,
+      ...(s.overview?.shareAllowAuto === true ? { batchShareAllowAuto: true } : {}),
       host,
       hostName: name(host),
       hostOnline,
@@ -240,6 +247,7 @@ export function workspaceProfiles(stations: J[]): J {
       // whether it is signed in on more than one of its members (its row opens the account's page, else the profile's),
       // how many connects use it.
       several,
+      ...(p.machine === true ? { machine: true } : {}),
       usedCount: Array.isArray(p.usedBy) ? p.usedBy.length : 0,
     });
   }

@@ -365,9 +365,7 @@ pub fn View::takes_input(self : View) -> Bool {
     None => {
       let s = @signals.signal(!self.tree.pressless_at(self.at), same=fn(a, b) { a == b })
       n.input_cell = Some(s)
-      if !self.tree.inputs_at.contains(self.at) {
-        self.tree.inputs_at.push(self.at)
-      }
+      self.tree.inputs_at_add(self.at)
       s
     }
   }
@@ -392,8 +390,11 @@ fn Tree::inputs_told(self : Tree) -> Unit {
 fn Tree::inputs_told_each(self : Tree) -> Unit {
   // (where only what changed and what it holds may take input otherwise (Tree::modals_told's `within`): those alone)
   if !self.inputs_whole {
+    if self.inputs_in.is_empty() { return }
     let todo = self.inputs_in.copy()
     self.inputs_in.clear()
+    self.inputs_in_bits_clear(todo)
+    if self.inputs_at.is_empty() { return }
     // (no modal layer, the old frame's or the tree's: whether each takes input is what holds it says, worked out once
     // for each change's node and carried down what it holds, not asked again of each all the way up)
     let plain = self.modals.is_empty() && self.held_under_now() == -2
@@ -409,10 +410,9 @@ fn Tree::inputs_told_each(self : Tree) -> Unit {
     return
   }
   self.inputs_whole = false
+  self.inputs_in_bits_clear(self.inputs_in)
   self.inputs_in.clear()
-  let live = self.inputs_at.filter(fn(at) { self.nodes[at].live && self.nodes[at].input_cell is Some(_) })
-  self.inputs_at.clear()
-  self.inputs_at.append(live)
+  self.inputs_at_prune()
   for at in self.inputs_at {
     match self.nodes[at].input_cell {
       Some(s) => s.set(!self.pressless_at(at))

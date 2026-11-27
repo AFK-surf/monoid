@@ -2937,9 +2937,11 @@ jobs:
   # or Android's: each hands put only what it finished (release-put.sh --hand), and one cut at its five minutes held
   # back the Mac's and Windows' betas, signed and ready: main 44147606865, 2026-11-17. `done` still waits for every
   # part, so deployed/beta stays and the next run plans the one that failed again)
+  # Wait for monoid-api: release-told.sh forwards /v1/releases/out to monoid-cloud, so waiting shortens the Cloudflare
+  # DO RPC rollout skew window when release broadcasts wake stations.
   put:
-    needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && !cancelled() && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -2970,7 +2972,8 @@ jobs:
       # (the station's platforms' deltas, each its job's, put in its feed; none, and the feed goes out as it was handed)
       - name: The station's deltas in its feed
         run: node scripts/release-deltas.ts --merge "$RUNNER_TEMP/release"
-      - name: Put the releases (their files, then their feeds)
+      - id: put-releases
+        name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
@@ -2978,13 +2981,10 @@ jobs:
           sh scripts/release-put.sh "$RUNNER_TEMP/release"
           # shellcheck disable=SC2086 # names, one word each
           [ -z "$(echo $HANDED)" ] || sh scripts/release-put.sh --drop $HANDED
-      # (app.youdid.wtf is the same Worker as app.still.fail, cloud/wrangler.jsonc, whose devices and stations it tells:
-      # told once, by PUBLIC_ORIGIN, the only audience cloud/src/status.ts takes; youdid.wtf's token was refused every time)
-      - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
-        run: sh scripts/release-told.sh https://app.still.fail
       # monoid's cloud reads its own account's bucket, and answers for still.fail too once CLOUD_MOVED is on: the same
       # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13). Both side by
-      # side, each with its own account's token.
+      # side, each with its own account's token. Put before telling the clouds so stations and apps woken by
+      # /v1/releases/out read the new changelog.json rather than racing the upload.
       - name: Put changelog.json (and in monoid's bucket)
         env:
           STILLFAIL_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2998,6 +2998,11 @@ jobs:
           wait "$stillfail" || { echo "changelog.json not put in still.fail's bucket" >&2; status=1; }
           if [ -n "${monoid:-}" ]; then wait "$monoid" || { echo "changelog.json not put in monoid's bucket" >&2; status=1; }; fi
           exit "$status"
+      # (app.youdid.wtf is the same Worker as app.still.fail, cloud/wrangler.jsonc, whose devices and stations it tells:
+      # told once, by PUBLIC_ORIGIN, the only audience cloud/src/status.ts takes; youdid.wtf's token was refused every time)
+      - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
+        if: ${{ !cancelled() && steps.put-releases.outcome == 'success' }}
+        run: sh scripts/release-told.sh https://app.still.fail
 
   # Old installers and beta blockmaps deleted (scripts/release-prune.ts says which stay), after put and beside done and
   # station-update, never before them: the release is put and told by then, and an old file Cloudflare's API would not

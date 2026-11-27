@@ -23,8 +23,10 @@ import { makeCa, makeLeaf, pem } from "../src/vault/x509.ts";
 // The core, as the desktop app runs it: imported by its path at run time (see lock-e2e.ts).
 const CORE = "../../client/core-ts/src/hosts/node.ts";
 type Sealer = { get(key: string, user: boolean, reason: string): Promise<Uint8Array | null>; set(key: string, value: Uint8Array, user: boolean): Promise<void>; delete(key: string): Promise<void> };
-const { start } = (await import(CORE)) as {
+type CoreAuth = { needsAuth(name: string): boolean; whenReady(): Promise<void>; takeMessage(m: unknown): boolean; callAuth(name: string, params: unknown): unknown };
+const { start, ClientAuthTracker } = (await import(CORE)) as {
   start: (dir: string, origin: string, listener: (client: number, json: string) => void, channel?: string, options?: { sealer?: Sealer }) => { connect(): number; receive(client: number, json: string): void; close(): Promise<void> };
+  ClientAuthTracker: new () => CoreAuth;
 };
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -139,18 +141,23 @@ function core(name: string) {
     delete: async (key) => void sealed.delete(key),
   };
   const waiting = new Map<number, (m: any) => void>();
+  const auth = new ClientAuthTracker();
   const c = start(dir, ORIGIN, (_client, json) => {
     const m = JSON.parse(json);
+    if (auth.takeMessage(m)) return;
     if (typeof m.id === "number" && ("ok" in m || "error" in m)) waiting.get(m.id)?.(m), waiting.delete(m.id);
   }, undefined, { sealer });
   const ui = c.connect();
   let next = 1;
-  const call = (name: string, params: unknown) =>
-    new Promise<any>((resolve, reject) => {
+  const call = async (name: string, params: unknown) => {
+    if (auth.needsAuth(name)) await auth.whenReady();
+    const callAuth = auth.callAuth(name, params);
+    return await new Promise<any>((resolve, reject) => {
       const id = next++;
       waiting.set(id, (m) => ("ok" in m ? resolve(m.ok) : reject(Object.assign(new Error(m.error?.message ?? JSON.stringify(m.error)), { code: m.error?.code }))));
-      c.receive(ui, JSON.stringify({ kind: "call", id, call: name, params }));
+      c.receive(ui, JSON.stringify({ kind: "call", id, call: name, params, ...(callAuth ? { auth: callAuth } : {}) }));
     });
+  };
   c.receive(ui, JSON.stringify({ kind: "call", id: 0, call: "client.device", params: { app: "desktop", build: "e2e", userAgent: "Mac OS X", locale: "zh-CN" } }));
   return { call, asked, close: () => c.close() };
 }

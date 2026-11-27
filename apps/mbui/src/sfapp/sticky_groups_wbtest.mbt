@@ -37,14 +37,16 @@ fn sticky_heading_y(t : @ui.Tester, label : String) -> Double? {
 
 ///|
 fn sticky_find_floating_pill(t : @ui.Tester, name : String) -> (Double, Double, Double, Double)? {
-  // Floating Liquid Glass pill on small screen sits centered below top bar (y in [50, 100], width <= 230, expanded == None)
+  // Floating Liquid Glass pill on small screen sits left-aligned above the bottom tab bar (x ~= 22, lower half,
+  // hit height >= 44, width <= 230, expanded == None)
   for s in t.semantics() {
     if !s.hidden &&
       s.role is Button &&
       s.expanded is None &&
       s.label.has_prefix(name + " ") &&
-      s.rect.1 >= 50.0 &&
-      s.rect.1 <= 110.0 &&
+      s.rect.0 >= 16.0 &&
+      s.rect.0 <= 32.0 &&
+      s.rect.1 >= 500.0 &&
       s.rect.2 <= 230.0 {
       return Some(s.rect)
     }
@@ -167,48 +169,78 @@ test "short desktop window (h<720): degrades bottom stack to 2+1 with zero overl
 }
 
 ///|
-test "small screen (Whole 390x844): native Liquid Glass floating group pill, zero opaque slabs, zero bottom chrome, menu jump with zero overshoot" {
+test "small screen (Whole 390x844): persistent bottom-left Liquid Glass group pill above tab bar, >=44pt hit target, native sheet jump with zero overshoot" {
   let t = sticky_tester("projects-sticky", 390.0, 844.0, 2)
-  // At scroll = 0: zero floating group pill at top AND zero bottom floating capsule!
-  assert_true(sticky_find_floating_pill(t, "未归类") is None, msg="no floating pill at scroll=0 while in-flow heading is visible")
-  for s in t.semantics() {
-    assert_false(!s.hidden && s.role is Button && s.label.contains("有动态"), msg="small screen must not stack a bottom floating capsule over the Liquid Glass tab bar")
-  }
+  // At scroll = 0: persistent bottom-left group pill is immediately visible showing the topmost group ("未归类")
+  let top_pill = sticky_find_floating_pill(t, "未归类")
+  assert_true(top_pill is Some(_), msg="expected persistent bottom-left group pill at scroll=0 showing topmost group")
   assert_eq(t.audit(), [])
 
-  // Scroll deep into "board" so its in-flow heading scrolls cleanly past the Liquid Glass top bar
+  // Scroll deep into "board"
   sticky_scroll_by(t, 195.0, 400.0, 360.0)
   // Zero bottom stacked headers
   let bot_group_heads = t.semantics().filter(fn(s) {
     !s.hidden && s.role is Button && s.expanded is Some(_) && s.rect.1 > 700.0
   })
   assert_eq(bot_group_heads.length(), 0, msg="small screen must have 0 bottom stacked headers")
-  // Compact centered Liquid Glass floating pill appears cleanly below the top glass bar
+  // Compact left-aligned Liquid Glass floating pill sits cleanly above the bottom tab bar
   let pill = sticky_find_floating_pill(t, "board")
-  assert_true(pill is Some(_), msg="expected floating Liquid Glass group pill for 'board' when scrolled inside it")
+  assert_true(pill is Some(_), msg="expected bottom-left floating Liquid Glass group pill for 'board'")
   let pr = pill.unwrap()
-  assert_true(pr.1 >= 54.0 && pr.1 + pr.3 <= 100.0, msg="floating pill out of top-below-bar band: y=\{pr.1} h=\{pr.3}")
-  // Pill must be centered horizontally (not a full-width opaque wall!)
-  assert_true(pr.0 > 60.0 && pr.0 + pr.2 < 330.0, msg="floating pill must stay compact & centered: x=\{pr.0} w=\{pr.2}")
+  assert_true((pr.0 - bar_inset_edge).abs() <= 1.0, msg="floating pill must align flush with bottom tab bar left: x=\{pr.0}")
+  assert_true(pr.3 >= 44.0, msg="floating pill touch target must be >= 44pt tall: h=\{pr.3}")
+  let bar_top = 844.0 - bar_top_from_foot()
+  assert_true(
+    pr.1 + pr.3 <= bar_top - 4.0 && pr.1 + pr.3 >= bar_top - 16.0,
+    msg="floating pill must sit cleanly above bottom tab bar (bar_top=\{bar_top}): y=\{pr.1} h=\{pr.3}",
+  )
   assert_eq(t.audit(), [])
 
-  // Tap floating Liquid Glass pill -> opens anchored native group-jump menu listing all groups
-  t.tap(pr.0 + pr.2 / 2.0, pr.1 + pr.3 / 2.0)
-  let menu_serial = @sf.last_presented()
+  // Sweep scrolling through subsequent groups: the persistent bottom-left pill must stay continuously visible
+  // on every scroll step (never flickering on/off mid-scroll) while tracking active groups.
+  for _ in 0..<24 {
+    sticky_scroll_by(t, 195.0, 400.0, 45.0)
+    let any_pill = t.semantics().iter().find_first(fn(s) {
+      !s.hidden &&
+      s.role is Button &&
+      s.expanded is None &&
+      s.rect.0 >= 16.0 &&
+      s.rect.0 <= 32.0 &&
+      s.rect.1 >= 500.0 &&
+      s.rect.2 <= 230.0 &&
+      s.label.contains(" ")
+    })
+    assert_true(any_pill is Some(_), msg="persistent bottom-left pill must remain continuously visible while scrolling")
+  }
+
+  // Scroll back to "board" for touch & jump assertions
+  sticky_scroll_by(t, 195.0, 400.0, -2000.0)
+  sticky_scroll_by(t, 195.0, 400.0, 360.0)
+  let pill = sticky_find_floating_pill(t, "board")
+  assert_true(pill is Some(_), msg="expected bottom-left floating pill restored for 'board'")
+  let pr = pill.unwrap()
+
+  // Verify real finger touches across the entire 44pt vertical span (top edge, center, bottom edge) hit the pill
+  // and open the native group-jump sheet cleanly (never falling through to underlying chat rows or bottom bar).
+  let cx = pr.0 + pr.2 / 2.0
+  for dy in [2.0, pr.3 - 2.0] {
+    t.touch(0, cx, pr.1 + dy)
+    t.touch(2, cx, pr.1 + dy)
+    t.run_for(@ui.move_most_ms * 2.0)
+    assert_true(t.find("release-qa  4") is Some(_), msg="expected pill touch at dy=\{dy} to open group-jump sheet")
+    t.back()
+    t.run_for(@ui.move_most_ms * 2.0)
+  }
+
+  // Tap center of bottom-left Liquid Glass pill -> opens native group-jump sheet listing all groups
+  t.tap(cx, pr.1 + pr.3 / 2.0)
   t.run_for(@ui.move_most_ms * 2.0)
-  assert_true(t.find("release-qa  4") is Some(_), msg="group-jump menu must list release-qa")
-  // Tap release-qa in menu -> menu begins closing while anchor pill stays mounted at y in [50, 110] for Liquid Glass
-  // morph-back handoff (own_menu_drawn via presented_drawn_of; note LiquidMorphPhysics holds real trigger text at a=0
-  // during teardrop contraction), then glides cleanly to release-qa with ZERO overshoot!
+  assert_true(t.find("release-qa  4") is Some(_), msg="group-jump sheet must list release-qa")
+  // Tap release-qa in sheet -> closes sheet and glides cleanly to release-qa with ZERO overshoot!
   t.tap_text("release-qa  4")
-  assert_true(@sf.presented_drawn_of(menu_serial), msg="group-jump menu is still playing its closing animation")
-  let board_words = t.words().filter(fn(w) { w.0 == "board" })
-  let pill_mounted = board_words.iter().any(fn(w) { w.2 >= 50.0 && w.2 <= 110.0 })
-  let board_desc = board_words.map(fn(w) { "y=\{w.2},a=\{w.5}" }).join("; ")
-  assert_true(pill_mounted, msg="pill anchor must remain mounted while its own menu is closing: [\{board_desc}]")
   t.run_for(@ui.move_most_ms * 5.0)
   let rq_head = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role is Button && s.expanded is Some(_) && s.label.has_prefix("release-qa ") })
-  assert_true(rq_head is Some(_), msg="release-qa in-flow heading must be visible after menu jump")
+  assert_true(rq_head is Some(_), msg="release-qa in-flow heading must be visible after jump")
   let rqr = rq_head.unwrap().rect
   assert_true(rqr.1 >= 54.0 && rqr.1 <= 70.0, msg="release-qa heading landed cleanly below top glass bar: y=\{rqr.1}")
   match t.rect_of("发布前夜间回归失败排查") {
@@ -219,7 +251,46 @@ test "small screen (Whole 390x844): native Liquid Glass floating group pill, zer
       )
     None => fail("first chat row of release-qa must be visible after jump")
   }
+  // Once release-qa lands at top_edge, the persistent bottom-left pill stays visible and immediately reports release-qa
+  // (never lingering on the previous group infra-ops).
+  assert_true(
+    sticky_find_floating_pill(t, "release-qa") is Some(_) &&
+    sticky_find_floating_pill(t, "infra-ops") is None,
+    msg="persistent bottom-left pill must immediately display target group 'release-qa' after jump",
+  )
   assert_eq(t.audit(), [])
+  t.assert_idle()
+}
+
+///|
+test "small screen Android system_bars (380x872, top=44, bottom=28): bottom-left pill clears nav_foot + tab bar and opens reliably under real touch" {
+  let t = sticky_tester("projects-sticky", 380.0, 872.0, 2)
+  t.check_looks(false)
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":44,\"bottom\":28,\"left\":0,\"right\":0}}")
+  t.run_for(@ui.move_most_ms)
+  sticky_scroll_by(t, 190.0, 420.0, 420.0)
+  let pill = sticky_find_floating_pill(t, "board")
+  assert_true(pill is Some(_), msg="expected bottom-left floating pill with realistic Android system_bars")
+  let pr = pill.unwrap()
+  let bar_top = 872.0 - bar_top_from_foot()
+  assert_true((pr.0 - bar_inset_edge).abs() <= 1.0, msg="pill left aligns flush with tab bar left: x=\{pr.0}")
+  assert_true(pr.3 >= 44.0, msg="pill touch height >= 44pt: h=\{pr.3}")
+  assert_true(
+    pr.1 + pr.3 <= bar_top - 4.0 && pr.1 + pr.3 >= bar_top - 16.0,
+    msg="pill clears Android nav_foot + bottom tab bar (bar_top=\{bar_top}): y=\{pr.1} h=\{pr.3}",
+  )
+  assert_eq(t.audit(), [])
+  // Real Android finger touch with 2pt thumb jitter opens group-jump sheet cleanly
+  let cx = pr.0 + pr.2 / 2.0
+  let cy = pr.1 + pr.3 / 2.0
+  t.touch(0, cx, cy)
+  t.touch(1, cx + 1.5, cy + 2.0)
+  t.touch(2, cx + 1.5, cy + 2.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("release-qa  4") is Some(_), msg="Android touch on bottom-left pill must open group-jump sheet")
+  t.back()
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after closing sheet")
   t.assert_idle()
 }
 
@@ -259,7 +330,21 @@ test "small screen shell suppression: modal, board, search, and pushed page supp
   t.run_for(@ui.move_most_ms * 2.0)
   assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after popping back to Home")
 
-  // 4. Search open -> suppressed; closed -> restored
+  // 4. Bottom bar switcher panel open & toast shown -> suppressed; cleared -> restored
+  bar.mode.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(sticky_find_floating_pill(t, "board") is None, msg="pill suppressed while bottom bar panel is open")
+  bar.mode.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after bottom bar panel closes")
+
+  @sfbase.toast_later("已复制链接")
+  t.run_for(@motion.presence_in_ms)
+  assert_true(sticky_find_floating_pill(t, "board") is None, msg="pill suppressed while toast is visible")
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms + 200.0)
+  assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after toast dismisses")
+
+  // 5. Search open -> suppressed; closed -> restored
   sticky_scroll_by(t, 195.0, 400.0, -600.0)
   sticky_scroll_by(t, 195.0, 400.0, -300.0)
   t.tap_text("搜索全部内容")

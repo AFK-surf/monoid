@@ -12,6 +12,7 @@ import {
   "stillfail/sfapp/settings",
   "stillfail/sfapptest",
   "stillfail/sfbase",
+  "stillfail/sfdesk",
   "stillfail/sffixture",
   "stillfail/sfkept",
   "stillfail/sfpages",

@@ -1061,7 +1061,7 @@ fn SectionWindowHost::sync_chrome(
         hs.set_inset_right(Pt(0.0))
         hs.set_inset_top(Pt(0.0))
         hs.set_inset_bottom(Pt(0.0))
-        host.drawn_clear_of(self.list).points(Is(false)) |> ignore
+        host.drawn_clear_of(self.list) |> ignore
         let read_chrome = fn() -> SectionChrome[Int] {
           self.members_ver.get() |> ignore
           self.config_ver.get() |> ignore

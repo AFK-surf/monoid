@@ -50,6 +50,28 @@ static void assert_js_lower_str(const char *in, const char *expected) {
         (const uint8_t *)expected, strlen(expected));
 }
 
+#ifndef _WIN32
+static void *ro_pread_worker(void *arg) {
+    int64_t fh = *(int64_t *)arg;
+    for (int i = 0; i < 64; i++) {
+        int64_t rlen = 0;
+        int32_t rerr = -1;
+        uint8_t *chunk = (uint8_t *)sts_file_pread(fh, (int64_t)(i % 4) * 4096, 4096, &rlen, &rerr);
+        if (chunk != NULL) {
+            assert(rerr == 0);
+            for (int64_t k = 0; k < rlen; k++) {
+                assert(chunk[k] == 'B');
+            }
+            sts_free(chunk);
+        } else {
+            assert(rerr == -2);
+            break;
+        }
+    }
+    return NULL;
+}
+#endif
+
 static void test_js_lower_utf8(void) {
     // 1. Empty & ASCII fast paths
     assert_js_lower_str("", "");
@@ -2076,6 +2098,70 @@ int main(void) {
 
         unlink(sym_p);
         unlink(sec_file);
+
+        // Single-open read-only handle (`sts_file_open_ro`/`pread`/`close`) tear-free across atomic rename
+        {
+            char fa[512], fb[512], fsym[512];
+            snprintf(fa, sizeof(fa), "%s/ro_a.bin", tmp_dir);
+            snprintf(fb, sizeof(fb), "%s/ro_b.bin", tmp_dir);
+            snprintf(fsym, sizeof(fsym), "%s/ro_sym.bin", tmp_dir);
+            const size_t sz = 512 * 1024;
+            uint8_t *buf_a = (uint8_t *)malloc(sz);
+            uint8_t *buf_b = (uint8_t *)malloc(sz);
+            assert(buf_a != NULL && buf_b != NULL);
+            memset(buf_a, 'A', sz);
+            memset(buf_b, 'B', sz);
+            assert(sts_write_file_atomic(fa, buf_a, (int64_t)sz, 0644) == 1);
+            assert(sts_write_file_atomic(fb, buf_b, (int64_t)sz, 0644) == 1);
+            assert(sts_symlink(fa, fsym, 0) == 1);
+
+            int64_t fsz = 0;
+            int32_t ferr = 0;
+            // Symlink rejected (-5), dir rejected (-4), ENOENT (-2)
+            assert(sts_file_open_ro(fsym, &fsz, &ferr) < 0 && ferr == -5);
+            assert(sts_file_open_ro(tmp_dir, &fsz, &ferr) < 0 && ferr == -4);
+            assert(sts_file_open_ro("/nonexistent_sts_ro_path_xyz", &fsz, &ferr) < 0 && ferr == -2);
+
+            int64_t fh = sts_file_open_ro(fa, &fsz, &ferr);
+            assert(fh > 0 && ferr == 0 && fsz == (int64_t)sz);
+            // Atomically replace `fa` with `fb` BEFORE reading from `fh`!
+            assert(sts_rename(fb, fa) == 1);
+            int64_t off = 0;
+            while (off < fsz) {
+                int64_t rlen = 0;
+                int32_t rerr = -1;
+                uint8_t *chunk = (uint8_t *)sts_file_pread(fh, off, 256 * 1024, &rlen, &rerr);
+                assert(chunk != NULL && rerr == 0 && rlen > 0);
+                for (int64_t k = 0; k < rlen; k++) {
+                    assert(chunk[k] == 'A');
+                }
+                sts_free(chunk);
+                off += rlen;
+            }
+            assert(off == fsz);
+            assert(sts_file_close(fh) == 1);
+            assert(sts_file_close(fh) == 0);
+
+            // Concurrent `sts_file_pread` + `sts_file_close` refcount stress (TSan + ASan)
+            for (int iter = 0; iter < 32; iter++) {
+                int64_t cfh = sts_file_open_ro(fa, &fsz, &ferr);
+                assert(cfh > 0 && ferr == 0);
+                pthread_t ths[4];
+                for (int t = 0; t < 4; t++) {
+                    assert(pthread_create(&ths[t], NULL, ro_pread_worker, &cfh) == 0);
+                }
+                assert(sts_file_close(cfh) == 1);
+                for (int t = 0; t < 4; t++) {
+                    pthread_join(ths[t], NULL);
+                }
+            }
+
+            free(buf_a);
+            free(buf_b);
+            unlink(fsym);
+            unlink(fa);
+        }
+
         rmdir(tmp_dir);
     }
 

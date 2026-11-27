@@ -1,6 +1,8 @@
 // GET /events (admin/mod.rs): every change to what the API shows, pushed as it happens (src/api/events.ts).
 import { type Request, error, param } from "../request.ts";
 import type { Route, Tools } from "../admin.ts";
+import { RUNTIME_KINDS } from "../../agents/runtime.ts";
+import { clientProfileServices, clientRuntimes } from "../runtime-compat.ts";
 import { jobSeen, sessionSeen } from "../seen.ts";
 import { readOnly } from "../../mesh/credential.ts";
 
@@ -48,7 +50,15 @@ export const routes = ({ events, sessionExists, store }: Tools): Route[] => [
             .filter((key) => sessionExists(key) && (store === undefined || sessionSeen(store, r.viewer, key)))
             .slice(0, 16)
         : null;
-      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, running, spare);
+      // `overviewPatch=1`: client accepts top-level `overview-patch` deltas after its baseline; restricted to clients
+      // that declare full runtime & profile-services support so legacy `runtime-compat` streams always project full overviews.
+      const headers = r.headers ?? {};
+      const supported = clientRuntimes(headers);
+      const overviewPatch =
+        param(r, "overviewPatch") === "1" &&
+        RUNTIME_KINDS.every((k) => supported.has(k)) &&
+        clientProfileServices(headers);
+      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, running, spare, overviewPatch);
     },
   },
 ];

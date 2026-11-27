@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { Effect, Layer } from "effect";
-import { SETTLE_MS, StatusLive, TASKS_MOST, routeOf, statusOf, statusServer, type LocalStatus, type StatusInput } from "../src/api/status.ts";
+import { SETTLE_MS, StatusLive, TASKS_MOST, WaitingTracker, routeOf, statusOf, statusServer, type LocalStatus, type StatusInput } from "../src/api/status.ts";
 import { platform } from "../src/platform/index.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { Store, WAITING_FOR_PEOPLE } from "../src/store/store.ts";
+import { Store, WAITING_FOR_PEOPLE, WAITING_FOR_PERSON_OF } from "../src/store/store.ts";
 import { testClock } from "./hub-fakes.ts";
 
 const DAY = 24 * 60 * 60_000;
@@ -213,5 +213,135 @@ test("where there are no Unix sockets (Windows) there is no status socket, and n
     await Effect.runPromise(Effect.scoped(Layer.build(StatusLive)) as Effect.Effect<unknown>);
   } finally {
     platform.hasUnixSockets = had;
+  }
+});
+
+test("waitingForPersonOf uses primary-key and covering index seeks with zero table scans", () => {
+  const store = Store.open(":memory:");
+  try {
+    const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${WAITING_FOR_PERSON_OF}`).all("s1", 0).map((r: any) => String(r.detail));
+    assert.ok(!plan.some((d) => /^SCAN\b/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH s USING INDEX sqlite_autoindex_sessions_1 \(key=\?\)/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH u USING COVERING INDEX turns_by_session\b/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH t USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH d USING (COVERING )?INDEX deliveries_pending\b/.test(d)), plan.join("\n"));
+  } finally {
+    store.close();
+  }
+});
+
+test("WaitingTracker matches waitingForPeople via O(1) per-key updates without rescanning sessions_live", async () => {
+  const time = testClock(), store = Store.open(":memory:", null, time.clock);
+  try {
+    const mk = (key: string, title: string) => {
+      const now = store.now();
+      store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: now, lastActiveAt: now });
+      store.setTitle(key, title);
+    };
+    const ask = async (key: string, turnId: string, declared: string, need: string | null = null) => {
+      await time.adjust(10);
+      store.startTurn(turnId, key, "message");
+      if (need !== null) store.setNeed(turnId, need);
+      await time.adjust(10);
+      store.endTurn(turnId, "completed", null, declared, null);
+    };
+
+    mk("s0", "Zero");
+    mk("s1", "First");
+    mk("s2", "Second");
+    mk("s3", "Third");
+    mk("other", "Other");
+    await ask("s0", "t0", "need_human", "need-0");
+    // Deliver a pending message to s0 so it is hidden initially, then cleared in the same tick as s3 drops.
+    const th0 = store.openThread("chat", "C", "th0", null, null);
+    store.joinThread(th0.id, "s0", "chat");
+    const [m0] = store.insertMessage({ thread: th0.id, ts: "0.1", authorKind: "person", author: "p@x", text: "hold" });
+    store.deliver(th0.id, m0, ["s0"]);
+    await ask("s1", "t1", "need_human", "need-1");
+    await ask("s2", "t2", "need_human", "need-2");
+    await ask("s3", "t3", "need_human", "need-3");
+
+    let fullScans = 0;
+    let pkSeeks = 0;
+    const origAll = store.waitingForPeople.bind(store);
+    const origOne = store.waitingForPersonOf.bind(store);
+    store.waitingForPeople = (since, limit) => { fullScans++; return origAll(since, limit); };
+    store.waitingForPersonOf = (key, since) => { pkSeeks++; return origOne(key, since); };
+
+    const tracker = new WaitingTracker(store);
+    const off = store.subscribe((c) => tracker.note(c));
+    try {
+      const since = () => store.now() - DAY;
+      // Initial seed with limit=2 (truncated because 3 sessions are waiting: s3, s2, s1).
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.equal(fullScans, 1);
+      assert.equal(pkSeeks, 0);
+
+      // Routine updates on an unrelated session perform 0 full scans and only O(1) PK seeks.
+      for (let i = 0; i < 10; i++) {
+        store.setTitle("other", `edit-${i}`);
+        assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      }
+      assert.equal(fullScans, 1, "routine updates never rescan sessions_live");
+      assert.equal(pkSeeks, 10, "routine updates use O(1) waitingForPersonOf PK seeks");
+
+      // Title update on a waiting session refreshes it in place with 0 full scans.
+      store.setTitle("s3", "Third renamed");
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.equal(tracker.read(since(), 2)[0]?.title, "Third renamed");
+      assert.equal(fullScans, 1);
+
+      // Delivery answers s3 -> drops from top-2 while truncated -> re-seeds once to promote s1.
+      const thread = store.openThread("chat", "C", "th1", null, null);
+      store.joinThread(thread.id, "s3", "chat");
+      const [msgN] = store.insertMessage({ thread: thread.id, ts: "1.1", authorKind: "person", author: "p@x", text: "go ahead" });
+      store.deliver(thread.id, msgN, ["s3"]);
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s2", "s1"]);
+      assert.equal(fullScans, 2, "shrinking a truncated top-limit set re-seeds once to promote #3");
+
+      // markDelivered clears s3's undelivered row -> s3 returns to waiting and displaces s1 without a full scan.
+      store.markDelivered("s3", [{ thread: thread.id, n: msgN, apart: false }]);
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s3", "s2"]);
+      assert.equal(fullScans, 2, "a newly waiting session displaces the oldest in memory without rescanning");
+
+      // Same-tick swap while truncated: s3 drops out while older s0 (endedAt < floor) becomes waiting in the same
+      // tick. Even though known.size stays 2, lost > gainedAboveFloor triggers a re-seed so unseen s1 outranks s0.
+      const [msgN2] = store.insertMessage({ thread: thread.id, ts: "1.2", authorKind: "person", author: "p@x", text: "second" });
+      store.deliver(thread.id, msgN2, ["s3"]);
+      store.markDelivered("s0", [{ thread: th0.id, n: m0, apart: false }]);
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s2", "s1"]);
+      assert.equal(fullScans, 3, "same-tick drop + older-than-floor return re-seeds to promote unseen #3");
+      // deliveredThere also emits a session change so s3 returns to waiting in exact parity with waitingForPeople.
+      store.deliveredThere(["s3"]);
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
+      assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s3", "s2"]);
+      assert.equal(fullScans, 3, "deliveredThere refreshes s3 via O(1) PK seek without rescanning");
+
+      // With limit=10 (not truncated), archiving/deleting/completing never needs a full re-seed.
+      assert.deepEqual(tracker.read(since(), 10), origAll(since(), 10));
+      const scansUntruncated = fullScans;
+      store.setArchived("s2", true, "p@x");
+      assert.deepEqual(tracker.read(since(), 10), origAll(since(), 10));
+      await ask("s1", "t1b", "all_done");
+      assert.deepEqual(tracker.read(since(), 10), origAll(since(), 10));
+      store.deleteSession("s3");
+      store.deleteSession("s0");
+      assert.deepEqual(tracker.read(since(), 10), origAll(since(), 10));
+      assert.equal(fullScans, scansUntruncated, "untruncated cache handles archive, turn completion, and delete with 0 full scans");
+
+      // Expiry past `since` evicts in memory with 0 full scans.
+      await ask("other", "to1", "need_human", "wait-me");
+      assert.deepEqual(tracker.read(since(), 10).map((r) => r.key), ["other"]);
+      await time.adjust(DAY + 100);
+      assert.deepEqual(tracker.read(since(), 10), []);
+      assert.equal(fullScans, scansUntruncated);
+    } finally {
+      off();
+    }
+  } finally {
+    store.close();
   }
 });

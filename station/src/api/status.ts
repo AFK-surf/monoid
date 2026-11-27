@@ -173,6 +173,130 @@ export function statusServer(now: () => LocalStatus, changed: (f: () => void) =>
   };
 }
 
+export type WaitingSession = { key: string; title: string | null; need: string | null; endedAt: number };
+
+export type WaitingStore = {
+  waitingForPeople(since: number, limit: number): WaitingSession[];
+  waitingForPersonOf?(key: string, since: number): WaitingSession | null;
+};
+
+const WAITING_DIRTY_CAP = 64;
+
+/// Incremental cache of `store.waitingForPeople(since, limit)` for the local status socket: seeds once on first read,
+/// then updates only sessions that changed via O(1) `waitingForPersonOf(key, since)` PK seeks so debounced status
+/// pushes never rescan cold unarchived sessions on the main thread. Re-seeds only if the top-`limit` set was truncated
+/// and shrinks below `limit`, or if too many distinct keys accumulated unread.
+export class WaitingTracker {
+  readonly #store: WaitingStore;
+  #known: Map<string, WaitingSession> | null = null;
+  #truncated = false;
+  #floorEndedAt = 0;
+  #lastSince = 0;
+  #lastLimit = 0;
+  readonly #dirty = new Set<string>();
+  readonly #removed = new Set<string>();
+
+  constructor(store: WaitingStore) {
+    this.#store = store;
+  }
+
+  note(c: { type: string; key?: string }): void {
+    if (this.#known === null) return;
+    if (c.type === "session" && typeof c.key === "string") {
+      this.#removed.delete(c.key);
+      this.#dirty.add(c.key);
+      if (this.#dirty.size > WAITING_DIRTY_CAP) this.reset();
+    } else if (c.type === "sessionRemoved" && typeof c.key === "string") {
+      this.#dirty.delete(c.key);
+      if (this.#known.has(c.key)) this.#removed.add(c.key);
+    }
+  }
+
+  reset(): void {
+    this.#known = null;
+    this.#truncated = false;
+    this.#floorEndedAt = 0;
+    this.#dirty.clear();
+    this.#removed.clear();
+  }
+
+  read(since: number, limit: number): WaitingSession[] {
+    if (typeof this.#store.waitingForPersonOf !== "function" || limit <= 0) {
+      return this.#store.waitingForPeople(since, limit);
+    }
+    if (this.#known !== null && (since < this.#lastSince || (limit > this.#lastLimit && this.#truncated))) {
+      this.reset();
+    }
+    if (this.#known === null) {
+      const rows = this.#store.waitingForPeople(since, limit + 1);
+      this.#truncated = rows.length > limit;
+      const kept = rows.slice(0, limit);
+      this.#known = new Map(kept.map((r) => [r.key, r]));
+      this.#floorEndedAt = this.#truncated ? kept[kept.length - 1]!.endedAt : 0;
+      this.#lastSince = since;
+      this.#lastLimit = limit;
+      this.#dirty.clear();
+      this.#removed.clear();
+      return kept;
+    }
+
+    const floor = this.#floorEndedAt;
+    let lost = 0;
+    let gainedAboveFloor = 0;
+
+    for (const k of this.#removed) {
+      if (this.#known.delete(k)) lost++;
+    }
+    this.#removed.clear();
+    for (const k of this.#dirty) {
+      const prev = this.#known.get(k);
+      const row = this.#store.waitingForPersonOf(k, since);
+      if (row !== null) {
+        if (prev === undefined) {
+          if (row.endedAt > floor) gainedAboveFloor++;
+        } else if (row.endedAt < prev.endedAt) {
+          lost++;
+        }
+        this.#known.set(k, row);
+      } else if (prev !== undefined) {
+        this.#known.delete(k);
+        lost++;
+      }
+    }
+    this.#dirty.clear();
+
+    for (const [k, row] of this.#known) {
+      if (row.endedAt < since) {
+        this.#known.delete(k);
+        lost++;
+      }
+    }
+    // When truncated, every unseen waiting row has endedAt <= floor. If we lost more known slots than we gained
+    // strictly above floor, an unseen row may now outrank a newly inserted <= floor row or fill a vacated slot.
+    if (this.#truncated && (this.#known.size < limit || lost > gainedAboveFloor)) {
+      this.reset();
+      return this.read(since, limit);
+    }
+
+    const sorted = [...this.#known.values()].sort((a, b) => b.endedAt - a.endedAt);
+    if (sorted.length > limit) {
+      const kept = sorted.slice(0, limit);
+      this.#known = new Map(kept.map((r) => [r.key, r]));
+      this.#truncated = true;
+      this.#floorEndedAt = kept[kept.length - 1]!.endedAt;
+      this.#lastSince = since;
+      this.#lastLimit = limit;
+      return kept;
+    }
+    if (this.#truncated && sorted.length === limit) {
+      this.#floorEndedAt = sorted[sorted.length - 1]!.endedAt;
+    }
+    this.#lastSince = since;
+    this.#lastLimit = limit;
+    return sorted;
+  }
+}
+
 /// The local status's socket, for as long as the station runs: none where there are no Unix sockets (Windows, as
 /// station/mb/src/station_main/run.mbt has it).
 export const StatusLive = Layer.effectDiscard(
@@ -184,17 +308,23 @@ export const StatusLive = Layer.effectDiscard(
     const side = yield* AgentsSide;
     const mesh = yield* MeshNative;
     const time = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("status")), (t) => Effect.promise(() => t.close()));
+    const waiting = new WaitingTracker(store);
     const now = () => statusOf({
       version: version(),
       cloud: plane.state.state,
       reached: plane.state.reached,
       running: store.runningSessions().map((r) => ({ key: r.key, title: r.title, since: r.lastActiveAt })),
       processes: side.current?.hub.processes() ?? new Map(),
-      waiting: store.waitingForPeople(store.now() - WAITING_DAYS * 24 * 60 * 60_000, TASKS_MOST),
+      waiting: waiting.read(store.now() - WAITING_DAYS * 24 * 60 * 60_000, TASKS_MOST),
       health: { front: mesh.frontLink?.() ?? "direct", presenceOnline: plane.state.reached },
     });
     const changed = (f: () => void) => {
-      const offStore = store.subscribe((c) => { if (c.type === "session" || c.type === "sessionRemoved") f(); });
+      const offStore = store.subscribe((c) => {
+        if (c.type === "session" || c.type === "sessionRemoved") {
+          waiting.note(c);
+          f();
+        }
+      });
       const offCloud = plane.state.listen(() => f());
       return () => { offStore(); offCloud(); };
     };

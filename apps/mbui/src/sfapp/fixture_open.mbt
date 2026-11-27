@@ -815,14 +815,21 @@ pub fn open_mode(mode : String) -> Unit {
     app.nav.replace(Place("profiles"))
   } else if mode == "place-profiles-sum-a" {
     @settings.fixture_page("settings-profiles-sum-a") |> ignore
-    @settings.profiles_narrow_overview.set(false)
     app.nav.replace(Place("profiles"))
-  } else if mode == "place-profiles-sum-overview" {
-    // (the bottom bar's Profile switched to 概览, its own: profiles_place_overview)
+  } else if mode == "place-profiles-sum-overview" || mode == "profiles-overview" {
     @settings.fixture_page("settings-profiles-sum-a") |> ignore
-    @settings.profiles_narrow_overview.set(false)
-    @settings.profiles_place_overview.set(true)
     app.nav.replace(Place("profiles"))
+    app.nav.push(Setting(ProfilesOverview))
+  } else if mode == "place-profiles-manage" || mode == "place-profiles-sharing" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    app.nav.replace(Place("profiles"))
+    @sfbase.place_pick[@sfbase.place_key("ws1", "profiles")] = @settings.Route::ProfilesManage("")
+  } else if mode == "profiles-manage" || mode == "profiles-sharing" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    open_setting("profiles-manage")
+  } else if mode == "profiles-manage-station" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    open_setting("profiles-manage/ws1/st1")
   } else if mode == "terminal" || mode.has_prefix("terminal-") {
     // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
     // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)
@@ -1043,7 +1050,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-failed", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
-    "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
+    "files-tree", "place-stations", "place-profiles", "profiles-manage", "profiles-manage-station", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
     "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station", "newchat-station-many",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of

@@ -509,23 +509,38 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/apps/mbui/out/core-target
     steps:
       # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh);
-      # and the runner's image (GitHub's ImageVersion; none, a runner of our own: own), for the units' store: GitHub
-      # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
-      # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
-      # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
+      # and the runner's compiler and iOS SDK (IMG: cc and 12 hex digits of iphoneos clang, its --version, the C standard
+      # headers it preprocesses for arm64 and the SDK build version; none, a runner of our own: own), for the units' store:
+      # two compilers/SDKs in turn kept only the last run's units (used.sh), the other's compiling all again (20261104.0337.1
+      # and 20261112.0361.1, 43919855625..43925936518), whereas two runner images carrying the same Xcode 27.1 / clang 21.0.0
+      # (20261104.0337.1 and 20261123.0387.2, 45974238144) tore main's store apart when keyed by ImageVersion)
       # (less the 1-5 s of "Set up job" before it and what GitHub counts past them: less 5, 45386683892's JOB_END was 301 s
       # after the job began, and cut 32 s before it the job was cancelled at 301 s; less 8, it is at 298. The SDK checked
       # in the same step, one step's start less; and the compiler's version, for the engine's key below, asked while the
       # machine is idle: asked beside moonc the key took 13 s there)
-      - name: The job's end, its image and iOS's SDK 27.1 or later
+      - name: The job's end, its compiler and iOS's SDK 27.1 or later
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 8 ))" >> "$GITHUB_ENV"
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           set -o pipefail
           cc=$(xcrun --sdk iphoneos clang++ --version)
           echo "IOS_CLANG_VERSION=${cc%%$'\n'*}" >> "$GITHUB_ENV"
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(xcrun --sdk iphoneos --find clang 2>/dev/null || true)
+            sdk_path=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
+            cc_args=(-E -x c -arch arm64 -)
+            [ -z "$sdk_path" ] || cc_args=(-E -x c -isysroot "$sdk_path" -arch arm64 -)
+            img="cc$({
+              [ -n "$cc_bin" ] && shasum -a 256 "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" "${cc_args[@]}" 2>/dev/null || true
+              xcrun --sdk iphoneos --show-sdk-build-version 2>/dev/null || true
+            } | shasum -a 256 | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=${cc%%$'\n'*})"
           v=$(xcrun --sdk iphoneos --show-sdk-version)
           echo "iOS SDK $v ($(xcodebuild -version | head -1))"
           case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac

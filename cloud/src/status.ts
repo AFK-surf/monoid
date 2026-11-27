@@ -7,7 +7,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { bearerToken, denied, nowSeconds, readJson, reply } from "./auth";
+import { bearerToken, clock, denied, nowSeconds, readJson, reply } from "./auth";
+import { changelogFixesOf, etagOf, parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type ChangelogFix, type Channel, type PlatformReleases } from "./changelog";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
 import { unavailable } from "./releases";
@@ -65,13 +66,322 @@ export function incidentsOf(issues: unknown): Incident[] {
 
 const dayOf = (seconds: number) => Math.floor(seconds / 86_400);
 
-/** What was last found of each service and its days, in one object ("primary"). */
+type FileReadResult =
+  | { ok: true; value: string | null; expiresAt: number | null }
+  | { ok: false; error: unknown };
+
+export type ChangelogResponseResult =
+  | { ok: true; body: string; etag?: string }
+  | { ok: true; notModified: true; etag: string }
+  | { ok: false; file: string; message: string };
+
+type ChangelogFullResult =
+  | { ok: true; body: string; etag: string }
+  | { ok: false; file: string; message: string };
+
+/** What was last found of each service and its days, in one object ("primary"). Also holds the in-memory single-flight cache for changelog and release feeds, invalidated globally on /v1/releases/out. */
 export class ServiceStatus extends DurableObject<Env> {
+  #changelogGen = 0;
+  #fileCache = new Map<string, { value: string | null; expiresAt: number }>();
+  #fileInFlight = new Map<string, Promise<FileReadResult>>();
+  #fileRefreshInFlight = new Map<string, Promise<FileReadResult>>();
+  #responseCache = new Map<string, { body: string; etag: string; expiresAt: number; refreshAt: number }>();
+  #responseInFlight = new Map<string, Promise<ChangelogFullResult>>();
+  #responseRefreshInFlight = new Map<string, Promise<void>>();
+  #fixesCache: { fixes: ChangelogFix[]; expiresAt: number; refreshAt: number } | null = null;
+  #fixesInFlight: Promise<ChangelogFix[]> | null = null;
+  #fixesRefreshInFlight: Promise<void> | null = null;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS last (service TEXT PRIMARY KEY, at INTEGER NOT NULL, found TEXT NOT NULL, fails INTEGER NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS kept (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS days (service TEXT NOT NULL, day INTEGER NOT NULL, ok INTEGER NOT NULL, total INTEGER NOT NULL, PRIMARY KEY (service, day))");
+  }
+
+  invalidateChangelog(): void {
+    this.#changelogGen++;
+    this.#fileCache.clear();
+    this.#fileInFlight.clear();
+    this.#fileRefreshInFlight.clear();
+    this.#responseCache.clear();
+    this.#responseInFlight.clear();
+    this.#responseRefreshInFlight.clear();
+    this.#fixesCache = null;
+    this.#fixesInFlight = null;
+    this.#fixesRefreshInFlight = null;
+  }
+
+  protected async settleChangelog(): Promise<void> {
+    while (this.#responseRefreshInFlight.size > 0 || this.#fixesRefreshInFlight !== null) {
+      await Promise.allSettled([
+        ...this.#responseRefreshInFlight.values(),
+        ...(this.#fixesRefreshInFlight ? [this.#fixesRefreshInFlight] : []),
+      ]);
+    }
+  }
+
+  #readFile(key: string, upstream: string | null, ttlSeconds: number, forceFresh = false): Promise<FileReadResult> {
+    const cacheKey = `${key}\0${upstream ?? ""}`;
+    if (!forceFresh) {
+      const now = clock.now();
+      const cached = this.#fileCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        return Promise.resolve({ ok: true, value: cached.value, expiresAt: cached.expiresAt });
+      }
+    }
+    const inFlightMap = forceFresh ? this.#fileRefreshInFlight : this.#fileInFlight;
+    const existing = inFlightMap.get(cacheKey);
+    if (existing) return existing;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<FileReadResult> => {
+      const result = await readReleaseFile(this.env.RELEASES, key, upstream ?? undefined);
+      if (!result.ok) return result;
+      if (result.cacheable && ttlSeconds > 0 && this.#changelogGen === gen) {
+        const expiresAt = clock.now() + ttlSeconds * 1000;
+        this.#fileCache.set(cacheKey, { value: result.value, expiresAt });
+        return { ok: true, value: result.value, expiresAt };
+      }
+      return { ok: true, value: result.value, expiresAt: null };
+    })();
+    inFlightMap.set(cacheKey, promise);
+    const cleanup = () => {
+      if (inFlightMap.get(cacheKey) === promise) inFlightMap.delete(cacheKey);
+    };
+    this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    return promise;
+  }
+
+  async #readChangelog(channel: Channel, ttlSeconds: number, onFail: (file: string, error: unknown) => void, forceFresh = false): Promise<{ entries: ChangelogEntry[]; expiresAt: number | null }> {
+    let minExpires: number | null = Infinity;
+    const track = (exp: number | null) => {
+      if (exp === null) minExpires = null;
+      else if (minExpires !== null) minExpires = Math.min(minExpires, exp);
+    };
+    if (channel === "stable") {
+      const stable = await this.#readFile("changelog-stable.json", null, ttlSeconds, forceFresh);
+      if (!stable.ok) {
+        onFail("changelog-stable.json", stable.error);
+        return { entries: [], expiresAt: null };
+      }
+      track(stable.expiresAt);
+      const written = parseChangelog(stable.value);
+      if (written.length) return { entries: written, expiresAt: minExpires === Infinity ? null : minExpires };
+    }
+    const beta = await this.#readFile("changelog.json", null, ttlSeconds, forceFresh);
+    if (!beta.ok) {
+      onFail("changelog.json", beta.error);
+      return { entries: [], expiresAt: null };
+    }
+    track(beta.expiresAt);
+    return { entries: parseChangelog(beta.value), expiresAt: minExpires === Infinity ? null : minExpires };
+  }
+
+  async #readReleased(channel: Channel, upstream: string | null, ttlSeconds: number, onFail: (file: string, error: unknown) => void, forceFresh = false): Promise<{ released: PlatformReleases; expiresAt: number | null }> {
+    const beta = channel === "beta";
+    const keys = [
+      [beta ? "station-beta.json" : "station.json", upstream] as const,
+      [beta ? "android/beta/latest.json" : "android/latest.json", null] as const,
+      [beta ? "mac/beta/latest.json" : "mac/latest.json", null] as const,
+      [beta ? "win/beta/latest.json" : "win/latest.json", null] as const,
+      [beta ? "web-beta.json" : "web.json", null] as const,
+    ];
+    const results = await Promise.all(keys.map(([key, up]) => this.#readFile(key, up, ttlSeconds, forceFresh)));
+    let minExpires: number | null = Infinity;
+    const texts = results.map((r, i) => {
+      if (!r.ok) {
+        onFail(keys[i]![0], r.error);
+        minExpires = null;
+        return null;
+      }
+      if (r.expiresAt === null) minExpires = null;
+      else if (minExpires !== null) minExpires = Math.min(minExpires, r.expiresAt);
+      return r.value;
+    });
+    return {
+      released: parseReleased(texts[0]!, texts[1]!, texts[2]!, texts[3]!, texts[4]!),
+      expiresAt: minExpires === Infinity ? null : minExpires,
+    };
+  }
+
+  async #buildChangelogResponse(channel: Channel, upstream: string | null, ttlSeconds: number, forceFresh: boolean): Promise<ChangelogFullResult> {
+    const cacheKey = `${channel}\0${upstream ?? ""}`;
+    const gen = this.#changelogGen;
+    let failure = null as { file: string; message: string } | null;
+    const onFail = (file: string, error: unknown) => {
+      failure ??= { file, message: error instanceof Error ? error.message : String(error) };
+    };
+    const [list, have] = await Promise.all([
+      this.#readChangelog(channel, ttlSeconds, onFail, forceFresh),
+      this.#readReleased(channel, upstream, ttlSeconds, onFail, forceFresh),
+    ]);
+    if (failure) return { ok: false, file: failure.file, message: failure.message };
+    const body = JSON.stringify({ entries: list.entries, released: have.released });
+    const etag = await etagOf(body);
+    if (ttlSeconds > 0 && this.#changelogGen === gen && list.expiresAt !== null && have.expiresAt !== null) {
+      const expiresAt = Math.min(list.expiresAt, have.expiresAt);
+      const now = clock.now();
+      if (expiresAt > now) {
+        const refreshAt = now + Math.max(1000, Math.floor((expiresAt - now) * 0.75));
+        this.#responseCache.set(cacheKey, { body, etag, expiresAt, refreshAt });
+      }
+    }
+    return { ok: true, body, etag };
+  }
+
+  #refreshChangelogResponse(cacheKey: string, channel: Channel, upstream: string | null, ttlSeconds: number): void {
+    if (this.#responseRefreshInFlight.has(cacheKey)) return;
+    const gen = this.#changelogGen;
+    const backoff = () => {
+      if (this.#changelogGen !== gen) return;
+      const cached = this.#responseCache.get(cacheKey);
+      const now = clock.now();
+      if (cached && cached.expiresAt > now) {
+        cached.refreshAt = Math.min(cached.expiresAt, now + Math.max(1000, Math.floor((cached.expiresAt - now) / 2)));
+      }
+    };
+    const refresh = (async () => {
+      if (this.#changelogGen !== gen) return;
+      const prev = this.#responseCache.get(cacheKey);
+      const result = await this.#buildChangelogResponse(channel, upstream, ttlSeconds, true);
+      if (!result.ok) {
+        console.error(`changelog background refresh ${result.file} failed:`, result.message);
+        backoff();
+      } else if (this.#responseCache.get(cacheKey) === prev) {
+        backoff();
+      }
+    })()
+      .catch((error) => {
+        console.error("changelog background refresh failed:", error);
+        backoff();
+      })
+      .finally(() => {
+        if (this.#responseRefreshInFlight.get(cacheKey) === refresh) this.#responseRefreshInFlight.delete(cacheKey);
+      });
+    this.#responseRefreshInFlight.set(cacheKey, refresh);
+    this.ctx.waitUntil(refresh);
+  }
+
+  async changelogResponse(channel: Channel, upstream: string | null, ttlSeconds: number, ifNoneMatch?: string | null): Promise<ChangelogResponseResult> {
+    const cacheKey = `${channel}\0${upstream ?? ""}`;
+    const now = clock.now();
+    const cached = ttlSeconds > 0 ? this.#responseCache.get(cacheKey) : undefined;
+    if (cached && cached.expiresAt > now) {
+      if (now >= cached.refreshAt) {
+        this.#refreshChangelogResponse(cacheKey, channel, upstream, ttlSeconds);
+      }
+      if (ifNoneMatch && cached.etag === ifNoneMatch) {
+        return { ok: true, notModified: true, etag: cached.etag };
+      }
+      return { ok: true, body: cached.body, etag: cached.etag };
+    }
+    let promise = ttlSeconds > 0 ? this.#responseInFlight.get(cacheKey) : undefined;
+    if (!promise) {
+      promise = this.#buildChangelogResponse(channel, upstream, ttlSeconds, false);
+      if (ttlSeconds > 0) {
+        this.#responseInFlight.set(cacheKey, promise);
+        const cleanup = () => {
+          if (this.#responseInFlight.get(cacheKey) === promise) this.#responseInFlight.delete(cacheKey);
+        };
+        this.ctx.waitUntil(promise.then(cleanup, cleanup));
+      }
+    }
+    const result = await promise;
+    if (!result.ok) return result;
+    if (ifNoneMatch && result.etag === ifNoneMatch) {
+      return { ok: true, notModified: true, etag: result.etag };
+    }
+    return { ok: true, body: result.body, etag: result.etag };
+  }
+
+  #refreshChangelogFixes(ttlSeconds: number): void {
+    if (this.#fixesRefreshInFlight) return;
+    const gen = this.#changelogGen;
+    const backoff = () => {
+      if (this.#changelogGen !== gen) return;
+      const cached = this.#fixesCache;
+      const now = clock.now();
+      if (cached && cached.expiresAt > now) {
+        cached.refreshAt = Math.min(cached.expiresAt, now + Math.max(1000, Math.floor((cached.expiresAt - now) / 2)));
+      }
+    };
+    const refresh = (async () => {
+      if (this.#changelogGen !== gen) return;
+      const prev = this.#fixesCache;
+      let failed = false;
+      const { entries, expiresAt } = await this.#readChangelog(
+        "beta",
+        ttlSeconds,
+        (file, error) => {
+          failed = true;
+          console.error(`changelog ${file} background refresh unavailable:`, error);
+        },
+        true,
+      );
+      if (failed) {
+        backoff();
+        return;
+      }
+      const fixes = changelogFixesOf(entries);
+      if (ttlSeconds > 0 && this.#changelogGen === gen && expiresAt !== null) {
+        const now = clock.now();
+        if (expiresAt > now) {
+          const refreshAt = now + Math.max(1000, Math.floor((expiresAt - now) * 0.75));
+          this.#fixesCache = { fixes, expiresAt, refreshAt };
+        }
+      }
+      if (this.#fixesCache === prev) backoff();
+    })()
+      .catch((error) => {
+        console.error("changelog fixes background refresh failed:", error);
+        backoff();
+      })
+      .finally(() => {
+        if (this.#fixesRefreshInFlight === refresh) this.#fixesRefreshInFlight = null;
+      });
+    this.#fixesRefreshInFlight = refresh;
+    this.ctx.waitUntil(refresh);
+  }
+
+  changelogFixes(ttlSeconds: number): Promise<ChangelogFix[]> {
+    const now = clock.now();
+    if (ttlSeconds > 0 && this.#fixesCache && this.#fixesCache.expiresAt > now) {
+      if (now >= this.#fixesCache.refreshAt) {
+        this.#refreshChangelogFixes(ttlSeconds);
+      }
+      return Promise.resolve(this.#fixesCache.fixes);
+    }
+    if (ttlSeconds > 0 && this.#fixesInFlight) return this.#fixesInFlight;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<ChangelogFix[]> => {
+      let failed = false;
+      const { entries, expiresAt } = await this.#readChangelog("beta", ttlSeconds, (file, error) => {
+        failed = true;
+        console.error(`changelog ${file} unavailable:`, error);
+      });
+      const fixes = changelogFixesOf(entries);
+      if (!failed && ttlSeconds > 0 && this.#changelogGen === gen && expiresAt !== null) {
+        const current = clock.now();
+        if (expiresAt > current) {
+          const refreshAt = current + Math.max(1000, Math.floor((expiresAt - current) * 0.75));
+          this.#fixesCache = { fixes, expiresAt, refreshAt };
+        }
+      }
+      return fixes;
+    })();
+    if (ttlSeconds > 0) {
+      this.#fixesInFlight = promise;
+      const cleanup = () => {
+        if (this.#fixesInFlight === promise) this.#fixesInFlight = null;
+      };
+      this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    }
+    return promise;
+  }
+
+  async releasedVersions(channel: Channel, upstream: string | null, ttlSeconds: number): Promise<PlatformReleases> {
+    const { released } = await this.#readReleased(channel, upstream, ttlSeconds, (file, error) => console.error(`changelog ${file} unavailable:`, error));
+    return released;
   }
 
   record(checks: Check[]): void {
@@ -239,6 +549,7 @@ export async function receiveReleased(request: Request, env: Env): Promise<Respo
   if (claims === undefined) return reply({ error: "not_found" }, 404);
   if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || !RELEASING.some((file) => claims.workflow_ref === `${claims.repository}/.github/workflows/${file}@refs/heads/main`)) return denied();
+  await env.SERVICE_STATUS.getByName("primary").invalidateChangelog().catch((error) => console.error("changelog cache invalidate failed:", error));
   await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" }, { ephemeral: true });
   return reply({ ok: true });
 }

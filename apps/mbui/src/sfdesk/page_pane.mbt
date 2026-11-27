@@ -405,7 +405,15 @@ fn pane_made(
       })
     Setting(Profiles("")) =>
       made("profiles/", fn(a, core, here, _stint, frame, width) {
-        @sfpages.profiles_page_node(a, src, core, here, @settings.profiles_narrow_overview, on_back=core.pop, frame~, width~, tips~)
+        @sfpages.profiles_list_node(a, core, here, "", on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(ProfilesOverview) =>
+      made("profiles-overview", fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_overview_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(ProfilesManage(only)) =>
+      made("profiles-manage/" + only, fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_manage_node(a, src, core, here, only, on_back=core.pop, frame~, width~, tips~)
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(a, core, here, _stint, frame, width) {

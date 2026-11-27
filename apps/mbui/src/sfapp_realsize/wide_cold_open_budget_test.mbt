@@ -125,8 +125,8 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
   // Hotspot #2 (PR-B4): strictly below pre-opt (766/0/645/139/1048) so reverting Hotspot #2 fails this gate
   "large/stations(list+st1)": (760, 0, 639, 150, 1036),
   "large/station_detail(st2)": (430, 0, 348, 78, 512),
-  // Hotspot #2 (PR-B4): strictly below pre-opt (870/0/698/254/1034) so reverting Hotspot #2 fails this gate
-  "large/profiles(overview)": (850, 0, 675, 270, 1000),
+  // Hotspot #2 (PR-B4) + #8938 three-tier profiles: actual 773/0/627/237/934, strictly below #8938-without-B4 (~803/0/659/243/982)
+  "large/profiles(overview)": (795, 0, 650, 250, 965),
   "large/profile_detail(p1)": (39, 0, 68, 7, 41),
   "large/connects": (744, 69, 783, 120, 770),
   "large/usage": (606, 69, 783, 221, 924),
@@ -152,8 +152,8 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
   // Hotspot #2 (PR-B4): strictly below pre-opt (770/2/670/136/1101)
   "medium/stations(list+st1)": (764, 6, 664, 150, 1089),
   "medium/station_detail(st2)": (420, 0, 358, 74, 513),
-  // Hotspot #2 (PR-B4): strictly below pre-opt (837/2/706/235/1074)
-  "medium/profiles(overview)": (815, 6, 685, 250, 1040),
+  // Hotspot #2 (PR-B4) + #8938 three-tier profiles: actual 744/2/636/218/976, strictly below #8938-without-B4 (~770/2/667/225/1020)
+  "medium/profiles(overview)": (765, 6, 658, 235, 1005),
   "medium/profile_detail(p1)": (23, 0, 70, 6, 35),
   "medium/connects": (1817, 2283, 1190, 156, 1816),
   "medium/usage": (1865, 2283, 1284, 244, 2105),

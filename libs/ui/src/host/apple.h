@@ -90,6 +90,8 @@ void mb_stream_route_acks_wait(int (*ack)(double route, double ts, uint32_t wait
 // text (apple_text.m)
 // drawn at this many pixels a point; a change draws every glyph again
 void mb_text_set_scale(double scale);
+// flush remaining subpixel phases of glyphs rasterized on the frames' thread during this frame as one batch
+void mb_text_flush_ahead(void);
 CTFontRef mb_platform_font(double size, int weight, int mono); // per platform, retained
 moonbit_string_t mb_string_from_ns(NSString *s);
 NSString *mb_ns_from_string(moonbit_string_t s);
