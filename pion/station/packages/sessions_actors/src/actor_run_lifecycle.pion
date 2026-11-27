@@ -3581,6 +3581,22 @@ pub fn ActorsGen::called_k(
   if method == "runChanged" {
     let text = str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), "")
     let change = arg_or_null(args, 1)
+    if !is_some(a.agent) && a.phase != "closed" {
+      match sessions_core::jget(change, "now") {
+        Some(now_obj) => {
+          match sessions_core::str_of(sessions_core::jget(now_obj, "runtime")) {
+            Some(rt) => {
+              if rt != "" && rt != a.runtime {
+                a.runtime = rt
+                self.mirror(a)
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
     // Direct RPC: matches MB where `runChanged` still posts its notice even after `close(a)`.
     self.rpc_direct_k(
       a.key,

@@ -159,7 +159,7 @@ pub fn evaluate_turn_end(
 /// Per-session serial actor state.
 pub struct SessionActor {
   pub key : String
-  pub runtime : String
+  pub mut runtime : String
   pub mut phase : ActorPhase
   pub mut generation : Int
   pub mut in_flight_start : Bool

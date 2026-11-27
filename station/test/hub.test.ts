@@ -5263,3 +5263,81 @@ test("taken in place, written out for the notes, continued from a terminal and c
   assert.ok(fresh.options.instructions!.includes("skills/people/ada@x.com.md"));
   await r.close();
 });
+
+test("a session taken across to another runtime while opening keeps that runtime across mirrors and station handover", async () => {
+  const model = "gemini-4-argon";
+  const first = new Rig();
+  const agy = new FakeDriver("agy");
+  await first.hub.shutdown();
+  first.edit((raw) => {
+    raw.profiles = [
+      { id: "cc", runtime: "claude", home: "homes/cc", models: [model], access: { kind: "api-provider", provider: "openrouter", key: "or-key" } },
+      { id: "ag", runtime: "agy", home: "homes/ag", models: [model], access: { kind: "subscription" } },
+    ];
+    raw.connects.find((c: any) => c.id === "cl").bind = { runtime: "claude", model };
+  });
+  let enteredOpen: () => void = () => {};
+  let releaseOpen: () => void = () => {};
+  const waitEntered = new Promise<void>((r) => { enteredOpen = r; });
+  agy.openGate = () => {
+    enteredOpen();
+    return new Promise<void>((r) => { releaseOpen = r; });
+  };
+  first.hub = first.newHub({ chats: (id) => (id === "cl" ? first.chat : undefined), drivers: [first.claude, first.codex, agy] });
+
+  // Creating the chat with `warm(key)` (as `POST /chats` does when `clientKey` is sent) runs `acquireRunOn`, moving it
+  // from billed-per-use `claude` (`cc`) to paid `agy` (`ag`) and firing `runChanged` while `agy.open` is starting.
+  const [key, thread] = await newSession(first.hub, { runtime: "claude", model, createdBy: "Ada@X.com" });
+  void first.hub.warm(key);
+  await waitEntered;
+  assert.equal(first.session(key).runtime, "agy");
+  assert.equal(first.hub.actors.get(key)!.runtime, "agy");
+
+  // A message arrives while `agy.open` is still in flight, queueing actor work and mirror updates before `open` returns.
+  sayIn(first.hub, thread.id, "Ada@X.com", "check dual-track progress");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(first.hub.actors.get(key)!.runtime, "agy", "in-flight open runtime is not overwritten by stale mirrors");
+
+  agy.openGate = undefined;
+  releaseOpen();
+  await settle();
+
+  assert.equal(first.claude.count(), 0);
+  assert.equal(agy.count(), 1);
+  const old = agy.last();
+  assert.equal(old.prompts.length, 1);
+  assert.equal(first.hub.actors.get(key)!.runtime, "agy");
+
+  // Station hot-update handover while the switched `agy` turn is running: must snapshot and adopt under `agy`, not `claude`.
+  const handed = await first.hub.handOver();
+  const snap = handed.sessions.find((s) => s.key === key)!;
+  assert.equal(snap.runtime, "agy");
+  assert.ok(snap.turn !== null);
+
+  const nextClaude = new FakeDriver("claude");
+  const nextAgy = new FakeDriver("agy");
+  const hub = first.newHub({
+    chats: (id) => (id === "cl" ? first.chat : undefined),
+    drivers: [nextClaude, new FakeDriver("codex"), nextAgy],
+  });
+  await hub.takeUp();
+  hub.recover();
+  await settle();
+
+  assert.equal(nextClaude.count(), 0, "must not adopt agy runner with ClaudeDriver");
+  assert.equal(nextAgy.count(), 1, "adopted with AgyDriver");
+  const taken = nextAgy.last();
+  assert.equal(taken.sessionId, old.sessionId);
+
+  // Completing the turn on AgyDriver ends the turn cleanly and accepts subsequent messages.
+  const tools = await import("../src/tools/chat.ts");
+  const chatState = tools.chatTools(hub).find((t) => t.name === "chat_state")!;
+  await chatState.run(key, { kind: "all_done", done: "dual-track report delivered" });
+  taken.complete();
+  await settle();
+  assert.equal(first.store.lastTurn(key)!.outcome, "completed");
+  assert.equal(first.store.getSession(key)!.running, false);
+
+  await hub.shutdown();
+  await first.close();
+});

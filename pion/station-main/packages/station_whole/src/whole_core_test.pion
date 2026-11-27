@@ -922,5 +922,22 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
     "exited runner must flush incomplete trailing UTF-8 as U+FFFD",
   )
 
+  // 8. Runtime switch on an idle actor (`set_actor_runtime`) updates `export_session_snapshots`
+  //    so handover exports the switched runtime rather than the stale initial runtime.
+  let _ = core.agents.issue_session_token("sess-rt-switch")
+  let actor_sw = core.agents.hub.ensure_actor("sess-rt-switch", "claude")
+  core.agents.session_runtimes.set("sess-rt-switch", "agy")
+  core.agents.hub.set_actor_runtime("sess-rt-switch", "agy")
+  wc_assert(actor_sw.runtime == "agy", "idle actor runtime must switch to agy")
+  let snaps_sw = core.agents.export_session_snapshots()
+  let mut found_sw = false
+  for si in 0..<snaps_sw.length() {
+    if snaps_sw[si].key == "sess-rt-switch" {
+      found_sw = true
+      wc_assert(snaps_sw[si].runtime == "agy", "exported snapshot must carry switched runtime agy")
+    }
+  }
+  wc_assert(found_sw, "sess-rt-switch must appear in exported snapshots")
+
   core.shutdown_pre_handover()
 }

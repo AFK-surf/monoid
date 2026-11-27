@@ -853,7 +853,12 @@ pub fn WholeAgents::adopt_sessions(
           true
         }
         adopt_ok.set(row.key, ok)
-        self.session_runtimes.set(row.key, row.runtime)
+        let effective_rt = if ok && snap.has_agent && snap.runtime.length() > 0 {
+          snap.runtime
+        } else {
+          row.runtime
+        }
+        self.session_runtimes.set(row.key, effective_rt)
         if row.archived_at.is_none() && row.token.length() > 0 && !row.token.starts_with("revoked:") {
           self.register_adopted_token(row.key, row.token)
         }
@@ -2220,7 +2225,10 @@ fn WholeAgents::build_domain_handlers(
           Ok(n) => {
             sess_updated = n > 0
             match rt_opt {
-              Some(rt) => if rt.length() > 0 { self.session_runtimes.set(target_sess, rt) }
+              Some(rt) => if rt.length() > 0 {
+                self.session_runtimes.set(target_sess, rt)
+                self.hub.set_actor_runtime(target_sess, rt)
+              }
               None => ()
             }
           }

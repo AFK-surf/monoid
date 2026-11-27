@@ -3670,3 +3670,83 @@ test "d103: a turn of its own refused by the account concurrency cap is kept as 
   assert_run(!a.paused_cap && !is_some(a.queued_retry), "woken and its retry taken")
   assert_run(d103_prompted(s, ["RESUME_AFTER_RESTART_WORDS"]), "the resume must be given once woken")
 }
+
+test "runChanged updates actor runtime and mirrors when no live agent is open, and preserves live agent runtime" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let mut open_id = 0
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "store.hasPending" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  // Start `warm` as `claude`; `node.open` stays in flight while `takeAcross` fires `runChanged` -> `agy`.
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.open" {
+      open_id = id
+    }
+  }
+  assert_run(open_id > 0, "expected in-flight node.open")
+
+  // `runChanged` arrives while `node.open` is in flight (`a.agent` is still `None`).
+  // Note `runChanged` queues behind `warm` in the actor pump, or runs when idle before `open`:
+  // test both an idle actor `s2` and `s1` completing `open` + `runChanged`.
+  actors.heard(
+    "{\"call\":2,\"actor\":\"s2\",\"runtime\":\"claude\",\"method\":\"runChanged\",\"args\":[\"switched\",{\"now\":{\"runtime\":\"agy\"}}],\"now\":1005}",
+    s.disp,
+  )
+  s.drive(responder)
+  let a2 = get_actor(actors, "s2")
+  assert_run(a2.runtime == "agy", "idle actor runtime must update to agy on runChanged")
+
+  // Complete `node.open` on `s1` with `runtime: "agy"` and queue `runChanged` right behind it.
+  actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"runChanged\",\"args\":[\"switched\",{\"now\":{\"runtime\":\"agy\"}}],\"now\":1006}",
+    s.disp,
+  )
+  let open_ans = base_codec::json_obj([
+    ("answer", sessions_core::jint(open_id)),
+    (
+      "value",
+      base_codec::json_obj([
+        ("handle", sessions_core::jint(5)),
+        ("generation", sessions_core::jint(1)),
+        ("runtime", sessions_core::jstr("agy")),
+        ("profile", sessions_core::jstr("ag")),
+        ("identity", base_codec::json_obj([("runtime", sessions_core::jstr("agy"))])),
+      ]),
+    ),
+    ("now", sessions_core::jnum(1010.0)),
+  ])
+  actors.heard(base_codec::json_stringify(open_ans), s.disp)
+  s.drive(responder)
+
+  let a1 = get_actor(actors, "s1")
+  assert_run(a1.runtime == "agy", "s1 runtime must be agy after cross-runtime open")
+
+  // While a live `agy` agent is open (`a1.agent` is `Some`), a `runChanged` to `claude` must keep `a1.runtime == "agy"`
+  // until the live `agy` process is actually closed/replaced.
+  actors.heard(
+    "{\"call\":4,\"actor\":\"s1\",\"method\":\"runChanged\",\"args\":[\"configured\",{\"now\":{\"runtime\":\"claude\"}}],\"now\":1020}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(a1.runtime == "agy", "live agent runtime must stay agy while process is open")
+
+  let snap = actors.current.snapshot(a1)
+  assert_run(sessions_core::text_of(snap, "runtime") == "agy", "snapshot must export live agent runtime agy")
+  assert_run(actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(host.rt)
+}

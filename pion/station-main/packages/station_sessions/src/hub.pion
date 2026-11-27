@@ -195,15 +195,33 @@ pub fn SessionHub::new() -> SessionHub {
   }
 }
 
-/// Ensures an actor exists for `key` and returns it.
+/// Ensures an actor exists for `key` and returns it, syncing `runtime` when no process or start is active.
 pub fn SessionHub::ensure_actor(self : SessionHub, key : String, runtime : String) -> SessionActor {
   match self.actors.get(key) {
-    Some(a) => a
+    Some(a) => {
+      if !a.has_process && !a.in_flight_start && runtime.length() > 0 {
+        a.runtime = runtime
+      }
+      a
+    }
     None => {
       let a = SessionActor::new(key, runtime)
       self.actors.set(key, a)
       a
     }
+  }
+}
+
+/// Updates an existing actor's runtime when no live process or in-flight start of the previous runtime holds it.
+pub fn SessionHub::set_actor_runtime(self : SessionHub, key : String, runtime : String) -> Unit {
+  if runtime.length() == 0 {
+    return
+  }
+  match self.actors.get(key) {
+    Some(a) => if !a.has_process && !a.in_flight_start {
+      a.runtime = runtime
+    }
+    None => ()
   }
 }
 
@@ -434,6 +452,11 @@ pub fn SessionHub::adopt(
       }
       adopted_agent = true
       actor.has_process = true
+      if snap.runtime.length() > 0 {
+        actor.runtime = snap.runtime
+      }
+    } else if !actor.has_process && !actor.in_flight_start && row.runtime.length() > 0 {
+      actor.runtime = row.runtime
     }
     let set_idle = adopted_agent && !snap.has_turn
     if set_idle {

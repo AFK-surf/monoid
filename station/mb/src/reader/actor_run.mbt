@@ -366,7 +366,15 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       return match refused { Some(r) => jstr(r); None => Json::null() }
     }
     "suspend" => return self.suspend(a, why=str_of(Some(arg(0))).unwrap_or("the station is in no workspace"))
-    "runChanged" => self.notice(a, str_of(Some(arg(0))).unwrap_or(""), change=arg(1))
+    "runChanged" => {
+      let change = arg(1)
+      if a.agent is None && a.phase != "closed" && change.value("now") is Some(now_obj) &&
+        str_of(now_obj.value("runtime")) is Some(rt) && rt != "" && rt != a.runtime {
+        a.runtime = rt
+        self.mirror(a)
+      }
+      self.notice(a, str_of(Some(arg(0))).unwrap_or(""), change~)
+    }
     "adopt" => self.adopt(a, arg(0), arg(1), arg(2), arg(3))
     "snapshot" => return self.snapshot(a)
     "close" => self.close(a)

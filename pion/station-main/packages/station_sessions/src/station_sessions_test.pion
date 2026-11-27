@@ -765,3 +765,60 @@ test "R2 N1/N2/P2 regressions: UTF-8 CJK & U+3000 in links, residual Steer drain
   let posix_bs = plan_delete_session("/data", "/data/x\\..\\sessions\\y", [], empty_other)
   expect(!posix_bs.remove_workspace, "POSIX backslash must NOT be treated as path separator")
 }
+
+test "SessionHub ensure_actor, set_actor_runtime, and adopt sync actor.runtime across runtime switches" {
+  let hub = SessionHub::new()
+  let a = hub.ensure_actor("s-cross", "claude")
+  expect(a.runtime == "claude", "initial runtime claude")
+
+  // Idle runtime switch via `set_actor_runtime` or `ensure_actor` updates `actor.runtime`.
+  hub.set_actor_runtime("s-cross", "agy")
+  expect(a.runtime == "agy", "set_actor_runtime updates idle actor to agy")
+  let a_same = hub.ensure_actor("s-cross", "codex")
+  expect(a_same.runtime == "codex", "ensure_actor syncs idle actor to codex")
+
+  // While `in_flight_start` or `has_process` holds a process of the current runtime, `actor.runtime` stays pinned to it.
+  a.begin_start()
+  hub.set_actor_runtime("s-cross", "claude")
+  let _ = hub.ensure_actor("s-cross", "claude")
+  expect(a.runtime == "codex", "in_flight_start preserves opening runtime")
+  a.finish_start(true, 1000L)
+  hub.set_actor_runtime("s-cross", "claude")
+  expect(a.runtime == "codex", "live process preserves its own runtime until closed")
+
+  // `adopt` sets `actor.runtime` from `snap.runtime` when adopting a live runner even if DB row switched,
+  // and from `row.runtime` when no runner is adopted.
+  let hub2 = SessionHub::new()
+  let rows : Map[String, HubSessionRow] = Map::new()
+  rows.set("s-live", HubSessionRow::{
+    key: "s-live", runtime: "claude", profile: "p1", runtime_session_id: Some("rs1"), ran_on: Some("ag"),
+    ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: false,
+  })
+  rows.set("s-cold", HubSessionRow::{
+    key: "s-cold", runtime: "agy", profile: "ag", runtime_session_id: None, ran_on: None,
+    ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: false,
+  })
+  let _ = hub2.ensure_actor("s-cold", "claude")
+  let adopt_ok : Map[String, Bool] = Map::new()
+  adopt_ok.set("s-live", true)
+  adopt_ok.set("s-cold", true)
+  let _ = hub2.adopt(
+    [
+      HandoverSnapshot::{ key: "s-live", runtime: "agy", has_agent: true, has_turn: true, notices: [] },
+      HandoverSnapshot::{ key: "s-cold", runtime: "claude", has_agent: false, has_turn: false, notices: [] },
+    ],
+    rows,
+    adopt_ok,
+    2000L,
+  )
+  match hub2.actors.get("s-live") {
+    Some(live_actor) => expect(live_actor.runtime == "agy", "adopted live runner keeps snap.runtime agy")
+    None => panic("missing s-live actor")
+  }
+  match hub2.actors.get("s-cold") {
+    Some(cold_actor) => expect(cold_actor.runtime == "agy", "cold session syncs row.runtime agy")
+    None => panic("missing s-cold actor")
+  }
+}

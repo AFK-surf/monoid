@@ -14,7 +14,7 @@ import { SessionsProgram, sessionsBinaryAvailable, type ProgramUser } from "../a
 import type { HostedProcess, Router } from "../agents/mb-agents.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { RenewRefused } from "../accounts/console.ts";
-import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
+import { modelLimitOf, runtimeKind, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
 import * as instructions from "../agents/instructions.ts";
 import { handedOf, type MessageRow, type PendingMessage, type RunChange } from "../store/rows.ts";
@@ -636,6 +636,7 @@ export class MbActor {
   /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, its unread cleared.
   #routing: { outcome?: Json; cleared?: boolean } = {};
   #adopting: { generation: number; pending: Array<() => void> } | null = null;
+  #openingRuntime: RuntimeKind | null = null;
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
   constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps, onStateChange?: () => void) {
@@ -668,7 +669,7 @@ export class MbActor {
     const prev = this.processState();
     const prevSettled = this.settled();
     this.#mirror = state;
-    this.runtime = state.runtime;
+    this.runtime = this.#openingRuntime ?? state.runtime;
     // Only a change of what holds a concurrency slot is told (`Hub.syncActiveSlots`): every mirror would query the
     // store and push to each borrower for nothing (0.1.11459: a million queries and an 8.7 s stall).
     if (this.processState() !== prev || this.settled() !== prevSettled) this.#onStateChange?.();
@@ -807,8 +808,9 @@ export class MbActor {
       this.#program.unregisterHandle(snap.agent, this);
     }
     const agent = held?.snapshot() ?? null;
+    const agentRuntime = runtimeKind((agent as { runtime?: unknown } | null)?.runtime);
     held?.detach();
-    return { ...snap, agent, ...(toolsUnheard ? { toolsUnheard: true } : {}), ...(nudgeUnheard ? { nudgeUnheard: true } : {}) } as Snapshot;
+    return { ...snap, ...(agentRuntime ? { runtime: agentRuntime } : {}), agent, ...(toolsUnheard ? { toolsUnheard: true } : {}), ...(nudgeUnheard ? { nudgeUnheard: true } : {}) } as Snapshot;
   }
 
   /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
@@ -1122,6 +1124,8 @@ export class MbActor {
       case "open": {
         const [stopped, readBack, profile, forceCap, asked] = args;
         let generation = 0;
+        let openingRuntime: RuntimeKind = this.runtime;
+        this.#openingRuntime = openingRuntime;
         const heard = deps.toolsHeard?.(this.key);
         // (the program's number for this ask: what it gives it up by, `node.cancelOpen`)
         const id = typeof asked === "number" ? asked : -(++this.#next);
@@ -1136,12 +1140,21 @@ export class MbActor {
             profile: profile ?? null,
             forceCap: forceCap === true,
             signal: abort.signal,
-            runtime: (runtime) => { this.runtime = runtime; },
+            runtime: (runtime) => {
+              openingRuntime = runtime;
+              this.#openingRuntime = runtime;
+              this.runtime = runtime;
+            },
             generation: () => (generation = this.nextGeneration()),
             listener: (g) => this.listener(g),
           });
+        } catch (error) {
+          this.#openingRuntime = null;
+          this.runtime = openingRuntime;
+          throw error;
         } finally {
           if (this.#openAborts.get(id) === abort) this.#openAborts.delete(id);
+          this.#openingRuntime = null;
         }
         // (given up as it came: never its actor's, ended at once)
         if (abort.signal.aborted || this.#closed) {
@@ -1149,11 +1162,13 @@ export class MbActor {
           await opened.session.dispose().catch(() => {});
           throw new OpenAborted(typeof abort.signal.reason === "string" ? abort.signal.reason : "closed");
         }
+        const runtime = opened.identity.runtime;
+        this.runtime = runtime;
         const handle = this.#program.allocHandle(this);
         this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
-        return { ...rest, handle, runtime: this.runtime };
+        return { ...rest, handle, runtime };
       }
       case "retune": {
         const [handle, profile, restart, holding] = args;

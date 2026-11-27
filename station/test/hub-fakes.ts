@@ -250,6 +250,8 @@ export class FakeDriver implements AgentDriver {
   shutdowns = 0;
   /// Given to every session it opens as its `beforePrompt`.
   beforePrompt?: (text: string) => void;
+  /// Waited for while `open` starts a process, so a test can deliver messages or state changes mid-open.
+  openGate?: () => Promise<void>;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
   /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
@@ -281,6 +283,7 @@ export class FakeDriver implements AgentDriver {
       this.resumeFailsOnce.delete(options.resume!);
       throw once;
     }
+    await this.openGate?.();
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
     session.beforePrompt = this.beforePrompt;
     this.sessions.push(session);
