@@ -780,8 +780,7 @@ fn shapes_thin() -> Unit {
 
 ///|
 fn clear_shapes() -> Unit {
-  set_shapes.clear()
-  set_shapes.shrink_to_fit()
+  set_shapes.val = []
   // (and who spaces words and how the host's face draws the marks set closer: found again as a run starts or the
   // faces change)
   spaced_said.val = None
@@ -824,8 +823,7 @@ let font_shapes_gone : FontShapes = {
 /// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
 /// `words_shaped_in` or evicting unrelated global window text caches.
 fn forget_words_for_face(face : Int) -> Unit {
-  set_shapes.clear()
-  set_shapes.shrink_to_fit()
+  set_shapes.val = []
   text_cache.last_font = None
   text_cache.seg_last_font_0 = None
   text_cache.seg_last_font_1 = None
@@ -1900,7 +1898,7 @@ fn bidi_line(
   for k, l in levels {
     lv[a + k] = l
   }
-  let order = @text.visual_order(levels[:])
+  let order = @text.visual_order(levels)
   let mut x = x0
   for k in order {
     xs[a + k] = x
@@ -2503,7 +2501,7 @@ priv struct SetShaped {
 ///|
 /// The last texts shaped in stretches, the latest last (a field's words as they are written: few fields show at once).
 // kept across runs: a cache of what was shaped, let go with the shapes (clear_shapes)
-let set_shapes : Array[SetShaped] = []
+let set_shapes : Ref[Array[SetShaped]] = Ref([])
 
 ///|
 let set_shapes_most : Int = 8
@@ -2514,11 +2512,11 @@ let set_shapes_most : Int = 8
 /// face's (its clusters, advances and glyphs; line breaks worked out of the whole text on demand). Words written right
 /// to left are shaped whole, in the field's font alone: their order is the whole text's.
 fn shape_set(text : String, size : Double, weight : Int, style : Int, set : Array[WordsSet]) -> Shaped {
-  for i, k in set_shapes {
+  for i, k in set_shapes.val {
     if k.text == text && k.size == size && k.weight == weight && k.style == style && k.set == set {
-      if i + 1 < set_shapes.length() {
-        set_shapes.remove(i) |> ignore
-        set_shapes.push(k)
+      if i + 1 < set_shapes.val.length() {
+        set_shapes.val.remove(i) |> ignore
+        set_shapes.val.push(k)
       }
       return k.shaped
     }
@@ -2590,10 +2588,10 @@ fn shape_set(text : String, size : Double, weight : Int, style : Int, set : Arra
     lay_wrap: false,
     used: text_cache.frame,
   }
-  if set_shapes.length() >= set_shapes_most {
-    set_shapes.remove(0) |> ignore
+  if set_shapes.val.length() >= set_shapes_most {
+    set_shapes.val.remove(0) |> ignore
   }
-  set_shapes.push({ text, set, size, weight, style, shaped })
+  set_shapes.val.push({ text, set, size, weight, style, shaped })
   shaped
 }
 

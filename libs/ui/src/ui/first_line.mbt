@@ -125,7 +125,7 @@ fn Ctx::first_line_faults(self : Ctx) -> Array[String] {
         for li in 0..<count {
           let y = top + li.to_double() * lh
           // (one already there whose middle is within half a line of this one's: the same line)
-          let same = lines.iter().any(fn(l) { (l.0 + l.1 - (y + y + lh)).abs() / 2.0 < dmin(l.2, lh) / 2.0 })
+          let same = arr_any(lines, fn(l) { (l.0 + l.1 - (y + y + lh)).abs() / 2.0 < dmin(l.2, lh) / 2.0 })
           if !same {
             lines.push((y, y + lh, lh))
           }

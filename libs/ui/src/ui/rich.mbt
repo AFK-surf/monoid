@@ -670,7 +670,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   let (_, _, own0) = font_metrics(r.size, r.weight)
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
   // browser, by the first font's alone: line_metrics)
-  let cjk = r.runs.iter().any(fn(run) { words_cjk(run.text) })
+  let cjk = arr_any(r.runs, fn(run) { words_cjk(run.text) })
   let all_code_or_mono = r.runs.length() > 0 && r.runs.iter().all(fn(run) { run.code || run.mono })
   let base_cjk_ov = if all_code_or_mono { r.code_cjk_override } else { r.cjk_override }
   let base_eff_cjk = effective_cjk(r.faces, base_cjk_ov)
@@ -1565,7 +1565,7 @@ pub fn Ctx::rich(
     runs
   } else {
     match one_line(runs.map(fn(r) { r.text })) {
-      Some(texts) => runs.mapi(fn(k, r) { { ..r, text: texts[k] } })
+      Some(texts) => runs.mapi(fn(k, r) { Run::{ ..r, text: texts[k] } })
       None => runs
     }
   }

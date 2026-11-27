@@ -2518,7 +2518,7 @@ fn on_key_now(code : Int, mods : Int) -> Unit {
   // pill), as a browser's selection is by Escape)
   if code == key_escape {
     let c = g()
-    let layered = c.last_layers.iter().any(fn(l) { c.layer_takes(l) && (l.modal || l.escape) })
+    let layered = arr_any(c.last_layers, fn(l) { c.layer_takes(l) && (l.modal || l.escape) })
     c.layer_keys_now()
     if !layered && mods == 0 && tree_picking() {
       select_none()

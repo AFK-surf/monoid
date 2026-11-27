@@ -984,7 +984,7 @@ fn view_rich(
     runs
   } else {
     match one_line(runs.map(fn(r) { r.text })) {
-      Some(texts) => runs.mapi(fn(k, r) { { ..r, text: texts[k] } })
+      Some(texts) => runs.mapi(fn(k, r) { @text.Run::{ ..r, text: texts[k] } })
       None => runs
     }
   }
@@ -1327,7 +1327,7 @@ fn old_place(tree : @view.Tree) -> Unit {
     let (ox, oy) = (laid_snapped(ox), laid_snapped(oy))
     old_placed.push((c.id, x, y, c.w, c.h, a, ox, oy, s))
     // (the side what holds it went beside what it goes beside, for its build (old_went): told as it changes)
-    match old_islands.iter().find_first(fn(o) { o.id == c.id }) {
+    match arr_find_first(old_islands, fn(o) { o.id == c.id }) {
       Some(o) => {
         let went = tree.went_over(c.id)
         if o.went.untracked() != went {
@@ -1346,7 +1346,7 @@ fn old_place(tree : @view.Tree) -> Unit {
       (id, x, y, iw, ih, a, _, _, _) => x == 0.0 && y == 0.0 && iw == w && ih == h && a == 1.0 && tree.drawn_scale(id) == 1.0 && tree.alone(id)
     }) &&
     // (one as tall as what it holds measured in a box of its own, whatever it fills: old_natural_after_layout)
-    !old_islands.iter().any(fn(o) { o.id == old_placed[0].0 && o.natural is Some(_) })
+    !arr_any(old_islands, fn(o) { o.id == old_placed[0].0 && o.natural is Some(_) })
   // (told where any is placed otherwise than it was)
   let mut same = was.length() == old_placed.length()
   for i, p in was {
@@ -1357,7 +1357,7 @@ fn old_place(tree : @view.Tree) -> Unit {
   if !same {
     old_placed_said.val.set(old_placed_said.val.untracked() + 1)
   }
-  if !old_placed.iter().any(fn(p) { tree.placed_by_clock(p.0) }) {
+  if !arr_any(old_placed, fn(p) { tree.placed_by_clock(p.0) }) {
     old_place_seen.val = Some((tree, seen))
   }
 }
@@ -1496,7 +1496,7 @@ fn old_frame(c : Ctx) -> Unit {
   match view_app.val {
     Some(tree) if tree.told_since() ||
       old_islands.length() != old_placed.length() ||
-      old_islands.iter().any(fn(o) { !old_placed.iter().any(fn(p) { p.0 == o.id }) }) => view_brought(tree)
+      arr_any(old_islands, fn(o) { !arr_any(old_placed, fn(p) { p.0 == o.id }) }) => view_brought(tree)
     _ => ()
   }
   // (built for where they are laid out as the frame began: built again as that changes)
@@ -1506,7 +1506,7 @@ fn old_frame(c : Ctx) -> Unit {
     o.held_box = -1
   }
   if old_whole.val {
-    match old_islands.iter().find_first(fn(o) { old_placed.iter().any(fn(p) { p.0 == o.id }) }) {
+    match arr_find_first(old_islands, fn(o) { arr_any(old_placed, fn(p) { p.0 == o.id }) }) {
       Some(o) => {
         // (the old frame's own node holding it: laid out as this old view's, under its owner; no box of its own)
         old_box_owners.clear()
@@ -1521,7 +1521,7 @@ fn old_frame(c : Ctx) -> Unit {
   old_box_owners.clear()
   old_boxes_clear()
   for p in old_placed {
-    match old_islands.iter().find_first(fn(o) { o.id == p.0 }) {
+    match arr_find_first(old_islands, fn(o) { o.id == p.0 }) {
       Some(o) => {
         // (laid out where its layout puts it, on no pixel it is not on, as the old frame lays out what it holds)
         let (id, _, _, w, h, _, ox, oy, _) = p
@@ -1585,7 +1585,7 @@ fn old_frame(c : Ctx) -> Unit {
                         |> ignore
                       }
                       // (one that gives way: in the height its node is given, all of it)
-                      None if o.gives => o.held_box = c.box(style=style(w=Fixed(w), h=Full), fn() { put() })
+                      None if o.gives => o.held_box = c.box(style=style(w=Fixed(w), h=Len::Full), fn() { put() })
                       None => o.held_box = c.box(style=style(w=Fixed(w)), fn() { put() })
                     }
                   None => {
@@ -1611,7 +1611,7 @@ fn old_frame(c : Ctx) -> Unit {
         // pixel_grid), its words set on the pixels where it is laid out and carried with it, glyphs_carried)
         c.moved_carries(i, fn(_, _) {
           old_placed_said.val.get() |> ignore
-          match old_placed.iter().find_first(fn(q) { q.0 == id }) {
+          match arr_find_first(old_placed, fn(q) { q.0 == id }) {
             Some(q) => (q.1 - left, q.2 - top)
             None => (0.0, 0.0)
           }
@@ -1890,7 +1890,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   // sent close together, the first still on its way))
   let lifting : Ref[(@view.NodeId, Array[(Int, Int)], (@view.NodeId, Int)?)?] = Ref(None)
   let raise_holds = fn(id : @view.NodeId) {
-    !raised.is_empty() && raised.iter().any(fn(r) { r.1 == id || tree.holds_in_order(id, r.1) })
+    !raised.is_empty() && arr_any(raised, fn(r) { r.1 == id || tree.holds_in_order(id, r.1) })
   }
   let lift_to = fn(next : @view.NodeId?) {
     let held_by = fn(outer : @view.NodeId) {
@@ -1923,7 +1923,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     }
     match next {
       Some(n) if !raised.is_empty() && !(lifting.val is Some((_, _, Some(_)))) =>
-        match raised.iter().find_first(fn(r) { r.1 == n || tree.holds_in_order(r.1, n) }) {
+        match arr_find_first(raised, fn(r) { r.1 == n || tree.holds_in_order(r.1, n) }) {
           Some((list, b)) => {
             ride_spoil()
             match list_riding.val {
@@ -2328,7 +2328,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // (an old view come to: its targets, found before (Ctx::view_targets), under what is drawn after it, a native view
     // of the tree's among them: tree_hits_passed)
     if c.hosted {
-      match next_old_hits.iter().find_first(fn(o) { o.id == c.id }) {
+      match arr_find_first(next_old_hits, fn(o) { o.id == c.id }) {
         Some(o) => tree_hits_passed.val = o.to
         None => ()
       }
@@ -2384,7 +2384,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
               // (what of it is drawn: within that clip, as the corner rule reads it, Ctx::corner_faults; said where its
               // nodes are laid out, the island drawn at (px, py) as big as `s` from where it is laid out at (ox, oy))
               let k = clip_top()
-              match old_placed.iter().find_first(fn(o) { o.0 == c.id }) {
+              match arr_find_first(old_placed, fn(o) { o.0 == c.id }) {
                 Some((_, px, py, _, _, _, ox, oy, s)) if s > 0.0 => {
                   let laid = fn(dx : Double, dy : Double) { (ox + (dx - px) / s, oy + (dy - py) / s) }
                   let (x0, y0) = laid(clip_stack[k], clip_stack[k + 1])
@@ -3273,7 +3273,7 @@ fn view_glyphs_held(_tree : @view.Tree, sc : Double) -> Unit {
   let rows : Array[@view.NodeId] = []
   for id in ride_kept.keys() {
     match ride_kept.get(id) {
-      Some(k) if !k.kept.iter().all(fn(g) { glyphs_there(g, sc) }) => rows.push(id)
+      Some(k) if !arr_all(k.kept, fn(g) { glyphs_there(g, sc) }) => rows.push(id)
       _ => ()
     }
   }
@@ -3776,7 +3776,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       Some(b) if physical_equal(b.of, shapes) => b
       // (the same outlines in other colours, an icon's parts breathing: the bands they come to as they were)
       Some(b) if b.fits(shapes) => {
-        let b = { ..b, of: shapes }
+        let b = ShapeBands::{ ..b, of: shapes }
         view_shape_bands[c.id] = b
         b
       }
@@ -4179,7 +4179,7 @@ let island_building : Ref[@view.NodeId?] = Ref(None)
 pub fn old_given() -> (Double, Double)? {
   match island_building.val {
     Some(id) =>
-      match old_islands.iter().find_first(fn(o) { o.id == id }) {
+      match arr_find_first(old_islands, fn(o) { o.id == id }) {
         Some(o) if o.gives => o.given.get()
         _ => None
       }
@@ -4195,7 +4195,7 @@ pub fn old_given() -> (Double, Double)? {
 pub fn old_went() -> @view.Side? {
   match island_building.val {
     Some(id) =>
-      match old_islands.iter().find_first(fn(o) { o.id == id }) {
+      match arr_find_first(old_islands, fn(o) { o.id == id }) {
         Some(o) => o.went.get()
         None => None
       }
@@ -4485,12 +4485,12 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   view_down_extra.clear()
   view_scroll_lets_go(tree, id)
   match view_held.val {
-    Some(Node(n)) => {
+    Some(ViewHeld::Node(n)) => {
       tree.press_held(n) |> ignore
       // (a field's press taken over: nothing of it kept)
       tree_field_let_go(tree_field_pressing(n), x, y, false)
     }
-    Some(Old(part, _)) => {
+    Some(ViewHeld::Old(part, _)) => {
       view_input_went(part)
       old_pointer_now(3, x, y, 0, 0, h_event_time())
     }
@@ -4959,7 +4959,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
   let tapped = Ref(false)
   let took = match (kind, view_held.val) {
     (0, _) if over => {
-      view_held.val = Some(Old(-1, None))
+      view_held.val = Some(ViewHeld::Old(-1, None))
       view_input_went(-1)
       false
     }
@@ -4982,7 +4982,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     // which moves that end, finger_select.mbt)
     (0, _) if button != 2 && finger_end_at(x, y) => {
       tree_field_menu_dismiss_if_outside(tree, x, y)
-      view_held.val = Some(Old(-1, None))
+      view_held.val = Some(ViewHeld::Old(-1, None))
       view_input_went(-1)
       false
     }
@@ -5051,7 +5051,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
           if button != 2 {
             view_press_unfocused(g())
           }
-          view_held.val = Some(if button == 2 { Nowhere } else { Node(id) })
+          view_held.val = Some(if button == 2 { Nowhere } else { ViewHeld::Node(id) })
           // (the hold its, called off as any is: the window behind, the node taking no press, a second finger)
           if button != 2 {
             tree.event(at, fn() { tree.hold_press(id) })
@@ -5083,7 +5083,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
             Some(o) if !old_whole.val => old_part_of(o)
             _ => -1
           }
-          view_held.val = Some(Old(part, owner))
+          view_held.val = Some(ViewHeld::Old(part, owner))
           view_input_went(part)
           false
         }
@@ -5113,12 +5113,12 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
         // (Ctx::select_press, its moves and its let go its too), as an old view's page's words are, its lists not
         // dragged by the mouse there)
         Nothing if button != 2 && pointing() is Mouse && (shift_pick || tree_sel_at(x, y) is Some(_)) => {
-          view_held.val = Some(Old(-1, None))
+          view_held.val = Some(ViewHeld::Old(-1, None))
           view_input_went(-1)
           false
         }
         Nothing if old_whole.val && island_allows(old_whole_island()) => {
-          view_held.val = Some(Old(-1, old_whole_island()))
+          view_held.val = Some(ViewHeld::Old(-1, old_whole_island()))
           view_input_went(-1)
           false
         }
@@ -5136,12 +5136,12 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     // down: View::claims), what had it called off)
     // (a field of the tree's the press went down on: what is picked dragged on, where it took it as it went down; how far
     // a finger went, where it waits for a tap: tree_field_moved)
-    (1, Some(Node(id))) if tree_field_moved(tree_field_pressing(id), x, y, at) => true
-    (1, Some(Node(_) | Nowhere)) if view_claimed(tree, x, y, at) => true
+    (1, Some(ViewHeld::Node(id))) if tree_field_moved(tree_field_pressing(id), x, y, at) => true
+    (1, Some(ViewHeld::Node(_) | Nowhere)) if view_claimed(tree, x, y, at) => true
     // (held by a gesture waiting on a tap, a hold or its own slop: taken over as a press is, Tree::yields; what holds it
     // asked first, at the same move)
     (1, Some(Dragging(id))) if tree.yields(id) && view_claimed(tree, x, y, at) => true
-    (1, Some(Old(part, _))) => {
+    (1, Some(ViewHeld::Old(part, _))) => {
       view_input_went(part)
       false
     }
@@ -5174,7 +5174,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
         Pressed(_) | Dragged(_) | TopRow(_) => true
       }
     }
-    (2, Some(Node(id))) => {
+    (2, Some(ViewHeld::Node(id))) => {
       view_held.val = None
       let fid = tree_field_pressing(id)
       if tree.press_held(id) && tree.target_at(x, y) == Pressed(id) {
@@ -5247,7 +5247,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       h_frame_owed()
       true
     }
-    (4 | 5 | 6 | 8, Some(Node(id))) => {
+    (4 | 5 | 6 | 8, Some(ViewHeld::Node(id))) => {
       // (a second finger on a press: called off, the rest nobody's; a field's, nothing of it kept)
       tree_field_let_go(tree_field_pressing(id), x, y, false)
       view_held.val = Some(Nowhere)
@@ -5286,12 +5286,12 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       h_frame_owed()
       true
     }
-    (2 | 3, Some(Old(part, _))) => {
+    (2 | 3, Some(ViewHeld::Old(part, _))) => {
       view_held.val = None
       view_input_went(part)
       false
     }
-    (3, Some(Node(id))) => {
+    (3, Some(ViewHeld::Node(id))) => {
       // (called off: the press's hold let go, nothing pressed)
       view_held.val = None
       tree.press_held(id) |> ignore
@@ -5519,7 +5519,7 @@ pub fn old(
       over: natural && over,
     })
     n.owns(fn() {
-      match old_islands.search_by(fn(o) { o.id == id }) {
+      match arr_search_by(old_islands, fn(o) { o.id == id }) {
         Some(i) => {
           let o = old_islands.remove(i)
           old_presses_gone(o.id)
@@ -5663,7 +5663,7 @@ fn old_part_hit(c : Ctx, x : Double, y : Double, pressed? : Bool = false) -> Int
 /// How big the old view hosted in node `id` is drawn (its scale and its holders', as it was placed: old_place); 1 for
 /// one not placed.
 fn island_scale(id : @view.NodeId) -> Double {
-  match old_placed.iter().find_first(fn(q) { q.0 == id }) {
+  match arr_find_first(old_placed, fn(q) { q.0 == id }) {
     Some(q) => q.8
     None => 1.0
   }
@@ -5776,7 +5776,7 @@ fn typed_event(typed : Int) -> Unit {
 ///|
 /// The old view in node `id`'s part (-1: none known: all of them).
 fn old_part_of(id : @view.NodeId) -> Int {
-  match old_islands.iter().find_first(fn(o) { o.id == id }) {
+  match arr_find_first(old_islands, fn(o) { o.id == id }) {
     Some(o) => o.part
     None => -1
   }
@@ -5855,10 +5855,10 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
 /// rest of what it does nobody's.
 fn view_hold_lost() -> Unit {
   match (view_app.val, view_held.val) {
-    (Some(tree), Some(Dragging(_))) | (Some(tree), Some(Node(_))) => {
+    (Some(tree), Some(Dragging(_))) | (Some(tree), Some(ViewHeld::Node(_))) => {
       // (a field of the tree's holding it: the press called off, nothing of it kept, tree_field.mbt)
       match view_held.val {
-        Some(Node(n)) => tree_field_let_go(tree_field_pressing(n), 0.0, 0.0, false)
+        Some(ViewHeld::Node(n)) => tree_field_let_go(tree_field_pressing(n), 0.0, 0.0, false)
         _ => ()
       }
       view_held.val = Some(Nowhere)
@@ -6293,9 +6293,7 @@ pub fn old_takes_none(v : @view.View) -> @view.View {
 ///|
 /// The old view that is the whole window (old_whole), where it is placed.
 fn old_whole_island() -> @view.NodeId? {
-  old_islands
-  .iter()
-  .find_first(fn(o) { old_placed.iter().any(fn(p) { p.0 == o.id }) })
+  arr_find_first(old_islands, fn(o) { arr_any(old_placed, fn(p) { p.0 == o.id }) })
   .map(fn(o) { o.id })
 }
 
@@ -6345,7 +6343,7 @@ fn view_captures_off(at : Double, gone : (@view.NodeId?) -> Bool, back_gone? : (
     _ => ()
   }
   match view_held.val {
-    Some(Old(part, island)) if gone(island) => {
+    Some(ViewHeld::Old(part, island)) if gone(island) => {
       view_held.val = Some(Nowhere)
       c.press_called_off(c.px, c.py, at)
       // (as the host calling it off is taken: the hand's, built again where it went, inputrec.mbt's took_input)
@@ -6511,7 +6509,7 @@ fn view_through(to : @view.Target, x : Double, y : Double, down_at : Double, why
         Some(o) if !old_whole.val => old_part_of(o)
         _ => -1
       }
-      view_held.val = Some(Old(part, owner))
+      view_held.val = Some(ViewHeld::Old(part, owner))
       view_input_went(part)
       match why {
         Moved(x0, y0) => {
@@ -6591,7 +6589,7 @@ fn view_key(code : Int, mods : Int) -> Bool {
   // (a list a field offers, picked from by Tab while it is open) has it; the focus moved where none does)
   if code == key_tab && (mods | mod_shift_key) == mod_shift_key && view_tab_ours(c, mods) {
     let facts = view_key_facts(c, c.focus_allowed())
-    if tree.stroke(code, mods, view_moment(), from=focus_node_of(c.focus), facts~) {
+    if @view.Tree::stroke(tree, code, mods, view_moment(), from=focus_node_of(c.focus), facts~) {
       return true
     }
     tree.event(view_moment(), fn() { c.tab((mods & mod_shift_key) != 0) })
@@ -6635,7 +6633,7 @@ fn view_key(code : Int, mods : Int) -> Bool {
   // `FieldEmpty` where nothing is written in it; a field's own keys and those with ⌘ or Ctrl held its where no action
   // takes them, as a field's in none of the tree: the old frame's)
   let facts = view_key_facts(c, focus)
-  let actions = fn() { tree.stroke(code, mods, view_moment(), from=held, facts~) }
+  let actions = fn() { @view.Tree::stroke(tree, code, mods, view_moment(), from=held, facts~) }
   if field_own || (field && held is None) {
     return actions()
   }
@@ -6659,11 +6657,17 @@ fn view_key(code : Int, mods : Int) -> Bool {
 ///|
 /// The topmost old-frame layer stack that takes `code` right now (-3 when none).
 fn old_layer_key_stack(c : Ctx, code : Int) -> Int {
-  c.last_layers
-  .iter()
-  .filter(fn(l) { c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) })
-  .map(fn(l) { c.layer_stack(l) })
-  .fold(init=-3, fn(a, b) { if b > a { b } else { a } })
+  let mut best = -3
+  for i = 0; i < c.last_layers.length(); i = i + 1 {
+    let l = c.last_layers[i]
+    if c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) {
+      let s = c.layer_stack(l)
+      if s > best {
+        best = s
+      }
+    }
+  }
+  best
 }
 
 ///|
@@ -7751,7 +7755,7 @@ fn view_outs_told(t : @view.Tree) -> Unit {
   if c.focus != 0 {
     match c.old_focus_island(c.focus) {
       Some(isl) if t.laid_out_nowhere(isl) => {
-        let kept = if old_islands.iter().any(fn(o) { o.id == isl }) {
+        let kept = if arr_any(old_islands, fn(o) { o.id == isl }) {
           Some((c.focus, isl, c.focus_visible))
         } else {
           None
@@ -7764,7 +7768,7 @@ fn view_outs_told(t : @view.Tree) -> Unit {
   }
   match old_focus_parked.val {
     Some((id, isl, visible)) if c.focus == 0 && t.focused_now().0 is None =>
-      if !old_islands.iter().any(fn(o) { o.id == isl }) || !t.holds(isl, isl) {
+      if !arr_any(old_islands, fn(o) { o.id == isl }) || !t.holds(isl, isl) {
         // (its old view gone meanwhile: nothing to give it back to)
         old_focus_parked.val = None
       } else if !t.laid_out_nowhere(isl) {
@@ -7896,7 +7900,7 @@ let layer_focus_open : Array[LayerFocus] = []
 /// The layer of layer_focus_open that holds what Ctx's focus names `id` (a node of tree `t`'s), if one does.
 fn layer_focus_holding(t : @view.Tree, id : Int) -> @view.NodeId? {
   guard focus_node_of(id) is Some(n) else { return None }
-  layer_focus_open.iter().find_first(fn(l) { t.holds(l.layer, n) }).map(fn(l) { l.layer })
+  arr_find_first(layer_focus_open, fn(l) { t.holds(l.layer, n) }).map(fn(l) { l.layer })
 }
 
 ///|
@@ -7916,8 +7920,8 @@ fn tree_focus_kept_for(node : @view.NodeId, id : Int) -> Bool {
     return false
   }
   // (the layer just over it: the lowest open that does not hold it, over the one that does, if one does)
-  let under = layer_focus_open.iter().find_first(fn(l) { t.holds(l.layer, node) }).map(fn(l) { l.layer })
-  match layer_focus_open.search_by(fn(l) { !t.holds(l.layer, node) && l.back_in == under }) {
+  let under = arr_find_first(layer_focus_open, fn(l) { t.holds(l.layer, node) }).map(fn(l) { l.layer })
+  match arr_search_by(layer_focus_open, fn(l) { !t.holds(l.layer, node) && l.back_in == under }) {
     Some(i) => {
       // (asked as the frame it opened in builds it: what it gives back; asked after: what had it as it opened kept)
       if layer_focus_open[i].fresh {
@@ -8157,7 +8161,7 @@ fn Ctx::focus_parked(self : Ctx, target : Int) -> Bool {
                   backs.push(k)
                   back_ins.push(k_in)
                 }
-                None if l.opener_in is Some(o) && layer_focus_open.iter().any(fn(x) { x.layer == o }) => {
+                None if l.opener_in is Some(o) && arr_any(layer_focus_open, fn(x) { x.layer == o }) => {
                   backs.push(l.back)
                   back_ins.push(Some(o))
                 }
@@ -8253,7 +8257,7 @@ fn layer_opener_back(t : @view.Tree, opener : @view.Opener?) -> (Int, @view.Node
 /// The layer of layer_focus_open that holds what opened a layer (`opener`, View::opened_by), as it opens.
 fn layer_opener_in(t : @view.Tree, opener : @view.Opener?) -> @view.NodeId? {
   match opener {
-    Some(@view.ByNode(n)) => layer_focus_open.iter().find_first(fn(l) { t.holds(l.layer, n) }).map(fn(l) { l.layer })
+    Some(@view.ByNode(n)) => arr_find_first(layer_focus_open, fn(l) { t.holds(l.layer, n) }).map(fn(l) { l.layer })
     Some(@view.ByOld(k)) => layer_focus_holding(t, k)
     None => None
   }
@@ -8295,7 +8299,7 @@ fn view_layers_focus(t : @view.Tree, gone : Array[@view.NodeId], opened : Array[
   // (the focus in one gone, or nowhere: back to what that gives it back to, the whole of it given back first)
   // (the focus in one gone: on a node of the tree's in it (or let go with it), or on a stop of an old view it hosts)
   let focused_in = match focus_node_of(c.focus) {
-    Some(n) => going.iter().find_first(fn(l) { t.holds(l.layer, n) || !t.holds(n, n) })
+    Some(n) => arr_find_first(going, fn(l) { t.holds(l.layer, n) || !t.holds(n, n) })
     None => None
   }
   let back = match focused_in {
@@ -8324,7 +8328,7 @@ fn view_layers_focus(t : @view.Tree, gone : Array[@view.NodeId], opened : Array[
         Some(_) => false
         None =>
           match c.old_focus_island(b) {
-            Some(isl) if old_islands.iter().any(fn(o) { o.id == isl }) &&
+            Some(isl) if arr_any(old_islands, fn(o) { o.id == isl }) &&
               t.laid_out_nowhere(isl) &&
               t.in_use(isl) => {
               if c.focus != 0 {
@@ -8353,7 +8357,7 @@ fn view_layers_focus(t : @view.Tree, gone : Array[@view.NodeId], opened : Array[
   let mut had_in = layer_focus_holding(t, had)
   for o in opened {
     let (layer, to) = o
-    match layer_focus_open.search_by(fn(l) { l.layer == layer }) {
+    match arr_search_by(layer_focus_open, fn(l) { l.layer == layer }) {
       Some(i) => {
         layer_focus_open[i].back = had
         layer_focus_open[i].back_in = had_in
@@ -8475,8 +8479,8 @@ let view_shape_of : Ref[ShapeOf] = Ref(OfOld)
 fn view_cursor_tell() -> Unit {
   let kind = match (view_app.val, view_held.val) {
     (None, _) => desk.old_shape
-    (Some(tree), Some(Dragging(id))) | (Some(tree), Some(Node(id))) => tree.cursor_of(id).code()
-    (Some(_), Some(Old(_, _))) => desk.old_shape
+    (Some(tree), Some(Dragging(id))) | (Some(tree), Some(ViewHeld::Node(id))) => tree.cursor_of(id).code()
+    (Some(_), Some(ViewHeld::Old(_, _))) => desk.old_shape
     (Some(tree), _) => {
       let k = match view_shape_of.val {
         OfNode(id) => tree.cursor_of(id).code()
@@ -8841,7 +8845,7 @@ fn view_layers_first(c : Ctx) -> Unit {
     if c.focus != tree_said_id(l.layer) {
       // (under another layer opened over it, the focus there: its own still to give as that goes and gives it back
       // to this one's ground; else the person's or the app's, given it elsewhere)
-      if !layer_focus_open.iter().any(fn(o) { o.layer != l.layer && tree_layer_focused(c, t, o.layer) }) {
+      if !arr_any(layer_focus_open, fn(o) { o.layer != l.layer && tree_layer_focused(c, t, o.layer) }) {
         l.first = false
       }
       continue
@@ -9088,7 +9092,7 @@ fn old_list_under_pointer(c : Ctx) -> Int {
 /// took none of them; none under a modal one of theirs. True where one took it.
 fn view_scroll_key(c : Ctx, code : Int) -> Bool {
   guard view_app.val is Some(tree) else { return false }
-  if c.last_layers.iter().any(fn(l) { l.modal && c.layer_takes(l) }) {
+  if arr_any(c.last_layers, fn(l) { l.modal && c.layer_takes(l) }) {
     return false
   }
   let action = if code == key_page_down {

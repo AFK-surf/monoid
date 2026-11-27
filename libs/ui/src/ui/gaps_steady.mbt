@@ -261,7 +261,7 @@ fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, D
     let mut gone = false
     while p >= 0 && !gone {
       if old_box_owners.get(p) is Some((_, id)) {
-        gone = !old_islands.iter().any(fn(o) { o.id == id })
+        gone = !arr_any(old_islands, fn(o) { o.id == id })
       }
       p = c.nodes[p].parent
     }

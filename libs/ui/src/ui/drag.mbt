@@ -19,7 +19,10 @@ pub(all) enum DragAxis {
 ///|
 fn DragAxis::same(self : DragAxis, other : DragAxis) -> Bool {
   match (self, other) {
-    (Hold, Hold) | (Vertical, Vertical) | (Horizontal, Horizontal) | (Free, Free) => true
+    (DragAxis::Hold, DragAxis::Hold)
+    | (DragAxis::Vertical, DragAxis::Vertical)
+    | (DragAxis::Horizontal, DragAxis::Horizontal)
+    | (DragAxis::Free, DragAxis::Free) => true
     _ => false
   }
 }

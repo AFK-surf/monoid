@@ -232,11 +232,31 @@ priv struct Desk {
 /// window's tree's (its words in pieces: which tree it is of, by its number (view_tree_made), the row of a list made by
 /// its key it is in and where it is in that row (View::row_place): the same paragraph while its row's key is there,
 /// scrolled away and back, whatever node shows it then; another once another row is where it was); none.
-#derive(Eq, Hash)
+#derive(Eq)
 priv enum SelKey {
   NoSel
   Para(Int)
   Words(Int, @view.NodeId, Array[Int])
+}
+
+///|
+impl Hash for SelKey with hash_combine(self, hasher) {
+  match self {
+    SelKey::NoSel => hasher.combine_int(0)
+    SelKey::Para(id) => {
+      hasher.combine_int(1)
+      hasher.combine_int(id)
+    }
+    SelKey::Words(tree_no, list_id, path) => {
+      hasher.combine_int(2)
+      hasher.combine_int(tree_no)
+      Hash::hash_combine(list_id, hasher)
+      hasher.combine_int(path.length())
+      for i = 0; i < path.length(); i = i + 1 {
+        hasher.combine_int(path[i])
+      }
+    }
+  }
 }
 
 ///|
@@ -951,7 +971,7 @@ pub fn picked_words() -> String {
 fn refresh_at(base : SelKey, at : Array[Int], row_depth : Int) -> Array[Int] {
   guard row_depth >= 0 && row_depth < at.length() else { return at }
   match (base, view_app.val) {
-    (Words(tree_no, list_id, path), Some(tree)) if tree_no == view_tree_made.val && path.length() > 0 =>
+    (SelKey::Words(tree_no, list_id, path), Some(tree)) if tree_no == view_tree_made.val && path.length() > 0 =>
       match tree.row_order_of(list_id, path[0]) {
         Some(cur) if at[row_depth] != cur => {
           let next = at.copy()
@@ -2046,7 +2066,7 @@ fn selection_end_drawn() -> (SelTarget, Double, Double, Double)? {
 /// where it was drawn (Ctx::sel_walk's ox, oy); none where it is not found.
 fn Ctx::selection_moved_now(self : Ctx) -> (Double, Double) {
   guard selection_end_drawn() is Some((t, _, _, _)) else { return (0.0, 0.0) }
-  guard t.base is Para(base) else { return (0.0, 0.0) }
+  guard t.base is SelKey::Para(base) else { return (0.0, 0.0) }
   for j in 0..<self.count {
     let n = self.nodes[j]
     let said = match (n.rcut, n.rich) {

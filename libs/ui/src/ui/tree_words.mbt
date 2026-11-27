@@ -31,7 +31,7 @@ pub fn style_words(style : TextStyle) -> @view.WordsLook {
     },
     wrap: st.wrap.unwrap_or(true),
     tracking: match st.tracking {
-      Some(Exact(px)) => Points(px)
+      Some(Tracking::Exact(px)) => Points(px)
       Some(t) => Ems(t.px(1.0))
       None => @view.letters_own
     },
@@ -54,7 +54,7 @@ pub fn style_ink(style : TextStyle) -> Int64 {
 /// Whether words of `style` are cut short on their line (`w=Cut`), sampled when declaring the node's sizing.
 pub fn style_cut(style : TextStyle) -> Bool {
   let dark = @signals.untracked(fn() { tree_theme().dark })
-  style.resolve(g().narrow, dark).w is Some(Cut)
+  style.resolve(g().narrow, dark).w is Some(Len::Cut)
 }
 
 ///|
@@ -62,7 +62,7 @@ pub fn style_cut(style : TextStyle) -> Bool {
 /// takes as the words saying they may be cut on it: Ctx::squeeze_cut_said), sampled when declaring sizing.
 pub fn style_fills(style : TextStyle) -> Bool {
   let dark = @signals.untracked(fn() { tree_theme().dark })
-  style.resolve(g().narrow, dark).w is Some(Full | Grow(_))
+  style.resolve(g().narrow, dark).w is Some(Len::Full | Grow(_))
 }
 
 ///|

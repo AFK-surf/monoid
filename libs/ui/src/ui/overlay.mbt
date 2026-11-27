@@ -499,7 +499,7 @@ fn Ctx::focus_in_layer(self : Ctx, id : Int) -> Bool {
         if at == id {
           return true
         }
-        match self.last_layers.iter().find_first(fn(l) { l.id == at }) {
+        match arr_find_first(self.last_layers, fn(l) { l.id == at }) {
           Some(l) if at != 0 => at = l.parent
           _ => return false
         }
@@ -526,7 +526,7 @@ pub fn Ctx::pointer_in_overlay(self : Ctx, id : Int) -> Bool {
     let mut at = f.layer
     for _ in 0..<64 {
       if at == id { return true }
-      match self.last_layers.iter().find_first(fn(l) { l.id == at && self.layer_takes(l) }) {
+      match arr_find_first(self.last_layers, fn(l) { l.id == at && self.layer_takes(l) }) {
         Some(l) if at != 0 => at = l.parent
         _ => break
       }
@@ -559,7 +559,7 @@ fn Ctx::keys_here(self : Ctx) -> Bool {
     let parent = match self.layers.iter().find_first(fn(l) { l.id == at }) {
       Some(l) => Some(l.parent)
       None =>
-        match self.last_layers.iter().find_first(fn(l) { l.id == at }) {
+        match arr_find_first(self.last_layers, fn(l) { l.id == at }) {
           Some(l) => Some(l.parent)
           None => None
         }
@@ -1033,7 +1033,7 @@ fn layer_back_forget() -> Unit {
 fn Ctx::layer_back_taken(self : Ctx, id : Int, gen : Int) -> Unit {
   guard self.layer_gen.get(id) == Some(gen) && !self.layer_retired_now(id) else { return }
   // (staying open as it is taken: taken all the same, nothing done)
-  if self.last_layers.iter().any(fn(l) { l.id == id && layer_stays(l) }) {
+  if arr_any(self.last_layers, fn(l) { l.id == id && layer_stays(l) }) {
     return
   }
   self.dismissals[id] = Back
@@ -1083,7 +1083,7 @@ fn Ctx::layers_dismissed(self : Ctx, gone : Array[(Int, Dismiss)], tell? : Bool 
       let back = self.layer_return.get(id).unwrap_or(0)
       // (a stop of the old views' that may take it, or a node of the tree's: its own, as focus_moved has it)
       let there = back != 0 &&
-        (self.last_focusables.iter().any(fn(f) { f.id == back && !self.layer_inert(f.layer) }) ||
+        (arr_any(self.last_focusables, fn(f) { f.id == back && !self.layer_inert(f.layer) }) ||
         tree_said_ids.contains(back))
       self.focus_moved(if there { back } else { 0 }, returned=true)
     }
@@ -1140,7 +1140,7 @@ fn Ctx::layer_retired_now(self : Ctx, id : Int) -> Bool {
 /// layers or over it alone (Ctx::keys_reach).
 fn Ctx::keys_layer(self : Ctx, from? : Int = -3) -> Int {
   let open = self.last_layers.filter(fn(l) { self.layer_takes(l) && self.layer_stack(l) >= from }).rev()
-  match open.iter().find_first(fn(l) { l.modal || self.focus_in_layer(l.id) }) {
+  match arr_find_first(open, fn(l) { l.modal || self.focus_in_layer(l.id) }) {
     Some(l) => l.id
     None => 0
   }
@@ -1158,7 +1158,7 @@ fn Ctx::keys_reach(self : Ctx, id : Int) -> Bool {
   }
   let layer = self.keys_layer(from~)
   if layer == 0 {
-    !self.last_layers.iter().any(fn(l) { self.layer_takes(l) && self.layer_stack(l) >= from && self.focus_in_layer(l.id) })
+    !arr_any(self.last_layers, fn(l) { self.layer_takes(l) && self.layer_stack(l) >= from && self.focus_in_layer(l.id) })
   } else {
     self.focus_in_layer(layer) && self.focus == id
   }

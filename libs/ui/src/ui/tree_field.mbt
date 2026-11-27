@@ -947,7 +947,7 @@ fn tree_field_handle_down(x : Double, y : Double, at : Double) -> Bool {
   if which != 1 {
     st.menu = false
   }
-  view_held.val = Some(Node(id))
+  view_held.val = Some(ViewHeld::Node(id))
   view_down.val = None
   ignore(at)
   tree_field_redraw()

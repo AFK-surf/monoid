@@ -23,7 +23,7 @@ let tree_window_zoom : Ref[@signals.Signal[Double]] = Ref(@signals.signal(1.0, s
 /// (tree_corner_roots_now), again as they change (the window maximized, another system's corner, another theme's
 /// ranges).
 pub fn corner_of(k : CornerOf) -> @view.Live[Double] {
-  By(fn() { k.radius(tree_corner_roots_now()) })
+  By(fn() { CornerOf::radius(k, tree_corner_roots_now()) })
 }
 
 ///|
@@ -137,7 +137,14 @@ pub fn tree_corners_linked(v : @view.View, links : () -> FixedArray[CornerOf]?) 
       Some(k) => {
         // (as the tree's linked corners are worked out: its window's corner, its theme's, its zoom, followed)
         let roots = tree_corner_roots_now()
-        Some((k[0].radius(roots), k[1].radius(roots), k[2].radius(roots), k[3].radius(roots)))
+        Some(
+          (
+            CornerOf::radius(k[0], roots),
+            CornerOf::radius(k[1], roots),
+            CornerOf::radius(k[2], roots),
+            CornerOf::radius(k[3], roots),
+          ),
+        )
       }
       None => None
     }

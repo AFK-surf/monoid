@@ -397,7 +397,7 @@ fn tree_place_with_row(v : @view.View) -> (Array[Int], Int) {
         }
         i
       }
-      None => p.kids().search_by(fn(k) { k.id() == at.id() }).unwrap_or(0)
+      None => arr_search_by(p.kids(), fn(k) { k.id() == at.id() }).unwrap_or(0)
     }
     up.push(i)
     at = p
@@ -734,7 +734,7 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
         Some(Nowhere) => ()
         // (an old view under them held it, the words of the tree's that take no press drawn over it there (a page's
         // messages over 小屏's shell): its press called off, as a hold of the old frame's own on words it drew is its)
-        Some(Old(_, _)) if words is Some(t) && tree_words_over(tree, t, x, y) => g().press_called_off(x, y, at)
+        Some(ViewHeld::Old(_, _)) if words is Some(t) && tree_words_over(tree, t, x, y) => g().press_called_off(x, y, at)
         // (a cover held over them whose still hold goes through to what lies under it (View::gesture's `through`: the
         // page beside 中屏's sidebar), which nothing of the tree's under it took: its hold ended, as one handed through
         // is, the words under it the hold's)
@@ -742,13 +742,13 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
           tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore
         // (a ground's press (View::as_ground: the page a tap on brings its bars, a reader's on 小屏) under words picked
         // with the pointer: the hold the words', the ground's press called off, no tap as it is let go)
-        Some(Node(id)) if words is Some(_) && tree.is_ground(id) => tree.hold_lost_in(id.at)
+        Some(ViewHeld::Node(id)) if words is Some(_) && tree.is_ground(id) => tree.hold_lost_in(id.at)
         // (a node's own press, its own hold: its)
         _ => return
       }
       guard words is Some(t) else { return }
       view_down.val = None
-      view_held.val = Some(Old(-1, None))
+      view_held.val = Some(ViewHeld::Old(-1, None))
       view_input_went(-1)
       old_pointer_now(0, x, y, 0, 0, at)
       g().finger_pick(t, x, y)
@@ -768,8 +768,8 @@ fn tree_finger_menu(tree : @view.Tree, x : Double, y : Double, words : SelTarget
   let call_off : () -> Unit = match view_held.val {
     // (a field of the tree's on Android has its own long press (tree_field_held) that picks the word there; never
     // stolen by its secondary-button context menu, nor by an I-beam backdrop area wired with field_menu_on)
-    Some(Node(id)) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) => return false
-    Some(Node(id)) => fn() { tree.hold_lost_in(id.at) }
+    Some(ViewHeld::Node(id)) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) => return false
+    Some(ViewHeld::Node(id)) => fn() { tree.hold_lost_in(id.at) }
     Some(Dragging(id)) if tree.claims_scroll(id) && words is None =>
       fn() { tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore }
     Some(Nowhere) if words is None => fn() {  }

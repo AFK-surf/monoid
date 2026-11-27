@@ -258,7 +258,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
         }
         out.write_string("<p>" + pieces + "</p>")
       }
-      Some(Heading(level)) => {
+      Some(WordsShape::Heading(level)) => {
         close_lists(0)
         close_code()
         close_quote()
