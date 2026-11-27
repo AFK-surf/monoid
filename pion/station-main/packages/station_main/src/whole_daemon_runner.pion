@@ -170,6 +170,79 @@ pub fn is_path_within_root(path : String, root : String, sep : String) -> Bool {
   p == r || p.starts_with(r + "/")
 }
 
+/// 1:1 with `station/src/sessions/agent-home.ts:23-27`:
+/// Home workspace uses `<data>/agent`; joined workspace uses `<data>/agent/workspaces/<ws>`
+/// so joined workspaces NEVER read the home workspace's `MEMORY.md` or skills.
+pub fn workspace_agent_home_path(
+  data_dir : String,
+  ws : String,
+  home_ws : String,
+  sep : String,
+) -> Result[String, String] {
+  let base = nodepath::join(sep, [data_dir, "agent"])
+  if ws.length() == 0 || home_ws.length() == 0 || ws == home_ws {
+    return Ok(base)
+  }
+  let wb = ws.to_bytes()
+  if wb.length() > 128 {
+    return Err("invalid workspace id length: " + ws)
+  }
+  for i in 0..<wb.length() {
+    let c = wb[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57)
+    || (c >= 65 && c <= 90)
+    || (c >= 97 && c <= 122)
+    || c == 45
+    || c == 95
+    if !ok {
+      return Err("invalid workspace id: " + ws)
+    }
+  }
+  Ok(nodepath::join(sep, [base, "workspaces", ws]))
+}
+
+/// Resolves the nearest existing ancestor of `target` via `realpath` and reconstructs the
+/// canonical path (never falling back to an unvalidated raw path when `realpath` fails).
+pub fn canonicalize_with_existing_ancestor(
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
+  target : String,
+  sep : String,
+) -> Result[String, String] {
+  if target.length() == 0 || path_has_parent_traversal(target) {
+    return Err("invalid path: " + target)
+  }
+  match realpath_fn(target) {
+    Ok(r) => return Ok(r)
+    Err(_) => ()
+  }
+  let mut cur = target
+  let tail : Array[String] = []
+  let mut steps = 0
+  while steps < 64 {
+    steps = steps + 1
+    let parent = nodepath::dirname(sep, cur)
+    let base = nodepath::basename(sep, cur)
+    if parent == cur || base.length() == 0 {
+      return Err("no existing ancestor for path: " + target)
+    }
+    tail.push(base)
+    cur = parent
+    match realpath_fn(cur) {
+      Ok(real_anc) => {
+        let parts : Array[String] = [real_anc]
+        let mut ti = tail.length() - 1
+        while ti >= 0 {
+          parts.push(tail[ti])
+          ti = ti - 1
+        }
+        return Ok(nodepath::join(sep, parts))
+      }
+      Err(_) => ()
+    }
+  }
+  Err("path depth limit exceeded: " + target)
+}
+
 /// Resolves and validates a session CWD against path traversal and workspace root containment.
 pub fn resolve_safe_session_cwd(
   row_cwd : Option[String],
@@ -202,12 +275,83 @@ pub fn resolve_safe_session_cwd(
   Ok(data_dir)
 }
 
+/// Canonical CWD authorization: resolves nearest existing ancestor via `realpath` (never falling
+/// back to raw path) and checks containment against `realpath(data_dir)` (or authorized `allowed_roots`
+/// for explicit `row_cwd`).
+pub fn resolve_canonical_session_cwd(
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
+  row_cwd : Option[String],
+  row_workspace : String,
+  data_dir : String,
+  allowed_roots : Array[String],
+  sep : String,
+) -> Result[String, String] {
+  let raw_cwd = match resolve_safe_session_cwd(row_cwd, row_workspace, data_dir, sep) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  let canon_cwd = match canonicalize_with_existing_ancestor(realpath_fn, raw_cwd, sep) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  let canon_data = match canonicalize_with_existing_ancestor(realpath_fn, data_dir, sep) {
+    Ok(c) => c
+    Err(e) => return Err("cannot canonicalize data_dir: " + e)
+  }
+  if is_path_within_root(canon_cwd, canon_data, sep) {
+    return Ok(canon_cwd)
+  }
+  match row_cwd {
+    Some(rc) => if rc.trim().length() > 0 {
+      for i in 0..<allowed_roots.length() {
+        let ar = allowed_roots[i].trim()
+        if ar.length() == 0 {
+          continue
+        }
+        match canonicalize_with_existing_ancestor(realpath_fn, ar, sep) {
+          Ok(canon_root) => {
+            if is_path_within_root(canon_cwd, canon_root, sep) {
+              return Ok(canon_cwd)
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      return Err("explicit session cwd is outside authorized roots")
+    }
+    None => ()
+  }
+  Err("session workspace escapes canonical station data_dir")
+}
+
+/// Pure newline-boundary ACK calculation (Abstraction 2):
+/// Returns `Some(nl_end_pos)` ONLY when `payload` contains at least one `\n` byte beyond `prev_acked`,
+/// ensuring neither fresh nor adopted runners ever ACK a partial JSON line across `SIGUSR2` handovers.
+pub fn compute_newline_acked_end(at : Int64, payload : Bytes, prev_acked : Int64) -> Option[Int64] {
+  let mut last_nl = -1
+  for i in 0..<payload.length() {
+    if (payload[i].to_int() & 0xFF) == 10 {
+      last_nl = i
+    }
+  }
+  if last_nl < 0 {
+    return None
+  }
+  let nl_end = at + (last_nl + 1).to_int64()
+  if nl_end > prev_acked {
+    Some(nl_end)
+  } else {
+    None
+  }
+}
+
 /// Escapes XML attribute values for `<message ...>` envelopes.
 fn escape_xml_attr(s : String) -> String {
   s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 }
 
 /// Wraps a human prompt in the standard `<message via="..." thread="..." from="..." ts="...">` envelope.
+/// Internal station reminders (`[station] ...`) and already-enveloped `<message ...>` strings pass through verbatim.
 pub fn format_message_envelope(
   via : String,
   thread_addr : String,
@@ -216,7 +360,7 @@ pub fn format_message_envelope(
   text : String,
 ) -> String {
   let trimmed = text.trim()
-  if trimmed.starts_with("<message ") {
+  if trimmed.starts_with("<message ") || trimmed.starts_with("[station] ") {
     return text
   }
   let sb = StringBuilder::new()
@@ -472,7 +616,7 @@ pub fn encode_runtime_steer(
         ),
       ]
       match turn_id {
-        Some(tid) => if tid.length() > 0 { params.push(("turnId", base_codec::json_str(tid))) }
+        Some(tid) => if tid.length() > 0 { params.push(("expectedTurnId", base_codec::json_str(tid))) }
         None => ()
       }
       base_codec::json_stringify(
@@ -1046,16 +1190,35 @@ pub fn resolve_authorized_profile(
             Some(base_codec::Json::Str(rs)) => station_drivers::runtime_kind_from_str(rs)
             _ => None
           }
+          let explicit_runtimes : Array[String] = []
+          match base_codec::json_get(p, "runtimes") {
+            Some(base_codec::Json::Arr(rarr)) => {
+              for ri in 0..<rarr.length() {
+                match rarr[ri] {
+                  base_codec::Json::Str(rs) => if rs.length() > 0 { explicit_runtimes.push(rs) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
           let home_raw = match base_codec::json_get(p, "home") {
             Some(base_codec::Json::Str(s)) => s.trim()
             _ => ""
           }
-          // P0-2: `machine: true` without `home` MUST keep `home = ""` (never fabricate `<data>/homes/<id>`).
+          // P0-2 (Abstraction 1):
+          // - Relative `home_raw` (e.g. `"homes/<id>"` in real `config.json`) resolves under `data_dir`
+          //   (`station/src/sessions/config.ts:109,129` `under(dataDir, p.home)`).
+          // - `machine: true` without `home` keeps `home = ""` (never fabricate `<data>/homes/<id>`).
           let home = if home_raw.length() > 0 {
             if path_has_parent_traversal(home_raw) {
               return Err("profile home contains path traversal: " + pid)
             }
-            home_raw
+            if nodepath::is_absolute(sep, home_raw) {
+              home_raw
+            } else {
+              nodepath::join(sep, [data_dir, home_raw])
+            }
           } else if machine {
             ""
           } else {
@@ -1168,13 +1331,22 @@ pub fn resolve_authorized_profile(
             max_concurrent_sessions: max_conc,
             direct_quota: direct_quota,
           }
-          // Verify `runtime_kind` is offered by `station_drivers::profile_runtimes(prof)` (not just single `runtime`).
-          let offered = station_drivers::profile_runtimes(prof)
+          // Verify `runtime_kind` is offered by `runtimes[]` (if present) or `station_drivers::profile_runtimes(prof)`.
           let mut rt_offered = false
-          for ri in 0..<offered.length() {
-            if station_drivers::runtime_kind_to_str(offered[ri]) == rt_str {
-              rt_offered = true
-              break
+          if explicit_runtimes.length() > 0 {
+            for ri in 0..<explicit_runtimes.length() {
+              if explicit_runtimes[ri] == rt_str {
+                rt_offered = true
+                break
+              }
+            }
+          } else {
+            let offered = station_drivers::profile_runtimes(prof)
+            for ri in 0..<offered.length() {
+              if station_drivers::runtime_kind_to_str(offered[ri]) == rt_str {
+                rt_offered = true
+                break
+              }
             }
           }
           if !rt_offered {
@@ -1197,8 +1369,9 @@ pub fn resolve_authorized_profile(
   Ok(station_drivers::Profile::default(safe_id, Some(runtime_kind), fallback_home))
 }
 
-/// Safely kills a runner process/group ONLY after verifying `is_runner_live` against OS start time
-/// (prevents PID-reuse collateral kills).
+/// Safely signals ONLY the `is_runner_live`-verified `runner_pid` (Abstraction 3: never send
+/// direct signals to an unverified independent agent PGID; `stillfail-runner` cleans up its own
+/// child process group on SIGTERM).
 fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
   if info.runner_pid <= 1 {
     return
@@ -1211,10 +1384,66 @@ fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
   if !station_drivers::is_runner_live(info, true, os_start) {
     return
   }
-  if info.pgid > 1 {
-    let _ = station_sys::proc_kill(info.pgid, station_sys::SIG_TERM, true)
-  }
   let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_TERM, false)
+}
+
+/// Unified live session authorization & path policy (Abstraction 1: single entry point shared by
+/// both fresh spawns and existing live runner reuse).
+pub struct SessionLaunchPolicy {
+  pub profile : station_drivers::Profile
+  pub cwd : String
+  pub ws : String
+  pub agent_home : String
+}
+
+/// Reads the live hot-reloaded `config.json` from `core.config_file` (never a stale startup copy).
+pub fn live_config_raw(core : station_whole::WholeCore, fallback : base_codec::Json) -> base_codec::Json {
+  match core.config_file {
+    Some(cf) => cf.raw()
+    None => fallback
+  }
+}
+
+/// Single authoritative policy resolver for both fresh spawns and existing live runner reuse.
+pub fn resolve_session_launch_policy(
+  cfg_raw : base_codec::Json,
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
+  row : station_store::SessionRow,
+  runtime_kind : station_drivers::RuntimeKind,
+  home_ws : String,
+  data_dir : String,
+  allowed_roots : Array[String],
+  sep : String,
+) -> Result[SessionLaunchPolicy, String] {
+  let sess_ws = match row.ws {
+    Some(w) => if w.length() > 0 { w } else { home_ws }
+    None => home_ws
+  }
+  let profile = match resolve_authorized_profile(cfg_raw, row.profile, runtime_kind, sess_ws, home_ws, data_dir, sep) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let cwd = match resolve_canonical_session_cwd(realpath_fn, row.cwd, row.workspace, data_dir, allowed_roots, sep) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  let agent_home = match workspace_agent_home_path(data_dir, sess_ws, home_ws, sep) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  Ok(SessionLaunchPolicy::{ profile: profile, cwd: cwd, ws: sess_ws, agent_home: agent_home })
+}
+
+struct PendingEndTurn {
+  turn_id : Option[String]
+  outcome : String
+  detail : Option[String]
+  declared_str : Option[String]
+  need_opt : Option[String]
+  wait_secs_opt : Option[Int]
+  wait_for_opt : Option[String]
+  wait_watch_opt : Option[Bool]
+  wall_ms : Int64
 }
 
 enum LiveRunnerPhase {
@@ -1276,6 +1505,10 @@ struct LiveRunnerSession {
   mut write_queue_bytes : Int
   mut codex_active_turn_id : Option[String]
   mut dropping_oversized_out_line : Bool
+  mut stopping : Bool
+  mut reprompt_restarts : Int
+  mut pending_end_turn : Option[PendingEndTurn]
+  mut adopted_db_out : Int64
 }
 
 /// Manages all live `stillfail-runner` child processes and active agent turns for `whole_daemon`.
@@ -1680,12 +1913,16 @@ fn live_runner_finish_turn(
           actor.has_process = false
         }
         _ => {
-          // P1-2: Runner is not Ready (e.g. Exited): NEVER leave actor stuck Running with has_process=false!
-          // Re-queue the reminder as a Prompt so next `pump` spawns a fresh runner, and finish current turn.
+          // P1-2 & P2: Bounded Reprompt restart (max 2 attempts) so undeclared-end never loops forever.
           actor.phase = station_sessions::ActorPhase::Idle
           actor.has_process = false
-          actor.queue.push(station_sessions::ActorWork::Prompt(reminder))
-          actor.pump_next_prompt()
+          if sess.reprompt_restarts < 2 {
+            sess.reprompt_restarts = sess.reprompt_restarts + 1
+            actor.queue.push(station_sessions::ActorWork::Prompt(reminder))
+            actor.pump_next_prompt()
+          } else {
+            ctx.log("[live-runner] reprompt restart cap (2) reached for " + sess.session_key + "; finishing turn")
+          }
         }
       }
     }
@@ -1699,42 +1936,63 @@ fn live_runner_finish_turn(
     _ => actor.declared
   }
   let (declared_str, need_opt, wait_secs_opt, wait_for_opt, wait_watch_opt) = turn_declared_fields(eff_declared)
-  let turn_id_opt = sess.current_turn_id
+  let pend = PendingEndTurn::{
+    turn_id: sess.current_turn_id,
+    outcome: outcome,
+    detail: detail,
+    declared_str: declared_str,
+    need_opt: need_opt,
+    wait_secs_opt: wait_secs_opt,
+    wait_for_opt: wait_for_opt,
+    wait_watch_opt: wait_watch_opt,
+    wall_ms: wall_ms,
+  }
+  live_runner_commit_end_turn(ctx, core, sess, pend)
+}
+
+/// Abstraction 2: Atomically commits `endTurn` to SQLite; on DB error, preserves `current_turn_id`
+/// and schedules `sess.pending_end_turn` for retry in `tick()` instead of faking `running=0` SSE!
+fn live_runner_commit_end_turn(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  sess : LiveRunnerSession,
+  pend : PendingEndTurn,
+) -> Unit {
   match core.store.require_open() {
     Ok(st) => {
-      let decl_j = match declared_str {
+      let decl_j = match pend.declared_str {
         Some(s) => base_codec::json_str(s)
         None => base_codec::json_null()
       }
-      let det_j = match detail {
+      let det_j = match pend.detail {
         Some(s) => base_codec::json_str(s)
         None => base_codec::json_null()
       }
-      let need_j = match need_opt {
+      let need_j = match pend.need_opt {
         Some(s) => base_codec::json_str(s)
         None => base_codec::json_null()
       }
-      let wsec_j = match wait_secs_opt {
+      let wsec_j = match pend.wait_secs_opt {
         Some(n) => base_codec::json_int(n)
         None => base_codec::json_null()
       }
-      let wfor_j = match wait_for_opt {
+      let wfor_j = match pend.wait_for_opt {
         Some(s) => base_codec::json_str(s)
         None => base_codec::json_null()
       }
-      let wwatch_j = match wait_watch_opt {
+      let wwatch_j = match pend.wait_watch_opt {
         Some(b) => base_codec::json_int(if b { 1 } else { 0 })
         None => base_codec::json_null()
       }
       match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-        match turn_id_opt {
+        match pend.turn_id {
           Some(tid) => {
             match t.run(
               "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
               [
                 base_codec::json_str(tid),
-                sql_db::int64_to_json(wall_ms),
-                base_codec::json_str(outcome),
+                sql_db::int64_to_json(pend.wall_ms),
+                base_codec::json_str(pend.outcome),
                 det_j,
                 decl_j,
                 need_j,
@@ -1751,30 +2009,28 @@ fn live_runner_finish_turn(
         }
         match t.run(
           "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
-          [base_codec::json_str(sess.session_key), sql_db::int64_to_json(wall_ms)],
+          [base_codec::json_str(sess.session_key), sql_db::int64_to_json(pend.wall_ms)],
         ) {
           Err(e) => return Err(e)
           Ok(_) => ()
         }
         Ok(())
       }) {
-        Ok(_) => sess.current_turn_id = None
-        Err(e) => {
-          ctx.log("[live-runner] endTurn SQLite tx failed for " + sess.session_key + ": " + e.message)
+        Ok(_) => {
           sess.current_turn_id = None
+          sess.pending_end_turn = None
+          live_runner_emit_session_event(core, sess.ws, sess.session_key, false, pend.declared_str, pend.wall_ms)
+        }
+        Err(e) => {
+          ctx.log("[live-runner] endTurn SQLite tx failed for " + sess.session_key + ": " + e.message + "; deferring retry")
+          sess.pending_end_turn = Some(pend)
         }
       }
     }
-    Err(_) => sess.current_turn_id = None
+    Err(_) => {
+      sess.pending_end_turn = Some(pend)
+    }
   }
-  live_runner_emit_session_event(
-    core,
-    sess.ws,
-    sess.session_key,
-    false,
-    declared_str,
-    wall_ms,
-  )
 }
 
 fn live_runner_flush_ready(
@@ -1782,27 +2038,37 @@ fn live_runner_flush_ready(
   sess : LiveRunnerSession,
   sock_id : Int64,
   now_ms : Int64,
-) -> Unit {
+) -> Bool {
   let rsid = match sess.runtime_session_id {
     Some(s) => s
     None => ""
   }
   match sess.pending_prompt {
     Some(text) => {
+      let next_seq = sess.prompt_seq + 1
+      let frame = encode_runtime_prompt(sess.runtime_kind, text, rsid, next_seq)
+      // Abstraction 2: Only consume `pending_prompt` AFTER `live_runner_send_sess` returns true!
+      if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+        return false
+      }
       sess.pending_prompt = None
-      sess.prompt_seq = sess.prompt_seq + 1
+      sess.prompt_seq = next_seq
       if sess.is_acp {
         let _ = sess.acp_guard.on_prompt(now_ms)
       } else {
         sess.stop_guard.busy = true
       }
-      let frame = encode_runtime_prompt(sess.runtime_kind, text, rsid, sess.prompt_seq)
-      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
     }
     None => ()
   }
   while sess.pending_steers.length() > 0 {
     let first = sess.pending_steers[0]
+    let next_seq = sess.prompt_seq + 1
+    let frame = encode_runtime_steer(sess.runtime_kind, first, rsid, next_seq, turn_id=sess.codex_active_turn_id)
+    if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+      return false
+    }
+    sess.prompt_seq = next_seq
     let rest : Array[String] = []
     for i in 1..<sess.pending_steers.length() {
       rest.push(sess.pending_steers[i])
@@ -1813,10 +2079,8 @@ fn live_runner_flush_ready(
     for i in 0..<rest.length() {
       sess.pending_steers.push(rest[i])
     }
-    sess.prompt_seq = sess.prompt_seq + 1
-    let frame = encode_runtime_steer(sess.runtime_kind, first, rsid, sess.prompt_seq, turn_id=sess.codex_active_turn_id)
-    let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
   }
+  true
 }
 
 fn live_runner_start_acp_init(
@@ -2048,7 +2312,13 @@ fn live_runner_handle_agent_line(
       match sess.phase {
         LiveRunnerPhase::AcpOpening(info, sock_id) => {
           sess.phase = LiveRunnerPhase::Ready(info, sock_id)
-          live_runner_flush_ready(ctx, sess, sock_id, now_ms)
+          if !live_runner_flush_ready(ctx, sess, sock_id, now_ms) {
+            live_runner_close_sock(ctx, sess.conn_id, sock_id)
+            sess.phase = LiveRunnerPhase::Exited
+            if sess.current_turn_id is Some(_) {
+              live_runner_finish_turn(ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+            }
+          }
         }
         _ => ()
       }
@@ -2076,7 +2346,13 @@ fn live_runner_handle_agent_line(
       match sess.phase {
         LiveRunnerPhase::CodexOpening(info, sock_id) => {
           sess.phase = LiveRunnerPhase::Ready(info, sock_id)
-          live_runner_flush_ready(ctx, sess, sock_id, now_ms)
+          if !live_runner_flush_ready(ctx, sess, sock_id, now_ms) {
+            live_runner_close_sock(ctx, sess.conn_id, sock_id)
+            sess.phase = LiveRunnerPhase::Exited
+            if sess.current_turn_id is Some(_) {
+              live_runner_finish_turn(ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+            }
+          }
         }
         _ => ()
       }
@@ -2330,6 +2606,10 @@ pub fn LiveRunnerManager::adopt_live_runner(
     write_queue_bytes: 0,
     codex_active_turn_id: None,
     dropping_oversized_out_line: false,
+    stopping: false,
+    reprompt_restarts: 0,
+    pending_end_turn: None,
+    adopted_db_out: 0L,
   }
   self.sessions.set(session_key, sess)
   self.by_conn_id.set(cid, session_key)
@@ -2560,14 +2840,15 @@ fn LiveRunnerManager::dispatch_prompt(
     })
     match tid_opt {
       Some(tid) => {
-        let _ = st.insert_message(
+        let notice_txt = "Could not start agent: " + reason
+        match st.insert_message(
           station_store::NewMessage::{
             thread: tid,
             ts: None,
             author_kind: "notice",
             author: "station",
             agent_identity: None,
-            text: Some("Could not start agent: " + reason),
+            text: Some(notice_txt),
             attachments: None,
             quotes: None,
             declared: None,
@@ -2578,7 +2859,10 @@ fn LiveRunnerManager::dispatch_prompt(
             at: wall_ms,
           },
           deliver_to=[],
-        )
+        ) {
+          Ok((n, _)) => emit_thread_sse_event(core, sess_ws, tid, n, "notice", "notice", "station", notice_txt, wall_ms)
+          Err(_) => ()
+        }
       }
       None => ()
     }
@@ -2590,14 +2874,17 @@ fn LiveRunnerManager::dispatch_prompt(
     live_runner_emit_session_event(core, sess_ws, session_key, false, None, wall_ms)
   }
 
-  // P0-2: Authorize profile BEFORE reusing an existing live runner OR spawning a new one!
-  let profile = match resolve_authorized_profile(
-    cfg_raw,
-    row.profile,
+  // Abstraction 1: Single authoritative live launch policy (live `core.config_file.raw()`,
+  // relative `profile.home`, workspace-isolated `agent_home`, canonical `realpath` CWD).
+  let live_cfg = live_config_raw(core, cfg_raw)
+  let policy = match resolve_session_launch_policy(
+    live_cfg,
+    ctx.ops_fs.realpath,
+    row,
     rt_kind,
-    sess_ws,
     core.config.home_workspace,
     ctx.data,
+    core.config.drive_roots,
     ctx.sep,
   ) {
     Ok(p) => p
@@ -2606,34 +2893,56 @@ fn LiveRunnerManager::dispatch_prompt(
       return
     }
   }
+  let profile = policy.profile
+  let cwd = policy.cwd
 
-  // If a live runner is already attached and ready/starting for this session, reuse it directly!
+  // If a live runner is already attached and ready/starting for this session, verify its
+  // `(profile_id, runtime_str, cwd)` still matches the live policy! If drifted, reclaim & respawn.
   match self.sessions.get(session_key) {
-    Some(existing) => match existing.phase {
-      LiveRunnerPhase::Ready(_, sock_id) => {
-        live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms)
-        live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
-        existing.current_turn_id = Some(turn_id)
-        existing.turn_started_at = wall_ms
-        existing.pending_prompt = Some(enveloped_prompt)
-        actor.has_process = true
-        live_runner_flush_ready(ctx, existing, sock_id, now_ms)
-        return
+    Some(existing) => {
+      let identity_ok = existing.profile_id == profile.id
+      && existing.runtime_str == row.runtime
+      && existing.cwd == cwd
+      if !identity_ok {
+        ctx.log("[live-runner] live policy drifted for " + session_key + "; reclaiming stale runner")
+        self.reclaim_session(ctx, core, session_key, existing)
+      } else {
+        if !prompt_text.trim().starts_with("[station] ") {
+          existing.reprompt_restarts = 0
+        }
+        match existing.phase {
+          LiveRunnerPhase::Ready(_, sock_id) => {
+            live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms)
+            live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
+            existing.current_turn_id = Some(turn_id)
+            existing.turn_started_at = wall_ms
+            existing.pending_prompt = Some(enveloped_prompt)
+            actor.has_process = true
+            if !live_runner_flush_ready(ctx, existing, sock_id, now_ms) {
+              live_runner_close_sock(ctx, existing.conn_id, sock_id)
+              existing.phase = LiveRunnerPhase::Exited
+              self.by_conn_id.remove(existing.conn_id)
+              actor.has_process = false
+              live_runner_finish_turn(ctx, core, existing, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+            }
+            return
+          }
+          LiveRunnerPhase::Spawning(_, _, _, _, _)
+          | LiveRunnerPhase::Connecting(_)
+          | LiveRunnerPhase::AcpInit(_, _)
+          | LiveRunnerPhase::AcpOpening(_, _)
+          | LiveRunnerPhase::CodexInit(_, _)
+          | LiveRunnerPhase::CodexOpening(_, _) => {
+            live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms)
+            live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
+            existing.current_turn_id = Some(turn_id)
+            existing.turn_started_at = wall_ms
+            existing.pending_prompt = Some(enveloped_prompt)
+            return
+          }
+          LiveRunnerPhase::Exited => ()
+        }
       }
-      LiveRunnerPhase::Spawning(_, _, _, _, _)
-      | LiveRunnerPhase::Connecting(_)
-      | LiveRunnerPhase::AcpInit(_, _)
-      | LiveRunnerPhase::AcpOpening(_, _)
-      | LiveRunnerPhase::CodexInit(_, _)
-      | LiveRunnerPhase::CodexOpening(_, _) => {
-        live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms)
-        live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
-        existing.current_turn_id = Some(turn_id)
-        existing.turn_started_at = wall_ms
-        existing.pending_prompt = Some(enveloped_prompt)
-        return
-      }
-      LiveRunnerPhase::Exited => ()
     }
     None => ()
   }
@@ -2651,31 +2960,6 @@ fn LiveRunnerManager::dispatch_prompt(
       return
     }
   }
-  let cwd = match resolve_safe_session_cwd(row.cwd, row.workspace, ctx.data, ctx.sep) {
-    Ok(c) => {
-      // Symlink containment check if directory already exists.
-      match (ctx.ops_fs.realpath)(c) {
-        Ok(real_c) => {
-          if row.cwd is None {
-            let real_data = match (ctx.ops_fs.realpath)(ctx.data) {
-              Ok(rd) => rd
-              Err(_) => ctx.data
-            }
-            if !is_path_within_root(real_c, real_data, ctx.sep) {
-              fail_before_spawn("session workspace symlink escapes station data_dir")
-              return
-            }
-          }
-          real_c
-        }
-        Err(_) => c
-      }
-    }
-    Err(e) => {
-      fail_before_spawn(e)
-      return
-    }
-  }
   let _ = station_sys::mkdir_p(cwd)
   let rdir = station_drivers::runners_dir(ctx.data, ctx.sep)
   let _ = station_sys::mkdir_p(rdir)
@@ -2685,18 +2969,18 @@ fn LiveRunnerManager::dispatch_prompt(
     Some(p) => p
     None => ""
   }
-  // P1-1: Inject real 4-layer memory (`MEMORY.md` 16 KB + `<station-memory>` 4 KB + `<person-memory>` 4 KB)
-  // and real `row.workspace` / `row.cwd` / `projects_on` / `told_notes`!
-  let memory_path = nodepath::join(ctx.sep, [ctx.data, "agent", "MEMORY.md"])
+  // Abstraction 1 (P0): Workspace-isolated agent home (`<data>/agent` for home ws,
+  // `<data>/agent/workspaces/<ws>` for joined ws) — NEVER leak home ws memory to joined ws!
+  let memory_path = nodepath::join(ctx.sep, [policy.agent_home, "MEMORY.md"])
   let raw_mem = match (ctx.ops_fs.read_bytes)(memory_path) {
     Ok(b) => b.to_string()
     Err(_) => ""
   }
-  let st_mem_path = nodepath::join(ctx.sep, [ctx.data, "agent", "skills", "machines", station_drivers::station_tag(core.config.station_id) + ".md"])
+  let st_mem_path = nodepath::join(ctx.sep, [policy.agent_home, "skills", "machines", station_drivers::station_tag(core.config.station_id) + ".md"])
   let st_mem_entry = read_memory_entry_for_runner(ctx.ops_fs, st_mem_path)
   let ptag = station_drivers::person_tag(person_str)
   let p_mem_entry = if ptag.length() > 0 {
-    read_memory_entry_for_runner(ctx.ops_fs, nodepath::join(ctx.sep, [ctx.data, "agent", "skills", "people", ptag + ".md"]))
+    read_memory_entry_for_runner(ctx.ops_fs, nodepath::join(ctx.sep, [policy.agent_home, "skills", "people", ptag + ".md"]))
   } else {
     None
   }
@@ -2710,7 +2994,7 @@ fn LiveRunnerManager::dispatch_prompt(
     p_mem_entry,
     ctx.sep,
   )
-  let site_path = nodepath::join(ctx.sep, [ctx.data, "agent", "INSTRUCTIONS.md"])
+  let site_path = nodepath::join(ctx.sep, [policy.agent_home, "INSTRUCTIONS.md"])
   let site_text = match (ctx.ops_fs.read_bytes)(site_path) {
     Ok(b) => station_drivers::read_site_instructions(b.to_string())
     Err(_) => ""
@@ -2888,6 +3172,10 @@ fn LiveRunnerManager::dispatch_prompt(
         write_queue_bytes: 0,
         codex_active_turn_id: None,
         dropping_oversized_out_line: false,
+        stopping: false,
+        reprompt_restarts: 0,
+        pending_end_turn: None,
+        adopted_db_out: 0L,
       }
       self.sessions.set(session_key, sess)
       self.by_conn_id.set(cid, session_key)
@@ -2937,6 +3225,18 @@ pub fn LiveRunnerManager::handle_sys_event(
               // Ready! Detach bootstrap handle WITHOUT killing the runner and connect to its Unix socket.
               let _ = child.close()
               self.by_spawn_ev.remove(ev_id)
+              if sess.stopping {
+                safe_kill_runner_info(info)
+                sess.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(sess.conn_id)
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.has_process = false
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(ctx, core, sess, "aborted", None, now_ms, wall_ms)
+                }
+                ctx.log("[live-runner] runner ready arrived after stop request; terminated " + info.id)
+                return true
+              }
               sess.phase = LiveRunnerPhase::Connecting(info)
               let _ = ctx.mux_role.call_async_raw(
                 builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
@@ -2965,6 +3265,17 @@ pub fn LiveRunnerManager::handle_sys_event(
           let out_str = bytes_to_str_local(out_buf, out_buf.length())
           match parse_runner_ready_line(out_str) {
             Some(info) => {
+              if sess.stopping {
+                safe_kill_runner_info(info)
+                sess.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(sess.conn_id)
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.has_process = false
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(ctx, core, sess, "aborted", None, now_ms, wall_ms)
+                }
+                return true
+              }
               sess.phase = LiveRunnerPhase::Connecting(info)
               let _ = ctx.mux_role.call_async_raw(
                 builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
@@ -3062,12 +3373,40 @@ pub fn LiveRunnerManager::handle_role_done(
                   _ => -1L
                 }
                 if usid >= 0L {
+                  if sess.stopping {
+                    let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_signal("TERM", true))
+                    let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_done())
+                    live_runner_close_sock(ctx, conn_id, usid)
+                    safe_kill_runner_info(info)
+                    sess.phase = LiveRunnerPhase::Exited
+                    self.by_conn_id.remove(conn_id)
+                    let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                    actor.has_process = false
+                    if sess.current_turn_id is Some(_) {
+                      live_runner_finish_turn(ctx, core, sess, "aborted", None, now_ms, wall_ms)
+                    }
+                    return true
+                  }
                   sess.phase = LiveRunnerPhase::Ready(info, usid)
                   match sess.adopted_instance_id {
                     Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, true)
                     None => ()
                   }
-                  let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_attach())
+                  if !live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_attach()) {
+                    live_runner_close_sock(ctx, conn_id, usid)
+                    sess.phase = LiveRunnerPhase::Exited
+                    self.by_conn_id.remove(conn_id)
+                    match sess.adopted_instance_id {
+                      Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                      None => ()
+                    }
+                    let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                    actor.has_process = false
+                    if sess.current_turn_id is Some(_) {
+                      live_runner_finish_turn(ctx, core, sess, "failed", Some("runner attach write failed"), now_ms, wall_ms)
+                    }
+                    return true
+                  }
                   let _ = ctx.mux_role.call_async_raw(
                     builders_core::MuxToken::Tagged(conn_id, LIVE_RUNNER_TOK_UNIX_READ, usid),
                     "tcp.read",
@@ -3154,7 +3493,8 @@ pub fn LiveRunnerManager::handle_role_done(
           let mut fail_close_reason : Option[String] = None
           let mut ack_dirty = false
           let mut pending_adopted_batch : Array[(String, Int64, Int64, Bytes)] = []
-          let mut batch_out = sess.acked_out
+          let mut batch_db_out = sess.adopted_db_out
+          let mut batch_nl_out = sess.acked_out
           let mut batch_err = sess.acked_err
 
           let flush_adopted_batch = fn() -> Bool {
@@ -3174,9 +3514,20 @@ pub fn LiveRunnerManager::handle_role_done(
                 ) {
                   Ok(_) => {
                     pending_adopted_batch = []
-                    sess.acked_out = batch_out
-                    sess.acked_err = batch_err
-                    ack_dirty = true
+                    sess.adopted_db_out = batch_db_out
+                    let target_out = if sess.current_turn_id is Some(_) {
+                      batch_nl_out
+                    } else {
+                      batch_db_out
+                    }
+                    if target_out > sess.acked_out {
+                      sess.acked_out = target_out
+                      ack_dirty = true
+                    }
+                    if batch_err > sess.acked_err {
+                      sess.acked_err = batch_err
+                      ack_dirty = true
+                    }
                     true
                   }
                   Err(pe) => {
@@ -3269,9 +3620,9 @@ pub fn LiveRunnerManager::handle_role_done(
                       wall_ms,
                     ) {
                       Ok((eff_out, eff_err, _)) => {
-                        sess.acked_out = eff_out
+                        sess.adopted_db_out = eff_out
                         sess.acked_err = eff_err
-                        batch_out = eff_out
+                        batch_db_out = eff_out
                         batch_err = eff_err
                         sess.adopted_db_initialized = true
                       }
@@ -3285,7 +3636,7 @@ pub fn LiveRunnerManager::handle_role_done(
                   _ => {
                     if out_off > sess.acked_out { sess.acked_out = out_off }
                     if err_off > sess.acked_err { sess.acked_err = err_off }
-                    batch_out = sess.acked_out
+                    batch_nl_out = sess.acked_out
                     batch_err = sess.acked_err
                   }
                 }
@@ -3295,13 +3646,21 @@ pub fn LiveRunnerManager::handle_role_done(
                     LiveRunnerPhase::Ready(info, s) => {
                       if sess.is_adopted {
                         // Adopted runner is already initialized; flush any pending prompt/steers directly!
-                        live_runner_flush_ready(ctx, sess, s, now_ms)
+                        if !live_runner_flush_ready(ctx, sess, s, now_ms) {
+                          fail_close_reason = Some("runner write queue overflow")
+                          exited_now = true
+                          break
+                        }
                       } else if sess.is_acp {
                         live_runner_start_acp_init(ctx, sess, info, s)
                       } else if sess.is_codex {
                         live_runner_start_codex_init(ctx, sess, info, s)
                       } else {
-                        live_runner_flush_ready(ctx, sess, s, now_ms)
+                        if !live_runner_flush_ready(ctx, sess, s, now_ms) {
+                          fail_close_reason = Some("runner write queue overflow")
+                          exited_now = true
+                          break
+                        }
                       }
                     }
                     _ => ()
@@ -3310,7 +3669,6 @@ pub fn LiveRunnerManager::handle_role_done(
               }
               Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
                 let end_pos = at + payload.length().to_int64()
-                let mut adopted_eff_payload : Bytes = Bytes::new(0)
                 if sess.adopted_instance_id is Some(_) {
                   if !sess.adopted_db_initialized {
                     match (sess.adopted_instance_id, cur_info_opt) {
@@ -3326,9 +3684,9 @@ pub fn LiveRunnerManager::handle_role_done(
                           wall_ms,
                         ) {
                           Ok((eff_out, eff_err, _)) => {
-                            sess.acked_out = eff_out
+                            sess.adopted_db_out = eff_out
                             sess.acked_err = eff_err
-                            batch_out = eff_out
+                            batch_db_out = eff_out
                             batch_err = eff_err
                             sess.adopted_db_initialized = true
                           }
@@ -3342,7 +3700,7 @@ pub fn LiveRunnerManager::handle_role_done(
                       _ => ()
                     }
                   }
-                  let cur_off = if stream == "err" { batch_err } else { batch_out }
+                  let cur_off = if stream == "err" { batch_err } else { batch_db_out }
                   if end_pos > cur_off {
                     let eff_payload = if at < cur_off {
                       let skip = (cur_off - at).to_int()
@@ -3356,12 +3714,11 @@ pub fn LiveRunnerManager::handle_role_done(
                     }
                     let eff_at = if at < cur_off { cur_off } else { at }
                     if eff_payload.length() > 0 {
-                      adopted_eff_payload = eff_payload
                       pending_adopted_batch.push((stream, eff_at, end_pos, eff_payload))
                       if stream == "err" {
                         batch_err = end_pos
                       } else {
-                        batch_out = end_pos
+                        batch_db_out = end_pos
                       }
                     }
                   }
@@ -3372,32 +3729,22 @@ pub fn LiveRunnerManager::handle_role_done(
                     ack_dirty = true
                   }
                 } else {
-                  let parse_payload = if sess.adopted_instance_id is Some(_) {
-                    adopted_eff_payload
-                  } else {
-                    let prev_out = sess.acked_out
-                    if at < prev_out && end_pos > prev_out {
-                      let skip = (prev_out - at).to_int()
-                      if skip < payload.length() {
-                        slice_bytes_local(payload, skip, payload.length())
-                      } else {
-                        Bytes::new(0)
-                      }
-                    } else if end_pos <= prev_out {
-                      Bytes::new(0)
+                  let prev_out = if sess.adopted_instance_id is Some(_) { batch_nl_out } else { sess.acked_out }
+                  let parse_payload = if at < prev_out && end_pos > prev_out {
+                    let skip = (prev_out - at).to_int()
+                    if skip < payload.length() {
+                      slice_bytes_local(payload, skip, payload.length())
                     } else {
-                      payload
+                      Bytes::new(0)
                     }
+                  } else if end_pos <= prev_out {
+                    Bytes::new(0)
+                  } else {
+                    payload
                   }
-                  let mut last_nl_in_payload = -1
                   if parse_payload.length() > 0 {
                     if sess.out_at < 0L {
                       sess.out_at = at
-                    }
-                    for pi in 0..<parse_payload.length() {
-                      if (parse_payload[pi].to_int() & 0xFF) == 10 {
-                        last_nl_in_payload = pi
-                      }
                     }
                     let combined = if sess.out_line_buf.length() == 0 {
                       parse_payload
@@ -3431,14 +3778,22 @@ pub fn LiveRunnerManager::handle_role_done(
                       sess.out_line_buf = Bytes::new(0)
                     }
                   }
-                  // P1-3: Only advance non-adopted `acked_out` to complete `\n` boundaries so SIGUSR2
-                  // handover never splits a partial JSON line across predecessor & successor!
-                  if !(sess.adopted_instance_id is Some(_)) && last_nl_in_payload >= 0 {
+                  // Abstraction 2: Unified newline-boundary ACK via `compute_newline_acked_end` for
+                  // BOTH fresh AND adopted runners (runner ACK never truncates a partial line).
+                  if parse_payload.length() > 0 {
                     let payload_start_off = end_pos - parse_payload.length().to_int64()
-                    let nl_end_pos = payload_start_off + (last_nl_in_payload + 1).to_int64()
-                    if nl_end_pos > sess.acked_out {
-                      sess.acked_out = nl_end_pos
-                      ack_dirty = true
+                    match compute_newline_acked_end(payload_start_off, parse_payload, prev_out) {
+                      Some(nl_end_pos) => {
+                        if sess.adopted_instance_id is Some(_) {
+                          if nl_end_pos > batch_nl_out {
+                            batch_nl_out = nl_end_pos
+                          }
+                        } else if nl_end_pos > sess.acked_out {
+                          sess.acked_out = nl_end_pos
+                          ack_dirty = true
+                        }
+                      }
+                      None => ()
                     }
                   }
                 }
@@ -3513,7 +3868,21 @@ pub fn LiveRunnerManager::handle_role_done(
             if ack_dirty {
               let keep_opt : Option[Int64] = if sess.adopted_instance_id is Some(_) { Some(0L) } else { None }
               let ack_line = station_drivers::encode_runner_ack(sess.acked_out, sess.acked_err, keep_opt)
-              let _ = live_runner_send_sess(ctx, sess, cur_sock, ack_line)
+              if !live_runner_send_sess(ctx, sess, cur_sock, ack_line) {
+                live_runner_close_sock(ctx, conn_id, cur_sock)
+                sess.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(conn_id)
+                match sess.adopted_instance_id {
+                  Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                  None => ()
+                }
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.has_process = false
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(ctx, core, sess, "failed", Some("runner ack write overflow"), now_ms, wall_ms)
+                }
+                return true
+              }
             }
             let _ = ctx.mux_role.call_async_raw(
               builders_core::MuxToken::Tagged(conn_id, LIVE_RUNNER_TOK_UNIX_READ, cur_sock),
@@ -3557,10 +3926,12 @@ pub fn LiveRunnerManager::stop_session(
   }
   match sess.phase {
     LiveRunnerPhase::Spawning(_, child, _, _, _) => {
+      sess.stopping = true
       let _ = child.kill(station_sys::SIG_TERM, true)
       return true
     }
     LiveRunnerPhase::Connecting(info) => {
+      sess.stopping = true
       safe_kill_runner_info(info)
       return true
     }
@@ -3589,6 +3960,7 @@ pub fn LiveRunnerManager::stop_session(
       true
     }
     station_drivers::AbortAction::KillImmediately(_) => {
+      sess.stopping = true
       let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
       // timer: kill grace escalation after SIGTERM (5s)
       sess.kill_escalate_at = Some(now_ms + station_drivers::KILL_GRACE_MS)
@@ -3605,6 +3977,7 @@ fn LiveRunnerManager::reclaim_session(
   skey : String,
   sess : LiveRunnerSession,
 ) -> Unit {
+  sess.stopping = true
   match sess.phase {
     LiveRunnerPhase::Spawning(ev_id, child, _, _, _) => {
       let _ = child.kill(station_sys::SIG_TERM, true)
@@ -3636,7 +4009,7 @@ fn LiveRunnerManager::reclaim_session(
 }
 
 /// Periodic tick enforcing spawn timeouts, `OwnProcessStopGuard`, `AcpTurnGuard`, `check_steer_silent`,
-/// archived/deleted session reclamation, and warm idle runner eviction.
+/// deferred `pending_end_turn` SQLite retries, archived/deleted reclamation, and warm idle runner eviction.
 pub fn LiveRunnerManager::tick(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -3651,6 +4024,11 @@ pub fn LiveRunnerManager::tick(
     let sess = match self.sessions.get(skey) {
       Some(s) => s
       None => continue
+    }
+    // Abstraction 2: Retry any deferred SQLite `endTurn` commit before proceeding.
+    match sess.pending_end_turn {
+      Some(pend) => live_runner_commit_end_turn(ctx, core, sess, pend)
+      None => ()
     }
     // P0-5: Reclaim runners whose session was archived or deleted in SQLite.
     match core.store.require_open() {
@@ -3833,6 +4211,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     let skey = keys[i]
     match self.sessions.get(skey) {
       Some(sess) => {
+        sess.stopping = true
         sess.stop_guard.on_handover_or_dispose()
         sess.acp_guard.on_handover_or_dispose()
         let _ = sess.agy_tracker.on_dispose()

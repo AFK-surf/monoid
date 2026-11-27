@@ -7162,17 +7162,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
                     }
-                    // P1-4: Record explicit `movedTo` thread route in `ConnectWorkspace::route_thread`.
-                    match base_codec::json_get(req, "movedTo") {
-                      Some(base_codec::Json::Str(mt)) => {
-                        let mt_trim = mt.trim()
-                        if mt_trim.length() > 0 && mt_trim != ctx.station_key.id {
-                          st.connects.workspace.route_thread(remote_cid, ev_ch, ev_tts, Some(mt_trim))
-                        }
-                      }
-                      _ => ()
-                    }
-                    // `movedTo` forwarding (P1: use `ask_peer_rpc` so caller is answered only after target confirms).
+                    // `movedTo` forwarding (only from locally authorized `ConnectWorkspace` routes,
+                    // never mutating local routes from untrusted peer request fields).
                     match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
                       Some(moved) => {
                         if moved != ctx.station_key.id {
@@ -7944,7 +7935,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
           }
           let _ = st.mcp_srv.tick(st.mcp_cb)
-          st.live_runners.pump(ctx, st.core, ctx.cfg_raw, _now, _wall)
+          st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), _now, _wall)
         }
         None => ()
       }
@@ -7963,7 +7954,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.upkeep.tick(now, clones_active)
           st.live_runners.tick(ctx, st.core, now, wall)
-          st.live_runners.pump(ctx, st.core, ctx.cfg_raw, now, wall)
+          st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)

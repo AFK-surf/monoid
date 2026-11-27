@@ -1352,9 +1352,9 @@ test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wi
     }
     Err(e) => panic("expected api-provider profile ok: " + e)
   }
-  // P1-4: Codex steer uses `turn/steer` + `turnId`, cancel uses `turn/interrupt` + `turnId`.
+  // R4: Codex steer uses `turn/steer` + `expectedTurnId`, cancel uses `turn/interrupt` + `turnId`.
   let cs = encode_runtime_steer(station_drivers::RuntimeKind::Codex, "nudge", "th-42", 5, turn_id=Some("trn-9"))
-  assert_true(cs.contains("\"method\":\"turn/steer\"") && cs.contains("\"turnId\":\"trn-9\""), "codex turn/steer with turnId")
+  assert_true(cs.contains("\"method\":\"turn/steer\"") && cs.contains("\"expectedTurnId\":\"trn-9\""), "codex turn/steer with expectedTurnId")
   let ccx = encode_runtime_cancel(station_drivers::RuntimeKind::Codex, "th-42", 6, turn_id=Some("trn-9"))
   assert_true(ccx.contains("\"method\":\"turn/interrupt\"") && ccx.contains("\"turnId\":\"trn-9\""), "codex turn/interrupt with turnId")
   match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"turn\":{\"id\":\"trn-9\"}}}") {
@@ -1435,4 +1435,72 @@ test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wi
     None => panic("expected decoded session key from /sessions/<key>/stop")
   }
   assert_true(extract_session_stop_key("GET", "/sessions/s1/stop") is None, "GET is not stop")
+}
+
+test "W17C-1 R4: unified live policy (relative home, runtimes[], ws agent_home, canonical CWD), newline ACK, [station] passthrough" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+
+  // 1. Relative `home: "homes/p1"` resolves under `data_dir` & `runtimes: ["codex"]` is honored.
+  let cfg = parse(
+    "{\"profiles\":[{\"id\":\"p-rel\",\"runtimes\":[\"codex\",\"claude\"],\"home\":\"homes/p1\"},{\"id\":\"p-trav\",\"runtime\":\"claude\",\"home\":\"../escape\"}]}",
+  )
+  match resolve_authorized_profile(cfg, "p-rel", station_drivers::RuntimeKind::Codex, "ws-home", "ws-home", "/data", "/") {
+    Ok(pr) => assert_str_eq(pr.home, "/data/homes/p1")
+    Err(e) => panic("expected relative home + runtimes[] ok: " + e)
+  }
+  assert_true(
+    resolve_authorized_profile(cfg, "p-rel", station_drivers::RuntimeKind::Agy, "ws-home", "ws-home", "/data", "/").is_err(),
+    "runtime outside runtimes[] refused",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-trav", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_err(),
+    "relative home traversal refused",
+  )
+
+  // 2. Workspace-isolated agent home (`<data>/agent` vs `<data>/agent/workspaces/<ws>`).
+  match workspace_agent_home_path("/data", "ws-home", "ws-home", "/") {
+    Ok(p) => assert_str_eq(p, "/data/agent")
+    Err(e) => panic("home agent_home err: " + e)
+  }
+  match workspace_agent_home_path("/data", "ws-joined", "ws-home", "/") {
+    Ok(p) => assert_str_eq(p, "/data/agent/workspaces/ws-joined")
+    Err(e) => panic("joined agent_home err: " + e)
+  }
+  assert_true(workspace_agent_home_path("/data", "../bad", "ws-home", "/").is_err(), "ws traversal refused")
+
+  // 3. Canonical CWD via nearest existing ancestor `realpath` (blocks symlink escape!).
+  let fake_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
+    if p == "/data" { Ok("/real/data") }
+    else if p == "/data/sessions/s1/workspace" { Ok("/real/data/sessions/s1/workspace") }
+    else if p == "/data/sessions/s1/link-escape" { Ok("/etc") }
+    else { Err(station_ops::FsErr::NotFound) }
+  }
+  match resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/workspace/sub/newdir"), "/data/sessions/s1/workspace", "/data", [], "/") {
+    Ok(c) => assert_str_eq(c, "/real/data/sessions/s1/workspace/sub/newdir")
+    Err(e) => panic("expected non-existent child under real ancestor ok: " + e)
+  }
+  assert_true(
+    resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/link-escape/child"), "/data/sessions/s1/workspace", "/data", [], "/").is_err(),
+    "symlink escape outside data_dir refused",
+  )
+
+  // 4. Unified newline-boundary ACK (`compute_newline_acked_end`).
+  assert_true(compute_newline_acked_end(100L, "{\"type\":\"part".to_bytes(), 100L) is None, "half-line must NOT advance ACK")
+  match compute_newline_acked_end(100L, "{\"a\":1}\n{\"b\":".to_bytes(), 100L) {
+    Some(off) => assert_true(off == 108L, "ACK advances only to newline + 1 (100 + 8 = 108)")
+    None => panic("expected Some(108L) for line + trailing partial")
+  }
+  match compute_newline_acked_end(100L, "ok\n".to_bytes(), 100L) {
+    Some(off) => assert_true(off == 103L, "complete line advances to exact end")
+    None => panic("expected Some(103L)")
+  }
+
+  // 5. Internal `[station] ` reminder is passed through verbatim (not wrapped in `<message ...>`).
+  let rem = "[station] You ended without calling chat_state. Call chat_state now."
+  assert_str_eq(format_message_envelope("web", "CHAT/1.0", "alice", "1.0", rem), rem)
 }
