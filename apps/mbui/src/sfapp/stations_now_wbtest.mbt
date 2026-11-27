@@ -701,20 +701,20 @@ test "share-accounts-many: tall 24-account preview scrolls at readable width and
     assert_eq(t.squeeze_faults(), [])
     assert_eq(t.corner_faults(), [])
     assert_eq(t.contrast_faults(), [])
-    // Readable width: the header brand stays unshrunk vertically (not collapsed into a narrow toothpick).
-    // Verify vertical scroll moves the preview content upward inside the stage viewport.
+    // Capture bottom controls' resting Y positions so we can verify zero jump when switching provider filters.
+    let claude_tab_y0 = t.query(Tab, label="Claude").unwrap().rect.1
+    let close_btn_y0 = t.query(Button, label="关闭").unwrap().rect.1
+    // Readable width: verify vertical scroll genuinely moves lower groups upward into view.
     let head_y0 = t.find("24 个订阅账号").unwrap().1
+    let chatgpt_y0 = t.find("ChatGPT 订阅").unwrap().1
     t.wheel(at.0 / 2.0, at.1 / 2.0, 360.0)
     t.run_for(@motion.presence_in_ms)
-    let head_y1 = match t.find("24 个订阅账号") {
-      Some(hit) => hit.1
-      None => head_y0 - 360.0
-    }
-    assert_true(head_y1 < head_y0 - 50.0, msg="tall share stage scrolls vertically: \{head_y0} -> \{head_y1} at \{Repr(at)}")
+    let chatgpt_y1 = t.find("ChatGPT 订阅").unwrap().1
+    assert_true(chatgpt_y1 < chatgpt_y0 - 150.0 && chatgpt_y1 > 0.0 && chatgpt_y1 < at.1, msg="tall share stage scrolls vertically: \{chatgpt_y0} -> \{chatgpt_y1} at \{Repr(at)}")
     assert_eq(t.squeeze_faults(), [])
     assert_eq(t.corner_faults(), [])
     assert_eq(t.contrast_faults(), [])
-    // Filter to Claude (8 accounts): count updates, other providers hide, scroll resets to top
+    // Filter to Claude (8 accounts): count updates, other providers hide, scroll resets to top, controls stay put
     t.click(Tab, label="Claude")
     t.run_for(@motion.presence_in_ms)
     assert_true(picture_says(t, "8 个订阅账号"), msg="Claude filtered count \{Repr(at)}")
@@ -724,15 +724,29 @@ test "share-accounts-many: tall 24-account preview scrolls at readable width and
     let head_claude = t.find("8 个订阅账号").unwrap().1
     let group_claude = t.find("Claude 订阅").unwrap().1
     assert_true(head_claude >= head_y0 - 5.0 && head_claude < group_claude, msg="filter switch resets scroll to top: head=\{head_claude} group=\{group_claude} init=\{head_y0}")
+    assert_true((t.query(Tab, label="Claude").unwrap().rect.1 - claude_tab_y0).abs() < 0.5, msg="Claude tab stays stationary at \{Repr(at)}")
+    assert_true((t.query(Button, label="关闭").unwrap().rect.1 - close_btn_y0).abs() < 0.5, msg="Close button stays stationary at \{Repr(at)}")
     assert_eq(t.squeeze_faults(), [])
     assert_eq(t.corner_faults(), [])
     assert_eq(t.contrast_faults(), [])
-    // Filter to Google (5 accounts): fits cleanly, count updates
+    // Filter to OpenCode Go (5 short rows): controls still stay completely stationary under the finger/pointer
+    t.click(Tab, label="OpenCode Go")
+    t.run_for(@motion.presence_in_ms)
+    assert_true(picture_says(t, "5 个订阅账号"), msg="OpenCode filtered count \{Repr(at)}")
+    assert_true(picture_says(t, "OpenCode Go 订阅"), msg="OpenCode filtered heading \{Repr(at)}")
+    assert_true(!picture_says(t, "Claude 订阅"), msg="Claude hidden under OpenCode filter \{Repr(at)}")
+    assert_true((t.query(Tab, label="Claude").unwrap().rect.1 - claude_tab_y0).abs() < 0.5, msg="Tabs stay stationary on short OpenCode filter at \{Repr(at)}")
+    assert_true((t.query(Button, label="关闭").unwrap().rect.1 - close_btn_y0).abs() < 0.5, msg="Buttons stay stationary on short OpenCode filter at \{Repr(at)}")
+    assert_eq(t.squeeze_faults(), [])
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.contrast_faults(), [])
+    // Filter to Google (5 accounts, groupTitle "Google" matching prod): fits cleanly, count updates
     t.click(Tab, label="Google")
     t.run_for(@motion.presence_in_ms)
     assert_true(picture_says(t, "5 个订阅账号"), msg="Google filtered count \{Repr(at)}")
-    assert_true(picture_says(t, "Google 订阅"), msg="Google filtered heading \{Repr(at)}")
+    assert_true(picture_says(t, "Gemini"), msg="Google filtered pool visible \{Repr(at)}")
     assert_true(!picture_says(t, "Claude 订阅"), msg="Claude hidden under Google filter \{Repr(at)}")
+    assert_true((t.query(Tab, label="Claude").unwrap().rect.1 - claude_tab_y0).abs() < 0.5, msg="Tabs stay stationary on Google filter at \{Repr(at)}")
     assert_eq(t.squeeze_faults(), [])
     assert_eq(t.corner_faults(), [])
     assert_eq(t.contrast_faults(), [])

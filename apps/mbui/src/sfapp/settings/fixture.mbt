@@ -2038,7 +2038,7 @@ fn fx_many_profiles() -> Array[Json] {
     let c5 = (i * 29 + 10) % 100
     let cw = (i * 15 + 20) % 95
     out.push(
-      fx_profile("mg\{i}", "gemini\{i}@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+      fx_profile("mg\{i}", "gemini\{i}@gmail.com", "subscription", "green", "可用", "agy", "Google", [
         ("email", str("gemini\{i}@gmail.com")),
         ("planText", str("AI Ultra")),
         ("signInProvider", str("Google")),

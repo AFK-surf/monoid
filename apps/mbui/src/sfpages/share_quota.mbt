@@ -104,18 +104,32 @@ fn share_frame_node(v : @view.View, flat : Bool, count : () -> String, body : (@
 // ── the subscriptions' allowances ──────────────────────────────────────
 
 ///|
-/// Short vendor label for the share stage's provider filter tabs: strips trailing "订阅" / "subscription(s)" suffix
-/// when present so tabs read crisply ("Claude", "ChatGPT", "Google", "OpenCode Go") instead of repeating "订阅".
-fn share_group_tab_label(title : String) -> String {
-  for suffix in [" 订阅", "订阅", " subscriptions", " Subscriptions", " subscription", " Subscription"] {
-    if title.has_suffix(suffix) {
-      let trimmed = title[:title.length() - suffix.length()].trim(chars=" ").to_owned()
-      if trimmed != "" {
-        return trimmed
+/// Short vendor label for the share stage's provider filter tabs: maps canonical group keys directly (locale-independent)
+/// and falls back to stripping trailing subscription suffixes from `title` for any other group.
+fn share_group_tab_label(key : String, title : String) -> String {
+  match key {
+    "claude" => "Claude"
+    "chatgpt" => "ChatGPT"
+    "grok" => "SuperGrok"
+    "kimi" => "Kimi Code"
+    "opencode" => "OpenCode Go"
+    "cursor" => "Cursor"
+    "devin" => "Devin"
+    "agy" => "Google"
+    "colab" => "Google Colab"
+    "copilot" => "GitHub Copilot"
+    _ => {
+      for suffix in [" 订阅", "订阅", " subscriptions", " Subscriptions", " subscription", " Subscription"] {
+        if title.has_suffix(suffix) {
+          let trimmed = title[:title.length() - suffix.length()].trim(chars=" ").to_owned()
+          if trimmed != "" {
+            return trimmed
+          }
+        }
       }
+      title
     }
   }
-  title
 }
 
 ///|
@@ -170,7 +184,7 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
   let group_tabs = fn() -> Array[(String, String)] {
     let out : Array[(String, String)] = [("", @sf.t("web-main.filter.all"))]
     for g in all_groups.get() {
-      out.push((g.0, share_group_tab_label(g.1)))
+      out.push((g.0, share_group_tab_label(g.0, g.1)))
     }
     out
   }
@@ -211,6 +225,14 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
     above=fn(v) {
       v.box(fn(all) {
         @sf.style_node(all, fn() { groups_and_looks })
+        // Clear a vanished provider filter permanently so a later quota refresh cannot hijack the view back to it.
+        all.reacts(fn() { all_groups.get() }, fn(gs) {
+          let g = chosen_group.untracked()
+          if g != "" && !gs.iter().any(fn(x) { x.0 == g }) {
+            chosen_group.set("")
+            scroll.put(0.0)
+          }
+        }, at_start=false)
         all.show(at_once=true, fn() { all_groups.get().length() > 1 }, fn(row) {
           row.fills_across(Is(true)) |> ignore
           @sf.share_tabs_each_node(

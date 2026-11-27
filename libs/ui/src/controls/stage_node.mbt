@@ -54,9 +54,20 @@ fn stage_node(
       .presses(Is(true))
       .on_press(fn() {  })
       |> ignore
+      // Scrollable stages hold a fixed column height (capped to `stage_scroll_h`) so switching filter tabs or content
+      // heights never shifts the tabs/buttons under the person's finger or pointer; shorter cards center inside the slot.
+      if x.stage_scroll is Some(_) {
+        d.height(By(fn() { Some(dmax(0.0, dmin(room().1, stage_scroll_h))) })) |> ignore
+      }
       // what it holds: scrolled vertically at readable width when `stage_scroll` is given, else scaled to fit whole
       match x.stage_scroll {
-        Some(sc) => stage_scroll_node(d, x.w, sc, x.stage_bg, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
+        Some(sc) =>
+          d.box(fn(slot) {
+            style_node(slot, fn() { stage_scroll_slot })
+            slot.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            stage_scroll_node(slot, x.w, sc, x.stage_bg, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
+          })
+          |> ignore
         None => stage_fit_node(d, x.w, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
       }
       // under it: what is chosen of it over 关闭 and its foot's buttons, on the night
@@ -83,6 +94,42 @@ fn stage_node(
 }
 
 ///|
+/// Maximum column height for a scrollable stage (`stage_scroll_node`): fills small/medium screens while capping tall
+/// large monitors so bottom controls stay comfortable and stationary across filter switches.
+let stage_scroll_h : Double = 700.0
+
+///|
+/// Preview slot for a scrollable stage: vertically centers short previews that hug their own height.
+// kept across runs: a value (no field of it changes)
+let stage_scroll_slot : @ui.Style = @ui.css("justify=JCenter w=Full")
+
+///|
+/// Shared poster layout box inside a stage's `by_room`: laid out `most` wide out of flow, horizontally centered in
+/// `room.width()`, scaled by `scale_fn` about its top center, with a companion spacer reserving `room.tall * across`.
+#callsite(autofill(loc))
+fn stage_poster_box(
+  holder : @view.View,
+  room : @view.Room,
+  most : Double,
+  scale_fn : (@view.View) -> () -> Double,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  let made : Ref[@view.View?] = Ref(None)
+  holder.box(made_for=loc, fn(b) {
+    made.val = Some(b)
+    b.over(Is(true), edges=(Some(0.0), Some(0.0), None, None)).width(Is(Some(most))) |> ignore
+    body(b)
+  })
+  |> ignore
+  let whole = made.val.unwrap()
+  let across = fn() { dmin(1.0, room.width() / most) }
+  whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(scale_fn(whole)), about=@view.Pivot::At(0.5, 0.0))
+  |> ignore
+  holder.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
+}
+
+///|
 /// What a stage holds in `parent` (a column that gives it what it leaves under the rest), as opaque as `seen` says (its
 /// words' way in, after the night's, as a dialog's are): made by `body` `most` wide,
 /// whatever the stage's width, and drawn smaller from its top's middle where the stage has not that width, or not the
@@ -90,28 +137,22 @@ fn stage_node(
 /// it out: View::by_room's height); its room as large as it is drawn, in the column's middle.
 fn stage_fit_node(parent : @view.View, most : Double, seen : () -> Double, body : (@view.View) -> Unit) -> Unit {
   parent.by_room(fn(held, room) {
-    // (laid out `most` wide over its room from its top, out of its flow: the room as tall as it is drawn, not as it is
-    // laid out)
-    let made : Ref[@view.View?] = Ref(None)
-    held.box(fn(b) {
-      made.val = Some(b)
-      b.over(Is(true), edges=(Some(0.0), Some(0.0), None, None)).width(Is(Some(most))) |> ignore
-      body(b)
-    })
-    |> ignore
-    let whole = made.val.unwrap()
-    // (how much smaller it is drawn at the stage's width, and in the room the column gave it)
     let across = fn() { dmin(1.0, room.width() / most) }
-    let drawn = fn() {
-      let tall = room.tall(whole)
-      match room.height() {
-        Some(h) if tall > 0.0 => dmin(across(), h / tall)
-        _ => across()
-      }
-    }
-    whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(drawn), about=@view.Pivot::At(0.5, 0.0)) |> ignore
-    // (its room: as tall as it is drawn at the stage's width, given less by the column where it has not that)
-    held.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
+    stage_poster_box(
+      held,
+      room,
+      most,
+      fn(whole) {
+        fn() {
+          let tall = room.tall(whole)
+          match room.height() {
+            Some(h) if tall > 0.0 => dmin(across(), h / tall)
+            _ => across()
+          }
+        }
+      },
+      body,
+    )
   })
   .shrink(Is(1.0))
   .min_height(Is(Some(0.0)))
@@ -141,7 +182,6 @@ fn stage_scroll_node(
       Some(g) => held.ground(By(g)) |> ignore
       None => ()
     }
-    let made : Ref[@view.View?] = Ref(None)
     held.box(fn(sc) {
       sc
       .shrink(Is(1.0))
@@ -151,21 +191,7 @@ fn stage_scroll_node(
         slop=@ui.touch_slop(),
         bar=@ui.tree_scroll_bar(),
         bar_clear=fn() { (pane_corner * across() / 2.0, pane_corner * across() / 2.0) },
-        fn(content) {
-          content.box(fn(b) {
-            made.val = Some(b)
-            b.over(Is(true), edges=(Some(0.0), Some(0.0), None, None)).width(Is(Some(most))) |> ignore
-            body(b)
-          })
-          |> ignore
-          let whole = made.val.unwrap()
-          whole
-          .offset(By(fn() { ((room.width() - most) / 2.0, 0.0) }))
-          .scale(By(across), about=@view.Pivot::At(0.5, 0.0))
-          |> ignore
-          // (reserve the scaled height so scroll range and short-content hug height match what is drawn)
-          content.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
-        },
+        fn(content) { stage_poster_box(content, room, most, fn(_) { across }, body) },
       )
       |> ignore
     })

@@ -5,6 +5,29 @@
 // (@headless.radio_group, kind Tab: Tab stops at the one shown, ← → step along them choosing each); here their look.
 
 ///|
+/// Shared text look for a single share tab item on the stage night scrim.
+#callsite(autofill(loc))
+fn share_tab_words_node(item : @view.View, words : () -> String, it : @headless.RadioItem, loc~ : SourceLoc) -> Unit {
+  item.box(made_for=loc, fn(n) {
+    let look = fn() {
+      if it.chosen() {
+        share_tabs_name_on
+      } else if it.hovered() || it.focus_shown() {
+        share_tabs_name_lit
+      } else {
+        share_tabs_name
+      }
+    }
+    n
+    .words(By(words))
+    .words_look(By(fn() { @ui.style_words(look()) }))
+    .ink(By(fn() { @ui.style_ink(look()) }))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// The words of `keys` in `parent`, a tab list called `label`, `name(key)` each one's words (read out its name), the
 /// one shown `chosen()`; a press or an arrow key on another tells `choose` its key. The node.
 #callsite(autofill(loc))
@@ -23,23 +46,7 @@ pub fn[K : Eq] share_tabs_node(
       let words = fn() { name(key) }
       rg.item(row, fn() { key }, words, fn(item, it) {
         style_node(item, fn() { share_tabs_item })
-        item.box(fn(n) {
-          let look = fn() {
-            if it.chosen() {
-              share_tabs_name_on
-            } else if it.hovered() || it.focus_shown() {
-              share_tabs_name_lit
-            } else {
-              share_tabs_name
-            }
-          }
-          n
-          .words(By(words))
-          .words_look(By(fn() { @ui.style_words(look()) }))
-          .ink(By(fn() { @ui.style_ink(look()) }))
-          |> ignore
-        })
-        |> ignore
+        share_tab_words_node(item, words, it)
       })
       |> ignore
     }
@@ -72,23 +79,7 @@ pub fn share_tabs_each_node(
               // Inside a horizontal `scrolls` container (`bounds_input=true`), each tab needs at least `theme().items.least`
               // height (44pt on touch, 36pt on mouse) so its press target is never clipped vertically.
               style_node(item, fn() { share_tabs_scroll_item.then(row_least_h()) })
-              item.box(fn(n) {
-                let look = fn() {
-                  if it.chosen() {
-                    share_tabs_name_on
-                  } else if it.hovered() || it.focus_shown() {
-                    share_tabs_name_lit
-                  } else {
-                    share_tabs_name
-                  }
-                }
-                n
-                .words(By(words))
-                .words_look(By(fn() { @ui.style_words(look()) }))
-                .ink(By(fn() { @ui.style_ink(look()) }))
-                |> ignore
-              })
-              |> ignore
+              share_tab_words_node(item, words, it)
             })
             |> ignore
           })
