@@ -1436,7 +1436,8 @@ public final class FramePacerTest {
         phA.runUntil(t + 4 * phA.period);
         boolean okA = phA.drawn.size() >= 2 && nowA[1] > t / 1e6;
 
-        // Order B: vsyncCame(T) -> takeRender()+begin()+ended(more=true) -> duplicate vsyncCame(T) -> 0 extra postVsync & T+1 on time!
+        // Order B: vsyncCame(T) -> takeRender()+begin()+ended(more=true) -> stale-gen duplicate vsyncCame(T, shows, 1L)
+        //          -> 0 extra postVsync & T+1 on time; untagged 2-arg vsyncCame(T, shows) fails open without stalling T+1.
         Phone phB = new Phone(120, 3, true, 200_000);
         final double[] nowB = new double[4];
         final int[] postsDeltaB = {-1};
@@ -1446,17 +1447,18 @@ public final class FramePacerTest {
             @Override public boolean more(int f, double now) { return f == 0; }
         };
         phB.main(t - phB.period / 2, phB.pacer::wantFrame);
-        // Duplicate vsyncCame(t, shows) arrives after frame 0's ended(more=true) (t+0.7ms) has already queued T+1
+        // Stale-gen duplicate from T's callback (gen=1) arrives after frame 0's ended(more=true) queued T+1 (gen=2)
         phB.main(t + 1_500_000L, () -> {
             int before = phB.vsyncPosts;
-            phB.pacer.vsyncCame(t, shows);
+            phB.pacer.vsyncCame(t, shows, 1L);
             postsDeltaB[0] = phB.vsyncPosts - before;
         });
         phB.runUntil(t + 4 * phB.period);
         boolean okB = phB.drawn.size() >= 2 && postsDeltaB[0] == 0
                 && Math.abs(nowB[1] - (t + phB.period) / 1e6) < 0.01;
 
-        // Order C: frameNow() at T -> ended(more=true) queues T+1 -> duplicate vsyncCame(T) hits lastFrameNowAt fast path -> 0 extra postVsync & T+1 on time!
+        // Order C: frameNow() at T -> ended(more=true) queues T+1 (gen=1) -> stale-gen duplicate vsyncCame(T, shows, 999L)
+        //          -> 0 extra postVsync & T+1 on time; untagged 2-arg vsyncCame(T, shows) also fails open with T+1 on time.
         Phone phC = new Phone(120, 3, true, 200_000);
         final double[] nowC = new double[4];
         final int[] postsDeltaC = {-1};
@@ -1468,17 +1470,32 @@ public final class FramePacerTest {
         phC.main(t + 100_000L, phC.pacer::frameNow);
         phC.main(t + 1_500_000L, () -> {
             int before = phC.vsyncPosts;
-            phC.pacer.vsyncCame(t, shows);
+            phC.pacer.vsyncCame(t, shows, 999L);
             postsDeltaC[0] = phC.vsyncPosts - before;
         });
         phC.runUntil(t + 4 * phC.period);
         boolean okC = phC.drawn.size() >= 2 && postsDeltaC[0] == 0
                 && Math.abs(nowC[1] - (t + phC.period) / 1e6) < 0.01;
 
+        // Order D: untagged legacy 2-arg duplicate vsyncCame(T, shows) after frameNow()+ended(more=true) fails open
+        //          (zero timestamp heuristic) and still delivers T+1 on time with no duplicate frame at T.
+        Phone phD = new Phone(120, 3, true, 200_000);
+        final double[] nowD = new double[4];
+        phD.app = new App() {
+            @Override public double work(int f, double now) { if (f < 4) nowD[f] = now; return 0.5; }
+            @Override public double gpu(int f, double now) { return 1.0; }
+            @Override public boolean more(int f, double now) { return f == 0; }
+        };
+        phD.main(t + 100_000L, phD.pacer::frameNow);
+        phD.main(t + 1_500_000L, () -> phD.pacer.vsyncCame(t, shows));
+        phD.runUntil(t + 4 * phD.period);
+        boolean okD = phD.drawn.size() == 2 && Math.abs(nowD[1] - (t + phD.period) / 1e6) < 0.01;
+
         check("duplicate vsyncCame(T) before/after ended(more=true) or frameNow never stalls or double-posts T+1",
-                okA && okB && okC, "okA=" + okA + " (drawn=" + phA.drawn.size() + ", t1=" + nowA[1]
+                okA && okB && okC && okD, "okA=" + okA + " (drawn=" + phA.drawn.size() + ", t1=" + nowA[1]
                         + "), okB=" + okB + " (deltaPosts=" + postsDeltaB[0] + ", t1=" + nowB[1]
-                        + "), okC=" + okC + " (deltaPosts=" + postsDeltaC[0] + ", t1=" + nowC[1] + ")");
+                        + "), okC=" + okC + " (deltaPosts=" + postsDeltaC[0] + ", t1=" + nowC[1]
+                        + "), okD=" + okD + " (drawn=" + phD.drawn.size() + ", t1=" + nowD[1] + ")");
     }
 
     /** 18. Opus: wantImmediateFrame() while ahead==true clears ahead on takeRender() so ended(more=true) drives T+1 on real clock. */
