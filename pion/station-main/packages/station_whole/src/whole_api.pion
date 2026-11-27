@@ -17,6 +17,7 @@ import "form"
 import "http1"
 import "sql_db"
 import "station_api"
+import "station_drivers"
 import "station_http"
 import "station_ops"
 import "station_rules_bridge"
@@ -262,11 +263,93 @@ fn profile_allowed_in_ws(prof : base_codec::Json, ws : Option[String], home_ws :
   }
 }
 
-fn profile_has_runtime(prof : base_codec::Json, rt : String) -> Bool {
-  match base_codec::json_get(prof, "runtimes") {
-    Some(base_codec::Json::Arr(rts)) => json_str_arr_has(rts, rt)
-    _ => false
+fn parse_driver_profile_for_skills(prof : base_codec::Json, data_dir : String) -> station_drivers::Profile {
+  let id = match json_field_str(prof, "id") {
+    Some(s) => s
+    None => ""
   }
+  let rt = match json_field_str(prof, "runtime") {
+    Some(s) => station_drivers::runtime_kind_from_str(s)
+    None => None
+  }
+  let home = match json_field_str(prof, "home") {
+    Some(s) => under_data_dir(data_dir, s)
+    None => under_data_dir(data_dir, "")
+  }
+  let mut access_kind = station_drivers::AccessKind::Env
+  let mut access_key = ""
+  let mut access_provider : Option[String] = None
+  let mut access_endpoint : Option[String] = None
+  let mut access_protocol : Option[String] = None
+  let mut access_service : Option[String] = None
+  let mut access_login = false
+  match base_codec::json_get(prof, "access") {
+    Some(acc) => {
+      match json_field_str(acc, "kind") {
+        Some(k) => access_kind = station_drivers::access_kind_from_str(k)
+        None => ()
+      }
+      match json_field_str(acc, "key") {
+        Some(k) => access_key = k
+        None => ()
+      }
+      access_provider = json_field_str(acc, "provider")
+      access_endpoint = json_field_str(acc, "endpoint")
+      access_protocol = json_field_str(acc, "protocol")
+      access_service = json_field_str(acc, "service")
+      match json_field_bool(acc, "login") {
+        Some(b) => access_login = b
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let base = station_drivers::Profile::default(id, rt, home)
+  station_drivers::Profile::{
+    ..base,
+    enabled: match json_field_bool(prof, "enabled") {
+      Some(b) => b
+      None => true
+    },
+    machine: match json_field_bool(prof, "machine") {
+      Some(b) => b
+      None => false
+    },
+    access_kind: access_kind,
+    access_key: access_key,
+    access_provider: access_provider,
+    access_endpoint: access_endpoint,
+    access_protocol: access_protocol,
+    access_service: access_service,
+    access_login: access_login,
+  }
+}
+
+/// 1:1 with Node `hubConfig` (`station/src/sessions/config.ts:134-136`):
+/// derives supported runtimes from raw `config.json` via `station_drivers::profile_runtimes`
+/// (with compatibility fallback for pre-derived `"runtimes"` arrays) and filters out top-level `disabledRuntimes`.
+fn profile_has_runtime(
+  prof : base_codec::Json,
+  data_dir : String,
+  disabled_runtimes : Map[String, Bool],
+  rt : String,
+) -> Bool {
+  if disabled_runtimes.contains(rt) {
+    return false
+  }
+  let derived = station_drivers::profile_runtimes(parse_driver_profile_for_skills(prof, data_dir))
+  for i in 0..<derived.length() {
+    if station_drivers::runtime_kind_to_str(derived[i]) == rt {
+      return true
+    }
+  }
+  if derived.length() == 0 {
+    match base_codec::json_get(prof, "runtimes") {
+      Some(base_codec::Json::Arr(rts)) => return json_str_arr_has(rts, rt)
+      _ => ()
+    }
+  }
+  false
 }
 
 /// Extract local preset directory paths from a JSON `dirs` array, excluding entries with non-empty `elsewhere` or empty `path`.
@@ -366,6 +449,18 @@ fn resolve_skills_context_from_json(
             Some(ah) => if ah.length() > 0 { agent_home = under_data_dir(data_dir, ah) }
             None => ()
           }
+          let disabled_runtimes : Map[String, Bool] = Map::new()
+          match base_codec::json_get(cfg, "disabledRuntimes") {
+            Some(base_codec::Json::Arr(drs)) => {
+              for i in 0..<drs.length() {
+                match drs[i] {
+                  base_codec::Json::Str(s) => if s.length() > 0 { disabled_runtimes.set(s, true) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
           match base_codec::json_get(cfg, "profiles") {
             Some(base_codec::Json::Arr(profs)) => {
               // 1:1 with Node `pickProfileFor`:
@@ -381,11 +476,11 @@ fn resolve_skills_context_from_json(
                   allowed.push(prof)
                 }
               }
-              // 2) `fallbackAgyHomes` only when runtime === "agy", filtered to runtimes.includes("agy")
+              // 2) `fallbackAgyHomes` only when runtime === "agy", filtered to derived runtimes including "agy"
               if runtime == Some("agy") {
                 for i in 0..<allowed.length() {
                   let prof = allowed[i]
-                  if profile_has_runtime(prof, "agy") {
+                  if profile_has_runtime(prof, data_dir, disabled_runtimes, "agy") {
                     let h = match json_field_str(prof, "home") {
                       Some(s) => s
                       None => ""
@@ -420,7 +515,7 @@ fn resolve_skills_context_from_json(
                   Some(rt) => {
                     for i in 0..<allowed.length() {
                       let prof = allowed[i]
-                      if profile_has_runtime(prof, rt) {
+                      if profile_has_runtime(prof, data_dir, disabled_runtimes, rt) {
                         picked = Some(prof)
                         break
                       }
