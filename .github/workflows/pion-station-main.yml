@@ -419,7 +419,7 @@ jobs:
           fi
           out="$("$BIN" --version)"
           echo "$out"
-          test "$out" = "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin"
+          test "$out" = "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree"
           sys_out="$("$BIN" --smoke-sys)"
           echo "$sys_out"
           printf '%s\n' "$sys_out" | grep -q '"ok":true'

@@ -1,6 +1,6 @@
 // Wave 12-CLI-Main Real-Machine E2E Parity & Launcher Routing Test for `stillfail-station-pion`:
-// 1. `--version` exact 4-token handshake (`stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin`).
-// 2. Real binary vs real Node `station/src/main.ts` (+ `bin/admin-cli.ts`) parity across all 8 CLI subcommands:
+// 1. `--version` exact 4-token handshake (`stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree`).
+// 2. Real binary vs real Node `station/src/main.ts` (+ `bin/admin-cli.ts`) parity across CLI subcommands:
 //    `id` (OS CSPRNG keygen + mode 0600), `status`, `lock` (signed genesis Ed25519 verification + reset),
 //    `channel`, `enroll` (Ed25519 enroll signature + `--lock`), `update` (signed feed + tamper rejection +
 //    `--replace-prepare` `.tar.gz` extraction + verbatim-symlink `copy_dir` + executable mode bits),
