@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 | [3bb9a03a0](https://github.com/AFK-surf/monoid/commit/3bb9a03a01ff07c3712fd1a806ec539402ddfec9) fix(ui): support Shift+click range extension for t | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 | [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
 | [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.77 | 101.99 | 109.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.05 | 67.49 | 101.6 | 115.56 |
 | [fd365a890](https://github.com/AFK-surf/monoid/commit/fd365a8905602c0900cc39f1e3bf2082ece52000) fix(mbui): keep board counts until the selected fi | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.05 | 67.49 | 101.6 | 115.56 |
 | [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.6 | 115.56 |
-| [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 129.36 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.64 |
 | [3bb9a03a0](https://github.com/AFK-surf/monoid/commit/3bb9a03a01ff07c3712fd1a806ec539402ddfec9) fix(ui): support Shift+click range extension for t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.54 |
 | [2eab0062a](https://github.com/AFK-surf/monoid/commit/2eab0062a97617dbc5b2db61cb14fe8717f75f18) feat(station): expose chat attachments over Comma  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.41 |
 | [3cc244396](https://github.com/AFK-surf/monoid/commit/3cc2443960c94da204958f3dc3d7448c76775f7b) feat(mbui,core): add a switch that removes the hue | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.72 |
 | [fd365a890](https://github.com/AFK-surf/monoid/commit/fd365a8905602c0900cc39f1e3bf2082ece52000) fix(mbui): keep board counts until the selected fi | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.59 |
 | [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.59 |
-| [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.74 |
