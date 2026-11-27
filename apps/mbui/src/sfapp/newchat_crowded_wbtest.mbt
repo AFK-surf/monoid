@@ -455,17 +455,15 @@ test "wide: how hard it thinks one under another, from the least to the most" {
 }
 
 ///|
-test "narrow, a short window, many models starred: the one picked in view as the sheet opens, the lowest of them though it is" {
+test "narrow, a short window, many models starred: the sheet opens at its foot, those used most in view nearest the hand, the one picked far over them though it is" {
   both_pages(fn() raise {
-    // (2026-11-05 用户「模型选择面板打开不会自动滚动到能看见已选择模型的地方」)
+    // (2026-11-27 用户「还是默认滚到最下面吧，手机往上操作不方便」, in place of 2026-11-05's the one picked in view)
     let t = crowded("newchat-providers-model-far", h=crowded_short)
     run_to_sheet_rest(t)
-    let sheet = t.get(@ui.Role::Dialog).rect
-    let picked = "Sonnet 5"
-    let row = t.get(Button, label=picked).rect
-    // (the configurations used most stay put under what scrolls: the one picked between the sheet's top and them)
     let used = t.get(Button, label="GPT-6 Astra · 中").rect
-    assert_true(row.1 >= sheet.1 && row.1 + row.3 <= used.1, msg="\{picked} \{Repr(row)}: the sheet \{Repr(sheet)}, those used most from \{Repr(used)}")
+    assert_true(wholly_in_view(t, used), msg="those used most from \{Repr(used)}")
+    let picked = t.get(Button, label="Sonnet 5").rect
+    assert_true(!wholly_in_view(t, picked), msg="the one picked \{Repr(picked)} in view: not at the foot")
   })
 }
 
