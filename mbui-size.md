@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 2.67 | 3.61 | 14.99 | 38.03 | 58.24 | 33.32 | 67.99 | 103.02 | 131.83 |
 | [23f501c02](https://github.com/AFK-surf/monoid/commit/23f501c02c24abddf9b9a9f2a98c2146fc7a11fd) fix(ui): fix adaptive glass ink, dark contour on b | 2.67 | 3.61 | 14.98 | 38.03 | 58.19 | 33.32 | 67.97 | 102.89 | 135.39 |
 | [dcc7a90e0](https://github.com/AFK-surf/monoid/commit/dcc7a90e062b622c4da63040bb111b5c58428678) fix(mbui): relocate small-screen group pill above  | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 103.09 | 131.45 |
 | [b9c66c6cf](https://github.com/AFK-surf/monoid/commit/b9c66c6cfa60f5c89eff99f8634d960b7851e918) feat(station-whole): add production OS adapters fo | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 103.09 | 131.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [686a170c1](https://github.com/AFK-surf/monoid/commit/686a170c1ea9b0e400a6e0ea4bc637c5a46472a9) fix(ui): measure list bands from the rows they fol | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 125.46 |
 | [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 123.44 |
 | [31e518d3a](https://github.com/AFK-surf/monoid/commit/31e518d3ac79355c27990842cea53f90e6273747) fix(mbui): isolate VaultItem plaintext, visibility | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 123.44 |
-| [cc78ae49e](https://github.com/AFK-surf/monoid/commit/cc78ae49ef4d463c7dbc41dc782e1d0424df4de1) feat(mbui): add project-grouped sticky section hea | 2.65 | 3.58 | 14.88 | 37.78 | 57.87 | 33.1 | 67.7 | 101.42 | 132.69 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [23f501c02](https://github.com/AFK-surf/monoid/commit/23f501c02c24abddf9b9a9f2a98c2146fc7a11fd) fix(ui): fix adaptive glass ink, dark contour on b | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.67 |
 | [dcc7a90e0](https://github.com/AFK-surf/monoid/commit/dcc7a90e062b622c4da63040bb111b5c58428678) fix(mbui): relocate small-screen group pill above  | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.75 |
 | [b9c66c6cf](https://github.com/AFK-surf/monoid/commit/b9c66c6cfa60f5c89eff99f8634d960b7851e918) feat(station-whole): add production OS adapters fo | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [686a170c1](https://github.com/AFK-surf/monoid/commit/686a170c1ea9b0e400a6e0ea4bc637c5a46472a9) fix(ui): measure list bands from the rows they fol | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.56 |
 | [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.66 |
 | [31e518d3a](https://github.com/AFK-surf/monoid/commit/31e518d3ac79355c27990842cea53f90e6273747) fix(mbui): isolate VaultItem plaintext, visibility | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.62 |
-| [cc78ae49e](https://github.com/AFK-surf/monoid/commit/cc78ae49ef4d463c7dbc41dc782e1d0424df4de1) feat(mbui): add project-grouped sticky section hea | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.44 |
