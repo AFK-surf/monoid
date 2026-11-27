@@ -22,6 +22,7 @@
 // It keeps the session's transcript itself (`sessions`/<session id>.jsonl, Cursor's lines, read by read/transcript.ts);
 // the runtime's own (session-state/…/events.jsonl) is its format to change.
 import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { createHmac } from 'node:crypto'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -285,9 +286,17 @@ async function main() {
       const token = message.provider ? '' : (process.env.STILLFAIL_COPILOT_TOKEN ?? '')
       // The runtime's own process: its environment the station gave this one, and the profile's token alone (never a
       // login of the machine's: `useLoggedInUser` false reads no stored login, `gh`, or token variable).
+      const runtimeEnv = { ...process.env, STILLFAIL_COPILOT_TOKEN: undefined }
+      if (message.borrowed) {
+        const url = new URL(message.mcpUrl)
+        if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') throw new Error('Copilot borrowing requires the local station door')
+        const { key, profile } = message.borrowed
+        runtimeEnv.COPILOT_API_URL = url.origin + '/copilot-api/' + encodeURIComponent(key) + '/' + encodeURIComponent(profile)
+        runtimeEnv.GITHUB_COPILOT_API_TOKEN = createHmac('sha256', process.env.STILLFAIL_MCP_TOKEN).update('copilot-api\0' + profile).digest('hex')
+      }
       client = new sdk.CopilotClient({
         mode: 'coding-agent',
-        runtime: sdk.RuntimeConnection.forSpawnedStdio({ baseDirectory: home, env: { ...process.env, STILLFAIL_COPILOT_TOKEN: undefined } }),
+        runtime: sdk.RuntimeConnection.forSpawnedStdio({ baseDirectory: home, env: runtimeEnv }),
         github: { useLoggedInUser: false, ...(token !== '' ? { token } : {}) },
         clientInfo: { applicationName: 'still.fail' },
       })
@@ -311,11 +320,13 @@ async function main() {
       }
       // A model provider of its own in place of GitHub's (the SDK's `github.capi` and `inference` options: the tests'
       // local model); none from the station.
+      if (message.borrowed) options.github = { capi: { enableWebSocketResponses: false } }
       if (message.provider) {
         options.github = { ...options.github, ...message.provider.github }
         options.inference = { ...options.inference, ...message.provider.inference }
       }
       session = message.resume ? await client.resumeSession(message.resume, options) : await client.createSession(options)
+      if (message.borrowed) await session.rpc.gitHubAuth.setCredentials({ credentials: { type: 'copilot-api-token', host: 'https://github.com' } })
       transcript = join(message.sessions, `${session.sessionId}.jsonl`)
       if (!message.resume) keep({ type: 'session', id: session.sessionId, cwd: message.cwd })
       return { session: session.sessionId }

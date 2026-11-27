@@ -33,12 +33,18 @@ import { CommandMissing, type RunnerInfo } from "./runner.ts";
 import { cleanEnv, uuid, type OpenOptions } from "./runtime.ts";
 import type { CursorLiveState } from "./cursor.ts";
 
+import type { CopilotLease } from "../share/copilot.ts";
+
+const borrowedCopilot = (p: OpenOptions["profile"]) => (p.share as { borrowed?: boolean } | undefined)?.borrowed === true;
+
 type Json = any;
 
 /// Inherited variables that would let a session use another GitHub account, another Copilot home or another provider
 /// than its profile's.
 const SCRUBBED = [
   "COPILOT_HOME",
+  "GITHUB_COPILOT_API_TOKEN",
+  "COPILOT_API_URL",
   "COPILOT_GITHUB_TOKEN",
   "GH_TOKEN",
   "GITHUB_TOKEN",
@@ -140,6 +146,7 @@ export type CopilotDriverOptions = {
   data: string;
   /// The Node the bridge runs on (the station's own).
   node?: string;
+  lend?: (profile: OpenOptions["profile"]) => Promise<CopilotLease>;
   /// The driver and the SDK's package (tests give their own): the station's when not given.
   bridge?: string;
   sdk?: string;
@@ -148,6 +155,7 @@ export type CopilotDriverOptions = {
 };
 
 export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
+  private readonly lend: CopilotDriverOptions["lend"];
   private readonly node: string;
   private readonly bridge: string;
   private readonly sdk: string | undefined;
@@ -155,6 +163,7 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
 
   constructor(options: CopilotDriverOptions) {
     super(options.data);
+    this.lend = options.lend;
     this.node = options.node ?? process.execPath;
     this.bridge = options.bridge ?? BRIDGE;
     this.sdk = options.sdk;
@@ -173,13 +182,20 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
   /// Every chat model this GitHub account may use: GitHub's Copilot model catalog, with the profile's token. The
   /// profile's check offers these, and a chat may pick any of them.
   async models(profile: OpenOptions["profile"]): Promise<string[]> {
-    const token = await copilotToken(profile);
+    const lease = borrowedCopilot(profile) ? await this.borrow(profile) : null;
+    const token = lease?.token ?? await copilotToken(profile);
     if (token === undefined) return [];
-    const answer = await fetch("https://api.githubcopilot.com/models", {
+    const answer = await fetch((lease?.api ?? "https://api.githubcopilot.com") + "/models", {
+      redirect: "error",
       headers: { authorization: `Bearer ${token}`, "copilot-integration-id": "vscode-chat", accept: "application/json" },
     });
     if (!answer.ok) throw new Error(`GitHub Copilot models: ${answer.status}`);
     return chatModels((await answer.json().catch(() => null)) as Json);
+  }
+
+  private borrow(profile: OpenOptions["profile"]) {
+    if (!this.lend) throw new Error("This station cannot borrow a Copilot subscription");
+    return this.lend(profile);
   }
 
   /// Its environment: the profile's token, the SDK's package, the station's tools' token; no other account's.
@@ -187,23 +203,26 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
     const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "copilot"), options.route) });
     // (a token in the profile's own variables is its token: given the SDK, not left for the runtime to find)
     delete env.COPILOT_GITHUB_TOKEN;
+    delete env.GITHUB_COPILOT_API_TOKEN;
+    delete env.COPILOT_API_URL;
+    if (borrowedCopilot(options.profile)) {
+      for (const key of SCRUBBED) delete env[key];
+    } else env.STILLFAIL_COPILOT_TOKEN = token;
     env.STILLFAIL_COPILOT_SDK = sdk;
-    env.STILLFAIL_COPILOT_TOKEN = token;
     env.STILLFAIL_MCP_TOKEN = options.mcpToken;
     env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
     return env;
   }
 
   async open(options: OpenOptions, events: Events): Promise<CopilotSession> {
-    if ((options.profile.share as { borrowed?: unknown } | undefined)?.borrowed === true) {
-      throw new Error("GitHub Copilot cannot use a profile shared from another station. Sign in on this station.");
-    }
     const sessions = join(copilotHome(options.profile.home), SESSIONS);
     await mkdir(sessions, { recursive: true });
     const sdk = this.sdk ?? (await findSdk(this.data));
     // Not installed: the person's message waits for it as for any runtime not on PATH (agents/runner.ts).
     if (sdk === null) throw new CommandMissing("copilot");
-    const token = await copilotToken(options.profile);
+    const borrowed = borrowedCopilot(options.profile);
+    if (borrowed) await this.borrow(options.profile);
+    const token = borrowed ? "" : await copilotToken(options.profile);
     if (token === undefined) throw new Error(NOT_SIGNED_IN);
     if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) {
       // Not one this driver kept (the CLI's ACP server's sessions were its own home's): failing here lets the caller
@@ -218,6 +237,7 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
     try {
       const opened = await session.request(OPEN, "open", {
         cwd: options.cwd,
+        ...(borrowed ? { borrowed: { key: options.key, profile: options.profile.id } } : {}),
         ...(options.resume !== undefined ? { resume: options.resume } : {}),
         ...(model !== null && model !== "" ? { model } : {}),
         ...(effort !== null ? { effort } : {}),

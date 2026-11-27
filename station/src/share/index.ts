@@ -47,11 +47,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, watch } from "node:fs";
 import { lstat, mkdir, readdir, readFile, readlink, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { CopilotLeases, readCopilotLease } from "./copilot.ts";
+import { copilotToken, NOT_SIGNED_IN } from "../agents/copilot.ts";
 import type { Clock } from "effect";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
 import { codexAuthFile } from "../agents/machine-logins.ts";
 import { CONSOLE_FILE, ProfileLoginOver, RenewRefused } from "../accounts/console.ts";
-import { copilotTokenFile } from "../accounts/copilot.ts";
 import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
 import { devinAccountFile, grokAuthFile } from "../accounts/profiles.ts";
@@ -178,6 +179,7 @@ export type SharingDeps = {
   autoChats?: () => { accept: boolean; tasksOnly: boolean };
   /// Tests: Codex's token endpoint.
   codexTokenUrl?: string;
+  copilotExchange?: typeof profileFetch;
   /// Tests: the MoonBit program that reads and writes the skills' files (readerBinary's where none is given).
   binary?: string;
   /// Live `config.json` `readers` snapshot getter for `--builder memory`.
@@ -276,7 +278,7 @@ export function signInFiles(p: Json, services: ServiceRegistry = DEFAULT_SERVICE
     const r = typeof p.runtime === "string" ? p.runtime : undefined;
     if (r === "claude") out.push(".credentials.json", ".claude.json");
     else if (r === "codex") out.push("auth.json");
-    else if (r === "copilot") out.push(copilotTokenFile(""));
+    else if (r === "copilot") out.push("copilot/github-token");
     else if (r === "grok") out.push(grokAuthFile(""));
     else if (r === "cursor") out.push(cursorAuthFile(""));
     else if (r === "devin") out.push(join(devinData(""), "devin", "credentials.toml"), devinAccountFile(""));
@@ -296,6 +298,9 @@ export function portable(p: Json): Json {
   if (isObject(out.access) && !keyed(out.access.kind)) delete out.access.key;
   // A proxy is this machine's, not the profile's: the other station has its own way out, or none.
   if (isObject(out.env)) for (const k of Object.keys(out.env)) if (machineProxy(k)) delete out.env[k];
+  if (p.runtime === "copilot" && isObject(out.env)) {
+    for (const key of ["COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_API_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "STILLFAIL_COPILOT_TOKEN"]) delete out.env[key];
+  }
   return out;
 }
 
@@ -360,10 +365,8 @@ async function keptCodexExpiry(file: string): Promise<number> {
 /// Why profile `p`'s login cannot be shared with other stations (null: it can): what `shareProfile` refuses turning a
 /// share on, and what a move asks before sharing a login as it moves it (move/accounts.ts), so the two never differ. A
 /// copy of another station's is not this station's to share.
-const COPILOT_SHARE_REFUSAL = "a GitHub Copilot profile cannot be shared with other stations yet; sign in on the station where you want to use it";
 export function shareRefusal(p: Json, services: ServiceRegistry = DEFAULT_SERVICES): string | null {
   if (isObject(p?.share) && p.share.borrowed === true) return "this profile is another station's";
-  if (p?.runtime === "copilot") return COPILOT_SHARE_REFUSAL;
   if (p?.access?.kind === "service") {
     const s = serviceOf(p);
     const adapter = s !== undefined ? services.get(s) : undefined;
@@ -398,6 +401,7 @@ export class Sharing {
   /// it goes to tells them, as their host), so none takes a copy of what goes to that station in a moment.
   private unannounced = new Set<string>();
   private moveDone = new Map<string, Promise<void>>();
+  private copilotLeases = new CopilotLeases();
   /// The Claude token each borrowed profile was last lent (Codex keeps its own in its home's auth.json).
   private lentClaude = new Map<string, MachineToken>();
   private reconciling: Promise<void> | null = null;
@@ -737,7 +741,7 @@ export class Sharing {
   private shares(): Map<string, Shared> {
     const out = new Map<string, Shared>();
     for (const p of this.profiles()) {
-      if (p.runtime === "copilot" || !isObject(p.share) || p.share.borrowed === true || typeof p.share.id !== "string") continue;
+      if (!isObject(p.share) || p.share.borrowed === true || typeof p.share.id !== "string") continue;
       const auto = p.share.allowAuto === true;
       out.set(p.share.id, { kind: "profile", name: String(p.name ?? p.id), allow: auto ? this.autoAllow(p.share.allow) : Array.isArray(p.share.allow) ? p.share.allow : null, ...(auto ? { allowAuto: true } : {}), profile: p });
     }
@@ -901,22 +905,6 @@ export class Sharing {
   }
 
   private async reconcileOnce() {
-    // Older stations allowed Copilot shares. Stop hosting them and remove copies without changing the host's login.
-    if (this.profiles().some((p) => p.runtime === "copilot" && isObject(p.share))) {
-      const removed: string[] = [];
-      await this.deps.config.updateSoon((raw) => {
-        raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => {
-          if (p?.runtime !== "copilot" || !isObject(p.share)) return true;
-          if (p.share.borrowed === true) {
-            removed.push(String(p.id));
-            return false;
-          }
-          delete p.share;
-          return true;
-        });
-      });
-      for (const id of removed) await this.deps.profileGone?.(id).catch((error) => log.warn("share", "moving sessions off an unsupported Copilot copy failed", { profile: id, error: (error as Error).message }));
-    }
     const me = this.me();
     if (me === null || this.deps.cloud.removed()) return;
     const rosters = this.rosters();
@@ -1176,8 +1164,6 @@ export class Sharing {
   private async placeProfile(id: string, had: Borrowed, got: Json): Promise<string | null> {
     const given = isObject(got?.profile) ? got.profile : null;
     if (!given) throw new Error("the host sent no profile");
-    // An older host can still offer the share after this station removes its copy.
-    if (given.runtime === "copilot") return null;
     await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const at = list.findIndex((p) => isObject(p?.share) && p.share.id === id);
@@ -1227,15 +1213,9 @@ export class Sharing {
       for (const [session, held] of [...this.borrowedHeldSlots.entries()]) {
         if (held.shareId === id) this.releaseBorrowedSlot(session);
       }
-      const removed: string[] = [];
       await this.deps.config.updateSoon((raw) => {
-        raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => {
-          const drop = isObject(p?.share) && p.share.id === id && p.share.borrowed === true;
-          if (drop && p.runtime === "copilot" && typeof p.id === "string") removed.push(p.id);
-          return !drop;
-        });
+        raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => !(isObject(p?.share) && p.share.id === id && p.share.borrowed === true));
       });
-      for (const profile of removed) await this.deps.profileGone?.(profile).catch((error) => log.warn("share", "moving sessions off an unsupported Copilot copy failed", { profile, error: (error as Error).message }));
       return;
     }
     this.stopWatch(`borrowed:${id}`);
@@ -1411,8 +1391,7 @@ export class Sharing {
   async handle(peer: string, request: Json, workspace?: string): Promise<Json> {
     const method = String(request?.method ?? "");
     const id = String(request?.id ?? "");
-    // Older stations did not transfer Copilot's login file when taking an account.
-    if (method === "share.copilotMove") return { supported: true };
+    if (method === "share.copilotMove") return { supported: true, lending: true };
     if (method === "share.changed") {
       // (one this station is handing over as it is told: heard once the hand-over is done here, so a word of the new
       // host's, its share undone as the login came home, is not heard by the station that still hosts it, then lost)
@@ -1482,6 +1461,15 @@ export class Sharing {
         return { version: at, profile: portable(now.profile), email, allow: now.allow, ...(now.allowAuto ? { allowAuto: true } : {}), workspaces: this.sharedIn(now.profile), quotaRevision: state.hosted[id]?.quotaRevision ?? 0, otherActive, hostCap, slotEpoch: this.slotEpoch };
       }
       if (method === "share.slotClaim") return this.handleSlotClaim(peer, id, p, request);
+      if (method === "share.copilotLease") {
+        if (p.runtime !== "copilot" || p.access?.kind !== "subscription" || p.share?.borrowed || p.enabled === false || this.moving.has(id)) throw new Error("Copilot subscription unavailable");
+        const login = await copilotToken({ ...p, home: this.home(p) });
+        if (!login) throw new Error(NOT_SIGNED_IN);
+        const lease = await this.copilotLeases.get(p.id, login, this.time.now(), this.deps.copilotExchange);
+        const current = this.shares().get(id);
+        if (!current || current.profile?.id !== p.id || current.profile?.enabled === false || this.moving.has(id) || !this.mayUse(current.allow, peer) || this.reach(current, peer) === null) throw new Error(NOT_FOR_IT);
+        return lease;
+      }
       if (method === "share.lend") {
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
         return this.lend(p, typeof request.rejected === "string" ? request.rejected : undefined);
@@ -1653,6 +1641,7 @@ export class Sharing {
       return { runtime: "claude", token: t.token, expiresAt: t.expiresAt };
     }
     if (p.runtime === "agy") return this.lendAgyHere(p);
+    if (p.runtime === "copilot") throw new Error("Update the borrowing station to request a Copilot API credential");
     const file = this.codexFile(p);
     let auth = JSON.parse(await readFile(file, "utf8"));
     let expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
@@ -2238,6 +2227,16 @@ export class Sharing {
     void this.reconcile();
   }
 
+  async lendCopilot(profile: Json) {
+    if (profile?.runtime !== "copilot" || !this.borrowedSubscription(profile)) throw new Error("No borrowed Copilot subscription");
+    await this.rosterSaid();
+    const value = await this.deps.ask(this.hostOf(profile), null, { method: "share.copilotLease", id: profile.share.id }).catch((error) => {
+      if (/unknown share request/.test(String(error))) throw new Error("Update the station that hosts this Copilot subscription");
+      throw error;
+    });
+    return readCopilotLease(value, this.time.now());
+  }
+
   /// A borrowed Claude subscription's token, from its host; `rejected`, the one a process here was refused with.
   async lendClaude(profile: Json, rejected?: string): Promise<MachineToken> {
     const host = this.hostOf(profile);
@@ -2543,21 +2542,17 @@ export class Sharing {
   /// moved as.
   async moveProfile(profileId: string, to: string, lang = stationLang(), shareFirst?: (share: string) => Promise<void>): Promise<{ id: string; share?: string }> {
     const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
-    let p = this.profiles().find((x) => x.id === profileId);
+    const p = this.profiles().find((x) => x.id === profileId);
     if (!p) throw new Said(t("station.share.moveUnknown"));
     if (p.machine === true) throw new Said(t("station.share.moveMachine"));
     if (isObject(p.share) && p.share.borrowed === true) throw new Said(t("station.share.moveBorrowed"));
-    if (p.runtime === "copilot" && isObject(p.share)) {
-      await this.reconcile();
-      p = this.profiles().find((x) => x.id === profileId);
-      if (!p || isObject(p.share)) throw new Said(t("station.share.moveNotTaken"));
-    }
     if (to === this.me()) return { id: profileId };
     const ws = this.reach({ kind: "profile", profile: p }, to);
     if (ws === null) throw new Said(t("station.share.moveWhere"));
-    if (p.runtime === "copilot" && p.access?.kind === "subscription") {
-      const capable = await this.deps.ask(to, ws, { method: "share.copilotMove" }).then((answer) => answer?.supported === true, () => false);
-      if (!capable) throw new Said(t("station.share.moveNotTaken"));
+    const copilotMove = p.runtime === "copilot" && p.access?.kind === "subscription";
+    if (copilotMove) {
+      const capability = await this.deps.ask(to, ws, { method: "share.copilotMove" }).catch(() => null);
+      if (capability?.lending !== true) throw new Said(t("station.share.moveNotTaken"));
     }
     const credentials: Record<string, string> = {};
     const home = this.home(p);
@@ -2566,6 +2561,9 @@ export class Sharing {
         const path = join(home, name);
         if (!(await lstat(path)).isSymbolicLink()) credentials[name] = (await readFile(path)).toString("base64");
       } catch {}
+    }
+    if (copilotMove && typeof p.env?.COPILOT_GITHUB_TOKEN === "string" && p.env.COPILOT_GITHUB_TOKEN.trim()) {
+      credentials["copilot/github-token"] = Buffer.from(p.env.COPILOT_GITHUB_TOKEN.trim()).toString("base64");
     }
     // (its account read while its login is here: the copy kept here is named by it after the login goes)
     const email = await this.emailOf(p);
@@ -2598,7 +2596,7 @@ export class Sharing {
         made = true;
         log.info("share", "a profile shared as it moves, with this station and the one it goes to only", { profile: profileId, to });
       }
-      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email, credentials, allow, ...following, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
+      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email, credentials, ...(copilotMove ? { copilotMove: true } : {}), allow, ...following, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
       taken = true;
       if (typeof answer?.id === "string") there = answer.id;
       // Ours no more: the login forgotten (the new host renews it now), the profile kept as a copy under the same id.
@@ -2701,7 +2699,6 @@ export class Sharing {
   /// A share lent to this station by its host for a move (`lendTo`): its copy placed here before this answers.
   private async borrow(peer: string, id: string, request: Json): Promise<Json> {
     if (!/^sh-[0-9a-z]{10,40}$/.test(id)) throw new Error("bad share id");
-    if (request?.profile?.runtime === "copilot") throw new Error(COPILOT_SHARE_REFUSAL);
     if (this.shares().has(id)) return { borrowed: true };
     const me = this.me();
     const allow: string[] | null = Array.isArray(request?.allow) ? request.allow : null;
@@ -2872,9 +2869,8 @@ export class Sharing {
   /// One at a time (`serially`, with what else changes `state.hosted`): what one looked at to decide (its id here, a copy
   /// it had, one of the same account) is as it was when it is written.
   private take(peer: string, request: Json): Promise<Json> {
-    // Older stations do not transfer Copilot's login file. Refuse their moves, and all moves that would keep sharing it.
-    if (request?.profile?.runtime === "copilot" && (request.own !== true || request.profile.access?.kind === "subscription" && request.copilotMove !== true)) {
-      throw new Refused("Update both stations before moving a Copilot subscription; Copilot profiles cannot be shared between stations.");
+    if (request.profile?.runtime === "copilot" && request.profile.access?.kind === "subscription" && request.copilotMove !== true) {
+      throw new Refused("Update both stations before moving a Copilot subscription");
     }
     return this.serially(() => (request?.own === true ? this.takeOwn(peer, request) : this.takeShared(peer, request)));
   }

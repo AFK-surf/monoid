@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { ConfigFile } from "../src/ops/config.ts";
+import type { profileFetch } from "../src/ops/agent-env.ts";
+import { CopilotLeases, readCopilotLease } from "../src/share/copilot.ts";
 import { Sharing, shareRefusal } from "../src/share/index.ts";
 import { agyAccountFile, agyToken } from "../src/agents/agy.ts";
 import { Refused } from "../src/mesh/bus.ts";
@@ -61,7 +63,7 @@ type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: strin
 const made: Sharing[] = [];
 after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void; accountKey?: (id: string) => string; accountCap?: (id: string) => number | undefined; accountProtection?: (id: string) => boolean; localActiveForAccount?: (key: string) => number; onSlotFreed?: () => void } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { copilotExchange?: typeof profileFetch; profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void; accountKey?: (id: string) => string; accountCap?: (id: string) => number | undefined; accountProtection?: (id: string) => boolean; localActiveForAccount?: (key: string) => number; onSlotFreed?: () => void } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -102,103 +104,6 @@ const settle = async (...stations: Station[]) => {
 
 const KEY = { id: "deepseek", name: "DeepSeek", access: { kind: "api-provider", provider: "deepseek", key: "sk-secret" }, home: "homes/deepseek", env: {} };
 const SUB = { id: "max", name: "Claude Max", runtime: "claude", access: { kind: "subscription" }, home: "homes/max", env: {} };
-const COPILOT = { id: "copilot", name: "Copilot", runtime: "copilot", access: { kind: "subscription" }, home: "homes/copilot", env: {} };
-
-test("Copilot profiles cannot be shared, including when a peer asks to borrow one", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const a = station(cloud, A, () => all, [COPILOT]);
-  const b = station(cloud, B, () => all);
-  all.set(A, a).set(B, b);
-  assert.match(String(shareRefusal(COPILOT)), /cannot be shared/);
-  assert.match(String(shareRefusal({ ...COPILOT, access: { kind: "env" } })), /cannot be shared/);
-  await assert.rejects(a.sharing.shareProfile("copilot", true, null), /cannot be shared/);
-  await assert.rejects(b.sharing.handle(A, { method: "share.borrow", id: "sh-1234567890", profile: COPILOT }, "w"), /cannot be shared/);
-  assert.equal(b.config.raw().profiles.length, 0);
-});
-
-test("an old hosted Copilot share is stopped and its copy is removed", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const a = station(cloud, A, () => all, [{ ...SUB, id: "copilot" }]);
-  const b = station(cloud, B, () => all);
-  all.set(A, a).set(B, b);
-  await a.sharing.shareProfile("copilot", true, null);
-  await settle(a, b);
-  assert.equal(b.config.raw().profiles.length, 1);
-  a.config.update((raw) => { raw.profiles[0].runtime = "copilot"; });
-  await settle(a, b);
-  assert.equal(a.config.raw().profiles[0].runtime, "copilot");
-  assert.equal(a.config.raw().profiles[0].share, undefined, "the host keeps its local profile");
-  assert.equal(b.config.raw().profiles.length, 0, "the borrower is told the share ended");
-});
-
-test("an old borrowed Copilot copy is removed even when its host is offline", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const gone: string[] = [];
-  const copy = { ...COPILOT, id: "sh-1234567890", share: { id: "sh-1234567890", borrowed: true, host: A, workspaces: ["w"] } };
-  const b = station(cloud, B, () => all, [copy], undefined, { profileGone: async (id) => { gone.push(id); } });
-  all.set(B, b);
-  await b.sharing.reconcile();
-  assert.equal(b.config.raw().profiles.length, 0);
-  assert.deepEqual(gone, [copy.id]);
-});
-
-test("an older host cannot recreate a borrowed Copilot profile", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const a = station(cloud, A, () => all);
-  const b = station(cloud, B, () => all);
-  all.set(A, a).set(B, b);
-  const handle = a.sharing.handle.bind(a.sharing);
-  a.sharing.handle = async (peer, request, ws) => {
-    if (request.method === "share.get") return { profile: COPILOT, version: 1, workspaces: ["w"], allow: null };
-    if (request.method === "share.version") return { version: 1 };
-    return handle(peer, request, ws);
-  };
-  for (const version of [1, 2]) {
-    await b.sharing.handle(A, { method: "share.changed", id: "sh-1234567890", kind: "profile", name: "Copilot", version, allow: null }, "w");
-    await settle(b);
-    assert.equal(b.config.raw().profiles.length, 0);
-  }
-});
-
-test("moving a Copilot subscription transfers its login only to an updated station", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const a = station(cloud, A, () => all, [COPILOT]);
-  const b = station(cloud, B, () => all);
-  all.set(A, a).set(B, b);
-  const token = join(a.data, "homes", "copilot", "copilot", "github-token");
-  mkdirSync(join(a.data, "homes", "copilot", "copilot"), { recursive: true });
-  writeFileSync(token, "test-login");
-  const handle = b.sharing.handle.bind(b.sharing);
-  b.sharing.handle = async (peer, request, ws) => {
-    if (request.method === "share.copilotMove") throw new Error("unknown share request");
-    return handle(peer, request, ws);
-  };
-  await assert.rejects(a.sharing.moveProfile("copilot", B, "en"));
-  assert.equal(readFileSync(token, "utf8"), "test-login");
-  assert.equal(a.config.raw().profiles.length, 1);
-  assert.equal(b.config.raw().profiles.length, 0);
-  b.sharing.handle = handle;
-  assert.deepEqual(await a.sharing.moveProfile("copilot", B, "en"), { id: "copilot" });
-  assert.equal(readFileSync(join(b.data, "homes", "copilot", "copilot", "github-token"), "utf8"), "test-login");
-  assert.equal(existsSync(token), false);
-  assert.equal(a.config.raw().profiles.length, 0);
-  assert.equal(b.config.raw().profiles[0].share, undefined);
-});
-
-test("an updated station refuses a Copilot move from an older sender", async () => {
-  const cloud = new FakeCloud();
-  const all = new Map<string, Station>();
-  const b = station(cloud, B, () => all);
-  all.set(B, b);
-  await assert.rejects(b.sharing.handle(A, { method: "share.take", own: true, profileId: "copilot", profile: COPILOT, credentials: {} }, "w"), /Update both stations/);
-  await assert.rejects(b.sharing.handle(A, { method: "share.take", own: false, id: "sh-1234567890", profile: COPILOT, copilotMove: true }, "w"), /cannot be shared/);
-  assert.equal(b.config.raw().profiles.length, 0);
-});
 
 test("a shared machine login carries its account to existing and returning borrowers", async () => {
   const cloud = new FakeCloud();
@@ -1667,4 +1572,82 @@ test("cross-station concurrency slots: older host refusing share.slotClaim falls
 
   await a.sharing.close();
   await b.sharing.close();
+});
+
+test("Copilot lends only the expiring API credential and denies even a cached lease after unsharing", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  let exchanges = 0;
+  const api = "https://api.individual.githubcopilot.com";
+  const host = station(cloud, A, () => all, [{ ...SUB, runtime: "copilot", env: { COPILOT_GITHUB_TOKEN: "gho_host", GH_TOKEN: "other" } }], undefined, {
+    copilotExchange: async (url, init) => {
+      exchanges++;
+      assert.equal(url, "https://api.github.com/copilot_internal/v2/token");
+      assert.equal(init?.headers?.authorization, "Bearer gho_host");
+      return Response.json({ token: "expiring", expires_at: Math.floor(Date.now() / 1000) + 1200, endpoints: { api } });
+    },
+  });
+  const borrower = station(cloud, B, () => all);
+  all.set(A, host).set(B, borrower);
+  await host.sharing.shareProfile("max", true, [B]);
+  await settle(host, borrower);
+  const copy = borrower.config.raw().profiles[0];
+  assert.equal(copy.share.borrowed, true);
+  assert.deepEqual(copy.env, {});
+  const [one, two] = await Promise.all([borrower.sharing.lendCopilot(copy), borrower.sharing.lendCopilot(copy)]);
+  assert.deepEqual(one, two);
+  assert.equal(one.token, "expiring");
+  assert.equal(exchanges, 1);
+  await host.sharing.shareProfile("max", false, null);
+  await assert.rejects(borrower.sharing.lendCopilot(copy));
+  assert.equal(exchanges, 1);
+});
+
+test("Copilot renews before expiry and never reuses a lease after an account change", async () => {
+  const api = "https://api.githubcopilot.com";
+  let count = 0;
+  const exchange = async () => Response.json({ token: "lease-" + ++count, endpoints: { api }, expires_at: 900 + count * 100 });
+  const leases = new CopilotLeases();
+  assert.equal((await leases.get("p", "first", 0, exchange)).token, "lease-1");
+  assert.equal((await leases.get("p", "first", 940_000, exchange)).token, "lease-2");
+  assert.equal((await leases.get("p", "second", 940_000, exchange)).token, "lease-3");
+  assert.throws(() => readCopilotLease({ api: "https://notgithubcopilot.com", token: "x", expiresAt: 100 }, 0));
+  assert.throws(() => readCopilotLease({ api, token: "x", expiresAt: 100 }, 100));
+});
+
+const COPILOT = { id: "copilot", name: "Copilot", runtime: "copilot", access: { kind: "subscription" }, home: "homes/copilot", env: {} };
+
+test("moving a Copilot subscription transfers its login only to an updated station", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [COPILOT]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const token = join(a.data, "homes", "copilot", "copilot", "github-token");
+  mkdirSync(join(a.data, "homes", "copilot", "copilot"), { recursive: true });
+  writeFileSync(token, "test-login");
+  const handle = b.sharing.handle.bind(b.sharing);
+  b.sharing.handle = async (peer, request, ws) => {
+    if (request.method === "share.copilotMove") throw new Error("unknown share request");
+    return handle(peer, request, ws);
+  };
+  await assert.rejects(a.sharing.moveProfile("copilot", B, "en"));
+  assert.equal(readFileSync(token, "utf8"), "test-login");
+  assert.equal(a.config.raw().profiles.length, 1);
+  assert.equal(b.config.raw().profiles.length, 0);
+  b.sharing.handle = handle;
+  assert.deepEqual(await a.sharing.moveProfile("copilot", B, "en"), { id: "copilot" });
+  assert.equal(readFileSync(join(b.data, "homes", "copilot", "copilot", "github-token"), "utf8"), "test-login");
+  assert.equal(existsSync(token), false);
+  assert.equal(a.config.raw().profiles.length, 0);
+  assert.equal(b.config.raw().profiles[0].share, undefined);
+});
+
+test("an updated station refuses a Copilot move from an older sender", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const b = station(cloud, B, () => all);
+  all.set(B, b);
+  await assert.rejects(b.sharing.handle(A, { method: "share.take", own: true, profileId: "copilot", profile: COPILOT, credentials: {} }, "w"), /Update both stations/);
+  assert.equal(b.config.raw().profiles.length, 0);
 });

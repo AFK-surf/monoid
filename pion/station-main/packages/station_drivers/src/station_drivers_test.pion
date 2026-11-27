@@ -472,14 +472,18 @@ test "drivers: all 11 runtimes argv, env, MCP injection, and subagent silent gua
     None => ""
   }
   expect(str_contains(cop_setup, "\"silent\"") && str_contains(cop_setup, "chat_post"), "copilot silent config carries SPEAKS")
-  let borrowed_cop = Profile::{ ..p_cop, borrowed: true, share_workspaces: ["ws-home"] }
-  let borrowed_cop_opts = make_opts("chat:borrowed", borrowed_cop, "/ws/5", "http://127.0.0.1:9000/mcp", "tok-cop", None, None, None, None, false, "", false, [], Some("/data/runtimes/copilot/lib/node_modules/@microsoft/copilot-sdk"), Some("ghu_12345"), None)
-  match build_driver_launch(RuntimeKind::Copilot, borrowed_cop_opts) {
-    Err(e) => expect(str_contains(e, "shared from another station"), "borrowed Copilot is refused")
-    Ok(_) => panic("borrowed Copilot must not start")
+
+  let guest_profile = Profile::{ ..p_cop, borrowed: true }
+  let guest = OpenOptions::{ ..o_cop, profile: guest_profile, copilot_token: None }
+  let lent = match build_driver_launch(RuntimeKind::Copilot, guest) {
+    Ok(spec) => spec
+    Err(e) => panic(e)
   }
-  expect(!allowed_in(borrowed_cop, Some("ws-home"), Some("ws-home")), "borrowed Copilot is not selected")
-  expect(allowed_in(p_cop, Some("ws-home"), Some("ws-home")), "local Copilot remains available")
+  expect(!opt_str_is_some(env_get(lent.env, "STILLFAIL_COPILOT_TOKEN")), "borrowed driver has no GitHub login")
+  match lent.setup_json {
+    Some(line) => expect(str_contains(line, "\"borrowed\"") && str_contains(line, "chat:c-5"), "borrowed bridge uses the session door")
+    None => panic("missing borrowed setup")
+  }
 
   // 6) Pi
   let p_pi = make_profile("p-pi", Some(RuntimeKind::Pi), "/homes/pi", true, false, Some("deepseek-r2"), AccessKind::OpencodeGo, "ocg-key", None, None, [], None)

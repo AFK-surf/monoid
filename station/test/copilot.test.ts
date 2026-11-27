@@ -80,14 +80,6 @@ const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live
 const said = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" && e.field === "text" ? [e.text] : [])).join("");
 
 describe("the Copilot driver's rules", () => {
-  test("a borrowed profile cannot start even when its home contains a token", async () => {
-    const o = options();
-    o.profile.share = { borrowed: true };
-    const driver = new CopilotDriver({ data });
-    drivers.push(driver);
-    await assert.rejects(driver.open(o, () => {}), /cannot use a profile shared from another station/);
-  });
-
   test("its instructions name the station's tools as Copilot does, not mcp__stillfail__", () => {
     const rules = copilotRules("Be brief.");
     assert.match(rules, /^Be brief\./);
@@ -171,6 +163,21 @@ describe("the Copilot driver", { concurrency: true }, () => {
     drivers.push(d);
     return d;
   }
+
+  test("a borrowed profile opens without a local sign-in and gives its bridge no GitHub token", async () => {
+    const o = options({}, null);
+    o.profile.share = { borrowed: true };
+    o.profile.env = { COPILOT_GITHUB_TOKEN: "gho_stale" };
+    const d = new CopilotDriver({ data, sdk: data, extra: { dump: o.dump }, bridge: envBridge,
+      lend: async () => ({ token: "short", api: "https://api.githubcopilot.com", expiresAt: 1e15 }) });
+    drivers.push(d);
+    const session = await d.open(o, listen().push);
+    const { env, open } = JSON.parse(readFileSync(o.dump, "utf8").trim());
+    assert.deepEqual(open.borrowed, { key: o.key, profile: o.profile.id });
+    assert.equal(env.STILLFAIL_COPILOT_TOKEN, undefined);
+    assert.equal(env.COPILOT_GITHUB_TOKEN, undefined);
+    await session.dispose();
+  });
 
   test("the bridge is given the profile's token, the station's tools' token and what a subagent may not call; nothing of the machine's", async () => {
     const o = options({ model: "gpt-5.5", effort: "high" });
