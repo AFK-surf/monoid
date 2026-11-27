@@ -30,6 +30,9 @@ export type TopicPolicyBase = {
   readonly keepBeforeViews?: number;
   /// Client shows the kept value immediately before the core answers (`@core.Client::show_kept`).
   readonly showKept?: true;
+  /// Gated by `MBUI_TOPIC_POLICY` replay switch on the client (enabled in production; off in pre-B2b replay traces).
+  /// Never applies to `sensitive` topics (security ceiling is unconditional).
+  readonly topicPolicy?: true;
   /// Store: topics of words typed (`store.ts` `ASKED_BY_WORDS`).
   readonly askedByWords?: true;
   /// Store: expensive derived topics not recomputed while idle during eviction grace (`store.ts` `LAZY_WHEN_IDLE`).
@@ -83,6 +86,9 @@ const HOME_LASTING: TopicPolicy = { retention: "swr", lasting: true, homeLasting
 /// unsubscribe and shown immediately (`showKept: true`) until the core answers so re-opening a
 /// card/popover/page draws its prior content instead of bones or an empty list.
 const viewKept = (keep: number): TopicPolicy => ({ retention: "swr", keep, showKept: true });
+/// PR-B2b extended read-only view topics gated by `MBUI_TOPIC_POLICY` (enabled in production;
+/// off in pre-B2b replay traces).
+const viewKeptPolicy = (keep: number): TopicPolicy => ({ retention: "swr", keep, showKept: true, topicPolicy: true });
 /// `chat` keeps the last 8 decoded chats (`4` before `MBUI_SWR_VIEWS`), oldest forgotten, so
 /// re-opening or prefetching a recent chat receives a delta instead of a whole chat payload
 /// (~180 KB, 17–21 ms to decode on a phone), while still waiting for the core before drawing.
@@ -99,7 +105,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   live: LIVE,
   host: LIVE,
   memory: LIVE,
-  presets: LIVE,
+  presets: viewKeptPolicy(8),
   profilePace: LIVE,
   stationMove: LIVE,
   net: LIVE,
@@ -110,7 +116,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   chatRows: LIVE,
   slackApp: LIVE,
   jobs: LIVE,
-  jobLog: LIVE,
+  jobLog: { retention: "delta", keep: 8, topicPolicy: true },
   machineLogins: SENSITIVE,
   machineLogin: SENSITIVE,
   machineLoginScreen: SENSITIVE,
@@ -144,7 +150,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   },
   profiles: LASTING,
   profile: viewKept(16),
-  profilesOverview: { retention: "live", lazyWhenIdle: true },
+  profilesOverview: { retention: "swr", keep: 4, showKept: true, lazyWhenIdle: true, topicPolicy: true },
   connects: LASTING,
   connect: viewKept(16),
   connectCandidates: viewKept(8),
@@ -163,19 +169,19 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   archivedRows: LIVE,
   archive: LASTING,
   search: { retention: "live", askedByWords: true },
-  stationSearch: LIVE,
+  stationSearch: { retention: "live", askedByWords: true },
   linkPreview: LIVE,
   filePeek: LIVE,
   messagePeek: LIVE,
   newChat: LIVE,
   preset: LIVE,
-  otherPresets: LIVE,
+  otherPresets: viewKeptPolicy(8),
   boardDrafts: LIVE,
   shareIn: LIVE,
   pick: viewKept(12),
   chatJobs: viewKept(16),
   chatLetters: LIVE,
-  chatFeedback: LIVE,
+  chatFeedback: { retention: "delta", keep: 8, topicPolicy: true },
   chatThings: LIVE,
   chatOutline: viewKept(8),
   chatSubchats: { retention: "live", askedByWords: true },
@@ -208,8 +214,8 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   agentEnvForm: LIVE,
   profileFlow: LIVE,
   changelog: HOME_LASTING,
-  releases: LIVE,
-  fonts: LIVE,
+  releases: viewKeptPolicy(4),
+  fonts: viewKeptPolicy(4),
   workspaceMarks: { retention: "live", unseen: true },
   workspaceWays: LIVE,
   lock: SENSITIVE,
@@ -284,10 +290,12 @@ function hasSearchParam(params: Readonly<Record<string, unknown>> | null | undef
 }
 
 /// Evaluates the effective policy for `(name, params)`, accounting for own-property lookup,
-/// optional `byParam` overrides, unconditional `sensitive` ceiling, and search-parameter (`q` / non-empty `query`) downgrade to `live`.
+/// optional `byParam` overrides, unconditional `sensitive` ceiling, optional `topicPolicy` switch
+/// (`MBUI_TOPIC_POLICY`, enabled by default), and search-parameter (`q` / non-empty `query`) downgrade to `live`.
 export function evaluateTopicPolicy(
   name: string,
   params?: Readonly<Record<string, unknown>> | null,
+  opts?: { readonly topicPolicy?: boolean },
 ): EvaluatedTopicPolicy {
   if (!isKnownTopic(name)) return LIVE_EVALUATED;
   const base: TopicPolicy = TOPIC_POLICY[name];
@@ -302,6 +310,20 @@ export function evaluateTopicPolicy(
     return {
       retention: "sensitive",
       sensitive: true,
+      lasting: false,
+      homeLasting: false,
+      keep: 0,
+      keepBeforeViews: 0,
+      showKept: false,
+      askedByWords: Boolean(effective.askedByWords),
+      lazyWhenIdle: Boolean(effective.lazyWhenIdle),
+      unseen: Boolean(effective.unseen),
+    };
+  }
+  if (opts?.topicPolicy === false && effective.topicPolicy === true) {
+    return {
+      retention: "live",
+      sensitive: false,
       lasting: false,
       homeLasting: false,
       keep: 0,

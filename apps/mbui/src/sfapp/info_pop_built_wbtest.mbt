@@ -33,7 +33,7 @@ test "大屏: the chat's info popover opens and closes without building the chat
   t.run_for(@ui.move_most_ms)
   t.back()
   t.run_for(@ui.move_most_ms)
-  let opened = info_pop_island_builds(t, fn() raise { t.click(Button, label="对话信息") })
+  let opened = info_pop_island_builds(t, fn() { t.click(Button, label="对话信息") })
   // (none at the frames of its way in)
   assert_true(opened.length() <= 1, msg=opened.join("\n"))
   assert_true(t.query(Dialog) is Some(_))

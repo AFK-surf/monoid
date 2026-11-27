@@ -45,6 +45,7 @@ const LAZY_WHEN_IDLE: ReadonlySet<string> = topicsWhere((p) => p.lazyWhenIdle ==
 /// A topic of words typed by its kind: its name and where it looks.
 function wordsKind(topic: Topic): string {
   if (topic.topic === "chatSubchats") return `${topic.topic}\u0001${String(topic.station ?? "")}\u0001${String(topic.thread ?? "")}\u0001${String(topic.session ?? "")}`;
+  if (topic.topic === "stationSearch") return `${topic.topic}\u0001${String(topic.station ?? "")}`;
   return `${topic.topic}\u0001${String(topic.scope ?? "")}`;
 }
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of
@@ -201,7 +202,7 @@ export class Store {
   #source: Source | null = null;
   #idleCount = 0;
   /// The topic of words typed let go of last, of each kind (wordsKind): kept made as any topic is (#flushOf).
-  readonly #wordsLetGo = new Map<string, string>();
+  readonly #wordsLetGo = new Map<string, { key: string; topic: Topic }>();
   #watchCount = 0;
   #firstPending = new Map<string, Entry>();
   #updatesPending = new Map<string, Entry>();
@@ -488,6 +489,9 @@ export class Store {
       for (const [key, rec] of [...byClient]) {
         if (this.authGen.matches(rec.topic, event)) byClient.delete(key);
       }
+    }
+    for (const [kind, rec] of [...this.#wordsLetGo]) {
+      if (this.authGen.matches(rec.topic, event)) this.#wordsLetGo.delete(kind);
     }
     for (const [client, connId] of this.#connIds) {
       if (this.#authNotReady.has(client)) continue;
@@ -808,7 +812,7 @@ export class Store {
     if (!entry || entry.subscribers.length > 0 || entry.watchers.length > 0 || entry.usage.hasSubscribers()) return;
     entry.idle = idle;
     this.#source?.idle?.(topic);
-    if (ASKED_BY_WORDS.has(topic.topic)) this.#wordsLetGo.set(wordsKind(topic), topicKey(topic));
+    if (ASKED_BY_WORDS.has(topic.topic)) this.#wordsLetGo.set(wordsKind(topic), { key: topicKey(topic), topic });
     this.runner.fork(laterSleep(EVICT_AFTER_MS).pipe(Effect.andThen(Effect.sync(() => this.#evict(topic, idle)))));
   }
 
@@ -1184,7 +1188,7 @@ export class Store {
   #flushOf(topic: Topic): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry) return;
-    if (entry.idle !== null && entry.stale && (LAZY_WHEN_IDLE.has(topic.topic) || (ASKED_BY_WORDS.has(topic.topic) && this.#wordsLetGo.get(wordsKind(topic)) !== topicKey(topic)))) {
+    if (entry.idle !== null && entry.stale && (LAZY_WHEN_IDLE.has(topic.topic) || (ASKED_BY_WORDS.has(topic.topic) && this.#wordsLetGo.get(wordsKind(topic))?.key !== topicKey(topic)))) {
       // Let go of, of words typed, other words let go of since (or lazy-when-idle topics such as `profilesOverview`):
       // made again only as it is asked again (subscribe: outputDirty / watch: resumed), never meanwhile; the words let
       // go of last are kept as any topic is, for the page that comes back to them. Each letter typed in the `@` menu
@@ -1486,14 +1490,19 @@ export class Store {
   }
 
   #evict(topic: Topic, idle: number): void {
-    const entry = this.#topics.get(topicKey(topic));
+    const key = topicKey(topic);
+    const entry = this.#topics.get(key);
     if (!entry || entry.idle !== idle) return;
     // Gone before its source hears: what the source asks of the live topics then no longer has it.
-    this.#topics.delete(topicKey(topic));
+    this.#topics.delete(key);
+    if (ASKED_BY_WORDS.has(topic.topic)) {
+      const kind = wordsKind(topic);
+      if (this.#wordsLetGo.get(kind)?.key === key) this.#wordsLetGo.delete(kind);
+    }
     entry.stop?.();
     entry.output?.stop();
-    if (this.#firstPending.get(topicKey(topic)) === entry) this.#firstPending.delete(topicKey(topic));
-    if (this.#updatesPending.get(topicKey(topic)) === entry) this.#updatesPending.delete(topicKey(topic));
+    if (this.#firstPending.get(key) === entry) this.#firstPending.delete(key);
+    if (this.#updatesPending.get(key) === entry) this.#updatesPending.delete(key);
     this.#source?.stop(topic);
     if (holds(topic)) this.#release_?.(topic);
   }

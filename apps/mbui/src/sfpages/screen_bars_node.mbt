@@ -1401,11 +1401,33 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
   let sub_t = @sfbase.hold(s.src, scope, "terminals", { "station": str(s.station) })
   let sub_s = @sfbase.hold(s.src, scope, "screens", { "station": str(s.station) })
   @sfbase.press_wait(
-    fn() { @sfbase.opens_answered(sub_t.get()) && @sfbase.opens_answered(sub_s.get()) },
     fn() {
-      let tval = @signals.untracked(fn() { sub_t.get().value })
-      let sval = @signals.untracked(fn() { sub_s.get().value })
-      @sfbase.let_go(s.src, scope)
+      let ts = sub_t.get()
+      let ss = sub_s.get()
+      @sfbase.cap_settled(ts) && @sfbase.cap_settled(ss)
+    },
+    fn() {
+      let ts = @signals.untracked(fn() { sub_t.get() })
+      let ss = @signals.untracked(fn() { sub_s.get() })
+      let tval = ts.value
+      let sval = ss.value
+      let t_confirmed = ts.is_confirmed_known()
+      let s_confirmed = ss.is_confirmed_known()
+      let stop_watch : Ref[(() -> Unit)?] = Ref(None)
+      let released = Ref(false)
+      let release_once = fn() {
+        if !released.val {
+          released.val = true
+          match stop_watch.val {
+            Some(stop) => {
+              stop_watch.val = None
+              stop()
+            }
+            None => ()
+          }
+          @sfbase.let_go(s.src, scope)
+        }
+      }
       let go_page = fn(next : @sfbase.Page) {
         if pg.lone {
           @sfbase.lone_page_replace(next)
@@ -1416,10 +1438,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let scs = items(sval, "screens")
       let others = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
       let user_ids = scs
-        .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+        .filter(fn(sc) { !flag(Some(sc), "opening") && (flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_")) })
         .map(fn(sc) { text(Some(sc), "id") })
-      let can_term = flag(tval, "open")
-      let can_browse = flag(sval, "browser") && flag(sval, "control")
+      let can_term = t_confirmed && flag(tval, "open")
+      let can_browse = s_confirmed && flag(sval, "browser") && flag(sval, "control")
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
         let sid = text(Some(sc), "id")
@@ -1427,24 +1449,38 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         let here = sid == s.screen
         let icon = if here { "check" } else if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
         menu_items.push(Some(@sf.menu_item_of(title, icon~, fn() {
-          if !here {
-            go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
+          let cur_s = sub_s.untracked()
+          release_once()
+          if here || !cur_s.is_confirmed_known() || !items(cur_s.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid && !flag(Some(x), "opening") }) {
+            return
           }
+          go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
         })))
       }
       if !user_ids.is_empty() || can_browse {
         let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
         menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
-          if !s.is_active_principal() {
+          let cur_s = sub_s.untracked()
+          release_once()
+          if !s.is_active_principal() || in_browser || !cur_s.is_confirmed_known() {
             return
           }
-          if !in_browser {
-            let target = match @settings.browser_tab_to_open(s.station, user_ids) {
-              Some(tid) => tid
-              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+          let cur_user_ids = items(cur_s.value, "screens")
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
+            .map(fn(sc) { text(Some(sc), "id") })
+          let target = match @settings.browser_tab_to_open(s.station, cur_user_ids) {
+            Some(tid) => tid
+            None => {
+              if !(flag(cur_s.value, "browser") && flag(cur_s.value, "control")) {
+                return
+              }
+              @settings.new_browser_tab(s.src.call, s.station, cur_user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
             }
-            go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
           }
+          go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
         })))
       }
       let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
@@ -1457,7 +1493,12 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
           menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
-            go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
+            let cur_t = sub_t.untracked()
+            release_once()
+            if !cur_t.is_confirmed_known() || !items(cur_t.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+              return
+            }
+            go_page(Terminal({ station: s.station, terminal: tid, watch: !flag(cur_t.value, "open"), cwd }))
           })))
         }
       }
@@ -1466,16 +1507,29 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           menu_items.push(None)
         }
         let open_new_terminal = fn() {
+          let cur_t = sub_t.untracked()
+          release_once()
+          if !cur_t.is_confirmed_known() || !flag(cur_t.value, "open") {
+            return
+          }
           go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
         }
         let open_new_browser = fn() {
-          if !s.is_active_principal() {
+          let cur_s = sub_s.untracked()
+          release_once()
+          if !s.is_active_principal() || !cur_s.is_confirmed_known() || !(flag(cur_s.value, "browser") && flag(cur_s.value, "control")) {
             return
           }
+          let cur_user_ids = items(cur_s.value, "screens")
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
+            .map(fn(sc) { text(Some(sc), "id") })
           let target = @settings.new_browser_tab(
             s.src.call,
             s.station,
-            user_ids,
+            cur_user_ids,
             failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
           )
           let nu = screen_ui(screen_key(s.station, target))
@@ -1484,6 +1538,8 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
         if can_term && can_browse {
           menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, fn() {
+            // Submenu omits `gone=release_once`: popping back to the parent keeps `scope` alive,
+            // while closing the entire menu stack calls the parent's `gone=release_once` (`gone_all`).
             @sf.menu(
               [
                 Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", open_new_terminal)),
@@ -1501,11 +1557,25 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
       }
       if !menu_items.is_empty() {
-        @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End)
+        let has_screen_items = !others.is_empty() || !user_ids.is_empty() || can_browse
+        let has_term_items = !open_terms.is_empty() || can_term
+        @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End, gone=release_once)
+        let menu_serial = @sf.last_presented()
+        stop_watch.val = Some(
+          @sfbase.watch_while_open(
+            fn() {
+              (has_screen_items && flag(sub_s.get().value, "denied")) ||
+              (has_term_items && flag(sub_t.get().value, "denied"))
+            },
+            fn() { @sf.close_presented_of(menu_serial) },
+          ),
+        )
+      } else {
+        release_once()
       }
     },
     let_go=fn() { @sfbase.let_go(s.src, scope) },
-    most=@sf.open_hold_ms,
+    most=5000.0,
   )
   |> ignore
 }

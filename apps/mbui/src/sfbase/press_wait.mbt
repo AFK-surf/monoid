@@ -217,3 +217,28 @@ pub fn PressWait::check(self : PressWait) -> Unit {
     self.answered()
   }
 }
+
+///|
+/// Watches a reactive condition while a presented menu is open; fires `on_fire` once when `pred()` becomes true,
+/// and returns a stop closure to dispose the effect when the menu closes.
+pub fn watch_while_open(pred : () -> Bool, on_fire : () -> Unit) -> () -> Unit {
+  let active = Ref(true)
+  let owner = @signals.set_owner(None)
+  let stop = @signals.untracked(fn() {
+    @signals.effect(fn() {
+      guard active.val else { return }
+      if pred() {
+        active.val = false
+        @signals.untracked(on_fire)
+      }
+    })
+  })
+  @signals.set_owner(owner) |> ignore
+  if !active.val {
+    stop()
+  }
+  fn() {
+    active.val = false
+    stop()
+  }
+}

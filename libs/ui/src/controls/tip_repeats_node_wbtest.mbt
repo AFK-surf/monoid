@@ -5,7 +5,7 @@
 /// A window 400 by 200, a mouse's: a button `w` wide holding `words` on one line cut short where it has not the room,
 /// its tip saying them (`repeats` as said), the pointer rested on it a tip's while from when the hover ground came: the
 /// tips shown then, and how many times the window's tree was laid out over that while.
-fn repeats_tip(words : String, w : Double, repeats : Bool) -> (Array[String], Int) raise {
+fn repeats_tip(words : String, w : Double, repeats : Bool) -> (Array[String], Int) {
   let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=0)
   t.check_looks(false)
   @ui.set_view_app(fn(root) {

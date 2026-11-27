@@ -777,7 +777,7 @@ test "wide: a new chat's composer stays where it is as another station is picked
   let offer = "继续 Willow 终端中的会话"
   assert_true(t.find(offer) is Some(_), msg="Willow's machine's session offered")
   let (bx, by, _, _) = composer_glass(t)
-  let pick = fn(from : String, to : String) raise {
+  let pick = fn(from : String, to : String) {
     t.click(Button, label=from)
     t.run_for(@motion.presence_in_ms)
     t.click(Button, label=to)

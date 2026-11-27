@@ -158,6 +158,7 @@ priv struct PeekTopics {
   name : () -> String
   s : () -> Json?
   screens : () -> Json?
+  screens_retained : () -> Bool
 }
 
 ///|
@@ -174,6 +175,7 @@ fn peek_station_topics(core : Core, address : String) -> PeekTopics {
       }
     },
     screens: fn() { screens.get().value },
+    screens_retained: fn() { !screens.get().is_confirmed_known() },
   }
 }
 
@@ -213,7 +215,7 @@ fn peek_ways_node(p : @view.View, core : Core, address : String, st : PeekTopics
   // (its screens asked while it shows: its 屏幕 opens on them)
   p.reacts(fn() { (st.screens)() is Some(_) }, at_start=false, fn(_) {  })
   @sf.submenu_row_node(p, fn() { tr("android-misc.screen.section") }, fn() {
-    peek_screen_items(core, address, (st.screens)(), close)
+    peek_screen_items(core, address, (st.screens)(), close, screens_retained=(st.screens_retained)())
   })
   p.show(fn() { field(field((st.s)(), "overview"), "drive") is Some(Object(_)) }, fn(d) {
     @sf.submenu_row_node(d, fn() { tr("android-misc.drive.title") }, fn() {

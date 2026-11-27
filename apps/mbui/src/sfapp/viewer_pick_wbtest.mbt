@@ -11,7 +11,7 @@ fn picture_open(t : @ui.Tester) -> Bool {
 
 ///|
 /// The chat's picture closed: by back over the whole window, else by its tab's ×; the moves it sets off done.
-fn picture_closed(t : @ui.Tester) -> Unit raise {
+fn picture_closed(t : @ui.Tester) -> Unit {
   if viewer.get() is Some(_) || @sfbase.tab_full.get() is Some(_) {
     t.back()
   } else {

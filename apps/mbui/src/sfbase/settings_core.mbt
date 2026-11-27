@@ -45,8 +45,8 @@ fn settings_core_of(
   share_card~ : () -> Unit,
 ) -> @settings.Core {
   // (a station's terminal from its page: the page it is)
-  @settings.open_terminal_of.val = fn(station, terminal, cwd) {
-    open_page(Terminal({ station, terminal, watch: false, cwd }))
+  @settings.open_terminal_of.val = fn(station, terminal, cwd, watch) {
+    open_page(Terminal({ station, terminal, watch, cwd }))
   }
   {
     topic: fn(name, params) {

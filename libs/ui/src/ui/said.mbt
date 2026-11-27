@@ -288,7 +288,7 @@ fn said_sel(k : SelKey) -> String {
   match k {
     NoSel => "0"
     Para(id) => said_id(id).to_string()
-    Words(tree, row, _, place_text) => "w\{tree}/\{row.at}/\{row.gen}/\{place_text}"
+    Words(tree, row_at, row_gen, _, place_text) => "w\{tree}/\{row_at}/\{row_gen}/\{place_text}"
   }
 }
 

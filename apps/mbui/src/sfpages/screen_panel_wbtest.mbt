@@ -1182,6 +1182,7 @@ fn browser_screens() -> Json {
     "browser": true,
     "control": true,
     "known": true,
+    "confirmed": true,
     "outdated": false,
     "screens": [
       { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },
@@ -1425,6 +1426,7 @@ test "read-only or non-closable browser tabs show tabs without × or ＋, ignore
     "browser": true,
     "control": false,
     "known": true,
+    "confirmed": true,
     "outdated": false,
     "screens": [
       { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },
@@ -1617,6 +1619,7 @@ fn switch_terminals(open : Bool, cwd? : String = "~/still.fail/station") -> Json
   {
     "open": Json::boolean(open),
     "known": Json::boolean(true),
+    "confirmed": Json::boolean(true),
     "outdated": Json::boolean(false),
     "terminals": [
       { "id": "term-1", "by": "左子健", "at": 1794650000000.0, "cwd": Json::string(cwd), "looking": [] },
@@ -1630,6 +1633,7 @@ fn switch_screens(browser : Bool, control : Bool) -> Json {
     "browser": Json::boolean(browser),
     "control": Json::boolean(control),
     "known": Json::boolean(true),
+    "confirmed": Json::boolean(true),
     "outdated": Json::boolean(false),
     "screens": [
       { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },

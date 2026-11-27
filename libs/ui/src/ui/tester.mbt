@@ -2630,25 +2630,25 @@ pub fn Tester::row(self : Tester, item : Int) -> (Double, Double, Double, Double
 /// Checks the list's rows in view follow each other without gaps or
 /// overlaps and fill the view from `top` to `bottom` (unless they run
 /// out), as mygo's checkRows does.
-pub fn Tester::check_rows(self : Tester, top : Double, bottom : Double) -> Unit raise {
+pub fn Tester::check_rows(self : Tester, top : Double, bottom : Double) -> Unit {
   let (first, last) = self.visible()
   if last < first || first < 0 {
-    fail("no row in view")
+    @halt.saying("no row in view")
   }
   let (_, y0, _, h0) = self.row(first).unwrap()
   if y0 > top + 0.01 {
-    fail("row \{first}, the first in view, starts at \{y0}, below the top \{top}")
+    @halt.saying("row \{first}, the first in view, starts at \{y0}, below the top \{top}")
   }
   let mut end = y0 + h0
   for i in (first + 1)..=last {
     match self.row(i) {
       Some((_, y, _, h)) => {
         if (y - end).abs() > 0.01 {
-          fail("row \{i} starts \{y - end} from where row \{i - 1} ends")
+          @halt.saying("row \{i} starts \{y - end} from where row \{i - 1} ends")
         }
         end = y + h
       }
-      None => fail("row \{i} in view was not built")
+      None => @halt.saying("row \{i} in view was not built")
     }
   }
   let count = match self.list_on() {
@@ -2656,7 +2656,7 @@ pub fn Tester::check_rows(self : Tester, top : Double, bottom : Double) -> Unit 
     Tree(l) => l.count
   }
   if last < count - 1 && end < bottom - 0.01 {
-    fail("row \{last}, the last in view, ends at \{end}, above the bottom \{bottom}")
+    @halt.saying("row \{last}, the last in view, ends at \{end}, above the bottom \{bottom}")
   }
 }
 
@@ -4254,6 +4254,32 @@ pub fn Tester::all(
 }
 
 ///|
+/// Non-halting version of `Tester::get`: returns `Ok(node)` when there is exactly one matching node,
+/// or `Err(message)` when there is none or more than one.
+pub fn Tester::try_get(
+  self : Tester,
+  role : Role,
+  label? : String = "",
+  has? : String = "",
+  checked? : Check,
+  selected? : Bool,
+  expanded? : Bool,
+  disabled? : Bool,
+  within? : SemNode,
+) -> Result[SemNode, String] {
+  self.reads_own()
+  let f : Find = { role, label, has, checked, selected, expanded, disabled, within }
+  let found = self.found(f)
+  if found.length() == 1 {
+    return Ok(found[0])
+  }
+  if found.is_empty() {
+    return Err("no \{f.said()} in the semantics tree:\n\{self.semantics_dump()}")
+  }
+  Err("\{found.length()} of \{f.said()} in the semantics tree:\n\{self.semantics_dump()}")
+}
+
+///|
 /// The node of `role` named `label` (Testing Library's getByRole with its name, Compose's onNode; the rest of what
 /// Tester::all takes too): the one not hidden; the test fails when there is none, or more than one.
 pub fn Tester::get(
@@ -4266,17 +4292,11 @@ pub fn Tester::get(
   expanded? : Bool,
   disabled? : Bool,
   within? : SemNode,
-) -> SemNode raise {
-  self.reads_own()
-  let f : Find = { role, label, has, checked, selected, expanded, disabled, within }
-  let found = self.found(f)
-  if found.length() == 1 {
-    return found[0]
+) -> SemNode {
+  match self.try_get(role, label~, has~, checked?, selected?, expanded?, disabled?, within?) {
+    Ok(s) => s
+    Err(msg) => @halt.saying(msg)
   }
-  if found.is_empty() {
-    fail("no \{f.said()} in the semantics tree:\n\{self.semantics_dump()}")
-  }
-  fail("\{found.length()} of \{f.said()} in the semantics tree:\n\{self.semantics_dump()}")
 }
 
 ///|
@@ -4302,6 +4322,29 @@ pub fn Tester::query(
 }
 
 ///|
+/// Non-halting version of `Tester::click`: taps the matching node or returns `Err(message)`.
+pub fn Tester::try_click(
+  self : Tester,
+  role : Role,
+  label? : String = "",
+  has? : String = "",
+  checked? : Check,
+  selected? : Bool,
+  expanded? : Bool,
+  disabled? : Bool,
+  within? : SemNode,
+) -> Result[Unit, String] {
+  match self.try_get(role, label~, has~, checked?, selected?, expanded?, disabled?, within?) {
+    Ok(s) => {
+      let (x, y, w, h) = s.rect
+      self.tap(x + w / 2.0, y + h / 2.0)
+      Ok(())
+    }
+    Err(msg) => Err(msg)
+  }
+}
+
+///|
 /// A tap on the middle of the node of `role` named `label` (Tester::get, what it takes), settled.
 pub fn Tester::click(
   self : Tester,
@@ -4313,10 +4356,34 @@ pub fn Tester::click(
   expanded? : Bool,
   disabled? : Bool,
   within? : SemNode,
-) -> Unit raise {
-  let s = self.get(role, label~, has~, checked?, selected?, expanded?, disabled?, within?)
-  let (x, y, w, h) = s.rect
-  self.tap(x + w / 2.0, y + h / 2.0)
+) -> Unit {
+  match self.try_click(role, label~, has~, checked?, selected?, expanded?, disabled?, within?) {
+    Ok(_) => ()
+    Err(msg) => @halt.saying(msg)
+  }
+}
+
+///|
+/// Non-halting version of `Tester::act`: asks `action` of the matching node or returns `Err(message)`.
+pub fn Tester::try_act(
+  self : Tester,
+  role : Role,
+  action : Action,
+  label? : String = "",
+  has? : String = "",
+  within? : SemNode,
+) -> Result[Unit, String] {
+  match self.try_get(role, label~, has~, within?) {
+    Ok(s) => {
+      if s.id == 0 {
+        return Err("\{s.describe()} takes no action")
+      }
+      g().ask_action(s.id, action)
+      self.draw()
+      Ok(())
+    }
+    Err(msg) => Err(msg)
+  }
 }
 
 ///|
@@ -4328,21 +4395,19 @@ pub fn Tester::act(
   label? : String = "",
   has? : String = "",
   within? : SemNode,
-) -> Unit raise {
-  let s = self.get(role, label~, has~, within?)
-  if s.id == 0 {
-    fail("\{s.describe()} takes no action")
+) -> Unit {
+  match self.try_act(role, action, label~, has~, within?) {
+    Ok(_) => ()
+    Err(msg) => @halt.saying(msg)
   }
-  g().ask_action(s.id, action)
-  self.draw()
 }
 
 ///|
 /// Asks `s` (one of what the semantics tree says, Tester::all's: of several alike, the one a test means) to do `action`,
 /// as Tester::act asks the one of its role and label.
-pub fn Tester::act_on(self : Tester, s : SemNode, action : Action) -> Unit raise {
+pub fn Tester::act_on(self : Tester, s : SemNode, action : Action) -> Unit {
   if s.id == 0 {
-    fail("\{s.describe()} takes no action")
+    @halt.saying("\{s.describe()} takes no action")
   }
   g().ask_action(s.id, action)
   self.draw()

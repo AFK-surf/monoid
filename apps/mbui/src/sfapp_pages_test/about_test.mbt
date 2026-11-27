@@ -195,7 +195,7 @@ test "the update dialog as tall in every stage of a newer build on every screen:
     let t = update_dialog_tester(w, platform, asked)
     // (its head where it was: a dialog in the middle as tall, a sheet from the foot as tall; its foot where it was)
     let head = fn() { t.find("当前版本 0.1.2").unwrap().1 }
-    let foot = fn() raise { t.get(Button, label="稍后").rect.1 }
+    let foot = fn() { t.get(Button, label="稍后").rect.1 }
     let first = head()
     let first_foot = foot()
     let same = fn(stage : String) raise {

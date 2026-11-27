@@ -256,3 +256,45 @@ test "pressing the already-active preset row toggles it off" {
     assert_eq(text(Some(picks.last().unwrap().params), "preset"), "", msg=mode)
   }
 }
+
+///|
+test "其他成员的预设 waits for fresh otherPresets (version >= 0) instead of snapping to retained showKept (-2)" {
+  new_run()
+  let others_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let stale_val : Json = {
+    "reading": false,
+    "presets": [
+      { "id": "p-old", "name": "旧快照预设", "whose": "旧成员", "station": "ws1/st1", "stationName": "Willow", "summary": "" },
+    ],
+  }
+  let fresh_val : Json = {
+    "reading": false,
+    "presets": [
+      { "id": "p-new", "name": "最新成员预设", "whose": "新成员", "station": "ws1/st1", "stationName": "Willow", "summary": "" },
+    ],
+  }
+  let base = preset_calls("newchat-preset", [])
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "otherPresets" {
+        let ver = others_ver.get()
+        { value: Some(if ver < 0 { stale_val } else { fresh_val }), error: None, version: ver }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  let t = preset_mode("newchat-preset", wide=true, src~)
+  choose(t, "其他成员的预设")
+  t.run_for(@ui.move_most_ms)
+  // While otherPresets is retained (version = -2), press_wait must NOT open the stale snapshot.
+  assert_false(shows(t, "旧快照预设"), msg=runs(t))
+  assert_true(shows(t, "其他成员的预设"), msg=runs(t))
+
+  // Once fresh otherPresets (version = 1) arrives, panel opens with the fresh preset list.
+  others_ver.set(1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "最新成员预设"), msg=runs(t))
+  assert_false(shows(t, "旧快照预设"), msg=runs(t))
+}

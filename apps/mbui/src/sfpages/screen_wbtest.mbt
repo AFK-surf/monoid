@@ -2155,7 +2155,7 @@ test "sideways, the rail's people button only while others are on it, named so; 
 
 ///|
 /// 只看 turned the other way in 控制中心 (where it is since 2026-11-13: off the viewer's bar), the panel closed again.
-fn look_switch(r : ScreenRig) -> Unit raise {
+fn look_switch(r : ScreenRig) -> Unit {
   r.tap_label(tr("web-pages.screen.panel"))
   r.t.run_for(@sf.later_ms)
   r.t.click(Switch, label=tr("android-misc.screen.look"))

@@ -3,7 +3,7 @@
 // checked before (crypto.ts). Its tables beside the store's, in the same database (`CREATE TABLE IF NOT EXISTS`: a
 // station from before has none, and one from before opens this one's database as it was).
 import type { DatabaseSync } from "node:sqlite";
-import type { BoxCert, Item, KeyAsk, Vault } from "./crypto.ts";
+import type { BoxCert, Item, JoinAsk, JoinDismiss, KeyAsk, Vault } from "./crypto.ts";
 import { hasInvalidVaultMembers, initializeVaultMembers, vaultMembersComplete } from "./member-index.ts";
 
 const DELETED_WRITE = "vault was deleted during the write";
@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS vault_boxes (
   body TEXT NOT NULL,
   PRIMARY KEY (ws, device)
 );
+-- Active workspace vault discovery index: vaults holds one row per vault (typically tens of rows per workspace, not an
+-- append-only log), so creating this partial index is sub-millisecond and guarantees 0 temp B-trees on discovery.
+CREATE INDEX IF NOT EXISTS vaults_workspace_active ON vaults (ws, id DESC)
+  WHERE json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true';
 CREATE TABLE IF NOT EXISTS vault_asks (
   ws TEXT NOT NULL,
   vault TEXT NOT NULL,
@@ -45,6 +49,20 @@ CREATE TABLE IF NOT EXISTS vault_asks (
   PRIMARY KEY (ws, vault, device)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS vault_asks_vault_at ON vault_asks (ws, vault, at DESC, device);
+CREATE TABLE IF NOT EXISTS vault_joins (
+  ws TEXT NOT NULL,
+  vault TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  body TEXT,
+  joined_up_to INTEGER NOT NULL DEFAULT -1,
+  dismiss_up_to INTEGER NOT NULL DEFAULT -1,
+  dismiss_body TEXT,
+  PRIMARY KEY (ws, vault, sub)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS vault_joins_vault_at ON vault_joins (ws, vault, state, at DESC, sub);
+CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss ON vault_joins (ws, vault, sub) WHERE dismiss_body IS NOT NULL;
 -- A previous station can have validated a write before this station commits a deletion. These checks also apply to
 -- its already-prepared UPSERT statements when it resumes, without scanning old rows during installation.
 CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items
@@ -78,6 +96,12 @@ CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_insert AFTER INSERT ON vaults
 CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_update AFTER UPDATE OF body ON vaults
   WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
   BEGIN DELETE FROM vault_asks WHERE ws = NEW.ws AND vault = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_insert AFTER INSERT ON vaults
+  WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
+  BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_update AFTER UPDATE OF body ON vaults
+  WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
+  BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;
 `;
 
 const parse = <T>(rows: unknown[]): T[] => rows.map((r) => JSON.parse((r as { body: string }).body) as T);
@@ -85,6 +109,13 @@ const parse = <T>(rows: unknown[]): T[] => rows.map((r) => JSON.parse((r as { bo
 export const MEMBER_VAULTS = `SELECT v.body FROM vault_member_lookup m
   CROSS JOIN vaults v ON v.ws = m.ws AND v.id = m.vault
   WHERE m.ws = ? AND m.sub = ? ORDER BY m.vault`;
+export const ACTIVE_WORKSPACE_VAULTS = `SELECT id, body FROM vaults
+  WHERE ws = ? AND json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true'
+  ORDER BY id DESC LIMIT ?`;
+export const ACTIVE_WORKSPACE_VAULTS_BEFORE = `SELECT id, body FROM vaults
+  WHERE ws = ? AND json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true'
+    AND id < ?
+  ORDER BY id DESC LIMIT ?`;
 
 export class VaultStore {
   readonly #db: DatabaseSync;
@@ -124,6 +155,41 @@ export class VaultStore {
     }
   }
 
+  /// Active workspace vaults in `ws`, newest ULID first, read directly via the `vaults_workspace_active` partial
+  /// index with bounded keyset pagination (0 temp B-trees, never scanning personal or deleted vaults).
+  activeWorkspaceVaults(
+    ws: string,
+    limit: number,
+    opts?: { maxScan?: number; accept?: (v: Vault) => boolean },
+  ): Vault[] {
+    if (limit <= 0) return [];
+    const maxScan = Math.max(limit, opts?.maxScan ?? 64);
+    const accept = opts?.accept;
+    const firstStmt = this.#db.prepare(ACTIVE_WORKSPACE_VAULTS);
+    const nextStmt = this.#db.prepare(ACTIVE_WORKSPACE_VAULTS_BEFORE);
+    const out: Vault[] = [];
+    let scanned = 0;
+    let cursorId: string | null = null;
+    while (out.length < limit && scanned < maxScan) {
+      const batch = Math.min(Math.max(limit - out.length, 8), maxScan - scanned);
+      if (batch <= 0) break;
+      const rows = (cursorId === null
+        ? firstStmt.all(ws, batch)
+        : nextStmt.all(ws, cursorId, batch)) as { id: string; body: string }[];
+      if (rows.length === 0) break;
+      scanned += rows.length;
+      cursorId = rows[rows.length - 1]!.id;
+      for (const r of rows) {
+        const v = JSON.parse(r.body) as Vault;
+        if (accept !== undefined && !accept(v)) continue;
+        out.push(v);
+        if (out.length >= limit) break;
+      }
+      if (rows.length < batch) break;
+    }
+    return out;
+  }
+
   /// A short ordered prefix and its database keys, followed by the rest only when a search needs it.
   firstVaults(ws: string, limit: number): { id: string; value: Vault }[] {
     const rows = this.#db.prepare("SELECT id, body FROM vaults WHERE ws = ? ORDER BY id LIMIT ?").all(ws, limit) as { id: string; body: string }[];
@@ -160,6 +226,7 @@ export class VaultStore {
       save.run(v.ws, v.id, v.seq, JSON.stringify(v));
       this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
       this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
       this.#db.exec("RELEASE vault_delete");
     } catch (error) {
       try { this.#db.exec("ROLLBACK TO vault_delete; RELEASE vault_delete"); } catch { /* SQLite may already have rolled back. */ }
@@ -169,7 +236,24 @@ export class VaultStore {
 
   /// Save only if the version checked by the caller is still the one held. `null` means there was no vault.
   putVaultIf(v: Vault, previous: string | null): boolean {
-    this.#version++;
+    return this.putVaultChecked(v, previous) === "saved";
+  }
+
+  /// Atomic vault CAS write with optional join-request approval precondition (`approveJoin`, requiring exact
+  /// `(sub, at, device, box, sig)` match + wrapped key for the stored ask's `(device, box)`) and newly-added member
+  /// `vault_joins` admission watermark update (`joined_up_to = MAX(joined_up_to, vault_joins.at)` using the applicant's
+  /// own ask clock, kept separate from signed admin `dismiss_body`/`dismiss_up_to` so a later removal cannot resurrect
+  /// the pre-join request even if the approving admin is later demoted).
+  putVaultChecked(
+    v: Vault,
+    previous: string | null,
+    opts?: {
+      addedSubs?: readonly string[];
+      approveJoin?: { sub: string; at: number; device: string; box: string; sig: string };
+      isValidAsk?: (a: JoinAsk) => boolean;
+      isActiveDismiss?: (d: JoinDismiss) => boolean;
+    },
+  ): "saved" | "conflict" | "join_cancelled" {
     const body = JSON.stringify(v);
     const save = () => previous === null
       ? this.#db.prepare(`INSERT INTO vaults (ws, id, seq, body)
@@ -177,18 +261,59 @@ export class VaultStore {
         .run(v.ws, v.id, v.seq, body, v.ws, v.id).changes > 0
       : this.#db.prepare("UPDATE vaults SET seq = ?, body = ? WHERE ws = ? AND id = ? AND body = ?")
         .run(v.seq, body, v.ws, v.id, previous).changes > 0;
-    if (!v.deleted) return save();
-    this.#db.exec("SAVEPOINT vault_delete_if");
+    const needsTx = Boolean(v.deleted) || opts?.approveJoin !== undefined || (opts?.addedSubs !== undefined && opts.addedSubs.length > 0);
+    if (!needsTx) {
+      this.#version++;
+      return save() ? "saved" : "conflict";
+    }
+    this.#db.exec("BEGIN IMMEDIATE");
     try {
+      if (opts?.approveJoin !== undefined) {
+        const row = this.#db.prepare(
+          "SELECT body, at, joined_up_to, dismiss_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ? AND state = 'pending' AND at = ? AND at > joined_up_to",
+        ).get(v.ws, v.id, opts.approveJoin.sub, opts.approveJoin.at) as
+          | { body: string | null; at: number; joined_up_to: number; dismiss_up_to: number; dismiss_body: string | null }
+          | undefined;
+        let askOkNow = false;
+        if (row !== undefined && row.body !== null && row.body !== "") {
+          const ask = JSON.parse(row.body) as JoinAsk;
+          const matchesAsk = ask.device === opts.approveJoin.device
+            && ask.box === opts.approveJoin.box
+            && ask.sig?.sig === opts.approveJoin.sig;
+          const hasWrappedKey = Array.isArray(v.keys) && v.keys.some((k) => k.cert.device === ask.device && k.cert.box === ask.box);
+          const valid = opts.isValidAsk ? opts.isValidAsk(ask) : true;
+          askOkNow = matchesAsk && hasWrappedKey && valid;
+        }
+        let dismissed = false;
+        if (askOkNow && row !== undefined && row.dismiss_body !== null && row.dismiss_body !== "" && row.at <= row.dismiss_up_to) {
+          const d = JSON.parse(row.dismiss_body) as JoinDismiss;
+          dismissed = opts.isActiveDismiss ? opts.isActiveDismiss(d) : true;
+        }
+        if (!askOkNow || dismissed) {
+          this.#db.exec("ROLLBACK");
+          return "join_cancelled";
+        }
+      }
+      this.#version++;
       const saved = save();
-      if (saved) {
+      if (!saved) {
+        this.#db.exec("ROLLBACK");
+        return "conflict";
+      }
+      if (v.deleted) {
         this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
         this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+        this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      } else if (opts?.addedSubs && opts.addedSubs.length > 0) {
+        const bump = this.#db.prepare(
+          "UPDATE vault_joins SET joined_up_to = CASE WHEN at > joined_up_to THEN at ELSE joined_up_to END WHERE ws = ? AND vault = ? AND sub = ?",
+        );
+        for (const sub of opts.addedSubs) bump.run(v.ws, v.id, sub);
       }
-      this.#db.exec("RELEASE vault_delete_if");
-      return saved;
+      this.#db.exec("COMMIT");
+      return "saved";
     } catch (error) {
-      try { this.#db.exec("ROLLBACK TO vault_delete_if; RELEASE vault_delete_if"); } catch { /* SQLite may already have rolled back. */ }
+      try { this.#db.exec("ROLLBACK"); } catch { /* SQLite may already have rolled back. */ }
       throw error;
     }
   }
@@ -224,6 +349,7 @@ export class VaultStore {
     this.#version++;
     this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(ws, id);
     this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(ws, id);
+    this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(ws, id);
     this.#db.prepare("DELETE FROM vaults WHERE ws = ? AND id = ?").run(ws, id);
   }
 
@@ -283,41 +409,426 @@ export class VaultStore {
       .run(body, cert.ws, cert.device, previous).changes > 0;
   }
 
-  /// Explicit per-vault key asks for these vaults, newest first per vault via `vault_asks_vault_at`, bounded per vault
-  /// and in total, filtered to active lock devices and optional caller predicate so empty vaults and invalid rows never
-  /// consume budget slots.
+  /// Explicit per-vault key asks for these vaults, newest first per vault.
+  /// When active lock devices are supplied (any count), probes the PRIMARY KEY `(ws, vault, device)` in bounded
+  /// batches of 256 so thousands of historical revoked-device asks are never scanned (O(activeDevices * log N),
+  /// independent of revoked history). When `devices` is omitted, uses a split-range keyset cursor on `vault_asks_vault_at`.
   asksForVaults(
     ws: string,
     vaultIds: readonly string[],
     limit: number,
-    opts?: { devices?: readonly string[]; perVault?: number; accept?: (a: KeyAsk) => boolean },
+    opts?: { devices?: readonly string[]; perVault?: number; perVaultScan?: number; maxScan?: number; maxDevices?: number; accept?: (a: KeyAsk) => boolean },
   ): KeyAsk[] {
     if (vaultIds.length === 0 || limit <= 0) return [];
     const devices = opts?.devices;
     if (devices !== undefined && devices.length === 0) return [];
     const perVault = Math.min(opts?.perVault ?? 64, limit);
+    const perVaultScan = Math.max(perVault, opts?.perVaultScan ?? 128);
+    const maxScan = Math.max(perVaultScan, opts?.maxScan ?? 512);
     const accept = opts?.accept;
     const out: KeyAsk[] = [];
-    const devicesJson = devices !== undefined ? JSON.stringify(devices) : null;
-    const stmt = devicesJson !== null
-      ? this.#db.prepare(
-        "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?)) ORDER BY at DESC, device ASC LIMIT ?",
-      )
-      : this.#db.prepare(
-        "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+    if (devices !== undefined) {
+      // Batched PK point-lookup per active device: O(activeDevices * log N), completely bypassing revoked-device rows
+      // at any active-device count (no cliff at 257+ active devices).
+      const pkStmt = this.#db.prepare(
+        "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?))",
       );
+      const maxDevices = Math.max(256, opts?.maxDevices ?? 2048);
+      const cappedDevices = devices.length > maxDevices ? devices.slice(0, maxDevices) : devices;
+      const chunks: string[] = [];
+      for (let i = 0; i < cappedDevices.length; i += 256) {
+        chunks.push(JSON.stringify(cappedDevices.slice(i, i + 256)));
+      }
+      let totalScanned = 0;
+      for (const vault of vaultIds) {
+        if (out.length >= limit || totalScanned >= maxScan) break;
+        const want = Math.min(perVault, limit - out.length);
+        const matched: { at: number; device: string; body: string }[] = [];
+        let vaultScanned = 0;
+        for (const chunkJson of chunks) {
+          if (vaultScanned >= perVaultScan || totalScanned >= maxScan) break;
+          const rows = pkStmt.all(ws, vault, chunkJson) as { at: number; device: string; body: string }[];
+          if (rows.length === 0) continue;
+          const takeRows = Math.min(rows.length, perVaultScan - vaultScanned, maxScan - totalScanned);
+          for (let i = 0; i < takeRows; i++) matched.push(rows[i]!);
+          vaultScanned += takeRows;
+          totalScanned += takeRows;
+        }
+        if (matched.length === 0) continue;
+        matched.sort((a, b) => (b.at - a.at) || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
+        let taken = 0;
+        for (const r of matched) {
+          const a = JSON.parse(r.body) as KeyAsk;
+          if (accept !== undefined && !accept(a)) continue;
+          out.push(a);
+          taken++;
+          if (taken >= want || out.length >= limit) break;
+        }
+      }
+      return out;
+    }
+    const firstStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
+    const sameAtStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
+    const olderStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
+    let totalScanned = 0;
     for (const vault of vaultIds) {
-      const remain = limit - out.length;
-      if (remain <= 0) break;
-      const take = Math.min(perVault, remain);
-      const rows = devicesJson !== null ? stmt.all(ws, vault, devicesJson, take) : stmt.all(ws, vault, take);
-      for (const a of parse<KeyAsk>(rows)) {
-        if (accept !== undefined && !accept(a)) continue;
-        out.push(a);
-        if (out.length >= limit) break;
+      if (out.length >= limit || totalScanned >= maxScan) break;
+      const want = Math.min(perVault, limit - out.length);
+      let taken = 0;
+      let vaultScanned = 0;
+      let cursorAt: number | null = null;
+      let cursorDev = "";
+      while (taken < want && vaultScanned < perVaultScan && totalScanned < maxScan) {
+        const batch = Math.min(want - taken, perVaultScan - vaultScanned, maxScan - totalScanned);
+        if (batch <= 0) break;
+        let rows: { at: number; device: string; body: string }[];
+        if (cursorAt === null) {
+          rows = firstStmt.all(ws, vault, batch) as { at: number; device: string; body: string }[];
+        } else {
+          const sameRows = sameAtStmt.all(ws, vault, cursorAt, cursorDev, batch) as { at: number; device: string; body: string }[];
+          if (sameRows.length < batch) {
+            const rem = batch - sameRows.length;
+            const olderRows = olderStmt.all(ws, vault, cursorAt, rem) as { at: number; device: string; body: string }[];
+            rows = sameRows.length === 0 ? olderRows : [...sameRows, ...olderRows];
+          } else {
+            rows = sameRows;
+          }
+        }
+        if (rows.length === 0) break;
+        vaultScanned += rows.length;
+        totalScanned += rows.length;
+        const last = rows[rows.length - 1]!;
+        cursorAt = last.at;
+        cursorDev = last.device;
+        for (const r of rows) {
+          const a = JSON.parse(r.body) as KeyAsk;
+          if (accept !== undefined && !accept(a)) continue;
+          out.push(a);
+          taken++;
+          if (taken >= want || out.length >= limit) break;
+        }
+        if (rows.length < batch) break;
       }
     }
     return out;
+  }
+
+  /// Snapshot of a member's join-request row (including dismiss-only tombstones where `body` is NULL and `state` is `'none'`).
+  joinSnapshot(ws: string, vault: string, sub: string): {
+    value: JoinAsk | null;
+    body: string | null;
+    joinedUpTo: number;
+    dismissUpTo: number;
+    dismiss: JoinDismiss | null;
+    dismissBody: string | null;
+  } | null {
+    const row = this.#db.prepare(
+      "SELECT body, joined_up_to, dismiss_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?",
+    ).get(ws, vault, sub) as { body: string | null; joined_up_to: number; dismiss_up_to: number; dismiss_body: string | null } | undefined;
+    if (!row) return null;
+    const value = row.body !== null && row.body !== "" ? (JSON.parse(row.body) as JoinAsk) : null;
+    const dismiss = row.dismiss_body !== null && row.dismiss_body !== "" ? (JSON.parse(row.dismiss_body) as JoinDismiss) : null;
+    return { value, body: row.body, joinedUpTo: row.joined_up_to, dismissUpTo: row.dismiss_up_to, dismiss, dismissBody: row.dismiss_body };
+  }
+
+  /// Save a signed `JoinAsk` (`pending` or `cancelled`) only if the parent vault and previous `body` still match,
+  /// preserving any existing `dismiss_up_to`, `dismiss_body`, and `joined_up_to` (unless `resetJoinedFloor` is set
+  /// when replacing an ask from a revoked device).
+  putJoinIf(join: JoinAsk, vaultBody: string, previousBody: string | null, rowExists: boolean, resetJoinedFloor = false): boolean {
+    const body = JSON.stringify(join);
+    if (!rowExists) {
+      return this.#db.prepare(`INSERT INTO vault_joins (ws, vault, sub, at, state, body)
+        SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)
+          AND NOT EXISTS (SELECT 1 FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?)`)
+        .run(join.ws, join.vault, join.sub, join.at, join.state, body, join.ws, join.vault, vaultBody, join.ws, join.vault, join.sub).changes > 0;
+    }
+    if (previousBody === null) {
+      return this.#db.prepare(`UPDATE vault_joins SET at = ?, state = ?, body = ?
+        WHERE ws = ? AND vault = ? AND sub = ? AND body IS NULL
+          AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+        .run(join.at, join.state, body, join.ws, join.vault, join.sub, join.ws, join.vault, vaultBody).changes > 0;
+    }
+    if (resetJoinedFloor) {
+      return this.#db.prepare(`UPDATE vault_joins SET at = ?, state = ?, body = ?, joined_up_to = -1
+        WHERE ws = ? AND vault = ? AND sub = ? AND body = ?
+          AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+        .run(join.at, join.state, body, join.ws, join.vault, join.sub, previousBody, join.ws, join.vault, vaultBody).changes > 0;
+    }
+    return this.#db.prepare(`UPDATE vault_joins SET at = ?, state = ?, body = ?
+      WHERE ws = ? AND vault = ? AND sub = ? AND body = ?
+        AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+      .run(join.at, join.state, body, join.ws, join.vault, join.sub, previousBody, join.ws, join.vault, vaultBody).changes > 0;
+  }
+
+  /// Record a signed admin `JoinDismiss` watermark monotonically (never regressing `dismiss_up_to`), inserting a
+  /// dismiss-only tombstone (`state = 'none'`, `body = NULL`) if the station has not seen the ask yet. When
+  /// `allowReplaceInvalid` is true (e.g. a previously dismissing admin was demoted), allows replacing the exact
+  /// `previousDismissBody` at the same `upTo`.
+  putJoinDismissIf(
+    dismiss: JoinDismiss,
+    vaultBody: string,
+    previousDismissUpTo: number | null,
+    previousDismissBody: string | null = null,
+    allowReplaceInvalid = false,
+  ): boolean {
+    const body = JSON.stringify(dismiss);
+    if (previousDismissUpTo === null) {
+      return this.#db.prepare(`INSERT INTO vault_joins (ws, vault, sub, at, state, body, dismiss_up_to, dismiss_body)
+        SELECT ?, ?, ?, 0, 'none', NULL, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)
+          AND NOT EXISTS (SELECT 1 FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?)`)
+        .run(dismiss.ws, dismiss.vault, dismiss.sub, dismiss.upTo, body, dismiss.ws, dismiss.vault, vaultBody, dismiss.ws, dismiss.vault, dismiss.sub).changes > 0;
+    }
+    if (allowReplaceInvalid && previousDismissBody !== null) {
+      return this.#db.prepare(`UPDATE vault_joins SET dismiss_up_to = ?, dismiss_body = ?
+        WHERE ws = ? AND vault = ? AND sub = ? AND dismiss_up_to = ? AND dismiss_body = ?
+          AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+        .run(dismiss.upTo, body, dismiss.ws, dismiss.vault, dismiss.sub, previousDismissUpTo, previousDismissBody, dismiss.ws, dismiss.vault, vaultBody).changes > 0;
+    }
+    return this.#db.prepare(`UPDATE vault_joins SET dismiss_up_to = ?, dismiss_body = ?
+      WHERE ws = ? AND vault = ? AND sub = ? AND dismiss_up_to = ?
+        AND (? > dismiss_up_to OR dismiss_body IS NULL)
+        AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+      .run(dismiss.upTo, body, dismiss.ws, dismiss.vault, dismiss.sub, previousDismissUpTo, dismiss.upTo, dismiss.ws, dismiss.vault, vaultBody).changes > 0;
+  }
+
+  /// Signed workspace-vault join records (`pending` and `cancelled`) for managing admins, queried with completely
+  /// independent per-state quotas AND scan budgets on `vault_joins_vault_at (ws, vault, state, at DESC, sub)` so
+  /// filtered `pending` rows can never starve `cancelled` tombstones (nor vice versa), with resumable keyset cursor
+  /// for `cancelled` tombstones.
+  joinsForVaults(
+    ws: string,
+    vaultIds: readonly string[],
+    limit: number,
+    opts?: {
+      perVault?: number;
+      perVaultCancelled?: number;
+      cancelledLimit?: number;
+      perVaultScan?: number;
+      maxScan?: number;
+      cancelledMaxScan?: number;
+      cancelledAfterVault?: string;
+      cancelledAfterAt?: number;
+      cancelledAfterSub?: string;
+      accept?: (a: JoinAsk, joinedUpTo: number, dismiss: JoinDismiss | null) => boolean;
+    },
+  ): { joins: JoinAsk[]; nextCancelledCursor?: { vault: string; at: number; sub: string } } {
+    if (vaultIds.length === 0 || limit <= 0) return { joins: [] };
+    const perVault = Math.min(opts?.perVault ?? 64, limit);
+    const cancelledLimit = opts?.cancelledLimit ?? 64;
+    const perVaultCancelled = Math.min(opts?.perVaultCancelled ?? 64, cancelledLimit);
+    const perVaultScan = Math.max(perVault, opts?.perVaultScan ?? 128);
+    const maxScan = Math.max(perVaultScan, opts?.maxScan ?? 512);
+    const cancelledMaxScan = Math.max(perVaultScan, opts?.cancelledMaxScan ?? maxScan);
+    const accept = opts?.accept;
+    const out: JoinAsk[] = [];
+    const firstStmt = this.#db.prepare(
+      "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? ORDER BY at DESC, sub ASC LIMIT ?",
+    );
+    const sameAtStmt = this.#db.prepare(
+      "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? AND at = ? AND sub > ? ORDER BY at DESC, sub ASC LIMIT ?",
+    );
+    const olderStmt = this.#db.prepare(
+      "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? AND at < ? ORDER BY at DESC, sub ASC LIMIT ?",
+    );
+    const scanState = (
+      state: "pending" | "cancelled",
+      perVaultCap: number,
+      stateLimit: number,
+      stateMaxScan: number,
+      after?: { vault: string; at: number; sub: string },
+    ): { vault: string; at: number; sub: string } | undefined => {
+      let stateEmitted = 0;
+      let stateScanned = 0;
+      let nextCursor: { vault: string; at: number; sub: string } | undefined;
+      let lastVisited: { vault: string; at: number; sub: string } | null = null;
+      let exhausted = false;
+      const startIdx = after ? Math.max(0, vaultIds.indexOf(after.vault)) : 0;
+      for (let vi = startIdx; vi < vaultIds.length; vi++) {
+        const vault = vaultIds[vi]!;
+        if (stateEmitted >= stateLimit) break;
+        if (stateScanned >= stateMaxScan) {
+          exhausted = true;
+          break;
+        }
+        const want = Math.min(perVaultCap, stateLimit - stateEmitted);
+        let taken = 0;
+        let vaultScanned = 0;
+        let cursorAt: number | null = vi === startIdx && after && after.vault === vault ? after.at : null;
+        let cursorSub = vi === startIdx && after && after.vault === vault ? after.sub : "";
+        while (taken < want && vaultScanned < perVaultScan && stateScanned < stateMaxScan) {
+          const batch = Math.min(want - taken + 1, perVaultScan - vaultScanned, stateMaxScan - stateScanned);
+          if (batch <= 0) {
+            exhausted = true;
+            break;
+          }
+          let rows: { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
+          if (cursorAt === null) {
+            rows = firstStmt.all(ws, vault, state, batch) as { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
+          } else {
+            const sameRows = sameAtStmt.all(ws, vault, state, cursorAt, cursorSub, batch) as { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
+            if (sameRows.length < batch) {
+              const olderRows = olderStmt.all(ws, vault, state, cursorAt, batch - sameRows.length) as { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
+              rows = sameRows.length === 0 ? olderRows : [...sameRows, ...olderRows];
+            } else {
+              rows = sameRows;
+            }
+          }
+          if (rows.length === 0) break;
+          let hitVaultCap = false;
+          for (let i = 0; i < rows.length; i++) {
+            const r = rows[i]!;
+            vaultScanned++;
+            stateScanned++;
+            cursorAt = r.at;
+            cursorSub = r.sub;
+            lastVisited = { vault, at: r.at, sub: r.sub };
+            if (r.body === null || r.body === "") continue;
+            const a = JSON.parse(r.body) as JoinAsk;
+            const d = r.dismiss_body !== null && r.dismiss_body !== "" ? (JSON.parse(r.dismiss_body) as JoinDismiss) : null;
+            if (accept !== undefined && !accept(a, r.joined_up_to, d)) continue;
+            out.push(a);
+            taken++;
+            stateEmitted++;
+            if (stateEmitted >= stateLimit) {
+              if (i + 1 < rows.length || vi + 1 < vaultIds.length) {
+                nextCursor = { vault, at: r.at, sub: r.sub };
+              }
+              break;
+            }
+            if (taken >= want) {
+              hitVaultCap = true;
+              break;
+            }
+          }
+          if (nextCursor !== undefined || hitVaultCap) break;
+          if (rows.length < batch) break;
+        }
+        if (nextCursor !== undefined) break;
+        if (stateScanned >= stateMaxScan) {
+          exhausted = true;
+          break;
+        }
+      }
+      if (nextCursor === undefined && exhausted && lastVisited !== null) {
+        nextCursor = lastVisited;
+      }
+      return nextCursor;
+    };
+    scanState("pending", perVault, limit, maxScan);
+    const cancelledAfter = opts?.cancelledAfterVault !== undefined && opts.cancelledAfterAt !== undefined && opts.cancelledAfterSub !== undefined
+      ? { vault: opts.cancelledAfterVault, at: opts.cancelledAfterAt, sub: opts.cancelledAfterSub }
+      : undefined;
+    const nextCancelledCursor = scanState("cancelled", perVaultCancelled, cancelledLimit, cancelledMaxScan, cancelledAfter);
+    return nextCancelledCursor !== undefined ? { joins: out, nextCancelledCursor } : { joins: out };
+  }
+
+  /// Signed admin join-dismiss records for these workspace vaults via partial index `vault_joins_vault_dismiss`,
+  /// bounded with keyset cursor (`afterVault`, `afterSub`) that also advances cleanly when `maxScan` is exhausted.
+  joinDismissesForVaults(
+    ws: string,
+    vaultIds: readonly string[],
+    limit: number,
+    opts?: {
+      afterVault?: string;
+      afterSub?: string;
+      maxScan?: number;
+      accept?: (d: JoinDismiss) => boolean;
+    },
+  ): { dismisses: JoinDismiss[]; nextCursor?: { vault: string; sub: string } } {
+    if (vaultIds.length === 0 || limit <= 0) return { dismisses: [] };
+    const maxScan = Math.max(limit, opts?.maxScan ?? 256);
+    const accept = opts?.accept;
+    const out: JoinDismiss[] = [];
+    const firstStmt = this.#db.prepare(
+      "SELECT sub, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_dismiss WHERE ws = ? AND vault = ? AND dismiss_body IS NOT NULL ORDER BY sub ASC LIMIT ?",
+    );
+    const afterStmt = this.#db.prepare(
+      "SELECT sub, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_dismiss WHERE ws = ? AND vault = ? AND dismiss_body IS NOT NULL AND sub > ? ORDER BY sub ASC LIMIT ?",
+    );
+    const startIdx = opts?.afterVault ? Math.max(0, vaultIds.indexOf(opts.afterVault)) : 0;
+    let totalScanned = 0;
+    let nextCursor: { vault: string; sub: string } | undefined;
+    let lastVisited: { vault: string; sub: string } | null = null;
+    let exhaustedBudget = false;
+    for (let vi = startIdx; vi < vaultIds.length; vi++) {
+      const vault = vaultIds[vi]!;
+      if (out.length >= limit) break;
+      if (totalScanned >= maxScan) {
+        exhaustedBudget = true;
+        break;
+      }
+      let cursorSub: string | null = vi === startIdx && opts?.afterVault === vault && opts.afterSub !== undefined ? opts.afterSub : null;
+      while (out.length < limit) {
+        if (totalScanned >= maxScan) {
+          exhaustedBudget = true;
+          break;
+        }
+        const batch = Math.min(limit - out.length + 1, maxScan - totalScanned);
+        if (batch <= 0) {
+          exhaustedBudget = true;
+          break;
+        }
+        const rows = (cursorSub === null
+          ? firstStmt.all(ws, vault, batch)
+          : afterStmt.all(ws, vault, cursorSub, batch)) as { sub: string; dismiss_body: string }[];
+        if (rows.length === 0) break;
+        let emittedInBatch = 0;
+        let lastVisitedSub = cursorSub ?? "";
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i]!;
+          totalScanned++;
+          lastVisitedSub = r.sub;
+          lastVisited = { vault, sub: r.sub };
+          if (!r.dismiss_body) continue;
+          const d = JSON.parse(r.dismiss_body) as JoinDismiss;
+          if (accept !== undefined && !accept(d)) continue;
+          if (out.length >= limit) {
+            nextCursor = { vault, sub: cursorSub ?? "" };
+            break;
+          }
+          out.push(d);
+          emittedInBatch++;
+          cursorSub = r.sub;
+          if (out.length >= limit) {
+            if (i + 1 < rows.length || vi + 1 < vaultIds.length) {
+              nextCursor = { vault, sub: r.sub };
+            }
+            break;
+          }
+        }
+        if (nextCursor !== undefined) break;
+        if (emittedInBatch === 0) cursorSub = lastVisitedSub;
+        if (rows.length < batch) break;
+      }
+      if (nextCursor !== undefined || exhaustedBudget) break;
+    }
+    if (nextCursor === undefined && exhaustedBudget && lastVisited !== null) {
+      nextCursor = lastVisited;
+    }
+    return nextCursor !== undefined ? { dismisses: out, nextCursor } : { dismisses: out };
+  }
+
+  /// Direct O(1) PK lookup of `sub`'s own active join state on each discoverable workspace vault (excluding pre-join
+  /// asks already suppressed by `joined_up_to`).
+  ownJoinsForVaults(ws: string, vaultIds: readonly string[], sub: string): { joins: JoinAsk[]; dismisses: JoinDismiss[] } {
+    const joins: JoinAsk[] = [];
+    const dismisses: JoinDismiss[] = [];
+    const stmt = this.#db.prepare(
+      "SELECT at, body, joined_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND sub = ?",
+    );
+    for (const vault of vaultIds) {
+      const row = stmt.get(ws, vault, sub) as { at: number; body: string | null; joined_up_to: number; dismiss_body: string | null } | undefined;
+      if (!row) continue;
+      if (row.body !== null && row.body !== "" && row.at > row.joined_up_to) joins.push(JSON.parse(row.body) as JoinAsk);
+      if (row.dismiss_body !== null && row.dismiss_body !== "") dismisses.push(JSON.parse(row.dismiss_body) as JoinDismiss);
+    }
+    return { joins, dismisses };
   }
 
   askSnapshot(ws: string, vault: string, device: string): { value: KeyAsk; body: string } | null {

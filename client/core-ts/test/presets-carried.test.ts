@@ -14,6 +14,7 @@ import { Effect } from "effect";
 import { Choose } from "../src/choose.ts";
 import type { Inner } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
+import { AuthGenTracker } from "../src/auth-gen.ts";
 import { CoreError } from "../src/error.ts";
 import { GONE_KEPT, type KeptRecord, type PresetProjects, type PresetRecord, canonical, isGone, mergePresetProjects, presetProjectsOf } from "../src/preset-records.ts";
 import { TABLE, heldOf, presetProjectsHeld, starredKeys, starsHeld } from "../src/presets-kept.ts";
@@ -184,6 +185,7 @@ function device(who: { sub: string; email: string; name: string }, stations: Rig
       perform: (op: { target: { station: string }; method: string; path: string; body: unknown }) => call(op.target.station, op.method, op.path, op.body),
     },
     store: {
+      authGen: new AuthGenTracker(),
       get: (t: { topic: string; station?: string }) => (t.topic === "presets" ? lists.get(t.station!) : undefined),
       value: (t: { topic: string; scope?: string }) =>
         t.topic === "stations" ? { ok: stations.map((s) => ({ id: s.id, name: s.id.toUpperCase(), station: s.address, online: up.has(s.address) })) } : t.topic === "overview" ? { ok: lists.get(`overview`) } : undefined,
@@ -748,4 +750,161 @@ test("preset.setProject carries per-user /preset-projects between stations witho
   assert.equal(afterExplicit?.project, "Fresh");
   assert.equal(afterExplicit?.rev, 3);
   assert.equal(afterExplicit?.ren, undefined, "explicit setProject must clear server ren watermark");
+});
+
+test("otherPresets_clears_cache_on_auth_boundary_and_drops_stale_inflight_response", async () => {
+  const a = station("a");
+  const bo = device(YOU, [a]);
+  await bo.open(a);
+  const theirs = ok(await bo.call("add", a.address, { name: "Bo's review", dirs: ["/src/app"], instructions: "be kind" })) as { id: string };
+  const d = device(ME, [a]);
+  await d.open(a);
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:member");
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id), [theirs.id]);
+
+  // Workspace auth boundary clears #others cache synchronously.
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:downgraded");
+  assert.deepEqual(others().presets, [], "auth boundary must clear #others cache synchronously");
+
+  // In-flight read started under old generation must be dropped when authGen bumps before completion.
+  let release!: () => void;
+  const inflight = new Promise<void>((resolve) => { release = resolve; });
+  const origAnswer = a.answer;
+  let holding = true;
+  a.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holding) {
+      holding = false;
+      return Effect.flatMap(Effect.promise(() => inflight), () => origAnswer(viewer)(method, path, body));
+    }
+    return origAnswer(viewer)(method, path, body);
+  };
+
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(10);
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:changed-again");
+  release();
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id), [theirs.id], "active subscription auto-recovers after authGen boundary");
+
+  // Once stopped, subsequent boundary clears cache without auto-restarting a read.
+  d.views.stop({ topic: "otherPresets", scope: WS });
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:stopped-boundary");
+  assert.deepEqual(others().presets, [], "stopped subscription stays cleared after boundary");
+  await d.settle();
+  assert.deepEqual(others().presets, [], "stopped subscription must not auto-refetch after boundary");
+});
+
+test("readOthers_routine_refresh_while_queued_preserves_at_and_never_drops_stations", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  let releaseB!: () => void;
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const origB = b.answer;
+  let holdB = true;
+  b.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holdB) {
+      holdB = false;
+      return Effect.flatMap(Effect.promise(() => gateB), () => origB(viewer)(method, path, body));
+    }
+    return origB(viewer)(method, path, body);
+  };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "station a answered while b is still in flight");
+
+  // Routine presets event triggers readOthers while b is still in flight: must NOT flash empty or drop b.
+  d.views.readOthers(WS);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "routine readOthers must preserve already-received presets");
+
+  releaseB();
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id).sort(), [onA.id, onB.id].sort(), "both station a and station b presets must be present");
+});
+
+test("otherPresets_prunes_removed_station_and_drops_late_response", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  let releaseB!: () => void;
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const origB = b.answer;
+  let holdB = true;
+  b.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holdB) {
+      holdB = false;
+      return Effect.flatMap(Effect.promise(() => gateB), () => origB(viewer)(method, path, body));
+    }
+    return origB(viewer)(method, path, body);
+  };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id]);
+
+  // Remove station b from workspace membership while b's read is still in flight, then trigger readOthers.
+  const origShared = d.inner.data.shared.bind(d.inner.data);
+  d.inner.data.shared = ((topic: { workspace?: string }) => {
+    if (topic.workspace === WS) return { name: "W", stations: [{ id: a.id, name: "A" }], members: [ME, YOU].map((m) => ({ ...m, role: "member" })) };
+    return origShared(topic as never);
+  }) as typeof d.inner.data.shared;
+  d.views.readOthers(WS);
+
+  // Release b's late response: must be dropped because b is no longer in ws.
+  releaseB();
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "removed station's late response must be dropped");
+  assert.ok(!others().presets.some((p) => p.id === onB.id));
+});
+
+test("otherPresets_and_othersFound_filter_removed_station_immediately_without_readOthers", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id).sort(), [onA.id, onB.id].sort());
+  assert.ok(d.views.othersFound(WS, onB.id) !== undefined);
+
+  // Remove station b from workspace membership WITHOUT calling readOthers:
+  // #othersView and othersFound must filter out b immediately.
+  const origShared = d.inner.data.shared.bind(d.inner.data);
+  d.inner.data.shared = ((topic: { workspace?: string }) => {
+    if (topic.workspace === WS) return { name: "W", stations: [{ id: a.id, name: "A" }], members: [ME, YOU].map((m) => ({ ...m, role: "member" })) };
+    return origShared(topic as never);
+  }) as typeof d.inner.data.shared;
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "removed station's presets must disappear immediately without readOthers");
+  assert.equal(d.views.othersFound(WS, onB.id), undefined, "othersFound must ignore removed station's cached presets");
 });

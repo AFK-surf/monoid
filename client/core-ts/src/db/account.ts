@@ -599,6 +599,7 @@ export class AccountDb {
   overviewProfile(station: string, id: string): J { return this.#docs.overviewProfile(station, id); }
   overviewHeld(station: string): boolean { return this.#docs.overviewHeld(station); }
   boundStationDocs(station: string, prefix: string, most: number): void { this.#docs.boundStationDocs(station, prefix, most); }
+  dropWorkspaceStationDocs(workspace: string | null, prefix: string): void { this.#docs.dropWorkspaceStationDocs(workspace, prefix); }
   slackApp(station: string, connect: string): J { return this.#docs.slackApp(station, connect); }
   putSlackApp(station: string, connect: string, value: J, confirmed: number | null): void { this.#docs.putSlackApp(station, connect, value, confirmed); }
   draft(station: string, chat: string): J { return this.#docs.draft(station, chat); }

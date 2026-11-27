@@ -92,10 +92,14 @@ fn move_press_on(t : @ui.Tester, w : String, label : String) -> Unit {
 
 ///|
 /// `label` chosen in what is put up over the page (a menu, a sheet of it, a question), and what that opens let come.
-fn move_pick(t : @ui.Tester, label : String) -> Unit raise {
-  let over = try t.get(Dialog) catch { _ => t.get(Menu) }
-  t.click(Button, label~, within=over) catch {
-    _ => t.click(MenuItem, label~, within=over)
+fn move_pick(t : @ui.Tester, label : String) -> Unit {
+  let over = match t.try_get(Dialog) {
+    Ok(d) => d
+    Err(_) => t.get(Menu)
+  }
+  match t.try_click(Button, label~, within=over) {
+    Ok(_) => ()
+    Err(_) => t.click(MenuItem, label~, within=over)
   }
   t.draw()
   t.run_for(@ui.move_most_ms)
@@ -550,9 +554,7 @@ test "a chat going to another station: its bar says where, its composer shut say
     t.tap(x, y)
     t.type_text("发不出去的话")
     // (send pressed where there is one to press: out of reach, nothing)
-    t.click(Button, label=@sf.t("web-main.composer.send")) catch {
-      _ => ()
-    }
+    t.try_click(Button, label=@sf.t("web-main.composer.send")) |> ignore
     t.run_for(@ui.move_most_ms)
     assert_eq(move_calls(calls, "chat.send").length(), 0, msg=at)
   }

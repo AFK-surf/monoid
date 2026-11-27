@@ -68,7 +68,8 @@ pub fn fill_chip_node(
           s
         }
       }
-      boxed.then(words_st)
+      let styled = boxed.then(words_st)
+      if squeezes { styled } else { styled.then(chip_box_centered) }
     })
     b.bone_whole(Is(true)).shrink(Is(if squeezes { 1.0 } else { 0.0 })) |> ignore
     if squeezes {

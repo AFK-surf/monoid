@@ -134,7 +134,7 @@ test "a progress bar as nodes finishing: read out whole (its most, 100%) as it i
     |> ignore
   })
   t.draw()
-  let said = fn() raise {
+  let said = fn() {
     let b = t.get(ProgressBar)
     (b.value, b.range)
   }

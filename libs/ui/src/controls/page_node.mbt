@@ -1854,11 +1854,12 @@ pub fn row_end_button_node(
   parent : @view.View,
   label : () -> String,
   press : () -> Unit,
+  tone? : Tone = Ghost,
   busy? : () -> Bool = fn() { false },
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  button_node(loc~, parent, label, press, tone=Ghost, busy~, disabled~).margin(Is((0.0, 0.0, -button_padx, 0.0)))
+  button_node(loc~, parent, label, press, tone~, busy~, disabled~).margin(Is((0.0, 0.0, -button_padx, 0.0)))
 }
 
 ///|
@@ -1954,11 +1955,12 @@ pub fn row_corner_button_node(
   parent : @view.View,
   label : () -> String,
   press : () -> Unit,
+  tone? : Tone = Ghost,
   busy? : () -> Bool = fn() { false },
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  let b = row_end_button_node(loc~, parent, label, press, busy~, disabled~)
+  let b = row_end_button_node(loc~, parent, label, press, tone~, busy~, disabled~)
   let narrow = look_node(parent) is Narrow
   if !narrow && @signals.untracked(native_input) is Finger {
     return b

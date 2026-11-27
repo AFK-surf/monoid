@@ -1634,7 +1634,7 @@ pub fn Tester::assert_pattern(
   within? : SemNode,
   rtl? : Bool = false,
   label? : String = "",
-) -> Unit raise {
+) -> Unit {
   let faults = self.check_pattern(pattern, within?, rtl~)
   if !faults.is_empty() {
     let header = if label == "" {
@@ -1642,6 +1642,6 @@ pub fn Tester::assert_pattern(
     } else {
       "ARIA pattern \{pattern.name()} (\{label}) failed (\{faults.length()} faults):"
     }
-    fail(header + "\n" + faults.join("\n"))
+    @halt.saying(header + "\n" + faults.join("\n"))
   }
 }

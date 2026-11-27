@@ -514,6 +514,20 @@ pub fn writing_text(src : Source, w : Writing, words : String) -> Unit {
 }
 
 ///|
+/// Programmatically replaces draft `key`'s text (for example `/btw` prefilling `new:<ws>`), updating the core via
+/// `composer.text` and syncing every cached `Writing` handle for `key` across wrapped `Source` instances.
+pub fn writing_set_text(src : Source, key : String, words : String, caret? : Int) -> Unit {
+  let w = writing(src, key)
+  writing_text(src, w, words)
+  for cached in writing_cache.val {
+    if cached.key == key {
+      cached.value.state.text.set(words)
+      refs_put(key, cached.value.field, words, caret?)
+    }
+  }
+}
+
+///|
 /// A file picked or pasted (`pasted`: long words kept as a file, what the core says of them) going up to `station`
 /// (`composer.add`, its bytes beside the call): shown at once, a picture from its bytes, else the host's picture of it
 /// (`still`: where the host has it, @hostapi.Picked.src; a video's still); or the picture of the quote `quote` (a

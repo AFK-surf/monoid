@@ -12,7 +12,7 @@ fn skt_focused(t : @ui.Tester) -> String? {
 
 ///|
 /// The field `label` tapped by a finger in its middle.
-fn skt_tap_field(t : @ui.Tester, label : String) -> Unit raise {
+fn skt_tap_field(t : @ui.Tester, label : String) -> Unit {
   let (x, y, w, h) = t.get(TextField, label~).rect
   t.tap(x + w / 2.0, y + h / 2.0)
   t.draw()

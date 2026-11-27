@@ -69,6 +69,7 @@ test("what_a_station_said_beyond_the_tables_shows_after_a_restart_before_any_net
   assert.equal(v(values, 6).rttMs, 40);
   assert.equal((first.core.inner.stations.link(S)?.memory.get("host") as { identity?: string } | undefined)?.identity, "studio");
   await run(first.core.inner.data.written);
+  await run(first.core.inner.data.device.flushTable("auth"));
   first.core.close();
   // Opened again, nothing answering yet: each shows as it was.
   const host = first.host;
@@ -80,9 +81,10 @@ test("what_a_station_said_beyond_the_tables_shows_after_a_restart_before_any_net
   const again = await shown(core, host, 300);
   assert.equal(v(again, 1).loaded, true);
   assert.deepEqual(v(again, 1).logins.map((l: { id: string }) => l.id), ["l0"]);
-  assert.equal(v(again, 2).known, true);
+  assert.equal(v(again, 2).known, true, "keeper-cached screens show immediately for display on writable DB");
+  assert.equal(v(again, 2).confirmed, false, "keeper-cached screens stay unconfirmed until station replies in current authGen");
   assert.deepEqual(v(again, 2).screens.map((s: { id: string }) => s.id), ["desktop"]);
-  assert.equal(logWords(v(again, 3)), "one\ntwo\n");
+  assert.equal(v(again, 3), undefined, "jobLog is ephemeral and never resurrected from disk across restarts");
   assert.notEqual(v(again, 4), undefined);
   assert.deepEqual(v(again, 5).transfers.map((t: { id: string }) => t.id), ["t1"]);
   assert.equal(v(again, 6).rttMs, 40, "how it was reached last, until it is reached anew");
@@ -100,12 +102,12 @@ test("a_job_log_kept_is_read_again_once_a_run_and_what_is_live_only_is_not_kept"
   subscribe(first.core, ui, 2, search);
   await first.host.time.pass(KEEP_MS + 1_000, 1_000);
   const data = first.core.inner.data;
-  assert.deepEqual(data.stationMemory(S, logKey("j1", 300)), { text: "one\ntwo\n", outputAt: 1, from: 0 });
+  assert.equal(data.stationMemory(S, logKey("j1", 300)), undefined, "jobLog is ephemeral and never persisted to disk");
   assert.notEqual(first.core.inner.stations.link(S)?.memory.get(topicKey(search)), undefined, "what the search found is shown");
   assert.equal(data.stationMemory(S, topicKey(search)), undefined, "and not kept");
   await run(data.written);
   first.core.close();
-  // Opened again: shown as kept, read again, and what the station says now in its place.
+  // Opened again: not resurrected from disk, read fresh from station once a run.
   const host = first.host;
   said["GET /jobs/j1/log?lines=300"] = { text: "one\ntwo\nthree\n", outputAt: 2 };
   const reads = () => host.requests.flatMap(readsOf).filter((u) => u.endsWith("/jobs/j1/log?lines=300")).length;
@@ -117,7 +119,6 @@ test("a_job_log_kept_is_read_again_once_a_run_and_what_is_live_only_is_not_kept"
   subscribe(core, ui2, 1, { topic: "jobLog", station: S, job: "j1", lines: 300 });
   await host.time.pass(2_000, 50);
   apply(host, values);
-  // (its lines numbered on from what was kept: those kept as they were, the one more under them)
   assert.deepEqual((v(values, 1).lines as { n: number; runs: { text: string }[] }[]).map((l) => [l.n, l.runs.map((r) => r.text).join("")]), [[0, "one"], [1, "two"], [2, "three"], [3, ""]]);
   assert.equal(reads(), before + 1);
   core.close();

@@ -336,9 +336,9 @@ test "workspace vault create card emits vault.create with scope workspace" {
 }
 
 ///|
-test "workspace vault members dialog toggles member, shows rekey warning, and emits vault.setMembers" {
+test "workspace vault members dialog shows 3 groups (requests/joined/unjoined), approves/invites/removes atomically, and passes audit across widths and 1.3x" {
   let calls : Array[(String, Json)] = []
-  let t = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-workspace", over=fn(base) {
+  let t = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-workspace-requests", over=fn(base) {
     {
       ..base,
       call: fn(name, params, done) {
@@ -349,25 +349,103 @@ test "workspace vault members dialog toggles member, shows rekey warning, and em
   })
   t.run_for(@ui.move_most_ms)
   scrolled_to(t, 1100.0, "共享成员")
-  assert_true(t.find("3 位成员") is Some(_))
+  assert_true(t.find("已加入 3 / 5 人，1 人申请加入") is Some(_))
   tap_words(t, "共享成员")
   t.frame()
   presented_in(t)
-  assert_true(t.find("Workspace 密钥库成员") is Some(_))
-  assert_true(t.find("移除成员后将自动更换密钥库主密钥并重新加密所有条目。") is None)
-  // verify VaultMember object array [{ sub, name }] initializes all 3 switches to On
-  assert_eq(t.get(Switch, label="林").check, Some(On))
-  assert_eq(t.get(Switch, label="Ana").check, Some(On))
-  assert_eq(t.get(Switch, label="周").check, Some(On))
-  // uncheck 周 (u3)
-  t.click(Switch, label="周")
+  for words in ["Workspace 密钥库成员", "申请加入中", "陈雨", "核对码 P3Q-8RT", "已加入", "当前账号 · 已获钥", "等待对方打开密钥库", "未加入", "赵敏"] {
+    assert_true(t.find(words) is Some(_), msg="missing: \{words}")
+  }
+  let f0 = t.audit()
+  assert_true(f0.is_empty(), msg="desktop dialog audit: " + f0.join(" | "))
+  // Approve Chen Yu's join request -> emits vault.addMember with askAt/askDevice/askBox
+  t.click(Button, label="通过")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("移除成员后将自动更换密钥库主密钥并重新加密所有条目。") is Some(_))
-  t.click(Button, label="保存")
+  let approved = calls.filter(fn(c) { c.0 == "vault.addMember" && text(Some(c.1), "sub") == "u4" })
+  assert_eq(approved.length(), 1)
+  assert_eq(text(Some(approved[0].1), "vault"), "v-ws")
+  assert_true(t.find("申请加入中") is None)
+  // Proactively invite Zhao Min -> emits vault.addMember without askAt
+  t.click(Button, label="拉入")
   t.run_for(@ui.move_most_ms)
-  let saved = calls.filter(fn(c) { c.0 == "vault.setMembers" })
-  assert_eq(saved.length(), 1)
-  assert_eq(saved[0].1, { "workspace": "ws1", "vault": "v-ws", "members": ["u1", "u2"] })
+  let invited = calls.filter(fn(c) { c.0 == "vault.addMember" && text(Some(c.1), "sub") == "u5" })
+  assert_eq(invited.length(), 1)
+  assert_true(t.find("未加入") is None)
+  // Audit open 3-group dialog on narrow phone & 320px @ 1.3x font scale
+  for size in [(390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3), (320.0, 640.0, 2, 1.3)] {
+    let (w, h, platform, scale) = size
+    let t2 = setting_tester(Vault, w, platform~, mode="settings-vault-workspace-requests", h~)
+    t2.set_font_scale(scale)
+    t2.frame()
+    t2.run_for(@ui.move_most_ms)
+    scrolled_to(t2, w, "共享成员")
+    tap_words(t2, "共享成员")
+    t2.frame()
+    presented_in(t2)
+    let f2 = t2.audit()
+    assert_true(f2.is_empty(), msg="\{w}×\{h} @\{scale}: " + f2.join(" | "))
+  }
+}
+
+///|
+test "discoverable workspace vault shown for unjoined member (setUp=false and setUp=true), supports requestJoin/cancelJoin, and preserves vault.setup for recovery words" {
+  // 1. setUp=false + availableWorkspaceVaults: Vault page shows off + discover card; VaultItems stays off only.
+  let calls : Array[(String, Json)] = []
+  let t = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-discover", over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push((name, params))
+        (base.call)(name, params, done)
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  for words in ["密钥库未开启", "Workspace 密钥库", "尚未加入此团队密钥库", "申请加入"] {
+    assert_true(t.find(words) is Some(_), msg="discover missing: \{words}")
+  }
+  let f0 = t.audit()
+  assert_true(f0.is_empty(), msg="discover desktop audit: " + f0.join(" | "))
+  t.click(Button, label="申请加入")
+  t.run_for(@ui.move_most_ms)
+  let reqs = calls.filter(fn(c) { c.0 == "vault.requestJoin" })
+  assert_eq(reqs.length(), 1)
+  assert_eq(reqs[0].1, { "workspace": "ws1", "vault": "v-ws" })
+  // Now setUp=true without recovery words: card switches to pending + cancel button, and none card calls vault.setup!
+  scrolled_to(t, 1100.0, "已申请加入")
+  assert_true(t.find("已申请加入") is Some(_))
+  assert_true(t.find("取消申请") is Some(_))
+  t.click(Button, label="取消申请")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.filter(fn(c) { c.0 == "vault.cancelJoin" }).length(), 1)
+  // 2. setUp=true without hasRecovery: clicking personal vault "开启密钥库" on none card calls vault.setup (not vault.create).
+  let calls2 : Array[(String, Json)] = []
+  let t_pending = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-discover-pending", over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        calls2.push((name, params))
+        (base.call)(name, params, done)
+      },
+    }
+  })
+  t_pending.run_for(@ui.move_most_ms)
+  t_pending.click(Button, label="开启密钥库")
+  t_pending.run_for(@ui.move_most_ms)
+  assert_eq(calls2.filter(fn(c) { c.0 == "vault.setup" }).length(), 1)
+  assert_eq(calls2.filter(fn(c) { c.0 == "vault.create" }).length(), 0)
+  // 3. Audit both discover states across phone 390, narrow 320 @ 1.3x, and desktop 1280.
+  for mode in ["settings-vault-discover", "settings-vault-discover-pending"] {
+    for size in [(390.0, 844.0, 2, 1.0), (320.0, 640.0, 2, 1.3), (1280.0, 800.0, 0, 1.0)] {
+      let (w, h, platform, scale) = size
+      let td = setting_tester(Vault, w, platform~, mode~, h~)
+      td.set_font_scale(scale)
+      td.frame()
+      td.run_for(@ui.move_most_ms)
+      let fd = td.audit()
+      assert_true(fd.is_empty(), msg="\{mode} \{w}×\{h} @\{scale}: " + fd.join(" | "))
+    }
+  }
 }
 
 ///|

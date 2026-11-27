@@ -50,13 +50,6 @@ test "who is on a screen: each view's device and mode; a member lets one go or a
     @sf.set_words(@sfbase.fill)
     let calls : Array[(String, Json)] = []
     let base = @sffixture.fixture("settings")
-    let src : Source = {
-      ..base,
-      call: fn(name, params, done) {
-        if name.has_prefix("screen.") { calls.push((name, params)) }
-        done(Ok(Json::null()))
-      },
-    }
     let view = fn(id : String, name : String, control : Bool, more : Map[String, Json]) -> Json {
       let m : Map[String, Json] = {
         "id": Json::string(id),
@@ -76,6 +69,32 @@ test "who is on a screen: each view's device and mode; a member lets one go or a
         view("v2", "Bob", false, may),
         view("v3", "Agent「部署」", true, { "agent": Json::boolean(true) }),
       ]),
+    }
+    let src : Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "screens" {
+          {
+            value: Some(
+              obj([
+                ("screens", Json::array([screen])),
+                ("outdated", Json::boolean(false)),
+                ("control", Json::boolean(true)),
+                ("known", Json::boolean(true)),
+                ("confirmed", Json::boolean(true)),
+              ]),
+            ),
+            error: None,
+            version: 1,
+          }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+      call: fn(name, params, done) {
+        if name.has_prefix("screen.") { calls.push((name, params)) }
+        done(Ok(Json::null()))
+      },
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {
@@ -1231,7 +1250,7 @@ test "a station's overview: its browser one row opening it, the agents' pages an
     let screens_topic : Json = {
       "browser": true,
       "control": true,
-      "known": true,
+      "known": true, "confirmed": true,
       "outdated": false,
       "screens": [
         {
@@ -1727,6 +1746,464 @@ test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, dele
     assert_eq(t_ro.all(Link, label="github").length(), 0)
     assert_eq(t_ro.audit(), [], msg="ro audit: \{w}")
   }
+}
+
+///|
+test "screens and terminals kept state (version < 0) show read-only list but disable actions until fresh (version >= 0)" {
+  let prev_terminals_here = terminals_here_kept.val
+  defer { terminals_here_kept.val = prev_terminals_here }
+  terminals_here_kept.val = Some(true)
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let calls : Array[(String, Json)] = []
+  let screens_topic : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "browser": true,
+    "control": true,
+    "screens": [
+      {
+        "id": "display:1",
+        "kind": "display",
+        "title": "Willow 的屏幕",
+        "width": 1920.0,
+        "height": 1080.0,
+        "line": "1920 × 1080",
+        "link": "",
+      },
+      {
+        "id": "browser:t1",
+        "kind": "browser",
+        "closable": true,
+        "title": "Sign in · Anthropic",
+        "width": 1280.0,
+        "height": 800.0,
+        "line": "浏览器标签页 · 1280 × 800",
+        "link": "",
+      },
+    ],
+  }
+  let terms_topic : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      {
+        "id": "term-1",
+        "cwd": "/work/proj",
+        "ended": false,
+        "looking": [],
+      },
+    ],
+  }
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let tp = base.topic(name, params).get().snapshot()
+      if name == "screens" {
+        { value: Some(screens_topic), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_topic), error: None, version: terms_ver.get() }
+      } else {
+        tp
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let core = @sfbase.settings_core(src, rig_workspace)
+  let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+  let s = fn() { @settings.station_of(core, here(), "ws1/st1") }
+  let t = station_part_tester(fn(p) {
+    p.gap(Is(20.0)) |> ignore
+    station_all_screens_node(p, core, here, s)
+  }, w=420.0, h=900.0, platform=0)
+
+  // Retained (version = -2): read-only list items are still rendered (no bones/empty list).
+  assert_true(t.find("Willow 的屏幕") is Some(_))
+  assert_true(t.find("Sign in · Anthropic") is Some(_))
+  assert_true(t.find("打开浏览器") is Some(_))
+  assert_true(t.find("proj") is Some(_))
+  assert_true(t.find("打开终端") is Some(_))
+
+  let nav_before = @sfbase.app.nav.pages().length()
+  // Tapping screen, browser, closeTab, terminal, or openTerminal while retained triggers 0 calls and 0 navigation.
+  t.tap_text("关闭标签页")
+  t.draw()
+  t.tap_text("打开浏览器")
+  t.draw()
+  t.tap_text("Willow 的屏幕")
+  t.draw()
+  t.tap_text("proj")
+  t.draw()
+  t.tap_text("打开终端")
+  t.draw()
+  assert_eq(calls.length(), 0)
+  assert_eq(@sfbase.app.nav.pages().length(), nav_before)
+
+  // Fresh Core answers arrive (version >= 0): interactive actions recover immediately.
+  screens_ver.set(1)
+  terms_ver.set(1)
+  t.draw()
+
+  t.tap_text("关闭标签页")
+  t.draw()
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.close" }))
+
+  t.tap_text("打开终端")
+  t.draw()
+  assert_true(@sfbase.app.nav.pages().length() > nav_before)
+}
+
+///|
+test "remote_node guards close and browser open while screens/terminals are retained (version -3) and recovers when fresh" {
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let screens_val : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "browser": true,
+    "control": true,
+    "screens": [
+      { "id": "browser:u_1", "kind": "browser", "userTab": true, "closable": true, "title": "Docs" },
+    ],
+  }
+  let terms_val : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      { "id": "term-1", "cwd": "/work/proj", "ended": false },
+    ],
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let term_row : RemoteRow = {
+    key: "t/ws1/st1/term-1",
+    station: "ws1/st1",
+    kind: "terminal",
+    id: "term-1",
+    icon: "terminal",
+    title: "proj",
+    under: "/work/proj",
+    agent: false,
+    closable: true,
+    cwd: "/work/proj",
+    watch: false,
+    last: true,
+  }
+  let tab_row : RemoteRow = {
+    key: "s/ws1/st1/browser:u_1",
+    station: "ws1/st1",
+    kind: "browser",
+    id: "browser:u_1",
+    icon: "web",
+    title: "Docs",
+    under: "",
+    agent: false,
+    closable: true,
+    cwd: "",
+    watch: false,
+    last: true,
+  }
+  // Retained (-3): closing rows or opening browser tab from retained screens triggers 0 calls.
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // Fresh (1): closing rows sends terminal.end and screen.close normally.
+  screens_ver.set(1)
+  terms_ver.set(1)
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_true(calls.iter().any(fn(c) { c.0 == "terminal.end" }))
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.close" }))
+}
+
+///|
+test "remote_node and station_peek reject unconfirmed empty (0/None), retained (<0), and incapable states before write calls" {
+  let screens_state : @signals.Signal[@sfbase.Topic] = @signals.signal({ value: None, error: None, version: 0 })
+  let terms_state : @signals.Signal[@sfbase.Topic] = @signals.signal({ value: None, error: None, version: 0 })
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        screens_state.get()
+      } else if name == "terminals" {
+        terms_state.get()
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let core = @sfbase.settings_core(src, rig_workspace)
+
+  // 1. Unconfirmed empty subscription (version == 0, value == None): 0 writes, capabilities false.
+  assert_false(remote_can_term(src, "ws1/st1"))
+  assert_false(remote_can_browse(src, "ws1/st1"))
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  remote_new_browser_view(src, "ws1", Side, "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 2. Retained (-2) with capable flags: still 0 writes and capabilities false.
+  let capable_screens : Json = { "known": true, "confirmed": true, "outdated": false, "browser": true, "control": true, "screens": [] }
+  let capable_terms : Json = { "known": true, "confirmed": true, "outdated": false, "open": true, "terminals": [] }
+  screens_state.set({ value: Some(capable_screens), error: None, version: -2 })
+  terms_state.set({ value: Some(capable_terms), error: None, version: -2 })
+  assert_false(remote_can_term(src, "ws1/st1"))
+  assert_false(remote_can_browse(src, "ws1/st1"))
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  remote_new_browser_view(src, "ws1", Side, "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 3. Fresh (version >= 0) but browser/control disabled: 0 screen.openBrowser calls.
+  let readonly_screens : Json = { "known": true, "confirmed": true, "outdated": false, "browser": true, "control": false, "screens": [] }
+  screens_state.set({ value: Some(readonly_screens), error: None, version: 1 })
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 4. Fresh (version >= 0) and capable: screen.openBrowser fires normally.
+  screens_state.set({ value: Some(capable_screens), error: None, version: 2 })
+  terms_state.set({ value: Some(capable_terms), error: None, version: 2 })
+  assert_true(remote_can_term(src, "ws1/st1"))
+  assert_true(remote_can_browse(src, "ws1/st1"))
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.openBrowser" }))
+}
+
+///|
+test "remote_front_in and remote_row_step skip retained rows and select once confirmed" {
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let base = @sffixture.fixture("settings")
+  let screens_val : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "browser": false,
+    "control": false,
+    "screens": [],
+  }
+  let terms_val : Json = {
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      { "id": "term-1", "cwd": "/work/proj", "ended": false },
+    ],
+  }
+  let stations_val : Json = [
+    { "station": "ws1/st1", "name": "Studio", "online": true },
+  ]
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else if name == "stations" {
+        { value: Some(stations_val), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  let lines = remote_lines(src, "ws1", true)
+  assert_eq(remote_rows_of(lines).length(), 1)
+  // Retained (-3): default auto-select must return None and remote_row_step must open 0 tabs.
+  assert_true(remote_front_in(src, "ws1", lines) is None)
+  let tabs_before = @sfbase.remote_tabs_raw(src, "ws1").0.length()
+  remote_row_step(src, "ws1", 1)
+  assert_eq(@sfbase.remote_tabs_raw(src, "ws1").0.length(), tabs_before)
+
+  // Fresh (1): default auto-select picks the confirmed terminal row.
+  terms_ver.set(1)
+  screens_ver.set(1)
+  assert_true(remote_front_in(src, "ws1", lines) is Some(_))
+}
+
+///|
+test "remote_row_close re-verifies live target existence and capability at invocation time" {
+  let screens_val : @signals.Signal[Json] = @signals.signal({
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "browser": true,
+    "control": false,
+    "screens": [{ "id": "browser:u_1", "kind": "browser", "userTab": true, "closable": true, "title": "Docs" }],
+  })
+  let terms_val : @signals.Signal[Json] = @signals.signal({
+    "known": true, "confirmed": true,
+    "outdated": false,
+    "open": false,
+    "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": false }],
+  })
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val.get()), error: None, version: 1 }
+      } else if name == "terminals" {
+        { value: Some(terms_val.get()), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let term_row : RemoteRow = {
+    key: "t/ws1/st1/term-1",
+    station: "ws1/st1",
+    kind: "terminal",
+    id: "term-1",
+    icon: "terminal",
+    title: "proj",
+    under: "/work/proj",
+    agent: false,
+    closable: true,
+    cwd: "/work/proj",
+    watch: false,
+    last: true,
+  }
+  let tab_row : RemoteRow = {
+    key: "s/ws1/st1/browser:u_1",
+    station: "ws1/st1",
+    kind: "browser",
+    id: "browser:u_1",
+    icon: "web",
+    title: "Docs",
+    under: "",
+    agent: false,
+    closable: true,
+    cwd: "",
+    watch: false,
+    last: true,
+  }
+  // 1. Fresh but capability revoked (open: false / control: false): 0 write calls.
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_eq(calls.length(), 0)
+
+  // 2. Fresh and capable, but target ended/removed or closable: false: still 0 write calls.
+  terms_val.set({ "known": true, "confirmed": true, "outdated": false, "open": true, "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": true }] })
+  screens_val.set({ "known": true, "confirmed": true, "outdated": false, "browser": true, "control": true, "screens": [{ "id": "browser:u_1", "kind": "browser", "closable": false, "title": "Docs" }] })
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_eq(calls.length(), 0)
+}
+
+///|
+test "preset_others_content reactively updates as otherPresets topic changes" {
+  let state : @signals.Signal[@sfbase.TopicState?] = @signals.signal(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [{ "id": "p1", "station": "ws1/st1", "name": "Alpha Preset", "whose": "Bob", "summary": "app" }],
+      }),
+      error: None,
+      version: 1,
+      waiting: false,
+    }),
+  )
+  let base = @sffixture.fixture("settings")
+  let t = station_part_tester(fn(p) {
+    preset_others_content(
+      p,
+      base,
+      rig_workspace,
+      "ws1/st1",
+      [],
+      "",
+      state.untracked(),
+      fn() { state.get() },
+      fn() {  },
+      fn() {  },
+      false,
+      false,
+    )
+  }, w=420.0, h=600.0, platform=0)
+  assert_true(t.find("Alpha Preset") is Some(_))
+  assert_true(t.find("Beta Preset") is None)
+
+  // Late station answer arrives: Beta Preset appears reactively without reopening the panel.
+  state.set(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [
+          { "id": "p1", "station": "ws1/st1", "name": "Alpha Preset", "whose": "Bob", "summary": "app" },
+          { "id": "p2", "station": "ws1/st2", "name": "Beta Preset", "whose": "Eve", "summary": "lib" },
+        ],
+      }),
+      error: None,
+      version: 2,
+      waiting: false,
+    }),
+  )
+  t.draw()
+  assert_true(t.find("Alpha Preset") is Some(_))
+  assert_true(t.find("Beta Preset") is Some(_))
+
+  // Same-ID rename & summary clear updates row reactively in place.
+  state.set(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [
+          { "id": "p1", "station": "ws1/st1", "name": "Alpha Renamed", "whose": "Bob", "summary": "" },
+          { "id": "p2", "station": "ws1/st2", "name": "Beta Preset", "whose": "Eve", "summary": "lib" },
+        ],
+      }),
+      error: None,
+      version: 3,
+      waiting: false,
+    }),
+  )
+  t.draw()
+  assert_true(t.find("Alpha Renamed") is Some(_))
+  assert_true(t.find("Alpha Preset") is None)
+
+  // Auth invalidation / removal clears list reactively.
+  state.set(Some({ value: Some({ "reading": false, "presets": [] }), error: None, version: 4, waiting: false }))
+  t.draw()
+  assert_true(t.find("Alpha Renamed") is None)
+  assert_true(t.find("Beta Preset") is None)
 }
 
 ///|

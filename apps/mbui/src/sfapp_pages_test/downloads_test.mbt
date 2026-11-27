@@ -55,7 +55,7 @@ fn downloads_src(
 ///|
 /// The middle of the video `name` of a message (its picture, nothing over it there), as a screen reader has it (播放
 /// …), whichever page draws the chat.
-fn video_middle(t : @ui.Tester, name : String) -> (Double, Double) raise {
+fn video_middle(t : @ui.Tester, name : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(Button, label=tr("web-main.file.play", args=[("name", name)])).rect
   (x + w / 2.0, y + h / 2.0)
 }

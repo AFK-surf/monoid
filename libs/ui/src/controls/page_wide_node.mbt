@@ -849,8 +849,9 @@ fn wide_link_row_node(
         row_control_node(first, control, under, by_side, false)
       })
       |> ignore
+      let note_base = if parent.lent(floating_host_lent) is Some(_) { wide_list_note.then(panel_note_words) } else { wide_list_note }
       words.show(fn() { note() != "" }, fn(n) {
-        styled_words(n, note, fn() { note_look(if note_cut() { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
+        styled_words(n, note, fn() { note_look(if note_cut() { note_base.then(cut_words) } else { note_base }) }) |> ignore
       })
       words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { desk_note_bad }) |> ignore })
       match below {

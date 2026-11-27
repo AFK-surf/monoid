@@ -56,7 +56,7 @@ test "what floats: its line the theme's; in the dark the raised grey with a tigh
 ///|
 /// A window with two buttons side by side, each with a tip, the first's of keys `keys` (an action's, said by
 /// set_shortcuts), dark or light; the pointer resting on the first.
-fn caps_tester(dark : Bool, keys : String, solid? : Bool = false) -> @ui.Tester raise {
+fn caps_tester(dark : Bool, keys : String, solid? : Bool = false) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=240.0, platform=0)
   t.check_looks(false)
   set_dark(Some(dark))

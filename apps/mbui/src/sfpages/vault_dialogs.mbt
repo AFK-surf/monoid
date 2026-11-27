@@ -708,158 +708,334 @@ pub fn vault_recover_dialog(core : Core, ws : String) -> Unit {
 }
 
 ///|
-/// Workspace vault member management dialog: admins can toggle workspace members (self disabled) and save via
-/// `vault.setMembers` (showing a key-rotation notice whenever any existing member is unchecked); non-admins see a
-/// read-only list of current shared members.
-pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
+/// Formats a join-request row's subtitle (`deviceText · 核对码 K7M-4PX · 3 分钟前`).
+fn vd_join_meta(rv : Json?) -> String {
+  let parts : Array[String] = []
+  let email = text(rv, "email")
+  if email != "" {
+    parts.push(email)
+  }
+  let dev = text(rv, "deviceText")
+  if dev != "" {
+    parts.push(dev)
+  }
+  let code = text(rv, "deviceCode")
+  if code != "" {
+    parts.push(@sf.t("web-pages.vault.devicesDialog.codePrefix", args=[("code", code)]))
+  }
+  let at = text(rv, "atText")
+  if at != "" {
+    parts.push(at)
+  }
+  parts.join(" · ")
+}
+
+///|
+/// Reactive workspace vault member management dialog:
+/// - **申请加入中** (admin only, shown when non-empty): pending join request cards with `通过` (`vault.addMember` with
+///   `askAt`/`askDevice`/`askBox`) and `忽略` (`vault.dismissJoin`).
+/// - **已加入**: current vault members with status (`当前账号` / `已获钥` / `等待设备授权` / `等待对方打开密钥库`)
+///   and admin `移除` (`vault.removeMember` after key-rotation confirmation).
+/// - **未加入** (admin only, shown when non-empty): workspace members not yet in the vault with 1-click `拉入`
+///   (`vault.addMember`, reporting whether a key was wrapped immediately or awaits the member opening the vault).
+pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit {
   let ws = here.workspace
   let my_sub = here.sub
-  let vault_id = text(rv, "id")
-  let initial = vault_member_subs(rv)
-  let can_manage = vault_can_manage(rv)
+  let rv = fn() {
+    items((core.topic)("vaults", { "workspace": str(ws) }).get().value, "vaults")
+    .iter()
+    .find_first(fn(r) { text(Some(r), "id") == vault_id })
+  }
   let ws_members = fn() {
     items((core.topic)("workspace", { "workspace": str(ws) }).get().value, "members")
   }
-  let selected : @signals.Signal[Array[String]] = @signals.signal(initial.copy())
-  let saving : @signals.Signal[Bool] = @signals.signal(false)
-  let error : @signals.Signal[String] = @signals.signal("")
-  let changed = fn() {
-    let cur = selected.get()
-    if cur.length() != initial.length() {
-      return true
-    }
-    for i = 0; i < cur.length(); i = i + 1 {
-      if !initial.contains(cur[i]) {
-        return true
-      }
-    }
-    false
+  let can_manage = fn() { vault_can_manage(rv()) }
+  let can_give = fn() { can_manage() && flag(rv(), "keyed") }
+  let requests = fn() { items(rv(), "joinRequests") }
+  let joined = fn() { items(rv(), "members") }
+  let joined_subs = fn() { vault_member_subs(rv()) }
+  let req_subs = fn() { requests().map(fn(r) { text(Some(r), "sub") }) }
+  let unjoined = fn() {
+    let in_vault = joined_subs()
+    let asking = req_subs()
+    ws_members().filter(fn(m) {
+      let s = text(Some(m), "sub")
+      s != "" && !in_vault.contains(s) && !asking.contains(s)
+    })
   }
-  let has_removed = fn() {
-    let cur = selected.get()
-    for i = 0; i < initial.length(); i = i + 1 {
-      if !cur.contains(initial[i]) {
-        return true
-      }
+  let email_of = fn(sub : String) -> String {
+    match ws_members().iter().find_first(fn(m) { text(Some(m), "sub") == sub }) {
+      Some(m) => text(Some(m), "email")
+      None => ""
     }
-    false
   }
   open_dialog_nodes(
     @sf.t("web-pages.vault.members.dialogTitle"),
     fn(v, _) {
-      if can_manage {
-        @sf.group_node(v, fn(g) {
-          g.each(ws_members, fn(m) { text(Some(m), "sub") }, fn(row, m) {
-            let mv = fn() { Some(m.get()) }
-            let sub = fn() { text(mv(), "sub") }
-            let is_me = fn() { my_sub != "" && sub() == my_sub }
-            let title = fn() {
-              let n = text(mv(), "name")
-              if n != "" { n } else { text(mv(), "email") }
-            }
-            let note = fn() {
-              if is_me() {
-                @sf.t("web-pages.vault.members.you")
-              } else {
-                text(mv(), "email")
+      // Section 1: Pending join requests (admin only)
+      v.show(fn() { can_manage() && !requests().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.members.requestsTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(requests, fn(r) { text(Some(r), "sub") }, fn(row, r) {
+            let req = fn() { Some(r.get()) }
+            let req_sub = @signals.untracked(fn() { text(req(), "sub") })
+            let is_first = fn() { requests().get(0).map(fn(x) { text(Some(x), "sub") }) == Some(req_sub) }
+            let busy_approve = fn() { is_doing(core, ["vault.addMember"], [("workspace", ws), ("vault", vault_id), ("sub", req_sub)]) }
+            let busy_dismiss = fn() { is_doing(core, ["vault.dismissJoin"], [("workspace", ws), ("vault", vault_id), ("sub", req_sub)]) }
+            let approve = fn() {
+              let cur = @signals.untracked(req)
+              let params : Array[(String, Json)] = [
+                ("vault", str(vault_id)),
+                ("sub", str(req_sub)),
+                ("askAt", Json::number(number(cur, "at"))),
+                ("askDevice", str(text(cur, "device"))),
+                ("askBox", str(text(cur, "box"))),
+              ]
+              let ask_sig = text(cur, "sig")
+              if ask_sig != "" {
+                params.push(("askSig", str(ask_sig)))
               }
+              vault_act(
+                core,
+                ws,
+                "addMember",
+                params,
+                @sf.t("web-pages.vault.members.approveWhat"),
+                done=@sf.t("web-pages.vault.members.approved"),
+              )
             }
-            @sf.switch_row_node(
+            let dismiss = fn() {
+              let cur = @signals.untracked(req)
+              vault_act(
+                core,
+                ws,
+                "dismissJoin",
+                [("vault", str(vault_id)), ("sub", str(req_sub)), ("upTo", Json::number(number(cur, "at")))],
+                @sf.t("web-pages.vault.members.dismissWhat"),
+                done=@sf.t("web-pages.vault.members.dismissed"),
+              )
+            }
+            @sf.link_row_node(
               row,
-              title,
-              fn() { selected.get().contains(sub()) },
-              fn(on) {
-                let id = @signals.untracked(sub)
-                let cur = selected.untracked()
-                if on {
-                  if !cur.contains(id) {
-                    let next = cur.copy()
-                    next.push(id)
-                    selected.set(next)
-                  }
-                } else if cur.contains(id) {
-                  selected.set(cur.filter(fn(x) { x != id }))
-                }
+              fn() {
+                let n = text(req(), "name")
+                if n != "" { n } else { req_sub }
               },
-              note~,
-              disabled=fn() { is_me() || saving.get() },
+              fn() {  },
+              note=fn() { vd_join_meta(req()) },
+              goes=false,
+              chevron=false,
+              control=fn(c) {
+                c.box(fn(acts) {
+                  acts.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
+                  @sf.button_node(
+                    acts,
+                    fn() { @sf.t("web-pages.vault.members.dismiss") },
+                    dismiss,
+                    tone=Ghost,
+                    busy=busy_dismiss,
+                    disabled=busy_approve,
+                  )
+                  |> ignore
+                  acts.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.approve") },
+                        approve,
+                        busy=busy_approve,
+                        disabled=fn() { !can_give() || busy_dismiss() },
+                      )
+                      |> ignore
+                    } else {
+                      @sf.row_end_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.approve") },
+                        approve,
+                        busy=busy_approve,
+                        disabled=fn() { !can_give() || busy_dismiss() },
+                      )
+                      |> ignore
+                    }
+                  })
+                })
+                |> ignore
+              },
             )
           })
         })
-        v.show(has_removed, fn(s) {
-          @sf.words_node(s, fn() { @sf.t("web-pages.vault.members.rekeyNote") }, fn() { vd_note }) |> ignore
+      })
+      // Section 2: Joined members (everyone sees; admins can remove others with rotation confirmation)
+      v.show(fn() { !joined().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.members.joinedTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
         })
-        v.show(fn() { error.get() != "" }, fn(e) {
-          @sf.words_node(e, fn() { error.get() }, fn() { vd_note_bad }) |> ignore
-        })
-      } else {
-        let shown = fn() {
-          let from_ws = ws_members().filter(fn(m) { initial.contains(text(Some(m), "sub")) })
-          if from_ws.length() > 0 {
-            from_ws
-          } else {
-            items(rv, "members")
-          }
-        }
-        @sf.group_node(v, fn(g) {
-          g.each(shown, fn(m) { text(Some(m), "sub") }, fn(row, m) {
+        |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(joined, fn(m) { text(Some(m), "sub") }, fn(row, m) {
             let mv = fn() { Some(m.get()) }
+            let sub = @signals.untracked(fn() { text(mv(), "sub") })
+            let is_me = my_sub != "" && sub == my_sub
             let title = fn() {
               let n = text(mv(), "name")
               if n != "" {
                 n
               } else {
-                let e = text(mv(), "email")
-                if e != "" { e } else { text(mv(), "sub") }
+                let e = email_of(sub)
+                if e != "" { e } else { sub }
               }
             }
-            @sf.link_row_node(row, title, fn() {  }, note=fn() { text(mv(), "email") }, goes=false)
+            let note = fn() {
+              let status = if has(mv(), "keyed") {
+                if flag(mv(), "keyed") {
+                  @sf.t("web-pages.vault.members.statusKeyed")
+                } else if count(mv(), "pendingDevices") > 0 {
+                  @sf.t("web-pages.vault.members.statusPendingDevice")
+                } else {
+                  @sf.t("web-pages.vault.members.statusNoDevice")
+                }
+              } else {
+                ""
+              }
+              let parts : Array[String] = []
+              if is_me {
+                parts.push(@sf.t("web-pages.vault.members.you"))
+              } else {
+                let e = email_of(sub)
+                if e != "" {
+                  parts.push(e)
+                }
+              }
+              if status != "" {
+                parts.push(status)
+              }
+              parts.join(" · ")
+            }
+            let is_first = fn() { joined().get(0).map(fn(x) { text(Some(x), "sub") }) == Some(sub) }
+            let busy = fn() { is_doing(core, ["vault.removeMember"], [("workspace", ws), ("vault", vault_id), ("sub", sub)]) }
+            let remove_press = fn() {
+              let who = @signals.untracked(title)
+              confirm(
+                @sf.t("web-pages.vault.members.removeTitle"),
+                @sf.t("web-pages.vault.members.removeBody", args=[("name", who)]),
+                @sf.t("web-pages.vault.members.remove"),
+                danger=true,
+                fn() {
+                  vault_act(
+                    core,
+                    ws,
+                    "removeMember",
+                    [("vault", str(vault_id)), ("sub", str(sub))],
+                    @sf.t("web-pages.vault.members.removeWhat"),
+                    done=@sf.t("web-pages.vault.members.removed"),
+                  )
+                },
+              )
+            }
+            @sf.link_row_node(
+              row,
+              title,
+              fn() {  },
+              note~,
+              goes=false,
+              chevron=false,
+              control=fn(c) {
+                c.show(fn() { can_give() && !is_me }, fn(btn) {
+                  btn.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.remove") },
+                        remove_press,
+                        tone=GhostDanger,
+                        busy~,
+                      )
+                      |> ignore
+                    } else {
+                      @sf.row_end_button_node(
+                        p,
+                        fn() { @sf.t("web-pages.vault.members.remove") },
+                        remove_press,
+                        tone=GhostDanger,
+                        busy~,
+                      )
+                      |> ignore
+                    }
+                  })
+                })
+              },
+            )
           })
         })
-      }
+      })
+      // Section 3: Unjoined workspace members (admin only, 1-click proactive invite)
+      v.show(fn() { can_manage() && !unjoined().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.members.unjoinedTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(unjoined, fn(m) { text(Some(m), "sub") }, fn(row, m) {
+            let mv = fn() { Some(m.get()) }
+            let sub = @signals.untracked(fn() { text(mv(), "sub") })
+            let is_first = fn() { unjoined().get(0).map(fn(x) { text(Some(x), "sub") }) == Some(sub) }
+            let title = fn() {
+              let n = text(mv(), "name")
+              if n != "" { n } else { text(mv(), "email") }
+            }
+            let busy = fn() { is_doing(core, ["vault.addMember"], [("workspace", ws), ("vault", vault_id), ("sub", sub)]) }
+            let press = fn() {
+              vault_act(
+                core,
+                ws,
+                "addMember",
+                [("vault", str(vault_id)), ("sub", str(sub))],
+                @sf.t("web-pages.vault.members.inviteWhat"),
+                then=fn(said) {
+                  (core.say)(
+                    @sf.t(
+                      if count(Some(said), "keyedDevices") > 0 {
+                        "web-pages.vault.members.invitedKeyed"
+                      } else {
+                        "web-pages.vault.members.invitedWaiting"
+                      },
+                    ),
+                  )
+                },
+              )
+            }
+            @sf.link_row_node(
+              row,
+              title,
+              fn() {  },
+              note=fn() { text(mv(), "email") },
+              goes=false,
+              chevron=false,
+              control=fn(c) {
+                c.show(can_give, fn(btn) {
+                  btn.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(p, fn() { @sf.t("web-pages.vault.members.invite") }, press, busy~) |> ignore
+                    } else {
+                      @sf.row_end_button_node(p, fn() { @sf.t("web-pages.vault.members.invite") }, press, busy~) |> ignore
+                    }
+                  })
+                })
+              },
+            )
+          })
+        })
+      })
     },
     fn(v, shut) {
       @sf.foot_spacer_node(v)
-      if can_manage {
-        @sf.button_node(
-          v,
-          fn() { @sf.t("common.cancel") },
-          fn() { shut() },
-          tone=Ghost,
-          disabled=fn() { saving.get() },
-        )
-        |> ignore
-        @sf.button_node(
-          v,
-          fn() { @sf.t("common.save") },
-          fn() {
-            saving.set(true)
-            error.set("")
-            vault_act(
-              core,
-              ws,
-              "setMembers",
-              [("vault", str(vault_id)), ("members", Json::array(selected.untracked().map(str)))],
-              @sf.t("web-pages.vault.members.saveWhat"),
-              done=@sf.t("web-pages.vault.members.saved"),
-              then=fn(_) {
-                saving.set(false)
-                shut()
-              },
-              failed=fn(err) {
-                saving.set(false)
-                error.set(vault_said(err).unwrap_or(""))
-              },
-            )
-          },
-          tone=Primary,
-          busy=fn() { saving.get() },
-          disabled=fn() { !changed() || saving.get() },
-        )
-        |> ignore
-      } else {
-        @sf.button_node(v, fn() { @sf.t("common.close") }, fn() { shut() }, tone=Primary) |> ignore
-      }
+      @sf.button_node(v, fn() { @sf.t("common.close") }, fn() { shut() }, tone=Primary) |> ignore
     },
   )
 }
@@ -1015,11 +1191,3 @@ let vd_agent : @ui.Style = @ui.css("w=Full gap=S2_5 pt=S1")
 /// (warn: the amber, the meta's size, in lines)
 // kept across runs: a value (no field of it changes)
 let vt_warn_lines : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vd_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vd_note_bad : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, w=Full)

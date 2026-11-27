@@ -710,3 +710,367 @@ pub fn nav_quota_chips_node(
     }
   })
 }
+
+///|
+/// Dynamic per-provider-group column layout for `quota_compact_node`:
+/// - `columns` / `col_widths`: canonical column order (`5h`, `W`, `M`, then remaining marks in first-seen
+///   order) and measured max slot widths across all non-pooled accounts in the group.
+/// - `pool_label_w`: measured max pool-name width (`Gemini`, `Claude / GPT`, ...) across all pooled
+///   accounts in the group so single-pool and multi-pool sibling accounts align vertically.
+/// - `pool_columns` / `pool_col_widths`: canonical column order and measured max slot widths across all
+///   pooled windows in the group.
+#derive(Eq)
+pub struct QuotaCompactGroup {
+  columns : Array[String]
+  col_widths : Array[Double]
+  pool_label_w : Double
+  pool_columns : Array[String]
+  pool_col_widths : Array[Double]
+}
+
+///|
+/// Empty group layout (used as default when no row is bound yet).
+pub fn QuotaCompactGroup::empty() -> QuotaCompactGroup {
+  { columns: [], col_widths: [], pool_label_w: 0.0, pool_columns: [], pool_col_widths: [] }
+}
+
+///|
+/// Canonical column order (`5h`, `W`, `M`, then remaining marks in first-seen order).
+fn quota_compact_order(seen : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for fixed in ["5h", "W", "M"] {
+    if seen.contains(fixed) {
+      out.push(fixed)
+    }
+  }
+  for mk in seen {
+    if !out.contains(mk) {
+      out.push(mk)
+    }
+  }
+  out
+}
+
+///|
+/// Normalize ASCII digits to `'8'` when measuring tabular figures: matches `tabular=true` advance width
+/// and guarantees 0 fanout when normal percentage/countdown values refresh (`76% -> 71%`, `4h21m -> 4h19m`).
+fn quota_compact_tabular_sample(s : String) -> String {
+  let buf = StringBuilder()
+  for c in s {
+    if c >= '0' && c <= '9' {
+      buf.write_char('8')
+    } else {
+      buf.write_char(c)
+    }
+  }
+  buf.to_string()
+}
+
+///|
+/// Measure a provider group's compact quota column layout in node `v`'s tree, reactive to theme,
+/// `words_scale()`, and language (`W -> 周`, `M -> 月` in Chinese). Reuses `nav_quota_chip_w(v)` so
+/// every `@sf.fill_chip_node(small=true)` micro-capsule fits its group-shared column width with 0
+/// reflow on normal percentage/countdown refreshes (digits normalized to `'8'`).
+pub fn quota_compact_group(v : @view.View, quotas : Array[Json?]) -> QuotaCompactGroup {
+  let _ = @sf.theme()
+  let _ = v.words_scale()
+  let _ = @sf.language()
+  let chip = nav_quota_chip_w(v)
+  let slot_w = fn(mark : String, w : Json?) -> Double {
+    let shown = quota_compact_mark_text(mark)
+    let fig = quota_compact_tabular_sample(quota_figure(w))
+    chip(shown, fig, quota_is_refill(w)) + 1.0
+  }
+  let non_pool_seen : Array[String] = []
+  let pool_seen : Array[String] = []
+  let mut pool_label_w = 0.0
+  let entries : Array[(Bool, Array[Json], Array[(String, Array[Json])])] = []
+  for q in quotas {
+    if !has_quota(q) {
+      continue
+    }
+    let ws = match @sf.chip_field(q, "windows") {
+      Some(Array(a)) => a
+      _ => []
+    }
+    let parts = quota_parts(ws)
+    let is_pooled = parts.iter().any(fn(p) { p.0 != "" })
+    entries.push((is_pooled, ws, parts))
+    if is_pooled {
+      pool_label_w = @sf.dmax(pool_label_w, nav_quota_label_w(v, parts))
+      for p in parts {
+        for w in p.1 {
+          let mk = quota_part_mark(p.0, Some(w))
+          if mk != "" && !pool_seen.contains(mk) {
+            pool_seen.push(mk)
+          }
+        }
+      }
+    } else {
+      for w in ws {
+        let mk = quota_mark(Some(w))
+        if mk != "" && !non_pool_seen.contains(mk) {
+          non_pool_seen.push(mk)
+        }
+      }
+    }
+  }
+  let columns = quota_compact_order(non_pool_seen)
+  let pool_columns = quota_compact_order(pool_seen)
+  let col_widths = Array::make(columns.length(), 0.0)
+  let pool_col_widths = Array::make(pool_columns.length(), 0.0)
+  for entry in entries {
+    let (is_pooled, ws, parts) = entry
+    if is_pooled {
+      for p in parts {
+        for w in p.1 {
+          let mk = quota_part_mark(p.0, Some(w))
+          match pool_columns.search(mk) {
+            Some(idx) => pool_col_widths[idx] = @sf.dmax(pool_col_widths[idx], slot_w(mk, Some(w)))
+            None => ()
+          }
+        }
+      }
+    } else {
+      for w in ws {
+        let mk = quota_mark(Some(w))
+        match columns.search(mk) {
+          Some(idx) => col_widths[idx] = @sf.dmax(col_widths[idx], slot_w(mk, Some(w)))
+          None => ()
+        }
+      }
+    }
+  }
+  { columns, col_widths, pool_label_w, pool_columns, pool_col_widths }
+}
+
+///|
+/// Align quota windows to a provider group's canonical `columns` order: missing leading or intermediate
+/// columns become `None` placeholders; trailing empty columns after the row's last present window are
+/// trimmed so narrow screens do not wrap unnecessarily; any window whose mark is not in `columns` is
+/// appended at the end.
+fn quota_compact_aligned(
+  windows : Array[Json],
+  columns : Array[String],
+  mark_of : (Json?) -> String,
+) -> Array[(String, Json?)] {
+  if columns.length() == 0 {
+    return windows.map(fn(w) { (mark_of(Some(w)), Some(w)) })
+  }
+  let used = Array::make(windows.length(), false)
+  let out : Array[(String, Json?)] = []
+  for col in columns {
+    let mut found : Json? = None
+    for i, w in windows {
+      if !used[i] && mark_of(Some(w)) == col {
+        used[i] = true
+        found = Some(w)
+        break
+      }
+    }
+    out.push((col, found))
+  }
+  for i, w in windows {
+    if !used[i] {
+      out.push((mark_of(Some(w)), Some(w)))
+    }
+  }
+  let mut last = out.length()
+  while last > 0 && out[last - 1].1 is None {
+    last -= 1
+  }
+  if last < out.length() {
+    out.truncate(last)
+  }
+  out
+}
+
+///|
+/// Compact dynamically-measured equal-width micro-capsule quota readout for high-density account rows
+/// (`profiles_list.mbt`):
+/// - Each slot reuses `@sf.fill_chip_node(small=true)` (16pt ultra-compact height, concentric radius,
+///   proportional progress fill bar in grey/amber/red or soft-red refill countdown, full `says()` & tip).
+/// - Column widths are measured per provider group (`QuotaCompactGroup` via `quota_compact_group` using
+///   `nav_quota_chip_w`) with ASCII digits normalized to `'8'` so micro-capsules align pixel-for-pixel
+///   across rows while normal percentage/countdown refreshes cause zero group-wide reflow; short marks
+///   localize `W -> 周` and `M -> 月` in Chinese while keeping `W` / `M` in English.
+/// - Regular 1–3 windows (e.g. `5h`, `周`/`W`, `月`/`M`, single-model `Fable`/`Sonnet`): single horizontal
+///   row (`gap=S1_5`, graceful `wraps(2.0)` only at extreme narrow widths + 1.3x font scale); rows missing
+///   a leading window render an equal-width empty placeholder box so later columns stay vertically aligned.
+/// - Multi-window model pools (e.g. Antigravity `Gemini` / `Claude / GPT` via `quota_parts`): one compact
+///   row per pool (`gap=S1` between rows, `gap=S2` after the group-shared pool-name column `pool_label_w`)
+///   with group-measured `pool_columns` / `pool_col_widths` on the right.
+#callsite(autofill(loc))
+pub fn quota_compact_node(
+  parent : @view.View,
+  q : () -> Json?,
+  group? : () -> QuotaCompactGroup,
+  at_foot? : () -> Bool = fn() { true },
+  tips? : @sf.TipLayer,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.show(at_once=true, loc~, fn() { has_quota(q()) }, fn(x) {
+    let windows_sig = @signals.computed(fn(_) {
+      match @sf.chip_field(q(), "windows") {
+        Some(Array(a)) => a
+        _ => []
+      }
+    })
+    let windows = fn() { windows_sig.get() }
+    let parts_sig = @signals.computed(fn(_) { quota_parts(windows()) })
+    let parts = fn() { parts_sig.get() }
+    let pooled_sig = @signals.computed(fn(_) { parts().iter().any(fn(p) { p.0 != "" }) })
+    let pooled = fn() { pooled_sig.get() }
+    let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
+    let grp_sig = @signals.computed(
+      fn(_) {
+        match group {
+          Some(g) => g()
+          None => quota_compact_group(x, [q()])
+        }
+      },
+      same=fn(a, b) { a == b },
+    )
+    let grp = fn() { grp_sig.get() }
+    x.width_share(Is(1.0)) |> ignore
+    x.pick(at_once=true, pooled, fn(r, is_pooled) {
+      if is_pooled {
+        @sf.style_node(r, fn() { quota_compact_pools })
+        let label_w = fn() {
+          let g = grp().pool_label_w
+          if g > 0.0 { g } else { nav_quota_label_w(r, parts()) }
+        }
+        r.each(fn() { Array::makei(parts().length(), fn(k) { k }) }, fn(k) { k }, fn(c, k) {
+          let k = k.untracked()
+          @sf.style_node(c, fn() { quota_compact_pool_row })
+          c.show(at_once=true, fn() { part(k).0 != "" }, fn(l) {
+            l.min_width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
+            @sf.words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+          })
+          c.box(fn(cs) {
+            @sf.style_node(cs, fn() { quota_compact_row })
+            cs.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(2.0))) |> ignore
+            let aligned_sig = @signals.computed(fn(_) {
+              let p = part(k)
+              quota_compact_aligned(p.1, grp().pool_columns, fn(w) { quota_part_mark(p.0, w) })
+            })
+            let aligned = fn() { aligned_sig.get() }
+            cs.each(fn() { Array::makei(aligned().length(), fn(j) { j }) }, fn(j) { j }, fn(d, j) {
+              let j = j.untracked()
+              let slot = fn() { aligned().get(j) }
+              let col_w = fn() { grp().pool_col_widths.get(j).unwrap_or(0.0) }
+              d.pick(at_once=true, fn() { slot().bind(fn(s) { s.1 }) is Some(_) }, fn(cell, has_w) {
+                if has_w {
+                  let held = @signals.computed(fn(_) { slot().bind(fn(s) { s.1 }) }, same=fn(a, b) { a == b })
+                  let w = fn() { held.get() }
+                  quota_compact_slot_node(cell, w, fn() { quota_part_mark(part(k).0, w()) }, col_w, tips?)
+                } else {
+                  cell.min_width(By(fn() { Some(col_w()) })).shrink(Is(0.0)) |> ignore
+                }
+              })
+            })
+          })
+          |> ignore
+        })
+      } else {
+        @sf.style_node(r, fn() { quota_compact_row })
+        let side = @ui.Space::S3.px()
+        let clear = @sf.dmax(0.0, @sf.row_corner - side)
+        r
+        .margin(By(fn() {
+          let look = @ui.style_words(@sf.chip_text)
+          let scale = r.words_scale()
+          let line = if look.line < 0.0 { -look.line * @ui.sp_at(scale, look.size) } else { @ui.sp_at(scale, look.line) }
+          let chip_h = @sf.dmax(@sf.fill_chip_small_h, line)
+          let inset = @ui.capsule_in(@sf.row_corner, chip_h)
+          let dx = inset - side
+          let dy = if at_foot() && inset < @ui.Space::S2_5.px() { inset - @ui.Space::S2_5.px() } else { 0.0 }
+          (dx, 0.0, 0.0, dy)
+        }))
+        .padding(Is((0.0, 0.0, clear, 0.0)))
+        .wraps(Is(Some(2.0)))
+        |> ignore
+        let aligned_sig = @signals.computed(fn(_) {
+          quota_compact_aligned(windows(), grp().columns, quota_mark)
+        })
+        let aligned = fn() { aligned_sig.get() }
+        r.each(fn() { Array::makei(aligned().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+          let i = i.untracked()
+          let slot = fn() { aligned().get(i) }
+          let col_w = fn() { grp().col_widths.get(i).unwrap_or(0.0) }
+          c.pick(at_once=true, fn() { slot().bind(fn(s) { s.1 }) is Some(_) }, fn(cell, has_w) {
+            if has_w {
+              let held = @signals.computed(fn(_) { slot().bind(fn(s) { s.1 }) }, same=fn(a, b) { a == b })
+              let w = fn() { held.get() }
+              quota_compact_slot_node(cell, w, fn() { quota_mark(w()) }, col_w, tips?)
+            } else {
+              cell.min_width(By(fn() { Some(col_w()) })).shrink(Is(0.0)) |> ignore
+            }
+          })
+        })
+      }
+    })
+  })
+}
+
+///|
+/// Localize compact window short marks (`W` -> `周`, `M` -> `月` in Chinese; keep `W`/`M` in English,
+/// and keep `5h`, `7d`, model names, etc. unchanged).
+fn quota_compact_mark_text(mark : String) -> String {
+  if @sf.language() == "zh" {
+    match mark {
+      "W" => "周"
+      "M" => "月"
+      _ => mark
+    }
+  } else {
+    mark
+  }
+}
+
+///|
+/// One equal-width ultra-compact quota micro-capsule (`@sf.fill_chip_node(small=true)`).
+fn quota_compact_slot_node(
+  s : @view.View,
+  w : () -> Json?,
+  mark : () -> String,
+  min_w : () -> Double,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let shown_mark = fn() { quota_compact_mark_text(mark()) }
+  let chip = @sf.fill_chip_node(
+    s,
+    fn() { @sf.chip_left(w()) },
+    fn() { @sf.chip_str(w(), "level") },
+    shown_mark,
+    fn() { quota_figure(w()) },
+    small=true,
+    label_muted=true,
+    refill=fn() { quota_is_refill(w()) },
+    said=fn() { quota_said(w()) },
+    tips?,
+    tips_within=true,
+  )
+  chip
+  .min_width(By(fn() { Some(min_w()) }))
+  .shrink(Is(0.0))
+  .says(By(fn() {
+    match w() {
+      Some(_) => Some(@view.said(Image, label=quota_said(w())))
+      None => None
+    }
+  }))
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let quota_compact_row : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let quota_compact_pools : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let quota_compact_pool_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")

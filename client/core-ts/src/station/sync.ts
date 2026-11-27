@@ -32,7 +32,7 @@ import { digest } from "../digest.ts";
 import { logged } from "../log-lines.ts";
 import { type Channel, Channels } from "../channels/channels.ts";
 import { ENTRIES, LETTERS, PAGE, TRANSCRIPT, TRANSCRIPT_PAGE, entriesOf, heldIn, lettersOf, transcriptOf } from "./channel-kinds.ts";
-import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type HistoryRead, type Link, Links, type LiveView, LOG_KEY, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import { concat, readAll, replyHeader, type StationWire } from "./wire.ts";
 import { SseParser } from "../sse.ts";
 import * as logins from "./machine-logins.ts";
@@ -375,6 +375,24 @@ export class StationsSync {
     // A thread caught up on brought its latest: one less to catch up on.
     core.data.onLogChange((table, station, id) => {
       if (table === "entry") this.#caughtUp(station, Number(id));
+    });
+    // Drop cached protected memory synchronously on any auth boundary (including offline links and non-downgrade transitions)
+    // and immediately re-fetch active protected topics on reachable stations so the UI never stays empty.
+    core.store.authGen.onBoundary((event) => {
+      const ws = event.kind === "global" ? null : event.kind === "workspace" ? event.workspace : undefined;
+      if (ws === undefined) return;
+      this.clearProtectedMemory(ws);
+      this.#refetchProtectedInUse(ws);
+    });
+    // Re-notify cold-start `screens`/`terminals` when workspace authDigest is seeded after initial compute.
+    core.store.authGen.onWorkspaceDigestSeeded((ws) => {
+      for (const link of this.#links.values()) {
+        const address = link.addr.toString();
+        if (ofAddress(address) === ws) {
+          this.onChange(address, "screens");
+          this.onChange(address, "terminals");
+        }
+      }
     });
     // Nothing left to bring of a station: what is still behind is not coming now (read again later, as the sync goes).
     core.scheduler.onIdle = (lane) => this.#lull(lane);
@@ -758,7 +776,47 @@ export class StationsSync {
       else if (topic.topic === "live") this.channels.bring(transcriptOf(address, String(topic.key)), Priority.shown, "latest");
       else if (topic.topic === "drive" && this.#core.store.inUse(topic)) this.driveShown(address, String(topic.root), String(topic.path));
       else if (topic.topic === "profilePace" && this.#core.store.inUse(topic)) this.paceShown(address);
+      else if (topic.topic === "presets" && this.#core.store.inUse(topic)) this.presetsShown(address);
+      else if (topic.topic === "jobLog" && this.#core.store.inUse(topic) && typeof topic.job === "string" && typeof topic.lines === "number") {
+        this.readLog(address, topic.job, topic.lines);
+      }
     }
+  }
+
+  /// Monotonic per-station sequence numbers for `screens` and `terminals` so an older in-flight GET cannot overwrite a newer SSE or GET.
+  readonly #screensSeq = new Map<string, number>();
+  readonly #terminalsSeq = new Map<string, number>();
+  /// Monotonic per-station confirmation sequence numbers: advanced ONLY on station-confirmed replies (200/404/SSE) or `clearProtectedMemory`,
+  /// never by local optimistic `#screensWithout`, so `screenGone` can block stale 200s without swallowing an in-flight 401/403.
+  readonly #screensConfirmSeq = new Map<string, number>();
+  readonly #terminalsConfirmSeq = new Map<string, number>();
+  /// Per-station auth generation where `GET /screens` or `GET /terminals` returned 401/403 (survives Link rebuild within the same authGen).
+  readonly #screensDeniedGen = new Map<string, number>();
+  readonly #terminalsDeniedGen = new Map<string, number>();
+
+  #nextSeq(map: Map<string, number>, address: string): number {
+    const n = (map.get(address) ?? 0) + 1;
+    map.set(address, n);
+    return n;
+  }
+
+  #capRevKey(address: string, key: "screens" | "terminals"): string {
+    return `capRev:${address}:${key}`;
+  }
+
+  #capRevRecord(address: string, key: "screens" | "terminals"): { rev: number; denied: boolean } | undefined {
+    if (this.#core.data.device.isUnloaded("auth")) return undefined;
+    const raw = this.#core.data.device.get("auth", this.#capRevKey(address, key));
+    if (!isObject(raw)) return undefined;
+    const rev = Number(raw.rev);
+    if (!Number.isFinite(rev) || rev < 0 || typeof raw.denied !== "boolean") return undefined;
+    return { rev, denied: raw.denied };
+  }
+
+  /// Whether station `address` explicitly refused `screens` or `terminals` (401/403) in the current auth generation.
+  isDenied(key: "screens" | "terminals", address: string): boolean {
+    const map = key === "screens" ? this.#screensDeniedGen : this.#terminalsDeniedGen;
+    return map.get(address) === this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
   }
 
   /// The station's screens as it has them now, in its link's memory (kept: what was said last
@@ -766,19 +824,48 @@ export class StationsSync {
   /// and said (`outdated`).
   /// `noHedge`: read in the background (requests.ts NO_HEDGE), as `#terminals`' and `#machineLogins`'.
   #screens(address: string, ctx: SpanContext | null = null, noHedge = false): Effect.Effect<void, CoreError> {
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
+      const seq = this.#nextSeq(this.#screensSeq, address);
+      const confirmAtStart = this.#screensConfirmSeq.get(address) ?? 0;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/screens", null, { quiet: true, ctx, noHedge }));
-      if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) });
-      else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true });
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+      if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
+        if ((this.#screensConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        // Synchronously apply all in-memory revocation + notification BEFORE any async disk I/O so active viewers abort immediately,
+        // and fork durable `device/auth` flush so a slow/hanging storage write never blocks the `"screens"` single-flight slot.
+        this.#screensDeniedGen.set(address, startGen);
+        link.memory.clearKey("screens");
+        const prevRev = this.#capRevRecord(address, "screens")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: prevRev + 1, denied: true });
+        this.onChange(address, "screens");
+        this.#core.runner.fork(
+          Effect.gen({ self: this }, function* () {
+            if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+            yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+          }),
+        );
+        return;
+      }
+      if (this.#screensSeq.get(address) !== seq) return;
+      if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) }, startGen);
+      else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true }, startGen);
       else return yield* Effect.fail(answer.failure);
     });
   }
 
   /// What is held of a station's screens but `screen` (closed from here), or but its view `view` (ended from here).
-  #screensWithout(address: string, screen: string, view: string | null): void {
-    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+  /// Always advances `#screensSeq` (never `#screensConfirmSeq`) so an older in-flight 200 cannot re-add a just-closed
+  /// screen while an in-flight 401/403 still takes effect, and never promotes an unconfirmed baseline or restamps `authDigest`/`capRev`.
+  #screensWithout(address: string, screen: string, view: string | null, gen: number): void {
+    this.#nextSeq(this.#screensSeq, address);
+    const link = this.#links.get(address);
+    if (!link || !link.memory.confirmedIn("screens", gen)) return;
+    const held = link.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return;
     let changed = false;
     const screens = held.screens.flatMap((s) => {
@@ -792,47 +879,151 @@ export class StationsSync {
       changed = true;
       return [{ ...(s as object), views: views.filter((v) => get(v, "id") !== view) }];
     });
-    if (changed) this.#heldScreens(address, { ...held, screens });
+    if (changed) {
+      link.memory.setConfirmed("screens", { ...held, screens }, gen);
+      this.onChange(address, "screens");
+    }
   }
 
-  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }): void {
+  #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }, confirmedGen: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    link.memory.set("screens", held);
+    this.#screensDeniedGen.delete(address);
+    this.#nextSeq(this.#screensConfirmSeq, address);
+    const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+    let capRev: number | undefined;
+    if (!this.#core.data.device.isUnloaded("auth")) {
+      const cur = this.#capRevRecord(address, "screens");
+      const rev = cur?.rev ?? 0;
+      if (cur?.denied === true) {
+        const nextRev = rev + 1;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: nextRev, denied: false });
+        capRev = nextRev;
+      } else {
+        capRev = rev;
+      }
+    }
+    const stamped = {
+      ...held,
+      ...(digest !== undefined ? { authDigest: digest } : {}),
+      ...(capRev !== undefined ? { capRev } : {}),
+    };
+    link.memory.setConfirmed("screens", stamped, confirmedGen);
     this.onChange(address, "screens");
   }
 
   /// The station's terminals as it has them now (GET /terminals), in its link's memory as its screens are. A station
   /// from before terminals has none (404): held so, and said (`outdated`).
   #terminals(address: string, ctx: SpanContext | null = null, noHedge = false): Effect.Effect<void, CoreError> {
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
+      const seq = this.#nextSeq(this.#terminalsSeq, address);
+      const confirmAtStart = this.#terminalsConfirmSeq.get(address) ?? 0;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/terminals", null, { quiet: true, ctx, noHedge }));
-      if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false });
-      else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true });
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+      if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
+        if ((this.#terminalsConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        // Synchronously apply all in-memory revocation + notification BEFORE any async disk I/O,
+        // and fork durable `device/auth` flush so a slow/hanging storage write never blocks the `"terminals"` single-flight slot.
+        this.#terminalsDeniedGen.set(address, startGen);
+        link.memory.clearKey("terminals");
+        const prevRev = this.#capRevRecord(address, "terminals")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: prevRev + 1, denied: true });
+        this.onChange(address, "terminals");
+        this.#core.runner.fork(
+          Effect.gen({ self: this }, function* () {
+            if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+            yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+          }),
+        );
+        return;
+      }
+      if (this.#terminalsSeq.get(address) !== seq) return;
+      if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false }, startGen);
+      else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true }, startGen);
       else return yield* Effect.fail(answer.failure);
     });
   }
 
-  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean }): void {
+  #heldTerminals(address: string, held: { terminals: unknown[]; outdated: boolean }, confirmedGen: number): void {
     const link = this.#links.get(address);
     if (!link) return;
-    link.memory.set("terminals", held);
+    this.#terminalsDeniedGen.delete(address);
+    this.#nextSeq(this.#terminalsConfirmSeq, address);
+    const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+    let capRev: number | undefined;
+    if (!this.#core.data.device.isUnloaded("auth")) {
+      const cur = this.#capRevRecord(address, "terminals");
+      const rev = cur?.rev ?? 0;
+      if (cur?.denied === true) {
+        const nextRev = rev + 1;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: nextRev, denied: false });
+        capRev = nextRev;
+      } else {
+        capRev = rev;
+      }
+    }
+    const stamped = {
+      ...held,
+      ...(digest !== undefined ? { authDigest: digest } : {}),
+      ...(capRev !== undefined ? { capRev } : {}),
+    };
+    link.memory.setConfirmed("terminals", stamped, confirmedGen);
     this.onChange(address, "terminals");
   }
 
-  /// What is held of the station's terminals; undefined while it has not said.
-  terminals(address: string): { terminals: unknown[]; outdated: boolean } | undefined {
-    return this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean } | undefined;
+  /// Whether `key` (e.g. `"screens"`, `"terminals"`) was confirmed by station `address` in the current auth generation.
+  isConfirmed(key: string, address: string): boolean {
+    const link = this.#links.get(address);
+    if (!link) return false;
+    return link.memory.confirmedIn(key, this.#core.store.authGen.workspaceAuthGen(ofAddress(address)));
   }
 
-  /// What is held of the station's screens; undefined while it has not said. A tab this device is opening
-  /// (`#openingTabs`) is among them until the station lists it, said `opening`.
+  /// What is held of the station's terminals; confirmed in current authGen, or cold-start keeper cache only when
+  /// the owning DB is writable, `device/auth` is loaded, `authDigest` matches, and `capRev` matches the non-denied watermark.
+  terminals(address: string): { terminals: unknown[]; outdated: boolean } | undefined {
+    if (this.isDenied("terminals", address)) return undefined;
+    const held = this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean; authDigest?: string; capRev?: number } | undefined;
+    if (held === undefined) return undefined;
+    if (this.isConfirmed("terminals", address)) return held;
+    if (!this.#core.data.isStationWritable(address) || this.#core.data.device.isUnloaded("auth")) return undefined;
+    const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+    const rec = this.#capRevRecord(address, "terminals");
+    if (
+      curDigest === undefined ||
+      held.authDigest !== curDigest ||
+      rec?.denied === true ||
+      typeof held.capRev !== "number" ||
+      held.capRev !== (rec?.rev ?? 0)
+    ) return undefined;
+    return held;
+  }
+
+  /// What is held of the station's screens; confirmed in current authGen, or cold-start keeper cache only when
+  /// the owning DB is writable, `device/auth` is loaded, `authDigest` matches, and `capRev` matches the non-denied watermark.
+  /// A tab this device is opening (`#openingTabs`) is among them until the station lists it, said `opening`.
   screens(address: string): { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined {
-    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+    if (this.isDenied("screens", address)) return undefined;
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string; capRev?: number } | undefined;
+    if (held === undefined) return undefined;
+    if (!this.isConfirmed("screens", address)) {
+      if (!this.#core.data.isStationWritable(address) || this.#core.data.device.isUnloaded("auth")) return undefined;
+      const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
+      const rec = this.#capRevRecord(address, "screens");
+      if (
+        curDigest === undefined ||
+        held.authDigest !== curDigest ||
+        rec?.denied === true ||
+        typeof held.capRev !== "number" ||
+        held.capRev !== (rec?.rev ?? 0)
+      ) return undefined;
+    }
     const opening = this.#openingTabs.get(address);
-    if (held === undefined || opening === undefined || opening.size === 0) return held;
+    if (opening === undefined || opening.size === 0) return held;
     // (the same object while neither changed: the views compare what they read by reference first)
     const kept = this.#screensWithOpening.get(address);
     if (kept !== undefined && kept.held === held && kept.opening === opening) return kept.value;
@@ -862,6 +1053,11 @@ export class StationsSync {
     return this.ask(address, "screens", this.#screens(address));
   }
 
+  /// The station's terminals read now, for a person waiting on them (a view of one opened before they were confirmed).
+  readTerminals(address: string): Effect.Effect<void, CoreError> {
+    return this.ask(address, "terminals", this.#terminals(address));
+  }
+
   /// The agents' memory on the station (GET /memory, the `memory` topic), read as a page shows it: each time, as agents
   /// write it while they work and nothing on the stream says so; what was read last (kept in the link's memory) shows
   /// meanwhile. Not read, why: once nothing is held.
@@ -872,8 +1068,12 @@ export class StationsSync {
   /// The workspace's presets on the station (GET /presets, the `presets` topic), read as a page shows them (with the
   /// directories offered for a new one, which change as its chats work), and as one is made, changed or removed; what
   /// was read last shows meanwhile.
+  #presetsQueueKey(address: string): string {
+    return `presets/${this.#core.store.authGen.workspaceAuthGen(ofAddress(address))}`;
+  }
+
   presetsShown(address: string): void {
-    this.#enqueue(address, "presets", Priority.shown, this.#presets(address));
+    this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
   }
 
   /// What moving the station's things to another stands at (GET /move, the `stationMove` topic: move.ts), read as its
@@ -973,15 +1173,19 @@ export class StationsSync {
 
   #presets(address: string): Effect.Effect<void, CoreError> {
     const key = topicKey({ topic: "presets", station: address });
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/presets", null, { quiet: true }));
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Success") {
         link.errors.delete(key);
         link.memory.set(PRESETS, answer.success);
         this.onChange(address, "log", key);
-      } else if (answer.failure.status !== undefined && !link.memory.has(PRESETS)) {
+      } else if (answer.failure.status !== undefined) {
+        link.memory.delete(PRESETS);
         link.errors.set(key, answer.failure);
         this.onChange(address, "errors", key);
       }
@@ -1058,19 +1262,30 @@ export class StationsSync {
   readLog(address: string, job: string, lines: number): void {
     const key = logKey(job, lines);
     if (this.#links.get(address)?.memory.fresh(key)) return;
+    const tKey = topicKey({ topic: "jobLog", station: address, job, lines });
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     this.#enqueue(
       address,
-      `log/${job}/${lines}`,
+      `log/${startGen}/${job}/${lines}`,
       Priority.shown,
       Effect.gen({ self: this }, function* () {
         const link = this.#links.get(address);
         if (!link || !this.reachable(address)) return;
-        const answer = yield* this.requests.call(link.addr, "GET", `/jobs/${encode(job)}/log?lines=${lines}`, null, { quiet: true });
-        link.followsLogs = get(answer, "follows") === true;
-        // What the stream said meanwhile is newer.
-        if (!link.memory.fresh(key)) {
-          link.memory.set(key, logged(link.memory.get(key), str(get(answer, "text")) ?? "", get(answer, "outputAt") ?? null));
-          this.onChange(address, "log", topicKey({ topic: "jobLog", station: address, job, lines }));
+        const answer = yield* Effect.result(this.requests.call(link.addr, "GET", `/jobs/${encode(job)}/log?lines=${lines}`, null, { quiet: true }));
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+        if (answer._tag === "Success") {
+          link.errors.delete(tKey);
+          link.followsLogs = get(answer.success, "follows") === true;
+          // What the stream said meanwhile is newer.
+          if (!link.memory.fresh(key)) {
+            link.memory.set(key, logged(link.memory.get(key), str(get(answer.success, "text")) ?? "", get(answer.success, "outputAt") ?? null));
+            this.onChange(address, "log", tKey);
+          }
+        } else if (answer.failure.status !== undefined) {
+          link.memory.delete(key);
+          link.errors.set(tKey, answer.failure);
+          this.onChange(address, "errors", tKey);
         }
       }),
     );
@@ -2173,8 +2388,10 @@ export class StationsSync {
         if (id && lines !== null && link) {
           // (its lines numbered on from what it said before: log-lines.ts)
           const key = logKey(id, lines);
+          const tKey = topicKey({ topic: "jobLog", station: address, job: id, lines });
+          link.errors.delete(tKey);
           link.memory.set(key, logged(link.memory.get(key), str(get(data, "text")) ?? "", get(data, "outputAt") ?? null));
-          this.onChange(address, "log", topicKey({ topic: "jobLog", station: address, job: id, lines }));
+          this.onChange(address, "log", tKey);
         }
         return;
       }
@@ -2211,13 +2428,23 @@ export class StationsSync {
         return;
       }
       // Its screens came or went, or who is on them changed.
-      case "screens":
-        this.#heldScreens(address, { screens: Array.isArray(get(data, "screens")) ? (get(data, "screens") as unknown[]) : [], outdated: false, ...(get(data, "browser") === true ? { browser: true } : {}) });
+      case "screens": {
+        const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+        if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#nextSeq(this.#screensSeq, address);
+          this.#heldScreens(address, { screens: Array.isArray(get(data, "screens")) ? (get(data, "screens") as unknown[]) : [], outdated: false, ...(get(data, "browser") === true ? { browser: true } : {}) }, gen);
+        }
         return;
+      }
       // Its terminals came, went, or who is on them changed.
-      case "terminals":
-        this.#heldTerminals(address, { terminals: Array.isArray(get(data, "terminals")) ? (get(data, "terminals") as unknown[]) : [], outdated: false });
+      case "terminals": {
+        const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+        if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#nextSeq(this.#terminalsSeq, address);
+          this.#heldTerminals(address, { terminals: Array.isArray(get(data, "terminals")) ? (get(data, "terminals") as unknown[]) : [], outdated: false }, gen);
+        }
         return;
+      }
       // A login of the station's.
       case "machine-logins": {
         const link = this.#links.get(address);
@@ -3242,11 +3469,84 @@ export class StationsSync {
     });
   }
 
+  /// Clears cached protected memory (`presets`, `jobLog`, `screens`, `terminals`) and optimistic `#openingTabs`
+  /// for stations matching `ws` (or all stations when `ws === null`).
+  clearProtectedMemory(ws: string | null): void {
+    const protectedPrefixes = [PRESETS, LOG_KEY, "screens", "terminals"] as const;
+    // Best-effort persisted cleanup for writable DBs (ephemeral keys never read/write keeper; screens/terminals require current-gen confirmation).
+    this.#core.data.clearStationMemory(ws, protectedPrefixes);
+    for (const addr of [...this.#openingTabs.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#openingTabs.delete(addr);
+    }
+    for (const addr of [...this.#screensWithOpening.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#screensWithOpening.delete(addr);
+    }
+    for (const addr of [...this.#screensDeniedGen.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#screensDeniedGen.delete(addr);
+    }
+    for (const addr of [...this.#terminalsDeniedGen.keys()]) {
+      if (ws === null || ofAddress(addr) === ws) this.#terminalsDeniedGen.delete(addr);
+    }
+    for (const link of this.#links.values()) {
+      const address = link.addr.toString();
+      if (ws !== null && ofAddress(address) !== ws) continue;
+      const presetsKey = topicKey({ topic: "presets", station: address });
+      link.memory.deletePrefix(PRESETS);
+      link.memory.deletePrefix(LOG_KEY);
+      // Use clearKey for screens/terminals so #looked stays set and read-only DBs cannot lazy-reload pre-boundary rows.
+      link.memory.clearKey("screens");
+      link.memory.clearKey("terminals");
+      this.#nextSeq(this.#screensSeq, address);
+      this.#nextSeq(this.#terminalsSeq, address);
+      this.#nextSeq(this.#screensConfirmSeq, address);
+      this.#nextSeq(this.#terminalsConfirmSeq, address);
+      link.errors.delete(presetsKey);
+      for (const k of [...link.errors.keys()]) {
+        const parsed = parseJson(k);
+        if (isObject(parsed) && parsed.topic === "jobLog") link.errors.delete(k);
+      }
+      this.onChange(address, "screens");
+      this.onChange(address, "terminals");
+    }
+  }
+
+  /// Re-enqueues currently in-use protected topics (`screens`, `terminals`, `presets`, `jobLog`) on reachable stations
+  /// of `ws` (or all workspaces when `ws === null`) after any auth boundary so non-downgrade transitions recover immediately.
+  #refetchProtectedInUse(ws: string | null): void {
+    for (const link of this.#links.values()) {
+      const address = link.addr.toString();
+      const linkWs = ofAddress(address);
+      if (ws !== null && linkWs !== ws) continue;
+      if (!this.reachable(address)) continue;
+      const gen = this.#core.store.authGen.workspaceAuthGen(linkWs);
+      for (const t of this.#core.store.liveTopics()) {
+        if (t.station !== address || !this.#core.store.inUse(t)) continue;
+        switch (t.topic) {
+          case "screens":
+            this.#enqueue(address, `screens/${gen}`, Priority.shown, this.#screens(address));
+            break;
+          case "terminals":
+            this.#enqueue(address, `terminals/${gen}`, Priority.shown, this.#terminals(address));
+            break;
+          case "presets":
+            this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
+            break;
+          case "jobLog":
+            if (typeof t.job === "string" && typeof t.lines === "number") {
+              this.readLog(address, t.job, t.lines);
+            }
+            break;
+        }
+      }
+    }
+  }
+
   /// Proactively re-reads `overview`, `chatRows`, `sessions`, `threads`, and all currently active
   /// held station topics (`jobs`, `archivedRows`, `stationUsage`, `session`, `thread`, `drive`,
-  /// `slackApp`, `job`) on all reachable stations of `ws` after a downgrade/safe-mode boundary so UI
+  /// `slackApp`, `job`, `presets`, `jobLog`) on all reachable stations of `ws` after a downgrade/safe-mode boundary so UI
   /// recovers without requiring a link reconnect.
   refreshWorkspace(ws: string): void {
+    this.clearProtectedMemory(ws);
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ofAddress(address) !== ws || !this.reachable(address)) continue;
@@ -3295,6 +3595,25 @@ export class StationsSync {
               this.#enqueue(address, `job/${t.id}`, Priority.shown, this.#read(address, t, `/jobs/${encode(t.id)}`));
             }
             break;
+          case "presets": {
+            this.#enqueue(address, this.#presetsQueueKey(address), Priority.shown, this.#presets(address));
+            break;
+          }
+          case "jobLog":
+            if (typeof t.job === "string" && typeof t.lines === "number") {
+              this.readLog(address, t.job, t.lines);
+            }
+            break;
+          case "screens": {
+            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
+            this.#enqueue(address, `screens/${gen}`, Priority.shown, this.#screens(address));
+            break;
+          }
+          case "terminals": {
+            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
+            this.#enqueue(address, `terminals/${gen}`, Priority.shown, this.#terminals(address));
+            break;
+          }
         }
       }
     }
@@ -3320,7 +3639,8 @@ export class StationsSync {
         // A screen closed, a view of one ended: gone from what is held of the station's screens at once (its station
         // tells its list as it goes, `screens` on its stream).
         case "screenGone":
-          this.#screensWithout(address, effect.screen, effect.view);
+          if (readGen !== this.#core.store.authGen.workspaceAuthGen(ofAddress(address))) return;
+          this.#screensWithout(address, effect.screen, effect.view, readGen);
           return;
         case "session": {
           if (effect.key !== null) reads.push([`session/${effect.key}`, this.#session(address, effect.key)]);
@@ -3372,7 +3692,7 @@ export class StationsSync {
           if (this.#core.store.inUse({ topic: "memory", station: address }) || this.#links.get(address)?.memory.has(MEMORY)) reads.push(["memory", this.#memory(address)]);
           break;
         case "presets":
-          reads.push(["presets", this.#presets(address)]);
+          reads.push([this.#presetsQueueKey(address), this.#presets(address)]);
           break;
         // A move or a move back asked: what it stands at read again where shown (its station tells the rest as it goes).
         case "move":

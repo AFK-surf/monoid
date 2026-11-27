@@ -14,6 +14,7 @@ import { devicePage, googleStart, consumeLoginRate, signedInPage } from "./login
 import { passwordSignIn } from "./password";
 import { adminOrigins, betaOrigin, header, publicOrigins } from "./compat";
 import { asOrigin, forward, served } from "./guests";
+import { reachedAt } from "./changelog";
 import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
@@ -85,8 +86,11 @@ export default {
     setCloud(env.PUBLIC_ORIGIN);
     // A cloud that moved into another (guests.ts): what reaches it goes there, but for its releases, which stay here.
     if (env.FORWARD_TO && !new URL(request.url).pathname.startsWith("/releases/")) return forward(request, env);
-    // A request a guest forwarded is answered as made on its origin, as its product (guests.ts).
+    // A request a guest forwarded is answered as made on its origin, as its product (guests.ts); this Worker's own
+    // zone is still the one it reached (changelog.ts popChangelogKey).
+    const zone = new URL(request.url).origin;
     request = served(request, env);
+    reachedAt(request, zone);
     const origin = new URL(request.url).origin;
     env = asOrigin(env, origin);
     return asProductOf(env.PUBLIC_ORIGIN === origin || betaOrigin(env) === origin ? origin : env.PUBLIC_ORIGIN, () => answer(request, env, ctx));

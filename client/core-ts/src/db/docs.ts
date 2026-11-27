@@ -249,6 +249,21 @@ export class DocsStore {
     for (const [kind] of kinds.slice(most)) this.dropStationDoc(station, String(kind), null);
   }
 
+  /// Drops persisted station docs matching `prefix` across all stations (when `workspace === null`) or all stations of `workspace`.
+  dropWorkspaceStationDocs(workspace: string | null, prefix: string): void {
+    if (workspace === null) {
+      const rows = this.#env.sql.all("SELECT address, kind FROM station WHERE substr(kind, 1, ?) = ?", [prefix.length, prefix]);
+      for (const [address, kind] of rows) this.dropStationDoc(String(address), String(kind), null);
+      return;
+    }
+    const wsPrefix = `${workspace}/`;
+    const rows = this.#env.sql.all(
+      "SELECT address, kind FROM station WHERE substr(address, 1, ?) = ? AND substr(kind, 1, ?) = ?",
+      [wsPrefix.length, wsPrefix, prefix.length, prefix],
+    );
+    for (const [address, kind] of rows) this.dropStationDoc(String(address), String(kind), null);
+  }
+
   slackApp(station: string, connect: string): J {
     return this.#doc(K("slack", station, connect), "SELECT json FROM slack_app WHERE station = ? AND connect = ?", [station, connect]);
   }

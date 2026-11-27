@@ -32,7 +32,7 @@ fn table_tester(platform : Int, w : Double, h : Double, text? : String = copy_ta
 
 ///|
 /// The table's key, as a screen reader finds it.
-fn table_key_of(tt : @ui.Tester, copied? : Bool = false) -> (Double, Double, Double, Double) raise {
+fn table_key_of(tt : @ui.Tester, copied? : Bool = false) -> (Double, Double, Double, Double) {
   tt.get(Button, label=if copied { t("common.copied") } else { t("web-main.prose.copyTable") }).rect
 }
 

@@ -105,8 +105,9 @@ fn handed(m : Made) -> Json? {
 ///|
 /// The send button: the capsule's bottom right (opened: under the field).
 fn tap_send(t : @ui.Tester) -> Unit {
-  t.click(Button, label=@sf.t("web-main.composer.send")) catch {
-    e => @halt.saying("no send button: \{e}")
+  match t.try_click(Button, label=@sf.t("web-main.composer.send")) {
+    Ok(_) => ()
+    Err(e) => @halt.saying("no send button: \{e}")
   }
 }
 

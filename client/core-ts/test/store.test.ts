@@ -417,6 +417,108 @@ test("a_topic_of_words_typed_let_go_of_is_made_again_only_as_it_is_asked_again",
   assert.deepEqual(source.take(), [`compute ${topicDebug(page)}`]);
 });
 
+test("stationSearch_wordsKind_tracks_each_station_independently_and_skips_stale_idle_queries", async () => {
+  const { host, store, source, pass } = setup();
+  const st1 = (q: string): Topic => ({ topic: "stationSearch", station: "ws/st1", q, limit: 6 });
+  const st2 = (q: string): Topic => ({ topic: "stationSearch", station: "ws/st2", q, limit: 6 });
+  source.computed = { ok: { items: [] } };
+
+  // On ws/st1, type "a" then "ab", unsubscribing both so "ab" is the last let-go query for ws/st1.
+  store.subscribe(1, 1, st1("a"));
+  await pass(COALESCE_MS * 2);
+  store.subscribe(1, 2, st1("ab"));
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 1);
+  store.unsubscribe(1, 2);
+
+  // On ws/st2, subscribe and unsubscribe "x": must NOT evict ws/st1's last let-go entry ("ab").
+  store.subscribe(1, 3, st2("x"));
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 3);
+
+  source.take();
+  host.takeEmitted();
+
+  // Invalidate all three while idle: st1("ab") and st2("x") recompute; older st1("a") does not.
+  store.invalidate(st1("a"));
+  store.invalidate(st1("ab"));
+  store.invalidate(st2("x"));
+  await pass(COALESCE_MS * 2);
+  assert.deepEqual(
+    source.take().sort(),
+    [`compute ${topicDebug(st1("ab"))}`, `compute ${topicDebug(st2("x"))}`].sort(),
+  );
+
+  // Re-subscribing older st1("a") recomputes it on demand and emits the fresh value.
+  source.computed = { ok: { items: ["hit-a"] } };
+  store.subscribe(1, 4, st1("a"));
+  assert.deepEqual(host.takeEmitted(), [], "stale idle stationSearch must not emit before recomputing");
+  await pass(COALESCE_MS * 2);
+  assert.deepEqual(source.take(), [`compute ${topicDebug(st1("a"))}`]);
+  assert.deepEqual(host.takeEmitted(), [[1, value(4, { items: ["hit-a"] })]]);
+});
+
+test("workspaces_remains_live_and_never_retained_in_kept", async () => {
+  const { host, store, pass } = setup();
+  const wsTopic: Topic = { topic: "workspaces" };
+  store.registerClient(1, 1);
+  store.authGen.syncAccounts(["acc-1"]);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:owner");
+
+  store.subscribe(1, 1, wsTopic);
+  store.set(wsTopic, { ok: { workspaces: [{ id: "wsA" }] } });
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 1, true);
+  assert.equal(store.keptValueOf(1, wsTopic), undefined, "workspaces is LIVE and must not be retained in #kept");
+  host.takeEmitted();
+});
+
+test("wordsLetGo_clears_on_eviction_and_auth_boundary_without_stale_leak", async () => {
+  const { host, store, pass } = setup();
+  const st1 = (query: string): Topic => ({ topic: "stationSearch", station: "wsA/st1", query });
+  let computes = 0;
+  store.setSource({
+    start(topic) {
+      if (topic.topic === "stationSearch") store.invalidate(topic);
+    },
+    stop() {},
+    compute(topic) {
+      if (topic.topic !== "stationSearch") return undefined;
+      computes++;
+      return { ok: { items: [`hit-${topic.query}-${computes}`] } };
+    },
+  });
+  store.registerClient(1, 1);
+  store.authGen.syncAccounts(["acc-1"]);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:owner");
+
+  // Subscribe then unsubscribe -> enters #wordsLetGo, then auth boundary fires -> must evict cleanly.
+  store.subscribe(1, 1, st1("alpha"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 1);
+  host.takeEmitted();
+  store.unsubscribe(1, 1);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:member");
+  host.takeEmitted();
+
+  // Re-subscribing with a new query must NOT depend on or keep the old invalidated entry.
+  store.subscribe(1, 2, st1("beta"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 2);
+  const betaMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: unknown });
+  assert.deepEqual(betaMsgs.find((m) => m.id === 2)?.value, { items: ["hit-beta-2"] });
+  store.unsubscribe(1, 2);
+
+  // Let idle eviction run -> #wordsLetGo entry must be removed upon eviction.
+  await pass(EVICT_AFTER_MS + EVICT_AFTER_MS / 4);
+  assert.deepEqual(store.liveTopics(), []);
+  store.subscribe(1, 3, st1("gamma"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 3);
+  const gammaMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: unknown });
+  assert.deepEqual(gammaMsgs.find((m) => m.id === 3)?.value, { items: ["hit-gamma-3"] });
+});
+
 test("topics_changed_together_go_out_together_in_order", async () => {
   const { host, store, pass } = setup();
   const session: Topic = { topic: "session", station: "ws/st", key: "k" };

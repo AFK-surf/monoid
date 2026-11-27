@@ -214,7 +214,7 @@ test "pick, long, 大屏 keyboard and mouse: at a point, its panel 6 under it; 8
 
 ///|
 test "pick, long, 大屏 keyboard and mouse: 9 found in a window just tall enough for them (464 high: its panel, 106 down, 349.6 tall, 8 off its foot), the same opened there or in one too short for them (300) and grown to it: its panel and its last choice where they are" {
-  let at = fn(short : Bool) raise {
+  let at = fn(short : Bool) {
     let t = menu_tester(1280.0, if short { 300.0 } else { 464.0 }, 0)
     let choices = Array::makei(9, fn(i) { @sf.choice("j\{i}", "甲\{i + 1}") }) +
       Array::makei(3, fn(i) { @sf.choice("y\{i}", "乙\{i + 1}") })

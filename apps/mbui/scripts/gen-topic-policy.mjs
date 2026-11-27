@@ -35,12 +35,13 @@ function validateBasePolicy(label, p, spec) {
       p.lasting === true ||
       p.homeLasting === true ||
       p.showKept === true ||
+      p.topicPolicy === true ||
       p.keep !== undefined ||
       p.keepBeforeViews !== undefined
     ) {
-      throw new Error(`${label}: ${p.retention} topic cannot set lasting/homeLasting/showKept/keep/keepBeforeViews`);
+      throw new Error(`${label}: ${p.retention} topic cannot set lasting/homeLasting/showKept/topicPolicy/keep/keepBeforeViews`);
     }
-    return { kind: p.retention };
+    return { kind: p.retention, topicPolicy: false };
   }
   if (p.retention === "delta") {
     if (p.lasting === true || p.showKept === true) {
@@ -52,7 +53,7 @@ function validateBasePolicy(label, p, spec) {
     if (p.keepBeforeViews !== undefined && !isNonNegativeInt(p.keepBeforeViews)) {
       throw new Error(`${label}: keepBeforeViews must be a non-negative integer`);
     }
-    return { kind: "delta", keep: p.keep, keepBefore: p.keepBeforeViews ?? p.keep };
+    return { kind: "delta", keep: p.keep, keepBefore: p.keepBeforeViews ?? p.keep, topicPolicy: p.topicPolicy === true };
   }
   // p.retention === "swr"
   if (p.lasting === true) {
@@ -62,7 +63,7 @@ function validateBasePolicy(label, p, spec) {
     if (spec && Object.hasOwn(spec, "query")) {
       throw new Error(`${label}: lasting topic must not declare a 'query' param in TOPICS`);
     }
-    return { kind: "lasting", homeLasting: p.homeLasting === true };
+    return { kind: "lasting", homeLasting: p.homeLasting === true, topicPolicy: p.topicPolicy === true };
   }
   if (p.showKept === true) {
     if (!isPositiveInt(p.keep)) {
@@ -74,7 +75,7 @@ function validateBasePolicy(label, p, spec) {
     if (spec && Object.hasOwn(spec, "query")) {
       throw new Error(`${label}: showKept topic must not declare a 'query' param in TOPICS`);
     }
-    return { kind: "showKept", keep: p.keep };
+    return { kind: "showKept", keep: p.keep, topicPolicy: p.topicPolicy === true };
   }
   throw new Error(`${label}: swr topic must set either lasting: true or showKept: true`);
 }
@@ -84,22 +85,29 @@ function exprForKeep(info) {
     case "sensitive":
     case "live":
       return "0";
-    case "delta":
-      return info.keep === info.keepBefore
-        ? `${info.keep}`
-        : `if views { ${info.keep} } else { ${info.keepBefore} }`;
+    case "delta": {
+      const inner =
+        info.keep === info.keepBefore
+          ? `${info.keep}`
+          : `if views { ${info.keep} } else { ${info.keepBefore} }`;
+      return info.topicPolicy ? `if policy { ${inner} } else { 0 }` : inner;
+    }
     case "lasting":
-      return "if topic_policy_typed(params) { 0 } else { topic_policy_last_most }";
+      return info.topicPolicy
+        ? "if policy && !topic_policy_typed(params) { topic_policy_last_most } else { 0 }"
+        : "if topic_policy_typed(params) { 0 } else { topic_policy_last_most }";
     case "showKept":
-      return `if views && !topic_policy_typed(params) { ${info.keep} } else { 0 }`;
+      return info.topicPolicy
+        ? `if views && policy && !topic_policy_typed(params) { ${info.keep} } else { 0 }`
+        : `if views && !topic_policy_typed(params) { ${info.keep} } else { 0 }`;
   }
 }
 
 function exprForBool(info, field) {
   if (field === "sensitive") return info.kind === "sensitive" ? "true" : "false";
-  if (field === "lasting") return info.kind === "lasting" ? "true" : "false";
+  if (field === "lasting") return info.kind === "lasting" ? (info.topicPolicy ? "policy" : "true") : "false";
   if (field === "homeLasting") return info.kind === "lasting" && info.homeLasting ? "true" : "false";
-  if (field === "showKept") return info.kind === "showKept" ? "true" : "false";
+  if (field === "showKept") return info.kind === "showKept" ? (info.topicPolicy ? "policy" : "true") : "false";
   return "false";
 }
 
@@ -151,6 +159,7 @@ export function generateTopicPolicyMbt(
 
   const sensitiveTopics = [];
   const lastingTopics = [];
+  const lastingPolicyTopics = [];
   const homeLastingTopics = [];
   const deltaTopics = [];
   const showKeptTopics = [];
@@ -211,22 +220,26 @@ export function generateTopicPolicyMbt(
     if (baseInfo.kind === "sensitive") {
       sensitiveTopics.push(name);
     } else if (baseInfo.kind === "delta") {
-      deltaTopics.push([name, baseInfo.keep, baseInfo.keepBefore]);
+      deltaTopics.push([name, baseInfo.keep, baseInfo.keepBefore, baseInfo.topicPolicy]);
     } else if (baseInfo.kind === "lasting") {
-      lastingTopics.push(name);
+      if (baseInfo.topicPolicy) lastingPolicyTopics.push(name);
+      else lastingTopics.push(name);
       if (baseInfo.homeLasting) homeLastingTopics.push(name);
     } else if (baseInfo.kind === "showKept") {
-      showKeptTopics.push([name, baseInfo.keep]);
+      showKeptTopics.push([name, baseInfo.keep, baseInfo.topicPolicy]);
     }
   }
 
   const formatOrPatterns = (names) => `    ${names.map(q).join("\n    | ")}`;
   const knownArms = protocolKeys.map((n) => `    ${q(n)} => true`).join("\n");
 
-  const buildBoolArms = (staticList, field) => {
+  const buildBoolArms = (staticList, policyList, field) => {
     const arms = [];
     if (staticList.length > 0) {
       arms.push(`${formatOrPatterns(staticList)} => true`);
+    }
+    if (policyList.length > 0) {
+      arms.push(`${formatOrPatterns(policyList)} => policy`);
     }
     for (const bp of byParamTopics) {
       const baseExpr = exprForBool(bp.baseInfo, field);
@@ -240,20 +253,26 @@ export function generateTopicPolicyMbt(
   };
 
   const keepArms = [];
-  for (const [name, keep, keepBefore] of deltaTopics) {
-    keepArms.push(
-      keep === keepBefore
-        ? `    ${q(name)} => ${keep}`
-        : `    ${q(name)} => if views { ${keep} } else { ${keepBefore} }`,
-    );
+  for (const [name, keep, keepBefore, topicPolicy] of deltaTopics) {
+    const inner = keep === keepBefore ? `${keep}` : `if views { ${keep} } else { ${keepBefore} }`;
+    keepArms.push(topicPolicy ? `    ${q(name)} => if policy { ${inner} } else { 0 }` : `    ${q(name)} => ${inner}`);
   }
   if (lastingTopics.length > 0) {
     keepArms.push(
       `    ${lastingTopics.map(q).join("\n    | ")} =>\n      if topic_policy_typed(params) {\n        0\n      } else {\n        topic_policy_last_most\n      }`,
     );
   }
-  for (const [name, keep] of showKeptTopics) {
-    keepArms.push(`    ${q(name)} => if views && !topic_policy_typed(params) { ${keep} } else { 0 }`);
+  if (lastingPolicyTopics.length > 0) {
+    keepArms.push(
+      `    ${lastingPolicyTopics.map(q).join("\n    | ")} =>\n      if policy && !topic_policy_typed(params) {\n        topic_policy_last_most\n      } else {\n        0\n      }`,
+    );
+  }
+  for (const [name, keep, topicPolicy] of showKeptTopics) {
+    keepArms.push(
+      topicPolicy
+        ? `    ${q(name)} => if views && policy && !topic_policy_typed(params) { ${keep} } else { 0 }`
+        : `    ${q(name)} => if views && !topic_policy_typed(params) { ${keep} } else { 0 }`,
+    );
   }
   for (const bp of byParamTopics) {
     const baseExpr = exprForKeep(bp.baseInfo);
@@ -264,10 +283,12 @@ export function generateTopicPolicyMbt(
     }
   }
 
-  const sensitiveArms = buildBoolArms(sensitiveTopics, "sensitive");
-  const lastingArms = buildBoolArms(lastingTopics, "lasting");
-  const homeLastingArms = buildBoolArms(homeLastingTopics, "homeLasting");
-  const showKeptArms = buildBoolArms(showKeptTopics.map(([n]) => n), "showKept");
+  const sensitiveArms = buildBoolArms(sensitiveTopics, [], "sensitive");
+  const lastingArms = buildBoolArms(lastingTopics, lastingPolicyTopics, "lasting");
+  const homeLastingArms = buildBoolArms(homeLastingTopics, [], "homeLasting");
+  const showKeptStatic = showKeptTopics.filter(([, , tp]) => !tp).map(([n]) => n);
+  const showKeptPolicy = showKeptTopics.filter(([, , tp]) => tp).map(([n]) => n);
+  const showKeptArms = buildBoolArms(showKeptStatic, showKeptPolicy, "showKept");
   const deviceGlobalList = Array.isArray(deviceGlobal) ? deviceGlobal : [];
   for (const dg of deviceGlobalList) {
     if (!protocolSet.has(dg)) {
@@ -343,8 +364,9 @@ export function generateTopicPolicyMbt(
     "}",
     "",
     "///|",
-    "/// Whether `(name, params)` is a bar/rail opening list kept in `last_said`.",
-    "pub fn topic_policy_lasting(name : String, params : Json) -> Bool {",
+    "/// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (`policy` = `MBUI_TOPIC_POLICY`).",
+    "pub fn topic_policy_lasting_by(name : String, params : Json, policy : Bool) -> Bool {",
+    ...(lastingPolicyTopics.length === 0 ? ["  ignore(policy)"] : []),
     "  if topic_policy_sensitive(name, params) || topic_policy_typed(params) {",
     "    return false",
     "  }",
@@ -352,6 +374,12 @@ export function generateTopicPolicyMbt(
     ...(lastingArms ? [lastingArms] : []),
     "    _ => false",
     "  }",
+    "}",
+    "",
+    "///|",
+    "/// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (production default: `policy = true`).",
+    "pub fn topic_policy_lasting(name : String, params : Json) -> Bool {",
+    "  topic_policy_lasting_by(name, params, true)",
     "}",
     "",
     "///|",
@@ -367,8 +395,8 @@ export function generateTopicPolicyMbt(
     "}",
     "",
     "///|",
-    "/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`).",
-    "pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {",
+    "/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`, `policy` = `MBUI_TOPIC_POLICY`).",
+    "pub fn topic_policy_keep_by(name : String, params : Json, views : Bool, policy : Bool) -> Int {",
     "  if topic_policy_sensitive(name, params) {",
     "    return 0",
     "  }",
@@ -379,8 +407,14 @@ export function generateTopicPolicyMbt(
     "}",
     "",
     "///|",
-    "/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`).",
-    "pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Bool {",
+    "/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`, `policy = true`).",
+    "pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {",
+    "  topic_policy_keep_by(name, params, views, true)",
+    "}",
+    "",
+    "///|",
+    "/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`, `policy` = `MBUI_TOPIC_POLICY`).",
+    "pub fn topic_policy_show_kept_by(name : String, params : Json, views : Bool, policy : Bool) -> Bool {",
     "  if topic_policy_sensitive(name, params) || !views || topic_policy_typed(params) {",
     "    return false",
     "  }",
@@ -388,6 +422,12 @@ export function generateTopicPolicyMbt(
     ...(showKeptArms ? [showKeptArms] : []),
     "    _ => false",
     "  }",
+    "}",
+    "",
+    "///|",
+    "/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`, `policy = true`).",
+    "pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Bool {",
+    "  topic_policy_show_kept_by(name, params, views, true)",
     "}",
     "",
   ].join("\n");

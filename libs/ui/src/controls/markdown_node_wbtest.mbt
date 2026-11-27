@@ -243,7 +243,7 @@ test "Markdown as nodes: a row of images, one of them twice, each drawn at the w
 /// `code` in a code block in a column 16 in from a window `w` wide (a finger's at 390, a mouse's wider), in the colours
 /// `ink` says where it says them, the system's words at `scale`, wrapped at its width where `wrapped` (its wrap key
 /// pressed), drawn as nodes (`code_block_node`): its Tester, drawn.
-fn mlines_tester(code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester raise {
+fn mlines_tester(code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester {
   let platform = if w < 500.0 { 2 } else { 0 }
   let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=900.0, platform~)
   @ui.set_view_app(fn(root) {

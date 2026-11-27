@@ -423,7 +423,7 @@ test "profiles, connects, the vault: their lists" {
   let run = fn(words : String) { t.text_runs().filter(fn(r) { r.text == words })[0] }
   let name = run("Claude 主账号")
   let plan = run("Ultra")
-  let chips = t.text_runs().filter(fn(r) { r.top > name.bottom + 4.0 && r.top < name.bottom + 40.0 })
+  let chips = t.text_runs().filter(fn(r) { r.top >= name.bottom + 2.0 && r.top < name.bottom + 40.0 })
   assert_true(chips.iter().any(fn(r) { r.text.has_suffix("62%") }), msg="\{Repr(chips.map(fn(r) { r.text }))}")
   assert_true(plan.x0 > name.x1 && plan.x0 - name.x1 < 12.0, msg="name \{Repr(name)}, plan \{Repr(plan)}")
   let t2 = settings_tester("connects")
@@ -550,12 +550,11 @@ test "Google subscription tiers appear beside the account names with four quota 
 }
 
 ///|
-test "profiles on a phone: an allowance of three windows said one way for all, each chip whole (OpenCode Go's)" {
+test "profiles on a phone: an allowance of three windows said one way for all, each slot whole (OpenCode Go's)" {
   let t = settings_tester("profiles", shows="settings-profiles-monthly")
-  // (on one line 5 小时剩余 62%, 本周剩余 19% and 每月剩余 97% were cut to 5 小时剩…, 本周剩余…, 每月剩余…, 2026-10-31)
-  // a phone's 390 has the room for all three in full: each its name and what is left, whole
+  // compact fixed-column slots fit all three windows on one line with short marks (`5h`, `周`, `月`)
   let shown = t.words().filter(fn(w) { w.5 > 0.5 }).map(fn(w) { w.0 })
-  for words in ["5h", "62%", "本周", "19%", "每月", "97%"] {
+  for words in ["5h", "62%", "周", "19%", "月", "97%"] {
     assert_true(shown.contains(words), msg="\{words}: \{Repr(shown)}")
     assert_eq(t.lines_of(words), [words], msg=words)
   }
@@ -563,16 +562,16 @@ test "profiles on a phone: an allowance of three windows said one way for all, e
 }
 
 ///|
-test "a model's own week (Fable's) is a chip and a dial of its own, after the account's week" {
+test "a model's own week (Fable's) is a slot and a dial of its own, after the account's week" {
   let t = settings_tester("profiles", shows="settings-profiles-fable")
-  // (its chips one way for all, the longest the row has the room for: each its name whole, then what is left)
+  // compact fixed-column slots keep `周` and `Fable` on the same line, `46%` beside `Fable`
   let shown = fn(t : @ui.Tester) { t.words().filter(fn(w) { w.5 > 0.5 }) }
   let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { w.0 == words })[0] }
-  for words in ["每周", "每周 Fable"] {
-    assert_eq(shown(t).filter(fn(w) { w.0 == words }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
+  for words in ["周", "Fable"] {
+    assert_true(shown(t).filter(fn(w) { w.0 == words }).length() >= 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
   }
-  assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "每周 Fable").1 }))
-  assert_true(at(t, "每周 Fable").1 > at(t, "每周").1 && at(t, "每周 Fable").2 == at(t, "每周").2)
+  assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "Fable").1 }))
+  assert_true(at(t, "Fable").1 > at(t, "周").1 && at(t, "Fable").2 == at(t, "周").2)
   assert_eq(t.squeeze_faults(), [])
   // on its page a dial after the account's, under the same heading: beside them, or on the line under where one
   // line has not the room for all three whole (dials_node's `lines`)

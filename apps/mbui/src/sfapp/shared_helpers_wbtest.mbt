@@ -352,7 +352,7 @@ fn strip(name : String) -> Attachment {
 ///|
 /// The panel `title` opened from its key in the bar where the bar holds it (named so, or saying so as its value: how far
 /// the resources came, named 资源加载), else from the ⋯'s line; at the frame that opened it.
-fn svc_open(t : @ui.Tester, title : String) -> Unit raise {
+fn svc_open(t : @ui.Tester, title : String) -> Unit {
   let by_value = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.value == title })
   match (t.query(Button, label=title), by_value) {
     (Some(_), _) => t.click(Button, label=title)
@@ -399,7 +399,7 @@ fn tree_words_drawn() -> Array[String] {
 ///|
 /// Whether the rect `r` is wholly in view in the panel: inside the part seen of every box of the panel's laid out round
 /// it (a scroller's, the panel's own), so nothing over its foot or past a scroller's edge hides any of it.
-fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool raise {
+fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool {
   let (x, y, w, h) = r
   let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
   t

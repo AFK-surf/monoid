@@ -289,9 +289,9 @@ test "desk: a web service beside its chat laid out at a size through its sizes b
       None => "fit"
     }
   }
-  let read_out = fn() raise { (t.get(TextField, label="宽").value, t.get(TextField, label="自动").value) }
+  let read_out = fn() { (t.get(TextField, label="宽").value, t.get(TextField, label="自动").value) }
   // (the size key, or its line in the ⋯ where the bar has not the room for it: laid out at a size, it says that too)
-  let sizes = fn() raise {
+  let sizes = fn() {
     match t.query(Button, label="页面尺寸") {
       Some(_) => t.click(Button, label="页面尺寸")
       None => {

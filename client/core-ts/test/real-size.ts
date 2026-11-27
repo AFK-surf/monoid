@@ -1559,6 +1559,19 @@ export const OWN_LOCK: Entry[] = (() => {
 
 /// The owner's vault in the workspace with no safe mode: `个人`, keyed for both their devices, on Maple.
 export const PERSONAL_VAULT = `v_01J${"A".repeat(23)}`;
+const WORKSPACE_VAULT = `v_01J${"B".repeat(23)}`;
+const DISC_VAULT = `v_01J${"C".repeat(23)}`;
+const LINA_LOG = keyOf32(fixed(0x7a));
+const LINA_SIGNER = keyOf32(fixed(0x7b));
+const LINA_DEVICE = keyOf32(fixed(0x7c)).hex;
+const LINA_BOX = boxPublic(fixed(0x7d));
+const LINA_CHAIN: Entry[] = (() => {
+  const e = {
+    v: 1 as const, ws: "person:s2", seq: 0, prev: null, at: 1_790_000_010, kind: "genesis",
+    body: { sub: "s2", device: { key: LINA_LOG.id, id: LINA_DEVICE, label: "macos still.fail · Lina Park 的 MacBook Air", sign_key: LINA_SIGNER.id } },
+  };
+  return [{ ...e, sig: { key: LINA_LOG.id, alg: "Ed25519" as const, sig: LINA_LOG.signBytes(lockBytes(entryHash(e))) } } as Entry];
+})();
 const itemId = (i: number) => `i_01J${"A".repeat(21)}${String(i).padStart(2, "0")}`;
 const VAULT_KEY = fixed(0x79);
 /// Their secrets: some dozens, each with how agents may ask for it (its listing, in the clear), what it holds sealed
@@ -1574,11 +1587,15 @@ function certOf(device: string, box: string, signer: ReturnType<typeof keyOf32>,
 }
 function vaultRecord(now: number): J {
   const secs = Math.floor(now / 1000);
-  const certs = [certOf(VAULT_DEVICE, VAULT_BOX, VAULT_SIGNER, secs - 30 * 86400), certOf(PHONE_DEVICE, PHONE_BOX, PHONE_SIGNER, secs - 29 * 86400)];
+  const certs = [certOf(VAULT_DEVICE, VAULT_BOX, VAULT_SIGNER, secs - 30 * 86400), certOf(PHONE_DEVICE, PHONE_BOX, PHONE_SIGNER, secs - 29 * 86400), certOf(LINA_DEVICE, LINA_BOX, LINA_SIGNER, secs - 2 * 86400)];
   const context = keyContext(PLAIN_WORKSPACE, PERSONAL_VAULT, 0);
-  const keys = certs.map((c, i) => ({ cert: c, wrapped: sealWith(c.box, VAULT_KEY, context, fixed(0x80 + i)) }));
+  const keys = certs.slice(0, 2).map((c, i) => ({ cert: c, wrapped: sealWith(c.box, VAULT_KEY, context, fixed(0x80 + i)) }));
   const vault = sign({ v: 1 as const, ws: PLAIN_WORKSPACE, id: PERSONAL_VAULT, seq: 3, owner: "s1", name: "个人", members: ["s1"], epoch: 0, keys, at: secs - 20 * 86400 }, TAG.vault, VAULT_SIGNER);
-  return { certs, vault };
+  const wsContext = keyContext(PLAIN_WORKSPACE, WORKSPACE_VAULT, 0);
+  const wsKeys = certs.slice(0, 2).map((c, i) => ({ cert: c, wrapped: sealWith(c.box, VAULT_KEY, wsContext, fixed(0x84 + i)) }));
+  const wsVault = sign({ v: 1 as const, ws: PLAIN_WORKSPACE, id: WORKSPACE_VAULT, seq: 1, owner: "s1", name: "团队", scope: "workspace" as const, members: ["s1"], epoch: 0, keys: wsKeys, at: secs - 10 * 86400 }, TAG.vault, VAULT_SIGNER);
+  const joinAsk = sign({ v: 1 as const, ws: PLAIN_WORKSPACE, vault: WORKSPACE_VAULT, sub: "s2", device: LINA_DEVICE, box: LINA_BOX, state: "pending" as const, at: secs - 600 }, TAG.join, LINA_SIGNER);
+  return { certs, vault, wsVault, joinAsk };
 }
 function itemOf(now: number, i: number, at: number): J {
   // (the one added later, `vaultAdded`: a name of its own, among the others by its letter as a person's would be)
@@ -1600,7 +1617,7 @@ export function vaultItemsOf(now: number, count = VAULT_ITEMS): J {
 }
 function vaultOf(now: number): J {
   const secs = Math.floor(now / 1000);
-  const { certs, vault } = vaultRecord(now);
+  const { certs, vault, wsVault, joinAsk } = vaultRecord(now);
   // (two left of the plain library from before, on Maple, to be moved in: `plainLeft`)
   const plain = Object.fromEntries([0, 1].map((i) => {
     const name = pick(["Linear API key", "Notion integration"], i);
@@ -1620,9 +1637,19 @@ function vaultOf(now: number): J {
     hosts: ["api.github.com", "github.com"], box: VAULT_BOX, at: Math.floor((now - (i + 1) * 9 * MIN) / 1000), status: "pending", timeout: { kind: "idle", seconds: 3600 },
   });
   return {
-    vaults: { [PERSONAL_VAULT]: vault }, at: { [PERSONAL_VAULT]: "maple" }, boxes: Object.fromEntries(certs.map((c: J) => [c.device, c])),
+    vaults: { [PERSONAL_VAULT]: vault, [WORKSPACE_VAULT]: wsVault },
+    at: { [PERSONAL_VAULT]: "maple", [WORKSPACE_VAULT]: "maple" },
+    boxes: Object.fromEntries(certs.map((c: J) => [c.device, c])),
     requests: Object.fromEntries([0, 1, 2].map((i) => [`vr-${i}`, request(i)])), asked: { "vr-0": "maple", "vr-1": "willow", "vr-2": "studio" }, refused: {},
-    on: { [PERSONAL_VAULT]: Object.fromEntries(UP.map((_, st) => [STATIONS[st]!.id, { seq: 3, items: {} }])) }, keeps: UP.map((_, st) => STATIONS[st]!.id), hidden: {},
+    on: {
+      [PERSONAL_VAULT]: Object.fromEntries(UP.map((_, st) => [STATIONS[st]!.id, { seq: 3, items: {} }])),
+      [WORKSPACE_VAULT]: Object.fromEntries(UP.map((_, st) => [STATIONS[st]!.id, { seq: 1, items: {} }])),
+    },
+    keeps: UP.map((_, st) => STATIONS[st]!.id), hidden: {},
+    memberChains: { s2: LINA_CHAIN },
+    memberRoles: { s1: "owner", s2: "member", s3: "member" },
+    joins: { [WORKSPACE_VAULT]: { s2: joinAsk } },
+    discoverable: { [DISC_VAULT]: { summary: { id: DISC_VAULT, ws: PLAIN_WORKSPACE, name: "运维团队", scope: "workspace", owner: "s2", memberCount: 3, seq: 2, at: secs - 2 * 86400 }, from: ["maple"] } },
     plain, plainOn: ["maple"], plainLasts: { lasts: "chat", at: now - 5 * DAY },
     uses: Object.fromEntries(UP.map((_, st) => [`${STATIONS[st]!.id}/${PERSONAL_VAULT}`, uses(st)])),
   };

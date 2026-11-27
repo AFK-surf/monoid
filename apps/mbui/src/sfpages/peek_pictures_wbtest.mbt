@@ -67,7 +67,7 @@ fn peek_pictures_frames(
   asked : Array[(String, Json, (Result[(Json, Bytes), Json]) -> Unit)],
   title : String,
   answer_at : Int,
-) -> Array[((Double, Double, Double, Double)?, Array[(Double, Double)])] raise {
+) -> Array[((Double, Double, Double, Double)?, Array[(Double, Double)])] {
   t.draw()
   let (x, y, w, h) = t.get(@ui.Role::Button, label="截图").rect
   t.move_to(x + w / 2.0, y + h / 2.0)

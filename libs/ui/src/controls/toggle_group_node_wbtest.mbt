@@ -169,7 +169,7 @@ test "toggle_group_node: smooth NodeWay highlight transition with laid == 0 and 
     let k = tog2(kind=Single)
     k.t.run_for(@ui.move_most_ms)
     let lifted = @ui.tree_theme().lifted
-    let lifted_alpha_in = fn(label : String) -> Int raise {
+    let lifted_alpha_in = fn(label : String) -> Int {
       let r = k.t.get(Button, label~).rect
       let mut found = 0
       for dr in k.t.drawn_rects() {

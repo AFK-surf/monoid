@@ -4,7 +4,7 @@
 
 ///|
 /// The pointer moved over the middle of the dot read out as `name`.
-fn over_dot(t : @ui.Tester, name : String) -> Unit raise {
+fn over_dot(t : @ui.Tester, name : String) -> Unit {
   let (x, y, w, h) = t.get(Radio, label=name).rect
   t.move_to(x + w / 2.0, y + h / 2.0)
   t.draw()

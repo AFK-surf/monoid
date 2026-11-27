@@ -84,6 +84,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_OPEN_WHOLE": 47,
   "MBUI_PAGE_PICTURES": 47,
   "MBUI_START_PAGE": 47,
+  "MBUI_TOPIC_POLICY": 81,
 }
 
 ///|

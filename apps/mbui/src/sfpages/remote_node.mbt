@@ -90,17 +90,37 @@ pub fn remote_close_tab_clean(src : Source, ws : String, key : String) -> Unit {
 }
 
 ///|
+/// Whether `r`'s backing station topic (`terminals` or `screens`) is fresh and confirmed by the station
+/// and still lists `r.id` as a real (non-ended / non-optimistic) target.
+fn remote_row_confirmed(src : Source, r : RemoteRow) -> Bool {
+  if r.kind == "terminal" {
+    let tr = src.topic("terminals", { "station": Json::string(r.station) }).get()
+    tr.is_confirmed_known() &&
+    items(tr.value, "terminals").iter().any(fn(t) { text(Some(t), "id") == r.id && !flag(Some(t), "ended") })
+  } else {
+    @sfbase.live_screen_confirmed(src.topic("screens", { "station": Json::string(r.station) }).get(), r.id)
+  }
+}
+
+///|
 /// Open a browser tab on `station` into workspace `ws`'s remote workbench (reusing last seen or creating a new tab).
 pub fn remote_open_station_browser_tab(src : Source, ws : String, station : String) -> Unit {
-  let sval = @signals.untracked(fn() {
-    src.topic("screens", { "station": Json::string(station) }).get().value
+  let sr = @signals.untracked(fn() {
+    src.topic("screens", { "station": Json::string(station) }).get()
   })
-  let listed = items(sval, "screens")
-    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
-    .map(fn(sc) { text(Some(sc), "id") })
+  if !sr.is_confirmed_known() {
+    return
+  }
+  let sval = sr.value
+  let listed = @sfbase.confirmed_user_browser_ids(sr)
   let target = match @settings.browser_tab_to_open(station, listed) {
     Some(id) => id
-    None => @settings.new_browser_tab(src.call, station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+    None => {
+      if !(flag(sval, "browser") && flag(sval, "control")) {
+        return
+      }
+      @settings.new_browser_tab(src.call, station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+    }
   }
   remote_tab_show(src, ws, @sfbase.RemoteTab::Screen({ station, screen: target, title: "", until_gone: false }))
 }
@@ -349,7 +369,7 @@ fn remote_front_in(src : Source, ws : String, lines : Array[RemoteLine]) -> (Str
   match tabs.iter().find_first(fn(p) { p.0 == act }) {
     Some(p) => Some(p)
     None =>
-      match remote_rows_of(lines).get(0) {
+      match remote_rows_of(lines).iter().find_first(fn(r) { remote_row_confirmed(src, r) }) {
         Some(r) => {
           let tab = remote_row_tab(r)
           Some((tab.key(), tab))
@@ -387,7 +407,8 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
   let asks_t = (src.asks_terminals)()
   let (rows, front) = @signals.untracked(fn() {
     let lines = remote_lines(src, ws, asks_t)
-    (remote_rows_of(lines), remote_front_in(src, ws, lines))
+    let confirmed = remote_rows_of(lines).filter(fn(r) { remote_row_confirmed(src, r) })
+    (confirmed, remote_front_in(src, ws, lines))
   })
   guard !rows.is_empty() else { return }
   let at = match front {
@@ -404,23 +425,58 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
 
 ///|
 /// Row `r` opened: across the whole screen its own page (a screen's, a terminal's); in a side column a tab of the
-/// workbench beside it, brought to the front.
+/// workbench beside it, brought to the front. Re-reads live confirmed `terminals`/`screens` at invocation time.
 fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) -> Unit {
-  match (at, r.kind) {
-    (Whole, "terminal") => @sfbase.open_terminal(r.station, r.id, r.cwd, "", watch=r.watch)
-    (Whole, _) => @sfbase.open_screen(r.station, r.id, Some(r.title))
-    _ => remote_tab_show(src, ws, remote_row_tab(r))
+  if r.kind == "terminal" {
+    let tr = @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(r.station) }).get() })
+    guard tr.is_confirmed_known() else { return }
+    let live = items(tr.value, "terminals").iter().find_first(fn(t) {
+      let tv = Some(t)
+      text(tv, "id") == r.id && !flag(tv, "ended")
+    })
+    guard live is Some(t) else { return }
+    let live_cwd = text(Some(t), "cwd")
+    let live_watch = !flag(tr.value, "open")
+    match at {
+      Whole => @sfbase.open_terminal(r.station, r.id, live_cwd, "", watch=live_watch)
+      _ => remote_tab_show(src, ws, @sfbase.RemoteTab::Terminal({ station: r.station, terminal: r.id, watch: live_watch, cwd: live_cwd }))
+    }
+  } else {
+    let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
+    guard sr.is_confirmed_known() else { return }
+    let live = items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") })
+    guard live is Some(sc) else { return }
+    let live_title = text(Some(sc), "title")
+    match at {
+      Whole => @sfbase.open_screen(r.station, r.id, Some(live_title))
+      _ => remote_tab_show(src, ws, @sfbase.RemoteTab::Screen({ station: r.station, screen: r.id, title: live_title, until_gone: false }))
+    }
   }
 }
 
 ///|
 /// Row `r` closed (its tab of the browser closed, its terminal ended), with the workbench's tabs showing it.
+/// Re-reads live confirmed `terminals`/`screens` and re-verifies target existence & close capability at invocation time.
 fn remote_row_close(src : Source, ws : String, r : RemoteRow) -> Unit {
   let on : Map[String, Json] = { "station": Json::string(r.station) }
   if r.kind == "terminal" {
+    let tr = @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(r.station) }).get() })
+    guard tr.is_confirmed_known() && flag(tr.value, "open") else { return }
+    let exists = items(tr.value, "terminals").iter().any(fn(t) {
+      let tv = Some(t)
+      text(tv, "id") == r.id && !flag(tv, "ended")
+    })
+    guard exists else { return }
     on["terminal"] = Json::string(r.id)
     (src.call)("terminal.end", Json::object(on), @sfbase.answer_unread)
   } else {
+    let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
+    guard sr.is_confirmed_known() && flag(sr.value, "control") else { return }
+    let closable_now = items(sr.value, "screens").iter().any(fn(sc) {
+      let sv = Some(sc)
+      text(sv, "id") == r.id && flag(sv, "closable") && !flag(sv, "opening")
+    })
+    guard closable_now else { return }
     on["screen"] = Json::string(r.id)
     (src.call)("screen.close", Json::object(on), failed_said(@sf.t("web-pages.screen.closeTabWhat")))
   }
@@ -451,11 +507,38 @@ fn remote_row_menu_items(src : Source, ws : String, r : RemoteRow) -> Array[@sf.
     out.push(
       Some(
         @sf.menu_item_of(@sf.t("web-pages.screen.window"), icon="external", fn() {
-          if @sfbase.open_window(page) {
+          let live_page : @sfbase.Page? = if r.kind == "terminal" {
+            let tr = @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(r.station) }).get() })
+            if !tr.is_confirmed_known() {
+              None
+            } else {
+              match items(tr.value, "terminals").iter().find_first(fn(t) {
+                let tv = Some(t)
+                text(tv, "id") == r.id && !flag(tv, "ended")
+              }) {
+                Some(t) =>
+                  Some(Terminal({ station: r.station, terminal: r.id, watch: !flag(tr.value, "open"), cwd: text(Some(t), "cwd") }))
+                None => None
+              }
+            }
+          } else {
+            let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
+            if !sr.is_confirmed_known() {
+              None
+            } else {
+              match items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") }) {
+                Some(sc) =>
+                  Some(Screen({ station: r.station, screen: r.id, title: text(Some(sc), "title"), until_gone: false }))
+                None => None
+              }
+            }
+          }
+          guard live_page is Some(open_pg) else { return }
+          if @sfbase.open_window(open_pg) {
             // (handed to its window: its tab here goes, what it shows kept for that window)
             let (tabs, _) = @signals.untracked(fn() { @sfbase.remote_tabs_of(src, ws) })
             for p in tabs {
-              if p.1.page() == page {
+              if remote_row_shows(r, p.1) {
                 @sfbase.remote_tab_close(src, ws, p.0)
               }
             }
@@ -798,20 +881,23 @@ pub fn remote_page_node(
 }
 
 ///|
-/// Whether a new terminal can be opened on station `address` from here: asked for, and the station letting this person
-/// type (or not said yet).
+/// Whether a new terminal can be opened on station `address` from here: asked for, confirmed, and the station letting
+/// this person open terminals.
 fn remote_can_term(src : Source, address : String) -> Bool {
   guard (src.asks_terminals)() else { return false }
-  let tval = src.topic("terminals", { "station": Json::string(address) }).get().value
-  tval is None || flag(tval, "open")
+  let tr = src.topic("terminals", { "station": Json::string(address) }).get()
+  tr.is_confirmed_known() && flag(tr.value, "open")
 }
 
 ///|
-/// Whether station `address`'s browser can be reached from here: a tab of its own made where it lets this person drive
-/// it, else the tabs it has.
+/// Whether station `address`'s browser can be reached from here: confirmed, and either a tab of its own can be made
+/// where it lets this person drive it, or it already has browser tabs.
 fn remote_can_browse(src : Source, address : String) -> Bool {
-  let sv = src.topic("screens", { "station": Json::string(address) }).get().value
-  (flag(sv, "browser") && flag(sv, "control")) || items(sv, "screens").any(fn(sc) { text(Some(sc), "kind") == "browser" })
+  let sr = src.topic("screens", { "station": Json::string(address) }).get()
+  sr.is_confirmed_known() && (
+    (flag(sr.value, "browser") && flag(sr.value, "control")) ||
+    items(sr.value, "screens").any(fn(sc) { text(Some(sc), "kind") == "browser" })
+  )
 }
 
 ///|
@@ -825,10 +911,12 @@ fn remote_terminal_stations(src : Source, ws : String) -> Array[(String, String)
 /// only to look at) the one last seen or its last; across the whole screen (`at` Whole) its page, in a side column a tab
 /// of workspace `ws`'s workbench brought to the front.
 fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address : String) -> Unit {
-  let sv = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(address) }).get().value })
-  let listed = items(sv, "screens")
-    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
-    .map(fn(sc) { text(Some(sc), "id") })
+  let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(address) }).get() })
+  if !sr.is_confirmed_known() {
+    return
+  }
+  let sv = sr.value
+  let listed = @sfbase.confirmed_user_browser_ids(sr)
   let target = if flag(sv, "browser") && flag(sv, "control") {
     @settings.new_browser_tab(src.call, address, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   } else {
@@ -836,7 +924,7 @@ fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address :
       Some(id) => id
       None =>
         items(sv, "screens")
-        .filter(fn(sc) { text(Some(sc), "kind") == "browser" })
+        .filter(fn(sc) { text(Some(sc), "kind") == "browser" && !flag(Some(sc), "opening") })
         .map(fn(sc) { text(Some(sc), "id") })
         .last()
         .unwrap_or("")
@@ -867,6 +955,9 @@ fn remote_station_add_menu(
     out.push(
       Some(
         @sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", fn() {
+          if !@signals.untracked(fn() { remote_can_term(src, address) }) {
+            return
+          }
           if at == Whole {
             @sfbase.open_terminal(address, "new", "", "")
           } else {

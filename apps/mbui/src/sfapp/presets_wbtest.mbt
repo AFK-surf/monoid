@@ -957,16 +957,16 @@ test "the folder picker's station, way and rows pressed: the picker as it was ti
       if ms == 0.0 { println("PICKER_PRESS \{at}: the menu's own words \{menu.join(" | ")}") }
       t.ways_set_out() |> ignore
       pace.val = ms
-      picker_pressed(t, "\{at}, Maple", calls, fn() raise { t.click(MenuItemRadio, label="Maple") }, line, menu, ("Maple", "ws1/st2"), "", [
+      picker_pressed(t, "\{at}, Maple", calls, fn() { t.click(MenuItemRadio, label="Maple") }, line, menu, ("Maple", "ws1/st2"), "", [
           "文档", "项目", "下载",
         ], ms)
       assert_false(shows(t, "web-app"), msg="\{at}: Maple's home")
       // a folder's row
-      picker_pressed(t, "\{at}, 项目", calls, fn() raise { t.click(Button, label="项目") }, None, [], ("Maple", "ws1/st2"), "/Users/lin/项目", [
+      picker_pressed(t, "\{at}, 项目", calls, fn() { t.click(Button, label="项目") }, None, [], ("Maple", "ws1/st2"), "/Users/lin/项目", [
           "still.fail", "web-app", "素材",
         ], ms)
       // a step of the way back
-      picker_pressed(t, "\{at}, lin", calls, fn() raise { t.click(Link, label="lin") }, None, [], ("Maple", "ws1/st2"), "/Users/lin", [
+      picker_pressed(t, "\{at}, lin", calls, fn() { t.click(Link, label="lin") }, None, [], ("Maple", "ws1/st2"), "/Users/lin", [
           "文档", "项目", "下载",
         ], ms)
     }

@@ -71,14 +71,101 @@ pub fn open_remote_browser(src : Source, station : String, listed_ids : Array[St
 }
 
 ///|
+/// Whether `sr` is confirmed+known by the station and lists `id` as a real (non-optimistic) screen.
+pub fn live_screen_confirmed(sr : TopicState, id : String) -> Bool {
+  sr.is_confirmed_known() &&
+  items(sr.value, "screens").iter().any(fn(sc) {
+    let sv = Some(sc)
+    text(sv, "id") == id && !flag(sv, "opening")
+  })
+}
+
+///|
+/// Confirmed non-optimistic user browser tab ids listed in `sr` (empty when `sr` is not confirmed+known).
+pub fn confirmed_user_browser_ids(sr : TopicState) -> Array[String] {
+  if !sr.is_confirmed_known() {
+    return []
+  }
+  items(sr.value, "screens")
+    .filter(fn(sc) {
+      let sv = Some(sc)
+      !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+    })
+    .map(fn(sc) { text(Some(sc), "id") })
+}
+
+///|
+/// Whether a station capability topic (`screens` / `terminals`) has settled for the current auth generation:
+/// confirmed by the station, explicitly confirmed `outdated` (404), explicitly `denied` (401/403), or answered with an error
+/// (never a cold-start `confirmed: false` cache).
+pub fn cap_settled(st : TopicState) -> Bool {
+  st.is_confirmed_known() ||
+  (st.is_confirmed() && flag(st.value, "confirmed") && flag(st.value, "outdated")) ||
+  (st.is_confirmed() && flag(st.value, "denied")) ||
+  st.error is Some(_)
+}
+
+///|
 /// The first of the chat's screens, its station's own display where it has one, else a chat-workspace terminal when
 /// terminals are offered (`can_terminal`: its keys, ⌘K, the menu bar: chat.screen).
-pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal : Bool) -> Unit {
+pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal : Bool, src? : Source? = None) -> Unit {
   match screens {
-    [s, ..] => open_screen(r.station, s.id, Some(s.title))
+    [s, ..] => {
+      match src {
+        Some(source) => {
+          let sr = @signals.untracked(fn() { source.topic("screens", { "station": Json::string(r.station) }).get() })
+          if live_screen_confirmed(sr, s.id) {
+            open_screen(r.station, s.id, Some(s.title))
+          } else if !cap_settled(sr) {
+            let scope = "chat-remote-first/" + r.station
+            let ssub = hold(source, scope, "screens", { "station": Json::string(r.station) })
+            press_wait(
+              fn() { cap_settled(ssub.get()) },
+              fn() {
+                let cur = ssub.untracked()
+                let_go(source, scope)
+                if live_screen_confirmed(cur, s.id) {
+                  open_screen(r.station, s.id, Some(s.title))
+                }
+              },
+              let_go=fn() { let_go(source, scope) },
+              most=5000.0,
+            )
+            |> ignore
+          }
+          return
+        }
+        None => open_screen(r.station, s.id, Some(s.title))
+      }
+    }
     [] =>
       if can_terminal && (terminals_capable_fn.val)() {
-        open_terminal(r.station, "new", "", r.session)
+        match src {
+          Some(source) => {
+            let tr = @signals.untracked(fn() { source.topic("terminals", { "station": Json::string(r.station) }).get() })
+            if tr.is_confirmed_known() && flag(tr.value, "open") {
+              open_terminal(r.station, "new", "", r.session)
+            } else if !cap_settled(tr) {
+              let scope = "chat-remote-first/" + r.station
+              let tsub = hold(source, scope, "terminals", { "station": Json::string(r.station) })
+              press_wait(
+                fn() { cap_settled(tsub.get()) },
+                fn() {
+                  let cur = tsub.untracked()
+                  let_go(source, scope)
+                  if cur.is_confirmed_known() && flag(cur.value, "open") {
+                    open_terminal(r.station, "new", "", r.session)
+                  }
+                },
+                let_go=fn() { let_go(source, scope) },
+                most=5000.0,
+              )
+              |> ignore
+            }
+            return
+          }
+          None => open_terminal(r.station, "new", "", r.session)
+        }
       }
   }
 }
@@ -103,13 +190,33 @@ fn chat_remote_menu_show(
   terminals_val : Json?,
   from : @sf.Beside,
   along : @ui.Along,
+  terms_sig? : @signals.Computed[TopicState]? = None,
+  screens_sig? : @signals.Computed[TopicState]? = None,
+  on_gone? : () -> Unit = fn() {  },
 ) -> Unit {
+  let released = Ref(false)
+  let release_once = fn() {
+    if !released.val {
+      released.val = true
+      on_gone()
+    }
+  }
   let term_ok = can_terminal && (terminals_capable_fn.val)()
   if !can_browser && !term_ok {
     match screens {
-      [] => return
+      [] => {
+        release_once()
+        return
+      }
       [s] => {
-        open_screen(r.station, s.id, Some(s.title))
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
+        release_once()
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
         return
       }
       _ => ()
@@ -142,7 +249,14 @@ fn chat_remote_menu_show(
     }
     for s in other_screens {
       items_out.push(Some(@sf.menu_item_of(chat_screen_label(s), icon=chat_screen_icon(s), fn() {
-        open_screen(r.station, s.id, Some(s.title))
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
+        release_once()
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
       })))
     }
   }
@@ -153,20 +267,59 @@ fn chat_remote_menu_show(
     }
     for s in agent_tabs {
       items_out.push(Some(@sf.menu_item_of(chat_screen_label(s), icon=chat_screen_icon(s), fn() {
-        open_screen(r.station, s.id, Some(s.title))
+        let ok = match screens_sig {
+          Some(ssig) => live_screen_confirmed(ssig.untracked(), s.id)
+          None => true
+        }
+        release_once()
+        if ok {
+          open_screen(r.station, s.id, Some(s.title))
+        }
       })))
     }
   }
   if has_browser {
     let listed_ids = user_tabs.map(fn(s) { s.id })
     items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.openBrowserRow"), icon="web", fn() {
-      match src {
-        Some(s) => open_remote_browser(s, r.station, listed_ids)
-        None =>
+      match (src, screens_sig) {
+        (Some(s), Some(ssig)) => {
+          let sr = ssig.untracked()
+          release_once()
+          if !sr.is_confirmed_known() {
+            return
+          }
+          let cur_listed = items(sr.value, "screens")
+            .filter(fn(sc) {
+              let sv = Some(sc)
+              !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+            })
+            .map(fn(sc) { text(Some(sc), "id") })
+          match @settings.browser_tab_to_open(r.station, cur_listed) {
+            Some(to) => open_screen(r.station, to, None)
+            None =>
+              if flag(sr.value, "browser") && flag(sr.value, "control") {
+                open_remote_browser(s, r.station, cur_listed)
+              }
+          }
+        }
+        (Some(s), None) => {
+          release_once()
+          if can_browser {
+            open_remote_browser(s, r.station, listed_ids)
+          } else {
+            match @settings.browser_tab_to_open(r.station, listed_ids) {
+              Some(to) => open_screen(r.station, to, None)
+              None => if !user_tabs.is_empty() { open_screen(r.station, user_tabs[0].id, None) }
+            }
+          }
+        }
+        (None, _) => {
+          release_once()
           match @settings.browser_tab_to_open(r.station, listed_ids) {
             Some(to) => open_screen(r.station, to, None)
             None => if !user_tabs.is_empty() { open_screen(r.station, user_tabs[0].id, None) }
           }
+        }
       }
     })))
   }
@@ -176,7 +329,18 @@ fn chat_remote_menu_show(
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openTerminal"), heading=true, fn() { })))
     }
     if term_ok {
+      // Never statically disable on timeout: re-check live confirmed+known `terminals` + `open` at click time so late fresh arrival recovers.
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
+        match terms_sig {
+          Some(sig) => {
+            let st = sig.untracked()
+            release_once()
+            if !st.is_confirmed_known() || !flag(st.value, "open") {
+              return
+            }
+          }
+          None => release_once()
+        }
         open_terminal(r.station, "new", "", r.session)
       })))
     }
@@ -184,9 +348,22 @@ fn chat_remote_menu_show(
       let tv = Some(t)
       let tid = text(tv, "id")
       let cwd = text(tv, "cwd")
-      let label = chat_terminal_short(cwd) + (if text(tv, "chat") == r.session && r.session != "" { " · " + r.title } else { "" })
+      let chat_id = text(tv, "chat")
+      let label = chat_terminal_short(cwd) + (if chat_id == r.session && r.session != "" { " · " + r.title } else { "" })
       items_out.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
-        open_terminal(r.station, tid, cwd, text(tv, "chat"))
+        let mut live_watch = false
+        match terms_sig {
+          Some(sig) => {
+            let st = sig.untracked()
+            release_once()
+            if !st.is_confirmed_known() || !items(st.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+              return
+            }
+            live_watch = !flag(st.value, "open")
+          }
+          None => release_once()
+        }
+        open_terminal(r.station, tid, cwd, chat_id, watch=live_watch)
       })))
     }
   }
@@ -196,7 +373,9 @@ fn chat_remote_menu_show(
     } else {
       @sf.t("web-pages.chat.screen")
     }
-    @sf.menu(items_out, from~, title=menu_title, along~)
+    @sf.menu(items_out, from~, title=menu_title, along~, gone=release_once)
+  } else {
+    release_once()
   }
 }
 
@@ -217,19 +396,50 @@ pub fn chat_remote_open(
   along? : @ui.Along = Start,
 ) -> Unit {
   let term_ok = v.can_terminal() && (terminals_capable_fn.val)() && @signals.untracked(fn() { (src.asks_terminals)() })
-  if !term_ok {
-    chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), false, None, from, along)
-    return
-  }
   let scope = "chat-remote/" + r.station
   let ask_params : Map[String, Json] = { "station": Json::string(r.station) }
+  let ssub = hold(src, scope, "screens", ask_params)
+  if !term_ok {
+    press_wait(
+      fn() { cap_settled(ssub.get()) },
+      fn() {
+        chat_remote_menu_show(
+          Some(src),
+          r,
+          v.screens,
+          v.can_browser(),
+          false,
+          None,
+          from,
+          along,
+          screens_sig=Some(ssub),
+          on_gone=fn() { let_go(src, scope) },
+        )
+      },
+      let_go=fn() { let_go(src, scope) },
+      most=if !v.can_browser() && v.screens.length() == 1 { 5000.0 } else { @sf.open_hold_ms },
+    )
+    |> ignore
+    return
+  }
   let sub = hold(src, scope, "terminals", ask_params)
   press_wait(
-    fn() { opens_answered(sub.get()) },
+    fn() { cap_settled(sub.get()) && cap_settled(ssub.get()) },
     fn() {
-      let val = @signals.untracked(fn() { sub.get().value })
-      let_go(src, scope)
-      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, val, from, along)
+      let st = @signals.untracked(fn() { sub.get() })
+      chat_remote_menu_show(
+        Some(src),
+        r,
+        v.screens,
+        v.can_browser(),
+        true,
+        st.value,
+        from,
+        along,
+        terms_sig=Some(sub),
+        screens_sig=Some(ssub),
+        on_gone=fn() { let_go(src, scope) },
+      )
     },
     let_go=fn() { let_go(src, scope) },
     most=@sf.open_hold_ms,

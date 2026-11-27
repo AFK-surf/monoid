@@ -222,8 +222,9 @@ pub fn topic_policy_sensitive(name : String, params : Json) -> Bool {
 }
 
 ///|
-/// Whether `(name, params)` is a bar/rail opening list kept in `last_said`.
-pub fn topic_policy_lasting(name : String, params : Json) -> Bool {
+/// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (`policy` = `MBUI_TOPIC_POLICY`).
+pub fn topic_policy_lasting_by(name : String, params : Json, policy : Bool) -> Bool {
+  ignore(policy)
   if topic_policy_sensitive(name, params) || topic_policy_typed(params) {
     return false
   }
@@ -246,6 +247,12 @@ pub fn topic_policy_lasting(name : String, params : Json) -> Bool {
 }
 
 ///|
+/// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (production default: `policy = true`).
+pub fn topic_policy_lasting(name : String, params : Json) -> Bool {
+  topic_policy_lasting_by(name, params, true)
+}
+
+///|
 /// Whether `(name, params)` is one of Home's own `lasting` lists (`MBUI_HOME_SAME`).
 pub fn topic_policy_home_lasting(name : String, params : Json) -> Bool {
   if topic_policy_sensitive(name, params) {
@@ -260,13 +267,15 @@ pub fn topic_policy_home_lasting(name : String, params : Json) -> Bool {
 }
 
 ///|
-/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`).
-pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {
+/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`, `policy` = `MBUI_TOPIC_POLICY`).
+pub fn topic_policy_keep_by(name : String, params : Json, views : Bool, policy : Bool) -> Int {
   if topic_policy_sensitive(name, params) {
     return 0
   }
   match name {
+    "jobLog" => if policy { 8 } else { 0 }
     "chat" => if views { 8 } else { 4 }
+    "chatFeedback" => if policy { 8 } else { 0 }
     "workspace"
     | "chats"
     | "stations"
@@ -285,21 +294,26 @@ pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {
       } else {
         topic_policy_last_most
       }
+    "presets" => if views && policy && !topic_policy_typed(params) { 8 } else { 0 }
     "projects" => if views && !topic_policy_typed(params) { 8 } else { 0 }
     "project" => if views && !topic_policy_typed(params) { 16 } else { 0 }
     "tags" => if views && !topic_policy_typed(params) { 8 } else { 0 }
     "chatRow" => if views && !topic_policy_typed(params) { 32 } else { 0 }
     "station" => if views && !topic_policy_typed(params) { 16 } else { 0 }
     "profile" => if views && !topic_policy_typed(params) { 16 } else { 0 }
+    "profilesOverview" => if views && policy && !topic_policy_typed(params) { 4 } else { 0 }
     "connect" => if views && !topic_policy_typed(params) { 16 } else { 0 }
     "connectCandidates" => if views && !topic_policy_typed(params) { 8 } else { 0 }
     "agentCard" => if views && !topic_policy_typed(params) { 16 } else { 0 }
+    "otherPresets" => if views && policy && !topic_policy_typed(params) { 8 } else { 0 }
     "pick" => if views && !topic_policy_typed(params) { 12 } else { 0 }
     "chatJobs" => if views && !topic_policy_typed(params) { 16 } else { 0 }
     "chatOutline" => if views && !topic_policy_typed(params) { 8 } else { 0 }
     "agentRates" => if views && !topic_policy_typed(params) { 4 } else { 0 }
     "railCard" => if views && !topic_policy_typed(params) { 16 } else { 0 }
     "drivePlace" => if views && !topic_policy_typed(params) { 24 } else { 0 }
+    "releases" => if views && policy && !topic_policy_typed(params) { 4 } else { 0 }
+    "fonts" => if views && policy && !topic_policy_typed(params) { 4 } else { 0 }
     "stationPart" =>
       match topic_policy_param_str(params, "part") {
         Some("profiles") | Some("updates") | Some("copies") => if views && !topic_policy_typed(params) { 24 } else { 0 }
@@ -310,8 +324,14 @@ pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {
 }
 
 ///|
-/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`).
-pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Bool {
+/// How many values of `(name, params)` the core's client keeps as they are let go of (`views` = `MBUI_SWR_VIEWS`, `policy = true`).
+pub fn topic_policy_keep(name : String, params : Json, views : Bool) -> Int {
+  topic_policy_keep_by(name, params, views, true)
+}
+
+///|
+/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`, `policy` = `MBUI_TOPIC_POLICY`).
+pub fn topic_policy_show_kept_by(name : String, params : Json, views : Bool, policy : Bool) -> Bool {
   if topic_policy_sensitive(name, params) || !views || topic_policy_typed(params) {
     return false
   }
@@ -331,6 +351,11 @@ pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Boo
     | "agentRates"
     | "railCard"
     | "drivePlace" => true
+    "presets"
+    | "profilesOverview"
+    | "otherPresets"
+    | "releases"
+    | "fonts" => policy
     "stationPart" =>
       match topic_policy_param_str(params, "part") {
         Some("profiles") | Some("updates") | Some("copies") => true
@@ -338,4 +363,10 @@ pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Boo
       }
     _ => false
   }
+}
+
+///|
+/// Whether `(name, params)` shows its kept value immediately before the core answers (`views` = `MBUI_SWR_VIEWS`, `policy = true`).
+pub fn topic_policy_show_kept(name : String, params : Json, views : Bool) -> Bool {
+  topic_policy_show_kept_by(name, params, views, true)
 }

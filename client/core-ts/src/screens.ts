@@ -486,10 +486,12 @@ export function screenPath(station: string, id: string): string {
 }
 
 /// The `screens` topic's value: what is held (none while the station is down: `online` false).
-export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean): J {
+/// `known`: display readiness (`held !== undefined`); `confirmed`: station replied in the current auth generation.
+export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean, confirmed = held !== undefined, denied = false): J {
   const control = mayDrive(inner, station);
-  if (held?.outdated) return { screens: [], outdated: true, control, known: true, note: t("core-views.screen.outdated") };
-  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined };
+  if (denied) return { screens: [], outdated: false, control, known: false, confirmed: false, denied: true };
+  if (held?.outdated) return { screens: [], outdated: true, control, known: true, confirmed, note: t("core-views.screen.outdated") };
+  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined, confirmed: held !== undefined && confirmed };
   const screens = held.screens.flatMap((s) => {
     const id = get(s, "id");
     if (typeof id !== "string" || id === "") return [];
@@ -508,6 +510,8 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
       id, kind, title, ...(model !== null ? { model } : {}), width, height, viewers: names(get(s, "viewers")), controlledBy, ...(views.length > 0 ? { views } : {}), ...(get(s, "peek") === true ? { peek: true } : {}),
       // A page a person opened in the station's persistent browser profile (`screen.openBrowser`), put to sleep while idle.
       ...(get(s, "userTab") === true ? { userTab: true } : {}),
+      // Optimistic browser tab currently being opened on the station (not yet confirmed in station's list).
+      ...(get(s, "opening") === true ? { opening: true } : {}),
       // A Farview tab: the app draws it itself in Farview's own protocol (`farview.view`), not as pictures.
       ...(get(s, "farview") === true ? { farview: true } : {}),
       ...(get(s, "sleeping") === true ? { sleeping: true } : {}),
@@ -539,7 +543,7 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
   });
   // The machine's own display (`desktop`) first: what a chat's screen button opens, at the head of every list of them.
   screens.sort((a, b) => Number(b.id === DESKTOP) - Number(a.id === DESKTOP));
-  return { screens, outdated: false, control, known: true, ...(held.browser === true ? { browser: true } : {}) };
+  return { screens, outdated: false, control, known: true, confirmed, ...(held.browser === true ? { browser: true } : {}) };
 }
 
 /// What a link to one of a station's screens shows in a message (the `screenCard` topic): the screen as its station's
@@ -630,7 +634,7 @@ type Next = { socket: WireSocket; scope: Scope.Closeable; asked: ScreenAsk };
 
 /// How a view's stream ended (`gone`: its screen went, a tab closed; `dropped`: the stream went, `seen` whether a frame
 /// came on it first), or why it could not open.
-type Outcome = { ended: string | null; gone?: true } | { reopen: Next } | { dropped: true; seen: boolean } | { failed: CoreError };
+type Outcome = { ended: string | null; gone?: true } | { reopen: true } | { dropped: true; seen: boolean } | { failed: CoreError } | { denied: true } | { outdated: true };
 
 /// What a failure to open a view says the view is now: done for good (a phase), or worth trying again (null). The
 /// station's statuses: 404 no such screen, 400/415 no codec in common, 501 not supported here,
@@ -845,6 +849,15 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       ),
     );
 
+    const deniedAbort = Deferred.makeUnsafe<void>();
+    let denied = false;
+    const markDenied = () => {
+      denied = true;
+      Deferred.doneUnsafe(deniedAbort, Effect.void);
+      if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
+      if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
+    };
+    const isViewDenied = () => denied || inner.stations.isDenied("screens", station);
     open.set(name, {
       station,
       workspace: ofAddress(station),
@@ -912,6 +925,10 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
       },
       listed: () => {
+        if (inner.stations.isDenied("screens", station)) {
+          markDenied();
+          return;
+        }
         resume();
         tell();
         if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
@@ -919,64 +936,121 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
 
-    // A station whose screens are not known yet is asked first: one from before screens would take the view's stream
-    // for a request and never answer it.
-    if (inner.stations.screens(station) === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
-    if (inner.stations.screens(station)?.outdated) {
-      state.phase = "outdated";
-      state.message = t("core-views.screen.outdated");
-      tell();
-      return null;
-    }
-    // A tab this device is opening (`screen.openBrowser` with its id): the view is there at once, connecting, while its
-    // station makes it; opened once the station lists it (gone, if it refused it).
-    for (;;) {
-      relisted = yield* Deferred.make<void>();
-      if (get(listedItem(), "opening") !== true) break;
-      tell();
-      yield* Deferred.await(relisted);
-    }
-    relisted = null;
-    // A view is opened only of a screen the station listed: not listed as it was held, its
-    // list is read again first.
-    if (listedItem() === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
-    if (listedItem() === undefined && inner.stations.screens(station) !== undefined) {
-      state.phase = "gone";
-      state.message = t("core-views.screen.gone");
-      tell();
-      return null;
-    }
-    // A preview only of a screen its station says can be previewed: one from before previews would take it for a view
-    // (shown among those on it, its tab brought forward).
-    if (c.ask.peek && get(listedItem(), "peek") !== true) {
+    // If the station already explicitly refused GET /screens (401/403) in this auth generation, fail closed immediately.
+    if (isViewDenied()) {
       state.phase = "denied";
       state.message = t("core-views.screen.denied");
+      delete state.cursor;
       tell();
       return null;
     }
-    // Opened with no mode asked (a link, the station's page): only looking while someone else (an agent at work, a
-    // person) drives it, so a person who opens it to watch does not hold the agent off; else driving. The viewer's own
-    // views are not someone else, however many the list names: another window of theirs, or one of an app killed with
-    // the view open, which the station still holds until it finds the connection gone.
-    if (auto) wanted = may && names(get(listedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
-    tell();
 
-    /// One stream (`ready`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
-    /// opened again, or fails.
-    const attempt = (ready: Next | null): Effect.Effect<Outcome> =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          let socket: WireSocket;
-          let sent: ScreenAsk;
-          if (ready !== null) {
-            yield* Effect.addFinalizer(() => Scope.close(ready.scope, Exit.void));
-            ({ socket, asked: sent } = ready);
-          } else {
-            sent = { ...bounds, control: wanted };
-            const opened = yield* Effect.result(inner.stations.requests.screenView(addr, c.screen, sent, ctx));
-            if (opened._tag === "Failure") return { failed: opened.failure } as Outcome;
-            socket = opened.success;
-          }
+    const confirmedScreens = () => (inner.stations.isConfirmed("screens", station) ? inner.stations.screens(station) : undefined);
+    const confirmedItem = (): J => confirmedScreens()?.screens.find((s) => get(s, "id") === c.screen && get(s, "opening") !== true);
+    const checkConfirmedTarget = (): Outcome | null => {
+      if (isViewDenied()) return { denied: true };
+      if (!inner.stations.isConfirmed("screens", station)) return { dropped: true, seen: false };
+      if (confirmedScreens()?.outdated) return { outdated: true };
+      const cur = confirmedItem();
+      if (cur === undefined) return { ended: t("core-views.screen.gone"), gone: true };
+      if (c.ask.peek && get(cur, "peek") !== true) {
+        markDenied();
+        return { denied: true };
+      }
+      return null;
+    };
+
+    // Entire view lifecycle wrapped in a single scoped body raced against `deniedAbort`:
+    // any 401/403 during readScreens, opening wait, first handshake, socket.tap, frame reading,
+    // replacement handshake, or reconnect sleep immediately interrupts `runBody` and runs all finalizers.
+    const runBody = Effect.scoped(
+      Effect.gen(function* () {
+        // Hoisted above `attempt` so a replacement stream's scope is handed directly into `ready` before
+        // releasing `attempt`'s fallback finalizer — zero window where an interrupting 403 could leak it.
+        let ready: Next | null = null;
+        yield* Effect.addFinalizer(() => (ready === null ? Effect.void : Scope.close(ready.scope, Exit.void)));
+
+        // Always confirm screens with the station in the current authGen before opening a stream (even when cold-start keeper cache has a row).
+        // Transient failures (5xx) fall through to `attempt`, which retries confirmation before ever dispatching `requests.screenView`.
+        if (!inner.stations.isConfirmed("screens", station)) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
+        if (confirmedScreens()?.outdated) {
+          state.phase = "outdated";
+          state.message = t("core-views.screen.outdated");
+          tell();
+          return;
+        }
+        // A tab this device is opening (`screen.openBrowser` with its id): the view is there at once, connecting, while its
+        // station makes it; opened once the station lists it (gone, if it refused it).
+        for (;;) {
+          relisted = yield* Deferred.make<void>();
+          if (get(listedItem(), "opening") !== true) break;
+          tell();
+          yield* Deferred.await(relisted);
+        }
+        relisted = null;
+        // A view is opened only of a screen the station listed: not listed as it was held, its list is read again first.
+        if (inner.stations.isConfirmed("screens", station) && confirmedItem() === undefined) {
+          yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
+        }
+        if (inner.stations.isConfirmed("screens", station) && confirmedScreens()?.outdated) {
+          state.phase = "outdated";
+          state.message = t("core-views.screen.outdated");
+          tell();
+          return;
+        }
+        if (inner.stations.isConfirmed("screens", station) && confirmedItem() === undefined) {
+          state.phase = "gone";
+          state.message = t("core-views.screen.gone");
+          tell();
+          return;
+        }
+        // A preview only of a screen its station says can be previewed: one from before previews would take it for a view
+        // (shown among those on it, its tab brought forward).
+        if (inner.stations.isConfirmed("screens", station) && c.ask.peek && get(confirmedItem(), "peek") !== true) {
+          markDenied();
+          return;
+        }
+        // Opened with no mode asked (a link, the station's page): only looking while someone else (an agent at work, a
+        // person) drives it, so a person who opens it to watch does not hold the agent off; else driving. The viewer's own
+        // views are not someone else, however many the list names: another window of theirs, or one of an app killed with
+        // the view open, which the station still holds until it finds the connection gone.
+        if (auto && inner.stations.isConfirmed("screens", station)) {
+          wanted = may && names(get(confirmedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
+        }
+        tell();
+
+        /// One stream (`takeReady`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
+        /// opened again, or fails.
+        const attempt = (takeReady: Next | null): Effect.Effect<Outcome> =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              let socket: WireSocket;
+              let sent: ScreenAsk;
+              if (takeReady !== null) {
+                yield* Effect.addFinalizer(() => Scope.close(takeReady.scope, Exit.void));
+                if (ready === takeReady) ready = null;
+                ({ socket, asked: sent } = takeReady);
+              } else {
+                if (isViewDenied()) return { denied: true } as Outcome;
+                // Enforce station confirmation in current authGen before ever calling `requests.screenView`.
+                if (!inner.stations.isConfirmed("screens", station)) {
+                  const readRes = yield* Effect.result(inner.stations.readScreens(station));
+                  if (isViewDenied()) return { denied: true } as Outcome;
+                  if (readRes._tag === "Failure") {
+                    const st = readRes.failure.status;
+                    if (st !== undefined && st >= 500 && st !== 501) return { dropped: true, seen: false } as Outcome;
+                    return { failed: readRes.failure } as Outcome;
+                  }
+                }
+                const blocked = checkConfirmedTarget();
+                if (blocked !== null) return blocked;
+                if (auto) wanted = may && names(get(confirmedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
+                sent = { ...bounds, control: wanted };
+                const opened = yield* Effect.result(inner.stations.requests.screenView(addr, c.screen, sent, ctx));
+                if (isViewDenied()) return { denied: true } as Outcome;
+                if (opened._tag === "Failure") return { failed: opened.failure } as Outcome;
+                socket = opened.success;
+              }
           const control = sent.control;
           const queue = yield* Queue.unbounded<Uint8Array>();
           out = queue;
@@ -1015,20 +1089,32 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           const onReplaced = socket.replaced ? socket.replaced() : wire.replaced ? wire.replaced(addr) : null;
           if (onReplaced !== null) yield* Effect.forkScoped(Effect.andThen(onReplaced, Effect.sync(() => Deferred.doneUnsafe(again, Effect.void))));
           for (;;) {
+            if (isViewDenied()) return { denied: true } as Outcome;
             const next = yield* Effect.raceFirst(
               Effect.map(Effect.result(socket.reply.body.take), (r) => ({ r }) as const),
               Effect.as(Deferred.await(again), { reopen: true } as const),
             );
             if ("reopen" in next) {
+              const blocked = checkConfirmedTarget();
+              if (blocked !== null) return blocked;
               // The next stream opened while this one stays: the station has a view of this client's all along.
               const scope = yield* Scope.make();
+              let handedOff = false;
+              yield* Effect.addFinalizer(() => (handedOff ? Effect.void : Scope.close(scope, Exit.void)));
               const nextAsk = { ...bounds, control: wanted };
               const opened = yield* Effect.result(Scope.provide(inner.stations.requests.screenView(addr, c.screen, nextAsk, ctx), scope));
+              if (isViewDenied()) {
+                yield* Scope.close(scope, Exit.void);
+                return { denied: true } as Outcome;
+              }
               if (opened._tag === "Failure") {
                 yield* Scope.close(scope, Exit.void);
                 return { failed: opened.failure } as Outcome;
               }
-              return { reopen: { socket: opened.success, scope, asked: nextAsk } } as Outcome;
+              // Hand ownership directly to outer `runBody`'s `ready` BEFORE clearing `handedOff` — zero leak window.
+              ready = { socket: opened.success, scope, asked: nextAsk };
+              handedOff = true;
+              return { reopen: true } as Outcome;
             }
             if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true, seen } as Outcome;
             reader.push(next.r.success);
@@ -1235,49 +1321,67 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         }),
       );
 
-    let misses = 0;
-    let ready: Next | null = null;
-    // (one opened as the view ends: closed with it)
-    yield* Effect.addFinalizer(() => (ready === null ? Effect.void : Scope.close(ready.scope, Exit.void)));
-    for (;;) {
-      const outcome: Outcome = yield* attempt(ready);
-      ready = null;
-      if ("reopen" in outcome) {
-        ready = outcome.reopen;
-        continue;
-      }
-      if ("ended" in outcome) {
-        // Its screen gone (a tab closed) is over for good, as one no longer listed: nothing to open again.
-        state.phase = outcome.gone ? "gone" : "ended";
-        state.message = outcome.ended ?? t("core-views.screen.ended");
-        delete state.cursor;
-        tell();
-        return null;
-      }
-      if ("failed" in outcome) {
-        const final = verdict(outcome.failed, inner.stations.screens(station)?.outdated === true);
-        if (final !== null) {
-          state.phase = final.phase;
-          state.message = final.message;
-          const access = accessOf((outcome.failed as CoreError & { access?: unknown }).access);
-          if (access) state.access = access;
-          delete state.cursor;
+        let misses = 0;
+        for (;;) {
+          const outcome: Outcome = yield* attempt(ready);
+          if ("reopen" in outcome) {
+            if (isViewDenied()) return;
+            continue;
+          }
+          if ("denied" in outcome || isViewDenied()) return;
+          if ("outdated" in outcome) {
+            state.phase = "outdated";
+            state.message = t("core-views.screen.outdated");
+            delete state.cursor;
+            tell();
+            return;
+          }
+          if ("ended" in outcome) {
+            // Its screen gone (a tab closed) is over for good, as one no longer listed: nothing to open again.
+            state.phase = outcome.gone ? "gone" : "ended";
+            state.message = outcome.ended ?? t("core-views.screen.ended");
+            delete state.cursor;
+            tell();
+            return;
+          }
+          if ("failed" in outcome) {
+            const final = verdict(outcome.failed, confirmedScreens()?.outdated === true);
+            if (final !== null) {
+              state.phase = final.phase;
+              state.message = final.message;
+              const access = accessOf((outcome.failed as CoreError & { access?: unknown }).access);
+              if (access) state.access = access;
+              delete state.cursor;
+              tell();
+              return;
+            }
+          } else if (outcome.seen) misses = 0;
+          // The stream went, or could not be opened now: opened again after a while.
+          if (misses >= REOPEN_MS.length) {
+            state.phase = "failed";
+            state.message = "failed" in outcome ? outcome.failed.message : t("core-views.screen.lost");
+            tell();
+            return;
+          }
+          state.phase = "reconnecting";
+          state.message = t("core-views.screen.reconnecting");
           tell();
-          return null;
+          yield* Effect.sleep(REOPEN_MS[misses]!);
+          misses++;
         }
-      } else if (outcome.seen) misses = 0;
-      // The stream went, or could not be opened now: opened again after a while.
-      if (misses >= REOPEN_MS.length) {
-        state.phase = "failed";
-        state.message = "failed" in outcome ? outcome.failed.message : t("core-views.screen.lost");
-        tell();
-        return null;
-      }
-      state.phase = "reconnecting";
-      state.message = t("core-views.screen.reconnecting");
+      }),
+    );
+
+    const raced = yield* Effect.raceFirst(
+      Effect.as(runBody, "done" as const),
+      Effect.as(Deferred.await(deniedAbort), "denied" as const),
+    );
+    if (raced === "denied" || isViewDenied()) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      delete state.cursor;
       tell();
-      yield* Effect.sleep(REOPEN_MS[misses]!);
-      misses++;
     }
+    return null;
   }).pipe(Effect.scoped);
 }

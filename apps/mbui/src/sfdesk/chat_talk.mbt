@@ -85,7 +85,7 @@ fn chat_body_nodes(
   })
   .on_action("chat.screen", fn(_) {
     guard chat_view() is Some(cv) else { return false }
-    chat_remote_first(r, cv.screens, cv.can_terminal())
+    chat_remote_first(r, cv.screens, cv.can_terminal(), src=Some(src))
     true
   })
   .key_context("Chat")

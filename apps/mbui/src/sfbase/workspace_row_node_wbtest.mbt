@@ -133,7 +133,7 @@ fn invite_at(
   (Double, Double, Double, Double),
   (Double, Double, Double, Double),
   (Double, Double, Double, Double),
-) raise {
+) {
   @sf.presenters_reset()
   // (a window wider than the others': a test's labels are their keys, 加入 as wide as `android-misc.invite.join`)
   let tr = @ui.Tester::new(fn(_c) {  }, w=800.0, h=400.0, platform=0)

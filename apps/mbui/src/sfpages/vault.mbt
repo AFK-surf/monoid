@@ -57,7 +57,7 @@ pub fn vault_node(
   let shown = @signals.computed(fn(_) { vault_shown(view().value) })
   // (its blocks' keys, worked out once for each change of what it reads: what holds the page's list reads them alone)
   let keys = @signals.computed(fn(_) {
-    match vault_first_keys(ws(), view().value) {
+    match vault_first_keys(ws(), view().value, include_discover=true) {
       Some(keys) => keys
       None => vault_library_keys(shown.get())
     }
@@ -186,6 +186,14 @@ fn vault_library_keys(v : Json?) -> Array[String] {
       out.push("workspace-vault/" + text(Some(row), "id"))
     }
   }
+  if !plain {
+    for row in items(v, "availableWorkspaceVaults") {
+      let id = text(Some(row), "id")
+      if id != "" {
+        out.push("discover/" + id)
+      }
+    }
+  }
   out.push("kept")
   // deleting a manageable vault, in red at the page's foot, asked first (what goes with it said)
   if !plain && vaults.iter().any(fn(x) { vault_can_manage(Some(x)) }) {
@@ -236,10 +244,14 @@ fn vault_library_block(
             f,
             fn() { @sf.t("web-pages.vault.setUp") },
             fn() {
-              @settings.act(core, @sf.t("web-pages.vault.createWhat"), "vault.create", obj([("workspace", str(@signals.untracked(ws))), ("name", str(@sf.t("web-pages.vault.personal")))]))
+              if flag(@signals.untracked(v), "hasRecovery") {
+                @settings.act(core, @sf.t("web-pages.vault.createWhat"), "vault.create", obj([("workspace", str(@signals.untracked(ws))), ("name", str(@sf.t("web-pages.vault.personal")))]))
+              } else {
+                vault_setup(core, @signals.untracked(ws))
+              }
             },
             tone=Primary,
-            busy=fn() { is_doing(core, ["vault.create"], [("workspace", ws())]) },
+            busy=fn() { is_doing(core, ["vault.create", "vault.setup"], [("workspace", ws())]) },
             card_words=true,
           )
           |> ignore
@@ -288,6 +300,12 @@ fn vault_library_block(
         })
       })
     k if k.has_prefix("workspace-vault/") => vault_workspace_node(b, core, here, vault_of(k.exact_view(start=16).to_owned()))
+    k if k.has_prefix("discover/") => {
+      let id = k.exact_view(start=9).to_owned()
+      vault_discover_node(b, core, ws, id, fn() {
+        items(v(), "availableWorkspaceVaults").iter().find_first(fn(r) { text(Some(r), "id") == id })
+      })
+    }
     k if k.has_prefix("no-key/") => vault_no_key_node(b, core, ws, vault_of(k.exact_view(start=7).to_owned()))
     k if k.has_prefix("waits/") => vault_waits_node(b, vault_of(k.exact_view(start=6).to_owned()))
     k if k.has_prefix("refused/") => {
@@ -308,21 +326,139 @@ fn vault_library_block(
 }
 
 ///|
-/// A shared workspace vault section under its name: shared members row (opens member management dialog),
-/// authorized devices row, and default longest approval row (when the viewer can manage the vault).
-fn vault_workspace_node(b : @view.View, core : Core, here : () -> Here, rv : () -> Json?) -> Unit {
-  let ws = fn() { here().workspace }
-  @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
-    @sf.group_node(s, fn(g) {
-      @sf.link_row_node(
-        g,
-        fn() { @sf.t("web-pages.vault.members.title") },
-        fn() { vault_members_dialog(core, @signals.untracked(here), @signals.untracked(rv)) },
+/// A discoverable shared workspace vault that the viewer has not joined yet: lets them request to join (silently
+/// preparing this device's box key) or cancel a pending join request.
+fn vault_discover_node(b : @view.View, core : Core, ws : () -> String, id : String, dv : () -> Json?) -> Unit {
+  let requested = fn() { flag(dv(), "requested") }
+  @sf.section_node(b, fn() { text(dv(), "name") }, fn(s) {
+    @sf.page_card_node(s, footed=true, fn(k) {
+      @sf.card_lines_node(
+        k,
+        fn() {
+          if requested() {
+            @sf.t("web-pages.vault.discover.pendingTitle")
+          } else {
+            @sf.t("web-pages.vault.discover.title")
+          }
+        },
         note=fn() {
-          let n = vault_member_subs(rv()).length()
-          @sf.t("web-pages.vault.members.count", args=[("n", n.to_string())])
+          if requested() {
+            let at = text(dv(), "requestedAtText")
+            if at != "" {
+              @sf.t("web-pages.vault.discover.pendingNote", args=[("at", at)])
+            } else {
+              @sf.t("web-pages.vault.discover.pendingNoteNoAt")
+            }
+          } else {
+            @sf.t("web-pages.vault.discover.note", args=[("n", count(dv(), "memberCount").to_string())])
+          }
         },
       )
+      @sf.card_foot_node(k, fn(f) {
+        f.pick(requested, fn(p, is_req) {
+          if is_req {
+            @sf.button_node(
+              p,
+              fn() { @sf.t("web-pages.vault.discover.cancel") },
+              fn() {
+                vault_act(
+                  core,
+                  @signals.untracked(ws),
+                  "cancelJoin",
+                  [("vault", str(id))],
+                  @sf.t("web-pages.vault.discover.cancelWhat"),
+                  then=fn(said) {
+                    if flag(Some(said), "alreadyMember") {
+                      (core.say)(@sf.t("web-pages.vault.discover.alreadyMember"))
+                    } else if flag(Some(said), "cancelled") {
+                      (core.say)(@sf.t("web-pages.vault.discover.cancelled"))
+                    } else {
+                      (core.say)(@sf.t("web-pages.vault.discover.cancelStale"))
+                    }
+                  },
+                )
+              },
+              tone=Ghost,
+              busy=fn() { is_doing(core, ["vault.cancelJoin"], [("workspace", ws()), ("vault", id)]) },
+              card_words=true,
+            )
+            |> ignore
+          } else {
+            @sf.button_node(
+              p,
+              fn() { @sf.t("web-pages.vault.discover.request") },
+              fn() {
+                vault_act(
+                  core,
+                  @signals.untracked(ws),
+                  "requestJoin",
+                  [("vault", str(id))],
+                  @sf.t("web-pages.vault.discover.requestWhat"),
+                  then=fn(said) {
+                    (core.say)(
+                      @sf.t(
+                        if flag(Some(said), "alreadyMember") {
+                          "web-pages.vault.discover.alreadyMember"
+                        } else {
+                          "web-pages.vault.discover.requested"
+                        },
+                      ),
+                    )
+                  },
+                )
+              },
+              tone=Primary,
+              busy=fn() { is_doing(core, ["vault.requestJoin"], [("workspace", ws()), ("vault", id)]) },
+              card_words=true,
+            )
+            |> ignore
+          }
+        })
+      })
+    })
+  })
+}
+
+///|
+/// A shared workspace vault section under its name: shared members row (opens member management dialog, highlighting
+/// pending join requests in amber), authorized devices row, and default longest approval row (for managers).
+fn vault_workspace_node(b : @view.View, core : Core, here : () -> Here, rv : () -> Json?) -> Unit {
+  let ws = fn() { here().workspace }
+  let has_requests = fn() { items(rv(), "joinRequests").length() > 0 }
+  let member_note = fn() {
+    let joined = vault_member_subs(rv()).length()
+    let req_n = items(rv(), "joinRequests").length()
+    let unjoined = count(rv(), "unjoinedCount")
+    let total = joined + unjoined
+    if req_n > 0 {
+      @sf.t("web-pages.vault.members.summaryPending", args=[
+        ("joined", joined.to_string()),
+        ("total", total.to_string()),
+        ("req", req_n.to_string()),
+      ])
+    } else if unjoined > 0 {
+      @sf.t("web-pages.vault.members.summaryUnjoined", args=[
+        ("joined", joined.to_string()),
+        ("total", total.to_string()),
+        ("unjoined", unjoined.to_string()),
+      ])
+    } else if has(rv(), "unjoinedCount") && total > 0 {
+      @sf.t("web-pages.vault.members.summaryAll", args=[("total", total.to_string())])
+    } else {
+      @sf.t("web-pages.vault.members.count", args=[("n", joined.to_string())])
+    }
+  }
+  @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
+    @sf.group_node(s, fn(g) {
+      g.pick(has_requests, fn(p, pending) {
+        @sf.link_row_node(
+          p,
+          fn() { @sf.t("web-pages.vault.members.title") },
+          fn() { vault_members_dialog(core, @signals.untracked(here), text(@signals.untracked(rv), "id")) },
+          note=member_note,
+          lacks=pending,
+        )
+      })
       vault_devices_row_node(g, core, here, rv, fn() { false })
       g.show(fn() { vault_can_manage(rv()) }, fn(l) {
         vault_lasts_row_node(l, core, ws, rv)
@@ -624,12 +760,21 @@ fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> 
             } else {
               @sf.t("web-pages.vault.asked")
             }
-            @settings.act(
+            vault_act(
               core,
+              @signals.untracked(ws),
+              "ask",
+              [("vault", str(text(v, "id")))],
               @sf.t("web-pages.vault.askWhat"),
-              "vault.ask",
-              obj([("workspace", str(@signals.untracked(ws))), ("vault", str(text(v, "id")))]),
-              done~,
+              then=fn(said) {
+                (core.say)(
+                  if count(Some(said), "asked") == 0 {
+                    @sf.t("web-pages.vault.alreadyKeyed")
+                  } else {
+                    done
+                  },
+                )
+              },
             )
           },
           tone=Primary,
@@ -840,7 +985,7 @@ pub fn vault_items_node(
 /// signing for another reason than its not being trusted (the core's `stateText`), this device verified once by a press
 /// ("confirm-signer": its `confirmText`) or the members still syncing ("lock-waiting"). None where the library is there
 /// to be used (in plain text on the station, or locked, signed and set up here).
-fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
+fn vault_first_keys(ws : String, v : Json?, include_discover? : Bool = false) -> Array[String]? {
   // (the words as they are now: read, so that what reads this follows them as they come or go)
   recovery_words_turned.get() |> ignore
   match v {
@@ -854,10 +999,21 @@ fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
     // theirs whatever the workspace; in safe mode, 安全 is where a device is approved)
     Some(_) if !flag(v, "canSign") && !flag(v, "locked") => Some(["personal-lock"])
     Some(_) if !flag(v, "canSign") => Some(["not-signer"])
-    // (not set up here while a vault of theirs is on already, on another device of theirs: the core sets this one up by
-    // itself, or 申请授权 does, so the library shows, the vault under its name with no key here yet; 开启 only where
-    // the person has none)
-    Some(_) if !flag(v, "setUp") && items(v, "vaults").is_empty() => Some(["off"])
+    // (not set up here — or only silently prepared a recovery-less BoxCert for a pending workspace join — while the
+    // person has no vaults yet: keep showing 开启 so applying to join never flips the personal section into 暂无密钥 /
+    // 全部密钥 / 已加密; on 密钥, discoverable workspace vaults appear below 开启 so unjoined members can apply or cancel)
+    Some(_) if (!flag(v, "setUp") || (has(v, "hasRecovery") && !flag(v, "hasRecovery"))) && items(v, "vaults").is_empty() => {
+      let out = ["off"]
+      if include_discover {
+        for row in items(v, "availableWorkspaceVaults") {
+          let id = text(Some(row), "id")
+          if id != "" {
+            out.push("discover/" + id)
+          }
+        }
+      }
+      Some(out)
+    }
     Some(_) => None
   }
 }
