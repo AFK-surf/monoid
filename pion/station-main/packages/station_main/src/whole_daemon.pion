@@ -764,7 +764,6 @@ fn emit_thread_sse_event(
     vault: None,
     sees_ws: Some(Some(ws)),
     sees_session: None,
-    device: None,
     sees_thread: None,
     sees_job: None,
   }
