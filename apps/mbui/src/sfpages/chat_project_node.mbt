@@ -219,7 +219,7 @@ pub fn chat_bar_project_attrs_node(
       },
     )
     |> ignore
-    // 2. Neutral `#tag` chips (zero colored dots!)
+    // 2. Bare `#tag` words: no ground at rest, a capsule only on hover, as the project's
     attrs.each(tags_now, fn(tag) { tag }, fn(slot, tag_sig) {
       let tag_text = fn() { "#" + tag_sig.get() }
       @sf.action_box_node(
@@ -238,7 +238,6 @@ pub fn chat_bar_project_attrs_node(
           .lines_up(Is(Some(Middle)))
           .radius(Is(999.0))
           .max_width(By(fn() { Some(@sf.node_sp(b, 104.0)) }))
-          .ground(By(fn() { @sf.theme().p.neutral_bg }))
           |> ignore
           @sf.hover_ground_node(b)
           @sf.focus_ring_node(b)
