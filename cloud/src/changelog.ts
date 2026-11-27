@@ -339,7 +339,7 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
     } catch (error) {
       console.error("changelog cache unavailable:", error);
     } finally {
-      if (popMatch && !popUsed) popMatch.body?.cancel().catch(() => {});
+      if (popMatch && !popUsed) await popMatch.body?.cancel().catch(() => {});
     }
   }
   let failure = null as { file: string; error: unknown } | null;
