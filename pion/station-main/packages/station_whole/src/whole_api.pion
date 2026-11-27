@@ -862,8 +862,13 @@ pub fn WholeApi::new(
       return Ok(station_api::SearchResult::{ groups: [], building: false })
     }
     let eff_lim = if limit <= 0 { 20 } else if limit > 200 { 200 } else { limit }
-    let eff_off = if offset < 0 { 0 } else if offset > 800 { 800 } else { offset }
-    let sql_limit = if eff_off + eff_lim + 1 > 1001 { 1001 } else { eff_off + eff_lim + 1 }
+    let eff_off = if offset < 0 { 0 } else { offset }
+    // Bounded search window (never silently clamp `offset > 800` back to 800, which causes infinite repeat pages).
+    let max_window = 1000
+    if eff_off >= max_window {
+      return Ok(station_api::SearchResult::{ groups: [], building: false })
+    }
+    let sql_limit = if eff_off + eff_lim + 1 > max_window + 1 { max_window + 1 } else { eff_off + eff_lim + 1 }
     let want_chat = if kinds.length() == 0 {
       true
     } else {
@@ -886,8 +891,7 @@ pub fn WholeApi::new(
     let docs : Array[station_api::SearchDoc] = []
     if want_chat {
       let seen_tids : Map[String, Bool] = Map::new()
-      let run_chat_q = fn(col_expr : String) -> Result[Unit, station_api::ApiError] {
-        let (t_like_sql, t_like_params) = build_like_clauses(col_expr, words, 3)
+      let run_chat_q = fn(t_like_sql : String, t_like_params : Array[base_codec::Json]) -> Result[Unit, station_api::ApiError] {
         let t_params : Array[base_codec::Json] = [
           base_codec::json_str(home_ws_str),
           base_codec::json_str(asker.workspace),
@@ -940,20 +944,30 @@ pub fn WholeApi::new(
           Err(e) => Err(station_api::ApiError::new(500, e.message))
         }
       }
-      // Bounded title-hit query first, then bounded title+project body query (title hits never truncated by newer body hits).
-      match run_chat_q("COALESCE(t.title, '')") {
+      // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+project query.
+      let (t1_sql, t1_params) = build_first_title_like_clauses(
+        "COALESCE(t.title, '')",
+        "COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')",
+        words,
+        3,
+      )
+      match run_chat_q(t1_sql, t1_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
-      match run_chat_q("COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')") {
+      let (t2_sql, t2_params) = build_like_clauses(
+        "COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')",
+        words,
+        3,
+      )
+      match run_chat_q(t2_sql, t2_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
     }
     if want_msg {
       let seen_msgs : Map[String, Bool] = Map::new()
-      let run_msg_q = fn(col_expr : String) -> Result[Unit, station_api::ApiError] {
-        let (e_like_sql, e_like_params) = build_like_clauses(col_expr, words, 3)
+      let run_msg_q = fn(e_like_sql : String, e_like_params : Array[base_codec::Json]) -> Result[Unit, station_api::ApiError] {
         let e_params : Array[base_codec::Json] = [
           base_codec::json_str(home_ws_str),
           base_codec::json_str(asker.workspace),
@@ -1010,12 +1024,23 @@ pub fn WholeApi::new(
           Err(e) => Err(station_api::ApiError::new(500, e.message))
         }
       }
-      // Bounded title-hit query first, then bounded body-hit query.
-      match run_msg_q("COALESCE(t.title, '')") {
+      // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+body query.
+      let (e1_sql, e1_params) = build_first_title_like_clauses(
+        "COALESCE(t.title, '')",
+        "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
+        words,
+        3,
+      )
+      match run_msg_q(e1_sql, e1_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
-      match run_msg_q("COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')") {
+      let (e2_sql, e2_params) = build_like_clauses(
+        "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
+        words,
+        3,
+      )
+      match run_msg_q(e2_sql, e2_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }

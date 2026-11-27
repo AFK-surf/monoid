@@ -36,6 +36,18 @@ pub struct McpHttpResponse {
   pub body : String
 }
 
+/// Count UTF-8 Unicode code points in `s` (non-continuation bytes `(b & 0xC0) != 0x80`).
+pub fn utf8_codepoint_len(s : String) -> Int {
+  let b = s.to_bytes()
+  let mut count = 0
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xC0) != 0x80 {
+      count = count + 1
+    }
+  }
+  count
+}
+
 /// Constant-time string equality over raw UTF-8 bytes (no early exit on byte mismatch).
 pub fn ct_eq_str(a : String, b : String) -> Bool {
   let ab = a.to_bytes()
@@ -1293,6 +1305,14 @@ fn WholeAgents::build_domain_handlers(
         Err(e) => return station_tools::error_reply(e)
       }
       let rt_opt = mcp_arg_str(args, "runtime")
+      match rt_opt {
+        Some(rt) => {
+          if station_drivers::runtime_kind_from_str(rt).is_none() {
+            return station_tools::error_reply("unsupported runtime: " + rt)
+          }
+        }
+        None => ()
+      }
       let model_opt = mcp_arg_str(args, "model")
       let effort_opt = mcp_arg_str(args, "effort")
       let speed_opt = mcp_arg_str(args, "speed")
@@ -1484,7 +1504,7 @@ fn WholeAgents::build_domain_handlers(
         Some(k) => k.trim()
         None => ""
       }
-      if req_key.length() > 120 {
+      if utf8_codepoint_len(req_key) > 120 {
         return station_tools::error_reply("chat_create key must be at most 120 characters")
       }
       let new_key = if req_key.length() > 0 {

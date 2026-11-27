@@ -749,7 +749,8 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   wc_assert(get_s.contains("\"job\":null"), "unstarted task.get job MUST be null: " + get_s)
   let work_dir = core.remote.session_work_dir("ws-rig", "peer-st-1", "sess-r4", clock.now_ms)
   let _ = (core.remote.fs.write_file_mode)(work_dir + "/../meta.json", "{\"meta\":12345}".to_bytes(), 384, false)
-  wc_assert(measure_dir_bytes(core.remote.fs, work_dir) == 0L, "empty work_dir must measure 0 bytes")
+  let (empty_b, empty_complete) = measure_dir_bytes(core.remote.fs, work_dir)
+  wc_assert(empty_b == 0L && empty_complete, "empty work_dir must measure (0, true)")
   let sz_s = match core.handle_peer_rpc(
     "peer-st-1",
     "ws-rig",
@@ -762,12 +763,62 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   }
   wc_assert(sz_s.contains("\"bytes\":0"), "empty session work_dir must report bytes:0: " + sz_s)
 
-  // 3. Corrupted `projects-info.json` MUST return Err (never silently wipe).
+  // 3. Corrupted OR whitespace-only existing `projects-info.json` MUST return Err (never silently wipe).
   let _ = (core.agents.jobs.fs.mkdir_p)("/mem/w15-r4/data")
   let _ = (core.agents.jobs.fs.write_file_mode)("/mem/w15-r4/data/projects-info.json", "{broken".to_bytes(), 384, false)
   wc_assert(
     read_projects_info_map(core.agents.jobs.fs, "/mem/w15-r4/data").is_err(),
     "corrupted projects-info.json MUST fail loudly",
   )
+  let _ = (core.agents.jobs.fs.write_file_mode)("/mem/w15-r4/data/projects-info.json", "   \n\t ".to_bytes(), 384, false)
+  wc_assert(
+    read_projects_info_map(core.agents.jobs.fs, "/mem/w15-r4/data").is_err(),
+    "whitespace-only existing projects-info.json MUST fail loudly",
+  )
+
+  // 4. R5: UTF-8 codepoint counting (120 hanzi passes, 121 hanzi rejected) & first-term title LIKE clauses.
+  let mut hanzi_120 = ""
+  for _ in 0..<120 {
+    hanzi_120 = hanzi_120 + "汉"
+  }
+  wc_assert(utf8_codepoint_len(hanzi_120) == 120, "120 hanzi must count as 120 code points")
+  wc_assert(utf8_codepoint_len(hanzi_120 + "字") == 121, "121 hanzi must count as 121 code points")
+  let (ft_sql, ft_params) = build_first_title_like_clauses("t.title", "t.title || e.text", ["First", "Second"], 3)
+  wc_assert(ft_sql.contains("lower(t.title) LIKE ?3") && ft_sql.contains("lower(t.title || e.text) LIKE ?4"), "first term must target title, rest target all")
+  wc_assert(ft_params.length() == 2, "expected 2 params")
+
+  // 5. R5: `measure_dir_bytes` truncation sets `complete == false`.
+  let base_fs = core.agents.jobs.fs
+  let trunc_fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(_p : String) -> Option[station_jobs::FsStat] {
+      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+    },
+    stat: fn(_p : String) -> Option[station_jobs::FsStat] {
+      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+    },
+    read_dir: fn(_p : String) -> Option[Array[String]] { Some(["sub1", "sub2"]) },
+    read_file: base_fs.read_file,
+    read_bytes: base_fs.read_bytes,
+    read_range: base_fs.read_range,
+    write_file: base_fs.write_file,
+    write_bytes: base_fs.write_bytes,
+    write_file_mode: base_fs.write_file_mode,
+    append_file: base_fs.append_file,
+    truncate_in_place: base_fs.truncate_in_place,
+    rename: base_fs.rename,
+    remove_file: base_fs.remove_file,
+    rmdir: base_fs.rmdir,
+    remove_dir_all: base_fs.remove_dir_all,
+    mkdir_p: base_fs.mkdir_p,
+    readlink: base_fs.readlink,
+    realpath: base_fs.realpath,
+    chmod: base_fs.chmod,
+    exists: base_fs.exists,
+    now_ms: base_fs.now_ms,
+  }
+  let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
+  wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
+
   core.shutdown_pre_handover()
 }

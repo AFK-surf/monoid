@@ -104,7 +104,7 @@ fn kept_send_to_json(ks : station_api::KeptSend) -> base_codec::Json {
 
 /// Read and parse `<data_dir>/projects-info.json` strictly:
 /// - Missing file -> `Ok(empty map)`
-/// - Existing file with invalid JSON or non-object root -> `Err(...)` (NEVER silently wipes).
+/// - Existing file that is empty/whitespace-only, invalid JSON, or non-object root -> `Err(...)` (NEVER silently wipes).
 pub fn read_projects_info_map(
   fs : station_jobs::FsPort,
   data_dir : String,
@@ -113,9 +113,6 @@ pub fn read_projects_info_map(
   match (fs.read_file)(info_path) {
     None => Ok([])
     Some(raw) => {
-      if raw.trim().length() == 0 {
-        return Ok([])
-      }
       match base_codec::json_parse(raw) {
         base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
           let out : Array[(String, base_codec::Json)] = []
@@ -295,6 +292,34 @@ pub fn build_like_clauses(
     }
     let pat = "%" + escape_sql_like(t) + "%"
     sql = sql + " AND lower(" + col_expr + ") LIKE ?" + idx.to_string() + " ESCAPE '\\'"
+    params.push(base_codec::json_str(pat))
+    idx = idx + 1
+  }
+  (sql, params)
+}
+
+/// Build SQL clauses requiring the FIRST term to match `title_expr` and all remaining terms to
+/// match `all_expr` (1:1 aligned with `station_api::search_pick`'s `titled` ranking rule).
+pub fn build_first_title_like_clauses(
+  title_expr : String,
+  all_expr : String,
+  terms : Array[String],
+  start_param : Int,
+) -> (String, Array[base_codec::Json]) {
+  let mut sql = ""
+  let params : Array[base_codec::Json] = []
+  let max_terms = if terms.length() > 16 { 16 } else { terms.length() }
+  let mut idx = start_param
+  let mut is_first = true
+  for i in 0..<max_terms {
+    let t = terms[i]
+    if t.length() == 0 {
+      continue
+    }
+    let pat = "%" + escape_sql_like(t) + "%"
+    let target_expr = if is_first { title_expr } else { all_expr }
+    is_first = false
+    sql = sql + " AND lower(" + target_expr + ") LIKE ?" + idx.to_string() + " ESCAPE '\\'"
     params.push(base_codec::json_str(pat))
     idx = idx + 1
   }
