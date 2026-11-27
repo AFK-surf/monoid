@@ -1763,23 +1763,31 @@ fn patch_chats_for_thread_bool_in_burst(
   sql::SqlResult::Ok(changed)
 }
 
-/// Ingest an initial or post-downgrade authoritative snapshot (`GET /chats` top-level JSON array
-/// `[...]` matching `station/mb/src/readops/viewerrows.mbt:249`, OR `{chats, threads, entries,
-/// sessions, jobs}` object wrapper) in a single `sql::Burst` transaction and emit coalesced
-/// `CoreEvent` notifications to `FrameOutbox`.
-/// When `prune_missing == true`, deletes ALL stale cached rows for `self.station` absent from the
-/// authoritative chats list inside the SAME SQLite transaction BEFORE returning `Ok`!
+/// Validate that a `GET /chats` snapshot payload is either a top-level JSON array `[...]`
+/// (`station/mb/src/readops/viewerrows.mbt:249`) OR an object containing a `"chats"` array.
+/// Empty `{}` or malformed payloads return `false` and must never falsely confirm `chats`.
+pub fn is_valid_chats_snapshot_payload(snapshot : base_codec::Json) -> Bool {
+  match snapshot {
+    base_codec::Json::Arr(_) => true
+    base_codec::Json::Obj(_) => match base_codec::json_get(snapshot, "chats") {
+      Some(base_codec::Json::Arr(_)) => true
+      _ => false
+    }
+    _ => false
+  }
+}
+
+/// Ingest an initial or refreshed snapshot (`GET /chats` top-level JSON array `[...]` matching
+/// `station/mb/src/readops/viewerrows.mbt:249`, OR `{chats, threads, entries, sessions, jobs}`
+/// object wrapper) in a single `sql::Burst` transaction and emit coalesced `CoreEvent` notifications.
+/// Preserves local `changing`, `outbox`, and archived chats without scanning `chat` whole.
 pub fn StationEvents::apply_snapshot(
   self : StationEvents,
   snapshot : base_codec::Json,
-  prune_missing : Bool = false,
 ) -> sql::SqlResult[Int] {
   let changed_chats : Array[String] = []
   let added_entries : Array[(Int, store::Entry, Option[String])] = []
   let snap_events : Array[CoreEvent] = []
-  let keep_chat_ids : Map[String, Bool] = Map::new()
-  let keep_sessions : Map[String, Bool] = Map::new()
-  let keep_threads : Map[Int, Bool] = Map::new()
   let (has_chats_arr, chats_arr) : (Bool, Array[base_codec::Json]) = match snapshot {
     base_codec::Json::Arr(xs) => (true, xs)
     base_codec::Json::Obj(_) => match base_codec::json_get(snapshot, "chats") {
@@ -1787,13 +1795,6 @@ pub fn StationEvents::apply_snapshot(
       _ => (false, [])
     }
     _ => (false, [])
-  }
-  let mut has_md_kept = false
-  if prune_missing && has_chats_arr {
-    match self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'md_kept'") {
-      sql::SqlResult::Ok(rows) => { has_md_kept = rows.length() > 0 }
-      sql::SqlResult::Err(_) => ()
-    }
   }
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
@@ -1805,16 +1806,6 @@ pub fn StationEvents::apply_snapshot(
           sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
           sql::SqlResult::Ok(cid) => {
             changed_chats.push(cid)
-            keep_chat_ids.set(cid, true)
-            keep_sessions.set(cid, true)
-            match j_opt_str(item, "session") {
-              Some(sk) => if sk.length() > 0 { keep_sessions.set(sk, true) }
-              None => ()
-            }
-            match j_opt_u64(item, "thread") {
-              Some(th) => keep_threads.set(th.to_int(), true)
-              None => ()
-            }
             count += 1
             match j_opt_str(item, "clientKey") {
               Some(ck) => {
@@ -1830,10 +1821,6 @@ pub fn StationEvents::apply_snapshot(
     match base_codec::json_get(snapshot, "threads") {
       Some(base_codec::Json::Arr(threads)) => {
         for i in 0..<threads.length() {
-          match j_opt_u64(threads[i], "id") {
-            Some(th) => keep_threads.set(th.to_int(), true)
-            None => ()
-          }
           match put_thread_in_burst(b, self.station, threads[i], Some(1)) {
             sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
             sql::SqlResult::Ok(_) => count += 1
@@ -1882,7 +1869,6 @@ pub fn StationEvents::apply_snapshot(
           match self.put_summary_in_burst(b, sessions[i]) {
             sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
             sql::SqlResult::Ok(Some((skey, running))) => {
-              keep_sessions.set(skey, true)
               snap_events.push(CoreEvent::SessionChanged(self.station, skey, running))
               count += 1
             }
@@ -1928,185 +1914,12 @@ pub fn StationEvents::apply_snapshot(
       }
       _ => ()
     }
-    // Atomic post-downgrade pruning inside the SAME transaction: scrub every cached row on `self.station`
-    // that is NOT present in the authoritative post-downgrade chats snapshot BEFORE unlocking the read gate!
-    if prune_missing && has_chats_arr {
-      let st_p = base_codec::json_str(self.station)
-      match b.all("SELECT archived, id, thread, session FROM chat WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(crows) => {
-          for i in 0..<crows.length() {
-            let arch = sql::col_int(crows[i], 0)
-            let cid = sql::col_text(crows[i], 1)
-            if keep_chat_ids.get(cid).is_none() {
-              match b.run("DELETE FROM chat WHERE station = ? AND archived = ? AND id = ?", params=[
-                st_p,
-                base_codec::json_int(arch),
-                base_codec::json_str(cid),
-              ]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      match b.all("SELECT key FROM session WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(srows) => {
-          for i in 0..<srows.length() {
-            let sk = sql::col_text(srows[i], 0)
-            if keep_sessions.get(sk).is_none() {
-              let sk_p = base_codec::json_str(sk)
-              match b.run("DELETE FROM session WHERE station = ? AND key = ?", params=[st_p, sk_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM transcript WHERE station = ? AND session = ?", params=[st_p, sk_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM first WHERE station = ? AND session = ?", params=[st_p, sk_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      match b.all("SELECT id FROM thread WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(trows) => {
-          for i in 0..<trows.length() {
-            let th = sql::col_int(trows[i], 0)
-            if keep_threads.get(th).is_none() {
-              let th_p = base_codec::json_int(th)
-              match b.run("DELETE FROM entry WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM said WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM outbox WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM thread_member WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM thread WHERE station = ? AND id = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      // Also prune orphan `entry`/`said`/`thread_member` rows whose `thread` row was never created.
-      match b.all("SELECT DISTINCT thread FROM entry WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(erows) => {
-          for i in 0..<erows.length() {
-            let th = sql::col_int(erows[i], 0)
-            if keep_threads.get(th).is_none() {
-              let th_p = base_codec::json_int(th)
-              match b.run("DELETE FROM entry WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match b.run("DELETE FROM said WHERE station = ? AND thread = ?", params=[st_p, th_p]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      match b.all("SELECT session, thread FROM thread_member WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(tmrows) => {
-          for i in 0..<tmrows.length() {
-            let sk = sql::col_text(tmrows[i], 0)
-            let th = sql::col_int(tmrows[i], 1)
-            if keep_sessions.get(sk).is_none() || keep_threads.get(th).is_none() {
-              match b.run("DELETE FROM thread_member WHERE station = ? AND session = ? AND thread = ?", params=[
-                st_p,
-                base_codec::json_str(sk),
-                base_codec::json_int(th),
-              ]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      match b.all("SELECT id, session, chat FROM job WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(jrows) => {
-          for i in 0..<jrows.length() {
-            let jid = sql::col_text(jrows[i], 0)
-            let j_sess = sql::col_text(jrows[i], 1)
-            let j_chat = sql::col_text(jrows[i], 2)
-            let kept = (j_sess.length() > 0 && keep_sessions.get(j_sess).is_some()) ||
-            (j_chat.length() > 0 && keep_chat_ids.get(j_chat).is_some())
-            if !kept {
-              match b.run("DELETE FROM job WHERE station = ? AND id = ?", params=[st_p, base_codec::json_str(jid)]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-            }
-          }
-        }
-      }
-      match b.run("DELETE FROM changing WHERE station = ?", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(_) => ()
-      }
-      match b.run("DELETE FROM list WHERE station = ? AND list != 'chats'", params=[st_p]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(_) => ()
-      }
-      if has_md_kept {
-        match b.run("DELETE FROM md_kept WHERE station = ?", params=[st_p]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => ()
-        }
-      }
-    }
     sql::SqlResult::Ok(count)
   })
   match res {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(count) => {
-      if prune_missing && has_chats_arr {
-        let sks = self.sessions.keys()
-        for i in 0..<sks.length() {
-          if keep_sessions.get(sks[i]).is_none() {
-            self.sessions.remove(sks[i])
-          }
-        }
-        let jks = self.jobs.keys()
-        for i in 0..<jks.length() {
-          match self.jobs.get(jks[i]) {
-            Some(js) => {
-              let kept = match (js.session, js.chat) {
-                (Some(s), _) if keep_sessions.get(s).is_some() => true
-                (_, Some(c)) if keep_chat_ids.get(c).is_some() => true
-                _ => false
-              }
-              if !kept {
-                self.jobs.remove(jks[i])
-              }
-            }
-            None => ()
-          }
-        }
-      }
-      if changed_chats.length() > 0 || (prune_missing && has_chats_arr) {
+      if changed_chats.length() > 0 {
         self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
       }
       for i in 0..<added_entries.length() {

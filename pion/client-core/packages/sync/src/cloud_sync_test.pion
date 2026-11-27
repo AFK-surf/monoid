@@ -265,21 +265,31 @@ test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential
   rt.advance(1)
   debug_assert(calls.length() == 2, "retried ws.open at 1000ms")
 
-  // Second connect succeeds -> enters ws.next loop
+  // Second connect succeeds -> triggers initial `/v1/me` reconcile AND enters ws.next loop
   let (open_id2, _, _) = calls[1]
   sh.answer(open_id2, base_codec::json_obj([("id", base_codec::json_int(55))]))
   let _ = rt.run_ready()
-  debug_assert(calls.length() == 3, "ws.next #1 issued")
-  let (next_id1, next_op1, _) = calls[2]
-  debug_assert(next_op1 == "ws.next", "ws.next")
+  let mut saw_initial_me = false
+  let mut next_id1 = 0.to_int64()
+  for i in 2..<calls.length() {
+    let (cid, cop, cargs) = calls[i]
+    if cop == "fetch" && j_str(cargs, "url") == "http://127.0.0.1:8080/v1/me" {
+      saw_initial_me = true
+    }
+    if cop == "ws.next" {
+      next_id1 = cid
+    }
+  }
+  debug_assert(saw_initial_me && next_id1 > 0.to_int64(), "initial /v1/me reconcile and ws.next #1 issued")
 
   // Deliver workspace event -> triggers automatic GET /v1/workspaces/ws-live refresh
+  let pre_ev_n = calls.length()
   sh.answer(next_id1, base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"ws-live\"}"))]))
   let _ = rt.run_ready()
   debug_assert(seen_events.length() == 1 && seen_events[0] == "ws:ws-live", "received workspace event")
   let mut saw_ws_fetch = false
   let mut next_id2 = 0.to_int64()
-  for i in 3..<calls.length() {
+  for i in pre_ev_n..<calls.length() {
     let (cid, cop, cargs) = calls[i]
     if cop == "fetch" && j_str(cargs, "url") == "http://127.0.0.1:8080/v1/workspaces/ws-live" {
       saw_ws_fetch = true

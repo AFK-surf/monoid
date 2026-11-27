@@ -196,8 +196,8 @@ pub fn parse_cloud_me_strict(j : base_codec::Json) -> Result[CloudMe, String] {
       _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "] must be object")
     }
     let wid = match base_codec::json_get(w, "id") {
-      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else {
-        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].id is empty")
+      Some(base_codec::Json::Str(s)) => if is_valid_cloud_id(s) { s } else {
+        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].id is invalid")
       }
       _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].id must be non-empty string")
     }
@@ -206,8 +206,10 @@ pub fn parse_cloud_me_strict(j : base_codec::Json) -> Result[CloudMe, String] {
     }
     seen_ws.set(wid, true)
     let wname = match base_codec::json_get(w, "name") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].name must be string")
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else {
+        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].name is empty")
+      }
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].name must be non-empty string")
     }
     let wrole = match base_codec::json_get(w, "role") {
       Some(base_codec::Json::Str(s)) => if is_valid_workspace_role(s) { s } else {
@@ -276,8 +278,8 @@ pub fn parse_cloud_workspace_strict(
     _ => return Err("malformed workspace: root must be object")
   }
   let parsed_id = match base_codec::json_get(j, "id") {
-    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else {
-      return Err("malformed workspace: id is empty")
+    Some(base_codec::Json::Str(s)) => if is_valid_cloud_id(s) { s } else {
+      return Err("malformed workspace: id is invalid")
     }
     _ => return Err("malformed workspace: missing string id")
   }
@@ -796,23 +798,39 @@ fn ws_read_loop_k(
   })
 }
 
+fn is_ws_unauthorized_err(e : effect::EffectError) -> Bool {
+  match e {
+    effect::EffectError::Custom(m) => {
+      let low = ascii_lower(m)
+      low.contains("401") || low.contains("unauthorized")
+    }
+    _ => false
+  }
+}
+
 fn events_ws_loop_k(
   sh : shell::Shell,
-  origin : String,
-  token : String,
+  origin_getter : () -> String,
+  token_getter : () -> String,
   on_event : (CloudEvent) -> Unit,
   attempt : Int,
-  has_opened : Bool,
-  on_reconnect : Option[() -> Unit],
+  on_open : Option[() -> Unit],
+  on_unauthorized : Option[() -> Unit],
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
   if effect::is_interrupted() {
     k(effect::Exit::Interrupted)
     return
   }
-  let url = cloud_events_ws_url(origin)
-  let protocols : Array[String] = if token.length() > 0 {
-    ["stillfail-events", "stillfail-token." + token]
+  let cur_origin = origin_getter()
+  let cur_token = token_getter()
+  if cur_origin.length() == 0 {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let url = cloud_events_ws_url(cur_origin)
+  let protocols : Array[String] = if cur_token.length() > 0 {
+    ["stillfail-events", "stillfail-token." + cur_token]
   } else {
     ["stillfail-events"]
   }
@@ -829,22 +847,27 @@ fn events_ws_loop_k(
           }
           k(effect::Exit::Interrupted)
         }
-        effect::Exit::Failed(_) => {
+        effect::Exit::Failed(e) => {
+          if is_ws_unauthorized_err(e) {
+            match on_unauthorized {
+              Some(cb) => cb()
+              None => ()
+            }
+          }
           // timer: exponential backoff on failed cloud `/v1/events` WebSocket connect (1000ms..60000ms).
           let delay = cloud_ws_backoff_ms(attempt)
           effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
             match sex {
               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              _ => events_ws_loop_k(sh, origin, token, on_event, attempt + 1, has_opened, on_reconnect, k)
+              _ => events_ws_loop_k(sh, origin_getter, token_getter, on_event, attempt + 1, on_open, on_unauthorized, k)
             }
           })
         }
         effect::Exit::Succeeded(ws_id) => {
-          if has_opened {
-            match on_reconnect {
-              Some(cb) => cb()
-              None => ()
-            }
+          // Reconcile `/v1/me` on BOTH initial WS connect AND every reconnect!
+          match on_open {
+            Some(cb) => cb()
+            None => ()
           }
           let opened_at = sh.rt.now()
           ws_read_loop_k(sh, ws_id, on_event, fn(rex : effect::Exit[Unit]) -> Unit {
@@ -858,7 +881,7 @@ fn events_ws_loop_k(
                 effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
                   match sex {
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                    _ => events_ws_loop_k(sh, origin, token, on_event, next_attempt + 1, true, on_reconnect, k)
+                    _ => events_ws_loop_k(sh, origin_getter, token_getter, on_event, next_attempt + 1, on_open, on_unauthorized, k)
                   }
                 })
               }
@@ -871,6 +894,22 @@ fn events_ws_loop_k(
   )
 }
 
+/// Start consuming `/v1/events` WebSocket with dynamic origin/token getters evaluated on EVERY
+/// connect and reconnect, invoking `on_open` on initial connect and every reconnect, and
+/// `on_unauthorized` when connect fails with 401.
+pub fn start_events_ws_dynamic(
+  sh : shell::Shell,
+  origin_getter : () -> String,
+  token_getter : () -> String,
+  on_event : (CloudEvent) -> Unit,
+  on_open : Option[() -> Unit] = None,
+  on_unauthorized : Option[() -> Unit] = None,
+) -> effect::Fiber[Unit] {
+  sh.rt.fork_quiet_named("cloud-events-ws", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    events_ws_loop_k(sh, origin_getter, token_getter, on_event, 0, on_open, on_unauthorized, k)
+  })
+}
+
 /// Start consuming `/v1/events` WebSocket on a scoped fiber of `sh.rt` with exponential backoff (`1000ms..60000ms`).
 pub fn start_events_ws(
   sh : shell::Shell,
@@ -879,8 +918,47 @@ pub fn start_events_ws(
   on_event : (CloudEvent) -> Unit,
   on_reconnect : Option[() -> Unit] = None,
 ) -> effect::Fiber[Unit] {
-  sh.rt.fork_quiet_named("cloud-events-ws", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    events_ws_loop_k(sh, origin, token, on_event, 0, false, on_reconnect, k)
+  start_events_ws_dynamic(
+    sh,
+    fn() -> String { origin },
+    fn() -> String { token },
+    on_event,
+    on_open=on_reconnect,
+  )
+}
+
+/// Structured-error fetch for `GET <origin>/v1/me`, returning exact HTTP status in `CloudHttpError`
+/// so 401 triggers session-conditioned token refresh and never gets silently dropped.
+pub fn fetch_me_structured_k(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  k : (effect::Exit[Result[CloudMe, CloudHttpError]]) -> Unit,
+) -> Unit {
+  let url = join_base_url(origin, "/v1/me")
+  sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Succeeded(Err(parse_cloud_http_error(resp.status, resp.body))))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed /v1/me json: " + e)))
+            return
+          }
+        }
+        match parse_cloud_me_strict(j) {
+          Ok(me) => k(effect::Exit::Succeeded(Ok(me)))
+          Err(msg) => k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+        }
+      }
+    }
   })
 }
 
@@ -920,37 +998,87 @@ pub fn fetch_workspace_structured_k(
   })
 }
 
-/// Stateful Cloud Sync coordinator holding epoch-tagged credential cache and `/v1/events` WebSocket fiber.
+/// Stateful Cloud Sync coordinator bound immutably to one account DB `(bound_sub, bound_session)`,
+/// holding epoch-tagged credential cache and dynamic-token `/v1/events` WebSocket fiber.
 pub struct CloudSync {
   pub sh : shell::Shell
   pub db : sql::Sql
   mut origin : String
   mut token : String
+  mut bound_sub : String
+  mut bound_session : String
   cred_cache : Map[String, (MemberCredential, Int64)]
   mut ws_fiber : Option[effect::Fiber[Unit]]
   mut cred_epoch_getter : Option[(String) -> Int64]
   mut seq_provider : Option[() -> Int64]
   mut on_me_fetched : Option[(CloudMe, Int64) -> Unit]
   mut on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit]
-  mut on_workspace_revoked_err : Option[(String, CloudHttpError) -> Unit]
   mut on_unauthorized_err : Option[(CloudHttpError) -> Unit]
 }
 
-pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
+pub fn CloudSync::new(
+  sh : shell::Shell,
+  db : sql::Sql,
+  origin : String,
+  token : String = "",
+  bound_sub : String = "",
+  bound_session : String = "",
+) -> CloudSync {
   CloudSync::{
     sh: sh,
     db: db,
     origin: origin,
     token: token,
+    bound_sub: bound_sub,
+    bound_session: bound_session,
     cred_cache: Map::new(),
     ws_fiber: None,
     cred_epoch_getter: None,
     seq_provider: None,
     on_me_fetched: None,
     on_workspace_fetched: None,
-    on_workspace_revoked_err: None,
     on_unauthorized_err: None,
   }
+}
+
+/// Immutably bind this live `CloudSync` to `(sub, session)`.
+/// Refuses switching to a different `sub` (returns `Err("account_sub_mismatch")`, 0 side effects).
+pub fn CloudSync::bind_account_context(
+  self : CloudSync,
+  sub : String,
+  session : String = "",
+) -> Result[Unit, String] {
+  if sub.length() == 0 {
+    return Err("account_sub_mismatch: empty account sub")
+  }
+  if self.bound_sub.length() > 0 && self.bound_sub != sub {
+    return Err("account_sub_mismatch: expected " + self.bound_sub + ", got " + sub)
+  }
+  self.bound_sub = sub
+  if session.length() > 0 {
+    self.bound_session = session
+  }
+  Ok(())
+}
+
+pub fn CloudSync::bound_sub(self : CloudSync) -> String {
+  self.bound_sub
+}
+
+pub fn CloudSync::bound_session(self : CloudSync) -> String {
+  self.bound_session
+}
+
+pub fn CloudSync::token(self : CloudSync) -> String {
+  self.token
+}
+
+pub fn CloudSync::is_events_ws_running(self : CloudSync) -> Bool {
+  self.ws_fiber.is_some()
+}
+
+fn CloudSync::context_matches(self : CloudSync, orig_sub : String, orig_session : String) -> Bool {
+  self.bound_sub == orig_sub && self.bound_session == orig_session
 }
 
 pub fn CloudSync::set_cred_epoch_getter(self : CloudSync, getter : (String) -> Int64) -> Unit {
@@ -979,12 +1107,10 @@ pub fn CloudSync::set_commit_hooks(
   self : CloudSync,
   on_me_fetched : Option[(CloudMe, Int64) -> Unit] = None,
   on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit] = None,
-  on_workspace_revoked_err : Option[(String, CloudHttpError) -> Unit] = None,
   on_unauthorized_err : Option[(CloudHttpError) -> Unit] = None,
 ) -> Unit {
   self.on_me_fetched = on_me_fetched
   self.on_workspace_fetched = on_workspace_fetched
-  self.on_workspace_revoked_err = on_workspace_revoked_err
   self.on_unauthorized_err = on_unauthorized_err
 }
 
@@ -1022,7 +1148,6 @@ pub fn CloudSync::fetch_me_k(
   k : (effect::Exit[CloudMe]) -> Unit,
   persist : Bool = true,
 ) -> Unit {
-  // Never bypass registered commit hooks with direct SQLite persistence.
   let eff_persist = persist && self.on_me_fetched.is_none()
   fetch_me_k(self.sh, self.origin, self.token, self.db, k, persist=eff_persist)
 }
@@ -1033,7 +1158,6 @@ pub fn CloudSync::fetch_workspace_k(
   k : (effect::Exit[CloudWorkspace]) -> Unit,
   persist : Bool = true,
 ) -> Unit {
-  // Never bypass registered commit hooks with direct SQLite persistence.
   let eff_persist = persist && self.on_workspace_fetched.is_none()
   fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k, persist=eff_persist)
 }
@@ -1048,7 +1172,7 @@ pub fn CloudSync::refresh_token_k(
 }
 
 /// Get a cached member credential or fetch & cache a fresh one when missing/expired (`expires_at <= now_sec + 60`).
-/// Captures `cred_epoch(ws_id)` BEFORE async I/O and rejects/refuses caching if `cred_epoch` advanced in-flight!
+/// Captures `(cred_epoch(ws_id), bound_sub, bound_session)` BEFORE async I/O and rejects if changed in-flight!
 pub fn CloudSync::fetch_member_credential_k(
   self : CloudSync,
   ws_id : String,
@@ -1059,6 +1183,8 @@ pub fn CloudSync::fetch_member_credential_k(
 ) -> Unit {
   let cache_key = ws_id + "/" + device
   let captured_epoch = self.current_cred_epoch(ws_id)
+  let orig_sub = self.bound_sub
+  let orig_session = self.bound_session
   if fresh {
     self.cred_cache.remove(cache_key)
   } else {
@@ -1073,6 +1199,10 @@ pub fn CloudSync::fetch_member_credential_k(
     }
   }
   fetch_member_credential_k(self.sh, self.origin, self.token, ws_id, device, fn(ex : effect::Exit[MemberCredential]) -> Unit {
+    if !self.context_matches(orig_sub, orig_session) {
+      k(effect::Exit::Failed(effect::EffectError::Custom("account_context_changed")))
+      return
+    }
     match ex {
       effect::Exit::Succeeded(c) => {
         if self.current_cred_epoch(ws_id) != captured_epoch {
@@ -1088,30 +1218,50 @@ pub fn CloudSync::fetch_member_credential_k(
   })
 }
 
-fn CloudSync::trigger_me_reconcile(self : CloudSync) -> Unit {
+/// Reconcile `/v1/me` through the single atomic commit hook, capturing `(orig_sub, orig_session, req_seq)`
+/// BEFORE async I/O and routing HTTP 401 to `on_unauthorized_err` (never silently dropped).
+pub fn CloudSync::trigger_me_reconcile(self : CloudSync) -> Unit {
   let req_seq = self.next_req_seq()
+  let orig_sub = self.bound_sub
+  let orig_session = self.bound_session
+  let cur_origin = self.origin
+  let cur_token = self.token
   let _ = self.sh.rt.fork_quiet_named("cloud-refresh-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    fetch_me_k(
+    fetch_me_structured_k(
       self.sh,
-      self.origin,
-      self.token,
-      self.db,
-      fn(ex : effect::Exit[CloudMe]) -> Unit {
-        match (ex, self.on_me_fetched) {
-          (effect::Exit::Succeeded(me), Some(cb)) => cb(me, req_seq)
+      cur_origin,
+      cur_token,
+      fn(ex : effect::Exit[Result[CloudMe, CloudHttpError]]) -> Unit {
+        if !self.context_matches(orig_sub, orig_session) {
+          fk(effect::Exit::Succeeded(()))
+          return
+        }
+        match ex {
+          effect::Exit::Succeeded(Ok(me)) => match self.on_me_fetched {
+            Some(cb) => cb(me, req_seq)
+            None => ()
+          }
+          effect::Exit::Succeeded(Err(herr)) => {
+            if herr.status == 401 {
+              match self.on_unauthorized_err {
+                Some(cb) => cb(herr)
+                None => ()
+              }
+            }
+          }
           _ => ()
         }
         fk(effect::Exit::Succeeded(()))
       },
-      persist=false,
     )
   })
 }
 
-/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` on `workspaces` events and on
-/// WS reconnect (reconciling missed membership changes), and `/v1/workspaces/<ws>` on `workspace` events,
-/// routing EVERY fetched document through commit hooks with monotonic `req_seq` captured BEFORE I/O
-/// and checking structured HTTP status codes (`403`/`404`/`401`) without string matching.
+/// Start `/v1/events` WebSocket with dynamic `self.origin`/`self.token` reading on every connect/reconnect:
+/// - Initial connect & every reconnect trigger `/v1/me` reconcile.
+/// - WS 401 and `/v1/me` 401 invoke `on_unauthorized_err`.
+/// - `WorkspaceChanged` 403/404 triggers `/v1/me` reconcile (NEVER directly calls `drop_workspace`!).
+/// - Every callback verifies `(orig_sub, orig_session)` still matches before mutating state or reporting errors.
 pub fn CloudSync::start_events_ws(
   self : CloudSync,
   on_event : (CloudEvent) -> Unit,
@@ -1121,24 +1271,35 @@ pub fn CloudSync::start_events_ws(
     Some(_) => return
     None => ()
   }
-  let fiber = start_events_ws(
+  let orig_sub = self.bound_sub
+  let orig_session = self.bound_session
+  let fiber = start_events_ws_dynamic(
     self.sh,
-    self.origin,
-    self.token,
+    fn() -> String { self.origin },
+    fn() -> String { self.token },
     fn(ev : CloudEvent) -> Unit {
+      if !self.context_matches(orig_sub, orig_session) {
+        return
+      }
       match ev {
         CloudEvent::WorkspacesChanged(_) => {
           self.trigger_me_reconcile()
         }
         CloudEvent::WorkspaceChanged(wid, _) => {
           let req_seq = self.next_req_seq()
+          let cur_origin = self.origin
+          let cur_token = self.token
           let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
             fetch_workspace_structured_k(
               self.sh,
-              self.origin,
-              self.token,
+              cur_origin,
+              cur_token,
               wid,
               fn(ex : effect::Exit[Result[CloudWorkspace, CloudHttpError]]) -> Unit {
+                if !self.context_matches(orig_sub, orig_session) {
+                  fk(effect::Exit::Succeeded(()))
+                  return
+                }
                 match ex {
                   effect::Exit::Succeeded(Ok(ws)) => match self.on_workspace_fetched {
                     Some(cb) => cb(ws, req_seq)
@@ -1146,10 +1307,9 @@ pub fn CloudSync::start_events_ws(
                   }
                   effect::Exit::Succeeded(Err(herr)) => {
                     if herr.status == 403 || herr.status == 404 {
-                      match self.on_workspace_revoked_err {
-                        Some(cb) => cb(wid, herr)
-                        None => ()
-                      }
+                      // NEVER drop_workspace directly on 403/404 (prevents stale 403/404 from wiping rejoined
+                      // workspaces or account-level `403 not_beta` from wiping valid workspaces): reconcile `/v1/me`!
+                      self.trigger_me_reconcile()
                     } else if herr.status == 401 {
                       match self.on_unauthorized_err {
                         Some(cb) => cb(herr)
@@ -1168,15 +1328,36 @@ pub fn CloudSync::start_events_ws(
       }
       on_event(ev)
     },
-    on_reconnect=Some(fn() -> Unit {
+    on_open=Some(fn() -> Unit {
+      if !self.context_matches(orig_sub, orig_session) {
+        return
+      }
       self.trigger_me_reconcile()
       match on_reconnect {
         Some(cb) => cb()
         None => ()
       }
     }),
+    on_unauthorized=Some(fn() -> Unit {
+      if !self.context_matches(orig_sub, orig_session) {
+        return
+      }
+      match self.on_unauthorized_err {
+        Some(cb) => cb(CloudHttpError::{ status: 401, code: "unauthorized", message: "events ws unauthorized" })
+        None => ()
+      }
+    }),
   )
   self.ws_fiber = Some(fiber)
+}
+
+pub fn CloudSync::restart_events_ws(
+  self : CloudSync,
+  on_event : (CloudEvent) -> Unit,
+  on_reconnect : Option[() -> Unit] = None,
+) -> Unit {
+  self.stop()
+  self.start_events_ws(on_event, on_reconnect=on_reconnect)
 }
 
 pub fn CloudSync::stop(self : CloudSync) -> Unit {

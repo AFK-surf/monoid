@@ -180,23 +180,32 @@ test "Slice 2B-2: account-scoped pending_purges isolates Account A failed purge 
   debug_assert(!core_a.can_read_workspace("ws-shared"), "Account A stays gated after SQLite failure")
   debug_assert(core_a.membership.has_pending_purge("ws-shared"), "Account A latches pending_purge")
 
-  // Verify persisted host `device/pending_purges` is strictly outer-keyed by `sub-A` (NEVER flat!).
-  let host_doc = match host_storage.get(HOST_PENDING_PURGES_KEY) {
+  // Verify persisted host pending purges is stored under Account A's dedicated per-account key
+  // `device/pending_purges/sub-A` (isolated from Account B's `device/pending_purges/sub-B`)!
+  let key_a = host_pending_purges_key_for_sub("sub-A")
+  let key_b = host_pending_purges_key_for_sub("sub-B")
+  let host_doc = match host_storage.get(key_a) {
     Some(d) => d
-    None => panic("expected host device/pending_purges persisted")
+    None => panic("expected host per-account pending_purges persisted")
   }
   let host_json = base_codec::json_stringify(host_doc)
-  debug_assert(host_json.contains("\"sub-A\"") && host_json.contains("\"ws-shared\""), "host doc keyed by sub-A")
-  debug_assert(extract_account_pending_purges(host_doc, "sub-B").keys().length() == 0, "sub-B sees 0 pending purges from sub-A")
+  debug_assert(host_json.contains("\"ws-shared\""), "sub-A host key records ws-shared")
+  debug_assert(host_storage.get(key_b).is_none(), "sub-B host key untouched")
 
-  // Flat non-account-scoped JSON must NEVER trigger purges for any account!
+  // Flat non-account-scoped JSON must NEVER trigger purges for any account via nested extractor!
   let flat_bad = base_codec::json_obj([("ws-shared", base_codec::json_arr([base_codec::json_str("ws-shared/st-1")]))])
-  debug_assert(extract_account_pending_purges(flat_bad, "ws-shared").keys().length() == 0, "flat device doc ignored")
+  debug_assert(extract_account_pending_purges(flat_bad, "ws-shared").keys().length() == 0, "flat device doc ignored by nested extractor")
 
-  // Account B opens the SAME workspace `ws-shared` with the SAME shared host `device/pending_purges`:
+  // Account B opens the SAME workspace `ws-shared` reading ONLY its own host key `device/pending_purges/sub-B`:
   // MUST NOT be gated or purged!
   let core_b = make_membership_core(rt, sim_b, "ws-shared", "ws-shared/st-1")
-  let _ = core_b.set_db_account_sub("sub-B", host_purges_doc=Some(host_doc))
+  core_b.membership.set_host_pending_purges_reader(fn(k : String) -> HostStorageRead {
+    match host_storage.get(k) {
+      Some(d) => HostStorageRead::Found(d)
+      None => HostStorageRead::Absent
+    }
+  })
+  let _ = core_b.set_db_account_sub("sub-B")
   core_b.set_viewer("bob@still.fail", sub="sub-B")
   seed_workspace_and_station(core_b.db, "ws-shared", "Shared Corp", "ws-shared/st-1", "st-1", "c-b", 2, "bob-legit-data")
   let retry_b = core_b.retry_pending_purges()
@@ -329,13 +338,17 @@ test "Slice 2B-3: strict /v1/me & /v1/workspaces validation, atomic seq ordering
   let mut reconnect_hits = 0
   cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {}, on_reconnect=Some(fn() -> Unit { reconnect_hits += 1 }))
   let _ = ws_rt.run_ready()
-  // Open #1 succeeds -> no reconnect reconcile yet
+  // Open #1 succeeds -> triggers initial `/v1/me` reconcile!
   let (open1, _, _) = ws_calls[0]
   ws_sh.answer(open1, base_codec::json_obj([("id", base_codec::json_int(1))]))
   let _ = ws_rt.run_ready()
-  debug_assert(reconnect_hits == 0, "initial open is not a reconnect")
-  // Close #1 -> advance 1000ms -> Open #2 succeeds -> MUST fire reconnect + GET /v1/me!
-  let (next1, _, _) = ws_calls[1]
+  debug_assert(reconnect_hits == 1, "initial WS connect triggers /v1/me reconcile")
+  // Close #1 -> advance 1000ms -> Open #2 succeeds -> MUST fire reconnect + second GET /v1/me!
+  let mut next1 = 0L
+  for i in 1..<ws_calls.length() {
+    if ws_calls[i].1 == "ws.next" { next1 = ws_calls[i].0 }
+  }
+  debug_assert(next1 > 0L, "ws.next #1 issued")
   ws_sh.answer(next1, base_codec::json_obj([("end", base_codec::json_bool(true))]))
   let _ = ws_rt.run_ready()
   ws_rt.advance(1000)
@@ -346,13 +359,13 @@ test "Slice 2B-3: strict /v1/me & /v1/workspaces validation, atomic seq ordering
   debug_assert(open2 > 0L, "ws.open #2 issued")
   ws_sh.answer(open2, base_codec::json_obj([("id", base_codec::json_int(2))]))
   let _ = ws_rt.run_ready()
-  let mut saw_me_reconcile = false
+  let mut me_reconcile_calls = 0
   for i in 0..<ws_calls.length() {
     if ws_calls[i].1 == "fetch" && j_str(ws_calls[i].2, "url") == "https://cloud.example/v1/me" {
-      saw_me_reconcile = true
+      me_reconcile_calls += 1
     }
   }
-  debug_assert(reconnect_hits == 1 && saw_me_reconcile, "Cloud WS reconnect triggered automatic /v1/me reconcile")
+  debug_assert(reconnect_hits == 2 && me_reconcile_calls >= 2, "Cloud WS initial connect & reconnect both triggered /v1/me reconcile")
   cs.stop()
   let _ = ws_rt.run_ready()
 }
@@ -441,8 +454,10 @@ test "Slice 2B-4: refresh_token rotation uses access_expires + valid ULID, 401/i
   }
   debug_assert(parse_stored_accounts_strict(bad_camel).is_none(), "strict parser rejects camelCase accessExpires")
 
-  // Verify `cred_epoch` advanced and old static mesh credential was invalidated!
-  debug_assert(core.membership.get_valid_static_credential("ws-1").is_none(), "old static mesh credential purged on refresh")
+  // OAuth refresh is decoupled from station `cred_epoch`; only downgrade/fresh/rejoin bumps `cred_epoch` and purges static cred!
+  debug_assert(core.membership.get_valid_static_credential("ws-1").is_some(), "OAuth refresh does NOT bump cred_epoch")
+  let _ = core.membership.bump_cred_epoch("ws-1")
+  debug_assert(core.membership.get_valid_static_credential("ws-1").is_none(), "old static mesh credential purged when cred_epoch advances")
 
   // 2. Refresh returns 401 / `invalid_grant` -> `invalidate_session` signs out, bumps global authGen, stops sync, blocks reads!
   let mut saw_invalid_session = false
@@ -680,16 +695,17 @@ test "Slice 2B-6: post-downgrade per-record filtering, {station,session} & {stat
     None => debug_assert(false, "expected chats value")
   }
 
-  // CRITICAL: `GET /chats` MUST NOT auto-confirm individual `chat` or `chatJobs` views!
+  // CRITICAL: `GET /chats` MUST NOT auto-confirm individual `chat` views!
   debug_assert(!core.can_read_chat("ws-d/st-1", None, Some("sess-10")), "GET /chats NEVER confirms {station, session} chat")
   debug_assert(!core.can_read_chat("ws-d/st-1", Some(10), None), "GET /chats NEVER confirms {station, thread} chat")
   match core.handle_wire("{\"id\":202,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-d/st-1\",\"session\":\"sess-10\"}}") {
     Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "single chat stays Waiting after GET /chats alone")
     None => debug_assert(false, "expected Waiting")
   }
+  // Non-chat resources (`profiles`, `usage`, `chatJobs`, etc.) are NOT deadlocked on downgrade!
   match core.handle_wire("{\"id\":203,\"subscribe\":{\"topic\":\"chatJobs\",\"station\":\"ws-d/st-1\",\"thread\":10}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "chatJobs stays Waiting after GET /chats alone")
-    None => debug_assert(false, "expected Waiting")
+    Some((txt, _)) => debug_assert(!txt.contains("\"waiting\":true"), "chatJobs not deadlocked on role downgrade")
+    None => debug_assert(false, "expected chatJobs value")
   }
 
   // Now complete individual `GET /threads/10` fetch -> confirms BOTH `{station, session}` AND `{station, thread}`
@@ -711,20 +727,9 @@ test "Slice 2B-6: post-downgrade per-record filtering, {station,session} & {stat
     Some((txt, _)) => debug_assert(txt.contains("post-downgrade-ok"), "{station, session} chat projects fresh post-downgrade content")
     None => debug_assert(false, "expected chat value")
   }
-  // Entries-only thread fetch MUST NOT unlock `chatJobs`!
-  match core.handle_wire("{\"id\":205,\"subscribe\":{\"topic\":\"chatJobs\",\"station\":\"ws-d/st-1\",\"thread\":10}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "chatJobs stays Waiting after entries-only thread fetch without jobs")
-    None => debug_assert(false, "expected Waiting for chatJobs")
-  }
-  // Independent authoritative jobs confirmation unlocks `chatJobs`!
-  core.membership.confirm_chat_jobs("ws-d", "ws-d/st-1", thread=Some(10), session=Some("sess-10"))
-  match core.handle_wire("{\"id\":206,\"subscribe\":{\"topic\":\"chatJobs\",\"station\":\"ws-d/st-1\",\"thread\":10}}") {
-    Some((txt, _)) => debug_assert(!txt.contains("\"waiting\":true"), "chatJobs confirmed after authoritative jobs snapshot")
-    None => debug_assert(false, "expected chatJobs value")
-  }
 }
 
-test "R1-Group1: immutable account/DB binding, strict station prefix rejection, fail-closed ambiguous bare station, and 0 authGen jitter on repeated /v1/me" {
+test "R1-Group1: immutable account/DB binding, strict station prefix rejection, quarantined ambiguous bare alias, and 0 authGen jitter on repeated /v1/me" {
   let rt = effect::Runtime::new()
   let sim = SimAccountDb::new(rt)
   let core = make_membership_core(rt, sim, "ws-a", "ws-a/st-1")
@@ -762,13 +767,14 @@ test "R1-Group1: immutable account/DB binding, strict station prefix rejection, 
   debug_assert(core.membership.bind_station_checked("ws-a", "ws-b/st-1").is_err(), "bind_station_checked rejects cross-ws prefix")
   debug_assert(core.membership.bind_station("ws-a", "ws-b/st-1") == "", "bind_station returns empty on mismatch")
 
-  // 3. Ambiguous multi-owner bare station fails closed (NEVER scans owners to pick a readable workspace)!
+  // 3. Ambiguous multi-owner bare station fails closed AND stays permanently quarantined even after `ws-a` is dropped!
   let _ = core.membership.bind_station("ws-a", "ambig-bare")
   let _ = core.membership.bind_station("ws-b", "ambig-bare")
   debug_assert(core.membership.is_ambiguous_bare_station("ambig-bare"), "ambig-bare detected as multi-owner")
   debug_assert(!core.can_read_station("ambig-bare"), "ambig-bare MUST fail closed")
 
-  // 4. Repeated `/v1/me` after dropping `ws-a` MUST cause 0 duplicate drops and 0 authGen bumps!
+  // 4. Repeated `/v1/me` after dropping `ws-a` MUST cause 0 duplicate drops and 0 authGen bumps,
+  //    AND `ambig-bare` MUST remain quarantined (NEVER auto-reassigned to `ws-b`)!
   let me_only_b = match parse_cloud_me_strict(match base_codec::json_parse("{\"user\":{\"sub\":\"sub-alice\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-b\",\"name\":\"WS Beta\",\"role\":\"owner\"}]}") {
     base_codec::JsonParseResult::Ok(j) => j
     _ => panic("j")
@@ -779,8 +785,10 @@ test "R1-Group1: immutable account/DB binding, strict station prefix rejection, 
   let s1 = core.membership.next_cloud_seq()
   match core.commit_cloud_me(me_only_b, req_seq=s1, now_ms=3000L) {
     Ok(true) => ()
-    other => panic("first drop /v1/me failed")
+    _ => panic("first drop /v1/me failed")
   }
+  debug_assert(core.membership.is_ambiguous_bare_station("ambig-bare"), "ambig-bare stays quarantined after ws-a dropped")
+  debug_assert(!core.can_read_station("ambig-bare"), "quarantined ambig-bare NEVER auto-reassigned to ws-b")
   let gen_after_first = core.auth.workspace_auth_gen("ws-a")
   let agg_after_first = core.auth.aggregate_auth_gen()
   // Repeat `/v1/me` twice: MUST NOT re-drop `ws-a` or bump `authGen` / `aggregate`!
@@ -788,56 +796,71 @@ test "R1-Group1: immutable account/DB binding, strict station prefix rejection, 
   let _ = core.commit_cloud_me(me_only_b, req_seq=core.membership.next_cloud_seq(), now_ms=5000L)
   debug_assert(core.auth.workspace_auth_gen("ws-a") == gen_after_first, "0 authGen jitter on repeated /v1/me")
   debug_assert(core.auth.aggregate_auth_gen() == agg_after_first, "0 aggregate authGen jitter on repeated /v1/me")
+
+  // Offline restart preserves quarantined bare alias from SQLite `meta`!
+  let core_restart = make_membership_core(rt, sim, "ws-b", "ws-b/st-1")
+  let _ = core_restart.set_db_account_sub("sub-alice")
+  debug_assert(core_restart.membership.is_ambiguous_bare_station("ambig-bare"), "offline restart preserves quarantined bare alias")
+  debug_assert(!core_restart.can_read_station("ambig-bare"), "offline restart keeps quarantined bare alias fail-closed")
 }
 
-test "R1-Group2: separated Host/Meta logs preserve other accounts and offline restart preserves revoked & downgrade latches" {
+test "R3-Group2: per-account host storage keys, HostStorageRead::ReadError vs Absent, single-tx revoke persistence, and non-deadlocking offline restart" {
   let rt = effect::Runtime::new()
   let sim_a = SimAccountDb::new(rt)
   let host_storage : Map[String, base_codec::Json] = Map::new()
-  // Seed Account B's host-only pending purge in shared host storage!
-  let initial_host = match base_codec::json_parse("{\"sub-B\":{\"ws-b-only\":[\"ws-b-only/st-9\"]}}") {
+  let key_a = host_pending_purges_key_for_sub("sub-A")
+  let key_b = host_pending_purges_key_for_sub("sub-B")
+  debug_assert(key_a == "device/pending_purges/sub-A" && key_b == "device/pending_purges/sub-B" && key_a != key_b, "per-account host keys isolated")
+  let b_doc = match base_codec::json_parse("{\"ws-b-only\":[\"ws-b-only/st-9\"]}") {
     base_codec::JsonParseResult::Ok(j) => j
     _ => panic("j")
   }
-  host_storage.set(HOST_PENDING_PURGES_KEY, initial_host)
+  host_storage.set(key_b, b_doc)
 
   let core_a = make_membership_core(rt, sim_a, "ws-a", "ws-a/st-1")
-  core_a.membership.set_host_pending_purges_reader(fn(k : String) -> Option[base_codec::Json] { host_storage.get(k) })
+  let mut simulate_read_err = true
+  core_a.membership.set_host_pending_purges_reader(fn(k : String) -> HostStorageRead {
+    if simulate_read_err {
+      return HostStorageRead::ReadError("simulated io failure")
+    }
+    match host_storage.get(k) {
+      Some(j) => HostStorageRead::Found(j)
+      None => HostStorageRead::Absent
+    }
+  })
   core_a.membership.set_host_pending_purges_hook(fn(k : String, doc : base_codec::Json) -> Result[Unit, String] {
     host_storage.set(k, doc)
     Ok(())
   })
-  let _ = core_a.set_db_account_sub("sub-A", host_purges_doc=Some(initial_host))
-  seed_workspace_and_station(core_a.db, "ws-a", "WS Alpha", "ws-a/st-1", "st-1", "c-a", 1, "secret")
+  let _ = core_a.set_db_account_sub("sub-A")
+  // `HostStorageRead::ReadError` MUST return Err (never silently treated as Absent)!
+  debug_assert(core_a.membership.load_host_pending_purges().is_err(), "ReadError distinguished from Absent")
+  simulate_read_err = false
+  debug_assert(core_a.membership.load_host_pending_purges().is_ok(), "Absent returns Ok")
 
-  // Account A writes its own pending purge (and loads SQLite meta); Account B's host-only entry MUST remain 100% intact!
+  seed_workspace_and_station(core_a.db, "ws-a", "WS Alpha", "ws-a/st-1", "st-1", "c-a", 1, "secret")
   sim_a.fail_drop_sql = true
   let _ = core_a.drop_workspace("ws-a")
-  let after_host = match host_storage.get(HOST_PENDING_PURGES_KEY) { Some(d) => d; None => panic("missing host") }
-  let after_str = base_codec::json_stringify(after_host)
-  debug_assert(after_str.contains("\"sub-A\"") && after_str.contains("\"ws-a\""), "sub-A written to host")
-  debug_assert(after_str.contains("\"sub-B\"") && after_str.contains("\"ws-b-only\""), "sub-B host-only entry preserved untouched!")
+  // Account A writes ONLY to `device/pending_purges/sub-A`; Account B's key is 100% untouched!
+  let saved_a = match host_storage.get(key_a) { Some(d) => base_codec::json_stringify(d); None => panic("missing sub-A host key") }
+  let saved_b = match host_storage.get(key_b) { Some(d) => base_codec::json_stringify(d); None => panic("missing sub-B host key") }
+  debug_assert(saved_a.contains("\"ws-a\"") && !saved_a.contains("\"ws-b-only\""), "sub-A host key isolated")
+  debug_assert(saved_b.contains("\"ws-b-only\"") && !saved_b.contains("\"ws-a\""), "sub-B host key completely untouched")
 
-  // Heal SQLite so Account A finishes purge (`pending_purges` cleared, `revoked["ws-a"] = true` persisted!).
+  // Heal SQLite so Account A finishes purge (`pending_purges` cleared, `revoked["ws-a"] = true` persisted in 1 tx).
   sim_a.fail_drop_sql = false
   let _ = core_a.retry_pending_purges()
   debug_assert(!core_a.membership.has_pending_purge("ws-a") && core_a.membership.is_revoked("ws-a"), "revoked stays true after purge")
-  // Also downgrade `ws-d` so `unconfirmed_state` is persisted to SQLite `meta`!
-  let _ = core_a.membership.bind_station("ws-d", "ws-d/st-1")
-  let _ = core_a.membership.mark_downgraded("ws-d")
-  let _ = core_a.membership.persist_unconfirmed_state(core_a.db)
 
-  // Offline restart: brand-new ClientCore reading ONLY SQLite DB (no network, no `/v1/me`)!
+  // Offline restart: revoked workspace remains blocked, while non-revoked workspace is NOT deadlocked!
   let core_a_restart = make_membership_core(rt, sim_a, "ws-d", "ws-d/st-1")
   let _ = core_a_restart.set_db_account_sub("sub-A")
   debug_assert(core_a_restart.membership.is_revoked("ws-a") && !core_a_restart.can_read_workspace("ws-a"), "offline restart preserved revoked latch for ws-a")
-  debug_assert(!core_a_restart.can_read_station_list("ws-d/st-1"), "offline restart preserved chats unconfirmed latch for ws-d/st-1")
-  debug_assert(!core_a_restart.can_read_station_resource("ws-d/st-1", "profiles"), "offline restart preserved profiles resource unconfirmed latch")
-  debug_assert(!core_a_restart.can_read_chat("ws-d/st-1", Some(10), None), "offline restart preserved single-chat unconfirmed latch")
-  debug_assert(!core_a_restart.can_read_chat_jobs("ws-d/st-1", Some(10), None), "offline restart preserved chatJobs unconfirmed latch")
+  debug_assert(core_a_restart.can_read_station_list("ws-d/st-1"), "memory-only PendingAuthConfirm never deadlocks offline restart")
+  debug_assert(core_a_restart.can_read_station_resource("ws-d/st-1", "profiles"), "profiles readable after restart")
 }
 
-test "R1-Group3: top-level JSON array GET /chats prunes admin-only chat atomically, per-resource gates hold, cred_epoch blocks stale in-flight responses, and 403 surfaces access_denied" {
+test "R3-Group1&3: TS-aligned PendingAuthConfirm (non-deadlocking resources, array GET /chats preserves changing/outbox/archived, old transport_epoch rejected, upgrade clears, selector mismatch rejected, cred_epoch_changed fail-open retry)" {
   let rt = effect::Runtime::new()
   let sim = SimAccountDb::new(rt)
   let pending : Array[(String, (effect::Exit[HttpReply]) -> Unit)] = []
@@ -848,19 +871,33 @@ test "R1-Group3: top-level JSON array GET /chats prunes admin-only chat atomical
     stream_k: fn(_p : String, _h : Array[(String, String)], _c : (Bytes) -> Unit, _k : (effect::Exit[Unit]) -> Unit) -> Unit {},
   }
   let core = make_membership_core(rt, sim, "ws-d", "ws-d/st-1", tr=Some(tr))
+  let _ = core.set_db_account_sub("sub-1")
   core.set_viewer("alice@still.fail", sub="sub-1", role="admin")
-  seed_workspace_and_station(core.db, "ws-d", "DowngradeWS", "ws-d/st-1", "st-1", "admin-only-chat", 99, "ADMIN_ONLY_SECRET")
   seed_workspace_and_station(core.db, "ws-d", "DowngradeWS", "ws-d/st-1", "st-1", "member-chat", 10, "MEMBER_OK_MSG")
+  // Seed local `changing`, `outbox`, and an archived chat row that MUST survive post-downgrade `GET /chats`!
+  sim.changing_rows.set("ws-d/st-1:1", "{\"op\":\"rename\"}")
+  sim.outbox_rows.set("ws-d/st-1:10", "{\"clientKey\":\"ck-1\"}")
+  sim.chats.set("ws-d/st-1:1:arch-1", SimChatRow::{
+    station: "ws-d/st-1",
+    archived: 1,
+    id: "arch-1",
+    ord: 1.0,
+    thread: Some(50),
+    session: Some("arch-1"),
+    pinned_at: None,
+    last_active: 1000L,
+    unread: 0,
+    tone: None,
+    asks: 0,
+    json: "{\"id\":\"arch-1\",\"archived\":true,\"title\":\"Archived\"}",
+  })
+  sim.chat_order.push("ws-d/st-1:1:arch-1")
   core.membership.set_role("ws-d", "admin")
 
-  // Start a PRE-downgrade in-flight `GET /chats` request BEFORE the role downgrade!
-  let mut stale_snap_failed = false
+  // 1. Start a PRE-downgrade in-flight `GET /chats` BEFORE downgrade (captures old `transport_epoch == 1`).
+  let old_tr_epoch = core.sync.transport_epoch()
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
-      match ex {
-        effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")) => { stale_snap_failed = true }
-        _ => ()
-      }
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
       k(effect::Exit::Succeeded(()))
     })
   })
@@ -868,70 +905,114 @@ test "R1-Group3: top-level JSON array GET /chats prunes admin-only chat atomical
   debug_assert(pending.length() == 1, "1 pre-downgrade GET /chats in flight")
   let (_, pre_downgrade_k) = pending[0]
 
-  // Role downgrade `admin` -> `member` advances `cred_epoch` and schedules post-downgrade `GET /chats`!
+  // 2. Role downgrade `admin` -> `member`: bumps `authGen` + `transport_epoch` + `cred_epoch`, latches `PendingAuthConfirm`.
   core.handle_role_downgrade("ws-d", "admin", "member")
   let _ = rt.run_ready()
-  debug_assert(pending.length() >= 2, "post-downgrade GET /chats scheduled")
+  debug_assert(core.sync.transport_epoch() > old_tr_epoch, "transport_epoch bumped on downgrade")
+  debug_assert(pending.length() >= 2, "post-downgrade GET /chats scheduled on new transport_epoch")
+  // Non-chat resources (`profiles`, `usage`, `stations`, `longJobs`) are NOT deadlocked!
+  debug_assert(core.can_read_station_resource("ws-d/st-1", "profiles"), "profiles never deadlocked on downgrade")
+  debug_assert(core.can_read_station_resource("ws-d/st-1", "usage"), "usage never deadlocked on downgrade")
+  debug_assert(core.can_read_station_resource("ws-d/st-1", "stations"), "stations never deadlocked on downgrade")
+  // Workspace doc, chats list, and single chat ARE gated by `PendingAuthConfirm`!
+  debug_assert(!core.membership.is_workspace_doc_confirmed("ws-d"), "workspace doc gated by PendingAuthConfirm")
+  debug_assert(!core.can_read_station_list("ws-d/st-1"), "chats list gated by PendingAuthConfirm")
+  debug_assert(!core.can_read_chat("ws-d/st-1", Some(10), Some("member-chat")), "single chat gated by PendingAuthConfirm")
 
-  // Late response for PRE-downgrade `GET /chats` arrives containing `admin-only-chat`:
-  // MUST be rejected by `cred_epoch` check and NEVER unlock `chats`!
+  // 3. Old `transport_epoch` MUST NOT confirm `PendingAuthConfirm` even with matching `authGen`!
+  let cur_gen = core.auth.workspace_auth_gen("ws-d")
+  debug_assert(
+    !core.confirm_workspace_auth("ws-d", confirm_key_chats("ws-d/st-1"), cur_gen, transport_epoch=old_tr_epoch),
+    "old transport_epoch cannot confirm PendingAuthConfirm",
+  )
+  // Pre-downgrade in-flight response arrives: rejected, NEVER unlocks `chats`!
   pre_downgrade_k(effect::Exit::Succeeded(HttpReply::{
     status: 200,
     headers: [],
-    body: "[{\"id\":\"admin-only-chat\",\"session\":\"admin-only-chat\",\"thread\":99,\"title\":\"STALE_PRE_DOWNGRADE\",\"lastActive\":9000}]".to_bytes(),
+    body: "[{\"id\":\"member-chat\",\"session\":\"member-chat\",\"thread\":10,\"title\":\"Old Link\",\"lastActive\":9000}]".to_bytes(),
   }))
   let _ = rt.run_ready()
-  debug_assert(stale_snap_failed, "pre-downgrade in-flight GET /chats rejected via cred_epoch")
-  debug_assert(!core.can_read_station_list("ws-d/st-1"), "stale pre-downgrade response NEVER unlocks chats list")
+  debug_assert(!core.can_read_station_list("ws-d/st-1"), "pre-downgrade response NEVER unlocks chats")
 
-  // Now deliver the REAL post-downgrade top-level JSON ARRAY `[...]` (matching `viewerrows.mbt:249`)
-  // containing ONLY `member-chat` (omitting `admin-only-chat`):
+  // 4. Empty `{}` payload MUST NOT falsely confirm `chats`!
+  debug_assert(!is_valid_chats_snapshot_payload(base_codec::json_obj([])), "empty {} rejected as chats snapshot")
   let (_, post_downgrade_k) = pending[1]
+  // Real top-level JSON array `[...]` confirms `chats` AND preserves `changing`, `outbox`, and archived chats!
   post_downgrade_k(effect::Exit::Succeeded(HttpReply::{
     status: 200,
     headers: [],
     body: "[{\"id\":\"member-chat\",\"session\":\"member-chat\",\"thread\":10,\"title\":\"Member Chat\",\"lastActive\":9100}]".to_bytes(),
   }))
   let _ = rt.run_ready()
+  debug_assert(core.can_read_station_list("ws-d/st-1"), "chats list confirmed by top-level JSON array on new transport_epoch")
+  debug_assert(sim.changing_rows.get("ws-d/st-1:1").is_some(), "local changing row preserved (no destructive pruning)")
+  debug_assert(sim.outbox_rows.get("ws-d/st-1:10").is_some(), "local outbox row preserved (no destructive pruning)")
+  debug_assert(sim.chats.get("ws-d/st-1:1:arch-1").is_some(), "archived chat preserved (no destructive pruning)")
 
-  // 1. `admin-only-chat` MUST be atomically pruned from SQLite BEFORE `chats` unlocks -> 0 leak!
-  debug_assert(core.can_read_station_list("ws-d/st-1"), "chats list confirmed after pruning")
-  debug_assert(sim.chats.get("ws-d/st-1:0:admin-only-chat").is_none(), "admin-only-chat pruned from SQLite chat table")
-  debug_assert(sim.entries.get("ws-d/st-1 99").is_none(), "admin-only-chat entries pruned from SQLite entry table")
-  match core.handle_wire("{\"id\":301,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-d\"}}") {
-    Some((txt, _)) => debug_assert(txt.contains("Member Chat") && !txt.contains("admin-only-chat"), "chats list shows member-chat with 0 admin-only leak")
-    None => debug_assert(false, "expected chats value")
+  // 5. Selector mismatch (`thread: 10` paired with wrong `session: "other-sess"`) MUST be rejected!
+  match core.handle_wire("{\"id\":305,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-d/st-1\",\"thread\":10,\"session\":\"wrong-sess\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("chat_selector_mismatch"), "mismatched thread+session rejected on chat sub: " + txt)
+    None => debug_assert(false, "expected selector mismatch error")
+  }
+  match core.handle_wire("{\"id\":306,\"call\":\"chat.open\",\"params\":{\"station\":\"ws-d/st-1\",\"thread\":10,\"session\":\"wrong-sess\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("chat_selector_mismatch"), "mismatched thread+session rejected on chat.open: " + txt)
+    None => debug_assert(false, "expected selector mismatch error")
   }
 
-  // 2. Per-resource confirmation: `GET /chats` MUST NOT unlock `profiles`, `usage`, `search`, `longJobs`, `stations`!
-  debug_assert(!core.can_read_station_resource("ws-d/st-1", "profiles"), "profiles stays gated after GET /chats")
-  debug_assert(!core.can_read_station_resource("ws-d/st-1", "usage"), "usage stays gated after GET /chats")
-  debug_assert(!core.can_read_station_resource("ws-d/st-1", "search"), "search stays gated after GET /chats")
-  debug_assert(!core.can_read_station_resource("ws-d/st-1", "longJobs"), "longJobs stays gated after GET /chats")
-  match core.handle_wire("{\"id\":302,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-d\"}}") {
-    Some((txt, _)) => debug_assert(!txt.contains("\"default\""), "profiles projection hides unconfirmed station")
-    None => debug_assert(false, "expected profiles reply")
-  }
-  // Confirming `profiles` explicitly unlocks ONLY `profiles`, still NOT `usage`!
-  core.membership.confirm_station_resource("ws-d", "ws-d/st-1", "profiles")
-  debug_assert(core.can_read_station_resource("ws-d/st-1", "profiles"), "profiles unlocked when explicitly confirmed")
-  debug_assert(!core.can_read_station_resource("ws-d/st-1", "usage"), "usage remains gated")
-
-  // 3. New post-downgrade `chat` subscription triggers proactive fetch; HTTP 403 surfaces clear `access_denied` error!
+  // 6. Newly opened post-downgrade `chat` triggers confirmation fetch and unlocks cleanly!
   let before_n = pending.length()
-  let _ = core.handle_wire("{\"id\":303,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-d/st-1\",\"thread\":10}}")
+  let _ = core.handle_wire("{\"id\":307,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-d/st-1\",\"thread\":10}}")
   let _ = rt.run_ready()
-  debug_assert(pending.length() > before_n, "new post-downgrade chat sub triggered confirmation fetch")
+  debug_assert(pending.length() > before_n, "newly opened post-downgrade chat triggered confirmation fetch")
   let (_, th_k) = pending[pending.length() - 1]
-  th_k(effect::Exit::Succeeded(HttpReply::{ status: 403, headers: [], body: "{\"error\":\"forbidden\"}".to_bytes() }))
+  th_k(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: "{\"entries\":[{\"thread\":10,\"n\":2,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"Confirmed\",\"at\":9200}]}".to_bytes(),
+  }))
   let _ = rt.run_ready()
-  match core.handle_wire("{\"id\":304,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-d/st-1\",\"thread\":10}}") {
-    Some((txt, _)) => debug_assert(txt.contains("access_denied"), "403 surfaces explicit access_denied instead of eternal Waiting: " + txt)
-    None => debug_assert(false, "expected access_denied error")
+  debug_assert(core.can_read_chat("ws-d/st-1", Some(10), Some("member-chat")), "newly opened chat confirmed")
+
+  // 7. Role upgrade (`member` -> `admin`) immediately clears `PendingAuthConfirm`!
+  let me_up = match parse_cloud_me_strict(match base_codec::json_parse("{\"user\":{\"sub\":\"sub-1\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-d\",\"name\":\"DowngradeWS\",\"role\":\"admin\"}]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("j")
+  }) {
+    Ok(m) => m
+    Err(e) => panic(e)
   }
+  let _ = core.commit_cloud_me(me_up, req_seq=core.membership.next_cloud_seq(), now_ms=9300L)
+  debug_assert(!core.membership.has_pending_auth_confirm("ws-d"), "role upgrade immediately clears PendingAuthConfirm")
+  debug_assert(core.membership.is_workspace_doc_confirmed("ws-d"), "workspace doc unlocked after upgrade")
+
+  // 8. `cred_epoch_changed` (while `transport_epoch` is unchanged) fail-open reschedules ONCE so sync is never dropped!
+  let n_before_ce = pending.length()
+  let mut final_ce_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { final_ce_ok = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending.length() == n_before_ce + 1, "initial snapshot scheduled")
+  // Advance `cred_epoch` ONLY (same `transport_epoch`), then deliver first response:
+  let _ = core.membership.bump_cred_epoch("ws-d")
+  let (_, first_ce_k) = pending[n_before_ce]
+  first_ce_k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  // Fail-open retry scheduled a second request automatically!
+  debug_assert(pending.length() == n_before_ce + 2, "cred_epoch_changed fail-open rescheduled once")
+  let (_, retry_ce_k) = pending[n_before_ce + 1]
+  retry_ce_k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  debug_assert(final_ce_ok, "fail-open retry completed cleanly")
 }
 
-test "R1-Group4&5: unified /v1/me & /v1/workspaces seq blocks stale downgrade overwrite, epoch-second access_expires, and session-conditioned 401" {
+test "R3-Group2&3&4&5: bidirectional /v1/me & /v1/workspaces seq lock, immutable CloudSync context, 403/404 -> /v1/me reconcile (no direct drop), dynamic WS token, OAuth refresh decoupled from cred_epoch, and session-conditioned 401" {
   let rt = effect::Runtime::new()
   let sim = SimAccountDb::new(rt)
   let core = make_membership_core(rt, sim, "ws-1", "ws-1/st-1")
@@ -939,7 +1020,7 @@ test "R1-Group4&5: unified /v1/me & /v1/workspaces seq blocks stale downgrade ov
   core.set_viewer("alice@still.fail", sub="sub-1", role="owner")
   core.membership.set_role("ws-1", "owner")
 
-  // 1. Capture older seq for `/v1/workspaces/ws-1`, then commit newer `/v1/me` downgrading role to `member`:
+  // 1a. Forward seq lock: older `/v1/workspaces/ws-1` rejected after newer `/v1/me`!
   let old_ws_seq = core.membership.next_cloud_seq()
   let new_me_seq = core.membership.next_cloud_seq()
   let me_dg = match parse_cloud_me_strict(match base_codec::json_parse("{\"user\":{\"sub\":\"sub-1\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-1\",\"name\":\"WS1\",\"role\":\"member\"}]}") {
@@ -969,12 +1050,35 @@ test "R1-Group4&5: unified /v1/me & /v1/workspaces seq blocks stale downgrade ov
     None => debug_assert(false, "expected member role")
   }
 
+  // 1b. REVERSE seq lock: older `/v1/me` rejected after newer `/v1/workspaces/ws-1`!
+  let older_me_seq = core.membership.next_cloud_seq()
+  let newer_ws_seq = core.membership.next_cloud_seq()
+  let fresh_ws = match parse_cloud_workspace_strict(match base_codec::json_parse("{\"id\":\"ws-1\",\"name\":\"WS1\",\"role\":\"admin\",\"stations\":[{\"id\":\"st-1\",\"name\":\"S1\"}]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("j")
+  }, "ws-1") {
+    Ok(w) => w
+    Err(e) => panic(e)
+  }
+  match core.commit_cloud_workspace(fresh_ws, req_seq=newer_ws_seq, now_ms=1010L) {
+    Ok(true) => ()
+    _ => panic("fresh workspace commit failed")
+  }
+  match core.commit_cloud_me(me_dg, req_seq=older_me_seq, now_ms=1011L) {
+    Ok(committed) => debug_assert(!committed, "older /v1/me MUST be rejected after newer /v1/workspaces/<id>")
+    Err(_) => debug_assert(false, "stale /v1/me should return Ok(false)")
+  }
+  match core.membership.role_of("ws-1") {
+    Some(r) => debug_assert(r == "admin", "role stays admin after stale /v1/me discarded")
+    None => debug_assert(false, "expected admin role")
+  }
+
   // 2. Static mesh credential CANNOT be re-armed once `cred_epoch > 1`!
   debug_assert(core.membership.cred_epoch_of("ws-1") > 1L, "cred_epoch > 1 after downgrade")
   core.membership.set_static_credential("ws-1", "rearmed-stale-cred")
   debug_assert(core.membership.get_valid_static_credential("ws-1").is_none(), "static credential refuses re-arm after cred_epoch > 1")
 
-  // 3. Epoch-second `access_expires` & session/refresh-conditioned 401 isolation (stale session 401 MUST NOT kick out new session)!
+  // 3. OAuth refresh MUST NOT bump `cred_epoch`, preserves sibling & session IDs, and stale 401 is ignored!
   core.account_sessions.set("sub-1", "sess-new")
   core.account_sessions.set("sub-2", "sess-bob")
   core.auth_store.register_account(views::StoredAccount::{
@@ -1000,12 +1104,11 @@ test "R1-Group4&5: unified /v1/me & /v1/workspaces seq blocks stale downgrade ov
     saved_docs.push(d)
     Ok(())
   })
-  // Stale 401 from old session `sess-old` or old refresh `ref-old` MUST be ignored with 0 side effects!
   debug_assert(!core.invalidate_session("sub-1", expected_session=Some("sess-old")), "stale session 401 ignored")
   debug_assert(!core.invalidate_session("sub-1", expected_refresh=Some("ref-old")), "stale refresh 401 ignored")
   debug_assert(!core.membership.is_session_invalidated() && core.auth_store.accounts.length() == 2, "new session untouched after stale 401")
 
-  // Matching refresh preserves sibling account `sub-2` AND BOTH `session` IDs with epoch-second `access_expires`!
+  let ce_before_oauth = core.membership.cred_epoch_of("ws-1")
   match core.apply_refreshed_tokens(
     "sub-1",
     RefreshedTokens::{ access: "acc-rot", refresh: "ref-rot", access_expires: 1795820200L, name: None },
@@ -1015,9 +1118,95 @@ test "R1-Group4&5: unified /v1/me & /v1/workspaces seq blocks stale downgrade ov
     Ok(a) => debug_assert(a == "acc-rot", "rotated token applied")
     Err(e) => panic("refresh failed: " + e)
   }
+  debug_assert(core.membership.cred_epoch_of("ws-1") == ce_before_oauth, "OAuth token refresh MUST NOT bump station cred_epoch!")
   let doc_str = base_codec::json_stringify(saved_docs[0])
   debug_assert(doc_str.contains("\"sess-new\"") && doc_str.contains("\"sess-bob\"") && doc_str.contains("\"sub-2\""), "persisted accounts preserve sibling & session IDs")
   debug_assert(doc_str.contains("\"access_expires\":1795820200"), "epoch-seconds access_expires persisted")
+
+  // 4. `CloudSync`: immutable account binding, dynamic WS token on reconnect, WS 401 -> refresh hook,
+  //    and workspace 403/404 triggers `/v1/me` reconcile (NEVER direct `drop_workspace`!).
+  let ws_calls : Array[(Int64, String, base_codec::Json)] = []
+  let mock_sh = shell::Shell::stood_in(
+    rt,
+    fn(cid : Int64, op : String, args : base_codec::Json, _b : Option[Bytes]) -> Unit {
+      ws_calls.push((cid, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      sim.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let cs = CloudSync::new(mock_sh, core.db, "https://cloud.example", token="tok-v1", bound_sub="sub-1", bound_session="sess-new")
+  debug_assert(cs.bind_account_context("sub-2").is_err(), "CloudSync refuses switching bound_sub")
+  let mut unauth_count = 0
+  let mut me_reconcile_count = 0
+  cs.set_seq_provider(fn() -> Int64 { core.membership.next_cloud_seq() })
+  cs.set_commit_hooks(
+    on_me_fetched=Some(fn(_m : CloudMe, _seq : Int64) -> Unit { me_reconcile_count += 1 }),
+    on_unauthorized_err=Some(fn(_h : CloudHttpError) -> Unit { unauth_count += 1 }),
+  )
+  cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {})
+  let _ = rt.run_ready()
+  // Initial ws.open carries `tok-v1`; fail with 401 -> invokes `on_unauthorized_err`!
+  debug_assert(ws_calls.length() == 1 && ws_calls[0].1 == "ws.open", "first ws.open issued")
+  debug_assert(base_codec::json_stringify(ws_calls[0].2).contains("stillfail-token.tok-v1"), "initial ws uses tok-v1")
+  // Rotate token in CloudSync, then fail first ws.open with 401 and advance virtual clock past 1s backoff:
+  cs.set_origin_and_token("", "tok-v2")
+  mock_sh.refuse(ws_calls[0].0, "401 unauthorized")
+  let _ = rt.run_ready()
+  debug_assert(unauth_count == 1, "WS 401 routed to on_unauthorized_err")
+  rt.advance(1000)
+  // Second ws.open MUST dynamically pick up rotated `tok-v2`!
+  debug_assert(ws_calls.length() >= 2 && ws_calls[1].1 == "ws.open", "reconnect ws.open issued")
+  debug_assert(base_codec::json_stringify(ws_calls[1].2).contains("stillfail-token.tok-v2"), "WS reconnect dynamically reads updated tok-v2")
+  // Open WS succeeds -> immediately triggers `/v1/me` reconcile on connect!
+  mock_sh.answer(ws_calls[1].0, base_codec::json_obj([("id", base_codec::json_int(7))]))
+  let _ = rt.run_ready()
+  let mut saw_me_on_open = false
+  let mut ws_next_id = 0L
+  for ci in 2..<ws_calls.length() {
+    if ws_calls[ci].1 == "fetch" && base_codec::json_stringify(ws_calls[ci].2).contains("/v1/me") {
+      saw_me_on_open = true
+      mock_sh.answer(
+        ws_calls[ci].0,
+        base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+        bytes=Some("{\"user\":{\"sub\":\"sub-1\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-1\",\"name\":\"WS1\",\"role\":\"admin\"}]}".to_bytes()),
+      )
+    } else if ws_calls[ci].1 == "ws.next" {
+      ws_next_id = ws_calls[ci].0
+    }
+  }
+  let _ = rt.run_ready()
+  debug_assert(saw_me_on_open && me_reconcile_count == 1, "WS initial connect triggered /v1/me reconcile")
+
+  // Deliver `WorkspaceChanged("ws-1")` whose `GET /v1/workspaces/ws-1` returns `403 not_beta`:
+  // MUST trigger `/v1/me` reconcile and MUST NOT directly drop `ws-1`!
+  let pre_ev_calls = ws_calls.length()
+  mock_sh.answer(ws_next_id, base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"ws-1\",\"rev\":9}"))]))
+  let _ = rt.run_ready()
+  let mut ws_fetch_id = 0L
+  for ci in pre_ev_calls..<ws_calls.length() {
+    if ws_calls[ci].1 == "fetch" && base_codec::json_stringify(ws_calls[ci].2).contains("/v1/workspaces/ws-1") {
+      ws_fetch_id = ws_calls[ci].0
+    }
+  }
+  debug_assert(ws_fetch_id > 0L, "WorkspaceChanged fetched /v1/workspaces/ws-1")
+  let before_403_calls = ws_calls.length()
+  mock_sh.answer(
+    ws_fetch_id,
+    base_codec::json_obj([("status", base_codec::json_int(403)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some("{\"error\":\"not_beta\"}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  let mut saw_me_after_403 = false
+  for ci in before_403_calls..<ws_calls.length() {
+    if ws_calls[ci].1 == "fetch" && base_codec::json_stringify(ws_calls[ci].2).contains("/v1/me") {
+      saw_me_after_403 = true
+    }
+  }
+  debug_assert(saw_me_after_403, "workspace 403/404 triggers /v1/me reconcile instead of direct drop")
+  debug_assert(core.can_read_workspace("ws-1"), "ws-1 NOT wiped directly by workspace 403 not_beta")
+  cs.stop()
 }
 
 test "R1-Group6: railCard, account.doc(vault_secrets), moved chat.open, new:<ws> draft, composer.carry, lock.status, parameterless scope, and readable vaultItems" {

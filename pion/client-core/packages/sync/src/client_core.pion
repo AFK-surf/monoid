@@ -405,58 +405,26 @@ fn ClientCore::wire_station_hooks(
       })
     })
   })
-  // Post-downgrade confirmation hooks (NEVER confirm on disconnect!):
-  // 0. Bind `cred_epoch` and authoritative post-downgrade pruning predicate onto `SyncScheduler`.
+  // TS-aligned `PendingAuthConfirm` hooks (`core.ts:353-363, 1539-1596`):
+  // Never confirm on disconnect; confirm ONLY when both `authGen` AND `transport_epoch >= min_transport_epoch` match!
   sync.set_cred_epoch_getter(fn() -> Int64 {
     self.membership.cred_epoch_of(target_ws)
   })
-  sync.set_should_prune_snapshot(fn() -> Bool {
-    self.membership.is_station_unconfirmed(target_ws, station)
-  })
-  // 1. `GET /chats` snapshot confirms ONLY the `chats` list (after atomic stale-row pruning!),
-  //    NEVER unlocking `profiles`/`usage`/`search`/`longJobs` or individual `chat`/`chatJobs`.
-  //    Also scans open `{station, session}` subs whose `thread` mapping was just learned and triggers refresh!
-  sync.set_snapshot_confirmed_hook(fn() -> Unit {
-    self.membership.confirm_station_chats_list(target_ws, station)
-    let _ = self.membership.persist_unconfirmed_state(self.db)
-    self.trigger_unconfirmed_open_chats_for_station(target_ws, station)
-    self.notify_confirmation_refresh("chats")
-  })
-  // 2. Individual thread fetch confirms ONLY the `chat` view (BOTH `{station, thread}` AND `{station, session}`).
-  sync.set_thread_confirmed_hook(fn(th : Int) -> Unit {
-    let sess_opt = self.lookup_session_for_thread(station, th)
-    self.membership.confirm_chat(target_ws, station, thread=Some(th), session=sess_opt)
-    let _ = self.membership.persist_unconfirmed_state(self.db)
-    self.notify_confirmation_refresh("chat")
-  })
-  // 3. `chatJobs` is confirmed ONLY by an authoritative jobs snapshot, NEVER by entries-only fetch.
-  sync.set_chat_jobs_confirmed_hook(fn(th : Int) -> Unit {
-    let sess_opt = self.lookup_session_for_thread(station, th)
-    self.membership.confirm_chat_jobs(target_ws, station, thread=Some(th), session=sess_opt)
-    let _ = self.membership.persist_unconfirmed_state(self.db)
-    self.notify_confirmation_refresh("chatJobs")
-  })
-  // 4. Surface explicit denial/offline errors when post-downgrade confirmation fails (never hang blank).
-  sync.set_snapshot_error_hook(fn(status : Int, _msg : String) -> Unit {
-    if self.membership.is_station_unconfirmed(target_ws, station) || self.membership.is_station_chat_unconfirmed(target_ws, station) {
-      let reason = if status == 403 || status == 401 { "access_denied" } else if status == 0 { "offline" } else { "" }
-      if reason.length() > 0 {
-        self.membership.set_station_unconfirmed_reason(target_ws, station, reason)
-        let _ = self.membership.persist_unconfirmed_state(self.db)
-        self.notify_confirmation_refresh("chat")
-        self.notify_confirmation_refresh("chatJobs")
-      }
+  let canon_st = canonical_station(target_ws, station)
+  sync.set_snapshot_confirmed_hook(fn(read_gen : Int, tr_epoch : Int64) -> Unit {
+    if self.confirm_workspace_auth(target_ws, confirm_key_chats(canon_st), read_gen, transport_epoch=tr_epoch) {
+      self.trigger_unconfirmed_open_chats_for_station(target_ws, station)
+      self.notify_confirmation_refresh("chats")
     }
   })
-  sync.set_thread_error_hook(fn(_th : Int, status : Int, _msg : String) -> Unit {
-    if self.membership.is_station_chat_unconfirmed(target_ws, station) {
-      let reason = if status == 403 || status == 401 { "access_denied" } else if status == 0 { "offline" } else { "" }
-      if reason.length() > 0 {
-        self.membership.set_station_unconfirmed_reason(target_ws, station, reason)
-        let _ = self.membership.persist_unconfirmed_state(self.db)
-        self.notify_confirmation_refresh("chat")
-        self.notify_confirmation_refresh("chatJobs")
-      }
+  sync.set_thread_confirmed_hook(fn(th : Int, read_gen : Int, tr_epoch : Int64) -> Unit {
+    let c1 = self.confirm_workspace_auth(target_ws, confirm_key_chat_thread(canon_st, th), read_gen, transport_epoch=tr_epoch)
+    let c2 = match self.lookup_session_for_thread(station, th) {
+      Some(sk) => self.confirm_workspace_auth(target_ws, confirm_key_chat_session(canon_st, sk), read_gen, transport_epoch=tr_epoch)
+      None => false
+    }
+    if c1 || c2 {
+      self.notify_confirmation_refresh("chat")
     }
   })
 }
@@ -1602,8 +1570,31 @@ pub fn ClientCore::can_read_station_list(self : ClientCore, st : String) -> Bool
   self.membership.is_station_list_confirmed(st, fallback_ws=self.workspace)
 }
 
-pub fn ClientCore::can_read_station_resource(self : ClientCore, st : String, resource : String) -> Bool {
-  self.membership.is_station_resource_confirmed(st, resource, fallback_ws=self.workspace)
+pub fn ClientCore::can_read_station_resource(self : ClientCore, st : String, _resource : String) -> Bool {
+  // Non-chat station resources have no independent post-downgrade fetcher; gate strictly on
+  // workspace revocation / pending-purge / session validity (zero permanent deadlock on downgrade).
+  self.can_read_station(st)
+}
+
+/// Single confirmation entry point matching TS `inner.confirmWorkspaceAuth`:
+/// verifies `auth.workspace_auth_gen(ws) == read_gen` AND (for station reads)
+/// `transport_epoch >= pending.min_transport_epoch`.
+pub fn ClientCore::confirm_workspace_auth(
+  self : ClientCore,
+  ws : String,
+  confirm_key : String,
+  read_gen : Int,
+  transport_epoch : Int64 = 0L,
+  require_transport_epoch : Bool = true,
+) -> Bool {
+  self.membership.confirm_workspace_auth(
+    ws,
+    confirm_key,
+    self.auth.workspace_auth_gen(ws),
+    read_gen,
+    transport_epoch=transport_epoch,
+    require_transport_epoch=require_transport_epoch,
+  )
 }
 
 fn ClientCore::lookup_session_for_thread(self : ClientCore, station : String, th : Int) -> Option[String] {
@@ -1754,7 +1745,57 @@ pub fn ClientCore::can_read_draft_target(
   true
 }
 
-/// Unified per-chat read & post-downgrade confirmation check supporting BOTH
+/// Validate single-chat selector consistency when BOTH `thread` and `session` are provided,
+/// and return the single resolved `(final_station, final_thread, final_session)` target across
+/// `moved` redirections so gate checks, confirmation, and view projection use the exact same target.
+pub fn ClientCore::resolve_consistent_chat_target(
+  self : ClientCore,
+  st : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> Result[(String, Option[Int], Option[String]), String] {
+  match (thread, session) {
+    (Some(th), Some(sk)) if sk.length() > 0 => {
+      let (st_by_th, th_by_th, sess_by_th) = self.resolve_moved_chat_target(st, Some(th), None)
+      let (st_by_sk, th_by_sk, sess_by_sk) = self.resolve_moved_chat_target(st, None, Some(sk))
+      if st_by_th != st_by_sk {
+        return Err("chat_selector_mismatch: thread and session resolve to different stations")
+      }
+      let db_th_for_sk = match th_by_sk {
+        Some(t) => Some(t)
+        None => self.lookup_thread_for_session(st_by_sk, sk)
+      }
+      let eff_th = match th_by_th {
+        Some(t) => t
+        None => th
+      }
+      match db_th_for_sk {
+        Some(t2) => if t2 != eff_th {
+          return Err("chat_selector_mismatch: thread " + eff_th.to_string() + " disagrees with session " + sk)
+        }
+        None => ()
+      }
+      let db_sk_for_th = match sess_by_th {
+        Some(s) => Some(s)
+        None => self.lookup_session_for_thread(st_by_th, eff_th)
+      }
+      let eff_sk = match sess_by_sk {
+        Some(s) => s
+        None => sk
+      }
+      match db_sk_for_th {
+        Some(s2) => if s2.length() > 0 && s2 != eff_sk {
+          return Err("chat_selector_mismatch: session " + eff_sk + " disagrees with thread " + eff_th.to_string())
+        }
+        None => ()
+      }
+      Ok((st_by_th, Some(eff_th), Some(eff_sk)))
+    }
+    _ => Ok(self.resolve_moved_chat_target(st, thread, session))
+  }
+}
+
+/// Unified per-chat read & `PendingAuthConfirm` check supporting BOTH
 /// `{station, session}` (`apps/mbui/src/sfbase/chat_model.mbt:1295`) and `{station, thread}`.
 pub fn ClientCore::can_read_chat(
   self : ClientCore,
@@ -1779,45 +1820,96 @@ pub fn ClientCore::can_read_chat(
   self.membership.is_chat_confirmed(st, thread=resolved_th, session=resolved_sess, fallback_ws=self.workspace)
 }
 
-/// Independent `chatJobs` post-downgrade confirmation check (NOT unlocked by entries-only thread fetch!).
-pub fn ClientCore::can_read_chat_jobs(
+/// Unified post-downgrade confirmation fetch scheduler for an open or newly-opened chat,
+/// shared by BOTH `ClientCore` and `core_runtime` subscriptions so neither path hangs Waiting.
+pub fn ClientCore::request_chat_confirmation_fetch(
   self : ClientCore,
   st : String,
   thread : Option[Int],
   session : Option[String],
-) -> Bool {
+) -> Unit {
   if !self.can_read_station(st) {
-    return false
+    return
   }
-  if self.membership.is_chat_jobs_confirmed(st, thread=thread, session=session, fallback_ws=self.workspace) {
-    return true
+  let target_ws = self.membership.station_workspace(st, fallback_ws=self.workspace)
+  if !self.membership.has_pending_auth_confirm(target_ws) {
+    return
   }
-  let resolved_th = match thread {
-    Some(t) => Some(t)
-    None => match session { Some(sk) => self.lookup_thread_for_session(st, sk); None => None }
+  if self.can_read_chat(st, thread, session) {
+    return
   }
-  let resolved_sess = match session {
-    Some(s) => Some(s)
-    None => match thread { Some(th) => self.lookup_session_for_thread(st, th); None => None }
+  match self.station_sync(st) {
+    Some(sy) => {
+      let resolved_th = match thread {
+        Some(t) => Some(t)
+        None => match session { Some(sk) => self.lookup_thread_for_session(st, sk); None => None }
+      }
+      match resolved_th {
+        Some(th) => {
+          let _ = self.rt.fork_quiet_named("confirm-thread:" + st + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+            sy.fetch_thread_k(th, effect::priority_focused(), true, fn(_ : effect::Exit[Int]) -> Unit {
+              k(effect::Exit::Succeeded(()))
+            })
+          })
+        }
+        None => {
+          let _ = self.rt.fork_quiet_named("confirm-snap:" + st, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+            sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+              k(effect::Exit::Succeeded(()))
+            })
+          })
+        }
+      }
+    }
+    None => ()
   }
-  self.membership.is_chat_jobs_confirmed(st, thread=resolved_th, session=resolved_sess, fallback_ws=self.workspace)
 }
 
-/// Return a readable error (403 denied / offline) or `Waiting` when a chat/chatJobs view is unconfirmed.
-fn ClientCore::unconfirmed_chat_event(self : ClientCore, id : Int64, st : String) -> protocol::CoreEvent {
-  if !self.can_read_station(st) {
-    return protocol::CoreEvent::Waiting(id)
+/// Advance `transport_epoch` across all attached stations of `ws` and return the highest new epoch.
+pub fn ClientCore::bump_workspace_transport_epochs(self : ClientCore, ws : String) -> Int64 {
+  let attached = self.collect_attached_stations_for_workspace(ws)
+  let mut max_ep = 1L
+  for i in 0..<attached.length() {
+    match self.station_sync(attached[i]) {
+      Some(sy) => {
+        sy.bump_epoch()
+        let ep = sy.transport_epoch()
+        if ep > max_ep {
+          max_ep = ep
+        }
+      }
+      None => ()
+    }
   }
-  match self.membership.station_unconfirmed_reason_of(st, fallback_ws=self.workspace) {
-    Some("access_denied") => protocol::CoreEvent::Err(id, protocol::CoreError::{
-      code: "access_denied",
-      message: "station denied access after role downgrade",
-    })
-    Some("offline") => protocol::CoreEvent::Err(id, protocol::CoreError::{
-      code: "station_offline",
-      message: "station offline while confirming downgraded access",
-    })
-    _ => protocol::CoreEvent::Waiting(id)
+  max_ep
+}
+
+/// Called by `core_runtime` once a fresh member credential has been installed on `station`:
+/// advances `station`'s `transport_epoch`, raises `pending_auth_confirm[ws].min_transport_epoch`
+/// so responses from the prior credential/link cannot confirm, and re-schedules `GET /chats` + open chats.
+pub fn ClientCore::on_station_credential_installed(
+  self : ClientCore,
+  ws : String,
+  station : String,
+) -> Unit {
+  if !self.can_read_workspace(ws) {
+    return
+  }
+  match self.station_sync(station) {
+    Some(sy) => {
+      sy.bump_epoch()
+      let next_ep = sy.transport_epoch()
+      self.membership.advance_pending_confirm_transport_epoch(ws, next_ep)
+      if self.membership.has_pending_auth_confirm(ws) {
+        let _ = self.rt.fork_quiet_named("post-cred-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+        self.trigger_unconfirmed_open_chats_for_station(ws, station)
+      }
+    }
+    None => ()
   }
 }
 
@@ -1828,7 +1920,7 @@ fn ClientCore::trigger_unconfirmed_open_chats_for_station(
   ws : String,
   station : String,
 ) -> Unit {
-  if !self.membership.is_station_chat_unconfirmed(ws, station) {
+  if !self.membership.has_pending_auth_confirm(ws) {
     return
   }
   let sy = match self.station_sync(station) {
@@ -1954,14 +2046,13 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
     }
   }
 
-  // 1. Latch revocation + account-scoped pending purge BEFORE touching SQLite or memory.
+  // 1. Latch revocation + account-scoped pending purge in ONE SQLite tx BEFORE touching caches,
+  //    plus best-effort per-account host mirror (`device/pending_purges/<sanitized_sub>`).
   self.membership.latch_purge(ws, stations)
   let latch_persist_err : Option[String] = match self.membership.persist_pending_purges(self.db) {
     Ok(_) => None
     Err(msg) => Some(msg)
   }
-  let _ = self.membership.persist_revoked_state(self.db)
-  let _ = self.membership.persist_unconfirmed_state(self.db)
 
   // 2. Purge all in-memory state immediately so 0 stale rows can ever be projected.
   // Always clear `self.md_store` so rendered markdown caches for dropped stations never linger.
@@ -2111,20 +2202,23 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
       return Err(e.to_string())
     }
     sql::SqlResult::Ok(_) => {
-      // Clean station bindings for `ws` so repeated `/v1/me` snapshots never re-drop `ws` or jitter `authGen`!
+      // Unbind `ws` stations (quarantining multi-owner bare aliases) and atomically persist
+      // `revoked` + cleared `pending_purges` + updated `station_bindings` in ONE SQLite transaction!
       self.membership.unbind_workspace_stations(ws)
-      let _ = self.membership.persist_station_bindings(self.db)
       self.membership.clear_pending_purge(ws)
-      let clear_persist_res = self.membership.persist_pending_purges(self.db)
-      let _ = self.membership.persist_revoked_state(self.db)
-      let _ = self.membership.persist_unconfirmed_state(self.db)
-      match clear_persist_res {
-        Err(msg) => {
-          // Do not silently swallow purge-boundary persistence failures: keep in-memory purge latched!
+      let burst = sql::Burst::new(self.db)
+      let meta_commit = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+        self.membership.persist_meta_state_in_burst(b, include_bindings=true)
+      })
+      // Best-effort mirror to per-account host key (`device/pending_purges/<sanitized_sub>`):
+      // if ONLY host backup warns while SQLite succeeded, record warning without re-latching `pending_purges`!
+      let _ = self.membership.sync_host_pending_purges()
+      match meta_commit {
+        sql::SqlResult::Err(e) => {
           self.membership.latch_purge(ws, stations)
-          return Err(msg)
+          return Err(e.to_string())
         }
-        Ok(_) => match latch_persist_err {
+        sql::SqlResult::Ok(_) => match latch_persist_err {
           Some(msg) => Err(msg)
           None => Ok(())
         }
@@ -2154,12 +2248,11 @@ pub fn ClientCore::retry_pending_purges(self : ClientCore) -> Result[Int, String
   }
 }
 
-/// Handle a Cloud membership role downgrade (`owner`/`admin` -> `member`):
-/// 1. Mark all workspace stations unconfirmed (per-resource + per-chat + per-chatJobs),
-///    persist confirmation latches to SQLite `meta`, and bump `cred_epoch`;
-/// 2. Bump `workspace` + `aggregate` authGen (re-anchoring subs and scrubbing `kept`);
-/// 3. Trigger `fresh=true` mesh credential refresh & workspace refresh;
-/// 4. Proactively refresh station snapshots (`GET /chats`) and currently open chats (`GET /threads/<t>`).
+/// Handle a Cloud membership role downgrade (`owner`/`admin` -> `member`), aligned 1:1 with TS `pendingAuthConfirm`:
+/// 1. Advance `workspace` + `aggregate` authGen and bump `transport_epoch` across attached stations of `ws`;
+/// 2. Latch memory-only `PendingAuthConfirm(gen=new_gen, min_transport_epoch=min_ep)` and bump `cred_epoch[ws]`;
+/// 3. Trigger `fresh=true` mesh credential refresh & Cloud workspace refresh;
+/// 4. Proactively schedule `GET /chats` and currently open `chat` confirmations on the new epoch.
 pub fn ClientCore::handle_role_downgrade(
   self : ClientCore,
   ws : String,
@@ -2167,11 +2260,13 @@ pub fn ClientCore::handle_role_downgrade(
   new_role : String,
 ) -> Unit {
   let _ = old_role
-  let _ = new_role
-  let attached = self.collect_attached_stations_for_workspace(ws)
-  let _ = self.membership.mark_downgraded(ws, extra_stations=attached)
-  let _ = self.membership.persist_unconfirmed_state(self.db)
+  if is_valid_workspace_role(new_role) {
+    self.membership.set_role(ws, new_role)
+  }
   let _ = self.auth.bump_workspace(ws)
+  let new_gen = self.auth.workspace_auth_gen(ws)
+  let min_ep = self.bump_workspace_transport_epochs(ws)
+  let _ = self.membership.mark_downgraded(ws, new_gen, min_transport_epoch=min_ep)
   match self.on_credential_refresh {
     Some(cb) => cb(ws)
     None => ()
@@ -2181,6 +2276,7 @@ pub fn ClientCore::handle_role_downgrade(
     None => ()
   }
   // Proactively refresh `GET /chats` snapshots on every attached station of `ws`.
+  let attached = self.collect_attached_stations_for_workspace(ws)
   for i in 0..<attached.length() {
     let st = attached[i]
     match self.station_sync(st) {
@@ -2194,13 +2290,13 @@ pub fn ClientCore::handle_role_downgrade(
       None => ()
     }
   }
-  // Collect currently open chats in `ws` from both `self.router` and `core_runtime` (`on_runtime_open_chats`),
+  // Proactively refresh currently open chats in `ws` from both `self.router` and `core_runtime` (`on_runtime_open_chats`),
   // supporting BOTH `{station, thread}` AND `{station, session}` (`chat_model.mbt:1295`).
   let open_chats : Array[(String, Option[Int], Option[String])] = []
   let subs = self.router.active_subs_snapshot()
   for i in 0..<subs.length() {
     let (_, topic) = subs[i]
-    if topic.name == "chat" || topic.name == "chatJobs" {
+    if topic.name == "chat" {
       let st = match topic.param("station") {
         Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
         _ => self.station
@@ -2245,16 +2341,7 @@ pub fn ClientCore::handle_role_downgrade(
         let fk = st + ":" + th.to_string()
         if fetched_keys.get(fk).is_none() {
           fetched_keys.set(fk, true)
-          match self.station_sync(st) {
-            Some(sy) => {
-              let _ = self.rt.fork_quiet_named("downgrade-thread:" + fk, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-                sy.fetch_thread_k(th, effect::priority_focused(), true, fn(_ : effect::Exit[Int]) -> Unit {
-                  k(effect::Exit::Succeeded(()))
-                })
-              })
-            }
-            None => ()
-          }
+          self.request_chat_confirmation_fetch(st, Some(th), sess_opt)
         }
       }
       None => ()
@@ -2352,9 +2439,24 @@ pub fn ClientCore::commit_cloud_me(
     }
   }
 
-  // Step 2: Persist `account_doc("me")` atomically.
+  // Step 2 & Step 3: Atomically persist `account_doc("me")` AND clear persisted `revoked` + `pending_purges`
+  // markers for rejoined workspaces inside ONE single SQLite transaction!
+  // Only AFTER this SQLite transaction commits do we release in-memory gates & bump generations.
   let eff_now = if now_ms > 0L { now_ms } else { self.rt.now() }
   let raw_json = base_codec::json_stringify(me.raw)
+  let saved_revoked : Array[String] = []
+  let saved_pending : Array[(String, Array[String])] = []
+  for i in 0..<rejoined.length() {
+    let wid = rejoined[i]
+    if self.membership.is_revoked(wid) {
+      saved_revoked.push(wid)
+    }
+    if self.membership.has_pending_purge(wid) {
+      saved_pending.push((wid, self.membership.stations_to_purge(wid)))
+    }
+    self.membership.clear_pending_purge(wid)
+    self.membership.clear_revoked(wid)
+  }
   let burst = sql::Burst::new(self.db)
   match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
     match b.run(sql_account_doc_put(), params=[
@@ -2362,21 +2464,38 @@ pub fn ClientCore::commit_cloud_me(
       base_codec::json_str(raw_json),
       base_codec::json_int64(eff_now),
     ]) {
-      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
     }
+    if rejoined.length() > 0 {
+      match self.membership.persist_meta_state_in_burst(b) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    sql::SqlResult::Ok(())
   }) {
-    sql::SqlResult::Err(e) => return Err(e.to_string())
+    sql::SqlResult::Err(e) => {
+      // Restore in-memory latches if the atomic SQLite commit failed!
+      for i in 0..<saved_pending.length() {
+        self.membership.latch_purge(saved_pending[i].0, saved_pending[i].1)
+      }
+      for i in 0..<saved_revoked.length() {
+        self.membership.latch_purge(saved_revoked[i], [])
+        self.membership.clear_pending_purge(saved_revoked[i])
+      }
+      return Err(e.to_string())
+    }
     sql::SqlResult::Ok(_) => ()
   }
 
-  // Step 3 & Step 4: Clear persisted purge markers & `revoked[wid]` for rejoined workspaces,
-  // bump `authGen`/`vaultGen` + `cred_epoch`, and trigger `fresh=true` credential refresh.
+  // Step 4: SQLite commit succeeded — sync per-account host backup best-effort, clear pending_auth_confirm,
+  // bump `authGen`/`vaultGen` + `cred_epoch`, and trigger `fresh=true` credential refresh for rejoined workspaces.
   if rejoined.length() > 0 {
+    let _ = self.membership.sync_host_pending_purges()
     for i in 0..<rejoined.length() {
       let wid = rejoined[i]
-      self.membership.clear_pending_purge(wid)
-      self.membership.clear_revoked(wid)
+      self.membership.clear_pending_auth_confirm(wid)
       let _ = self.membership.bump_cred_epoch(wid)
       let _ = self.auth.bump_workspace_and_vault(wid)
       match self.on_credential_refresh {
@@ -2384,11 +2503,9 @@ pub fn ClientCore::commit_cloud_me(
         None => ()
       }
     }
-    let _ = self.membership.persist_pending_purges(self.db)
-    let _ = self.membership.persist_revoked_state(self.db)
   }
 
-  // Detect role downgrades and update recorded roles.
+  // Detect role downgrades (latch `PendingAuthConfirm`) and upgrades (immediately clear `PendingAuthConfirm`).
   for i in 0..<me.workspaces.length() {
     let wref = me.workspaces[i]
     let was_rejoined = contains_str_ma(rejoined, wref.id)
@@ -2398,6 +2515,12 @@ pub fn ClientCore::commit_cloud_me(
           if is_role_downgrade(prev_role, wref.role) {
             self.membership.set_role(wref.id, wref.role)
             self.handle_role_downgrade(wref.id, prev_role, wref.role)
+          } else if is_role_upgrade(prev_role, wref.role) {
+            self.membership.set_role(wref.id, wref.role)
+            self.membership.clear_pending_auth_confirm(wref.id)
+            self.notify_confirmation_refresh("workspace")
+            self.notify_confirmation_refresh("chats")
+            self.notify_confirmation_refresh("chat")
           } else if is_valid_workspace_role(wref.role) {
             self.membership.set_role(wref.id, wref.role)
           }
@@ -2490,17 +2613,31 @@ pub fn ClientCore::commit_cloud_workspace(
       }
     }
   }
+  let mut triggered_downgrade = false
   if is_valid_workspace_role(new_role) {
     match self.membership.role_of(ws.id) {
       Some(prev_role) => {
         if is_role_downgrade(prev_role, new_role) {
+          triggered_downgrade = true
           self.membership.set_role(ws.id, new_role)
           self.handle_role_downgrade(ws.id, prev_role, new_role)
+        } else if is_role_upgrade(prev_role, new_role) {
+          self.membership.set_role(ws.id, new_role)
+          self.membership.clear_pending_auth_confirm(ws.id)
+          self.notify_confirmation_refresh("workspace")
+          self.notify_confirmation_refresh("chats")
+          self.notify_confirmation_refresh("chat")
         } else {
           self.membership.set_role(ws.id, new_role)
         }
       }
       None => self.membership.set_role(ws.id, new_role)
+    }
+  }
+  if !triggered_downgrade {
+    let cur_gen = self.auth.workspace_auth_gen(ws.id)
+    if self.confirm_workspace_auth(ws.id, confirm_key_workspace(ws.id), cur_gen, require_transport_epoch=false) {
+      self.notify_confirmation_refresh("workspace")
     }
   }
   Ok(true)
@@ -2509,6 +2646,7 @@ pub fn ClientCore::commit_cloud_workspace(
 /// Apply rotated OAuth tokens for `sub`, conditioned on `(sub, expected_session, expected_refresh)`
 /// so a stale refresh response NEVER overwrites a newer re-login or rotated refresh token!
 /// Persists ALL accounts with TS `accounts.ts:50` `"access_expires"` (epoch seconds) and `"session"` IDs.
+/// NEVER bumps station `cred_epoch` (Cloud OAuth tokens and station mesh credentials are decoupled!).
 pub fn ClientCore::apply_refreshed_tokens(
   self : ClientCore,
   sub : String,
@@ -2552,10 +2690,6 @@ pub fn ClientCore::apply_refreshed_tokens(
   ) {
     Err(e) => Err(e)
     Ok(access) => {
-      let known = self.membership.known_workspaces()
-      for i in 0..<known.length() {
-        let _ = self.membership.bump_cred_epoch(known[i])
-      }
       let persisted = serialize_stored_accounts(self.auth_store.accounts, sessions=Some(self.account_sessions))
       match self.on_accounts_persisted {
         Some(hook) => match hook(persisted) {
@@ -3107,16 +3241,17 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     if th_opt.is_none() && sess_opt.is_none() {
       return Some(protocol::CoreEvent::Waiting(id))
     }
-    // Resolve moved chat destination FIRST, then authorize BOTH input AND final resolved target!
-    let (final_st, final_th, final_sess) = self.resolve_moved_chat_target(st, th_opt, sess_opt)
+    // Validate selector consistency (`thread` vs `session`) and resolve moved destination ONCE,
+    // using that single target across gate checks, `PendingAuthConfirm`, and view projection!
+    let (final_st, final_th, final_sess) = match self.resolve_consistent_chat_target(st, th_opt, sess_opt) {
+      Ok(t) => t
+      Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
+    }
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
       return Some(protocol::CoreEvent::Waiting(id))
     }
-    if !self.can_read_chat(st, th_opt, sess_opt) {
-      return Some(self.unconfirmed_chat_event(id, st))
-    }
-    if final_st != st && !self.can_read_chat(final_st, final_th, final_sess) {
-      return Some(self.unconfirmed_chat_event(id, final_st))
+    if !self.can_read_chat(final_st, final_th, final_sess) {
+      return Some(protocol::CoreEvent::Waiting(id))
     }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
@@ -3125,9 +3260,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     let rows_lim = self.chat_sub_window_rows_for(id, final_st, final_th, final_sess)
     match views::project_chat_by_params(
       self.db,
-      st,
-      th_opt,
-      sess_opt,
+      final_st,
+      final_th,
+      final_sess,
       compact,
       self.viewer_marks.me,
       self.rt.now(),
@@ -3158,7 +3293,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    if !self.can_read_workspace(ws) {
+    if !self.membership.is_workspace_doc_confirmed(ws) {
       return Some(protocol::CoreEvent::Waiting(id))
     }
     match views::project_workspace(self.db, ws) {
@@ -3533,6 +3668,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => None
     }
     let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    let ws_doc_ok = ws_scope.length() > 0 && self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope, resource="usage")
     match views::project_usage(
       self.db,
@@ -3541,7 +3677,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       self.rt.now(),
       days_asked=days,
       split=split,
-      include_workspace_doc=scope_ok,
+      include_workspace_doc=ws_doc_ok,
       allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_resource(st, "usage") }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -3569,6 +3705,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => "chats"
     }
     let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    let ws_doc_ok = ws_scope.length() > 0 && self.can_read_workspace(ws_scope)
     let res_name = if place == "usage" { "usage" } else { "railCard" }
     let briefs = self.station_briefs_for_scope(ws_scope, resource=res_name)
     let running = if scope_ok && self.can_read_station_resource(self.station, res_name) { self.running_session_count() } else { 0 }
@@ -3580,7 +3717,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       running,
       self.viewer_marks,
       self.rt.now(),
-      include_workspace_doc=scope_ok,
+      include_workspace_doc=ws_doc_ok,
       allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_resource(st, res_name) }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -3596,16 +3733,17 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Num(n, _)) => n.to_int()
       _ => return Some(protocol::CoreEvent::Waiting(id))
     }
-    let (final_st, final_th_opt, final_sess) = self.resolve_moved_chat_target(st, Some(th), None)
+    let sess_opt : Option[String] = match topic.param("session") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+    let (final_st, final_th_opt, _) = match self.resolve_consistent_chat_target(st, Some(th), sess_opt) {
+      Ok(t) => t
+      Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
+    }
     let eff_th = match final_th_opt { Some(t) => t; None => th }
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
       return Some(protocol::CoreEvent::Waiting(id))
-    }
-    if !self.can_read_chat_jobs(st, Some(th), None) {
-      return Some(self.unconfirmed_chat_event(id, st))
-    }
-    if final_st != st && !self.can_read_chat_jobs(final_st, Some(eff_th), final_sess) {
-      return Some(self.unconfirmed_chat_event(id, final_st))
     }
     let summary = match topic.param("summary") {
       Some(base_codec::Json::Bool(b)) => b
@@ -5037,18 +5175,16 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
         let req_th = proto_int(params, "thread")
         let req_sess = proto_str(params, "session")
-        // Resolve moved destination FIRST, then authorize BOTH input AND final resolved target!
-        let (final_st, final_th, final_sess) = self.resolve_moved_chat_target(req_st, req_th, req_sess)
+        let (final_st, final_th, final_sess) = match self.resolve_consistent_chat_target(req_st, req_th, req_sess) {
+          Ok(t) => t
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
+        }
         if !self.can_read_station(req_st) || !self.can_read_station(final_st) {
           return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
         }
-        if !self.can_read_chat(req_st, req_th, req_sess) || (final_st != req_st && !self.can_read_chat(final_st, final_th, final_sess)) {
-          let err_code = match self.membership.station_unconfirmed_reason_of(final_st, fallback_ws=self.workspace) {
-            Some("access_denied") => "access_denied"
-            Some("offline") => "station_offline"
-            _ => "unconfirmed"
-          }
-          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: "chat awaiting post-downgrade confirmation" }))
+        if !self.can_read_chat(final_st, final_th, final_sess) {
+          self.request_chat_confirmation_fetch(final_st, final_th, final_sess)
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unconfirmed", message: "chat awaiting post-downgrade confirmation" }))
         }
       }
       if call_name == "chats.window" {
@@ -5719,6 +5855,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             Some(sid) => if sid.length() > 0 { self.account_sessions.set(sub, sid) }
             None => ()
           }
+          if access.length() > 0 {
+            self.membership.clear_session_invalidated()
+          }
           self.auth_store.register_account(views::StoredAccount::{
             sub: sub,
             email: email,
@@ -5730,6 +5869,11 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           })
           self.set_viewer(email, sub=sub)
           self.login_flow.mark_completed(sub, outcome.return_to)
+          let persisted = serialize_stored_accounts(self.auth_store.accounts, sessions=Some(self.account_sessions))
+          match self.on_accounts_persisted {
+            Some(hook) => { let _ = hook(persisted) }
+            None => ()
+          }
           let _ = store::put_account_doc(self.db, "accounts", base_codec::json_stringify(views::project_accounts_topic(self.auth_store)))
         }
         // NEVER expose `verifier`, `access`, or `refresh`!
@@ -6706,33 +6850,11 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(th) => self.sync.focus_thread(Some(th))
           None => ()
         }
-        let target_ws = self.membership.station_workspace(st, fallback_ws=self.workspace)
-        if self.can_read_station(st) && self.membership.is_station_chat_unconfirmed(target_ws, st) && !self.can_read_chat(st, th_opt, sess_opt) {
-          match self.station_sync(st) {
-            Some(sy) => {
-              let resolved_th = match th_opt {
-                Some(t) => Some(t)
-                None => match sess_opt { Some(sk) => self.lookup_thread_for_session(st, sk); None => None }
-              }
-              match resolved_th {
-                Some(th) => {
-                  let _ = self.rt.fork_quiet_named("sub-confirm-thread:" + st + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-                    sy.fetch_thread_k(th, effect::priority_focused(), true, fn(_ : effect::Exit[Int]) -> Unit {
-                      k(effect::Exit::Succeeded(()))
-                    })
-                  })
-                }
-                None => {
-                  let _ = self.rt.fork_quiet_named("sub-confirm-snap:" + st, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-                    sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-                      k(effect::Exit::Succeeded(()))
-                    })
-                  })
-                }
-              }
-            }
-            None => ()
+        match self.resolve_consistent_chat_target(st, th_opt, sess_opt) {
+          Ok((final_st, final_th, final_sess)) => {
+            self.request_chat_confirmation_fetch(final_st, final_th, final_sess)
           }
+          Err(_) => ()
         }
       }
       self.router.handle(req)

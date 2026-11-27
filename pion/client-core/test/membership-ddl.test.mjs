@@ -307,16 +307,16 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
       const remNeighbor = db.prepare(`SELECT count(*) AS c FROM ${tbl} WHERE station = ?`).get("wsXdrop/st-1").c;
       assert.ok(remNeighbor >= 1, `expected preserved row in ${tbl} for wildcard-neighbor wsXdrop/st-1`);
     }
-    // Verify BOTH `station` AND `there_station` sides of `moved` were purged for `ws_drop` while keeping `ws-keep <-> wsXdrop`!
+    // Verify `moved` deletes ONLY rows whose source `station` belongs to `ws_drop`, preserving rows
+    // owned by `ws-keep` even when `there_station` pointed at `ws_drop` (Opus R2 P2-1)!
     assert.equal(
-      db.prepare("SELECT count(*) AS c FROM moved WHERE station IN (?, ?) OR there_station IN (?, ?)").get(
-        "ws_drop/st-1",
-        "st-drop-only",
-        "ws_drop/st-1",
-        "st-drop-only",
-      ).c,
+      db.prepare("SELECT count(*) AS c FROM moved WHERE station IN (?, ?)").get("ws_drop/st-1", "st-drop-only").c,
       0,
-      "moved rows referencing dropped stations on EITHER side must be purged",
+      "moved rows with source station in dropped workspace must be purged",
+    );
+    assert.ok(
+      db.prepare("SELECT count(*) AS c FROM moved WHERE station = 'ws-keep/st-1' AND there_station = 'ws_drop/st-1'").get().c >= 1,
+      "moved rows whose source station belongs to surviving ws-keep must be preserved",
     );
     assert.ok(
       db.prepare("SELECT count(*) AS c FROM moved WHERE station = 'ws-keep/st-1' AND there_station = 'wsXdrop/st-1'").get().c >= 1,
@@ -407,6 +407,14 @@ test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (acces
     payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "A", role: "owner" }, { id: "ws-1", name: "B", role: "member" }] },
   });
   assert.equal(badMeDup.ok, false);
+  const badMeSlashId = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws/evil", name: "Bad", role: "owner" }] },
+  });
+  assert.equal(badMeSlashId.ok, false);
+  const badMeEmptyName = await rpc.call("membership.parseCloudMeStrict", {
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "", role: "owner" }] },
+  });
+  assert.equal(badMeEmptyName.ok, false);
   const badWs = await rpc.call("membership.parseCloudWorkspaceStrict", {
     payload: { id: "ws-other", name: "Wrong", stations: [] },
     requestedWs: "ws-1",
