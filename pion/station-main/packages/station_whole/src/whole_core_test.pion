@@ -820,5 +820,12 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
   wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
 
+  // 6. R6: Non-ASCII terms bypass SQLite ASCII-only `lower()` pushdown (deferred to Unicode `jscase`).
+  wc_assert(is_ascii_only("hello_100%"), "ASCII term detected")
+  wc_assert(!is_ascii_only("ärger"), "non-ASCII term detected")
+  wc_assert(has_non_ascii_term(["abc", "ärger"]), "has_non_ascii_term detects non-ASCII")
+  let (uni_sql, uni_params) = build_like_clauses("e.text", ["ärger"], 3)
+  wc_assert(uni_sql.length() == 0 && uni_params.length() == 0, "non-ASCII term must not emit SQLite ASCII lower() LIKE")
+
   core.shutdown_pre_handover()
 }

@@ -863,12 +863,21 @@ pub fn WholeApi::new(
     }
     let eff_lim = if limit <= 0 { 20 } else if limit > 200 { 200 } else { limit }
     let eff_off = if offset < 0 { 0 } else { offset }
-    // Bounded search window (never silently clamp `offset > 800` back to 800, which causes infinite repeat pages).
+    // Strict bounded search window (`max_window = 1000`): never clamp `offset` backward and
+    // never leak hits past index 1000 (`offset=999&limit=1` -> 1 hit, `more=false`;
+    // `offset=998&limit=5` -> 2 hits, `more=false`; `offset=1000&limit=1` -> empty, `more=false`).
     let max_window = 1000
     if eff_off >= max_window {
       return Ok(station_api::SearchResult::{ groups: [], building: false })
     }
-    let sql_limit = if eff_off + eff_lim + 1 > max_window + 1 { max_window + 1 } else { eff_off + eff_lim + 1 }
+    let window_lim = if eff_lim < max_window - eff_off { eff_lim } else { max_window - eff_off }
+    let sql_limit = if has_non_ascii_term(words) {
+      max_window + 1
+    } else if eff_off + window_lim + 1 > max_window + 1 {
+      max_window + 1
+    } else {
+      eff_off + window_lim + 1
+    }
     let want_chat = if kinds.length() == 0 {
       true
     } else {
@@ -1045,7 +1054,23 @@ pub fn WholeApi::new(
         Err(e) => return Err(e)
       }
     }
-    station_api::search_pick(docs, query, asker, Some(kinds), eff_lim, eff_off)
+    match station_api::search_pick(docs, query, asker, Some(kinds), window_lim, eff_off) {
+      Ok(res) => {
+        let bounded_groups : Array[station_api::SearchGroup] = []
+        for gi in 0..<res.groups.length() {
+          let g = res.groups[gi]
+          let capped_more = if eff_off + g.hits.length() >= max_window { false } else { g.more }
+          bounded_groups.push(station_api::SearchGroup::{
+            kind: g.kind,
+            hits: g.hits,
+            more: capped_more,
+            left: g.left,
+          })
+        }
+        Ok(station_api::SearchResult::{ groups: bounded_groups, building: res.building })
+      }
+      Err(e) => Err(e)
+    }
   }
 
   let api_host = station_api::ApiHost::{
