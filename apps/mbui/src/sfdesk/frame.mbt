@@ -445,7 +445,8 @@ fn dock_side_at(
     list_band: f.band,
     bar,
     tape: false,
-    glass: if wide.tape.get() { 0.0 } else { dock_glass_strength(f.glass) },
+    glass: if wide.tape.get() { 0.0 } else { dock_glass_strength(f.glass, f.showing * s) },
+    seen: if wide.tape.get() || f.glass <= 0.0 { 1.0 } else { dock_glass_strength(f.glass, f.showing * s) },
   }
 }
 
@@ -597,19 +598,28 @@ priv struct SideAt {
   bar : Bool
   tape : Bool
   glass : Double
+  /// how much of what the sidebar holds shows: given way with the drawer's glass as it comes to the rail (else whole)
+  seen : Double
 }
 
 ///|
-/// Smoothly maps `FoldLook.glass` (`0..1`) to the drawer glass materialisation strength: dissolves cleanly to `0.0`
-/// before the shrinking drawer narrows down to the resting rail (`g <= 0.14`) so no narrow glass strip lingers or
-/// snaps off at the end of a dismiss, and materialises smoothly with zero-slope easing as the drawer slides out.
-fn dock_glass_strength(g : Double) -> Double {
-  if g <= 0.14 {
-    0.0
-  } else if g >= 1.0 {
+/// How far past the rail the shown-a-while drawer's glass starts to give way to the resting rail's ground (points).
+pub let dock_glass_fade_w : Double = 64.0
+
+///|
+/// How much of the drawer's glass (its blur, rim and shadow) and of what the sidebar holds shows, the block shown a
+/// while `g` of the way (`FoldLook.glass`) with `past` of the sidebar showing past the rail (`FoldLook.showing` of its
+/// width): whole while that is wider than `dock_glass_fade_w`, so what the sidebar holds never shows on no ground;
+/// then both giving way together, eased, as the drawer comes to the rail's width, so no full strip lingers at the rail
+/// and goes off in one frame.
+fn dock_glass_strength(g : Double, past : Double) -> Double {
+  if g <= 0.0 {
+    return 0.0
+  }
+  if past >= dock_glass_fade_w {
     1.0
   } else {
-    let u = (g - 0.14) / 0.86
+    let u = past / dock_glass_fade_w
     u * u * (3.0 - 2.0 * u)
   }
 }

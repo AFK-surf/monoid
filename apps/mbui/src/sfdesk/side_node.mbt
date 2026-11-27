@@ -45,6 +45,11 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     |> ignore
     dock_round_node(cut, at)
     cut.box(fn(side) {
+      // (given way with the drawer's glass as a drawer shown a while comes back to the rail, so nothing it holds shows
+      // on no ground: a signal of its own, so the window's size, which moves `at`, wakes it not)
+      let seen = @signals.computed(fn(_) { at().seen }, same=fn(a, b) { a == b })
+      side.owns(fn() { seen.dispose() }) |> ignore
+      side.alpha(By(fn() { if @signals.active_sub() is None { at().seen } else { seen.get() } })) |> ignore
       // (where the rail's lit place pressed again finds its list: back_to_top.mbt)
       side_made.val = Some(side)
       side.owns(fn() {
