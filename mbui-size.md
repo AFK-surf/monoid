@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.15 | 154.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 2.67 | 3.61 | 14.99 | 38.02 | 58.24 | 33.33 | 67.99 | 108.89 | 125.14 |
 | [dc6e4f996](https://github.com/AFK-surf/monoid/commit/dc6e4f9961facdb43561ff91f42454cb2071df38) fix(core-ts): memoize bridged conn.closed and forg | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 102.12 | 129.32 |
 | [38ba386fa](https://github.com/AFK-surf/monoid/commit/38ba386fa931ef37ed7734be8cc194ddc5e6de00) feat(station-whole): assemble transport-independen | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 101.96 | 130.04 |
-| [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 101.96 | 130.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.43 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c14a4b71d](https://github.com/AFK-surf/monoid/commit/c14a4b71d0f144c24929d1021d967b1f5e1b3f05) feat(core,mbui): add authGen/vaultGen sync boundar | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
 | [dc6e4f996](https://github.com/AFK-surf/monoid/commit/dc6e4f9961facdb43561ff91f42454cb2071df38) fix(core-ts): memoize bridged conn.closed and forg | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.54 |
 | [38ba386fa](https://github.com/AFK-surf/monoid/commit/38ba386fa931ef37ed7734be8cc194ddc5e6de00) feat(station-whole): assemble transport-independen | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
-| [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.66 |
