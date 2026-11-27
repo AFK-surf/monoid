@@ -532,6 +532,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["againSession", opt("String"), { doc: "The session whose turn failed for the provider or the connection, or that the station stopped asking for a state,\nwhile this exact notice can try it again (重试: `session.retry`)." }],
     ["linkAt", opt("i64"), { client: opt("I54"), doc: "One about a profile: where in `words` (UTF-16 units) what went wrong begins, after its ：: the link to that\nprofile's page. Absent otherwise." }],
     ["profileAction", opt("String"), { said: true, doc: "One about a profile the station says what to do of: that, as the short action at the end of the pill\n(重新登录, 设置代理), which opens that profile's page; `words` then say what went wrong alone. Absent otherwise." }],
+    ["software", opt("NoticeSoftware"), { doc: "A failure about a runtime's installation or version: repairing or updating it on the station, its progress while\nthat runs, or opening the station's software settings. Absent otherwise." }],
     ["detail", opt("String"), { said: true, doc: "A failure's own words, as what failed said them (a provider's, a process's): shown when the notice is\nopened, under `words`. Absent otherwise." }],
     ["short", opt("String"), { said: true, doc: "A chat's run changed (run-change.ts): what it runs on now in what changed alone (换成 Codex · GPT-6), said in\nplace of `words` where they have not the room on their line. Absent otherwise." }],
     ["lines", opt(vec("String")), { said: true, doc: "A chat's run changed: how it ran and how it runs, whole (之前：…, 现在：…), shown in place of `words` once\nthe notice is opened. Absent otherwise." }],
@@ -540,6 +541,11 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["count", opt("u32"), { doc: "Failures said in the same words one after another, folded into this one (views.ts foldNotices): how many\n(2 or more), drawn after `words` as ×n. Absent for one." }],
     ["lastSeq", opt("i64"), { client: opt("I54"), doc: "With `count`: the last folded notice's `seq`, what is acted on (`session.retry`, `session.cancelRetry`,\n`session.reassign`, `chat.report`) and read up to." }],
   ], { doc: "still.fail's notice as a chat shows it (core views.ts noticeOf)." }),
+  NoticeSoftware: struct([
+    ["runtime", "String", { doc: "The runtime the notice is about (`codex`, etc.: `software.update`'s `id`)." }],
+    ["kind", "String", { doc: "repair | update | updating | settings: what pressing the action at the pill's end does (`repair`: `software.update` with `repair: true`; `update`: `software.update`; `updating`: disabled progress words while it runs; `settings`: opens the station's page)." }],
+    ["action", "String", { said: true, doc: "The short label at the end of the pill (用 npm 修复, 更新, 正在修复…, 重试, 软件设置)." }],
+  ], { doc: "A shortcut at the end of a harness failure notice to repair or update the runtime on its station, or open its software settings." }),
   RunSides: struct([
     ["was", "String", { said: true, doc: "What changed as it was (Claude Code · Opus 5.5)." }],
     ["now", "String", { said: true, doc: "What changed as it is now (Codex · GPT-6)." }],

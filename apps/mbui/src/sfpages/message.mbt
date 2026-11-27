@@ -122,6 +122,44 @@ fn install_runtime(src : Source, station : String, i : Install) -> Unit {
 }
 
 ///|
+// kept across runs: a value (no field of it changes)
+let no_notice_software : @sfbase.NoticeSoftware = { runtime: "", kind: "", action: "" }
+
+///|
+/// Whether a harness failure notice's shortcut cannot be pressed now: the station is updating/repairing it, the RPC is
+/// in flight, the chat is read only, or the station is offline for a repair/update.
+fn software_notice_busy(src : Source, offline : Bool, station : String, sw : @sfbase.NoticeSoftware) -> Bool {
+  if src.read_only || sw.kind == "updating" {
+    return true
+  }
+  if sw.kind == "repair" || sw.kind == "update" {
+    offline || core_doing(src, ["software.update"], [("station", station), ("id", sw.runtime)])
+  } else {
+    false
+  }
+}
+
+///|
+/// Runs the shortcut at the end of a harness failure notice: repairs or updates the runtime on `station`, or opens the
+/// station's software settings page.
+fn software_notice_act(src : Source, offline : Bool, station : String, sw : @sfbase.NoticeSoftware) -> Unit {
+  if software_notice_busy(src, offline, station, sw) {
+    return
+  }
+  match sw.kind {
+    "repair" =>
+      act(src, sw.action, "", "software.update", {
+        "station": Json::string(station),
+        "id": Json::string(sw.runtime),
+        "repair": Json::boolean(true),
+      })
+    "update" => act(src, sw.action, "", "software.update", { "station": Json::string(station), "id": Json::string(sw.runtime) })
+    "settings" => open_page(Setting(@settings.Route::Station(station)))
+    _ => ()
+  }
+}
+
+///|
 /// The file of a message's `files` that is a quote's own (fileOf): the one it names.
 fn quote_file(q : Quote, files : Array[Attachment]) -> Attachment? {
   if q.file == "" {

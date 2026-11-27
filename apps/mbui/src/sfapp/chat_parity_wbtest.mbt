@@ -284,6 +284,65 @@ test "a notice about a profile the station says what to do of: · 重新登录 a
 }
 
 ///|
+test "a harness failure notice: · 用 npm 修复 calls software.update with repair=true, and · 软件设置 opens the station page" {
+  both_pages(fn() raise {
+    let words = "无法启动 agent：Codex 缺少执行组件，无法使用工具"
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", fn(name, v) {
+      if name == "chat" {
+        with_chat_message(v, 9.0, [
+          ("notice", {
+            "failed": true,
+            "words": Json::string(words),
+            "md": [["p", [[0, words.length()]]]],
+            "software": { "runtime": "codex", "kind": "repair", "action": "用 npm 修复" },
+          }),
+        ])
+      } else {
+        v
+      }
+    })
+    for _ in 0..<6 {
+      if t.find(words) is Some(_) {
+        break
+      }
+      t.wheel(195.0, 400.0, -300.0)
+    }
+    t.tap_text("用 npm 修复")
+    let sent = named(calls, "software.update")
+    assert_eq(sent.length(), 1)
+    assert_eq(text(Some(sent[0].params), "id"), "codex")
+    assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
+    assert_true(flag(Some(sent[0].params), "repair"))
+
+    let calls2 : Array[Made] = []
+    let t2 = edited_core(calls2, "chat", fn(name, v) {
+      if name == "chat" {
+        with_chat_message(v, 9.0, [
+          ("notice", {
+            "failed": true,
+            "words": Json::string(words),
+            "md": [["p", [[0, words.length()]]]],
+            "software": { "runtime": "codex", "kind": "settings", "action": "软件设置" },
+          }),
+        ])
+      } else {
+        v
+      }
+    })
+    for _ in 0..<6 {
+      if t2.find(words) is Some(_) {
+        break
+      }
+      t2.wheel(195.0, 400.0, -300.0)
+    }
+    t2.tap_text("软件设置")
+    t2.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(@settings.Route::Station("ws1/st1")))
+  })
+}
+
+///|
 test "a notice that a chat was opened: its line is its Markdown drawn, the chat's chip in it, and tapped it opens that chat" {
   both_pages(fn() raise {
     let calls : Array[Made] = []

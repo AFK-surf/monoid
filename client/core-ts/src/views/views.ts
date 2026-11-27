@@ -935,10 +935,10 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
 }
 
 import * as brand from "../brand.ts";
-import { noticeOf } from "../notice.ts";
+import { noticeOf, softwareNoticeTarget } from "../notice.ts";
 import { runChangeOf } from "../run-change.ts";
 import { isOwnSurface, isStationAuthor, withoutMentions } from "../titles.ts";
-export { noticeOf };
+export { noticeOf, softwareNoticeTarget };
 const brandName = () => brand.name();
 
 /// The pictures of the Slack people a session heard, by their Slack id, as the station gives them: those who wrote in its
@@ -4943,7 +4943,17 @@ export class Views implements Owner {
       const out: J = { ...m, waiting };
       const install = m.system === true && typeof m.runtime === "string" ? present.installView(m.runtime, updates, manages) : null;
       if (install !== null) out.install = install;
-      else if (reports && m.system === true && u64(m.seq) !== null && (str(m.text) ?? "").startsWith("⚠️")) out.reportable = true;
+      else {
+        const swTarget = m.system === true && isObject(m.notice) && m.notice.failed === true && str(m.profile) === null
+          ? softwareNoticeTarget(str(m.notice.words) ?? "")
+          : null;
+        if (swTarget !== null) {
+          const sw = present.softwareNoticeView(swTarget.runtime, swTarget.preferRepair, updates, manages);
+          const detail = str(m.notice.detail) ?? sw.detail;
+          out.notice = { ...m.notice, software: sw.software, ...(detail ? { detail } : {}) };
+        }
+        if (reports && m.system === true && u64(m.seq) !== null && (str(m.text) ?? "").startsWith("⚠️")) out.reportable = true;
+      }
       this.#shownMade.set(raw, { by, waiting, out: sharedValue(out) });
       return out;
     });
