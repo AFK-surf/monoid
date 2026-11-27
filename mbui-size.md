@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.15 | 154.34 |
 | [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.19 | 136.76 |
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
 | [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 2.67 | 3.6 | 14.95 | 37.94 | 58.12 | 33.25 | 67.9 | 101.96 | 130.04 |
 | [0973b9321](https://github.com/AFK-surf/monoid/commit/0973b9321389c2506ab5590eae4d3d9a2dd5f1f2) fix(ci): update mbui-ci test package prefixes from | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 101.86 | 127.14 |
 | [225e586cc](https://github.com/AFK-surf/monoid/commit/225e586ccf866d08902958d74e855d99ced9ab01) feat(station-main): wire native hooks and claude-t | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 101.86 | 127.14 |
-| [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.89 |
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
 | [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5d20d0961](https://github.com/AFK-surf/monoid/commit/5d20d09614916784636c531a919e59426f5d51b6) docs(changelog): say the lists that came with the  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.66 |
 | [0973b9321](https://github.com/AFK-surf/monoid/commit/0973b9321389c2506ab5590eae4d3d9a2dd5f1f2) fix(ci): update mbui-ci test package prefixes from | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [225e586cc](https://github.com/AFK-surf/monoid/commit/225e586ccf866d08902958d74e855d99ced9ab01) feat(station-main): wire native hooks and claude-t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.62 |
-| [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
