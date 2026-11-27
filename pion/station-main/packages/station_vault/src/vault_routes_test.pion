@@ -855,6 +855,7 @@ test "P2-4..P2-8: proof-verified viewer, box hooks/SSE, latest validation, befor
     first: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Option[Map[String, base_codec::Json]], sql_db::SqlError] { Err(io_err) },
     all: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] { Err(io_err) },
     tx: fn(_f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] { Err(io_err) },
+    read_tx: fn(_f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] { Err(io_err) },
   }
   let bad_store = unwrap_ok(VaultStore::new_with_port(failing_port))
   let bad_ctx = VaultRouteCtx::{

@@ -284,6 +284,7 @@ pub struct VaultDbPort {
   pub first : (String, Array[base_codec::Json]) -> Result[Option[Map[String, base_codec::Json]], sql_db::SqlError]
   pub all : (String, Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError]
   pub tx : ((VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError]
+  pub read_tx : ((VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError]
 }
 
 pub fn sql_db_vault_port(db : sql_db::Db) -> VaultDbPort {
@@ -294,6 +295,12 @@ pub fn sql_db_vault_port(db : sql_db::Db) -> VaultDbPort {
     all: fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] { db.all(sql, params) },
     tx: fn(f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] {
       db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] { f(sql_db_vault_port(txdb)) })
+    },
+    read_tx: fn(f : (VaultDbPort) -> Result[Unit, sql_db::SqlError]) -> Result[Unit, sql_db::SqlError] {
+      db.deferred_tx_err(
+        fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+        fn() -> Result[Unit, sql_db::SqlError] { f(sql_db_vault_port(db)) },
+      )
     },
   }
 }
@@ -810,7 +817,7 @@ pub fn VaultStore::member_vaults(self : VaultStore, ws : String, sub : String) -
           Err(e) => return Err(e.message)
         }
         let mut out : Array[form::Json] = []
-        let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+        let tx_res = (db.read_tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
           let complete = match vault_members_complete_db(txdb, ws) {
             Ok(b) => b
             Err(e) => return Err(e)
@@ -1209,7 +1216,7 @@ pub fn VaultStore::put_vault_checked(
       }
     }
   }
-  let needs_tx = deleted || !(approve_join is None) || added_subs.length() > 0
+  let needs_tx = deleted || !(approve_join is None) || added_subs.length() > 0 || prune_key_pairs.length() > 0 || prune_removed_devices.length() > 0
   if !needs_tx {
     self.ver = self.ver + 1L
     return match do_save(db) {

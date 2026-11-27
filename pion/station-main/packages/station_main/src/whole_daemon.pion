@@ -763,6 +763,7 @@ fn emit_thread_sse_event(
     vault: None,
     sees_ws: Some(Some(ws)),
     sees_session: None,
+    device: None,
     sees_thread: None,
     sees_job: None,
   }
@@ -2316,18 +2317,40 @@ fn verify_on_personal_lock(
   }
 }
 
-/// Locate every `ws` entry in `person_chains` committing to statement body hash `h` and return
-/// the exact chain prefix from genesis to that entry (1:1 with `PersonChains.commitsTo` in
-/// `station/src/mesh/person-chains.ts:187`), because `lock::body_refusal` checks the LAST entry.
+/// Locate every `ws` entry in `person_chains` (active chain + kept `aside` forks) committing to
+/// statement body hash `h` and return the exact chain prefix from genesis to that entry
+/// (1:1 with `PersonChains.commitsTo` in `station/src/mesh/person-chains.ts:187`, capped at 4096),
+/// because `lock::body_refusal` checks the LAST entry.
 fn commits_to_body(
   person_chains : Array[(String, Array[form::Json])],
+  aside_opt : Option[form::Json],
   h : String,
 ) -> Array[lock::Commit] {
+  let chain_most = 4096
   let out : Array[lock::Commit] = []
   for ci in 0..<person_chains.length() {
-    let (g, ch) = person_chains[ci]
-    for j in 0..<ch.length() {
-      let e = ch[j]
+    let (g, active) = person_chains[ci]
+    let all : Array[form::Json] = []
+    for i in 0..<active.length() {
+      all.push(active[i])
+    }
+    match form::json_field(aside_opt, g) {
+      Some(form::Json::Arr(xs)) => {
+        for i in 0..<xs.length() {
+          all.push(xs[i])
+        }
+      }
+      _ => ()
+    }
+    let by : Map[String, form::Json] = Map::new()
+    for i in 0..<all.length() {
+      match station_rules_bridge::entry_hash(all[i]) {
+        Ok(eh) => by.set(eh, all[i])
+        Err(_) => ()
+      }
+    }
+    for j in 0..<all.length() {
+      let e = all[j]
       let kind = match form::json_field(Some(e), "kind") {
         Some(form::Json::Str(s)) => s
         _ => ""
@@ -2342,11 +2365,36 @@ fn commits_to_body(
       if body_h != h {
         continue
       }
-      let prefix : Array[form::Json] = []
-      for k in 0..<(j + 1) {
-        prefix.push(ch[k])
+      let rev : Array[form::Json] = []
+      let mut cur_opt : Option[form::Json] = Some(e)
+      while rev.length() <= chain_most {
+        match cur_opt {
+          None => break
+          Some(cur) => {
+            rev.push(cur)
+            match form::json_field(Some(cur), "prev") {
+              Some(form::Json::Str(prev_h)) => cur_opt = by.get(prev_h)
+              _ => break
+            }
+          }
+        }
       }
-      out.push(lock::Commit::{ genesis: g, chain: prefix })
+      if rev.length() > 0 {
+        let first = rev[rev.length() - 1]
+        let is_genesis = match form::json_field(Some(first), "prev") {
+          Some(form::Json::Null) | None => true
+          _ => false
+        }
+        if is_genesis {
+          let prefix : Array[form::Json] = []
+          let mut k = rev.length() - 1
+          while k >= 0 {
+            prefix.push(rev[k])
+            k = k - 1
+          }
+          out.push(lock::Commit::{ genesis: g, chain: prefix })
+        }
+      }
     }
   }
   out
@@ -2354,6 +2402,9 @@ fn commits_to_body(
 
 /// Bring missing moved-lock root chain (`lock.person`) and statement bodies (`lock.bodies`) from
 /// an authenticated hello while a workspace is in `waiting` state (`station/src/mesh/serve.ts` `broughtForState`).
+/// Fail-closed persistence order: validates `lock.person` in memory first, persists `lock.bodies`
+/// BEFORE saving the root chain so a body write failure NEVER leaves the root chain persisted
+/// without its rotated settings body (which would exit `waiting` using carried old `cloud_keys`).
 fn bring_waiting_lock(
   cloud : station_cloud::CloudStore,
   hello : base_codec::Json,
@@ -2383,7 +2434,7 @@ fn bring_waiting_lock(
     Some(o) => o
     None => return false
   }
-  let mut any = false
+  let mut cand_chain : Option[Array[form::Json]] = None
   match base_codec::json_get(lobj, "person") {
     Some(base_codec::Json::Arr(items)) => {
       if items.length() > 0 && items.length() <= 64 {
@@ -2392,20 +2443,14 @@ fn bring_waiting_lock(
           arr.push(station_rules_bridge::base_to_form(items[i]))
         }
         match lock::person_chain(arr, root, station_rules_bridge::lock_crypto()) {
-          Ok(ch) => {
-            if ch.entries.length() > 0 {
-              match upsert_and_save_person_chain(cloud, root, ch.entries) {
-                Ok(_) => any = true
-                Err(_) => ()
-              }
-            }
-          }
+          Ok(ch) => if ch.entries.length() > 0 { cand_chain = Some(ch.entries) }
           Err(_) => ()
         }
       }
     }
     _ => ()
   }
+  let mut any = false
   match base_codec::json_get(lobj, "bodies") {
     Some(base_codec::Json::Arr(items)) => {
       if items.length() > 0 && items.length() <= 64 {
@@ -2413,16 +2458,47 @@ fn bring_waiting_lock(
         for i in 0..<items.length() {
           arr.push(station_rules_bridge::base_to_form(items[i]))
         }
+        let cand_chains : Array[(String, Array[form::Json])] = []
+        let mut replaced = false
+        for ci in 0..<cloud.person_chains.length() {
+          let (g, ch) = cloud.person_chains[ci]
+          if g == root {
+            match cand_chain {
+              Some(new_ch) => {
+                cand_chains.push((root, new_ch))
+                replaced = true
+              }
+              None => cand_chains.push((g, ch))
+            }
+          } else {
+            cand_chains.push((g, ch))
+          }
+        }
+        if !replaced {
+          match cand_chain {
+            Some(new_ch) => cand_chains.push((root, new_ch))
+            None => ()
+          }
+        }
         let commits_fn = fn(h : String) -> Array[lock::Commit] {
-          commits_to_body(cloud.person_chains, h)
+          commits_to_body(cand_chains, cloud.person_chains_aside, h)
         }
         match cloud.take_bodies(joined_ws, arr, commits_fn) {
           Ok(r) => if r.taken > 0 { any = true }
-          Err(_) => ()
+          Err(_) => return false
         }
       }
     }
     _ => ()
+  }
+  match cand_chain {
+    Some(entries) => {
+      match upsert_and_save_person_chain(cloud, root, entries) {
+        Ok(_) => any = true
+        Err(_) => return false
+      }
+    }
+    None => ()
   }
   any
 }
@@ -7880,9 +7956,12 @@ test "P1-A & P2-A: non-head ws commit recovery rejects rotated key and renewal p
     ])),
   ])
 
-  // Verify commits_to_body returns exact prefix [pgen, p_ws] (length 2, NOT 3) and body_refusal accepts open_body!
-  let commits = commits_to_body([(root_hash, [pgen, p_ws, p_tail])], open_h)
+  // Verify commits_to_body returns exact prefix [pgen, p_ws] (length 2, NOT 3) both on active chain and in `aside`!
+  let commits = commits_to_body([(root_hash, [pgen, p_ws, p_tail])], None, open_h)
   test_wd_assert(commits.length() == 1 && commits[0].chain.length() == 2, "expected exact prefix len 2")
+  let aside_doc = form::Json::Obj([(root_hash, form::Json::Arr([p_ws]))])
+  let aside_commits = commits_to_body([(root_hash, [pgen])], Some(aside_doc), open_h)
+  test_wd_assert(aside_commits.length() == 1 && aside_commits[0].chain.length() == 2, "expected aside prefix len 2")
   match station_rules_bridge::body_refusal(ws, open_body, commits) {
     None => ()
     Some(why) => panic("open_body refused: " + why)
@@ -7904,8 +7983,6 @@ test "P1-A & P2-A: non-head ws commit recovery rejects rotated key and renewal p
   let new_jwt = test_wd_make_jwt(new_k_seed, "k-new", jwt_claims)
   let ep_proof = test_wd_endpoint_proof(owner_seed, ws, owner_pub, endpoint_id)
 
-  // P1-A: Old-key hello carries root chain (with p_ws NOT at head) + rotated cloud_keys open_body.
-  // Station exits waiting, re-verifies against rotated cloud_keys -> MUST REJECT old_jwt!
   let hello_old_bring = base_codec::json_obj([
     ("credential", base_codec::json_str(old_jwt)),
     ("lock", base_codec::json_obj([
@@ -7919,6 +7996,36 @@ test "P1-A & P2-A: non-head ws commit recovery rejects rotated key and renewal p
       ("bodies", base_codec::json_arr([station_rules_bridge::form_to_base(open_body)])),
     ])),
   ])
+
+  // R4 P1: Inject disk write failure on `bodies`: MUST fail closed — stay `waiting`, do NOT persist
+  // `lock.person`, and MUST NOT admit `old_jwt` using carried old keys!
+  let fail_fs = station_cloud::CloudFs::{
+    read_text: fs.read_text,
+    write_private_text: fn(p : String, data : String) -> Result[Unit, String] {
+      if p.contains("bodies") {
+        Err("ENOSPC")
+      } else {
+        (fs.write_private_text)(p, data)
+      }
+    },
+    remove_file: fs.remove_file,
+    rename_file: fs.rename_file,
+    mkdir_p: fs.mkdir_p,
+    exists: fs.exists,
+  }
+  let cloud_fail = station_cloud::CloudStore::open("/d", fail_fs)
+  match verify_member_credential(cloud_fail, hello_old_bring, endpoint_id, now_s) {
+    Err(refusal) => test_wd_assert(refusal.reason == "lock_station", "R4 P1: expected lock_station waiting refusal on body write failure, got " + refusal.reason)
+    Ok(_) => panic("R4 P1: must not admit old_jwt when take_bodies fails")
+  }
+  match cloud_fail.locked(now_s) {
+    Some(eff) => test_wd_assert(eff.waiting, "R4 P1: must remain waiting after body write failure")
+    None => panic("R4 P1: expected waiting lock")
+  }
+  test_wd_assert(cloud_fail.person_chains.length() == 0, "R4 P1: root person chain must not be persisted on body write failure")
+
+  // P1-A: Old-key hello carries root chain (with p_ws NOT at head) + rotated cloud_keys open_body.
+  // Station exits waiting, re-verifies against rotated cloud_keys -> MUST REJECT old_jwt!
   match verify_member_credential(cloud, hello_old_bring, endpoint_id, now_s) {
     Err(refusal) => test_wd_assert(refusal.error == "unknown credential key", "unexpected refusal: " + refusal.error)
     Ok(_) => panic("P1-A: rotated-out old credential must be rejected; bodies=" + cloud.bodies().values().length().to_string() + " chains=" + cloud.person_chains.length().to_string() + " gkeys=" + base_codec::json_stringify(cloud.grant_keys(now_s)))

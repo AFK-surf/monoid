@@ -236,6 +236,64 @@ pub fn run_vault_sqlite_selftest() -> Result[Unit, String] {
     _ => return Err("expected bob join row with joined_up_to after approve")
   }
 
+  // 3b. P2-1: KeyAsk-only CAS update (no approve_join, no added_subs, not deleted) MUST enter tx
+  //     and prune `prune_key_pairs` atomically, and roll back vault write if ask-prune fails!
+  let v1_body = match store.vault_snapshot(ws, vid_ws) {
+    Ok(Some(s)) => s.body
+    _ => return Err("missing v1 snapshot")
+  }
+  let rebox_ask = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(vid_ws)),
+    ("device", form::Json::Str("dev_rebox")), ("box", form::Json::Str("x25519:rebox")), ("at", form::Json::Num(710.0)),
+  ])
+  match store.put_ask(rebox_ask) {
+    Ok(_) => ()
+    Err(e) => return Err("put_ask(rebox) failed: " + e)
+  }
+  let rebox_cert = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str("dev_rebox")), ("box", form::Json::Str("x25519:rebox")),
+    ("at", form::Json::Num(705.0)),
+  ])
+  let ws_v1_rebox = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(vid_ws)),
+    ("seq", form::Json::Num(1.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("Shared")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([
+      form::Json::Obj([("cert", bob_cert), ("wrapped", form::Json::Str("AAAA"))]),
+      form::Json::Obj([("cert", rebox_cert), ("wrapped", form::Json::Str("BBBB"))]),
+    ])),
+    ("at", form::Json::Num(720.0)),
+  ])
+  // Inject a DB failure specifically on `DELETE FROM vault_asks` via a trigger -> vault write MUST roll back!
+  match db.exec("CREATE TEMP TRIGGER fail_ask_prune BEFORE DELETE ON vault_asks BEGIN SELECT RAISE(ABORT, 'injected_prune_err'); END;") {
+    Ok(_) => ()
+    Err(e) => return Err("create fail_ask_prune trigger failed: " + e.message)
+  }
+  match store.put_vault_checked(ws_v1_rebox, Some(v1_body), prune_key_pairs=[("dev_rebox", "x25519:rebox")]) {
+    VaultWriteResult::DbError(_) => ()
+    _ => return Err("expected DbError when ask-prune fails inside CAS tx")
+  }
+  // Vault body MUST still be v1_body (rolled back) and rebox_ask MUST still exist!
+  match store.vault_snapshot(ws, vid_ws) {
+    Ok(Some(s)) => if s.body != v1_body { return Err("vault write was not rolled back on ask-prune failure") }
+    _ => return Err("missing vault snapshot after rollback")
+  }
+  match db.exec("DROP TRIGGER temp.fail_ask_prune;") {
+    Ok(_) => ()
+    Err(e) => return Err("drop fail_ask_prune trigger failed: " + e.message)
+  }
+  match store.put_vault_checked(ws_v1_rebox, Some(v1_body), prune_key_pairs=[("dev_rebox", "x25519:rebox")]) {
+    VaultWriteResult::Saved => ()
+    _ => return Err("expected Saved for KeyAsk-only rebox CAS update")
+  }
+  match store.ask_snapshot(ws, vid_ws, "dev_rebox") {
+    Ok(None) => ()
+    _ => return Err("expected dev_rebox ask pruned by KeyAsk-only CAS update")
+  }
+
   // 4. Delete vault -> triggers wipe `vault_asks`/`vault_joins`, `in_vault` returns false,
   //    and partial index `vaults_workspace_active` excludes the deleted vault; then `forget_vault`
   //    triggers `vault_member_drop` (bob drops back to 5 vaults).
