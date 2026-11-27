@@ -228,7 +228,7 @@ function startPionRig(bin: string, data: string, extraArgs: string[] = []): RigH
     },
   );
   children.push(child);
-  const ctrl = child.stdio[5] as Duplex;
+  const ctrl = (child.stdio as unknown[])[5] as Duplex;
   const messages: Record<string, unknown>[] = [];
   let ctrlBuf = "";
   ctrl.on("data", (chunk: Buffer) => {
