@@ -865,6 +865,7 @@ test "connects_os_fail_closed_ack_on_callback_false" {
     1000L,
     fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
       if op == "stream.open" {
+        stream10_reads = 0
         q.push(
           host_shim::HostEvent::ShellDone(
             host_shim::ShellDone::{ id: id, json: "{\"id\":10,\"status\":200,\"headers\":[]}", error: "", bytes: None },
@@ -957,6 +958,7 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   let allow : Array[Bool] = [false]
   let calls : Array[Int] = [0]
   let persisted : Array[String] = []
+  let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
     on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Bool {
       calls[0] = calls[0] + 1
@@ -971,7 +973,7 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
     },
     on_card_answer: fn(_cid, _ans) -> Bool { false },
     on_interactive: fn(_cid, _eid, _p) -> Bool { false },
-    on_disconnect: fn(_cid, _r) -> Unit {},
+    on_disconnect: fn(_cid, r) -> Unit { disconnects.push(r) },
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
 
@@ -985,8 +987,9 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   }
   edge_assert(!rt.is_connect_running("grp-im2"))
 
-  // 2. Signed Group SSE event: first delivery fails (`on_event` returns false) -> cursor NOT advanced;
-  //    redelivery succeeds -> callback invoked twice, persisted once, 3rd delivery ignored as duplicate!
+  // 2. Signed Group SSE event: first delivery fails (`on_event` returns false) -> cursor NOT advanced,
+  //    SSE stream closed & backoff reconnect triggered; after reconnect, redelivery succeeds once,
+  //    and 3rd delivery is ignored as duplicate!
   edge_assert(rt.register_group("grp-sse", "http://127.0.0.1:9999", seed, "bot-1", "Bot") is Ok(_))
   rt.running_connects.set("grp-sse", true)
   let user_seed = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
@@ -1017,14 +1020,21 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   ])
   let sse_chunk = "event: event\ndata: " + base_codec::json_stringify(stamped) + "\n\n"
 
-  // Attempt 1: callback returns false -> 0 delivered, cursor stays 0.
+  // Attempt 1: callback returns false -> 0 delivered, cursor stays 0, stream closed & Reconnecting!
   match rt.feed_group_sse("grp-sse", sse_chunk, 1000L) {
     Ok(n) => edge_assert(n == 0)
     Err(e) => panic(e)
   }
   edge_assert(calls[0] == 1 && persisted.length() == 0)
+  edge_assert(!rt.is_connect_running("grp-sse"))
+  edge_assert(disconnects.length() == 1 && disconnects[0] == "event_rejected")
+  match rt.status_of("grp-sse") {
+    Some(station_connects::ConnectStatus::Reconnecting(r)) => edge_assert(r == "event_rejected")
+    _ => panic("expected Reconnecting(event_rejected) after on_event=false")
+  }
 
-  // Attempt 2: callback returns true -> 1 delivered, cursor advances to 1.
+  // Attempt 2: after reconnect, callback returns true -> 1 delivered, cursor advances to 1.
+  rt.running_connects.set("grp-sse", true)
   allow[0] = true
   match rt.feed_group_sse("grp-sse", sse_chunk, 1001L) {
     Ok(n) => edge_assert(n == 1)
@@ -1038,5 +1048,28 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
     Err(e) => panic(e)
   }
   edge_assert(calls[0] == 2 && persisted.length() == 1)
+
+  // 3. `GroupStep::NeedSync` (aseq gap `5 > cur(1) + 1`) closes SSE stream & triggers backoff reconnect!
+  let gap_stamped = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(ev_id)),
+        ("aseq", base_codec::json_int(5)),
+        ("event", signed_ev),
+      ]),
+    ),
+  ])
+  let gap_chunk = "event: event\ndata: " + base_codec::json_stringify(gap_stamped) + "\n\n"
+  match rt.feed_group_sse("grp-sse", gap_chunk, 1003L) {
+    Ok(n) => edge_assert(n == 0)
+    Err(e) => panic(e)
+  }
+  edge_assert(!rt.is_connect_running("grp-sse"))
+  edge_assert(disconnects.length() == 2 && disconnects[1].starts_with("need_sync:"))
+  match rt.status_of("grp-sse") {
+    Some(station_connects::ConnectStatus::Reconnecting(r)) => edge_assert(r.starts_with("need_sync:"))
+    _ => panic("expected Reconnecting(need_sync:...) on GroupStep::NeedSync")
+  }
   rt.stop()
 }

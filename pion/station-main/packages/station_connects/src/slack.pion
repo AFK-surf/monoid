@@ -608,6 +608,7 @@ pub struct SlackConnector {
   pub base_url : String
   pub app_token : String
   pub bot_token : String
+  pub mut team_id : String
   pub mut bot_user_id : String
   pub mut bot_id : String
   pub mut ws_handle : Option[Int64]
@@ -633,6 +634,7 @@ pub fn SlackConnector::new(
       base_url: base_url,
       app_token: app_token,
       bot_token: bot_token,
+      team_id: "",
       bot_user_id: "",
       bot_id: "",
       ws_handle: None,
@@ -679,12 +681,13 @@ pub fn SlackConnector::identify(
   let resp = (transport.fetch)(slack_auth_test_request(self.base_url, self.bot_token))
   match parse_slack_api_response("auth.test", resp) {
     SlackApiOutcome::Ok(j) => {
+      self.team_id = json_str_field(j, "team_id")
       self.bot_user_id = json_str_field(j, "user_id")
       self.bot_id = json_str_field(j, "bot_id")
       Ok(
         BotIdentity::{
           team: json_str_field(j, "team"),
-          team_id: json_str_field(j, "team_id"),
+          team_id: self.team_id,
           url: json_str_field(j, "url"),
           bot_user_id: self.bot_user_id,
           bot_name: json_str_field(j, "user"),
@@ -811,15 +814,42 @@ pub fn SlackConnector::handle_frame(
               let dedupe_key = match ev {
                 ChatEvent::Message(m) => "slack:" + m.channel + "/" + m.thread_ts + "#" + m.ts
                 ChatEvent::OwnNotice(m) => "slack:own:" + m.channel + "/" + m.thread_ts + "#" + m.ts
-                ChatEvent::Changed(ch, tts, ts, _) => "slack:chg:" + ch + "/" + tts + "#" + ts
+                ChatEvent::Changed(ch, tts, ts, _) => {
+                  // Distinct edits to the same message share `(ch, tts, ts)`: key on the edit
+                  // event's own unique id (`payload.event_id` -> `inner.event_ts` -> `inner.message.edited.ts`).
+                  // If none is present, skip transport dedupe and let SQLite `cur_text == new_text` dedupe.
+                  let ev_id = json_str_field(payload, "event_id")
+                  let ev_ts = json_str_field(inner, "event_ts")
+                  let edited_ts = match base_codec::json_get(inner, "message") {
+                    Some(msg_obj) => match base_codec::json_get(msg_obj, "edited") {
+                      Some(ed_obj) => json_str_field(ed_obj, "ts")
+                      None => ""
+                    }
+                    None => ""
+                  }
+                  let edit_uid = if ev_id != "" {
+                    ev_id
+                  } else if ev_ts != "" {
+                    ev_ts
+                  } else {
+                    edited_ts
+                  }
+                  if edit_uid != "" {
+                    "slack:chg:" + ch + "/" + tts + "#" + ts + "@" + edit_uid
+                  } else {
+                    ""
+                  }
+                }
                 ChatEvent::Stop(ch, tts, ts, _) => "slack:stop:" + ch + "/" + tts + "#" + ts
                 ChatEvent::LoginCode(ch, tts, ts, _, _) => "slack:login:" + ch + "/" + tts + "#" + ts
               }
-              if self.dedupe.is_duplicate(dedupe_key, now) {
-                return SlackStep::DuplicateIgnored(env.envelope_id, dedupe_key)
-              }
-              if env.envelope_id != "" {
-                self.pending_dedupe.set(env.envelope_id, dedupe_key)
+              if dedupe_key != "" {
+                if self.dedupe.is_duplicate(dedupe_key, now) {
+                  return SlackStep::DuplicateIgnored(env.envelope_id, dedupe_key)
+                }
+                if env.envelope_id != "" {
+                  self.pending_dedupe.set(env.envelope_id, dedupe_key)
+                }
               }
               SlackStep::Event(env.envelope_id, ev)
             }

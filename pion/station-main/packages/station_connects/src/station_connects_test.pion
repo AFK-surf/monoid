@@ -892,3 +892,63 @@ test "at-least-once dedupe: un-ACKed redelivery delivers again on Slack, Feishu,
     _ => debug_assert(false, "expected third comma put")
   }
 }
+
+test "slack multi-edit dedupe: distinct edits deliver, same edit redelivery dedupes, missing uid skips transport dedupe" {
+  let slack = match SlackConnector::new("xapp-1-abc", "xoxb-123", "https://slack.test/api") {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  let smock = MockNet::new(i64(5000))
+  let str = smock.transport()
+  smock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"team_id\":\"T_AUTH\",\"user_id\":\"UBOT\",\"bot_id\":\"BBOT\",\"team\":\"T\",\"user\":\"bot\"}"))
+  match slack.identify(str) {
+    Ok(id) => debug_assert(id.team_id == "T_AUTH" && slack.team_id == "T_AUTH", "identify populates team_id")
+    Err(e) => debug_assert(false, e)
+  }
+  smock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"url\":\"wss://slack.test/link\"}"))
+  let _ = slack.connect(str)
+
+  // Edit #1 with event_id Ev1 -> delivers & ACKs
+  let ed1 = "{\"type\":\"events_api\",\"envelope_id\":\"env-ed-1\",\"payload\":{\"event_id\":\"Ev1\",\"event\":{\"type\":\"message\",\"subtype\":\"message_changed\",\"channel\":\"C1\",\"event_ts\":\"1700.10\",\"message\":{\"type\":\"message\",\"user\":\"U1\",\"ts\":\"1700.1\",\"thread_ts\":\"1700.1\",\"text\":\"v1\"}}}}"
+  match slack.handle_frame(str, WsFrame::Text(ed1)) {
+    SlackStep::Event(eid, ChatEvent::Changed(_, _, _, txt)) => {
+      debug_assert(eid == "env-ed-1" && txt == "v1", "edit 1 delivered")
+      let _ = slack.ack(str, eid)
+    }
+    _ => debug_assert(false, "expected edit 1 event")
+  }
+  // Edit #2 on SAME message (same ch/tts/ts) with distinct event_id Ev2 -> MUST deliver!
+  let ed2 = "{\"type\":\"events_api\",\"envelope_id\":\"env-ed-2\",\"payload\":{\"event_id\":\"Ev2\",\"event\":{\"type\":\"message\",\"subtype\":\"message_changed\",\"channel\":\"C1\",\"event_ts\":\"1700.20\",\"message\":{\"type\":\"message\",\"user\":\"U1\",\"ts\":\"1700.1\",\"thread_ts\":\"1700.1\",\"text\":\"v2\"}}}}"
+  match slack.handle_frame(str, WsFrame::Text(ed2)) {
+    SlackStep::Event(eid, ChatEvent::Changed(_, _, _, txt)) => {
+      debug_assert(eid == "env-ed-2" && txt == "v2", "edit 2 delivered")
+      let _ = slack.ack(str, eid)
+    }
+    _ => debug_assert(false, "expected edit 2 event (must not collide with edit 1)")
+  }
+  // Redelivery of Edit #2 with SAME event_id Ev2 -> DuplicateIgnored!
+  let ed2_dup = "{\"type\":\"events_api\",\"envelope_id\":\"env-ed-2b\",\"payload\":{\"event_id\":\"Ev2\",\"event\":{\"type\":\"message\",\"subtype\":\"message_changed\",\"channel\":\"C1\",\"event_ts\":\"1700.20\",\"message\":{\"type\":\"message\",\"user\":\"U1\",\"ts\":\"1700.1\",\"thread_ts\":\"1700.1\",\"text\":\"v2\"}}}}"
+  match slack.handle_frame(str, WsFrame::Text(ed2_dup)) {
+    SlackStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "redelivered edit 2 with same event_id must be deduplicated")
+  }
+  // Edit with NO event_id / event_ts / edited.ts -> never dropped by transport dedupe (left to SQLite)
+  let ed_nouid = "{\"type\":\"events_api\",\"envelope_id\":\"env-ed-3\",\"payload\":{\"event\":{\"type\":\"message\",\"subtype\":\"message_changed\",\"channel\":\"C1\",\"message\":{\"type\":\"message\",\"user\":\"U1\",\"ts\":\"1700.1\",\"thread_ts\":\"1700.1\",\"text\":\"v3\"}}}}"
+  match slack.handle_frame(str, WsFrame::Text(ed_nouid)) {
+    SlackStep::Event(eid, ChatEvent::Changed(_, _, _, txt)) => {
+      debug_assert(eid == "env-ed-3" && txt == "v3", "edit without uid delivered")
+      let _ = slack.ack(str, eid)
+    }
+    _ => debug_assert(false, "expected edit without uid")
+  }
+  let ed_nouid_2 = "{\"type\":\"events_api\",\"envelope_id\":\"env-ed-4\",\"payload\":{\"event\":{\"type\":\"message\",\"subtype\":\"message_changed\",\"channel\":\"C1\",\"message\":{\"type\":\"message\",\"user\":\"U1\",\"ts\":\"1700.1\",\"thread_ts\":\"1700.1\",\"text\":\"v4\"}}}}"
+  match slack.handle_frame(str, WsFrame::Text(ed_nouid_2)) {
+    SlackStep::Event(eid, ChatEvent::Changed(_, _, _, txt)) => {
+      debug_assert(eid == "env-ed-4" && txt == "v4", "second edit without uid delivered")
+    }
+    _ => debug_assert(false, "second edit without uid must not be transport-deduped")
+  }
+}

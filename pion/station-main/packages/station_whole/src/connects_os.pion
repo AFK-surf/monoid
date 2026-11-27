@@ -1298,6 +1298,22 @@ pub fn ConnectsOsRuntime::group_stream_id_of(
   self.group_sse_streams.get(connect_id)
 }
 
+pub fn ConnectsOsRuntime::slack_team_id(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+) -> Option[String] {
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Slack(s)) => {
+      if s.team_id.length() > 0 {
+        Some(s.team_id)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
 pub fn ConnectsOsRuntime::register_slack(
   self : ConnectsOsRuntime,
   connect_id : String,
@@ -1421,17 +1437,21 @@ pub fn ConnectsOsRuntime::start_connect(
   let tr = self.bridge.transport(async_ws_writes=true)
   self.statuses.set(connect_id, station_connects::ConnectStatus::Starting)
   match entry {
-    ConnectorEntry::Slack(s) => match s.connect(tr) {
-      Ok(h) => {
-        self.running_connects.set(connect_id, true)
-        self.ws_to_connect.set(h, connect_id)
-        self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
-        let _ = self.arm_ws_next(h)
-        Ok(())
-      }
-      Err(e) => {
-        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
-        Err(e)
+    ConnectorEntry::Slack(s) => {
+      // Populate runtime `team_id` / `bot_user_id` / `bot_id` via `auth.test` (best-effort).
+      let _ = s.identify(tr)
+      match s.connect(tr) {
+        Ok(h) => {
+          self.running_connects.set(connect_id, true)
+          self.ws_to_connect.set(h, connect_id)
+          self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+          let _ = self.arm_ws_next(h)
+          Ok(())
+        }
+        Err(e) => {
+          self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
+          Err(e)
+        }
       }
     }
     ConnectorEntry::Feishu(f) => match f.connect(tr) {
@@ -1883,14 +1903,42 @@ pub fn ConnectsOsRuntime::feed_group_sse(
                 g.commit_pending(now_ms)
                 delivered = delivered + 1
               } else {
-                // Fail-closed: discard pending cursor commit and stop batch immediately so redelivery retries in order!
+                // Fail-closed: discard pending cursor commit, close SSE stream & trigger backoff reconnect
+                // so the rejected event and any trailing events in the stream are redelivered in order!
                 g.discard_pending()
+                match self.group_sse_streams.get(connect_id) {
+                  Some(sid) => self.on_group_sse_closed(connect_id, sid, "event_rejected")
+                  None => {
+                    self.running_connects.remove(connect_id)
+                    g.machine.on_close(now_ms, Some("event_rejected"))
+                    self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting("event_rejected"))
+                    if !self.stopped {
+                      (self.callbacks.on_disconnect)(connect_id, "event_rejected")
+                    }
+                  }
+                }
                 break
               }
             } else {
               g.discard_pending()
               break
             }
+          }
+          station_connects::GroupStep::NeedSync(space, cur) => {
+            g.discard_pending()
+            let reason = "need_sync:" + space + ":" + cur.to_string()
+            match self.group_sse_streams.get(connect_id) {
+              Some(sid) => self.on_group_sse_closed(connect_id, sid, reason)
+              None => {
+                self.running_connects.remove(connect_id)
+                g.machine.on_close(now_ms, Some(reason))
+                self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+                if !self.stopped {
+                  (self.callbacks.on_disconnect)(connect_id, reason)
+                }
+              }
+            }
+            break
           }
           _ => ()
         }

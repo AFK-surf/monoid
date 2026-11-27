@@ -755,3 +755,61 @@ test "hooks_tui_main resolves self executable path and rewrites native claude-tu
   }
   assert_true(parse_fs_lstat_reply("{\"value\":null}") is None, "null fs.lstat returns None")
 }
+
+test "decide_connect_inbound covers full multi/single-session, requireMention, edit, ownNotice, cross-station, and fail-closed matrix" {
+  let msg = fn(addressed : Bool) -> station_connects::ChatEvent {
+    station_connects::ChatEvent::Message(
+      station_connects::InboundMessage::{
+        channel: "C1",
+        thread_ts: "1.0",
+        ts: "1.0",
+        user: "U1",
+        text: "hi",
+        addressed: addressed,
+        files: [],
+        quoted: None,
+      },
+    )
+  }
+  let own_notice = station_connects::ChatEvent::OwnNotice(
+    station_connects::InboundMessage::{
+      channel: "C1",
+      thread_ts: "1.0",
+      ts: "1.1",
+      user: "UBOT",
+      text: "notice",
+      addressed: false,
+      files: [],
+      quoted: None,
+    },
+  )
+  let edit = station_connects::ChatEvent::Changed("C1", "1.0", "1.0", "edited")
+  let stop = station_connects::ChatEvent::Stop("C1", "1.0", "1.2", None)
+  let login = station_connects::ChatEvent::LoginCode("C1", "1.0", "1.3", "U1", "123456")
+
+  // Cross-station routed_elsewhere ALWAYS fails closed (RefuseNoAck).
+  assert_true(decide_connect_inbound(false, true, true, true, msg(true)) is ConnectInboundDecision::RefuseNoAck, "routed elsewhere msg")
+  assert_true(decide_connect_inbound(true, false, true, true, edit) is ConnectInboundDecision::RefuseNoAck, "routed elsewhere edit")
+
+  // Multi-session (`single=false`, `require_mention=true`):
+  assert_true(decide_connect_inbound(false, true, false, false, msg(false)) is ConnectInboundDecision::IgnoreAndAck, "multi unaddressed new thread ignored")
+  assert_true(decide_connect_inbound(false, true, false, false, msg(true)) is ConnectInboundDecision::PersistMessage, "multi addressed new thread persisted")
+  assert_true(decide_connect_inbound(false, true, false, true, msg(false)) is ConnectInboundDecision::PersistMessage, "multi unaddressed existing thread persisted")
+
+  // Single-session (`single=true`):
+  assert_true(decide_connect_inbound(true, true, false, false, msg(false)) is ConnectInboundDecision::IgnoreAndAck, "single requireMention=true unaddressed new ignored")
+  assert_true(decide_connect_inbound(true, false, false, false, msg(false)) is ConnectInboundDecision::PersistMessage, "single requireMention=false unaddressed new persisted")
+  assert_true(decide_connect_inbound(true, true, false, true, msg(false)) is ConnectInboundDecision::PersistMessage, "single requireMention=true existing thread persisted")
+  assert_true(decide_connect_inbound(true, true, false, false, msg(true)) is ConnectInboundDecision::PersistMessage, "single addressed new persisted")
+
+  // Changed (edit):
+  assert_true(decide_connect_inbound(false, true, false, false, edit) is ConnectInboundDecision::IgnoreAndAck, "edit on unknown thread ignored")
+  assert_true(decide_connect_inbound(false, true, false, true, edit) is ConnectInboundDecision::PersistEdit, "edit on existing thread persisted")
+
+  // OwnNotice: aligned with Node `acceptOwnNotice` (no spurious notice rows).
+  assert_true(decide_connect_inbound(false, true, false, true, own_notice) is ConnectInboundDecision::IgnoreAndAck, "ownNotice ignored & ACKed")
+
+  // Unimplemented Stop / LoginCode fail closed.
+  assert_true(decide_connect_inbound(false, true, false, true, stop) is ConnectInboundDecision::RefuseNoAck, "Stop fails closed")
+  assert_true(decide_connect_inbound(false, true, false, true, login) is ConnectInboundDecision::RefuseNoAck, "LoginCode fails closed")
+}

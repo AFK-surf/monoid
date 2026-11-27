@@ -221,6 +221,60 @@ struct WholeDriveRpcPutState {
   mut last_entry : Option[station_screens::DriveEntry]
 }
 
+struct ConnectMeta {
+  ws : String
+  config_surface : String
+  single : Bool
+  require_mention : Bool
+  runtime : String
+  profile : String
+  cwd : Option[String]
+}
+
+pub enum ConnectInboundDecision {
+  IgnoreAndAck
+  RefuseNoAck
+  PersistMessage
+  PersistEdit
+}
+
+/// Pure, side-effect-free inbound connect routing decision aligned 1:1 with
+/// `station/src/sessions/hub.ts:1179,1252-1274` and `station/src/sessions/config.ts:166,177`.
+pub fn decide_connect_inbound(
+  single : Bool,
+  require_mention : Bool,
+  routed_elsewhere : Bool,
+  existing_thread_exists : Bool,
+  event : station_connects::ChatEvent,
+) -> ConnectInboundDecision {
+  if routed_elsewhere {
+    return ConnectInboundDecision::RefuseNoAck
+  }
+  match event {
+    station_connects::ChatEvent::Message(m) => {
+      let wanted = m.addressed
+      || (if single { !require_mention || existing_thread_exists } else { existing_thread_exists })
+      if wanted {
+        ConnectInboundDecision::PersistMessage
+      } else {
+        ConnectInboundDecision::IgnoreAndAck
+      }
+    }
+    station_connects::ChatEvent::Changed(_, _, _, _) => {
+      if existing_thread_exists {
+        ConnectInboundDecision::PersistEdit
+      } else {
+        ConnectInboundDecision::IgnoreAndAck
+      }
+    }
+    // 1:1 with Node `hub.ts:1179` (`acceptOwnNotice`): never insert spurious `author_kind='notice'` rows.
+    station_connects::ChatEvent::OwnNotice(_) => ConnectInboundDecision::IgnoreAndAck
+    // Unimplemented event types fail closed (never ACK without handling).
+    station_connects::ChatEvent::Stop(_, _, _, _)
+    | station_connects::ChatEvent::LoginCode(_, _, _, _, _) => ConnectInboundDecision::RefuseNoAck
+  }
+}
+
 struct WholeRuntimeState {
   core : station_whole::WholeCore
   replica : station_whole::ReplicaOsRuntime
@@ -229,8 +283,7 @@ struct WholeRuntimeState {
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
-  connect_ws : Map[String, String]
-  connect_surface : Map[String, String]
+  connect_meta : Map[String, ConnectMeta]
   dns_streams : Map[Int64, Int64]
   mut next_dns_ev_id : Int64
   mut replica_before_store_ok : Bool
@@ -339,8 +392,7 @@ fn lookup_registered_device_sql(
 fn load_connects_from_config(
   cfg_raw : base_codec::Json,
   connects : station_whole::ConnectsOsRuntime,
-  connect_ws : Map[String, String],
-  connect_surface : Map[String, String],
+  connect_meta : Map[String, ConnectMeta],
   home_ws : String,
 ) -> Unit {
   let items = match base_codec::json_get(cfg_raw, "connects") {
@@ -387,7 +439,39 @@ fn load_connects_from_config(
       let w = get_str(it, "workspace").trim()
       if w.length() > 0 { w } else { home_ws }
     }
-    connect_ws.set(cid, ws)
+    // 1:1 with `station/src/sessions/config.ts:166,177`:
+    // `mode == "single-session"` honors `requireMention !== false`; `"multi-session"` always requires mention.
+    let single = get_str(it, "mode") == "single-session"
+    let require_mention = if !single {
+      true
+    } else {
+      match base_codec::json_get(it, "requireMention") {
+        Some(base_codec::Json::Bool(b)) => b
+        _ => true
+      }
+    }
+    let bind_opt = base_codec::json_get(it, "bind")
+    let runtime = {
+      let r = match bind_opt {
+        Some(b) => get_str(b, "runtime").trim()
+        None => ""
+      }
+      if r.length() > 0 { r } else { "claude" }
+    }
+    let profile = {
+      let p = match bind_opt {
+        Some(b) => get_str(b, "profile").trim()
+        None => ""
+      }
+      if p.length() > 0 { p } else { "default" }
+    }
+    let cwd_opt : Option[String] = match bind_opt {
+      Some(b) => {
+        let c = get_str(b, "cwd").trim()
+        if c.length() > 0 { Some(c) } else { None }
+      }
+      None => None
+    }
     if kind == "slack" {
       let sub = base_codec::json_get(it, "slack")
       let team_id = match sub {
@@ -397,7 +481,19 @@ fn load_connects_from_config(
         }
         None => ""
       }
-      connect_surface.set(cid, if team_id.length() > 0 { "slack:" + team_id } else { "slack:" + cid })
+      let cfg_surface = if team_id.length() > 0 { "slack:" + team_id } else { "slack:" + cid }
+      connect_meta.set(
+        cid,
+        ConnectMeta::{
+          ws: ws,
+          config_surface: cfg_surface,
+          single: single,
+          require_mention: require_mention,
+          runtime: runtime,
+          profile: profile,
+          cwd: cwd_opt,
+        },
+      )
       let bot_tok = get_nested_str(it, sub, "botToken")
       let app_tok = get_nested_str(it, sub, "appToken")
       let cfg_base = get_nested_str(it, sub, "baseUrl")
@@ -411,7 +507,26 @@ fn load_connects_from_config(
       if bot_tok.length() > 0 && app_tok.length() > 0 {
         match connects.register_slack(cid, app_tok, bot_tok, base_url=base_url) {
           Ok(_) => match connects.start_connect(cid) {
-            Ok(_) => ()
+            Ok(_) => {
+              // 1:1 with `station/src/slack/index.ts:173`: prefer runtime `auth.test` `team_id` over config `team.id` / `cid`.
+              match connects.slack_team_id(cid) {
+                Some(rt_tid) => {
+                  connect_meta.set(
+                    cid,
+                    ConnectMeta::{
+                      ws: ws,
+                      config_surface: "slack:" + rt_tid,
+                      single: single,
+                      require_mention: require_mention,
+                      runtime: runtime,
+                      profile: profile,
+                      cwd: cwd_opt,
+                    },
+                  )
+                }
+                None => ()
+              }
+            }
             Err(se) => {
               let _ = host_shim::write_stderr_line("[whole] slack connect " + cid + " start failed: " + se)
             }
@@ -422,7 +537,18 @@ fn load_connects_from_config(
         }
       }
     } else if kind == "feishu" {
-      connect_surface.set(cid, "feishu:" + cid)
+      connect_meta.set(
+        cid,
+        ConnectMeta::{
+          ws: ws,
+          config_surface: "feishu:" + cid,
+          single: single,
+          require_mention: require_mention,
+          runtime: runtime,
+          profile: profile,
+          cwd: cwd_opt,
+        },
+      )
       let sub = base_codec::json_get(it, "feishu")
       let app_id = get_nested_str(it, sub, "appId")
       let app_sec = get_nested_str(it, sub, "appSecret")
@@ -443,7 +569,18 @@ fn load_connects_from_config(
         }
       }
     } else if kind == "comma" {
-      connect_surface.set(cid, "comma:" + cid)
+      connect_meta.set(
+        cid,
+        ConnectMeta::{
+          ws: ws,
+          config_surface: "comma:" + cid,
+          single: single,
+          require_mention: require_mention,
+          runtime: runtime,
+          profile: profile,
+          cwd: cwd_opt,
+        },
+      )
       let sub = base_codec::json_get(it, "comma")
       let srv = get_nested_str(it, sub, "server")
       let url = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "url") }
@@ -462,7 +599,18 @@ fn load_connects_from_config(
         let _ = connects.start_connect(cid)
       }
     } else if kind == "group" {
-      connect_surface.set(cid, "group:" + cid)
+      connect_meta.set(
+        cid,
+        ConnectMeta::{
+          ws: ws,
+          config_surface: "group:" + cid,
+          single: single,
+          require_mention: require_mention,
+          runtime: runtime,
+          profile: profile,
+          cwd: cwd_opt,
+        },
+      )
       let sub = base_codec::json_get(it, "group")
       let srv = get_nested_str(it, sub, "server")
       let origin = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "origin") }
@@ -3920,13 +4068,22 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         fn(s : String) -> String { s },
         fn(_cid : String) -> Option[String] { None },
       )
-      let connect_ws : Map[String, String] = Map::new()
-      let connect_surface : Map[String, String] = Map::new()
+      let connect_meta : Map[String, ConnectMeta] = Map::new()
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
       let self_station_id = ctx.station_key.id
+      let platform_prefix = fn(platform : station_connects::ConnectPlatform) -> String {
+        match platform {
+          station_connects::ConnectPlatform::Slack => "slack"
+          station_connects::ConnectPlatform::Feishu
+          | station_connects::ConnectPlatform::Lark => "feishu"
+          station_connects::ConnectPlatform::Comma => "comma"
+          station_connects::ConnectPlatform::Group => "group"
+          station_connects::ConnectPlatform::Chat => "web"
+        }
+      }
       let resolve_surface = fn(connect_id : String, platform : station_connects::ConnectPlatform) -> String {
-        match connect_surface.get(connect_id) {
-          Some(s) => if s.length() > 0 { return s }
+        match connect_meta.get(connect_id) {
+          Some(m) => if m.config_surface.length() > 0 { return m.config_surface }
           None => ()
         }
         match platform {
@@ -3976,10 +4133,19 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             Err(_) => return false
           }
           let surface = resolve_surface(connect_id, platform)
-          let ws = match connect_ws.get(connect_id) {
-            Some(w) => w
-            None => core.config.home_workspace
+          let meta = match connect_meta.get(connect_id) {
+            Some(m) => m
+            None => ConnectMeta::{
+              ws: core.config.home_workspace,
+              config_surface: surface,
+              single: false,
+              require_mention: true,
+              runtime: "claude",
+              profile: "default",
+              cwd: None,
+            }
           }
+          let ws = meta.ws
           let make_ev_target = fn() -> station_api::EventTarget {
             station_api::EventTarget::{
               lang: None,
@@ -3996,31 +4162,124 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               sees_job: None,
             }
           }
-          match ev {
-            station_connects::ChatEvent::Message(m) => {
-              let thread_ts = if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts }
-              if is_routed_elsewhere(st_db.db, connect_id, m.channel, thread_ts) {
-                // Owned by another station: never create a duplicate local thread and never silently drop+ACK!
-                return false
-              }
-              let existing = find_existing_thread(st_db.db, surface, m.channel, thread_ts)
-              if !m.addressed && existing is None {
-                // Unaddressed chatter in an untracked channel/thread: ignore without creating thread/entry (hub.ts:1262).
-                return true
+          let (ev_channel, ev_thread_ts) = match ev {
+            station_connects::ChatEvent::Message(m) => (m.channel, if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts })
+            station_connects::ChatEvent::OwnNotice(m) => (m.channel, if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts })
+            station_connects::ChatEvent::Changed(ch, tts, ts, _) => (ch, if tts.length() > 0 { tts } else { ts })
+            station_connects::ChatEvent::Stop(ch, tts, ts, _) => (ch, if tts.length() > 0 { tts } else { ts })
+            station_connects::ChatEvent::LoginCode(ch, tts, ts, _, _) => (ch, if tts.length() > 0 { tts } else { ts })
+          }
+          let routed_elsewhere = is_routed_elsewhere(st_db.db, connect_id, ev_channel, ev_thread_ts)
+          let existing_opt = find_existing_thread(st_db.db, surface, ev_channel, ev_thread_ts)
+          match decide_connect_inbound(meta.single, meta.require_mention, routed_elsewhere, existing_opt is Some(_), ev) {
+            ConnectInboundDecision::IgnoreAndAck => return true
+            ConnectInboundDecision::RefuseNoAck => return false
+            ConnectInboundDecision::PersistMessage => {
+              let m = match ev {
+                station_connects::ChatEvent::Message(msg) => msg
+                _ => return false
               }
               let now_ms = host_shim::wall_ms()
-              let tid = match existing {
+              let created_by = platform_prefix(platform) + ":" + connect_id + ":" + m.user
+              let tid = match existing_opt {
                 Some(id) => id
                 None => match st_db.ensure_thread(
                   surface,
                   m.channel,
-                  thread_ts,
+                  ev_thread_ts,
                   None,
-                  Some(m.user),
+                  Some(created_by),
                   now_ms,
                   home=if ws.length() > 0 { Some(ws) } else { None },
                 ) {
                   Ok(id) => id
+                  Err(_) => return false
+                }
+              }
+              // Ensure a local session exists and is joined into `thread_sessions` (1:1 with Node `hub.ts:1275-1315`).
+              let existing_member : Option[String] = match st_db.db.first(
+                "SELECT session FROM thread_sessions WHERE thread = ?1 AND connect = ?2 AND left_at IS NULL LIMIT 1",
+                [sql_db::int64_to_json(tid), base_codec::json_str(connect_id)],
+              ) {
+                Ok(Some(r)) => match r.get("session") {
+                  Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+                  _ => None
+                }
+                Ok(None) => None
+                Err(_) => return false
+              }
+              if existing_member is None {
+                let bound_opt : Option[String] = if meta.single {
+                  match st_db.db.first("SELECT session_key FROM bindings WHERE connect = ?1 LIMIT 1", [base_codec::json_str(connect_id)]) {
+                    Ok(Some(r)) => match r.get("session_key") {
+                      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+                      _ => None
+                    }
+                    _ => None
+                  }
+                } else {
+                  None
+                }
+                let sess_key = match bound_opt {
+                  Some(bk) => bk
+                  None => if meta.single {
+                    match station_sys::random_bytes(8) {
+                      Ok(rb) => connect_id + ":single:" + base_codec::hex_encode(rb)
+                      Err(_) => connect_id + ":single:" + now_ms.to_string()
+                    }
+                  } else {
+                    connect_id + ":" + m.channel + ":" + ev_thread_ts
+                  }
+                }
+                let sess_exists = match st_db.db.first("SELECT 1 AS ok FROM sessions WHERE key = ?1 LIMIT 1", [base_codec::json_str(sess_key)]) {
+                  Ok(Some(_)) => true
+                  Ok(None) => false
+                  Err(_) => return false
+                }
+                if !sess_exists {
+                  let tok = match station_sys::random_bytes(32) {
+                    Ok(rb) => base_codec::hex_encode(rb)
+                    Err(_) => return false
+                  }
+                  let sess_ws_dir = nodepath::join(ctx.sep, [ctx.data, "sessions", sess_key])
+                  match st_db.insert_session(
+                    station_store::NewSession::{
+                      key: sess_key,
+                      connect: connect_id,
+                      sess_scope: if meta.single { "all" } else { "thread" },
+                      title: None,
+                      created_by: Some(created_by),
+                      created_by_sub: None,
+                      runtime: meta.runtime,
+                      profile: meta.profile,
+                      model: None,
+                      effort: None,
+                      workspace: sess_ws_dir,
+                      cwd: meta.cwd,
+                      token: tok,
+                      created_at: now_ms,
+                      last_active_at: now_ms,
+                      ws: if ws.length() > 0 { Some(ws) } else { None },
+                      told_notes: 0L,
+                    },
+                  ) {
+                    Ok(_) => ()
+                    Err(_) => return false
+                  }
+                  if meta.single {
+                    match st_db.tx_retry_busy(3, fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+                      t.run(
+                        "INSERT OR REPLACE INTO bindings (connect, session_key) VALUES (?1, ?2)",
+                        [base_codec::json_str(connect_id), base_codec::json_str(sess_key)],
+                      )
+                    }) {
+                      Ok(_) => ()
+                      Err(_) => return false
+                    }
+                  }
+                }
+                match st_db.join_thread(tid, sess_key, connect_id, now_ms) {
+                  Ok(_) => ()
                   Err(_) => return false
                 }
               }
@@ -4083,60 +4342,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               let _ = core.api.events.emit("thread", ev_payload, make_ev_target(), now_ms, None)
               true
             }
-            station_connects::ChatEvent::OwnNotice(m) => {
-              let thread_ts = if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts }
-              let tid = match find_existing_thread(st_db.db, surface, m.channel, thread_ts) {
-                Some(id) => id
-                None => return true
+            ConnectInboundDecision::PersistEdit => {
+              let (ts, new_text) = match ev {
+                station_connects::ChatEvent::Changed(_, _, t_s, txt) => (t_s, txt)
+                _ => return false
               }
-              let now_ms = host_shim::wall_ms()
-              match st_db.insert_message(
-                station_store::NewMessage::{
-                  thread: tid,
-                  ts: Some(m.ts),
-                  author_kind: "notice",
-                  author: m.user,
-                  agent_identity: None,
-                  text: Some(m.text),
-                  attachments: None,
-                  quotes: m.quoted,
-                  declared: None,
-                  client: Some(connect_id),
-                  card: None,
-                  options: None,
-                  proposal: None,
-                  at: now_ms,
-                },
-              ) {
-                Ok((msg_n, _)) => {
-                  let ev_payload = base_codec::json_obj([
-                    ("id", base_codec::json_int64(tid)),
-                    (
-                      "entries",
-                      base_codec::json_arr([
-                        base_codec::json_obj([
-                          ("n", base_codec::json_int64(msg_n)),
-                          ("kind", base_codec::json_str("message")),
-                          ("authorKind", base_codec::json_str("notice")),
-                          ("author", base_codec::json_str(m.user)),
-                          ("text", base_codec::json_str(m.text)),
-                          ("at", base_codec::json_int64(now_ms)),
-                        ]),
-                      ]),
-                    ),
-                  ])
-                  let _ = core.api.events.emit("thread", ev_payload, make_ev_target(), now_ms, None)
-                  true
-                }
-                Err(_) => false
-              }
-            }
-            station_connects::ChatEvent::Changed(channel, thread_ts_in, ts, new_text) => {
-              let thread_ts = if thread_ts_in.length() > 0 { thread_ts_in } else { ts }
-              if is_routed_elsewhere(st_db.db, connect_id, channel, thread_ts) {
-                return false
-              }
-              let tid = match find_existing_thread(st_db.db, surface, channel, thread_ts) {
+              let tid = match existing_opt {
                 Some(id) => id
                 None => return true
               }
@@ -4239,9 +4450,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 Err(_) => false
               }
             }
-            // Unimplemented event types fail closed (return false -> never ACK without handling).
-            station_connects::ChatEvent::Stop(_, _, _, _)
-            | station_connects::ChatEvent::LoginCode(_, _, _, _, _) => false
           }
         },
         // Fail closed for unimplemented interactive/card handlers so frames are never ACKed without persistence.
@@ -4386,8 +4594,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         logins: logins,
         browser: browser,
         connects: connects,
-        connect_ws: connect_ws,
-        connect_surface: connect_surface,
+        connect_meta: connect_meta,
         dns_streams: Map::new(),
         next_dns_ev_id: 30064771072L, // 7 << 32 (disjoint from jobs/browser/terminals/logins/adb/restore)
         replica_before_store_ok: false,
@@ -4532,15 +4739,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 Some(rc) => {
                   let _ = child.close()
                   let detail = err_sb.to_string().trim()
-                  return Err(
-                    "replica restore helper exited " + rc.to_string()
+                  // 1:1 with Node `station/src/main.ts:238-240`: log restore error and fail-open into
+                  // normal startup so a corrupt/failed restore never bricks the station in a boot loop.
+                  let _ = host_shim::write_stderr_line(
+                    "[whole] replica restore helper exited " + rc.to_string()
                     + (if detail.length() > 0 { ": " + detail } else { "" }),
                   )
                 }
                 None => {
                   let _ = child.kill(station_sys::SIG_KILL, false)
                   let _ = child.close()
-                  return Err("replica restore helper timed out after 120s")
+                  let _ = host_shim::write_stderr_line("[whole] replica restore helper timed out after 120s; continuing startup")
                 }
               }
             }
@@ -4609,7 +4818,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 ])
               })
               // Load configured connects after primary store opens (devices are queried live from SQLite `devices` table).
-              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_ws, st.connect_surface, home_ws)
+              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_meta, home_ws)
               // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
@@ -5432,6 +5641,36 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.logins.tick(now)
           let _ = st.browser.tick(now)
           let _ = st.connects.tick(now)
+          // Sync runtime `auth.test` `team_id` into `connect_meta` if populated after reconnect.
+          let cm_keys = st.connect_meta.keys()
+          for cmi in 0..<cm_keys.length() {
+            let cid = cm_keys[cmi]
+            match st.connects.slack_team_id(cid) {
+              Some(rt_tid) => {
+                let want = "slack:" + rt_tid
+                match st.connect_meta.get(cid) {
+                  Some(m) => {
+                    if m.config_surface != want {
+                      st.connect_meta.set(
+                        cid,
+                        ConnectMeta::{
+                          ws: m.ws,
+                          config_surface: want,
+                          single: m.single,
+                          require_mention: m.require_mention,
+                          runtime: m.runtime,
+                          profile: m.profile,
+                          cwd: m.cwd,
+                        },
+                      )
+                    }
+                  }
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          }
           let _ = ctx.edge_hub.drain_deferred_done(fn(tok : builders_core::MuxToken, d : host_shim::ShellDone) -> Bool {
             st.connects.handle_mux_reply(tok, d)
           })
