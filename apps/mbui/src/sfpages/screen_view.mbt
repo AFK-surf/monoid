@@ -1188,11 +1188,11 @@ fn screen_leases_settle() -> Unit {
         }
       }
     } else if !held_by_window {
+      screen_lease_apply_hidden(lease.src, key)
       match screens_open.get(key) {
-        Some(s) => s.set_passkey_muted(false)
+        Some(s) => s.passkey_muted = false
         None => ()
       }
-      screen_lease_apply_hidden(lease.src, key)
     }
   }
   for key in empty_keys {

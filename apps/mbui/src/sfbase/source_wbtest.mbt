@@ -128,11 +128,23 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   set_startup_window_owner(window_page_owner_of(encoded))
   assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="child-process window must Wait before workspaces snapshot, never fallback to subs[0]")
   assert_false(window_here_owner_matches(0, "ws-1/st-1"))
-  // Complete workspaces snapshot arrives containing ws-1 -> acct-a: transitions to Matched!
+  // Stale cached workspaces snapshot with loaded=false must keep child-process window in Waiting!
+  let snap_stale : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_stale))
+  assert_false(workspace_owners_synced(), msg="loaded=false snapshot must not mark workspace_owners_synced")
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="loaded=false cached snapshot must keep Waiting")
+  // Complete workspaces snapshot arrives (loaded=true) containing ws-1 -> acct-a: transitions to Matched!
   let snap_a : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
       "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
     }),
   ])
   workspace_owners_sync_json(Some(snap_a))
@@ -149,6 +161,7 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
       "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
     }),
   ])
   workspace_owners_sync_json(Some(snap_empty))
@@ -158,6 +171,16 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_eq(window_page_owner_of(no_owner), Some(""))
   set_startup_window_owner(window_page_owner_of(no_owner))
   assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="missing owner must Deny child-process window")
+  // In-process secondary window transient opening owner is bound to exact station & non-empty owner.
+  reset()
+  accounts_subs_sync(["acct-a"])
+  workspace_owner_set("ws-1", "acct-a")
+  windows_here_opening_owner.val = Some(("ws-1/st-1", "acct-a"))
+  assert_true(window_here_owner_state(1, "ws-1/st-1") == Matched, msg="matching station during opening must Match")
+  assert_true(window_here_owner_state(2, "ws-2/st-2") == Denied, msg="different station during opening must be Denied")
+  windows_here_opening_owner.val = Some(("ws-1/st-1", ""))
+  assert_true(window_here_owner_state(1, "ws-1/st-1") == Denied, msg="empty opening owner must be Denied")
+  windows_here_opening_owner.val = None
   // Unknown secondary window id (`wid > 0`) -> Denied!
   assert_true(window_here_owner_state(999, "ws-1/st-1") == Denied, msg="unknown secondary window id must be Denied")
   reset()

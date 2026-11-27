@@ -179,10 +179,10 @@ pub fn window_text(p : Page) -> String? {
 let startup_window_owner : Ref[String?] = Ref(None)
 
 ///|
-/// Transient owner held ONLY across the synchronous first-frame render inside `@ui.window_open_here(what)` before
-/// `windows_here_owner[wid]` is populated. Cleared immediately on return.
+/// Transient `(station, owner)` held ONLY across the synchronous first-frame render inside `@ui.window_open_here(what)`
+/// for a `Page::Screen` before `windows_here_owner[wid]` is populated. Cleared immediately on return.
 // kept across runs: put back by pages.mbt's reset
-let windows_here_opening_owner : Ref[String?] = Ref(None)
+let windows_here_opening_owner : Ref[(String, String)?] = Ref(None)
 
 ///|
 /// Set the creation owner for a child-process standalone screen window (called only at real startup entrypoints).
@@ -277,7 +277,10 @@ pub fn open_window(p : Page) -> Bool {
           _ => ()
         }
         let owner = window_page_owner(p)
-        windows_here_opening_owner.val = Some(owner)
+        windows_here_opening_owner.val = match p {
+          Screen(at) => Some((at.station, owner))
+          _ => None
+        }
         let wid = @ui.window_open_here(what)
         windows_here_opening_owner.val = None
         if wid > 0 {
@@ -494,10 +497,23 @@ pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState 
   if wid > 0 {
     let expected = match windows_here_owner.get(wid) {
       Some(o) => Some(o)
-      None => windows_here_opening_owner.val
+      None =>
+        match windows_here_opening_owner.val {
+          Some((st, o)) if st == station => Some(o)
+          _ => None
+        }
     }
     match expected {
-      Some(owner) if !workspace_is_revoked(ws) && workspace_owner_of(ws) == owner => Matched
+      Some(owner) if owner != "" && !workspace_is_revoked(ws) =>
+        match workspace_explicit_owner_of(ws) {
+          Some(actual) => if actual == owner { Matched } else { Denied }
+          None =>
+            if !workspace_owners_synced() && workspace_owner_of(ws) == owner {
+              Matched
+            } else {
+              Denied
+            }
+        }
       _ => Denied
     }
   } else {

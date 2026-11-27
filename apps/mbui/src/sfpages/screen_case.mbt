@@ -98,6 +98,14 @@ let case_asked : Map[String, Bool] = Map([])
 
 ///|
 // kept across runs: as case_asked
+let case_asked_seq : Map[String, Int] = Map([])
+
+///|
+// kept across runs: as case_asked
+let case_seq_next : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: as case_asked
 let case_came : Map[String, Bool] = Map([])
 
 ///|
@@ -216,6 +224,15 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
     return
   }
   case_asked[id] = true
+  case_seq_next.val += 1
+  let req_seq = case_seq_next.val
+  case_asked_seq[id] = req_seq
+  let release_asked = fn() {
+    if case_asked_seq.get(id) == Some(req_seq) {
+      case_asked.remove(id)
+      case_asked_seq.remove(id)
+    }
+  }
   let params = {
     "station": Json::string(station),
     "screen": Json::string(screen),
@@ -224,11 +241,19 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   }
   (src.call)("screen.chrome", Json::object(params), fn(r) {
     if @sfbase.workspace_is_revoked(ws) || screen_principal_for(station) != expected_principal {
+      release_asked()
       return
     }
     match (orig_sess, screens_open.get(expected_key)) {
-      (Some(orig), Some(cur)) => if !physical_equal(orig, cur) || !cur.is_active_principal() { return }
-      (Some(_), None) => return
+      (Some(orig), Some(cur)) =>
+        if !physical_equal(orig, cur) || !cur.is_active_principal() {
+          release_asked()
+          return
+        }
+      (Some(_), None) => {
+        release_asked()
+        return
+      }
       (None, _) => ()
     }
     guard r is Ok(v) else { return }

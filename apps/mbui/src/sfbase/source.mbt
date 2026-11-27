@@ -567,14 +567,24 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 /// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
-  workspace_owners_seen_snapshot.val = true
+  let mut all_loaded = true
   let seen : Map[String, String] = Map([])
+  let pending_owners : Map[String, Bool] = Map([])
   for a in accounts {
     let s = Some(a)
     let acc = field(s, "account")
     let sub = text(acc, "sub")
     let owner = if sub != "" { sub } else { text(acc, "email") }
     if owner == "" {
+      continue
+    }
+    let acc_loaded = match field(s, "loaded") {
+      Some(False) => false
+      _ => true
+    }
+    if !acc_loaded {
+      all_loaded = false
+      pending_owners[owner] = true
       continue
     }
     for w in items(s, "workspaces") {
@@ -584,9 +594,15 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
       }
     }
   }
+  if all_loaded {
+    workspace_owners_seen_snapshot.val = true
+  }
   for ws in workspace_owners.keys().collect() {
     if !seen.contains(ws) {
       let old_owner = workspace_owners.get(ws).unwrap_or("")
+      if pending_owners.contains(old_owner) {
+        continue
+      }
       workspace_owners.remove(ws)
       workspace_revoked[ws] = true
       for f in workspace_owner_change_listeners {

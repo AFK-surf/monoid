@@ -3462,13 +3462,24 @@ test "passkey_muted revokes native Stream::route audio and suppresses 3840-byte 
   s.take({ "audio": { "n": 11.0 } }, Some(pcm_3840))
   assert_eq(audio_packets.val, 0, msg="passkey_muted must drop all 3840-byte PCM packets")
   assert_eq(routed_audio_true.val, 0, msg="passkey_muted must never route audio=true")
-  // Releasing passkey keepalive while still hidden (before settle) MUST keep passkey_muted == true!
-  s.passkey_keepalive_key = screen_key(s.station, s.screen)
+  // Releasing passkey keepalive while still hidden (with real ScreenLease) MUST keep passkey_muted == true,
+  // and running real screen_leases_settle() pauses the stream BEFORE clearing passkey_muted so 0 audio=true routes fire!
+  let lease_key = screen_key(s.station, s.screen)
+  let _ = screen_ui(lease_key)
+  screen_lease_set(base, lease_key, 1, false)
+  screen_lease_set_passkey(base, lease_key, true)
+  s.passkey_keepalive_key = lease_key
   s.passkey_release_keepalive()
   assert_true(s.passkey_muted, msg="passkey_release_keepalive must keep session muted until settle")
   s.take({ "audio": { "n": 12.0 } }, Some(pcm_3840))
   assert_eq(audio_packets.val, 0, msg="hidden session after passkey_release_keepalive must still deliver 0 audio")
   assert_eq(routed_audio_true.val, 0, msg="hidden session after passkey_release_keepalive must still route 0 audio=true")
+  // Now run real end-of-frame settle: pauses stream first, then clears passkey_muted with 0 audio=true routes!
+  screen_leases_settle()
+  assert_eq(s.call, 0, msg="hidden settle after passkey release must pause stream")
+  assert_false(s.passkey_muted, msg="passkey_muted resets only after stream is paused")
+  assert_eq(audio_packets.val, 0, msg="hidden settle must deliver 0 audio packets")
+  assert_eq(routed_audio_true.val, 0, msg="hidden settle must emit 0 audio=true routes")
   h.st_audio_here = orig_audio_here
   h.st_audio = orig_audio
   h.st_direct = orig_direct
@@ -3529,11 +3540,25 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   // Before workspaces snapshot arrives: Waiting, 0 screen.view RPCs!
   assert_true(@sfbase.window_here_owner_state(0, at.station) == Waiting)
   assert_eq(opens.val, 0, msg="Waiting child-process screen must emit 0 screen.view RPCs")
-  // Snapshot arrives with ws-1 -> acct-a: reactively wakes and opens screen.view!
+  // Stale cached snapshot (loaded=false) carrying ws-1 -> acct-a MUST still stay Waiting with 0 screen.view RPCs!
+  let snap_stale : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_stale))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station) == Waiting, msg="loaded=false cached snapshot must keep child-process screen Waiting")
+  assert_eq(opens.val, 0, msg="loaded=false cached snapshot must emit 0 screen.view RPCs")
+  // Snapshot arrives (loaded=true) with ws-1 -> acct-a: reactively wakes and opens screen.view!
   let snap_a : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
       "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
     }),
   ])
   @sfbase.workspace_owners_sync_json(Some(snap_a))

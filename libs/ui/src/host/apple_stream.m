@@ -1408,7 +1408,7 @@ static void audio_play(MBStream *s, NSData *data, NSUInteger expectedGen, BOOL c
 
 static void audio_packet(MBStream *s, NSData *data, NSUInteger expectedGen, BOOL counted) {
   os_unfair_lock_lock(&audio_state_lock);
-  if (counted && s.audioGeneration != expectedGen) {
+  if (s.audioGeneration != expectedGen) {
     os_unfair_lock_unlock(&audio_state_lock);
     return;
   }
@@ -1504,9 +1504,11 @@ void mb_host_stream_audio(int32_t sid, moonbit_bytes_t data) {
   if (!s || s.closed) return;
   NSUInteger length = (NSUInteger)Moonbit_array_length(data);
   if (length == 0) {
-    // (stopped: what its route plays stops with it, until the app routes it again)
-    unroute(sid, 2);
+    // (stopped: what its route plays stops with it, until the app routes it again; fixed lock order
+    // audio_state_lock -> routes_lock prevents any in-flight routed packet from surviving unroute)
     os_unfair_lock_lock(&audio_state_lock);
+    unroute(sid, 2);
+    s.audioGeneration++;
     s.audioPending = 0;
     os_unfair_lock_unlock(&audio_state_lock);
     dispatch_async(s.audioQueue, ^{ audio_stop(s); });
@@ -1552,7 +1554,15 @@ int mb_stream_route_take(uint64_t route, int kind, int key, uint64_t seq, uint64
     if (!s || s.closed) return 0;
     NSData *d = [[NSData alloc] initWithBytes:bytes length:len];
     if (kind == 6) {
-      dispatch_async(s.audioQueue, ^{ audio_play(s, d, 0, NO); });
+      os_unfair_lock_lock(&audio_state_lock);
+      os_unfair_lock_lock(&routes_lock);
+      mb_route *r2 = route_at(route, NO);
+      BOOL still = r2 && r2->audio == sid;
+      NSUInteger gen = s.audioGeneration;
+      os_unfair_lock_unlock(&routes_lock);
+      os_unfair_lock_unlock(&audio_state_lock);
+      if (!still) return 0;
+      dispatch_async(s.audioQueue, ^{ audio_play(s, d, gen, NO); });
       return 1;
     }
     @synchronized(s) {

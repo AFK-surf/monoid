@@ -2644,8 +2644,15 @@ void mb_host_stream_audio(int32_t id, moonbit_bytes_t data) {
   Stream *s = stream_of(id);
   if (!s || s->closed) return;
   size_t len = (size_t)Moonbit_array_length(data);
-  // (stopped: what its route plays stops with it, until the app routes it again)
-  if (len == 0) unroute(id, 2);
+  // (stopped: what its route plays stops with it, until the app routes it again; fixed lock order
+  // sound_lock -> routes_lock prevents any in-flight routed PCM from playing after unroute)
+  if (len == 0) {
+    AcquireSRWLockExclusive(&sound_lock);
+    unroute(id, 2);
+    sound_stop(s);
+    ReleaseSRWLockExclusive(&sound_lock);
+    return;
+  }
   sound_take(s, (const uint8_t *)data, len);
 }
 
@@ -2739,8 +2746,16 @@ int mb_stream_route_take(uint64_t route, int kind, int key, uint64_t seq, uint64
   ReleaseSRWLockShared(&streams_lock);
   if (!s || s->closed) return 0;
   if (kind == 6) {
-    sound_take(s, bytes, len);
-    return 1;
+    AcquireSRWLockExclusive(&sound_lock);
+    AcquireSRWLockShared(&routes_lock);
+    Route *r2 = route_at(route, 0);
+    int still = r2 && r2->audio == sid;
+    ReleaseSRWLockShared(&routes_lock);
+    if (still && !s->sound_gone) {
+      sound_play(s, bytes);
+    }
+    ReleaseSRWLockExclusive(&sound_lock);
+    return still ? 1 : 0;
   }
   EnterCriticalSection(&lock);
   s->direct_frames += 1;
