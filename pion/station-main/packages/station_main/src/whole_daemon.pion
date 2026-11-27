@@ -1456,7 +1456,7 @@ struct WholeRuntimeState {
   mcp_cb : station_http::ServerCallbacks
   serve : station_mesh::ServeEndpoint
   admin_conns : Map[Int64, AdminConnState]
-  seen_members : Map[String, Map[String, SeenMember]]
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]]
   admin_streams : Map[Int64, AdminStreamState]
   proxy_streams : Map[Int64, ProxyStreamState]
   proxy_by_sock : Map[Int64, Int64]
@@ -3371,7 +3371,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               base_role
             }
             match state_opt {
-              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, sess.email, aconn.effective_role, aconn.iat, aconn.sid_claim, sess.expires_unix)
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, aconn.conn_id), sess.email, aconn.effective_role, aconn.iat, aconn.sid_claim, sess.expires_unix)
               None => ()
             }
             true
@@ -3382,7 +3382,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
             let r = if aconn.effective_role.length() > 0 { aconn.effective_role } else { sess.role }
             match state_opt {
-              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, sess.email, r, aconn.iat, aconn.sid_claim, sess.expires_unix)
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, aconn.conn_id), sess.email, r, aconn.iat, aconn.sid_claim, sess.expires_unix)
               None => ()
             }
             true
@@ -4004,7 +4004,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
-                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, seen_member_session_key(vm.sid_claim, aconn.conn_id), vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -4029,7 +4029,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
-                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, seen_member_session_key(vm.sid_claim, aconn.conn_id), vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -6130,7 +6130,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
 
       let now0 = host_shim::now_ms()
-      let seen_members : Map[String, Map[String, SeenMember]] = Map::new()
+      let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
@@ -7559,7 +7559,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       mesh_door::StreamGuardVerdict::Allow => ()
                       mesh_door::StreamGuardVerdict::Close(code, reason) => {
                         ctx.log("kicking live admin connection " + cid.to_string() + ": " + reason)
-                        revoke_seen_member(st.seen_members, sess.workspace, sess.user_sub)
+                        revoke_seen_member_session(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, cid))
                         ctx.close_mesh_conn(cid, aconn.is_front, code, reason)
                         let _ = st.serve.close_connection(cid, aconn.remote_id)
                         st.admin_conns.remove(cid)

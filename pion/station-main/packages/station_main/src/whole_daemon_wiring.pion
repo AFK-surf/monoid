@@ -193,28 +193,49 @@ pub struct SeenMember {
   pub exp_unix : Int64
 }
 
+pub fn seen_member_session_key(sid_claim : String, conn_id : Int64) -> String {
+  if sid_claim.length() > 0 {
+    "sid:" + sid_claim
+  } else {
+    "conn:" + conn_id.to_string()
+  }
+}
+
+fn seen_role_rank(r : String) -> Int {
+  if r == "owner" { 3 } else if r == "admin" { 2 } else if r == "member" { 1 } else { 0 }
+}
+
 pub fn record_seen_member(
-  seen_members : Map[String, Map[String, SeenMember]],
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
   ws : String,
   sub : String,
+  session_key : String,
   email : String,
   role : String,
   iat : Int64,
   sid_claim : String,
   exp_unix : Int64,
 ) -> Unit {
-  if ws.length() == 0 || sub.length() == 0 {
+  if ws.length() == 0 || sub.length() == 0 || session_key.length() == 0 {
     return
   }
-  let m = match seen_members.get(ws) {
+  let by_sub = match seen_members.get(ws) {
     Some(existing) => existing
     None => {
-      let fresh : Map[String, SeenMember] = Map::new()
+      let fresh : Map[String, Map[String, SeenMember]] = Map::new()
       seen_members.set(ws, fresh)
       fresh
     }
   }
-  m.set(sub, SeenMember::{
+  let by_sess = match by_sub.get(sub) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, SeenMember] = Map::new()
+      by_sub.set(sub, fresh)
+      fresh
+    }
+  }
+  by_sess.set(session_key, SeenMember::{
     email: email,
     role: role,
     iat: iat,
@@ -223,21 +244,33 @@ pub fn record_seen_member(
   })
 }
 
-pub fn revoke_seen_member(
-  seen_members : Map[String, Map[String, SeenMember]],
+/// Remove only the specific revoked/kicked session (`sid` or `conn_id`) for `(ws, sub)`,
+/// preserving any other active device sessions held by the same member.
+pub fn revoke_seen_member_session(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
   ws : String,
   sub : String,
+  session_key : String,
 ) -> Unit {
   match seen_members.get(ws) {
-    Some(m) => m.remove(sub)
+    Some(by_sub) => match by_sub.get(sub) {
+      Some(by_sess) => {
+        by_sess.remove(session_key)
+        if by_sess.keys().length() == 0 {
+          by_sub.remove(sub)
+        }
+      }
+      None => ()
+    }
     None => ()
   }
 }
 
-/// Filter `seen_members` for `ws` against live `full_memberships(now_secs)`, credential expiry
-/// (`exp_unix`), and cloud revocations (`sub`/`sid` with `iat <= r.at`).
+/// Filter `seen_members` for `ws` against live `full_memberships(now_secs)`, exact Mesh credential
+/// expiry (`now_secs >= exp_unix`), and cloud revocations (`sub`/`sid` with `iat <= r.at`),
+/// aggregating all remaining valid sessions per `(ws, sub)`.
 pub fn active_seen_members_for_ws(
-  seen_members : Map[String, Map[String, SeenMember]],
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
   cloud : station_cloud::CloudStore,
   ws : String,
   now_secs : Double,
@@ -257,28 +290,53 @@ pub fn active_seen_members_for_ws(
     None => return (emails, roles)
   }
   match seen_members.get(ws) {
-    Some(m) => {
-      let subs = m.keys()
+    Some(by_sub) => {
+      let subs = by_sub.keys()
       for i in 0..<subs.length() {
         let sub = subs[i]
-        match m.get(sub) {
-          Some(sm) => {
-            if sm.exp_unix > 0L && now_secs > sm.exp_unix.to_double() {
-              continue
-            }
-            let mut revoked = false
-            for ri in 0..<ws_revs.length() {
-              let r = ws_revs[ri]
-              if sm.iat <= r.at
-              && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sm.sid_claim && sm.sid_claim.length() > 0))
-              {
-                revoked = true
-                break
+        match by_sub.get(sub) {
+          Some(by_sess) => {
+            let skeys = by_sess.keys()
+            let mut best : Option[SeenMember] = None
+            for si in 0..<skeys.length() {
+              match by_sess.get(skeys[si]) {
+                Some(sm) => {
+                  // Align 1:1 with `station_mesh/src/serve.pion:60`: `now >= exp` is expired.
+                  if sm.exp_unix > 0L && now_secs >= sm.exp_unix.to_double() {
+                    continue
+                  }
+                  let mut revoked = false
+                  for ri in 0..<ws_revs.length() {
+                    let r = ws_revs[ri]
+                    if sm.iat <= r.at
+                    && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sm.sid_claim && sm.sid_claim.length() > 0))
+                    {
+                      revoked = true
+                      break
+                    }
+                  }
+                  if !revoked {
+                    match best {
+                      None => best = Some(sm)
+                      Some(prev) => {
+                        let r_new = seen_role_rank(sm.role)
+                        let r_old = seen_role_rank(prev.role)
+                        if r_new > r_old || (r_new == r_old && sm.iat >= prev.iat) {
+                          best = Some(sm)
+                        }
+                      }
+                    }
+                  }
+                }
+                None => ()
               }
             }
-            if !revoked {
-              emails.set(sub, sm.email)
-              roles.set(sub, sm.role)
+            match best {
+              Some(chosen) => {
+                emails.set(sub, chosen.email)
+                roles.set(sub, chosen.role)
+              }
+              None => ()
             }
           }
           None => ()
@@ -500,18 +558,18 @@ pub fn wire_whole_core_runtime_hooks(
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
-  seen_members : Map[String, Map[String, SeenMember]],
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
 ) -> Unit {
   let _ = browser
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
-    let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    let now_s = host_shim::wall_ms().to_double() / 1000.0
     let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
       active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
     }
     resolve_vault_lock_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
   core.api.hooks.chains_of = Some(fn(ws : String) -> form::Json {
-    let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    let now_s = host_shim::wall_ms().to_double() / 1000.0
     let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
       active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
     }

@@ -394,11 +394,13 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     Err(e) => panic("put_vault failed: " + e)
   }
 
-  let seen_members : Map[String, Map[String, SeenMember]] = Map::new()
-  // u-owner expires at 1700005000, u-admin expires at 1700000200
-  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner", 1700000000L, "sid-owner", 1700005000L)
-  record_seen_member(seen_members, "ws-A", "u-admin", "admin@a.test", "admin", 1700000000L, "sid-admin", 1700000200L)
-  record_seen_member(seen_members, "ws-B", "u-other", "other@b.test", "owner", 1700000000L, "sid-other", 1700005000L)
+  let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
+  // u-owner holds 2 concurrent device sessions (`sid-owner-1` & `sid-owner-2`), both expire at 1700005000;
+  // u-admin expires at 1700000200 (tested at exact boundary `now_s == exp`).
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-1", 10L), "owner@a.test", "owner", 1700000000L, "sid-owner-1", 1700005000L)
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L), "owner@a.test", "owner", 1700000010L, "sid-owner-2", 1700005000L)
+  record_seen_member(seen_members, "ws-A", "u-admin", seen_member_session_key("sid-admin", 12L), "admin@a.test", "admin", 1700000000L, "sid-admin", 1700000200L)
+  record_seen_member(seen_members, "ws-B", "u-other", seen_member_session_key("sid-other", 13L), "other@b.test", "owner", 1700000000L, "sid-other", 1700005000L)
 
   let known_at = fn(now_s : Double) -> (String) -> (Map[String, String], Map[String, String]) {
     fn(ws : String) -> (Map[String, String], Map[String, String]) {
@@ -440,12 +442,12 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     panic("ws-A chains leaked historical departed member u-departed!")
   }
 
-  // 3. Credential expiry: at t2 = 1700000300 (past u-admin's exp_unix=1700000200), u-admin immediately disappears
-  let t2 = 1700000300.0
-  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf) {
+  // 3. Exact Mesh expiry boundary: at t_exact = 1700000200.0 (`now_s == exp_unix`), u-admin is IMMEDIATELY excluded!
+  let t_exact = 1700000200.0
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
     Some(ls) => {
       if ls.members.contains("u-admin") || ls.persons.contains("u-admin") {
-        panic("expired member u-admin must disappear from personal_vault_lock")
+        panic("member u-admin at exact boundary now_s == exp must be excluded from personal_vault_lock")
       }
       if !ls.members.contains("u-owner") {
         panic("non-expired u-owner must remain")
@@ -453,36 +455,48 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     }
     None => panic("expected personal vault lock for remaining active u-owner")
   }
-  let chains_t2 = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf)
-  if !(form::json_field(Some(chains_t2), "u-admin") is None) {
-    panic("expired member u-admin must disappear from GET /vault/boxes chains")
+  let chains_t_exact = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if !(form::json_field(Some(chains_t_exact), "u-admin") is None) {
+    panic("member u-admin at exact boundary now_s == exp must be excluded from GET /vault/boxes chains")
   }
 
-  // 4. Mesh revocation: revoking u-owner immediately removes them from both personal_vault_lock and GET /vault/boxes
-  revoke_seen_member(seen_members, "ws-A", "u-owner")
-  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf) is None) {
-    panic("after all active members expired/revoked, personal_vault_lock must be None (no historical fallback)")
+  // 4. Multi-session isolation: kicking/revoking ONLY `sid-owner-1` MUST keep `u-owner` active via `sid-owner-2`!
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-1", 10L))
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => {
+      if !ls.members.contains("u-owner") || !ls.persons.contains("u-owner") {
+        panic("revoking sid-owner-1 must NOT evict u-owner while sid-owner-2 is still valid")
+      }
+    }
+    None => panic("expected u-owner to stay in personal_vault_lock via sid-owner-2")
   }
-  let chains_revoked = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf)
+  let chains_after_s1 = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if form::json_field(Some(chains_after_s1), "u-owner") is None {
+    panic("revoking sid-owner-1 must keep u-owner chain in GET /vault/boxes via sid-owner-2")
+  }
+
+  // Revoking the second (last) session `sid-owner-2` now removes u-owner completely
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L))
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
+    panic("after all active sessions expired/revoked, personal_vault_lock must be None (no historical fallback)")
+  }
+  let chains_revoked = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
   if !(form::json_field(Some(chains_revoked), "u-owner") is None) {
     panic("revoked member u-owner must disappear from GET /vault/boxes chains")
   }
-  // Also verify cloud revocation list filters even if still present in seen_members
-  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner", 1700000000L, "sid-owner", 1700005000L)
+  // Also verify cloud `sub` revocation list filters even if still present in seen_members
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L), "owner@a.test", "owner", 1700000010L, "sid-owner-2", 1700005000L)
   match cloud.state {
     Some(st_cloud) => {
       st_cloud.revocations = [station_cloud::Revocation::{ kind: "sub", id: "u-owner", at: 1700000050L }]
     }
     None => ()
   }
-  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) is None) {
-    // Only u-admin should remain if not expired at t1; u-owner must be absent!
-    match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
-      Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") {
-        panic("cloud-revoked u-owner must not appear in personal_vault_lock")
-      }
-      None => ()
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
+    Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") {
+      panic("cloud-revoked u-owner must not appear in personal_vault_lock")
     }
+    None => ()
   }
   let chains_cloud_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf)
   if !(form::json_field(Some(chains_cloud_rev), "u-owner") is None) {
