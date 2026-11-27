@@ -10,6 +10,8 @@ pub(all) struct SkillOffer {
   description : String
   /// "session" | "agent" | "workspace" | "project" | "builtin"
   source : String
+  /// For a "session" skill, its chat's preset or project (else its folder's name) as the station says it; "" unknown.
+  place : String
 }
 
 ///|
@@ -257,7 +259,7 @@ pub fn skills_fetch(
           let o = Some(x)
           let name = text(o, "name")
           if name != "" {
-            list.push({ name, description: text(o, "description"), source: text(o, "source") })
+            list.push({ name, description: text(o, "description"), source: text(o, "source"), place: text(o, "place") })
           }
         }
         c.runtime.set(rt)
@@ -362,14 +364,15 @@ pub fn skills_runtime_label(runtime : String) -> String {
 }
 
 ///|
-/// Localized badge text for a skill's `source`, naming the attached runtime for `"agent"` skills.
-pub fn skills_source_label(source : String, runtime : String) -> String {
+/// Localized badge text for a skill's `source`, naming the attached runtime for `"agent"` skills and the chat's preset or
+/// project (`place`) for `"session"` ones.
+pub fn skills_source_label(source : String, runtime : String, place? : String = "") -> String {
   match source {
     "agent" => {
       let label = skills_runtime_label(runtime)
       if label != "" { label } else { @sf.t("web-main.skillMenu.source.agent") }
     }
-    "session" => @sf.t("web-main.skillMenu.source.session")
+    "session" => if place != "" { place } else { @sf.t("web-main.skillMenu.source.session") }
     "workspace" => @sf.t("web-main.skillMenu.source.workspace")
     "project" => @sf.t("web-main.skillMenu.source.project")
     "builtin" => @sf.t("web-main.skillMenu.source.builtin")

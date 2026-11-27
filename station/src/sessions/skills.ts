@@ -23,6 +23,9 @@ export type ListedSkill = {
   name: string;
   description: string;
   source: SkillSource;
+  /// For a `session` skill, what people know its folder by: the chat's preset, else its project, else the folder's
+  /// name. Absent where none is known (the app then says 工作目录).
+  place?: string;
 };
 
 export type ResolvedSkill = ListedSkill & {
@@ -419,8 +422,9 @@ export async function collectSkills(opts: CollectSkillsOptions): Promise<Resolve
   );
 }
 
-const toListed = (skills: readonly ResolvedSkill[]): ListedSkill[] =>
-  skills.map(({ name, description, source }) => ({ name, description, source }));
+/// Skills as `chat.skills` answers them: `place` named on the session ones.
+export const toListed = (skills: readonly ResolvedSkill[], place: string): ListedSkill[] =>
+  skills.map(({ name, description, source }) => ({ name, description, source, ...(source === "session" && place !== "" ? { place } : {}) }));
 
 function pickProfileFor(hub: Hub, ws: string | null, runtime: RuntimeKind | null, profileId?: string | null): { profile: Profile | null; fallbackAgyHomes: string[] } {
   const config = hub.config();
@@ -457,7 +461,8 @@ export async function skillsForSession(hub: Hub, key: string): Promise<ListedSki
     workspaceSkillsDir,
     presetDirs: presetCopy?.dirs,
   });
-  return { runtime, skills: toListed(resolved), resolved };
+  const place = presetCopy?.name || hub.store.recentSessionThreads(key, 1).threads[0]?.thread.project || (row.cwd ? basename(row.cwd) : "");
+  return { runtime, skills: toListed(resolved, place), resolved };
 }
 
 /// Skills available for a new chat before a session exists, based on selected runtime, optional preset, and workspace.
@@ -478,7 +483,7 @@ export async function skillsForRuntime(
     workspaceSkillsDir,
     presetDirs: preset?.dirs,
   });
-  return { runtime, skills: toListed(resolved) };
+  return { runtime, skills: toListed(resolved, preset?.name ?? "") };
 }
 
 /// Extracts explicit `/<skill>` tokens written by a person, ignoring fenced code blocks, paths (`a/b`), and URLs.

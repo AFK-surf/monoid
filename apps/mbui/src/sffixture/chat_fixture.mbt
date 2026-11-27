@@ -4164,7 +4164,7 @@ fn fix_chat_skills(p : Json?) -> Json {
     }
     _ => {
       list.push({ "name": "code-review", "description": "审查当前分支的改动并指出风险", "source": "agent" })
-      list.push({ "name": "team:deploy", "description": "执行团队预发环境部署检查", "source": "session" })
+      list.push({ "name": "team:deploy", "description": "执行团队预发环境部署检查", "source": "session", "place": "发版值守" })
     }
   }
   list.push({ "name": "release-check", "description": "发布前回归清单与构建校验", "source": "workspace" })

@@ -1726,7 +1726,7 @@ pub fn skills_reset() -> Unit
 
 pub fn skills_runtime_label(String) -> String
 
-pub fn skills_source_label(String, String) -> String
+pub fn skills_source_label(String, String, place? : String) -> String
 
 pub fn skills_state(String, String, String, String) -> (String, Array[SkillOffer], Bool, Bool)
 
@@ -3506,6 +3506,7 @@ pub(all) struct SkillOffer {
   name : String
   description : String
   source : String
+  place : String
 }
 
 pub(all) struct Source {

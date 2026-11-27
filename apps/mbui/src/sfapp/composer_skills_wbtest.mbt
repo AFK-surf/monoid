@@ -84,6 +84,7 @@ test "composer /: skills follow attached agent (Claude shows Claude skills, not 
   assert_true(t.find("调用 Skill · Claude") is Some(_), msg="header shows Claude runtime")
   assert_true(t.find("/code-review") is Some(_), msg="lists Claude skill")
   assert_true(t.find("/team:deploy") is Some(_), msg="lists session skill")
+  assert_true(t.find("发版值守") is Some(_), msg="session skill names its chat's preset, not 工作目录")
   assert_true(t.find("/swarm") is None, msg="does not list Antigravity skill on Claude chat")
   // ArrowDown moves to the second skill (`/team:deploy`), Tab inserts it in place of `/`
   t.key(@ui.key_code_down)
@@ -143,4 +144,11 @@ test "composer /: works on small touch screen with >= 44pt skill rows and passes
   assert_true(rh >= 44.0, msg="touch row height \{rh} < 44")
   let added = t.audit().filter(fn(f) { !before.contains(aw_plain(f)) })
   assert_eq(added, [], msg="small touch screen audit added faults: " + added.join(" | "))
+}
+
+///|
+test "composer /: a session skill's badge is its chat's preset or project, else 工作目录" {
+  assert_eq(@sfbase.skills_source_label("session", "claude", place="发版值守"), "发版值守")
+  assert_eq(@sfbase.skills_source_label("session", "claude"), "工作目录")
+  assert_eq(@sfbase.skills_source_label("workspace", "claude", place="发版值守"), "工作区")
 }

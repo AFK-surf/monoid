@@ -7,7 +7,7 @@ import { geminiDir } from "../src/agents/agy.ts";
 import { copilotHome } from "../src/agents/copilot.ts";
 import { cursorHome } from "../src/agents/cursor.ts";
 import type { Profile } from "../src/agents/runtime.ts";
-import { collectSkills, extractSlashInvocations, formatSkillInvocations, parseSkillFrontmatter } from "../src/sessions/skills.ts";
+import { collectSkills, extractSlashInvocations, formatSkillInvocations, parseSkillFrontmatter, toListed } from "../src/sessions/skills.ts";
 
 async function writeSkill(root: string, dirName: string, content: string): Promise<string> {
   const dir = join(root, dirName);
@@ -250,4 +250,19 @@ test("extractSlashInvocations and formatSkillInvocations match explicit /skill c
   assert.ok(hint.includes('<skill-invocation name="swarm" path="/home/a/builtin/skills/native_swarm/SKILL.md">'));
   assert.ok(hint.includes("Read /home/a/builtin/skills/native_swarm/SKILL.md"));
   assert.equal(formatSkillInvocations(["/unknown-command hello"], resolved), "");
+});
+
+test("toListed names the chat's preset or project on session skills only, and nothing where none is known", () => {
+  const resolved = [
+    { name: "team:review", description: "Review", source: "session" as const, path: "/work/.claude/commands/team/review.md" },
+    { name: "shared-one", description: "Shared", source: "workspace" as const, path: "/ws/skills/shared-one/SKILL.md" },
+  ];
+  assert.deepEqual(toListed(resolved, "发版值守"), [
+    { name: "team:review", description: "Review", source: "session", place: "发版值守" },
+    { name: "shared-one", description: "Shared", source: "workspace" },
+  ]);
+  assert.deepEqual(toListed(resolved, ""), [
+    { name: "team:review", description: "Review", source: "session" },
+    { name: "shared-one", description: "Shared", source: "workspace" },
+  ]);
 });

@@ -4022,7 +4022,8 @@ fn skill_menu_node(
         row,
         fn() {
           let src_kind = item().map(fn(s) { s.source }).unwrap_or("")
-          @sfbase.skills_source_label(src_kind, shown_runtime())
+          let place = item().map(fn(s) { s.place }).unwrap_or("")
+          @sfbase.skills_source_label(src_kind, shown_runtime(), place~)
         },
         fn() { ref_time },
       ).shrink(Is(0.0))
