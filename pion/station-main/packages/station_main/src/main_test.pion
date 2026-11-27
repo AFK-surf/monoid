@@ -1166,18 +1166,18 @@ test "W17B-5 Opus R2 regressions: P0-A runtime connect.event gate, P0-B connect.
   let has_local = fn(id : String) -> Bool { id == "slack-local" }
   let local_ws = fn(id : String) -> Option[String] { if id == "slack-local" { Some("ws-1") } else { None } }
 
-  // P0-A: With native gate disabled (default), BOTH `LearnAndDeliver` and `kept: true` MUST be rejected.
+  // Wave 17C-1: temporary native connects gate removed; valid remote/kept events validate directly.
   let valid_remote = parse(
     "{\"connect\":{\"id\":\"slack-remote\",\"origin\":\"st-peer\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-1\",\"bind\":{\"runtime\":\"claude\"}}}",
   )
-  match validate_connect_event_with_gate(false, valid_remote, "ws-1", "st-here", has_local, local_ws) {
-    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "native connects disabled until runner cutover")
-    _ => panic("P0-A: expected Reject when native gate is disabled")
+  match validate_connect_event(valid_remote, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::LearnAndDeliver(lid, _) => assert_str_eq(lid, "slack-remote@st-peer")
+    _ => panic("W17C-1: expected LearnAndDeliver for valid remote connect.event")
   }
   let valid_kept = parse("{\"kept\":true,\"connect\":{\"id\":\"slack-local\",\"origin\":\"st-here\"}}")
-  match validate_connect_event_with_gate(false, valid_kept, "ws-1", "st-here", has_local, local_ws) {
-    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "native connects disabled until runner cutover")
-    _ => panic("P0-A: expected Reject for kept when native gate is disabled")
+  match validate_connect_event(valid_kept, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::DeliverKept(lid) => assert_str_eq(lid, "slack-local")
+    _ => panic("W17C-1: expected DeliverKept for valid kept connect.event")
   }
 
   // P0-B: `build_connect_call_post_request` MUST match TS `remote.ts` `answerCall` 1:1:
@@ -1234,4 +1234,63 @@ test "W17B-5 Opus R2 regressions: P0-A runtime connect.event gate, P0-B connect.
   assert_true(fstate.seen_of("feishu-1", "oc_chat1") == msg_create_ms - 1L, "P1-D: taking holds create_time - 1")
   fstate.commit_taking(hold)
   assert_true(fstate.seen_of("feishu-1", "oc_chat1") == msg_create_ms, "P1-D: commit advances to create_time, not local now")
+}
+
+test "W17C-1 live runner protocol: ready parse, runtime prompt/steer/cancel framing, skill-invocation, stdout event parsing" {
+  // 1. Ready line parsing
+  let ready_out = "debug line\n{\"ready\":true,\"id\":\"claude-chat_c-1\",\"runner\":4321,\"pid\":4322,\"pgid\":4322,\"startedAt\":1700000000000,\"program\":\"claude\",\"args\":[\"-p\"],\"socket\":\"/tmp/r.sock\",\"keeps\":true}\n"
+  match parse_runner_ready_line(ready_out) {
+    Some(info) => {
+      assert_str_eq(info.id, "claude-chat_c-1")
+      assert_true(info.runner_pid == 4321 && info.pid == 4322 && info.pgid == 4322, "runner pids parsed")
+      assert_str_eq(info.socket, "/tmp/r.sock")
+      assert_true(info.keeps, "keeps flag parsed")
+    }
+    None => panic("expected valid RunnerInfo from ready line")
+  }
+  assert_true(parse_runner_ready_line("not json") is None, "invalid ready line returns None")
+
+  // 2. Runner argv builder & skill-invocation framing
+  let rargs = build_live_runner_args("/data/run/runners", "claude-c1", "/ws/c1", "claude", ["-p", "--verbose"])
+  assert_true(rargs.length() == 10 && rargs[0] == "--dir" && rargs[6] == "--" && rargs[7] == "claude" && rargs[9] == "--verbose", "runner argv layout")
+  let with_skill = format_prompt_with_skill("do it", Some("pion"), Some("use pionc"))
+  assert_true(with_skill.starts_with("<skill-invocation name=\"pion\">\nuse pionc\n</skill-invocation>\n\ndo it"), "skill-invocation wrapper")
+  assert_str_eq(format_prompt_with_skill("plain", None, None), "plain")
+
+  // 3. Claude stream-json prompt/cancel framing & stdout event parsing
+  let cp = encode_runtime_prompt(station_drivers::RuntimeKind::Claude, "hello", "", 1)
+  assert_true(cp.contains("\"type\":\"user\"") && cp.contains("\"text\":\"hello\""), "claude userMessage frame")
+  let cc = encode_runtime_cancel(station_drivers::RuntimeKind::Claude, "", 2)
+  assert_true(cc.contains("\"type\":\"control_request\"") && cc.contains("\"subtype\":\"interrupt\""), "claude interrupt frame")
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Claude, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid-123\"}") {
+    ParsedAgentEvent::SessionId(sid) => assert_str_eq(sid, "sid-123")
+    _ => panic("expected SessionId from claude init")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Claude, "{\"type\":\"result\",\"is_error\":false,\"session_id\":\"sid-123\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}") {
+    ParsedAgentEvent::TurnCompleted(Some(sid), Some(u)) => {
+      assert_str_eq(sid, "sid-123")
+      assert_true(u.input == 10L && u.output == 20L, "claude usage parsed")
+    }
+    _ => panic("expected TurnCompleted with usage")
+  }
+
+  // 4. ACP JSON-RPC framing & stdout event parsing
+  assert_true(is_acp_runtime(station_drivers::RuntimeKind::Agy), "agy is ACP")
+  assert_true(!is_acp_runtime(station_drivers::RuntimeKind::Claude), "claude is not ACP")
+  let ap = encode_runtime_prompt(station_drivers::RuntimeKind::Agy, "go", "acp-s1", 3)
+  assert_true(ap.contains("\"method\":\"session/prompt\"") && ap.contains("\"id\":\"prompt:3\""), "acp session/prompt frame")
+  let ac = encode_runtime_cancel(station_drivers::RuntimeKind::Agy, "acp-s1", 4)
+  assert_true(ac.contains("\"method\":\"session/cancel\""), "acp session/cancel frame")
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Agy, "{\"jsonrpc\":\"2.0\",\"id\":\"open\",\"result\":{\"sessionId\":\"acp-s9\"}}") {
+    ParsedAgentEvent::AcpSessionOpened(sid) => assert_str_eq(sid, "acp-s9")
+    _ => panic("expected AcpSessionOpened")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Agy, "{\"jsonrpc\":\"2.0\",\"id\":\"prompt:3\",\"result\":{\"stopReason\":\"end_turn\"}}") {
+    ParsedAgentEvent::TurnCompleted(_, _) => ()
+    _ => panic("expected ACP TurnCompleted")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Agy, "{\"jsonrpc\":\"2.0\",\"id\":\"prompt:3\",\"result\":{\"stopReason\":\"cancelled\"}}") {
+    ParsedAgentEvent::TurnAborted => ()
+    _ => panic("expected ACP TurnAborted")
+  }
 }

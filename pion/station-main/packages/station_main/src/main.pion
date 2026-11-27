@@ -1280,14 +1280,10 @@ fn main(_world : World) -> Unit {
     }
     match find_main_subcommand(cli_args) {
       Some("run") => {
-        // Wave 17B-5: external connects protocol & Hub routing are ready in Pion `whole_daemon`,
-        // while the Wave 17A Node `exec_replace` entry gate remains active until Wave 17C-1
-        // wires live `stillfail-runner` process spawning to consume `started_prompts`.
+        // Wave 17C-1: live `stillfail-runner` spawning & turn execution are wired in Pion
+        // `whole_daemon`; external connects & cross-station `connect.event` run natively on Pion.
         let rc = if should_run_whole_daemon(argv) {
-          match maybe_handoff_external_connects_to_node(argv) {
-            Some(handoff_rc) => handoff_rc
-            None => run_whole_daemon(argv)
-          }
+          run_whole_daemon(argv)
         } else {
           run_rig_daemon(argv)
         }

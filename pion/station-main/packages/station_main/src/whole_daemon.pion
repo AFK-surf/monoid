@@ -384,33 +384,6 @@ pub enum ConnectEventValidation {
   LearnAndDeliver(String, base_codec::Json)
 }
 
-/// Returns `true` only when the explicit test-only native connects flag is enabled.
-/// Until Wave 17C-1 wires live `stillfail-runner` spawning to consume `started_prompts`,
-/// runtime `connect.event` ingress MUST fail closed when this returns `false` (P0-A).
-pub fn native_connects_runtime_enabled() -> Bool {
-  match station_sys::env_get("STILLFAIL_PION_NATIVE_CONNECTS_TEST") {
-    Some("1") => true
-    _ => false
-  }
-}
-
-/// Runtime-gated wrapper around `validate_connect_event` (P0-A): when `native_enabled` is
-/// `false`, rejects BOTH `LearnAndDeliver` and `kept: true` BEFORE any DB or `remote-connects`
-/// mutation so cross-station events are never falsely ACKed into a silent black hole.
-pub fn validate_connect_event_with_gate(
-  native_enabled : Bool,
-  req : base_codec::Json,
-  ws : String,
-  here_station : String,
-  has_local_connect : (String) -> Bool,
-  local_connect_ws : (String) -> Option[String],
-) -> ConnectEventValidation {
-  if !native_enabled {
-    return ConnectEventValidation::Reject("native connects disabled until runner cutover")
-  }
-  validate_connect_event(req, ws, here_station, has_local_connect, local_connect_ws)
-}
-
 /// Builds a `connect.call` outbound `post` RPC payload 1:1 with TS `station/src/connects/remote.ts`:
 /// - `op: "post"` (matching `answerCall` line 369: `request?.op`)
 /// - `args: [thread, message, [], card ?? null]` (matching `remote.ts` lines 257 & 397: 4-element tuple)
@@ -1500,6 +1473,7 @@ struct WholeRuntimeState {
   rig_put_streams : Map[Int64, StreamPutCtx]
   adopted_runners : Map[Int, AdoptedRunnerConn]
   adopted_runner_by_sock : Map[Int64, Int]
+  live_runners : LiveRunnerManager
   mut next_runner_conn_id : Int
   mut carried_handover_failed : Option[String]
   mut mcp_announced : Bool
@@ -2194,9 +2168,17 @@ fn build_whole_core_config(ctx : DaemonCtx, now_secs : Double) -> station_whole:
   }
 
   let home_drive_roots = parse_drive_roots_for_workspace(ctx.cfg_raw, home_ws, true)
-  let runner_bin = match ctx.args.app {
-    Some(a) => nodepath::join(ctx.sep, [a, "station", "stillfail-runner"])
-    None => ""
+  let runner_bin = match station_sys::env_get("STILLFAIL_RUNNER") {
+    Some(p) => if p.trim().length() > 0 { p.trim() } else {
+      match ctx.args.app {
+        Some(a) => nodepath::join(ctx.sep, [a, "station", "stillfail-runner"])
+        None => ""
+      }
+    }
+    None => match ctx.args.app {
+      Some(a) => nodepath::join(ctx.sep, [a, "station", "stillfail-runner"])
+      None => ""
+    }
   }
   station_whole::WholeCoreConfig::{
     station_id: ctx.station_key.id,
@@ -4949,6 +4931,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     tok : builders_core::MuxToken,
     d : host_shim::ShellDone,
   ) -> Unit {
+    if st.live_runners.handle_role_done(ctx, st.core, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
+      return
+    }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
         // Async `tar.file` archived session upload completion (Wave 17C-3A R4 N1).
@@ -6419,6 +6404,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         rig_put_streams: Map::new(),
         adopted_runners: Map::new(),
         adopted_runner_by_sock: Map::new(),
+        live_runners: LiveRunnerManager::new(),
         next_runner_conn_id: 1,
         carried_handover_failed: None,
         mcp_announced: false,
@@ -6850,11 +6836,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
 
           // Cross-station external connect event delivery (`connect.event`, 1:1 with TS `workspace.ts:348-375 taken()`).
-          // P0-A: runtime entry gate refuses BOTH `LearnAndDeliver` and `kept: true` unless
-          // `STILLFAIL_PION_NATIVE_CONNECTS_TEST=1`, preventing silent black-hole ACKs before Wave 17C-1.
           if method == "connect.event" {
-            let validation = validate_connect_event_with_gate(
-              native_connects_runtime_enabled(),
+            let validation = validate_connect_event(
               req,
               ws,
               ctx.station_key.id,
@@ -7630,6 +7613,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.browser.handle_sys_event(ev_id, sev) {
             return
           }
+          if st.live_runners.handle_sys_event(ctx, st.core, ev_id, sev, now_sys, host_shim::wall_ms()) {
+            return
+          }
           let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
         }
         None => ()
@@ -7663,6 +7649,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
           }
           let _ = st.mcp_srv.tick(st.mcp_cb)
+          st.live_runners.pump(ctx, st.core, ctx.cfg_raw, _now, _wall)
         }
         None => ()
       }
@@ -7680,6 +7667,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
           }
           st.upkeep.tick(now, clones_active)
+          st.live_runners.tick(ctx, st.core, now, wall)
+          st.live_runners.pump(ctx, st.core, ctx.cfg_raw, now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -7937,6 +7926,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.replica.kept_log.entries.length() > 0 {
             let _ = st.replica.persist_kept_log()
           }
+          st.live_runners.prepare_handover(st.core)
           match st.core.export_handover(host_shim::wall_ms()) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
@@ -8041,11 +8031,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             let _ = st.replica.persist_kept_log()
           }
 
-          // On `SIGUSR2` hot handover: detach job handles WITHOUT killing running jobs so the
-          // new daemon adopts them seamlessly. On full shutdown (`SIGTERM`/`SIGINT`): stop managed jobs.
+          // On `SIGUSR2` hot handover: detach job & live runner handles WITHOUT killing running
+          // processes so the new daemon adopts them seamlessly. On full shutdown: stop them cleanly.
           if ctx.is_handover_shutdown() {
+            st.live_runners.detach_all_for_handover(ctx)
             st.core.agents.jobs.detach_all_for_handover()
           } else {
+            st.live_runners.stop_all_on_shutdown(ctx)
             let jobs_list = st.core.agents.jobs.list()
             let w_end = host_shim::wall_ms()
             for ji in 0..<jobs_list.length() {

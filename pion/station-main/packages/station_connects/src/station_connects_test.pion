@@ -1120,3 +1120,51 @@ test "ConnectWorkspace::on_forward_error pins thread and forbids failover when m
     None => debug_assert(false, "expected pinned station")
   }
 }
+
+test "W17C-1 feishu: non-message event resets last_event_create_time_ms to 0" {
+  let f = match FeishuConnector::new("app1", "sec1", FeishuDomain::Feishu, Some("https://feishu.test")) {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  f.bot_open_id = "ou_bot"
+  let mock = MockNet::new(i64(5000))
+  let tr = mock.transport()
+  mock.push_http(HttpResponse::ok_text(200, "{\"code\":0,\"data\":{\"URL\":\"wss://ws.feishu.test/?service_id=1\"}}"))
+  let _ = f.connect(tr)
+  let msg_ev = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"ev1\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_id\":\"om_1\",\"create_time\":\"1700000123456\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hi\\\"}\"}}}"
+  let f1 = encode_feishu_frame(
+    FeishuFrame::{
+      seq_id: i64(1),
+      log_id: i64(1),
+      service: 1,
+      method: FEISHU_DATA,
+      headers: [("type", "event")],
+      payload_encoding: None,
+      payload_type: None,
+      payload: Some(msg_ev.to_bytes()),
+      log_id_new: None,
+    },
+  )
+  let _ = f.handle_frame(tr, WsFrame::Binary(f1))
+  debug_assert(f.last_event_create_time_ms == 1700000123456L, "message event sets create_time_ms")
+
+  let card_ev = "{\"header\":{\"event_type\":\"card.action.trigger\",\"event_id\":\"ev2\"},\"event\":{\"operator\":{\"open_id\":\"ou_u1\"},\"action\":{\"value\":{\"chat_id\":\"oc_1\",\"thread_ts\":\"om_1\",\"choice\":\"Yes\"}}}}"
+  let f2 = encode_feishu_frame(
+    FeishuFrame::{
+      seq_id: i64(2),
+      log_id: i64(2),
+      service: 1,
+      method: FEISHU_DATA,
+      headers: [("type", "event")],
+      payload_encoding: None,
+      payload_type: None,
+      payload: Some(card_ev.to_bytes()),
+      log_id_new: None,
+    },
+  )
+  let _ = f.handle_frame(tr, WsFrame::Binary(f2))
+  debug_assert(f.last_event_create_time_ms == i64(0), "non-message event must clear last_event_create_time_ms")
+}

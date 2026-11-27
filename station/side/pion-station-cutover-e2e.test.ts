@@ -1788,1895 +1788,7 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
   }
 });
 
-test("W17A.7: External connects entry gate & in-place exec_replace fallback (live Node SIGUSR2 + SIGKILL crash recovery, cold launcher, cross-station connect.event, STRICT=1 refusal, disabled connects clean Pion boot & handover)", async () => {
-  const mesh = resolveMeshAddon();
-  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
-
-  async function peerRpc(
-    ep: Endpoint,
-    stationId: string,
-    addr: string,
-    workspace: string,
-    request: Record<string, unknown>,
-  ): Promise<any> {
-    const conn = await ep.connect({ id: stationId, relays: [], ips: [addr] }, PEER_BYTES_ALPN);
-    try {
-      const stream = await conn.openBi();
-      await stream.write(Buffer.from(JSON.stringify({ workspace, request }) + "\n"));
-      await stream.finish();
-      const chunks: Buffer[] = [];
-      for (;;) {
-        const c = await stream.read();
-        if (c === null) break;
-        chunks.push(c);
-      }
-      const all = Buffer.concat(chunks);
-      const nl = all.indexOf(10);
-      const headerStr = (nl >= 0 ? all.subarray(0, nl) : all).toString("utf8").trim();
-      const parsed = JSON.parse(headerStr);
-      if ("error" in parsed) throw new Error(String(parsed.error));
-      return parsed;
-    } finally {
-      await conn.close(0, "done");
-    }
-  }
-
-  // Mock Slack HTTP + Socket Mode WS server.
-  let slackHttpHits = 0;
-  let slackWsConns = 0;
-  const slackSrv = createHttpServer((req, res) => {
-    slackHttpHits++;
-    if (req.url?.includes("auth.test")) {
-      res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ ok: true, team_id: "T_GATE", team: "GateTeam", user_id: "UBOT", bot_id: "BBOT", user: "bot" }),
-      );
-      return;
-    }
-    if (req.url?.includes("apps.connections.open")) {
-      const port = (slackSrv.address() as AddressInfo).port;
-      res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port}/slack-ws` }),
-      );
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
-  });
-  const slackWss = new WebSocketServer({ noServer: true });
-  servers.push(slackWss, slackSrv);
-  slackSrv.on("upgrade", (req, socket, head) => {
-    slackWss.handleUpgrade(req, socket, head, (ws) => {
-      slackWsConns++;
-      ws.send(JSON.stringify({ type: "hello", num_connections: slackWsConns }));
-    });
-  });
-  await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
-  const slackPort = (slackSrv.address() as AddressInfo).port;
-
-  // --- Scenario 1 (Opus R5 `node-crash`): Live Node + Slack -> flip `engine: "pion"` + `SIGUSR2` -> `SIGKILL` Node crash recovery ---
-  {
-    const dir = freshDir("ext-gate-live-crash");
-    const appDir = join(dir, "app");
-    const dataDir = join(dir, "data");
-    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-    mkdirSync(join(dataDir, "mesh"), { recursive: true });
-
-    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const stationId = idRes.stdout.trim();
-
-    const enabledSlackCfg = {
-      engine: "node",
-      connects: [
-        {
-          id: "slack-main",
-          bind: { runtime: "claude" },
-          slack: {
-            appToken: "xapp-1-w17a-gate",
-            botToken: "xoxb-w17a-gate",
-            baseUrl: `http://127.0.0.1:${slackPort}`,
-          },
-        },
-      ],
-    };
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify(enabledSlackCfg));
-    writeFileSync(
-      join(dataDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-gate",
-        workspace_name: "GateWS",
-        station: stationId,
-        name: "gate-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const udpPort = await pickFreeUdpPort();
-    const logs: string[] = [];
-    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: {
-        ...process.env,
-        STILLFAIL_NO_DISCOVERY: "1",
-        STILLFAIL_NO_DHT: "1",
-        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-        STILLFAIL_READER_ENGINE: "mb",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(launcher);
-    launcher.stdout.on("data", (d) => logs.push(String(d)));
-    launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-    const pid1 = await until(
-      "Scenario 1 initial Node pid",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
-      },
-      30_000,
-    );
-    const port1 = readPorts(dataDir).admin!;
-    assert.equal((await httpCall(port1, "GET", "/healthz")).status, 200);
-
-    // Flip to `"engine": "pion"` and send `SIGUSR2`: Pion MUST exec_replace in-place into Node!
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ ...enabledSlackCfg, engine: "pion" }));
-    launcher.kill("SIGUSR2");
-
-    await until(
-      "Scenario 1 exec_replace logged on SIGUSR2",
-      () => logs.join("").includes("external connects active (slack:slack-main); exec-replacing into Node station"),
-      15_000,
-    );
-    const pid2 = await until(
-      "Scenario 1 exec-replaced Node pid2 after SIGUSR2",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
-      },
-      20_000,
-    );
-    const port2 = readPorts(dataDir).admin!;
-    assert.equal((await httpCall(port2, "GET", "/healthz")).status, 200);
-
-    const clientEp = await bindClientEp(mesh);
-    const jwt = signMemberJwt({ ws: "ws-gate", device: clientEp.id(), sub: "u-gate", email: "g@example.com", name: "Gate", role: "owner" });
-    const { conn: conn2 } = await until("Scenario 1 Node admin /admin/api/ways after SIGUSR2", () =>
-      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
-    );
-    assert.equal((await adminRequest(conn2, "GET", "/admin/api/ways")).status, 200);
-    conn2.close(0, "done");
-
-    // Simulate sudden Node crash (`SIGKILL`): Launcher restarts Pion -> exec_replace back into Node within 10s (NO 5-failure give-up)!
-    process.kill(pid2, "SIGKILL");
-    const pid3 = await until(
-      "Scenario 1 Node pid3 recovered after SIGKILL crash",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && p !== pid2 && isAlive(p) ? p : null;
-      },
-      15_000,
-    );
-    const port3 = readPorts(dataDir).admin!;
-    await until("Scenario 1 /healthz 200 after SIGKILL recovery", async () => {
-      try {
-        const r = await httpCall(port3, "GET", "/healthz");
-        return r.status === 200 ? true : null;
-      } catch {
-        return null;
-      }
-    }, 10_000);
-    assert.equal(isAlive(pid3), true);
-    assert.equal(logs.join("").includes("giving up"), false, `launcher must NOT give up: ${logs.join("")}`);
-
-    launcher.kill("SIGTERM");
-    await until("Scenario 1 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-  }
-
-  // --- Scenario 2 (Opus R5 `cold-launcher`): Cold start via real Launcher with `"engine": "pion"` + enabled Slack ---
-  {
-    const dir = freshDir("ext-gate-cold-launcher");
-    const appDir = join(dir, "app");
-    const dataDir = join(dir, "data");
-    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-    mkdirSync(join(dataDir, "mesh"), { recursive: true });
-
-    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const stationId = idRes.stdout.trim();
-
-    writeFileSync(
-      join(dataDir, "config.json"),
-      JSON.stringify({
-        engine: "pion",
-        connects: [
-          {
-            id: "slack-cold",
-            bind: { runtime: "claude" },
-            slack: {
-              appToken: "xapp-1-w17a-cold",
-              botToken: "xoxb-w17a-cold",
-              baseUrl: `http://127.0.0.1:${slackPort}`,
-            },
-          },
-        ],
-      }),
-    );
-    writeFileSync(
-      join(dataDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-cold-l",
-        workspace_name: "ColdLauncherWS",
-        station: stationId,
-        name: "cold-launcher-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const udpPort = await pickFreeUdpPort();
-    const logs: string[] = [];
-    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: {
-        ...process.env,
-        STILLFAIL_NO_DISCOVERY: "1",
-        STILLFAIL_NO_DHT: "1",
-        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-        STILLFAIL_READER_ENGINE: "mb",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(launcher);
-    launcher.stdout.on("data", (d) => logs.push(String(d)));
-    launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-    const nodePid = await until(
-      "Scenario 2 cold-launcher exec-replaced Node pid",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
-      },
-      30_000,
-    );
-    const port = readPorts(dataDir).admin!;
-    assert.equal((await httpCall(port, "GET", "/healthz")).status, 200);
-    assert.ok(
-      logs.join("").includes("external connects active (slack:slack-cold); exec-replacing into Node station"),
-      `expected cold-launcher exec_replace log, got: ${logs.join("")}`,
-    );
-    assert.equal(logs.join("").includes("giving up"), false);
-
-    const clientEp = await bindClientEp(mesh);
-    const jwt = signMemberJwt({ ws: "ws-cold-l", device: clientEp.id(), sub: "u-cl", email: "cl@example.com", name: "CL", role: "owner" });
-    const { conn } = await until("Scenario 2 Node admin /admin/api/ways", () =>
-      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
-    );
-    assert.equal((await adminRequest(conn, "GET", "/admin/api/ways")).status, 200);
-    conn.close(0, "done");
-    assert.equal(isAlive(nodePid), true);
-
-    launcher.kill("SIGTERM");
-    await until("Scenario 2 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-  }
-
-  // --- Scenario 3 (Astra R5 P1): Cross-station receiver (`connects: []` + `connect.event` -> `remote-connects.json`) -> `engine: "pion"` + `SIGUSR2` -> 2nd `connect.event` edit ---
-  {
-    const dir = freshDir("ext-gate-remote-connects");
-    const appDir = join(dir, "app");
-    const dataDir = join(dir, "data");
-    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-    mkdirSync(join(dataDir, "mesh"), { recursive: true });
-
-    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const stationId = idRes.stdout.trim();
-
-    const peerEp = await bindClientEp(mesh);
-    const peerId = peerEp.id();
-
-    // Mock cloud presence WS so Node's `cloud.peersCurrent` is true and accepts `stillfail/station/2` peer RPCs!
-    const cloudHttp = createHttpServer((_req, res) => {
-      res.writeHead(404).end();
-    });
-    const cloudWss = new WebSocketServer({ server: cloudHttp });
-    servers.push(cloudHttp, cloudWss);
-    cloudWss.on("connection", (wsSock) => {
-      wsSock.send(
-        JSON.stringify({
-          type: "state",
-          workspace: "ws-rem",
-          workspace_name: "RemWS",
-          name: "rem-receiver",
-          peers: [{ id: peerId, name: "peer-sender", relay: null }],
-          workspaces: [],
-          revocations: [],
-        }),
-      );
-    });
-    await new Promise<void>((r) => cloudHttp.listen(0, "127.0.0.1", () => r()));
-    const cloudPort = (cloudHttp.address() as AddressInfo).port;
-
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
-    writeFileSync(
-      join(dataDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        origin: `http://127.0.0.1:${cloudPort}`,
-        workspace: "ws-rem",
-        workspace_name: "RemWS",
-        station: stationId,
-        name: "rem-receiver",
-        peers: [{ id: peerId, name: "peer-sender", relay: null }],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    // Pre-seed a Slack thread + message in `stillfail.db` (without `remote-connects.json` yet)
-    // so both `connect.event` edits persist directly without triggering outbound peer `connect.call` lookups.
-    {
-      const seed = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
-      const now = Date.now();
-      seed.db.prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_REM', 'C_REM', '100.001', 'RemoteThread', ?)").run(now);
-      seed.db.prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '100.001', 'person', 'U_REM', 'initial-remote-msg', ?)").run(now);
-      seed.close();
-    }
-
-    const udpPort = await pickFreeUdpPort();
-    const logs: string[] = [];
-    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: {
-        ...process.env,
-        STILLFAIL_NO_DISCOVERY: "1",
-        STILLFAIL_NO_DHT: "1",
-        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-        STILLFAIL_READER_ENGINE: "mb",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(launcher);
-    launcher.stdout.on("data", (d) => logs.push(String(d)));
-    launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-    const pid1 = await until(
-      "Scenario 3 initial Node pid",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
-      },
-      30_000,
-    );
-
-    const described = {
-      kind: "slack",
-      workspace: "ws-rem",
-      mode: "multi-session",
-      requireMention: false,
-      bind: { runtime: "claude" },
-      botUserId: "UBOT_REM",
-      botName: "rembot",
-      identity: null,
-      platform: "slack",
-      team: "T_REM",
-      cards: true,
-      loginCards: false,
-      mention: ["<@", ">"],
-      link: null,
-      has: [],
-    };
-    const known = { id: "slack-remote", origin: peerId };
-
-    // 1st `connect.event`: Node learns the remote connect and writes `<data>/remote-connects.json`.
-    let lastEv1Err = "";
-    const ev1Resp = await until("Scenario 3 1st connect.event peer RPC", async () => {
-      try {
-        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem", {
-          method: "connect.event",
-          workspace: "ws-rem",
-          connect: known,
-          described,
-          event: {
-            type: "changed",
-            channel: "C_REM",
-            threadTs: "100.001",
-            ts: "100.001",
-            text: "first-remote-edit",
-          },
-        });
-      } catch (e) {
-        lastEv1Err = String(e);
-        return null;
-      }
-    }, 15_000).catch((err) => {
-      throw new Error(`${String(err)} (lastEv1Err=${lastEv1Err})`);
-    });
-    assert.deepEqual(ev1Resp.result, { ok: true });
-
-    await until("Scenario 3 remote-connects.json written by Node", () => {
-      const p = join(dataDir, "remote-connects.json");
-      if (!existsSync(p)) return null;
-      try {
-        const obj = JSON.parse(readFileSync(p, "utf8"));
-        return Object.keys(obj).length > 0 ? obj : null;
-      } catch {
-        return null;
-      }
-    }, 10_000);
-
-    // Flip `config.json` to `"engine": "pion"` (keeping `connects: []`!) and trigger `SIGUSR2`.
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-    launcher.kill("SIGUSR2");
-
-    await until(
-      "Scenario 3 exec_replace logged for remote-connects.json",
-      () => logs.join("").includes("remote-connects:1") && logs.join("").includes("exec-replacing into Node station"),
-      15_000,
-    );
-    const pid2 = await until(
-      "Scenario 3 exec-replaced Node pid2 after SIGUSR2",
-      () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
-      },
-      20_000,
-    );
-    assert.equal((await httpCall(readPorts(dataDir).admin!, "GET", "/healthz")).status, 200);
-    assert.equal(isAlive(pid2), true);
-
-    // 2nd `connect.event` (edit) MUST succeed on the exec-replaced Node station and persist the edited text!
-    const ev2Resp = await until("Scenario 3 2nd connect.event edit peer RPC", async () => {
-      try {
-        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem", {
-          method: "connect.event",
-          workspace: "ws-rem",
-          connect: known,
-          described,
-          event: {
-            type: "changed",
-            channel: "C_REM",
-            threadTs: "100.001",
-            ts: "100.001",
-            text: "edited-remote-message-after-sigusr2",
-          },
-        });
-      } catch {
-        return null;
-      }
-    }, 15_000);
-    assert.deepEqual(ev2Resp.result, { ok: true });
-
-    launcher.kill("SIGTERM");
-    await until("Scenario 3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-    // Read back edited message via Node `Store.open`!
-    const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
-    const rows = verifyStore.db.prepare("SELECT text FROM entries WHERE text LIKE '%edited-remote-message-after-sigusr2%'").all() as { text: string }[];
-    verifyStore.close();
-    assert.ok(rows.length >= 1, "expected 2nd connect.event edited text persisted in stillfail.db");
-  }
-
-  // --- Scenario 4: `STILLFAIL_STATION_ENGINE_STRICT=1` cold refusal (omitted/null/"chat" Slack + Feishu + Comma + Group) ---
-  {
-    const coldDir = freshDir("ext-gate-strict");
-    mkdirSync(join(coldDir, "mesh"), { recursive: true });
-    const idRes = spawnSync(pionBin, ["id", "--data", coldDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const coldId = idRes.stdout.trim();
-    writeFileSync(
-      join(coldDir, "config.json"),
-      JSON.stringify({
-        engine: "pion",
-        connects: [
-          { id: "sl-omit", slack: { appToken: "xapp-1-t", botToken: "xoxb-t", baseUrl: `http://127.0.0.1:${slackPort}` } },
-          { id: "sl-null", kind: null },
-          { id: "sl-chat", kind: "chat" },
-          { id: "fs-1", kind: "feishu", feishu: { appId: "cli_1", appSecret: "sec_1" } },
-          { id: "cm-1", kind: "comma", comma: { server: "http://127.0.0.1:9", token: "tok" } },
-          { id: "gr-1", kind: "group", group: { server: HEX32, key: HEX32, memberId: "m1" } },
-        ],
-      }),
-    );
-    writeFileSync(
-      join(coldDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-cold",
-        workspace_name: "ColdWS",
-        station: coldId,
-        name: "cold-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const hitsBefore = slackHttpHits;
-    const wsBefore = slackWsConns;
-    const coldRun = spawnSync(pionBin, ["run", "--data", coldDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_STATION_ENGINE_STRICT: "1" },
-      encoding: "utf8",
-      timeout: 15_000,
-    });
-    assert.notEqual(coldRun.status, 0, "STRICT=1 cold start with enabled external connects must exit non-zero");
-    const combined = `${coldRun.stdout}\n${coldRun.stderr}`;
-    assert.ok(
-      combined.includes("slack:sl-omit, slack:sl-null, slack:sl-chat, feishu:fs-1, comma:cm-1, group:gr-1"),
-      `expected STRICT refusal naming all 6 connects, got: ${combined}`,
-    );
-    assert.equal(existsSync(join(coldDir, "stillfail.db")), false, "STRICT refusal must NOT create stillfail.db");
-    assert.equal(slackHttpHits, hitsBefore, "STRICT refusal must NOT contact mock Slack HTTP");
-    assert.equal(slackWsConns, wsBefore, "STRICT refusal must NOT open mock Slack WS");
-  }
-
-  // --- Scenario 5: No enabled connects & no `remote-connects.json` -> clean pure Pion `whole_daemon` boot, handover & shutdown ---
-  {
-    const dir = freshDir("ext-gate-disabled");
-    const appDir = join(dir, "app");
-    const dataDir = join(dir, "data");
-    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
-    mkdirSync(join(dataDir, "mesh"), { recursive: true });
-    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const stationId = idRes.stdout.trim();
-    writeFileSync(
-      join(dataDir, "config.json"),
-      JSON.stringify({
-        engine: "pion",
-        connects: [
-          { id: "slack-off", enabled: false, slack: { appToken: "xapp-1-t", botToken: "xoxb-t", baseUrl: `http://127.0.0.1:${slackPort}` } },
-          { id: "feishu-off", kind: "feishu", enabled: false },
-        ],
-      }),
-    );
-    writeFileSync(
-      join(dataDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-dis",
-        workspace_name: "DisWS",
-        station: stationId,
-        name: "dis-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const udpPort = await pickFreeUdpPort();
-    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
-      stdio: "ignore",
-    });
-    children.push(launcher);
-
-    const pid1 = await until("disabled-connects pion pid1", () => {
-      const p = readHubPid(dataDir);
-      return p > 0 && isAlive(p) ? p : null;
-    });
-
-    const clientEp = await bindClientEp(mesh);
-    const jwt = signMemberJwt({ ws: "ws-dis", device: clientEp.id(), sub: "u-dis", email: "d@example.com", name: "Dis", role: "owner" });
-    const { conn } = await until("disabled-connects admin connect", () =>
-      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
-    );
-    const stResp = await adminRequest(conn, "GET", "/status");
-    assert.equal(stResp.status, 200);
-    const stJson = JSON.parse(stResp.body.toString("utf8"));
-    assert.equal(stJson.edge?.connects?.enabledInConfig, 0);
-    assert.equal(stJson.edge?.connects?.total, 0);
-    assert.equal(stJson.edge?.connects?.running, 0);
-    conn.close(0, "done");
-
-    // `SIGUSR2` handover + `SIGTERM` clean shutdown with 0 orphans & 0 FD leak!
-    const fdBefore = openFdCount(pid1);
-    launcher.kill("SIGUSR2");
-    const pid2 = await until("disabled-connects pion pid2 after SIGUSR2", () => {
-      const p = readHubPid(dataDir);
-      return p > 0 && p !== pid1 && isAlive(p) ? p : null;
-    });
-    await until("old pion pid1 exited", () => !isAlive(pid1), 10_000);
-    const fdAfter = openFdCount(pid2);
-    if (fdBefore > 0 && fdAfter > 0) {
-      assert.ok(Math.abs(fdAfter - fdBefore) <= 12, `unexpected FD delta across handover: before=${fdBefore} after=${fdAfter}`);
-    }
-
-    launcher.kill("SIGTERM");
-    await until("disabled-connects launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-    await until("disabled-connects pion pid2 exited", () => !isAlive(pid2));
-  }
-
-  // --- Scenario 6 (Astra R7 6a / 6b / 6c): Pending `<data>/restore/ready.json` decided BEFORE `ready` ---
-  {
-    const srcDir = freshDir("ext-gate-r8-src");
-    const srcDb = join(srcDir, "stillfail.db");
-    const ws = "ws-r8-rest";
-    const nowMs = Date.now();
-    const peerEp = await bindClientEp(mesh);
-    const peerId = peerEp.id();
-    const remoteConnectId = `slack-r8@${peerId}`;
-
-    const srcStore = Store.open(srcDb, join(srcDir, "archives"));
-    srcStore.db
-      .prepare(
-        "INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run("s:r8-rem", remoteConnectId, "s:r8-rem", "RestoredRemote", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, ws);
-    srcStore.db
-      .prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_R8', 'C_R8', '200.001', 'RestoredRemoteThread', ?)")
-      .run(nowMs);
-    srcStore.db
-      .prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's:r8-rem', ?, ?)")
-      .run(remoteConnectId, nowMs);
-    srcStore.db
-      .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_R8', 'before-r8-restore', ?)")
-      .run(nowMs);
-    const r13OpId = "op-r13-uuid-1234";
-    srcStore.db
-      .prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, thread) VALUES (?, ?, 'turn', ?, ?, 'completed', 1)")
-      .run("r11-saved-turn", "s:r8-rem", nowMs - 1000, nowMs);
-    srcStore.db
-      .prepare(
-        "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id) VALUES (1, 1, 'accepted', 'ProjR13', 'alice@example.com', ?, 'note-r13', '[]', 0, ?)",
-      )
-      .run(nowMs, r13OpId);
-
-    const originId = "b".repeat(64);
-    const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
-    exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-r8" }] });
-    let passRes = exp.pass(nothingTold());
-    while (passRes.more) passRes = exp.pass(nothingTold());
-    const head = passRes.heads[ws];
-    assert.ok(head, "expected Exporter head for Scenario 6");
-    const genPath = genDir(ownDir(join(srcDir, "replica")), ws, head.gen);
-    const filesSrcDir = join(srcDir, "exported-files");
-    mkdirSync(filesSrcDir, { recursive: true });
-    for (const hash of Object.keys(head.files)) {
-      const p = exp.sourceOf(hash);
-      if (p) copyFileSync(p, join(filesSrcDir, hash));
-    }
-    exp.close();
-    srcStore.close();
-
-    const stageR8Restore = (dataDir: string, merge = false): void => {
-      const copyDir = join(dataDir, "restore", "copy");
-      mkdirSync(copyDir, { recursive: true });
-      cpSync(genPath, join(copyDir, head.gen), { recursive: true });
-      cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
-      writeFileSync(
-        join(dataDir, "restore", "ready.json"),
-        JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r8", from: peerId, ...(merge ? { merge: true } : {}) }),
-      );
-    };
-
-    const describedR8 = {
-      kind: "slack",
-      workspace: ws,
-      mode: "multi-session",
-      requireMention: false,
-      bind: { runtime: "claude" },
-      botUserId: "UBOT_R8",
-      botName: "r8bot",
-      identity: null,
-      platform: "slack",
-      team: "T_R8",
-      cards: true,
-      loginCards: false,
-      mention: ["<@", ">"],
-      link: null,
-      has: [],
-    };
-
-    const cloudHttp = createHttpServer((_req, res) => {
-      res.writeHead(404).end();
-    });
-    const cloudWss = new WebSocketServer({ server: cloudHttp });
-    servers.push(cloudHttp, cloudWss);
-    cloudWss.on("connection", (wsSock) => {
-      wsSock.send(
-        JSON.stringify({
-          type: "state",
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          name: "r8-rest-station",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          workspaces: [],
-          revocations: [],
-        }),
-      );
-    });
-    await new Promise<void>((r) => cloudHttp.listen(0, "127.0.0.1", () => r()));
-    const cloudPort = (cloudHttp.address() as AddressInfo).port;
-
-    // (6a) Live Node + staged `restore/ready.json` + STRICT=1 + flip `engine: "pion"` + SIGUSR2:
-    // Pion exits 1 BEFORE `ready`, original Node PID stays alive with 100% 200 on `/healthz` + `/admin/api/ways`!
-    {
-      const dir = freshDir("ext-gate-r8-6a");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r8-6a",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const udpPort = await pickFreeUdpPort();
-      const logs: string[] = [];
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-          STILLFAIL_STATION_ENGINE_STRICT: "1",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      children.push(launcher);
-      launcher.stdout.on("data", (d) => logs.push(String(d)));
-      launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-      const pid1 = await until("6a initial Node pid", () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
-      }, 30_000);
-      const port1 = readPorts(dataDir).admin!;
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      launcher.kill("SIGUSR2");
-
-      await until(
-        "6a STRICT=1 refusal logged before ready",
-        () => logs.join("").includes("restore:pending-ready-json"),
-        15_000,
-      );
-      assert.equal(readHubPid(dataDir), pid1, "6a original Node PID must remain unchanged");
-      assert.equal(isAlive(pid1), true, "6a original Node must remain alive");
-      assert.equal(logs.join("").includes("giving up"), false);
-
-      const clientEp = await bindClientEp(mesh);
-      const jwt = signMemberJwt({ ws, device: clientEp.id(), sub: "u-6a", email: "6a@example.com", name: "6a", role: "owner" });
-      const { conn } = await until("6a Node admin /admin/api/ways", () =>
-        openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
-      );
-      for (let i = 0; i < 8; i++) {
-        assert.equal((await httpCall(port1, "GET", "/healthz")).status, 200);
-        assert.equal((await adminRequest(conn, "GET", "/admin/api/ways")).status, 200);
-      }
-      conn.close(0, "done");
-
-      launcher.kill("SIGTERM");
-      await until("6a launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-    }
-
-    // (6b) Live Node + staged `restore/ready.json` + default mode + flip `engine: "pion"` + SIGUSR2:
-    // Smooth Node->Node handover via in-place `exec_replace` with ZERO `/healthz` resets/timeouts + 1st `connect.event` edit persists!
-    {
-      const dir = freshDir("ext-gate-r8-6b");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "node", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r8-6b",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const udpPort = await pickFreeUdpPort();
-      const logs: string[] = [];
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      children.push(launcher);
-      launcher.stdout.on("data", (d) => logs.push(String(d)));
-      launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-      const pid1 = await until("6b initial Node pid", () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && isAlive(p) && (readPorts(dataDir).admin ?? 0) > 0 ? p : null;
-      }, 30_000);
-      const adminPort = readPorts(dataDir).admin!;
-      assert.equal((await httpCall(adminPort, "GET", "/healthz")).status, 200);
-
-      // Concurrent `/healthz` sampler across the entire `SIGUSR2` handover: ZERO resets / ZERO timeouts!
-      let sampling = true;
-      let sampleOk = 0;
-      const sampleErrs: string[] = [];
-      const sampler = (async () => {
-        while (sampling) {
-          try {
-            const r = await httpCall(adminPort, "GET", "/healthz", { connection: "close" });
-            if (r.status === 200) sampleOk++;
-            else sampleErrs.push(`status=${r.status}`);
-          } catch (e) {
-            sampleErrs.push(String(e));
-          }
-          await new Promise((r) => setTimeout(r, 40));
-        }
-      })();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      launcher.kill("SIGUSR2");
-
-      await until(
-        "6b exec_replace logged for restore:pending-ready-json",
-        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
-        15_000,
-      );
-      const pid2 = await until("6b new Node pid2 after SIGUSR2", () => {
-        const p = readHubPid(dataDir);
-        return p > 0 && p !== pid1 && isAlive(p) ? p : null;
-      }, 25_000);
-      await until("6b old Node pid1 exited", () => !isAlive(pid1), 15_000);
-      sampling = false;
-      await sampler;
-      assert.ok(sampleOk >= 3, `expected >= 3 /healthz samples during handover, got ${sampleOk}`);
-      assert.deepEqual(sampleErrs, [], `6b handover must have ZERO /healthz resets/errors, got: ${sampleErrs.join("; ")}`);
-      assert.equal(isAlive(pid2), true);
-
-      const evResp = await until("6b connect.event edit on new Node", async () => {
-        try {
-          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
-            method: "connect.event",
-            workspace: ws,
-            connect: { id: "slack-r8", origin: peerId },
-            described: describedR8,
-            event: {
-              type: "changed",
-              channel: "C_R8",
-              threadTs: "200.001",
-              ts: "200.001",
-              text: "edited-after-6b-sigusr2-restore",
-            },
-          });
-        } catch {
-          return null;
-        }
-      }, 15_000);
-      assert.deepEqual(evResp.result, { ok: true });
-
-      launcher.kill("SIGTERM");
-      await until("6b launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
-      const editedRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE '%edited-after-6b-sigusr2-restore%'")
-        .all() as { text: string }[];
-      verifyStore.close();
-      assert.ok(editedRows.length >= 1, "6b expected edited text persisted in stillfail.db");
-    }
-
-    // (6c-no-db & 6c-empty-db) Cold start + staged `restore/ready.json` + default mode:
-    // Both with NO `stillfail.db` at all (`6c-no-db`) and with a pre-created empty schema DB (`6c-empty-db`),
-    // Pion immediately `exec_replace`s into Node -> `restored.json.error === null` -> first `/healthz 200`
-    // served by Node -> restored cross-station session present -> `connect.event` edit persists!
-    for (const mode of ["6c-no-db", "6c-empty-db"] as const) {
-      const dir = freshDir(`ext-gate-r9-${mode}`);
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-      if (mode === "6c-empty-db") {
-        Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives")).close();
-      } else {
-        assert.equal(existsSync(join(dataDir, "stillfail.db")), false, "6c-no-db must start with NO stillfail.db");
-      }
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: `r9-${mode}`,
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const udpPort = await pickFreeUdpPort();
-      const logs: string[] = [];
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      children.push(launcher);
-      launcher.stdout.on("data", (d) => logs.push(String(d)));
-      launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-      await until(
-        `${mode} immediate exec_replace into Node on cold restore`,
-        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
-        20_000,
-      );
-      const nodePid = await until(
-        `${mode} Node pid serving /healthz 200`,
-        async () => {
-          const p = readHubPid(dataDir);
-          const port = readPorts(dataDir).admin ?? 0;
-          if (p > 0 && isAlive(p) && port > 0) {
-            try {
-              const r = await httpCall(port, "GET", "/healthz");
-              if (r.status === 200) return p;
-            } catch {}
-          }
-          return null;
-        },
-        25_000,
-      );
-      assert.equal(isAlive(nodePid), true);
-      await until(
-        `${mode} Node replica restore completed`,
-        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
-        15_000,
-      );
-      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `${mode} restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
-
-      const editedText = `edited-after-${mode}-cold-restore`;
-      const evResp = await until(`${mode} connect.event edit on Node`, async () => {
-        try {
-          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
-            method: "connect.event",
-            workspace: ws,
-            connect: { id: "slack-r8", origin: peerId },
-            described: describedR8,
-            event: {
-              type: "changed",
-              channel: "C_R8",
-              threadTs: "200.001",
-              ts: "200.001",
-              text: editedText,
-            },
-          });
-        } catch {
-          return null;
-        }
-      }, 15_000);
-      assert.deepEqual(evResp.result, { ok: true });
-
-      launcher.kill("SIGTERM");
-      await until(`${mode} launcher exit`, () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archives"));
-      const sessRow = verifyStore.getSession("s:r8-rem");
-      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, `${mode} expected restored cross-station session s:r8-rem`);
-      const editedRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE ?")
-        .all(`%${editedText}%`) as { text: string }[];
-      verifyStore.close();
-      assert.ok(editedRows.length >= 1, `${mode} expected edited text persisted in stillfail.db`);
-    }
-
-    // (6c-locked-existing-db) Opus R10 P2: Existing rollback-journal DB locked with `BEGIN EXCLUSIVE`
-    // + pending `restore/ready.json` -> Pion MUST exit 1 without opening DB for writes, preserving
-    // `<data>/restore/`, byte-identical DB contents, and `journal_mode=delete`!
-    {
-      const dir = freshDir("ext-gate-r11-locked-db");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r11-locked-db",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const dbPath = join(dataDir, "stillfail.db");
-      const seed = new DatabaseSync(dbPath);
-      seed.exec("PRAGMA journal_mode = DELETE;");
-      seed.exec("CREATE TABLE threads (id INTEGER PRIMARY KEY); CREATE TABLE sessions (key TEXT PRIMARY KEY);");
-      seed.close();
-      const origBytes = readFileSync(dbPath);
-
-      const locker = new DatabaseSync(dbPath);
-      locker.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
-      const out: string[] = [];
-      const child = spawn(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      child.stdout.on("data", (d) => out.push(String(d)));
-      child.stderr.on("data", (d) => out.push(String(d)));
-      const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
-      try { locker.exec("ROLLBACK; PRAGMA locking_mode = NORMAL"); } catch {}
-      try { locker.close(); } catch {}
-
-      assert.equal(code, 1, `6c-locked-existing-db must exit 1, got ${code}: ${out.join("")}`);
-      assert.ok(
-        out.join("").includes("target db not ready for restore handoff"),
-        `6c-locked-existing-db expected restore handoff refusal stderr, got: ${out.join("")}`,
-      );
-      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6c-locked-existing-db must preserve restore/ready.json");
-      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6c-locked-existing-db must preserve restore/copy");
-      assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6c-locked-existing-db must not modify locked DB bytes");
-      const verify = new DatabaseSync(dbPath);
-      const jm = (verify.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode;
-      verify.close();
-      assert.equal(jm.toLowerCase(), "delete", "6c-locked-existing-db must preserve journal_mode=delete");
-    }
-
-    // (6d-io-fail-atomic-retry) Astra R10 P1: Empty 0-table DB (`PRAGMA user_version = 13`) + real
-    // SQLite write failure (`RLIMIT_FSIZE` with `SIGXFSZ` ignored) during atomic temp-DB init ->
-    // Pion exits 1, leaves `stillfail.db` untouched with 0 tables and zero `.init.*.tmp` debris,
-    // preserves `<data>/restore/` -> clearing the limit and booting real Launcher in same dir
-    // atomically initializes schema, `exec_replace`s into Node, restores `s:r8-rem` + `thread_sessions`,
-    // and persists first peer `connect.event` edit!
-    {
-      const dir = freshDir("ext-gate-r11-io-retry");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r11-io-retry",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      // Seed a valid 0-table SQLite file with `PRAGMA user_version = 13`.
-      const dbPath = join(dataDir, "stillfail.db");
-      const emptyDb = new DatabaseSync(dbPath);
-      emptyDb.exec("PRAGMA user_version = 13;");
-      emptyDb.close();
-
-      // 1. Trigger real mid-migration SQLite write failures at RLIMIT_FSIZE=155648 (304*512B)
-      //    and RLIMIT_FSIZE=229376 (448*512B) with `SIGXFSZ` ignored so SQLite observes `EFBIG`
-      //    inside `ensure_restore_target_schema`'s single `BEGIN IMMEDIATE` transaction and rolls back cleanly.
-      for (const fsizeBlocks of [304, 448]) {
-        const failRun = spawnSync(
-          "sh",
-          ["-c", `trap "" XFSZ; ulimit -f ${fsizeBlocks}; exec "$@"`, "--", pionBin, "run", "--app", appDir, "--data", dataDir, "--port", "0"],
-          {
-            env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-            encoding: "utf8",
-            timeout: 15_000,
-          },
-        );
-        assert.equal(failRun.status, 1, `6d-io-fail-atomic-retry must exit 1 under ulimit -f ${fsizeBlocks}, got ${failRun.status}: ${failRun.stdout}\n${failRun.stderr}`);
-        assert.ok(
-          `${failRun.stdout}\n${failRun.stderr}`.includes("target db not ready for restore handoff"),
-          `6d-io-fail-atomic-retry expected restore handoff refusal stderr under ulimit -f ${fsizeBlocks}, got: ${failRun.stdout}\n${failRun.stderr}`,
-        );
-        assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on mid-init IO failure");
-        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on mid-init IO failure");
-        const checkZero = new DatabaseSync(dbPath, { readOnly: true });
-        const tblCount = (checkZero.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get() as { n: number }).n;
-        checkZero.close();
-        assert.equal(tblCount, 0, `stillfail.db MUST remain 0-table after rollback under ulimit -f ${fsizeBlocks}`);
-      }
-
-      // 2. Lift fault (same dataDir, same 0-table `stillfail.db`, NO re-staging!) and boot via real Launcher.
-      const udpPort = await pickFreeUdpPort();
-      const logs: string[] = [];
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      children.push(launcher);
-      launcher.stdout.on("data", (d) => logs.push(String(d)));
-      launcher.stderr.on("data", (d) => logs.push(String(d)));
-
-      await until(
-        "6d-io-fail-atomic-retry exec_replace into Node after lifting RLIMIT_FSIZE",
-        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
-        20_000,
-      );
-      const nodePid = await until(
-        "6d-io-fail-atomic-retry Node pid serving /healthz 200",
-        async () => {
-          const p = readHubPid(dataDir);
-          const port = readPorts(dataDir).admin ?? 0;
-          if (p > 0 && isAlive(p) && port > 0) {
-            try {
-              const r = await httpCall(port, "GET", "/healthz");
-              if (r.status === 200) return p;
-            } catch {}
-          }
-          return null;
-        },
-        25_000,
-      );
-      assert.equal(isAlive(nodePid), true);
-      await until(
-        "6d-io-fail-atomic-retry Node replica restore completed",
-        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
-        15_000,
-      );
-      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `6d-io-fail-atomic-retry restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
-
-      const editedText = "edited-after-6d-atomic-retry";
-      const evResp = await until("6d-io-fail-atomic-retry connect.event edit on Node", async () => {
-        try {
-          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
-            method: "connect.event",
-            workspace: ws,
-            connect: { id: "slack-r8", origin: peerId },
-            described: describedR8,
-            event: {
-              type: "changed",
-              channel: "C_R8",
-              threadTs: "200.001",
-              ts: "200.001",
-              text: editedText,
-            },
-          });
-        } catch {
-          return null;
-        }
-      }, 15_000);
-      assert.deepEqual(evResp.result, { ok: true });
-
-      launcher.kill("SIGTERM");
-      await until("6d-io-fail-atomic-retry launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
-      const sessRow = verifyStore.getSession("s:r8-rem");
-      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, "6d-io-fail-atomic-retry expected restored cross-station session s:r8-rem");
-      const tsCount = (verifyStore.db.prepare("SELECT COUNT(*) AS n FROM thread_sessions").get() as { n: number }).n;
-      assert.equal(tsCount, 1, "6d-io-fail-atomic-retry expected thread_sessions === 1");
-      const origRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE ?")
-        .all("%before-r8-restore%") as { text: string }[];
-      const turnRow = verifyStore.db
-        .prepare("SELECT outcome FROM turns WHERE id = ?")
-        .get("r11-saved-turn") as { outcome: string } | undefined;
-      const editedRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE ?")
-        .all(`%${editedText}%`) as { text: string }[];
-      verifyStore.close();
-      assert.ok(origRows.length >= 1, "6d-io-fail-atomic-retry expected original restored message in stillfail.db");
-      assert.equal(turnRow?.outcome, "completed", "6d-io-fail-atomic-retry expected restored turn r11-saved-turn");
-      assert.ok(editedRows.length >= 1, "6d-io-fail-atomic-retry expected edited text persisted in stillfail.db");
-    }
-
-    // (6e-higher-user-version) Astra R10: Higher `user_version` (e.g. 99) -> Pion MUST exit 1,
-    // zero writes to `stillfail.db`, and preserve `<data>/restore/`!
-    {
-      const dir = freshDir("ext-gate-r11-higher-uv");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r11-higher-uv",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const dbPath = join(dataDir, "stillfail.db");
-      const futureDb = new DatabaseSync(dbPath);
-      futureDb.exec("PRAGMA user_version = 99;");
-      futureDb.close();
-      const origBytes = readFileSync(dbPath);
-
-      const res = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-        encoding: "utf8",
-        timeout: 15_000,
-      });
-      assert.equal(res.status, 1, `6e-higher-user-version must exit 1, got ${res.status}: ${res.stdout}\n${res.stderr}`);
-      assert.ok(
-        `${res.stdout}\n${res.stderr}`.includes("unsupported_user_version:99"),
-        `6e-higher-user-version expected unsupported_user_version:99, got: ${res.stdout}\n${res.stderr}`,
-      );
-      assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6e-higher-user-version must not modify DB bytes");
-      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6e-higher-user-version must preserve restore/ready.json");
-      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6e-higher-user-version must preserve restore/copy");
-    }
-
-    // (6f-concurrent-writer-preserves-commit) Astra R11 P1 #1: On an empty v13 WAL DB, another SQLite
-    // connection holds a write transaction creating `threads` and inserting local thread 73.
-    // Because `ensure_restore_target_schema` coordinates via SQLite `BEGIN IMMEDIATE` in-place (zero
-    // rename/inode swap), BOTH timings preserve inode and thread 73 on the canonical `stillfail.db` path!
-    {
-      const setupWalV13 = (tag: string) => {
-        const dir = freshDir(tag);
-        const appDir = join(dir, "app");
-        const dataDir = join(dir, "data");
-        installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-        mkdirSync(join(dataDir, "mesh"), { recursive: true });
-        const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-        assert.equal(idRes.status, 0, idRes.stderr);
-        const stationId = idRes.stdout.trim();
-        stageR8Restore(dataDir);
-        writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-        writeFileSync(
-          join(dataDir, "mesh", "cloud.json"),
-          JSON.stringify({
-            origin: `http://127.0.0.1:${cloudPort}`,
-            workspace: ws,
-            workspace_name: "R8RestWS",
-            station: stationId,
-            name: tag,
-            peers: [{ id: peerId, name: "peer-r8", relay: null }],
-            relay_urls: [],
-            grant_keys: grantKeys,
-          }),
-        );
-        const dbPath = join(dataDir, "stillfail.db");
-        const initDb = new DatabaseSync(dbPath);
-        initDb.exec("PRAGMA journal_mode = WAL; PRAGMA user_version = 13;");
-        initDb.close();
-        return { appDir, dataDir, dbPath, inoBefore: statSync(dbPath).ino };
-      };
-
-      const createThreadsSql =
-        "CREATE TABLE threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER NOT NULL, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, project TEXT, project_locked INTEGER NOT NULL DEFAULT 0, tags TEXT, UNIQUE(surface, channel, thread_ts));";
-
-      // (a) Concurrent writer commits after 300ms (inside busy_timeout=2000) while real Launcher starts:
-      {
-        const { appDir, dataDir, dbPath, inoBefore } = setupWalV13("ext-gate-r12-conc-300ms");
-        const writer = new DatabaseSync(dbPath);
-        writer.exec(`BEGIN IMMEDIATE; ${createThreadsSql} INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'web', 'CHAT', '73.000', 'LocalThread73', ${Date.now()});`);
-        const commitTimer = setTimeout(() => {
-          try { writer.exec("COMMIT"); } catch {}
-          try { writer.close(); } catch {}
-        }, 300);
-
-        const udpPort = await pickFreeUdpPort();
-        const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-          env: {
-            ...process.env,
-            STILLFAIL_NO_DISCOVERY: "1",
-            STILLFAIL_NO_DHT: "1",
-            STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-            STILLFAIL_READER_ENGINE: "mb",
-          },
-          stdio: "ignore",
-        });
-        children.push(launcher);
-        await until("6f-a Node serving /healthz 200", async () => {
-          const p = readHubPid(dataDir);
-          const port = readPorts(dataDir).admin ?? 0;
-          if (p > 0 && isAlive(p) && port > 0) {
-            try {
-              const r = await httpCall(port, "GET", "/healthz");
-              if (r.status === 200) return p;
-            } catch {}
-          }
-          return null;
-        }, 25_000);
-        clearTimeout(commitTimer);
-        try { writer.close(); } catch {}
-        launcher.kill("SIGTERM");
-        await until("6f-a launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-        assert.equal(statSync(dbPath).ino, inoBefore, "6f-a stillfail.db inode MUST NOT change");
-        const ro = new DatabaseSync(dbPath, { readOnly: true });
-        const row = ro.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
-        ro.close();
-        assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73" }, "6f-a local thread 73 MUST survive concurrent restore handoff");
-      }
-
-      // (b) Concurrent writer holds lock >2000ms (3.5s) -> Pion exits 1 preserving restore/ -> writer commits:
-      {
-        const { appDir, dataDir, dbPath, inoBefore } = setupWalV13("ext-gate-r12-conc-3500ms");
-        const writer = new DatabaseSync(dbPath);
-        writer.exec(`BEGIN IMMEDIATE; ${createThreadsSql} INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'web', 'CHAT', '73.000', 'LocalThread73Long', ${Date.now()});`);
-        const out: string[] = [];
-        const child = spawn(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        child.stdout.on("data", (d) => out.push(String(d)));
-        child.stderr.on("data", (d) => out.push(String(d)));
-        const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
-        writer.exec("COMMIT");
-        writer.close();
-
-        assert.equal(code, 1, `6f-b must exit 1 on >2000ms writer lock, got ${code}: ${out.join("")}`);
-        assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6f-b must preserve restore/ready.json");
-        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6f-b must preserve restore/copy");
-        assert.equal(statSync(dbPath).ino, inoBefore, "6f-b stillfail.db inode MUST NOT change");
-        const ro = new DatabaseSync(dbPath, { readOnly: true });
-        const row = ro.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
-        ro.close();
-        assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73Long" }, "6f-b local thread 73 MUST survive after writer commits");
-      }
-    }
-
-    // (6g-partial-4-core-tables-restores-turns) Astra R11 P1 #2: Residual v13 DB with ONLY the 4 core
-    // tables (`threads`, `sessions`, `entries`, `thread_sessions`, missing `turns`/`letters`) + snapshot
-    // containing completed `turns` row (`r11-saved-turn`) -> Pion completes all 17 restorable tables inside
-    // `BEGIN IMMEDIATE` before `exec_replace` -> Node restores `r11-saved-turn` (`completed`) and cleans `restore/`!
-    {
-      const dir = freshDir("ext-gate-r12-partial-4tbl");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r12-partial-4tbl",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      // Build a real v13 DB and drop every table except the 4 core tables.
-      const dbPath = join(dataDir, "stillfail.db");
-      Store.open(dbPath, join(dataDir, "archives")).close();
-      const partial = new DatabaseSync(dbPath);
-      const keep = new Set(["threads", "sessions", "entries", "thread_sessions"]);
-      const views = partial.prepare("SELECT name FROM sqlite_master WHERE type='view'").all() as { name: string }[];
-      for (const v of views) partial.exec(`DROP VIEW IF EXISTS "${v.name}";`);
-      const triggers = partial.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[];
-      for (const tr of triggers) partial.exec(`DROP TRIGGER IF EXISTS "${tr.name}";`);
-      const tables = partial
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-        .all() as { name: string }[];
-      for (const t of tables) {
-        if (!keep.has(t.name)) partial.exec(`DROP TABLE IF EXISTS "${t.name}";`);
-      }
-      partial.close();
-
-      const udpPort = await pickFreeUdpPort();
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: "ignore",
-      });
-      children.push(launcher);
-      await until(
-        "6g Node replica restore completed",
-        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
-        25_000,
-      );
-      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `6g restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
-      assert.equal(existsSync(join(dataDir, "restore")), false, "6g restore/ must be cleaned after full restore");
-
-      launcher.kill("SIGTERM");
-      await until("6g launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
-      const turnRow = verifyStore.db
-        .prepare("SELECT outcome FROM turns WHERE id = ?")
-        .get("r11-saved-turn") as { outcome: string } | undefined;
-      const tsCount = (verifyStore.db.prepare("SELECT COUNT(*) AS n FROM thread_sessions").get() as { n: number }).n;
-      const origRows = verifyStore.db
-        .prepare("SELECT text FROM entries WHERE text LIKE ?")
-        .all("%before-r8-restore%") as { text: string }[];
-      verifyStore.close();
-      assert.equal(turnRow?.outcome, "completed", "6g MUST restore completed turn r11-saved-turn");
-      assert.equal(tsCount, 1, "6g expected thread_sessions === 1");
-      assert.ok(origRows.length >= 1, "6g expected original restored message");
-    }
-
-    // (6h-zero-byte-and-missing-db-preserve-wal) Astra R11 P1 #3: Both missing DB + real >10KB WAL
-    // AND 0-byte DB + real >10KB WAL MUST exit 1 before touching SQLite, leaving WAL and restore/
-    // SHA-256 byte-for-byte identical (and 0-byte DB still 0 bytes)!
-    {
-      // Create a genuine >10 KiB WAL file from a real SQLite WAL database.
-      const walSeedDir = freshDir("ext-gate-r12-wal-seed");
-      const walSeedPath = join(walSeedDir, "seed.db");
-      const walSeed = new DatabaseSync(walSeedPath);
-      walSeed.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE payload (id INTEGER PRIMARY KEY, body TEXT);");
-      const ins = walSeed.prepare("INSERT INTO payload (body) VALUES (?)");
-      for (let i = 0; i < 40; i++) ins.run("W".repeat(512));
-      const realWalBytes = readFileSync(`${walSeedPath}-wal`);
-      walSeed.close();
-      assert.ok(realWalBytes.length > 10_000, `expected >10KB real WAL, got ${realWalBytes.length}`);
-      const sha256 = (buf: Buffer) => createHash("sha256").update(buf).digest("hex");
-      const expectedWalHash = sha256(realWalBytes);
-
-      for (const mode of ["missing-db", "zero-byte-db"] as const) {
-        const dir = freshDir(`ext-gate-r12-wal-${mode}`);
-        const appDir = join(dir, "app");
-        const dataDir = join(dir, "data");
-        installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-        mkdirSync(join(dataDir, "mesh"), { recursive: true });
-        const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-        assert.equal(idRes.status, 0, idRes.stderr);
-        const stationId = idRes.stdout.trim();
-        stageR8Restore(dataDir);
-        writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-        writeFileSync(
-          join(dataDir, "mesh", "cloud.json"),
-          JSON.stringify({
-            origin: `http://127.0.0.1:${cloudPort}`,
-            workspace: ws,
-            workspace_name: "R8RestWS",
-            station: stationId,
-            name: `r12-wal-${mode}`,
-            peers: [{ id: peerId, name: "peer-r8", relay: null }],
-            relay_urls: [],
-            grant_keys: grantKeys,
-          }),
-        );
-        const dbPath = join(dataDir, "stillfail.db");
-        const walPath = `${dbPath}-wal`;
-        if (mode === "zero-byte-db") writeFileSync(dbPath, "");
-        writeFileSync(walPath, realWalBytes);
-        const readyHashBefore = sha256(readFileSync(join(dataDir, "restore", "ready.json")));
-
-        const res = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-          encoding: "utf8",
-          timeout: 15_000,
-        });
-        assert.equal(res.status, 1, `6h-${mode} must exit 1, got ${res.status}: ${res.stdout}\n${res.stderr}`);
-        assert.equal(sha256(readFileSync(walPath)), expectedWalHash, `6h-${mode} WAL SHA-256 MUST be untouched`);
-        assert.equal(
-          sha256(readFileSync(join(dataDir, "restore", "ready.json"))),
-          readyHashBefore,
-          `6h-${mode} restore/ready.json SHA-256 MUST be untouched`,
-        );
-        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, `6h-${mode} restore/copy MUST be preserved`);
-        if (mode === "zero-byte-db") {
-          assert.equal(statSync(dbPath).size, 0, "6h-zero-byte-db must remain 0 bytes");
-        } else {
-          assert.equal(existsSync(dbPath), false, "6h-missing-db must remain absent");
-        }
-      }
-    }
-
-    // (6i-historical-v13-adds-missing-columns) Astra R12 #1: Historical v13 target DB that already has
-    // all 17 restorable tables EXCEPT newer columns (specifically `proposal_outcomes.info_op_id`) +
-    // snapshot carrying an unsynced accepted proposal with `info_op_id` -> Pion runs idempotent
-    // `run_v13_migrations` inside `BEGIN IMMEDIATE` before `exec_replace` -> Node restores full row
-    // and `Store.getUnsyncedAcceptOutcome(1, 1)` returns the exact `opId`!
-    {
-      const dir = freshDir("ext-gate-r13-hist-v13");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r13-hist-v13",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      // Build a real v13 DB with all 17 tables, then recreate `proposal_outcomes` WITHOUT `info_op_id`.
-      const dbPath = join(dataDir, "stillfail.db");
-      Store.open(dbPath, join(dataDir, "archive")).close();
-      const hist = new DatabaseSync(dbPath);
-      hist.exec(
-        "DROP TABLE proposal_outcomes; CREATE TABLE proposal_outcomes (thread INTEGER NOT NULL, n INTEGER NOT NULL, status TEXT NOT NULL, project TEXT, resolved_by TEXT NOT NULL, resolved_at INTEGER NOT NULL, info_note TEXT, info_refs TEXT, info_synced INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (thread, n));",
-      );
-      hist.close();
-
-      const udpPort = await pickFreeUdpPort();
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: "ignore",
-      });
-      children.push(launcher);
-      await until(
-        "6i Node replica restore completed",
-        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
-        25_000,
-      );
-      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `6i restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
-      assert.equal(existsSync(join(dataDir, "restore")), false, "6i restore/ must be cleaned");
-
-      launcher.kill("SIGTERM");
-      await until("6i launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const verifyStore = Store.open(dbPath, join(dataDir, "archive"));
-      const outcome = verifyStore.getUnsyncedAcceptOutcome(1, 1);
-      verifyStore.close();
-      assert.ok(outcome !== null, "6i MUST preserve proposal_outcomes.info_op_id so getUnsyncedAcceptOutcome(1, 1) is non-null");
-      assert.equal(outcome.opId, r13OpId, "6i opId must match snapshot UUID");
-      assert.equal(outcome.project, "ProjR13");
-    }
-
-    // (6j-v12-archive-cold-restore-upgrades-to-v13) Astra R12 #2 & Opus R12 nit: Real v12 data dir
-    // with archived thread 73 (`<data>/archive/threads/73.jsonl.zst`) + staged merge snapshot ->
-    // default `engine=pion` cold start leaves v12 DB untouched (0 writes) and hands off to Node ->
-    // Node upgrades v12->v13 AND merges snapshot so both archived local message and remote snapshot
-    // message are readable; also confirms v14 still refuses with exit 1!
-    {
-      const dir = freshDir("ext-gate-r13-v12-upgrade");
-      const appDir = join(dir, "app");
-      const dataDir = join(dir, "data");
-      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir, "mesh"), { recursive: true });
-      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-      assert.equal(idRes.status, 0, idRes.stderr);
-      const stationId = idRes.stdout.trim();
-
-      stageR8Restore(dataDir, true);
-      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(dataDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          origin: `http://127.0.0.1:${cloudPort}`,
-          workspace: ws,
-          workspace_name: "R8RestWS",
-          station: stationId,
-          name: "r13-v12-upgrade",
-          peers: [{ id: peerId, name: "peer-r8", relay: null }],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-
-      const dbPath = join(dataDir, "stillfail.db");
-      const archiveDir = join(dataDir, "archive");
-      Store.open(dbPath, archiveDir).close();
-      const v12 = new DatabaseSync(dbPath);
-      v12.exec(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at, archived_at) VALUES (73, 'web', 'CHAT', '73.v12', 'ArchivedV12Thread', ${nowMs}, ${nowMs});`);
-      v12.exec("PRAGMA user_version = 12;");
-      v12.close();
-      writeCompressed(
-        threadFile(archiveDir, 73),
-        JSON.stringify({
-          thread: 73,
-          n: 1,
-          kind: "message",
-          target: null,
-          ts: "73.001",
-          authorKind: "person",
-          author: "alice@example.com",
-          text: "v12-archived-local-73",
-          attachments: [],
-          quotes: [],
-          declared: null,
-          at: nowMs,
-        }) + "\n",
-      );
-
-      const udpPort = await pickFreeUdpPort();
-      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-          STILLFAIL_READER_ENGINE: "mb",
-        },
-        stdio: "ignore",
-      });
-      children.push(launcher);
-      await until(
-        "6j Node v12 upgrade & replica merge completed",
-        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
-        25_000,
-      );
-      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `6j restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
-      assert.equal(existsSync(join(dataDir, "restore")), false, "6j restore/ must be cleaned");
-
-      launcher.kill("SIGTERM");
-      await until("6j launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-
-      const checkV13 = new DatabaseSync(dbPath, { readOnly: true });
-      const finalVer = (checkV13.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-      const localRows = checkV13.prepare("SELECT text FROM entries WHERE text LIKE '%v12-archived-local-73%'").all() as { text: string }[];
-      const remoteRows = checkV13.prepare("SELECT text FROM entries WHERE text LIKE '%before-r8-restore%'").all() as { text: string }[];
-      checkV13.close();
-      assert.equal(finalVer, 13, "6j v12 DB MUST be upgraded to user_version === 13 by Node");
-      assert.ok(localRows.length >= 1, "6j MUST restore archived local v12 thread 73 entries");
-      assert.ok(remoteRows.length >= 1, "6j MUST merge remote snapshot entries");
-
-      // Also verify v14 (SCHEMA_VERSION + 1) still refuses with exit 1 and preserves restore/.
-      const dir14 = freshDir("ext-gate-r13-v14-refuse");
-      const appDir14 = join(dir14, "app");
-      const dataDir14 = join(dir14, "data");
-      installReleaseDir(appDir14, pionBin, readerBin, runnerBin, true);
-      mkdirSync(join(dataDir14, "mesh"), { recursive: true });
-      stageR8Restore(dataDir14);
-      writeFileSync(join(dataDir14, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      const db14Path = join(dataDir14, "stillfail.db");
-      const db14 = new DatabaseSync(db14Path);
-      db14.exec("PRAGMA user_version = 14;");
-      db14.close();
-      const res14 = spawnSync(pionBin, ["run", "--app", appDir14, "--data", dataDir14, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-        encoding: "utf8",
-        timeout: 15_000,
-      });
-      assert.equal(res14.status, 1, `v14 must refuse with exit 1, got ${res14.status}`);
-      assert.ok(`${res14.stdout}\n${res14.stderr}`.includes("unsupported_user_version:14"));
-      assert.equal(existsSync(join(dataDir14, "restore", "ready.json")), true);
-    }
-
-    // Schema version parity guard (Opus R11 nit): `station_store/src/schema.pion` SCHEMA_VERSION === TS SCHEMA_VERSION.
-    {
-      const pionSchemaSrc = readFileSync(
-        join(root, "pion", "station-main", "packages", "station_store", "src", "schema.pion"),
-        "utf8",
-      );
-      const m = pionSchemaSrc.match(/pub let SCHEMA_VERSION\s*:\s*Int\s*=\s*(\d+)/);
-      assert.ok(m, "expected SCHEMA_VERSION constant in station_store/src/schema.pion");
-      assert.equal(Number(m[1]), SCHEMA_VERSION, "Pion station_store SCHEMA_VERSION must match TS SCHEMA_VERSION");
-    }
-  }
-
-  // --- Scenario 7 (Astra R6 P1 #2): 3-state `DbDepCheck` under 850ms & >2000ms exclusive SQLite lock + clean control DB ---
-  {
-    const lockDir = freshDir("ext-gate-r7-dblock");
-    mkdirSync(join(lockDir, "mesh"), { recursive: true });
-    const idRes = spawnSync(pionBin, ["id", "--data", lockDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const lockId = idRes.stdout.trim();
-    writeFileSync(join(lockDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-    writeFileSync(
-      join(lockDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-dblock",
-        workspace_name: "DbLockWS",
-        station: lockId,
-        name: "dblock-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-
-    const lockDbPath = join(lockDir, "stillfail.db");
-    const s = Store.open(lockDbPath, join(lockDir, "archives"));
-    const nowMs = Date.now();
-    s.db
-      .prepare(
-        "INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run("s:lock-1", "ext@peer-lock", "s:lock-1", "LockSess", "claude", "default", lockDir, randomBytes(32).toString("hex"), nowMs, nowMs, lockDir, "ws-dblock");
-    s.close();
-
-    // (a) 850ms exclusive lock (locking_mode=EXCLUSIVE blocks even WAL readers) -> Pion waits inside busy_timeout=2000, sees Found, exits 1!
-    {
-      const locker = new DatabaseSync(lockDbPath);
-      locker.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
-      const timer = setTimeout(() => {
-        try { locker.exec("ROLLBACK; PRAGMA locking_mode = NORMAL"); } catch {}
-        try { locker.close(); } catch {}
-      }, 850);
-      const out: string[] = [];
-      const child = spawn(pionBin, ["run", "--data", lockDir, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_STATION_ENGINE_STRICT: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      child.stdout.on("data", (d) => out.push(String(d)));
-      child.stderr.on("data", (d) => out.push(String(d)));
-      const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
-      clearTimeout(timer);
-      try { locker.close(); } catch {}
-      assert.equal(code, 1, `850ms lock must exit 1, got ${code}: ${out.join("")}`);
-      assert.ok(out.join("").includes("db:remote-connect-sessions"), `expected db:remote-connect-sessions, got: ${out.join("")}`);
-    }
-
-    // (b) Sustained >2000ms exclusive lock -> Pion hits SQLITE_BUSY -> Unknown -> fail-safe exits 1!
-    {
-      const locker = new DatabaseSync(lockDbPath);
-      locker.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
-      const out: string[] = [];
-      const child = spawn(pionBin, ["run", "--data", lockDir, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_STATION_ENGINE_STRICT: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      child.stdout.on("data", (d) => out.push(String(d)));
-      child.stderr.on("data", (d) => out.push(String(d)));
-      const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
-      try { locker.exec("ROLLBACK; PRAGMA locking_mode = NORMAL"); } catch {}
-      try { locker.close(); } catch {}
-      assert.equal(code, 1, `>2000ms lock must fail-safe exit 1, got ${code}: ${out.join("")}`);
-      assert.ok(
-        out.join("").includes("sqlite_master_err:") || out.join("").includes("db:unreadable:"),
-        `expected Unknown SQLite lock refusal, got: ${out.join("")}`,
-      );
-    }
-
-    // (c) Control DB with NO cross-station session -> Pion boots cleanly under STRICT=1!
-    {
-      const ctrlDir = freshDir("ext-gate-r7-dbctrl");
-      mkdirSync(join(ctrlDir, "mesh"), { recursive: true });
-      const cidRes = spawnSync(pionBin, ["id", "--data", ctrlDir], { encoding: "utf8" });
-      assert.equal(cidRes.status, 0, cidRes.stderr);
-      const ctrlId = cidRes.stdout.trim();
-      writeFileSync(join(ctrlDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
-      writeFileSync(
-        join(ctrlDir, "mesh", "cloud.json"),
-        JSON.stringify({
-          workspace: "ws-dbctrl",
-          workspace_name: "DbCtrlWS",
-          station: ctrlId,
-          name: "dbctrl-station",
-          peers: [],
-          relay_urls: [],
-          grant_keys: grantKeys,
-        }),
-      );
-      const cs = Store.open(join(ctrlDir, "stillfail.db"), join(ctrlDir, "archives"));
-      cs.close();
-
-      const ctrlUdp = await pickFreeUdpPort();
-      const ctrlProc = spawn(pionBin, ["run", "--data", ctrlDir, "--port", "0"], {
-        env: {
-          ...process.env,
-          STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_NO_DHT: "1",
-          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${ctrlUdp}`,
-          STILLFAIL_STATION_ENGINE_STRICT: "1",
-        },
-        stdio: "ignore",
-      });
-      children.push(ctrlProc);
-      const ctrlPort = await until("Scenario 7c control DB Pion loopback port", () => {
-        const p = readPorts(ctrlDir).admin ?? 0;
-        return p > 0 ? p : null;
-      }, 15_000);
-      assert.equal((await httpCall(ctrlPort, "GET", "/healthz")).status, 200);
-      ctrlProc.kill("SIGTERM");
-      await until("Scenario 7c control DB Pion exit", () => ctrlProc.exitCode !== null || ctrlProc.signalCode !== null);
-    }
-  }
-
-  // --- Scenario 8 (Astra R6 P2): Case-insensitive `STILLFAIL_STATION_ENGINE_STRICT` (`True` & `TrUe`) ---
-  {
-    const ciDir = freshDir("ext-gate-r7-strict-case");
-    mkdirSync(join(ciDir, "mesh"), { recursive: true });
-    const idRes = spawnSync(pionBin, ["id", "--data", ciDir], { encoding: "utf8" });
-    assert.equal(idRes.status, 0, idRes.stderr);
-    const ciId = idRes.stdout.trim();
-    writeFileSync(
-      join(ciDir, "config.json"),
-      JSON.stringify({ engine: "pion", connects: [{ id: "sl-ci", kind: "slack" }] }),
-    );
-    writeFileSync(
-      join(ciDir, "mesh", "cloud.json"),
-      JSON.stringify({
-        workspace: "ws-ci",
-        workspace_name: "CiWS",
-        station: ciId,
-        name: "ci-station",
-        peers: [],
-        relay_urls: [],
-        grant_keys: grantKeys,
-      }),
-    );
-    for (const strictVal of ["True", "TrUe"]) {
-      const r = spawnSync(pionBin, ["run", "--data", ciDir, "--port", "0"], {
-        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_STATION_ENGINE_STRICT: strictVal },
-        encoding: "utf8",
-        timeout: 15_000,
-      });
-      assert.equal(r.status, 1, `STRICT=${strictVal} must exit 1, got ${r.status}`);
-      assert.ok(
-        `${r.stdout}\n${r.stderr}`.includes("slack:sl-ci"),
-        `STRICT=${strictVal} refusal must mention slack:sl-ci`,
-      );
-      assert.equal(existsSync(join(ciDir, "stillfail.db")), false, `STRICT=${strictVal} must not create stillfail.db`);
-    }
-  }
-});
+// (Wave 17A.7 temporary Node fallback entry gate test removed in Wave 17C-1: external connects run natively on Pion.)
 
 test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-station connect.event + comma.read_file + native replica restore, zero Node fallback)", async () => {
   const mesh = resolveMeshAddon();
@@ -3821,8 +1933,7 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
 
     const udpPort = await pickFreeUdpPort();
     const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
       stdio: "ignore",
     });
     children.push(launcher);
@@ -4030,8 +2141,7 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
 
     const udpPort = await pickFreeUdpPort();
     const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
       stdio: "ignore",
     });
     children.push(launcher);
@@ -4163,8 +2273,7 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
 
     const udpPort = await pickFreeUdpPort();
     const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
-          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
       stdio: "ignore",
     });
     children.push(launcher);
@@ -4238,9 +2347,9 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
       card: { type: "options", options: [{ label: "Ship" }] },
     });
 
-    // (b) P0-A: Clean Pion whole station WITHOUT `STILLFAIL_PION_NATIVE_CONNECTS_TEST=1` MUST reject
-    // runtime `connect.event` with zero DB/remote-connects writes (never false-ACK into black hole).
-    const dir = freshDir("w17b5-p0a-runtime-gate");
+    // (b) Wave 17C-1: Clean Pion whole station WITHOUT any test env flag accepts
+    // runtime `connect.event` natively and persists the remote connect + session + entry.
+    const dir = freshDir("w17c1-native-connect-event");
     const appDir = join(dir, "app");
     const dataDir = join(dir, "data");
     installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
@@ -4250,15 +2359,15 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
     const stationId = idRes.stdout.trim();
     const peerEp = await bindClientEp(mesh);
     const peerId = peerEp.id();
-    const ws = "ws-p0a-gate";
+    const ws = "ws-c1-native";
     writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
     writeFileSync(
       join(dataDir, "mesh", "cloud.json"),
       JSON.stringify({
         workspace: ws,
-        workspace_name: "P0AGateWS",
+        workspace_name: "C1NativeWS",
         station: stationId,
-        name: "p0a-gate-station",
+        name: "c1-native-station",
         peers: [{ id: peerId, name: "peer-sender", relay: null }],
         relay_urls: [],
         grant_keys: grantKeys,
@@ -4270,7 +2379,7 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
       stdio: "ignore",
     });
     children.push(launcher);
-    await until("P0-A gate station ready", async () => {
+    await until("W17C-1 native station ready", async () => {
       const p = readHubPid(dataDir);
       const port = readPorts(dataDir).admin ?? 0;
       if (p > 0 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
@@ -4280,33 +2389,471 @@ test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-statio
       }
       return null;
     }, 20_000);
-    const gateResp = await until("P0-A connect.event rejected", async () => {
+    const nativeResp = await until("W17C-1 connect.event accepted natively", async () => {
       try {
         return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
           method: "connect.event",
           workspace: ws,
           connect: { id: "slack-peer", origin: peerId },
           described: { kind: "slack", workspace: ws, mode: "per-thread", requireMention: true, bind: { runtime: "claude" } },
-          event: { type: "message", message: { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "should be rejected", addressed: true } },
+          event: { type: "message", message: { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "native connect event ok", addressed: true } },
         });
-      } catch (err: any) {
-        const msg = String(err?.message ?? err);
-        if (msg.includes("native connects disabled")) return { error: msg };
+      } catch {
         return null;
       }
     }, 15_000);
-    assert.ok(
-      typeof gateResp?.error === "string" && gateResp.error.includes("native connects disabled until runner cutover"),
-      `P0-A expected rejection error, got: ${JSON.stringify(gateResp)}`,
-    );
-    assert.equal(existsSync(join(dataDir, "remote-connects.json")), false, "P0-A must not write remote-connects.json");
+    assert.deepEqual(nativeResp.result, { ok: true }, `expected native connect.event acceptance, got: ${JSON.stringify(nativeResp)}`);
+    assert.equal(existsSync(join(dataDir, "remote-connects.json")), true, "native connect.event must persist remote-connects.json");
     launcher.kill("SIGTERM");
-    await until("P0-A launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+    await until("W17C-1 native launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
     const checkDb = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
     const sessCnt = (checkDb.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
     const entryCnt = (checkDb.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
     checkDb.close();
-    assert.equal(sessCnt, 0, "P0-A must create zero sessions");
-    assert.equal(entryCnt, 0, "P0-A must insert zero entries");
+    assert.ok(sessCnt >= 1, "native connect.event must create session");
+    assert.ok(entryCnt >= 1, "native connect.event must insert entry");
+  }
+});
+
+test("W17C-1: Live stillfail-runner spawning & full agent turn loop (Web/Hub MCP chat_post+chat_state, native Slack connect without env flag, graceful SIGUSR2 handover)", async () => {
+  const mesh = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const pionBin = resolvePionBinary();
+  const readerBin = resolveNativeTool("STILLFAIL_READER", "reader", "stillfail-reader");
+  const runnerBin = resolveNativeTool("STILLFAIL_RUNNER", "runner", "stillfail-runner");
+  const launcherBin = resolveNativeTool("STILLFAIL_LAUNCHER", "launcher", "stillfail-launcher");
+
+  // Helper: create a real executable mock `claude` CLI on PATH that speaks Claude `stream-json`
+  // and calls the station's real `/mcp` endpoint with its per-session Bearer token!
+  function writeMockClaude(binDir: string, mode: "reply" | "hold"): string {
+    mkdirSync(binDir, { recursive: true });
+    const scriptPath = join(binDir, "claude");
+    const body = mode === "reply"
+      ? `#!${process.execPath}
+const readline = require("node:readline");
+const http = require("node:http");
+
+function mcpCall(urlStr, token, name, args) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: "mcp-" + Date.now() + "-" + Math.random(),
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const req = http.request(
+      {
+        hostname: u.hostname,
+        port: Number(u.port),
+        path: u.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      },
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "mock-claude-sid-1" }) + "\\n");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === "user") {
+    const mcpUrl = process.env.STILLFAIL_MCP_URL;
+    const token = process.env.STILLFAIL_MCP_TOKEN;
+    if (mcpUrl && token) {
+      await mcpCall(mcpUrl, token, "chat_post", { text: "hello from live pion runner" });
+      await mcpCall(mcpUrl, token, "chat_state", { kind: "all_done", done: "replied via live runner" });
+    }
+    process.stdout.write(JSON.stringify({
+      type: "result",
+      is_error: false,
+      session_id: "mock-claude-sid-1",
+      usage: { input_tokens: 15, output_tokens: 25 },
+    }) + "\\n");
+  }
+});
+`
+      : `#!${process.execPath}
+process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "mock-claude-ho-1" }) + "\\n");
+setInterval(() => {}, 60000);
+`;
+    writeFileSync(scriptPath, body, { mode: 0o755 });
+    chmodSync(scriptPath, 0o755);
+    return scriptPath;
+  }
+
+  // -------------------------------------------------------------------------
+  // Scenario 1: Web/Hub session -> live stillfail-runner -> /mcp chat_post + chat_state -> SQLite all_done
+  // -------------------------------------------------------------------------
+  {
+    const dir = freshDir("c1-w");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    const mockBinDir = join(dir, "mock-bin");
+    writeMockClaude(mockBinDir, "reply");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+    const ws = "ws-c1-web";
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: ws,
+        workspace_name: "C1WebWS",
+        station: stationId,
+        name: "c1-web-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...process.env,
+        PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+        STILLFAIL_RUNNER: runnerBin,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+      },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+    try {
+      await until("W17C-1 S1 station ready", async () => {
+        const p = readHubPid(dataDir);
+        const port = readPorts(dataDir).admin ?? 0;
+        if (p > 0 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
+          try {
+            if ((await httpCall(port, "GET", "/healthz")).status === 200) return p;
+          } catch {}
+        }
+        return null;
+      }, 20_000);
+
+      const clientEp = await bindClientEp(mesh);
+      const jwt = signMemberJwt({ ws, device: clientEp.id(), sub: "u-c1", email: "c1@example.com", name: "C1", role: "owner" });
+      const { conn } = await until("W17C-1 S1 admin connect", () => openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt));
+      const createRes = await adminRequest(
+        conn,
+        "POST",
+        "/sessions",
+        [["content-type", "application/json"]],
+        JSON.stringify({ runtime: "claude", profile: "p1", title: "W17C-1 Web Live Turn" }),
+      );
+      assert.equal(createRes.status, 200, `POST /sessions failed: ${createRes.body.toString("utf8")}`);
+      const created = JSON.parse(createRes.body.toString("utf8"));
+      const sessionKey = created.key as string;
+      const threadId = created.thread as number;
+      assert.ok(sessionKey && threadId > 0, `expected key & thread, got ${JSON.stringify(created)}`);
+
+      const msgRes = await adminRequest(
+        conn,
+        "POST",
+        `/threads/${threadId}/messages`,
+        [["content-type", "application/json"]],
+        JSON.stringify({ text: "ping live runner" }),
+      );
+      assert.equal(msgRes.status, 200, `POST /threads/:id/messages failed: ${msgRes.body.toString("utf8")}`);
+      conn.close(0, "done");
+
+      // Wait for real stillfail-runner + mock claude to call /mcp chat_post + chat_state and complete the turn!
+      await until("W17C-1 S1 live reply & all_done turn in SQLite", () => {
+        try {
+          const db = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
+          try {
+            const entry = db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'agent' AND text = 'hello from live pion runner'").get(threadId) as { text: string } | undefined;
+            const turn = db.prepare("SELECT outcome, declared FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 1").get(sessionKey) as { outcome: string | null; declared: string | null } | undefined;
+            const sess = db.prepare("SELECT runtime_session_id, running FROM sessions WHERE key = ?").get(sessionKey) as { runtime_session_id: string | null; running: number } | undefined;
+            if (entry && turn?.outcome === "completed" && turn?.declared === "all_done" && sess?.running === 0 && sess?.runtime_session_id === "mock-claude-sid-1") {
+              return true;
+            }
+          } finally {
+            db.close();
+          }
+        } catch {}
+        return null;
+      }, 25_000);
+    } finally {
+      launcher.kill("SIGTERM");
+      await until("W17C-1 S1 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null, 15_000).catch(() => {});
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Scenario 2: External Connect (Slack) WITHOUT STILLFAIL_PION_NATIVE_CONNECTS_TEST
+  // -> stays on Pion -> spawns live runner -> agent calls /mcp chat_post -> delivered to mock Slack!
+  // -------------------------------------------------------------------------
+  {
+    const slackPosts: any[] = [];
+    let slackClientWs: any = null;
+    const slackSrv = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const bodyStr = Buffer.concat(chunks).toString("utf8");
+        const url = req.url ?? "";
+        res.setHeader("Content-Type", "application/json");
+        if (url.includes("apps.connections.open")) {
+          const p = (slackSrv.address() as AddressInfo).port;
+          res.end(JSON.stringify({ ok: true, url: `ws://127.0.0.1:${p}/slack-ws` }));
+        } else if (url.includes("auth.test")) {
+          res.end(JSON.stringify({ ok: true, user_id: "UBOTC1", bot_id: "BBOTC1", user: "c1bot", team_id: "TC1", team: "C1Team" }));
+        } else if (url.includes("chat.postMessage")) {
+          slackPosts.push(bodyStr);
+          res.end(JSON.stringify({ ok: true, ts: "1700000100.000200" }));
+        } else {
+          res.end(JSON.stringify({ ok: true }));
+        }
+      });
+    });
+    servers.push(slackSrv);
+    const slackWss = new WebSocketServer({ server: slackSrv, path: "/slack-ws" });
+    servers.push(slackWss);
+    const slackAckedC1: string[] = [];
+    slackWss.on("connection", (ws) => {
+      slackClientWs = ws;
+      ws.on("message", (d) => {
+        try {
+          const m = JSON.parse(String(d));
+          if (typeof m.envelope_id === "string") slackAckedC1.push(m.envelope_id);
+        } catch {}
+      });
+      ws.send(JSON.stringify({ type: "hello", num_connections: 1 }));
+    });
+    await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
+    const slackPort = (slackSrv.address() as AddressInfo).port;
+
+    const dir = freshDir("c1-sl");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    const mockBinDir = join(dir, "mock-bin");
+    writeMockClaude(mockBinDir, "reply");
+    // withRealNodeMain = false: main.js exits 99 -> proves zero Node fallback without any env flag!
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+    const ws = "ws-c1-slack";
+    writeFileSync(
+      join(dataDir, "config.json"),
+      JSON.stringify({
+        engine: "pion",
+        connects: [
+          {
+            id: "slack-c1",
+            bind: { runtime: "claude" },
+            slack: { appToken: "xapp-1-c1", botToken: "xoxb-c1", baseUrl: `http://127.0.0.1:${slackPort}` },
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: ws,
+        workspace_name: "C1SlackWS",
+        station: stationId,
+        name: "c1-slack-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const envCopy = { ...process.env };
+    delete envCopy.STILLFAIL_PION_NATIVE_CONNECTS_TEST;
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...envCopy,
+        PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+        STILLFAIL_RUNNER: runnerBin,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+      },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+    try {
+      const pionPid = await until("W17C-1 S2 pure Pion pid", () => {
+        const p = readHubPid(dataDir);
+        return p > 0 && isAlive(p) && readProcCmdline(p).includes("stillfail-station-pion") ? p : null;
+      }, 25_000);
+      assert.match(readProcCmdline(pionPid), /stillfail-station-pion/);
+      await until("W17C-1 S2 Slack WS connected", () => (slackClientWs ? true : null), 15_000);
+
+      slackClientWs.send(JSON.stringify({
+        type: "events_api",
+        envelope_id: "env-c1-1",
+        payload: {
+          event_id: "EvC1_1",
+          event: {
+            type: "app_mention",
+            channel: "C_C1",
+            ts: "1700000100.000100",
+            thread_ts: "1700000100.000100",
+            user: "UALICE",
+            text: "<@UBOTC1> run live runner on slack",
+          },
+        },
+      }));
+      await until("W17C-1 S2 Slack envelope env-c1-1 ACKed", () => (slackAckedC1.includes("env-c1-1") ? true : null), 10_000);
+
+      // Verify mock claude ran under stillfail-runner, called /mcp chat_post, and Pion posted back to Slack!
+      const posted = await until(
+        "W17C-1 S2 outbound Slack post from live runner",
+        () => slackPosts.find((p) => decodeURIComponent(String(p)).includes("hello from live pion runner")) ?? null,
+        20_000,
+      );
+      assert.ok(decodeURIComponent(String(posted)).includes("channel=C_C1"), `expected channel=C_C1 in Slack post: ${posted}`);
+    } finally {
+      launcher.kill("SIGTERM");
+      await until("W17C-1 S2 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null, 15_000).catch(() => {});
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Scenario 3: Graceful SIGUSR2 handover -> live stillfail-runner stays alive & is adopted by successor!
+  // -------------------------------------------------------------------------
+  {
+    const dir = freshDir("c1-ho");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    const mockBinDir = join(dir, "mock-bin-ho");
+    writeMockClaude(mockBinDir, "hold");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+    const ws = "ws-c1-ho";
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: ws,
+        workspace_name: "C1HandoverWS",
+        station: stationId,
+        name: "c1-ho-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...process.env,
+        PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+        STILLFAIL_RUNNER: runnerBin,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+      },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+    let liveRunnerPid = 0;
+    let liveRunnerPgid = 0;
+    try {
+      const pionPid1 = await until("W17C-1 S3 initial Pion pid", async () => {
+        const p = readHubPid(dataDir);
+        const port = readPorts(dataDir).admin ?? 0;
+        if (p > 0 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
+          try {
+            if ((await httpCall(port, "GET", "/healthz")).status === 200) return p;
+          } catch {}
+        }
+        return null;
+      }, 20_000);
+
+      const clientEp = await bindClientEp(mesh);
+      const jwt = signMemberJwt({ ws, device: clientEp.id(), sub: "u-ho", email: "ho@example.com", name: "HO", role: "owner" });
+      const { conn } = await until("W17C-1 S3 admin connect", () => openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt));
+      const createRes = await adminRequest(
+        conn,
+        "POST",
+        "/sessions",
+        [["content-type", "application/json"]],
+        JSON.stringify({ runtime: "claude", profile: "p1", title: "W17C-1 Handover Hold" }),
+      );
+      assert.equal(createRes.status, 200);
+      const created = JSON.parse(createRes.body.toString("utf8"));
+      const msgRes = await adminRequest(
+        conn,
+        "POST",
+        `/threads/${created.thread}/messages`,
+        [["content-type", "application/json"]],
+        JSON.stringify({ text: "hold open across SIGUSR2" }),
+      );
+      assert.equal(msgRes.status, 200);
+      conn.close(0, "done");
+
+      // Wait for real stillfail-runner to spawn and write its info file
+      const runnersDir = join(dataDir, "run", "runners");
+      const runnerInfo = await until("W17C-1 S3 live runner info file", () => {
+        if (!existsSync(runnersDir)) return null;
+        const files = readdirSync(runnersDir).filter((f) => f.endsWith(".json"));
+        for (const f of files) {
+          try {
+            const info = JSON.parse(readFileSync(join(runnersDir, f), "utf8"));
+            if (info.runner > 0 && isAlive(info.runner)) return info;
+          } catch {}
+        }
+        return null;
+      }, 20_000);
+      liveRunnerPid = runnerInfo.runner;
+      liveRunnerPgid = runnerInfo.pgid;
+      extraPids.push(liveRunnerPid);
+      if (liveRunnerPgid > 1) extraPids.push(liveRunnerPgid);
+
+      // Trigger graceful SIGUSR2 handover on launcher!
+      launcher.kill("SIGUSR2");
+      const pionPid2 = await until("W17C-1 S3 successor Pion pid after SIGUSR2", async () => {
+        const p = readHubPid(dataDir);
+        const port = readPorts(dataDir).admin ?? 0;
+        if (p > 0 && p !== pionPid1 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
+          try {
+            if ((await httpCall(port, "GET", "/healthz")).status === 200) return p;
+          } catch {}
+        }
+        return null;
+      }, 25_000);
+      assert.notEqual(pionPid2, pionPid1);
+      assert.equal(isAlive(liveRunnerPid), true, `live runner PID ${liveRunnerPid} MUST survive SIGUSR2 handover!`);
+    } finally {
+      launcher.kill("SIGTERM");
+      await until("W17C-1 S3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null, 15_000).catch(() => {});
+      if (liveRunnerPgid > 1) {
+        try { process.kill(-liveRunnerPgid, "SIGKILL"); } catch {}
+      }
+      if (liveRunnerPid > 1) {
+        try { process.kill(liveRunnerPid, "SIGKILL"); } catch {}
+      }
+    }
   }
 });
