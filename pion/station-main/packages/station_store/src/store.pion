@@ -357,6 +357,7 @@ fn delete_orphan_thread_in_tx(t : sql_db::Db, tid : Int64) -> Result[Unit, sql_d
     ("comma_router_connects", "DELETE FROM comma_router_connects WHERE thread = ?1"),
     ("comma_task_participants", "DELETE FROM comma_task_participants WHERE thread = ?1"),
     ("deliveries", "DELETE FROM deliveries WHERE thread = ?1"),
+    ("deferred_files", "DELETE FROM deferred_files WHERE thread = ?1"),
     ("entries", "DELETE FROM entries WHERE thread = ?1"),
     ("letter_deliveries", "DELETE FROM letter_deliveries WHERE thread = ?1"),
     ("letters", "DELETE FROM letters WHERE thread = ?1"),

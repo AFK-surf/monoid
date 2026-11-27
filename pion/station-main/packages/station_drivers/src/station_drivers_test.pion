@@ -786,9 +786,9 @@ test "review P1: station_tag and person_tag Unicode parity with TS" {
   expect(str_starts_with(istanbul, "_"), "İstanbul lowercased & hashed: " + istanbul)
 }
 
-test "review P1: migrations 121-192 verbatim and session_instructions full template" {
+test "review P1: migrations 121-196 verbatim and session_instructions full template" {
   let notes = migration_notes()
-  expect(notes.length() == 72, "all 72 notes 121..192 present")
+  expect(notes.length() == 76, "all 76 notes 121..196 present")
   expect(str_contains(notes[10].1, "station_use {station, reason, timeout?}"), "note 131 verbatim station_use")
   expect(str_contains(notes[12].1, "device_use {device, reason, timeout?}"), "note 133 verbatim device_use")
   expect(str_contains(notes[14].1, "relays {action: list|add|remove, url?}"), "note 135 verbatim relays")

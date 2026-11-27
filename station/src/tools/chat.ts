@@ -233,23 +233,30 @@ export const CHAT_LEAVE = {
 export const CHAT_HISTORY = {
   name: "chat_history",
   description:
-    "Read earlier messages of one of your conversations, oldest first, your own posts included.",
+    "Read earlier messages of your conversation, oldest first, or download unfetched files.",
   inputSchema: {
     "type": "object",
     "properties": {
       "to": {
         "type": "string",
-        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering."
+        "description": "CHANNEL/THREAD_TS of the conversation."
       },
       "before": {
         "type": "string",
-        "description": "Only messages older than this message ts."
+        "description": "Only messages older than this ts."
       },
       "limit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 200,
         "description": "Default 30."
+      },
+      "fetch": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Unfetched file ids to download locally."
       }
     },
     "required": [

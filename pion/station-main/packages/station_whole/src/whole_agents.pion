@@ -2158,11 +2158,35 @@ fn WholeAgents::build_domain_handlers(
             )
             idx = idx - 1
           }
+          let deferred_rows = match st.db.all(
+            "SELECT n, file_id, name, size FROM deferred_files WHERE thread = ?1 AND resolved_at IS NULL ORDER BY n, ord LIMIT 200",
+            [sql_db::int64_to_json(tid)],
+          ) {
+            Ok(drows) => drows
+            Err(_) => []
+          }
+          let deferred_json : Array[base_codec::Json] = []
+          for di in 0..<deferred_rows.length() {
+            let dr = deferred_rows[di]
+            let dn = match dr.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            let did = match dr.get("file_id") { Some(v) => v, None => base_codec::json_str("") }
+            let dname = match dr.get("name") { Some(v) => v, None => base_codec::json_str("") }
+            let dsize = match dr.get("size") { Some(v) => v, None => base_codec::json_int(0) }
+            deferred_json.push(
+              base_codec::json_obj([
+                ("n", dn),
+                ("id", did),
+                ("name", dname),
+                ("size", dsize),
+              ]),
+            )
+          }
           return station_tools::text_reply(
             base_codec::json_stringify(
               base_codec::json_obj([
                 ("thread", base_codec::json_int64(tid)),
                 ("messages", base_codec::json_arr(msgs)),
+                ("deferredFiles", base_codec::json_arr(deferred_json)),
               ]),
             ),
           )

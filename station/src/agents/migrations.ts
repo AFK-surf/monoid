@@ -200,6 +200,7 @@ export const NOTES: [number, string][] = [
   [193, "station_tool called with no name lists every tool it reaches (with what each does): call it so first when its description names no tools."],
   [194, "chat_post takes reply_to in a Feishu conversation: the ts of a message there to post under, in its thread, so a group is not interrupted; left out, the post goes where the conversation is. Choose where each post belongs."],
   [195, "When choosing a specific model with chat_create, pass both its full model ID and its runtime, because passing only model uses the opening chat's runtime."],
+  [196, "Platform attachments (Slack, Feishu, group, Comma) are no longer eagerly downloaded by the station; they appear under Unfetched files with their file ids. Call chat_history with to and fetch=[\"<id>\"] to download what you need (the station deduplicates and coalesces downloads across calls and sessions)."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

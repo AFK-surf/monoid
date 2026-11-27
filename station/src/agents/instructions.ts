@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { portableName } from "../ops/paths.ts";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
+import type { InboundFile } from "../sessions/chat.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
@@ -395,8 +396,8 @@ const escapeXmlAttr = (value: string) => escapeAttr(value).replaceAll("<", "&lt;
 
 /// A message's words as the agent reads them: quotes (which message, whose, the file of it quoted, the passage as a
 /// blockquote, then the comment), then the words, then the files as paths (not a quoted message's file: the agent had
-/// it with that message, and is only pointed back at it).
-export function messageForAgent(m: MessageRow): string {
+/// it with that message, and is only pointed back at it), plus any unfetched platform files with how to download them.
+export function messageForAgent(m: MessageRow, deferred: readonly InboundFile[] = [], address = ""): string {
   const again = new Set<string>();
   const parts = m.quotes.map((q) => {
     let whose: string;
@@ -428,6 +429,15 @@ export function messageForAgent(m: MessageRow): string {
   if (pasted.length) parts.push(`The user pasted text into the composer; its full contents are in these text attachments. Read them as part of the user's message:\n${pasted.map(a => `- ${a.path}`).join("\n")}`);
   const attached = m.attachments.filter((a) => !again.has(a.path));
   if (attached.length > 0) parts.push(`Attached files:\n${attached.map((a) => `- ${a.path} (${a.name}, ${a.size} bytes)`).join("\n")}`);
+  if (deferred.length > 0) {
+    const how = address !== "" ? ` (call chat_history with to="${address}" and fetch=["<id>"] to download what you need)` : "";
+    const lines = deferred.map((f) => {
+      const size = f.size > 0 ? `, ${f.size} bytes` : "";
+      const note = f.size > 50 * 1024 * 1024 ? ", over 50 MB limit" : "";
+      return `- id=${f.id} (${f.name}${size}${note})`;
+    });
+    parts.push(`Unfetched files${how}:\n${lines.join("\n")}`);
+  }
   return parts.filter((p) => p !== "").join("\n\n");
 }
 
@@ -448,7 +458,7 @@ function timeAttr(m: MessageRow, surface: string): string {
 
 /// Messages handed to a session, each with its source and sender, and a hint where a thread is new to it.
 /// `posts`: the agent's first post in a message's thread made after it (by ts), said as its `before`.
-export function formatInbound(messages: PendingMessage[], newThreads: Set<number>, names: Map<string, string>, selves: Map<string, string>, posts: Map<PendingMessage, string> = new Map(), cards: Map<PendingMessage, { ended: Pick<MessageRow, "author" | "ts">; current: Pick<MessageRow, "ts"> | null; special: string | null }> = new Map(), selfKey = ""): string {
+export function formatInbound(messages: PendingMessage[], newThreads: Set<number>, names: Map<string, string>, selves: Map<string, string>, posts: Map<PendingMessage, string> = new Map(), cards: Map<PendingMessage, { ended: Pick<MessageRow, "author" | "ts">; current: Pick<MessageRow, "ts"> | null; special: string | null }> = new Map(), selfKey = "", deferred: Map<string, InboundFile[]> = new Map()): string {
   const lines: string[] = [];
   const hinted = new Set<number>();
   for (const p of messages) {
@@ -467,7 +477,8 @@ export function formatInbound(messages: PendingMessage[], newThreads: Set<number
     const from = agent ? (name ?? "another agent") : name !== undefined ? `${name} (${m.author})` : m.author;
     const post = posts.get(p);
     const sentBefore = post !== undefined ? ` before="${escapeAttr(post)}"` : "";
-    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}"${timeAttr(m, p.surface)} from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m)}\n</message>`);
+    const unfetched = deferred.get(`${m.thread}:${m.n}`) ?? [];
+    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}"${timeAttr(m, p.surface)} from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m, unfetched, address)}\n</message>`);
     const change = cards.get(p);
     if (change !== undefined) {
       const whose = change.ended.author === selfKey ? "Your card" : "A card";
@@ -522,7 +533,7 @@ export function formatWidgetModels(models: WidgetModel[]): string {
 
 /// A thread's messages for chat_history: people by name, this session's own posts as "you", other agents and the
 /// station marked as bots.
-export function formatHistory(messages: MessageRow[], surface: string, address: string, selfKey: string, names: Map<string, string>, cards: Map<number, { card: any; pending: boolean; chose?: { by: string; option: string } }> = new Map()): string {
+export function formatHistory(messages: MessageRow[], surface: string, address: string, selfKey: string, names: Map<string, string>, cards: Map<number, { card: any; pending: boolean; chose?: { by: string; option: string } }> = new Map(), deferred: Map<number, InboundFile[]> = new Map()): string {
   return messages
     .map((m) => {
       const from = m.authorKind === "agent" && m.author === selfKey ? "you" : m.authorKind === STATION_AUTHOR ? "station" : names.has(m.author) ? `${names.get(m.author)} (${m.author})` : m.author;
@@ -541,7 +552,7 @@ export function formatHistory(messages: MessageRow[], surface: string, address: 
         const chose = found.chose === undefined ? "" : `; ${found.chose.by} chose ${JSON.stringify(found.chose.option)}, which closed it without a message`;
         card = `\n[Answer card: ${found.pending ? "pending" : "no longer pending"}${chose}; ${JSON.stringify(facts)}]`;
       }
-      return `<message via="${via(surface)}" thread="${address}"${timeAttr(m, surface)} from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m)}${card}\n</message>`;
+      return `<message via="${via(surface)}" thread="${address}"${timeAttr(m, surface)} from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m, deferred.get(m.n) ?? [], address)}${card}\n</message>`;
     })
     .join("\n");
 }

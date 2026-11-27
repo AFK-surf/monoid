@@ -296,11 +296,15 @@ test("joined by its code, then as its key alone; a direct space's every message 
     agent.complete();
     await w.rig.quiet();
 
-    // ── a person's file is fetched into the session's uploads; an answer to the bot's message calls it too
+    // ── a person's file is deferred until the agent fetches it via chat_history; an answer to the bot's message calls it too
     const shot = w.server.upload(team, w.ada, "shot.png", "image/png", Buffer.from("png-bytes"));
     w.server.say(team, w.ada, "截图", { files: [shot.sha256] });
     await until("the file's message", () => w.texts(team).includes("截图"));
-    const withFile = w.rig.store.messagesBefore(w.rig.store.threadAt("group:g", team, team)!.id, null, 50).find((m) => m.text === "截图")!;
+    const teamThreadId = w.rig.store.threadAt("group:g", team, team)!.id;
+    const beforeFetch = w.rig.store.messagesBefore(teamThreadId, null, 50).find((m) => m.text === "截图")!;
+    assert.equal(beforeFetch.attachments.length, 0);
+    await w.rig.call(key, "chat_history", { to: `${team}/${team}`, fetch: [shot.sha256] });
+    const withFile = w.rig.store.messagesBefore(teamThreadId, null, 50).find((m) => m.text === "截图")!;
     assert.equal(withFile.attachments.length, 1);
     assert.equal(readFileSync(withFile.attachments[0]!.path, "utf8"), "png-bytes");
 
