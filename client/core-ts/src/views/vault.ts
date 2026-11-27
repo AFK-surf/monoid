@@ -2733,7 +2733,7 @@ class Vaults {
     lock: Checked,
     id: string,
     who: { sub: string; device: string },
-    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number } | null = null,
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -2869,7 +2869,7 @@ class Vaults {
     epoch: number,
     key: Uint8Array,
     device: string | null,
-    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number } | null,
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<number, CoreError> {
     const self = this;
     // One giving of a vault at a time (two would write the same seq, the second refused), each after the one before,
@@ -2879,10 +2879,9 @@ class Vaults {
       Effect.gen(function* () {
         const inner = self.#inner;
         const isStale = () =>
-          expected !== null &&
-          (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
-            inner.store.authGen.vaultGen(self.ws, id) !== expected.vaultGen ||
-            inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen);
+          inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+          inner.store.authGen.vaultGen(self.ws, id) !== expected.vaultGen ||
+          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen;
         if (isStale()) return 0;
         const { lock, signer, self: who } = yield* self.#ready();
         if (isStale()) return 0;
@@ -3087,21 +3086,20 @@ class Vaults {
   #rekey(
     id: string,
     seq: number,
-    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number } | null,
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<void, CoreError> {
     const self = this;
     return this.#giving(id)(
       Effect.gen(function* () {
         const inner = self.#inner;
-        const startWsAuthGen = expected?.wsAuthGen ?? inner.store.authGen.workspaceAuthGen(self.ws);
-        const startVaultGen = expected?.vaultGen ?? inner.store.authGen.vaultGen(self.ws, id);
-        const startVaultGlobalGen = expected?.vaultGlobalGen ?? inner.store.authGen.vaultGlobalGen;
+        const startWsAuthGen = expected.wsAuthGen;
+        const startVaultGen = expected.vaultGen;
+        const startVaultGlobalGen = expected.vaultGlobalGen;
         const rekeyExpected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
         const isStale = () =>
-          expected !== null &&
-          (inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
-            inner.store.authGen.vaultGen(self.ws, id) !== startVaultGen ||
-            inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen);
+          inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+          inner.store.authGen.vaultGen(self.ws, id) !== startVaultGen ||
+          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
         if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const { lock, signer, self: who } = yield* self.#ready();
         if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
@@ -3133,7 +3131,7 @@ class Vaults {
         };
         const host = hostOf(inner, self.ws, v.id);
         if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
-        const first = yield* Effect.result(self.#putVault(made(v.seq, v.epoch + 1), host, expected !== null ? rekeyExpected : null));
+        const first = yield* Effect.result(self.#putVault(made(v.seq, v.epoch + 1), host, rekeyExpected));
         let nv: Vault;
         if (first._tag === "Success") nv = first.success;
         else {
@@ -3178,7 +3176,7 @@ class Vaults {
     ask: string | null,
     known: Map<string, Uint8Array> | undefined,
     how: { asked?: () => void; priv?: Uint8Array },
-    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number } | null,
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<number, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -3273,7 +3271,13 @@ class Vaults {
     how: { asked?: () => void; priv?: Uint8Array } = {},
     expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<number, CoreError> {
-    return this.#giving(id)(this.#carryNow(id, ask, known, how, expected ?? null));
+    const inner = this.#inner;
+    const effectiveExpected = expected ?? {
+      wsAuthGen: inner.store.authGen.workspaceAuthGen(this.ws),
+      vaultGen: inner.store.authGen.vaultGen(this.ws, id),
+      vaultGlobalGen: inner.store.authGen.vaultGlobalGen,
+    };
+    return this.#giving(id)(this.#carryNow(id, ask, known, how, effectiveExpected));
   }
 
   /// A vault's key kept unsealed UNLOCK_MS from now, then forgotten (and the pages told).
@@ -3314,16 +3318,15 @@ class Vaults {
   #putVault(
     next: Vault,
     station: string,
-    expected: { wsAuthGen: number; vaultGen?: number; vaultGlobalGen: number } | null,
+    expected: { wsAuthGen: number; vaultGen?: number; vaultGlobalGen: number },
   ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       const isStale = () =>
-        expected !== null &&
-        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
-          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen ||
-          (expected.vaultGen !== undefined && inner.store.authGen.vaultGen(self.ws, next.id) !== expected.vaultGen));
+        inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen ||
+        (expected.vaultGen !== undefined && inner.store.authGen.vaultGen(self.ws, next.id) !== expected.vaultGen);
       const targets = station === "" ? [] : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
       for (const s of targets) {
         if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
@@ -3787,16 +3790,20 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const effectiveExpected = expected ?? {
+        wsAuthGen: inner.store.authGen.workspaceAuthGen(self.ws),
+        vaultGen: inner.store.authGen.vaultGen(self.ws, vault),
+        vaultGlobalGen: inner.store.authGen.vaultGlobalGen,
+      };
       const body = yield* Effect.try({ try: () => ({ plain: plainOf(plain), listing: listingOf(listing) }), catch: asCoreError });
       const { lock, signer, self: who } = yield* self.#ready();
-      const v = yield* self.#writable(lock, vault, who);
+      const v = yield* self.#writable(lock, vault, who, effectiveExpected);
       if (!v.members.includes(who.sub)) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
-      const key = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }), false, undefined, expected);
+      const key = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }), false, undefined, effectiveExpected);
       if (
-        expected !== undefined &&
-        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
-          inner.store.authGen.vaultGen(self.ws, vault) !== expected.vaultGen ||
-          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen)
+        inner.store.authGen.workspaceAuthGen(self.ws) !== effectiveExpected.wsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, vault) !== effectiveExpected.vaultGen ||
+        inner.store.authGen.vaultGlobalGen !== effectiveExpected.vaultGlobalGen
       ) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
@@ -3807,7 +3814,7 @@ class Vaults {
       inner.host.randomBytes(nonce);
       const ct = encryptWith(key, utf8(JSON.stringify(body.plain)), itemContext(self.ws, vault, item, version, v.epoch), nonce);
       const next = sign({ v: 1 as const, ws: self.ws, vault, id: item, version, epoch: v.epoch, ct, ...(body.listing ? { listing: body.listing } : {}), at: nowS(inner) }, TAG.item, signer);
-      return yield* self.#putItem(next, v, expected ?? null);
+      return yield* self.#putItem(next, v, effectiveExpected);
     });
   }
 
@@ -3819,20 +3826,24 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const effectiveExpected = expected ?? {
+        wsAuthGen: inner.store.authGen.workspaceAuthGen(self.ws),
+        vaultGen: inner.store.authGen.vaultGen(self.ws, vault),
+        vaultGlobalGen: inner.store.authGen.vaultGlobalGen,
+      };
       const { lock, signer, self: who } = yield* self.#ready();
-      const v = yield* self.#writable(lock, vault, who, expected ?? null);
+      const v = yield* self.#writable(lock, vault, who, effectiveExpected);
       if (
-        expected !== undefined &&
-        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
-          inner.store.authGen.vaultGen(self.ws, vault) !== expected.vaultGen ||
-          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen)
+        inner.store.authGen.workspaceAuthGen(self.ws) !== effectiveExpected.wsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, vault) !== effectiveExpected.vaultGen ||
+        inner.store.authGen.vaultGlobalGen !== effectiveExpected.vaultGlobalGen
       ) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
       const prev = items(inner, self.ws, vault)[id];
       if (!prev || prev.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const next = sign({ v: 1 as const, ws: self.ws, vault, id, version: prev.version + 1, epoch: v.epoch, deleted: true as const, ct: "", at: nowS(inner) }, TAG.item, signer);
-      return yield* self.#putItem(next, v, expected ?? null);
+      return yield* self.#putItem(next, v, effectiveExpected);
     });
   }
 
@@ -3844,17 +3855,16 @@ class Vaults {
   #putItem(
     next: Item,
     v: Vault,
-    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number } | null,
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<unknown, CoreError> {
     const self = this;
     const targets = writeHosts(this.#inner, this.ws, v.id);
     return Effect.gen(function* () {
       const inner = self.#inner;
       const isStale = () =>
-        expected !== null &&
-        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
-          inner.store.authGen.vaultGen(self.ws, v.id) !== expected.vaultGen ||
-          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen);
+        inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, v.id) !== expected.vaultGen ||
+        inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen;
       let item = next;
       let on = "";
       for (const s of targets) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect } from "effect";
-import { Adb } from "../src/adb.ts";
+import { Adb, GRANTS_KEY, REVOKED_KEY } from "../src/adb.ts";
 import type { Mesh } from "../src/mesh.ts";
 import { Runner } from "../src/runtime.ts";
 import { Store } from "../src/store.ts";
@@ -230,19 +230,19 @@ test("r16: ADB rejects legacy unowned GRANTS_KEY array, never falls back to subs
   const host = new FakeHost();
   const exp = Math.floor(host.nowMs() / 1000) + 3600;
   // 1. Pre-populate legacy unowned array in GRANTS_KEY -> must NOT be claimed by current account on startup
-  host.store("adb.grants", {
+  host.store(GRANTS_KEY, {
     "ws/st": [{ id: "legacy-unowned", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 1 }],
   });
   host.appKeys = true;
   const runner = new Runner(host.time.clock);
   const store = new Store(host, runner);
   let owner: string | null = "acct-a";
-  let askCount = 0;
+  let revokeAskCount = 0;
   let bumpInSignRevokes = false;
   const link = {
     ask: (_head: unknown, { adb: ask }: { adb: { op: string; request?: string } }) =>
       Effect.sync(() => {
-        askCount++;
+        if (ask.op === "revoke") revokeAskCount++;
         let sent = false;
         const body =
           ask.op === "grants"
@@ -284,14 +284,14 @@ test("r16: ADB rejects legacy unowned GRANTS_KEY array, never falls back to subs
     await host.time.pass(50);
     assert.deepEqual(adb.grants(), [], "legacy unowned GRANTS_KEY array must be ignored on startup");
 
-    // 2. Same-owner boundary prunes cached grant immediately until fresh readGrants
+    // 2. Same-owner boundary prunes old-gen cached grant immediately and auto-refreshes via readGrants
     const gen1 = store.authGen.workspaceAuthGen("ws");
     adb.heard("ws/st", { id: "g-same-owner", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 1 }, gen1, "acct-a");
     assert.deepEqual(adb.grants().map((g) => g.id), ["g-same-owner"]);
     store.authGen.bumpWorkspace("ws");
-    assert.deepEqual(adb.grants(), [], "same-owner workspaceAuthGen bump must immediately prune old-gen cached grants");
-    await runner.run(adb.readGrants("ws/st"));
-    assert.deepEqual(adb.grants().map((g) => g.id), ["g-fresh"], "fresh readGrants under new gen repopulates grants()");
+    await host.time.pass(20);
+    assert.equal(adb.grants().some((g) => g.id === "g-same-owner"), false, "same-owner workspaceAuthGen bump must immediately prune old-gen cached grants");
+    assert.deepEqual(adb.grants().map((g) => g.id), ["g-fresh"], "same-owner boundary auto-refreshes grants under new gen");
 
     // 3. subOf("ws") becomes null while subs() still has acct-a -> never falls back to subs()[0]
     owner = null;
@@ -303,15 +303,106 @@ test("r16: ADB rejects legacy unowned GRANTS_KEY array, never falls back to subs
     store.authGen.bumpWorkspace("ws");
     const genRev = store.authGen.workspaceAuthGen("ws");
     adb.heard("ws/st", { id: "g-rev", chat: "c3", session: "s3", reason: "debug", status: "granted", exp, at: 3 }, genRev, "acct-a");
-    askCount = 0;
-    host.storage.delete("adb.revoked");
+    revokeAskCount = 0;
+    host.storage.delete(REVOKED_KEY);
     bumpInSignRevokes = true;
     await assert.rejects(
       () => runner.run(adb.run({ kind: "revoke", station: "ws/st", request: "g-rev" })),
       (e: { code?: string }) => e?.code === "auth_stale",
     );
-    assert.equal(askCount, 0, "stale #revoke must issue 0 primary/relay askAt calls");
-    assert.equal(host.storage.has("adb.revoked"), false, "stale #revoke must not persist adb.revoked");
+    assert.equal(revokeAskCount, 0, "stale #revoke must issue 0 primary/relay revoke askAt calls");
+    assert.equal(host.storage.has(REVOKED_KEY), false, "stale #revoke must not persist adb-revoked");
+  } finally {
+    runner.shutdown();
+  }
+});
+
+test("r17: delayed cold-start GRANTS_KEY discards stale grants across boundary, and same-owner global boundary auto-refreshes", async () => {
+  const host = new FakeHost();
+  const exp = Math.floor(host.nowMs() / 1000) + 3600;
+  host.store(GRANTS_KEY, {
+    "ws/st": {
+      sub: "acct-a",
+      grants: [{ id: "g-persisted-stale", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 1 }],
+    },
+  });
+  const loadGate = Deferred.makeUnsafe<void>();
+  const origStorageGet = host.storageGet.bind(host);
+  let gatedOnce = true;
+  host.storageGet = (key) => {
+    if (gatedOnce && key === GRANTS_KEY) {
+      gatedOnce = false;
+      return Effect.flatMap(Deferred.await(loadGate), () => origStorageGet(key));
+    }
+    return origStorageGet(key);
+  };
+  const runner = new Runner(host.time.clock);
+  const store = new Store(host, runner);
+  store.authGen.syncAccounts(["acct-a"]);
+  let serverGrantId = "g-confirmed-1";
+  let grantsReads = 0;
+  let allowRead = false;
+  const readGate = Deferred.makeUnsafe<void>();
+  const link = {
+    ask: (_head: unknown, { adb: ask }: { adb: { op: string } }) => {
+      if (ask.op === "grants") {
+        grantsReads++;
+        const reply = () => {
+          let sent = false;
+          const bytes = new TextEncoder().encode(
+            JSON.stringify({
+              signs: true,
+              grants: [{ id: serverGrantId, chat: "c2", session: "s2", reason: "debug", status: "granted", exp, at: 2 }],
+            }),
+          );
+          return { status: 200, body: { take: Effect.sync(() => { if (sent) return null; sent = true; return bytes; }) } };
+        };
+        return allowRead ? Effect.sync(reply) : Effect.map(Deferred.await(readGate), reply);
+      }
+      return Effect.fail(new Error("unexpected"));
+    },
+  };
+  const mesh = { deviceId: () => "phone", link: () => Effect.succeed(link) } as unknown as Mesh;
+  const stub = personalStub();
+  const adb = new Adb({
+    ...stub,
+    subOf: () => "acct-a",
+    subs: () => [{ sub: "acct-a", email: "a@x" }],
+    host,
+    runner,
+    store,
+    mesh: () => Effect.succeed(mesh),
+    credentials: () => (() => Effect.succeed({} as never)),
+    relays: () => [],
+    lends: () => false,
+  });
+  takeAll(adb);
+  try {
+    // 1. Astra P1: cross same-owner workspace boundary BEFORE delayed storageGet("adb.grants") resolves
+    store.authGen.bumpWorkspace("ws");
+    Deferred.doneUnsafe(loadGate, Effect.void);
+    await host.time.pass(50);
+    // Persisted stale grant must NOT be resurrected; automatic refresh is waiting on readGate
+    assert.deepEqual(adb.grants(), [], "delayed GRANTS_KEY crossing boundary must never resurrect g-persisted-stale");
+    assert.ok(grantsReads >= 1, "crossing boundary during cold-start load must trigger fresh readGrants");
+
+    // Release fresh readGrants -> now new-gen grant appears
+    allowRead = true;
+    Deferred.doneUnsafe(readGate, Effect.void);
+    await host.time.pass(50);
+    assert.deepEqual(adb.grants().map((g) => g.id), ["g-confirmed-1"]);
+
+    // 2. Opus P1: adding a 2nd account triggers global boundary -> same-owner station auto-refreshes without manual readGrants!
+    serverGrantId = "g-confirmed-after-global";
+    const readsBeforeGlobal = grantsReads;
+    store.authGen.syncAccounts(["acct-a", "acct-b"]);
+    await host.time.pass(50);
+    assert.ok(grantsReads > readsBeforeGlobal, "same-owner global boundary must automatically trigger readGrants");
+    assert.deepEqual(
+      adb.grants().map((g) => g.id),
+      ["g-confirmed-after-global"],
+      "same-owner global boundary must automatically recover grants without manual intervention",
+    );
   } finally {
     runner.shutdown();
   }

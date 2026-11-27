@@ -18,6 +18,7 @@ import { StationAddr } from "./station/addr.ts";
 import { Retold } from "./station/retold.ts";
 import { LANG_HEADER } from "./station/requests.ts";
 import type { RequestHead } from "./station/wire.ts";
+import { snapWsAuthGen } from "./auth-gen.ts";
 import type { Store } from "./store.ts";
 import { fromUtf8, parseJson, utf8 } from "./util.ts";
 import { ofAddress } from "./workspace.ts";
@@ -601,21 +602,30 @@ export class Adb {
     env.store.authGen.onBoundary((event) => {
       if (event.kind !== "global" && event.kind !== "workspace") return;
       let pruned = false;
+      const toRefresh: string[] = [];
       for (const [station, entry] of [...this.#grants]) {
         const ws = ofAddress(station);
         if (event.kind === "workspace" && ws !== event.workspace) continue;
         const curSub = this.#ownerAt(station);
         const curGen = this.#env.store.authGen.workspaceAuthGen(ws);
-        if (curSub === null || entry.sub !== curSub || entry.gen !== curGen) {
+        if (curSub === null || entry.sub !== curSub) {
           this.#grants.delete(station);
           pruned = true;
+        } else if (entry.gen !== curGen) {
+          this.#grants.delete(station);
+          pruned = true;
+          toRefresh.push(station);
         }
       }
       if (pruned) {
         this.#keep();
         this.#sync();
       }
+      for (const station of toRefresh) {
+        this.#env.runner.fork(Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after boundary" }));
+      }
     });
+    const loadSnap = env.store.authGen.snapshot(0);
     env.runner.fork(
       Effect.ensuring(
         Effect.map(Effect.all([Effect.orElseSucceed(env.host.storageGet(GRANTS_KEY), () => null), Effect.orElseSucceed(env.host.storageGet(ON_KEY), () => null)]), ([bytes, on]) => {
@@ -628,15 +638,26 @@ export class Adb {
               if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
               const sub = typeof (raw as J).sub === "string" ? ((raw as J).sub as string) : null;
               const list = Array.isArray((raw as J).grants) ? ((raw as J).grants as J[]) : null;
+              if (sub === null || list === null) continue;
+              const ws = ofAddress(station);
+              const startWsGen = snapWsAuthGen(loadSnap, ws);
+              const curWsGen = this.#env.store.authGen.workspaceAuthGen(ws);
               const curSub = this.#ownerAt(station);
+              if (curWsGen !== startWsGen) {
+                // Auth boundary crossed while GRANTS_KEY was loading asynchronously: never stamp stale persisted
+                // grants with the new generation; trigger authoritative refresh if the same owner is still active.
+                if (curSub !== null && sub === curSub) {
+                  this.#env.runner.fork(Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after cold-start boundary" }));
+                }
+                continue;
+              }
               // Keep owner-tagged persisted grants across cold start even before workspaces finish hydrating
               // (`#grantsOf` / `#allGrants` still enforce `entry.sub === this.#ownerAt(station)` on every read);
               // discard immediately if an authoritative owner is already known and differs.
-              if (sub !== null && (curSub === null || sub === curSub) && list !== null) {
-                const curGen = this.#env.store.authGen.workspaceAuthGen(ofAddress(station));
+              if (curSub === null || sub === curSub) {
                 this.#grants.set(station, {
                   sub,
-                  gen: curGen,
+                  gen: curWsGen,
                   grants: new Map(list.filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])),
                 });
               }
