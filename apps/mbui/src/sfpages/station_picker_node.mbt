@@ -888,6 +888,12 @@ fn sp_wide_table_node(
               lit=Some(fn() { (@sf.hovered_in_node(row) && !list.keys_elsewhere(idx)) || row.focus_shown() }),
               extra=fn() { list.highlighted(idx) },
             )
+            // (the hand come onto a row after the keys stepped: the hand's again, the keys' row no longer kept lit)
+            row.reacts(fn() { @sf.hovered_in_node(row) }, fn(on) {
+              if on {
+                list.navigated.set(false)
+              }
+            })
             @sf.rippled_node(row, press, @sf.row_corner, fn() { entry.name })
             // Column 1: (check box +) Station mark + name (with repeats=true tooltip on name node) (+ check)
             row.box(fn(c1) {
@@ -908,8 +914,11 @@ fn sp_wide_table_node(
                 @sf.tip_node(tl, name_v, fn() { entry.name }, within=true, repeats=true, pressed=fn() { row.pressed() })
                 |> ignore
               }
-              if !role.many && chosen() {
-                @sf.icon_node(c1, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+              if !role.many {
+                c1.show(at_once=true, chosen, fn(k) {
+                  k.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                  @sf.icon_node(k, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                })
               }
             })
             |> ignore
@@ -1058,7 +1067,10 @@ fn sp_narrow_drawer_node(
       let idx = i_sig.untracked()
       let entry = entries[idx]
       let chosen = fn() { (role.chosen)(entry) }
-      let press = fn() { (role.press)(entry) }
+      let press = fn() {
+        list.pointed_at(idx)
+        (role.press)(entry)
+      }
       if role.many {
         // (a preset's: its check box leading the station's row as with few stations, the panel's own row)
         let st = Some(entry.station)
@@ -1076,6 +1088,7 @@ fn sp_narrow_drawer_node(
           },
           note=fn() { text(st, "summary") },
           press~,
+          held=fn() { list.highlighted(idx) },
         )
       } else {
         sp_compact_station_row_node(row_host, Some(entry.station), entry.name, entry.net, busy, chosen, fn() {
