@@ -1250,8 +1250,7 @@ fn evaluate_runtime_topic(
         break
       }
     }
-    let rows_lim = sess.core.chat_window_for(resolved_st, resolved_th, sess_param)
-    let (at_opt, at_off_opt) = sess.core.chat_place_for(resolved_st, resolved_th)
+    let (at_opt, at_off_opt, rows_lim) = sess.core.chat_sub_snapshot_for(id, resolved_st, resolved_th, sess_param)
     match views::project_chat_by_params(
       sess.db,
       st,
@@ -1438,6 +1437,7 @@ pub extern "C" fn pion_core_runtime_send(
     protocol::ParseRequestResult::Ok(req) => {
       match req {
         protocol::CoreRequest::Subscribe(id, topic, keyed, _from_id, have) => {
+          sess.core.drop_chat_sub_snapshot(id)
           match evaluate_runtime_topic(sess, id, topic) {
             Some(ev) => {
               let val_opt : Option[base_codec::Json] = match ev {
@@ -1487,6 +1487,7 @@ pub extern "C" fn pion_core_runtime_send(
         protocol::CoreRequest::Unsubscribe(id, _, keep) => {
           match remove_runtime_sub(sess, id) {
             Some(removed) => {
+              sess.core.close_chat_sub_snapshot(id)
               if keep {
                 match removed.last_val {
                   Some(v) => {

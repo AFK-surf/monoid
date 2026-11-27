@@ -76,6 +76,7 @@ pub struct ClientCore {
   chat_windows : Map[String, Int]
   chat_places : Map[String, Option[(Int, Option[Double])]]
   chat_place_order : Array[String]
+  chat_sub_snapshots : Map[Int64, ChatSubSnapshot]
   mut on_prefs_saved : Option[(base_codec::Json) -> Result[Unit, String]]
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
@@ -170,6 +171,7 @@ pub fn ClientCore::new(
     chat_windows: Map::new(),
     chat_places: Map::new(),
     chat_place_order: [],
+    chat_sub_snapshots: Map::new(),
     on_prefs_saved: None,
     auth_seq: 0,
     lock_state: None,
@@ -1359,6 +1361,104 @@ fn ClientCore::restore_notify_state(self : ClientCore) -> Unit {
   }
 }
 
+struct ChatSubSnapshot {
+  station : String
+  thread : Option[Int]
+  session : Option[String]
+  at : Option[Int]
+  at_offset : Option[Double]
+  rows : Int
+}
+
+/// Drop any stale per-subscription chat open snapshot when starting a fresh subscription on `id`.
+pub fn ClientCore::drop_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
+  self.chat_sub_snapshots.remove(id)
+}
+
+/// Snapshot `(at, atOffset, rows)` once when a `chat` subscription opens and reuse it for every
+/// refresh (`EntryAdded` / `ConnectionChanged` / `chat.send`) on that subscription (`topics.ts:710-760`,
+/// `views.ts:1453`), so mid-subscription `chat.place` / `chat.window` calls never yank the active view.
+pub fn ClientCore::chat_sub_snapshot_for(
+  self : ClientCore,
+  id : Int64,
+  station : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> (Option[Int], Option[Double], Int) {
+  match self.chat_sub_snapshots.get(id) {
+    Some(snap) => (snap.at, snap.at_offset, snap.rows)
+    None => {
+      let rows = self.chat_window_for(station, thread, session)
+      let (at_opt, at_off_opt) = self.chat_place_for(station, thread)
+      self.chat_sub_snapshots.set(id, ChatSubSnapshot::{
+        station: station,
+        thread: thread,
+        session: session,
+        at: at_opt,
+        at_offset: at_off_opt,
+        rows: rows,
+      })
+      (at_opt, at_off_opt, rows)
+    }
+  }
+}
+
+/// Drop a `chat` subscription's open snapshot on `Unsubscribe` and reclaim its `chat_windows` entry
+/// when no other live subscription targets the same chat (`views.ts:1453`).
+pub fn ClientCore::close_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
+  match self.chat_sub_snapshots.get(id) {
+    None => ()
+    Some(snap) => {
+      self.chat_sub_snapshots.remove(id)
+      let rem_ids = self.chat_sub_snapshots.keys()
+      match snap.thread {
+        Some(th) => {
+          let mut in_use = false
+          for i in 0..<rem_ids.length() {
+            match self.chat_sub_snapshots.get(rem_ids[i]) {
+              Some(other) => {
+                if other.station == snap.station {
+                  match other.thread {
+                    Some(oth) => if oth == th { in_use = true }
+                    None => ()
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          if !in_use {
+            self.chat_windows.remove(snap.station + ":t:" + th.to_string())
+          }
+        }
+        None => ()
+      }
+      match snap.session {
+        Some(sk) => if sk.length() > 0 {
+          let mut in_use = false
+          for i in 0..<rem_ids.length() {
+            match self.chat_sub_snapshots.get(rem_ids[i]) {
+              Some(other) => {
+                if other.station == snap.station {
+                  match other.session {
+                    Some(osk) => if osk == sk { in_use = true }
+                    None => ()
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          if !in_use {
+            self.chat_windows.remove(snap.station + ":s:" + sk)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+}
+
 /// Look up effective `chat.window` row count for `(station, thread?, session?)` (`views.ts:5023`).
 pub fn ClientCore::chat_window_for(
   self : ClientCore,
@@ -1631,8 +1731,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let rows_lim = self.chat_window_for(st, th_opt, sess_opt)
-    let (at_opt, at_off_opt) = self.chat_place_for(st, th_opt)
+    let (at_opt, at_off_opt, rows_lim) = self.chat_sub_snapshot_for(id, st, th_opt, sess_opt)
     match views::project_chat_by_params(
       self.db,
       st,
@@ -1859,7 +1958,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_settings(self.db, ws_scope) {
+    match views::project_settings(self.db, ws_scope, viewer_sub=self.viewer_sub) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -4083,15 +4182,20 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
       }
       self.router.handle(req)
     }
-    protocol::CoreRequest::Subscribe(_id, topic, _keyed, _from, _have) => {
+    protocol::CoreRequest::Subscribe(id, topic, _keyed, _from, _have) => {
       // Rule 4: subscribing NEVER starts a network request; only reads local SQLite.
       // If subscribing to a specific chat thread, only raises priority without opening a new fetch.
+      self.drop_chat_sub_snapshot(id)
       if topic.name == "chat" {
         match topic.param("thread") {
           Some(base_codec::Json::Num(n, _)) => self.sync.focus_thread(Some(n.to_int()))
           _ => ()
         }
       }
+      self.router.handle(req)
+    }
+    protocol::CoreRequest::Unsubscribe(id, _, _) => {
+      self.close_chat_sub_snapshot(id)
       self.router.handle(req)
     }
     _ => self.router.handle(req)

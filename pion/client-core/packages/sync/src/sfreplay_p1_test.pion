@@ -626,6 +626,54 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     _ => debug_assert(false, "missing atOffset before restart")
   }
 
+  // P1-2 snapshot invariance: while sub #41 is active (opened at seq=4, offset=12.5), calling `chat.place(seq=2)`
+  // and `chat.window(rows=5)` then injecting a new message + triggering `refresh_topic("chat")` MUST keep sub #41
+  // pinned to its opening snapshot (at=4, atOffset=12.5), never jumping to seq=2!
+  let _ = sf_call_ok(core, 4101L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(2)),
+    ("offset", base_codec::json_num(7.5)),
+  ]))
+  let _ = sf_call_ok(core, 4102L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(5)),
+  ]))
+  let _ = sf_call_ok(core, 4103L, "chat.send", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("clientKey", base_codec::json_str("ck-snap-1")),
+    ("author", base_codec::json_str("alice")),
+    ("text", base_codec::json_str("new msg during active sub")),
+  ]))
+  let refresh_evs = core.refresh_topic("chat")
+  debug_assert(refresh_evs.length() == 1, "expected 1 live refresh event for active chat sub #41")
+  let (ref_wire, _) = protocol::encode_core_event(refresh_evs[0])
+  debug_assert(ref_wire.contains("new msg during active sub"), "live refresh must include new message: " + ref_wire)
+  debug_assert(!ref_wire.contains("\"at\":2") && !ref_wire.contains("7.5"), "active sub refresh must NOT yank at/atOffset to mid-sub chat.place: " + ref_wire)
+  // Unsubscribing #41 removes snapshot AND reclaims `chat_windows` entry (`views.ts:1453`).
+  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(41L, true, false))
+  debug_assert(core.chat_windows.get("ws-1/st-1:t:10").is_none(), "unsubscribe must reclaim chat_windows entry")
+  // Re-subscribing now picks up the updated persisted place (seq=2, offset=7.5).
+  let ch_resub = sf_sub_val(core, 4104L, "chat", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ])
+  sf_expect_int(ch_resub, "at", 2)
+  match base_codec::json_get(ch_resub, "atOffset") {
+    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 7.5, "re-sub must pick up updated atOffset 7.5")
+    _ => debug_assert(false, "missing updated atOffset after re-sub")
+  }
+  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(4104L, true, false))
+  // Restore (seq=4, offset=12.5) for restart recovery check below.
+  let _ = sf_call_ok(core, 4105L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+
   // Restart recovery: a fresh `ClientCore` on the same DB MUST recover BOTH `at: 4` AND `atOffset: 12.5`!
   let core_restarted = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
   let ch_after_restart = sf_sub_val(core_restarted, 411L, "chat", [
@@ -668,11 +716,16 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     _ => debug_assert(false, "chat.place(seq: null) must delete persisted place row")
   }
 
-  // P2-3: Sensitive topics (`accounts`, `lock`, `vaults`) MUST NEVER emit `v` keep tokens or honor `have`!
+  // P2-3: Sensitive topics (`accounts`, `lock`, `vaults`) MUST emit `{id, v: null}` on `Unsubscribe(keep=true)`
+  // (never leaving mbui `ending` stalled), NEVER cache in `kept`, and ignore `have`!
   let _ = sf_sub_val(core, 430L, "accounts", [])
   match core.handle_request(protocol::CoreRequest::Unsubscribe(430L, true, true)) {
-    None => ()
-    _ => debug_assert(false, "sensitive topic accounts must not emit Unsubscribed(v) token on keep=true")
+    Some(protocol::CoreEvent::Unsubscribed(uid, None)) => {
+      debug_assert(uid == 430L, "expected Unsubscribed id=430")
+      let (unsub_wire, _) = protocol::encode_core_event(protocol::CoreEvent::Unsubscribed(uid, None))
+      debug_assert(unsub_wire.contains("\"v\":null"), "sensitive keep unsubscribe must encode {id, v: null}: " + unsub_wire)
+    }
+    _ => debug_assert(false, "sensitive topic accounts must emit Unsubscribed(430, None) on keep=true")
   }
   debug_assert(core.router.kept_count() == 0, "sensitive topic accounts must never be cached in kept")
   let acct_val = sf_sub_val(core, 431L, "accounts", [])
@@ -716,4 +769,96 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
   sf_expect_str(lp_replaced, "opens", "chat")
   sf_expect_str(lp_replaced, "station", "st-2")
   sf_expect_str(lp_replaced, "chat", "sess-9")
+}
+
+test "sfreplay_p1: settings progressPrefs nested sub check & profiles canBatchShare alignment" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-r3-align")
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true},{\"id\":\"st-off\",\"name\":\"Offline\",\"online\":false}]}",
+    confirmed=Some(1730000000000L),
+  )
+
+  // 1. TS `views/progress.ts:40-45` nested `{sub, progress: {minutes, strength, rev, at}, owed, met}`
+  let _ = store::put_workspace_pref(
+    db,
+    "ws-1",
+    "progressPrefs",
+    "{\"sub\":\"sub-alice\",\"progress\":{\"minutes\":30,\"strength\":\"remind\",\"rev\":4,\"at\":1730000000000},\"owed\":[],\"met\":[]}",
+  )
+  let st_match = sf_sub_val(core, 501L, "settings", [("scope", base_codec::json_str("ws-1"))])
+  sf_expect_int(st_match, "progressMinutes", 30)
+  sf_expect_str(st_match, "progressStrength", "remind")
+  sf_expect_int(st_match, "progressSeq", 4)
+
+  // Another person's `progressPrefs` (`sub != viewer_sub`) MUST fall back to PROGRESS_DEFAULT!
+  core.set_viewer("bob@still.fail", sub="sub-bob", role="member")
+  let st_other = sf_sub_val(core, 502L, "settings", [("scope", base_codec::json_str("ws-1"))])
+  sf_expect_int(st_other, "progressMinutes", 10)
+  sf_expect_str(st_other, "progressStrength", "require")
+  sf_expect_int(st_other, "progressSeq", 1)
+
+  // 2. `profiles` `canBatchShare` & `several` (`views/profiles.ts:117,198-205`):
+  // - p1: owned on st-1 (sharing=true, online=true) + borrowed (`share.role == "user"`) on st-2
+  //   -> `several == false` (borrowed copy does NOT count!) and `canBatchShare == true`
+  // - p2: owned on st-1 with `share == null && shareable == false` -> `canBatchShare == false`
+  // - p3: owned on st-1 with `share != null && shareable == false` (host st-1 online) -> `canBatchShare == true`
+  // - p4: owned on st-1 with `share.host == "st-off"` (host offline) -> `canBatchShare == false`
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-1",
+    "overview",
+    "{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true,\"sharing\":true,\"profiles\":[{\"id\":\"p1\",\"name\":\"P1\",\"email\":\"p1@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-1\",\"role\":\"host\",\"host\":\"st-1\"}},{\"id\":\"p2\",\"name\":\"P2\",\"email\":\"p2@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"shareable\":false},{\"id\":\"p3\",\"name\":\"P3\",\"email\":\"p3@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"shareable\":false,\"share\":{\"id\":\"sh-3\",\"role\":\"host\",\"host\":\"st-1\"}},{\"id\":\"p4\",\"name\":\"P4\",\"email\":\"p4@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-4\",\"role\":\"host\",\"host\":\"st-off\"}}]}",
+    confirmed=Some(1730000000000L),
+  )
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-2",
+    "overview",
+    "{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true,\"sharing\":true,\"profiles\":[{\"id\":\"p1-copy\",\"name\":\"P1 Copy\",\"email\":\"p1@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-1\",\"role\":\"user\",\"host\":\"st-1\"}}]}",
+    confirmed=Some(1730000000000L),
+  )
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-off",
+    "overview",
+    "{\"id\":\"st-off\",\"name\":\"Offline\",\"online\":false,\"sharing\":true,\"profiles\":[]}",
+    confirmed=Some(1730000000000L),
+  )
+  let pv = sf_sub_val(core, 503L, "profiles", [("scope", base_codec::json_str("ws-1"))])
+  match base_codec::json_get(pv, "items") {
+    Some(base_codec::Json::Arr(items)) => {
+      debug_assert(items.length() == 4, "expected 4 grouped profiles")
+      let mut saw_p1 = false
+      let mut saw_p2 = false
+      let mut saw_p3 = false
+      let mut saw_p4 = false
+      for i in 0..<items.length() {
+        let it = items[i]
+        match base_codec::json_get(it, "title") {
+          Some(base_codec::Json::Str("p1@example.com")) => {
+            saw_p1 = true
+            sf_expect_bool(it, "several", false)
+            sf_expect_bool(it, "canBatchShare", true)
+          }
+          Some(base_codec::Json::Str("p2@example.com")) => {
+            saw_p2 = true
+            sf_expect_bool(it, "canBatchShare", false)
+          }
+          Some(base_codec::Json::Str("p3@example.com")) => {
+            saw_p3 = true
+            sf_expect_bool(it, "canBatchShare", true)
+          }
+          Some(base_codec::Json::Str("p4@example.com")) => {
+            saw_p4 = true
+            sf_expect_bool(it, "canBatchShare", false)
+          }
+          _ => ()
+        }
+      }
+      debug_assert(saw_p1 && saw_p2 && saw_p3 && saw_p4, "must verify all 4 profile canBatchShare cases")
+    }
+    _ => debug_assert(false, "expected items array in profiles view")
+  }
 }

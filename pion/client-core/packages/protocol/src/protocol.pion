@@ -2024,7 +2024,7 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
         match prev {
           Some(sub) => {
             if is_sensitive_topic(sub.topic) {
-              return None
+              return Some(CoreEvent::Unsubscribed(id, None))
             }
             match (sub.last_value, sub.last_token) {
               (Some(v), Some(tok)) => {
