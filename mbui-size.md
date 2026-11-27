@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3cf626007](https://github.com/AFK-surf/monoid/commit/3cf62600776cb0d2255954c70948689a826f4560) feat(station-main): wire all 8 CLI subcommands int | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
 | [fde30eb69](https://github.com/AFK-surf/monoid/commit/fde30eb69d56d3cfd39ebfe5ef1b0bcacdcddeda) fix(ui): record keyboard scrolls for row motion ch | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
 | [7cb446b32](https://github.com/AFK-surf/monoid/commit/7cb446b322f2282313dd7bf0686de8a1049c863f) fix(mbui): open the first chat when the startup wa | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.7 | 130.2 |
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [7b1f1df26](https://github.com/AFK-surf/monoid/commit/7b1f1df26d54f54dae65985e90b26c7db4db8161) fix(mesh): bump noq-proto so a discarded path 0 no | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [74a1001ae](https://github.com/AFK-surf/monoid/commit/74a1001ae641a7ab0327a6036a98d4985682c062) feat(pion): add pure-Pion station_store SQLite cor | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
-| [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3cf626007](https://github.com/AFK-surf/monoid/commit/3cf62600776cb0d2255954c70948689a826f4560) feat(station-main): wire all 8 CLI subcommands int | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.67 |
 | [fde30eb69](https://github.com/AFK-surf/monoid/commit/fde30eb69d56d3cfd39ebfe5ef1b0bcacdcddeda) fix(ui): record keyboard scrolls for row motion ch | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.75 |
 | [7cb446b32](https://github.com/AFK-surf/monoid/commit/7cb446b322f2282313dd7bf0686de8a1049c863f) fix(mbui): open the first chat when the startup wa | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.48 |
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.56 |
 | [7b1f1df26](https://github.com/AFK-surf/monoid/commit/7b1f1df26d54f54dae65985e90b26c7db4db8161) fix(mesh): bump noq-proto so a discarded path 0 no | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.66 |
 | [74a1001ae](https://github.com/AFK-surf/monoid/commit/74a1001ae641a7ab0327a6036a98d4985682c062) feat(pion): add pure-Pion station_store SQLite cor | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.75 |
-| [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.59 |
