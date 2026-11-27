@@ -3,16 +3,25 @@ package dev.mbui;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Pure Android frame-scheduling state machine with single-lock ownership where Choreographer vsync
- * slot ownership and release never depend on timestamps.
+ * Pure Android frame-scheduling state machine with single-lock ownership.
  *
- * <p>Production callbacks use the generation-tagged 3-arg path
+ * <p>Slot ownership and release rely strictly on monotonic callback generations ({@link #activeVsyncGen}),
+ * never timestamps: production callbacks use the generation-tagged 3-arg path
  * ({@link FramePacer.Platform#postVsync(long)} -> {@link #vsyncCame(long, long, long)}), where each
  * callback releases only its own {@code activeVsyncGen} slot and stale generations are ignored.
  * Legacy untagged 2-arg {@code vsyncCame(t, shows)} ({@code gen == 0L}) fails open by releasing
- * the slot and re-arming whenever undispatched demand exists. Timestamps ({@link #lastFrameNowAt},
- * {@link #lastAppDispatchedVsyncNs}, and {@link #ahead} freshness) are used only for same-vsync
- * deduplication and prefetch expiry, never to refuse releasing a vsync slot.
+ * the slot and re-arming whenever undispatched demand exists.
+ *
+ * <p>Kept-ahead beat tracking uses monotonic beat sequences ({@link #currentBeatSeq},
+ * {@link #appDispatchedBeatSeq}, {@link #aheadBeatSeq}), and per-frame app dispatch identity and
+ * same-beat external demand attribution use monotonic dispatch tokens ({@link #activeDispatchToken},
+ * {@link #takenDispatchToken}, {@link #externalForToken}, propagated through
+ * {@link FramePacer.Taken#dispatchToken}). Because Android delivers independent Choreographer
+ * callbacks ({@code vsyncCame}, {@code fireWake}, and wall-clock {@code frameNow}) without a shared
+ * frame ID, {@link #isSameDispatchedBeatLocked(long)} still matches incoming timestamps against
+ * {@link #appDispatchedBeatNs} (plus a half-period window when {@link #appDispatchedFromWallClock}
+ * is true), and {@link #vsyncAt} is kept for timeline reporting and {@link #aheadBeatSeq} prefetch
+ * expiry; timestamps never refuse releasing a vsync slot.
  *
  * <p>Constructive liveness invariant (fail-open): whenever undispatched demand exists
  * ({@code (appWanted && !appDispatched) || picturesOnly}), at least one of the following holds once
@@ -51,9 +60,6 @@ final class FrameScheduler {
     final AtomicBoolean picturesOnly = new AtomicBoolean();
     final AtomicBoolean externalWanted = new AtomicBoolean();
 
-    /** External demand arriving for an already-dispatched vsync, consumed at that frame's ended(). */
-    private long externalForVsync;
-
     /**
      * The vsync the next frame is drawn for and when the system is to show it (ns, the system's clock; 0: not said): since
      * Android 13, the expected presentation of the vsync's preferred frame timeline (Choreographer.FrameData), the
@@ -62,11 +68,6 @@ final class FrameScheduler {
      */
     private volatile long[] vsyncAt = {0L, 0L};
 
-    /**
-     * A vsync asked for ahead came and no frame was drawn for it (vsyncCame): the next frame wanted is drawn at once,
-     * for it, while it is the latest vsync (a frame later than that is the next vsync's).
-     */
-    private boolean ahead;
     /** Whether the current vsyncAt has been dispatched for an app frame (prevents stealing T+1's appWanted). */
     private boolean appDispatched;
     /** Whether a pending picture-only redraw originated while a low-rate paced vote was active. */
@@ -76,13 +77,40 @@ final class FrameScheduler {
     private long nextVsyncGen;
     /** Generation of the sole in-flight Choreographer callback, or 0 when none is in flight. */
     private long activeVsyncGen;
-    /** Last vsync timestamp dispatched for an app frame (used only for same-vsync deduplication). */
-    private long lastAppDispatchedVsyncNs;
+
+    /** Monotonic sequence counter for latched Choreographer/frameNow beats (> 0, never resets). */
+    private long nextBeatSeq;
+    /** Sequence of the current latched beat represented by {@link #vsyncAt}, or 0 when none/reset. */
+    private long currentBeatSeq;
+    /** Sequence of the beat most recently dispatched for an app frame, or 0 when none/reset. */
+    private long appDispatchedBeatSeq;
     /**
-     * Timestamp of the most recent immediate dispatch: wall-clock {@code nanoTime()} from
-     * {@link #frameNow()} or {@code vsyncNs} from {@link #wakeFrameNow(long, long, boolean)}.
+     * A vsync asked for ahead came and no frame was drawn for it (vsyncCame): holds that beat's sequence
+     * (0 when none), so the next frame wanted is drawn at once for it while it is the latest vsync
+     * (a frame later than that is the next vsync's).
      */
-    private long lastFrameNowAt;
+    private long aheadBeatSeq;
+
+    /** Monotonic dispatch token counter for every app frame dispatched (> 0, never resets). */
+    private long nextDispatchToken;
+    /** Dispatch token of the most recently dispatched app frame, or 0 when none/reset. */
+    private long activeDispatchToken;
+    /** Dispatch token of the app frame most recently taken by {@link #takeRender()}, or 0 when none/reset. */
+    private long takenDispatchToken;
+    /** External demand arriving for an already-dispatched beat's token, consumed at that frame's ended(). */
+    private long externalForToken;
+    /**
+     * Beat timestamp bound to {@link #activeDispatchToken} for matching independent same-beat platform
+     * callbacks ({@code vsyncCame} / {@code fireWake} / wall-clock {@code frameNow}), preserved even if
+     * an unused {@code ahead} or picture-only beat updates {@link #vsyncAt}.
+     */
+    private long appDispatchedBeatNs;
+    /**
+     * Whether {@link #activeDispatchToken} originated from a wall-clock {@link #frameNow()} call without
+     * a deferred Choreographer vsync (so a same-beat {@link #vsyncCame} arrives with latched
+     * {@code t < appDispatchedBeatNs} within half a frame period).
+     */
+    private boolean appDispatchedFromWallClock;
 
     // Main-thread state for coalescing CALLBACK_ANIMATION (vsyncCame) with CALLBACK_INSETS_ANIMATION (frameNow).
     private boolean imeMoving;
@@ -139,12 +167,11 @@ final class FrameScheduler {
         }
     }
 
-    /** Consumes external demand recorded for {@code vsyncNs} if it matches. */
-    boolean consumeExternalForVsync(long vsyncNs) {
-        if (vsyncNs == 0L) return false;
+    /** Consumes external demand recorded for the app frame currently being built, if any. */
+    boolean consumeExternalForCurrentFrame() {
         synchronized (lock) {
-            if (externalForVsync == vsyncNs) {
-                externalForVsync = 0L;
+            if (takenDispatchToken != 0L && externalForToken == takenDispatchToken) {
+                externalForToken = 0L;
                 return true;
             }
             return false;
@@ -165,7 +192,7 @@ final class FrameScheduler {
                 appWanted.set(true);
             }
             vsyncAt = new long[] {0L, 0L};
-            ahead = false;
+            aheadBeatSeq = 0L;
             appDispatched = false;
             deferredVsync = false;
             deferredFromVsync = false;
@@ -173,9 +200,13 @@ final class FrameScheduler {
             deferredWakeApp = false;
             deferredWakeExternal = false;
             activeVsyncGen = 0L;
-            lastFrameNowAt = 0L;
-            lastAppDispatchedVsyncNs = 0L;
-            externalForVsync = 0L;
+            currentBeatSeq = 0L;
+            appDispatchedBeatSeq = 0L;
+            activeDispatchToken = 0L;
+            takenDispatchToken = 0L;
+            externalForToken = 0L;
+            appDispatchedBeatNs = 0L;
+            appDispatchedFromWallClock = false;
             if (onContinuityReset != null) onContinuityReset.run();
             if (appWanted.get() || picturesOnly.get()) {
                 postGen = claimPostVsyncLocked();
@@ -184,13 +215,25 @@ final class FrameScheduler {
         if (postGen != 0L) postVsyncOutOfLock(postGen);
     }
 
-    /** Atomically consumes pending frame flags, reads vsyncAt, and claims vsyncAt[0] when building an app frame. */
+    /** Atomically consumes pending frame flags, reads vsyncAt, and claims the active dispatch token for an app frame. */
     FramePacer.Taken takeRender() {
         synchronized (lock) {
             boolean app = appDispatched && appWanted.getAndSet(false);
+            long token = 0L;
             if (app) {
                 appDispatched = false;
-                ahead = false;
+                aheadBeatSeq = 0L;
+                if (activeDispatchToken == 0L) {
+                    activeDispatchToken = ++nextDispatchToken;
+                }
+                if (currentBeatSeq != 0L && appDispatchedBeatSeq != currentBeatSeq) {
+                    appDispatchedBeatSeq = currentBeatSeq;
+                }
+                if (appDispatchedBeatNs == 0L && vsyncAt[0] != 0L) {
+                    appDispatchedBeatNs = vsyncAt[0];
+                }
+                token = activeDispatchToken;
+                takenDispatchToken = token;
             }
             boolean pictured = picturesOnly.getAndSet(false);
             boolean picturedPaced = pictured && picturedFromPaced;
@@ -198,16 +241,27 @@ final class FrameScheduler {
             boolean external = app && externalWanted.getAndSet(false);
             long[] at = vsyncAt;
             long gen = continuitySource.continuityGen();
-            if (app && at[0] != 0L) lastAppDispatchedVsyncNs = at[0];
-            return new FramePacer.Taken(app, pictured, external, picturedPaced, at, gen);
+            return new FramePacer.Taken(app, pictured, external, picturedPaced, at, gen, token);
         }
     }
 
     /** Marks an immediate app frame without waiting for the next vsync (e.g. mid-frame imeBottom change). */
     void wantImmediateFrame() {
         synchronized (lock) {
+            boolean wasDispatched = appDispatched;
             appWanted.set(true);
             appDispatched = true;
+            aheadBeatSeq = 0L;
+            if (!wasDispatched || activeDispatchToken == 0L) {
+                activeDispatchToken = ++nextDispatchToken;
+            }
+            if (currentBeatSeq != 0L && appDispatchedBeatSeq != currentBeatSeq) {
+                appDispatchedBeatSeq = currentBeatSeq;
+                if (vsyncAt[0] != 0L) {
+                    appDispatchedBeatNs = vsyncAt[0];
+                    appDispatchedFromWallClock = false;
+                }
+            }
         }
     }
 
@@ -266,7 +320,7 @@ final class FrameScheduler {
             if (shows != 0L && vsyncAt[0] == t && vsyncAt[1] == 0L) {
                 vsyncAt = new long[] {t, shows};
             }
-            if (lastFrameNowAt != 0L && t <= lastFrameNowAt && lastFrameNowAt - t < periodSource.framePeriodNs() / 2L) {
+            if ((!imeMoving || appDispatchedFromWallClock) && isSameDispatchedBeatLocked(t)) {
                 act = handleDuplicateVsyncLocked(gen);
             } else if (imeMoving) {
                 deferredVsyncT = t;
@@ -286,7 +340,7 @@ final class FrameScheduler {
     void askAhead() {
         long postGen;
         synchronized (lock) {
-            ahead = false;
+            aheadBeatSeq = 0L;
             postGen = claimPostVsyncLocked();
         }
         if (postGen != 0L) p.postMain(() -> p.postVsync(postGen));
@@ -303,24 +357,28 @@ final class FrameScheduler {
                 picturesOnly.set(true);
                 if (fromPaced) picturedFromPaced = true;
             }
-            boolean alreadyPendingForT = false;
-            if (ahead) {
-                ahead = false;
+            boolean alreadyPendingForBeat = false;
+            if (aheadBeatSeq != 0L) {
+                long claimedBeat = aheadBeatSeq;
+                aheadBeatSeq = 0L;
                 long t = vsyncAt[0];
                 long age = p.nanoTime() - t;
                 if (age >= 0L && age < periodSource.framePeriodNs()) {
-                    if (forApp && t != 0L && lastAppDispatchedVsyncNs == t) {
-                        if (appDispatched) alreadyPendingForT = true;
+                    if (forApp && appDispatchedBeatSeq == claimedBeat) {
+                        if (appDispatched) alreadyPendingForBeat = true;
                     } else {
                         if (forApp) {
-                            if (t != 0L) lastAppDispatchedVsyncNs = t;
+                            appDispatchedBeatSeq = claimedBeat;
+                            activeDispatchToken = ++nextDispatchToken;
+                            appDispatchedBeatNs = t;
+                            appDispatchedFromWallClock = false;
                             appDispatched = true;
                         }
                         act = ACT_RENDER;
                     }
                 }
             }
-            if (!alreadyPendingForT && act == ACT_NONE) {
+            if (!alreadyPendingForBeat && act == ACT_NONE) {
                 act = claimPostVsyncLocked();
             }
         }
@@ -330,7 +388,7 @@ final class FrameScheduler {
     /** Clears the ahead slot when a frame finishes without requesting another frame. */
     void clearAhead() {
         synchronized (lock) {
-            ahead = false;
+            aheadBeatSeq = 0L;
         }
     }
 
@@ -345,11 +403,12 @@ final class FrameScheduler {
             externalWanted.set(true);
             appWanted.set(true);
             appDispatched = true;
-            ahead = false;
+            aheadBeatSeq = 0L;
             long now = p.nanoTime();
-            lastFrameNowAt = now;
-            long dt = deferredVsync ? deferredVsyncT : now;
-            if (dt != 0L) lastAppDispatchedVsyncNs = dt;
+            long beat = ++nextBeatSeq;
+            currentBeatSeq = beat;
+            appDispatchedBeatSeq = beat;
+            activeDispatchToken = ++nextDispatchToken;
             if (deferredVsync) {
                 boolean fromVsync = deferredFromVsync;
                 long defGen = deferredVsyncGen;
@@ -359,9 +418,13 @@ final class FrameScheduler {
                 deferredWakeApp = false;
                 deferredWakeExternal = false;
                 vsyncAt = new long[] {deferredVsyncT, deferredVsyncShows};
+                appDispatchedBeatNs = deferredVsyncT;
+                appDispatchedFromWallClock = false;
                 if (fromVsync) clearActiveVsyncLocked(defGen);
             } else {
                 vsyncAt = new long[] {now, 0L};
+                appDispatchedBeatNs = now;
+                appDispatchedFromWallClock = true;
             }
             if (imeMoving) {
                 postGen = claimPostVsyncLocked();
@@ -372,6 +435,22 @@ final class FrameScheduler {
     }
 
     // ---- locked state-machine helpers ----
+
+    /**
+     * Whether Choreographer timestamp {@code t} matches the beat already dispatched under
+     * {@link #activeDispatchToken}. Wall-clock {@link #frameNow()} beats lack Choreographer's
+     * latched timestamp, so a same-beat callback arrives slightly before {@link #appDispatchedBeatNs}
+     * (within half a frame period).
+     */
+    private boolean isSameDispatchedBeatLocked(long t) {
+        if (t == 0L || activeDispatchToken == 0L || appDispatchedBeatNs == 0L) {
+            return false;
+        }
+        if (t == appDispatchedBeatNs) return true;
+        return appDispatchedFromWallClock
+                && t < appDispatchedBeatNs
+                && appDispatchedBeatNs - t < periodSource.framePeriodNs() / 2L;
+    }
 
     private long claimPostVsyncLocked() {
         if (activeVsyncGen != 0L) return ACT_NONE;
@@ -392,7 +471,7 @@ final class FrameScheduler {
         }
     }
 
-    /** Handles a duplicate vsync callback for an already-dispatched vsync (inside lock). */
+    /** Handles a duplicate vsync callback for an already-dispatched beat (inside lock). */
     private long handleDuplicateVsyncLocked(long gen) {
         clearActiveVsyncLocked(gen);
         boolean app = appWanted.get();
@@ -409,14 +488,14 @@ final class FrameScheduler {
     }
 
     private long wakeFrameNowLocked(long vsyncNs, long shows, boolean pacedOnly) {
-        if (vsyncNs != 0L && lastAppDispatchedVsyncNs == vsyncNs) {
-            if (!pacedOnly) externalForVsync = vsyncNs;
+        if (isSameDispatchedBeatLocked(vsyncNs)) {
+            if (!pacedOnly && activeDispatchToken != 0L) externalForToken = activeDispatchToken;
             return ACT_NONE;
         }
         if (imeMoving) {
             deferredWakeApp = true;
             if (!pacedOnly) deferredWakeExternal = true;
-            ahead = false;
+            aheadBeatSeq = 0L;
             if (!deferredVsync) {
                 deferredVsyncT = vsyncNs;
                 deferredVsyncShows = shows;
@@ -433,9 +512,12 @@ final class FrameScheduler {
         if (!pacedOnly) externalWanted.set(true);
         appWanted.set(true);
         appDispatched = true;
-        ahead = false;
-        if (vsyncNs != 0L) lastAppDispatchedVsyncNs = vsyncNs;
-        lastFrameNowAt = vsyncNs;
+        aheadBeatSeq = 0L;
+        long beat = ++nextBeatSeq;
+        currentBeatSeq = beat;
+        appDispatchedBeatSeq = beat;
+        activeDispatchToken = ++nextDispatchToken;
+        appDispatchedFromWallClock = false;
         if (deferredVsync) {
             boolean fromVsync = deferredFromVsync;
             long defGen = deferredVsyncGen;
@@ -445,40 +527,50 @@ final class FrameScheduler {
             deferredWakeApp = false;
             deferredWakeExternal = false;
             vsyncAt = new long[] {deferredVsyncT, deferredVsyncShows};
+            appDispatchedBeatNs = deferredVsyncT;
             if (fromVsync) clearActiveVsyncLocked(defGen);
         } else {
             long s = shows != 0L ? shows : (vsyncAt[0] == vsyncNs ? vsyncAt[1] : 0L);
             vsyncAt = new long[] {vsyncNs, s};
+            appDispatchedBeatNs = vsyncNs;
         }
         return ACT_RENDER;
     }
 
     private long dispatchVsyncLocked(long t, long shows, boolean fromVsync, long gen) {
-        vsyncAt = new long[] {t, shows};
         boolean app = appWanted.get();
-        if (t != 0L && lastAppDispatchedVsyncNs == t) {
+        if (isSameDispatchedBeatLocked(t)) {
             if (fromVsync) {
                 return handleDuplicateVsyncLocked(gen);
             }
             return (!app && picturesOnly.get()) ? ACT_RENDER : ACT_NONE;
         }
+        vsyncAt = new long[] {t, shows};
+        long beat = ++nextBeatSeq;
+        currentBeatSeq = beat;
         if (app || picturesOnly.get()) {
-            ahead = false;
+            aheadBeatSeq = 0L;
             if (fromVsync) clearActiveVsyncLocked(gen);
             if (app) {
-                if (t != 0L) lastAppDispatchedVsyncNs = t;
+                appDispatchedBeatSeq = beat;
+                activeDispatchToken = ++nextDispatchToken;
+                appDispatchedBeatNs = t;
+                appDispatchedFromWallClock = false;
                 appDispatched = true;
             }
             return ACT_RENDER;
         }
-        ahead = true;
+        aheadBeatSeq = beat;
         if (fromVsync) clearActiveVsyncLocked(gen);
         // (a frame wanted as this was kept: the one asking saw it not yet kept, and asked for another vsync, or none)
         boolean app2 = appWanted.get();
-        if ((app2 || picturesOnly.get()) && ahead) {
-            ahead = false;
+        if ((app2 || picturesOnly.get()) && aheadBeatSeq == beat) {
+            aheadBeatSeq = 0L;
             if (app2) {
-                if (t != 0L) lastAppDispatchedVsyncNs = t;
+                appDispatchedBeatSeq = beat;
+                activeDispatchToken = ++nextDispatchToken;
+                appDispatchedBeatNs = t;
+                appDispatchedFromWallClock = false;
                 appDispatched = true;
             }
             return ACT_RENDER;
@@ -495,7 +587,6 @@ final class FrameScheduler {
         deferredVsyncGen = 0L;
         long t = deferredVsyncT;
         long shows = deferredVsyncShows;
-        vsyncAt = new long[] {t, shows};
         if (deferredWakeApp) {
             if (deferredWakeExternal) externalWanted.set(true);
             appWanted.set(true);

@@ -401,9 +401,9 @@ pub fn Replay::keep_stations(self : Replay) -> Unit {
     if e.out {
       match kind_of(m) {
         "subscribe" if name_of(m) == "stations" => {
-          let t = match m.get("subscribe") {
+          let t : Map[String, Json] = match m.get("subscribe") {
             Some(Object(t)) => t
-            _ => {}
+            _ => Map([])
           }
           let rank = if t.get("brief") == Some(Json::boolean(true)) {
             0
@@ -413,7 +413,11 @@ pub fn Replay::keep_stations(self : Replay) -> Unit {
             2
           }
           owner[id] = self.kept.length()
-          self.kept.push({ scope: canon(t.get("scope").unwrap_or(Json::null())), rank, value: None, given: 0 })
+          let scope_j = match t.get("scope") {
+            Some(v) => v
+            None => Json::null()
+          }
+          self.kept.push({ scope: canon(scope_j), rank, value: None, given: 0 })
           e.done = true
         }
         "subscribe" | "call" => owner.remove(id)
@@ -471,7 +475,7 @@ pub fn Replay::skip_where(self : Replay, which : (String, Json) -> Bool) -> Unit
       !e.done &&
       e.msg is Object(m) &&
       kind_of(m) == "call" &&
-      which(name_of(m), m.get("params").unwrap_or(Json::null())) {
+      which(name_of(m), match m.get("params") { Some(v) => v; None => Json::null() }) {
       e.done = true
       match id_of(m) {
         Some(id) => gone.push(id)
@@ -984,9 +988,13 @@ pub fn Replay::sent_bytes_from(self : Replay, name : String, key : String, prefi
 ///|
 /// Whether the run answered the call it had as `id` (an `ok` or an `error` for it).
 fn Replay::answers(self : Replay, id : Int) -> Bool {
-  self.evs.iter().any(fn(e) {
-    !e.out && e.msg is Object(m) && (m.contains("ok") || m.contains("error")) && id_of(m) == Some(id)
-  })
+  for i = 0; i < self.evs.length(); i = i + 1 {
+    let e = self.evs[i]
+    if !e.out && e.msg is Object(m) && (m.contains("ok") || m.contains("error")) && id_of(m) == Some(id) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -1432,7 +1440,7 @@ fn Replay::out(self : Replay, text : String) -> Unit {
     match id_of(m) {
       Some(now) if kind == "subscribe" && name_of(m) == "stations" => {
         let scope = match m.get("subscribe") {
-          Some(Object(t)) => canon(t.get("scope").unwrap_or(Json::null()))
+          Some(Object(t)) => canon(match t.get("scope") { Some(v) => v; None => Json::null() })
           _ => canon(Json::null())
         }
         self.stations_asked[now] = scope

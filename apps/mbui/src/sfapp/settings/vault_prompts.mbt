@@ -1,9 +1,18 @@
-// A member's device set up without the key to a vault of the person's own, waiting on this one for it (the core's
-// `lockPrompts` topic's `asks`, views/vault.ts `vaultAsks`: the topic every page has open and every recorded run asks, so no
-// topic of its own; the lock's own prompts are lock_prompts.mbt): put up over whichever page is open, in any
-// workspace of the person's, once, until given the key here (授权: `vault.addDevice {vault, device}`, this device's key
-// unsealed, the person asked once) or put away (稍后, a tap beside it: `vault.hidePrompt {device}`, put up again once that
-// device asks again: a certificate dated later). Given the key on another device, it goes by itself.
+// A member's device whose person pressed 申请授权 for a vault this device holds the key to (the core's `lockPrompts`
+// topic's `asks`, views/vault.ts `vaultAsks`: the topic every page has open and every recorded run asks, so no topic
+// of its own; the lock's own prompts are lock_prompts.mbt): put up over whichever page is open, in any workspace of
+// the person's, once, until given the key here (授权: `vault.addDevice {vault, device}`, this device's key unsealed,
+// the person asked once) or put away (稍后, a tap beside it: `vault.hidePrompt {vault, device, at}`, put up again
+// once that device asks for that vault again with a later timestamp). Given the key on another device, it goes by itself.
+
+///|
+/// Full-precision ask timestamp (`Double`, avoiding 32-bit `Int` narrowing on timestamps past 2038).
+fn key_ask_at(rv : Json?) -> Double {
+  match field(rv, "at") {
+    Some(Number(n, ..)) => n
+    _ => 0.0
+  }
+}
 
 ///|
 /// The asks put up here (a device, a vault and when it asked, `key_ask_of`), then put away: not put up again while the
@@ -13,7 +22,7 @@ let key_asks_closed : Array[String] = []
 
 ///|
 fn key_ask_of(r : Json) -> String {
-  text(Some(r), "workspace") + " " + text(Some(r), "vault") + " " + text(Some(r), "device") + " " + count(Some(r), "at").to_string()
+  text(Some(r), "workspace") + " " + text(Some(r), "vault") + " " + text(Some(r), "device") + " " + key_ask_at(Some(r)).to_string()
 }
 
 ///|
@@ -51,7 +60,11 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
   key_asks_closed.push(ask)
   let on = [("workspace", ws), ("vault", vault), ("device", device)]
   let hide = fn() {
-    (core.call)("vault.hidePrompt", obj([("workspace", str(ws)), ("device", str(device)), ("at", Json::number(count(rv, "at").to_double()))]), answer_unread)
+    (core.call)(
+      "vault.hidePrompt",
+      obj([("workspace", str(ws)), ("vault", str(vault)), ("device", str(device)), ("at", Json::number(key_ask_at(rv)))]),
+      answer_unread,
+    )
   }
   let giving = fn() { is_doing(core, ["vault.addDevice"], on) }
   // 稍后 then 授权 in the panel's foot: side by side across a sheet's, at a dialog's end in its corner (panel_nodes')
@@ -84,19 +97,30 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
       Some(False) => false
       _ => true
     }
-    let body_key = if safe_mode { "web-pages.vault.promptBody" } else { "web-pages.vault.promptBodyNoSafeMode" }
     let dev_code = text(rv, "deviceCode")
     let owner_name = text(rv, "ownerName")
     let owner_email = text(rv, "ownerEmail")
+    let owner_who = if owner_name != "" { owner_name } else { owner_email }
     let is_own = flag(rv, "isOwnDevice")
+    // (a teammate's device asking for a workspace vault's key is never one of this person's trusted devices:
+    // use ownerName -> ownerEmail -> generic non-self fallback, never falling back to promptBodyNoSafeMode)
+    let body_key = if safe_mode {
+      "web-pages.vault.promptBody"
+    } else if !is_own && owner_who != "" {
+      "web-pages.vault.promptBodyTheirs"
+    } else if !is_own {
+      "web-pages.vault.promptBodyTheirsUnknown"
+    } else {
+      "web-pages.vault.promptBodyNoSafeMode"
+    }
     let at_text = text(rv, "atText")
-    let has_info = dev_code != "" || owner_name != "" || at_text != ""
+    let has_info = dev_code != "" || owner_who != "" || at_text != ""
     let has_items = field(rv, "vaultItems") is Some(Number(_))
     let item_count = count(rv, "vaultItems")
     let is_ws_vault = text(rv, "vaultScope") == "workspace"
     v.box(fn(col) {
       @sf.style_node(col, fn() { key_ask_column })
-      @sf.words_node(col, fn() { fill(body_key, [("vault", text(rv, "vaultName")), ("at", at_text)]) }, fn() {
+      @sf.words_node(col, fn() { fill(body_key, [("vault", text(rv, "vaultName")), ("at", at_text), ("owner", owner_who)]) }, fn() {
         key_ask_body
       })
       |> ignore
@@ -120,14 +144,14 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
             })
             |> ignore
           }
-          if owner_name != "" {
+          if owner_who != "" {
             let owner_text = fn() {
               let base = if is_own {
-                fill("web-pages.vault.promptOwnerSelf", [("name", owner_name)])
+                fill("web-pages.vault.promptOwnerSelf", [("name", owner_who)])
               } else {
-                owner_name
+                owner_who
               }
-              if owner_email != "" && owner_email != owner_name {
+              if owner_email != "" && owner_email != owner_who {
                 base + " · " + owner_email
               } else {
                 base

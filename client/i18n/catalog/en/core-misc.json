@@ -360,6 +360,8 @@
   "core-misc.vault.noPlainStation": "No station can keep secrets: update your stations",
   "core-misc.vault.plainLocked": "Secrets now always go into the encrypted vault: update the station it came from and try again",
   "core-misc.vault.memberNotOnStation": "A selected member has not connected to this station yet. Update the station or wait until that member connects.",
+  "core-misc.vault.askStationOld": "Stations are too old to forward key requests: update your stations, or ask an admin to authorize this device in Vault › Devices",
+  "core-misc.vault.askNoStation": "No online station accepted the key request: try again shortly, or ask an admin to authorize this device in Vault › Devices",
   "core-misc.vault.browseEmpty": "No personal secrets from other workspaces can be shared",
   "core-misc.reader.gone": "That book is no longer open; open it again",
   "core-misc.personal.noKey": "This device can't keep a device key. Use the desktop or Android app",

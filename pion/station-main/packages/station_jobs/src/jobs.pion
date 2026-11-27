@@ -436,6 +436,21 @@ pub struct JobManager {
   pub mut next_event_id : Int64
 }
 
+pub fn JobManager::detach_all_for_handover(self : JobManager) -> Unit {
+  let keys = self.active_by_job.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.active_by_job.get(k) {
+      Some(active) => {
+        let _ = (self.backend.close_handle)(active.child)
+        self.event_to_job.remove(active.event_id)
+      }
+      None => ()
+    }
+    self.active_by_job.remove(k)
+  }
+}
+
 pub fn JobManager::new(
   data_dir : String,
   fs : FsPort,

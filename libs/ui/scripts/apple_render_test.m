@@ -5708,6 +5708,88 @@ int main(void) {
         }
         free(px_light);
 
+        // v10_through_hole_adaptive_ink: adaptive Light liquid glass over a real kind==9 native-view hole
+        // must keep light glass + dark text (kind==7) + dark opaque adaptive_ink progress bar (kind==0, pad.w<0),
+        // while an identical capsule over the opaque black stage (a==1) flips to dark glass + bright white ink,
+        // and a capsule over a 70% dark scrim (rgba(0,0,0,0.70)) atop the kind==9 hole flips its text bright white.
+        {
+          mb_render_set_size(400, 240, 2);
+          test_frost_can = 1;
+          uint8_t solid_g[16 * 16];
+          memset(solid_g, 255, sizeof solid_g);
+          mb_atlas_upload(0, 16, 16, 16, 16, solid_g);
+          double th[11 * MB_INST];
+          rect_at(th + 0 * MB_INST, 0, 0, 400, 240, 0, 0.0, 0.0, 0.0, 0);
+          rect_at(th + 1 * MB_INST, 0, 0, 200, 240, 9, 0.0, 0.0, 0.0, MB_VIEW_TEX + 7);
+          // Capsule A over raw kind==9 hole: (20, 36, 160, 48), center (100, 60)
+          rect_at(th + 2 * MB_INST, 20, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -381);
+          th[2 * MB_INST + 4] = 24.0; th[2 * MB_INST + 6] = 1.0; th[2 * MB_INST + 7] = 2.0;
+          th[2 * MB_INST + 11] = 0x67 / 255.0; th[2 * MB_INST + 12] = 0.0; th[2 * MB_INST + 13] = 14.0;
+          th[2 * MB_INST + 14] = -1.0; th[2 * MB_INST + 15] = 1.0;
+          // Capsule A text (kind==7, 0x18181BFF) at center (56, 60)
+          rect_at(th + 3 * MB_INST, 48, 52, 16, 16, 7, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0);
+          th[3 * MB_INST + 12] = 16.0; th[3 * MB_INST + 13] = 16.0; th[3 * MB_INST + 14] = 16.0; th[3 * MB_INST + 15] = 16.0;
+          th[3 * MB_INST + 21] = 100.0; th[3 * MB_INST + 22] = 60.0; th[3 * MB_INST + 23] = 48.0;
+          // Capsule A opaque adaptive_ink progress bar (kind==0, pad.w=-48, 0x18181BFF) at center (134, 60)
+          rect_at(th + 4 * MB_INST, 104, 52, 60, 16, 0, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0);
+          th[4 * MB_INST + 4] = 8.0;
+          th[4 * MB_INST + 21] = 100.0; th[4 * MB_INST + 22] = 60.0; th[4 * MB_INST + 23] = -48.0;
+          // Capsule B over opaque pure black stage: (220, 36, 160, 48), center (300, 60)
+          rect_at(th + 5 * MB_INST, 220, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -382);
+          th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = 1.0; th[5 * MB_INST + 7] = 2.0;
+          th[5 * MB_INST + 11] = 0x67 / 255.0; th[5 * MB_INST + 12] = 0.0; th[5 * MB_INST + 13] = 14.0;
+          th[5 * MB_INST + 14] = -1.0; th[5 * MB_INST + 15] = 1.0;
+          // Capsule B text (kind==7, 0x18181BFF) at center (256, 60)
+          rect_at(th + 6 * MB_INST, 248, 52, 16, 16, 7, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0);
+          th[6 * MB_INST + 12] = 16.0; th[6 * MB_INST + 13] = 16.0; th[6 * MB_INST + 14] = 16.0; th[6 * MB_INST + 15] = 16.0;
+          th[6 * MB_INST + 21] = 300.0; th[6 * MB_INST + 22] = 60.0; th[6 * MB_INST + 23] = 48.0;
+          // Capsule B opaque adaptive_ink progress bar (kind==0, pad.w=-48, 0x18181BFF) at center (334, 60)
+          rect_at(th + 7 * MB_INST, 304, 52, 60, 16, 0, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0);
+          th[7 * MB_INST + 4] = 8.0;
+          th[7 * MB_INST + 21] = 300.0; th[7 * MB_INST + 22] = 60.0; th[7 * MB_INST + 23] = -48.0;
+          // 70% dark scrim (rgba(0,0,0,0.70)) over bottom-left kind==9 hole: (10, 150, 180, 70)
+          rect_at(th + 8 * MB_INST, 10, 150, 180, 70, 0, 0.0, 0.0, 0.0, 0);
+          th[8 * MB_INST + 11] = 0.70;
+          // Capsule C over 70% dark scrim on kind==9 hole: (20, 160, 160, 50), center (100, 185)
+          rect_at(th + 9 * MB_INST, 20, 160, 160, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -383);
+          th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = 1.0; th[9 * MB_INST + 7] = 2.0;
+          th[9 * MB_INST + 11] = 0x67 / 255.0; th[9 * MB_INST + 12] = 0.0; th[9 * MB_INST + 13] = 14.0;
+          th[9 * MB_INST + 14] = -1.0; th[9 * MB_INST + 15] = 1.0;
+          // Capsule C dark adaptive text (kind==7, #1A1A1A) at center (100, 185)
+          rect_at(th + 10 * MB_INST, 92, 177, 16, 16, 7, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 0);
+          th[10 * MB_INST + 12] = 16.0; th[10 * MB_INST + 13] = 16.0; th[10 * MB_INST + 14] = 16.0; th[10 * MB_INST + 15] = 16.0;
+          th[10 * MB_INST + 21] = 100.0; th[10 * MB_INST + 22] = 185.0; th[10 * MB_INST + 23] = 50.0;
+          glass_forget();
+          shown_ok = 0;
+          mb_host_render_dirty(0, 0, 400, 240);
+          mb_render_present(th, 11, 0.0, 0.0, 0.0);
+          present_drain();
+          int tw = 0, thh = 0;
+          uint8_t *px_th = read_texture(canvas, &tw, &thh);
+          uint8_t *a_gl = px_th + ((size_t)(60 * 2) * tw + 84 * 2) * 4;
+          uint8_t *a_tx = px_th + ((size_t)(60 * 2) * tw + 56 * 2) * 4;
+          uint8_t *a_br = px_th + ((size_t)(60 * 2) * tw + 134 * 2) * 4;
+          uint8_t *b_gl = px_th + ((size_t)(60 * 2) * tw + 284 * 2) * 4;
+          uint8_t *b_tx = px_th + ((size_t)(60 * 2) * tw + 256 * 2) * 4;
+          uint8_t *b_br = px_th + ((size_t)(60 * 2) * tw + 334 * 2) * 4;
+          uint8_t *c_tx = px_th + ((size_t)(185 * 2) * tw + 100 * 2) * 4;
+          double a_tx_l = (0.2126 * a_tx[2] + 0.7152 * a_tx[1] + 0.0722 * a_tx[0]) / 255.0;
+          double a_br_l = (0.2126 * a_br[2] + 0.7152 * a_br[1] + 0.0722 * a_br[0]) / 255.0;
+          double b_gl_l = (0.2126 * b_gl[2] + 0.7152 * b_gl[1] + 0.0722 * b_gl[0]) / 255.0;
+          double b_tx_l = (0.2126 * b_tx[2] + 0.7152 * b_tx[1] + 0.0722 * b_tx[0]) / 255.0;
+          double b_br_l = (0.2126 * b_br[2] + 0.7152 * b_br[1] + 0.0722 * b_br[0]) / 255.0;
+          double c_tx_l = (0.2126 * c_tx[2] + 0.7152 * c_tx[1] + 0.0722 * c_tx[0]) / 255.0;
+          printf("apple_render: v10_through_hole_adaptive_ink hole=(gl=%d/%d tx=%.3f br=%.3f) stage=(gl=%.3f tx=%.3f br=%.3f) scrim70=(tx=%.3f)\n",
+                 a_gl[2], a_gl[3], a_tx_l, a_br_l, b_gl_l, b_tx_l, b_br_l, c_tx_l);
+          CHECK(a_gl[3] >= 100 && a_gl[3] <= 170 && a_gl[2] >= a_gl[3] - 12);
+          CHECK(a_tx_l < 0.25 && a_br_l < 0.25);
+          CHECK(b_gl[3] == 255 && b_gl_l < 0.35);
+          CHECK(b_tx_l > 0.75 && b_br_l > 0.75);
+          CHECK(c_tx_l > 0.75);
+          free(px_th);
+          mb_render_set_size(400, 300, 2);
+        }
+
         // Frost overflow beyond MB_FROSTS: any tid that cannot fit all its instances is dropped from through_tid
         // (and its partial frosts stripped) so no card renders transparent without a CABackdropLayer.
         {

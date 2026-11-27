@@ -583,31 +583,52 @@ let machine_go_row : @ui.Style = @ui.css("row w=Full pt=S2_5 pb=S6 gap=S2 justif
 ///|
 /// The emails in what was typed or pasted (parseEmails): each once, lowercased.
 fn parse_emails(words : String) -> Array[String] {
-  let out : Array[String] = []
+  typed_parts(words).emails
+}
+
+///|
+/// What was typed or pasted, cut into words where parseEmails cuts it: its emails (each once, lowercased); the words
+/// with an `@` in them that are no email, each once as typed, but the last while nothing follows it yet (still being
+/// written: `writing`, said gently rather than as a mistake).
+priv struct TypedParts {
+  emails : Array[String]
+  wrong : Array[String]
+  writing : Bool
+}
+
+///|
+/// `words` cut into TypedParts.
+fn typed_parts(words : String) -> TypedParts {
+  let emails : Array[String] = []
+  let wrong : Array[String] = []
+  let writing = Ref(false)
   let stop = fn(ch : Char) { ch == ' ' || ch == '\n' || ch == '\t' || ch == ',' || ch == ';' || ch == '<' || ch == '>' || ch == '"' || ch == '\'' || ch == '(' || ch == ')' || ch == '，' || ch == '；' }
   let b = StringBuilder()
-  let flush = fn() {
+  let flush = fn(last : Bool) {
     let w = b.to_string()
     b.reset()
-    match w.find("@") {
-      Some(at) if at > 0 && w.unsafe_substring(start=at + 1, end=w.length()).contains(".") => {
-        let e = w.to_lower()
-        if !out.contains(e) && !e.has_suffix(".") {
-          out.push(e)
-        }
-      }
-      _ => ()
+    let email = match w.find("@") {
+      Some(at) if at > 0 && w.unsafe_substring(start=at + 1, end=w.length()).contains(".") && !w.has_suffix(".") =>
+        Some(w.to_lower())
+      _ => None
+    }
+    match email {
+      Some(e) => if !emails.contains(e) { emails.push(e) }
+      // (a name or other words of a pasted address book line, "Ana <ana@example.com>", are no attempt at an email)
+      None if !w.contains("@") => ()
+      None if last => writing.val = true
+      None => if !wrong.contains(w) { wrong.push(w) }
     }
   }
   for ch in words {
     if stop(ch) {
-      flush()
+      flush(false)
     } else {
       b.write_char(ch)
     }
   }
-  flush()
-  out
+  flush(true)
+  { emails, wrong, writing: writing.val }
 }
 
 ///|
@@ -690,9 +711,48 @@ fn add_people_emails(st : AddPeople) -> Array[String] {
 }
 
 ///|
+/// What adding people says under the emails typed, each "" where it has nothing to say: those typed who are members
+/// already, those typed who were added already and join at their first sign-in, the words with an `@` that are no
+/// email; `whole` where an email is still being written, or nothing typed is one (how one is written, said gently).
+/// Nothing typed or nothing but new emails: all of it "" and `whole` false.
+#derive(Eq)
+priv struct AddPeopleSaid {
+  members : String
+  added : String
+  wrong : String
+  whole : Bool
+}
+
+///|
+/// `list` named in a sentence of `key` (its `.one` when it is one).
+fn add_people_named(key : String, list : Array[String], app? : String = "") -> String {
+  if list.length() == 0 {
+    return ""
+  }
+  fill(key, [("n", list.length().to_string()), ("list", join(list, tr("android-settings.add.listSep"))), ("app", app)])
+}
+
+///|
+/// What adding people says under what `typed` (AddPeopleSaid), the workspace's `view` saying who is in it already.
+fn add_people_said_of(typed : String, view : Json?) -> AddPeopleSaid {
+  let parts = typed_parts(typed)
+  let members = items(view, "members").map(fn(m) { text(Some(m), "email").to_lower() })
+  let added = items(view, "added").map(fn(a) { text(Some(a), "email").to_lower() })
+  let are_members = parts.emails.filter(fn(e) { members.contains(e) })
+  let are_added = parts.emails.filter(fn(e) { !members.contains(e) && added.contains(e) })
+  {
+    members: add_people_named("android-settings.add.isMember", are_members),
+    added: add_people_named("android-settings.add.isAdded", are_added, app=@sf.product()),
+    wrong: add_people_named("android-settings.add.notEmail", parts.wrong),
+    whole: parts.writing || (parts.emails.length() == 0 && parts.wrong.length() == 0 && typed.trim(chars=" \t\n,;，；").length() > 0),
+  }
+}
+
+///|
 /// Adding people's body in node `v`: the form (what it does, the emails, the Slack people of the online stations, the
 /// role, why it failed) or, once added, what came of it.
 fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> Unit {
+  let said = @signals.computed(fn(_) { add_people_said_of(st.typed.get(), st.view) })
   v.pick(fn() { st.done.get() != "" }, fn(b, done) {
     if done {
       b.box(fn(n) {
@@ -721,9 +781,25 @@ fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> 
         rows=1,
         most=3,
         placeholder=tr("android-settings.add.emailsPlaceholder"),
+        error=fn() { said.get().wrong },
+        invalid=fn() { said.get().wrong != "" },
         edited=fn(t) { st.typed.set(t) },
       )
       |> ignore
+      // (under the field, at once as it is typed, as the field's own lines grow: who of it is in already, what of it is
+      // no email, red only for that)
+      n.show(at_once=true, fn() { said.get().members != "" }, fn(w) {
+        @sf.words_node(w, fn() { said.get().members }, fn() { add_note_words }) |> ignore
+      })
+      n.show(at_once=true, fn() { said.get().added != "" }, fn(w) {
+        @sf.words_node(w, fn() { said.get().added }, fn() { add_note_words }) |> ignore
+      })
+      n.show(at_once=true, fn() { said.get().wrong != "" }, fn(w) {
+        @sf.words_node(w, fn() { said.get().wrong }, fn() { add_error_words }) |> ignore
+      })
+      n.show(at_once=true, fn() { said.get().whole }, fn(w) {
+        @sf.words_node(w, fn() { tr("android-settings.add.whole") }, fn() { add_note_words }) |> ignore
+      })
     })
     |> ignore
     b.show(fn() { online_stations(core, here).length() > 0 }, fn(s) {

@@ -193,3 +193,57 @@ test("a client gone closes the service's socket, and a refusal says why", async 
   assert.equal(none.status, 502);
   assert.ok(none.message.includes(`localhost:${http.port} 无响应`), none.message);
 });
+
+test("FrameReader joins multi-chunk frames once, handles zero-length and trailing frames, and rejects truncated or oversized frames", async (t) => {
+  const big = Buffer.alloc(40_000);
+  for (let i = 0; i < big.length; i += 4) big.writeUInt32BE(i, i);
+  const first = frame(FRAME_BINARY, big);
+  const empty = frame(FRAME_BINARY, Buffer.alloc(0));
+  const trail = frame(FRAME_TEXT, Buffer.from("ok"));
+  const wire = Buffer.concat([first, empty, trail]);
+
+  const pipe = new Pipe();
+  const reader = new FrameReader(pipe, wire.subarray(0, 2));
+  await pipe.write(wire.subarray(2, 5));
+  await pipe.write(Buffer.alloc(0));
+  for (let at = 5; at < wire.length; at += 8192) await pipe.write(wire.subarray(at, at + 8192));
+  await pipe.finish();
+
+  const joins = t.mock.method(Buffer, "concat");
+  let f1;
+  let f2;
+  let f3;
+  let eof;
+  try {
+    f1 = await reader.next();
+    f2 = await reader.next();
+    f3 = await reader.next();
+    eof = await reader.next();
+  } finally {
+    joins.mock.restore();
+  }
+  const joined = joins.mock.calls.reduce((sum, call) => sum + (call.result?.length ?? 0), 0);
+  assert.ok(joined <= wire.length, `joined ${joined} bytes for ${wire.length} bytes of frames`);
+  assert.equal(f1?.[0], FRAME_BINARY);
+  assert.deepEqual(f1?.[1], big);
+  assert.deepEqual(f2, [FRAME_BINARY, Buffer.alloc(0)]);
+  assert.deepEqual(f3, [FRAME_TEXT, Buffer.from("ok")]);
+  assert.equal(eof, null);
+
+  // Oversized frame header rejects once 5 bytes arrive.
+  const overHead = Buffer.alloc(5);
+  overHead[0] = FRAME_BINARY;
+  overHead.writeUInt32BE(16 * 1024 * 1024 + 1, 1);
+  const overPipe = new Pipe();
+  await overPipe.finish();
+  await assert.rejects(new FrameReader(overPipe, overHead).next(), /frame too long/);
+
+  // Truncated header and truncated body both reject at EOF.
+  const truncHeaderPipe = new Pipe();
+  await truncHeaderPipe.finish();
+  await assert.rejects(new FrameReader(truncHeaderPipe, wire.subarray(0, 3)).next(), /the stream ended inside a frame/);
+
+  const truncBodyPipe = new Pipe();
+  await truncBodyPipe.finish();
+  await assert.rejects(new FrameReader(truncBodyPipe, first.subarray(0, 8192)).next(), /the stream ended inside a frame/);
+});

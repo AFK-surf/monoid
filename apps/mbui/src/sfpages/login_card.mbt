@@ -627,7 +627,7 @@ fn login_active_node(
 fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Json?, place : String, now : () -> Double) -> Unit {
   let id = text(@signals.untracked(l), "id")
   let field = login_field(place + "\u{1}" + station + "\u{1}" + id)
-  let words = fn() { field.text().trim(chars=" \n").to_owned() }
+  let words = fn() { field.composed_said().trim(chars=" \n").to_owned() }
   // (by the one it made: its step's press is a function made with it, no value to compare)
   let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "", now()) })
   let shows = fn() { shows.get() }

@@ -7,7 +7,9 @@ import { tr, stationLang } from "../ops/i18n.ts";
 
 export type Json = any;
 
-export type ThreadRef = { channel: string; threadTs: string };
+/// `replyTo`: a message of the conversation the post answers under, in its thread (Feishu: the agent's `reply_to`);
+/// a surface that has no such threads posts where the conversation is.
+export type ThreadRef = { channel: string; threadTs: string; replyTo?: string };
 
 /// What a station's own words in a thread (sessions/actor.ts `notice`, the hub's and the connects' ⚠️ words, its link
 /// to a new session, what it says of a relay, a chat opened or a copy that failed) end with as they are

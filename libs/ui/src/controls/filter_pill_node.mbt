@@ -7,7 +7,7 @@
 
 ///|
 /// A filter's pill in `parent`: what is picked said in it (`words()`), `lead` making its mark before the words, a ▾
-/// after them (`chevron`); pressed, `open` given the pill's button (what opens beside it). While `picked()`, on the
+/// after them (`chevron`); pressed, `open` given the pill (what opens beside it). While `picked()`, on the
 /// neutral ground, its words in the ink, and with `clear` a × at its end (read out `clear_label()`) clearing it,
 /// concentric with the capsule's end; else edged alone, its words muted. Its words cut short before it runs past what
 /// holds it. The pill.
@@ -27,13 +27,13 @@ pub fn filter_pill_node(
   parent.box(made_for=loc, fn(pill) {
     style_node(pill, fn() { if picked() { filter_pill_picked } else { filter_pill } }, in_row=true)
     pill.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    let me : Ref[@view.View?] = Ref(None)
-    @headless.button(pill, words, fn(_) { if me.val is Some(b) { open(b) } }, fn(btn, b) {
-      me.val = Some(btn)
+    let btn_lit : Ref[() -> Bool] = Ref(fn() { false })
+    let btn_focused : Ref[() -> Bool] = Ref(fn() { false })
+    @headless.button(pill, words, fn(_) { open(pill) }, fn(btn, b) {
+      btn_lit.val = fn() { b.hovered() || b.pressed() || b.focus_shown() }
+      btn_focused.val = fn() { b.focus_shown() }
       style_node(btn, fn() { if clears() { filter_pill_button_cleared } else { filter_pill_button } }, in_row=true)
       btn.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      btn.focus_ring_theme() |> ignore
-      hover_ground_node(btn, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
       match lead {
         Some(f) => f(btn)
         None => ()
@@ -49,12 +49,21 @@ pub fn filter_pill_node(
       }
     })
     |> ignore
+    let lit = btn_lit.val
+    let focused = btn_focused.val
+    // Highlight and edge-sharpen the whole outer capsule while the primary trigger is hovered/pressed/focused,
+    // leaving the concentric × button with its own quiet circle hover so no nested pill-in-pill appears.
+    hover_ground_node(pill, lit=Some(lit))
+    pill
+    .edge(By(fn() { control_edge(hot=lit()) }))
+    .ring(By(fn() { if focused() { (-1.0, 0.0, 0L) } else { (0.0, 0.0, 0L) } }))
+    |> ignore
     match clear {
       Some(f) =>
         pill.show(at_once=true, clears, fn(c) {
           style_node(c, fn() { filter_pill_clear_room }, in_row=true)
           c.shrink(Is(0.0)) |> ignore
-          icon_button_node(c, "close", clear_label, f, size=filter_pill_clear, icon_size=13.0) |> ignore
+          icon_button_node(c, "close", clear_label, f, size=filter_pill_clear, icon_size=filter_pill_clear_icon) |> ignore
         })
       None => ()
     }
@@ -347,35 +356,40 @@ pub fn chip_tabs_node(
 }
 
 ///|
-/// The pill's height (preset capsules', a press's room) and its ×, concentric with its end.
-let filter_pill_clear : Double = 32.0
+/// The pill's concentric × button (20×20 inside the 28pt capsule at 1.0x/1.3x font scale: (28 - 20) / 2 = 4pt inset).
+let filter_pill_clear : Double = 20.0
+
+///|
+let filter_pill_clear_icon : Double = 11.0
 
 ///|
 let filter_pill_chevron : Double = 12.0
 
 ///|
-/// The pill (the presets' capsule): a capsule edged in the line, 44 high; picked, on the neutral ground.
+/// The pill: a compact 28pt capsule (`S7`), edged via `control_edge` (`Line` at rest, `Border` while pointed at);
+/// picked, on the neutral ground.
 // kept across runs: a value (no field of it changes)
-let filter_pill : @ui.Style = @ui.css("row min_h=S11 min_w=S0 align=ACenter radius=Full border=B0_5 border_color=Line")
+let filter_pill : @ui.Style = @ui.css("row min_h=S7 min_w=S0 align=ACenter radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let filter_pill_picked : @ui.Style = filter_pill.then(@ui.css("bg=Neutral"))
 
 ///|
-/// What opens it: its mark, words and ▾ 12 in, 6 apart, round as the pill.
+/// What opens it: transparent hit area inside the outer capsule so hover lights the whole pill cleanly without a
+/// nested inner capsule; 10 in either side, 6 apart.
 // kept across runs: a value (no field of it changes)
-let filter_pill_button : @ui.Style = @ui.css("row min_h=S11 min_w=S0 px=S3 gap=S1_5 align=ACenter radius=Full")
+let filter_pill_button : @ui.Style = @ui.css("row min_h=S7 min_w=S0 px=S2_5 py=S0_5 gap=S1_5 align=ACenter")
 
 ///|
-/// With the × after it: as close to it as the × to the pill's end.
+/// With the × after it: 10 in on the left, 4 before the 20×20 × button (whose 11pt glyph adds 4.5pt optical margin).
 // kept across runs: a value (no field of it changes)
-let filter_pill_button_cleared : @ui.Style = @ui.css("row min_h=S11 min_w=S0 pl=S3 pr=S1 gap=S1_5 align=ACenter radius=Full")
+let filter_pill_button_cleared : @ui.Style = @ui.css("row min_h=S7 min_w=S0 pl=S2_5 pr=S1 py=S0_5 gap=S1_5 align=ACenter")
 
 ///|
-/// The ×'s room: as far in from the pill's end as makes it concentric with it ((44 - 32) / 2).
+/// The ×'s room: 4pt from the pill's right end, matching the vertical inset ((28 - 20) / 2) at 1.0x/1.3x font scale.
 // kept across runs: a value (no field of it changes)
-let filter_pill_clear_room : @ui.Style = @ui.css("row pr=S1_5 align=ACenter")
+let filter_pill_clear_room : @ui.Style = @ui.css("row pr=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

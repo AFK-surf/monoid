@@ -360,6 +360,8 @@
   "core-misc.vault.noPlainStation": "没有可存放密钥的 station：请更新 station",
   "core-misc.vault.plainLocked": "密钥现在都存入加密的库：请更新对应 station 后重试",
   "core-misc.vault.memberNotOnStation": "所选成员尚未连接过此 station，请先更新 station 或等该成员连接后再添加",
+  "core-misc.vault.askStationOld": "当前 station 版本较旧，暂不支持发送授权申请：请先更新 station，或请管理员在密钥库「设备」中手动授权",
+  "core-misc.vault.askNoStation": "当前没有在线的 station 接收授权申请，请稍后重试，或请管理员在密钥库「设备」中手动授权",
   "core-misc.vault.browseEmpty": "其它工作区暂无可共享的个人密钥",
   "core-misc.reader.gone": "这本书已经不在了，请重新打开",
   "core-misc.personal.noKey": "这台设备存不了设备钥匙，请用桌面或安卓 app",

@@ -252,6 +252,7 @@ test "大屏, 戳一下 on words its message has more than once: the time picked
   t.drag(px + pw / 4.0 + 1.0, py + ph / 2.0, px + pw * 3.0 / 4.0 - 1.0, py + ph / 2.0)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="戳一下")
+  t.move_to(700.0, 700.0)
   t.run_for(@ui.move_most_ms)
   let notes = @sfbase.intent_notes_for("ws1/st1:s-c1")
   assert_eq(notes.length(), 1)

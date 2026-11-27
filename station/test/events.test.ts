@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
-import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo, serializeRawOverview } from "../src/api/events.ts";
+import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_COUNTS_ONLY_LEGACY_MS, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo, serializeRawOverview } from "../src/api/events.ts";
 import { log } from "../src/ops/log.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
@@ -1243,7 +1243,7 @@ test("background overview changes coalesce into one trailing push and volatile t
 
   // Burst of background changes within 10 s coalesces into a single trailing overview after the window.
   for (let i = 2; i <= 5; i++) {
-    state.counts.running = i;
+    state.processes[0]!.pid = i;
     events.overviewSoon();
     await settle();
   }
@@ -1252,7 +1252,7 @@ test("background overview changes coalesce into one trailing push and volatile t
   await settle();
   const afterBurst = stream.got.filter((e) => e.event === "overview");
   assert.equal(afterBurst.length, 2, "one trailing overview after burst");
-  assert.equal(afterBurst[1]!.data.counts.running, 5);
+  assert.equal(afterBurst[1]!.data.processes[0].pid, 5);
 
   // Jitter in ample disk freeBytes, process rssMb, and machine telemetry does not emit another overview.
   state.disk.freeBytes -= 4_096_000;
@@ -1810,6 +1810,7 @@ test("a viewer's overview is told against what it was told without parsing it ag
 
     // A field and, past the margin, the bucket change: told, its keys said, nothing parsed.
     pushed.length = 0;
+    await time.adjust(OVERVIEW_COUNTS_ONLY_LEGACY_MS);
     const changed = await parsesIn(async () => {
       state.counts.running = 2;
       before.events.overviewChanged("direct");
@@ -1854,6 +1855,7 @@ test("a viewer's overview is told against what it was told without parsing it ag
       state.disk.freeBytes = 8 * GiB - 127 * MiB;
       after.events.overviewChanged();
       await settle();
+      await time.adjust(OVERVIEW_COUNTS_ONLY_LEGACY_MS);
       state.counts.running = 4;
       after.events.overviewChanged();
       await settle();
@@ -2365,4 +2367,184 @@ test("GET /events route enables overviewPatch only for clients advertising full 
   // Full modern core with overviewPatch=1: enabled.
   await route.handle({ ...baseReq, headers: { "stillfail-runtimes": RUNTIME_KINDS.join(","), "stillfail-profile-services": "1" } }, []);
   assert.deepEqual(calls, [false, false, false, true]);
+});
+
+test("legacy streams coalesce counts-only overview updates to 30s without resetting window on suppressed compares", async () => {
+  const time = testClock();
+  const { events } = setup(time.clock);
+  const state = { counts: { sessions: 5, running: 1, warm: 2 }, profiles: [{ id: "p1" }] };
+  events.follow({ overview: async () => structuredClone(state) });
+  const v = { ...viewer("a@x"), device: "dev-legacy-counts" };
+  const legacy = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+
+  // t=0: baseline full overview.
+  events.overviewChanged();
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1);
+
+  // t=10s: counts changes 1 -> 2 -> deferred until t=30s.
+  await time.adjust(10_000);
+  state.counts.running = 2;
+  events.overviewSoon("sessionState");
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1, "deferred at 10s");
+
+  // t=15s: counts bounces back to 1 (suppressed compare must NOT refresh lastFullSentAt).
+  await time.adjust(5_000);
+  state.counts.running = 1;
+  events.overviewChanged();
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1, "unchanged bounce suppressed");
+
+  // t=20s: counts changes 1 -> 3 -> still deferred to original t=30s deadline (10s left, not 30s from t=15s).
+  await time.adjust(5_000);
+  state.counts.running = 3;
+  events.overviewSoon("sessionState");
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1, "still deferred at 20s");
+
+  // t=25s: counts changes 3 -> 4 -> does not schedule a duplicate timer; still 1 overview.
+  await time.adjust(5_000);
+  state.counts.running = 4;
+  events.overviewChanged();
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1, "still deferred at 25s");
+
+  // t=30s: single trailing full overview arrives with the latest counts (running=4).
+  await time.adjust(5_000);
+  await settle();
+  const ovs = legacy.got.filter((e) => e.event === "overview");
+  assert.equal(ovs.length, 2, "at most one full overview delivered at 30s boundary");
+  assert.equal(ovs[1]!.data.counts.running, 4);
+
+  // Advancing further with no new changes emits nothing extra.
+  await time.adjust(OVERVIEW_COUNTS_ONLY_LEGACY_MS);
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 2);
+
+  await legacy.close();
+});
+
+test("co-scheduled deferred legacy devices flush together in one shared OverviewRound at 30s", async () => {
+  const time = testClock();
+  const { events } = setup(time.clock);
+  const state = { counts: { running: 1 }, profiles: [{ id: "p1" }] };
+  let sharedBuilds = 0;
+  events.follow({
+    overview: async (v, _lang, round) => {
+      let base = round?.get("base") as typeof state | undefined;
+      if (base === undefined) {
+        sharedBuilds++;
+        base = structuredClone(state);
+        round?.set("base", base);
+      }
+      return { ...base, viewer: { via: "mesh", ...v } };
+    },
+  });
+  const s1 = reader((await events.open({ ...viewer("a@x"), device: "dev-1" }, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+  const s2 = reader((await events.open({ ...viewer("a@x"), device: "dev-2" }, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+  const s3 = reader((await events.open({ ...viewer("a@x"), device: "dev-3" }, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+
+  events.overviewChanged();
+  await settle();
+  assert.equal(sharedBuilds, 1);
+
+  await time.adjust(10_000);
+  state.counts.running = 2;
+  events.overviewSoon("sessionState");
+  await settle();
+  assert.equal(s1.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(s2.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(s3.got.filter((e) => e.event === "overview").length, 1);
+
+  const buildsBefore30s = sharedBuilds;
+  await time.adjust(20_000);
+  await settle();
+  assert.equal(sharedBuilds, buildsBefore30s + 1, "all 3 deferred devices share one OverviewRound at 30s");
+  assert.equal(s1.got.filter((e) => e.event === "overview").length, 2);
+  assert.equal(s2.got.filter((e) => e.event === "overview").length, 2);
+  assert.equal(s3.got.filter((e) => e.event === "overview").length, 2);
+
+  await s1.close();
+  await s2.close();
+  await s3.close();
+});
+
+test("non-counts change within 30s flushes legacy overview immediately with latest counts and cancels trailing timer", async () => {
+  const time = testClock();
+  const { events } = setup(time.clock);
+  const state = { counts: { running: 1 }, profiles: [{ id: "p1", name: "old" }] };
+  events.follow({ overview: async () => structuredClone(state) });
+  const v = { ...viewer("a@x"), device: "dev-legacy-early" };
+  const legacy = reader((await events.open(v, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+
+  // t=0: baseline.
+  events.overviewChanged();
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1);
+
+  // t=10s: counts-only change is deferred (trailing timer set for t=30s).
+  await time.adjust(10_000);
+  state.counts.running = 2;
+  events.overviewSoon("sessionState");
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 1);
+
+  // t=15s: profiles also changes -> immediately pushes full overview carrying BOTH latest profiles and latest counts.
+  await time.adjust(5_000);
+  state.counts.running = 3;
+  state.profiles[0]!.name = "new";
+  events.overviewChanged("accounts");
+  await settle();
+  const ovs = legacy.got.filter((e) => e.event === "overview");
+  assert.equal(ovs.length, 2, "non-counts change pushes immediately");
+  assert.equal(ovs[1]!.data.profiles[0].name, "new");
+  assert.equal(ovs[1]!.data.counts.running, 3);
+
+  // Advancing past the old t=30s deadline (and beyond) must not fire a redundant push.
+  await time.adjust(20_000);
+  await settle();
+  assert.equal(legacy.got.filter((e) => e.event === "overview").length, 2, "cancelled trailing timer does not re-fire");
+
+  await legacy.close();
+});
+
+test("overviewPatch=1 streams receive counts-only patches immediately while legacy devices coalesce to 30s", async () => {
+  const time = testClock();
+  const { events } = setup(time.clock);
+  const state = { counts: { running: 1 }, profiles: [{ id: "p1" }] };
+  events.follow({ overview: async () => structuredClone(state) });
+  const vPatch = { ...viewer("a@x"), device: "dev-patch" };
+  const vLegacy = { ...viewer("a@x"), device: "dev-legacy" };
+  const patchStream = reader((await events.open(vPatch, "zh", false, [], [], null, false, [], false, null, true)).body as AsyncIterable<Buffer>);
+  const legacyStream = reader((await events.open(vLegacy, "zh", false, [], [], null, false, [], false, null, false)).body as AsyncIterable<Buffer>);
+
+  // t=0: baseline for both devices.
+  events.overviewChanged();
+  await settle();
+  assert.equal(patchStream.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(legacyStream.got.filter((e) => e.event === "overview").length, 1);
+
+  // t=10s and t=20s: counts-only changes reach patchStream immediately as overview-patch; legacyStream stays held.
+  for (const nextRunning of [2, 3]) {
+    await time.adjust(10_000);
+    state.counts.running = nextRunning;
+    events.overviewSoon("sessionState");
+    await settle();
+  }
+  const patches = patchStream.got.filter((e) => e.event === "overview-patch");
+  assert.deepEqual(patches.map((p) => p.data.set.counts.running), [2, 3], "patch stream unaffected by legacy 30s debounce");
+  assert.equal(patchStream.got.filter((e) => e.event === "overview").length, 1);
+  assert.equal(legacyStream.got.filter((e) => e.event === "overview").length, 1, "legacy device held during 30s window");
+
+  // t=30s: legacyStream gets its coalesced full overview with running=3; patchStream gets nothing extra.
+  await time.adjust(10_000);
+  await settle();
+  const legacyOvs = legacyStream.got.filter((e) => e.event === "overview");
+  assert.equal(legacyOvs.length, 2);
+  assert.equal(legacyOvs[1]!.data.counts.running, 3);
+  assert.equal(patchStream.got.filter((e) => e.event === "overview-patch").length, 2);
+
+  await patchStream.close();
+  await legacyStream.close();
 });

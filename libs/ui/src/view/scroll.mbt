@@ -1856,7 +1856,15 @@ pub fn View::scrolls(
         s.hand_fingers.push((d.finger, hy, hwy))
       }
       Moved => {
-        guard s.hand_fingers.search_by(fn(f) { f.0 == d.finger }) is Some(i) else { return }
+        let mut found_i = -1
+        for k = 0; k < s.hand_fingers.length(); k = k + 1 {
+          if s.hand_fingers[k].0 == d.finger {
+            found_i = k
+            break
+          }
+        }
+        guard found_i >= 0 else { return }
+        let i = found_i
         let (_, prev_y, prev_wy) = s.hand_fingers[i]
         // (where it is kept, leading or not: what leads it again goes on from there)
         s.hand_fingers[i] = (d.finger, hy, hwy)
@@ -1890,9 +1898,12 @@ pub fn View::scrolls(
       // (let go: flung at the cumulative driven speed as of then, chained with caught glide momentum when repeated
       // quickly in the same direction; another finger still on it, it goes on by that one, nothing flung)
       Up => {
-        let prev_wy = match s.hand_fingers.search_by(fn(f) { f.0 == d.finger }) {
-          Some(i) => s.hand_fingers[i].2
-          None => hwy
+        let mut prev_wy = hwy
+        for k = 0; k < s.hand_fingers.length(); k = k + 1 {
+          if s.hand_fingers[k].0 == d.finger {
+            prev_wy = s.hand_fingers[k].2
+            break
+          }
         }
         s.hand_fingers.retain(fn(f) { f.0 != d.finger })
         if !s.hand_fingers.is_empty() {

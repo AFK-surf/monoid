@@ -42,7 +42,7 @@ pub struct Menu {
   priv node : @view.View
   priv off : () -> Bool
   priv rove : RovingFocus
-  priv entries : Array[MenuEntry]
+  priv mut entries : Array[MenuEntry]
   priv typeahead : Typeahead
   priv on_close : (() -> Unit)?
   priv close_key : Int?
@@ -118,7 +118,16 @@ pub fn Menu::handle_key(self : Menu, k : @view.Key) -> Bool {
     }
   }
   let on_item = match v.tree.focused_now().0 {
-    Some(f) => self.entries.iter().any(fn(e) { e.node.id() == f })
+    Some(f) => {
+      let mut found = false
+      for i = 0; i < self.entries.length(); i = i + 1 {
+        if self.entries[i].node.id() == f {
+          found = true
+          break
+        }
+      }
+      found
+    }
     None => false
   }
   if self.keep_field && !on_item {
@@ -148,10 +157,13 @@ pub fn Menu::handle_key(self : Menu, k : @view.Key) -> Bool {
     let live = self.live()
     return self.typeahead.handle_key(k, live, fn(i) {
       let id = live[i].id()
-      match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-        Some(e) => (e.text)()
-        None => ""
+      for j = 0; j < self.entries.length(); j = j + 1 {
+        let e = self.entries[j]
+        if e.node.id() == id {
+          return (e.text)()
+        }
       }
+      ""
     })
   }
   if k.mods != 0 {
@@ -351,7 +363,7 @@ fn Menu::part(
     v.owns(fn() {
       self.entries.retain(fn(e) { e.node.id() != v.id() })
       if self.entries.is_empty() {
-        self.entries.shrink_to_fit()
+        self.entries = []
       }
     })
     |> ignore

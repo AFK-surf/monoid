@@ -78,9 +78,10 @@ test "大屏, built as a host builds: words a mouse picked in a message have 引
   let (ix, iy, iw, ih) = words_rect(t, "滚动位置记成")
   mouse_dragged(t, hx + 1.0, hy + hh / 2.0, ix + iw - 1.0, iy + ih / 2.0)
   assert_true(t.ctx().selected_text().has_suffix("滚动位置记成"), msg=t.ctx().selected_text())
-  match pill_over(t, iy) {
-    Some((qx, _)) => assert_true((qx - (ix + iw)).abs() < 40.0, msg="引用 at \{qx}")
-    None => fail("no 引用 over where the pointer let go, in the frame it let go in")
+  match (pill_over(t, iy), t.words().filter(fn(w) { w.0 == "分享图" && w.2 < iy && w.2 > iy - 60.0 })) {
+    (Some((qx, _)), [(_, sx, _, sw, _, _), ..]) =>
+      assert_true(((qx + sx + sw) / 2.0 - (ix + iw)).abs() < 25.0, msg="pill 引用 at \{qx}, 分享图 at \{sx}+\{sw}, end \{ix + iw}")
+    _ => fail("no [引用 | 分享图] over where the pointer let go, in the frame it let go in")
   }
   t.run_for(@ui.move_most_ms)
   assert_true(pill_over(t, iy) is Some(_), msg="引用 gone once all the let-go set off is over")
@@ -276,10 +277,10 @@ test "大屏, a chat only in Feishu, built as a host builds: words a mouse picke
   mouse_dragged(t, ax + 1.0, ay + ah / 2.0, bx + bw - 1.0, by + bh / 2.0)
   let picked = t.ctx().selected_text()
   assert_true(picked.has_prefix("已挂载文本选区标记") && picked.has_suffix("浮层即可正常出现"), msg=picked)
-  guard pill_over(t, by) is Some((qx, _)) else {
-    fail("no 引用 over words picked in a Feishu reply: picked=\{Repr(@ui.picked_now())}")
+  guard (pill_over(t, by), t.words().filter(fn(w) { w.0 == "分享图" && w.2 < by && w.2 > by - 60.0 })) is (Some((qx, _)), [(_, sx, _, sw, _, _), ..]) else {
+    fail("no [引用 | 分享图] over words picked in a Feishu reply: picked=\{Repr(@ui.picked_now())}")
   }
-  assert_true((qx - (bx + bw)).abs() < 40.0, msg="引用 at \{qx}")
+  assert_true(((qx + sx + sw) / 2.0 - (bx + bw)).abs() < 25.0, msg="pill 引用 at \{qx}, 分享图 at \{sx}+\{sw}")
   pill_pressed(t, by)
   let (qt, ts, role, author) = last_quote(calls)
   assert_true(qt != "" && qt == picked.trim(chars=" \n\t").to_owned(), msg=qt)
@@ -323,8 +324,10 @@ test "大屏, a chat only in Feishu, built as a host builds: words a mouse picke
   guard @ui.picked_now() is Some(p) else { fail("nothing picked") }
   assert_eq(p.text, "已挂载文本选区标记")
   assert_true(!p.text.contains("\n"), msg=p.text)
-  guard pill_over(t, ay) is Some((qx, _)) else { fail("no 引用 over words picked within one list item") }
-  assert_true((qx - (ax + aw)).abs() < 40.0, msg="引用 at \{qx}")
+  guard (pill_over(t, ay), t.words().filter(fn(w) { w.0 == "分享图" && w.2 < ay && w.2 > ay - 60.0 })) is (Some((qx, _)), [(_, sx, _, sw, _, _), ..]) else {
+    fail("no [引用 | 分享图] over words picked within one list item")
+  }
+  assert_true(((qx + sx + sw) / 2.0 - (ax + aw)).abs() < 25.0, msg="pill 引用 at \{qx}, 分享图 at \{sx}+\{sw}")
   pill_pressed(t, ay)
   assert_eq(last_quote(calls), ("已挂载文本选区标记", "", "agent", "Claude"))
   assert_true(@ui.picked_now() is None)
@@ -466,7 +469,7 @@ test "大屏, selectionIntent enabled: mouse selection shows 30pt dual-button �
     fail("no 戳一下 in dual-button bar")
   }
   assert_true(px > qx + qw, msg="戳一下 sits to the right of 引用")
-  // Single 30pt liquid glass pill + hairline rule_down divider between the two actions
+  // Single 30pt liquid glass pill + two hairline rule_down dividers separating 引用 | 分享图 | 戳一下
   let glass = t.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, (qx, qy, qw, qh)) })
   assert_eq(glass.length(), 1, msg="single liquid glass capsule")
   assert_eq(glass[0].4, 6)
@@ -474,7 +477,7 @@ test "大屏, selectionIntent enabled: mouse selection shows 30pt dual-button �
   let seps = t.drawn_rects().filter(fn(r) {
     (r.2 - @sf.rule_w).abs() < 0.1 && (r.3 - 12.0).abs() < 0.5 && r.0 >= qx + qw && r.0 <= px
   })
-  assert_eq(seps.length(), 1, msg="hairline rule_down separator between 引用 and 戳一下")
+  assert_eq(seps.length(), 2, msg="hairline rule_down separators between 引用 | 分享图 | 戳一下")
 
   // Switching language while the selection stays open updates both visible labels and a11y button names live
   lang.set("en")

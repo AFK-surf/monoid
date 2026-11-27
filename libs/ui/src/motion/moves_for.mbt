@@ -157,10 +157,12 @@ pub fn Moves::moves_with(self : Moves, v : @view.View) -> Unit {
   // (made for a change while a shape it is in goes with what it holds, after that set off: carried on its ground, by
   // the edges of it it is nearer as the change lays it out, worked out at that change's moment once it is laid out)
   let at = self.owner.cause_at()
-  match self.shapes.iter().find_first(fn(s) { s.carrying && s.round.goes_at(at) && held_in(v, s.v) }) {
-    Some(s) =>
+  for i = 0; i < self.shapes.length(); i = i + 1 {
+    let s = self.shapes[i]
+    if s.carrying && s.round.goes_at(at) && held_in(v, s.v) {
       v.at_moment(at, fn() { p.ride.set(Some((s, carried_edges(v.laid_window_now(), s.to)))) }) |> ignore
-    None => ()
+      break
+    }
   }
   // (let go with its node: its ways' ends let go, it no more of what moves)
   v.owns(fn() {
@@ -204,8 +206,18 @@ pub fn Moves::ground_over(self : Moves) -> Double {
 /// Whether all it set off for its cause is where it went: its declared end come (each way's end a moment of its
 /// node's timeline), followed: told as it sets off and at that moment, nothing watched meanwhile. Never set off: it is.
 pub fn Moves::over(self : Moves) -> Bool {
-  self.shapes.iter().all(fn(s) { !s.goes() }) &&
-  self.parts.iter().all(fn(p) { !p.x.goes(p.v) && !p.y.goes(p.v) })
+  for i = 0; i < self.shapes.length(); i = i + 1 {
+    if self.shapes[i].goes() {
+      return false
+    }
+  }
+  for i = 0; i < self.parts.length(); i = i + 1 {
+    let p = self.parts[i]
+    if p.x.goes(p.v) || p.y.goes(p.v) {
+      return false
+    }
+  }
+  true
 }
 
 ///|
@@ -239,7 +251,15 @@ fn Shape::shown(self : Shape) -> (Double, Double, Double, Double) {
 ///|
 /// Whether its ground was on its way at moment `at` (its edges or its corners).
 fn Shape::goes_at(self : Shape, at : Double) -> Bool {
-  self.round.goes_at(at) || self.ways.iter().any(fn(w) { w.goes_at(at) })
+  if self.round.goes_at(at) {
+    return true
+  }
+  for i = 0; i < self.ways.length(); i = i + 1 {
+    if self.ways[i].goes_at(at) {
+      return true
+    }
+  }
+  false
 }
 
 ///|

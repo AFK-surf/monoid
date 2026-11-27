@@ -84,7 +84,6 @@ import { rootViewThrough } from "../drive/drive.ts";
 import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
-import { channelOf } from "../updates/versions.ts";
 import { allowedIn, type Connect, type HubConfig, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
@@ -191,7 +190,8 @@ export type AgentsParts = {
   /// A session's page in the app (`<origin>/o/…`), in still.fail cloud only.
   pageOf(key: string): string | undefined;
   /// Where the session pages are (sessions/page.ts), in still.fail cloud only: for a read off this thread to link them.
-  pages(): PageBase | null;
+  /// Those of workspace `ws` (the home one when none is named) are on the origin its lock says (page.ts `pageOrigin`).
+  pages(ws?: string | null): PageBase | null;
   /// Where the station is in its control plane while in a workspace.
   place(): { origin: string; workspace: string; station: string; name: string } | null;
   /// Where the station stands with its control plane: the workspaces it is in.
@@ -252,17 +252,19 @@ export const AgentsLive = (control: Control) =>
       };
       const bound = () => cloud.fullMemberships().length > 0;
       // Session pages are still.fail cloud's (`<origin>/o/…`); other control planes have none to link to.
-      // In the workspace its chat is in.
-      const pages = (): PageBase | null => {
+      // In the workspace its chat is in: on the origin its lock in force says (the same on each of its stations,
+      // whichever channel or host each is enrolled on), else the station's own, never a test channel's (page.ts).
+      const pages = (ws?: string | null): PageBase | null => {
         const s = place();
-        return s && plane.spec().pages
-          ? { origin: pageOrigin(s.origin, channelOf(config.raw(), app)), workspace: s.workspace, station: s.station }
-          : null;
+        if (!s || !plane.spec().pages) return null;
+        const at = ws === undefined || ws === null || ws === s.workspace ? null : ws;
+        return { origin: pageOrigin(s.origin, cloud.locked(at)?.state?.origins), workspace: s.workspace, station: s.station };
       };
       const pageOf = (key: string) => {
-        const s = pages();
-        const ws = store.sessionWs(key) ?? s?.workspace;
-        return s && (ws === s.workspace || cloud.membership(ws!) !== null) ? sessionPage(s, ws!, key) : undefined;
+        const ws = store.sessionWs(key) ?? place()?.workspace;
+        if (ws === undefined || (ws !== place()?.workspace && cloud.membership(ws) === null)) return undefined;
+        const s = pages(ws);
+        return s ? sessionPage(s, ws, key) : undefined;
       };
 
       // config.json as the hub reads it: the accounts' (each profile running the models its last check found besides

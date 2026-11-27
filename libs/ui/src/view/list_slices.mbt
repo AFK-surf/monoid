@@ -177,7 +177,15 @@ fn SliceIds::lent_to(self : SliceIds, v : View, at : PlaceAt, sid : () -> Int, t
   v.owns(fn() { take(of.val) }) |> ignore
   let tree = v.tree
   v.lends(list_item_lent, {
-    pointed: fn() { self.shown_of(of_now()).get().iter().any(fn(o) { o.alive() && o.pointed_in() }) },
+    pointed: fn() {
+      let arr = self.shown_of(of_now()).get()
+      for i = 0; i < arr.length(); i = i + 1 {
+        if arr[i].alive() && arr[i].pointed_in() {
+          return true
+        }
+      }
+      false
+    },
     span: fn() {
       @signals.untracked(fn() {
         let i = sid()

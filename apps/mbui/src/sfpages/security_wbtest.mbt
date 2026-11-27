@@ -604,6 +604,181 @@ test "people added, answered with a change of the lock no station took yet: its 
 }
 
 ///|
+/// Adding people over the made-up settings, `w` wide, to a workspace whose member is ana@example.com and that has
+/// he@example.com added to join at first sign-in; the emails field pressed and `typed` typed in. What each call of
+/// `workspace.addMembers` was asked to add is kept in `asked`. `lang`, `scale`: the language and the size of words set
+/// before it opens.
+fn add_people_typing(
+  w : Double,
+  platform : Int,
+  typed : String,
+  asked : Array[Array[String]],
+  lang? : String,
+  scale? : Double = 1.0,
+) -> @ui.Tester {
+  let made : Ref[Source?] = Ref(None)
+  let t = setting_tester(Workspace, w, platform~, over=fn(base) {
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "workspace.addMembers" {
+          let emails : Array[String] = []
+          match params {
+            Object(o) =>
+              match o.get("emails") {
+                Some(Array(a)) =>
+                  for e in a {
+                    if e is String(x) {
+                      emails.push(x)
+                    }
+                  }
+                _ => ()
+              }
+            _ => ()
+          }
+          asked.push(emails)
+          done(Ok({ "joined": [], "added": Json::array(emails.map(Json::string)), "already": [] }))
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+    made.val = Some(src)
+    src
+  })
+  @sf.set_language(lang)
+  t.set_font_scale(scale)
+  t.run_for(@ui.move_most_ms)
+  let core = @sfbase.settings_core(made.val.unwrap(), rig_workspace)
+  let here = @settings.here_of(core, rig_workspace.id, rig_workspace.name)
+  @settings.open_add_people(
+    core,
+    here,
+    Some({ "role": "owner", "members": [{ "email": "ana@example.com", "role": "member" }], "added": [{ "email": "he@example.com", "role": "member" }] }),
+  )
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find(if lang == Some("en") { "name@example.com (you can paste several)" } else { "name@example.com，可粘贴多个" }).unwrap()
+  t.tap(x + 4.0, y + 4.0)
+  t.frame()
+  t.type_text(typed)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// The words drawn whole and shown, each once.
+fn add_people_shown(t : @ui.Tester) -> Array[String] {
+  t.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
+}
+
+///|
+/// What adding people says under its field (its sentences' marks) and what `t.audit()` says of them.
+let add_people_marks : Array[String] = ["已是成员", "已在待加入名单中", "不是有效的邮箱", "请填写完整的邮箱"]
+
+///|
+fn add_people_marks_shown(t : @ui.Tester) -> Array[String] {
+  add_people_shown(t).filter(fn(w) { add_people_marks.iter().any(fn(m) { w.contains(m) }) })
+}
+
+///|
+test "people added, an email typed of a member already: said so under the field, 添加 not lit (FB-78)" {
+  for (w, platform) in page_cases {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(w, platform, "Ana@Example.com", asked)
+    let at = "\{w} platform \{platform}: " + add_people_shown(t).join("|")
+    assert_eq(add_people_marks_shown(t), ["ana@example.com 已是成员。"], msg=at)
+    assert_true(t.get(Button, label="添加").disabled, msg=at)
+    assert_eq(t.audit().filter(fn(f) { add_people_marks.iter().any(fn(m) { f.contains(m) }) }), [], msg=at)
+  }
+}
+
+///|
+test "people added, an email typed of one added already who joins at first sign-in: said so under the field, 添加 not lit (FB-78)" {
+  for (w, platform) in page_cases {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(w, platform, "he@example.com", asked)
+    let at = "\{w} platform \{platform}: " + add_people_shown(t).join("|")
+    assert_eq(add_people_marks_shown(t), ["he@example.com 已在待加入名单中，首次登录 \{@sf.product()} 时自动加入。"], msg=at)
+    assert_true(t.get(Button, label="添加").disabled, msg=at)
+  }
+}
+
+///|
+test "people added, words with an @ that are no email: how one is written said gently while it is still typed, in red once more follows it, 添加 not lit (FB-78)" {
+  for (w, platform) in page_cases {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(w, platform, "bob@company", asked)
+    let at = "\{w} platform \{platform}"
+    assert_eq(add_people_marks_shown(t), ["请填写完整的邮箱，如 name@example.com。"], msg=at + add_people_shown(t).join("|"))
+    assert_true(t.get(Button, label="添加").disabled, msg=at)
+    t.type_text(", ")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(add_people_marks_shown(t), ["bob@company 不是有效的邮箱，请写成 name@example.com 这样。"], msg=at + add_people_shown(t).join("|"))
+    assert_true(t.get(Button, label="添加").disabled, msg=at)
+    assert_eq(t.audit().filter(fn(f) { add_people_marks.iter().any(fn(m) { f.contains(m) }) }), [], msg=at)
+  }
+}
+
+///|
+test "people added, a new email typed beside one in already and a word that is no email: only the new one added (FB-78)" {
+  for (w, platform) in page_cases {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(w, platform, "ana@example.com, bob@, new@example.com", asked)
+    let at = "\{w} platform \{platform}"
+    assert_eq(
+      add_people_marks_shown(t),
+      ["ana@example.com 已是成员。", "bob@ 不是有效的邮箱，请写成 name@example.com 这样。"],
+      msg=at + add_people_shown(t).join("|"),
+    )
+    assert_false(t.get(Button, label="添加").disabled, msg=at)
+    t.click(Button, label="添加")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked, [["new@example.com"]], msg=at)
+  }
+}
+
+///|
+test "people added, only new emails typed: nothing said under the field (FB-78)" {
+  for (w, platform) in page_cases {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(w, platform, "Ana Li <new@example.com>; other@example.com", asked)
+    let at = "\{w} platform \{platform}"
+    assert_eq(add_people_marks_shown(t), [], msg=at + add_people_shown(t).join("|"))
+    assert_eq(t.get(Button, label="添加 2 人").disabled, false, msg=at)
+  }
+}
+
+///|
+test "people added, 320 wide at 1.3x the words in zh and en: what is said under the field whole, no fault (FB-78)" {
+  let typed = "ana@example.com, he@example.com, bob@, carol@company, new@example.com"
+  for lang in ["zh", "en"] {
+    let asked : Array[Array[String]] = []
+    let t = add_people_typing(320.0, 2, typed, asked, lang~, scale=1.3)
+    let at = "\{lang}: " + add_people_shown(t).join("|")
+    let said = if lang == "en" {
+      [
+        "ana@example.com is already a member.", "he@example.com is already added and joins on first sign-in to \{@sf.product()}.",
+        "bob@, carol@company aren't valid emails; write them like name@example.com.",
+      ]
+    } else {
+      [
+        "ana@example.com 已是成员。", "he@example.com 已在待加入名单中，首次登录 \{@sf.product()} 时自动加入。", "bob@、carol@company 不是有效的邮箱，请写成 name@example.com 这样。",
+      ]
+    }
+    // (each sentence however its lines are cut: all that is shown run together, without spaces)
+    let shown = add_people_shown(t).join("").replace_all(old=" ", new="")
+    for x in said {
+      assert_true(shown.contains(x.replace_all(old=" ", new="")), msg=at + " lacks " + x)
+    }
+    assert_eq(add_people_shown(t).filter(fn(w) { w.contains("…") }), [], msg=at)
+    assert_eq(t.fixed_outgrown(), [], msg=at)
+    assert_eq(t.words_over_now(), [], msg=at)
+    assert_eq(t.audit().filter(fn(f) { said.iter().any(fn(m) { f.contains(m) }) }), [], msg=at)
+  }
+  @sf.set_language(None)
+}
+
+///|
 /// The upgrade of safe mode as the fixture's `settings-security-upgrade-…` say it (the core's sentences).
 let upgrade_title : String = "安全模式有一项升级尚未完成"
 

@@ -389,6 +389,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   }
   if (kind === null && args.about !== undefined && args.about !== null) throw new Error("about goes with kind: the message the state this post records is about");
   if (text === "" && paths.length === 0) throw new Error("text is empty");
+  const replyTo = typeof args.reply_to === "string" && args.reply_to.trim() !== "" ? args.reply_to.trim() : null;
   // A Feishu chat with no conversation yet (one its bot made, or is in): this post begins one, the session's from now on.
   const feishuChat = feishuChatId(args.to);
   if (feishuChat !== null && aboutTs(args) !== null) throw new Error("about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)");
@@ -397,6 +398,14 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const connect = existing?.connect ?? feishuConnectOf(hub, key);
   const surface = existing?.thread.surface ?? hub.surface(connect);
   const chat = hub.chat(connect);
+  // Where it answers is the agent's: under a message it names, in that message's thread (Feishu alone has such threads
+  // inside a conversation). One the conversation does not have is refused, not said elsewhere.
+  if (replyTo !== null) {
+    if (existing === null || !surface.startsWith("feishu:")) throw new Error("reply_to is for an existing Feishu conversation: the ts of a message in it");
+    if (store.messageNumberAt(existing.thread.id, replyTo) === null) throw new Error(`reply_to must be the ts of a message in ${threadAddress(existing.thread.channel, existing.thread.threadTs)}, got ${replyTo}`);
+    // A card's answer is no message in Feishu (feishu/surface.ts `answered`): the card's own message is.
+    if (replyTo.startsWith("card-")) throw new Error("reply_to cannot be a card's answer, which Feishu keeps as no message of its own: give the ts of the message with the card");
+  }
   const refused = typeof card?.assignee === "string" ? runnerAssignee(hub, existing?.thread.id ?? null, card.assignee) : null;
   if (refused !== null) throw new Error(refused);
   // A login card on a platform: its page to open, with a field for the code that page gives or the device code to enter
@@ -468,7 +477,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   checkQuestionTurn();
   let posted: string;
   // A chat's first post where it was relayed goes into the station's first message there (relay.ts).
-  const opening = existing !== null && card === null && files.length === 0 ? await intoOpening(hub, key, chat, existing.thread, text, checkQuestionTurn) : null;
+  const opening = existing !== null && card === null && files.length === 0 && replyTo === null ? await intoOpening(hub, key, chat, existing.thread, text, checkQuestionTurn) : null;
   let n: number;
   let thread: SessionThread;
   if (opening !== null) {
@@ -486,7 +495,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
     [n] = store.insertMessage({ thread: row.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared, card, agentIdentity: identity });
   } else {
     thread = existing;
-    const here = { channel: thread.thread.channel, threadTs: thread.thread.threadTs };
+    const here = { channel: thread.thread.channel, threadTs: thread.thread.threadTs, ...(replyTo !== null ? { replyTo } : {}) };
     checkQuestionTurn();
     if (slack) {
       try {

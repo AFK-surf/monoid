@@ -408,7 +408,11 @@ export class HelperVideoEncoder implements BrowserVideoEncoder {
   readonly ready: Promise<void>;
   readonly #socket: Socket;
   readonly #out: H264FrameQueue;
-  #carry: Buffer = Buffer.alloc(0);
+  readonly #header = Buffer.alloc(5);
+  #headerBytes = 0;
+  #bodyLen = 0;
+  #bodyLeft = 0;
+  readonly #bodyParts: Buffer[] = [];
   #pendingConfig: FrameConfig | undefined;
   #encoderName = "VideoToolbox H.264 (hardware)";
   #hardware = true;
@@ -484,6 +488,10 @@ export class HelperVideoEncoder implements BrowserVideoEncoder {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#bodyParts.length = 0;
+    this.#headerBytes = 0;
+    this.#bodyLen = 0;
+    this.#bodyLeft = 0;
     try {
       if (!this.#socket.destroyed) {
         this.#socket.write(encodeHelperMsg(2, Buffer.from(JSON.stringify({ close: true }))));
@@ -494,13 +502,38 @@ export class HelperVideoEncoder implements BrowserVideoEncoder {
   }
 
   #onData(chunk: Buffer) {
-    this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
-    while (this.#carry.length >= 5) {
-      const length = this.#carry.readUInt32BE(1);
-      if (this.#carry.length < 5 + length) return;
-      const kind = this.#carry[0]!;
-      const payload = this.#carry.subarray(5, 5 + length);
-      this.#carry = this.#carry.subarray(5 + length);
+    let at = 0;
+    while (!this.#closed && at < chunk.length) {
+      if (this.#headerBytes < this.#header.length) {
+        const got = chunk.copy(this.#header, this.#headerBytes, at);
+        this.#headerBytes += got;
+        at += got;
+        if (this.#headerBytes < this.#header.length) return;
+        this.#bodyLen = this.#header.readUInt32BE(1);
+        this.#bodyLeft = this.#bodyLen;
+      }
+      if (this.#bodyLeft === 0) {
+        const kind = this.#header[0]!;
+        this.#headerBytes = 0;
+        this.#onMessage(kind, Buffer.alloc(0));
+        continue;
+      }
+      // Join multi-read helper frames once when the final piece arrives.
+      const part = chunk.subarray(at, at + this.#bodyLeft);
+      at += part.length;
+      this.#bodyLeft -= part.length;
+      if (this.#bodyLeft > 0) {
+        if (part.length > 0) this.#bodyParts.push(part);
+        return;
+      }
+      let payload = part;
+      if (this.#bodyParts.length > 0) {
+        if (part.length > 0) this.#bodyParts.push(part);
+        payload = Buffer.concat(this.#bodyParts, this.#bodyLen);
+        this.#bodyParts.length = 0;
+      }
+      const kind = this.#header[0]!;
+      this.#headerBytes = 0;
       this.#onMessage(kind, payload);
     }
   }

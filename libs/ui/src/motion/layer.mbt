@@ -2429,7 +2429,7 @@ fn layout_entry(c : @ui.Ctx, e : Moving, still : Bool, frame : Int, scrolled : M
       let oy = oy + cy
       r.moving_dy = oy
       if ox != 0.0 || oy != 0.0 {
-        look = look.then({ ..@ui.still_look, dx: ox, dy: oy })
+        look = look.then({ alpha: 1.0, dx: ox, dy: oy, sx: 1.0, sy: 1.0, ox: 0.5, oy: 0.5, rot: 0.0, circle: 0.0, words: 1.0 })
         flip_dy = oy
       }
       match r.enter {

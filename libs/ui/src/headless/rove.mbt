@@ -14,7 +14,7 @@ priv struct RoveEntry {
 ///|
 /// Composable roving focus behavior for multi-item composite controls.
 pub struct RovingFocus {
-  priv items : Array[RoveEntry]
+  priv mut items : Array[RoveEntry]
   priv axis : GroupAxis
   priv roving : Bool
   priv wraps : Bool
@@ -65,7 +65,14 @@ pub fn RovingFocus::add(
     if n == 0 {
       return None
     }
-    let (start_fwd, start_bwd) = match self.items.search_by(fn(e) { e.node.id() == v.id() }) {
+    let mut found_idx : Int? = None
+    for i = 0; i < n; i = i + 1 {
+      if self.items[i].node.id() == v.id() {
+        found_idx = Some(i)
+        break
+      }
+    }
+    let (start_fwd, start_bwd) = match found_idx {
       Some(idx) => (idx + 1, idx - 1)
       None => {
         let p = removed_pos.val.unwrap_or(0)
@@ -90,10 +97,17 @@ pub fn RovingFocus::add(
   }
   self.recovery.track_with(v, fallback, false)
   v.owns(fn() {
-    removed_pos.val = self.items.search_by(fn(e) { e.node.id() == v.id() })
+    let mut pos : Int? = None
+    for i = 0; i < self.items.length(); i = i + 1 {
+      if self.items[i].node.id() == v.id() {
+        pos = Some(i)
+        break
+      }
+    }
+    removed_pos.val = pos
     self.items.retain(fn(e) { e.node.id() != v.id() })
     if self.items.is_empty() {
-      self.items.shrink_to_fit()
+      self.items = []
     }
     self.made.set(self.made.untracked() + 1)
   })
@@ -117,16 +131,23 @@ pub fn RovingFocus::stop_at(self : RovingFocus) -> @view.NodeId? {
   self.made.get() |> ignore
   let live = self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
   match self.last.get() {
-    Some(id) if live.iter().any(fn(e) { e.node.id() == id }) => Some(id)
-    _ =>
-      match live.iter().find_first(fn(e) { (e.first)() }) {
-        Some(e) => Some(e.node.id())
-        None =>
-          match live {
-            [e, ..] => Some(e.node.id())
-            [] => None
-          }
+    Some(id) =>
+      for i = 0; i < live.length(); i = i + 1 {
+        if live[i].node.id() == id {
+          return Some(id)
+        }
       }
+    None => ()
+  }
+  for i = 0; i < live.length(); i = i + 1 {
+    let e = live[i]
+    if (e.first)() {
+      return Some(e.node.id())
+    }
+  }
+  match live {
+    [e, ..] => Some(e.node.id())
+    [] => None
   }
 }
 
@@ -134,11 +155,15 @@ pub fn RovingFocus::stop_at(self : RovingFocus) -> @view.NodeId? {
 /// Ask focus onto the current Tab stop (`stop_at`), shown where `visible`. Returns whether a member took focus.
 pub fn RovingFocus::focus_stop(self : RovingFocus, visible? : Bool = true) -> Bool {
   match @signals.untracked(fn() { self.stop_at() }) {
-    Some(id) =>
-      match self.items.iter().find_first(fn(e) { e.node.id() == id }) {
-        Some(e) => e.node.ask_focus(visible~)
-        None => false
+    Some(id) => {
+      for i = 0; i < self.items.length(); i = i + 1 {
+        let e = self.items[i]
+        if e.node.id() == id {
+          return e.node.ask_focus(visible~)
+        }
       }
+      false
+    }
     None => false
   }
 }
@@ -179,7 +204,14 @@ fn axis_keys(axis : GroupAxis, rtl : Bool) -> (Array[Int], Array[Int]) {
 pub fn RovingFocus::step(self : RovingFocus, code : Int) -> @view.View? {
   let live = self.live()
   let n = live.length()
-  guard n > 0 && live.search_by(fn(v) { v.focused() }) is Some(i) else { return None }
+  let mut focused_idx : Int? = None
+  for idx = 0; idx < n; idx = idx + 1 {
+    if live[idx].focused() {
+      focused_idx = Some(idx)
+      break
+    }
+  }
+  guard n > 0 && focused_idx is Some(i) else { return None }
   let (prev, next) = axis_keys(self.axis, self.rtl)
   let to = if prev.contains(code) {
     Some(if i > 0 { i - 1 } else if self.wraps { n - 1 } else { 0 })

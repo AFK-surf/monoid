@@ -288,7 +288,7 @@ fn given_into(src : Source, station : String, w : Writing, no_files : Bool, g : 
 ///|
 /// What draft `w` says once a visualization's `words` are put after what is written in it (a line between).
 fn followed_words(w : Writing, words : String) -> String {
-  let now = w.field.text()
+  let now = w.field.commit_composing()
   if now.trim() == "" {
     words
   } else {

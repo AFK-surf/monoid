@@ -22,7 +22,7 @@ pub fn[T : Eq] View::memo(
   }
   let c = @signals.computed(
     loc~,
-    same=fn(a, b) { prev_read_clock.val == read_clock.val && eq(a, b) },
+    same=fn(a : T, b : T) { prev_read_clock.val == read_clock.val && eq(a, b) },
     fn(_) {
       let prev = tree.clock_read_now
       tree.clock_read_now = false

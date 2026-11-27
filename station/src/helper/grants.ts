@@ -134,14 +134,32 @@ export class HelperGrants {
     this.#open = options.open ?? ((url) => void execFile("open", [url], () => undefined));
     // A grant changed (its window saw it), or the helper came back: looked at again.
     options.helper.listen((event) => {
-      if (event.event === "grants") void this.refresh(true);
+      if (event.event === "grants") {
+        this.invalidate();
+        void this.refresh(true);
+      }
     });
-    options.helper.onBack(() => void this.refresh(true));
+    options.helper.onBack(() => {
+      this.invalidate();
+      void this.refresh(true);
+    });
   }
 
   /// The last look; null before the first.
   status(): HelperStatus | null {
     return this.#status;
+  }
+
+  /// Whether the last successful look is newer than `maxAgeMs` with no failed look or invalidation since.
+  fresh(maxAgeMs = FRESH_MS): boolean {
+    if (this.#status === null || this.#unanswered !== null) return false;
+    const age = this.#now() - this.#checked;
+    return age >= 0 && age < maxAgeMs;
+  }
+
+  /// Marks the cached look stale without discarding `#status` or launching the helper.
+  invalidate(): void {
+    this.#checked = -Infinity;
   }
 
   /// Told when what is known of them changed.

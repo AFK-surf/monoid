@@ -356,7 +356,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
     .shrink(Is(0.0))
     .width(By(fn() { Some(if over() { 0.0 } else { at() }) }))
     .clips(By(fn() { !over() && at() < whole() }))
-    .offset(By(fn() { (pane_aside_at(src, col), 0.0) }))
+    .offset_snapped(By(fn() { (pane_aside_at(src, col), 0.0) }))
     .key_context("Chat")
     .on_action("panel.tab.close", fn(_) { side_close_front(src, r) })
     .on_action("panel.tab.reopen", fn(_) { side_reopen_key(src, r) })
@@ -368,7 +368,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       .grow(Is(1.0))
       .min_height(Is(Some(0.0)))
       .width(By(fn() { Some(whole()) }))
-      .offset(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
+      .offset_snapped(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
       .ground(By(fn() { if over() { 0L } else { @sf.theme().p.bg } }))
       |> ignore
       p.show(at_once=true, over, fn(bg) {

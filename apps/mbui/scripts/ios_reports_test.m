@@ -374,6 +374,125 @@ int main(void) {
       CHECK(qp[@"js"] == nil);
       SAME([qp[@"$exception_list"] firstObject][@"value"], @"footprint 1599 MB, -4 MB/min; shell: quiet");
     }
+
+    // ── sf_memory_runaway_event_native: native_mem from both ends' snapshots, the title naming what grew ──
+    {
+      const uint64_t M = 1024ULL * 1024ULL;
+      NSDictionary *macHere = @{@"app" : @"macos", @"$os" : @"macOS"};
+      // 14 tags: tag_150..tag_163 at 1..14 MB after (plus a 0.5 MB one, under 1 MB), grown by 0..13 MB; ioaccelerator
+      // the most, two of 300 MB tying (sorted by name), one shrinking and one only half a MB larger
+      NSMutableDictionary *before = [@{@"phys_footprint" : @(2682 * M), @"malloc_in_use" : @(900 * M),
+                                       @"metal_allocated" : @(1300 * M)} mutableCopy];
+      NSMutableDictionary *tb = [NSMutableDictionary dictionary], *ta = [NSMutableDictionary dictionary];
+      for (int i = 0; i < 14; i++) {
+        NSString *k = [NSString stringWithFormat:@"tag_%d", 150 + i];
+        tb[k] = @((uint64_t)(1 + i) * M - (uint64_t)i * M);
+        ta[k] = @((uint64_t)(1 + i) * M);
+      }
+      tb[@"ioaccelerator"] = @(1320 * M);
+      ta[@"ioaccelerator"] = @(2100 * M);
+      tb[@"anon_0"] = @(100 * M);
+      ta[@"anon_0"] = @(300 * M);
+      tb[@"malloc_small"] = @(250 * M);
+      ta[@"malloc_small"] = @(300 * M);
+      tb[@"iosurface"] = @(500 * M);
+      ta[@"iosurface"] = @(400 * M);
+      tb[@"stack"] = @(8 * M);
+      ta[@"stack"] = @(8 * M + M / 2);
+      ta[@"tiny"] = @(M / 2);
+      before[@"vm_tags_bytes"] = tb;
+      NSDictionary *after = @{
+        @"phys_footprint" : @(3470 * M), @"internal" : @(3000 * M), @"compressed" : @(200 * M), @"external" : @(150 * M),
+        @"reusable" : @(20 * M), @"resident" : @(3300 * M), @"malloc_in_use" : @(870 * M + 5),
+        @"malloc_allocated" : @(1000 * M), @"malloc_blocks" : @123456, @"metal_allocated" : @(1500 * M),
+        @"vm_tags_bytes" : ta,
+      };
+      NSDictionary *ev = sf_memory_runaway_event_native(2682 * M, 3470 * M, 15000, nil, nil, nil, @"acc-1", macHere, 0,
+                                                        @"00000000-0000-4000-8000-000000000003", before, after);
+      CHECK([NSJSONSerialization isValidJSONObject:ev]);
+      NSDictionary *nm = ev[@"properties"][@"native_mem"];
+      SAME(nm[@"footprint_before_mb"], @2682);
+      SAME(nm[@"footprint_after_mb"], @3470);
+      SAME(nm[@"internal_mb"], @3000);
+      SAME(nm[@"compressed_mb"], @200);
+      SAME(nm[@"external_mb"], @150);
+      SAME(nm[@"reusable_mb"], @20);
+      SAME(nm[@"resident_mb"], @3300);
+      SAME(nm[@"malloc_in_use_mb"], @870);
+      SAME(nm[@"malloc_allocated_mb"], @1000);
+      SAME(nm[@"malloc_blocks"], @123456);
+      SAME(nm[@"malloc_delta_mb"], @(-29));  // -30 MB + 5 bytes, toward zero
+      SAME(nm[@"metal_mb"], @1500);
+      SAME(nm[@"metal_delta_mb"], @200);
+      SAME(nm[@"vm_tags_mb"], (@{
+             @"ioaccelerator" : @2100, @"iosurface" : @400, @"anon_0" : @300, @"malloc_small" : @300, @"tag_163" : @14,
+             @"tag_162" : @13, @"tag_161" : @12, @"tag_160" : @11, @"tag_159" : @10, @"tag_158" : @9, @"stack" : @8,
+             @"tag_157" : @8,
+           }));
+      SAME(nm[@"vm_tags_delta_mb"], (@{
+             @"ioaccelerator" : @780, @"anon_0" : @200, @"malloc_small" : @50, @"tag_163" : @13, @"tag_162" : @12,
+             @"tag_161" : @11, @"tag_160" : @10, @"tag_159" : @9,
+           }));
+      NSString *value = [ev[@"properties"][@"$exception_list"] firstObject][@"value"];
+      SAME(value, @"footprint 3470 MB, +3152 MB/min; shell: quiet; native: ioaccelerator 2100MB (+780MB)");
+
+      // nothing grew: the title names the largest; no start's snapshot: no deltas at all
+      NSDictionary *flat = sf_memory_runaway_event_native(3470 * M, 3470 * M, 15000, nil, nil, nil, @"acc-1", macHere,
+                                                          0, @"00000000-0000-4000-8000-000000000004", after, after);
+      SAME(flat[@"properties"][@"native_mem"][@"vm_tags_delta_mb"], @{});
+      SAME(flat[@"properties"][@"native_mem"][@"malloc_delta_mb"], @0);
+      SAME([flat[@"properties"][@"$exception_list"] firstObject][@"value"],
+           @"footprint 3470 MB, +0 MB/min; shell: quiet; native: ioaccelerator 2100MB");
+      NSDictionary *alone = sf_memory_runaway_event_native(3470 * M, 3470 * M, 15000, nil, nil, nil, @"acc-1", macHere,
+                                                           0, @"00000000-0000-4000-8000-000000000005", nil, after);
+      NSDictionary *am = alone[@"properties"][@"native_mem"];
+      CHECK(am[@"footprint_before_mb"] == nil && am[@"malloc_delta_mb"] == nil && am[@"metal_delta_mb"] == nil);
+      CHECK(am[@"vm_tags_delta_mb"] == nil);
+      SAME(@([am[@"vm_tags_mb"] count]), @12);
+      SAME([alone[@"properties"][@"$exception_list"] firstObject][@"value"],
+           @"footprint 3470 MB, +0 MB/min; shell: quiet; native: ioaccelerator 2100MB");
+      // no tags at all: native_mem without a title's word
+      NSDictionary *bare = sf_memory_runaway_event_native(3470 * M, 3470 * M, 15000, nil, nil, nil, @"acc-1", macHere,
+                                                          0, @"00000000-0000-4000-8000-000000000006", nil,
+                                                          @{@"phys_footprint" : @(3470 * M)});
+      SAME(bare[@"properties"][@"native_mem"], (@{@"footprint_after_mb" : @3470, @"vm_tags_mb" : @{}}));
+      SAME([bare[@"properties"][@"$exception_list"] firstObject][@"value"], @"footprint 3470 MB, +0 MB/min; shell: quiet");
+
+      // without snapshots: exactly what sf_memory_runaway_event gives, no native_mem
+      NSDictionary *none = sf_memory_runaway_event_native(1600 * M, 1700 * M, 15000, nil, nil, nil, @"acc-1", macHere,
+                                                          0, @"00000000-0000-4000-8000-000000000007", nil, nil);
+      SAME(none, sf_memory_runaway_event(1600 * M, 1700 * M, 15000, nil, nil, nil, @"acc-1", macHere, 0,
+                                         @"00000000-0000-4000-8000-000000000007"));
+      CHECK(none[@"properties"][@"native_mem"] == nil);
+      SAME([none[@"properties"][@"$exception_list"] firstObject][@"value"], @"footprint 1700 MB, +400 MB/min; shell: quiet");
+    }
+    // ── sf_native_mem_snapshot: this process's own, and a 4 MiB block written to seen in malloc's ──
+    {
+      SAME(sf_vm_tag_name(0), @"anon_0");
+      SAME(sf_vm_tag_name(VM_MEMORY_IOACCELERATOR), @"ioaccelerator");
+      SAME(sf_vm_tag_name(VM_MEMORY_IOSURFACE), @"iosurface");
+      SAME(sf_vm_tag_name(VM_MEMORY_MALLOC_LARGE), @"malloc_large");
+      SAME(sf_vm_tag_name(230), @"tag_230");
+      NSDictionary *s0 = sf_native_mem_snapshot();
+      CHECK([s0[@"phys_footprint"] unsignedLongLongValue] > 0);
+      CHECK([s0[@"malloc_in_use"] unsignedLongLongValue] > 0);
+      CHECK([s0[@"vm_tags_bytes"] count] > 0);
+      CHECK(s0[@"metal_allocated"] == nil);
+      const size_t n = 4u << 20;
+      char *block = calloc(1, n);
+      memset(block, 1, n);
+      NSDictionary *s1 = sf_native_mem_snapshot();
+      CHECK([s1[@"malloc_in_use"] unsignedLongLongValue] >= [s0[@"malloc_in_use"] unsignedLongLongValue] + n);
+      uint64_t dirty = 0;
+      for (NSString *k in s1[@"vm_tags_bytes"]) dirty += [s1[@"vm_tags_bytes"][k] unsignedLongLongValue];
+      CHECK(dirty >= n);
+      NSDictionary *real = sf_memory_runaway_event_native(1, 2, 15000, nil, nil, nil, @"acc-1", @{}, 0,
+                                                          @"00000000-0000-4000-8000-000000000008", s0, s1);
+      CHECK([NSJSONSerialization isValidJSONObject:real]);
+      CHECK([real[@"properties"][@"native_mem"][@"malloc_delta_mb"] longLongValue] >= 4);
+      CHECK([[real[@"properties"][@"$exception_list"] firstObject][@"value"] containsString:@"; native: "]);
+      free(block);
+    }
     {
       // the theme the person chose, kept under the key mbui's iOS host reads as the app starts (ios_app.m initial_dark)
       NSString *suite = [NSString stringWithFormat:@"ios_reports_test.%d", getpid()];

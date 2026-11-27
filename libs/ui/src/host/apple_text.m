@@ -166,6 +166,7 @@ static CTFontRef last_attrs_font;
 static int last_attrs_style = -1;
 static CFDictionaryRef last_attrs;
 static void bmp_forget_face(int32_t face);
+static void bmp_invalidate_ascii_nom(void);
 
 static void face_changed(int32_t face) {
   [fonts removeAllObjects];
@@ -182,6 +183,7 @@ static void face_changed(int32_t face) {
     bmp_forget_face(face);
     return;
   }
+  bmp_invalidate_ascii_nom();
   generation++;
   keys_stale = 1;
 }
@@ -536,9 +538,15 @@ typedef struct {
   double size;
   int weight, style;
   int *pages[256];
+  uint8_t ascii_nom_ready;
+  double ascii_nom[128];
 } bmp_keys;
 static bmp_keys *bmp_cache;
 static int n_bmp, last_bmp = -1;
+
+static void bmp_invalidate_ascii_nom(void) {
+  for (int i = 0; i < n_bmp; i++) bmp_cache[i].ascii_nom_ready = 0;
+}
 
 static void bmp_forget_face(int32_t face) {
   for (int i = 0; i < n_bmp; i++) {
@@ -547,8 +555,26 @@ static void bmp_forget_face(int32_t face) {
         free(bmp_cache[i].pages[p]);
         bmp_cache[i].pages[p] = NULL;
       }
+      bmp_cache[i].ascii_nom_ready = 0;
     }
   }
+}
+
+static const double *bmp_ascii_nom(bmp_keys *bk, CTFontRef f) {
+  if (!bk->ascii_nom_ready) {
+    UniChar chars[95];
+    CGGlyph glyphs[95];
+    CGSize advs[95];
+    for (int i = 0; i < 128; i++) bk->ascii_nom[i] = NAN;
+    for (int i = 0; i < 95; i++) chars[i] = (UniChar)(0x20 + i);
+    CTFontGetGlyphsForCharacters(f, chars, glyphs, 95);
+    CTFontGetAdvancesForGlyphs(f, kCTFontOrientationHorizontal, glyphs, advs, 95);
+    for (int i = 0; i < 95; i++) {
+      if (glyphs[i] != 0) bk->ascii_nom[0x20 + i] = advs[i].width;
+    }
+    bk->ascii_nom_ready = 1;
+  }
+  return bk->ascii_nom;
 }
 
 static bmp_keys *bmp_for(double size, int weight, int style) {
@@ -568,6 +594,7 @@ static bmp_keys *bmp_for(double size, int weight, int style) {
   b->weight = weight;
   b->style = style;
   memset(b->pages, 0, sizeof(b->pages));
+  b->ascii_nom_ready = 0;
   last_bmp = n_bmp++;
   return b;
 }
@@ -694,7 +721,6 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
   double *glyph_x = shape_glyph_x;
   memset(from, 0, need_chars);
   memset(simple, 0, need_chars);
-  memset(glyph_adv, 0, sizeof(double) * need_chars);
   for (int32_t j = 0; j <= len; j++) glyph_x[j] = NAN;
   int any_rtl = 0;
   CFArrayRef runs = CTLineGetGlyphRuns(line);
@@ -726,7 +752,6 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
     CTRunStatus status = CTRunGetStatus(run);
     int rtl = (status & kCTRunStatusRightToLeft) != 0;
     if (rtl) any_rtl = 1;
-    double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), NULL, NULL, NULL);
     CFRange rr = CTRunGetStringRange(run);
     int run_1to1 = !rtl && !(status & kCTRunStatusNonMonotonic) && gc == rr.length;
     for (CFIndex g = 0; g < gc; g++) {
@@ -735,11 +760,52 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
       if (ci < 0 || ci >= len) continue;
       from[ci] = 1;
       if (isnan(glyph_x[ci]) || pos[g].x < glyph_x[ci]) glyph_x[ci] = pos[g].x;
-      double next = g + 1 < gc ? pos[g + 1].x : pos[0].x + w;
-      glyph_adv[ci] += next - pos[g].x;
     }
     if (run_1to1 && rr.location >= 0 && rr.location + rr.length <= len) {
-      memset(simple + rr.location, 1, (size_t)rr.length);
+      // Encode 1-to-1 LTR run membership in simple[j]: 1 = simple (non-ASCII, fallback font, or run >= 254),
+      // 2..255 = simple and shaped with primary font `f` in run r = tag - 2 (eligible for unkerned ASCII fast path).
+      // Only query CTRunGetAttributes when the run can contain a printable ASCII pair (zero overhead on CJK runs).
+      uint8_t tag = 1;
+      if (r < 254 && rr.length >= 2 && u[rr.location] >= 0x20 && u[rr.location] <= 0x7E) {
+        CTFontRef rf = (CTFontRef)CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName);
+        if (rf == f) tag = (uint8_t)(r + 2);
+      }
+      memset(simple + rr.location, tag, (size_t)rr.length);
+    }
+  }
+  if (any_rtl) {
+    memset(glyph_adv, 0, sizeof(double) * need_chars);
+    for (CFIndex r = 0; r < n_runs; r++) {
+      CTRunRef run = CFArrayGetValueAtIndex(runs, r);
+      CFIndex gc = CTRunGetGlyphCount(run);
+      if (gc <= 0) continue;
+      const CFIndex *idx = CTRunGetStringIndicesPtr(run);
+      const CGPoint *pos = CTRunGetPositionsPtr(run);
+      if (!idx || !pos) {
+        size_t need = (size_t)gc;
+        if (need > shape_glyph_cap) {
+          size_t nc = shape_glyph_cap ? shape_glyph_cap : 256;
+          while (nc < need) nc *= 2;
+          shape_idx = realloc(shape_idx, sizeof(CFIndex) * nc);
+          shape_pos = realloc(shape_pos, sizeof(CGPoint) * nc);
+          shape_glyph_cap = nc;
+        }
+        if (!idx) {
+          CTRunGetStringIndices(run, CFRangeMake(0, 0), shape_idx);
+          idx = shape_idx;
+        }
+        if (!pos) {
+          CTRunGetPositions(run, CFRangeMake(0, 0), shape_pos);
+          pos = shape_pos;
+        }
+      }
+      double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), NULL, NULL, NULL);
+      for (CFIndex g = 0; g < gc; g++) {
+        CFIndex ci = idx[g];
+        if (ci < 0 || ci >= len) continue;
+        double next = g + 1 < gc ? pos[g + 1].x : pos[0].x + w;
+        glyph_adv[ci] += next - pos[g].x;
+      }
     }
   }
   bmp_keys *bk = bmp_for(size, weight, style);
@@ -748,6 +814,7 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
   // a cluster starts where the one before it ended
   double x0 = (units && !any_rtl) ? 0.0 : offset_at(line, u, (NSUInteger)len, 0);
   int mono = (style & 2) != 0;
+  const double *nom = (units && !any_rtl && !mono && !(style & (32 | 64))) ? bmp_ascii_nom(bk, f) : NULL;
   while (i < (NSUInteger)len && k < cap) {
     NSRange r;
     if (units) {
@@ -760,13 +827,18 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
     double start_x = x0;
     NSUInteger next_i = r.location + r.length;
     double x1;
-    // In a simple 1-to-1 monotonic LTR run without takes_no_room, the caret offset between two Han ideographs
-    // (or between two printable ASCII characters in a monospaced face) has no kerning, punctuation squeezing, or
-    // CJK-Latin auto-spacing, so it equals glyph_x[next_i] directly without a CTLineGetOffsetForStringIndex call.
+    // In a simple 1-to-1 monotonic LTR run without takes_no_room, the caret offset between two Han ideographs,
+    // two printable ASCII characters in a monospaced face, or two printable ASCII characters in the same primary-font
+    // run whose shaped step matches the font's unkerned nominal advance equals glyph_x[next_i] directly without a
+    // CTLineGetOffsetForStringIndex call.
     if (units && !any_rtl && next_i < (NSUInteger)len && simple[r.location] && simple[next_i]
         && !isnan(glyph_x[next_i])
         && ((is_han(c) && is_han(u[next_i]))
-            || (mono && c >= 0x20 && c <= 0x7E && u[next_i] >= 0x20 && u[next_i] <= 0x7E))) {
+            || (c >= 0x20 && c <= 0x7E && u[next_i] >= 0x20 && u[next_i] <= 0x7E
+                && (mono
+                    || (nom && simple[r.location] >= 2 && simple[r.location] == simple[next_i]
+                        && !isnan(glyph_x[r.location]) && !isnan(nom[c])
+                        && fabs((glyph_x[next_i] - glyph_x[r.location]) - nom[c]) < 1e-6))))) {
       x1 = glyph_x[next_i];
     } else if (units && !any_rtl) {
       x1 = CTLineGetOffsetForStringIndex(line, (CFIndex)next_i, NULL);

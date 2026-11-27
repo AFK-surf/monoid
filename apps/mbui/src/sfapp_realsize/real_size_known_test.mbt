@@ -362,6 +362,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-stations-unprotected": (718, 495, 77),
   "phone settings-station": (572, 399, 68),
   "phone settings-station-unprotected": (572, 399, 68),
+  "phone settings-station-unprotected-blocked": (613, 428, 70),
   "phone settings-station-offline": (572, 399, 68),
   // (raised once, 2026-11-17, through settings-station-restored: the shell's two layers over its pages for the chat shared
   // as a picture and a visualization over the whole screen made as nodes, the station's page made in the frame they
@@ -788,6 +789,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-stations-unprotected": (822, 593, 103),
   "wide settings-station": (791, 608, 107),
   "wide settings-station-unprotected": (791, 608, 107),
+  "wide settings-station-unprotected-blocked": (826, 636, 114),
   "wide settings-station-offline": (791, 608, 107),
   "wide settings-station-env": (782, 565, 103),
   "wide settings-station-processes": (924, 724, 158),

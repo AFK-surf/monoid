@@ -266,7 +266,7 @@ pub fn liquid_pill_group_node(
         Some(make_glass(sp, ly))
       }
     }))
-    .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
+    .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5), moves_besides=false)
     .edge(By(fn() {
       if g.glass_solid() {
         match solid_edge {

@@ -558,7 +558,14 @@ fn voids(text : String, bytes : Bytes?) -> Bool {
     return true
   }
   if voided.length() > 0 {
-    let waits = fn(id) { voided.iter().any(fn(v) { v.0 == id }) }
+    let waits = fn(id : Int) {
+      for k = 0; k < voided.length(); k = k + 1 {
+        if voided[k].0 == id {
+          return true
+        }
+      }
+      false
+    }
     match head {
       Some((id, true)) if waits(id) && client.voidable(id) => voided.retain(fn(v) { v.0 != id })
       Some((id, _)) if !waits(id) && client.reads_no_other(id) => ()

@@ -19,7 +19,7 @@ pub struct Menubar[K] {
   priv set_active : (K?) -> Unit
   priv off : () -> Bool
   priv rove : RovingFocus
-  priv entries : Array[MenubarEntry[K]]
+  priv mut entries : Array[MenubarEntry[K]]
 }
 
 ///|
@@ -121,9 +121,8 @@ pub fn[K : Eq] menubar(
   loc~ : SourceLoc,
 ) -> @view.View {
   let rove = RovingFocus::new(axis=Horizontal, roving=true, wraps=true, rtl~)
-  let entries : Array[MenubarEntry[K]] = []
   let setup = fn(v : @view.View) {
-    let mb : Menubar[K] = { node: v, active_: active, set_active, off: disabled, rove, entries }
+    let mb : Menubar[K] = { node: v, active_: active, set_active, off: disabled, rove, entries: [] }
     look(v, mb)
     v
     .says(By(fn() { Some(@view.said(MenuBar, label=label())) }))
@@ -135,9 +134,12 @@ pub fn[K : Eq] menubar(
         match @signals.untracked(active) {
           Some(cur) => {
             set_active(None)
-            match entries.iter().find_first(fn(e) { e.key == cur && e.node.takes_input() && !(e.off)() }) {
-              Some(e) => e.node.ask_focus(visible=true) |> ignore
-              None => ()
+            for i = 0; i < mb.entries.length(); i = i + 1 {
+              let e = mb.entries[i]
+              if e.key == cur && e.node.takes_input() && !(e.off)() {
+                e.node.ask_focus(visible=true) |> ignore
+                break
+              }
             }
             return true
           }
@@ -146,14 +148,14 @@ pub fn[K : Eq] menubar(
       }
       if k.code == group_key_down {
         if v.tree.focused_now().0 is Some(fid) {
-          match entries.iter().find_first(fn(e) { e.node.id() == fid && !(e.off)() }) {
-            Some(e) => {
+          for i = 0; i < mb.entries.length(); i = i + 1 {
+            let e = mb.entries[i]
+            if e.node.id() == fid && !(e.off)() {
               if @signals.untracked(active) != Some(e.key) {
                 set_active(Some(e.key))
               }
               return true
             }
-            None => ()
           }
         }
         return false
@@ -161,12 +163,14 @@ pub fn[K : Eq] menubar(
       match rove.step(k.code) {
         Some(target) => {
           if @signals.untracked(active) is Some(_) {
-            match entries.iter().find_first(fn(e) { e.node.id() == target.id() }) {
-              Some(e) =>
+            for i = 0; i < mb.entries.length(); i = i + 1 {
+              let e = mb.entries[i]
+              if e.node.id() == target.id() {
                 if @signals.untracked(active) != Some(e.key) {
                   set_active(Some(e.key))
                 }
-              None => ()
+                break
+              }
             }
           }
           true
@@ -208,7 +212,7 @@ pub fn[K : Eq] Menubar::trigger(
     v.owns(fn() {
       self.entries.retain(fn(e) { e.node.id() != v.id() })
       if self.entries.is_empty() {
-        self.entries.shrink_to_fit()
+        self.entries = []
       }
     })
     |> ignore

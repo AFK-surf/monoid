@@ -249,18 +249,16 @@ pub let coming_after_ms : Double = 300.0
 pub let coming_in_ms : Double = 200.0
 
 ///|
-/// The pill's ring (14 across), or the spinner in its place on white at 25%.
-let coming_ring : Double = 14.0
+/// The pill's ring (12pt full-bleed across), or the spinner in its place on white at ~27% (shared media_badge_*).
+let coming_ring : Double = @sf.media_badge_ring
 
 ///|
-/// The pill's height: its ring and its words' line, as a video's capsule (@sf.video_capsule: the same ring and
-/// words, its ends S1_5 each); 18, so that it stands concentric in a picture's corner (a card's, 26) no further in
-/// than corner_fit lets it (16).
-let coming_pill_h : Double = 18.0
+/// The pill's height (24pt, shared with @sf.video_capsule_node via media_badge_h): stands 14pt concentric in a 26pt
+/// media card corner (within corner_fit's [4, 16]) with 6pt concentric margin around the 12pt ring.
+let coming_pill_h : Double = @sf.media_badge_h
 
 ///|
-/// How far the pill is from the picture's sides and foot: concentric with its corner (26 less its half: 17; 8 in, its
-/// ends were rounder than that corner left room for, which the corners' check refused).
+/// How far the pill is from the picture's sides and foot: concentric with its corner (26 less its half: 14).
 let coming_in : Double = @ui.capsule_in(@sf.message_file_corner, coming_pill_h)
 
 ///|
@@ -268,7 +266,7 @@ let coming_in : Double = @ui.capsule_in(@sf.message_file_corner, coming_pill_h)
 let coming_alone_in : Double = 8.0
 
 ///|
-let coming_track : Int64 = 0xFFFFFF40L
+let coming_track : Int64 = @sf.media_badge_track
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -276,7 +274,7 @@ let coming_room : @ui.Style = @ui.style(
   w=Full,
   h=Full,
   p=@sf.room_of(coming_in),
-  align=AEnd,
+  align=AStart,
   justify=JEnd,
 )
 
@@ -286,7 +284,8 @@ let coming_pill : @ui.Style = @ui.style(
   row=true,
   h=Fixed(coming_pill_h),
   gap=S1,
-  px=S1_5,
+  pl=@sf.media_badge_pl,
+  pr=@sf.media_badge_pr,
   radius=Full,
   bg=@sf.video_shade,
   align=ACenter,
@@ -294,7 +293,7 @@ let coming_pill : @ui.Style = @ui.style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let coming_words : @ui.TextStyle = @ui.text_style(size=Caption, color=@sf.white_ink, wrap=false, tabular=true)
+let coming_words : @ui.TextStyle = @sf.media_badge_words
 
 ///|
 /// How much larger a message's picture is lifted all the way, held for its menu.

@@ -372,9 +372,10 @@ export class FeishuSurface extends ConnectedSurface {
     return answer;
   }
 
-  /// Posts a message where the thread is: a topic's or a thread's reply in it, else in the chat. Its message id.
+  /// Posts a message where the thread is: under the message the agent answers (`replyTo`) in its thread, a topic's or a
+  /// thread's reply in it, else in the chat. Its message id.
   private async send(thread: ThreadRef, msgType: string, content: string): Promise<string> {
-    const root = this.threads.topicRoot(this.connect, thread.threadTs);
+    const root = thread.replyTo ?? this.threads.topicRoot(this.connect, thread.threadTs);
     const answer =
       root !== null
         ? await this.client.api("POST", `/open-apis/im/v1/messages/${encodeURIComponent(root)}/reply`, { msg_type: msgType, content, reply_in_thread: true })

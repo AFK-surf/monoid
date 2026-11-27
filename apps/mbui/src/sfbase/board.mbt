@@ -422,7 +422,7 @@ pub fn board_writing_kept(src : Source, ws : String) -> Bool {
   guard board_writing_here.get(ws) is Some(id) else { return false }
   @signals.untracked(fn() {
     let w = writing(src, board_file_key(ws, id))
-    w.field.text().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()
+    w.field.composed_said().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()
   })
 }
 

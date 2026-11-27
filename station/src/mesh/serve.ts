@@ -145,9 +145,10 @@ function leftOutFor(cloud: Cloud, hello: any, device: string, accepted?: Accepte
 /// and the last entries of the workspace's lock (`entries`), so one taken out of it hears so, with no cloud to read it of.
 export function refusalOf(cloud: Cloud, hello: any, device: string, e: unknown, accepted?: Accepted, sub: string | null = null): Record<string, unknown> {
   if (e instanceof LockRefusal) {
-    const chains = sub === null ? [] : ownChainsOf(cloud, sub, joinedOf(cloud, claimed(hello))).map(([genesis, entries]) => ({ genesis, entries }));
-    const person = chains.length > 0 && JSON.stringify(chains).length <= REFUSAL_PERSON_BYTES ? { person: chains } : {};
     const ws = joinedOf(cloud, claimed(hello));
+    if (e.message === NOT_GIVEN) return { error: e.message, code: "lock_station", why: "waiting" };
+    const chains = sub === null ? [] : ownChainsOf(cloud, sub, ws).map(([genesis, entries]) => ({ genesis, entries }));
+    const person = chains.length > 0 && JSON.stringify(chains).length <= REFUSAL_PERSON_BYTES ? { person: chains } : {};
     const tail: Entry[] = [];
     let bytes = 0;
     for (const entry of sub === null ? [] : cloud.lockAfter(-1, ws).reverse()) {
@@ -783,15 +784,27 @@ function admission(m: Members, device: string): Admit {
     // the lock is asked.
     const check = (line: any, verified?: (sub: string) => void): { admitted: Admitted; named: string } => {
       // Of any full workspace the station is in (never rig workspaces): the viewer's is the one its requests are answered for.
-      const admitted = verifyMemberOf(typeof line?.credential === "string" ? line.credential : "", (ws: string) => m.cloud.grantKeys(ws === m.cloud.home() ? null : ws), m.cloud.fullMemberships(), device, m.accepted?.());
-      const named = admitted.viewer.role;
-      verified?.(admitted.viewer.sub);
+      let admitted = verifyMemberOf(typeof line?.credential === "string" ? line.credential : "", (ws: string) => m.cloud.grantKeys(ws === m.cloud.home() ? null : ws), m.cloud.fullMemberships(), device, m.accepted?.());
+      let named = admitted.viewer.role;
       if (proof) admitted.viewer.lockDevice = proof;
+      const wsKey = joinedOf(m.cloud, admitted.viewer.workspace);
+      if (m.cloud.waiting(wsKey)) {
+        // Let an authenticated hello carry missing root/bodies out of `waiting`, then re-verify against the live
+        // effective state BEFORE setting `verified` (`whose`), recording `seenDevices`, or admitting the device.
+        if (broughtForState(line, m.cloud, admitted.viewer.workspace) && !m.cloud.waiting(wsKey)) {
+          admitted = verifyMemberOf(typeof line?.credential === "string" ? line.credential : "", (ws: string) => m.cloud.grantKeys(ws === m.cloud.home() ? null : ws), m.cloud.fullMemberships(), device, m.accepted?.());
+          named = admitted.viewer.role;
+          if (proof) admitted.viewer.lockDevice = proof;
+        }
+      }
       // Which devices came, for a lock's owner to name (seen-devices.ts): what it says of itself with its lock proof
       // (`lock.kind`, `lock.label`), its base key.
       // Its base key only as its proof for this endpoint holds (as the cloud checked it).
       const base = proof && endpointProof(admitted.viewer.workspace, proof.base, device, proof.proof) ? proof.base : null;
-      seenDevicesOf(m.cloud).saw(nowSecs(), admitted.viewer, device, base, line?.lock ?? null);
+      if (!m.cloud.waiting(wsKey)) {
+        verified?.(admitted.viewer.sub);
+        seenDevicesOf(m.cloud).saw(nowSecs(), admitted.viewer, device, base, line?.lock ?? null);
+      }
       const inIt = inLockBringing(m.cloud, admitted, named, device, line);
       // (no lock of its workspace here: its base key, its id on its person's own log, as its proof holds)
       return { admitted: inIt.viewer.lockId === undefined && base !== null ? { ...inIt, viewer: { ...inIt.viewer, lockId: base } } : inIt, named };
@@ -805,7 +818,8 @@ function admission(m: Members, device: string): Admit {
     } catch (e) {
       // (what answers a route itself waits for no member of this one: none comes)
       if (m.served !== undefined && conn.handed !== undefined) m.served.viewer(conn.handed, null);
-      return { refused: { line: refusalOf(m.cloud, hello, device, e, m.accepted?.(), whose), code: 1, reason: e instanceof LockRefusal ? "lock_unconfirmed" : "credential_refused", error: e } };
+      const line = refusalOf(m.cloud, hello, device, e, m.accepted?.(), whose);
+      return { refused: { line, code: 1, reason: line.code === "lock_station" ? "lock_station" : e instanceof LockRefusal ? "lock_unconfirmed" : "credential_refused", error: e } };
     }
     // How far its lock goes, when it has one (a device that has more brings it).
     const head = lockHead(m.cloud, joinedOf(m.cloud, current.viewer.workspace));

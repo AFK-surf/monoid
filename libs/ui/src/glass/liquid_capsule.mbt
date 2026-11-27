@@ -304,6 +304,7 @@ pub fn liquid_press_glass_decorate(
         (sx + sy) / 2.0
       }),
       about=At(0.5, 0.5),
+      moves_besides=false,
     )
     |> ignore
   }

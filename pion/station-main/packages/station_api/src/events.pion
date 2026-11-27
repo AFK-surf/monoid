@@ -380,6 +380,7 @@ pub struct EventsHub {
   mut overview_vals : Array[String]
   mut shared_initialized : Bool
   mut handed : Bool
+  mut last_opened : Option[EventsOpenResult]
   pub seen_store : Option[SeenStore]
   pub in_vault : Option[(Viewer, String) -> Bool]
 }
@@ -393,6 +394,7 @@ pub fn EventsHub::new(run : String, keeps : EventKeeps) -> EventsHub {
     overview_vals: [],
     shared_initialized: true,
     handed: false,
+    last_opened: None,
     seen_store: None,
     in_vault: None,
   }
@@ -412,9 +414,18 @@ pub fn EventsHub::with_visibility(
     overview_vals: [],
     shared_initialized: true,
     handed: false,
+    last_opened: None,
     seen_store: seen_store,
     in_vault: in_vault,
   }
+}
+
+/// Take the most recent `EventsOpenResult` produced by `open_stream` (for transport adapters
+/// that receive `HandlerAction::UpgradeSse` from `AdminApi` without opening a duplicate stream).
+pub fn EventsHub::take_last_opened(self : EventsHub) -> Option[EventsOpenResult] {
+  let res = self.last_opened
+  self.last_opened = None
+  res
 }
 
 pub fn EventsHub::client_count(self : EventsHub) -> Int {
@@ -589,13 +600,15 @@ pub fn EventsHub::open_stream(
   }
 
   let initial = client.drain_outbox()
-  EventsOpenResult::{
+  let opened = EventsOpenResult::{
     client_id: cid,
     resumed: resumes,
     head: head,
     headers: headers,
     initial_frames: initial,
   }
+  self.last_opened = Some(opened)
+  opened
 }
 
 /// Emit a logged event to all matching active streams and append to the resumable `EventLog`.

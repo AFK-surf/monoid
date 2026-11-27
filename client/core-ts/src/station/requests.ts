@@ -231,7 +231,7 @@ export class Requests {
   /// `flushCut`: hand the last short batch to the sink on failure or cancellation, for a download keeping its bytes.
   /// Not `quiet`, it is in a person's sight: the station's background waits while it is under way, and what is idle
   /// there gives way (scheduler.ts `foregroundBegin`).
-  exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
+  exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false, guard?: () => boolean): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
     const isRead = (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD") && !path.startsWith("/preview/");
     const headIdleMs = json ? JSON_IDLE_MS : isRead ? BODY_IDLE_MS : 0;
     const bodyIdleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
@@ -263,7 +263,7 @@ export class Requests {
         };
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
-            const reply = yield* within(this.wire.request(station, head, body, gone), headIdleMs);
+            const reply = yield* within(this.wire.request(station, head, body, gone, guard), headIdleMs);
             span.set("stillfail.head_ms", Math.round(host.monotonicMs() - began));
             answered(span, reply);
             const tooOld = stationTooOld(reply.headers, path);
@@ -326,12 +326,12 @@ export class Requests {
 
   /// A JSON request; a non-2xx answer is an error. `noHedge`: kept current in the background, never asked twice at once
   /// (NO_HEDGE).
-  call(station: StationAddr, method: string, path: string, body: unknown, options: { quiet?: boolean; ctx?: SpanContext | null; headers?: [string, string][]; noHedge?: boolean } = {}): Effect.Effect<unknown, CoreError> {
+  call(station: StationAddr, method: string, path: string, body: unknown, options: { quiet?: boolean; ctx?: SpanContext | null; headers?: [string, string][]; noHedge?: boolean; guard?: () => boolean } = {}): Effect.Effect<unknown, CoreError> {
     const bytes = body === undefined || body === null ? empty : toJsonBytes(body);
     const headers: [string, string][] = body === undefined || body === null ? [] : [["content-type", "application/json"]];
     if (options.headers) headers.push(...options.headers);
     if (options.noHedge) headers.push([NO_HEDGE, "1"]);
-    return Effect.flatMap(this.exchange(station, method, path, headers, bytes, options.quiet ?? false, options.ctx ?? null, undefined, undefined, undefined, undefined, true), (r) => {
+    return Effect.flatMap(this.exchange(station, method, path, headers, bytes, options.quiet ?? false, options.ctx ?? null, undefined, undefined, undefined, undefined, true, false, options.guard), (r) => {
       // Parsed inside the exchange: invalid JSON also fails its request span.
       const data = r.json === undefined ? {} : r.json;
       if (r.status >= 200 && r.status < 300) return Effect.succeed(data as unknown);

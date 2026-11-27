@@ -423,3 +423,49 @@ test("H264FrameQueue bounds latency to MAX_QUEUED_FRAMES (4), drops broken P-fra
   q.close();
   assert.equal(await q.next(), null);
 });
+
+test("HelperVideoEncoder joins a multi-read frame once, handles zero-length control messages, and reads trailing packed frames", async (t) => {
+  const msg = (kind: number, payload: Buffer) => {
+    const head = Buffer.alloc(5);
+    head[0] = kind;
+    head.writeUInt32BE(payload.length, 1);
+    return Buffer.concat([head, payload]);
+  };
+  const sock = Object.assign(new EventEmitter(), { destroyed: false, write() {}, destroy() {} });
+  const enc = new HelperVideoEncoder(sock as unknown as Socket);
+  t.after(() => enc.close());
+  sock.emit("data", msg(1, Buffer.from(JSON.stringify({ ok: true, encoder: "fake-vt", hardware: true }))));
+  await enc.ready;
+
+  const nal = Buffer.alloc(40_000);
+  for (let i = 0; i < nal.length; i += 4) nal.writeUInt32BE(i, i);
+  const head = Buffer.alloc(9);
+  head[0] = 1;
+  head.writeBigUInt64BE(10_000n, 1);
+  const big = msg(3, Buffer.concat([head, nal]));
+  const empty = msg(99, Buffer.alloc(0));
+  head[0] = 0;
+  head.writeBigUInt64BE(43_000n, 1);
+  const tail = Buffer.from([7, 8, 9]);
+  const wire = Buffer.concat([big, empty, msg(3, Buffer.concat([head, tail]))]);
+
+  const joins = t.mock.method(Buffer, "concat");
+  try {
+    sock.emit("data", wire.subarray(0, 2));
+    sock.emit("data", wire.subarray(2, 5));
+    for (let at = 5; at < wire.length; at += 8192) sock.emit("data", wire.subarray(at, at + 8192));
+  } finally {
+    joins.mock.restore();
+  }
+  const joined = joins.mock.calls.reduce((sum, call) => sum + (call.result?.length ?? 0), 0);
+  assert.ok(joined <= wire.length, `joined ${joined} bytes for ${wire.length} bytes of encoded frames`);
+
+  const f1 = (await enc.next())!;
+  assert.equal(f1.key, true);
+  assert.equal(f1.ts, 10_000);
+  assert.deepEqual(Buffer.from(f1.data), nal);
+  const f2 = (await enc.next())!;
+  assert.equal(f2.key, false);
+  assert.equal(f2.ts, 43_000);
+  assert.deepEqual(Buffer.from(f2.data), tail);
+});

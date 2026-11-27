@@ -12,6 +12,7 @@ fn composer_wants_open(w : Writing, roomy~ : Bool, focused~ : Bool, lingers~ : B
   focused ||
   lingers ||
   w.text.get() != "" ||
+  w.field.composing() ||
   w.files.get().length() > 0 ||
   w.quotes.get().length() > 0
 }
@@ -21,16 +22,29 @@ fn composer_wants_open(w : Writing, roomy~ : Bool, focused~ : Bool, lingers~ : B
 /// core's say comes a moment after them, its topic; send pressed meanwhile is not lost: what goes is the core's to
 /// take, composer.take, nothing taken nothing sent); never while it is `locked`.
 fn composer_ready(w : Writing, locked~ : Bool) -> Bool {
-  (w.ready.get() || (w.field.text().trim() != "" && !w.starting.get())) && !locked
+  (w.ready.get() || (w.field.composed_said().trim() != "" && !w.starting.get())) && !locked
 }
 
 ///|
 /// Send pressed (or Enter) in draft `w`'s composer on `station`, where it is ready: its field's words as they are
-/// now (typed since the core last heard, a frame not drawn yet) told the core first, then `send` once what they refer
-/// to can be read in this workspace (sfbase's outside.mbt). True where it went on to send.
+/// now (typed since the core last heard, or still being composed by an input method, a frame not drawn yet) told the
+/// core first, then `send` once what they refer to can be read in this workspace (sfbase's outside.mbt). True where
+/// it went on to send.
 fn composer_submit(src : Source, w : Writing, station : String, locked~ : Bool, send : (Writing) -> Unit) -> Bool {
   guard composer_ready(w, locked~) else { return false }
-  writing_text(src, w, w.field.text())
+  for q in @signals.untracked(fn() { w.quotes.get() }) {
+    let id = text(Some(q), "id")
+    match composing.comments.get(id) {
+      Some(f) if f.composing() => {
+        let comment = f.commit_composing()
+        if comment != text(Some(q), "comment") {
+          writing_comment(src, w, id, comment)
+        }
+      }
+      _ => ()
+    }
+  }
+  writing_text(src, w, w.field.commit_composing())
   @sfbase.send_sharing(src, w.key, station, w.text.get().trim(chars=" \n\t").to_owned(), fn() { send(w) })
   true
 }

@@ -1260,12 +1260,17 @@ test "wide: words picked in a message with the pointer: 引用 over them quotes 
   let (px, py, pw, ph) = words_rect(t, "高度先按 90 估")
   t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
   t.frame()
-  // the pill 8 over where the pointer let go: its line, its end
+  // the pill [引用 | 分享图] 12 over where the pointer let go: its line, its end
   let (qx, qy) = match t.words().filter(fn(w) { w.0 == "引用" && w.2 < py && w.2 > py - 60.0 }) {
     [w, ..] => (w.1, w.2)
     _ => fail("no 引用 over what is picked")
   }
-  assert_true((qx - (px + pw)).abs() < 40.0, msg="引用 at \{Repr((qx, qy))}")
+  let (sx, sy, sw) = match t.words().filter(fn(w) { w.0 == "分享图" && w.2 < py && w.2 > py - 60.0 }) {
+    [w, ..] => (w.1, w.2, w.3)
+    _ => fail("no 分享图 over what is picked")
+  }
+  let pill_mid = (qx + sx + sw) / 2.0
+  assert_true(qx < sx && (qy - sy).abs() < 2.0 && (pill_mid - (px + pw)).abs() < 25.0, msg="pill 引用=\{Repr((qx, qy))} 分享图=\{Repr((sx, sy))} end=\{px + pw}")
   t.tap(qx + 4.0, qy + 4.0)
   t.frame()
   // into the chat's draft as the core keeps it (composer.quote), whose words with them
@@ -1316,12 +1321,16 @@ test "wide: words picked with the pointer from a message's heading into its list
   t.frame()
   let picked = t.ctx().selected_text()
   assert_true(picked.has_prefix("做了什么\n") && picked.has_suffix("滚动位置记成"), msg=picked)
-  // the pill over where the pointer let go: the line of the list's item, not the heading where it went down
+  // the pill [引用 | 分享图] over where the pointer let go: the line of the list's item, not the heading where it went down
   let (qx_down, qy_down) = match t.words().filter(fn(w) { w.0 == "引用" && w.2 < iy && w.2 > iy - 60.0 }) {
     [w, ..] => (w.1, w.2)
     _ => fail("no 引用 over where the pointer let go")
   }
-  assert_true((qx_down - (ix + iw)).abs() < 40.0, msg="引用 at \{Repr((qx_down, qy_down))}")
+  let (sx_down, sw_down) = match t.words().filter(fn(w) { w.0 == "分享图" && w.2 < iy && w.2 > iy - 60.0 }) {
+    [w, ..] => (w.1, w.3)
+    _ => fail("no 分享图 over where the pointer let go")
+  }
+  assert_true(((qx_down + sx_down + sw_down) / 2.0 - (ix + iw)).abs() < 25.0, msg="pill down at \{Repr((qx_down, sx_down, qy_down))}")
   // dragged up the other way, over the heading where it let go, at its start
   t.drag(ix + iw - 1.0, iy + ih / 2.0, hx + 1.0, hy + hh / 2.0)
   t.frame()
@@ -1330,7 +1339,14 @@ test "wide: words picked with the pointer from a message's heading into its list
     [w, ..] => (w.1, w.2)
     _ => fail("no 引用 over where the pointer let go")
   }
-  assert_true((qx - hx).abs() < 40.0 && ((qy_down - qy) - (iy - hy)).abs() < 2.0, msg="引用 down=\{Repr((qx_down, qy_down))} up=\{Repr((qx, qy))} hy=\{hy} iy=\{iy}")
+  let (sx, sw) = match t.words().filter(fn(w) { w.0 == "分享图" && w.2 < hy && w.2 > hy - 60.0 }) {
+    [w, ..] => (w.1, w.3)
+    _ => fail("no 分享图 over where the pointer let go")
+  }
+  assert_true(
+    ((qx + sx + sw) / 2.0 - hx).abs() < 25.0 && ((qy_down - qy) - (iy - hy)).abs() < 2.0,
+    msg="pill down=\{Repr((qx_down, sx_down, qy_down))} up=\{Repr((qx, sx, qy))} hy=\{hy} iy=\{iy}",
+  )
   t.tap(qx + 4.0, qy + 4.0)
   t.frame()
   let quoted = named(calls, "composer.quote")

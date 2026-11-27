@@ -83,14 +83,16 @@ final class FramePacer {
         final boolean app, pictured, external, picturedPaced;
         final long[] vsyncAt;
         final long continuityGen;
+        final long dispatchToken;
 
-        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt, long continuityGen) {
+        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt, long continuityGen, long dispatchToken) {
             this.app = app;
             this.pictured = pictured;
             this.external = external;
             this.picturedPaced = picturedPaced;
             this.vsyncAt = vsyncAt;
             this.continuityGen = continuityGen;
+            this.dispatchToken = dispatchToken;
         }
     }
 
@@ -168,7 +170,7 @@ final class FramePacer {
             @Override public float topRate() { return topRate; }
 
             @Override public boolean consumeExternalForLastVsync() {
-                return scheduler.consumeExternalForVsync(telemetry.lastVsync());
+                return scheduler.consumeExternalForCurrentFrame();
             }
         });
         this.appWanted = scheduler.appWanted;

@@ -2376,6 +2376,119 @@ public final class FramePacerTest {
                         + ", frameNowCalls=" + frameNowNanoCalls + ", allHeld=" + allHeldLock[0] + ")");
     }
 
+    /**
+     * Regression: monotonic per-frame dispatchToken across vsyncCame, ahead claim, wakeFrameNow, frameNow,
+     * wantImmediateFrame, and resetContinuity; backward/out-of-order timestamps fail open without deadlock.
+     */
+    static void dispatchTokenMonotonicAndBackwardVsyncFailOpenCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.onMain = true;
+        long t1 = 12 * ph.period;
+        long t2 = 13 * ph.period;
+        long t3 = 14 * ph.period;
+        long tBack = 10 * ph.period; // strictly earlier than t1..t3
+
+        // 1. Normal vsyncCame dispatch -> token1 > 0
+        ph.now = t1;
+        ph.pacer.wantFrame();
+        ph.pacer.vsyncCame(t1, t1 + 2 * ph.period);
+        FramePacer.Taken tk1 = ph.pacer.takeRender();
+
+        // 2. Ahead claim via ask() -> token2 > token1; same-beat duplicate fireWake deduplicates & lifts via token
+        ph.now = t2;
+        ph.pacer.vsyncCame(t2, t2 + 2 * ph.period); // sets aheadBeatSeq
+        ph.pacer.wantPacedFrame(); // claims ahead
+        FramePacer.Taken tk2 = ph.pacer.takeRender();
+        FramePacer.WakeReq extWake = ph.pacer.scheduleWake(t2 / 1e6, false);
+        int reqsBeforeDup = ph.renderRequests;
+        ph.pacer.fireWake(extWake, t2, t2 + 2 * ph.period);
+        boolean dupNoRender = ph.renderRequests == reqsBeforeDup;
+        boolean extConsumedForT2 = ph.pacer.scheduler.consumeExternalForCurrentFrame();
+        boolean extConsumedOnce = !ph.pacer.scheduler.consumeExternalForCurrentFrame();
+
+        // 3. frameNow() without deferredVsync -> token3 > token2; same-beat latched vsyncCame deduplicates & re-posts
+        ph.now = t3 + 1_000_000L;
+        ph.pacer.frameNow();
+        FramePacer.Taken tk3 = ph.pacer.takeRender();
+        ph.pacer.wantFrame();
+        long activeGen = ph.pacer.scheduler.activeVsyncGen();
+        int postsBeforeSameBeat = ph.vsyncPosts;
+        ph.pacer.vsyncCame(t3, t3 + 2 * ph.period, activeGen);
+        boolean sameBeatReposted = ph.vsyncPosts == postsBeforeSameBeat + 1
+                && ph.pacer.scheduler.activeVsyncGen() != 0L
+                && ph.pacer.scheduler.activeVsyncGen() != activeGen
+                && !ph.pacer.scheduler.isAppDispatched();
+
+        // 4. Backward/regressed timestamp on the newly posted gen -> fails open, renders cleanly, token4 > token3
+        long rearmedGen = ph.pacer.scheduler.activeVsyncGen();
+        ph.pacer.vsyncCame(tBack, tBack + 2 * ph.period, rearmedGen);
+        FramePacer.Taken tk4 = ph.pacer.takeRender();
+        boolean backwardDispatched = tk4.app && ph.pacer.scheduler.activeVsyncGen() == 0L;
+
+        // 5. wantImmediateFrame + resetContinuity keep dispatchToken strictly monotonic
+        ph.pacer.wantImmediateFrame();
+        FramePacer.Taken tk5 = ph.pacer.takeRender();
+        ph.pacer.resetContinuity(t3 + 5 * ph.period);
+        long tAfter = t3 + 6 * ph.period;
+        ph.now = tAfter;
+        ph.pacer.wantFrame();
+        ph.pacer.vsyncCame(tAfter, tAfter + 2 * ph.period);
+        FramePacer.Taken tk6 = ph.pacer.takeRender();
+
+        boolean monotonic = tk1.app && tk2.app && tk3.app && tk4.app && tk5.app && tk6.app
+                && tk1.dispatchToken > 0L
+                && tk2.dispatchToken > tk1.dispatchToken
+                && tk3.dispatchToken > tk2.dispatchToken
+                && tk4.dispatchToken > tk3.dispatchToken
+                && tk5.dispatchToken > tk4.dispatchToken
+                && tk6.dispatchToken > tk5.dispatchToken;
+
+        check("dispatchToken is strictly monotonic across all dispatch paths and backward vsync fails open",
+                monotonic && dupNoRender && extConsumedForT2 && extConsumedOnce && sameBeatReposted && backwardDispatched,
+                "tokens=[" + tk1.dispatchToken + "," + tk2.dispatchToken + "," + tk3.dispatchToken
+                        + "," + tk4.dispatchToken + "," + tk5.dispatchToken + "," + tk6.dispatchToken
+                        + "], dupNoRender=" + dupNoRender + ", extConsumed=" + extConsumedForT2 + "/" + extConsumedOnce
+                        + ", sameBeatReposted=" + sameBeatReposted + ", backwardDispatched=" + backwardDispatched);
+    }
+
+    /**
+     * Regression: wantImmediateFrame() mid-frame after wall-clock frameNow() must NOT clear
+     * appDispatchedFromWallClock, so a same-beat latched vsyncCame(T, activeGen) still deduplicates
+     * without requesting an extra render or regressing vsyncAt, and re-posts a fresh generation.
+     */
+    static void wantImmediateFramePreservesFrameNowWallClockDedupCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.onMain = true;
+        long t = 12 * ph.period;
+        long wallNow = t + 1_000_000L; // 1 ms after latched T (< period / 2)
+
+        ph.now = wallNow;
+        ph.pacer.frameNow();
+        FramePacer.Taken tk1 = ph.pacer.takeRender();
+
+        ph.pacer.wantImmediateFrame();
+        FramePacer.Taken tk2 = ph.pacer.takeRender();
+        FramePacer.Begun b2 = ph.pacer.begin(tk2.vsyncAt, wallNow + 200_000L, tk2.external, tk2.continuityGen);
+        ph.pacer.ended(true, false, b2.following, 0f, b2.externalDemand);
+
+        long activeGen = ph.pacer.scheduler.activeVsyncGen();
+        int rendersBefore = ph.renderRequests;
+        int postsBefore = ph.vsyncPosts;
+        ph.pacer.vsyncCame(t, t + 2 * ph.period, activeGen);
+        long rearmedGen = ph.pacer.scheduler.activeVsyncGen();
+
+        boolean noExtraRender = ph.renderRequests == rendersBefore && !ph.pacer.scheduler.isAppDispatched();
+        boolean reposted = ph.vsyncPosts == postsBefore + 1 && rearmedGen != 0L && rearmedGen != activeGen;
+        boolean vsyncNotRegressed = ph.pacer.vsyncAt()[0] == wallNow;
+        boolean monotonicTokens = tk1.app && tk2.app && tk1.dispatchToken > 0L && tk2.dispatchToken > tk1.dispatchToken;
+
+        check("wantImmediateFrame after frameNow preserves wall-clock same-beat dedup and re-posts fresh gen",
+                noExtraRender && reposted && vsyncNotRegressed && monotonicTokens,
+                "noExtraRender=" + noExtraRender + ", reposted=" + reposted
+                        + " (activeGen=" + activeGen + "->" + rearmedGen + "), vsyncAt0=" + ph.pacer.vsyncAt()[0]
+                        + "/" + wallNow + ", tokens=" + tk1.dispatchToken + "->" + tk2.dispatchToken);
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -2424,6 +2537,8 @@ public final class FramePacerTest {
         sameVsyncCallbackInputDoesNotDeadlockWantedCase();
         resetContinuityClearsInFlightWantedCase();
         askReadsNanoTimeInsideLockAndRejectsStaleOrNegativeAheadCase();
+        dispatchTokenMonotonicAndBackwardVsyncFailOpenCase();
+        wantImmediateFramePreservesFrameNowWallClockDedupCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

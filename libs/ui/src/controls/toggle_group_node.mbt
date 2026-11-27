@@ -129,7 +129,7 @@ pub fn[K] toggle_group_node(
             @glass.over(under, alpha(@ui.tree_theme().lifted, on_w))
           }
         }))
-        .scale(By(fn() { 1.0 - toggle_group_press_dip * dclamp(press_way.shown(b), 0.0, 1.0) }))
+        .scale(By(fn() { 1.0 - toggle_group_press_dip * dclamp(press_way.shown(b), 0.0, 1.0) }), moves_besides=false)
         .alpha(By(fn() { if (item.disabled)() && !g.disabled() { toggle_group_off_alpha } else { 1.0 } }))
         |> ignore
         let ink = fn(n : @view.View) {

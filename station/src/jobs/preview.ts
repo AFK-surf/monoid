@@ -135,33 +135,80 @@ export type ByteSink = { write(bytes: Buffer): Promise<void>; finish(): Promise<
 
 /// Frames from a byte stream. `carry`: bytes already read past the stream's head.
 export class FrameReader {
-  private carry: Buffer;
-  private source: ByteSource;
+  private readonly source: ByteSource;
+  private readonly header = Buffer.alloc(5);
+  private headerBytes = 0;
+  private bodyLen = 0;
+  private bodyLeft = 0;
+  private readonly bodyParts: Buffer[] = [];
+  private tail: Buffer;
+  private tailAt = 0;
+
   constructor(source: ByteSource, carry: Buffer = Buffer.alloc(0)) {
     this.source = source;
-    this.carry = carry;
-  }
-
-  private async fill(n: number): Promise<boolean> {
-    while (this.carry.length < n) {
-      const more = await this.source.read();
-      if (more === null) return false;
-      this.carry = Buffer.concat([this.carry, more]);
-    }
-    return true;
+    this.tail = carry;
   }
 
   /// The next frame; null when the stream ended between frames (an end inside one is an error).
   async next(): Promise<[number, Buffer] | null> {
-    if (!(await this.fill(1))) return null;
-    if (!(await this.fill(5))) throw new Error("the stream ended inside a frame");
-    const length = this.carry.readUInt32BE(1);
-    if (length > MAX_FRAME) throw new Error("frame too long");
-    if (!(await this.fill(5 + length))) throw new Error("the stream ended inside a frame");
-    const kind = this.carry[0];
-    const payload = Buffer.from(this.carry.subarray(5, 5 + length));
-    this.carry = this.carry.subarray(5 + length);
-    return [kind, payload];
+    for (;;) {
+      if (this.tailAt < this.tail.length) {
+        if (this.headerBytes < this.header.length) {
+          const got = this.tail.copy(this.header, this.headerBytes, this.tailAt);
+          this.headerBytes += got;
+          this.tailAt += got;
+          if (this.headerBytes < this.header.length) {
+            this.tail = Buffer.alloc(0);
+            this.tailAt = 0;
+            continue;
+          }
+          this.bodyLen = this.header.readUInt32BE(1);
+          if (this.bodyLen > MAX_FRAME) throw new Error("frame too long");
+          this.bodyLeft = this.bodyLen;
+        }
+        let payload: Buffer | null = null;
+        if (this.bodyLeft === 0) {
+          payload = this.bodyParts.length > 0 ? Buffer.concat(this.bodyParts, this.bodyLen) : Buffer.alloc(0);
+        } else {
+          // Join multi-chunk frames once when the final piece arrives.
+          const part = this.tail.subarray(this.tailAt, this.tailAt + this.bodyLeft);
+          this.tailAt += part.length;
+          this.bodyLeft -= part.length;
+          if (this.bodyLeft === 0) {
+            if (this.bodyParts.length > 0) {
+              this.bodyParts.push(part);
+              payload = Buffer.concat(this.bodyParts, this.bodyLen);
+            } else {
+              payload = part.length === this.tail.length ? part : Buffer.from(part);
+            }
+          } else if (part.length > 0) {
+            this.bodyParts.push(part);
+          }
+        }
+        if (this.tailAt >= this.tail.length) {
+          this.tail = Buffer.alloc(0);
+          this.tailAt = 0;
+        }
+        if (payload !== null) {
+          this.bodyParts.length = 0;
+          this.headerBytes = 0;
+          return [this.header[0]!, payload];
+        }
+      }
+      if (this.headerBytes === this.header.length && this.bodyLeft === 0) {
+        this.bodyParts.length = 0;
+        this.headerBytes = 0;
+        return [this.header[0]!, Buffer.alloc(0)];
+      }
+      const more = await this.source.read();
+      if (more === null) {
+        if (this.headerBytes === 0) return null;
+        throw new Error("the stream ended inside a frame");
+      }
+      if (more.length === 0) continue;
+      this.tail = more;
+      this.tailAt = 0;
+    }
   }
 }
 

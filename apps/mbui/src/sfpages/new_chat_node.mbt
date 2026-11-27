@@ -756,6 +756,8 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
         over_it: Some(over_choices),
         over_tall: @sf.glass_chooser_h.points().unwrap_or(0.0) + @ui.Space::px(S1_5),
         away,
+        runtime: fn() { text((on.view)(), "runtime") },
+        preset: fn() { text((on.view)(), "preset") },
       },
       shows=fn() { !(on.going)() },
       tips=on.tips,
