@@ -956,16 +956,18 @@ fn chats_pane_node(
   let top_push_by : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
   let bot_push_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
   let bot_push_by : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let top_fade_span = @ui.Space::S3_5.px() - @ui.Space::S1.px()
+  let bot_fade_span = @ui.Space::S1_5.px()
   let push_alpha_of = fn(key_fn : () -> String) -> () -> Double {
     fn() {
       let cur = key_fn()
       if top_push_key.get() == Some(cur) {
-        // Heading has pt = S3_5 (14pt); dissolve foreground completely over 10pt so glyphs never get sliced at top_edge
-        let a = 1.0 - top_push_by.get() / 10.0
+        // Heading has pt = S3_5 (14pt); dissolve foreground completely S1 (4pt) before glyphs hit top_edge
+        let a = 1.0 - top_push_by.get() / top_fade_span
         if a <= 0.0 { 0.0 } else if a >= 1.0 { 1.0 } else { a }
       } else if bot_push_key.get() == Some(cur) {
-        // Heading has >=7pt below glyphs (pb = S1 + descender room); dissolve over 6pt before hitting bottom_edge
-        let a = 1.0 - bot_push_by.get() / 6.0
+        // Heading has >=7pt below glyphs (pb = S1 + descender room); dissolve over S1_5 (6pt) before hitting bottom_edge
+        let a = 1.0 - bot_push_by.get() / bot_fade_span
         if a <= 0.0 { 0.0 } else if a >= 1.0 { 1.0 } else { a }
       } else {
         1.0
@@ -1594,10 +1596,12 @@ fn section_chrome_node(
           let (te_k, be_k, tp, bp) = state
           top_edge_key.set(te_k)
           bot_edge_key.set(be_k)
+          // Write `by` before `key` on `Some` (and clear `key` before resetting `by` on `None`) so a newly pushed
+          // heading never briefly evaluates with the previous heading's `by`.
           match tp {
             Some((k, by)) => {
-              top_push_key.set(Some(k))
               top_push_by.set(by)
+              top_push_key.set(Some(k))
             }
             None => {
               top_push_key.set(None)
@@ -1606,8 +1610,8 @@ fn section_chrome_node(
           }
           match bp {
             Some((k, by)) => {
-              bot_push_key.set(Some(k))
               bot_push_by.set(by)
+              bot_push_key.set(Some(k))
             }
             None => {
               bot_push_key.set(None)
@@ -1636,7 +1640,8 @@ fn section_chrome_node(
         |> ignore
       })
       |> ignore
-      // Matching bottom-band mask when a foot band is present (zero extra nodes when bottom_edge == 0).
+      // Matching bottom-band mask for the bottom-stacked state when a foot band is present (zero extra nodes when
+      // bottom_edge == 0; covers stacked headers only since bottom has no `active` sentinel and lists_foot_node is opaque).
       host.show(at_once=true, fn() { is_grouped() && read_chrome().bottom_edge > 0.0 }, fn(fcap) {
         fcap
         .over(Is(true), edges=(Some(0.0), None, Some(0.0), Some(0.0)))
@@ -1825,6 +1830,7 @@ fn list_day_or_group_heading_node(
         fn() { label() + " " + count_text() },
         fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
         expanded=fn() { !collapsed() },
+        disabled?=push_alpha.map(fn(a) { fn() { a() < 0.999 } }),
         fn(row) {
           // (its chevron centred in the rows' end column, where their last marks stand)
           @sf.style_node(row, fn() {

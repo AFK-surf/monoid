@@ -1673,12 +1673,25 @@ test "top_push / bot_push track outgoing straddling headers continuously (includ
   tree.set_pixel_grid(1.5)
   tree.frame(300.0, 320.0, now=0.0) |> ignore
 
-  // 1. Resting with h/A at slot 0 and h/B at slot 1 (not pushed past top_edge): top_push must be None
-  //    (no spurious sub-pixel push-out from fractional 51.0 * 1.5 = 76.5 rounding!)
+  // 1. Resting with h/A at slot 0 and h/B at slot 1 (not pushed past top_edge): top_push must be None across ALL
+  //    scroll positions including IEEE-754 half-tie values where ((x + 51.0) - x) * 1.5 differs from 51.0 * 1.5 = 76.5!
+  let rest_xs : Array[Double] = [49.0 / 1.5, 55.0 / 1.5, 32.6666667, 50.0, 50.1, 50.3]
+  let mut ri = 0
+  let mut t_ms = 16.0
+  while ri < rest_xs.length() {
+    scroll.put(rest_xs[ri])
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    assert_eq(
+      chrome_ref.val.unwrap().top_push,
+      None,
+      msg="resting slot-0 header at fractional top_edge (x=\{rest_xs[ri]}) must not report spurious top_push",
+    )
+    ri = ri + 1
+    t_ms = t_ms + 16.0
+  }
   scroll.put(50.0)
-  tree.frame(300.0, 320.0, now=16.0) |> ignore
-  let c_rest = chrome_ref.val.unwrap()
-  assert_eq(c_rest.top_push, None, msg="resting slot-0 header at fractional top_edge must not report spurious top_push")
+  tree.frame(300.0, 320.0, now=t_ms) |> ignore
+  t_ms = t_ms + 16.0
   // section_clip_of top edge must match quantized drawn y of h/A to the exact pixel (77 / 1.5 = 51.3333pt)
   let ya = section_drawn_y(tree, rows, "h/A").unwrap()
   let clip = tree.section_clip_of(rows["h/A"].id()).unwrap()
@@ -1687,7 +1700,6 @@ test "top_push / bot_push track outgoing straddling headers continuously (includ
   // 2. Scroll into push-out zone where h/C pushes h/B up and h/B pushes h/A above top_edge
   let mut saw_top_push = false
   let mut prev_by = 0.0
-  let mut t_ms = 32.0
   let mut sx = 50.0
   while sx <= 140.0 {
     scroll.put(sx)
@@ -1726,7 +1738,21 @@ test "top_push / bot_push track outgoing straddling headers continuously (includ
   }
   assert_true(saw_collapsed_push, msg="expected top_push to report collapsed 0-row section h/C as it pushes past top_edge")
 
-  // 4. Verify bottom push-out reports bot_push continuously when bottom slot 1 (h/F) is pushed off bottom_edge by h/D -> h/E
+  // 4. Verify resting bottom slot reports bot_push == None across fractional scroll positions, and bottom push-out
+  //    reports bot_push continuously when bottom slot 1 (h/F) is pushed off bottom_edge by h/D -> h/E
+  let bot_rest_xs : Array[Double] = [40.0, 49.0 / 1.5, 55.0 / 1.5, 50.3]
+  let mut bri = 0
+  while bri < bot_rest_xs.length() {
+    scroll.put(bot_rest_xs[bri])
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    assert_eq(
+      chrome_ref.val.unwrap().bot_push,
+      None,
+      msg="resting bottom-stacked header at x=\{bot_rest_xs[bri]} must not report spurious bot_push",
+    )
+    bri = bri + 1
+    t_ms = t_ms + 16.0
+  }
   let mut saw_bot_push = false
   sx = 48.0
   while sx >= 0.0 {

@@ -476,10 +476,9 @@ fn solve_sections(
   let mut top_push_by = 0.0
   let mut bot_push_idx = -1
   let mut bot_push_by = 0.0
-  // Quantized top/bottom clip edges matching the contact-run grid snap so resting headers at fractional insets
-  // never report a spurious sub-pixel push-out while genuine outgoing headers report exact continuous push distance.
-  let l_edge_q = if grid > 0.0 { x + (te * grid).round() / grid } else { l_edge }
-  let b_edge_q = if grid > 0.0 { x + ((vh - be) * grid).round() / grid } else { b_edge }
+  // Quantized top clip edge using the exact same `((l_edge - x) * grid).round()` expression as contact-run snapping
+  // (so IEEE-754 half-ties like `((x + 51.0) - x) * 1.5` match resting slot-0 `drawn[j]` bit-for-bit across all `x`).
+  let l_edge_q = if grid > 0.0 { x + ((l_edge - x) * grid).round() / grid } else { l_edge }
   for j in 0..<g {
     let dy = dys[j]
     if is_above_ovf[j] {
@@ -518,9 +517,13 @@ fn solve_sections(
       top_push_idx = j
       top_push_by = l_edge_q - drawn[j]
     }
-    if bot_cap >= 1 && !is_below_ovf[j] && drawn[j] < b_edge_q - 1.0e-6 && drawn[j] + rs[j] > b_edge_q + 1.0e-6 {
-      bot_push_idx = j
-      bot_push_by = drawn[j] + rs[j] - b_edge_q
+    if bot_cap >= 1 && !is_below_ovf[j] {
+      // Exact quantized resting bottom slot for heading `j`, matching bottom contact-run snapping bit-for-bit
+      let bot_rest_q = if grid > 0.0 { x + ((b_edge - rs[j] - x) * grid).round() / grid } else { b_edge - rs[j] }
+      if drawn[j] > bot_rest_q + 1.0e-6 && drawn[j] < b_edge - 1.0e-6 {
+        bot_push_idx = j
+        bot_push_by = drawn[j] - bot_rest_q
+      }
     }
   }
   let top_stack_h = dmax(0.0, top_stack_end - l_edge)

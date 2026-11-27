@@ -374,35 +374,61 @@ test "1.3x large font scale: small screen floating pill and large screen sticky 
 }
 
 ///|
-test "desktop & medium push-out: outgoing Above/Below headings dissolve before clip edge with zero audit faults" {
-  // Desktop Side (1280x800): scroll into the exact push-out zone where monoid pushes board up and board pushes 未归类
-  // above top_edge (reproducing the mid-push clipped sliver state).
+test "desktop & medium push-out: outgoing Above/Below headings dissolve smoothly to 0 before clip edge" {
+  // Desktop Side (1280x800): scroll to just before monoid pushes board -> 未归类 above top_edge, then step through
+  // the push-out zone and explicitly verify 未归类 enters mid-fade (0 < alpha < 1), decreases monotonically, and
+  // dissolves to alpha <= 0.001 before finishing push-out.
   let t = sticky_tester("projects-sticky", 1280.0, 800.0, 0)
-  sticky_scroll_by(t, 150.0, 400.0, 456.0)
+  sticky_scroll_by(t, 150.0, 400.0, 396.0)
   assert_eq(sticky_desk_audit(t), [])
-  // Once 未归类 is pushed >= 10pt above top_edge, its interactive foreground button dissolves cleanly (opacity -> 0,
-  // skipped by pointer hit-testing & semantics) so half-sliced glyphs never linger below 新建对话.
-  let uncat = t.semantics().iter().find_first(fn(s) {
-    !s.hidden && s.role is Button && s.expanded is Some(_) && s.label.has_prefix("未归类 ")
-  })
-  if uncat is Some(u) {
-    // Either fully gone from top stack or dissolved cleanly before glyphs cross top_edge
-    assert_true(
-      u.rect.1 >= 34.0 || u.rect.1 + u.rect.3 <= 48.0,
-      msg="outgoing Above heading 未归类 must not linger half-clipped under top band: y=\{u.rect.1}, h=\{u.rect.3}",
-    )
-  }
-  for w in t.words() {
-    if w.0 == "未归类" && w.2 < 52.0 {
-      assert_true(
-        w.5 <= 0.001,
-        msg="outgoing 未归类 glyphs crossing top_edge must be dissolved: y=\{w.2}, alpha=\{w.5}",
-      )
+  // Resting slot-0 text y sits at `top_edge + S3_5`, so `clip_top = start_y - S3_5` is the exact `top_edge` clip line.
+  let start_uncat = t.words().iter().find_first(fn(w) { w.0 == "未归类" && w.1 < 260.0 }).unwrap()
+  let clip_top = start_uncat.2 - @ui.Space::S3_5.px()
+  let alpha_of_uncat = fn(tt : @ui.Tester) -> Double? {
+    for w in tt.words() {
+      // Only inspect glyphs still below `top_edge` (above `clip_top` is clipped to 0px by `section_clip_of`
+      // and masked by `cap`, even while the virtual list keeps the overflow row mounted in overscan).
+      if w.0 == "未归类" && w.1 < 260.0 && w.2 + w.4 > clip_top {
+        return Some(w.5)
+      }
     }
+    None
   }
-  // Finish pushing 未归类 out -> board settles cleanly at slot 0, monoid below hairline
-  sticky_scroll_by(t, 150.0, 400.0, 64.0)
-  assert_eq(sticky_desk_audit(t), [])
+  let start_a = alpha_of_uncat(t)
+  assert_true(
+    start_a is Some(a) && a >= 0.999,
+    msg="未归类 should start fully opaque before push-out: \{start_a.unwrap_or(-1.0)}",
+  )
+  let mut prev_a = 1.0
+  let mut saw_mid_fade = false
+  let mut saw_dissolved = false
+  let mut step = 0
+  while step < 24 {
+    sticky_scroll_by(t, 150.0, 400.0, 4.0)
+    assert_eq(sticky_desk_audit(t), [])
+    match alpha_of_uncat(t) {
+      Some(a) => {
+        assert_true(
+          a <= prev_a + 1.0e-6,
+          msg="未归类 alpha must decrease monotonically during downward push-out: \{prev_a} -> \{a}",
+        )
+        if a > 0.01 && a < 0.99 {
+          saw_mid_fade = true
+        }
+        if a <= 0.001 {
+          saw_dissolved = true
+        }
+        prev_a = a
+      }
+      None => {
+        saw_dissolved = true
+        prev_a = 0.0
+      }
+    }
+    step = step + 1
+  }
+  assert_true(saw_mid_fade, msg="expected to observe 未归类 in mid-fade (0 < alpha < 1) during push-out")
+  assert_true(saw_dissolved, msg="expected 未归类 to dissolve cleanly to alpha <= 0.001 during push-out")
   let board_btn = t.semantics().iter().find_first(fn(s) {
     !s.hidden && s.role is Button && s.expanded is Some(_) && s.label.has_prefix("board ")
   })
