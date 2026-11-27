@@ -2319,14 +2319,14 @@ fn verify_on_personal_lock(
 
 /// Locate every `ws` entry in `person_chains` (active chain + kept `aside` forks) committing to
 /// statement body hash `h` and return the exact chain prefix from genesis to that entry
-/// (1:1 with `PersonChains.commitsTo` in `station/src/mesh/person-chains.ts:187`, capped at 4096),
+/// (1:1 with `PersonChains.commitsTo` in `station/src/mesh/person-chains.ts:187`, capped at `CHAIN_MOST = 1024`),
 /// because `lock::body_refusal` checks the LAST entry.
 fn commits_to_body(
   person_chains : Array[(String, Array[form::Json])],
   aside_opt : Option[form::Json],
   h : String,
 ) -> Array[lock::Commit] {
-  let chain_most = 4096
+  let chain_most = 1024
   let out : Array[lock::Commit] = []
   for ci in 0..<person_chains.length() {
     let (g, active) = person_chains[ci]
@@ -8060,4 +8060,44 @@ test "P1-A & P2-A: non-head ws commit recovery rejects rotated key and renewal p
     Err(r) => test_wd_assert(r.error == "unknown credential key", "P2-A: unexpected refusal: " + r.error)
     Ok(_) => panic("P2-A: rotated-out key must be rejected on renewal")
   }
+}
+
+test "R5: commits_to_body enforces CHAIN_MOST = 1024 boundary (1025-entry chain succeeds, 1026-entry chain stops before genesis)" {
+  let mk_entry = fn(seq : Int, prev : form::Json, kind : String, body : form::Json) -> form::Json {
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("person:u_bound")),
+      ("seq", form::Json::Num(seq.to_double())),
+      ("prev", prev),
+      ("at", form::Json::Num((1700000000 + seq).to_double())),
+      ("kind", form::Json::Str(kind)),
+      ("body", body),
+      ("sig", form::Json::Obj([("key", form::Json::Str("ed25519:00")), ("alg", form::Json::Str("Ed25519")), ("sig", form::Json::Str("00"))])),
+    ])
+  }
+  let target_h_1025 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let target_h_1026 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let entries : Array[form::Json] = []
+  let gen = mk_entry(0, form::Json::Null, "genesis", form::Json::Obj([("sub", form::Json::Str("u_bound"))]))
+  let root_h = test_wd_entry_hash(gen)
+  entries.push(gen)
+  let mut prev_h = root_h
+  // Build entries 1..=1025 (total 1026 entries):
+  // - index 1024 (1025th entry, chain length 1025) commits to target_h_1025 -> MUST succeed (len 1025)
+  // - index 1025 (1026th entry, chain length 1026) commits to target_h_1026 -> MUST stop before genesis (empty)
+  for seq in 1..<1026 {
+    let e = if seq == 1024 {
+      mk_entry(seq, form::Json::Str(prev_h), "ws", form::Json::Obj([("t", form::Json::Str("tag")), ("h", form::Json::Str(target_h_1025))]))
+    } else if seq == 1025 {
+      mk_entry(seq, form::Json::Str(prev_h), "ws", form::Json::Obj([("t", form::Json::Str("tag")), ("h", form::Json::Str(target_h_1026))]))
+    } else {
+      mk_entry(seq, form::Json::Str(prev_h), "device", form::Json::Obj([("id", form::Json::Str("d" + seq.to_string()))]))
+    }
+    prev_h = test_wd_entry_hash(e)
+    entries.push(e)
+  }
+  let ok_1025 = commits_to_body([(root_h, entries)], None, target_h_1025)
+  test_wd_assert(ok_1025.length() == 1 && ok_1025[0].chain.length() == 1025, "expected 1025-entry chain to succeed")
+  let rej_1026 = commits_to_body([(root_h, entries)], None, target_h_1026)
+  test_wd_assert(rej_1026.length() == 0, "expected 1026-entry chain to stop before genesis and return empty")
 }
