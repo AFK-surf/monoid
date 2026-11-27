@@ -109,137 +109,175 @@ async function diskRoom(path: string): Promise<unknown> {
   }
 }
 
-export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Promise<unknown> {
-  const raw = d.config() ?? {};
-  // What is of the viewer's workspace: its chats, and the connects added in it.
-  // (Counted by connect from the viewer's workspace in the index; the processes not cold are the hub's few.)
-  const visibleConnects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: any) => sees(viewer, typeof c?.workspace === "string" && c.workspace !== "" ? c.workspace : null));
-  const ids = visibleConnects.map((c: any) => c.id);
-  let counted = d.store.overviewSessionCounts(viewer, ids);
-  if (counted === null) {
-    if (d.hub.waitForSessionCounts == null || !await d.hub.waitForSessionCounts()) throw new Error("session counts are not ready");
-    counted = d.store.overviewSessionCounts(viewer, ids);
-    if (counted === null) throw new Error("session counts are not ready");
-  }
-  const counts = counted;
-  const sessionsOf = (connect: unknown) => connect === null ? counts.total : typeof connect === "string" ? counts.byConnect.get(connect) ?? 0 : 0;
-  const states = [...d.hub.processes()].filter(([key]) => sees(viewer, d.store.sessionWs(key) ?? null)).map(([, state]) => state);
-  // The agents' runtime processes; background jobs' groups are recorded too (to be reaped), but they are jobs.
-  const processes = d.store.listProcesses().filter((p) => p.runtime !== "job");
-  // (The disk's room asked meanwhile: it never fails.)
-  const disk = diskRoom(d.hub.config().dataDir);
-  const memory = await keptMemory(d, processes.map((p) => p.pgid));
-  const connects = visibleConnects.map((c: any) => {
-    const mode = c.mode ?? "multi-session";
-    const runtime = c.bind?.runtime;
-    const nonEmpty = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
-    const kind = typeof c.kind === "string" && c.kind !== "" ? c.kind : "slack";
-    const bindProfiles: string[] = Array.isArray(c.bind?.profiles)
-      ? [...new Set<string>(c.bind.profiles.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
-      : [];
-    const singleProfile = nonEmpty(c.bind?.profile) ?? (bindProfiles.length === 1 ? bindProfiles[0]! : null);
-    const startsOnAuto = c.autoStation === true;
-    const startsOn = startsOnAuto ? null : nonEmpty(c.station);
-    const rawStartsOnStations: string[] = !startsOnAuto && Array.isArray(c.stations)
-      ? [...new Set<string>(c.stations.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
-      : [];
-    const startsOnStations = startsOnAuto ? null : rawStartsOnStations.length > 0 ? rawStartsOnStations : startsOn !== null ? [startsOn] : null;
-    const shown = {
-      id: c.id,
-      // What it is known by (its bot's name on its platform, and its workspace there), as its kind says: its id till then.
-      name: c.id,
-      team: null,
-      botImage: null,
-      enabled: c.enabled ?? true,
-      kind,
-      mode,
-      requireMention: mode === "multi-session" ? true : (c.requireMention ?? true),
-      bind: {
-        runtime,
-        model: nonEmpty(c.bind?.model),
-        effort: nonEmpty(c.bind?.effort),
-        profile: singleProfile,
-        ...(bindProfiles.length > 1 ? { profiles: bindProfiles } : {}),
-      },
-      // Every connect has Slack's tokens for the pages (masked: connects/part.ts; none for another kind's).
-      slack: { appToken: "", botToken: "" },
-      connection: c.enabled === false ? { state: "disabled" } : { state: "starting" },
-      createdBy: c.createdBy?.id ? c.createdBy : null,
-      sessions: sessionsOf(c.id),
-      session: mode === "single-session" ? d.store.binding(c.id) : null,
-      // The station(s) of its workspace its new conversations run on (null: this one), and that it can be moved to
-      // another (connects/workspace.ts; a station from before says neither).
-      startsOn,
-      startsOnStations,
-      ...(startsOnAuto ? { startsOnAuto: true } : {}),
-      moves: true,
-    };
-    const own = d.connectKinds?.get(kind);
-    return own === undefined ? shown : { ...shown, ...own.shown(c), connection: own.connection(c) ?? shown.connection };
+/// Per-broadcast scratch cache shared across all viewers of one `Events.flush()` round, discarded when the round ends.
+/// Avoids rebuilding and re-serializing identical station-wide and workspace-scoped subtrees once per device.
+export type OverviewRound = Map<string, unknown>;
+
+function roundCached<T>(round: OverviewRound | undefined, key: string, make: () => T): T {
+  if (round === undefined) return make();
+  if (round.has(key)) return round.get(key) as T;
+  const value = make();
+  round.set(key, value);
+  return value;
+}
+
+export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang, round?: OverviewRound): Promise<unknown> {
+  const raw = roundCached(round, "st:raw", () => d.config() ?? {});
+  const wsScope = `${viewer.workspace}\0${viewer.home === false ? "0" : "1"}`;
+  const mgrScope = managesStation(viewer) ? "1" : "0";
+  const roScope = readOnly(viewer) ? "1" : "0";
+  // (The disk's room and process memory asked once per round meanwhile: they never fail.)
+  const disk = roundCached(round, "st:disk", () => diskRoom(d.hub.config().dataDir));
+  const processesPromise = roundCached(round, "st:processes", async () => {
+    // The agents' runtime processes; background jobs' groups are recorded too (to be reaped), but they are jobs.
+    const processes = d.store.listProcesses().filter((p) => p.runtime !== "job");
+    const memory = await keptMemory(d, processes.map((p) => p.pgid));
+    return processes.map((p) => {
+      const kb = memory.get(p.pgid);
+      return { ...p, rssMb: kb === undefined ? null : Math.round(kb / 1024) };
+    });
   });
+  const wsData = await roundCached(round, `ws:connects:${wsScope}`, async () => {
+    // What is of the viewer's workspace: its chats, and the connects added in it.
+    // (Counted by connect from the viewer's workspace in the index; the processes not cold are the hub's few.)
+    const visibleConnects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: any) => sees(viewer, typeof c?.workspace === "string" && c.workspace !== "" ? c.workspace : null));
+    const ids = visibleConnects.map((c: any) => c.id);
+    let counted = d.store.overviewSessionCounts(viewer, ids);
+    if (counted === null) {
+      if (d.hub.waitForSessionCounts == null || !await d.hub.waitForSessionCounts()) throw new Error("session counts are not ready");
+      counted = d.store.overviewSessionCounts(viewer, ids);
+      if (counted === null) throw new Error("session counts are not ready");
+    }
+    const counts = counted;
+    const sessionsOf = (connect: unknown) => connect === null ? counts.total : typeof connect === "string" ? counts.byConnect.get(connect) ?? 0 : 0;
+    const states = [...d.hub.processes()].filter(([key]) => sees(viewer, d.store.sessionWs(key) ?? null)).map(([, state]) => state);
+    const connects = visibleConnects.map((c: any) => {
+      const mode = c.mode ?? "multi-session";
+      const runtime = c.bind?.runtime;
+      const nonEmpty = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+      const kind = typeof c.kind === "string" && c.kind !== "" ? c.kind : "slack";
+      const bindProfiles: string[] = Array.isArray(c.bind?.profiles)
+        ? [...new Set<string>(c.bind.profiles.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
+        : [];
+      const singleProfile = nonEmpty(c.bind?.profile) ?? (bindProfiles.length === 1 ? bindProfiles[0]! : null);
+      const startsOnAuto = c.autoStation === true;
+      const startsOn = startsOnAuto ? null : nonEmpty(c.station);
+      const rawStartsOnStations: string[] = !startsOnAuto && Array.isArray(c.stations)
+        ? [...new Set<string>(c.stations.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
+        : [];
+      const startsOnStations = startsOnAuto ? null : rawStartsOnStations.length > 0 ? rawStartsOnStations : startsOn !== null ? [startsOn] : null;
+      const shown = {
+        id: c.id,
+        // What it is known by (its bot's name on its platform, and its workspace there), as its kind says: its id till then.
+        name: c.id,
+        team: null,
+        botImage: null,
+        enabled: c.enabled ?? true,
+        kind,
+        mode,
+        requireMention: mode === "multi-session" ? true : (c.requireMention ?? true),
+        bind: {
+          runtime,
+          model: nonEmpty(c.bind?.model),
+          effort: nonEmpty(c.bind?.effort),
+          profile: singleProfile,
+          ...(bindProfiles.length > 1 ? { profiles: bindProfiles } : {}),
+        },
+        // Every connect has Slack's tokens for the pages (masked: connects/part.ts; none for another kind's).
+        slack: { appToken: "", botToken: "" },
+        connection: c.enabled === false ? { state: "disabled" } : { state: "starting" },
+        createdBy: c.createdBy?.id ? c.createdBy : null,
+        sessions: sessionsOf(c.id),
+        session: mode === "single-session" ? d.store.binding(c.id) : null,
+        // The station(s) of its workspace its new conversations run on (null: this one), and that it can be moved to
+        // another (connects/workspace.ts; a station from before says neither).
+        startsOn,
+        startsOnStations,
+        ...(startsOnAuto ? { startsOnAuto: true } : {}),
+        moves: true,
+      };
+      const own = d.connectKinds?.get(kind);
+      return own === undefined ? shown : { ...shown, ...own.shown(c), connection: own.connection(c) ?? shown.connection };
+    });
+    return {
+      connects,
+      counts: { sessions: sessionsOf(null), running: states.filter((s) => s === "running").length, warm: states.filter((s) => s === "warm").length },
+    };
+  });
+  const processes = await processesPromise;
   // (what each profile's home says read off the thread first: accounts/index.ts `homeSays`)
-  await d.accounts?.homesReadSoon?.();
-  const profiles = d.accounts?.profilesView(viewer) ?? [];
-  const built = d.builtAt?.();
-  const interrupted = d.hub.interruptedIn?.(viewer);
+  await roundCached(round, "st:homes", () => d.accounts?.homesReadSoon?.());
+  const profileBundle = roundCached(round, `ws:profiles:${wsScope}`, () => {
+    const profiles = d.accounts?.profilesView(viewer) ?? [];
+    return {
+      profiles,
+      // Who made each model its profiles run, and its series, as the model catalog says (accounts/catalog.ts): the
+      // clients group and mark models by them, and by the names alone where it says none.
+      modelMakers: modelMakers(profiles),
+      // What a chat can be kept to less context on (sessions/context-cap.ts): the runtimes that take it, and each model's
+      // whole window as the model catalog says it, the most it can be. A station from before says none: none offered.
+      contextCaps: { runtimes: CONTEXT_RUNTIMES, least: CONTEXT_LEAST, windows: modelWindows(profiles) },
+    };
+  });
+  const built = roundCached(round, "st:built", () => d.builtAt?.());
+  const interrupted = roundCached(round, `ws:interrupted:${wsScope}`, () => d.hub.interruptedIn?.(viewer));
+  const decScope = `${viewer.role === "owner" || viewer.role === "admin" ? "1" : "0"}\0${viewer.home}\0${viewer.workspace ?? ""}`;
+  const automaticDecisions = d.accounts ? await roundCached(round, `dec:${decScope}`, () => decisionsView(d, viewer)) : null;
+  const driveScope = viewer.home === false ? viewer.workspace : null;
+  const driveRoots = await roundCached(round, `drv:roots:${driveScope ?? ""}`, () => Promise.all(rootsOf(raw, driveScope).map((p) => (d.rootView ?? rootView)(p))));
+  const drive = roundCached(round, `drv:view:${driveScope ?? ""}\0${roScope}`, () => ({ roots: driveRoots, ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) }));
+  const permScope = `${roScope}\0${viewer.role}\0${wsScope}`;
   return {
     ...(typeof built === "number" && Number.isSafeInteger(built) && built > 0 ? { builtAt: built } : {}),
     ...(interrupted && interrupted.count > 0 ? { interrupted } : {}),
-    automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
-    archiving: archivingView(raw, viewer),
-    autoChats: autoChatsView(raw, viewer),
-    disabledRuntimes: disabledRuntimesView(raw),
+    automaticDecisions,
+    archiving: roundCached(round, `mgr:archiving:${mgrScope}`, () => archivingView(raw, viewer)),
+    autoChats: roundCached(round, `mgr:autoChats:${mgrScope}`, () => autoChatsView(raw, viewer)),
+    disabledRuntimes: roundCached(round, "st:disabledRuntimes", () => disabledRuntimesView(raw)),
     viewer: { via: "mesh", ...viewer },
-    mesh: meshStatus(d.cloud, viewer),
-    connects,
-    profiles,
+    mesh: roundCached(round, `ws:mesh:${viewer.workspace}`, () => meshStatus(d.cloud, viewer)),
+    connects: wsData.connects,
+    profiles: profileBundle.profiles,
     sessionRuntimeChange: true,
     connectRuntimeChange: true,
     accountSubsets: true,
     modelSpeeds: true,
     claudeTui: true,
-    // Who made each model its profiles run, and its series, as the model catalog says (accounts/catalog.ts): the
-    // clients group and mark models by them, and by the names alone where it says none.
-    modelMakers: modelMakers(profiles),
-    // What a chat can be kept to less context on (sessions/context-cap.ts): the runtimes that take it, and each model's
-    // whole window as the model catalog says it, the most it can be. A station from before says none: none offered.
-    contextCaps: { runtimes: CONTEXT_RUNTIMES, least: CONTEXT_LEAST, windows: modelWindows(profiles) },
-    processes: processes.map((p) => {
-      const kb = memory.get(p.pgid);
-      return { ...p, rssMb: kb === undefined ? null : Math.round(kb / 1024) };
-    }),
-    counts: { sessions: sessionsOf(null), running: states.filter((s) => s === "running").length, warm: states.filter((s) => s === "warm").length },
+    modelMakers: profileBundle.modelMakers,
+    contextCaps: profileBundle.contextCaps,
+    processes,
+    counts: wsData.counts,
     slackUsers: d.store.slackIdentities(viewer.email),
     disk: await disk,
-    logins: d.accounts?.loginsView(viewer) ?? [],
-    apiProviders: d.accounts?.apiProviders() ?? [],
-    profileServices: d.accounts?.profileServices?.() ?? [],
-    machineLogins: d.accounts?.machineLogins() ?? [],
+    logins: roundCached(round, `ws:logins:${wsScope}`, () => d.accounts?.loginsView(viewer) ?? []),
+    apiProviders: roundCached(round, "st:apiProviders", () => d.accounts?.apiProviders() ?? []),
+    profileServices: roundCached(round, "st:profileServices", () => d.accounts?.profileServices?.() ?? []),
+    machineLogins: roundCached(round, "st:machineLogins", () => d.accounts?.machineLogins() ?? []),
     // An OpenCode Go profile can be signed in to the OpenCode Console (accounts/console.ts) rather than given a key.
     consoleSignIn: d.accounts !== undefined,
     // It shares profiles and skills with its workspaces' other stations (share/index.ts).
     sharing: d.accounts !== undefined,
     // A profile's stations can follow the workspace's whitelist (share/index.ts `allowAuto`).
     shareAllowAuto: d.accounts !== undefined,
-    updates: d.updates?.get(lang) ?? [],
+    updates: roundCached(round, `lang:updates:${lang}`, () => d.updates?.get(lang) ?? []),
     // The folders pinned in its drive (drive/drive.ts), each with whether it can be browsed now; a member who may write
     // browses every folder from the home (`anywhere`).
     // Those of a joined workspace browse only its pinned folders, never the whole machine.
     // The variables everything it starts for its agents runs with (ops/agent-env.ts): a proxy, mostly.
-    agentEnv: agentEnvView(raw),
+    agentEnv: roundCached(round, "st:agentEnv", () => agentEnvView(raw)),
     // Station-managed third-party MCP servers (tools/managed-mcp.ts): masked secrets and live status.
-    mcpServers: d.mcpServers ? d.mcpServers() : managedMcpConfigView(raw),
+    mcpServers: roundCached(round, "st:mcpServers", () => (d.mcpServers ? d.mcpServers() : managedMcpConfigView(raw))),
     // How a session whose prompt cache is over goes on (routes/context.ts): afresh, by itself, when set.
-    context: contextView(raw),
+    context: roundCached(round, "st:context", () => contextView(raw)),
     // Whether it sends its log to still.fail (routes/diagnostics.ts).
-    diagnostics: diagnosticsView(raw),
-    network: networkView(raw),
-    drive: { roots: await Promise.all(rootsOf(raw, viewer.home === false ? viewer.workspace : null).map((p) => (d.rootView ?? rootView)(p))), ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) },
+    diagnostics: roundCached(round, "st:diagnostics", () => diagnosticsView(raw)),
+    network: roundCached(round, "st:network", () => networkView(raw)),
+    drive,
     // What its search finds of the machine: its files through Spotlight (macOS) or walked as asked, and
     // whether the person's own mail, messages and the like too.
-    search: { files: platform.hasSpotlight ? "spotlight" : "walk", personal: raw?.search?.personal === true },
+    search: roundCached(round, "st:search", () => ({ files: platform.hasSpotlight ? "spotlight" : "walk", personal: raw?.search?.personal === true })),
     // macOS's grants to still.fail Helper (a Mac's station only; a station from before them says none: not shown).
-    ...withPermissions(d, viewer),
+    ...roundCached(round, `perm:${permScope}`, () => withPermissions(d, viewer)),
   };
 }
 

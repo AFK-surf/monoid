@@ -42,27 +42,27 @@ pub let markdown_read : Ref[((String, (Json?) -> Unit) -> Unit)?] = Ref(None)
 pub let kept_call : Ref[((String, Json, Bytes?) -> Result[(Json, Bytes?), Json]?)?] = Ref(None)
 
 ///|
-/// Whether a person's words may hold more than one run, or one set otherwise than plain, as the core reads them
-/// (refLinks.ts draftWords: an address, a composer's mark, a link to a chat; the few of Markdown's marks it reads: a
-/// pair of `*`, `_`, `~` or backticks, a line begun `- ` or `* `): words with none of these are their own one run,
-/// asked of none. Never false where the core would say more (it may be true where the core says one plain run).
-pub fn words_may_link(text : String) -> Bool {
-  if text.contains("://") || text.contains("@[") || text.contains("](") {
-    return true
-  }
+/// Whether a person's words may hold one of the few of Markdown's marks the core reads (refLinks.ts: a pair of `*`,
+/// `_`, `~` or backticks; a list's item, its line begun `- `, `* ` or a number and `. ` or `) `): words with none
+/// are set all alike, asked of none (`ref.styles`). Never false where the core would find one (it may be true where
+/// the core finds none). (Lines counted with care here: what is under it in this file keeps its place.)
+pub fn words_may_mark(text : String) -> Bool {
+  // (where a line is: 0 in its words, 1 so far only blanks, 2 in the digits it begins with; then `marked`, its `-`
+  // or `*`, or its digits' `.` or `)`: an item's mark if a blank follows)
+  let mut starts = 1
   let mut stars = 0
   let mut lows = 0
   let mut waves = 0
   let mut ticks = 0
-  // (a line so far only blanks; then its `-` or `*`, an item's mark if a blank follows)
-  let mut starts = true
+  // (a blank after it: an item)
   let mut marked = false
+  let digit = fn(c : Char) { c >= '0' && c <= '9' }
   for c in text {
     if marked && c == ' ' {
       return true
     }
-    marked = starts && (c == '-' || c == '*')
-    starts = c == '\n' || (starts && c == ' ')
+    marked = (starts == 1 && (c == '-' || c == '*')) || (starts == 2 && (c == '.' || c == ')'))
+    starts = if c == '\n' || (starts == 1 && c == ' ') { 1 } else if starts > 0 && digit(c) { 2 } else { 0 }
     match c {
       '*' => stars += 1
       '_' => lows += 1
@@ -722,4 +722,13 @@ pub fn md_links_to(text : String, tree : Json?) -> Map[String, LinkTo] {
   }
   blocks(blocks_of(text, tree))
   out
+}
+
+///|
+/// Whether a person's words may hold more than one run, or one set otherwise than plain, as the core reads them
+/// (refLinks.ts draftWords: an address, a composer's mark, a link to a chat; one of Markdown's marks it reads,
+/// words_may_mark): words with none of these are their own one run, asked of none. Never false where the core would
+/// say more (it may be true where the core says one plain run).
+pub fn words_may_link(text : String) -> Bool {
+  text.contains("://") || text.contains("@[") || text.contains("](") || words_may_mark(text)
 }

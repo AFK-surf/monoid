@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Effect, Fiber } from "effect";
 import { FakeCloud } from "../harness/cloud.ts";
 import { apply } from "../src/delta.ts";
+import { HostError } from "../src/error.ts";
 import { Bridge, BridgeHost, bridgeIroh, startBridged } from "../src/hosts/bridge.ts";
 import { WebHost } from "../src/hosts/web.ts";
 import { ACCESS_CACHE_MS, createAccessCache } from "../src/iroh-access.ts";
@@ -606,4 +607,272 @@ test("createAccessCache_reads_at_most_once_per_resolve_for_unknown_relays", () =
   access.clear();
   access.resolveAll(["https://r2.test"]);
   assert.equal(reads, 4);
+});
+
+test("bridgeIroh_conn_closed_is_single_flight_across_raceFirst_interrupts", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  let closedCallId: number | null = null;
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    sent.push({ id, op, json: parsed });
+    if (op === "iroh.bind") bridge.complete(id, JSON.stringify({ id: 10 }), null, null);
+    else if (op === "iroh.connect") bridge.complete(id, JSON.stringify({ id: 20 }), null, null);
+    else if (op === "conn.closed") closedCallId = id;
+    else if (op === "conn.close") bridge.complete(id, "{}", null, null);
+  };
+  native.callSync = (op) => {
+    if (op === "conn.remoteId") return JSON.stringify({ value: "peer-20" });
+    if (op === "conn.stats") return JSON.stringify({ value: { rxBytes: 10, txBytes: 20 } });
+    return JSON.stringify({ value: null });
+  };
+  try {
+    const iroh = bridgeIroh(bridge);
+    const ep = await run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
+    const conn = await run(ep.connect({ id: "peer-20", relays: [], ips: [] }, new Uint8Array(), []));
+
+    // 100 sequential + 100 concurrent interrupted races must issue strictly 1 native conn.closed RPC.
+    for (let i = 0; i < 100; i++) {
+      await run(Effect.raceFirst(conn.closed(), Effect.void));
+    }
+    await run(Effect.all(Array.from({ length: 100 }, () => Effect.raceFirst(conn.closed(), Effect.void)), { concurrency: "unbounded" }));
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+    assert.notEqual(closedCallId, null);
+
+    // Active waiters share the same single-flight RPC and receive the exact CloseReason once it resolves.
+    const w1 = Effect.runFork(conn.closed());
+    const w2 = Effect.runFork(conn.closed());
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+
+    const expected = { kind: "application", reason: "peer-bye" };
+    bridge.complete(closedCallId!, JSON.stringify(expected), null, null);
+
+    assert.deepEqual(await run(Fiber.join(w1)), expected);
+    assert.deepEqual(await run(Fiber.join(w2)), expected);
+    assert.deepEqual(await run(conn.closed()), expected);
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridgeIroh_conn_closed_snapshots_and_forgets_handle_matching_gone_semantics", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  const syncSent: { op: string; json: J }[] = [];
+  let closedCallId: number | null = null;
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    sent.push({ id, op, json: parsed });
+    if (op === "iroh.bind") bridge.complete(id, JSON.stringify({ id: 10 }), null, null);
+    else if (op === "iroh.connect") bridge.complete(id, JSON.stringify({ id: 20 }), null, null);
+    else if (op === "conn.closed") closedCallId = id;
+    else if (op === "conn.close") bridge.complete(id, "{}", null, null);
+  };
+  native.callSync = (op, json) => {
+    syncSent.push({ op, json: JSON.parse(json) });
+    if (op === "conn.remoteId") return JSON.stringify({ value: "peer-hex-id" });
+    if (op === "conn.stats") return JSON.stringify({ value: { rxBytes: 1234, txBytes: 5678 } });
+    return JSON.stringify({ error: `unexpected sync ${op}` });
+  };
+  try {
+    const iroh = bridgeIroh(bridge);
+    const ep = await run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
+    const conn = await run(ep.connect({ id: "peer-hex-id", relays: [], ips: [] }, new Uint8Array(), []));
+
+    const waiting = Effect.runFork(conn.closed());
+    assert.notEqual(closedCallId, null);
+
+    const expected = { kind: "timeout", reason: "idle" };
+    bridge.complete(closedCallId!, JSON.stringify(expected), null, null);
+    assert.deepEqual(await run(Fiber.join(waiting)), expected);
+
+    const closes = sent.filter((c) => c.op === "conn.close");
+    assert.deepEqual(closes.map((c) => c.json), [{ id: 20, code: 0, reason: "", forget: true }]);
+
+    // After forget, no method may issue native.call or native.callSync.
+    sent.length = 0;
+    syncSent.length = 0;
+
+    assert.equal(conn.remoteId(), "peer-hex-id");
+    assert.deepEqual(conn.closeReason(), expected);
+    assert.deepEqual(conn.stats(), { rxBytes: 1234, txBytes: 5678 });
+    assert.deepEqual(conn.paths(), []);
+    assert.equal(await run(conn.acceptBi()), null);
+    await assert.rejects(run(conn.openBi()), (e: unknown) => e instanceof HostError && e.message === "connection closed: idle");
+    await assert.rejects(run(conn.openUni()), (e: unknown) => e instanceof HostError && e.message === "connection closed: idle");
+    assert.deepEqual(await run(conn.closed()), expected);
+    conn.close(1, "ignored");
+
+    assert.equal(sent.length, 0);
+    assert.equal(syncSent.length, 0);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridgeIroh_conn_close_is_idempotent_and_forgets_after_closed_reason", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  const syncSent: { op: string; json: J }[] = [];
+  let closedCallId: number | null = null;
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    sent.push({ id, op, json: parsed });
+    if (op === "iroh.bind") bridge.complete(id, JSON.stringify({ id: 10 }), null, null);
+    else if (op === "iroh.connect") bridge.complete(id, JSON.stringify({ id: 21 }), null, null);
+    else if (op === "conn.closed") closedCallId = id;
+    else if (op === "conn.close") bridge.complete(id, "{}", null, null);
+  };
+  native.callSync = (op, json) => {
+    syncSent.push({ op, json: JSON.parse(json) });
+    if (op === "conn.remoteId") return JSON.stringify({ value: "peer-21" });
+    if (op === "conn.stats") return JSON.stringify({ value: { rxBytes: 7, txBytes: 9 } });
+    if (op === "conn.closeReason") return JSON.stringify({ value: { kind: "local", reason: "woke" } });
+    return JSON.stringify({ value: null });
+  };
+  try {
+    const iroh = bridgeIroh(bridge);
+    const ep = await run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
+    const conn = await run(ep.connect({ id: "peer-21", relays: [], ips: [] }, new Uint8Array(), []));
+
+    // Calling close twice without a prior conn.closed() sends exactly 1 conn.close and 1 conn.closed.
+    conn.close(0, "woke");
+    conn.close(0, "woke");
+
+    assert.deepEqual(
+      sent.filter((c) => c.op === "conn.close").map((c) => c.json),
+      [{ id: 21, code: 0, reason: "woke" }],
+    );
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+    assert.notEqual(closedCallId, null);
+
+    // Before conn.closed completes, closeReason() still queries the shell and does not forget early.
+    assert.deepEqual(conn.closeReason(), { kind: "local", reason: "woke" });
+    assert.deepEqual(syncSent, [{ op: "conn.closeReason", json: { id: 21 } }]);
+    assert.deepEqual(
+      sent.filter((c) => c.op === "conn.close").map((c) => c.json),
+      [{ id: 21, code: 0, reason: "woke" }],
+    );
+
+    const expected = { kind: "local", reason: "woke" };
+    bridge.complete(closedCallId!, JSON.stringify(expected), null, null);
+
+    assert.deepEqual(await run(conn.closed()), expected);
+    assert.deepEqual(conn.closeReason(), expected);
+    assert.deepEqual(
+      sent.filter((c) => c.op === "conn.close").map((c) => c.json),
+      [
+        { id: 21, code: 0, reason: "woke" },
+        { id: 21, code: 0, reason: "", forget: true },
+      ],
+    );
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+
+    // Subsequent close calls are no-ops.
+    conn.close(0, "again");
+    assert.equal(sent.filter((c) => c.op === "conn.close").length, 2);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridgeIroh_conn_closed_error_falls_back_without_forgetting", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  let closedCallId: number | null = null;
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    sent.push({ id, op, json: parsed });
+    if (op === "iroh.bind") bridge.complete(id, JSON.stringify({ id: 10 }), null, null);
+    else if (op === "iroh.connect") bridge.complete(id, JSON.stringify({ id: 22 }), null, null);
+    else if (op === "conn.closed") closedCallId = id;
+    else if (op === "conn.close") bridge.complete(id, "{}", null, null);
+  };
+  try {
+    const iroh = bridgeIroh(bridge);
+    const ep = await run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
+    const conn = await run(ep.connect({ id: "peer-22", relays: [], ips: [] }, new Uint8Array(), []));
+
+    const waiting = Effect.runFork(conn.closed());
+    assert.notEqual(closedCallId, null);
+
+    bridge.complete(closedCallId!, null, "bridge failed", null);
+
+    const fallback = { kind: "other", reason: "" };
+    assert.deepEqual(await run(Fiber.join(waiting)), fallback);
+    assert.equal(sent.filter((c) => c.op === "conn.close").length, 0);
+
+    // Subsequent conn.closed() reuses the cached fallback without issuing another RPC or forget.
+    assert.deepEqual(await run(conn.closed()), fallback);
+    assert.equal(sent.filter((c) => c.op === "conn.closed").length, 1);
+    assert.equal(sent.filter((c) => c.op === "conn.close").length, 0);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridgeIroh_endpoint_close_is_single_flight_forgets_and_matches_unbound_semantics", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  const syncSent: { op: string; json: J }[] = [];
+  let epCloseCallId: number | null = null;
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    sent.push({ id, op, json: parsed });
+    if (op === "iroh.bind") bridge.complete(id, JSON.stringify({ id: 30 }), null, null);
+    else if (op === "iroh.close") epCloseCallId = id;
+  };
+  native.callSync = (op, json) => {
+    syncSent.push({ op, json: JSON.parse(json) });
+    if (op === "iroh.endpointId") return JSON.stringify({ value: "ep-hex-30" });
+    return JSON.stringify({ error: `unexpected sync ${op}` });
+  };
+  try {
+    const iroh = bridgeIroh(bridge);
+    const ep = await run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
+
+    const closing = Effect.runFork(Effect.all([ep.close(), ep.close()], { concurrency: "unbounded" }));
+    assert.deepEqual(
+      sent.filter((c) => c.op === "iroh.close").map((c) => c.json),
+      [{ id: 30, forget: true }],
+    );
+    assert.notEqual(epCloseCallId, null);
+
+    bridge.complete(epCloseCallId!, "{}", null, null);
+    await run(Fiber.join(closing));
+    await run(ep.close());
+    assert.equal(sent.filter((c) => c.op === "iroh.close").length, 1);
+
+    // After close, no method may touch the forgotten handle.
+    sent.length = 0;
+    syncSent.length = 0;
+
+    assert.equal(ep.id(), "ep-hex-30");
+    assert.deepEqual(ep.relayStatus(), []);
+    ep.addAddr({ id: "peer", relays: [], ips: [] });
+    assert.equal(await run(ep.accept!()), null);
+    await run(ep.networkChange());
+    await run(ep.setRelayEntries!([]));
+
+    const isEndpointClosed = (e: unknown) => e instanceof HostError && e.message === "the endpoint is closed";
+    await assert.rejects(run(ep.connect({ id: "peer", relays: [], ips: [] }, new Uint8Array(), [])), isEndpointClosed);
+    await assert.rejects(run(ep.meshUseLeaf!({ scope: "s", attachment: {} as J })), isEndpointClosed);
+    await assert.rejects(run(ep.meshDetachLeaf!({ scope: "s", attachmentId: [1] })), isEndpointClosed);
+    await assert.rejects(run(ep.meshConfigure!({ scope: "s", transit: false, peers: [], relayUrls: [] })), isEndpointClosed);
+    await assert.rejects(run(ep.meshRemove!("s")), isEndpointClosed);
+    await assert.rejects(run(ep.setDisabledRelays!("deadbeef", ["https://r1.test/"])), isEndpointClosed);
+    await assert.rejects(run(ep.insertRelay!("https://r1.test/")), isEndpointClosed);
+    await assert.rejects(run(ep.removeRelay!("https://r1.test/")), isEndpointClosed);
+
+    assert.equal(sent.length, 0);
+    assert.equal(syncSent.length, 0);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

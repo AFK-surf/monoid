@@ -1,0 +1,848 @@
+// Comprehensive unit tests for `WholeStore`, `WholeAgents`, `WholeApi`, and `WholeCore`
+// (`pionc test --json --package station_whole`).
+// Live SQLite + real disk Drive + real Rust `libstillfail_shell.a` `image.thumb` E2E is
+// additionally verified via a native linked probe binary.
+
+import "base_codec"
+import "crypto"
+import "form"
+import "http1"
+import "jscase"
+import "station_api"
+import "station_http"
+import "station_jobs"
+import "station_rules_bridge"
+import "station_screens"
+import "station_sessions"
+import "station_sys"
+import "station_tools"
+import "station_vault"
+
+fn wc_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("whole_core_test assertion failed: " + msg)
+  }
+}
+
+fn wc_response_status(act : station_http::HandlerAction) -> Int {
+  match act {
+    station_http::HandlerAction::Respond(resp) => resp.status
+    _ => -1
+  }
+}
+
+fn wc_response_body(act : station_http::HandlerAction) -> String {
+  match act {
+    station_http::HandlerAction::Respond(resp) => resp.body.to_string()
+    _ => ""
+  }
+}
+
+fn wc_response_header(act : station_http::HandlerAction, name : String) -> Option[String] {
+  match act {
+    station_http::HandlerAction::Respond(resp) => {
+      for i in 0..<resp.headers.length() {
+        if resp.headers[i].name == name {
+          return Some(resp.headers[i].value)
+        }
+      }
+      None
+    }
+    _ => None
+  }
+}
+
+fn wc_noop_proc_backend() -> station_jobs::ProcBackend {
+  station_jobs::ProcBackend::{
+    spawn_proc: fn(_id : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      Err("disabled in pure unit test")
+    },
+    kill_handle: fn(_cp : station_sys::ChildProcess, _sig : Int, _g : Bool) -> Int { 0 },
+    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
+    kill_pid: fn(_pid : Int, _sig : Int, _g : Bool) -> Int { 0 },
+    proc_start_time_ms: fn(_pid : Int) -> Option[Int64] { None },
+    base_env: fn() -> Array[String] { [] },
+    random_token: fn() -> Result[String, String] { Ok("unit-test-job-token-0123456789abcdef") },
+  }
+}
+
+fn wc_empty_status(_v : station_api::Viewer) -> (Array[station_api::RunningSessionInfo], Array[(String, String)]) {
+  ([], [])
+}
+
+struct TestClock {
+  mut now_ms : Int64
+}
+
+fn make_test_core(data_dir : String, drive_dir : String, rng : DetRng, clock : TestClock) -> WholeCore {
+  let mem_fs = station_screens::MemDriveFs::new()
+  mem_fs.put_dir(data_dir)
+  mem_fs.put_dir(drive_dir)
+  let cfg = WholeCoreConfig::{
+    station_id: "st-w15-test",
+    station_build: "0.1.0-w15",
+    data_dir: data_dir,
+    drive_roots: [drive_dir],
+    drive_protected: [data_dir],
+    assets_dir: data_dir + "/assets",
+    runner_bin: data_dir + "/runner",
+    mcp_port: 4312,
+    home_workspace: "ws-home",
+    allowed_workspaces: ["ws-home", "ws-collab"],
+    rig_workspaces: ["ws-rig"],
+    rig_owner_email: "owner@example.com",
+    rig_owner_name: "Owner",
+    rig_person_lock_id: "lock-owner-1",
+  }
+  let clock_fn = fn() -> Int64 { clock.now_ms }
+  WholeCore::init_pre_handover_with_deps(
+    cfg,
+    mem_fs.fs(),
+    None,
+    mem_job_fs_port(clock_fn),
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] { rng.bytes(n) },
+    None,
+    clock_fn,
+    held_rig=false,
+  )
+}
+
+test "whole_core_pre_handover_sqlite_write_guard_one_shot_hook_and_version_check" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let core = make_test_core("/mem/w15-pre/data", "/mem/w15-pre/drive", rng, clock)
+
+  // SQLite MUST NOT be open before predecessor exits.
+  wc_assert(!core.store.is_primary_open(), "store must not be open in PreHandover")
+  wc_assert(store_phase_name(core.store.phase) == "pre-handover", "phase must be pre-handover")
+  wc_assert(core.store.require_open().is_err(), "require_open must refuse before open")
+
+  // Calling check_open_guard with predecessor_gone=false MUST refuse and NOT run before_store.
+  let mut hook_runs = 0
+  let res = core.store.check_open_guard(
+    false,
+    fn(_dir : String) -> Result[Unit, String] {
+      hook_runs = hook_runs + 1
+      Ok(())
+    },
+  )
+  wc_assert(res.is_err(), "check_open_guard(false) must fail")
+  wc_assert(hook_runs == 0, "before_store hook must not run when predecessor_gone=false")
+
+  // Once predecessor_gone=true, before_store runs AT MOST ONCE even if called again on retry.
+  let res_ok1 = core.store.check_open_guard(
+    true,
+    fn(_dir : String) -> Result[Unit, String] {
+      hook_runs = hook_runs + 1
+      Ok(())
+    },
+  )
+  wc_assert(res_ok1.is_ok() && hook_runs == 1, "before_store runs once on first true")
+  let res_ok2 = core.store.check_open_guard(
+    true,
+    fn(_dir : String) -> Result[Unit, String] {
+      hook_runs = hook_runs + 1
+      Ok(())
+    },
+  )
+  wc_assert(res_ok2.is_ok() && hook_runs == 1, "before_store must NOT re-run on retry")
+
+  // Unknown handover snapshot version MUST be rejected.
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":99,\"exportedAt\":1}").is_err(),
+    "unknown handover version 99 must be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"exportedAt\":1}").is_err(),
+    "missing handover version must be rejected",
+  )
+
+  // During pre-handover read-only mode, writes are rejected with 403 even for an authenticated owner.
+  let seed = crypto::sha256("w15-owner-seed-1".to_bytes())
+  let pub_bytes = match crypto::ed25519_public_key(seed) {
+    Ok(p) => p
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let valid_key_id = "ed25519:" + crypto::bytes_to_hex(pub_bytes)
+  let owner = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("owner@example.com", "ws-home"),
+    valid_key_id,
+  )
+  let write_act = core.api.handle_authenticated_api_with_status(
+    owner,
+    "POST",
+    "/api/threads/1/messages",
+    [],
+    "{\"text\":\"should fail\"}".to_bytes(),
+    1700000000200L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(write_act) == 403, "write during pre-handover must return 403")
+  wc_assert(
+    wc_response_body(write_act).contains("read-only handover"),
+    "403 body must explain read-only handover",
+  )
+}
+
+test "whole_api_auth_server_home_correction_core_floor_and_readonly_writes" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000001000L }
+  let core = make_test_core("/mem/w15-auth/data", "/mem/w15-auth/drive", rng, clock)
+  core.api.read_only_handover = false
+
+  // 1. PeerIdentity::Unknown MUST ALWAYS be rejected with 403.
+  let unk_get = core.api.handle_authenticated_api_with_status(
+    PeerIdentity::Unknown,
+    "GET",
+    "/api/status",
+    [],
+    Bytes::new(0),
+    1700000001000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(unk_get) == 403, "Unknown peer GET must be 403")
+
+  // 2. Invalid cryptographic key id MUST be rejected with 403.
+  let bad_key_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("owner@example.com", "ws-home"),
+    "ed25519:not-a-valid-32-byte-hex",
+  )
+  wc_assert(
+    wc_response_status(
+      core.api.handle_authenticated_api_with_status(
+        bad_key_peer,
+        "GET",
+        "/api/status",
+        [],
+        Bytes::new(0),
+        1700000001002L,
+        wc_empty_status,
+      ),
+    ) == 403,
+    "invalid key id must be 403",
+  )
+
+  let seed = crypto::sha256("w15-owner-seed-2".to_bytes())
+  let pub_bytes = match crypto::ed25519_public_key(seed) {
+    Ok(p) => p
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let valid_key_id = "ed25519:" + crypto::bytes_to_hex(pub_bytes)
+
+  // 3. Spoofed `home: true` on non-home workspace `ws-collab` MUST be corrected to `home: false`!
+  let spoofed_collab = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("collab@example.com", "ws-collab"),
+    valid_key_id,
+  )
+  let mut observed_home = true
+  let mut observed_ws = ""
+  let collab_status = core.api.handle_authenticated_api_with_status(
+    spoofed_collab,
+    "GET",
+    "/api/status",
+    [],
+    Bytes::new(0),
+    1700000001003L,
+    fn(v : station_api::Viewer) -> (Array[station_api::RunningSessionInfo], Array[(String, String)]) {
+      observed_home = v.home
+      observed_ws = v.workspace
+      ([], [])
+    },
+  )
+  wc_assert(wc_response_status(collab_status) == 200, "ws-collab GET /api/status must succeed")
+  wc_assert(!observed_home && observed_ws == "ws-collab", "server MUST compute viewer.home=false for ws-collab")
+
+  // 4. OLDEST_CORE floor gate (426 Upgrade Required) applies to `/api/status`!
+  let owner = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("owner@example.com", "ws-home"),
+    valid_key_id,
+  )
+  let old_core_res = core.api.handle_authenticated_api_with_status(
+    owner,
+    "GET",
+    "/api/status",
+    [http1::Header::{ name: station_api::BUILD_HEADER, value: "2000" }],
+    Bytes::new(0),
+    1700000001004L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(old_core_res) == 426, "outdated core on /api/status must get 426")
+
+  // 5. Read-only viewer MUST be rejected with 403 on write routes.
+  let ro_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::read_only_viewer("viewer@example.com", "ws-home"),
+    valid_key_id,
+  )
+  let ro_write = core.api.handle_authenticated_api_with_status(
+    ro_peer,
+    "POST",
+    "/api/threads/1/messages",
+    [],
+    "{\"text\":\"nope\"}".to_bytes(),
+    1700000001005L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(ro_write) == 403, "read-only viewer POST must be 403")
+}
+
+test "whole_api_drive_raw_binary_upload_conflict_replace_and_exact_length_read" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000001500L }
+  let core = make_test_core("/mem/w15-drv/data", "/mem/w15-drv/drive", rng, clock)
+  core.api.read_only_handover = false
+
+  let seed = crypto::sha256("w15-drive-seed".to_bytes())
+  let pub_bytes = match crypto::ed25519_public_key(seed) {
+    Ok(p) => p
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let key_id = "ed25519:" + crypto::bytes_to_hex(pub_bytes)
+  let home_owner = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("owner@example.com", "ws-home"),
+    key_id,
+  )
+  let collab_owner = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("collab@example.com", "ws-collab"),
+    key_id,
+  )
+
+  // 1. Raw binary PUT /api/drive/upload creates new file (no JSON/base64 wrapper!).
+  let up1 = core.api.handle_authenticated_api_with_status(
+    home_owner,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-drv/drive&path=sample.bin&id=up-1&offset=0&total=10",
+    [],
+    "0123456789".to_bytes(),
+    1700000001501L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(up1) == 200, "initial raw upload must return 200")
+  wc_assert(wc_response_body(up1).contains("\"have\":10"), "upload must return have:10")
+  wc_assert(wc_response_body(up1).contains("\"name\":\"sample.bin\""), "upload must return final entry")
+
+  // 2. Uploading same path WITHOUT replace=1 MUST fail with 409 Conflict (default overwrite=false!).
+  let up_conflict = core.api.handle_authenticated_api_with_status(
+    home_owner,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-drv/drive&path=sample.bin&id=up-2&offset=0&total=10",
+    [],
+    "abcdefghij".to_bytes(),
+    1700000001502L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(up_conflict) == 409, "overwrite without replace=1 must return 409")
+  wc_assert(wc_response_body(up_conflict).contains("\"exists\""), "409 body must have code exists")
+
+  // 3. Uploading WITH replace=1 succeeds and overwrites cleanly.
+  let up_replace = core.api.handle_authenticated_api_with_status(
+    home_owner,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-drv/drive&path=sample.bin&id=up-3&offset=0&total=10&replace=1",
+    [],
+    "ABCDEFGHIJ".to_bytes(),
+    1700000001503L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(up_replace) == 200, "overwrite with replace=1 must return 200")
+
+  // 4. GET /api/drive/read?offset=2&length=3 returns EXACT 3 raw bytes "CDE" + stillfail-total=10!
+  let rd = core.api.handle_authenticated_api_with_status(
+    home_owner,
+    "GET",
+    "/api/drive/read?root=/mem/w15-drv/drive&path=sample.bin&offset=2&length=3",
+    [],
+    Bytes::new(0),
+    1700000001504L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(rd) == 200, "GET /api/drive/read must return 200")
+  wc_assert(wc_response_body(rd) == "CDE", "GET /api/drive/read must return exact 3 raw bytes CDE, got: " + wc_response_body(rd))
+  wc_assert(
+    match wc_response_header(rd, "stillfail-total") { Some(v) => v == "10", None => false },
+    "stillfail-total header must be 10",
+  )
+
+  // 5. Non-home workspace `ws-collab` without Drive root grant MUST be rejected with 403!
+  let cross_ws_rd = core.api.handle_authenticated_api_with_status(
+    collab_owner,
+    "GET",
+    "/api/drive/read?root=/mem/w15-drv/drive&path=sample.bin&offset=0&length=3",
+    [],
+    Bytes::new(0),
+    1700000001505L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(cross_ws_rd) == 403, "cross-workspace Drive read must return 403")
+}
+
+test "whole_agents_mcp_token_lifecycle_wired_catalog_and_strict_state_validation" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000002000L }
+  let core = make_test_core("/mem/w15-mcp/data", "/mem/w15-mcp/drive", rng, clock)
+  let handlers = station_tools::default_domain_handlers()
+
+  let tok = match core.agents.issue_session_token("sess-mcp-1") {
+    Ok(t) => t
+    Err(e) => panic("issue_session_token failed: " + e)
+  }
+  wc_assert(tok.length() == 64, "32-byte hex token must be 64 chars")
+  wc_assert(ct_eq_str(tok, tok), "ct_eq_str self equality")
+  wc_assert(!ct_eq_str(tok, "0" + tok.slice(1, 64)), "ct_eq_str detects 1-char diff")
+
+  let list_body = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+
+  // Missing / wrong token -> 401; Cross-site Origin -> 403.
+  wc_assert(
+    core.agents.handle_mcp_http_with_handlers("POST", "/mcp", Some("127.0.0.1:4312"), None, None, list_body, handlers).status == 401,
+    "missing token -> 401",
+  )
+  wc_assert(
+    core.agents.handle_mcp_http_with_handlers("POST", "/mcp", Some("127.0.0.1:4312"), Some("https://evil.example"), Some("Bearer " + tok), list_body, handlers).status == 403,
+    "cross-site Origin -> 403",
+  )
+
+  // Valid tools/list returns ONLY genuinely wired tools (no fake unwired tools like browser/slack_api).
+  let ok_list = core.agents.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:4312"),
+    None,
+    Some("Bearer " + tok),
+    list_body,
+    handlers,
+  )
+  wc_assert(ok_list.status == 200, "valid tools/list must return 200")
+  wc_assert(ok_list.body.contains("\"chat_post\""), "wired chat_post must be listed")
+  wc_assert(ok_list.body.contains("\"project_manage\""), "wired project_manage must be listed")
+  wc_assert(!ok_list.body.contains("\"browser\""), "unwired browser tool must NOT be advertised")
+  wc_assert(!ok_list.body.contains("\"slack_api\""), "unwired slack_api tool must NOT be advertised")
+
+  // Strict `parse_turn_declared` rejects invalid `kind`.
+  wc_assert(parse_turn_declared("all_done", base_codec::json_obj([])).is_ok(), "all_done valid")
+  wc_assert(parse_turn_declared("need_human", base_codec::json_obj([])).is_ok(), "need_human valid")
+  wc_assert(parse_turn_declared("waiting", base_codec::json_obj([])).is_ok(), "waiting valid")
+  wc_assert(parse_turn_declared("bogus_kind", base_codec::json_obj([])).is_err(), "bogus_kind must fail")
+
+  // Revoke token -> subsequent request immediately returns 401.
+  wc_assert(core.agents.revoke_session_token("sess-mcp-1"), "revoke must return true")
+  wc_assert(
+    core.agents.handle_mcp_http_with_handlers("POST", "/mcp", Some("127.0.0.1:4312"), None, Some("Bearer " + tok), list_body, handlers).status == 401,
+    "revoked token must return 401",
+  )
+}
+
+test "whole_api_real_station_rules_bridge_ed25519_verify_and_tamper_reject" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000002500L }
+  let core = make_test_core("/mem/w15-crypto/data", "/mem/w15-crypto/drive", rng, clock)
+
+  let seed = crypto::sha256("w15-rules-bridge-ed25519-seed".to_bytes())
+  let pub_bytes = match crypto::ed25519_public_key(seed) {
+    Ok(p) => p
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let key_id = "ed25519:" + crypto::bytes_to_hex(pub_bytes)
+  let record_text = "{\"v\":1,\"ws\":\"ws-home\",\"action\":\"grant\"}"
+  let digest_hex = crypto::sha256_hex(record_text.to_bytes())
+  let tag = "stillfail-vault/1"
+  let msg = match station_rules_bridge::tagged_bytes(tag, digest_hex) {
+    Some(m) => m
+    None => panic("tagged_bytes failed")
+  }
+  let sig_bytes = match crypto::ed25519_sign(seed, msg) {
+    Ok(s) => s
+    Err(_) => panic("ed25519_sign failed")
+  }
+  let sig_hex = crypto::bytes_to_hex(sig_bytes)
+
+  wc_assert(core.api.verify_tagged_signature(key_id, sig_hex, tag, digest_hex), "valid tagged sig passes")
+  let sig_json = form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(sig_hex)),
+  ])
+  wc_assert(core.api.verify_record_signature(sig_json, tag, record_text), "valid record sig passes")
+  wc_assert(!core.api.verify_record_signature(sig_json, tag, "{\"v\":1,\"ws\":\"ws-home\",\"action\":\"evil\"}"), "tampered text rejected")
+
+  let rc = production_rig_crypto(None)
+  wc_assert((rc.verify_raw)(key_id, sig_bytes, msg), "RigCrypto valid raw sig passes")
+  wc_assert(!(rc.verify_raw)(key_id, sig_bytes, "tampered".to_bytes()), "RigCrypto tampered msg fails")
+}
+
+test "whole_core_mixed_rig_real_task_list_live_clock_expiry_and_zero_shutdown_count" {
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000003000L }
+  let core = make_test_core("/mem/w15-rig/data", "/mem/w15-rig/drive", rng, clock)
+
+  // 1. Rig workspace MUST reject non-rig full-station RPCs.
+  wc_assert(
+    core.handle_peer_rpc("peer-st-1", "ws-rig", "chat.post", form::Json::Obj([]), 0L).is_err(),
+    "rig workspace must reject chat.post",
+  )
+
+  // 2. Real `RemoteManager` execution on `task.list` (ungated readback) returns `{ "tasks": [] }`, NOT `{"ok":true}`!
+  let task_list_res = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "task.list",
+    form::Json::Obj([("session", form::Json::Str("sess-remote-1"))]),
+    0L,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("rig task.list failed: " + e)
+  }
+  wc_assert(task_list_res.contains("\"tasks\":[]"), "task.list must return real tasks array, got: " + task_list_res)
+  wc_assert(!task_list_res.contains("\"ok\":true"), "task.list must NOT return stub ok:true")
+
+  // 3. Real `session.size` returns `{ "exists": false, "bytes": 0 }`.
+  let size_res = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "session.size",
+    form::Json::Obj([("session", form::Json::Str("sess-remote-1"))]),
+    0L,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("rig session.size failed: " + e)
+  }
+  wc_assert(size_res.contains("\"bytes\":0"), "session.size must return real byte count")
+
+  // 4. Ungranted `task.start` is refused by `Rig::guard_request`.
+  wc_assert(
+    core.handle_peer_rpc("peer-st-1", "ws-rig", "task.start", form::Json::Obj([]), 0L).is_err(),
+    "rig task.start without grant must be refused",
+  )
+
+  // 5. Mutable clock expiry: vault grant active at t=1700000003s, expired after advancing clock past exp!
+  let sf : Map[String, String] = Map::new()
+  sf.set("value", "s3cr3t")
+  let g = station_vault::GrantRecord::{
+    id: "grant-live-clock-1",
+    session: "sess-1",
+    mode: station_vault::DeliveryMode::Env,
+    grant_scope: station_vault::GrantScope::Chat,
+    hosts: [],
+    env_var: Some("API_KEY"),
+    secret: station_vault::VaultSecret::{ kind: "api_key", name: "API_KEY", fields: sf },
+    expires_sec: 1700000100L,
+  }
+  wc_assert(core.store.register_vault_grant(g, clock.now_ms / 1000L).is_ok(), "register grant ok")
+  wc_assert(core.store.active_vault_grant_ids_at(clock.now_ms / 1000L).length() == 1, "grant active before exp")
+  clock.now_ms = 1700000200000L
+  core.on_tick(clock.now_ms)
+  wc_assert(core.store.active_vault_grant_ids_at(clock.now_ms / 1000L).length() == 0, "grant purged after clock passes exp")
+
+  // 6. Clean shutdown MUST leave `active_object_count() == 0` (clears actors, tokens, jobs, rig).
+  let _ = core.agents.hub.ensure_actor("sess-clean-1", "claude")
+  let _ = core.agents.issue_session_token("sess-clean-1")
+  wc_assert(core.active_object_count() >= 2, "active_object_count reflects live actor + token")
+  core.shutdown_pre_handover()
+  wc_assert(core.shut_down, "shut_down must be true")
+  wc_assert(!core.ready, "ready must be false after shutdown")
+  wc_assert(core.active_object_count() == 0, "active_object_count MUST be 0 after shutdown, got " + core.active_object_count().to_string())
+}
+
+test "whole_core_r3_bounded_sql_like_strict_snapshot_idempotent_adopt_drive_mcp_gate" {
+  // 1. Bounded SQL LIKE escaping & clause pushdown.
+  wc_assert(
+    escape_sql_like("100%_test\\A") == "100\\%\\_test\\\\a",
+    "escape_sql_like must escape %, _, \\ and lowercase ASCII",
+  )
+  let (like_sql, like_params) = build_like_clauses("COALESCE(t.title, '')", ["Alpha", "Beta_100%"], 3)
+  wc_assert(like_sql.contains("instr(js_lower(COALESCE(t.title, '')), ?3) > 0"), "first js_lower instr clause bound at ?3")
+  wc_assert(like_sql.contains("instr(js_lower(COALESCE(t.title, '')), ?4) > 0"), "second js_lower instr clause bound at ?4")
+  wc_assert(like_params.length() == 2, "expected 2 bound search parameters")
+
+  // 2. Strict `WholeHandoverSnapshot::from_json` rejects non-integer version (1.5) & malformed arrays.
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1.5,\"exportedAt\":1000}").is_err(),
+    "version 1.5 MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"bad\":true}]}").is_err(),
+    "malformed keptSends item MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"sessions\":[123]}").is_err(),
+    "malformed sessions item MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"activeJobIds\":[42]}").is_err(),
+    "non-string activeJobIds item MUST be rejected",
+  )
+
+  // 3. Idempotent token re-adoption NEVER revokes the existing active token.
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let core = make_test_core("/mem/w15-r3/data", "/mem/w15-r3/drive", rng, clock)
+  let tok = match core.agents.issue_session_token("sess-idemp-1") {
+    Ok(t) => t
+    Err(e) => panic(e)
+  }
+  core.agents.register_adopted_token("sess-idemp-1", tok)
+  core.agents.register_adopted_token("sess-idemp-1", tok)
+  match core.agents.resolve_token_ct(tok) {
+    Some(s) => wc_assert(s == "sess-idemp-1", "re-adopting identical token must keep it active")
+    None => panic("re-adopting identical token MUST NOT revoke it")
+  }
+
+  // 4. `AdminApi::kept_sends_identity` exports thread 10001+ without any 10000-row cap.
+  core.api.admin.keep_sends(
+    [
+      station_api::KeptSend::{
+        viewer: "alice@example.com",
+        workspace: "ws-home",
+        thread: 10001,
+        key: "idem-10001",
+        at_ms: 1700000000000L,
+        status: 200,
+        headers: [],
+        body_b64: base_codec::base64_encode("{\"ok\":true}".to_bytes()),
+      },
+    ],
+    None,
+  )
+  let exported = core.api.admin.kept_sends_identity()
+  wc_assert(
+    exported.length() == 1 && exported[0].thread == 10001 && exported[0].key == "idem-10001",
+    "kept_sends_identity must export thread 10001",
+  )
+
+  // 5. Drive `PUT /drive/upload` strict `total` required (400) & `replace=true` does NOT overwrite (409).
+  core.api.read_only_handover = false
+  let pub_hex = crypto::bytes_to_hex(crypto::sha256("r3-peer-key".to_bytes()))
+  let home_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("alice@example.com", "ws-home"),
+    "ed25519:" + pub_hex,
+  )
+  // Missing `total` -> 400.
+  let miss_total = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u1&offset=0",
+    [],
+    "hello".to_bytes(),
+    1700000000000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(miss_total) == 400, "missing total MUST return 400")
+  // Initial upload with total=5 -> 200.
+  let ok_up = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u2&offset=0&total=5",
+    [],
+    "hello".to_bytes(),
+    1700000001000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(ok_up) == 200, "initial upload expected 200")
+  // `replace=true` MUST NOT overwrite -> 409!
+  let bad_replace = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u3&offset=0&total=5&replace=true",
+    [],
+    "world".to_bytes(),
+    1700000002000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(bad_replace) == 409, "replace=true MUST return 409")
+
+  // 6. `WholeCore::handle_mcp_http_with_handlers` returns 503 before `ready == true`, and `session.size` matches `remote.ts` wire shape.
+  wc_assert(!core.ready, "WholeCore must start with ready == false")
+  let pre_mcp = core.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:4312"),
+    None,
+    None,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+    station_tools::default_domain_handlers(),
+  )
+  wc_assert(pre_mcp.status == 503, "handle_mcp_http before ready MUST return 503")
+  let sz = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "session.size",
+    form::Json::Obj([("session", form::Json::Str("sess-r3"))]),
+    0L,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("session.size failed: " + e)
+  }
+  wc_assert(
+    sz.contains("\"present\":false") && sz.contains("\"complete\":true"),
+    "session.size wire format must include present & complete",
+  )
+  core.shutdown_pre_handover()
+}
+
+test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_info_strict" {
+  // 1. Nested array strict validation: `sessions[0].notices = [123]` and malformed `keptSends[0].headers`.
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"sessions\":[{\"key\":\"s1\",\"notices\":[123]}]}",
+    ).is_err(),
+    "non-string sessions[0].notices MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"viewer\":\"a@b\",\"thread\":1,\"key\":\"k1\",\"headers\":[[1,\"v\"]]}]}",
+    ).is_err(),
+    "non-string keptSends[0].headers pair MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json(
+      "{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"viewer\":\"a@b\",\"thread\":1,\"key\":\"k1\",\"headers\":\"bad\"}]}",
+    ).is_err(),
+    "non-array keptSends[0].headers MUST be rejected",
+  )
+
+  // 2. Prepared-but-not-started remote task: `job` MUST be `null`, `spec` includes `back` & `dir`,
+  //    and empty `work_dir` measures `bytes: 0` (excluding parent room metadata).
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let core = make_test_core("/mem/w15-r4/data", "/mem/w15-r4/drive", rng, clock)
+  let prep = core.remote.prepare_scoped(
+    station_jobs::RemotePrepareRequest::{
+      workspace: "ws-rig",
+      source_station: "peer-st-1",
+      source_session: "sess-r4",
+      key: "task-prep-1",
+      name: "prep-only",
+      command: "echo hi",
+      back_paths: ["out/a.txt"],
+      mirror_name: Some("repo-m1"),
+      screen: false,
+      small: true,
+    },
+    clock.now_ms,
+  )
+  wc_assert(prep.is_ok(), "prepare_scoped failed")
+  let list_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "task.list",
+    form::Json::Obj([("session", form::Json::Str("sess-r4"))]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("task.list failed: " + e)
+  }
+  wc_assert(list_s.contains("\"job\":null"), "unstarted task.list job MUST be null: " + list_s)
+  wc_assert(list_s.contains("\"back\":[\"out/a.txt\"]"), "task.list spec MUST include back: " + list_s)
+  wc_assert(list_s.contains("\"dir\":\"repo-m1\""), "task.list spec MUST include dir: " + list_s)
+  let get_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "task.get",
+    form::Json::Obj([
+      ("session", form::Json::Str("sess-r4")),
+      ("key", form::Json::Str("task-prep-1")),
+    ]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("task.get failed: " + e)
+  }
+  wc_assert(get_s.contains("\"job\":null"), "unstarted task.get job MUST be null: " + get_s)
+  let work_dir = core.remote.session_work_dir("ws-rig", "peer-st-1", "sess-r4", clock.now_ms)
+  let _ = (core.remote.fs.write_file_mode)(work_dir + "/../meta.json", "{\"meta\":12345}".to_bytes(), 384, false)
+  let (empty_b, empty_complete) = measure_dir_bytes(core.remote.fs, work_dir)
+  wc_assert(empty_b == 0L && empty_complete, "empty work_dir must measure (0, true)")
+  let sz_s = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "session.size",
+    form::Json::Obj([("session", form::Json::Str("sess-r4"))]),
+    clock.now_ms,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("session.size failed: " + e)
+  }
+  wc_assert(sz_s.contains("\"bytes\":0"), "empty session work_dir must report bytes:0: " + sz_s)
+
+  // 3. Corrupted OR whitespace-only existing `projects-info.json` MUST return Err (never silently wipe).
+  let _ = (core.agents.jobs.fs.mkdir_p)("/mem/w15-r4/data")
+  let _ = (core.agents.jobs.fs.write_file_mode)("/mem/w15-r4/data/projects-info.json", "{broken".to_bytes(), 384, false)
+  wc_assert(
+    read_projects_info_map(core.agents.jobs.fs, "/mem/w15-r4/data").is_err(),
+    "corrupted projects-info.json MUST fail loudly",
+  )
+  let _ = (core.agents.jobs.fs.write_file_mode)("/mem/w15-r4/data/projects-info.json", "   \n\t ".to_bytes(), 384, false)
+  wc_assert(
+    read_projects_info_map(core.agents.jobs.fs, "/mem/w15-r4/data").is_err(),
+    "whitespace-only existing projects-info.json MUST fail loudly",
+  )
+
+  // 4. R5: UTF-8 codepoint counting (120 hanzi passes, 121 hanzi rejected) & first-term title LIKE clauses.
+  let mut hanzi_120 = ""
+  for _ in 0..<120 {
+    hanzi_120 = hanzi_120 + "汉"
+  }
+  wc_assert(utf8_codepoint_len(hanzi_120) == 120, "120 hanzi must count as 120 code points")
+  wc_assert(utf8_codepoint_len(hanzi_120 + "字") == 121, "121 hanzi must count as 121 code points")
+  let (ft_sql, ft_params) = build_first_title_like_clauses("t.title", "t.title || e.text", ["First", "Second"], 3)
+  wc_assert(ft_sql.contains("instr(js_lower(t.title), ?3) > 0") && ft_sql.contains("instr(js_lower(t.title || e.text), ?4) > 0"), "first term must target title, rest target all")
+  wc_assert(ft_params.length() == 2, "expected 2 params")
+
+  // 5. R5: `measure_dir_bytes` truncation sets `complete == false`.
+  let base_fs = core.agents.jobs.fs
+  let trunc_fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(_p : String) -> Option[station_jobs::FsStat] {
+      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+    },
+    stat: fn(_p : String) -> Option[station_jobs::FsStat] {
+      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+    },
+    read_dir: fn(_p : String) -> Option[Array[String]] { Some(["sub1", "sub2"]) },
+    read_file: base_fs.read_file,
+    read_bytes: base_fs.read_bytes,
+    read_range: base_fs.read_range,
+    write_file: base_fs.write_file,
+    write_bytes: base_fs.write_bytes,
+    write_file_mode: base_fs.write_file_mode,
+    append_file: base_fs.append_file,
+    truncate_in_place: base_fs.truncate_in_place,
+    rename: base_fs.rename,
+    remove_file: base_fs.remove_file,
+    rmdir: base_fs.rmdir,
+    remove_dir_all: base_fs.remove_dir_all,
+    mkdir_p: base_fs.mkdir_p,
+    readlink: base_fs.readlink,
+    realpath: base_fs.realpath,
+    chmod: base_fs.chmod,
+    exists: base_fs.exists,
+    now_ms: base_fs.now_ms,
+  }
+  let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
+  wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
+
+  // 6. R10: Exact SQL `instr(js_lower(col), ?k) > 0` pushdown for all terms (ASCII, `%`/`_`/`\` literals,
+  // CJK, Cyrillic, Greek, Turkish `İ`, Kelvin `K`), zero LIKE escaping and zero decoy scan.
+  let (s_sql, s_params) = build_like_clauses("e.text", ["100%_a\\b", "Санкт-Петербург", "300K", "İZMİR", "工资"], 3)
+  wc_assert(
+    s_sql.contains("instr(js_lower(e.text), ?3) > 0") &&
+    s_sql.contains("instr(js_lower(e.text), ?7) > 0") &&
+    !s_sql.contains("LIKE") &&
+    s_params.length() == 5,
+    "all terms must emit exact instr(js_lower(...), ?k) > 0 clauses",
+  )
+  match s_params[0] {
+    base_codec::Json::Str(v) => wc_assert(v == "100%_a\\b", "special LIKE chars must remain literal for instr()")
+    _ => wc_assert(false, "expected string param 0")
+  }
+  match s_params[2] {
+    base_codec::Json::Str(v) => wc_assert(v == "300k", "300K must lower to 300k via jscase::lower")
+    _ => wc_assert(false, "expected string param 2")
+  }
+  match s_params[3] {
+    base_codec::Json::Str(v) => wc_assert(v == jscase::lower("İZMİR"), "İZMİR must lower via jscase::lower")
+    _ => wc_assert(false, "expected string param 3")
+  }
+
+  core.shutdown_pre_handover()
+}

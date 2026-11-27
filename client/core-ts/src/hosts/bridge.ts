@@ -57,11 +57,11 @@
 //   an error, and the core signs in JS: Host.ed25519Sign); crypto.verify {alg, key, signature, message} (hex) → whether
 //   it is (libcrux's; a shell without it: an error, and the core checks in JS: Host.verify).
 import type { Recorder } from "../record.ts";
-import { Effect, Fiber, type Scope } from "effect";
+import { Deferred, Effect, Fiber, type Scope } from "effect";
 import { type Boot, Core } from "../core.ts";
 import { FileSource } from "../file-source.ts";
 import { HostError } from "../error.ts";
-import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "../iroh.ts";
+import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStats, IrohStream } from "../iroh.ts";
 import { createAccessCache } from "../iroh-access.ts";
 import { SOCKET_PING, SOCKET_PING_MS, type DbRange, type Host, type HttpRequest, type HttpResponse, type LoopbackRequest, type Pull, type Sql, type SqlRow, type SqlValue, type StreamResponse, type TcpConnection, type SqlError, type Unzstd, sqlError } from "../host.ts";
 import type { ClientId, CoreMessage } from "../protocol.ts";
@@ -537,47 +537,201 @@ export function bridgeIroh(bridge: Bridge, now?: () => number): Iroh {
       Effect.map(bridge.call("istream.tap", { id, call, ...(cursor ? { cursor: true } : {}) }, prefix), (a) => ((a.json as J)?.tapped !== true ? false : (a.json as J)?.cursor === true ? ("cursor" as const) : true)),
     receiveMediaDatagrams: (token) => Effect.map(bridge.call("istream.receiveMediaDatagrams", { id, token }), (a) => a.json === true),
   });
-  const connection = (id: number, mapPaths: (paths: IrohPath[]) => IrohPath[]): IrohConnection => ({
-    remoteId: () => String(bridge.sync("conn.remoteId", { id })),
-    openBi: () => Effect.map(bridge.call("conn.openBi", { id }), (a) => stream(handle(a))),
-    acceptBi: () => Effect.orElseSucceed(Effect.map(bridge.call("conn.acceptBi", { id }), (a) => ((a.json as J)?.end === true ? null : stream(handle(a)))), () => null),
-    openUni: () => Effect.map(bridge.call("conn.openUni", { id }), (a) => stream(handle(a))),
-    close: (code, reason) => void Effect.runFork(Effect.ignore(bridge.call("conn.close", { id, code, reason }))),
-    closeReason: () => (bridge.sync("conn.closeReason", { id }) as CloseReason | null) ?? null,
-    closed: () => Effect.orElseSucceed(Effect.map(bridge.call("conn.closed", { id }), (a) => a.json as CloseReason), () => ({ kind: "other", reason: "" }) as CloseReason),
-    paths: () => mapPaths((bridge.sync("conn.paths", { id }) as IrohPath[]) ?? []),
-    stats: () => bridge.sync("conn.stats", { id }) as ReturnType<IrohConnection["stats"]>,
-  });
+  const connection = (id: number, mapPaths: (paths: IrohPath[]) => IrohPath[]): IrohConnection => {
+    let closedReason: CloseReason | null = null;
+    let closedWait: Deferred.Deferred<CloseReason> | null = null;
+    let closeSent = false;
+    let forgotten = false;
+    let remoteIdCached: string | null = null;
+    let lastStats: IrohStats | null = null;
+
+    const snapshotBeforeForget = () => {
+      if (remoteIdCached === null) {
+        try {
+          const r = bridge.sync("conn.remoteId", { id });
+          if (r !== null && r !== undefined) remoteIdCached = String(r);
+        } catch {}
+      }
+      try {
+        const s = bridge.sync("conn.stats", { id }) as IrohStats | null;
+        if (s !== null && s !== undefined) lastStats = s;
+      } catch {}
+    };
+
+    const forgetOnce = () => {
+      if (forgotten) return;
+      snapshotBeforeForget();
+      forgotten = true;
+      void Effect.runFork(Effect.ignore(bridge.call("conn.close", { id, code: 0, reason: "", forget: true })));
+    };
+
+    const ensureClosedWatch = (): Effect.Effect<CloseReason> => {
+      if (closedReason !== null) return Effect.succeed(closedReason);
+      if (closedWait === null) {
+        const done = Deferred.makeUnsafe<CloseReason>();
+        closedWait = done;
+        void Effect.runFork(
+          Effect.match(bridge.call("conn.closed", { id }), {
+            onSuccess: (a) => {
+              const reason = a.json as CloseReason;
+              closedReason = reason;
+              forgetOnce();
+              Deferred.doneUnsafe(done, Effect.succeed(reason));
+            },
+            onFailure: () => {
+              const reason: CloseReason = { kind: "other", reason: "" };
+              closedReason = reason;
+              Deferred.doneUnsafe(done, Effect.succeed(reason));
+            },
+          }),
+        );
+      }
+      return Deferred.await(closedWait);
+    };
+
+    return {
+      remoteId: () => {
+        if (remoteIdCached !== null) return remoteIdCached;
+        if (forgotten) return "";
+        const r = String(bridge.sync("conn.remoteId", { id }));
+        remoteIdCached = r;
+        return r;
+      },
+      openBi: () =>
+        Effect.suspend(() =>
+          forgotten
+            ? Effect.fail(new HostError(`connection closed: ${closedReason?.reason ?? ""}`))
+            : Effect.map(bridge.call("conn.openBi", { id }), (a) => stream(handle(a))),
+        ),
+      acceptBi: () =>
+        Effect.suspend(() =>
+          forgotten
+            ? Effect.succeed(null)
+            : Effect.orElseSucceed(Effect.map(bridge.call("conn.acceptBi", { id }), (a) => ((a.json as J)?.end === true ? null : stream(handle(a)))), () => null),
+        ),
+      openUni: () =>
+        Effect.suspend(() =>
+          forgotten
+            ? Effect.fail(new HostError(`connection closed: ${closedReason?.reason ?? ""}`))
+            : Effect.map(bridge.call("conn.openUni", { id }), (a) => stream(handle(a))),
+        ),
+      close: (code, reason) => {
+        if (forgotten || closeSent) return;
+        closeSent = true;
+        void Effect.runFork(Effect.ignore(bridge.call("conn.close", { id, code, reason })));
+        if (closedWait === null && closedReason === null) void ensureClosedWatch();
+      },
+      closeReason: () => {
+        if (closedReason !== null) return closedReason;
+        if (forgotten) return null;
+        return (bridge.sync("conn.closeReason", { id }) as CloseReason | null) ?? null;
+      },
+      closed: () => Effect.suspend(ensureClosedWatch),
+      paths: () => (forgotten ? [] : mapPaths((bridge.sync("conn.paths", { id }) as IrohPath[]) ?? [])),
+      stats: () => {
+        if (forgotten) return lastStats ?? { rxBytes: 0, txBytes: 0 };
+        const s = bridge.sync("conn.stats", { id }) as IrohStats;
+        lastStats = s;
+        return s;
+      },
+    };
+  };
   const endpoint = (id: number): IrohEndpoint => {
+    let endpointIdCached: string | null = null;
+    let endpointClosed = false;
+    let endpointClose: Effect.Effect<void> | null = null;
     // Logical relay URL -> access URL per endpoint, so `conn.paths()` does not issue a sync `iroh.relayStatus` FFI call
     // each time; read again after `ACCESS_CACHE_MS` (iroh switches entrance in the background), on unknown URLs, and
     // after relay/network changes.
-    const access = createAccessCache(() => (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean; access?: string }[]) ?? [], { ...(now && { now }) });
+    const access = createAccessCache(() => (endpointClosed ? [] : ((bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean; access?: string }[]) ?? [])), { ...(now && { now }) });
     const mapPaths = (paths: IrohPath[]): IrohPath[] => {
       if (!paths.some((p) => p.relay !== null)) return paths;
       const relays = access.resolveAll(paths.map((p) => p.relay));
       return paths.map((p, i) => (p.relay === null ? p : { ...p, relay: relays[i]! }));
     };
     return {
-      id: () => String(bridge.sync("iroh.endpointId", { id })),
-      connect: (addr: IrohAddr, alpn, additional, givenUp) => Effect.map(bridge.call("iroh.connect", { id, addr, additional: additional.map(hex) }, alpn, givenUp), (a) => connection(handle(a), mapPaths)),
-      accept: () =>
-        Effect.orElseSucceed(
-          Effect.map(bridge.call("iroh.accept", { id }), (a) => ((a.json as J)?.end === true ? null : { connection: connection(handle(a), mapPaths), alpn: unhex(String((a.json as J).alpn)) })),
-          () => null,
+      id: () => {
+        if (endpointIdCached !== null) return endpointIdCached;
+        if (endpointClosed) return "";
+        const epId = String(bridge.sync("iroh.endpointId", { id }));
+        endpointIdCached = epId;
+        return epId;
+      },
+      connect: (addr: IrohAddr, alpn, additional, givenUp) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.map(bridge.call("iroh.connect", { id, addr, additional: additional.map(hex) }, alpn, givenUp), (a) => connection(handle(a), mapPaths)),
         ),
-      addAddr: (addr) => void bridge.sync("iroh.addAddr", { id, addr }),
-      networkChange: () => Effect.ensuring(Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }), Effect.sync(access.clear)),
-      relayStatus: access.readStatus,
+      accept: () =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.succeed(null)
+            : Effect.orElseSucceed(
+                Effect.map(bridge.call("iroh.accept", { id }), (a) => ((a.json as J)?.end === true ? null : { connection: connection(handle(a), mapPaths), alpn: unhex(String((a.json as J).alpn)) })),
+                () => null,
+              ),
+        ),
+      addAddr: (addr) => {
+        if (endpointClosed) return;
+        void bridge.sync("iroh.addAddr", { id, addr });
+      },
+      networkChange: () =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.void
+            : Effect.ensuring(Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }), Effect.sync(access.clear)),
+        ),
+      relayStatus: () => (endpointClosed ? [] : access.readStatus()),
       dhtSaid: (keep) => (bridge.sync("dht.said", { keep }) as ReturnType<NonNullable<IrohEndpoint["dhtSaid"]>> | null) ?? { lines: [], dropped: 0 },
-      meshUseLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshUseLeaf", {id,...value})),
-      meshDetachLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshDetachLeaf", {id,...value})),
-      meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
-      meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
-      setRelayEntries: (entries) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(access.clear)),
-      setDisabledRelays: (peer, relays) => Effect.asVoid(bridge.call("iroh.disabledRelays", { id, peer, relays })),
-      insertRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.insertRelay", { id, url })), Effect.sync(access.clear)),
-      removeRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.removeRelay", { id, url })), Effect.sync(access.clear)),
+      meshUseLeaf: (value) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.asVoid(bridge.call("iroh.meshUseLeaf", { id, ...value })),
+        ),
+      meshDetachLeaf: (value) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.asVoid(bridge.call("iroh.meshDetachLeaf", { id, ...value })),
+        ),
+      meshConfigure: (scope) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
+        ),
+      meshRemove: (scope) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
+        ),
+      setRelayEntries: (entries) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.void
+            : Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(access.clear)),
+        ),
+      setDisabledRelays: (peer, relays) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.asVoid(bridge.call("iroh.disabledRelays", { id, peer, relays })),
+        ),
+      insertRelay: (url) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.ensuring(Effect.asVoid(bridge.call("iroh.insertRelay", { id, url })), Effect.sync(access.clear)),
+        ),
+      removeRelay: (url) =>
+        Effect.suspend(() =>
+          endpointClosed
+            ? Effect.fail(new HostError("the endpoint is closed"))
+            : Effect.ensuring(Effect.asVoid(bridge.call("iroh.removeRelay", { id, url })), Effect.sync(access.clear)),
+        ),
       // (a shell from before says no such op: PCM)
       opus: () => {
         try {
@@ -594,7 +748,29 @@ export function bridgeIroh(bridge: Bridge, now?: () => number): Iroh {
           return false;
         }
       },
-      close: () => Effect.ignore(bridge.call("iroh.close", { id }), { log: "Unhandled", message: "endpoint closed" }),
+      close: () =>
+        Effect.suspend(() => {
+          if (endpointClose !== null) return endpointClose;
+          if (endpointIdCached === null) {
+            try {
+              const epId = bridge.sync("iroh.endpointId", { id });
+              if (epId !== null && epId !== undefined) endpointIdCached = String(epId);
+            } catch {}
+          }
+          endpointClosed = true;
+          access.clear();
+          const done = Deferred.makeUnsafe<void>();
+          void Effect.runFork(
+            Effect.ensuring(
+              Effect.ignore(bridge.call("iroh.close", { id, forget: true }), { log: "Unhandled", message: "endpoint closed" }),
+              Effect.sync(() => {
+                Deferred.doneUnsafe(done, Effect.void);
+              }),
+            ),
+          );
+          endpointClose = Deferred.await(done);
+          return endpointClose;
+        }),
     };
   };
   return {

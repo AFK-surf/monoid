@@ -33,6 +33,6 @@ export const FeaturesLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const config = yield* StationConfig;
     const { app } = yield* Paths;
-    parts.overview("features", () => stationFeatures(config.raw(), app));
+    parts.overview("features", () => stationFeatures(config.raw(), app), () => "s");
   }),
 );

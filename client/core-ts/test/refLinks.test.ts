@@ -1,7 +1,7 @@
 // still.fail's links as what is written names them (src/refLinks.ts), as every client reads them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adbOfLink, chatOfLink, copiedRef, draftWords, isChatLink, linkTo, personWords, REF_LINK, REF_MARK, screenOfLink, shareLink, splitBy, stationOfLink } from "../src/refLinks.ts";
+import { adbOfLink, chatOfLink, copiedRef, draftStyles, draftWords, itemAfter, isChatLink, linkTo, personWords, REF_LINK, REF_MARK, screenOfLink, shareLink, splitBy, stationOfLink } from "../src/refLinks.ts";
 
 const runs = (text: string, pattern: RegExp) => splitBy(text, pattern).map((p) => (typeof p === "string" ? p : [...p]));
 
@@ -102,12 +102,35 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
     { text: "https://example.com/a_b", link: "https://example.com/a_b", b: true },
     { text: " 这里", b: true },
   ]);
-  assert.deepEqual(personWords("列表：\n- 一\n  * 二 **粗**\n1. 有序"), [{ text: "列表：\n• 一\n  • 二 " }, { text: "粗", b: true }, { text: "\n1. 有序" }]);
+  assert.deepEqual(personWords("列表：\n- 一\n  * 二 **粗**\n1. 有序"), [
+    { text: "列表：\n• 一\n  • 二 ", li: [4, 10] },
+    { text: "粗", b: true },
+    { text: "\n1. 有序", li: [1] },
+  ]);
+  // (a mark opens after an item's mark as after a space; what only looks like an item is none)
+  assert.deepEqual(personWords("- _斜_"), [{ text: "• ", li: [0] }, { text: "斜", i: true }]);
+  assert.deepEqual(personWords("5 - 3 = 2\n1.5 倍\n-x"), [{ text: "5 - 3 = 2\n1.5 倍\n-x" }]);
   assert.deepEqual(personWords("代码：\n```ts\nconst a = *b*;\n- x\n```\n后面"), [{ text: "代码：\n" }, { text: "const a = *b*;\n- x", pre: true }, { text: "\n后面" }]);
   // Words written with no thought of Markdown stay as written: a mark with no partner on its line, a name's or a
   // path's `_`, `*` in sums and file patterns, a `#`, a fence never closed.
   for (const plain of ["snake_case_name 和 /a/__init__.py", "2*3*4 a * b * c *.ts and *.js", "**未闭合\n下一行**", "# 123 > x 5 - 3 = 2", "~~~ x ~ y", "```\nnever closed", "```\n```"]) assert.deepEqual(personWords(plain), [{ text: plain }]);
   assert.deepEqual(draftWords("@[首页] - hi **@[首页] 粗**"), [{ text: "首页", ref: true }, { text: " - hi " }, { text: "首页", ref: true, b: true }, { text: " 粗", b: true }]);
+  // How the field sets what is being written: the marks kept (`mark`), what they mark as its message will be, each
+  // stretch where it stands in the words, in order and apart; one mark in another holds both; nothing marked, none.
+  const said = (text: string) => draftStyles(text).map((s) => `${text.slice(s.start, s.end)}=${Object.keys(s).filter((k) => k !== "start" && k !== "end").sort().join("+")}`);
+  assert.deepEqual(said("这是**重点**和`a_b`"), ["**=mark", "重点=b", "**=mark", "`=mark", "a_b=code", "`=mark"]);
+  assert.deepEqual(said("*a **b** c* ~~d~~"), ["*=mark", "a =i", "**=i+mark", "b=b+i", "**=i+mark", " c=i", "*=mark", "~~=mark", "d=s", "~~=mark"]);
+  assert.deepEqual(said("x\n```ts\nlet a\n```\n**@[首页] y**"), ["```ts=mark", "let a=code+pre", "```=mark", "**=mark", "@[首页] y=b", "**=mark"]);
+  assert.deepEqual(draftStyles("snake_case 和 2*3*4，**没配对"), []);
+  assert.deepEqual(draftStyles("这是**重点**")[1], { start: 4, end: 6, b: true });
+  assert.deepEqual(said("- 一\n  12) 二 **粗**"), ["- =li", "12) =li", "**=mark", "粗=b", "**=mark"]);
+  // A new line after a list's item: the next item's mark put in (a number one more, its indent kept); after an item
+  // with no words the list ends, its mark and the break taken out; after any other line, nothing.
+  assert.deepEqual(itemAfter("- 一\n", 4), { text: "- 一\n- ", caret: 6 });
+  assert.deepEqual(itemAfter("x\n  9. 九\n后", 9), { text: "x\n  9. 九\n  10. 后", caret: 15 });
+  assert.deepEqual(itemAfter("- 一\n- \n", 7), { text: "- 一\n", caret: 4 });
+  assert.equal(itemAfter("abc\n", 4), null);
+  assert.equal(itemAfter("- 一", 3), null);
   // What a link is to, as every client draws it: a screen's, a station's 共享调试, a chat's web service's.
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/screen/browser%3Atab1"), { card: "screen", station: "ws1/st1", screen: "browser:tab1" });
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/terminal/term-1"), { card: "terminal", station: "ws1/st1", terminal: "term-1" });

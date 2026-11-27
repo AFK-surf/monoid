@@ -42,7 +42,7 @@ export class StationParts {
   /// The routes as made for an admin API's tools, and how many parts' routes they were made of.
   readonly #made = new WeakMap<Tools, { of: number; routes: Route[] }>();
   readonly #viewerMay: ((r: { method: string; path: string }) => boolean)[] = [];
-  readonly #overview = new Map<string, (viewer: Viewer, lang: Lang) => unknown>();
+  readonly #overview = new Map<string, { view: (viewer: Viewer, lang: Lang) => unknown; scope?: (viewer: Viewer, lang: Lang) => string | null }>();
   readonly #tools: { tool: Tool; offered?: () => boolean }[] = [];
   readonly #door: DoorRoute[] = [];
   readonly #ended: ((session: string) => void)[] = [];
@@ -89,9 +89,10 @@ export class StationParts {
   }
 
   /// A field of the overview (GET /overview), as `viewer` sees it; none of the platform's or another part's.
-  overview(field: string, view: (viewer: Viewer, lang: Lang) => unknown): void {
+  /// `scope`: when set, viewers returning the same non-null key share one evaluation within an `Events.flush()` round.
+  overview(field: string, view: (viewer: Viewer, lang: Lang) => unknown, scope?: (viewer: Viewer, lang: Lang) => string | null): void {
     if (this.#overview.has(field)) throw new Error(`the overview's ${field} is said twice`);
-    this.#overview.set(field, view);
+    this.#overview.set(field, { view, scope });
   }
 
   /// A part's tools for the agents (their MCP door, tools/mcp.ts); `offered`: while it says so (a `beta` feature's
@@ -201,9 +202,23 @@ export class StationParts {
     return this.#viewerMay.some((may) => may(r));
   }
 
-  async overviewOf(viewer: Viewer, lang: Lang): Promise<Record<string, unknown>> {
+  async overviewOf(viewer: Viewer, lang: Lang, round?: Map<string, unknown>): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
-    for (const [field, view] of this.#overview) out[field] = await view(viewer, lang);
+    for (const [field, { view, scope }] of this.#overview) {
+      const k = round !== undefined && scope !== undefined ? scope(viewer, lang) : null;
+      if (k !== null && round !== undefined) {
+        const cacheKey = `part:${field}:${k}`;
+        if (round.has(cacheKey)) {
+          out[field] = await (round.get(cacheKey) as Promise<unknown> | unknown);
+          continue;
+        }
+        const pending = Promise.resolve(view(viewer, lang));
+        round.set(cacheKey, pending);
+        out[field] = await pending;
+      } else {
+        out[field] = await view(viewer, lang);
+      }
+    }
     return out;
   }
 

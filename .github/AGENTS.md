@@ -73,7 +73,7 @@
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
   staged; only `station-put` puts it, packages then `station.json` seconds apart, so a run cut before leaves the channel
   as it was. Its native parts come from `station-natives-*`, which build only what neither the release
-  `native-artifacts` (20 of a part, hours of main's) nor the store (`natives/`: main's `natives-store`, after its natives
+  `native-artifacts` (10 of a part, hours of main's) nor the store (`natives/`: main's `natives-store`, after its natives
   jobs; readers kept 14 days, `scripts/release-prune.ts`) has.
 - `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts, not the Mac's reader, which
   `natives-mac-reader` builds beside it) and `desktop` for `desktop-build` alone, never for `natives`' slower Linux build

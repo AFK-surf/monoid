@@ -29,6 +29,99 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void assert_js_lower_eq(
+    const uint8_t *in,
+    size_t in_len,
+    const uint8_t *expected,
+    size_t exp_len
+) {
+    uint8_t buf[512];
+    size_t out_len = 0;
+    assert(sts_js_lower_utf8(in, in_len, buf, sizeof(buf), &out_len) == 1);
+    assert(out_len == exp_len);
+    if (exp_len > 0) {
+        assert(memcmp(buf, expected, exp_len) == 0);
+    }
+}
+
+static void assert_js_lower_str(const char *in, const char *expected) {
+    assert_js_lower_eq(
+        (const uint8_t *)in, strlen(in),
+        (const uint8_t *)expected, strlen(expected));
+}
+
+static void test_js_lower_utf8(void) {
+    // 1. Empty & ASCII fast paths
+    assert_js_lower_str("", "");
+    assert_js_lower_str("hello_100%\\abc", "hello_100%\\abc");
+    assert_js_lower_str("HELLO_World-123!", "hello_world-123!");
+
+    // 2. Unicode special rules: U+0130 (İ -> i + U+0307), U+212A (K -> k), Greek Final_Sigma (Σ -> ς / σ)
+    assert_js_lower_str("\xC4\xB0ZM\xC4\xB0R", "i\xCC\x87zmi\xCC\x87r");
+    assert_js_lower_str("300\xE2\x84\xAA", "300k");
+    // Standalone Σ -> σ (U+03C3)
+    assert_js_lower_str("\xCE\xA3", "\xCF\x83");
+    // ΟΣ -> ος (final sigma U+03C2)
+    assert_js_lower_str("\xCE\x9F\xCE\xA3", "\xCE\xBF\xCF\x82");
+    // ΟΣΑ -> οσα (medial sigma U+03C3)
+    assert_js_lower_str("\xCE\x9F\xCE\xA3\xCE\x91", "\xCE\xBF\xCF\x83\xCE\xB1");
+    // Ο + combining dot (ignorable U+0307) + Σ -> final sigma
+    assert_js_lower_str("\xCE\x9F\xCC\x87\xCE\xA3", "\xCE\xBF\xCC\x87\xCF\x82");
+    // Ο + U+0307 + Σ + U+0307 + Α -> medial sigma
+    assert_js_lower_str("\xCE\x9F\xCC\x87\xCE\xA3\xCC\x87\xCE\x91", "\xCE\xBF\xCC\x87\xCF\x83\xCC\x87\xCE\xB1");
+
+    // 3. Cyrillic, accented Greek, German, fullwidth Latin, CJK
+    assert_js_lower_str("\xD0\xA1\xD0\xB0\xD0\xBD\xD0\xBA\xD1\x82-\xD0\x9F\xD0\xB5\xD1\x82\xD0\xB5\xD1\x80\xD0\xB1\xD1\x83\xD1\x80\xD0\xB3",
+                        "\xD1\x81\xD0\xB0\xD0\xBD\xD0\xBA\xD1\x82-\xD0\xBF\xD0\xB5\xD1\x82\xD0\xB5\xD1\x80\xD0\xB1\xD1\x83\xD1\x80\xD0\xB3");
+    assert_js_lower_str("\xCE\x86\xCE\xBD\xCE\xBD\xCE\xB1", "\xCE\xAC\xCE\xBD\xCE\xBD\xCE\xB1");
+    assert_js_lower_str("\xC3\x84RG\xC3\x89R", "\xC3\xA4rg\xC3\xA9r");
+    assert_js_lower_str("\xEF\xBC\xA1\xEF\xBC\xA2\xEF\xBC\xA3", "\xEF\xBD\x81\xEF\xBD\x82\xEF\xBD\x83");
+    assert_js_lower_str("\xE5\xB7\xA5\xE8\xB5\x84", "\xE5\xB7\xA5\xE8\xB5\x84");
+
+    // 4. Invalid UTF-8 (WHATWG lossy replacement -> U+FFFD = EF BF BD)
+    {
+        const uint8_t bad[3] = { 0xFFu, 'A', 0x80u };
+        const uint8_t exp[7] = { 0xEFu, 0xBFu, 0xBDu, 'a', 0xEFu, 0xBFu, 0xBDu };
+        assert_js_lower_eq(bad, sizeof(bad), exp, sizeof(exp));
+    }
+
+    // 5. Embedded NUL bytes preserved by in_len
+    {
+        const uint8_t nul_in[5] = { 'A', 0x00u, 0xC3u, 0x84u, 'Z' };
+        const uint8_t nul_exp[5] = { 'a', 0x00u, 0xC3u, 0xA4u, 'z' };
+        assert_js_lower_eq(nul_in, sizeof(nul_in), nul_exp, sizeof(nul_exp));
+    }
+
+    // 6. Small output capacity rejected safely
+    {
+        uint8_t tiny[2];
+        size_t out_len = 99;
+        assert(sts_js_lower_utf8((const uint8_t *)"\xC4\xB0", 2, tiny, sizeof(tiny), &out_len) == 0);
+    }
+
+    // 7. Long string (> 4096 bytes) exercising heap code-point buffer
+    {
+        const size_t reps = 2200; // 2200 * 2 = 4400 bytes of "Ä" -> 4400 bytes of "ä"
+        uint8_t *long_in = (uint8_t *)malloc(reps * 2);
+        uint8_t *long_out = (uint8_t *)malloc(reps * 3);
+        assert(long_in != NULL && long_out != NULL);
+        for (size_t i = 0; i < reps; i++) {
+            long_in[i * 2] = 0xC3u;
+            long_in[i * 2 + 1] = 0x84u; // Ä
+        }
+        size_t out_len = 0;
+        assert(sts_js_lower_utf8(long_in, reps * 2, long_out, reps * 3, &out_len) == 1);
+        assert(out_len == reps * 2);
+        for (size_t i = 0; i < reps; i++) {
+            assert(long_out[i * 2] == 0xC3u && long_out[i * 2 + 1] == 0xA4u); // ä
+        }
+        free(long_in);
+        free(long_out);
+    }
+
+    printf("  [PASS] js_lower_utf8 (ASCII, Unicode, Final_Sigma, invalid UTF-8, NUL, >4096B)\n");
+}
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -556,6 +649,7 @@ int main(void) {
     test_win_udp_and_info();
     test_win_drive_io_and_reparse();
     test_win_cli_prims();
+    test_js_lower_utf8();
     assert(sts_wait_detached_for_test(5000) == 1);
     printf("station_sys_test (windows): ALL PASSED\n");
     return 0;
@@ -1464,6 +1558,8 @@ static void test_pty(void) {
         drain_queue();
         if (sts_wait_detached_for_test(50) == 1) break;
     }
+    test_js_lower_utf8();
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
     int st = 0;
@@ -1982,6 +2078,8 @@ int main(void) {
         unlink(sec_file);
         rmdir(tmp_dir);
     }
+
+    test_js_lower_utf8();
 
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();

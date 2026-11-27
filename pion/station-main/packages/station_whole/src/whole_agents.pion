@@ -1,0 +1,2258 @@
+// Real SessionHub + Drivers launch/adoption + Jobs + MCP Server & CSPRNG Bearer Token
+// lifecycle for `station_whole`.
+//
+// Security invariants:
+// - Per-session MCP tokens are 32-byte OS CSPRNG (`station_sys::random_bytes(32)` -> 64 hex chars).
+// - Session creation, token rotation, token revocation, and archival persist to SQLite BEFORE
+//   updating in-memory tables so revoked tokens never resurrect across restart.
+// - Token lookup uses constant-time byte comparison (`ct_eq_str`) against active tokens.
+// - Non-loopback Host headers or any browser `Origin` header are rejected with HTTP 403 via
+//   `station_tools::check_local_origin`.
+// - Every MCP tool call resolves `caller_ws` from SQLite and strictly isolates all reads/writes
+//   to `caller_ws`, never falling back to a default thread when an explicit target is not found.
+
+import "base_codec"
+import "crypto"
+import "sql_db"
+import "station_api"
+import "station_drivers"
+import "station_jobs"
+import "station_sessions"
+import "station_store"
+import "station_sys"
+import "station_tools"
+
+pub struct WholeAgentsConfig {
+  pub data_dir : String
+  pub assets_dir : String
+  pub runner_bin : String
+  pub mcp_port : Int
+  pub home_ws : String
+}
+
+pub struct McpHttpResponse {
+  pub status : Int
+  pub content_type : String
+  pub body : String
+}
+
+/// Count UTF-8 Unicode code points in `s` (non-continuation bytes `(b & 0xC0) != 0x80`).
+pub fn utf8_codepoint_len(s : String) -> Int {
+  let b = s.to_bytes()
+  let mut count = 0
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xC0) != 0x80 {
+      count = count + 1
+    }
+  }
+  count
+}
+
+/// Constant-time string equality over raw UTF-8 bytes (no early exit on byte mismatch).
+pub fn ct_eq_str(a : String, b : String) -> Bool {
+  let ab = a.to_bytes()
+  let bb = b.to_bytes()
+  if ab.length() != bb.length() {
+    return false
+  }
+  let mut diff = 0
+  for i in 0..<ab.length() {
+    diff = diff | ((ab[i].to_int() & 0xFF) ^ (bb[i].to_int() & 0xFF))
+  }
+  diff == 0
+}
+
+/// Pure in-memory `station_jobs::FsPort` for deterministic unit tests without disk side effects.
+pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
+  let files : Map[String, Bytes] = Map::new()
+  station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match files.get(p) {
+        Some(b) => Some(station_jobs::FsStat::{
+          kind: "file",
+          size: b.length().to_int64(),
+          mtime_ms: now_ms(),
+          mode: 384,
+        })
+        None => None
+      }
+    },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match files.get(p) {
+        Some(b) => Some(station_jobs::FsStat::{
+          kind: "file",
+          size: b.length().to_int64(),
+          mtime_ms: now_ms(),
+          mode: 384,
+        })
+        None => None
+      }
+    },
+    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
+    read_file: fn(p : String) -> Option[String] {
+      match files.get(p) {
+        Some(b) => Some(b.to_string())
+        None => None
+      }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] { files.get(p) },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      match files.get(p) {
+        Some(b) => {
+          let start = if off < 0L { 0 } else if off.to_int() > b.length() { b.length() } else { off.to_int() }
+          let avail = b.length() - start
+          let take = if len.to_int() < avail { len.to_int() } else { avail }
+          let out = Bytes::new(take)
+          for i in 0..<take {
+            out[i] = b[start + i]
+          }
+          Some(out)
+        }
+        None => None
+      }
+    },
+    write_file: fn(p : String, s : String) -> Bool {
+      files.set(p, s.to_bytes())
+      true
+    },
+    write_bytes: fn(p : String, b : Bytes) -> Bool {
+      files.set(p, b)
+      true
+    },
+    write_file_mode: fn(p : String, b : Bytes, _m : Int, _append : Bool) -> Bool {
+      files.set(p, b)
+      true
+    },
+    append_file: fn(p : String, s : String) -> Bool {
+      let prev = match files.get(p) {
+        Some(b) => b.to_string()
+        None => ""
+      }
+      files.set(p, (prev + s).to_bytes())
+      true
+    },
+    truncate_in_place: fn(p : String) -> Bool {
+      files.set(p, Bytes::new(0))
+      true
+    },
+    rename: fn(a : String, b : String) -> Bool {
+      match files.get(a) {
+        Some(v) => {
+          files.set(b, v)
+          let _ = files.remove(a)
+          true
+        }
+        None => false
+      }
+    },
+    remove_file: fn(p : String) -> Bool {
+      let _ = files.remove(p)
+      true
+    },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    readlink: fn(_p : String) -> Option[String] { None },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(p : String) -> Bool { files.get(p).is_some() },
+    now_ms: now_ms,
+  }
+}
+
+/// Exact list of MCP station tools genuinely wired to live SQLite / SessionHub / JobManager.
+pub fn wired_mcp_tool_names() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "chat_history",
+    "chat_list",
+    "chat_read",
+    "chat_create",
+    "chat_archive",
+    "chat_configure",
+    "session_send",
+    "session_history",
+    "search",
+    "job_start",
+    "job_list",
+    "job_log",
+    "job_stop",
+    "project_manage",
+  ]
+}
+
+fn is_wired_mcp_tool(name : String) -> Bool {
+  let names = wired_mcp_tool_names()
+  for i in 0..<names.length() {
+    if names[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Filtered MCP tool declarations matching only genuinely wired handlers (zero fake entries).
+pub fn wired_station_tools() -> Array[station_tools::ToolDecl] {
+  let all = station_tools::station_tools()
+  let out : Array[station_tools::ToolDecl] = []
+  for i in 0..<all.length() {
+    if is_wired_mcp_tool(all[i].name) {
+      out.push(all[i])
+    }
+  }
+  out
+}
+
+/// Full-station agents subsystem: `SessionHub`, `DriversRuntime`, `McpServer`, `JobManager`,
+/// and per-session CSPRNG Bearer token table.
+pub struct WholeAgents {
+  pub config : WholeAgentsConfig
+  pub hub : station_sessions::SessionHub
+  pub drivers : DriversRuntime
+  pub mcp : station_tools::McpServer
+  pub jobs : station_jobs::JobManager
+  pub mut bound_to_workspace : Bool
+  active_tokens : Array[(String, String)]
+  revoked_tokens : Map[String, Bool]
+  session_runtimes : Map[String, String]
+  session_is_subagent : Map[String, Bool]
+  random_bytes_fn : (Int) -> Result[Bytes, String]
+}
+
+/// Pure dependency-injected `WholeAgents` constructor (no OS FFI references).
+pub fn WholeAgents::new_with_deps(
+  config : WholeAgentsConfig,
+  fs : station_jobs::FsPort,
+  backend : station_jobs::ProcBackend,
+  rng : (Int) -> Result[Bytes, String],
+) -> WholeAgents {
+  let notify_url = "http://127.0.0.1:" + config.mcp_port.to_string() + "/job-notify"
+  let jobs = station_jobs::JobManager::new(
+    config.data_dir,
+    fs,
+    backend,
+    notify_url,
+    fn(_job_id : String, _text : String) -> Unit { () },
+    fn(_rec : station_jobs::JobRecord) -> Unit { () },
+  )
+  WholeAgents::{
+    config: config,
+    hub: station_sessions::SessionHub::new(),
+    drivers: DriversRuntime::new([]),
+    mcp: station_tools::McpServer::new(),
+    jobs: jobs,
+    bound_to_workspace: true,
+    active_tokens: [],
+    revoked_tokens: Map::new(),
+    session_runtimes: Map::new(),
+    session_is_subagent: Map::new(),
+    random_bytes_fn: rng,
+  }
+}
+
+/// Production `WholeAgents` constructor reusing `station_jobs::sys_fs` (live clock & recursive tree ops).
+pub fn WholeAgents::new(
+  config : WholeAgentsConfig,
+  job_fs : Option[station_jobs::FsPort] = None,
+  job_backend : Option[station_jobs::ProcBackend] = None,
+  random_bytes_fn : Option[(Int) -> Result[Bytes, String]] = None,
+) -> WholeAgents {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let fs = match job_fs {
+    Some(f) => f
+    None => station_jobs::sys_fs(sep=sep)
+  }
+  let backend = match job_backend {
+    Some(b) => b
+    None => station_jobs::real_proc_backend()
+  }
+  let rng = match random_bytes_fn {
+    Some(r) => r
+    None => station_sys::random_bytes
+  }
+  WholeAgents::new_with_deps(config, fs, backend, rng)
+}
+
+pub fn WholeAgents::active_token_count(self : WholeAgents) -> Int {
+  self.active_tokens.length()
+}
+
+pub fn WholeAgents::actor_count(self : WholeAgents) -> Int {
+  self.hub.actors.length()
+}
+
+fn WholeAgents::generate_token_hex(self : WholeAgents) -> Result[String, String] {
+  let raw = match (self.random_bytes_fn)(32) {
+    Ok(b) => b
+    Err(e) => return Err("CSPRNG failed while issuing MCP token: " + e)
+  }
+  if raw.length() < 32 {
+    return Err("CSPRNG returned fewer than 32 bytes for MCP token")
+  }
+  Ok(crypto::bytes_to_hex(raw))
+}
+
+fn WholeAgents::generate_revoked_marker(self : WholeAgents, session_key : String) -> String {
+  let suffix = match (self.random_bytes_fn)(16) {
+    Ok(b) => crypto::bytes_to_hex(b)
+    Err(_) => session_key
+  }
+  "revoked:" + session_key + ":" + suffix
+}
+
+fn WholeAgents::set_active_token_mem(self : WholeAgents, session_key : String, tok : String) -> Unit {
+  match self.token_for_session(session_key) {
+    Some(existing) => {
+      if ct_eq_str(existing, tok) {
+        return
+      }
+    }
+    None => ()
+  }
+  let _ = self.revoke_session_token(session_key)
+  self.active_tokens.push((tok, session_key))
+}
+
+/// Issue an in-memory 32-byte CSPRNG hex MCP bearer token (pure DI tests / pre-DB callers).
+pub fn WholeAgents::issue_session_token(
+  self : WholeAgents,
+  session_key : String,
+) -> Result[String, String] {
+  let tok = match self.generate_token_hex() {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  self.set_active_token_mem(session_key, tok)
+  Ok(tok)
+}
+
+/// Rotate a session's MCP token atomically: persists the new token into SQLite `sessions.token`
+/// FIRST, and only on commit revokes the old token and activates the new one in memory.
+pub fn WholeAgents::rotate_session_token(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  session_key : String,
+) -> Result[String, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let tok = match self.generate_token_hex() {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let updated = match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    t.run(
+      "UPDATE sessions SET token = ?1 WHERE key = ?2 AND archived_at IS NULL",
+      [base_codec::json_str(tok), base_codec::json_str(session_key)],
+    )
+  }) {
+    Ok(n) => n
+    Err(e) => return Err("rotate_session_token SQLite update failed: " + e.message)
+  }
+  if updated == 0 {
+    return Err("cannot rotate token: session not found or archived: " + session_key)
+  }
+  self.set_active_token_mem(session_key, tok)
+  Ok(tok)
+}
+
+/// Persist token revocation to SQLite `sessions.token = 'revoked:...'` FIRST, then revoke in memory.
+/// Guarantees revoked tokens NEVER resurrect on restart!
+pub fn WholeAgents::revoke_session_token_persisted(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  session_key : String,
+) -> Result[Bool, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let marker = self.generate_revoked_marker(session_key)
+  match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    t.run(
+      "UPDATE sessions SET token = ?1 WHERE key = ?2",
+      [base_codec::json_str(marker), base_codec::json_str(session_key)],
+    )
+  }) {
+    Ok(_) => ()
+    Err(e) => return Err("revoke_session_token SQLite update failed: " + e.message)
+  }
+  Ok(self.revoke_session_token(session_key))
+}
+
+/// Register an existing persisted token (never registers empty or `revoked:` markers;
+/// idempotent when the session already holds the exact same active token).
+pub fn WholeAgents::register_adopted_token(
+  self : WholeAgents,
+  session_key : String,
+  token : String,
+) -> Unit {
+  if token.length() == 0 || token.starts_with("revoked:") {
+    return
+  }
+  match self.token_for_session(session_key) {
+    Some(existing) => {
+      if ct_eq_str(existing, token) {
+        return
+      }
+    }
+    None => ()
+  }
+  if self.revoked_tokens.get(token).is_some() {
+    return
+  }
+  self.set_active_token_mem(session_key, token)
+}
+
+/// Immediately revoke the active MCP bearer token for `session_key` in memory.
+pub fn WholeAgents::revoke_session_token(self : WholeAgents, session_key : String) -> Bool {
+  let kept : Array[(String, String)] = []
+  let mut removed = false
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if sk == session_key {
+      self.revoked_tokens.set(tok, true)
+      removed = true
+    } else {
+      kept.push((tok, sk))
+    }
+  }
+  self.active_tokens.clear()
+  for i in 0..<kept.length() {
+    self.active_tokens.push(kept[i])
+  }
+  removed
+}
+
+/// Revoke all active MCP tokens in memory (used on shutdown).
+pub fn WholeAgents::revoke_all_tokens(self : WholeAgents) -> Unit {
+  for i in 0..<self.active_tokens.length() {
+    let (tok, _) = self.active_tokens[i]
+    self.revoked_tokens.set(tok, true)
+  }
+  self.active_tokens.clear()
+}
+
+/// Clear all in-memory actors, tokens, and tracked job records on clean shutdown so
+/// `WholeCore::active_object_count() == 0`.
+pub fn WholeAgents::clear_runtime_state_on_shutdown(self : WholeAgents) -> Unit {
+  self.revoke_all_tokens()
+  let actor_keys : Array[String] = []
+  for i in 0..<self.hub.adopted_keys.length() {
+    actor_keys.push(self.hub.adopted_keys[i])
+  }
+  self.hub.actors.clear()
+  self.hub.adopted_keys.clear()
+  self.session_runtimes.clear()
+  self.session_is_subagent.clear()
+  self.jobs.jobs.clear()
+  self.jobs.job_ids.clear()
+  self.jobs.token_to_job.clear()
+  let _ = actor_keys
+}
+
+/// Look up the active token for `session_key`.
+pub fn WholeAgents::token_for_session(self : WholeAgents, session_key : String) -> Option[String] {
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if sk == session_key {
+      return Some(tok)
+    }
+  }
+  None
+}
+
+/// Constant-time lookup of `candidate` token against all active tokens.
+pub fn WholeAgents::resolve_token_ct(self : WholeAgents, candidate : String) -> Option[String] {
+  if candidate.length() == 0 || candidate.starts_with("revoked:") {
+    return None
+  }
+  let mut matched : Option[String] = None
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if ct_eq_str(tok, candidate) {
+      matched = Some(sk)
+    }
+  }
+  match matched {
+    Some(sk) => {
+      if self.revoked_tokens.get(candidate).is_some() {
+        None
+      } else {
+        Some(sk)
+      }
+    }
+    None => None
+  }
+}
+
+pub fn WholeAgents::set_subagent(self : WholeAgents, session_key : String, is_sub : Bool) -> Unit {
+  self.session_is_subagent.set(session_key, is_sub)
+}
+
+fn opt_str_json_param(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+/// Atomically create a session + default thread + membership + initial CSPRNG token (+ optional
+/// initial message) inside ONE SQLite transaction (`Store::tx`), updating in-memory token/actor
+/// tables ONLY after commit. Returns `(mcp_token, thread_id)`.
+pub fn WholeAgents::create_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+  connect : String,
+  title : Option[String],
+  created_by : Option[String],
+  runtime : String,
+  profile : String,
+  model : Option[String],
+  workspace : String,
+  ws : Option[String],
+  now_ms : Int64,
+  initial_msg : Option[(String, String)] = None,
+) -> Result[(String, Int64), String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let token = match self.generate_token_hex() {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let effective_ws : Option[String] = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { Some(self.config.home_ws) }
+    None => Some(self.config.home_ws)
+  }
+  let tid = match st.tx(fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, model, effort, workspace, cwd, token, running, created_at, last_active_at, ws, told_notes)" +
+      " VALUES (?1, ?2, 'all', ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, 0, ?10, ?10, ?11, 0)",
+      [
+        base_codec::json_str(key),
+        base_codec::json_str(connect),
+        opt_str_json_param(title),
+        opt_str_json_param(created_by),
+        base_codec::json_str(runtime),
+        base_codec::json_str(profile),
+        opt_str_json_param(model),
+        base_codec::json_str(workspace),
+        base_codec::json_str(token),
+        sql_db::int64_to_json(now_ms),
+        opt_str_json_param(effective_ws),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match t.run(
+      "INSERT OR IGNORE INTO threads (surface, channel, thread_ts, title, created_by, created_at, home)" +
+      " SELECT 'chat', 'CHAT', ?1, ?2, ?3, ?4, ?1 WHERE NOT EXISTS" +
+      " (SELECT 1 FROM threads WHERE surface = 'chat' AND channel = 'CHAT' AND thread_ts = ?1)",
+      [
+        base_codec::json_str(key),
+        opt_str_json_param(title),
+        opt_str_json_param(created_by),
+        sql_db::int64_to_json(now_ms),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let thread_id = match t.first(
+      "SELECT id FROM threads WHERE surface = 'chat' AND channel = 'CHAT' AND thread_ts = ?1",
+      [base_codec::json_str(key)],
+    ) {
+      Ok(Some(r)) => match r.get("id") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => return Err(sql_db::sql_error(1, "missing thread id after insert"))
+      }
+      Ok(None) => return Err(sql_db::sql_error(1, "thread not found after insert"))
+      Err(e) => return Err(e)
+    }
+    match t.run(
+      "INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?1, ?2, ?3, ?4)" +
+      " ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL",
+      [
+        sql_db::int64_to_json(thread_id),
+        base_codec::json_str(key),
+        base_codec::json_str(connect),
+        sql_db::int64_to_json(now_ms),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match station_store::settle_conversation_in_tx(t, thread_id, now_ms, born=None) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match initial_msg {
+      Some((author, text)) => {
+        if text.length() > 0 {
+          match t.run(
+            "INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (?1, 1, 'message', 'agent', ?2, ?3, ?4)",
+            [
+              sql_db::int64_to_json(thread_id),
+              base_codec::json_str(author),
+              base_codec::json_str(text),
+              sql_db::int64_to_json(now_ms),
+            ],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match t.run(
+            "INSERT INTO deliveries (thread, n, session, delivered_at) VALUES (?1, 1, ?2, NULL)",
+            [
+              sql_db::int64_to_json(thread_id),
+              base_codec::json_str(key),
+            ],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      None => ()
+    }
+    Ok(thread_id)
+  }) {
+    Ok(id) => id
+    Err(e) => return Err("create_session transaction failed: " + e.message)
+  }
+  // Only update in-memory tables AFTER SQLite transaction commits.
+  self.set_active_token_mem(key, token)
+  let _ = self.hub.ensure_actor(key, runtime)
+  self.session_runtimes.set(key, runtime)
+  Ok((token, tid))
+}
+
+/// Archive a session in SQLite AND persist token revocation (`revoked:...`) before updating memory.
+pub fn WholeAgents::archive_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+  by : String,
+  now_ms : Int64,
+) -> Result[Unit, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  // Atomically archive the session (and owned conversation members) + persist token revocation
+  // inside ONE single SQLite transaction.
+  let archived_keys = match st.tx(fn(t : sql_db::Db) -> Result[Array[String], sql_db::SqlError] {
+    let outcome = match station_store::archive_session(t, key, now_ms, by) {
+      Ok(o) => o
+      Err(e) => return Err(e)
+    }
+    let keys : Array[String] = if outcome.sessions.length() > 0 { outcome.sessions } else { [key] }
+    for i in 0..<keys.length() {
+      let sk = keys[i]
+      let marker = self.generate_revoked_marker(sk)
+      match t.run(
+        "UPDATE sessions SET token = ?1 WHERE key = ?2",
+        [base_codec::json_str(marker), base_codec::json_str(sk)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(keys)
+  }) {
+    Ok(ks) => ks
+    Err(e) => return Err("archive_session failed: " + e.message)
+  }
+  for i in 0..<archived_keys.length() {
+    let sk = archived_keys[i]
+    let _ = self.revoke_session_token(sk)
+    match self.hub.actors.get(sk) {
+      Some(a) => {
+        let _ = a.evict()
+      }
+      None => ()
+    }
+  }
+  Ok(())
+}
+
+/// Delete a session from SQLite first, then revoke its MCP token and remove its actor in memory.
+pub fn WholeAgents::delete_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+) -> Result[Bool, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let deleted = match st.delete_session(key) {
+    Ok(b) => b
+    Err(e) => return Err("delete_session failed: " + e.message)
+  }
+  let _ = self.revoke_session_token(key)
+  let _ = self.hub.actors.remove(key)
+  let _ = self.session_runtimes.remove(key)
+  Ok(deleted)
+}
+
+/// Idempotently adopt all active (non-archived, non-revoked) session tokens from SQLite using
+/// paginated `rowid` batches (no 10,000-row cap) and lazy actor creation (actors are created
+/// on demand rather than eagerly warming every historical session).
+pub fn WholeAgents::adopt_all_active_tokens_from_store(
+  self : WholeAgents,
+  whole_store : WholeStore,
+) -> Result[Int, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let mut last_rowid = 0L
+  let mut count = 0
+  while true {
+    let rows = match st.db.all(
+      "SELECT rowid, key, runtime, token FROM sessions WHERE rowid > ?1 AND archived_at IS NULL AND token NOT LIKE 'revoked:%' ORDER BY rowid ASC LIMIT 500",
+      [sql_db::int64_to_json(last_rowid)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err("adopt_all_active_tokens_from_store failed: " + e.message)
+    }
+    if rows.length() == 0 {
+      break
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match r.get("rowid") {
+        Some(base_codec::Json::Num(n, _)) => last_rowid = n.to_int64()
+        _ => ()
+      }
+      let k = match r.get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let rt = match r.get("runtime") { Some(base_codec::Json::Str(s)) => s, _ => "claude" }
+      let tok = match r.get("token") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      if k.length() > 0 && tok.length() > 0 && !tok.starts_with("revoked:") {
+        self.session_runtimes.set(k, rt)
+        let already_same = match self.token_for_session(k) {
+          Some(existing) => ct_eq_str(existing, tok)
+          None => false
+        }
+        if !already_same {
+          self.register_adopted_token(k, tok)
+          count = count + 1
+        }
+      }
+    }
+    if rows.length() < 500 {
+      break
+    }
+  }
+  Ok(count)
+}
+
+/// Adopt handed-over sessions from SQLite + live `RunnerInfo` via `SessionHub::adopt` and
+/// `DriversRuntime::adoption` (`RunnerAdoptionMachine`).
+pub fn WholeAgents::adopt_sessions(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  snapshots : Array[station_sessions::HandoverSnapshot],
+  runners : Array[station_drivers::RunnerInfo],
+  now_ms : Int64,
+) -> Result[Array[station_sessions::AdoptOutcome], String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  self.drivers.adoption = station_drivers::RunnerAdoptionMachine::new(runners)
+  let rows_map : Map[String, station_sessions::HubSessionRow] = Map::new()
+  let adopt_ok : Map[String, Bool] = Map::new()
+  for i in 0..<snapshots.length() {
+    let snap = snapshots[i]
+    match st.get_session(snap.key) {
+      Ok(Some(row)) => {
+        let cb = match row.created_by {
+          Some(c) => c
+          None => ""
+        }
+        let ab = match row.archived_by {
+          Some(b) => b
+          None => ""
+        }
+        rows_map.set(
+          row.key,
+          station_sessions::HubSessionRow::{
+            key: row.key,
+            runtime: row.runtime,
+            profile: row.profile,
+            runtime_session_id: None,
+            ran_on: Some(row.profile),
+            ws: row.ws,
+            created_by: cb,
+            archived_at: row.archived_at,
+            archived_by: ab,
+            handed_over: false,
+            online: true,
+            has_pending: false,
+          },
+        )
+        let ok = if snap.has_agent {
+          match station_drivers::runtime_kind_from_str(snap.runtime) {
+            Some(rk) => {
+              let rid = station_drivers::runner_id(rk, row.key)
+              match self.drivers.adoption.adopt_once(rid) {
+                Ok(_) => true
+                Err(_) => false
+              }
+            }
+            None => false
+          }
+        } else {
+          true
+        }
+        adopt_ok.set(row.key, ok)
+        self.session_runtimes.set(row.key, row.runtime)
+        if row.archived_at.is_none() && row.token.length() > 0 && !row.token.starts_with("revoked:") {
+          self.register_adopted_token(row.key, row.token)
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err("get_session during adopt failed: " + e.message)
+    }
+  }
+  Ok(self.hub.adopt(snapshots, rows_map, adopt_ok, now_ms))
+}
+
+/// Build a real OS driver launch spec for any of the 10 CLI coding-agent runtimes using
+/// `drivers_os` (OS CSPRNG UUID v4, real `geteuid()`, `STILLFAIL_NODE`, `stub_dir`).
+pub fn WholeAgents::build_driver_launch_spec(
+  self : WholeAgents,
+  session_key : String,
+  runtime : station_drivers::RuntimeKind,
+  profile : station_drivers::Profile,
+  cwd : String,
+  instructions : String = "",
+  resume : Option[String] = None,
+  model : Option[String] = None,
+  effort : Option[String] = None,
+) -> Result[station_drivers::DriverLaunchSpec, String] {
+  let token = match self.token_for_session(session_key) {
+    Some(t) => t
+    None => return Err("no active MCP token for session: " + session_key)
+  }
+  let mcp_url = "http://127.0.0.1:" + self.config.mcp_port.to_string() + "/mcp"
+  let opts = os_open_options(
+    session_key,
+    profile,
+    cwd,
+    mcp_url,
+    token,
+    self.config.data_dir,
+    self.config.assets_dir,
+    self.config.runner_bin,
+    instructions=instructions,
+    resume=resume,
+    model=model,
+    effort=effort,
+  )
+  build_os_driver_launch(runtime, opts)
+}
+
+/// Export handover snapshots for all tracked active sessions.
+pub fn WholeAgents::export_session_snapshots(
+  self : WholeAgents,
+) -> Array[station_sessions::HandoverSnapshot] {
+  let out : Array[station_sessions::HandoverSnapshot] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<self.active_tokens.length() {
+    let (_, key) = self.active_tokens[i]
+    if seen.get(key).is_some() {
+      continue
+    }
+    seen.set(key, true)
+    match self.hub.actors.get(key) {
+      Some(actor) => {
+        out.push(station_sessions::HandoverSnapshot::{
+          key: key,
+          runtime: actor.runtime,
+          has_agent: actor.has_process,
+          has_turn: actor.is_busy(),
+          notices: [],
+        })
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// Real SQLite-backed MCP Tool Dispatch (Strict Workspace Isolation)
+// ---------------------------------------------------------------------------
+
+fn mcp_arg_str(args : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn mcp_arg_int(args : base_codec::Json, key : String, fallback : Int) -> Int {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => fallback
+  }
+}
+
+fn mcp_arg_bool(args : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn parse_turn_declared(
+  kind : String,
+  args : base_codec::Json,
+) -> Result[station_sessions::TurnDeclared, String] {
+  if kind == "all_done" {
+    let d = match mcp_arg_str(args, "done") {
+      Some(s) => s
+      None => "done"
+    }
+    Ok(station_sessions::TurnDeclared::AllDone(d))
+  } else if kind == "need_human" {
+    let nd = match mcp_arg_str(args, "need") {
+      Some(s) => s
+      None => "input needed"
+    }
+    Ok(station_sessions::TurnDeclared::NeedHuman(nd))
+  } else if kind == "waiting" {
+    let fw = match mcp_arg_str(args, "for") {
+      Some(s) => s
+      None => "work"
+    }
+    let sc = mcp_arg_int(args, "seconds", 60)
+    let wt = match mcp_arg_bool(args, "watch") {
+      Some(b) => b
+      None => false
+    }
+    Ok(station_sessions::TurnDeclared::Waiting(fw, sc, wt))
+  } else {
+    Err("invalid turn state kind: " + kind + " (expected all_done, need_human, or waiting)")
+  }
+}
+
+/// Strictly resolve a thread ID:
+/// - If `explicit_target` is `Some(raw)` (non-empty), MUST resolve that exact target and NEVER
+///   fall back to the caller's default thread!
+/// - If `explicit_target` is `None` (or empty), resolves caller's own bound thread.
+/// - Always verifies `thread_visible_in_ws(st, tid, caller_ws, home_ws) == true` (cross-workspace refused).
+fn resolve_scoped_thread_id(
+  st : station_store::Store,
+  session_key : String,
+  explicit_target : Option[String],
+  caller_ws : String,
+  home_ws : String,
+) -> Result[Int64, String] {
+  let tid : Int64 = match explicit_target {
+    Some(raw) => {
+      let trimmed = raw.trim()
+      if trimmed.length() > 0 {
+        let mut found : Option[Int64] = None
+        let slash = trimmed.index_of("/")
+        if slash > 0 {
+          let ch = trimmed.slice(0, slash)
+          let ts = trimmed.slice(slash + 1, trimmed.length())
+          match st.db.first(
+            "SELECT id FROM threads WHERE channel = ?1 AND thread_ts = ?2 LIMIT 1",
+            [base_codec::json_str(ch), base_codec::json_str(ts)],
+          ) {
+            Ok(Some(r)) => match r.get("id") {
+              Some(base_codec::Json::Num(n, _)) => found = Some(n.to_int64())
+              _ => ()
+            }
+            Ok(None) => ()
+            Err(e) => return Err("lookup thread failed: " + e.message)
+          }
+        }
+        if found.is_none() {
+          match base_codec::parse_int64_str(trimmed) {
+            Some(parsed_id) => {
+              match st.get_thread(parsed_id) {
+                Ok(Some(_)) => found = Some(parsed_id)
+                Ok(None) => ()
+                Err(e) => return Err("lookup thread failed: " + e.message)
+              }
+            }
+            None => ()
+          }
+        }
+        if found.is_none() {
+          // Support resolving a local session key (raw key, `chat:<key>`, or `.../chats/<key>`).
+          let mut sess_cand = trimmed
+          let chats_idx = sess_cand.index_of("/chats/")
+          if chats_idx >= 0 {
+            sess_cand = sess_cand.slice(chats_idx + 7, sess_cand.length())
+          }
+          match st.db.first(
+            "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+            [base_codec::json_str(sess_cand)],
+          ) {
+            Ok(Some(r)) => match r.get("thread") {
+              Some(base_codec::Json::Num(n, _)) => found = Some(n.to_int64())
+              _ => ()
+            }
+            Ok(None) => ()
+            Err(e) => return Err("lookup session thread failed: " + e.message)
+          }
+          if found.is_none() {
+            match st.db.first(
+              "SELECT id FROM threads WHERE home = ?1 LIMIT 1",
+              [base_codec::json_str(sess_cand)],
+            ) {
+              Ok(Some(r)) => match r.get("id") {
+                Some(base_codec::Json::Num(n, _)) => found = Some(n.to_int64())
+                _ => ()
+              }
+              Ok(None) => ()
+              Err(e) => return Err("lookup home thread failed: " + e.message)
+            }
+          }
+        }
+        match found {
+          Some(id) => id
+          None => return Err("unknown thread target: " + trimmed)
+        }
+      } else {
+        match st.db.first(
+          "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+          [base_codec::json_str(session_key)],
+        ) {
+          Ok(Some(r)) => match r.get("thread") {
+            Some(base_codec::Json::Num(n, _)) => n.to_int64()
+            _ => return Err("no thread bound to session " + session_key)
+          }
+          Ok(None) => return Err("no thread bound to session " + session_key)
+          Err(e) => return Err("lookup thread failed: " + e.message)
+        }
+      }
+    }
+    None => match st.db.first(
+      "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+      [base_codec::json_str(session_key)],
+    ) {
+      Ok(Some(r)) => match r.get("thread") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => return Err("no thread bound to session " + session_key)
+      }
+      Ok(None) => return Err("no thread bound to session " + session_key)
+      Err(e) => return Err("lookup thread failed: " + e.message)
+    }
+  }
+  match thread_visible_in_ws(st, tid, caller_ws, home_ws) {
+    Ok(true) => Ok(tid)
+    Ok(false) => Err("access denied: thread " + tid.to_string() + " belongs to another workspace")
+    Err(e) => Err(e)
+  }
+}
+
+fn thread_row_to_json(t : station_store::ThreadRow) -> base_codec::Json {
+  base_codec::json_obj([
+    ("id", base_codec::json_int64(t.id)),
+    ("surface", base_codec::json_str(t.surface)),
+    ("channel", base_codec::json_str(t.channel)),
+    ("threadTs", base_codec::json_str(t.thread_ts)),
+    (
+      "title",
+      match t.title {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      },
+    ),
+    (
+      "project",
+      match t.project {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      },
+    ),
+    ("tags", json_str_array(t.tags)),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+  ])
+}
+
+fn WholeAgents::resolve_caller_ws(
+  self : WholeAgents,
+  st : station_store::Store,
+  session_key : String,
+) -> Result[String, String] {
+  match session_effective_ws(st, session_key, self.config.home_ws) {
+    Ok(Some(ws)) => Ok(ws)
+    Ok(None) => Err("unknown caller session: " + session_key)
+    Err(e) => Err(e)
+  }
+}
+
+fn WholeAgents::build_domain_handlers(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  now_ms : Int64,
+) -> station_tools::DomainHandlers {
+  let base = station_tools::default_domain_handlers()
+  let home_ws = self.config.home_ws
+
+  let chat_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    if tool == "chat_post" {
+      let text = match mcp_arg_str(args, "text") {
+        Some(s) => s
+        None => ""
+      }
+      let title_opt = mcp_arg_str(args, "title")
+      let kind_opt = mcp_arg_str(args, "kind")
+      let parsed_decl : Option[station_sessions::TurnDeclared] = match kind_opt {
+        Some(k) => match parse_turn_declared(k, args) {
+          Ok(d) => Some(d)
+          Err(e) => return station_tools::error_reply(e)
+        }
+        None => None
+      }
+      let tid = match resolve_scoped_thread_id(st, session, mcp_arg_str(args, "to"), caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match title_opt {
+        Some(t) => {
+          if t.length() > 0 {
+            match st.update_thread_metadata(tid, Some(t), None, None, None) {
+              Ok(_) => ()
+              Err(e) => return station_tools::error_reply("update_thread_metadata failed: " + e.message)
+            }
+          }
+        }
+        None => ()
+      }
+      if text.length() > 0 {
+        let msg = station_store::NewMessage::{
+          thread: tid,
+          ts: None,
+          author_kind: "agent",
+          author: session,
+          agent_identity: None,
+          text: Some(text),
+          attachments: None,
+          quotes: None,
+          declared: kind_opt,
+          client: None,
+          card: None,
+          options: None,
+          proposal: None,
+          at: now_ms,
+        }
+        match st.insert_message(msg) {
+          Ok((n, _)) => {
+            let ends = match parsed_decl {
+              Some(decl) => {
+                let rt = match self.session_runtimes.get(session) { Some(r) => r, None => "claude" }
+                let actor = self.hub.ensure_actor(session, rt)
+                actor.record_post(decl)
+                true
+              }
+              None => false
+            }
+            let payload = base_codec::json_stringify(
+              base_codec::json_obj([
+                ("thread", base_codec::json_int64(tid)),
+                ("n", base_codec::json_int64(n)),
+                ("session", base_codec::json_str(session)),
+              ]),
+            )
+            if ends {
+              return station_tools::text_reply_ending_turn(payload)
+            }
+            return station_tools::text_reply(payload)
+          }
+          Err(e) => return station_tools::error_reply("chat_post insert_message failed: " + e.message)
+        }
+      }
+      return station_tools::text_reply("updated thread " + tid.to_string())
+    }
+    if tool == "chat_state" {
+      let kind = match mcp_arg_str(args, "kind") {
+        Some(k) => k
+        None => return station_tools::error_reply("kind is required")
+      }
+      let decl = match parse_turn_declared(kind, args) {
+        Ok(d) => d
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let actor = match self.hub.actors.get(session) {
+        Some(a) => a
+        None => match st.get_session(session) {
+          Ok(Some(row)) => self.hub.ensure_actor(session, row.runtime)
+          _ => return station_tools::error_reply("unknown session actor: " + session)
+        }
+      }
+      actor.record_state(decl)
+      return station_tools::text_reply_ending_turn("recorded state: " + kind)
+    }
+    if tool == "chat_list" {
+      let q = match mcp_arg_str(args, "query") {
+        Some(s) => s
+        None => ""
+      }
+      let limit = mcp_arg_int(args, "limit", 20)
+      let filter = station_store::ChatListFilter::{
+        model: mcp_arg_str(args, "model"),
+        created_by: mcp_arg_str(args, "created_by"),
+        archived: mcp_arg_bool(args, "archived"),
+        project: mcp_arg_str(args, "project"),
+        offset: mcp_arg_int(args, "offset", 0),
+      }
+      // Strictly scoped to `caller_ws` (NEVER `None`).
+      match st.search_chat_threads(Some(caller_ws), Some(home_ws), q, filter, limit) {
+        Ok((threads, total)) => {
+          let items : Array[base_codec::Json] = []
+          for i in 0..<threads.length() {
+            items.push(thread_row_to_json(threads[i]))
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("total", base_codec::json_int(total)),
+                ("chats", base_codec::json_arr(items)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("chat_list failed: " + e.message)
+      }
+    }
+    if tool == "chat_history" || tool == "chat_read" {
+      let target_opt = if tool == "chat_read" {
+        match mcp_arg_str(args, "chat") {
+          Some(c) => Some(c)
+          None => mcp_arg_str(args, "to")
+        }
+      } else {
+        mcp_arg_str(args, "to")
+      }
+      if tool == "chat_read" && target_opt.is_none() {
+        return station_tools::error_reply("chat is required for chat_read")
+      }
+      let tid = match resolve_scoped_thread_id(st, session, target_opt, caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let limit = mcp_arg_int(args, "limit", 30)
+      match st.db.all(
+        "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' ORDER BY n DESC LIMIT ?2",
+        [sql_db::int64_to_json(tid), base_codec::json_int(limit)],
+      ) {
+        Ok(rows) => {
+          let msgs : Array[base_codec::Json] = []
+          let mut idx = rows.length() - 1
+          while idx >= 0 {
+            let r = rows[idx]
+            let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            let ak_j = match r.get("author_kind") { Some(v) => v, None => base_codec::json_str("") }
+            let au_j = match r.get("author") { Some(v) => v, None => base_codec::json_str("") }
+            let tx_j = match r.get("text") { Some(v) => v, None => base_codec::json_str("") }
+            let at_j = match r.get("at") { Some(v) => v, None => base_codec::json_int(0) }
+            msgs.push(
+              base_codec::json_obj([
+                ("n", n_j),
+                ("authorKind", ak_j),
+                ("author", au_j),
+                ("text", tx_j),
+                ("at", at_j),
+              ]),
+            )
+            idx = idx - 1
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("thread", base_codec::json_int64(tid)),
+                ("messages", base_codec::json_arr(msgs)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("chat_history failed: " + e.message)
+      }
+    }
+    if tool == "chat_configure" {
+      let chat_arg = mcp_arg_str(args, "chat")
+      let target_chat_opt : Option[String] = match chat_arg {
+        Some(c) => if c.length() == 0 || c == "self" { None } else { Some(c) }
+        None => None
+      }
+      let tid = match resolve_scoped_thread_id(st, session, target_chat_opt, caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let rt_opt = mcp_arg_str(args, "runtime")
+      match rt_opt {
+        Some(rt) => {
+          if station_drivers::runtime_kind_from_str(rt).is_none() {
+            return station_tools::error_reply("unsupported runtime: " + rt)
+          }
+        }
+        None => ()
+      }
+      let model_opt = mcp_arg_str(args, "model")
+      let effort_opt = mcp_arg_str(args, "effort")
+      let speed_opt = mcp_arg_str(args, "speed")
+      let has_sess_update = rt_opt.is_some() || model_opt.is_some() || effort_opt.is_some() || speed_opt.is_some()
+      // Resolve target session key strictly from the workspace-verified thread `tid`
+      // (NEVER resolve raw `chat` string directly via `get_session` without workspace check,
+      // which would allow numeric `chat: "1"` to hijack another workspace's session key `"1"`).
+      let mut resolved_sess : Option[String] = None
+      match target_chat_opt {
+        None => resolved_sess = Some(session)
+        Some(_) => {
+          // 1. Prefer thread's `home` session if it belongs to `caller_ws`.
+          match st.db.first(
+            "SELECT home FROM threads WHERE id = ?1 LIMIT 1",
+            [sql_db::int64_to_json(tid)],
+          ) {
+            Ok(Some(r)) => match r.get("home") {
+              Some(base_codec::Json::Str(h)) => {
+                if h.length() > 0 {
+                  match session_effective_ws(st, h, home_ws) {
+                    Ok(Some(hws)) => if hws == caller_ws { resolved_sess = Some(h) }
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+            _ => ()
+          }
+          // 2. Otherwise pick the active member session of `tid` in `caller_ws`.
+          if resolved_sess.is_none() {
+            match st.db.first(
+              "SELECT m.session FROM thread_sessions m JOIN sessions s ON s.key = m.session" +
+              " WHERE m.thread = ?1 AND m.left_at IS NULL AND COALESCE(s.ws, ?2) = ?3" +
+              " ORDER BY m.joined_at DESC LIMIT 1",
+              [
+                sql_db::int64_to_json(tid),
+                base_codec::json_str(home_ws),
+                base_codec::json_str(caller_ws),
+              ],
+            ) {
+              Ok(Some(r)) => match r.get("session") {
+                Some(base_codec::Json::Str(sk)) => if sk.length() > 0 { resolved_sess = Some(sk) }
+                _ => ()
+              }
+              _ => ()
+            }
+          }
+        }
+      }
+      let target_sess = match resolved_sess {
+        Some(sk) => {
+          match session_effective_ws(st, sk, home_ws) {
+            Ok(Some(tws)) => {
+              if tws != caller_ws {
+                return station_tools::error_reply("access denied: target session belongs to another workspace")
+              }
+            }
+            Ok(None) => return station_tools::error_reply("unknown session " + sk)
+            Err(e) => return station_tools::error_reply(e)
+          }
+          sk
+        }
+        None => {
+          if has_sess_update {
+            return station_tools::error_reply(
+              "no session in workspace " + caller_ws + " bound to thread " + tid.to_string(),
+            )
+          }
+          ""
+        }
+      }
+      let mut sess_updated = false
+      if has_sess_update {
+        match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+          let mut changed = 0
+          match rt_opt {
+            Some(rt) => {
+              match t.run(
+                "UPDATE sessions SET runtime = ?1 WHERE key = ?2",
+                [base_codec::json_str(rt), base_codec::json_str(target_sess)],
+              ) {
+                Ok(n) => changed = changed + n
+                Err(e) => return Err(e)
+              }
+            }
+            None => ()
+          }
+          match model_opt {
+            Some(m) => {
+              let m_param = if m.length() == 0 { base_codec::json_null() } else { base_codec::json_str(m) }
+              match t.run(
+                "UPDATE sessions SET model = ?1 WHERE key = ?2",
+                [m_param, base_codec::json_str(target_sess)],
+              ) {
+                Ok(n) => changed = changed + n
+                Err(e) => return Err(e)
+              }
+            }
+            None => ()
+          }
+          match effort_opt {
+            Some(ef) => {
+              let ef_param = if ef.length() == 0 { base_codec::json_null() } else { base_codec::json_str(ef) }
+              match t.run(
+                "UPDATE sessions SET effort = ?1 WHERE key = ?2",
+                [ef_param, base_codec::json_str(target_sess)],
+              ) {
+                Ok(n) => changed = changed + n
+                Err(e) => return Err(e)
+              }
+            }
+            None => ()
+          }
+          match speed_opt {
+            Some(sp) => {
+              let sp_param = if sp.length() == 0 { base_codec::json_null() } else { base_codec::json_str(sp) }
+              match t.run(
+                "UPDATE sessions SET speed = ?1 WHERE key = ?2",
+                [sp_param, base_codec::json_str(target_sess)],
+              ) {
+                Ok(n) => changed = changed + n
+                Err(e) => return Err(e)
+              }
+            }
+            None => ()
+          }
+          Ok(changed)
+        }) {
+          Ok(n) => {
+            sess_updated = n > 0
+            match rt_opt {
+              Some(rt) => if rt.length() > 0 { self.session_runtimes.set(target_sess, rt) }
+              None => ()
+            }
+          }
+          Err(e) => return station_tools::error_reply("chat_configure session update failed: " + e.message)
+        }
+      }
+      let proj = match mcp_arg_str(args, "project") {
+        Some(raw_p) => match station_api::normalize_project_name(raw_p) {
+          Ok(clean) => Some(clean)
+          Err(e) => return station_tools::error_reply(e)
+        }
+        None => None
+      }
+      let tags_opt : Option[Array[String]] = match base_codec::json_get(args, "tags") {
+        Some(base_codec::Json::Arr(_)) => Some(parse_str_array_field(args, "tags"))
+        _ => None
+      }
+      let mut thread_updated = false
+      if proj.is_some() || tags_opt.is_some() {
+        match st.update_thread_metadata(tid, None, proj, None, tags_opt) {
+          Ok(updated) => thread_updated = updated
+          Err(e) => return station_tools::error_reply("chat_configure failed: " + e.message)
+        }
+      }
+      return station_tools::text_reply(
+        base_codec::json_stringify(
+          base_codec::json_obj([
+            ("updated", base_codec::json_bool(sess_updated || thread_updated)),
+            ("session", base_codec::json_str(target_sess)),
+            ("thread", base_codec::json_int64(tid)),
+          ]),
+        ),
+      )
+    }
+    if tool == "chat_archive" {
+      let target = match mcp_arg_str(args, "chat") {
+        Some(c) => c
+        None => return station_tools::error_reply("chat is required")
+      }
+      match session_effective_ws(st, target, home_ws) {
+        Ok(Some(tws)) => {
+          if tws != caller_ws {
+            return station_tools::error_reply("access denied: target session belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match self.archive_session(whole_store, target, "manual", now_ms) {
+        Ok(_) => return station_tools::text_reply("archived " + target)
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "chat_create" {
+      let req_key = match mcp_arg_str(args, "key") {
+        Some(k) => k.trim()
+        None => ""
+      }
+      if utf8_codepoint_len(req_key) > 120 {
+        return station_tools::error_reply("chat_create key must be at most 120 characters")
+      }
+      let new_key = if req_key.length() > 0 {
+        // Scope idempotent `key` strictly by `(caller_ws, caller_session, req_key)` so a second
+        // agent in the same workspace using the same `key` never collides or swallows its text.
+        let scoped_hash = crypto::sha256_hex((caller_ws + "\n" + session + "\n" + req_key).to_bytes())
+        let derived_key = "chat-" + scoped_hash.slice(0, 16)
+        match st.get_session(derived_key) {
+          Ok(Some(existing)) => {
+            let ex_ws = match existing.ws {
+              Some(w) => if w.length() > 0 { w } else { home_ws }
+              None => home_ws
+            }
+            if ex_ws != caller_ws {
+              return station_tools::error_reply("access denied: session key belongs to another workspace")
+            }
+            let ex_tid = match resolve_scoped_thread_id(st, derived_key, None, caller_ws, home_ws) {
+              Ok(id) => id
+              Err(e) => return station_tools::error_reply(e)
+            }
+            return station_tools::text_reply(
+              base_codec::json_stringify(
+                base_codec::json_obj([
+                  ("session", base_codec::json_str(derived_key)),
+                  ("thread", base_codec::json_int64(ex_tid)),
+                  ("workspace", base_codec::json_str(caller_ws)),
+                  ("reused", base_codec::json_bool(true)),
+                ]),
+              ),
+            )
+          }
+          Ok(None) => derived_key
+          Err(e) => return station_tools::error_reply("chat_create lookup failed: " + e.message)
+        }
+      } else {
+        let raw_id = match (self.random_bytes_fn)(8) {
+          Ok(b) => crypto::bytes_to_hex(b)
+          Err(e) => return station_tools::error_reply("CSPRNG failed: " + e)
+        }
+        "chat-" + raw_id
+      }
+      let title_opt = mcp_arg_str(args, "title")
+      let runtime = match mcp_arg_str(args, "runtime") {
+        Some(r) => if r.length() > 0 { r } else { "claude" }
+        None => "claude"
+      }
+      let profile = match mcp_arg_str(args, "profile") {
+        Some(p) => if p.length() > 0 { p } else { "default" }
+        None => "default"
+      }
+      let ws_dir = match mcp_arg_str(args, "cwd") {
+        Some(c) => if c.length() > 0 { c } else { self.config.data_dir }
+        None => self.config.data_dir
+      }
+      let initial_text = match mcp_arg_str(args, "text") {
+        Some(t) => t
+        None => ""
+      }
+      let initial_msg_opt : Option[(String, String)] = if initial_text.length() > 0 {
+        Some((session, initial_text))
+      } else {
+        None
+      }
+      // Atomically create session + thread + membership + initial message in ONE `Store::tx`.
+      match self.create_session(
+        whole_store,
+        new_key,
+        "chat",
+        title_opt,
+        None,
+        runtime,
+        profile,
+        mcp_arg_str(args, "model"),
+        ws_dir,
+        Some(caller_ws),
+        now_ms,
+        initial_msg=initial_msg_opt,
+      ) {
+        Ok((_, tid)) => {
+          let out_fields : Array[(String, base_codec::Json)] = [
+            ("session", base_codec::json_str(new_key)),
+            ("thread", base_codec::json_int64(tid)),
+            ("workspace", base_codec::json_str(caller_ws)),
+            ("reused", base_codec::json_bool(false)),
+          ]
+          if initial_text.length() > 0 {
+            out_fields.push(("n", base_codec::json_int64(1L)))
+          }
+          return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(out_fields)))
+        }
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "session_send" {
+      let target = match mcp_arg_str(args, "to") {
+        Some(t) => t
+        None => return station_tools::error_reply("to is required")
+      }
+      let body_text = match mcp_arg_str(args, "text") {
+        Some(t) => t
+        None => match mcp_arg_str(args, "message") {
+          Some(m) => m
+          None => return station_tools::error_reply("text is required")
+        }
+      }
+      let target_row = match st.get_session(target) {
+        Ok(Some(row)) => row
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply("session lookup failed: " + e.message)
+      }
+      let target_ws = match target_row.ws {
+        Some(w) => if w.length() > 0 { w } else { home_ws }
+        None => home_ws
+      }
+      if target_ws != caller_ws {
+        return station_tools::error_reply("access denied: target session belongs to another workspace")
+      }
+      let tid = match resolve_scoped_thread_id(st, target, None, caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let msg = station_store::NewMessage::{
+        thread: tid,
+        ts: None,
+        author_kind: "agent",
+        author: session,
+        agent_identity: None,
+        text: Some(body_text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: None,
+        options: None,
+        proposal: None,
+        at: now_ms,
+      }
+      match st.insert_message(msg, deliver_to=[target]) {
+        Ok((n, _)) => {
+          // Open actor with target's REAL runtime from SQLite (never hardcoded "claude").
+          let actor = self.hub.ensure_actor(target, target_row.runtime)
+          let _ = actor.submit_input(body_text)
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("delivered", base_codec::json_bool(true)),
+                ("to", base_codec::json_str(target)),
+                ("runtime", base_codec::json_str(target_row.runtime)),
+                ("thread", base_codec::json_int64(tid)),
+                ("n", base_codec::json_int64(n)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("session_send failed: " + e.message)
+      }
+    }
+    if tool == "session_history" {
+      let target = match mcp_arg_str(args, "chat") {
+        Some(c) => if c.length() > 0 { c } else { session }
+        None => session
+      }
+      match session_effective_ws(st, target, home_ws) {
+        Ok(Some(tws)) => {
+          if tws != caller_ws {
+            return station_tools::error_reply("access denied: target session belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let limit = mcp_arg_int(args, "limit", 20)
+      match st.db.all(
+        "SELECT id, started_at, ended_at, declared FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT ?2",
+        [base_codec::json_str(target), base_codec::json_int(limit)],
+      ) {
+        Ok(rows) => {
+          let turns : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let id_j = match r.get("id") { Some(v) => v, None => base_codec::json_null() }
+            let st_j = match r.get("started_at") { Some(v) => v, None => base_codec::json_int(0) }
+            let en_j = match r.get("ended_at") { Some(v) => v, None => base_codec::json_null() }
+            let dc_j = match r.get("declared") { Some(v) => v, None => base_codec::json_null() }
+            turns.push(
+              base_codec::json_obj([
+                ("id", id_j),
+                ("startedAt", st_j),
+                ("endedAt", en_j),
+                ("declared", dc_j),
+              ]),
+            )
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("session", base_codec::json_str(target)),
+                ("turns", base_codec::json_arr(turns)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("session_history failed: " + e.message)
+      }
+    }
+    station_tools::error_reply("unsupported chat tool: " + tool)
+  }
+
+  let search_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool != "search" {
+      return station_tools::error_reply("unsupported search tool: " + tool)
+    }
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let q = match mcp_arg_str(args, "query") {
+      Some(s) => s
+      None => return station_tools::error_reply("query is required")
+    }
+    let raw_limit = mcp_arg_int(args, "limit", 5)
+    let limit = if raw_limit <= 0 { 5 } else if raw_limit > 200 { 200 } else { raw_limit }
+    let words = station_api::search_terms(q)
+    let hits : Array[base_codec::Json] = []
+    if words.length() == 0 {
+      return station_tools::text_reply(
+        base_codec::json_stringify(base_codec::json_obj([("hits", base_codec::json_arr(hits))])),
+      )
+    }
+    // Strictly scoped to `caller_ws` with exact deterministic SQLite `instr(js_lower(...), ?k) > 0` + `LIMIT`.
+    let (like_sql, like_params) = build_like_clauses(
+      "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
+      words,
+      3,
+    )
+    let arch_clause = match mcp_arg_bool(args, "archived") {
+      Some(true) => ""
+      _ => " AND t.archived_at IS NULL"
+    }
+    let sql_params : Array[base_codec::Json] = [
+      base_codec::json_str(home_ws),
+      base_codec::json_str(caller_ws),
+    ]
+    for pi in 0..<like_params.length() {
+      sql_params.push(like_params[pi])
+    }
+    let lim_param_idx = 3 + like_params.length()
+    sql_params.push(base_codec::json_int(limit))
+    match st.db.all(
+      "SELECT e.thread, e.n, e.text, e.at, t.title FROM entries e" +
+      " JOIN threads t ON t.id = e.thread" +
+      " LEFT JOIN sessions h ON h.key = t.home" +
+      " WHERE e.kind = 'message' AND CASE" +
+      "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+      "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+      "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+      arch_clause +
+      like_sql +
+      " ORDER BY e.at DESC, e.rowid DESC LIMIT ?" + lim_param_idx.to_string(),
+      sql_params,
+    ) {
+      Ok(rows) => {
+        for i in 0..<rows.length() {
+          if hits.length() >= limit {
+            break
+          }
+          let r = rows[i]
+          let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let ttl = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if station_api::has_all_terms(ttl + " " + txt, words) {
+            let tid_j = match r.get("thread") { Some(v) => v, None => base_codec::json_int(0) }
+            let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            hits.push(
+              base_codec::json_obj([
+                ("kind", base_codec::json_str("message")),
+                ("thread", tid_j),
+                ("n", n_j),
+                ("title", base_codec::json_str(ttl)),
+                ("excerpt", base_codec::json_str(station_api::make_excerpt(txt, words))),
+              ]),
+            )
+          }
+        }
+      }
+      Err(e) => return station_tools::error_reply("search failed: " + e.message)
+    }
+    station_tools::text_reply(
+      base_codec::json_stringify(base_codec::json_obj([("hits", base_codec::json_arr(hits))])),
+    )
+  }
+
+  let job_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    if tool == "job_start" {
+      let command = match mcp_arg_str(args, "command") {
+        Some(c) => c
+        None => return station_tools::error_reply("command is required")
+      }
+      let name = match mcp_arg_str(args, "name") {
+        Some(n) => n
+        None => ""
+      }
+      let cwd = match mcp_arg_str(args, "cwd") {
+        Some(c) => if c.length() > 0 { c } else { self.config.data_dir }
+        None => self.config.data_dir
+      }
+      let port_opt : Option[Int] = match base_codec::json_get(args, "port") {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+      let watch = match mcp_arg_bool(args, "watch") {
+        Some(b) => b
+        None => false
+      }
+      let req = station_jobs::JobStartRequest::{
+        session: session,
+        name: name,
+        command: command,
+        cwd: cwd,
+        port: port_opt,
+        watch: watch,
+        id: None,
+        queued: false,
+        screen: false,
+        small: false,
+        pipe_stdio: false,
+      }
+      match self.jobs.start(req, now_ms) {
+        Ok(rec) => {
+          match whole_store.persist_job(rec) {
+            Ok(_) => ()
+            Err(e) => {
+              let _ = self.jobs.stop(rec.id, now_ms)
+              return station_tools::error_reply(e)
+            }
+          }
+          return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+        }
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "job_list" {
+      let list = self.jobs.list(session_opt=Some(session))
+      let out : Array[base_codec::Json] = []
+      for i in 0..<list.length() {
+        out.push(list[i].to_json())
+      }
+      return station_tools::text_reply(
+        base_codec::json_stringify(base_codec::json_obj([("jobs", base_codec::json_arr(out))])),
+      )
+    }
+    if tool == "job_stop" || tool == "job_log" {
+      let id = match mcp_arg_str(args, "id") {
+        Some(s) => s
+        None => return station_tools::error_reply("id is required")
+      }
+      let job_rec = match self.jobs.get(id) {
+        Some(r) => r
+        None => return station_tools::error_reply("no job " + id)
+      }
+      match session_effective_ws(st, job_rec.session, home_ws) {
+        Ok(Some(jws)) => {
+          if jws != caller_ws {
+            return station_tools::error_reply("access denied: job belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("no job " + id)
+        Err(e) => return station_tools::error_reply(e)
+      }
+      if tool == "job_stop" {
+        match self.jobs.stop(id, now_ms) {
+          Ok(rec) => {
+            match whole_store.update_job_state(rec) {
+              Ok(_) => ()
+              Err(e) => return station_tools::error_reply(e)
+            }
+            return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+          }
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      let lines = mcp_arg_int(args, "lines", 50)
+      match self.jobs.log(id, lines=lines) {
+        Ok(text) => return station_tools::text_reply(text)
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    station_tools::error_reply("unsupported job tool: " + tool)
+  }
+
+  let project_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool != "project_manage" {
+      return station_tools::error_reply("unsupported project tool: " + tool)
+    }
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let action = match mcp_arg_str(args, "action") {
+      Some(a) => a
+      None => return station_tools::error_reply("action is required (list, set_info, rename, merge, reclassify)")
+    }
+    // Schema passes parameters under nested `args` object; fall back to top-level `args`.
+    let sub_args : base_codec::Json = match base_codec::json_get(args, "args") {
+      Some(base_codec::Json::Obj(o)) => base_codec::Json::Obj(o)
+      _ => args
+    }
+    let p_str = fn(k : String) -> Option[String] {
+      match mcp_arg_str(sub_args, k) {
+        Some(v) => Some(v)
+        None => mcp_arg_str(args, k)
+      }
+    }
+    if action == "list" {
+      let info_entries = match read_projects_info_map(self.jobs.fs, self.config.data_dir) {
+        Ok(m) => m
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match st.db.all(
+        "SELECT t.project, COUNT(*) AS cnt FROM threads t" +
+        " LEFT JOIN sessions h ON h.key = t.home" +
+        " WHERE t.project IS NOT NULL AND t.project != '' AND CASE" +
+        "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+        "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+        "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+        " GROUP BY t.project ORDER BY t.project",
+        [base_codec::json_str(home_ws), base_codec::json_str(caller_ws)],
+      ) {
+        Ok(rows) => {
+          let seen_names : Map[String, Bool] = Map::new()
+          let projs : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
+            seen_names.set(name, true)
+            let entry_key = caller_ws + ":" + name
+            let mut note_str = ""
+            let mut refs_arr : Array[String] = []
+            for j in 0..<info_entries.length() {
+              if info_entries[j].0 == entry_key {
+                match mcp_arg_str(info_entries[j].1, "note") {
+                  Some(ns) => note_str = ns
+                  None => ()
+                }
+                refs_arr = parse_str_array_field(info_entries[j].1, "refs")
+                break
+              }
+            }
+            projs.push(
+              base_codec::json_obj([
+                ("name", base_codec::json_str(name)),
+                ("count", cnt),
+                ("note", base_codec::json_str(note_str)),
+                ("refs", json_str_array(refs_arr)),
+              ]),
+            )
+          }
+          // Also include projects saved via `set_info` for `caller_ws` that have 0 threads so far.
+          let ws_prefix = caller_ws + ":"
+          for j in 0..<info_entries.length() {
+            let (ek, ev) = info_entries[j]
+            if ek.starts_with(ws_prefix) {
+              let pname = ek.slice(ws_prefix.length(), ek.length())
+              if pname.length() > 0 && seen_names.get(pname).is_none() {
+                let note_str = match mcp_arg_str(ev, "note") { Some(ns) => ns, None => "" }
+                let refs_arr = parse_str_array_field(ev, "refs")
+                projs.push(
+                  base_codec::json_obj([
+                    ("name", base_codec::json_str(pname)),
+                    ("count", base_codec::json_int(0)),
+                    ("note", base_codec::json_str(note_str)),
+                    ("refs", json_str_array(refs_arr)),
+                  ]),
+                )
+              }
+            }
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(base_codec::json_obj([("projects", base_codec::json_arr(projs))])),
+          )
+        }
+        Err(e) => return station_tools::error_reply("project_manage list failed: " + e.message)
+      }
+    }
+    if action == "propose" {
+      return station_tools::error_reply(
+        "project_manage action 'propose' is not supported in WholeCore yet (no confirmation bar persistence)",
+      )
+    }
+    if action == "set_info" {
+      let raw_name = match p_str("name") {
+        Some(n) => n
+        None => match p_str("project") {
+          Some(n) => n
+          None => return station_tools::error_reply("name is required for set_info")
+        }
+      }
+      let clean = match station_api::normalize_project_name(raw_name) {
+        Ok(c) => if c.length() > 0 { c } else { return station_tools::error_reply("project name must not be empty") }
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let store_map = match read_projects_info_map(self.jobs.fs, self.config.data_dir) {
+        Ok(m) => m
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let entry_key = caller_ws + ":" + clean
+      let mut prev_note = ""
+      let mut prev_refs : Array[String] = []
+      for i in 0..<store_map.length() {
+        if store_map[i].0 == entry_key {
+          match mcp_arg_str(store_map[i].1, "note") {
+            Some(ns) => prev_note = ns
+            None => ()
+          }
+          prev_refs = parse_str_array_field(store_map[i].1, "refs")
+          break
+        }
+      }
+      // Preserve omitted `note` or `refs` on update (aligned with `station/src/sessions/projects.ts:1682`).
+      let note = match p_str("note") {
+        Some(s) => s
+        None => prev_note
+      }
+      let refs_list = match base_codec::json_get(sub_args, "refs") {
+        Some(base_codec::Json::Arr(_)) => parse_str_array_field(sub_args, "refs")
+        _ => match base_codec::json_get(args, "refs") {
+          Some(base_codec::Json::Arr(_)) => parse_str_array_field(args, "refs")
+          _ => prev_refs
+        }
+      }
+      let info_path = nodepath::join(self.jobs.fs.sep, [self.config.data_dir, "projects-info.json"])
+      let entry_val = base_codec::json_obj([
+        ("workspace", base_codec::json_str(caller_ws)),
+        ("name", base_codec::json_str(clean)),
+        ("note", base_codec::json_str(note)),
+        ("refs", json_str_array(refs_list)),
+        ("updatedAt", base_codec::json_int64(now_ms)),
+      ])
+      let next_map : Array[(String, base_codec::Json)] = []
+      let mut replaced = false
+      for i in 0..<store_map.length() {
+        let (k, v) = store_map[i]
+        if k == entry_key {
+          next_map.push((k, entry_val))
+          replaced = true
+        } else {
+          next_map.push((k, v))
+        }
+      }
+      if !replaced {
+        next_map.push((entry_key, entry_val))
+      }
+      let _ = (self.jobs.fs.mkdir_p)(self.config.data_dir)
+      let payload = base_codec::json_stringify(base_codec::json_obj(next_map))
+      if !station_sys::write_file_atomic(info_path, payload.to_bytes(), mode=384) {
+        return station_tools::error_reply("project_manage set_info failed to atomically persist projects-info.json")
+      }
+      return station_tools::text_reply(
+        base_codec::json_stringify(
+          base_codec::json_obj([
+            ("updated", base_codec::json_bool(true)),
+            ("workspace", base_codec::json_str(caller_ws)),
+            ("name", base_codec::json_str(clean)),
+            ("note", base_codec::json_str(note)),
+            ("refs", json_str_array(refs_list)),
+          ]),
+        ),
+      )
+    }
+    if action == "reclassify" {
+      let tid = match resolve_scoped_thread_id(st, session, p_str("chat"), caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let raw_proj = match p_str("project") {
+        Some(p) => p
+        None => return station_tools::error_reply("project is required for reclassify")
+      }
+      let clean = match station_api::normalize_project_name(raw_proj) {
+        Ok(c) => c
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match st.update_thread_metadata(tid, None, Some(clean), None, None) {
+        Ok(updated) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("updated", base_codec::json_bool(updated)),
+              ("thread", base_codec::json_int64(tid)),
+              ("project", base_codec::json_str(clean)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply("project_manage reclassify failed: " + e.message)
+      }
+    }
+    if action == "rename" || action == "merge" {
+      let from_name = match p_str("from") {
+        Some(f) => f
+        None => return station_tools::error_reply("from is required for " + action)
+      }
+      let raw_to = match p_str("to") {
+        Some(t) => t
+        None => return station_tools::error_reply("to is required for " + action)
+      }
+      let to_name = match station_api::normalize_project_name(raw_to) {
+        Ok(c) => if c.length() > 0 { c } else { return station_tools::error_reply("target project name must not be empty") }
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+        t.run(
+          "UPDATE threads SET project = ?1 WHERE project = ?2 AND id IN (" +
+          " SELECT th.id FROM threads th LEFT JOIN sessions h ON h.key = th.home WHERE CASE" +
+          "  WHEN th.home IS NOT NULL THEN COALESCE(h.ws, ?3) = ?4" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = th.id) THEN ?3 = ?4" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = th.id AND COALESCE(a.ws, ?3) = ?4) END)",
+          [
+            base_codec::json_str(to_name),
+            base_codec::json_str(from_name),
+            base_codec::json_str(home_ws),
+            base_codec::json_str(caller_ws),
+          ],
+        )
+      }) {
+        Ok(n) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("action", base_codec::json_str(action)),
+              ("from", base_codec::json_str(from_name)),
+              ("to", base_codec::json_str(to_name)),
+              ("updated", base_codec::json_int(n)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply("project_manage " + action + " failed: " + e.message)
+      }
+    }
+    station_tools::error_reply("unsupported project_manage action: " + action)
+  }
+
+  station_tools::DomainHandlers::{
+    chat: chat_handler,
+    job: job_handler,
+    remote: base.remote,
+    secret: base.secret,
+    device: base.device,
+    screen: base.screen,
+    browser: base.browser,
+    project: project_handler,
+    search: search_handler,
+    managed_mcp: base.managed_mcp,
+    system: base.system,
+  }
+}
+
+/// Pure dependency-injected `/mcp` HTTP handler (no SQLite FFI references).
+pub fn WholeAgents::handle_mcp_http_with_handlers(
+  self : WholeAgents,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  handlers : station_tools::DomainHandlers,
+) -> McpHttpResponse {
+  if path != "/mcp" {
+    return McpHttpResponse::{
+      status: 404,
+      content_type: "application/json",
+      body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str("not found"))])),
+    }
+  }
+  match station_tools::check_local_origin(host_header, origin_header, [self.config.mcp_port]) {
+    Some(err_msg) => {
+      return McpHttpResponse::{
+        status: 403,
+        content_type: "application/json",
+        body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(err_msg))])),
+      }
+    }
+    None => ()
+  }
+  let tools_host = station_tools::ToolsHost::{
+    resolve_token: fn(tok : String) -> Option[String] { self.resolve_token_ct(tok) },
+    call_context: fn(session : String) -> station_tools::CallContext {
+      station_tools::CallContext::{
+        session: session,
+        unbound_reason: if self.bound_to_workspace {
+          None
+        } else {
+          Some(station_tools::UNBOUND_REFUSAL)
+        },
+      }
+    },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
+    dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { [] },
+    listing_of: fn(session : String) -> Option[station_tools::Listing] {
+      let rt = match self.session_runtimes.get(session) {
+        Some(r) => r
+        None => "claude"
+      }
+      station_tools::listing_for(rt, false)
+    },
+    call_tool: fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+      station_tools::dispatch_tool(handlers, session, tool, args)
+    },
+  }
+  let reply = self.mcp.handle(method, authorization, body, tools_host)
+  let (st, ct, text) = station_tools::encode_json_reply(reply)
+  McpHttpResponse::{ status: st, content_type: ct, body: text }
+}
+
+/// Handle a local HTTP request to `/mcp` against live SQLite `WholeStore` + `SessionHub` + `JobManager`.
+pub fn WholeAgents::handle_mcp_http(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  now_ms : Int64,
+) -> McpHttpResponse {
+  let handlers = self.build_domain_handlers(whole_store, now_ms)
+  self.handle_mcp_http_with_handlers(
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    handlers,
+  )
+}

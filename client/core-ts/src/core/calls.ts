@@ -170,7 +170,7 @@ export type Call =
   | { kind: "historyTool"; name: string; call: string; result: string | null; failed: boolean; said: boolean }
   /// Where a chat's find goes (chat-find.ts): what was found, where the reader is, which way, what the view shows.
   | { kind: "chatFindGo"; hits: FindHit[]; at: FindAt | null; by: -1 | 0 | 1; from: number | null; to: number | null; drawn: Record<string, number> }
-  | { kind: "words"; what: "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.pasted" | "paste.info" | "drive.check"; text: string; caret: number; here: string }
+  | { kind: "words"; what: "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.styles" | "ref.enter" | "ref.pasted" | "paste.info" | "drive.check"; text: string; caret: number; here: string }
   /// A face's files on a device that keeps none of its own (font-files.ts): fetched, kept, given back.
   | { kind: "fonts"; call: FontsCall }
   /// A ```mermaid block's chart as SVG (mermaid.ts), in the app's colours, `width` wide where it fills its width.
@@ -1041,6 +1041,8 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     case "ref.before":
     case "ref.marks":
     case "ref.words":
+    case "ref.styles":
+    case "ref.enter":
     case "ref.pasted":
     case "paste.info":
     case "drive.check": {
