@@ -46,8 +46,11 @@ test "can_skip_record_bytes pre-filter matches timeline_of across edge cases" {
   assert_true(skip("claude", "{\"uuid\":\"1\",\"type\":\"progress\",\"data\":{\"x\":1}}"))
   assert_true(skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"x\"}}"))
   assert_true(skip("claude", "   \r"))
-  assert_true(skip("claude", "[1,2,3]"))
-  // Claude kept types, duplicate keys (last wins), escapes, attachment with isMeta
+  // Non-object and malformed JSON conservatively fall back to full parser
+  assert_false(skip("claude", "[1,2,3]"))
+  assert_false(skip("claude", "{\"type\":\"progress\"} trailing"))
+  assert_false(skip("claude", "{\"type\":\"progress\""))
+  // Claude kept types, duplicate keys (last wins, matching jsjson::parse), escapes, attachment with isMeta
   assert_false(skip("claude", "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"))
   assert_false(skip("claude", "{\"type\":\"assistant\",\"message\":{\"content\":\"hi\"}}"))
   assert_false(skip("claude", "{\"type\":\"attachment\",\"isMeta\":true,\"attachment\":{\"type\":\"queued_command\"}}"))
@@ -56,7 +59,16 @@ test "can_skip_record_bytes pre-filter matches timeline_of across edge cases" {
   assert_false(skip("claude", "{\"type\":\"user\",\"isMeta\":\"true\"}"))
   assert_false(skip("claude", "{\"\\u0074ype\":\"user\"}"))
   assert_false(skip("claude", "{\"type\":\"\\u0075ser\"}"))
-  assert_true(skip("claude", "{\"type\":\"user\",\"type\":\"api-request\"}"))
+  let dup_ignored = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"type\":\"progress\"}"
+  assert_true(skip("claude", dup_ignored))
+  let out_ign : Array[Entry] = []
+  timeline_of("claude", @jsjson.parse(dup_ignored), ReadState::new(), out_ign)
+  assert_eq(out_ign.length(), 0)
+  let dup_kept = "{\"type\":\"progress\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"
+  assert_false(skip("claude", dup_kept))
+  let out_kept : Array[Entry] = []
+  timeline_of("claude", @jsjson.parse(dup_kept), ReadState::new(), out_kept)
+  assert_eq(out_kept.length(), 1)
   // Codex, Pi, Grok, and non-skipped DSH/Cursor
   assert_true(skip("codex", "{\"type\":\"event_msg\",\"payload\":{\"type\":\"response_item\"}}"))
   assert_false(skip("codex", "{\"type\":\"response_item\",\"payload\":{}}"))

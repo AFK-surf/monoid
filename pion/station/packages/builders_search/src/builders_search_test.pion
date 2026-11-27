@@ -513,12 +513,40 @@ test "can_skip_record_bytes and can_skip_record_str match timeline_of edge cases
   check_skip("claude", "{\"uuid\":\"1\",\"type\":\"progress\",\"data\":{\"x\":1}}", true, "claude progress")
   check_skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"x\"}}", true, "claude isMeta true")
   check_skip("claude", "   \r", true, "blank")
-  check_skip("claude", "[1,2,3]", true, "array")
+  check_skip("claude", "[1,2,3]", false, "array conservative fallback")
+  check_skip("claude", "{\"type\":\"progress\"} trailing", false, "trailing garbage conservative fallback")
+  check_skip("claude", "{\"type\":\"progress\"", false, "truncated conservative fallback")
   check_skip("claude", "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}", false, "claude user")
   check_skip("claude", "{\"type\":\"assistant\",\"message\":{\"content\":\"hi\"}}", false, "claude assistant")
   check_skip("claude", "{\"type\":\"attachment\",\"isMeta\":true,\"attachment\":{\"type\":\"queued_command\"}}", false, "claude attachment+isMeta")
-  check_skip("claude", "{\"type\":\"api-request\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}", false, "claude dup key last wins kept")
-  check_skip("claude", "{\"type\":\"user\",\"type\":\"api-request\"}", true, "claude dup key last wins ignored")
+  let dup_kept = "{\"type\":\"api-request\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"
+  check_skip("claude", dup_kept, false, "claude dup key last wins kept")
+  expect_bs(
+    match js_json::parse(dup_kept) {
+      Ok(r) => {
+        match r.get("type") {
+          Some(js_json::JValue::Str(u)) => js_json::text(u) == "user"
+          _ => false
+        }
+      }
+      Err(_) => false
+    },
+    "dup_kept full parse resolves last key 'user'",
+  )
+  let dup_ignored = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"type\":\"progress\"}"
+  check_skip("claude", dup_ignored, true, "claude dup key last wins ignored")
+  expect_bs(
+    match js_json::parse(dup_ignored) {
+      Ok(r) => {
+        match r.get("type") {
+          Some(js_json::JValue::Str(u)) => js_json::text(u) == "progress"
+          _ => false
+        }
+      }
+      Err(_) => false
+    },
+    "dup_ignored full parse resolves last key 'progress'",
+  )
   check_skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"isMeta\":false}", false, "claude dup isMeta false")
   check_skip("claude", "{\"type\":\"user\",\"isMeta\":\"true\"}", false, "claude isMeta string")
   check_skip("claude", "{\"\\u0074ype\":\"user\"}", false, "escaped key fallback")

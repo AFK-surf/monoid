@@ -276,8 +276,8 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
     return true
   }
   if raw[i].to_int() != 0x7b {
-    // Non-object (or invalid JSON): produces zero entries in claude/codex/pi/grok.
-    return true
+    // Non-object (or invalid JSON): conservatively fall back to full parser.
+    return false
   }
   i += 1
   // type_state: 0 = ignored/unseen, 1 = wanted, 2 = claude user/assistant (skippable if isMeta=true)
@@ -294,7 +294,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
       }
     }
     if i >= end {
-      return true
+      return false
     }
     if raw[i].to_int() == 0x7d {
       i += 1
@@ -307,7 +307,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
         }
       }
       if i != end {
-        return true // trailing garbage -> malformed JSON -> 0 entries
+        return false // trailing garbage -> conservatively fall back to full parser
       }
       if type_state == 0 {
         return true
@@ -319,7 +319,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
     }
     if !first {
       if raw[i].to_int() != 0x2c {
-        return true
+        return false
       }
       i += 1
       while i < end {
@@ -331,12 +331,12 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
         }
       }
       if i >= end {
-        return true
+        return false
       }
     }
     first = false
     if raw[i].to_int() != 0x22 {
-      return true
+      return false
     }
     i += 1
     let key_start = i
@@ -345,17 +345,14 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
       if ch == 0x22 {
         break
       }
-      if ch == 0x5c {
-        // Escaped top-level key (e.g. \u0074ype): fall back to full parser.
+      if ch == 0x5c || ch < 0x20 {
+        // Escaped top-level key or control char: fall back to full parser.
         return false
-      }
-      if ch < 0x20 {
-        return true
       }
       i += 1
     }
     if i >= end {
-      return true
+      return false
     }
     let key_end = i
     i += 1
@@ -368,7 +365,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
       }
     }
     if i >= end || raw[i].to_int() != 0x3a {
-      return true
+      return false
     }
     i += 1
     while i < end {
@@ -380,7 +377,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
       }
     }
     if i >= end {
-      return true
+      return false
     }
     if bytes_eq_ascii(raw, key_start, key_end, "type") {
       if raw[i].to_int() == 0x22 {
@@ -391,16 +388,13 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
           if ch == 0x22 {
             break
           }
-          if ch == 0x5c {
+          if ch == 0x5c || ch < 0x20 {
             return false
-          }
-          if ch < 0x20 {
-            return true
           }
           i += 1
         }
         if i >= end {
-          return true
+          return false
         }
         let val_end = i
         i += 1
@@ -428,7 +422,7 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
       } else {
         let next = skip_json_value_bytes(raw, i, end)
         if next < 0 {
-          return true
+          return false
         }
         i = next
         type_state = 0
@@ -436,14 +430,14 @@ fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
     } else if rt_kind == 1 && bytes_eq_ascii(raw, key_start, key_end, "isMeta") {
       let next = skip_json_value_bytes(raw, i, end)
       if next < 0 {
-        return true
+        return false
       }
       is_meta = bytes_eq_ascii(raw, i, next, "true")
       i = next
     } else {
       let next = skip_json_value_bytes(raw, i, end)
       if next < 0 {
-        return true
+        return false
       }
       i = next
     }
