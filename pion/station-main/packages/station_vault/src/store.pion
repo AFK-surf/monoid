@@ -200,6 +200,7 @@ struct MemJoinRow {
 
 struct MemVaultData {
   vaults : Map[String, (String, String, Int64, String)]
+  items : Map[String, (String, String, String, Int64, String)]
   member_lookup : Map[String, Map[String, Bool]]
   boxes : Map[String, String]
   asks : Map[String, MemAskRow]
@@ -209,6 +210,7 @@ struct MemVaultData {
 fn MemVaultData::new() -> MemVaultData {
   MemVaultData::{
     vaults: Map::new(),
+    items: Map::new(),
     member_lookup: Map::new(),
     boxes: Map::new(),
     asks: Map::new(),
@@ -404,6 +406,13 @@ fn vault_has_wrapped_key(v : form::Json, device : String, box_key : String) -> B
 }
 
 fn mem_delete_vault_children(m : MemVaultData, ws : String, id : String) -> Unit {
+  let item_keys = m.items.keys()
+  for i in 0..<item_keys.length() {
+    match m.items.get(item_keys[i]) {
+      Some((iws, iv, _, _, _)) => if iws == ws && iv == id { m.items.remove(item_keys[i]) }
+      None => ()
+    }
+  }
   let ask_keys = m.asks.keys()
   for i in 0..<ask_keys.length() {
     match m.asks.get(ask_keys[i]) {
@@ -1404,6 +1413,314 @@ pub fn VaultStore::forget_vault(self : VaultStore, ws : String, id : String) -> 
       }
     }
     None => Err("vault store closed")
+  }
+}
+
+pub fn VaultStore::items(self : VaultStore, ws : String, vault_id : String) -> Result[Array[form::Json], String] {
+  match self.mem {
+    Some(m) => {
+      let pairs : Array[(String, String)] = []
+      let ks = m.items.keys()
+      for i in 0..<ks.length() {
+        match m.items.get(ks[i]) {
+          Some((iws, iv, iid, _, body)) => if iws == ws && iv == vault_id { pairs.push((iid, body)) }
+          None => ()
+        }
+      }
+      let mut si = 1
+      while si < pairs.length() {
+        let cur = pairs[si]
+        let mut sj = si - 1
+        while sj >= 0 && pairs[sj].0 > cur.0 {
+          pairs[sj + 1] = pairs[sj]
+          sj = sj - 1
+        }
+        pairs[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      for i in 0..<pairs.length() {
+        match parse_form_json(pairs[i].1) {
+          Some(v) => out.push(v)
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    None => match self.db {
+      Some(db) => match (db.all)(
+        "SELECT body FROM vault_items WHERE ws = ? AND vault = ? ORDER BY id",
+        [base_codec::json_str(ws), base_codec::json_str(vault_id)],
+      ) {
+        Ok(rows) => {
+          let out : Array[form::Json] = []
+          for i in 0..<rows.length() {
+            match row_str(rows[i], "body") {
+              Some(b) => match parse_form_json(b) {
+                Some(v) => out.push(v)
+                None => ()
+              }
+              None => ()
+            }
+          }
+          Ok(out)
+        }
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+pub fn VaultStore::item_snapshot(
+  self : VaultStore,
+  ws : String,
+  vault_id : String,
+  id : String,
+) -> Result[Option[JsonSnapshot], String] {
+  match self.mem {
+    Some(m) => match m.items.get(mem_k3(ws, vault_id, id)) {
+      Some((_, _, _, _, b)) => match parse_form_json(b) {
+        Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+        None => Err("corrupt vault item json")
+      }
+      None => Ok(None)
+    }
+    None => match self.db {
+      Some(db) => match (db.first)(
+        "SELECT body FROM vault_items WHERE ws = ? AND vault = ? AND id = ?",
+        [base_codec::json_str(ws), base_codec::json_str(vault_id), base_codec::json_str(id)],
+      ) {
+        Ok(Some(row)) => match row_str(row, "body") {
+          Some(b) => match parse_form_json(b) {
+            Some(v) => Ok(Some(JsonSnapshot::{ value: v, body: b }))
+            None => Err("corrupt vault item json")
+          }
+          None => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+/// CAS write for a vault item: checks both parent vault body and previous item body.
+pub fn VaultStore::put_item_if(
+  self : VaultStore,
+  item : form::Json,
+  vault_body : String,
+  previous : Option[String],
+) -> VaultWriteResult {
+  let ws = json_str_f(item, "ws")
+  let vault_id = json_str_f(item, "vault")
+  let id = json_str_f(item, "id")
+  let version = json_i64_f(item, "version")
+  let body = form_to_json_string(item)
+  match self.mem {
+    Some(m) => {
+      match m.vaults.get(mem_k2(ws, vault_id)) {
+        Some((_, _, _, vb)) => {
+          if vb != vault_body {
+            return VaultWriteResult::Conflict
+          }
+          match parse_form_json(vb) {
+            Some(vv) => if json_is_deleted(vv) { return VaultWriteResult::DeletedWrite }
+            None => ()
+          }
+        }
+        None => return VaultWriteResult::Conflict
+      }
+      let key = mem_k3(ws, vault_id, id)
+      match previous {
+        None => {
+          if m.items.contains(key) {
+            return VaultWriteResult::Conflict
+          }
+          m.items.set(key, (ws, vault_id, id, version, body))
+          return VaultWriteResult::Saved
+        }
+        Some(prev) => match m.items.get(key) {
+          Some((_, _, _, _, cur)) => {
+            if cur != prev {
+              return VaultWriteResult::Conflict
+            }
+            m.items.set(key, (ws, vault_id, id, version, body))
+            return VaultWriteResult::Saved
+          }
+          None => return VaultWriteResult::Conflict
+        }
+      }
+    }
+    None => ()
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return VaultWriteResult::DbError("vault store closed")
+  }
+  let res = match previous {
+    None => (db.run)(
+      "INSERT INTO vault_items (ws, vault, id, version, body) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?) AND NOT EXISTS (SELECT 1 FROM vault_items WHERE ws = ? AND vault = ? AND id = ?)",
+      [
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(id),
+        base_codec::json_int64(version),
+        base_codec::json_str(body),
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(vault_body),
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(id),
+      ],
+    )
+    Some(prev) => (db.run)(
+      "UPDATE vault_items SET version = ?, body = ? WHERE ws = ? AND vault = ? AND id = ? AND body = ? AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)",
+      [
+        base_codec::json_int64(version),
+        base_codec::json_str(body),
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(id),
+        base_codec::json_str(prev),
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(vault_body),
+      ],
+    )
+  }
+  match res {
+    Ok(n) => if n > 0 { VaultWriteResult::Saved } else { VaultWriteResult::Conflict }
+    Err(e) => if is_deleted_vault_write(e.message) { VaultWriteResult::DeletedWrite } else { VaultWriteResult::DbError(e.message) }
+  }
+}
+
+pub fn VaultStore::boxes(self : VaultStore, ws : String) -> Result[Array[form::Json], String] {
+  match self.mem {
+    Some(m) => {
+      let pairs : Array[(String, String)] = []
+      let prefix = ws + "\x00"
+      let ks = m.boxes.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        if k.starts_with(prefix) {
+          match m.boxes.get(k) {
+            Some(b) => pairs.push((k, b))
+            None => ()
+          }
+        }
+      }
+      let mut si = 1
+      while si < pairs.length() {
+        let cur = pairs[si]
+        let mut sj = si - 1
+        while sj >= 0 && pairs[sj].0 > cur.0 {
+          pairs[sj + 1] = pairs[sj]
+          sj = sj - 1
+        }
+        pairs[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      for i in 0..<pairs.length() {
+        match parse_form_json(pairs[i].1) {
+          Some(v) => out.push(v)
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    None => match self.db {
+      Some(db) => match (db.all)("SELECT body FROM vault_boxes WHERE ws = ? ORDER BY device", [base_codec::json_str(ws)]) {
+        Ok(rows) => {
+          let out : Array[form::Json] = []
+          for i in 0..<rows.length() {
+            match row_str(rows[i], "body") {
+              Some(b) => match parse_form_json(b) {
+                Some(v) => out.push(v)
+                None => ()
+              }
+              None => ()
+            }
+          }
+          Ok(out)
+        }
+        Err(e) => Err(e.message)
+      }
+      None => Err("vault store closed")
+    }
+  }
+}
+
+pub fn VaultStore::boxes_for(
+  self : VaultStore,
+  ws : String,
+  devices : Array[String],
+) -> Result[Array[form::Json], String] {
+  if devices.length() == 0 {
+    return Ok([])
+  }
+  match self.mem {
+    Some(m) => {
+      let pairs : Array[(String, String)] = []
+      for i in 0..<devices.length() {
+        let d = devices[i]
+        match m.boxes.get(mem_k2(ws, d)) {
+          Some(b) => pairs.push((d, b))
+          None => ()
+        }
+      }
+      let mut si = 1
+      while si < pairs.length() {
+        let cur = pairs[si]
+        let mut sj = si - 1
+        while sj >= 0 && pairs[sj].0 > cur.0 {
+          pairs[sj + 1] = pairs[sj]
+          sj = sj - 1
+        }
+        pairs[sj + 1] = cur
+        si = si + 1
+      }
+      let out : Array[form::Json] = []
+      for i in 0..<pairs.length() {
+        match parse_form_json(pairs[i].1) {
+          Some(v) => out.push(v)
+          None => ()
+        }
+      }
+      Ok(out)
+    }
+    None => match self.db {
+      Some(db) => {
+        let dev_arr : Array[base_codec::Json] = []
+        for i in 0..<devices.length() {
+          dev_arr.push(base_codec::json_str(devices[i]))
+        }
+        let dev_json = base_codec::json_stringify(base_codec::json_arr(dev_arr))
+        match (db.all)(
+          "SELECT body FROM vault_boxes WHERE ws = ? AND device IN (SELECT value FROM json_each(?)) ORDER BY device",
+          [base_codec::json_str(ws), base_codec::json_str(dev_json)],
+        ) {
+          Ok(rows) => {
+            let out : Array[form::Json] = []
+            for i in 0..<rows.length() {
+              match row_str(rows[i], "body") {
+                Some(b) => match parse_form_json(b) {
+                  Some(v) => out.push(v)
+                  None => ()
+                }
+                None => ()
+              }
+            }
+            Ok(out)
+          }
+          Err(e) => Err(e.message)
+        }
+      }
+      None => Err("vault store closed")
+    }
   }
 }
 

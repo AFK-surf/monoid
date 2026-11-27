@@ -474,6 +474,8 @@ pub struct WholeStore {
   mut store : Option[station_store::Store]
   pub mut vault_store : Option[station_vault::VaultStore]
   vault_backfill_done : Map[String, Bool]
+  vault_backfill_backoff : Map[String, (Int64, Int64)]
+  pub mut vault_backfill_last_error : Option[String]
   pub vault_grants : station_vault::GrantStore
   pub vault_incoming : station_vault::IncomingRegistry
   pub mut before_store_ran : Bool
@@ -491,6 +493,8 @@ pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) ->
     store: None,
     vault_store: None,
     vault_backfill_done: Map::new(),
+    vault_backfill_backoff: Map::new(),
+    vault_backfill_last_error: None,
     vault_grants: station_vault::GrantStore::new(),
     vault_incoming: station_vault::IncomingRegistry::new(),
     before_store_ran: false,
@@ -605,12 +609,15 @@ pub fn WholeStore::require_vault_store(self : WholeStore) -> Result[station_vaul
   }
 }
 
-/// Advance background batched `backfill_vault_members` by one bounded batch per workspace.
+/// Advance background batched `backfill_vault_members` by one bounded batch per workspace,
+/// with exponential backoff (1s -> 2s -> ... -> 300s) and error capture on failure so errors
+/// never spin every 100ms tick.
 /// Returns `true` when every workspace in `workspaces` has finished backfill + audits.
 pub fn WholeStore::backfill_vault_members_step(
   self : WholeStore,
   workspaces : Array[String],
   limit : Int = 64,
+  now_ms : Int64 = 0L,
 ) -> Bool {
   let vs = match self.vault_store {
     Some(v) => v
@@ -622,14 +629,40 @@ pub fn WholeStore::backfill_vault_members_step(
     if ws.length() == 0 || self.vault_backfill_done.contains(ws) {
       continue
     }
+    match self.vault_backfill_backoff.get(ws) {
+      Some((next_try_ms, _)) => {
+        if now_ms > 0L && now_ms < next_try_ms {
+          all_done = false
+          continue
+        }
+      }
+      None => ()
+    }
     match vs.backfill_vault_members(ws, limit=limit) {
-      Ok(true) => self.vault_backfill_done.set(ws, true)
+      Ok(true) => {
+        self.vault_backfill_done.set(ws, true)
+        self.vault_backfill_backoff.remove(ws)
+      }
       Ok(false) => {
+        self.vault_backfill_backoff.remove(ws)
         all_done = false
         // Bound work to at most one batch per tick across all workspaces so we never stall the loop.
         return false
       }
-      Err(_) => {
+      Err(err_msg) => {
+        let prev_delay = match self.vault_backfill_backoff.get(ws) {
+          Some((_, d)) => d
+          None => 0L
+        }
+        let next_delay = if prev_delay <= 0L {
+          1000L
+        } else if prev_delay * 2L > 300000L {
+          300000L
+        } else {
+          prev_delay * 2L
+        }
+        self.vault_backfill_backoff.set(ws, (now_ms + next_delay, next_delay))
+        self.vault_backfill_last_error = Some("vault backfill (" + ws + "): " + err_msg)
         all_done = false
         return false
       }

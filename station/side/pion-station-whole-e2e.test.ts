@@ -2971,27 +2971,66 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
   assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
 
-  // 1. Vault HTTP routes wired (no 404 unsupported api op; 409 vault_needs_lock without pinned lock)
-  for (const path of ["/vault/vaults", "/vault/discover", "/vault/asks", "/vault/joins"]) {
+  // 1. Vault HTTP routes wired with structured JSON `code: "vault_needs_lock"` (never flattened!)
+  for (const path of ["/vault/vaults", "/vault/discover", "/vault/asks", "/vault/joins", "/vault/items", "/vault/boxes"]) {
     const r = await adminCall(conn, "GET", path);
     assert.equal(r.status, 409, `GET ${path} expected 409 vault_needs_lock, got ${r.status}: ${r.body.toString()}`);
-    assert.ok(r.body.toString().includes("vault_needs_lock"), `GET ${path} missing vault_needs_lock: ${r.body.toString()}`);
+    const j = JSON.parse(r.body.toString("utf8"));
+    assert.equal(j.code, "vault_needs_lock", `GET ${path} must preserve structured code: ${r.body.toString()}`);
   }
+  // Unimplemented ops return honest 501 (ZERO fake 200 stubs!)
   const usesResp = await adminCall(conn, "GET", "/vault/uses");
-  assert.equal(usesResp.status, 200, `GET /vault/uses failed: ${usesResp.body.toString()}`);
+  assert.equal(usesResp.status, 501, `GET /vault/uses expected honest 501, got ${usesResp.status}: ${usesResp.body.toString()}`);
+  const instResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ id: "station" })));
+  assert.equal(instResp.status, 501, `POST /updates expected honest 501, got ${instResp.status}: ${instResp.body.toString()}`);
 
-  // 2. Unified ConfigFile settings mutations persist to config.json and read back cleanly
+  // 2. Plain Vault: dual-owner isolation, redacted list, version CAS conflict preserving `code: "vault_conflict"`
+  const plainPut = await adminCall(
+    conn,
+    "PUT",
+    "/vault/plain",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ id: "p-sec-1", name: "API_KEY", value: "sk_live_hidden_999", version: 0 })),
+  );
+  assert.equal(plainPut.status, 200, `PUT /vault/plain failed: ${plainPut.body.toString()}`);
+  assert.ok(!plainPut.body.toString().includes("sk_live_hidden_999"), "PUT /vault/plain must redact secret in response");
+  const plainList = await adminCall(conn, "GET", "/vault/plain");
+  assert.equal(plainList.status, 200);
+  assert.ok(!plainList.body.toString().includes("sk_live_hidden_999"), "GET /vault/plain must redact secret in list");
+  const plainConflict = await adminCall(
+    conn,
+    "PUT",
+    "/vault/plain",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ id: "p-sec-1", name: "API_KEY", value: "sk_stale", version: 0 })),
+  );
+  assert.equal(plainConflict.status, 409);
+  assert.equal(JSON.parse(plainConflict.body.toString("utf8")).code, "vault_conflict");
+
+  // 3. Unified ConfigFile settings mutations with redaction (`mcpServers`, `agentEnv`, `updates.channel`, `drive.roots`)
   const putMcp = await adminCall(
     conn,
     "PUT",
     "/mcp-servers",
     { "content-type": "application/json" },
-    Buffer.from(JSON.stringify({ servers: { demo: { command: "echo" } } })),
+    Buffer.from(JSON.stringify({ servers: { demo: { command: "echo", env: { SECRET_KEY: "raw-mcp-secret-777" } } } })),
   );
   assert.equal(putMcp.status, 200, `PUT /mcp-servers failed: ${putMcp.body.toString()}`);
+  assert.ok(!putMcp.body.toString().includes("raw-mcp-secret-777"), "PUT /mcp-servers must redact env secrets");
   const getMcp = await adminCall(conn, "GET", "/mcp-servers");
   assert.equal(getMcp.status, 200, `GET /mcp-servers failed: ${getMcp.body.toString()}`);
   assert.ok(getMcp.body.toString().includes("demo"), `GET /mcp-servers missing persisted server: ${getMcp.body.toString()}`);
+  assert.ok(!getMcp.body.toString().includes("raw-mcp-secret-777"), "GET /mcp-servers must redact env secrets");
+
+  const putEnv = await adminCall(
+    conn,
+    "PUT",
+    "/agent-env",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ text: "PLAIN_VAR=hello\nMY_API_TOKEN=tok_secret_888" })),
+  );
+  assert.equal(putEnv.status, 200, `PUT /agent-env failed: ${putEnv.body.toString()}`);
+  assert.ok(!putEnv.body.toString().includes("tok_secret_888"), "PUT /agent-env must redact secret tokens");
 
   const putCh = await adminCall(
     conn,
@@ -3004,6 +3043,18 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const cfgDisk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
   assert.equal(cfgDisk.updateChannel, "beta");
   assert.equal(cfgDisk.mcpServers?.demo?.command, "echo");
+  assert.equal(cfgDisk.mcpServers?.demo?.env?.SECRET_KEY, "raw-mcp-secret-777");
+  assert.equal(cfgDisk.agentEnv?.MY_API_TOKEN, "tok_secret_888");
+
+  // 4. Shared SQLite preference tables (`model_stars`, `progress_prefs`, `preset_projects`, `board_drafts`) + `GET /status` WaitingTracker
+  const putStars = await adminCall(conn, "PUT", "/stars", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ stars: ["claude-sonnet-4"] })));
+  assert.equal(putStars.status, 200, `PUT /stars failed: ${putStars.body.toString()}`);
+  const getStars = await adminCall(conn, "GET", "/stars");
+  assert.equal(getStars.status, 200);
+  assert.ok(getStars.body.toString().includes("claude-sonnet-4"));
+
+  const statusResp = await adminCall(conn, "GET", "/status");
+  assert.equal(statusResp.status, 200, `GET /status WaitingTracker failed: ${statusResp.body.toString()}`);
 
   const wsResp = await adminCall(conn, "GET", "/workspaces");
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);

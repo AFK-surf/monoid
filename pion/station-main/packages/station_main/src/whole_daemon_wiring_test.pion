@@ -83,12 +83,50 @@ test "wave17c2 devices tunnel resolves serial, airplay, android_tv via DevicesOs
     },
   )
   match resolve_device_tunnel_via_os(rt, atv_spec) {
-    ResolvedDeviceTunnel::AndroidTv(r) => {
-      if r.id != "0000000000000003" || r.protocols.length() != 2 {
+    ResolvedDeviceTunnel::AndroidTv(r, adb_host, adb_port) => {
+      if r.id != "0000000000000003" || r.protocols.length() != 2 || adb_host != "192.168.1.60" || adb_port <= 0 {
         panic("unexpected AndroidTv ref")
       }
     }
-    _ => panic("expected AndroidTv tunnel target, not 501")
+    _ => panic("expected AndroidTv tunnel target")
+  }
+
+  // Device spec refresh: updating target in SQLite refreshes OS registry cache
+  let ap_updated = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000002",
+      name: "Living Room TV",
+      kind: station_devices::DeviceKind::AirPlay,
+      target: "192.168.1.99:7000",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, ap_updated) {
+    ResolvedDeviceTunnel::AirPlay(r) => {
+      if r.target != "192.168.1.99:7000" {
+        panic("expected refreshed AirPlay target 192.168.1.99:7000, got " + r.target)
+      }
+    }
+    _ => panic("expected refreshed AirPlay target")
+  }
+
+  // HTTP request parser vs raw ADB wire stream
+  let http_bytes = "POST /action HTTP/1.1\r\nHost: tv\r\nContent-Type: application/json\r\n\r\n{\"cmd\":\"play\"}".to_bytes()
+  match parse_device_tunnel_http_req(http_bytes) {
+    Some((m, p, hdrs, b)) => {
+      if m != "POST" || p != "/action" || hdrs.length() != 2 || b.to_string() != "{\"cmd\":\"play\"}" {
+        panic("unexpected parsed device tunnel HTTP request")
+      }
+    }
+    None => panic("expected valid HTTP request parse")
+  }
+  let adb_bytes = "000chost:version".to_bytes()
+  if !(parse_device_tunnel_http_req(adb_bytes) is None) {
+    panic("raw ADB wire bytes must not parse as HTTP")
   }
 }
 

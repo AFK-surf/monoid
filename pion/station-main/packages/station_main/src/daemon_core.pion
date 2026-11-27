@@ -1422,6 +1422,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
+    // PR #9132: never auto-retry outbound `connect.call` RPCs on transport read errors (prevents duplicate posts).
+    if ob.method == "connect.call" {
+      match ob.on_ask_done {
+        Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed (no auto-retry)"))
+        None => ()
+      }
+      return
+    }
     let now_t = host_shim::now_ms()
     if now_t - ob.created_at_ms >= TELL_RETRY_MAX_MS || outbound_queue.length() >= MAX_OUTBOUND_TELLS {
       match ob.on_ask_done {
@@ -2702,38 +2710,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       next_heartbeat_ms = now + 10000L
     }
 
-    // Periodic 100ms tick: role tick, relay RTT ranking, outbound tell timeout, handover RPC cap, stream timeouts, presence ping.
+    // Periodic 100ms tick: role tick, outbound tell timeout, handover RPC cap, stream timeouts, presence ping.
     if now >= next_tick_ms {
       (hooks.on_tick)(ctx, now, wall)
-
-      // Periodic 30s `RelayRanker` RTT ranking & `apply_public_relays` tolerance switching.
-      if relay_urls.length() > 0 {
-        let cur_home = if relay_urls.length() > 0 { Some(relay_urls[0]) } else { None }
-        match daemon_relay_ranker.tick(
-          now,
-          relay_urls,
-          cur_home,
-          true,
-          false,
-          fn(rs : Array[String]) -> Array[station_mesh::RelayRankSample] {
-            let out : Array[station_mesh::RelayRankSample] = []
-            for ri in 0..<rs.length() {
-              out.push(station_mesh::RelayRankSample::{ relay: rs[ri], rtt_ms: Some((ri + 1).to_int64()) })
-            }
-            out
-          },
-          fn(_u : String) -> (Bool, Option[Int64]) { (true, Some(1L)) },
-          fn(_pub_on : Bool) -> Bool { true },
-        ) {
-          Some(outcome) => {
-            let ranked = daemon_relay_ranker.ranker.ranked_relays()
-            if outcome.up && ranked.length() > 0 {
-              relay_urls = ranked
-            }
-          }
-          None => ()
-        }
-      }
 
       // Enforce 15s timeout on in-flight outbound tell slots so silent peers cannot permanently occupy slots.
       let ob_keys = active_outbounds.keys()

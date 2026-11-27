@@ -597,7 +597,9 @@ pub fn WholeCore::init_pre_handover_with_deps(
   )
   let updates = station_drivers::RuntimeUpdatesManager::new()
   let waiting_tracker = station_api::WaitingTracker::new(build_empty_waiting_store_port())
-  api.waiting_tracker = Some(waiting_tracker)
+  api.waiting_tracker_factory = Some(fn(_ws : String) -> station_api::WaitingTracker {
+    station_api::WaitingTracker::new(build_empty_waiting_store_port())
+  })
   WholeCore::{
     config: config,
     config_file: cfg_opt,
@@ -700,7 +702,11 @@ pub fn WholeCore::init_pre_handover(
     }
   }
   let updates = station_drivers::RuntimeUpdatesManager::new()
-  let waiting_tracker = station_api::WaitingTracker::new(build_waiting_store_port(store))
+  let home_ws_for_wt = config.home_workspace
+  let waiting_tracker = station_api::WaitingTracker::new(build_waiting_store_port(store, home_ws_for_wt, home_ws_for_wt))
+  let wt_factory = fn(ws : String) -> station_api::WaitingTracker {
+    station_api::WaitingTracker::new(build_waiting_store_port(store, ws, home_ws_for_wt))
+  }
   let api = WholeApi::new(
     store,
     agents,
@@ -712,10 +718,11 @@ pub fn WholeCore::init_pre_handover(
     config_file=cfg_opt,
     config_open_err=cfg_err,
     updates=Some(updates),
-    waiting_tracker=Some(waiting_tracker),
+    waiting_tracker_factory=Some(wt_factory),
   )
   api.hooks.on_session_changed = Some(fn(key : String) -> Unit {
     waiting_tracker.note("session", Some(key))
+    api.note_waiting_session(key)
     api.events.overview_changed("session")
   })
   api.hooks.on_overview_dirty = Some(fn(reason : String) -> Unit {
@@ -1252,7 +1259,7 @@ pub fn WholeCore::on_tick(self : WholeCore, now_ms : Int64) -> Unit {
   let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
   self.rig.grants.tick()
   let _ = self.store.vault_grants.purge_expired(eff_now / 1000L)
-  let _ = self.store.backfill_vault_members_step(self.config.allowed_workspaces, limit=64)
+  let _ = self.store.backfill_vault_members_step(self.config.allowed_workspaces, limit=64, now_ms=eff_now)
   let _ = self.api.screens.prune_held(eff_now)
   let _ = self.agents.jobs.tick_stops(eff_now)
   let _ = self.agents.jobs.tick_restarts(eff_now)

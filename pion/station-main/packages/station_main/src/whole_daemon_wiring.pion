@@ -43,19 +43,51 @@ pub enum ResolvedDeviceTunnel {
   Serial(String, Int)
   /// AirPlay HTTP control target handled by `DevicesOsRuntime::handle_airplay_http`.
   AirPlay(station_whole::AirPlayDeviceRefOs)
-  /// Android TV HTTP/ADB multiplexed target handled by `DevicesOsRuntime`.
-  AndroidTv(station_whole::AndroidTvDeviceRefOs)
+  /// Android TV HTTP/ADB multiplexed target `(dev_ref, adb_host, adb_port)`.
+  AndroidTv(station_whole::AndroidTvDeviceRefOs, String, Int)
   /// Refusal `(http_status, message)`.
   Refuse(Int, String)
 }
 
-/// Sync `spec` into `devices.registry` (if absent) and resolve via `DevicesOsRuntime::reach_device_os`
-/// across all 5 device kinds (`tcp`, `adb`, `serial`, `airplay`, `android_tv`) with ZERO `501` stubs.
+fn str_array_eq(a : Option[Array[String]], b : Option[Array[String]]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(xs), Some(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if xs[i] != ys[i] {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn device_spec_changed(a : station_devices::DeviceSpec, b : station_devices::DeviceSpec) -> Bool {
+  a.name != b.name ||
+  a.target != b.target ||
+  a.baud != b.baud ||
+  a.model != b.model ||
+  a.paired != b.paired ||
+  !str_array_eq(a.protocols, b.protocols)
+}
+
+/// Sync `spec` into `devices.registry` (refreshing if changed in SQLite) and resolve via
+/// `DevicesOsRuntime::reach_device_os`.
 pub fn resolve_device_tunnel_via_os(
   devices : station_whole::DevicesOsRuntime,
   spec : station_devices::KeptDevice,
 ) -> ResolvedDeviceTunnel {
-  if devices.registry.get(spec.ws, spec.device.id) is None {
+  let needs_sync = match devices.registry.get(spec.ws, spec.device.id) {
+    None => true
+    Some(existing) => device_spec_changed(existing.device, spec.device)
+  }
+  if needs_sync {
+    let _ = devices.registry.remove(spec.ws, spec.device.id)
     match devices.registry.add(
       spec.ws,
       spec.owner_sub,
@@ -72,9 +104,79 @@ pub fn resolve_device_tunnel_via_os(
     Ok(station_whole::DeviceTunnelTarget::TcpDial(host, port)) => ResolvedDeviceTunnel::Tcp(host, port)
     Ok(station_whole::DeviceTunnelTarget::SerialPort(path, baud)) => ResolvedDeviceTunnel::Serial(path, baud)
     Ok(station_whole::DeviceTunnelTarget::AirPlayHttp(dev_ref)) => ResolvedDeviceTunnel::AirPlay(dev_ref)
-    Ok(station_whole::DeviceTunnelTarget::AndroidTvDemux(dev_ref, _, _)) => ResolvedDeviceTunnel::AndroidTv(dev_ref)
+    Ok(station_whole::DeviceTunnelTarget::AndroidTvDemux(dev_ref, _, _)) => {
+      let (adb_host, adb_port) = match station_devices::host_port(dev_ref.target) {
+        Some(hp) => (hp.host, 5555)
+        None => ("127.0.0.1", 5037)
+      }
+      ResolvedDeviceTunnel::AndroidTv(dev_ref, adb_host, adb_port)
+    }
     Err((code, msg)) => ResolvedDeviceTunnel::Refuse(code, msg)
   }
+}
+
+/// Parse an HTTP/1.1 request carried on a `device:` tunnel into `(method, path, headers, body)`.
+/// Returns `None` if `carry` does not begin with a valid HTTP request line (e.g. Android TV ADB wire stream).
+pub fn parse_device_tunnel_http_req(carry : Bytes) -> Option[(String, String, Array[(String, String)], Bytes)] {
+  let n = carry.length()
+  if n < 14 {
+    return None
+  }
+  // Find `\r\n\r\n` header terminator
+  let mut head_end = -1
+  let mut i = 0
+  while i + 3 < n {
+    if (carry[i].to_int() & 0xFF) == 13 &&
+    (carry[i + 1].to_int() & 0xFF) == 10 &&
+    (carry[i + 2].to_int() & 0xFF) == 13 &&
+    (carry[i + 3].to_int() & 0xFF) == 10 {
+      head_end = i
+      break
+    }
+    i = i + 1
+  }
+  if head_end <= 0 {
+    return None
+  }
+  let head_bytes = Bytes::new(head_end)
+  for j in 0..<head_end {
+    head_bytes[j] = carry[j]
+  }
+  let head_str = head_bytes.to_string()
+  let lines = head_str.split("\r\n")
+  if lines.length() == 0 {
+    return None
+  }
+  let parts = lines[0].split(" ")
+  if parts.length() < 3 || !parts[2].starts_with("HTTP/") {
+    return None
+  }
+  let method = parts[0].trim()
+  let path = parts[1].trim()
+  if method != "GET" && method != "POST" && method != "PUT" && method != "DELETE" && method != "HEAD" && method != "PATCH" && method != "OPTIONS" {
+    return None
+  }
+  let hdrs : Array[(String, String)] = []
+  for li in 1..<lines.length() {
+    let line = lines[li]
+    let mut colon = -1
+    for ci in 0..<line.length() {
+      if line.code_unit_at(ci) == 58 {
+        colon = ci
+        break
+      }
+    }
+    if colon > 0 {
+      hdrs.push((line.slice(0, colon).trim(), line.slice(colon + 1, line.length()).trim()))
+    }
+  }
+  let body_start = head_end + 4
+  let body_len = n - body_start
+  let body = Bytes::new(body_len)
+  for bi in 0..<body_len {
+    body[bi] = carry[body_start + bi]
+  }
+  Some((method, path, hdrs, body))
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +493,7 @@ pub fn AsyncUpkeepRunner::tick(
   self.next_event_id = ev_id + 1L
   let opts = station_sys::SpawnOptions::{
     program: "git",
-    args: ["-C", repo_path, "gc", "--auto", "--quiet"],
+    args: ["-c", "gc.autoDetach=false", "-C", repo_path, "gc", "--auto", "--quiet"],
     cwd: repo_path,
     env: None,
     new_pgid: true,

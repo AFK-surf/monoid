@@ -47,6 +47,8 @@ pub struct Viewer {
   pub home : Bool
   pub role : String
   pub device : Option[String]
+  pub lock_base : Option[String]
+  pub lock_proof : Option[String]
 }
 
 pub fn Viewer::member(email : String, workspace : String) -> Viewer {
@@ -58,6 +60,8 @@ pub fn Viewer::member(email : String, workspace : String) -> Viewer {
     home: true,
     role: "member",
     device: None,
+    lock_base: None,
+    lock_proof: None,
   }
 }
 
@@ -70,6 +74,8 @@ pub fn Viewer::owner(email : String, workspace : String) -> Viewer {
     home: true,
     role: "owner",
     device: None,
+    lock_base: None,
+    lock_proof: None,
   }
 }
 
@@ -82,6 +88,8 @@ pub fn Viewer::read_only_viewer(email : String, workspace : String) -> Viewer {
     home: true,
     role: "viewer",
     device: None,
+    lock_base: None,
+    lock_proof: None,
   }
 }
 
@@ -228,19 +236,28 @@ pub fn codepoint_slice(s : String, start_cp : Int, end_cp : Int) -> String {
   }
 }
 
-/// Structured HTTP refusal error mapped to a JSON `{ "error": ... }` response.
+/// Structured HTTP refusal error mapped to a JSON `{ "error": ... }` (or raw JSON) response.
 pub struct ApiError {
   pub status : Int
   pub message : String
   pub no_cache : Bool
+  pub raw_body : Option[base_codec::Json]
 }
 
 pub fn ApiError::new(status : Int, message : String) -> ApiError {
-  ApiError::{ status: status, message: message, no_cache: false }
+  ApiError::{ status: status, message: message, no_cache: false, raw_body: None }
 }
 
 pub fn ApiError::no_cache_err(status : Int, message : String) -> ApiError {
-  ApiError::{ status: status, message: message, no_cache: true }
+  ApiError::{ status: status, message: message, no_cache: true, raw_body: None }
+}
+
+pub fn ApiError::json(status : Int, body : base_codec::Json, no_cache : Bool = true) -> ApiError {
+  let msg = match base_codec::json_get(body, "error") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => "request failed"
+  }
+  ApiError::{ status: status, message: msg, no_cache: no_cache, raw_body: Some(body) }
 }
 
 /// Convert `Array[Byte]` to `Bytes`.
@@ -493,7 +510,15 @@ pub fn json_error(status : Int, message : String) -> station_http::HttpResponse 
 }
 
 pub fn api_error_response(err : ApiError) -> station_http::HttpResponse {
-  json_error(err.status, err.message)
+  let resp = match err.raw_body {
+    Some(body) => json_status(err.status, body)
+    None => json_error(err.status, err.message)
+  }
+  if err.no_cache {
+    resp.with_header("cache-control", "no-store")
+  } else {
+    resp
+  }
 }
 
 /// Extract string field from JSON object.

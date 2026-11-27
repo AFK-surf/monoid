@@ -1,4 +1,4 @@
-// Wave 17C-2 production HTTP API completeness gate & Vault / Updates / Settings / WaitingTracker tests.
+// Wave 17C-2 R2 production HTTP API security, isolation, redaction, Vault, and honest-501 unit tests.
 
 import "base_codec"
 import "form"
@@ -12,7 +12,11 @@ import "station_ops"
 import "station_screens"
 import "station_vault"
 
-fn make_test_api_req(method : String, path : String) -> station_api::ApiRequest {
+fn make_test_api_req_as(
+  method : String,
+  path : String,
+  viewer : station_api::Viewer,
+) -> station_api::ApiRequest {
   let (norm_path, norm_query_raw, norm_query) = station_http::parse_request_target(path)
   let http_req = station_http::HttpRequest::{
     conn_id: 0,
@@ -27,19 +31,36 @@ fn make_test_api_req(method : String, path : String) -> station_api::ApiRequest 
     peer: "",
     raw_head: Bytes::new(0),
   }
-  let viewer = station_api::Viewer::{
-    email: "owner@example.com",
-    sub: "u-owner",
-    name: "Owner",
-    workspace: "ws-main",
-    home: true,
-    role: "owner",
-    device: Some("dev-1"),
-  }
   station_api::ApiRequest::from_http(http_req, viewer)
 }
 
-fn make_mem_whole_api_fixture() -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs) {
+fn make_test_viewer(
+  email : String,
+  sub : String,
+  ws : String,
+  home : Bool,
+  role : String,
+) -> station_api::Viewer {
+  station_api::Viewer::{
+    email: email,
+    sub: sub,
+    name: email,
+    workspace: ws,
+    home: home,
+    role: role,
+    device: Some("dev-1"),
+    lock_base: None,
+    lock_proof: None,
+  }
+}
+
+fn make_test_api_req(method : String, path : String) -> station_api::ApiRequest {
+  make_test_api_req_as(method, path, make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"))
+}
+
+fn make_mem_whole_api_fixture(
+  seen_store_override : Option[station_api::SeenStore] = None,
+) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks) {
   let mem_fs = station_ops::MemFs::new()
   let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{}", 384)
   let ops_fs = mem_fs.ops()
@@ -85,25 +106,32 @@ fn make_mem_whole_api_fixture() -> (WholeStore, WholeAgents, WholeApi, station_d
     station_screens::TrashKind::Freedesktop,
   )
   let screens = station_screens::ScreenHub::new()
-  let events = station_api::EventsHub::new("st-w17c2", station_api::EventKeeps::default())
-  let seen_store = station_api::SeenStore::empty()
+  let seen_store = match seen_store_override {
+    Some(s) => s
+    None => station_api::SeenStore::empty()
+  }
+  let events = station_api::EventsHub::with_visibility(
+    "st-w17c2",
+    station_api::EventKeeps::default(),
+    Some(seen_store),
+    Some(fn(v : station_api::Viewer, vid : String) -> Bool {
+      match store.vault_store {
+        Some(vs) => vs.in_vault(v.workspace, v.sub, vid)
+        None => false
+      }
+    }),
+  )
   let hooks = WholeApiRuntimeHooks::new()
   hooks.read_only_handover_cell[0] = false
   let port = WholeApiRuntimePort::in_memory()
   let di_host = station_api::ApiHost::{
     read_op: fn(op : String, req : station_api::ApiRequest, args : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-      if op == "chats" || op == "sessions" || op == "session" || op == "threads" || op == "thread" || op == "thread.entries" || op == "openJobs" || op == "job" || op == "skills" || op == "session.skills" {
-        return Ok(base_codec::json_obj([("op", base_codec::json_str(op))]))
-      }
       match dispatch_extra_read_op(op, req, args, agents, seen_store, port) {
         Some(res) => res
         None => Err(station_api::ApiError::new(404, "unsupported read op: " + op))
       }
     },
     call: fn(op : String, req : station_api::ApiRequest, params : Array[String], body : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-      if op == "projects.info.get" || op == "hub.thread.messages" || op == "projects.thread.classification" || op == "hub.session.create" || op == "accounts.runtimes.put" || op == "hub.session.archive.POST" || op == "screens.list" {
-        return Ok(base_codec::json_obj([("op", base_codec::json_str(op))]))
-      }
       match dispatch_extra_call_op(
         op,
         req,
@@ -112,6 +140,7 @@ fn make_mem_whole_api_fixture() -> (WholeStore, WholeAgents, WholeApi, station_d
         store,
         agents,
         auth_policy,
+        seen_store,
         drive,
         screens,
         events,
@@ -153,375 +182,330 @@ fn make_mem_whole_api_fixture() -> (WholeStore, WholeAgents, WholeApi, station_d
   )
   api.read_only_handover = false
   api.hooks.read_only_handover_cell = hooks.read_only_handover_cell
-  (store, agents, api, updates, mem_fs)
+  (store, agents, api, updates, mem_fs, hooks)
 }
 
-test "wave17c2 completeness gate: every read_op and call_op from routes*.pion dispatches without 404 unsupported" {
-  let (_, _, api, _, _) = make_mem_whole_api_fixture()
+test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
+  let (_, _, api, _, _, _) = make_mem_whole_api_fixture()
   let req = make_test_api_req("POST", "/test")
 
-  let all_read_ops : Array[String] = [
-    "memory",
-    "chats",
-    "changed.chats",
-    "changed.sharedChats",
-    "changed.sessions",
-    "changed.threads",
+  let unimplemented_read_ops : Array[String] = [
     "usage",
     "usage.calls",
-    "resources",
     "machineSessions",
     "machineSession",
-    "skills",
-    "sessions",
-    "session",
     "session.timeline",
     "session.files",
     "session.parts",
     "session.poster",
-    "session.transcript",
-    "session.widget-state",
     "session.peek",
     "session.open",
-    "session.skills",
-    "threads",
-    "thread",
-    "thread.entries",
-    "thread.letters",
-    "openJobs",
-    "job",
-    "job.log",
   ]
-  for i in 0..<all_read_ops.length() {
-    let op = all_read_ops[i]
-    match (api.admin.host.read_op)(op, req, base_codec::json_obj([("key", base_codec::json_str("s1")), ("id", base_codec::json_str("1"))])) {
-      Err(e) => {
-        if e.status == 404 && e.message.starts_with("unsupported read op") {
-          panic("read_op returned 404 unsupported read op for: " + op)
-        }
-      }
-      Ok(_) => ()
+  for i in 0..<unimplemented_read_ops.length() {
+    let op = unimplemented_read_ops[i]
+    match (api.admin.host.read_op)(op, req, base_codec::json_obj([("key", base_codec::json_str("s1"))])) {
+      Err(e) => if e.status != 501 { panic("expected 501 for read_op " + op + ", got " + e.status.to_string()) }
+      Ok(_) => panic("unimplemented read_op returned fake 200: " + op)
     }
   }
 
-  let all_call_ops : Array[String] = [
-    // routes.pion
-    "hub.moved",
-    "search.settings",
-    "projects.info.get",
-    "projects.info.put",
-    "projects.rename",
-    "projects.merge",
-    "resources.process.end",
-    "hub.machineSession.create",
-    "hub.upload",
-    "hub.upload.parts",
-    "hub.dev.inject",
-    "hub.session.create",
-    "hub.sessions.resume-interrupted",
-    "hub.sessions.dismiss-interrupted",
-    "hub.session.delete",
-    "hub.session.jobs.delete",
-    "marks.session.title",
-    "marks.session.widgetState",
-    "marks.session.pin.PUT",
-    "marks.session.pin.DELETE",
-    "hub.session.archive.POST",
-    "hub.session.archive.DELETE",
-    "xshare.session",
-    "hub.session.stop",
-    "hub.session.cancel-retry",
-    "hub.session.retry",
-    "hub.session.reassign",
-    "hub.session.evict",
-    "hub.session.warm",
-    "hub.session.compact",
-    "hub.session.clear",
-    "hub.session.settings",
-    "hub.thread.create",
-    "hub.thread.relay.people",
-    "hub.thread.relay.get",
-    "hub.thread.relay.post",
-    "hub.thread.messages",
-    "hub.thread.sessions",
-    "hub.thread.archive.POST",
-    "hub.thread.archive.DELETE",
-    "hub.thread.regenerate-title",
-    "hub.thread.selection-intent",
-    "feedback.report",
-    "projects.thread.classification",
-    "projects.proposal.resolve",
-    "marks.thread.keep.delete",
-    "marks.thread.read",
-    "marks.thread.hidden",
-    "marks.thread.muted",
-    "marks.thread.title",
-    "marks.thread.keep",
-    "marks.thread.dismissed",
-    "marks.thread.closed-card",
-    "hub.job.stop",
-    "screens.list",
-    "screens.browser.open",
-    "screens.close",
-    "screens.open-url",
-    "screens.reload",
-    "screens.back",
-    "screens.forward",
-    "screens.sleep",
-    "screens.settings",
-    "screens.screenshot",
-    "screens.location",
-    "screens.status-bar",
-    "screens.biometrics",
-    "screens.uninstall",
-    "screens.record",
-    "screens.push",
-    "screens.install",
-    "screens.relaunch",
-    "screens.logs.get",
-    "screens.apps.get",
-    "screens.settings.get",
-    "screens.views.end",
-    "screens.view.end",
-    "screens.view.watch",
-    "screens.record.stop",
-    "screens.chrome",
-    // routes_domain.pion
-    "accounts.profiles.createKeyed",
-    "accounts.profiles.createMachine",
-    "accounts.profiles.pace",
-    "accounts.profiles.put",
-    "accounts.profiles.delete",
-    "accounts.profiles.resetQuota",
-    "accounts.profiles.share",
-    "accounts.profiles.move",
-    "accounts.profiles.check",
-    "accounts.profiles.quota",
-    "accounts.profiles.login",
-    "accounts.profiles.login-code",
-    "accounts.profiles.login-browser",
-    "accounts.profiles.fusion.get",
-    "accounts.profiles.login.get",
-    "accounts.profiles.login.delete",
-    "accounts.logins.create",
-    "accounts.logins.delete",
-    "accounts.logins.code",
-    "accounts.logins.browser",
-    "accounts.automaticDecisions.put",
-    "accounts.automaticDecisions.policy.put",
-    "accounts.automaticDecisions.review",
-    "accounts.automaticDecisions.refresh",
-    "accounts.archiving.put",
-    "accounts.auto-chats.put",
-    "accounts.runtimes.put",
-    "accounts.skills.share",
-    "presets.list",
-    "presets.create",
-    "presets.kept.GET",
-    "presets.kept.PUT",
-    "presets.others",
-    "presets.clone",
-    "presets.item.PUT",
-    "presets.item.DELETE",
-    "presets.clones.delete",
-    "presetProjects.GET",
-    "presetProjects.PUT",
-    "stars.GET",
-    "stars.PUT",
-    "progress.GET",
-    "progress.PUT",
-    "board.drafts.GET",
-    "board.drafts.PUT",
-    "board.files.GET",
-    "board.files.POST",
-    "board.stage",
-    "copies.retire.POST",
-    "copies.retire.DELETE",
-    "copies.retire.preview",
-    "copies.retire.again",
-    "copies.history.get",
-    "copies.settings.get",
-    "copies.settings.put",
-    "copies.handoff",
-    "copies.restore",
-    "copies.s3.test",
+  let unimplemented_call_ops : Array[String] = [
     "updates.install",
-    "updates.check",
-    "updates.channel",
-    "updates.auto",
-    "updates.wait",
-    "updates.uninstall",
-    "network.settings.put",
     "network.station.restart",
-    "permissions.request",
-    "context.settings.put",
-    "diagnostics.settings.put",
-    "agentEnv.put",
-    "mcpServers.get",
-    "mcpServers.put",
-    "mcpServers.reloadAll",
-    "mcpServers.reloadOne",
-    "tools.access.get",
-    "tools.access.put",
-    "links.preview",
-    "xshare.hosts.put",
-    "workspaces.list",
     "workspaces.join",
-    // routes_integrations.pion
-    "slack.connects.create",
     "connects.put",
     "connects.delete",
-    "connects.session",
-    "connects.reconnect",
-    "slack.connect.app.GET",
-    "slack.connect.app.PUT",
-    "slack.connect.app.POST",
-    "slack.apps.post",
-    "slack.installs.post",
-    "slack.verify.post",
-    "slack.config-tokens.post",
-    "slack.people.get",
-    "slack.create-app-url.get",
-    "slack.apps.delete",
-    "slack.config-tokens.delete",
-    "slack.me.PUT",
-    "slack.me.DELETE",
-    "feishu.verify.post",
+    "slack.connects.create",
     "feishu.connects.post",
-    "feishu.registrations.post",
-    "feishu.registrations.delete",
-    "feishu.connects.secret.put",
-    "comma.connects.create",
-    "group.connects.create",
-    "drive.view",
-    "drive.roots.put",
-    "drive.upload.put",
-    "drive.folders.get",
-    "drive.list.get",
-    "drive.stat.get",
-    "drive.read.get",
-    "drive.watch.get",
-    "drive.transfers.get",
+    "copies.retire.POST",
+    "copies.restore",
+    "copies.s3.test",
     "drive.mkdir.post",
-    "drive.rename.post",
-    "drive.remove.post",
-    "drive.zip.post",
-    "drive.stage.post",
-    "drive.grant.post",
-    "drive.transfers.post",
     "transfers.cancel",
-    "transfers.retry",
-    "vault.vaults.GET",
-    "vault.vaults.PUT",
-    "vault.vaults.latest",
-    "vault.discover.get",
-    "vault.items.GET",
-    "vault.items.PUT",
-    "vault.boxes.GET",
-    "vault.boxes.PUT",
-    "vault.asks.GET",
-    "vault.asks.PUT",
-    "vault.joins.GET",
-    "vault.joins.PUT",
-    "vault.joins.dismiss.put",
-    "vault.plain.GET",
-    "vault.plain.PUT",
-    "vault.plain.lasts.put",
-    "vault.plain.item.get",
-    "vault.plain.grants.post",
-    "vault.plain.denials.post",
-    "vault.plain.described.post",
-    "vault.plain.removed.post",
-    "vault.plain.saves.post",
-    "vault.requests.get",
-    "vault.uses.get",
-    "vault.cross-uses.get",
-    "vault.grants.post",
-    "vault.denials.post",
-    "vault.saves.post",
-    "vault.described.post",
-    "vault.removed.post",
-    "vault.browses.post",
-    "logins.machine.list",
-    "logins.machine.get",
-    "logins.machine.delete",
-    "logins.machine.answer",
-    "logins.machine.again",
-    "logins.machine.code",
-    "logins.machine.callback",
-    "logins.machine.browser",
+    "accounts.profiles.login",
+    "accounts.profiles.quota",
+    "accounts.skills.share",
+    "resources.process.end",
+    "screens.browser.open",
+    "links.preview",
+    "feedback.report",
     "signins.fill",
-    "signins.self",
-    "signins.deny",
+    "logins.machine.list",
+    "hub.session.stop",
+    "hub.session.retry",
+    "hub.session.compact",
+    "vault.uses.get",
+    "vault.grants.post",
+    "vault.plain.grants.post",
   ]
-
-  for i in 0..<all_call_ops.length() {
-    let op = all_call_ops[i]
+  for i in 0..<unimplemented_call_ops.length() {
+    let op = unimplemented_call_ops[i]
     match (api.admin.host.call)(op, req, ["p1", "p2"], base_codec::json_obj([])) {
-      Err(e) => {
-        if e.status == 404 && e.message.starts_with("unsupported api op") {
-          panic("call_op returned 404 unsupported api op for: " + op)
-        }
-      }
-      Ok(_) => ()
+      Err(e) => if e.status != 501 { panic("expected 501 for call_op " + op + ", got " + e.status.to_string()) }
+      Ok(_) => panic("unimplemented call_op returned fake 200: " + op)
     }
   }
 }
 
-test "wave17c2 vault handover 503 gate, lock 409 gate, updates channel/auto/uninstall, and settings ConfigFile persistence" {
-  let (_, _, api, updates, mem_fs) = make_mem_whole_api_fixture()
-  let req = make_test_api_req("PUT", "/vault/vaults")
+test "wave17c2 vault structured JSON error payloads and plain vault dual-owner isolation, redaction, CAS, and security mode" {
+  let (_, _, api, _, _, hooks) = make_mem_whole_api_fixture()
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", "ws-main", true, "member")
 
-  // 1. Pre-handover read_only_handover=true MUST return 503 vault_handover on PUT /vault/vaults
-  api.hooks.read_only_handover_cell[0] = true
-  match (api.admin.host.call)("vault.vaults.PUT", req, [], base_codec::json_obj([])) {
+  // 1. Pre-handover returns structured 503 JSON with `code: "vault_handover"`
+  hooks.read_only_handover_cell[0] = true
+  match (api.admin.host.call)("vault.vaults.PUT", make_test_api_req_as("PUT", "/vault/vaults", alice), [], base_codec::json_obj([])) {
     Err(e) => {
-      if e.status != 503 {
-        panic("expected 503 during handover on vault.vaults.PUT, got " + e.status.to_string())
+      if e.status != 503 { panic("expected 503") }
+      match e.raw_body {
+        Some(b) => if json_field_str(b, "code") != Some("vault_handover") { panic("missing structured vault_handover code") }
+        None => panic("expected structured raw_body on vault error")
       }
     }
-    Ok(_) => panic("expected 503 error during handover")
+    Ok(_) => panic("expected 503")
   }
 
-  // 2. After handover lifts, missing lock_of returns 409 vault_needs_lock
-  api.hooks.read_only_handover_cell[0] = false
-  match (api.admin.host.call)("vault.vaults.GET", req, [], base_codec::json_obj([])) {
+  // 2. Missing lock returns structured 409 JSON with `code: "vault_needs_lock"`
+  hooks.read_only_handover_cell[0] = false
+  match (api.admin.host.call)("vault.vaults.GET", make_test_api_req_as("GET", "/vault/vaults", alice), [], base_codec::json_obj([])) {
     Err(e) => {
-      if e.status != 409 || !e.message.starts_with("vault_needs_lock") {
-        panic("expected 409 vault_needs_lock, got " + e.status.to_string() + " " + e.message)
+      if e.status != 409 { panic("expected 409") }
+      match e.raw_body {
+        Some(b) => if json_field_str(b, "code") != Some("vault_needs_lock") { panic("missing structured vault_needs_lock code") }
+        None => panic("expected structured raw_body on vault_needs_lock")
       }
     }
-    Ok(_) => panic("expected 409 vault_needs_lock")
+    Ok(_) => panic("expected 409")
   }
 
-  // 3. Settings persist to unified ConfigFile (mcpServers, network, updates.channel, updates.auto)
-  match (api.admin.host.call)(
-    "mcpServers.put",
-    req,
-    [],
-    base_codec::json_obj([("servers", base_codec::json_obj([("demo", base_codec::json_obj([("command", base_codec::json_str("echo"))]))]))]),
-  ) {
+  // 3. Plain vault: Alice creates item v0 with secret value
+  let item0 = base_codec::json_obj([
+    ("id", base_codec::json_str("sec-1")),
+    ("name", base_codec::json_str("STRIPE_KEY")),
+    ("value", base_codec::json_str("sk_live_supersecret")),
+    ("version", base_codec::json_int(0)),
+  ])
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item0) {
+    Ok(res) => {
+      // Returned item MUST be redacted (no `value` field!)
+      let shown = match base_codec::json_get(res, "item") { Some(v) => v, None => panic("missing item") }
+      if !(base_codec::json_get(shown, "value") is None) {
+        panic("plain vault PUT leaked secret value in shown response")
+      }
+    }
+    Err(e) => panic("alice plain PUT failed: " + e.message)
+  }
+
+  // 4. Plain vault GET list for Alice returns redacted item; Bob sees empty list and gets 404 on item
+  match (api.admin.host.call)("vault.plain.GET", make_test_api_req_as("GET", "/vault/plain", alice), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "items") {
+      Some(base_codec::Json::Arr(xs)) => {
+        if xs.length() != 1 || !(base_codec::json_get(xs[0], "value") is None) {
+          panic("alice plain GET must return 1 redacted item")
+        }
+      }
+      _ => panic("missing items")
+    }
+    Err(e) => panic("alice plain GET failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.plain.GET", make_test_api_req_as("GET", "/vault/plain", bob), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "items") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("bob must NOT see alice's plain vault items") }
+      _ => panic("missing items")
+    }
+    Err(e) => panic("bob plain GET failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.plain.item.get", make_test_api_req_as("GET", "/vault/plain/item?id=sec-1", bob), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("bob plain item GET must return 404, got " + e.status.to_string()) }
+    Ok(_) => panic("bob must NOT read alice's plain item")
+  }
+
+  // 5. Stale version PUT returns structured 409 vault_conflict with `item`
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item0) {
+    Err(e) => {
+      if e.status != 409 { panic("expected 409 on stale plain version") }
+      match e.raw_body {
+        Some(b) => {
+          if json_field_str(b, "code") != Some("vault_conflict") { panic("expected vault_conflict code") }
+          if base_codec::json_get(b, "item") is None { panic("expected conflict item payload") }
+        }
+        None => panic("expected structured conflict body")
+      }
+    }
+    Ok(_) => panic("stale plain version must be rejected")
+  }
+
+  // 6. Security mode (lock.genesis != "") allows deletion only on plain vault
+  hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
+    Some(lock::LockState::{
+      ws: ws,
+      seq: 1.0,
+      head: "h1",
+      genesis: "gen-1",
+      origins: [],
+      rp_id: "",
+      cloud_keys: form::Json::Arr([]),
+      members: form::OrderedMap::new(),
+      devices: form::OrderedMap::new(),
+      sign_keys: form::OrderedMap::new(),
+      passkeys: form::OrderedMap::new(),
+      signed: form::OrderedMap::new(),
+      stations: form::OrderedMap::new(),
+      gateways: form::OrderedMap::new(),
+      persons: form::OrderedMap::new(),
+      disabled: false,
+      moved: None,
+    })
+  })
+  let item1_non_del = base_codec::json_obj([
+    ("id", base_codec::json_str("sec-1")),
+    ("name", base_codec::json_str("STRIPE_KEY")),
+    ("value", base_codec::json_str("sk_new")),
+    ("version", base_codec::json_int(1)),
+  ])
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item1_non_del) {
+    Err(e) => if e.status != 409 { panic("expected 409 vault_locked in security mode") }
+    Ok(_) => panic("non-delete plain PUT must fail in security mode")
+  }
+  let item1_del = base_codec::json_obj([
+    ("id", base_codec::json_str("sec-1")),
+    ("name", base_codec::json_str("STRIPE_KEY")),
+    ("deleted", base_codec::json_bool(true)),
+    ("version", base_codec::json_int(1)),
+  ])
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], item1_del) {
     Ok(_) => ()
+    Err(e) => panic("delete plain PUT in security mode should succeed: " + e.message)
+  }
+}
+
+test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace drive.roots.put, presets RMW, and cross-ws rejection" {
+  // SeenStore: session "s-main" & thread 10 belong to ws-main; "s-other" & thread 20 belong to ws-other
+  let seen = station_api::SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-other" },
+    session_ws: fn(k : String) -> Option[Option[String]] {
+      if k == "s-main" { Some(Some("ws-main")) } else if k == "s-other" { Some(Some("ws-other")) } else { None }
+    },
+    thread_exists: fn(tid : Int) -> Bool { tid == 10 || tid == 20 },
+    thread_sessions: fn(tid : Int) -> Array[String] {
+      if tid == 10 { ["s-main"] } else if tid == 20 { ["s-other"] } else { [] }
+    },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[station_api::HandedRecord] { None },
+  }
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture(seen_store_override=Some(seen))
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let joined_owner = make_test_viewer("j@example.com", "u-joined", "ws-other", false, "owner")
+
+  // 1. Cross-workspace rejection on session/thread ops
+  match (api.admin.host.read_op)("session.transcript", make_test_api_req_as("GET", "/sessions/s-other/transcript", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-other"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws session.transcript must return 404") }
+    Ok(_) => panic("cross-ws session.transcript must be rejected")
+  }
+  match (api.admin.host.read_op)("thread.letters", make_test_api_req_as("GET", "/threads/20/letters", home_owner), base_codec::json_obj([("id", base_codec::json_str("20"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws thread.letters must return 404") }
+    Ok(_) => panic("cross-ws thread.letters must be rejected")
+  }
+  match (api.admin.host.call)("hub.session.delete", make_test_api_req_as("DELETE", "/sessions/s-other", home_owner), ["s-other"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("cross-ws hub.session.delete must return 404") }
+    Ok(_) => panic("cross-ws hub.session.delete must be rejected")
+  }
+  match (api.admin.host.call)("marks.thread.title", make_test_api_req_as("PUT", "/threads/20/title", home_owner), ["20"], base_codec::json_obj([("title", base_codec::json_str("hijack"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws marks.thread.title must return 404") }
+    Ok(_) => panic("cross-ws marks.thread.title must be rejected")
+  }
+
+  // 2. mcpServers PUT/GET redaction + null deletion
+  let mcp_body = base_codec::json_obj([
+    ("servers", base_codec::json_obj([
+      ("srv1", base_codec::json_obj([
+        ("command", base_codec::json_str("npx")),
+        ("env", base_codec::json_obj([("API_KEY", base_codec::json_str("secret-12345"))])),
+      ])),
+    ])),
+  ])
+  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", home_owner), [], mcp_body) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("secret-12345") { panic("mcpServers.put leaked raw secret env") }
+    }
     Err(e) => panic("mcpServers.put failed: " + e.message)
   }
-  match (api.admin.host.call)("updates.channel", req, [], base_codec::json_obj([("channel", base_codec::json_str("beta"))])) {
-    Ok(_) => ()
-    Err(e) => panic("updates.channel failed: " + e.message)
+  match (api.admin.host.call)("mcpServers.get", make_test_api_req_as("GET", "/mcp-servers", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("secret-12345") { panic("mcpServers.get leaked raw secret env") }
+    }
+    Err(e) => panic("mcpServers.get failed: " + e.message)
   }
-  match (api.admin.host.call)("updates.install", req, [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
-    Ok(_) => {
-      if updates.station.updating is None {
-        panic("updates.install must mark station.updating")
+  // Delete srv1 via null
+  let mcp_del = base_codec::json_obj([("servers", base_codec::json_obj([("srv1", base_codec::json_null())]))])
+  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", home_owner), [], mcp_del) {
+    Ok(res) => {
+      if base_codec::json_stringify(res).contains("srv1") { panic("mcpServers.put null must delete server") }
+    }
+    Err(e) => panic("mcpServers.put delete failed: " + e.message)
+  }
+
+  // 3. agentEnv.put parse_env_text_lines + secret masking
+  match (api.admin.host.call)("agentEnv.put", make_test_api_req_as("PUT", "/agent-env", home_owner), [], base_codec::json_obj([("text", base_codec::json_str("FOO=bar\nMY_SECRET_TOKEN=tok_abcdef99"))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("tok_abcdef99") { panic("agentEnv.put leaked secret token") }
+    }
+    Err(e) => panic("agentEnv.put failed: " + e.message)
+  }
+
+  // 4. drive.roots.put home vs joined workspace isolation + live callback
+  let mut updated_ws = ""
+  hooks.on_drive_roots_changed = Some(fn(ws : String, _roots : Array[String]) -> Unit { updated_ws = ws })
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", home_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/home-dir")]))])) {
+    Ok(_) => if updated_ws != "ws-main" { panic("expected home drive roots hook") }
+    Err(e) => panic("home drive.roots.put failed: " + e.message)
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/joined-dir")]))])) {
+    Ok(_) => if updated_ws != "ws-other" { panic("expected joined drive roots hook") }
+    Err(e) => panic("joined drive.roots.put failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(cfg_b) => {
+      let cfg_txt = cfg_b.to_string()
+      if !cfg_txt.contains("/home-dir") || !cfg_txt.contains("ws-other") || !cfg_txt.contains("/joined-dir") {
+        panic("config.json must isolate drive.roots and drive.workspaces[ws-other], got: " + cfg_txt)
       }
     }
-    Err(e) => panic("updates.install failed: " + e.message)
+    Err(_) => panic("config.json missing")
   }
-  match mem_fs.ops().read_text("/tmp/w17c2-api-test/config.json") {
-    Ok(raw) => {
-      if !raw.contains("mcpServers") || !raw.contains("updateChannel") {
-        panic("expected config.json to contain mcpServers and updateChannel, got: " + raw)
-      }
+
+  // 5. presets read-modify-write & delete
+  let _ = (api.admin.host.call)("presets.create", make_test_api_req_as("POST", "/presets", home_owner), [], base_codec::json_obj([("id", base_codec::json_str("p1")), ("name", base_codec::json_str("One"))]))
+  let _ = (api.admin.host.call)("presets.create", make_test_api_req_as("POST", "/presets", home_owner), [], base_codec::json_obj([("id", base_codec::json_str("p2")), ("name", base_codec::json_str("Two"))]))
+  match (api.admin.host.call)("presets.list", make_test_api_req_as("GET", "/presets", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "presets") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 2 { panic("presets RMW must keep both p1 and p2") }
+      _ => panic("missing presets")
     }
-    Err(_) => panic("expected config.json to be written")
+    Err(e) => panic("presets.list failed: " + e.message)
+  }
+  let _ = (api.admin.host.call)("presets.item.DELETE", make_test_api_req_as("DELETE", "/presets/p1", home_owner), ["p1"], base_codec::json_obj([]))
+  match (api.admin.host.call)("presets.list", make_test_api_req_as("GET", "/presets", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "presets") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 1 || json_field_str(xs[0], "id") != Some("p2") { panic("presets DELETE must remove p1 and keep p2") }
+      _ => panic("missing presets")
+    }
+    Err(e) => panic("presets.list after delete failed: " + e.message)
+  }
+
+  // 6. hub.thread.create generates unique random keys (not timestamp-only)
+  let k1 = match (api.admin.host.call)("hub.thread.create", make_test_api_req_as("POST", "/threads", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match json_field_str(res, "key") { Some(k) => k, None => "" }
+    Err(e) => panic("hub.thread.create 1 failed: " + e.message)
+  }
+  let k2 = match (api.admin.host.call)("hub.thread.create", make_test_api_req_as("POST", "/threads", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match json_field_str(res, "key") { Some(k) => k, None => "" }
+    Err(e) => panic("hub.thread.create 2 failed: " + e.message)
+  }
+  if k1 == k2 || k1 == "c-1700000000000" {
+    panic("hub.thread.create must generate unique random keys, got: " + k1 + ", " + k2)
   }
 }
