@@ -21,6 +21,7 @@ import type { SendTraceHandle } from "../station/send-trace.ts";
 import { arr as arrU, get as getU, hex } from "../util.ts";
 import { PENDING_PREFIX, sentAs } from "./local.ts";
 import type { Views } from "./views.ts";
+import type { AccountDb } from "../db/account.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -58,6 +59,7 @@ function outgoing(inner: Inner, station: string, text: string, attachments: unkn
 
 export class ViewCalls {
   readonly #inner: Inner;
+  readonly #resumed = new WeakSet<AccountDb>();
   readonly #views: Views;
   readonly #deliveries = new Map<string, Deferred.Deferred<unknown, CoreError>>();
   readonly #tails = new Map<string, Deferred.Deferred<unknown, CoreError>>();
@@ -368,16 +370,25 @@ export class ViewCalls {
 
   /// What was on its way when the core last stopped goes on: messages sent and not answered, chats asked for.
   resume(): void {
-    this.#local.forgetUnanswered();
-    for (const key of this.#local.unmade()) this.makeChat(key);
-    for (const [station, key] of this.#local.firstsMaking()) {
+    for (const db of this.#inner.data.dbs()) this.resumeFor(db);
+  }
+
+  /// Resumes pending local operations stored in `db` alone (idempotent per `AccountDb` instance), so deferred
+  /// account databases resume their own outboxes/chats once opened without duplicating primary-account deliveries.
+  resumeFor(db: AccountDb): void {
+    if (this.#resumed.has(db)) return;
+    this.#resumed.add(db);
+    this.#local.forgetUnansweredFor(db);
+    for (const key of this.#local.unmadeFor(db)) this.makeChat(key);
+    for (const [station, key] of this.#local.firstsMakingFor(db)) {
       if (this.#local.firstTry(station, key)) this.makeFirst(station, key);
     }
-    for (const [station, thread, list] of this.#local.outboxes()) {
+    for (const [station, thread, list] of this.#local.outboxesFor(db)) {
       for (const m of list) {
         if (m.state === "sending" && (m.seq === undefined || m.seq === null)) this.#inner.runner.fork(Effect.ignore(this.deliver(station, thread, String(m.id), null), { log: "Unhandled", message: "message delivered" }));
       }
     }
+    this.#local.clearOpenedFor(db);
   }
 
   /// The card a row asks with, still pending: else it was answered already.
@@ -391,6 +402,11 @@ export class ViewCalls {
     const inner = this.#inner;
     const local = this.#local;
     const views = this.#views;
+    const ready = (station: string): Effect.Effect<void, CoreError> => {
+      if (!inner.cloudSync.needsWriteVerification()) return Effect.void;
+      const at = station.indexOf("/");
+      return inner.cloudSync.ensureVerifiedOwner(at >= 0 ? station.slice(0, at) : station);
+    };
     const send = (station: string, thread: number, message: J, ctx: SpanContext | null, session?: string | null) => {
       // Copied to the chat's Slack and Feishu threads ticked (`chat.cc`).
       const ccTo = views.ccTo(station, thread);
@@ -403,11 +419,11 @@ export class ViewCalls {
     };
     handlers.chatSend = (_inner, call, _p, _at, ctx) => {
       const c = call as Of<"chatSend">;
-      return Effect.andThen(parse(c.station), Effect.suspend(() => send(c.station, c.thread, outgoing(inner, c.station, c.text, c.attachments, c.quotes, c.client, c.uploads), ctx)));
+      return Effect.andThen(parse(c.station), Effect.andThen(ready(c.station), Effect.suspend(() => send(c.station, c.thread, outgoing(inner, c.station, c.text, c.attachments, c.quotes, c.client, c.uploads), ctx))));
     };
     handlers.chatCc = (_inner, call) => {
       const c = call as Of<"chatCc">;
-      return Effect.andThen(parse(c.station), Effect.sync(() => (views.setCc(c.station, c.thread, c.to, c.on), null)));
+      return Effect.andThen(parse(c.station), Effect.andThen(ready(c.station), Effect.sync(() => (views.setCc(c.station, c.thread, c.to, c.on), null))));
     };
     handlers.chatsWindow = (_inner, call) => {
       const c = call as Of<"chatsWindow">;
@@ -421,19 +437,22 @@ export class ViewCalls {
       const c = call as Of<"chatCreate">;
       return Effect.andThen(
         parse(c.station),
-        Effect.try({
-          try: () => {
-            const key = local.pendingNew(c.station, c.ask, c.key);
-            this.makeChat(key);
-            return { key };
-          },
-          catch: asCoreError,
-        }),
+        Effect.andThen(
+          ready(c.station),
+          Effect.try({
+            try: () => {
+              const key = local.pendingNew(c.station, c.ask, c.key);
+              this.makeChat(key);
+              return { key };
+            },
+            catch: asCoreError,
+          }),
+        ),
       );
     };
     handlers.chatSendTo = (_inner, call, _p, _at, ctx) => {
       const c = call as Of<"chatSendTo">;
-      return Effect.suspend((): Effect.Effect<unknown, CoreError> => {
+      return Effect.andThen(ready(c.station), Effect.suspend((): Effect.Effect<unknown, CoreError> => {
         const message = outgoing(inner, c.station, c.text, c.attachments, c.quotes, c.client, c.uploads);
         const restore = this.#restoreTarget(c.station, null, c.session);
         if (restore !== null) message.restore = restore;
@@ -456,11 +475,11 @@ export class ViewCalls {
         if (trace !== null) this.#pendingTraces.set(id, { trace, queueKey: `f:${c.station}\u0000${c.session}` });
         if (ask) this.makeFirst(c.station, c.session);
         return Effect.succeed({ id });
-      });
+      }));
     };
     handlers.chatRetry = (_inner, call, _p, _at, ctx) => {
       const c = call as Of<"chatRetry">;
-      return Effect.suspend(() => {
+      return Effect.andThen(ready(c.station), Effect.suspend(() => {
         const entry = local.outboxGet(c.station, c.thread, c.id);
         if (entry === undefined) return Effect.fail(CoreError.invalid(t("core-misc.call.no_outbox")));
         if (entry.final === true) return Effect.fail(CoreError.invalid(t("core-misc.call.refused_for_good")));
@@ -468,11 +487,11 @@ export class ViewCalls {
         if (typeof entry.restore !== "string" && restore !== null) local.outboxRestore(c.station, c.thread, c.id, restore);
         local.outboxState(c.station, c.thread, c.id, null);
         return this.deliver(c.station, c.thread, c.id, ctx, true);
-      });
+      }));
     };
     handlers.chatDiscard = (_inner, call) => {
       const c = call as Of<"chatDiscard">;
-      return Effect.suspend(() => {
+      return Effect.andThen(ready(c.station), Effect.suspend(() => {
         const entry = local.outboxGet(c.station, c.thread, c.id);
         // Its POST out and not answered yet: the station may take it, so it is not dropped here.
         if (entry !== undefined && entry.queued === false && entry.state === "sending") return Effect.fail(CoreError.invalid(t("core-misc.call.discard_sending")));
@@ -483,7 +502,7 @@ export class ViewCalls {
         // its files no longer going up for it, nor kept
         if (uploads?.length) inner.composers.release(uploads);
         return Effect.succeed(null);
-      });
+      }));
     };
     handlers.chatRetryIn = (_inner, call, progress, at, ctx) => {
       const c = call as Of<"chatRetryIn">;
@@ -522,6 +541,7 @@ export class ViewCalls {
       return Effect.gen(function* () {
         if (!("station" in c.op.target)) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.station")));
         const station = c.op.target.station;
+        yield* ready(station);
         let [thread, session, op] = [c.thread, c.session, c.op];
         // A chat asked for here (its row's key `new:…`): its station knows it only once it is made, by the session and
         // thread it gave; before that it is this device's alone, and so is archiving it.
@@ -555,6 +575,7 @@ export class ViewCalls {
       return Effect.gen(function* () {
         if (!("station" in c.op.target)) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.station")));
         const station = c.op.target.station;
+        yield* ready(station);
         const row: Record<string, unknown> = {};
         if (c.title !== null) row.title = c.title;
         if (c.pinned !== null) row.pinned = c.pinned ? inner.host.nowMs() : null;
@@ -571,6 +592,7 @@ export class ViewCalls {
       const c = call as Of<"decisionAnswer">;
       const self = this;
       return Effect.gen(function* () {
+        yield* ready(c.station);
         const card = yield* self.#pendingCard(c.station, c.thread, c.seq);
         const answer = decisions.answer(card, c.option);
         if (answer === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.no_option")));
@@ -589,6 +611,7 @@ export class ViewCalls {
       const c = call as Of<"decisionReply">;
       const self = this;
       return Effect.gen(function* () {
+        yield* ready(c.station);
         const card = yield* self.#pendingCard(c.station, c.thread, c.seq);
         const extras = arr(c.attachments).length > 0 || (c.uploads?.length ?? 0) > 0 || arr(c.quotes).length > 0;
         const reply = decisions.reply(card, c.text, extras);
@@ -600,6 +623,7 @@ export class ViewCalls {
     handlers.decisionDismiss = (_inner, call, progress, at, ctx) => {
       const c = call as Of<"decisionDismiss">;
       return Effect.gen(function* () {
+        yield* ready(c.station);
         local.letGo(c.station, c.thread, c.seq);
         const result = yield* Effect.result(handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx));
         local.letGoEnded(c.station, c.thread, c.seq, result._tag === "Success", inner.data.rowsRev(c.station));

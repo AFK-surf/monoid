@@ -109,23 +109,41 @@ final class Push {
 
     /**
      * What the app's environment says of `key`, as its activity sets it (MainActivity: the process's own, else the
-     * defaults its manifest's dev.mbui.env says): "" none. A push's process may have no activity yet.
+     * defaults its manifest's dev.mbui.env says): "" none. A push's process may have no activity yet. The process's own
+     * is read each time (the activity sets it as it is made); the manifest's is read once a process (manifestEnv).
      */
     static String env(Context c, String key) {
         String v = System.getenv(key);
         if (v != null && !v.isEmpty()) return v;
-        try {
-            android.os.Bundle meta = c.getPackageManager()
-                    .getApplicationInfo(c.getPackageName(), android.content.pm.PackageManager.GET_META_DATA).metaData;
-            String defaults = meta == null ? null : meta.getString("dev.mbui.env");
-            if (defaults != null) for (String kv : defaults.split(";")) {
-                int at = kv.indexOf('=');
-                if (at > 0 && kv.substring(0, at).equals(key)) return kv.substring(at + 1);
-            }
-        } catch (Exception e) {
-            Host.log("push: " + e);
+        for (String kv : manifestEnv(c)) {
+            int at = kv.indexOf('=');
+            if (at > 0 && kv.substring(0, at).equals(key)) return kv.substring(at + 1);
         }
         return "";
+    }
+
+    /** The manifest's dev.mbui.env, its `k=v` parts: read once (PackageManager's a call to the system each time). */
+    private static volatile String[] manifestEnv;
+
+    private static String[] manifestEnv(Context c) {
+        String[] got = manifestEnv;
+        if (got != null) return got;
+        synchronized (Push.class) {
+            if (manifestEnv != null) return manifestEnv;
+            got = new String[0];
+            try {
+                android.os.Bundle meta = c.getPackageManager()
+                        .getApplicationInfo(c.getPackageName(), android.content.pm.PackageManager.GET_META_DATA).metaData;
+                String defaults = meta == null ? null : meta.getString("dev.mbui.env");
+                if (defaults != null) got = defaults.split(";");
+            } catch (Exception e) {
+                // (not kept: asked again next time)
+                Host.log("push: " + e);
+                return got;
+            }
+            manifestEnv = got;
+            return got;
+        }
     }
 
     /** still.fail cloud, as the app's core is given it (sfcore start: MBUI_CLOUD, else still.fail's own). */

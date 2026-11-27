@@ -18,8 +18,8 @@ import { isObject, parseJson } from "./util.ts";
 /// The accounts signed in on this device, as a provider keeps them: never their tokens.
 export interface AccountSessions {
   list(): AccountView[];
-  /// Called after every change to the list.
-  onChange(listener: () => void): void;
+  /// Called after every change to the list; `removed` lists accounts explicitly signed out by this transition.
+  onChange(listener: (removed?: readonly string[]) => void): void;
   /// What authorizes a call as `sub` now (a bearer token).
   accessToken(sub: string): Effect.Effect<string, CoreError>;
   beginSignIn(redirectUri: string, returnTo: string, deviceName: string): Effect.Effect<string, CoreError>;
@@ -31,6 +31,10 @@ export interface AccountSessions {
   setTracer(tracer: Tracer): void;
   /// Refreshes under way.
   refreshing(): number;
+  /// Whether the persisted accounts table failed its initial storage read (distinct from an empty list).
+  isUnloaded(): boolean;
+  /// Persistent unique identifier of `sub`'s current login session ("" for legacy accounts without one).
+  sessionId(sub: string): string;
 }
 
 /// What a provider can do besides the accounts, workspaces, stations and credentials every provider has.
@@ -81,7 +85,11 @@ export const stillfailAccountProvider: AccountProviderFactory = ({ host, tracer,
       supports: () => true,
       start: () => {},
       request: (sub, method, path, body, ctx) => cloud.request(sub, method, path, body, ctx),
-      me: (sub, ctx) => Effect.tap(cloud.me(sub, ctx), (answer) => accounts.profile(sub, answer)),
+      me: (sub, ctx) =>
+        Effect.suspend(() => {
+          const sid = accounts.sessionId(sub);
+          return Effect.tap(cloud.me(sub, ctx), (answer) => (accounts.sessionId(sub) === sid ? accounts.profile(sub, answer) : Effect.void));
+        }),
       credential: (sub, workspace, device, said) => cloud.credential(sub, workspace, device, said),
       events: (sub) =>
         Effect.gen(function* () {

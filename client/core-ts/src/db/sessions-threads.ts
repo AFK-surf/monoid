@@ -2,7 +2,7 @@
 import type { SqlRow, SqlValue } from "../host.ts";
 import { equal, isObject } from "../util.ts";
 import { type DbEnv, type J, K, OWN_IN, frozen, get, membersOf, num, parse, placesFor, str, u64 } from "./collection.ts";
-import { ensureSessionDetail } from "./schema.ts";
+import { type SchemaSnapshot, ensureSessionDetail } from "./schema.ts";
 
 export type SessionsThreadsHooks = {
   summaryCame(station: string, key: string, summary: J): void;
@@ -22,18 +22,18 @@ export class SessionsThreadsStore {
     this.#hooks = hooks;
   }
 
-  openDetail(readOnly: boolean): void {
+  openDetail(readOnly: boolean, snapshot?: SchemaSnapshot): void {
     const sql = this.#env.sql;
     if (!readOnly) {
       try {
-        ensureSessionDetail(sql);
+        ensureSessionDetail(sql, snapshot);
         this.#detailTable = true;
       } catch {
         // No room to make it: fall back to inline `session.detail`.
       }
       return;
     }
-    this.#detailTable = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_detail'").length > 0;
+    this.#detailTable = snapshot ? snapshot.tables.has("session_detail") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_detail'").length > 0;
   }
 
   forgetStation(station: string): void {

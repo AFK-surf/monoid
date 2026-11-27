@@ -374,6 +374,30 @@ int main(void) {
       CHECK(qp[@"js"] == nil);
       SAME([qp[@"$exception_list"] firstObject][@"value"], @"footprint 1599 MB, -4 MB/min; shell: quiet");
     }
+    {
+      // the theme the person chose, kept under the key mbui's iOS host reads as the app starts (ios_app.m initial_dark)
+      NSString *suite = [NSString stringWithFormat:@"ios_reports_test.%d", getpid()];
+      NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+      CHECK(sf_theme_pref(d) == 0);
+      CHECK(sf_set_theme_pref(d, @"dark") == 1);
+      SAME([d stringForKey:@"mbui.theme_pref"], @"dark");
+      CHECK(sf_theme_pref(d) == 2);
+      CHECK(sf_set_theme_pref(d, @"light") == 1);
+      CHECK(sf_theme_pref(d) == 1);
+      // anything else not kept, what was kept left as it was
+      CHECK(sf_set_theme_pref(d, @"sepia") == 0);
+      CHECK(sf_set_theme_pref(d, @"") == 0);
+      CHECK(sf_theme_pref(d) == 1);
+      CHECK(sf_set_theme_pref(d, @"system") == 1);
+      SAME([d stringForKey:@"mbui.theme_pref"], @"system");
+      CHECK(sf_theme_pref(d) == 0);
+      // last active workspace kept for frame-0 cold-start pre-subscription and cleared on sign-out
+      CHECK(sf_set_last_workspace(d, @"ws_1") == 1);
+      SAME([d stringForKey:@"mbui.last_workspace"], @"ws_1");
+      CHECK(sf_set_last_workspace(d, @"") == 1);
+      CHECK([d stringForKey:@"mbui.last_workspace"] == nil);
+      [d removePersistentDomainForName:suite];
+    }
   }
   if (!failed) printf("ios reports: ok\n");
   return failed;

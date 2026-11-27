@@ -1520,7 +1520,7 @@ fn BarModel::ride(self : BarModel, s : Swap, j : Int, w : Double, row_top : Doub
   let k = self.k
   let place_at = fn(t : Double) {
     let ot = o.value_at(t)
-    let kt = k.value_at(t) * (1.0 - dclamp(2.0 * ot, 0.0, 1.0))
+    let kt = bar_panel_notch(k.value_at(t), ot)
     let (xs, y) = swap_at(s, ot, w, kt, row_top)
     (xs[j], y + s.drop * (1.0 - s.t(ot)))
   }
@@ -1585,16 +1585,22 @@ fn bar_glass_top(reach : Double, o : Double) -> Double {
 }
 
 ///|
+/// The notch closes with the panel. Its width eases to rest as the rows reach the full bar.
+fn bar_panel_notch(k : Double, open : Double) -> Double {
+  k * (1.0 - bar_smoothstep(0.0, 1.0, open))
+}
+
+///|
 /// The notch as it is at `t`: as its place has it, closed with the panel (its rows across the whole bar). A finger on
 /// the bar leaves it as it is, as Comma's bar keeps its circle: the places stay where the finger found them.
 fn BarModel::k_at(self : BarModel, t : Double) -> Double {
-  self.k.value_at(t) * (1.0 - dclamp(2.0 * self.o.value_at(t), 0.0, 1.0))
+  bar_panel_notch(self.k.value_at(t), self.o.value_at(t))
 }
 
 ///|
 /// Where the notch as drawn (BarModel::k_now) is going: where its spring and the panel are sent.
 fn BarModel::k_end(self : BarModel) -> Double {
-  self.k.to * (1.0 - dclamp(2.0 * self.o.to, 0.0, 1.0))
+  bar_panel_notch(self.k.to, self.o.to)
 }
 
 ///|
@@ -1927,6 +1933,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   // the moment it is taken
   v.show(
     fn() {
+      !@sfbase.first_page_waits.get() &&
       bar.mode.get() &&
       (match told() {
         Some(t) => t.shown
@@ -1951,12 +1958,15 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   v.box(fn(b) {
     b
     .over(Is(true))
+    .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+    .hides(By(fn() { @sfbase.first_page_waits.get() }))
     .padding(By(fn() { (22.0, 0.0, 22.0, 22.0 + nav_foot()) }))
     .presses(By(fn() {
-      match told() {
+      !@sfbase.first_page_waits.get() &&
+      (match told() {
         Some(t) => t.shown
         None => false
-      }
+      })
     }))
     |> ignore
     b.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore

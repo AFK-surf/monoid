@@ -104,6 +104,8 @@ pub fn reset() -> Unit {
   first_words.set("")
   first_answered.set(false)
   first_from.val = -1.0
+  first_due.val = -1.0
+  first_splash_suppressed.set(false)
   first_top.val = None
   first_left.val = false
   first_wide.val = None
@@ -505,8 +507,9 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
   // (what the host clears to, the ground's colour) in its place, its words as while the workspaces are read
   if first_waiting.val {
     // (the splash itself the window's tree's nodes over the shell: first_splash_node; the ground alone till the app's
-    // first splash has waited its second, the window held not shown for it)
-    if !splash_waited.get() {
+    // first splash has waited its second, or while the first page is about to settle within the grace window, the
+    // window held not shown for it)
+    if !splash_waited.get() || first_splash_suppressed.get() {
       frame_bare.val = true
     }
   }
@@ -748,12 +751,67 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         app_state_tree(o, src)
       }
     })
+    // One-shot frame-0 pre-subscription for the host-cached last workspace: subscribes Home's critical topics in
+    // parallel with `accounts`/`workspaces`/`prefs` so cold start collapses from 2 serial round-trips to 1 on repeat
+    // launches. Only mounted when a cached workspace is present (zero node overhead when empty), and consumed
+    // permanently once `first_shown` becomes true, on `SignedOut`/`Failed`, on `landing_now` (signed in with 0
+    // workspaces), or when a different workspace resolves, so stale topics are always unsubscribed and never remount
+    // on a later `SignedOut -> Starting` transition.
+    if @sfbase.cached_workspace.val != "" {
+      let pre_sub_ws : @signals.Signal[String] = @signals.signal(@sfbase.cached_workspace.val)
+      root.reacts(
+        fn() {
+          let ws = pre_sub_ws.get()
+          if ws == "" {
+            return false
+          }
+          if first_shown.get() || app_is(src) is (SignedOut | Failed) || landing_now(src) {
+            return true
+          }
+          match workspace_in_view(src).0 {
+            Some(w) => w.id != ws
+            None => false
+          }
+        },
+        fn(consume) {
+          if consume {
+            pre_sub_ws.set("")
+            if landing_now(src) {
+              @sfbase.note_workspace_pref("")
+            }
+          }
+        },
+      )
+      root.show(
+        fn() { pre_sub_ws.get() != "" && root.window().1 > 0.0 },
+        fn(p) {
+          let start_ws = @signals.untracked(fn() { pre_sub_ws.get() })
+          let own = src.owned_by(p)
+          let narrow = @sf.layout(p.window_w()) is Small && !@sf.native_able()
+          p.reacts(
+            fn() {
+              own.topic("chats", @sfbase.chats_asked(start_ws, "all")).get() |> ignore
+              own.topic("lock", { "workspace": Json::string(start_ws) }).get() |> ignore
+              own.topic("doing", {}).get() |> ignore
+              if narrow {
+                own.topic("changelog", @sfpages.news_params()).get() |> ignore
+                own.topic("longJobs", @sfbase.long_jobs_asked(start_ws)).get() |> ignore
+              }
+            },
+            fn(_) { () },
+          )
+        },
+      )
+    }
     // (the core what the settings put up by what has none at hand draws with (a station's card from a chat), said as
     // the tree is made and as the workspace in view changes, before what is presented is made: one put up before the
     // first frame is built (a fixture's) is made with it, not with none: settings' panels_frame)
     root.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) {
       match workspace_in_view(src).0 {
-        Some(w) => @settings.panels_frame(settings_core(src, w), w.id)
+        Some(w) => {
+          @settings.panels_frame(settings_core(src, w), w.id)
+          @sfbase.note_workspace_pref(w.id)
+        }
         None => ()
       }
     })
@@ -834,6 +892,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         SignedOut => {
           // (a first page come after signing in waited for the person too: not told, first_page_timing)
           first_page_timing.val = None
+          @sfbase.note_workspace_pref("")
           signed_out_tree(v, src)
         }
         SignedIn => {
@@ -1516,30 +1575,51 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   // (its first_page_ms waited for no more once it has shown: nothing left due)
   let expiry : Ref[() -> Unit] = Ref(fn() {  })
   v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(ws) {
-    if ws is Some(_) && !first_shown.get() && first_from.val < 0.0 {
-      first_from.val = v.cause_at()
-      first_top.val = Some((app.nav.top(), app.nav.top_stay()))
-      let at = first_from.val + first_page_ms
-      let due = if splash_from.val >= 0.0 && !@signals.untracked(fn() { splash_waited.get() }) {
-        let floor = first_from.val + @sf.local_ms * 3.0
-        let cap = splash_from.val + splash_label_ms - 1.0
-        dmax(floor, dmin(at, cap))
+    if ws is Some(_) && !first_shown.get() {
+      let schedule_due : Double? = if first_from.val < 0.0 {
+        first_from.val = v.cause_at()
+        first_top.val = Some((app.nav.top(), app.nav.top_stay()))
+        let at = first_from.val + first_page_ms
+        let due = if splash_from.val >= 0.0 && !@signals.untracked(fn() { splash_waited.get() }) {
+          let floor = first_from.val + @sf.local_ms * 3.0
+          let cap = splash_from.val + splash_label_ms - 1.0
+          dmax(floor, dmin(at, cap))
+        } else {
+          at
+        }
+        first_due.val = due
+        first_splash_suppressed.set(
+          splash_from.val >= 0.0 && due <= splash_from.val + splash_label_ms + first_splash_grace_ms,
+        )
+        Some(due)
+      } else if !first_expired.get() && first_due.val >= 0.0 {
+        // Remounted while still waiting (e.g. SignedIn -> Failed/Starting/over_tree -> SignedIn): the old view's
+        // at_moment timer was cancelled on unmount, so restore the expiry timer or expire immediately if overdue.
+        if v.cause_at() >= first_due.val {
+          first_expired.set(true)
+          None
+        } else {
+          Some(first_due.val)
+        }
       } else {
-        at
+        None
       }
-      expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
+      if schedule_due is Some(due) {
+        (expiry.val)()
+        expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
+      }
     }
   })
   v.reacts(fn() { first_shown.get() }, fn(shown) {
     if shown {
       (expiry.val)()
-      // (how long it took from the splash, when the workspace came into view, and whether the splash's second had gone
-      // by: told once a process, to the host's, src/stillfail's reports; not again as this node is built anew, signed
-      // in again or the core started again, first_shown still true)
+      // (how long it took from the splash, when the workspace came into view, whether the splash's second had gone
+      // by, and whether first_page_ms expired: told once a process, to the host's, src/stillfail's reports; not again
+      // as this node is built anew, signed in again or the core started again, first_shown still true)
       match first_page_timing.val {
         Some(told) if splash_from.val >= 0.0 && first_from.val >= 0.0 => {
           first_page_timing.val = None
-          told(v.cause_at() - splash_from.val, first_from.val - splash_from.val, splash_waited.get())
+          told(v.cause_at() - splash_from.val, first_from.val - splash_from.val, splash_waited.get(), first_expired.get())
         }
         _ => ()
       }
@@ -1643,12 +1723,22 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
+/// Grace window past `splash_label_ms` during which `first_splash_node` stays suppressed when the first page's expiry
+/// (`first_due`) is about to settle, preventing the loading bar from flashing briefly right before Home appears.
+let first_splash_grace_ms : Double = 200.0
+
+///|
+/// Whether the first-page splash is suppressed because `first_due` is within `first_splash_grace_ms` of
+/// `splash_label_ms`. Stored as a signal so `first_splash_node` reacts immediately when `first_due` is computed.
+let first_splash_suppressed : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// The splash over the first page while it is built and waits for what it shows (sfbase's first_page_waits, told by
 /// the frame as it is: first_hide), in node `v`, over all it holds: splash_of_tree saying first_words, once the app's
-/// first splash has waited its second; before it nothing over what the shell's nodes draw, its old views drawn at none
-/// (view_in), as the old view's splash was.
+/// first splash has waited its second (unless `first_due` is about to settle within `first_splash_grace_ms`); before
+/// it nothing over what the shell's nodes draw, its old views drawn at none (view_in), as the old view's splash was.
 fn first_splash_node(v : @view.View) -> Unit {
-  v.show(fn() { @sfbase.first_page_waits.get() && splash_waited.get() }, fn(s) {
+  v.show(fn() { @sfbase.first_page_waits.get() && splash_waited.get() && !first_splash_suppressed.get() }, fn(s) {
     s.over(Is(true)) |> ignore
     splash_of_tree(s, fn() { Some(first_words.get()) }, fn() { false })
   })
@@ -1658,6 +1748,11 @@ fn first_splash_node(v : @view.View) -> Unit {
 /// When the workspace came into view, the first page's wait begun (-1: not yet): first_page_node's.
 // kept across runs: put back as a run begins (new_run)
 let first_from : Ref[Double] = Ref(-1.0)
+
+///|
+/// When the first page's wait is scheduled to expire (-1: not yet): first_page_node's.
+// kept across runs: put back as a run begins (new_run)
+let first_due : Ref[Double] = Ref(-1.0)
 
 ///|
 /// The page on top as the first wait began and its stay on the stack. Opening
@@ -1680,10 +1775,10 @@ let first_wide : Ref[Bool?] = Ref(None)
 
 ///|
 /// What the host is told as the first page shows (first_page_node), in ms from the app's first splash: as it shows, as
-/// the workspace came into view; and whether the splash's second had gone by (splash_waited). Set once as the app
-/// starts (src/stillfail's reports), let go of once told or once signed out before it (the person's signing in in it);
-/// None under a Tester (new_run), unless its test sets one.
-pub let first_page_timing : Ref[((Double, Double, Bool) -> Unit)?] = Ref(None)
+/// the workspace came into view, whether the splash's second had gone by (splash_waited), and whether the wait expired
+/// (first_expired). Set once as the app starts (src/stillfail's reports), let go of once told or once signed out before
+/// it (the person's signing in in it); None under a Tester (new_run), unless its test sets one.
+pub let first_page_timing : Ref[((Double, Double, Bool, Bool) -> Unit)?] = Ref(None)
 
 ///|
 /// Whether the app's first page has shown (first_page_shown).

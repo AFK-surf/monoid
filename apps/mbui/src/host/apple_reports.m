@@ -489,7 +489,48 @@ __attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
   };
 }
 
+/// The theme and last active workspace kept where mbui's iOS host reads them on launch (libs/ui's ios_app.m):
+/// "light", "dark" or "system" for `mbui.theme_pref`, workspace id (or empty on sign-out) for `mbui.last_workspace`.
+static NSString *const SF_THEME_KEY = @"mbui.theme_pref";
+static NSString *const SF_LAST_WORKSPACE_KEY = @"mbui.last_workspace";
+
+static int32_t sf_set_theme_pref(NSUserDefaults *d, NSString *pref) {
+  if (![pref isEqualToString:@"light"] && ![pref isEqualToString:@"dark"] && ![pref isEqualToString:@"system"]) return 0;
+  if (![[d stringForKey:SF_THEME_KEY] isEqualToString:pref]) [d setObject:pref forKey:SF_THEME_KEY];
+  return 1;
+}
+
+/// The theme kept: 1 light, 2 dark, 0 the system's (none kept).
+static int32_t sf_theme_pref(NSUserDefaults *d) {
+  NSString *p = [d stringForKey:SF_THEME_KEY];
+  return [p isEqualToString:@"light"] ? 1 : [p isEqualToString:@"dark"] ? 2 : 0;
+}
+
+static int32_t sf_set_last_workspace(NSUserDefaults *d, NSString *ws) {
+  if (!ws || ws.length == 0) {
+    if ([d objectForKey:SF_LAST_WORKSPACE_KEY] != nil) [d removeObjectForKey:SF_LAST_WORKSPACE_KEY];
 #ifndef SF_REPORTS_PURE
+    unsetenv("MBUI_LAST_WORKSPACE");
+#endif
+    return 1;
+  }
+  if (![[d stringForKey:SF_LAST_WORKSPACE_KEY] isEqualToString:ws]) [d setObject:ws forKey:SF_LAST_WORKSPACE_KEY];
+#ifndef SF_REPORTS_PURE
+  setenv("MBUI_LAST_WORKSPACE", ws.UTF8String, 1);
+#endif
+  return 1;
+}
+
+#ifndef SF_REPORTS_PURE
+/// Restores the persisted last workspace into `MBUI_LAST_WORKSPACE` before MoonBit starts (app-side so `libs/ui`
+/// stays app-agnostic; does not overwrite an explicit env override).
+__attribute__((constructor)) static void sf_restore_last_workspace(void) {
+  @autoreleasepool {
+    if (getenv("MBUI_LAST_WORKSPACE") != NULL) return;
+    NSString *lastWs = [NSUserDefaults.standardUserDefaults stringForKey:SF_LAST_WORKSPACE_KEY];
+    if (lastWs.length > 0) setenv("MBUI_LAST_WORKSPACE", lastWs.UTF8String, 0);
+  }
+}
 #import <MetricKit/MetricKit.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
@@ -1089,6 +1130,10 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
     return 0;
   }
   if ([what isEqual:@"crash_pending"]) return sf_scan_crash_pending_mask();
+  // the theme the person chose, kept for the window's ground as the app next starts (sf_set_theme_pref): 1 taken
+  if ([what isEqual:@"set_theme_pref"]) return sf_set_theme_pref(NSUserDefaults.standardUserDefaults, sf_ns_string(a_));
+  if ([what isEqual:@"theme_pref"]) return sf_theme_pref(NSUserDefaults.standardUserDefaults);
+  if ([what isEqual:@"set_last_workspace"]) return sf_set_last_workspace(NSUserDefaults.standardUserDefaults, sf_ns_string(a_));
   return 0;
 }
 #endif

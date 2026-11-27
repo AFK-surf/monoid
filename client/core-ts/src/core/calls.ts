@@ -369,6 +369,7 @@ const METRIC_ATTR_ALLOWLIST = new Set([
   "max_ms",
   "in_view_ms",
   "waited",
+  "expired",
 ]);
 
 function form(name: string, params: unknown, prefix: string, actions: string[]): { topic: Topic; action: string; patch: unknown } | null {

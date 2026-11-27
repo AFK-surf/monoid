@@ -226,6 +226,17 @@ fn reports_start() -> Unit {
   @core.restarted_text.val = @sfapp.tr("android-misc.core.restarted")
   let has_host = host_tell("hello", "", "", 0, 0) != 0
   host_has_reports.val = has_host
+  @sfbase.cached_theme_pref.val = match host_tell("theme_pref", "", "", 0, 0) {
+    1 => "light"
+    2 => "dark"
+    _ => "system"
+  }
+  @sfbase.on_theme_pref.val = Some(fn(mode) { host_tell("set_theme_pref", mode, "", 0, 0) |> ignore })
+  let last_ws = @ui.env("MBUI_LAST_WORKSPACE")
+  if last_ws != "" {
+    @sfbase.cached_workspace.val = last_ws
+  }
+  @sfbase.on_workspace_pref.val = Some(fn(ws) { host_tell("set_last_workspace", ws, "", 0, 0) |> ignore })
   max_hang_ms.val = 0.0
   android_bar_placed.val = None
   @core.on_restarted.val = Some(fn() {
@@ -240,14 +251,18 @@ fn reports_start() -> Unit {
     }
   })
   // (how long the first page took from the splash: what a start slow to show says, beside the core's core.start)
-  @sfapp.first_page_timing.val = Some(fn(shown_ms, in_view_ms, waited) {
+  @sfapp.first_page_timing.val = Some(fn(shown_ms, in_view_ms, waited, expired) {
     if reporting_allowed() {
       @core.call(
         "client.metric",
         params={
           "kind": "first_page",
           "duration_ms": Json::number(shown_ms.round()),
-          "attrs": { "in_view_ms": Json::number(in_view_ms.round()), "waited": Json::boolean(waited) },
+          "attrs": {
+            "in_view_ms": Json::number(in_view_ms.round()),
+            "waited": Json::boolean(waited),
+            "expired": Json::boolean(expired),
+          },
         },
       )
     }

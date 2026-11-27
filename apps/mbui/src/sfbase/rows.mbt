@@ -371,16 +371,16 @@ pub fn chats_topic(src : Source, scope : String) -> Topic {
 
 ///|
 /// What workspace `ws`'s chats' list opens on as it is filtered and grouped (Home's, the wide frame's sidebar's), asked
-/// of `ask` (opens_answered's): cold-start 3-state gate waits for `prefs` and fixed-params base `"all"` list first;
-/// if `projects` is `On` and `listGroups[ws] == "project"`, also waits for the grouped query's first answer so the
-/// very first rendered frame is already grouped with zero flicker.
+/// of `ask` (opens_answered's): asks `"prefs"` and `"all"` in parallel, and as soon as `"prefs"` is answered asks the
+/// active filtered/grouped query in parallel with `"all"` (no extra serial round-trip when filtered or project-grouped).
 pub fn list_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
   let prefs_ok = opens_answered(ask("prefs", {}))
   let base_ok = opens_answered(ask("chats", chats_params(ws, "all")))
-  if !prefs_ok || !base_ok {
+  if !prefs_ok {
     return false
   }
-  opens_answered(ask("chats", chats_params_query(ws, active_list_query(src, ws))))
+  let active_ok = opens_answered(ask("chats", chats_params_query(ws, active_list_query(src, ws))))
+  base_ok && active_ok
 }
 
 ///|

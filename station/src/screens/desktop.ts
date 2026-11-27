@@ -317,7 +317,10 @@ export class HelperView implements ScreenView {
   readonly ready: Promise<{ width: number; height: number }>;
   readonly #socket: HelperPipe;
   readonly #input: InputOps;
-  #carry: Buffer = Buffer.alloc(0);
+  readonly #header = Buffer.alloc(5);
+  #headerBytes = 0;
+  #bodyLeft = 0;
+  readonly #bodyParts: Buffer[] = [];
   #waiting: ((frame: Frame | null) => void)[] = [];
   #config: FrameConfig | undefined;
   #audio = false;
@@ -400,19 +403,36 @@ export class HelperView implements ScreenView {
   }
 
   #heard(chunk: Buffer) {
-    if (this.#ended) return;
-    this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
-    while (!this.#ended && this.#carry.length >= 5) {
-      const length = this.#carry.readUInt32BE(1);
-      if (length > MAX_HELPER_FRAME) {
-        this.#fail(`helper frame too large (${length} bytes)`);
+    let at = 0;
+    while (!this.#ended && at < chunk.length) {
+      if (this.#headerBytes < this.#header.length) {
+        const got = chunk.copy(this.#header, this.#headerBytes, at);
+        this.#headerBytes += got;
+        at += got;
+        if (this.#headerBytes < this.#header.length) return;
+        this.#bodyLeft = this.#header.readUInt32BE(1);
+        if (this.#bodyLeft > MAX_HELPER_FRAME) {
+          this.#fail(`helper frame too large (${this.#bodyLeft} bytes)`);
+          return;
+        }
+      }
+
+      // A picture can span many pipe reads. Join the pieces only when the last one arrives.
+      const part = chunk.subarray(at, at + this.#bodyLeft);
+      at += part.length;
+      this.#bodyLeft -= part.length;
+      if (this.#bodyLeft > 0) {
+        if (part.length > 0) this.#bodyParts.push(part);
         return;
       }
-      if (this.#carry.length < 5 + length) return;
-      const kind = this.#carry[0]!;
-      const payload = this.#carry.subarray(5, 5 + length);
-      this.#carry = this.#carry.subarray(5 + length);
-      this.#message(kind, payload);
+      let payload = part;
+      if (this.#bodyParts.length > 0) {
+        this.#bodyParts.push(part);
+        payload = Buffer.concat(this.#bodyParts, this.#header.readUInt32BE(1));
+        this.#bodyParts.length = 0;
+      }
+      this.#headerBytes = 0;
+      this.#message(this.#header[0]!, payload);
     }
   }
 
@@ -735,6 +755,7 @@ export class HelperView implements ScreenView {
     // What its person holds down is let go of on the machine, else it stays held after them (x11-desktop.ts the same).
     if (!this.#cut) for (const op of this.#input.release?.() ?? []) this.#send(TO_HELPER.input, Buffer.from(JSON.stringify(op)));
     this.#ended = true;
+    this.#bodyParts.length = 0;
     this.#socket.destroy();
     for (const resolve of this.#waiting.splice(0)) resolve(null);
     this.#audioWait?.(null);

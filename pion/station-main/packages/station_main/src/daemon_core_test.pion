@@ -1,0 +1,274 @@
+// Pure unit tests for `daemon_core.pion`:
+// - 4-way ShellMux tag non-collision (`MUX_TAG_LOOPBACK/DOOR/MESH/ROLE`) & `fetch.cancel` ID re-encoding
+// - `FRONT_FRAME_END` / `FRONT_FRAME_FAILED` / multi-chunk data frame encoding & decoding
+// - `pending_handover_rpcs` FIFO queue, cap, 40s replay expiration filter, and front-disconnect pruning
+// - `can_mark_role_ready` barrier enforcement (refused while `!handover_done`)
+// - Predecessor identity check (`resolve_predecessor_pid`) & `hub.json` with `procStartTicks` + `bootId`
+// - Fail-closed `authenticate_peer_rpc` / `parse_and_authenticate_peer_line` & `FILE_STREAM_CHUNK_BYTES` parity
+
+import "base_codec"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+
+test "daemon_core: MUX_TAG_ROLE=3 and 0/1/2 tags never collide and rewrite fetch.cancel ids" {
+  assert_true(MUX_TAG_LOOPBACK == 0L, "MUX_TAG_LOOPBACK == 0")
+  assert_true(MUX_TAG_DOOR == 1L, "MUX_TAG_DOOR == 1")
+  assert_true(MUX_TAG_MESH == 2L, "MUX_TAG_MESH == 2")
+  assert_true(MUX_TAG_ROLE == 3L, "MUX_TAG_ROLE == 3")
+
+  let tags = [MUX_TAG_LOOPBACK, MUX_TAG_DOOR, MUX_TAG_MESH, MUX_TAG_ROLE]
+  let seen : Map[Int64, Bool] = Map::new()
+  let sample_ids : Array[Int64] = [0L, 1L, 2L, 3L, 4L, 7L, 63L, 64L, 1024L, 999999L]
+  for i in 0..<sample_ids.length() {
+    let orig = sample_ids[i]
+    for ti in 0..<tags.length() {
+      let tag = tags[ti]
+      let enc = encode_mux_id(orig, tag)
+      assert_true(!seen.contains(enc), "mux id collision at " + enc.to_string())
+      seen.set(enc, true)
+      let (dec_id, dec_tag) = decode_mux_id(enc)
+      assert_true(dec_id == orig, "decoded id matches original")
+      assert_true(dec_tag == tag, "decoded tag matches original")
+    }
+  }
+
+  // `make_tagged_mux` call_sync must re-encode `fetch.cancel` `{"id": N}` to `4*N + tag` for all tags 0..3.
+  for ti in 0..<tags.length() {
+    let tag = tags[ti]
+    let rewritten = rewrite_tagged_sync_args("fetch.cancel", "{\"id\":42}", tag)
+    let want_id = 42L * 4L + tag
+    assert_str_eq(rewritten, "{\"id\":" + want_id.to_string() + "}")
+  }
+  // Full 64-bit Int64 precision above 2^53-1 must be preserved without Double rounding.
+  assert_str_eq(
+    rewrite_tagged_sync_args("fetch.cancel", "{\"id\":9007199254740993}", MUX_TAG_ROLE),
+    "{\"id\":36028797018963975}",
+  )
+  // Other sync ops pass through unchanged.
+  assert_str_eq(rewrite_tagged_sync_args("iroh.sockets", "{\"id\":42}", MUX_TAG_MESH), "{\"id\":42}")
+
+  // Verify FILE_STREAM_CHUNK_BYTES matches station_jobs::REMOTE_CHUNK.
+  assert_true(
+    FILE_STREAM_CHUNK_BYTES == station_jobs::REMOTE_CHUNK.to_int64(),
+    "FILE_STREAM_CHUNK_BYTES must equal station_jobs::REMOTE_CHUNK",
+  )
+
+  let role_slot = MuxSlot::{ next_ev: None }
+  assert_true(role_slot.next_ev is None, "role slot starts empty")
+}
+
+test "daemon_core: FRONT_FRAME_END, FRONT_FRAME_FAILED, and multi-chunk data encode/decode" {
+  assert_true(FRONT_FRAME_END == 4294967294L, "FRONT_FRAME_END == 0xFFFFFFFE")
+  assert_true(FRONT_FRAME_FAILED == 4294967293L, "FRONT_FRAME_FAILED == 0xFFFFFFFD")
+
+  let end_b = front_encode_end_frame()
+  assert_true(end_b.length() == 4, "end frame is 4 bytes")
+  match decode_front_frame_header(end_b, 0) {
+    Some(FrontFrameTag::End) => ()
+    _ => panic("expected FrontFrameTag::End")
+  }
+
+  let fail_b = front_encode_failed_frame("disk full")
+  assert_true(fail_b.length() == 8 + 9, "failed frame has 4+4+len bytes")
+  match decode_front_frame_header(fail_b, 0) {
+    Some(FrontFrameTag::Failed) => ()
+    _ => panic("expected FrontFrameTag::Failed")
+  }
+  assert_true(read_u32_be(fail_b, 4) == 9L, "failed message length == 9")
+  let msg_slice = slice_bytes_local(fail_b, 8, fail_b.length())
+  assert_str_eq(bytes_to_str_local(msg_slice, msg_slice.length()), "disk full")
+
+  // Data payload larger than FRONT_FRAME_MOST (65536) splits into multiple length-prefixed frames.
+  let big = Bytes::new(FRONT_FRAME_MOST + 17)
+  big[0] = (0x41).to_byte()
+  big[FRONT_FRAME_MOST + 16] = (0x5A).to_byte()
+  let framed = front_encode_frames(big)
+  assert_true(framed.length() == (4 + FRONT_FRAME_MOST) + (4 + 17), "two frames encoded")
+  match decode_front_frame_header(framed, 0) {
+    Some(FrontFrameTag::Data(n1)) => assert_true(n1 == FRONT_FRAME_MOST, "first chunk == 65536")
+    _ => panic("expected first Data frame")
+  }
+  match decode_front_frame_header(framed, 4 + FRONT_FRAME_MOST) {
+    Some(FrontFrameTag::Data(n2)) => assert_true(n2 == 17, "second chunk == 17")
+    _ => panic("expected second Data frame")
+  }
+  assert_true(decode_front_frame_header(Bytes::new(3), 0) is None, "short header returns None")
+}
+
+test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s replay filter, and front pruning" {
+  let q : Array[PendingHandoverRpc] = []
+  let mk = fn(sid : Int64, line : String, is_front : Bool, at : Int64) -> PendingHandoverRpc {
+    PendingHandoverRpc::{
+      sid: sid,
+      line: line,
+      bin_opt: None,
+      remote_id: "peer-1",
+      alpn: station_mesh::PEER_BYTES_ALPN,
+      v2_bytes: true,
+      is_front: is_front,
+      queued_at_ms: at,
+    }
+  }
+  assert_true(enqueue_handover_rpc(q, mk(1L, "first", true, 1000L), max_items=3), "enqueue 1")
+  assert_true(enqueue_handover_rpc(q, mk(2L, "second", false, 5000L), max_items=3), "enqueue 2")
+  assert_true(enqueue_handover_rpc(q, mk(3L, "third", true, 10000L), max_items=3), "enqueue 3")
+  assert_true(!enqueue_handover_rpc(q, mk(4L, "overflow", false, 11000L), max_items=3), "cap enforced")
+
+  // Periodic expiry: at now=42000L, sid=1 (1000L) expires, 2 & 3 remain.
+  let expired = expire_handover_rpcs(q, 42000L, limit_ms=40000L)
+  assert_true(expired.length() == 1 && expired[0].sid == 1L, "only sid=1 expired")
+  assert_true(q.length() == 2 && q[0].sid == 2L && q[1].sid == 3L, "FIFO order preserved after expiry")
+
+  // Front disconnect pruning removes only is_front items.
+  drop_front_handover_rpcs(q)
+  assert_true(q.length() == 1 && q[0].sid == 2L, "only non-front sid=2 survives front reset")
+
+  // Live-clock per-item replay: clock starts at 46000L (sid=2 queued at 5000L is already expired);
+  // sid=5 (queued at 43000L) dispatches and its synchronous callback advances clock to 85000L,
+  // causing sid=6 (queued at 44000L) to exceed the 40s deadline and be timed out without executing.
+  assert_true(enqueue_handover_rpc(q, mk(5L, "fifth", false, 43000L), max_items=3), "enqueue 5")
+  assert_true(enqueue_handover_rpc(q, mk(6L, "sixth", false, 44000L), max_items=3), "enqueue 6")
+  let mut clock_ms = 46000L
+  let dispatched : Array[Int64] = []
+  let timed_out : Array[Int64] = []
+  replay_handover_rpcs(
+    q,
+    fn() -> Int64 { clock_ms },
+    fn(item : PendingHandoverRpc) -> Unit {
+      dispatched.push(item.sid)
+      if item.sid == 5L {
+        clock_ms = 85000L
+      }
+    },
+    fn(item : PendingHandoverRpc) -> Unit { timed_out.push(item.sid) },
+    limit_ms=40000L,
+  )
+  assert_true(q.length() == 0, "queue cleared after replay")
+  assert_true(dispatched.length() == 1 && dispatched[0] == 5L, "only sid=5 dispatched")
+  assert_true(
+    timed_out.length() == 2 && timed_out[0] == 2L && timed_out[1] == 6L,
+    "sid=2 (pre-expired) and sid=6 (expired mid-replay) timed out without executing",
+  )
+}
+
+test "daemon_core: mark_role_ready barrier rejects premature readiness before handover_done" {
+  assert_true(!can_mark_role_ready(false, false), "must reject mark_role_ready while !handover_done")
+  assert_true(!can_mark_role_ready(false, true), "must reject when !handover_done even if ready")
+  assert_true(can_mark_role_ready(true, false), "allows mark_role_ready once handover_done && !role_ready")
+  assert_true(!can_mark_role_ready(true, true), "idempotent: second call returns false")
+}
+
+test "daemon_core: predecessor identity verification and hub.json formatting" {
+  let id = station_ops::PreviousIdentity::{
+    pid: 4242,
+    start_time_ms: Some(1700000000000L),
+    start_ticks: Some(123456L),
+    boot_id: Some("boot-uuid-1"),
+    file_mtime_ms: Some(1700000000100L),
+  }
+  assert_true(resolve_predecessor_pid(None, fn(_x) { true }) is None, "None identity -> immediate takeover")
+  match resolve_predecessor_pid(Some(id), fn(x) { x.pid == 4242 }) {
+    Some(p) => assert_true(p == 4242, "alive predecessor returns pid")
+    None => panic("expected Some(4242)")
+  }
+  assert_true(
+    resolve_predecessor_pid(Some(id), fn(_x) { false }) is None,
+    "dead or reused predecessor -> immediate takeover",
+  )
+
+  let hub = format_hub_json_with_start(
+    4242,
+    Some(1700000000000L),
+    proc_start_ticks=Some(123456L),
+    boot_id=Some("boot-uuid-1"),
+  )
+  assert_true(hub.contains("\"pid\":4242"), "hub.json contains pid")
+  assert_true(hub.contains("\"procStartTimeMs\":1700000000000"), "hub.json contains procStartTimeMs")
+  assert_true(hub.contains("\"procStartTicks\":123456"), "hub.json contains procStartTicks")
+  assert_true(hub.contains("\"bootId\":\"boot-uuid-1\""), "hub.json contains bootId")
+}
+
+test "daemon_core: authenticate_peer_rpc and parse_and_authenticate_peer_line fail closed on unknown peers" {
+  let roster = station_mesh::CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "self-st",
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      station_mesh::WorkspaceMembership::{
+        workspace: "ws-1",
+        name: "WS",
+        home: true,
+        is_rig_here: false,
+        waiting: false,
+        peers: [station_mesh::PeerInfo::{ id: "known-peer", name: "Peer" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+  let line = "{\"workspace\":\"ws-1\",\"request\":{\"method\":\"ping\"}}"
+  let env = station_mesh::PeerRequestEnvelope::{
+    workspace: "ws-1",
+    request: base_codec::json_obj([("method", base_codec::json_str("ping"))]),
+    has_bytes: false,
+  }
+  match authenticate_peer_rpc(roster, "", env) {
+    Err(_) => ()
+    Ok(_) => panic("empty peer id must be rejected")
+  }
+  match authenticate_peer_rpc(roster, "unknown-peer", env) {
+    Err(_) => ()
+    Ok(_) => panic("unknown peer id must be rejected")
+  }
+  match parse_and_authenticate_peer_line(line, "unknown-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Err(_) => ()
+    Ok(_) => panic("parse_and_authenticate_peer_line must reject unknown peer")
+  }
+  match parse_and_authenticate_peer_line("{bad json", "known-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Err(e) => assert_true(e.contains("invalid peer json"), "malformed json rejected")
+    Ok(_) => panic("malformed json must be rejected")
+  }
+  match parse_and_authenticate_peer_line(line, "known-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Ok(auth) => {
+      assert_str_eq(auth.remote_id, "known-peer")
+      assert_str_eq(auth.alpn, station_mesh::PEER_BYTES_ALPN)
+      match auth.route {
+        station_mesh::PeerRouteTarget::BusLocal(ws) => assert_str_eq(ws, "ws-1")
+        _ => panic("expected BusLocal(ws-1)")
+      }
+    }
+    Err(e) => panic("known workspace peer must be admitted: " + e)
+  }
+}
+
+test "daemon_core: parse_daemon_run_args and parse_tell_reply" {
+  let argv = ["stillfail-station-pion", "run", "--data", "/tmp/d", "--port", "4760", "--control-fd", "9"]
+  match parse_daemon_run_args(argv, None, "/home/u") {
+    Ok(a) => {
+      assert_str_eq(a.data, "/tmp/d")
+      match a.port {
+        Some(p) => assert_true(p == 4760, "port == 4760")
+        None => panic("expected port")
+      }
+      assert_true(a.launcher.linked(), "launcher linked")
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+  match parse_daemon_run_args(["stillfail-station-pion", "run", "--port", "99999"], None, "/home/u") {
+    Err(_) => ()
+    Ok(_) => panic("out-of-range port must fail")
+  }
+  let (retry_perm, _) = parse_tell_reply("{\"error\":\"unknown method\"}")
+  assert_true(!retry_perm, "permanent refusal does not retry")
+  let (retry_ok, until_opt) = parse_tell_reply("{\"result\":{\"until\":1700001234}}")
+  assert_true(!retry_ok, "ok reply does not retry")
+  match until_opt {
+    Some(u) => assert_true(u == 1700001234L, "parsed until")
+    None => panic("expected until")
+  }
+  assert_true(tell_backoff_ms(0) == 1000L && tell_backoff_ms(10) == TELL_BACKOFF_CAP_MS, "backoff capped")
+}

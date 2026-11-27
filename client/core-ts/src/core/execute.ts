@@ -305,10 +305,22 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
         return Effect.succeed({ at: searchBook(book, call.query, call.limit) });
       }
       case "draftPut": {
-        return Effect.succeed(inner.composers.putDraft(call.station, call.chat, call.draft));
+        return Effect.gen(function* () {
+          if (inner.cloudSync.needsWriteVerification()) {
+            const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
+            yield* inner.cloudSync.ensureVerifiedOwner(ws);
+          }
+          return inner.composers.putDraft(call.station, call.chat, call.draft);
+        });
       }
       case "draftGet": {
-        return Effect.succeed(inner.composers.readDraft(call.station, call.chat));
+        return Effect.gen(function* () {
+          if (inner.cloudSync.hasUnverifiedAccounts()) {
+            const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
+            yield* Effect.ignore(inner.cloudSync.ensureVerifiedOwner(ws));
+          }
+          return inner.composers.readDraft(call.station, call.chat);
+        });
       }
       case "migrate":
         return Effect.gen(function* () {

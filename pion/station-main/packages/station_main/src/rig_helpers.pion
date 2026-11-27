@@ -21,21 +21,6 @@ pub struct RigRunArgs {
   pub launcher : station_ops::LauncherArgs
 }
 
-fn parse_non_neg_int(s : String) -> Option[Int] {
-  if s.length() == 0 {
-    return None
-  }
-  let mut acc = 0
-  for i in 0..<s.length() {
-    let c = s.code_unit_at(i) & 0xFF
-    if c < 48 || c > 57 {
-      return None
-    }
-    acc = acc * 10 + (c - 48)
-  }
-  Some(acc)
-}
-
 /// Parse `stillfail-station-pion run [--app DIR] [--port N] [--data DIR] [--control-fd N] [--launcher-*]`
 /// arguments into a normalized `RigRunArgs`.
 pub fn parse_rig_run_args(
@@ -44,47 +29,10 @@ pub fn parse_rig_run_args(
   home : String,
   sep : String = "/",
 ) -> Result[RigRunArgs, String] {
-  let args : Array[String] = []
-  let start = if argv.length() > 1 && argv[1] == "run" { 2 } else { 1 }
-  for i in start..<argv.length() {
-    args.push(argv[i])
+  match parse_daemon_run_args(argv, env_data, home, sep=sep) {
+    Ok(a) => Ok(RigRunArgs::{ app: a.app, data: a.data, port: a.port, launcher: a.launcher })
+    Err(e) => Err(e)
   }
-  let app = station_ops::flag(args, "--app")
-  let data = station_ops::data_dir(args, env_data, home, sep=sep)
-  let port : Option[Int] = match station_ops::flag(args, "--port") {
-    Some(p) => {
-      match parse_non_neg_int(p) {
-        Some(n) => {
-          if n > 65535 {
-            return Err("invalid --port value: " + p)
-          }
-          Some(n)
-        }
-        None => return Err("invalid --port value: " + p)
-      }
-    }
-    None => None
-  }
-  let base_launcher = station_ops::parse_launcher_args(args)
-  let launcher = match (base_launcher.fds, station_ops::flag(args, "--control-fd")) {
-    (None, Some(fd_raw)) => {
-      match parse_non_neg_int(fd_raw) {
-        Some(fd) => {
-          station_ops::LauncherArgs::{
-            fds: Some(station_ops::LauncherFds::{ mcp: -1, loopback: -1, control: fd }),
-            pipe: base_launcher.pipe,
-            ports: base_launcher.ports,
-            carries: base_launcher.carries,
-            heartbeats: base_launcher.heartbeats,
-            installer: base_launcher.installer,
-          }
-        }
-        None => return Err("invalid --control-fd value: " + fd_raw)
-      }
-    }
-    _ => base_launcher
-  }
-  Ok(RigRunArgs::{ app: app, data: data, port: port, launcher: launcher })
 }
 
 /// Launcher-parity `is_rig` check on raw `cloud.json` text (`station/native/launcher/src/data.rs:202`):

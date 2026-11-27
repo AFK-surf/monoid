@@ -88,6 +88,45 @@ let told_bars : Ref[Bool?] = Ref(None)
 let told_dark : Ref[Bool?] = Ref(None)
 
 ///|
+/// The theme the person chose on an earlier run ("light", "dark" or "system"), given by the host before the core's
+/// `prefs` have been read so the first frame's ground matches the host window's.
+pub let cached_theme_pref : Ref[String] = Ref("system")
+
+///|
+/// Called once `prefs` say the person's theme choice ("light", "dark" or "system") and whenever it changes, so the
+/// host can persist it for the next cold start.
+pub let on_theme_pref : Ref[((String) -> Unit)?] = Ref(None)
+
+///|
+let told_theme_pref : Ref[String?] = Ref(None)
+
+///|
+/// The workspace last in view on an earlier run, given by the host before `accounts`/`workspaces`/`prefs` arrive so
+/// cold start can pre-subscribe its chat list on frame 0 in parallel (collapsing the 2-round-trip waterfall into 1).
+pub let cached_workspace : Ref[String] = Ref("")
+
+///|
+/// Called when the workspace in view changes (or "" on sign-out) so the host can persist it for the next cold start.
+pub let on_workspace_pref : Ref[((String) -> Unit)?] = Ref(None)
+
+///|
+let told_workspace_pref : Ref[String?] = Ref(None)
+
+///|
+/// Records the active workspace ID `ws` (or "" on sign-out) and forwards changes to `on_workspace_pref` once.
+pub fn note_workspace_pref(ws : String) -> Unit {
+  if told_workspace_pref.val == Some(ws) {
+    return
+  }
+  let same_cached = cached_workspace.val == ws
+  told_workspace_pref.val = Some(ws)
+  cached_workspace.val = ws
+  if !same_cached && on_workspace_pref.val is Some(tell) {
+    tell(ws)
+  }
+}
+
+///|
 /// The glass chosen on this device, from the prefs' `glass` (`frosted`, `solid`; "" liquid glass, the default), or,
 /// where none is set, from the frost an older app set (`glassFrost`, "0".."100": 100 solid, above 0 frosted).
 // (`glassFrost` is read here only till 2026-12-03, 7 days after the three materials ship; then `glass` alone)
@@ -132,17 +171,35 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
   @ui.set_haptics(text(prefs, "haptics") != "off")
   // the experimental switches as chosen here (the prefs' `features`)
   features_from_prefs(prefs)
-  let dark = @settings.dark(prefs, system_dark)
+  let dark = match prefs {
+    Some(_) => @settings.dark(prefs, system_dark)
+    None =>
+      match cached_theme_pref.val {
+        "dark" => true
+        "light" => false
+        _ => system_dark
+      }
+  }
   @sf.set_dark(Some(dark))
   // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange; one
   // shown a moment over it while 外观's dot is pointed at (accent_preview) kept till it ends
   accent_set_here.val = @settings.pref_from(prefs, "accent")
   @sf.set_accent(accent_shown.val.unwrap_or(accent_set_here.val))
   // (the host told once the prefs are read: not the system's first, then the one chosen)
-  if prefs is Some(_) && told_dark.val != Some(dark) {
-    told_dark.val = Some(dark)
-    // (said on the log for scripted runs: e2e/flows checks the theme was taken)
-    @hostapi.log(if dark { "theme: dark" } else { "theme: light" })
+  if prefs is Some(_) {
+    let mode = @settings.appearance(prefs)
+    if told_theme_pref.val != Some(mode) {
+      told_theme_pref.val = Some(mode)
+      cached_theme_pref.val = mode
+      if on_theme_pref.val is Some(tell) {
+        tell(mode)
+      }
+    }
+    if told_dark.val != Some(dark) {
+      told_dark.val = Some(dark)
+      // (said on the log for scripted runs: e2e/flows checks the theme was taken)
+      @hostapi.log(if dark { "theme: dark" } else { "theme: light" })
+    }
   }
   dark
 }
@@ -454,6 +511,12 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
+  cached_theme_pref.val = "system"
+  on_theme_pref.val = None
+  told_theme_pref.val = None
+  cached_workspace.val = ""
+  on_workspace_pref.val = None
+  told_workspace_pref.val = None
   board_told.val = false
   selection_intent_told.val = false
   cmd_quote_told.val = false

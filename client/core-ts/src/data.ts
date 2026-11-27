@@ -5,7 +5,7 @@
 //
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
-import { Deferred, Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue, Semaphore } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS, ROOM_BACK_PAGES } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import type { SharedMarkKind, SharedMarksSnapshot, SharedMeta } from "./db/chats.ts";
@@ -92,16 +92,53 @@ export function dbName(sub: string): string {
 export const DEVICE_TABLES = ["prefs", "changelog", "choice", "chat_ref", "drive_place", "verified", "keys"] as const;
 export type DeviceTable = (typeof DEVICE_TABLES)[number];
 
+/// Compact immutable snapshot of the recovery-relevant fields read from disk `device/choice` before in-memory
+/// mutations merge over them; holds already-frozen references (no deep clone) and is cleared once recovery finishes.
+export type ChoiceRecoverySnapshot = {
+  readonly pendingMe: Record<string, unknown> | null;
+  readonly pendingMeSessions: Record<string, string> | null;
+  readonly accountSessions: Record<string, string> | null;
+  readonly workspaceOwners: Record<string, unknown> | null;
+  readonly credWorkspaces: ReadonlyMap<string, readonly string[]>;
+};
+
+function extractChoiceRecovery(v: Record<string, unknown>): ChoiceRecoverySnapshot | null {
+  const pendingMe = isObject(v.pendingMe) ? (frozen(v.pendingMe) as Record<string, unknown>) : null;
+  const pendingMeSessions = isObject(v.pendingMeSessions) ? (frozen(v.pendingMeSessions) as Record<string, string>) : null;
+  const accountSessions = isObject(v.accountSessions) ? (frozen(v.accountSessions) as Record<string, string>) : null;
+  const workspaceOwners = isObject(v.workspaceOwners) ? (frozen(v.workspaceOwners) as Record<string, unknown>) : null;
+  const credWorkspaces = new Map<string, readonly string[]>();
+  for (const key of Object.keys(v)) {
+    if (key.startsWith("credWorkspaces/") && Array.isArray(v[key])) {
+      const sub = key.slice("credWorkspaces/".length);
+      if (sub.length > 0) credWorkspaces.set(sub, frozen(v[key]) as readonly string[]);
+    }
+  }
+  if (!pendingMe && !pendingMeSessions && !accountSessions && !workspaceOwners && credWorkspaces.size === 0) return null;
+  return { pendingMe, pendingMeSessions, accountSessions, workspaceOwners, credWorkspaces };
+}
+
 class Device {
   readonly #host: Host;
+  readonly #runner: Runner;
   readonly #tables = new Map<string, Record<string, unknown>>();
   readonly #dirty = new Set<string>();
+  /// Tables whose initial `storageGet` failed (distinct from reading `null`/empty): never overwritten on disk until
+  /// a retry read (`reload`) succeeds and merges existing keys.
+  readonly #unloaded = new Set<string>();
+  /// Single-flight in-progress `reload` per table (owned by `#runner` so interrupting one waiter never cancels others).
+  readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
+  /// Compact pre-merge recovery snapshot of disk `device/choice`, cleared once recovery & concurrent verifications end.
+  #choiceRecovery: ChoiceRecoverySnapshot | null = null;
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
+  /// Called synchronously inside the Runner-owned reload fiber right after an unloaded table loads, BEFORE waiters wake.
+  onTableReloaded: (table: string) => void = () => {};
 
   constructor(host: Host, runner: Runner) {
     this.#host = host;
+    this.#runner = runner;
     this.#writes = Effect.runSync(Queue.unbounded<string>());
     // One writer: a table's latest value, in the order they changed. A write once begun is finished, though the core
     // closes: `close` writes what is left after it. One that fails leaves its table to be written again (by the next
@@ -109,14 +146,109 @@ class Device {
     this.#writer = runner.fork(
       Effect.forever(
         Effect.flatMap(Queue.take(this.#writes), (table) =>
-          Effect.uninterruptible(Effect.suspend(() => (this.#dirty.has(table) ? Effect.ignore(this.#write(table), { log: "Unhandled", message: "table written" }) : Effect.void))),
+          Effect.uninterruptible(Effect.suspend(() => (this.#dirty.has(table) && !this.#unloaded.has(table) ? Effect.ignore(this.#write(table), { log: "Unhandled", message: "table written" }) : Effect.void))),
         ),
       ),
     );
   }
 
-  /// A table's latest value written; still to be written if it fails.
+  /// Whether `table`'s initial disk read failed and has not yet been successfully reloaded.
+  isUnloaded(table: string): boolean {
+    return this.#unloaded.has(table);
+  }
+
+  /// Compact pre-merge recovery snapshot of disk `device/choice` (null if none or already released).
+  choiceRecovery(): ChoiceRecoverySnapshot | null {
+    return this.#choiceRecovery;
+  }
+
+  /// Releases the pre-merge recovery snapshot once startup/reload recovery and concurrent verifications have finished.
+  clearChoiceRecovery(): void {
+    this.#choiceRecovery = null;
+  }
+
+  #applyLoadedTable(table: string, bytes: Uint8Array | null): void {
+    this.#unloaded.delete(table);
+    const v = bytes ? parseJson(bytes) : undefined;
+    if (isObject(v)) {
+      if (table === "choice") this.#choiceRecovery = extractChoiceRecovery(v);
+      const cur = this.#tables.get(table) ?? {};
+      const merged: Record<string, unknown> = {};
+      for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
+      for (const key of Object.keys(cur)) {
+        if (
+          table === "choice"
+          && (key === "pendingMe" || key === "pendingMeSessions" || key === "accountSessions")
+          && isObject(merged[key])
+          && isObject(cur[key])
+        ) {
+          merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
+        } else if (
+          table === "choice"
+          && (key === "pendingCredentialDeletes" || key.startsWith("credWorkspaces/"))
+          && Array.isArray(merged[key])
+          && Array.isArray(cur[key])
+        ) {
+          merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+        } else {
+          merged[key] = cur[key];
+        }
+      }
+      this.#tables.set(table, merged);
+    }
+    if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
+  }
+
+  /// Retries reading an unloaded device table from host storage (single-flight per table, owned by `#runner` while
+  /// open so cancelling one waiter never cancels reload or post-load recovery) and merges any in-memory mutations on
+  /// top of the persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
+  reload(table: string, runHook = true): Effect.Effect<boolean> {
+    return Effect.suspend(() => {
+      if (!this.#unloaded.has(table)) return Effect.succeed(true);
+      if (this.#runner.closed) {
+        return Effect.gen({ self: this }, function* () {
+          const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
+          if (r._tag === "Success" && this.#unloaded.has(table)) {
+            this.#applyLoadedTable(table, r.success);
+            if (runHook) this.onTableReloaded(table);
+            return true;
+          }
+          return !this.#unloaded.has(table);
+        });
+      }
+      let d = this.#reloading.get(table);
+      if (!d) {
+        d = Deferred.makeUnsafe<boolean>();
+        this.#reloading.set(table, d);
+        const done = d;
+        let ok = false;
+        this.#runner.fork(
+          Effect.ensuring(
+            Effect.gen({ self: this }, function* () {
+              const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
+              if (r._tag === "Success" && this.#unloaded.has(table)) {
+                this.#applyLoadedTable(table, r.success);
+                if (runHook) this.onTableReloaded(table);
+                ok = true;
+              } else if (!this.#unloaded.has(table)) {
+                ok = true;
+              }
+            }),
+            Effect.sync(() => {
+              this.#reloading.delete(table);
+              Deferred.doneUnsafe(done, Effect.succeed(ok));
+            }),
+          ),
+        );
+      }
+      return Deferred.await(d);
+    });
+  }
+
+  /// A table's latest value written; still to be written if it fails. Refuses to overwrite a table whose original
+  /// persisted contents have not been read yet.
   #write(table: string): Effect.Effect<void, HostError> {
+    if (this.#unloaded.has(table)) return Effect.fail(new HostError(`device/${table} has not been read`));
     this.#dirty.delete(table);
     return Effect.tapError(this.#host.storageSet(`device/${table}`, toJsonBytes(this.#tables.get(table) ?? {})), () => Effect.sync(() => void this.#dirty.add(table)));
   }
@@ -128,6 +260,7 @@ class Device {
       yield* Fiber.interrupt(this.#writer);
       const failed: string[] = [];
       for (const table of [...this.#dirty]) {
+        if (this.#unloaded.has(table)) yield* this.reload(table);
         const written = yield* Effect.result(this.#write(table));
         if (written._tag === "Failure") failed.push(`device/${table}: ${written.failure.message}`);
       }
@@ -140,13 +273,20 @@ class Device {
       // (read together and taken in order: at a start each read waits its turn on the host's disk behind what else is read
       // or written then, and the first view waits on all of them; core.start `ms.db`)
       const read = yield* Effect.all(
-        DEVICE_TABLES.map((table) => Effect.orElseSucceed(host.storageGet(`device/${table}`), () => null)),
+        DEVICE_TABLES.map((table) => Effect.result(host.storageGet(`device/${table}`))),
         { concurrency: "unbounded" },
       );
       for (const [i, table] of DEVICE_TABLES.entries()) {
-        const bytes = read[i];
+        const r = read[i];
+        if (r._tag === "Failure") {
+          this.#unloaded.add(table);
+          continue;
+        }
+        this.#unloaded.delete(table);
+        const bytes = r.success;
         const v = bytes ? parseJson(bytes) : undefined;
         if (!isObject(v) || this.#tables.has(table)) continue;
+        if (table === "choice") this.#choiceRecovery = extractChoiceRecovery(v);
         // Each value frozen, as `put` keeps it: shared by whoever reads it (`shared`).
         for (const key of Object.keys(v)) frozen(v[key]);
         this.#tables.set(table, v as Record<string, unknown>);
@@ -186,6 +326,8 @@ class Device {
 export type DataOptions = {
   /// The signed-in account that reaches a workspace (Workspaces' owner): its database keeps the workspace's.
   owner: (workspace: string) => string | null;
+  /// Whether `workspace`'s current owner is verified against sign-in order (no earlier deferred account remaining).
+  ownerVerified?: (workspace: string) => boolean;
   derive?: Derive;
   /// The most an account's database may take on the device (KEPT by default).
   kept?: number;
@@ -310,12 +452,36 @@ const CHAT_ANSWERS_KEPT = 512;
 /// How long a session counts as used lately once its chat or history was opened (`usedLately`).
 export const RECENT_MS = 3 * 86_400_000;
 
+export type OpenTiming = { openMs: number; ensureMs: number; importMs: number };
+
 export class Data {
   readonly #host: Host;
   readonly #runner: Runner;
   readonly #owner: (workspace: string) => string | null;
+  readonly #ownerVerified: (workspace: string) => boolean;
   readonly #derive: Derive;
   readonly #dbs = new Map<string, AccountDb>();
+  /// Ephemeral in-memory fallback DBs opened via `host.memoryDb()` (do not persist across restarts).
+  readonly #ephemeral = new WeakSet<AccountDb>();
+  /// Signed-in account order, preserved by `dbs()`, `mes()`, and `locals()` even when an active account's database
+  /// opens ahead of others on cold start.
+  #order: string[] = [];
+  /// True once `setOrder` or `accounts` has established the authoritative signed-in list (so empty `#order` means
+  /// signed out, never unrestricted).
+  #ordered = false;
+  /// Accounts whose database open is deferred until after the first screen's topics answer.
+  readonly #deferred = new Set<string>();
+  /// Account-owned in-flight database opens by sub and generation: individual caller interruption never cancels the
+  /// account's open task, and waiters observe the real published DB (re-checking generation on sign-out/re-sign-in).
+  readonly #opening = new Map<string, { gen: number; done: Deferred.Deferred<AccountDb | undefined> }>();
+  /// Per-account FIFO mutex serializing open, sign-out cleanup (`deleteDb`), and re-sign-in on the same DB file.
+  readonly #subLocks = new Map<string, Semaphore.Semaphore>();
+  /// Monotonic per-sub generation bumped on sign-out and sign-in so stale opens never publish into a newer session.
+  readonly #subGen = new Map<string, number>();
+  /// Drafts written or flushed while their owning account DB was still deferred: flushed once verified ownership
+  /// resolves, and discarded if any potentially owning account signs out.
+  readonly #pendingDrafts = new Map<string, { topic: Topic; value: unknown; deferred: ReadonlySet<string>; provisional: string | null }>();
+  #closed = false;
   readonly device: Device;
   readonly #changed: ((topic: Topic) => void)[] = [];
   readonly #logChanged: ((table: string, station: string, id: string) => void)[] = [];
@@ -354,8 +520,9 @@ export class Data {
   readonly #loginSteps = new Map<string, { id: string; job: unknown; from: string | null }>();
   /// How far sessions' transcripts go as streams and reads said, past what their summaries say (`transcriptHead`).
   readonly #transcriptHeads = new Map<string, { last: number; skipped: number }>();
-  /// Values as typed, there at once and written a moment after their last change (drafts).
-  readonly #soon = new Map<string, [Topic, unknown]>();
+  /// Values as typed, there at once and written a moment after their last change (drafts), bound to the owning
+  /// account session generation so sign-out cannot flush a draft into a different account's database.
+  readonly #soon = new Map<string, { topic: Topic; value: unknown; sub: string | null; gen: number; db: AccountDb | undefined; deferred: ReadonlySet<string> }>();
   #flushing = false;
   /// What each database's state says, by account.
   readonly notes = new Map<string, DbNote>();
@@ -366,8 +533,14 @@ export class Data {
   /// told whether a station is kept in it, so the transcripts left as they were are read again (station/sync.ts).
   onRoomAgain: (kept: (station: string) => boolean) => void = () => {};
   onReplay: ((affected: (station: string) => boolean) => void) | null = null;
-  /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts).
+  /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts) before publishing.
   onOpened: (db: AccountDb) => Effect.Effect<void> = () => Effect.void;
+  /// Told once an opened database is published in `#dbs` and readable by views.
+  onPublished: (db: AccountDb) => void = () => {};
+  /// Told when a deferred account clears without publishing a DB (unrecoverable open failure) so callers can re-verify owners.
+  onDeferredCleared: (sub: string) => void = () => {};
+  /// Told after an account database settles a commit without being full (used to retry unpersisted `#liveMe`).
+  onDbCommitted: (db: AccountDb) => void = () => {};
   /// The marks of databases found damaged as the core ran, as they are written (damageKept).
   readonly #damaged = new Map<string, Promise<void>>();
 
@@ -393,6 +566,7 @@ export class Data {
     this.#runner = runner;
     this.#kept = options.kept ?? KEPT;
     this.#owner = options.owner;
+    this.#ownerVerified = options.ownerVerified ?? ((ws) => this.#owner(ws) !== null);
     this.#derive = options.derive ?? NO_DERIVE;
     this.device = new Device(host, runner);
     this.device.onChange = (table, key) => this.#tellQuery({ topic: "$device-record", table, key });
@@ -405,96 +579,361 @@ export class Data {
     for (const db of this.#dbs.values()) db.shrinkMemory();
   }
 
+  /// Loads the device's own tables from host storage (`DEVICE_TABLES`).
+  loadDevice(): Effect.Effect<void> {
+    return this.device.load(this.#host);
+  }
+
+  /// Records the full signed-in account order and which accounts are deferred for background open.
+  setOrder(subs: readonly string[], deferred: readonly string[] = []): void {
+    this.#order = [...subs];
+    this.#ordered = true;
+    this.#deferred.clear();
+    for (const sub of deferred) this.#deferred.add(sub);
+  }
+
+  /// Whether `sub`'s database open is currently deferred.
+  isDeferred(sub: string): boolean {
+    return this.#deferred.has(sub);
+  }
+
+  /// Whether any account's database open is still deferred.
+  hasDeferred(): boolean {
+    return this.#deferred.size > 0;
+  }
+
+  /// Current login generation for `sub` (bumped on sign-out and sign-in).
+  accountGen(sub: string): number {
+    return this.#subGen.get(sub) ?? 0;
+  }
+
+  /// Snapshots signed-in account generations (for `subs` if given, else all signed-in accounts) so an async
+  /// operation awaiting owner verification or IO can abort if a relevant account signs out mid-wait.
+  accountSessionSnapshot(subs?: Iterable<string>): { gens: Map<string, number> } {
+    const gens = new Map<string, number>();
+    const list = subs ? [...subs] : this.#order;
+    for (const sub of list) gens.set(sub, this.#subGen.get(sub) ?? 0);
+    return { gens };
+  }
+
+  /// Whether any account present in `snapshot` has since signed out or changed login generation.
+  accountSignedOutSince(snapshot: { gens: Map<string, number> }): boolean {
+    if (this.#closed) return true;
+    for (const [sub, gen] of snapshot.gens) {
+      if (!this.#allowed(sub) || (this.#subGen.get(sub) ?? 0) !== gen) return true;
+    }
+    return false;
+  }
+
+  /// Whether `sub` is still permitted to open/publish according to the signed-in order.
+  #allowed(sub: string): boolean {
+    return !this.#ordered || this.#order.includes(sub);
+  }
+
+  #lockOf(sub: string): Semaphore.Semaphore {
+    let lock = this.#subLocks.get(sub);
+    if (!lock) {
+      lock = Semaphore.makeUnsafe(1);
+      this.#subLocks.set(sub, lock);
+    }
+    return lock;
+  }
+
+  /// Opens one account's database (skipping if already open or no longer signed in), returning the live `AccountDb`
+  /// if published. Runs the open in an account-owned fiber serialized per sub so cancelling a single waiter never
+  /// aborts the open or clears `isDeferred` prematurely.
+  openAccount(sub: string, timing?: OpenTiming): Effect.Effect<AccountDb | undefined> {
+    return Effect.gen({ self: this }, function* () {
+      while (!this.#closed) {
+        if (!this.#allowed(sub)) {
+          this.#deferred.delete(sub);
+          return undefined;
+        }
+        const live = this.#dbs.get(sub);
+        if (live) {
+          this.#deferred.delete(sub);
+          return live;
+        }
+        const gen = this.#subGen.get(sub) ?? 0;
+        let entry = this.#opening.get(sub);
+        if (!entry || entry.gen !== gen) {
+          const done = Deferred.makeUnsafe<AccountDb | undefined>();
+          entry = { gen, done };
+          this.#opening.set(sub, entry);
+          const cur = entry;
+          this.#runner.fork(
+            Effect.gen({ self: this }, function* () {
+              let result: AccountDb | undefined = undefined;
+              yield* Effect.ensuring(
+                this.#lockOf(sub).withPermits(1)(
+                  Effect.map(this.#openLocked(sub, gen, timing), (db) => {
+                    result = db;
+                  }),
+                ),
+                Effect.sync(() => {
+                  if (this.#opening.get(sub) === cur) this.#opening.delete(sub);
+                  Deferred.doneUnsafe(done, Effect.succeed(result));
+                }),
+              );
+            }),
+          );
+        }
+        const db = yield* Deferred.await(entry.done);
+        if (this.#closed) return undefined;
+        // Generation changed while awaiting (sign-out + re-sign-in): loop to acquire the current generation's open.
+        if ((this.#subGen.get(sub) ?? 0) !== gen) continue;
+        return db ?? this.#dbs.get(sub);
+      }
+      return undefined;
+    });
+  }
+
+  /// Opens the given accounts' databases in order, skipping any already open or no longer signed in.
+  openAccounts(subs: readonly string[], timing?: OpenTiming): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      for (const sub of subs) {
+        if (this.#closed) return;
+        yield* this.openAccount(sub, timing);
+      }
+    });
+  }
+
   /// Opens the signed-in accounts' databases (and reads the device's values): what the first view is answered from.
   open(subs: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      yield* this.device.load(this.#host);
-      for (const sub of subs) yield* this.#open(sub);
+      yield* this.loadDevice();
+      this.setOrder(subs);
+      yield* this.openAccounts(subs);
+    });
+  }
+
+  /// Reads the persisted `/v1/me` document for a not-yet-opened account being signed out so its workspace credentials
+  /// can still be cleaned up cleanly.
+  #readUnopenedMe(sub: string): Effect.Effect<unknown> {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.#host.openDb) return undefined;
+      const opened = yield* Effect.result(this.#host.openDb(dbName(sub)));
+      if (opened._tag === "Failure") return undefined;
+      const sql = opened.success;
+      try {
+        const rows = sql.all("SELECT json FROM account_doc WHERE name = 'me'");
+        return rows.length > 0 && typeof rows[0][0] === "string" ? parseJson(rows[0][0]) : undefined;
+      } catch {
+        return undefined;
+      } finally {
+        try {
+          sql.close();
+        } catch {
+          // Already closed.
+        }
+      }
     });
   }
 
   /// The accounts signed in now: a new one's database is opened; one signed out has its database removed.
-  accounts(subs: string[]): Effect.Effect<void> {
+  /// Intentionally deferred accounts still present in `subs` stay deferred (e.g. token refreshes firing `accounts.onChange`).
+  accounts(subs: string[], explicitlyRemoved?: readonly string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      for (const [sub, db] of [...this.#dbs]) {
-        if (subs.includes(sub)) continue;
-        this.onSignedOut(sub, db.accountDoc("me"));
-        this.#dbs.delete(sub);
-        this.#setNote(sub, null);
-        db.close();
-        if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(db.name), { log: "Unhandled", message: "database deleted" });
-        this.#tellAll();
+      if (this.#closed) return;
+      const prevOrder = new Set(this.#order);
+      const removed = new Set<string>();
+      for (const sub of this.#order) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#dbs.keys()) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#deferred) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#opening.keys()) if (!subs.includes(sub)) removed.add(sub);
+      if (explicitlyRemoved) for (const sub of explicitlyRemoved) if (!subs.includes(sub)) removed.add(sub);
+      this.#order = [...subs];
+      this.#ordered = true;
+      for (const sub of removed) {
+        this.#deferred.delete(sub);
+        this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
       }
-      for (const sub of subs) if (!this.#dbs.has(sub)) yield* this.#open(sub);
+      if (removed.size > 0 && this.#pendingDrafts.size > 0) {
+        for (const [key, entry] of [...this.#pendingDrafts]) {
+          if ([...removed].some((sub) => entry.deferred.has(sub) || entry.provisional === sub)) {
+            this.#pendingDrafts.delete(key);
+            this.#tell(entry.topic);
+          }
+        }
+      }
+      if (removed.size > 0 && this.#soon.size > 0) {
+        for (const [key, entry] of [...this.#soon]) {
+          // Once bound to a verified DB, only signing out THAT owning account discards the draft; unrelated deferred
+          // accounts signing out must never drop a verified owner's debounced draft.
+          const affected = entry.db !== undefined
+            ? removed.has(entry.db.sub)
+            : (entry.sub !== null && removed.has(entry.sub)) || [...removed].some((sub) => entry.deferred.has(sub));
+          if (affected) {
+            this.#soon.delete(key);
+            this.#tell(entry.topic);
+          }
+        }
+      }
+      for (const sub of subs) {
+        if (!prevOrder.has(sub)) this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
+      }
+      // Serialize each removed account's close + `deleteDb` through its per-sub mutex concurrently so every removed
+      // account enters its FIFO lock before any subsequent re-sign-in can open the same DB filename.
+      if (removed.size > 0) {
+        yield* Effect.forEach(
+          [...removed],
+          (sub) =>
+            this.#lockOf(sub).withPermits(1)(
+              Effect.gen({ self: this }, function* () {
+                if (this.#closed) return;
+                const db = this.#dbs.get(sub);
+                let me: unknown;
+                if (db) {
+                  me = db.accountDoc("me");
+                  this.#dbs.delete(sub);
+                  this.#setNote(sub, null);
+                  db.close();
+                } else {
+                  me = yield* this.#readUnopenedMe(sub);
+                  this.#setNote(sub, null);
+                }
+                this.onSignedOut(sub, me);
+                if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(dbName(sub)), { log: "Unhandled", message: "database deleted" });
+                this.#tellAll();
+              }),
+            ),
+          { concurrency: "unbounded", discard: true },
+        );
+      }
+      for (const sub of subs) {
+        if (!this.#dbs.has(sub) && !this.#deferred.has(sub)) {
+          yield* this.openAccount(sub);
+        }
+      }
     });
   }
 
-  #open(sub: string): Effect.Effect<void> {
+  /// Opens one account DB while holding `#lockOf(sub)` for generation `gen`. Returns the published `AccountDb` or
+  /// `undefined`, and clears `#deferred` only when `gen` still matches at publish or unrecoverable failure.
+  #openLocked(sub: string, gen: number, timing?: OpenTiming): Effect.Effect<AccountDb | undefined> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#dbs.has(sub)) return;
-      const name = dbName(sub);
-      let sql: Sql | null = null;
-      let db: AccountDb | null = null;
-      let note: DbNote | null = null;
-      if (this.#host.openDb) {
-        let opened = yield* this.#openFile(sub, name);
-        // Damaged (found so now, or as an earlier core ran): made again, with what this device did itself.
-        const mark = yield* Effect.orElseSucceed(this.#host.storageGet(damagedKey(name)), () => null);
-        const damaged = opened.db === null ? opened.error instanceof SqlError && opened.error.kind === "corrupt" : mark !== null;
-        if (damaged) opened = yield* this.#makeAgain(sub, name, opened, opened.db === null ? opened.error.message : `as it ran: ${String(get(mark ? parseJson(mark) : null, "error") ?? "")}`);
-        if (opened.db !== null) db = opened.db;
-        else {
-          try {
-            opened.sql?.close();
-          } catch {
-            // Let go however it can be.
-          }
-          const busy = opened.error instanceof SqlError && opened.error.kind === "busy";
-          note = { kind: busy ? "busy" : "failed", detail: opened.error.message };
-          this.#report(busy ? "LocalDbBusy" : "LocalDbFailed", opened.error.message);
-        }
-      }
-      if (db === null) {
-        // Nothing to keep it in (another process holds it, or this host keeps nothing): kept in memory this run.
+      const stillValid = () => !this.#closed && !this.#dbs.has(sub) && (this.#subGen.get(sub) ?? 0) === gen && this.#allowed(sub);
+      if (!stillValid()) return this.#dbs.get(sub);
+      let unstored: AccountDb | Sql | null = null;
+      const closeUnstored = () => {
+        if (unstored === null) return;
+        const u = unstored;
+        unstored = null;
         try {
-          sql = this.#host.memoryDb?.() ?? null;
+          u.close();
         } catch {
-          sql = null;
+          // Let go however it can be.
         }
-        if (sql === null) {
-          if (note) this.#setNote(sub, note);
-          return;
-        }
-        try {
-          db = new AccountDb(sub, name, sql, this.#runner, this.#derive);
-        } catch (e) {
-          this.#setNote(sub, { kind: "failed", detail: e instanceof Error ? e.message : String(e) });
-          return;
-        }
-      }
-      if (db.readOnly) note = { kind: "newer", detail: null };
-      db.onCommit = (changes) => this.#committed(db, changes);
-      if (this.onReplay) db.onReplay = (affected) => this.onReplay?.((station) => this.of(station) === db && affected(station));
-      for (const [d, maker] of this.#makers) db.kept.made(d, maker);
-      db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
-      this.#dbs.set(sub, db);
-      if (note) this.#setNote(sub, note);
-      yield* this.onOpened(db);
-      this.#keepWithin(db);
-      this.#giveBackRoom(db);
-      this.#tellAll();
+      };
+      return yield* Effect.ensuring(
+        Effect.gen({ self: this }, function* () {
+          if (!stillValid()) return undefined;
+          const name = dbName(sub);
+          let sql: Sql | null = null;
+          let db: AccountDb | null = null;
+          let note: DbNote | null = null;
+          if (this.#host.openDb) {
+            let opened = yield* this.#openFile(sub, name, timing);
+            unstored = opened.db ?? opened.sql;
+            // Damaged (found so now, or as an earlier core ran): made again, with what this device did itself.
+            const tMark = timing ? this.#host.monotonicMs() : 0;
+            const mark = yield* Effect.orElseSucceed(this.#host.storageGet(damagedKey(name)), () => null);
+            if (timing) timing.openMs += this.#host.monotonicMs() - tMark;
+            const damaged = opened.db === null ? opened.error instanceof SqlError && opened.error.kind === "corrupt" : mark !== null;
+            if (damaged) {
+              unstored = null;
+              opened = yield* this.#makeAgain(sub, name, opened, opened.db === null ? opened.error.message : `as it ran: ${String(get(mark ? parseJson(mark) : null, "error") ?? "")}`);
+              unstored = opened.db ?? opened.sql;
+            }
+            if (opened.db !== null) db = opened.db;
+            else {
+              closeUnstored();
+              const busy = opened.error instanceof SqlError && opened.error.kind === "busy";
+              note = { kind: busy ? "busy" : "failed", detail: opened.error.message };
+              this.#report(busy ? "LocalDbBusy" : "LocalDbFailed", opened.error.message);
+            }
+          }
+          if (db === null) {
+            // Nothing to keep it in (another process holds it, or this host keeps nothing): kept in memory this run.
+            const tMem = timing ? this.#host.monotonicMs() : 0;
+            try {
+              sql = this.#host.memoryDb?.() ?? null;
+            } catch {
+              sql = null;
+            }
+            if (timing) timing.openMs += this.#host.monotonicMs() - tMem;
+            if (sql === null) {
+              if (stillValid()) {
+                this.#deferred.delete(sub);
+                if (note) this.#setNote(sub, note);
+                this.onDeferredCleared(sub);
+              }
+              return undefined;
+            }
+            unstored = sql;
+            const tEnsure = timing ? this.#host.monotonicMs() : 0;
+            try {
+              db = new AccountDb(sub, name, sql, this.#runner, this.#derive);
+              this.#ephemeral.add(db);
+              unstored = db;
+            } catch (e) {
+              closeUnstored();
+              if (stillValid()) {
+                this.#deferred.delete(sub);
+                this.#setNote(sub, { kind: "failed", detail: e instanceof Error ? e.message : String(e) });
+                this.onDeferredCleared(sub);
+              }
+              return undefined;
+            }
+            if (timing) timing.ensureMs += this.#host.monotonicMs() - tEnsure;
+          }
+          if (!stillValid()) {
+            closeUnstored();
+            return undefined;
+          }
+          if (db.readOnly) note = { kind: "newer", detail: null };
+          db.onCommit = (changes) => this.#committed(db, changes);
+          if (this.onReplay) db.onReplay = (affected) => this.onReplay?.((station) => this.of(station) === db && affected(station));
+          for (const [d, maker] of this.#makers) db.kept.made(d, maker);
+          db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
+          // Run legacy import before publishing `db` to `#dbs`, so sign-out cannot close `db` mid-import.
+          const tImp = timing ? this.#host.monotonicMs() : 0;
+          yield* this.onOpened(db);
+          if (timing) timing.importMs += this.#host.monotonicMs() - tImp;
+          if (!stillValid()) {
+            closeUnstored();
+            return undefined;
+          }
+          this.#dbs.set(sub, db);
+          this.#deferred.delete(sub);
+          unstored = null;
+          this.#setNote(sub, note);
+          this.onPublished(db);
+          this.#keepWithin(db);
+          this.#giveBackRoom(db);
+          this.#tellAll();
+          return db;
+        }),
+        Effect.sync(closeUnstored),
+      );
     });
   }
 
   /// An account's database file opened and read as the core uses it (Watched), or why not.
-  #openFile(sub: string, name: string): Effect.Effect<Opened> {
+  #openFile(sub: string, name: string, timing?: OpenTiming): Effect.Effect<Opened> {
     return Effect.gen({ self: this }, function* () {
+      const tOpen = timing ? this.#host.monotonicMs() : 0;
       const opened = yield* Effect.result(this.#host.openDb!(name));
+      if (timing) timing.openMs += this.#host.monotonicMs() - tOpen;
       if (opened._tag === "Failure") return { db: null, sql: null, error: opened.failure };
       const sql = opened.success;
+      const tEnsure = timing ? this.#host.monotonicMs() : 0;
       try {
-        return { db: new AccountDb(sub, name, new Watched(sql, (error) => this.#sawDamage(name, error)), this.#runner, this.#derive), sql };
+        const db = new AccountDb(sub, name, new Watched(sql, (error) => this.#sawDamage(name, error)), this.#runner, this.#derive);
+        if (timing) timing.ensureMs += this.#host.monotonicMs() - tEnsure;
+        return { db, sql };
       } catch (e) {
+        if (timing) timing.ensureMs += this.#host.monotonicMs() - tEnsure;
         return { db: null, sql, error: sqlError(e) };
       }
     });
@@ -518,30 +957,47 @@ export class Data {
       }
       const opened = yield* this.#openFile(sub, name);
       if (opened.db === null) return opened;
-      const sql = opened.sql;
-      let rows = 0;
-      try {
-        sql.exec("BEGIN IMMEDIATE");
-        for (const [table, columns, found] of kept) {
-          const insert = `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
-          for (const row of found) rows += sql.run(insert, row);
-        }
-        sql.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported', ?)", ["made again"]);
-        sql.exec("COMMIT");
-      } catch {
+      let owned: AccountDb | Sql | null = opened.db;
+      const closeOwned = () => {
+        if (owned === null) return;
+        const h = owned;
+        owned = null;
         try {
-          sql.exec("ROLLBACK");
+          h.close();
         } catch {
-          // Rolled back already.
+          // Already closed.
         }
-      }
-      // The mark goes, after any made as the damaged one was read here.
-      const marking = this.#damaged.get(name);
-      if (marking) yield* Effect.promise(() => marking);
-      this.#damaged.delete(name);
-      yield* Effect.ignore(this.#host.storageDelete(damagedKey(name)), { log: "Unhandled", message: "damage mark removed" });
-      this.#report("LocalDbMadeAgain", `${why}; ${rows} rows of this device's kept`);
-      return opened;
+      };
+      return yield* Effect.onInterrupt(
+        Effect.gen({ self: this }, function* () {
+          const sql = opened.sql;
+          let rows = 0;
+          try {
+            sql.exec("BEGIN IMMEDIATE");
+            for (const [table, columns, found] of kept) {
+              const insert = `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+              for (const row of found) rows += sql.run(insert, row);
+            }
+            sql.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported', ?)", ["made again"]);
+            sql.exec("COMMIT");
+          } catch {
+            try {
+              sql.exec("ROLLBACK");
+            } catch {
+              // Rolled back already.
+            }
+          }
+          // The mark goes, after any made as the damaged one was read here.
+          const marking = this.#damaged.get(name);
+          if (marking) yield* Effect.promise(() => marking);
+          this.#damaged.delete(name);
+          yield* Effect.ignore(this.#host.storageDelete(damagedKey(name)), { log: "Unhandled", message: "damage mark removed" });
+          this.#report("LocalDbMadeAgain", `${why}; ${rows} rows of this device's kept`);
+          owned = null;
+          return opened;
+        }),
+        () => Effect.sync(closeOwned),
+      );
     });
   }
 
@@ -576,9 +1032,20 @@ export class Data {
     return this.#dbs.get(sub);
   }
 
-  /// The databases open now.
+  /// Whether `db` is a writable persistent disk DB (not absent, not read-only, and not an ephemeral memory fallback).
+  isPersistentDb(db: AccountDb | undefined): db is AccountDb {
+    return db !== undefined && !db.readOnly && !this.#ephemeral.has(db);
+  }
+
+  /// The databases open now, in signed-in account order.
   dbs(): AccountDb[] {
-    return [...this.#dbs.values()];
+    if (!this.#ordered) return [...this.#dbs.values()];
+    const out: AccountDb[] = [];
+    for (const sub of this.#order) {
+      const db = this.#dbs.get(sub);
+      if (db !== undefined) out.push(db);
+    }
+    return out;
   }
 
   #ofWorkspace(workspace: string): AccountDb | undefined {
@@ -592,6 +1059,7 @@ export class Data {
   }
 
   #committed(db: AccountDb, changes: Changes): void {
+    if (!db.full && !this.#closed) this.onDbCommitted(db);
     // (asked at each commit of its own while one is owed, a few numbers of SQLite's: the commit that made the room
     // may be the last for long; never as another database commits, its own burst maybe still to be rolled back)
     if (this.#roomOwed.has(db)) {
@@ -770,6 +1238,18 @@ export class Data {
     if (read) read.signal.set((read.revision = ++this.#revisions));
   }
 
+  /// Registers a reactive read dependency on `record(name, sub)` without querying SQLite (used when an authoritative
+  /// in-memory `/v1/me` is already held in `#liveMe`).
+  trackAccountRecord(sub: string, name: string): void {
+    this.#readQuery({ topic: "$account-record", account: sub, name });
+  }
+
+  /// Notifies reactive readers subscribed to `record(name, sub)` when an account's in-memory record changes without a
+  /// live DB commit (e.g. authoritative `/v1/me` retained in memory while disk DB open failed and no memoryDb exists).
+  notifyAccountRecord(sub: string, name: string): void {
+    this.#tellQuery({ topic: "$account-record", account: sub, name });
+  }
+
   #readQuery(topic: Topic): void {
     if (!tracking()) return;
     const keys = [topicKey(topic)];
@@ -820,9 +1300,12 @@ export class Data {
     if (topic.topic === "prefs") return this.device.get("prefs", "device");
     if (topic.topic === "drivePlace") return this.device.get("drive_place", placeOf(topic));
     if (topic.topic === "draft") {
-      const soon = this.#soon.get(`${s("station")}${SEP}${s("chat")}`);
-      if (soon) return soon[1];
-      return this.of(s("station"))?.draft(s("station"), s("chat"));
+      const key = `${s("station")}${SEP}${s("chat")}`;
+      const soon = this.#soon.get(key);
+      if (soon) return soon.value;
+      const pending = this.#pendingDrafts.get(key);
+      if (pending) return pending.value;
+      return this.verifiedOf(s("station"))?.draft(s("station"), s("chat"));
     }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.accountDoc("login_sessions");
     if (topic.topic === "admin") return this.#dbs.get(s("account"))?.accountDoc(`admin/${s("list")}`);
@@ -987,7 +1470,27 @@ export class Data {
       }
       return;
     }
-    if (topic.topic === "draft") return this.of(s("station"))?.putDraft(s("station"), s("chat"), value);
+    if (topic.topic === "draft") {
+      const station = s("station");
+      const chat = s("chat");
+      const key = `${station}${SEP}${chat}`;
+      const atSlash = station.indexOf("/");
+      const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+      const db = this.verifiedOf(station);
+      if (db) {
+        this.#pendingDrafts.delete(key);
+        return db.putDraft(station, chat, value);
+      }
+      if (this.hasDeferred()) {
+        this.#pendingDrafts.set(key, {
+          topic,
+          value: frozen(structuredClone(value)),
+          deferred: new Set(this.#deferred),
+          provisional: this.#owner(ws),
+        });
+      }
+      return;
+    }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.putAccountDoc("login_sessions", value, at, topic);
     if (topic.topic === "admin") return this.#dbs.get(s("account"))?.putAccountDoc(`admin/${s("list")}`, value, at, topic);
     if (topic.topic === "workspace") return this.#ofWorkspace(s("workspace"))?.putWorkspace(s("workspace"), value, at);
@@ -1025,10 +1528,17 @@ export class Data {
 
   /// A held value as it is typed (a draft): there at once, written a moment after its last change.
   setSoon(topic: Topic, value: unknown): void {
-    const key = `${String(topic.station)}${SEP}${String(topic.chat)}`;
-    const was = this.#soon.get(key)?.[1] ?? this.shared(topic);
+    const station = String(topic.station);
+    const key = `${station}${SEP}${String(topic.chat)}`;
+    const was = this.#soon.get(key)?.value ?? this.shared(topic);
     if (was !== undefined && equal(was, value)) return;
-    this.#soon.set(key, [topic, frozen(structuredClone(value))]);
+    const atSlash = station.indexOf("/");
+    const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+    const db = this.verifiedOf(station);
+    const sub = db ? db.sub : this.#owner(ws);
+    const gen = sub !== null ? (this.#subGen.get(sub) ?? 0) : 0;
+    const deferred = db !== undefined ? new Set<string>() : new Set(this.#deferred);
+    this.#soon.set(key, { topic, value: frozen(structuredClone(value)), sub, gen, db, deferred });
     this.#tell(topic);
     if (this.#flushing) return;
     this.#flushing = true;
@@ -1039,11 +1549,22 @@ export class Data {
             this.#flushing = false;
             const soon = [...this.#soon.values()];
             this.#soon.clear();
-            for (const [t, v] of soon) this.set(t, v, false);
+            for (const entry of soon) this.#writeSoonEntry(entry);
           }),
         ),
       ),
     );
+  }
+
+  #writeSoonEntry(entry: { topic: Topic; value: unknown; sub: string | null; gen: number; db: AccountDb | undefined; deferred: ReadonlySet<string> }): void {
+    const station = String(entry.topic.station);
+    const atSlash = station.indexOf("/");
+    const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+    if (entry.sub !== null) {
+      if (this.#owner(ws) !== entry.sub || (this.#subGen.get(entry.sub) ?? 0) !== entry.gen) return;
+      if (entry.db !== undefined && this.#dbs.get(entry.sub) !== entry.db) return;
+    }
+    this.set(entry.topic, entry.value, false);
   }
 
   /// What is held to be written a moment after its last change (setSoon), written now: the app's attention moved (a
@@ -1051,7 +1572,7 @@ export class Data {
   flushSoon(): void {
     const soon = [...this.#soon.values()];
     this.#soon.clear();
-    for (const [t, v] of soon) this.set(t, v, false);
+    for (const entry of soon) this.#writeSoonEntry(entry);
   }
 
   /// Changes a held document in place (an event); does nothing while nothing is known of it.
@@ -1061,6 +1582,29 @@ export class Data {
     if (value === undefined) return;
     const next = change(value);
     this.set(topic, next === undefined ? value : next);
+  }
+
+  /// The database of `station`'s workspace only once its owner is verified against sign-in order.
+  verifiedOf(station: string): AccountDb | undefined {
+    const at = station.indexOf("/");
+    const ws = at >= 0 ? station.slice(0, at) : station;
+    if (!this.#ownerVerified(ws)) return undefined;
+    return this.of(station);
+  }
+
+  /// Flushes any drafts buffered while their owning account DB was deferred once verified ownership resolves.
+  flushPendingDrafts(): void {
+    if (this.#pendingDrafts.size === 0) return;
+    for (const [key, entry] of [...this.#pendingDrafts]) {
+      const station = String(entry.topic.station);
+      const db = this.verifiedOf(station);
+      if (db) {
+        this.#pendingDrafts.delete(key);
+        db.putDraft(station, String(entry.topic.chat), entry.value);
+      } else if (!this.hasDeferred()) {
+        this.#pendingDrafts.delete(key);
+      }
+    }
   }
 
   /// A held topic known no more (a draft sent or emptied).
@@ -1081,10 +1625,11 @@ export class Data {
     if (topic.topic !== "draft") return;
     const key = `${String(topic.station)}${SEP}${String(topic.chat)}`;
     const soon = this.#soon.delete(key);
+    const pending = this.#pendingDrafts.delete(key);
     const station = String(topic.station);
-    const db = this.of(station);
+    const db = this.verifiedOf(station);
     if (db && db.draft(station, String(topic.chat)) !== undefined) db.putDraft(station, String(topic.chat), undefined);
-    else if (soon) this.#tell(topic);
+    else if (soon || pending) this.#tell(topic);
   }
 
   // ── what a station said beyond the tables (station/memory.ts), among its documents ──
@@ -1208,11 +1753,11 @@ export class Data {
     for (const db of this.#dbs.values()) if (db.workspace(id) !== undefined) db.dropWorkspace(id);
   }
 
-  /// Every account's `me`, by account.
+  /// Every account's `me`, by account (in signed-in order).
   mes(): [string, unknown][] {
-    return [...this.#dbs].flatMap(([sub, db]) => {
+    return this.dbs().flatMap((db) => {
       const me = db.accountDoc("me");
-      return me === undefined ? [] : [[sub, me] as [string, unknown]];
+      return me === undefined ? [] : [[db.sub, me] as [string, unknown]];
     });
   }
 
@@ -1233,7 +1778,7 @@ export class Data {
 
   /// Every row of one of those tables, of every account: [station, key, value].
   locals(table: "outbox" | "pending" | "first" | "changing"): [string, string, unknown][] {
-    return [...this.#dbs.values()].flatMap((db) => db.locals(table));
+    return this.dbs().flatMap((db) => db.locals(table));
   }
 
   putLocal(table: "outbox" | "pending" | "first" | "changing", station: string, key: string, value: unknown): void {
@@ -2286,6 +2831,8 @@ export class Data {
   /// The core closing (core.ts `close`): what is pending of the trees written and every database's burst committed,
   /// so what was read is kept by the core that follows.
   closing(): void {
+    this.#closed = true;
+    this.flushSoon();
     this.flushMd();
     for (const db of this.#dbs.values()) db.commitNow();
   }

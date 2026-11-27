@@ -22,7 +22,7 @@ import { Data, holds } from "./data.ts";
 import { chatDerive } from "./views/views.ts";
 import { Doing, FAILED_SHOWN_MS, heavy } from "./doing.ts";
 import { DriveKept } from "./drive-kept.ts";
-import { CoreError, asCoreError, failedIn } from "./error.ts";
+import { CoreError, HostError, asCoreError, failedIn } from "./error.ts";
 import { HEDGE, type Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import { markdown } from "./markdown.ts";
@@ -226,7 +226,7 @@ export class Inner {
 /// and this device's keys are read from the device, or `START_TOLD_MS` passed, or the core stopped first, how long each
 /// took from the start (`ownLock`) with what the core's parts spent meanwhile; what was spent before `Core.make`, where
 /// the host measured it (`Boot`), with them.
-function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string) => void; ownLock: () => void } {
+function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string) => void; set: (key: string, value: number | boolean | string) => void; ownLock: () => void } {
   const span = inner.tracer.root("core.start", Kind.Internal);
   for (const [key, ms] of Object.entries(boot ?? {})) span.set(`stillfail.boot.${key}`, ms);
   const t0 = inner.host.monotonicMs();
@@ -246,6 +246,7 @@ function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string
       span.set(`stillfail.ms.${name}`, Math.round(now - at));
       at = now;
     },
+    set: (key, value) => span.set(key, value),
     ownLock: () => {
       const subs = inner.accounts.list().map((a) => a.sub);
       span.set("stillfail.accounts", subs.length);
@@ -294,6 +295,7 @@ export class Core {
       inner.wakes = new Wakes();
       // Everything the core asks of the host is given up or opened again when a UI comes back (wake.ts).
       inner.host = new WakingHost(host, inner.wakes, HEDGE);
+      Signer.bindRunner(inner.host, inner.runner);
       inner.driveKept = new DriveKept(inner.host);
       // (the files kept for messages left behind a week)
       inner.runner.fork(inner.driveKept.dropOldUploads());
@@ -336,15 +338,18 @@ export class Core {
       // Each signed-in account's database, opened before any network: the first view is answered from it.
       inner.data = new Data(inner.host, inner.runner, {
         owner: (workspace) => inner.workspaces.owner(workspace),
+        ownerVerified: (workspace) => {
+          const sub = inner.workspaces.owner(workspace);
+          return sub !== null && !inner.cloudSync?.hasEarlierDeferred(sub);
+        },
         derive: chatDerive,
       });
-      // What the former records store and the Rust core's kept chunks held, brought into an account's new database once.
+      // What the former records store and the Rust core's kept chunks held, brought into an account's new database once
+      // before the database is published in `#dbs` (so a concurrent sign-out cannot close it mid-import).
       inner.data.onOpened = (db) =>
-        Effect.andThen(
-          importFormer(inner.host, inner.runner, inner.data, inner.accounts.list().map((a) => a.sub), db),
-          // What was done here and kept in it goes on (a database opened after the start: signed in).
-          Effect.sync(() => inner.views?.local.opened(db)),
-        );
+        importFormer(inner.host, inner.runner, inner.data, inner.accounts.list().map((a) => a.sub), db);
+      // What was done here and kept in it goes on once the database is published (opened after the start: deferred or signed in).
+      inner.data.onPublished = (db) => inner.views?.local.opened(db);
       inner.data.onSignedOut = (sub, me) => inner.cloudSync?.signedOut(sub, me);
       inner.data.onNote = () => inner.status.setDb(inner.data.notes);
       inner.data.onRoomAgain = (kept) => inner.stations?.roomAgain(kept);
@@ -352,7 +357,24 @@ export class Core {
       // (this device's notice settings read beside the databases, not after them: each read at a start waits its turn on
       // the host's disk)
       const attend = inner.runner.fork(Attend.load(inner.host));
-      yield* inner.data.open(inner.accounts.list().map((a) => a.sub));
+      const subs = inner.accounts.list().map((a) => a.sub);
+      const tDevice = inner.host.monotonicMs();
+      yield* inner.data.loadDevice();
+      const dbDeviceMs = inner.host.monotonicMs() - tDevice;
+      const activeWs = prefs.lastWorkspace(inner.data);
+      const cachedOwners = inner.data.device.get("choice", "workspaceOwners");
+      const primarySub = activeWs !== null && isObject(cachedOwners) && typeof cachedOwners[activeWs] === "string" ? cachedOwners[activeWs] : null;
+      const defer = subs.length > 1 && primarySub !== null && subs.includes(primarySub);
+      const firstSubs = defer ? [primarySub] : subs;
+      const restSubs = defer ? subs.filter((s) => s !== primarySub) : [];
+      inner.data.setOrder(subs, restSubs);
+      const dbTiming = { openMs: 0, ensureMs: 0, importMs: 0 };
+      yield* inner.data.openAccounts(firstSubs, dbTiming);
+      start.set("stillfail.ms.db_device", Math.round(dbDeviceMs));
+      start.set("stillfail.ms.db_open", Math.round(dbTiming.openMs));
+      start.set("stillfail.ms.db_ensure", Math.round(dbTiming.ensureMs));
+      start.set("stillfail.ms.db_import", Math.round(dbTiming.importMs));
+      start.set("stillfail.db_deferred", restSubs.length);
       start.step("db");
       // (signatures checked once on this device, kept with its own values: vault/verified.ts)
       keepVerified({ get: (k) => inner.data.device.get("verified", k), put: (k, ok) => void inner.data.device.put("verified", k, ok) });
@@ -659,14 +681,89 @@ export class Core {
         return account ? Effect.catch(inner.provider.traces(account.sub, body), (e) => (refused(e) ? Effect.void : Effect.fail(e))) : Effect.void;
       });
       // An account signed in has its database opened; one signed out, removed (before what it reached is let go).
-      inner.accounts.onChange(() => {
+      inner.accounts.onChange((removed) => {
         inner.adb.accountsKnown();
-        inner.runner.fork(Effect.andThen(inner.data.accounts(inner.accounts.list().map((a) => a.sub)), Effect.sync(() => inner.cloudSync.accountsChanged())));
+        inner.runner.fork(Effect.andThen(inner.data.accounts(inner.accounts.list().map((a) => a.sub), removed), Effect.sync(() => inner.cloudSync.accountsChanged())));
       });
       // From now on the core keeps what it holds current, whatever the UI shows.
       inner.provider.start();
       inner.cloudSync.start();
       inner.stations.reconcile();
+      // Account-owned post-publish lifecycle: runs inside Data's runner-owned open fiber once per published DB (or
+      // unrecoverable deferred failure) so cancelling an on-demand caller can never drop resumeFor/syncSockets/reconcile.
+      inner.data.onPublished = (db) => {
+        inner.views.local.opened(db);
+        inner.cloudSync.adoptDb(db);
+        inner.cloudSync.recomputeOwners();
+        inner.viewCalls.resumeFor(db);
+        inner.cloudSync.syncSockets();
+        inner.stations.reconcile();
+      };
+      inner.data.onDeferredCleared = () => {
+        inner.cloudSync.recomputeOwners();
+        inner.cloudSync.syncSockets();
+        inner.stations.reconcile();
+      };
+      inner.data.onDbCommitted = (db) => {
+        inner.cloudSync.retryPendingLiveMe(db);
+      };
+      if (restSubs.length > 0) {
+        const firstChats = Deferred.makeUnsafe<void>();
+        inner.store.onFirstChats = (scope) => {
+          if (activeWs !== null && scope !== activeWs) return false;
+          Deferred.doneUnsafe(firstChats, Effect.void);
+          return true;
+        };
+        const activateDeferred = (sub: string) => Effect.asVoid(inner.data.openAccount(sub));
+        inner.cloudSync.onNeedDeferred = (workspace: string, beforeSub?: string | null, includeTarget = false) =>
+          Effect.gen(function* () {
+            const ordered = inner.accounts.list().map((a) => a.sub);
+            if (beforeSub) {
+              // Verify against every deferred account strictly earlier in sign-in order than the provisional owner
+              // (and open `beforeSub` itself when `includeTarget` is true because its live `/v1/me` already owns `workspace`).
+              for (const sub of ordered) {
+                if (sub === beforeSub) {
+                  if (includeTarget && inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+                  break;
+                }
+                if (inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+              }
+              return;
+            }
+            const cached = inner.data.device.get("choice", "workspaceOwners");
+            const hinted = isObject(cached) && typeof cached[workspace] === "string" ? cached[workspace] : null;
+            if (hinted !== null && ordered.includes(hinted)) {
+              for (const sub of ordered) {
+                if (inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+                if (sub === hinted) break;
+              }
+              const owner = inner.workspaces.owner(workspace);
+              if (owner !== null && !inner.cloudSync.hasEarlierDeferred(owner)) return;
+            }
+            for (const sub of ordered) {
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* activateDeferred(sub);
+              const owner = inner.workspaces.owner(workspace);
+              if (owner !== null && !inner.cloudSync.hasEarlierDeferred(owner)) return;
+            }
+          });
+        inner.runner.fork(
+          Effect.gen(function* () {
+            // Wait until the selected startup workspace's first `chats` topic is sent to the UI (or a short fallback
+            // deadline when no UI subscribes, such as push notifications, sign-in, or headless tests), then yield.
+            yield* Effect.raceFirst(
+              Deferred.await(firstChats),
+              laterSleep(1200), // timer: fallback deadline so deferred accounts still open when no UI subscribes to chats
+            );
+            for (const sub of restSubs) {
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* inner.store.turn();
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* activateDeferred(sub);
+            }
+          }),
+        );
+      }
       // The chats spoken in latest, read ahead once what the first views ask has gone.
       inner.runner.fork(Effect.andThen(laterSleep(AHEAD_AFTER_MS), Effect.sync(() => ahead.seed())));
       // What was on its way when the core last stopped goes on.
@@ -865,11 +962,25 @@ export class Core {
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
     const { runner, data } = this.inner;
-    // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
-    this.inner.sendTrace.close();
-    data.closing();
-    runner.shutdown();
-    this.#closing = runner.run(data.device.close());
+    let liveMeError: HostError | null = null;
+    try {
+      // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
+      this.inner.sendTrace.close();
+      data.closing();
+      liveMeError = this.inner.cloudSync.flushLiveMe();
+    } catch (e) {
+      liveMeError = e instanceof HostError ? e : new HostError(e instanceof Error ? e.message : String(e));
+    } finally {
+      runner.shutdown();
+    }
+    this.#closing = runner.run(
+      Effect.gen({ self: this }, function* () {
+        const pruneErr = yield* this.inner.cloudSync.reconcilePendingMeOnClose();
+        yield* data.device.close();
+        if (pruneErr) return yield* Effect.fail(pruneErr);
+        if (liveMeError) return yield* Effect.fail(liveMeError);
+      }),
+    );
     return this.#closing;
   }
 }

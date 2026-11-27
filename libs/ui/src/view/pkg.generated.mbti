@@ -1487,6 +1487,7 @@ pub fn Tree::gesture_tap_taken(Self) -> Bool
 pub fn Tree::glide_end_of(Self, Int32) -> Double?
 pub fn Tree::glyphs_of(Self, NodeId) -> ((GlyphAt) -> GlyphLook)?
 pub fn Tree::ground_drawn_of(Self, NodeId) -> GroundShape
+pub fn Tree::ground_follows_placed(Self, NodeId, NodeId) -> Bool
 pub fn Tree::ground_read(Self, NodeId) -> Int32
 pub fn Tree::grown_cut_of(Self, NodeId) -> Double
 pub fn Tree::hand_at_end(Self, Double) -> Unit

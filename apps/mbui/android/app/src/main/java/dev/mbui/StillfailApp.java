@@ -18,6 +18,7 @@ public final class StillfailApp extends Application {
     public void onCreate() {
         super.onCreate();
         app = this;
+        Reports.restoreLastWorkspace(this);
         Crashes.install(this);
         coreAhead();
         MemoryWatch.start(this);
@@ -26,8 +27,13 @@ public final class StillfailApp extends Application {
         AdbShare.install(this);
         // a video's player reading its parts of the core itself, past the app's (GL) thread (NativeViews.Direct)
         NativeViews.direct = AdbCore::read;
-        // FCM's token for the app to register as the core says (Push.java; none where this package has no Firebase app)
-        Push.start(this);
+        // FCM's token for the app to register as the core says (Push.java; none where this package has no Firebase app),
+        // asked off the main thread: Firebase's set-up (its options read from resources, FirebaseApp and its components
+        // made, FirebaseMessaging's instance) kept the activity from being made. Push.init is synchronized, so Push.Service
+        // setting it up at the same time finds it made.
+        Thread push = new Thread(() -> Push.start(this), "mbui-push-init");
+        push.setDaemon(true);
+        push.start();
     }
 
     private static boolean coreStarted;

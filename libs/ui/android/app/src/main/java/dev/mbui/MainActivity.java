@@ -101,8 +101,10 @@ public class MainActivity extends Activity {
         // what another app shared into this one (ACTION_SEND or SEND_MULTIPLE: text, files), for the app to take
         Shares.take(getIntent());
         FrameLayout root = new FrameLayout(this);
-        // over another app (OverActivity): nothing of the app's own ground, the app draws what is over it alone
-        root.setBackgroundColor(over() ? Color.TRANSPARENT : night(getResources().getConfiguration()) ? Host.groundDark : Host.groundLight);
+        // over another app (OverActivity): nothing of the app's own ground, the app draws what is over it alone; else
+        // the ground of the theme the person chose (Host.initialDark), the system's where they chose none
+        boolean dark = Host.initialDark(this, night(getResources().getConfiguration()));
+        root.setBackgroundColor(over() ? Color.TRANSPARENT : dark ? Host.groundDark : Host.groundLight);
         MBView view = new MBView(this);
         mbView = view;
         folds = new Folds(this, view);
@@ -216,13 +218,13 @@ public class MainActivity extends Activity {
             a.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(a);
         }
-        // the bars' icons as dark as the ground under them is light, the system's (the root's above) until the app says
+        // the bars' icons as dark as the ground under them is light, the chosen theme's (the root's above) until the app says
         // its own (Host.setDark): dark icons on a dark ground till then, they showed a moment late as the app opened
         WindowInsetsController c = getWindow().getInsetsController();
         if (c != null) {
             int bars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                     | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            c.setSystemBarsAppearance(night(getResources().getConfiguration()) ? 0 : bars, bars);
+            c.setSystemBarsAppearance(dark ? 0 : bars, bars);
         }
         Host.activity = this;
         Host.view = view;

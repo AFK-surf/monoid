@@ -198,6 +198,9 @@ export class Store {
   #soon = false;
   #held: ((topic: Topic) => unknown) | null = null;
   #release_: ((topic: Topic) => void) | null = null;
+  /// One-shot callback invoked when a non-error `chats` topic value is emitted to an active subscriber;
+  /// returning `true` consumes the hook (core.ts filters to the selected startup workspace).
+  onFirstChats: ((scope: string) => boolean) | null = null;
   #clock = false;
   #clockOn = false;
   #shaped = false;
@@ -942,6 +945,9 @@ export class Store {
       const first = sent === undefined ? this.#first(client, id, topic, keyed, value) : null;
       if (first) this.host.emit(client, first);
       else if (o) this.host.emit(client, to(o, id));
+    }
+    if (topic.topic === "chats" && !("err" in value) && this.onFirstChats !== null && subscribers.length > 0) {
+      if (this.onFirstChats(String(topic.scope ?? ""))) this.onFirstChats = null;
     }
     this.#opened(now);
   }

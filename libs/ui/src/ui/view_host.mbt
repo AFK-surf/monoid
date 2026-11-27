@@ -5346,7 +5346,7 @@ fn view_frame_end(c : Ctx) -> Unit {
     c.motion_left = true
   }
   // (a wait drawn by the clock: its frames as an old view's cycle has them, Ctx::cycle)
-  if tree.cycle_read() {
+  if tree.cycle_read() && app_visible() {
     c.cycling = true
   }
 

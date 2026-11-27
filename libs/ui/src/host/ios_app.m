@@ -58,6 +58,19 @@ static void read_info(void) {
   }
 }
 
+// Whether the app starts dark, before it has drawn anything: as the theme the person chose in it says (the app keeps
+// "light", "dark" or "system" in the user defaults' mbui.theme_pref as it changes, as Android's Host.saveThemePref),
+// else as `tc` is (the system's). Only the choice is kept, never what the app last drew (mb_host_set_dark: a film's or a
+// reader's page dark for a while).
+static BOOL initial_dark(UITraitCollection *tc) {
+  NSString *pref = [NSUserDefaults.standardUserDefaults stringForKey:@"mbui.theme_pref"];
+  if ([pref isEqualToString:@"dark"]) return YES;
+  if ([pref isEqualToString:@"light"]) return NO;
+  return tc.userInterfaceStyle == UIUserInterfaceStyleDark;
+}
+// initial_dark as the scene connected (MBSceneDelegate), for the controller's view (MBController loadView)
+static BOOL start_dark;
+
 // Something the system said, on the system's channel (src/hostapi/system.mbt), as JSON.
 static void say_system(NSDictionary *said) {
   NSData *json = [NSJSONSerialization dataWithJSONObject:said options:0 error:NULL];
@@ -930,7 +943,10 @@ static MBController *the_controller;
 }
 - (void)loadView {
   UIView *root = [UIView new];
-  root.backgroundColor = ground_light;
+  // the chosen theme's ground (start_dark; the status bar's words to match, preferredStatusBarStyle) till the app says
+  // its own (mb_host_set_dark), not the light one's under a dark app for its first frames
+  self.dark = start_dark;
+  root.backgroundColor = self.dark ? ground_dark : ground_light;
   self.view = root;
   the_view = [[MBView alloc] initWithFrame:CGRectZero];
   the_view.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1079,6 +1095,10 @@ static void say_activity(NSUserActivity *a) {
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)opts {
   if (![scene isKindOfClass:UIWindowScene.class]) return;
   self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+  // (the scene's traits: the controller made next is in no window yet as its view is loaded; round its view as it is
+  // laid out, the same ground)
+  start_dark = initial_dark(((UIWindowScene *)scene).traitCollection);
+  self.window.backgroundColor = start_dark ? ground_dark : ground_light;
   the_controller = [MBController new];
   // (in the system's tabs, none until the app hands it some: nav_bar)
   if (@available(iOS 18.0, *)) {

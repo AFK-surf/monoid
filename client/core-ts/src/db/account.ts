@@ -57,7 +57,7 @@ import { JobsStore } from "./jobs.ts";
 import { KEPT_ALL, KeptValues } from "./kept.ts";
 import { KeptCacheStore } from "./kept-cache.ts";
 import { LogsStore } from "./logs.ts";
-import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoomStep, migrate, versionOf } from "./schema.ts";
+import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoomStep, migrate, readSchemaSnapshot, versionOf } from "./schema.ts";
 import { SessionsThreadsStore, counted, placeTurn, sameTurns } from "./sessions-threads.ts";
 import { SlackSaidStore } from "./slack-said.ts";
 
@@ -199,6 +199,7 @@ export class AccountDb {
       forgetEntries: (station, thread) => this.#logs.forgetEntries(station, thread),
     });
 
+    const snapshot = readSchemaSnapshot(sql);
     if (!this.readOnly) {
       try {
         this.sql.exec("PRAGMA journal_size_limit = 8388608");
@@ -207,28 +208,28 @@ export class AccountDb {
       }
       const was = this.sql.all("SELECT value FROM meta WHERE key = 'account'")[0]?.[0];
       if (was === undefined) this.sql.run("INSERT INTO meta (key, value) VALUES ('account', ?)", [sub]);
-      ensureLetters(sql);
-      this.#chats.openMoved();
-      this.#chats.openSharedSidecar();
-      this.#logs.openSaid(false);
-      this.#docs.openParts(false);
-      this.#sessions.openDetail(false);
+      ensureLetters(sql, snapshot);
+      this.#chats.openMoved(snapshot);
+      this.#chats.openSharedSidecar(snapshot);
+      this.#logs.openSaid(false, snapshot);
+      this.#docs.openParts(false, snapshot);
+      this.#sessions.openDetail(false, snapshot);
       // (after the tables they are kept beside, station_part's: ensureOverviewParts)
-      this.kept.open(KEPT_ALL);
+      this.kept.open(KEPT_ALL, snapshot);
       try {
-        this.chatColumnsMade = ensureChatColumns(sql, (agents) => ({ state: derive.state({ agents }), watched: derive.watched({ agents }) }));
+        this.chatColumnsMade = ensureChatColumns(sql, (agents) => ({ state: derive.state({ agents }), watched: derive.watched({ agents }) }), snapshot);
       } catch (e) {
         // No room to derive them: the rows another core wrote are read by the columns they have, this time.
         console.error("still.fail core: a chat's columns could not be derived:", e instanceof Error ? e.message : String(e));
       }
-      this.#slack.open();
-      this.#logs.openEvicted();
-      this.#keptCache.openLogBytes();
-      this.#keptCache.openMediaTables();
+      this.#slack.open(snapshot);
+      this.#logs.openEvicted(snapshot);
+      this.#keptCache.openLogBytes(snapshot);
+      this.#keptCache.openMediaTables(snapshot);
     } else {
-      this.#logs.openSaid(true);
-      this.#docs.openParts(true);
-      this.#sessions.openDetail(true);
+      this.#logs.openSaid(true, snapshot);
+      this.#docs.openParts(true, snapshot);
+      this.#sessions.openDetail(true, snapshot);
     }
     this.#bursts = Effect.runSync(Queue.unbounded<void>());
     // The one write fiber: a burst is committed once what started it has run.

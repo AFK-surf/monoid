@@ -472,7 +472,7 @@ export class Readers {
         const engine = slotEngine();
         const text = answer.body ?? answer.text;
         if (engine !== null) readerTelemetry.recordCall(engine, "data", execMs, text !== undefined);
-        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { ...(engine !== null ? { engine } : {}), mode: "data", op: asked.ask.op, told: line.told, waitedMs: asked.took - asked.at, ms: execMs });
+        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { ...(engine !== null ? { engine } : {}), mode: "data", op: asked.ask.op, ...(asked.session !== null ? { session: asked.session, home: asked.home === slot } : {}), told: line.told, waitedMs: asked.took - asked.at, ms: execMs });
         // A background read rests its line as long as it took before the next: one after another, a history brought on
         // read 40 MB of a transcript in 10 s on a station short of memory (2026-11-03), every write and read waiting on the
         // disk meanwhile.

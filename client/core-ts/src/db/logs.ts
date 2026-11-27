@@ -4,7 +4,7 @@ import { lowerBound, upperBound } from "../ordered.ts";
 import { work } from "../work.ts";
 import { Cache, type DbEnv, type J, K, type LogTable, frozen, like, logColumns, logId, parse } from "./collection.ts";
 import { LogIndex, LogIndices } from "./log-index.ts";
-import { ensureKept, ensureSaid } from "./schema.ts";
+import { type SchemaSnapshot, ensureKept, ensureSaid } from "./schema.ts";
 import type { SlackSaidStore } from "./slack-said.ts";
 
 /// How many items of a log a read takes from SQLite one by one, beside those parsed already; more, it reads the range.
@@ -54,29 +54,34 @@ export class LogsStore {
     this.#slack = slack;
   }
 
-  openSaid(readOnly: boolean): void {
+  openSaid(readOnly: boolean, snapshot?: SchemaSnapshot): void {
     const sql = this.#env.sql;
     if (!readOnly) {
       try {
-        ensureSaid(sql);
+        ensureSaid(sql, snapshot);
         this.#said = true;
       } catch {
         // No room to make it: messages are not found by their words this time.
       }
       return;
     }
-    if (sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'said'").length > 0) {
+    if (snapshot ? snapshot.tables.has("said") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'said'").length > 0) {
       this.#said = true;
     }
   }
 
-  openEvicted(): void {
+  openEvicted(snapshot?: SchemaSnapshot): void {
     const sql = this.#env.sql;
     try {
-      ensureKept(sql);
+      ensureKept(sql, snapshot);
       // A chat's messages are no longer let go for room: those an earlier core let go are the sync's to bring again.
-      sql.run("UPDATE log_use SET evicted = 0 WHERE kind = 'entry' AND evicted = 1");
-      for (const r of sql.all("SELECT kind, station, id FROM log_use WHERE evicted = 1")) this.#evicted.add(K(String(r[0]), String(r[1]), String(r[2])));
+      const rows = sql.all("SELECT kind, station, id FROM log_use WHERE evicted = 1");
+      let hadEntry = false;
+      for (const r of rows) {
+        if (r[0] === "entry") hadEntry = true;
+        else this.#evicted.add(K(String(r[0]), String(r[1]), String(r[2])));
+      }
+      if (hadEntry) sql.run("UPDATE log_use SET evicted = 0 WHERE kind = 'entry' AND evicted = 1");
     } catch {
       // No room to make it: nothing is let go this time.
     }

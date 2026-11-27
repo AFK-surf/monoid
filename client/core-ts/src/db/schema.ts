@@ -9,6 +9,31 @@ import type { Sql } from "../host.ts";
 /// The version this core writes.
 export const VERSION = 1;
 
+/// One-shot read-only snapshot of `sqlite_master` tables, indexes and triggers, shared across all `ensure*` checks on
+/// open so steady-state cold opens perform zero write transactions and avoid redundant `sqlite_master` queries.
+/// Invariant: no `ensure*` step may drop or alter a table, index, or trigger that a later step's fast path expects to
+/// exist based on this snapshot.
+export type SchemaSnapshot = {
+  tables: Map<string, string>;
+  indexes: Map<string, string>;
+  triggers: Map<string, string>;
+};
+
+export function readSchemaSnapshot(sql: Sql): SchemaSnapshot {
+  const tables = new Map<string, string>();
+  const indexes = new Map<string, string>();
+  const triggers = new Map<string, string>();
+  for (const r of sql.all("SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'index', 'trigger') AND sql IS NOT NULL")) {
+    const type = String(r[0]);
+    const name = String(r[1]);
+    const body = String(r[2]);
+    if (type === "table") tables.set(name, body);
+    else if (type === "index") indexes.set(name, body);
+    else if (type === "trigger") triggers.set(name, body);
+  }
+  return { tables, indexes, triggers };
+}
+
 /// Each migration takes a database from the version before it to its own (index + 1).
 export const MIGRATIONS: string[] = [
   `
@@ -113,8 +138,25 @@ const UPSERT = `ON CONFLICT (station, thread, seq) DO UPDATE SET
 /// Searched by scanning it (a few MB of words: no index, as a workspace's search builds none). Not a migration (a
 /// version bump would leave an older core the database only to read): made where missing at every open, filled once
 /// from the entries held.
-export function ensureSaid(sql: Sql): void {
-  const had = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'said'").length > 0;
+export function ensureSaid(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const hasSaid = snap.tables.has("said");
+  const hasLegacy =
+    snap.tables.has("said_index") ||
+    snap.triggers.has("said_index_put") ||
+    snap.triggers.has("said_index_drop") ||
+    snap.triggers.has("said_index_set");
+  if (
+    hasSaid &&
+    !hasLegacy &&
+    snap.indexes.has("entry_edit") &&
+    snap.indexes.has("entry_person") &&
+    snap.triggers.has("said_put") &&
+    snap.triggers.has("said_drop")
+  ) {
+    return;
+  }
+  const had = hasSaid;
   sql.exec("BEGIN IMMEDIATE");
   try {
     sql.exec(`
@@ -396,7 +438,30 @@ const spaced = (s: string) => s.replace(/\s+/g, " ").trim();
 /// makes its own again in place of them (one since: these are not its statements), every part with them, the columns
 /// it does not know left empty: what is read of one is then made of the overview by SQLite as it is read (account.ts
 /// #columnText), till this core opens it again. Either reads of a part the fields it knows (its `part`, as it was).
-export function ensureOverviewParts(sql: Sql): void {
+export function ensureOverviewParts(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const triggers = overviewTriggers();
+  if (
+    snap.tables.has("station_part") &&
+    snap.tables.has("station_part_profiles") &&
+    triggers.every(([name, statement]) => {
+      const was = snap.triggers.get(name);
+      return was !== undefined && spaced(was) === spaced(statement);
+    })
+  ) {
+    const columns = new Set(sql.all("PRAGMA table_info(station_part)").map((r) => String(r[1])));
+    const profileCols = new Set(sql.all("PRAGMA table_info(station_part_profiles)").map((r) => String(r[1])));
+    const hotOk = HOT_PART_COLUMNS.every(([c]) => columns.has(c) && columns.has(partRev(c)));
+    const profOk = PROFILE_PART_COLUMNS.every(([c]) => profileCols.has(c) && profileCols.has(partRev(c)));
+    if (
+      hotOk &&
+      profOk &&
+      sql.all("SELECT 1 FROM station s WHERE s.kind = 'overview' AND NOT EXISTS (SELECT 1 FROM station_part p WHERE p.address = s.address) LIMIT 1").length === 0 &&
+      sql.all("SELECT 1 FROM station s WHERE s.kind = 'overview' AND NOT EXISTS (SELECT 1 FROM station_part_profiles p WHERE p.address = s.address) LIMIT 1").length === 0
+    ) {
+      return;
+    }
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
     sql.exec(`
@@ -423,8 +488,9 @@ export function ensureOverviewParts(sql: Sql): void {
       if (was !== undefined && spaced(was) === spaced(statement)) continue;
       if (was !== undefined) {
         sql.exec(`DROP TRIGGER ${name}`);
-        remade = true;
       }
+      // Missing or outdated trigger on an existing table may have left derived rows stale while an older writer ran.
+      if (snap.tables.has("station_part") || snap.tables.has("station_part_profiles")) remade = true;
       sql.exec(statement);
     }
     // (an earlier core's parts: all made again, of the overviews, by SQLite, also shedding legacy profiles blobs from station_part)
@@ -569,7 +635,44 @@ export type ChatColumnsMade = { rows: number; read: number; bytes: number };
 /// and present.watches read no more). Whether there are any is asked of
 /// the index on `made` alone. `chat_agent` is kept by triggers (SQL says all of it), made again whole where a trigger
 /// was missing or not this core's. Made where missing at every open, as `said`.
-export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state: string | null; watched: boolean }): ChatColumnsMade {
+export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state: string | null; watched: boolean }, snapshot?: SchemaSnapshot): ChatColumnsMade {
+  const unmade = `made IS NULL OR made NOT IN (${CHAT_MADE}, ${CHAT_MADE_ALT})`;
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const listedSql = snap.indexes.get("chat_listed");
+  const recentSql = snap.indexes.get("chat_recent");
+  const archiveSql = snap.indexes.get("chat_archive");
+  const unmadeSql = snap.indexes.get("chat_unmade");
+  const requiredIndexes = ["chat_project", "chat_archived_at", "chat_marks", "chat_client", "chat_agent_row", "chat_tag_window", "chat_tag_station", "chat_tag_row"];
+  const legacyIndexes = ["chat_made", "chat_marked", "chat_running", "chat_desk"];
+  const triggers = chatTriggers();
+  if (
+    snap.tables.has("chat_agent") &&
+    snap.tables.has("chat_tag") &&
+    listedSql !== undefined &&
+    /\bled\b/.test(listedSql) &&
+    /\bproject\b/.test(listedSql) &&
+    /\bunread\b/.test(listedSql) &&
+    !/\(station,\s*archived,\s*project\b/.test(listedSql) &&
+    recentSql !== undefined &&
+    /WHERE archived = 0/.test(recentSql) &&
+    archiveSql !== undefined &&
+    /\bstation\b/.test(archiveSql) &&
+    unmadeSql !== undefined &&
+    unmadeSql.includes(`(${CHAT_MADE}, ${CHAT_MADE_ALT})`) &&
+    requiredIndexes.every((name) => snap.indexes.has(name)) &&
+    legacyIndexes.every((name) => !snap.indexes.has(name)) &&
+    triggers.every(([name, statement]) => {
+      const was = snap.triggers.get(name);
+      return was !== undefined && spaced(was) === spaced(statement);
+    })
+  ) {
+    const has = new Set(sql.all("PRAGMA table_info(chat)").map((r) => String(r[1])));
+    const tagCols = new Set(sql.all("PRAGMA table_info(chat_tag)").map((r) => String(r[1])));
+    const chatColsOk = ["state", "watched", "made", ...CHAT_COLUMNS.map(([c]) => c)].every((c) => has.has(c));
+    if (chatColsOk && tagCols.has("unread") && sql.all(`SELECT 1 FROM chat WHERE ${unmade} LIMIT 1`).length === 0) {
+      return { rows: 0, read: 0, bytes: 0 };
+    }
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
     const has = new Set(sql.all("PRAGMA table_info(chat)").map((r) => String(r[1])));
@@ -609,7 +712,6 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // CHAT_MADE / CHAT_MADE_ALT changes so old DBs don't fall back to SCAN chat. `chat_made` is the name of the whole
     // index of a core from before, which makes it again where it is missing and asks by it: left to it under that name,
     // never made partial there (its `made < ?` would read the table whole), and dropped here)
-    const unmade = `made IS NULL OR made NOT IN (${CHAT_MADE}, ${CHAT_MADE_ALT})`;
     const unmadeWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_unmade'");
     if (unmadeWas.length > 0 && !String(unmadeWas[0]![0]).includes(`(${CHAT_MADE}, ${CHAT_MADE_ALT})`)) sql.exec("DROP INDEX chat_unmade");
     sql.exec("DROP INDEX IF EXISTS chat_made");
@@ -692,7 +794,9 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
 
 /// A thread's letters (what its agents and other chats' wrote each other), item by item: their own log beside its
 /// entries (the station's GET /threads/:id/letters, numbered from 1 in it). Made where missing at every open, as `said`.
-export function ensureLetters(sql: Sql): void {
+export function ensureLetters(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const has = snapshot ? snapshot.tables.has("letter") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'letter'").length > 0;
+  if (has) return;
   sql.exec("CREATE TABLE IF NOT EXISTS letter (station TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, thread, n)) WITHOUT ROWID");
 }
 
@@ -701,7 +805,9 @@ export function ensureLetters(sql: Sql): void {
 /// address), its thread on the one it left (`thread`) and there (`there`); `came`, said by the one it went to (its row's
 /// `from`, account.ts `#came`), not by the one it left. A chat that came back has no row. Made where missing at every
 /// open, as `said`.
-export function ensureMoved(sql: Sql): void {
+export function ensureMoved(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const has = snapshot ? snapshot.tables.has("moved") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'moved'").length > 0;
+  if (has) return;
   sql.exec("CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID");
 }
 
@@ -709,7 +815,9 @@ export function ensureMoved(sql: Sql): void {
 /// no `mineOf`, no `answeredBy`), per-station viewer identity/language/build metadata (`shared_meta`), and keyed viewer
 /// marks (`shared_mark`) so cold-start mark diffs re-project only changed rows by index. Made where missing at every
 /// open, as `said` and `moved`.
-export function ensureSharedSidecar(sql: Sql): void {
+export function ensureSharedSidecar(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  if (snap.tables.has("shared_sidecar") && snap.tables.has("shared_mark") && snap.tables.has("shared_meta")) return;
   sql.exec(`
     CREATE TABLE IF NOT EXISTS shared_sidecar (
       station TEXT NOT NULL,
@@ -743,7 +851,9 @@ export function ensureSharedSidecar(sql: Sql): void {
 /// What is kept of each log (a thread's entries, `entry`; an agent's transcript, `transcript`) as the device holds
 /// within its room (data.ts KEPT): when its chat was last opened here, and whether its items were let go for room.
 /// Made where missing at every open, as `said`.
-export function ensureKept(sql: Sql): void {
+export function ensureKept(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const has = snapshot ? snapshot.tables.has("log_use") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'log_use'").length > 0;
+  if (has) return;
   sql.exec("CREATE TABLE IF NOT EXISTS log_use (kind TEXT NOT NULL, station TEXT NOT NULL, id TEXT NOT NULL, opened INTEGER, evicted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, station, id))");
 }
 
@@ -793,7 +903,19 @@ const logTriggers = (): [string, string][] =>
     ];
   });
 
-export function ensureLogBytes(sql: Sql): void {
+export function ensureLogBytes(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const triggers = logTriggers();
+  if (
+    snap.tables.has("log_bytes") &&
+    snap.tables.has("log_bytes_done") &&
+    triggers.every(([name, statement]) => {
+      const was = snap.triggers.get(name);
+      return was !== undefined && spaced(was) === spaced(statement);
+    })
+  ) {
+    return;
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
     sql.exec(`
@@ -850,8 +972,9 @@ export function ensureMdKept(sql: Sql): void {
 /// What agents said in Slack and heard from it, read from their transcripts as they are written (elsewhere.ts): kept
 /// beyond the transcript's items (let go for room, they are still shown in their chats). Made where missing at every
 /// open, as `said`; answers whether it was made now (to be filled from the transcripts held).
-export function ensureSlackSaid(sql: Sql): boolean {
-  const had = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slack_said'").length > 0;
+export function ensureSlackSaid(sql: Sql, snapshot?: SchemaSnapshot): boolean {
+  const had = snapshot ? snapshot.tables.has("slack_said") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slack_said'").length > 0;
+  if (had && sql.all("PRAGMA table_info(slack_said)").some((c) => c[1] === "refused")) return false;
   sql.exec(`CREATE TABLE IF NOT EXISTS slack_said (
     station TEXT NOT NULL, session TEXT NOT NULL, i INTEGER NOT NULL, k INTEGER NOT NULL, out INTEGER NOT NULL, call TEXT,
     user TEXT, who TEXT, at INTEGER NOT NULL, dest TEXT NOT NULL, text TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0,
@@ -870,8 +993,10 @@ export function ensureSlackSaid(sql: Sql): boolean {
 /// (every message a station's agents ever heard, read whole as each chat was shown). Made where missing at every open;
 /// answers whether it was made now (to be filled from `slack_said`). The index finds a person's rows in `slack_said`
 /// again as some of them go.
-export function ensureSlackWho(sql: Sql): boolean {
-  const had = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slack_who'").length > 0;
+export function ensureSlackWho(sql: Sql, snapshot?: SchemaSnapshot): boolean {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const had = snap.tables.has("slack_who");
+  if (had && snap.indexes.has("slack_said_user")) return false;
   sql.exec(`CREATE TABLE IF NOT EXISTS slack_who (
     station TEXT NOT NULL, user TEXT NOT NULL, first INTEGER NOT NULL, who TEXT NOT NULL, at INTEGER NOT NULL,
     PRIMARY KEY (station, user)
@@ -909,7 +1034,18 @@ const sessionDetailTriggers = (): [string, string][] => [
 
 /// Keeps each session's large detail JSON out of the `session` row so summary upserts never rewrite its overflow pages.
 /// Triggers invalidate `session_detail` if an older core writes `session.detail` or deletes the parent `session` row.
-export function ensureSessionDetail(sql: Sql): void {
+export function ensureSessionDetail(sql: Sql, snapshot?: SchemaSnapshot): void {
+  const snap = snapshot ?? readSchemaSnapshot(sql);
+  const want = sessionDetailTriggers();
+  if (
+    snap.tables.has("session_detail") &&
+    want.every(([name, body]) => {
+      const was = snap.triggers.get(name);
+      return was !== undefined && spaced(was) === spaced(body);
+    })
+  ) {
+    return;
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
     sql.exec("CREATE TABLE IF NOT EXISTS session_detail (station TEXT NOT NULL, key TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (station, key))");

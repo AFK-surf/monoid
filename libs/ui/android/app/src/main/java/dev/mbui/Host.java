@@ -115,6 +115,53 @@ final class Host {
         return systemDark;
     }
 
+    /**
+     * The theme the person chose in the app ("light", "dark" or "system"), kept by the host for the next start, before
+     * the app has drawn anything: the window's ground and the bars' icons as the app will draw them (initialDark), not
+     * the system's for a moment. Only the choice is kept, never what the app last drew (setDark: a film's or a reader's
+     * page dark for a while). The app tells it as it changes (saveThemePref); "system" until it has.
+     */
+    private static final String THEME_PREFS = "mbui", THEME_KEY = "theme_pref";
+    private static boolean nightModeSynced;
+
+    static String cachedThemePref(Context c) {
+        try {
+            String v = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE).getString(THEME_KEY, "system");
+            return "light".equals(v) || "dark".equals(v) ? v : "system";
+        } catch (RuntimeException e) {
+            return "system";
+        }
+    }
+
+    /** Whether the app starts dark: as the person chose, else as the system is (`systemNight`: the configuration's). */
+    static boolean initialDark(Context c, boolean systemNight) {
+        switch (cachedThemePref(c)) {
+            case "dark": return true;
+            case "light": return false;
+            default: return systemNight;
+        }
+    }
+
+    /**
+     * The person's choice kept (anything but "light", "dark" or "system" ignored), and on Android 12 and later given to the
+     * system as the app's own night mode (UiModeManager.setApplicationNightMode, which the system keeps): its splash
+     * screen on the next start drawn in it too. With "light" or "dark" the app's configuration (its uiMode, and so
+     * systemDark) says the chosen one, not the system's: the app reads systemDark only for "system", which gives the
+     * system's back (MODE_NIGHT_AUTO), told as a configuration change (MainActivity.onConfigurationChanged).
+     */
+    static void saveThemePref(Context c, String pref) {
+        if (!"light".equals(pref) && !"dark".equals(pref) && !"system".equals(pref)) return;
+        android.content.SharedPreferences prefs = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE);
+        boolean changed = !prefs.contains(THEME_KEY) || !pref.equals(prefs.getString(THEME_KEY, "system"));
+        if (changed) prefs.edit().putString(THEME_KEY, pref).apply();
+        if (android.os.Build.VERSION.SDK_INT >= 31 && (changed || !nightModeSynced)) {
+            nightModeSynced = true;
+            android.app.UiModeManager ui = c.getSystemService(android.app.UiModeManager.class);
+            if (ui != null) ui.setApplicationNightMode("dark".equals(pref) ? android.app.UiModeManager.MODE_NIGHT_YES
+                    : "light".equals(pref) ? android.app.UiModeManager.MODE_NIGHT_NO : android.app.UiModeManager.MODE_NIGHT_AUTO);
+        }
+    }
+
     /** What shows under the system bars (the app's view is inside them), light and dark: MainActivity's dev.mbui.ground. */
     static int groundLight = android.graphics.Color.rgb(245, 245, 247), groundDark = 0xFF1B1C1F;
 

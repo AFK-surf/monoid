@@ -9,8 +9,9 @@ import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 import type { AccountView } from "../accounts.ts";
 import { NOT_BETA, cloudError, notBetaText, readCredential, type Credential } from "../cloud.ts";
 import { CREDENTIAL_429_COOLDOWN_MS, CREDENTIAL_ASK_CONCURRENCY, CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
+import type { AccountDb } from "../db/account.ts";
 import { CoreError, asCoreError } from "../error.ts";
-import type { Pull } from "../host.ts";
+import { HostError, type Pull } from "../host.ts";
 import { current, t } from "../i18n.ts";
 import { encode } from "../ops.ts";
 import { topicKey, type Topic } from "../protocol.ts";
@@ -57,8 +58,8 @@ export class CloudSync {
   onOpen: () => void = () => {};
   /// What a workspace read last failed with, while nothing is held of it.
   readonly errors = new SignalMap<string, CoreError>();
-  /// Each account's socket, while it is signed in.
-  readonly #sockets = new Map<string, Fiber.Fiber<void, never>>();
+  /// Each account's socket and the persistent session ID it was opened for, while it is signed in.
+  readonly #sockets = new Map<string, { fiber: Fiber.Fiber<void, never>; sid: string }>();
   /// The relays the mesh uses, as the first `/v1/me` of this run or the kept one said.
   relays: string[] | null = null;
   /// The account whose cloud supplied this run's relays; a later refresh from it may update the entrances.
@@ -73,6 +74,9 @@ export class CloudSync {
   onRelayLoad: (sub: string) => void = () => {};
   /// Told when an operator's list read only while shown changed (`audit`; `feedback/`, a report's own): sync/admin-relays.ts.
   onAdminSubList: (sub: string, prefix: string) => void = () => {};
+  /// Asked to open deferred account database(s) on demand when a workspace's owner is not yet resolved or verified
+  /// against earlier deferred accounts in sign-in order.
+  onNeedDeferred: ((workspace: string, beforeSub?: string | null, includeTarget?: boolean) => Effect.Effect<void>) | null = null;
   /// The lock entries a hello to a station of the workspace brings (views/lock.ts `carried`): none, null.
   carry: ((workspace: string) => import("../lock.ts").Entry[] | null) | null = null;
   /// The chain of the person's own lock a hello brings to a station (views/lock.ts `carriedPerson`).
@@ -93,10 +97,52 @@ export class CloudSync {
   /// How many times a workspace's kept credentials were removed (an account signed out), by key: an ask answered after
   /// keeps nothing.
   readonly #removed = new Map<string, number>();
+  /// Monotonic generation bumped whenever a fresh credential is saved to a specific storage key, so a stale queued
+  /// delete never overwrites a credential saved after re-sign-in.
+  readonly #credSaved = new Map<string, number>();
+  /// Workspaces whose initial or live workspace/feedback sync was deferred while an earlier account DB was still
+  /// unopened or unreadable; re-dispatched in `recomputeOwners` once verified ownership is established.
+  readonly #deferredWorkspaceSync = new Set<string>();
+  readonly #deferredFeedbackSync = new Set<string>();
+  /// Authoritative `/v1/me` payloads (or `null` for `NOT_BETA` rejection) held in memory by `(sub, loginGen, sessionId)`
+  /// when an account has no writable DB or its DB write has not yet been confirmed committed on disk. Always takes
+  /// precedence over stale disk rows in `#meOf(sub)` and is cleared only after `db.written` confirms persistence.
+  readonly #liveMe = new Map<string, { gen: number; sid: string; me: unknown | null }>();
+  /// Accounts currently running `#persistLiveMe` (prevents re-entrant retries during the same commit settlement).
+  readonly #persistingLiveMe = new Set<string>();
+  /// Accounts whose `pendingMe` entry was cleared (persisted to disk DB or signed out) while `device/choice` was
+  /// still unloaded; pruned once `device/choice` reloads so stale disk `pendingMe` never overwrites fresher state.
+  readonly #pendingMeCleared = new Set<string>();
+  /// Accounts signed out while `device/choice` was unloaded, mapping `sub` -> snapshot of `#credSaved` counters for
+  /// `credential/<sub>/*` at sign-out time so reload/close can collect historical `credWorkspaces`/`pendingMe`
+  /// deletes without touching credentials freshly saved after a later re-login.
+  readonly #signedOutWhileChoiceUnloaded = new Map<string, Map<string, number>>();
+  /// `(gen, sid)` at which `sub` already persisted an authoritative `/v1/me` (or `NOT_BETA`) to a persistent DB
+  /// in this run (retained even if a later refresh hits a transient 503).
+  readonly #persistedMe = new Map<string, { gen: number; sid: string }>();
+  /// Ensures `#onChoiceLoaded()` runs at most once after `device/choice` finishes loading.
+  #choiceHydrated = false;
+  /// Active `ensureVerifiedOwners()` calls that started while `device/choice` was unloaded and still need
+  /// `device.choiceRecovery()` for post-reload verification; snapshot is released once this drops back to 0.
+  #choiceReloadWaiters = 0;
+  /// `(gen, sid)` at which `sub` received `NOT_BETA` (preserved independently of `this.mes`, so a subsequent
+  /// transient 503 never causes a `NOT_BETA`-rejected account without a DB to re-block other accounts).
+  readonly #notBeta = new Map<string, { gen: number; sid: string }>();
+  /// Persistent session ID that last set `this.mes.get(sub)`.
+  readonly #mesSid = new Map<string, string>();
+  /// Persistent session ID that last saved each credential storage key in this run.
+  readonly #credSavedSession = new Map<string, string>();
+  /// Accounts that underwent in-place session replacement whose old-session workspace list could not yet be fully
+  /// enumerated (e.g. SQLite read error or unloaded `device/choice`); blocks legacy (no-session) credential hits
+  /// and retries cleanup once readable.
+  readonly #replacedUnverified = new Map<string, string>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
   readonly #credentialBackoff = new Map<string, number>();
+  /// Last observed persistent session ID per account sub so in-place re-login (same sub, new session) is detected
+  /// even when `AccountView` fields are identical.
+  readonly #shownSessions = new Map<string, string>();
 
   constructor(core: Inner) {
     this.#core = core;
@@ -104,9 +150,989 @@ export class CloudSync {
 
   /// Starts keeping still.fail cloud's data current: whom each account reaches, from what is held first.
   start(): void {
-    this.recomputeOwners();
+    for (const a of this.#core.accounts.list()) {
+      this.#shownSessions.set(a.sub, this.#core.accounts.sessionId(a.sub));
+    }
+    // Register Runner-owned reload hook so even if every caller waiting on `device.reload("choice")` is interrupted,
+    // the background reload still runs `#onChoiceLoaded()` (hydrate -> recompute -> drain) to completion.
+    this.#core.data.device.onTableReloaded = (table) => {
+      if (table === "choice") this.#onChoiceLoaded();
+    };
+    if (!this.#core.data.device.isUnloaded("choice")) {
+      this.#onChoiceLoaded();
+    } else {
+      this.recomputeOwners();
+    }
     // Each account's socket reads the account as it opens (or, failing its first try, at once).
     this.syncSockets();
+  }
+
+  #baseCredKey(storageKey: string): string {
+    const suffix = `/${CREDENTIAL_OTHERS}`;
+    return storageKey.endsWith(suffix) ? storageKey.slice(0, -suffix.length) : storageKey;
+  }
+
+  #readPendingCredentialDeletes(): string[] {
+    const raw = this.#core.data.device.get("choice", "pendingCredentialDeletes");
+    return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string" && k.length > 0) : [];
+  }
+
+  #isPendingCredentialDelete(storageKey: string): boolean {
+    return this.#readPendingCredentialDeletes().includes(storageKey);
+  }
+
+  #addPendingCredentialDeletes(keys: readonly string[]): void {
+    if (keys.length === 0) return;
+    const prev = this.#readPendingCredentialDeletes();
+    const next = [...new Set([...prev, ...keys])];
+    if (next.length !== prev.length) this.#core.data.device.put("choice", "pendingCredentialDeletes", next);
+  }
+
+  #removePendingCredentialDelete(key: string): void {
+    const prev = this.#readPendingCredentialDeletes();
+    if (!prev.includes(key)) return;
+    const next = prev.filter((k) => k !== key);
+    this.#core.data.device.put("choice", "pendingCredentialDeletes", next.length > 0 ? next : undefined);
+  }
+
+  /// Retries any credential storage deletes persisted before/during an earlier sign-out.
+  /// Serialized per credential key alongside fresh writes and removes only individually confirmed keys.
+  #drainPendingCredentialDeletes(): void {
+    const core = this.#core;
+    const keys = this.#readPendingCredentialDeletes();
+    if (keys.length === 0) return;
+    const byBase = new Map<string, Array<[string, number]>>();
+    for (const k of keys) {
+      const base = this.#baseCredKey(k);
+      let list = byBase.get(base);
+      if (!list) byBase.set(base, (list = []));
+      list.push([k, this.#credSaved.get(k) ?? 0]);
+    }
+    for (const [base, list] of byBase) {
+      core.runner.fork(
+        this.#keepingOf(base).withPermits(1)(
+          Effect.gen({ self: this }, function* () {
+            for (const [k, savedAt] of list) {
+              if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+              const r = yield* Effect.result(core.host.storageDelete(k));
+              if (r._tag === "Success") this.#removePendingCredentialDelete(k);
+            }
+          }),
+        ),
+      );
+    }
+  }
+
+  #isNotBeta(sub: string): boolean {
+    const e = this.#notBeta.get(sub);
+    return e !== undefined && e.gen === this.#core.data.accountGen(sub) && e.sid === this.#core.accounts.sessionId(sub);
+  }
+
+  #hasPersistedMe(sub: string): boolean {
+    const e = this.#persistedMe.get(sub);
+    return e !== undefined && e.gen === this.#core.data.accountGen(sub) && e.sid === this.#core.accounts.sessionId(sub);
+  }
+
+  #hasLiveMe(sub: string): boolean {
+    const live = this.#liveMe.get(sub);
+    return live !== undefined && live.gen === this.#core.data.accountGen(sub) && live.sid === this.#core.accounts.sessionId(sub);
+  }
+
+  /// Latest known `/v1/me` payload for `sub`: prefers same-generation, same-session in-memory authoritative `/v1/me`
+  /// (including `null` tombstone for `NOT_BETA`) without querying SQLite, while always registering the reactive
+  /// `$account-record/me` dependency so live `workspaces` subscriptions stay current even if disk SELECT fails.
+  #meOf(sub: string): unknown {
+    const core = this.#core;
+    const live = this.#liveMe.get(sub);
+    if (live !== undefined && live.gen === core.data.accountGen(sub) && live.sid === core.accounts.sessionId(sub)) {
+      core.data.trackAccountRecord(sub, "me");
+      return live.me === null ? undefined : live.me;
+    }
+    return core.data.record("me", sub);
+  }
+
+  #rememberWorkspacesOf(sub: string, me: unknown): void {
+    if (!isObject(me) || !Array.isArray(me.workspaces)) return;
+    for (const w of me.workspaces) {
+      if (isObject(w) && typeof w.id === "string" && w.id.length > 0) {
+        this.#rememberCredentialWorkspace(sub, w.id);
+      }
+    }
+  }
+
+  #readPendingMe(): Record<string, unknown | null> {
+    const raw = this.#core.data.device.get("choice", "pendingMe");
+    if (!isObject(raw)) return {};
+    return { ...(raw as Record<string, unknown | null>) };
+  }
+
+  #readSessionMap(key: "pendingMeSessions" | "accountSessions"): Record<string, string> {
+    const raw = this.#core.data.device.get("choice", key);
+    if (!isObject(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [sub, v] of Object.entries(raw)) {
+      if (typeof v === "string" && v.length > 0) out[sub] = v;
+    }
+    return out;
+  }
+
+  #recordAccountSession(sub: string): void {
+    const core = this.#core;
+    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice") || this.#replacedUnverified.has(sub)) return;
+    const sid = core.accounts.sessionId(sub);
+    const sessions = this.#readSessionMap("accountSessions");
+    if (sid.length > 0) {
+      if (sessions[sub] === sid) return;
+      sessions[sub] = sid;
+      core.data.device.put("choice", "accountSessions", sessions);
+    } else if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      delete sessions[sub];
+      core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+    }
+  }
+
+  #savePendingMe(sub: string, me: unknown | null): void {
+    this.#pendingMeCleared.delete(sub);
+    const sid = this.#core.accounts.sessionId(sub);
+    const next = this.#readPendingMe();
+    const sessions = this.#readSessionMap("pendingMeSessions");
+    const sameMe = Object.prototype.hasOwnProperty.call(next, sub) && equal(next[sub], me);
+    const sameSid = (sessions[sub] ?? "") === sid;
+    if (sameMe && sameSid) return;
+    next[sub] = me;
+    this.#core.data.device.put("choice", "pendingMe", next);
+    if (sid.length > 0 || Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      if (sid.length > 0) sessions[sub] = sid;
+      else delete sessions[sub];
+      this.#core.data.device.put("choice", "pendingMeSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+    }
+  }
+
+  #clearPendingMe(sub: string): void {
+    if (this.#core.data.device.isUnloaded("choice")) {
+      this.#pendingMeCleared.add(sub);
+    }
+    const next = this.#readPendingMe();
+    if (Object.prototype.hasOwnProperty.call(next, sub)) {
+      delete next[sub];
+      this.#core.data.device.put("choice", "pendingMe", Object.keys(next).length > 0 ? next : undefined);
+    }
+    const sessions = this.#readSessionMap("pendingMeSessions");
+    if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      delete sessions[sub];
+      this.#core.data.device.put("choice", "pendingMeSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+    }
+  }
+
+  #syncAccountSessions(): void {
+    const core = this.#core;
+    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice")) return;
+    const sessions = this.#readSessionMap("accountSessions");
+    let changed = false;
+    const subs = new Set<string>();
+    for (const a of core.accounts.list()) {
+      subs.add(a.sub);
+      if (this.#replacedUnverified.has(a.sub)) continue;
+      const sid = core.accounts.sessionId(a.sub);
+      if (sid.length > 0) {
+        if (sessions[a.sub] !== sid) {
+          sessions[a.sub] = sid;
+          changed = true;
+        }
+      } else if (Object.prototype.hasOwnProperty.call(sessions, a.sub)) {
+        delete sessions[a.sub];
+        changed = true;
+      }
+    }
+    for (const sub of Object.keys(sessions)) {
+      if (!subs.has(sub)) {
+        delete sessions[sub];
+        changed = true;
+      }
+    }
+    if (changed) {
+      core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+    }
+  }
+
+  /// Hydrates any authoritative `/v1/me` (or `NOT_BETA` tombstone) persisted in device storage when an earlier run
+  /// closed while an account had no writable DB, ensuring offline restarts never revert to stale disk rows.
+  /// Never overwrites accounts that already received a fresher authoritative `/v1/me`, cleared `pendingMe`, or
+  /// re-logged in with a different persistent session ID; never prunes entries while `accounts` failed to load.
+  #hydratePendingMe(): void {
+    const core = this.#core;
+    const raw = this.#readPendingMe();
+    const pendingSessions = this.#readSessionMap("pendingMeSessions");
+    const entries = Object.entries(raw);
+    if (entries.length === 0) {
+      this.#pendingMeCleared.clear();
+      this.#syncAccountSessions();
+      return;
+    }
+    const accountsUnloaded = core.accounts.isUnloaded();
+    const subs = new Set(core.accounts.list().map((a) => a.sub));
+    let pruned = false;
+    let sessionsChanged = false;
+    for (const [sub, me] of entries) {
+      const signedIn = subs.has(sub);
+      if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub)) {
+        delete raw[sub];
+        pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
+        }
+        continue;
+      }
+      if (!signedIn) continue;
+      const curSid = core.accounts.sessionId(sub);
+      const entrySid = pendingSessions[sub] ?? "";
+      if (entrySid !== curSid) {
+        // Stale pendingMe from an earlier login session before sign-out -> re-login: drop it!
+        delete raw[sub];
+        pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
+        }
+        continue;
+      }
+      const gen = core.data.accountGen(sub);
+      const existingLive = this.#liveMe.get(sub);
+      if (existingLive !== undefined && existingLive.gen === gen && existingLive.sid === curSid) {
+        // Current run already holds a fresher in-memory authoritative result for this generation & session:
+        // advance stale disk `pendingMe` to the fresher payload rather than keeping an older value.
+        if (!equal(raw[sub], existingLive.me)) {
+          raw[sub] = existingLive.me;
+          pruned = true;
+        }
+        continue;
+      }
+      if ((this.mes.get(sub) === null && this.#mesSid.get(sub) === curSid) || this.#hasPersistedMe(sub) || this.#isNotBeta(sub)) {
+        // Current run already received and persisted an authoritative `/v1/me` (or `NOT_BETA`) for this generation:
+        // drop the stale disk `pendingMe` entry rather than reverting SQLite!
+        delete raw[sub];
+        pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
+        }
+        continue;
+      }
+      const entry = { gen, sid: curSid, me };
+      this.#liveMe.set(sub, entry);
+      if (me === null) this.#notBeta.set(sub, { gen, sid: curSid });
+      const db = core.data.db(sub);
+      if (db && !db.readOnly) this.#persistLiveMe(sub, db, entry);
+    }
+    this.#pendingMeCleared.clear();
+    if (pruned) {
+      core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
+    }
+    if (sessionsChanged) {
+      core.data.device.put("choice", "pendingMeSessions", Object.keys(pendingSessions).length > 0 ? pendingSessions : undefined);
+    }
+    this.#syncAccountSessions();
+  }
+
+  /// Collects historical workspace credentials from the compact pre-merge `device/choice` recovery snapshot (and
+  /// current device table for accounts still signed out) for:
+  /// 1. accounts signed out during this run while `device/choice` was unloaded (preserving credentials freshly saved
+  ///    after a later re-login via `#credSaved`),
+  /// 2. orphaned signed-out accounts remaining in `device/choice` from a previous run whose `Core.close()` failed
+  ///    while `device/choice` was unreadable (ONLY when `accounts` loaded cleanly, never when `accounts.isUnloaded()`),
+  /// 3. signed-in accounts whose persistent `sessionId(sub)` differs from `device/choice`'s recorded session ID
+  ///    (cross-process sign-out -> re-login across any number of failed closes).
+  #collectSignedOutUnloadedDeletes(): Array<[string, number]> {
+    const core = this.#core;
+    const device = core.data.device;
+    const recovery = device.choiceRecovery();
+    const diskPendingMe = recovery?.pendingMe ?? null;
+    const diskPendingMeSessions = recovery?.pendingMeSessions ?? null;
+    const diskAccountSessions = recovery?.accountSessions ?? null;
+    const diskOwners = recovery?.workspaceOwners ?? null;
+    const diskCredWorkspaces = recovery?.credWorkspaces ?? null;
+    const curPendingMe = this.#readPendingMe();
+    const curOwners = device.get("choice", "workspaceOwners");
+    const accountsUnloaded = core.accounts.isUnloaded();
+    const signedInSubs = new Set(core.accounts.list().map((a) => a.sub));
+
+    const targets = new Map<string, Map<string, number>>(this.#signedOutWhileChoiceUnloaded);
+    if (!accountsUnloaded) {
+      const noteOrphan = (sub: string) => {
+        if (sub.length > 0 && !signedInSubs.has(sub) && !targets.has(sub)) {
+          targets.set(sub, new Map<string, number>());
+        }
+      };
+      if (diskCredWorkspaces) for (const sub of diskCredWorkspaces.keys()) noteOrphan(sub);
+      for (const k of device.keys("choice")) {
+        if (k.startsWith("credWorkspaces/")) noteOrphan(k.slice("credWorkspaces/".length));
+      }
+      if (diskPendingMe) for (const sub of Object.keys(diskPendingMe)) noteOrphan(sub);
+      for (const sub of Object.keys(curPendingMe)) noteOrphan(sub);
+      if (diskOwners) for (const owner of Object.values(diskOwners)) if (typeof owner === "string") noteOrphan(owner);
+      if (isObject(curOwners)) for (const owner of Object.values(curOwners)) if (typeof owner === "string") noteOrphan(owner);
+
+      // Cross-process re-login detection: signed-in account's persistent session ID differs from disk choice's.
+      for (const a of core.accounts.list()) {
+        const sub = a.sub;
+        const curSid = core.accounts.sessionId(sub);
+        if (targets.has(sub)) continue;
+        const hasDiskCreds = (diskCredWorkspaces?.get(sub)?.length ?? 0) > 0;
+        const hasDiskPending = diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub);
+        const hasDiskOwned = diskOwners !== null && Object.values(diskOwners).includes(sub);
+        const recordedAccountSid = diskAccountSessions?.[sub] ?? "";
+        const recordedPendingSid = diskPendingMeSessions?.[sub] ?? "";
+        if (
+          (hasDiskPending && recordedPendingSid !== curSid)
+          || ((hasDiskCreds || hasDiskOwned) && recordedAccountSid !== curSid)
+        ) {
+          targets.set(sub, new Map<string, number>());
+        }
+      }
+    }
+
+    if (targets.size === 0) return [];
+
+    const addFromMe = (wsIds: Set<string>, me: unknown) => {
+      if (isObject(me) && Array.isArray(me.workspaces)) {
+        for (const w of me.workspaces) {
+          if (isObject(w) && typeof w.id === "string" && w.id.length > 0) wsIds.add(w.id);
+        }
+      }
+    };
+    const addFromList = (wsIds: Set<string>, raw: unknown) => {
+      if (Array.isArray(raw)) {
+        for (const w of raw) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+      }
+    };
+    const addFromOwners = (wsIds: Set<string>, owners: unknown, sub: string) => {
+      if (isObject(owners)) {
+        for (const [ws, owner] of Object.entries(owners)) {
+          if (owner === sub) wsIds.add(ws);
+        }
+      }
+    };
+
+    const queued: Array<[string, number]> = [];
+    const keysToQueue: string[] = [];
+    for (const [sub, savedAtSignOut] of targets) {
+      const wsIds = new Set<string>();
+      const stillSignedOut = !signedInSubs.has(sub);
+      // Always read pre-merge disk snapshot first so a re-login's new pendingMe/credWorkspaces never masks old workspaces.
+      if (diskCredWorkspaces) addFromList(wsIds, diskCredWorkspaces.get(sub));
+      if (diskPendingMe) addFromMe(wsIds, diskPendingMe[sub]);
+      addFromOwners(wsIds, diskOwners, sub);
+      // Also inspect current merged table when the account is still signed out (catches anything remembered before sign-out).
+      if (stillSignedOut) {
+        addFromList(wsIds, device.get("choice", `credWorkspaces/${sub}`));
+        addFromMe(wsIds, curPendingMe[sub]);
+        addFromOwners(wsIds, curOwners, sub);
+      }
+      const curIndexedRaw = device.get("choice", `credWorkspaces/${sub}`);
+      const curIndexed = Array.isArray(curIndexedRaw) ? curIndexedRaw.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+      const keptWs = new Set<string>();
+      if (!stillSignedOut) {
+        // Preserve workspaces freshly remembered after re-login that were not in the pre-sign-out set.
+        for (const w of curIndexed) if (!wsIds.has(w)) keptWs.add(w);
+      }
+      for (const ws of wsIds) {
+        const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+        const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
+        const keySavedAfter = (this.#credSaved.get(key) ?? 0) !== (savedAtSignOut.get(key) ?? 0);
+        const othersSavedAfter = (this.#credSaved.get(othersKey) ?? 0) !== (savedAtSignOut.get(othersKey) ?? 0);
+        if (!stillSignedOut && (keySavedAfter || othersSavedAfter)) {
+          keptWs.add(ws);
+        }
+        if (!othersSavedAfter) {
+          const savedAt = savedAtSignOut.get(othersKey) ?? 0;
+          keysToQueue.push(othersKey);
+          queued.push([othersKey, savedAt]);
+        }
+        if (!keySavedAfter) {
+          const savedAt = savedAtSignOut.get(key) ?? 0;
+          this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+          keysToQueue.push(key);
+          queued.push([key, savedAt]);
+        }
+      }
+      device.put("choice", `credWorkspaces/${sub}`, keptWs.size > 0 ? [...keptWs] : undefined);
+    }
+    this.#signedOutWhileChoiceUnloaded.clear();
+    this.#addPendingCredentialDeletes(keysToQueue);
+    return queued;
+  }
+
+  /// Resolves the exact pre-wait effective owner of `workspace` in sign-in order (`preReloadOrder`), combining
+  /// the pre-merge disk `device/choice` recovery snapshot (`pendingMe`, `workspaceOwners`) with `preLocalHolders`.
+  /// Distinguishes the true pre-wait owner from lower-priority secondary members (so signing out a lower-priority
+  /// member does not cancel the primary owner's edit, while a disk-backed owner losing membership or signing out does).
+  #effectivePreHolder(
+    workspace: string,
+    preReloadOrder: readonly string[],
+    preLocalHolders: ReadonlySet<string>,
+    preSupersededPendingMe: ReadonlySet<string>,
+    preSessions: ReadonlyMap<string, string>,
+  ): string | null {
+    const recovery = this.#core.data.device.choiceRecovery();
+    const diskPendingMe = recovery?.pendingMe ?? null;
+    const diskPendingMeSessions = recovery?.pendingMeSessions ?? null;
+    const diskAccountSessions = recovery?.accountSessions ?? null;
+    const diskOwners = recovery?.workspaceOwners ?? null;
+    for (const sub of preReloadOrder) {
+      if (diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub) && !preSupersededPendingMe.has(sub)) {
+        const entrySid = diskPendingMeSessions?.[sub] ?? "";
+        const subSid = preSessions.get(sub) ?? "";
+        if (entrySid === subSid) {
+          const me = diskPendingMe[sub];
+          if (isObject(me) && Array.isArray(me.workspaces) && me.workspaces.some((w) => isObject(w) && w.id === workspace)) {
+            return sub;
+          }
+          continue;
+        }
+      }
+      if (preLocalHolders.has(sub)) return sub;
+    }
+    if (diskOwners !== null && typeof diskOwners[workspace] === "string" && diskOwners[workspace].length > 0) {
+      const cached = diskOwners[workspace];
+      if (preReloadOrder.includes(cached) && (diskAccountSessions?.[cached] ?? "") === (preSessions.get(cached) ?? "")) {
+        return cached;
+      }
+    }
+    return null;
+  }
+
+  /// Runs all recovery actions AT MOST ONCE once BOTH `accounts` and `device/choice` have loaded:
+  /// collect deferred/orphan/re-login sign-out credential deletes, hydrate unpersisted `pendingMe`,
+  /// recompute workspace ownership, drain queued credential deletes, and release recovery snapshot if no waiters remain.
+  #onChoiceLoaded(): void {
+    const core = this.#core;
+    if (this.#choiceHydrated || core.data.device.isUnloaded("choice")) return;
+    if (core.accounts.isUnloaded()) {
+      // Defer full hydration & orphan cleanup until `accounts` finishes loading (or Comma confirms identity).
+      this.recomputeOwners();
+      return;
+    }
+    this.#choiceHydrated = true;
+    this.#collectSignedOutUnloadedDeletes();
+    this.#hydratePendingMe();
+    for (const [sub, sid] of [...this.#replacedUnverified]) {
+      if (core.accounts.sessionId(sub) === sid) this.#invalidateReplacedSession(sub, sid);
+      else this.#replacedUnverified.delete(sub);
+    }
+    this.recomputeOwners();
+    this.#drainPendingCredentialDeletes();
+    if (this.#choiceReloadWaiters === 0) core.data.device.clearChoiceRecovery();
+  }
+
+  #setLiveMe(sub: string, me: unknown | null, sid = this.#core.accounts.sessionId(sub)): { gen: number; sid: string; me: unknown | null } {
+    const gen = this.#core.data.accountGen(sub);
+    const prevMe = this.#meOf(sub);
+    if (me === null) {
+      // Preserve every workspace previously known for `sub` (from `#liveMe` or SQLite) into the durable
+      // credential-cleanup index before overwriting `#liveMe` with the `NOT_BETA` tombstone.
+      this.#rememberWorkspacesOf(sub, prevMe);
+    } else if (isObject(prevMe) && Array.isArray(prevMe.workspaces)) {
+      const nextIds = new Set(
+        isObject(me) && Array.isArray(me.workspaces)
+          ? me.workspaces.flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []))
+          : [],
+      );
+      for (const w of prevMe.workspaces) {
+        if (isObject(w) && typeof w.id === "string" && w.id.length > 0 && !nextIds.has(w.id)) {
+          this.#rememberCredentialWorkspace(sub, w.id);
+        }
+      }
+    }
+    const entry = { gen, sid, me };
+    this.#liveMe.set(sub, entry);
+    const db = this.#core.data.db(sub);
+    if (!this.#core.data.isPersistentDb(db)) this.#savePendingMe(sub, me);
+    this.#core.data.notifyAccountRecord(sub, "me");
+    return entry;
+  }
+
+  #clearLiveMe(sub: string): void {
+    this.#clearPendingMe(sub);
+    if (this.#liveMe.delete(sub)) this.#core.data.notifyAccountRecord(sub, "me");
+  }
+
+  /// Writes or drops `live.me` in `db` and removes the in-memory + device-pending copy ONLY once `db.written`
+  /// finishes on a persistent disk DB and the committed on-disk row actually matches `live.me` (keeping `#liveMe`
+  /// and `pendingMe` intact for ephemeral memory DBs or if `SQLITE_FULL` rolls back).
+  #persistLiveMe(sub: string, db: AccountDb, live: { gen: number; sid: string; me: unknown | null }): void {
+    const core = this.#core;
+    if (db.readOnly || live.gen !== core.data.accountGen(sub) || live.sid !== core.accounts.sessionId(sub)) return;
+    const persistent = core.data.isPersistentDb(db);
+    this.#persistingLiveMe.add(sub);
+    const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
+    if (live.me === null) db.dropAccountDoc("me", topic);
+    else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+    core.runner.fork(
+      Effect.andThen(
+        Effect.ignore(db.written),
+        Effect.sync(() => {
+          this.#persistingLiveMe.delete(sub);
+          if (!persistent) return;
+          if (this.#liveMe.get(sub) !== live) return;
+          if (core.data.db(sub) !== db || db.readOnly || live.gen !== core.data.accountGen(sub) || live.sid !== core.accounts.sessionId(sub)) return;
+          try {
+            const persisted = db.accountDoc("me");
+            const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
+            if (matches) {
+              this.#persistedMe.set(sub, { gen: live.gen, sid: live.sid });
+              this.#liveMe.delete(sub);
+              this.#clearPendingMe(sub);
+            }
+          } catch {
+            // Read failed; keep `#liveMe` intact for retry / close verification.
+          }
+        }),
+      ),
+    );
+  }
+
+  /// Persists any same-generation, same-session in-memory authoritative `/v1/me` (or `NOT_BETA` tombstone) into a newly
+  /// published account DB BEFORE `recomputeOwners()` / `resumeFor()` so stale disk rows never overwrite fresher cloud state.
+  adoptDb(db: AccountDb): void {
+    const sub = db.sub;
+    const replacedSid = this.#replacedUnverified.get(sub);
+    if (replacedSid !== undefined && this.#core.accounts.sessionId(sub) === replacedSid) {
+      this.#invalidateReplacedSession(sub, replacedSid);
+    }
+    const live = this.#liveMe.get(sub);
+    if (live === undefined) return;
+    if (live.gen !== this.#core.data.accountGen(sub) || live.sid !== this.#core.accounts.sessionId(sub)) {
+      this.#clearLiveMe(sub);
+      return;
+    }
+    if (!db.readOnly) this.#persistLiveMe(sub, db, live);
+  }
+
+  /// Retries persisting an unconfirmed `#liveMe` record once a persistent disk `db` commits cleanly again (e.g.
+  /// after transient `SQLITE_FULL` clears) so subsequent offline restarts see the authoritative `/v1/me` on disk.
+  retryPendingLiveMe(db: AccountDb): void {
+    const sub = db.sub;
+    if (!this.#core.data.isPersistentDb(db) || db.full || this.#persistingLiveMe.has(sub)) return;
+    const live = this.#liveMe.get(sub);
+    if (live === undefined || live.gen !== this.#core.data.accountGen(sub) || live.sid !== this.#core.accounts.sessionId(sub)) return;
+    this.#persistLiveMe(sub, db, live);
+  }
+
+  /// Verifies every pending `#liveMe` record against on-disk SQLite after `Data.closing()` has settled in-flight
+  /// transactions; retries and commits any rolled-back/unpersisted entry per account (never letting one account's
+  /// SQLite read/write error abort others), persists DB-less/read-only/ephemeral-memory entries into
+  /// `device/choice["pendingMe"]` before `device.close()` flushes, and returns a `HostError` if any persistent
+  /// writable disk DB still fails to persist.
+  flushLiveMe(): HostError | null {
+    const core = this.#core;
+    const failed: string[] = [];
+    for (const [sub, live] of [...this.#liveMe]) {
+      if (live.gen !== core.data.accountGen(sub) || live.sid !== core.accounts.sessionId(sub)) continue;
+      const db = core.data.db(sub);
+      if (!core.data.isPersistentDb(db)) {
+        try {
+          this.#savePendingMe(sub, live.me);
+        } catch {
+          failed.push(`me/${sub}`);
+        }
+        continue;
+      }
+      const matches = () => {
+        const persisted = db.accountDoc("me");
+        return live.me === null ? persisted === undefined : equal(persisted, live.me);
+      };
+      this.#persistingLiveMe.add(sub);
+      try {
+        if (matches()) {
+          this.#persistedMe.set(sub, { gen: live.gen, sid: live.sid });
+          this.#liveMe.delete(sub);
+          this.#clearPendingMe(sub);
+          continue;
+        }
+        const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
+        if (live.me === null) db.dropAccountDoc("me", topic);
+        else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+        db.commitNow();
+        if (matches()) {
+          this.#persistedMe.set(sub, { gen: live.gen, sid: live.sid });
+          this.#liveMe.delete(sub);
+          this.#clearPendingMe(sub);
+        } else {
+          try { this.#savePendingMe(sub, live.me); } catch { /* reported below */ }
+          failed.push(`me/${sub}`);
+        }
+      } catch {
+        try { this.#savePendingMe(sub, live.me); } catch { /* reported below */ }
+        failed.push(`me/${sub}`);
+      } finally {
+        this.#persistingLiveMe.delete(sub);
+      }
+    }
+    return failed.length > 0 ? new HostError(`failed to persist authoritative /v1/me on close: ${failed.join(", ")}`) : null;
+  }
+
+  /// If `device/choice` was still unloaded at close time and this run cleared/updated `pendingMe` or signed out an
+  /// account, reloads `device/choice`, collects historical credential deletes for unloaded sign-outs (preserving
+  /// re-login protection), strips superseded disk `pendingMe` entries, and attempts the queued deletes before
+  /// `device.close()` flushes so a subsequent offline restart never reverts SQLite or leaks credentials.
+  reconcilePendingMeOnClose(): Effect.Effect<HostError | null> {
+    return Effect.gen({ self: this }, function* () {
+      const core = this.#core;
+      if (!core.data.device.isUnloaded("choice")) return null;
+      const needsChoice = this.#pendingMeCleared.size > 0 || this.#signedOutWhileChoiceUnloaded.size > 0;
+      if (!needsChoice && this.#liveMe.size === 0) return null;
+      const loaded = yield* core.data.device.reload("choice", false);
+      if (!loaded) {
+        return needsChoice
+          ? new HostError("device/choice could not be reloaded on close to reconcile pendingMe / sign-out cleanup")
+          : null;
+      }
+      const deleteTargets = this.#collectSignedOutUnloadedDeletes();
+      const raw = this.#readPendingMe();
+      const pendingSessions = this.#readSessionMap("pendingMeSessions");
+      let changed = false;
+      let sessionsChanged = false;
+      const accountsUnloaded = core.accounts.isUnloaded();
+      const subs = new Set(core.accounts.list().map((a) => a.sub));
+      for (const sub of Object.keys(raw)) {
+        const signedIn = subs.has(sub);
+        const gen = core.data.accountGen(sub);
+        const curSid = core.accounts.sessionId(sub);
+        const live = this.#liveMe.get(sub);
+        const staleSession = signedIn && (pendingSessions[sub] ?? "") !== curSid;
+        if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub) || staleSession) {
+          delete raw[sub];
+          changed = true;
+          if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+            delete pendingSessions[sub];
+            sessionsChanged = true;
+          }
+        } else if (signedIn && live !== undefined && live.gen === gen && live.sid === curSid) {
+          if (!equal(raw[sub], live.me)) {
+            raw[sub] = live.me;
+            changed = true;
+          }
+        } else if (signedIn && ((this.mes.get(sub) === null && this.#mesSid.get(sub) === curSid) || this.#hasPersistedMe(sub) || this.#isNotBeta(sub))) {
+          delete raw[sub];
+          changed = true;
+          if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+            delete pendingSessions[sub];
+            sessionsChanged = true;
+          }
+        }
+      }
+      this.#pendingMeCleared.clear();
+      if (changed) {
+        core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
+      }
+      if (sessionsChanged) {
+        core.data.device.put("choice", "pendingMeSessions", Object.keys(pendingSessions).length > 0 ? pendingSessions : undefined);
+      }
+      this.#syncAccountSessions();
+      core.data.device.clearChoiceRecovery();
+      for (const [k, savedAt] of deleteTargets) {
+        if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+        const r = yield* Effect.result(core.host.storageDelete(k));
+        if (r._tag === "Success") this.#removePendingCredentialDelete(k);
+      }
+      return null;
+    });
+  }
+
+  /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
+  /// to an empty memory DB or failed to open) and cloud `/v1/me` has not yet populated a readable `me` record
+  /// (nor rejected the account with `NOT_BETA` in the current login generation).
+  #meUnreadable(sub: string): boolean {
+    const core = this.#core;
+    if (core.data.notes.size === 0) return false;
+    const note = core.data.notes.get(sub);
+    if (note?.kind !== "busy" && note?.kind !== "failed") return false;
+    if (this.#isNotBeta(sub)) return false;
+    if (this.#hasLiveMe(sub)) return false;
+    if (core.data.record("me", sub) !== undefined) return false;
+    return !(this.mes.get(sub)?.code === NOT_BETA && this.#mesSid.get(sub) === core.accounts.sessionId(sub));
+  }
+
+  /// Whether `sub`'s local workspace membership list is not yet verified (deferred open or unreadable disk DB before `/v1/me`).
+  #isUnverified(sub: string): boolean {
+    return this.#core.data.isDeferred(sub) || this.#meUnreadable(sub);
+  }
+
+  /// Whether `sub`'s DB cannot accept local writes (opened read-only for a newer schema, or busy/failed without a DB).
+  #dbUnavailable(sub: string): boolean {
+    const core = this.#core;
+    const db = core.data.db(sub);
+    if (db !== undefined) return db.readOnly;
+    const note = core.data.notes.get(sub);
+    return note?.kind === "busy" || note?.kind === "failed";
+  }
+
+  /// Whether any signed-in non-console account currently has unverified workspace memberships, or `accounts` /
+  /// `device/choice` failed its initial disk read and has not yet completed recovery.
+  hasUnverifiedAccounts(): boolean {
+    const core = this.#core;
+    if (core.accounts.isUnloaded()) return true;
+    if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) return true;
+    if (core.data.hasDeferred()) return true;
+    if (core.data.notes.size === 0) return false;
+    return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
+  }
+
+  /// Whether local account-DB writes need ownership or DB-writability verification before running.
+  needsWriteVerification(): boolean {
+    if (this.hasUnverifiedAccounts()) return true;
+    return this.#core.accounts.list().some((a) => this.#dbUnavailable(a.sub));
+  }
+
+  #meListsWorkspace(sub: string, workspace: string): boolean {
+    const me = this.#meOf(sub);
+    return isObject(me) && Array.isArray(me.workspaces)
+      && me.workspaces.some((w) => isObject(w) && w.id === workspace);
+  }
+
+  /// Whether any non-console account strictly earlier than `sub` in sign-in order still has unverified memberships
+  /// (deferred DB, unreadable busy/failed disk DB without cloud `/v1/me`, or unread `accounts`/`device/choice` recovery).
+  hasEarlierDeferred(sub: string): boolean {
+    const core = this.#core;
+    if (core.accounts.isUnloaded()) return true;
+    if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) return true;
+    if (!this.hasUnverifiedAccounts()) return false;
+    for (const account of core.accounts.list()) {
+      if (this.#isConsole(account.sub)) continue;
+      if (account.sub === sub) return false;
+      if (this.#isUnverified(account.sub)) return true;
+    }
+    return false;
+  }
+
+  /// Accounts in sign-in order that could currently own `workspace`: every unknown-membership account up to (and
+  /// including) the first non-console account whose known membership (open DB or same-session live `/v1/me`) lists
+  /// `workspace`, never including strictly later accounts once an earlier account already holds `workspace`.
+  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsVerify: boolean; includeTarget: boolean } {
+    const core = this.#core;
+    const candidates = new Set<string>();
+    const order: string[] = [];
+    let firstHolder: string | null = null;
+    let sawUnverifiedBeforeHolder = false;
+    for (const account of core.accounts.list()) {
+      if (this.#isConsole(account.sub)) continue;
+      order.push(account.sub);
+      const unverified = this.#isUnverified(account.sub);
+      const known = !unverified || this.#hasLiveMe(account.sub) || this.#isNotBeta(account.sub);
+      if (!known) {
+        candidates.add(account.sub);
+        sawUnverifiedBeforeHolder = true;
+        continue;
+      }
+      if (this.#meListsWorkspace(account.sub, workspace)) {
+        firstHolder = account.sub;
+        candidates.add(account.sub);
+        if (unverified) sawUnverifiedBeforeHolder = true;
+        break;
+      }
+      if (unverified) sawUnverifiedBeforeHolder = true;
+    }
+    const pubOwner = core.workspaces.owner(workspace);
+    const holderIdx = firstHolder !== null ? order.indexOf(firstHolder) : -1;
+    const pubIdx = pubOwner !== null ? order.indexOf(pubOwner) : -1;
+    if (pubOwner !== null && (holderIdx < 0 || (pubIdx >= 0 && pubIdx <= holderIdx))) {
+      candidates.add(pubOwner);
+    }
+    const includeTarget = firstHolder !== null && core.data.isDeferred(firstHolder);
+    const needsVerify = this.hasUnverifiedAccounts() && (
+      firstHolder !== null
+        ? sawUnverifiedBeforeHolder
+        : (pubOwner === null || this.hasEarlierDeferred(pubOwner))
+    );
+    return { candidates, firstOpenHolder: firstHolder ?? pubOwner, needsVerify, includeTarget };
+  }
+
+  /// Whether `sub`'s workspace membership list was genuinely unknown BEFORE `ensureVerifiedOwners` started waiting
+  /// (neither open/readable DB, nor same-session authoritative live `/v1/me` / `NOT_BETA` tombstone even while DB was
+  /// deferred, nor same-session non-superseded disk `pendingMe` record).
+  #preWaitMembershipUnknown(
+    sub: string,
+    choiceUnloaded: boolean,
+    preKnownMembership: ReadonlySet<string>,
+    preSupersededPendingMe: ReadonlySet<string>,
+    preSessions: ReadonlyMap<string, string>,
+  ): boolean {
+    if (preKnownMembership.has(sub)) return false;
+    if (!choiceUnloaded) return true;
+    const recovery = this.#core.data.device.choiceRecovery();
+    const diskPendingMe = recovery?.pendingMe ?? null;
+    if (diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub) && !preSupersededPendingMe.has(sub)) {
+      const entrySid = recovery?.pendingMeSessions?.[sub] ?? "";
+      const subSid = preSessions.get(sub) ?? "";
+      if (entrySid === subSid) return false;
+    }
+    return true;
+  }
+
+  /// Ensures every workspace in `workspaces` has a verified owner with an available DB (opening earlier deferred
+  /// accounts if needed) before any local write, draft persistence, carry, or mutation touches an account DB.
+  /// Snapshots ALL candidate owners, pre-wait holders, known memberships, and session IDs across every workspace
+  /// before the first await, and whenever any wait occurs re-verifies EVERY workspace in `workspaces`. Fails with
+  /// `cancelled` if any candidate signs out or changes session, any pre-wait holder loses membership, ownership
+  /// remains unverified, or the resolved owner's DB is unavailable.
+  ensureVerifiedOwners(workspaces: Iterable<string>): Effect.Effect<void, CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      const core = this.#core;
+      if (!this.needsWriteVerification()) return;
+      if (core.accounts.isUnloaded()) {
+        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
+      const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
+      if (list.length === 0) return;
+      const choiceUnloaded = core.data.device.isUnloaded("choice") || !this.#choiceHydrated;
+      const preReloadOrder = core.accounts.list().filter((a) => !this.#isConsole(a.sub)).map((a) => a.sub);
+      const preSessions = new Map<string, string>();
+      const preKnownMembership = new Set<string>();
+      for (const sub of preReloadOrder) {
+        preSessions.set(sub, core.accounts.sessionId(sub));
+        if (!this.#isUnverified(sub) || this.#hasLiveMe(sub) || this.#isNotBeta(sub)) {
+          preKnownMembership.add(sub);
+        }
+      }
+      const preLocalHolders = new Map<string, Set<string>>();
+      const preSupersededPendingMe = new Set<string>();
+      const wsCandidates = new Map<string, Set<string>>();
+      const allSnapTargets = new Set<string>();
+      const allChecks: Array<[string, string | null]> = [];
+      let waits: Array<[string, string | null, boolean]> = [];
+      for (const ws of list) {
+        const info = this.#candidateOwners(ws);
+        wsCandidates.set(ws, new Set(info.candidates));
+        for (const sub of info.candidates) allSnapTargets.add(sub);
+        const firstKnownHolder = preReloadOrder.find((sub) => preKnownMembership.has(sub) && this.#meListsWorkspace(sub, ws)) ?? info.firstOpenHolder;
+        if (firstKnownHolder !== null) allSnapTargets.add(firstKnownHolder);
+        allChecks.push([ws, firstKnownHolder]);
+        if (info.needsVerify) waits.push([ws, info.firstOpenHolder, info.includeTarget]);
+      }
+      if (choiceUnloaded) {
+        for (const sub of preReloadOrder) {
+          allSnapTargets.add(sub);
+          const curSid = preSessions.get(sub) ?? "";
+          if (
+            this.#pendingMeCleared.has(sub)
+            || this.#hasPersistedMe(sub)
+            || (this.mes.get(sub) === null && this.#mesSid.get(sub) === curSid)
+            || this.#isNotBeta(sub)
+            || this.#hasLiveMe(sub)
+          ) {
+            preSupersededPendingMe.add(sub);
+          }
+        }
+        for (const ws of list) {
+          const holders = new Set<string>();
+          for (const sub of preReloadOrder) {
+            if (preKnownMembership.has(sub) && this.#meListsWorkspace(sub, ws)) holders.add(sub);
+          }
+          preLocalHolders.set(ws, holders);
+        }
+      }
+      if (!choiceUnloaded && waits.length === 0) {
+        for (const [ws] of allChecks) {
+          const postOwner = core.workspaces.owner(ws);
+          if (postOwner !== null && this.#dbUnavailable(postOwner)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+        }
+        return;
+      }
+      // Snapshot pre-wait login generations BEFORE the very first await (including device/choice reload), then
+      // evaluate sign-outs, session replacements, membership losses, and determinate owner changes per workspace.
+      const snap = core.data.accountSessionSnapshot(allSnapTargets);
+      const body = Effect.gen({ self: this }, function* () {
+        if (choiceUnloaded) {
+          const loaded = yield* core.data.device.reload("choice");
+          if (!loaded) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          this.#onChoiceLoaded();
+          // Recompute deferred waits after hydrating pendingMe/owners (keeping original allChecks & snap!).
+          waits = [];
+          for (const ws of list) {
+            const info = this.#candidateOwners(ws);
+            const set = wsCandidates.get(ws)!;
+            for (const sub of info.candidates) set.add(sub);
+            if (info.needsVerify) waits.push([ws, info.firstOpenHolder, info.includeTarget]);
+          }
+        }
+        if (this.onNeedDeferred && core.data.hasDeferred() && waits.length > 0) {
+          for (const [ws, beforeSub, includeTarget] of waits) {
+            yield* this.onNeedDeferred(ws, beforeSub, includeTarget);
+          }
+        }
+        for (const [ws, preHolder] of allChecks) {
+          const effectiveHolder = choiceUnloaded
+            ? this.#effectivePreHolder(ws, preReloadOrder, preLocalHolders.get(ws)!, preSupersededPendingMe, preSessions)
+            : preHolder;
+          if (effectiveHolder !== null && !this.#meListsWorkspace(effectiveHolder, ws)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          const postOwner = core.workspaces.owner(ws);
+          if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          // Only an earlier account whose pre-wait membership was genuinely unknown (neither open/live nor already
+          // answered by a same-session live/disk `pendingMe` record) may supersede `effectiveHolder` once verified;
+          // otherwise bind the write to `effectiveHolder` and cancel if an earlier account newly gained `ws`.
+          if (effectiveHolder !== null && postOwner !== effectiveHolder) {
+            const holderIdx = preReloadOrder.indexOf(effectiveHolder);
+            const postIdx = preReloadOrder.indexOf(postOwner);
+            const earlierMembershipUnknown =
+              postIdx >= 0
+              && postIdx < holderIdx
+              && this.#preWaitMembershipUnknown(postOwner, choiceUnloaded, preKnownMembership, preSupersededPendingMe, preSessions);
+            if (!earlierMembershipUnknown) {
+              return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+            }
+          }
+          const relevant = new Map<string, number>();
+          const addRelevant = (sub: string) => {
+            const gen = snap.gens.get(sub);
+            if (gen !== undefined) relevant.set(sub, gen);
+          };
+          if (effectiveHolder !== null) addRelevant(effectiveHolder);
+          addRelevant(postOwner);
+          for (const sub of wsCandidates.get(ws) ?? []) addRelevant(sub);
+          if (choiceUnloaded) {
+            const ownerIdx = preReloadOrder.indexOf(postOwner);
+            const limit = ownerIdx >= 0 ? ownerIdx + 1 : preReloadOrder.length;
+            for (let i = 0; i < limit; i++) addRelevant(preReloadOrder[i]);
+          }
+          if (core.data.accountSignedOutSince({ gens: relevant })) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          for (const sub of relevant.keys()) {
+            const beforeSid = preSessions.get(sub);
+            if (beforeSid !== undefined && core.accounts.sessionId(sub) !== beforeSid) {
+              return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+            }
+          }
+        }
+      });
+      if (!choiceUnloaded) return yield* body;
+      this.#choiceReloadWaiters++;
+      return yield* Effect.ensuring(
+        body,
+        Effect.sync(() => {
+          this.#choiceReloadWaiters--;
+          if (this.#choiceReloadWaiters === 0 && this.#choiceHydrated) {
+            core.data.device.clearChoiceRecovery();
+          }
+        }),
+      );
+    });
+  }
+
+  /// Ensures `workspace`'s owner is verified against sign-in order (opening earlier deferred accounts if needed)
+  /// before any local write, draft persistence, credential lookup, or mutation touches an account DB.
+  /// Fails with `cancelled` if any potentially owning account signs out or changes login generation mid-wait.
+  ensureVerifiedOwner(workspace: string): Effect.Effect<void, CoreError> {
+    return this.ensureVerifiedOwners([workspace]);
   }
 
   // ── what the topics read ──
@@ -132,7 +1158,7 @@ export class CloudSync {
   workspacesValue(): unknown {
     const core = this.#core;
     return core.accounts.list().map((account) => {
-      const record = core.data.record("me", account.sub);
+      const record = this.#meOf(account.sub);
       const me = isObject(record) ? record : {};
       const entry: Record<string, unknown> = {
         account,
@@ -175,14 +1201,24 @@ export class CloudSync {
   #account(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       yield* this.#me(sub);
-      const me = this.#core.data.record("me", sub);
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       const scheduler = this.#core.scheduler;
       // (the console's origin serves none of these: only its operator's lists, `#isConsole`)
       if (!this.#isConsole(sub)) {
-        for (const id of ids) if (this.#core.workspaces.owner(id) === sub) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        for (const id of ids) {
+          const o = this.#core.workspaces.owner(id);
+          if (o === sub && !this.hasEarlierDeferred(sub)) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+          else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) this.#deferredWorkspaceSync.add(id);
+        }
         // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
-        if (this.#core.provider.supports("feedback")) for (const id of ids) if (this.#core.workspaces.owner(id) === sub) this.feedbackChanged(id);
+        if (this.#core.provider.supports("feedback")) {
+          for (const id of ids) {
+            const o = this.#core.workspaces.owner(id);
+            if (o === sub && !this.hasEarlierDeferred(sub)) this.feedbackChanged(id);
+            else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) this.#deferredFeedbackSync.add(id);
+          }
+        }
         // What only some providers have: login sessions, an operator's lists.
         if (this.#core.provider.supports("loginSessions")) scheduler.enqueue("cloud", `sessions/${sub}`, Priority.background, this.#loginSessions(sub));
       }
@@ -201,11 +1237,17 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       yield* this.#me(sub);
       if (this.#isConsole(sub)) return;
-      const me = this.#core.data.record("me", sub);
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       for (const id of ids) {
-        if (this.#core.workspaces.owner(id) !== sub || isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) continue;
-        this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        const o = this.#core.workspaces.owner(id);
+        if (o === sub && !this.hasEarlierDeferred(sub)) {
+          if (!isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) {
+            this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+          }
+        } else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) {
+          this.#deferredWorkspaceSync.add(id);
+        }
       }
     });
   }
@@ -244,7 +1286,7 @@ export class CloudSync {
         || at === "/v1/me" || at.startsWith("/v1/me/")
         || (method === "DELETE" && ws !== null && (ws[2] === undefined || (ws[2] === "members" && ws[3] !== undefined && decodeURIComponent(ws[3]) === sub)));
       // (first: a workspace made, or joined, is the account's once its `/v1/me` lists it, and its view is then held as answered)
-      if (reaches) yield* Effect.ignore(scheduler.ask("cloud", `me/${sub}`, Priority.asked, this.#listed(sub)), { log: "Unhandled", message: "me read" });
+      if (reaches) yield* Effect.ignore(scheduler.ask("cloud", this.#meKey(sub), Priority.asked, this.#listed(sub)), { log: "Unhandled", message: "me read" });
       // (the view as the write answered it: the answer itself, or its `view`, people added)
       const view = viewIn(answer) ?? (isObject(answer) ? viewIn(answer.view) : null);
       const viewOf = view === null ? null : made || joined ? (view.id as string) : id;
@@ -269,12 +1311,16 @@ export class CloudSync {
     });
   }
 
+  #meKey(sub: string): string {
+    return `me/${sub}#${this.#core.accounts.sessionId(sub)}`;
+  }
+
   /// Everything of an account read again, waited on.
   refreshAccount(sub: string): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const scheduler = this.#core.scheduler;
-      yield* Effect.ignore(scheduler.ask("cloud", `me/${sub}`, Priority.asked, this.#me(sub)), { log: "Unhandled", message: "me read" });
-      const me = this.#core.data.record("me", sub);
+      yield* Effect.ignore(scheduler.ask("cloud", this.#meKey(sub), Priority.asked, this.#me(sub)), { log: "Unhandled", message: "me read" });
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       const onConsole = this.#isConsole(sub);
       const reads = onConsole ? [] : ids.filter((id) => this.#core.workspaces.owner(id) === sub).map((id) => Effect.ignore(scheduler.ask("cloud", `workspace/${id}`, Priority.asked, this.#workspace(id)), { log: "Unhandled", message: "workspace read" }));
@@ -289,15 +1335,17 @@ export class CloudSync {
   /// asked of it (each a 404, every time the console opened, of the account's requests a minute). A cloud from before
   /// says nothing: read as before.
   #isConsole(sub: string): boolean {
-    return pointer(this.#core.data.record("me", sub), "/console") === true;
+    return pointer(this.#meOf(sub), "/console") === true;
   }
 
   #me(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!core.accounts.list().some((a) => a.sub === sub)) return;
+      const snap = core.data.accountSessionSnapshot([sub]);
+      const sid = core.accounts.sessionId(sub);
       const answer = yield* Effect.result(core.provider.me(sub));
-      if (!core.accounts.list().some((a) => a.sub === sub)) return;
+      if (core.data.accountSignedOutSince(snap) || !core.accounts.list().some((a) => a.sub === sub) || core.accounts.sessionId(sub) !== sid) return;
       if (answer._tag === "Success") {
         const relays = relaysOf(answer.success);
         if (this.#relaySource !== null && !core.accounts.list().some((a) => a.sub === this.#relaySource)) {
@@ -307,13 +1355,26 @@ export class CloudSync {
         const first = relays !== null && this.relays === null;
         if (first) this.#relaySource = sub;
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
-        core.data.put("me", sub, answer.success);
+        const db = core.data.db(sub);
+        this.#notBeta.delete(sub);
+        if (this.#replacedUnverified.get(sub) === sid) {
+          this.#invalidateReplacedSession(sub, sid);
+        }
+        const live = this.#setLiveMe(sub, answer.success, sid);
+        if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
         this.mes.set(sub, null);
+        this.#mesSid.set(sub, sid);
       } else {
         // A beta app the account may not use: what it reached is not reached through this app.
-        if (answer.failure.code === NOT_BETA) core.data.forgetRecord("me", sub);
+        if (answer.failure.code === NOT_BETA) {
+          const db = core.data.db(sub);
+          this.#notBeta.set(sub, { gen: core.data.accountGen(sub), sid });
+          const live = this.#setLiveMe(sub, null, sid);
+          if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
+        }
         this.mes.set(sub, answer.failure);
+        this.#mesSid.set(sub, sid);
       }
       this.recomputeOwners();
       this.forgetUnreachable();
@@ -342,9 +1403,16 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) {
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(id);
+        return;
+      }
       const topic: Topic = { topic: "workspace", workspace: id };
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}`, null));
+      if (core.workspaces.owner(id) !== sub) {
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(id);
+        return;
+      }
       if (answer._tag === "Success") this.#took(id, answer.success);
       else {
         const error = answer.failure;
@@ -364,7 +1432,12 @@ export class CloudSync {
   /// The team's replies on bug reports from a workspace's chats changed (its event, or this device answered one): read
   /// again.
   feedbackChanged(id: string): void {
-    if (this.#core.workspaces.owner(id) === null || !this.#core.provider.supports("feedback")) return;
+    if (!this.#core.provider.supports("feedback")) return;
+    const sub = this.#core.workspaces.owner(id);
+    if (sub === null || this.hasEarlierDeferred(sub)) {
+      if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
+      return;
+    }
     this.#core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
   }
 
@@ -374,8 +1447,15 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) {
+        if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
+        return;
+      }
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}/feedback`, null));
+      if (core.workspaces.owner(id) !== sub) {
+        if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
+        return;
+      }
       if (answer._tag === "Success") core.data.put("feedback", id, isObject(answer.success) ? answer.success : { feedback: [] });
       else if (answer.failure.status === 404 || answer.failure.status === 403) {
         core.data.forgetRecord("feedback", id);
@@ -473,35 +1553,146 @@ export class CloudSync {
   }
 
   /// Which account reaches each workspace: the first (in sign-in order) whose last `/v1/me` lists it. An account
-  /// signed out: what it reached goes, with its credentials.
+  /// signed out: what it reached goes, with its credentials. While earlier accounts in sign-in order are still
+  /// deferred, workspaces they may own are left unassigned rather than provisionally assigned to a later account.
   recomputeOwners(): void {
     const core = this.#core;
     const accounts = core.accounts.list();
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
+    const hasUnverified = this.hasUnverifiedAccounts();
+    const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
+    const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
     const owners = new Map<string, string>();
+    let sawEarlierUnverified = core.accounts.isUnloaded() || core.data.device.isUnloaded("choice") || !this.#choiceHydrated;
     for (const account of accounts) {
       // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
       if (this.#isConsole(account.sub)) continue;
-      const me = core.data.record("me", account.sub);
+      if (this.#isUnverified(account.sub)) {
+        sawEarlierUnverified = true;
+        continue;
+      }
+      const me = this.#meOf(account.sub);
       for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
-        if (isObject(w) && typeof w.id === "string" && !owners.has(w.id)) owners.set(w.id, account.sub);
+        if (!isObject(w) || typeof w.id !== "string" || owners.has(w.id)) continue;
+        // If an earlier account in sign-in order is still unverified (deferred or busy/failed disk DB without /v1/me),
+        // only assign workspaces whose cached owner is confirmed to be this account. Any shared or uncached workspace
+        // waits until earlier accounts' memberships are known so writes never land in the wrong DB.
+        if (sawEarlierUnverified && cachedOwners?.[w.id] !== account.sub) continue;
+        owners.set(w.id, account.sub);
       }
     }
     core.workspaces.setOwners(owners);
+    if (!hasUnverified) {
+      core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
+      this.#syncAccountSessions();
+    }
+    if (this.#deferredWorkspaceSync.size > 0) {
+      for (const id of [...this.#deferredWorkspaceSync]) {
+        const o = core.workspaces.owner(id);
+        if (o !== null && !this.hasEarlierDeferred(o)) {
+          this.#deferredWorkspaceSync.delete(id);
+          // If `o`'s own `/v1/me` has not run yet, `#account(o)` will fetch `workspace/<id>` once its socket opens.
+          if (this.mes.has(o)) core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        } else if (!hasUnverified) {
+          this.#deferredWorkspaceSync.delete(id);
+        }
+      }
+    }
+    if (this.#deferredFeedbackSync.size > 0) {
+      for (const id of [...this.#deferredFeedbackSync]) {
+        const o = core.workspaces.owner(id);
+        if (o !== null && !this.hasEarlierDeferred(o)) {
+          this.#deferredFeedbackSync.delete(id);
+          if (this.mes.has(o) && core.provider.supports("feedback")) core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
+        } else if (!hasUnverified) {
+          this.#deferredFeedbackSync.delete(id);
+        }
+      }
+    }
+    core.data.flushPendingDrafts();
     core.views?.vaultChanged(null);
     this.onReach?.();
+  }
+
+  /// Records that `sub` stored a credential for `workspace` (along with its current persistent session ID) so sign-out
+  /// can remove every credential key and subsequent startups recognize credentials belonging to the current session.
+  #rememberCredentialWorkspace(sub: string, workspace: string): void {
+    const device = this.#core.data.device;
+    const indexKey = `credWorkspaces/${sub}`;
+    const raw = device.get("choice", indexKey);
+    const list = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+    if (!list.includes(workspace)) device.put("choice", indexKey, [...list, workspace]);
+    this.#recordAccountSession(sub);
   }
 
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
+    this.#replacedUnverified.delete(sub);
+    this.#notBeta.delete(sub);
+    this.#persistedMe.delete(sub);
+    this.#persistingLiveMe.delete(sub);
+    this.#mesSid.delete(sub);
+    this.#clearPendingMe(sub);
+    if (core.data.device.isUnloaded("choice")) {
+      const prefix = `${CREDENTIAL_KEY}/${sub}/`;
+      const savedAtSignOut = new Map<string, number>();
+      for (const [k, v] of this.#credSaved) {
+        if (k.startsWith(prefix)) savedAtSignOut.set(k, v);
+      }
+      this.#signedOutWhileChoiceUnloaded.set(sub, savedAtSignOut);
+    }
+    const live = this.#liveMe.get(sub);
+    const useLive = live !== undefined && (live.gen < core.data.accountGen(sub) || !core.accounts.list().some((a) => a.sub === sub));
+    if (useLive) this.#clearLiveMe(sub);
     this.#askTurn.delete(sub);
     this.#credentialBackoff.delete(sub);
-    for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
-      if (!isObject(w) || typeof w.id !== "string") continue;
-      const key = `${CREDENTIAL_KEY}/${sub}/${w.id}`;
+    const wsIds = new Set<string>();
+    for (const src of [me, useLive ? live.me : undefined]) {
+      for (const w of isObject(src) && Array.isArray(src.workspaces) ? src.workspaces : []) {
+        if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
+      }
+    }
+    const indexed = core.data.device.get("choice", `credWorkspaces/${sub}`);
+    if (Array.isArray(indexed)) {
+      for (const w of indexed) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+    }
+    const cachedOwners = core.data.device.get("choice", "workspaceOwners");
+    if (isObject(cachedOwners)) {
+      for (const [ws, owner] of Object.entries(cachedOwners)) {
+        if (owner === sub) wsIds.add(ws);
+      }
+    }
+    core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+    if (!core.data.device.isUnloaded("choice")) {
+      const sessions = this.#readSessionMap("accountSessions");
+      if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+        delete sessions[sub];
+        core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+      }
+    }
+    const allDeleteKeys: string[] = [];
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      allDeleteKeys.push(`${key}/${CREDENTIAL_OTHERS}`, key);
+    }
+    // Persist delete intent BEFORE starting async host IO so Core.close()/crash mid-delete still retries on next start.
+    this.#addPendingCredentialDeletes(allDeleteKeys);
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
       this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
-      const removing = Effect.all([Effect.ignore(core.host.storageDelete(`${key}/${CREDENTIAL_OTHERS}`), { log: "Unhandled", message: "credentials removed" }), Effect.ignore(core.host.storageDelete(key), { log: "Unhandled", message: "credentials removed" })]);
+      const targets: Array<[string, number]> = [
+        [othersKey, this.#credSaved.get(othersKey) ?? 0],
+        [key, this.#credSaved.get(key) ?? 0],
+      ];
+      const removing = Effect.gen({ self: this }, function* () {
+        for (const [k, savedAt] of targets) {
+          if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+          const r = yield* Effect.result(core.host.storageDelete(k));
+          if (r._tag === "Success") this.#removePendingCredentialDelete(k);
+        }
+      });
       core.runner.fork(this.#keepingOf(key).withPermits(1)(removing));
     }
   }
@@ -510,7 +1701,7 @@ export class CloudSync {
   /// `/v1/me` is known, since one not heard from may reach them.
   forgetUnreachable(): void {
     const core = this.#core;
-    if (core.accounts.list().some((a) => core.data.record("me", a.sub) === undefined)) return;
+    if (this.hasUnverifiedAccounts() || core.accounts.list().some((a) => this.#meOf(a.sub) === undefined)) return;
     const workspaces = new Set(core.workspaces.owned().map(([id]) => id));
     // (a workspace's own, held as a station's are: its new chat's draft)
     core.data.retain((station) => {
@@ -529,21 +1720,35 @@ export class CloudSync {
     }, null);
   }
 
-  /// The signed-in account that reaches `workspace`, reading every account's `/v1/me` if it is not known yet.
+  /// The signed-in account that reaches `workspace`, verifying against earlier unverified/deferred accounts in sign-in
+  /// order and reading every account's `/v1/me` if it is not known yet.
   owner(workspace: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
-      const known = () => {
+      if (core.accounts.isUnloaded()) {
+        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
+      if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) {
+        if (yield* core.data.device.reload("choice")) {
+          this.#onChoiceLoaded();
+        }
+      }
+      const verified = () => {
         const sub = core.workspaces.owner(workspace);
-        return sub !== null && core.accounts.list().some((a) => a.sub === sub) ? sub : null;
+        return sub !== null && core.accounts.list().some((a) => a.sub === sub) && !this.hasEarlierDeferred(sub) ? sub : null;
       };
-      const first = known();
+      const first = verified();
       if (first !== null) return first;
+      if (core.data.hasDeferred() && this.onNeedDeferred) {
+        yield* this.onNeedDeferred(workspace, core.workspaces.owner(workspace));
+        const afterDeferred = verified();
+        if (afterDeferred !== null) return afterDeferred;
+      }
       yield* Effect.all(
-        core.accounts.list().map((a) => Effect.ignore(core.scheduler.ask("cloud", `me/${a.sub}`, Priority.asked, this.#me(a.sub)), { log: "Unhandled", message: "me read" })),
+        core.accounts.list().map((a) => Effect.ignore(core.scheduler.ask("cloud", this.#meKey(a.sub), Priority.asked, this.#me(a.sub)), { log: "Unhandled", message: "me read" })),
         { concurrency: "unbounded" },
       );
-      const after = known();
+      const after = verified();
       if (after === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.account.no_access"), 404));
       return after;
     });
@@ -555,13 +1760,13 @@ export class CloudSync {
       if (this.relays) return this.relays;
       const core = this.#core;
       for (const account of core.accounts.list()) {
-        const r = relaysOf(core.data.record("me", account.sub));
+        const r = relaysOf(this.#meOf(account.sub));
         if (r) return r;
       }
       let last = CoreError.signedOut(t("core-misc.account.none"));
       for (const account of core.accounts.list()) {
-        yield* Effect.ignore(core.scheduler.ask("cloud", `me/${account.sub}`, Priority.asked, this.#me(account.sub)), { log: "Unhandled", message: "me read" });
-        const r = relaysOf(core.data.record("me", account.sub));
+        yield* Effect.ignore(core.scheduler.ask("cloud", this.#meKey(account.sub), Priority.asked, this.#me(account.sub)), { log: "Unhandled", message: "me read" });
+        const r = relaysOf(this.#meOf(account.sub));
         if (r) return r;
         last = this.mes.get(account.sub) ?? last;
       }
@@ -571,9 +1776,9 @@ export class CloudSync {
 
   /// The same account's `/v1/me` that supplies the relays, live or kept from the last run.
   #relayMe(): unknown {
-    if (this.#relaySource !== null) return this.#core.data.record("me", this.#relaySource);
+    if (this.#relaySource !== null) return this.#meOf(this.#relaySource);
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       if (relaysOf(me) !== null) return me;
     }
     return null;
@@ -594,7 +1799,7 @@ export class CloudSync {
     const kept = this.#core.data.record("ways", workspace);
     if (isObject(kept) && Array.isArray(kept.relays)) return kept.relays.flatMap((r) => (isObject(r) && typeof r.url === "string" ? [r.url] : []));
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       const found = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).find((w) => isObject(w) && w.id === workspace);
       if (isObject(found) && Array.isArray(found.relays)) return found.relays.filter((u): u is string => typeof u === "string");
     }
@@ -607,7 +1812,7 @@ export class CloudSync {
     const kept = this.#core.data.record("ways", workspace);
     if (isObject(kept) && Array.isArray(kept.off)) return kept.off.filter((u): u is string => typeof u === "string");
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       const found = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).find((w) => isObject(w) && w.id === workspace);
       if (isObject(found)) return Array.isArray(found.ways_off) ? found.ways_off.filter((u): u is string => typeof u === "string") : [];
     }
@@ -639,23 +1844,41 @@ export class CloudSync {
       const key = `${CREDENTIAL_KEY}/${sub}/${workspace}`;
       const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
       const other = main !== null && main !== device;
+      const targetKey = other ? othersKey : key;
       const now = core.host.nowMs() / 1000;
+      const removed = this.#removed.get(key) ?? 0;
+      const sid = core.accounts.sessionId(sub);
+      const snap = core.data.accountSessionSnapshot([sub]);
+      const stillSignedIn = () =>
+        !core.data.accountSignedOutSince(snap) &&
+        (this.#removed.get(key) ?? 0) === removed &&
+        core.accounts.list().some((a) => a.sub === sub) &&
+        core.accounts.sessionId(sub) === sid;
       const read = (k: string) => Effect.map(Effect.orElseSucceed(core.host.storageGet(k), () => null), parseJson);
       const readOthers = Effect.map(read(othersKey), (raw) => {
         if (!Array.isArray(raw)) return [];
         const parsed = raw.map(readKept);
         return parsed.every((k) => k !== null) ? (parsed as KeptCredential[]) : [];
       });
+      const allowLegacy = !this.#replacedUnverified.has(sub);
+      const matchesSession = (k: KeptCredential | null): KeptCredential | null =>
+        k && (k.session === sid || (k.session === undefined && allowLegacy)) ? k : null;
       let keptOne: KeptCredential | null;
-      if (other) keptOne = (yield* readOthers).find((k) => k.device === device) ?? null;
-      else {
-        const k = readKept(yield* read(key));
-        keptOne = k && k.device === device ? k : null;
+      if (other) {
+        keptOne = this.#isPendingCredentialDelete(othersKey)
+          ? null
+          : matchesSession((yield* readOthers).find((k) => k.device === device) ?? null);
+      } else {
+        const k = this.#isPendingCredentialDelete(key) ? null : readKept(yield* read(key));
+        keptOne = k && k.device === device ? matchesSession(k) : null;
       }
-      const kept: Credential | null = keptOne && keptOne.expires_at > now + 60 && !fresh ? strip(keptOne) : null;
+      if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
+      const kept: Credential | null =
+        keptOne && keptOne.expires_at > now + 60 && !fresh && !this.#isPendingCredentialDelete(targetKey)
+          ? strip(keptOne)
+          : null;
       if (kept && now - kept.issued_at < CREDENTIAL_FOR_S) return kept;
       const said = claim === null ? undefined : { base: claim.device, proof: claim.proof, kind: core.host.appKeys ? "app" : "web", label: prefs.deviceName(core.data) ?? "" };
-      const removed = this.#removed.get(key) ?? 0;
       const keeping = this.#keepingOf(key);
       const turn = this.#askTurnOf(sub);
       const self = this;
@@ -679,30 +1902,53 @@ export class CloudSync {
       );
       const ask = Effect.gen(function* () {
         const c = yield* asked;
-        const k: KeptCredential = { device, ...c };
+        if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
+        const k: KeptCredential = sid.length > 0 ? { device, session: sid, ...c } : { device, ...c };
         // (the keeping takes turns of its own, apart from the asks': a write waits on no ask)
         yield* keeping.withPermits(1)(Effect.gen(function* () {
-          if ((self.#removed.get(key) ?? 0) !== removed) return;
+          if (!stillSignedIn()) return;
+          const targetKey = other ? othersKey : key;
+          let payload: Uint8Array;
           if (other) {
-            // (read again, in turn: another endpoint's may have been kept while this one's was asked)
-            const others = [k, ...(yield* readOthers).filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
-            yield* Effect.ignore(core.host.storageSet(othersKey, toJsonBytes(others)), { log: "Unhandled", message: "credentials kept" });
-          } else yield* Effect.ignore(core.host.storageSet(key, toJsonBytes(k)), { log: "Unhandled", message: "credentials kept" });
+            // If `othersKey` is marked pending delete, start from an empty list so stale signed-out devices are never kept.
+            const prevOthers = self.#isPendingCredentialDelete(othersKey)
+              ? []
+              : (yield* readOthers).filter((o) => o.session === undefined || o.session === sid);
+            const others = [k, ...prevOthers.filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
+            payload = toJsonBytes(others);
+          } else payload = toJsonBytes(k);
+          const savedBefore = self.#credSaved.get(targetKey) ?? 0;
+          const saved = yield* Effect.result(core.host.storageSet(targetKey, payload));
+          // Re-verify login, session & removal generation AFTER async storageSet returns so a write started before
+          // sign-out or in-place re-login can never bump #credSaved, record accountSessions, or leave stale bytes.
+          if (saved._tag === "Success") {
+            if (stillSignedIn()) {
+              self.#credSaved.set(targetKey, savedBefore + 1);
+              self.#credSavedSession.set(targetKey, sid);
+              self.#removePendingCredentialDelete(targetKey);
+              self.#rememberCredentialWorkspace(sub, workspace);
+            } else if ((self.#credSaved.get(targetKey) ?? 0) === savedBefore) {
+              const del = yield* Effect.result(core.host.storageDelete(targetKey));
+              if (del._tag === "Failure") self.#addPendingCredentialDeletes([targetKey]);
+            }
+          }
         }));
+        if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
         return c;
       });
       // One ask out at a time for a device's credential, which every dial wanting it meanwhile waits on: a device
       // dialling its workspace's stations at once asked once a station (the locks' end to end, 2026-11-15: 23 of an
       // account's 187 requests in a minute, in pairs of the same millisecond). It runs apart from those waiting, so one
-      // of them interrupted ends nobody else's.
-      const k = `${device}/${key}`;
+      // of them interrupted ends nobody else's. Scoped by account login generation, removal count, and persistent
+      // session ID so a re-sign-in (including in-place re-login) never coalesces onto an earlier session's ask.
+      const k = `${device}/${key}#${core.data.accountGen(sub)}:${removed}:${sid}`;
       const once = Effect.suspend(() => {
         const out = this.#asking.get(k);
         if (out) return Deferred.await(out);
         const answered = Deferred.makeUnsafe<Credential, CoreError>();
         this.#asking.set(k, answered);
         core.runner.fork(Effect.flatMap(Effect.exit(ask), (exit) => Effect.sync(() => {
-          this.#asking.delete(k);
+          if (this.#asking.get(k) === answered) this.#asking.delete(k);
           Deferred.doneUnsafe(answered, exit);
         })));
         return Deferred.await(answered);
@@ -711,11 +1957,14 @@ export class CloudSync {
       // dial waited on still.fail cloud once a day, far from a phone in China (2026-10-30).
       // While the cloud said too many, it serves alone.
       if (kept) {
+        if (!stillSignedIn() || this.#isPendingCredentialDelete(targetKey)) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
         if (!this.#asking.has(k) && !cooled()) core.runner.fork(Effect.ignore(once, { log: "Unhandled", message: "credential renewed" }));
         return kept;
       }
       if (!this.#asking.has(k) && cooled()) return yield* Effect.fail(cloudError("rate_limited", 429));
-      return yield* once;
+      const freshCred = yield* once;
+      if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
+      return freshCred;
     });
   }
 
@@ -768,11 +2017,163 @@ export class CloudSync {
     });
   }
 
+  /// Cleans credentials, stale in-memory membership state, sockets, and recovery records from a previous login session
+  /// when `sub` re-logged in in-place (same `sub`, new persistent `sessionId`) without going through `signOut`.
+  /// Registers `#replacedUnverified` FIRST so even if reading SQLite `me` throws `SQLITE_IOERR` or `device/choice`
+  /// is unloaded, legacy (no-session) credentials are immediately blocked from cache hits and cleanup retries later.
+  #invalidateReplacedSession(sub: string, newSid: string): void {
+    const core = this.#core;
+    const firstForSession = this.#replacedUnverified.get(sub) !== newSid;
+    this.#replacedUnverified.set(sub, newSid);
+    if (firstForSession) {
+      this.#askTurn.delete(sub);
+      this.#credentialBackoff.delete(sub);
+    }
+    const prevLive = this.#liveMe.get(sub);
+    const wsIds = new Set<string>();
+    let meReadFailed = false;
+    let diskMe: unknown;
+    try {
+      diskMe = core.data.record("me", sub);
+    } catch {
+      meReadFailed = true;
+    }
+    for (const src of [prevLive?.me, diskMe]) {
+      for (const w of isObject(src) && Array.isArray(src.workspaces) ? src.workspaces : []) {
+        if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
+      }
+    }
+    if (prevLive !== undefined && prevLive.sid !== newSid) {
+      this.#liveMe.delete(sub);
+      this.#persistingLiveMe.delete(sub);
+      core.data.notifyAccountRecord(sub, "me");
+    }
+    if (this.#notBeta.get(sub)?.sid !== newSid) this.#notBeta.delete(sub);
+    if (this.#persistedMe.get(sub)?.sid !== newSid) this.#persistedMe.delete(sub);
+    if (this.#mesSid.get(sub) !== newSid) {
+      this.mes.delete(sub);
+      this.#mesSid.delete(sub);
+    }
+    const oldSock = this.#sockets.get(sub);
+    if (oldSock !== undefined && oldSock.sid !== newSid) {
+      core.runner.interrupt(oldSock.fiber as Fiber.Fiber<unknown, unknown>);
+      this.#sockets.delete(sub);
+      core.status.socketUp(sub);
+      if (!core.runner.closed && !core.data.isDeferred(sub)) {
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, newSid)), sid: newSid });
+      }
+    }
+    const pendingSessions = this.#readSessionMap("pendingMeSessions");
+    if ((pendingSessions[sub] ?? "") !== newSid) {
+      this.#clearPendingMe(sub);
+    }
+    const indexed = core.data.device.get("choice", `credWorkspaces/${sub}`);
+    if (Array.isArray(indexed)) {
+      for (const w of indexed) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+    }
+    const cachedOwners = core.data.device.get("choice", "workspaceOwners");
+    if (isObject(cachedOwners)) {
+      for (const [ws, owner] of Object.entries(cachedOwners)) {
+        if (owner === sub) wsIds.add(ws);
+      }
+    }
+    const pendingVerifyKeys: string[] = [];
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
+      if (this.#credSavedSession.get(key) !== newSid) pendingVerifyKeys.push(key);
+      if (this.#credSavedSession.get(othersKey) !== newSid) pendingVerifyKeys.push(othersKey);
+    }
+    // Persist pending-delete guards BEFORE async storageGet/storageDelete so a transient read failure on an old
+    // legacy (no-session) credential blocks cache hits and preserves retry intent.
+    this.#addPendingCredentialDeletes(pendingVerifyKeys);
+    const incomplete = meReadFailed || core.data.isDeferred(sub) || this.#meUnreadable(sub) || core.data.device.isUnloaded("choice");
+    if (!incomplete) {
+      this.#replacedUnverified.delete(sub);
+      const recordedSid = this.#readSessionMap("accountSessions")[sub] ?? "";
+      if (recordedSid !== newSid) {
+        core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+        this.#recordAccountSession(sub);
+      }
+    }
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
+      const needKey = this.#credSavedSession.get(key) !== newSid;
+      const needOthers = this.#credSavedSession.get(othersKey) !== newSid;
+      if (firstForSession) {
+        this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+      }
+      if (!needKey && !needOthers) continue;
+      const removing = Effect.gen({ self: this }, function* () {
+        const curRes = yield* Effect.result(core.host.storageGet(key));
+        if (curRes._tag === "Success") {
+          const curRaw = curRes.success;
+          if (curRaw === null) {
+            this.#removePendingCredentialDelete(key);
+          } else {
+            const curKept = readKept(parseJson(curRaw));
+            if (curKept?.session === newSid) {
+              this.#removePendingCredentialDelete(key);
+            } else {
+              const del = yield* Effect.result(core.host.storageDelete(key));
+              if (del._tag === "Success") this.#removePendingCredentialDelete(key);
+            }
+          }
+        }
+        const othersRes = yield* Effect.result(core.host.storageGet(othersKey));
+        if (othersRes._tag === "Success") {
+          const othersRaw = othersRes.success;
+          if (othersRaw === null) {
+            this.#removePendingCredentialDelete(othersKey);
+          } else {
+            const parsed = parseJson(othersRaw);
+            const list = Array.isArray(parsed) ? parsed.map(readKept).filter((x): x is KeptCredential => x !== null) : [];
+            const keep = list.filter((x) => x.session === newSid);
+            if (keep.length === 0) {
+              const del = yield* Effect.result(core.host.storageDelete(othersKey));
+              if (del._tag === "Success") this.#removePendingCredentialDelete(othersKey);
+            } else if (keep.length !== list.length) {
+              const wr = yield* Effect.result(core.host.storageSet(othersKey, toJsonBytes(keep)));
+              if (wr._tag === "Success") this.#removePendingCredentialDelete(othersKey);
+            } else {
+              this.#removePendingCredentialDelete(othersKey);
+            }
+          }
+        }
+      });
+      core.runner.fork(this.#keepingOf(key).withPermits(1)(removing));
+    }
+  }
+
   /// The accounts as UIs see them changed (a token refresh alone changes nothing here).
   accountsChanged(): void {
     const core = this.#core;
+    if (!this.#choiceHydrated && !core.accounts.isUnloaded() && !core.data.device.isUnloaded("choice")) {
+      this.#onChoiceLoaded();
+    }
     const list = core.accounts.list();
-    if (JSON.stringify(core.shownAccounts) === JSON.stringify(list)) return;
+    const replaced: Array<[string, string]> = [];
+    const currentSubs = new Set<string>();
+    for (const a of list) {
+      currentSubs.add(a.sub);
+      const curSid = core.accounts.sessionId(a.sub);
+      const prevSid = this.#shownSessions.get(a.sub);
+      if (prevSid !== undefined && prevSid !== curSid) {
+        replaced.push([a.sub, curSid]);
+      }
+      this.#shownSessions.set(a.sub, curSid);
+    }
+    for (const sub of [...this.#shownSessions.keys()]) {
+      if (!currentSubs.has(sub)) this.#shownSessions.delete(sub);
+    }
+    for (const [sub, newSid] of replaced) {
+      this.#invalidateReplacedSession(sub, newSid);
+    }
+    if (JSON.stringify(core.shownAccounts) === JSON.stringify(list)) {
+      if (replaced.length > 0) this.recomputeOwners();
+      return;
+    }
     const before = new Set(core.shownAccounts.map((a) => a.sub));
     core.shownAccounts = list;
     this.recomputeOwners();
@@ -794,14 +2195,25 @@ export class CloudSync {
   syncSockets(): void {
     const core = this.#core;
     if (core.runner.closed) return;
-    const wanted = core.accounts.list().map((a: AccountView) => a.sub);
-    for (const [sub, fiber] of [...this.#sockets]) {
+    const wanted = core.accounts.list().map((a: AccountView) => a.sub).filter((sub) => !core.data.isDeferred(sub));
+    for (const [sub, sock] of [...this.#sockets]) {
       if (wanted.includes(sub)) continue;
-      core.runner.interrupt(fiber as Fiber.Fiber<unknown, unknown>);
+      core.runner.interrupt(sock.fiber as Fiber.Fiber<unknown, unknown>);
       this.#sockets.delete(sub);
       core.status.socketUp(sub);
     }
-    for (const sub of wanted) if (!this.#sockets.has(sub)) this.#sockets.set(sub, core.runner.fork(this.#follow(sub)));
+    for (const sub of wanted) {
+      const sid = core.accounts.sessionId(sub);
+      const cur = this.#sockets.get(sub);
+      if (cur === undefined) {
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, sid)), sid });
+      } else if (cur.sid !== sid) {
+        core.runner.interrupt(cur.fiber as Fiber.Fiber<unknown, unknown>);
+        this.#sockets.delete(sub);
+        core.status.socketUp(sub);
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, sid)), sid });
+      }
+    }
   }
 
   /// Opens an account's events (still.fail cloud's socket, with a token good now), in the caller's scope.
@@ -836,11 +2248,15 @@ export class CloudSync {
     else if (event.type === "workspaces") {
       // The account's own entry of a workspace it stays in, told: in place, no request (every device of every member
       // read its `/v1/me` whole at each change of a workspace's people or stations, the locks' end to end, 2026-11-15).
-      if (!this.#entered(sub, event.entry)) core.scheduler.enqueue("cloud", `me/${sub}`, Priority.shown, this.#listed(sub));
+      if (!this.#entered(sub, event.entry)) core.scheduler.enqueue("cloud", this.#meKey(sub), Priority.shown, this.#listed(sub));
     }
     else if (event.type === "feedback" && typeof event.workspace === "string") this.feedbackChanged(event.workspace);
     else if (event.type === "workspace" && typeof event.id === "string") {
-      if (core.workspaces.owner(event.id) === null) return;
+      const owner = core.workspaces.owner(event.id);
+      if (owner === null || this.hasEarlierDeferred(owner)) {
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(event.id);
+        return;
+      }
       const lock = event.lock;
       const topic = { topic: "workspace", workspace: event.id } as const;
       // Only its lock moved on, as the event says: in place, no request (the lock itself is read of the stations,
@@ -880,13 +2296,16 @@ export class CloudSync {
   /// put in place of the one held; false where the list held does not name that workspace (read whole then).
   #entered(sub: string, entry: unknown): boolean {
     const core = this.#core;
-    const me = core.data.record("me", sub);
+    const me = this.#meOf(sub);
     if (!isObject(entry) || typeof entry.id !== "string" || !isObject(me) || !Array.isArray(me.workspaces)) return false;
     const at = me.workspaces.findIndex((w) => isObject(w) && w.id === entry.id);
     if (at < 0) return false;
     const workspaces = [...me.workspaces];
     workspaces[at] = { ...(workspaces[at] as Record<string, unknown>), ...entry } as (typeof workspaces)[number];
-    core.data.put("me", sub, { ...me, workspaces });
+    const updated = { ...me, workspaces };
+    const db = core.data.db(sub);
+    const live = this.#setLiveMe(sub, updated);
+    if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
     return true;
   }
 
@@ -906,7 +2325,7 @@ export class CloudSync {
   /// Holds an account's `/v1/events` socket open, reconnecting with backoff, until the account signs out (the fiber
   /// is interrupted). Each open reads the account again; a socket that went silent is opened anew;
   /// one suspected as the UI comes back has another opened beside it, which takes its place once open.
-  #follow(sub: string): Effect.Effect<void, never> {
+  #follow(sub: string, sid: string): Effect.Effect<void, never> {
     const core = this.#core;
     const self = this;
     type Opened = { frames: Pull<string>; scope: Scope.Closeable };
@@ -943,7 +2362,7 @@ export class CloudSync {
           self.onOpen();
           core.status.socketUp(sub);
           // Nothing is replayed: what changed while it was closed is read now.
-          core.scheduler.enqueue("cloud", `me/${sub}`, Priority.shown, self.#account(sub));
+          core.scheduler.enqueue("cloud", self.#meKey(sub), Priority.shown, self.#account(sub));
           let woke = false;
           let idle = false;
           let beside: Effect.Effect<Ev> | null = null;
@@ -985,7 +2404,7 @@ export class CloudSync {
               yield* Scope.close(socket.scope, Exit.void);
               socket = ev.beside;
               frames = socket.frames;
-              core.scheduler.enqueue("cloud", `me/${sub}`, Priority.shown, self.#account(sub));
+              core.scheduler.enqueue("cloud", self.#meKey(sub), Priority.shown, self.#account(sub));
             }
           }
           if (woke || idle || core.host.nowMs() - openedAt >= 60_000) wait.ms = SOCKET_RETRY_MS;
@@ -1001,13 +2420,15 @@ export class CloudSync {
         let down: string;
         if ("failed" in ended && first) {
           // Its first try failed: the account is read anyway, so what can be shown is.
-          core.scheduler.enqueue("cloud", `me/${sub}`, Priority.shown, self.#account(sub));
+          core.scheduler.enqueue("cloud", self.#meKey(sub), Priority.shown, self.#account(sub));
         }
         first = false;
         if ("failed" in ended) {
           if (ended.failed.code === "signed_out") {
-            self.#sockets.delete(sub);
-            core.status.socketUp(sub);
+            if (self.#sockets.get(sub)?.sid === sid) {
+              self.#sockets.delete(sub);
+              core.status.socketUp(sub);
+            }
             return;
           }
           down = ended.failed.message;
@@ -1025,7 +2446,7 @@ export class CloudSync {
   }
 }
 
-type KeptCredential = Credential & { device: string };
+type KeptCredential = Credential & { device: string; session?: string };
 
 /// A workspace's view, as a write answered with it or its event read whole.
 function viewIn(v: unknown): Record<string, unknown> | null {
@@ -1064,7 +2485,8 @@ function patched(held: Record<string, unknown>, event: Record<string, unknown>, 
 function readKept(v: unknown): KeptCredential | null {
   if (!isObject(v) || typeof v.device !== "string") return null;
   const c = readCredential(v);
-  return typeof c === "string" ? null : { ...c, device: v.device };
+  if (typeof c === "string") return null;
+  return typeof v.session === "string" && v.session.length > 0 ? { ...c, device: v.device, session: v.session } : { ...c, device: v.device };
 }
 
 function strip(k: KeptCredential): Credential {
