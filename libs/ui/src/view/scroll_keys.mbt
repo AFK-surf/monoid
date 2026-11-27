@@ -133,22 +133,27 @@ fn Scroll::keyed(self : Scroll, v : View, t : Double, action : String) -> Bool {
     None => 0.0
   }
   let page = shown - scroll_key_line
-  if action == scroll_page_down {
-    self.moved(t, page) |> ignore
+  let moved = if action == scroll_page_down {
+    self.moved(t, page)
   } else if action == scroll_page_up {
-    self.moved(t, -page) |> ignore
+    self.moved(t, -page)
   } else if action == scroll_line_down {
-    self.moved(t, scroll_key_line) |> ignore
+    self.moved(t, scroll_key_line)
   } else if action == scroll_line_up {
-    self.moved(t, -scroll_key_line) |> ignore
+    self.moved(t, -scroll_key_line)
   } else if action == scroll_top {
     self.sent(t, @signals.untracked(fn() { self.top_now() }))
   } else if action == scroll_foot {
-    if !(self.to_foot)(t) {
-      self.sent(t, self.most())
+    if (self.to_foot)(t) {
+      // A page's list puts itself at its foot on its next layout.
+      return true
     }
+    self.sent(t, self.most())
   } else {
     return false
+  }
+  if moved {
+    self.put_at = t
   }
   true
 }
