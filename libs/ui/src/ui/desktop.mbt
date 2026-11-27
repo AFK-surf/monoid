@@ -241,15 +241,8 @@ priv enum SelKey {
 
 ///|
 fn sel_words_key(tree_no : Int, list_id : @view.NodeId, place : Array[Int]) -> SelKey {
-  let sb : StringBuilder = StringBuilder()
-  for i = 0; i < place.length(); i = i + 1 {
-    if i > 0 {
-      sb.write_char(',')
-    }
-    sb.write_string(place[i].to_string())
-  }
   let head = if place.length() > 0 { Some(place[0]) } else { None }
-  SelKey::Words(tree_no, list_id, head, sb.to_string())
+  SelKey::Words(tree_no, list_id, head, list_text(place))
 }
 
 ///|
