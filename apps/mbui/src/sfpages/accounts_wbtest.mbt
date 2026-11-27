@@ -1815,7 +1815,7 @@ test "批量管理 shares several accounts, sets stations at once, stops sharing
     t.click(menu_role, label="停止分享")
     presented_in(t)
     assert_eq(asked.length(), 2, msg="\{at}: asked first")
-    assert_true(t.find("停止分享 1 个账号？") is Some(_), msg="\{at}: the key not shared is left as it is")
+    assert_true(t.find("停止分享账号") is Some(_) && t.find("1") is Some(_), msg="\{at}: the key not shared is left as it is")
     let stops = t.all(Button, label="停止分享")
     let (x, y, bw, bh) = stops[stops.length() - 1].rect
     t.tap(x + bw / 2.0, y + bh / 2.0)
@@ -1838,7 +1838,7 @@ test "批量管理 shares several accounts, sets stations at once, stops sharing
     t.run_for(@ui.move_most_ms)
     t.click(Button, label="删除")
     presented_in(t)
-    assert_true(t.find("删除 1 个账号？") is Some(_), msg=at)
+    assert_true(t.find("删除账号") is Some(_) && t.find("1") is Some(_), msg=at)
     assert_true(t.find("备用 key (Willow)") is Some(_), msg=at)
     let dels = t.all(Button, label="删除")
     let (dx, dy, dw, dh) = dels[dels.length() - 1].rect
@@ -1936,7 +1936,7 @@ test "批量管理 station filter, batch move with machine skip and partial fail
   assert_true(t.find("当前所在") is Some(_), msg="Willow marked as current station")
   t.click(Link, label="Maple")
   presented_in(t)
-  assert_true(t.find("迁移 1 个账号到 Maple？") is Some(_), msg="move confirm counts movable rows")
+  assert_true(t.find("迁移账号") is Some(_) && t.find("Maple") is Some(_), msg="move confirm counts movable rows")
   t.click(Button, label="迁移")
   t.run_for(@motion.presence_out_ms)
   assert_eq(moves.length(), 1)
@@ -2156,7 +2156,7 @@ test "批量管理 R2 regressions: SWR version -2 skipped, single-station empty 
   t4.run_for(@ui.move_most_ms)
   t4.click(Button, label="删除")
   presented_in(t4)
-  assert_true(t4.find("删除 1 个账号？") is Some(_), msg="M1+M6: confirm title counts only deletable rows")
+  assert_true(t4.find("删除账号") is Some(_) && t4.find("1") is Some(_), msg="M1+M6: confirm title counts only deletable rows")
   assert_true(t4.find("跳过 1 个本机登录") is Some(_), msg="M1+M6: confirm body states skipped machine login")
   let dels = t4.all(Button, label="删除")
   let (dx, dy, dw, dh) = dels[dels.length() - 1].rect

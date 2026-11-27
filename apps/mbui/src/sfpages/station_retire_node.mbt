@@ -163,9 +163,10 @@ fn station_retire_start(core : Core, here : Here, s : Json?) -> Unit {
       Some(Ok(preview)) => station_retire_panel(core, here, s, preview)
       Some(Err(e)) =>
         @sf.confirm(
-          @sf.t("web-pages.stations.retire.title", args=[("station", text(s, "name"))]),
+          @sf.t("web-pages.stations.retire.title"),
           text(Some(e), "message"),
           @sf.t("web-pages.stations.retire.noneOk"),
+          facts=[(@sf.t("common.confirmFact.sourceStation"), text(s, "name"))],
           fn() {  },
         )
       None => ()
@@ -218,10 +219,11 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
   // (a kind of thing: its name and how many on its line, which under it, as wide as the row)
   let kind = fn(v : @view.View, title : String, n : Int, note : String) { retire_kind_node(v, title, count(n), note) }
   @sf.panel_nodes(
-    @sf.t("web-pages.stations.retire.title", args=[("station", text(s, "name"))]),
+    @sf.t("web-pages.stations.retire.title"),
     from=Unanchored,
     form=true,
     fn(v, _) {
+      @sf.dialog_facts_card_node(v, [(@sf.t("common.confirmFact.sourceStation"), text(s, "name"))])
       // where they go: the station chosen, or none up to choose
       ws_way_row_node(
         v,

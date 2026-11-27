@@ -718,7 +718,7 @@ fn policy_dialog(core : Core, station : String, form : String, policy : Json?, i
     if fresh {
       @sf.t("web-pages.archivePolicy.newOption")
     } else {
-      text(ov, "name")
+      @sf.t("web-pages.archivePolicy.editOption")
     },
     fn(v, shut) {
       // (the option as the draft has it now: none while it is read, nothing shown till then)

@@ -3267,7 +3267,7 @@ fn composer_file_node(
                   (ByPath | AnyFile, Opened) =>
                     match (field(v(), "ref"), card.val) {
                       (Some(Object(_)), Some(c)) =>
-                        @sf.panel_nodes(name(), fn(pv, close) { ref_panel_body(pv, close, src, w.key, r.station, id) }, from=Node(c))
+                        @sf.panel_nodes(@sf.t("web-main.composer.refTitle"), fn(pv, close) { ref_panel_body(pv, close, src, w.key, r.station, id, name=name()) }, from=Node(c))
                       _ => ()
                     }
                   (ByPath | AnyFile, Again) => writing_retry(src, w, id)

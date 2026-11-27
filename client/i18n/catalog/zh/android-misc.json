@@ -101,7 +101,7 @@
   "android-misc.adb.wifi.off": "未连接",
   "android-misc.archive.deleteNamed": "删除「{title}」",
   "android-misc.archive.deleteText": "其会话、对话记录和 workspace 目录将被删除，且无法恢复。",
-  "android-misc.archive.deleteTitle": "删除「{title}」？",
+  "android-misc.archive.deleteTitle": "删除归档对话",
   "android-misc.archive.deleteWhat": "删除",
   "android-misc.archive.deleted": "已删除",
   "android-misc.archive.note": "手动归档的对话，以及空闲超过一天且已完成的对话（未在运行、未停在 block、无未读）。对话收到新消息时会自动回到列表。",

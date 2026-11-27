@@ -679,7 +679,13 @@ fn archive_row(
   }
   match ask {
     Some(ask) =>
-      @sf.confirm(@sf.t("android-chat.archive.ask", args=[("title", item.title)]), ask, @sf.t("android-chat.archive"), run)
+      @sf.confirm(
+        @sf.t("android-chat.archive.ask"),
+        ask,
+        @sf.t("android-chat.archive"),
+        run,
+        facts=[(@sf.t("common.confirmFact.chat"), item.title)],
+      )
     None => run()
   }
 }

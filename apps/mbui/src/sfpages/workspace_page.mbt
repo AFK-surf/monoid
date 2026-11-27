@@ -263,10 +263,11 @@ fn workspace_block_node(
             let name = @signals.untracked(name)
             let sub = @signals.untracked(here).sub
             confirm(
-              @sf.t("android-settings.workspace.leaveTitle", args=[("name", name)]),
+              @sf.t("android-settings.workspace.leaveTitle"),
               @sf.t("android-settings.workspace.leaveText"),
               @sf.t("android-settings.workspace.leave"),
               danger=true,
+              facts=[(@sf.t("common.confirmFact.workspace"), name)],
               fn() {
                 ws_gone(
                   core,
@@ -292,10 +293,11 @@ fn workspace_block_node(
               let name = text(v, "name")
               let sub = @signals.untracked(here).sub
               confirm(
-                @sf.t("android-settings.workspace.deleteTitle", args=[("name", name)]),
+                @sf.t("android-settings.workspace.deleteTitle"),
                 @sf.t("android-settings.workspace.deleteText", args=[("n", items(v, "stations").length().to_string()), ("app", @sf.product())]),
                 @sf.t("android-settings.workspace.delete"),
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.workspace"), name)],
                 fn() {
                   ws_gone(
                     core,
@@ -625,7 +627,10 @@ fn workspace_sample() -> Json {
 /// longer do anything about them (ws_member_row_node's `can`), what it showed last kept as it goes.
 fn ws_member_panel(core : Core, here : Here, m : Json, name : String, from : @sf.Anchor) -> Unit {
   let sub = text(Some(m), "sub")
-  @sf.panel_nodes(name, from~, fn(v, close) {
+  let email = text(Some(m), "email")
+  let member_label = if email != "" && email != name { name + " · " + email } else { name }
+  @sf.panel_nodes(@sf.t("android-settings.members.manageTitle"), from~, fn(v, close) {
+    @sf.dialog_facts_card_node(v, [(@sf.t("common.confirmFact.member"), member_label)])
     // (the workspace and the person in it as the core says them now, while the viewer may act on them; else what was
     // last so, kept as the panel goes)
     let now = fn() -> (Json?, Json)? {
@@ -689,10 +694,14 @@ fn ws_member_panel(core : Core, here : Here, m : Json, name : String, from : @sf
         let ws = text(w, "id")
         close()
         confirm(
-          @sf.t("android-settings.members.moveOutTitle", args=[("email", text(Some(x), "email")), ("name", text(w, "name"))]),
+          @sf.t("android-settings.members.moveOutTitle"),
           @sf.t("android-settings.members.moveOutText"),
           @sf.t("android-settings.members.moveOut"),
           danger=true,
+          facts=[
+            (@sf.t("common.confirmFact.member"), text(Some(x), "email")),
+            (@sf.t("common.confirmFact.workspace"), text(w, "name")),
+          ],
           fn() {
             @settings.act(
               core,

@@ -303,7 +303,7 @@ fn cd_menu_items(core : Core, here : Here, station : String, cv : Json?) -> Arra
   let delete = fn() {
     let sessions = text_number(cv, "sessions")
     confirm(
-      @sf.t("web-pages.archive.deleteConfirm", args=[("title", text(cv, "name"))]),
+      @sf.t("web-pages.connect.deleteConfirm"),
       if sessions > 0 {
         @sf.t(cd_kind_key("web-pages.connect.deleteBodySessions", cv), args=[("n", sessions.to_string())])
       } else {
@@ -311,6 +311,7 @@ fn cd_menu_items(core : Core, here : Here, station : String, cv : Json?) -> Arra
       },
       @sf.t("web-pages.connect.delete"),
       danger=true,
+      facts=[(@sf.t("common.confirmFact.connect"), text(cv, "name"))],
       // back to the list at once: its row turns there until the station has dropped it
       fn() {
         (core.pop)()

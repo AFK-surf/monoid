@@ -1886,10 +1886,11 @@ fn preset_delete_ask(
   on_err? : () -> Unit = fn() {  },
 ) -> Unit {
   @sf.confirm(
-    @sf.t("web-main.preset.deleteTitle", args=[("name", name)]),
+    @sf.t("web-main.preset.deleteTitle"),
     @sf.t("web-main.preset.deleteBody"),
     @sf.t("common.delete"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.preset"), name)],
     fn() {
       then()
       (src.call)("preset.delete", Json::object({ "station": Json::string(address), "id": Json::string(id) }), fn(r) {

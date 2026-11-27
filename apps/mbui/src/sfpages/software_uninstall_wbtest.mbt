@@ -94,7 +94,8 @@ test "卸载 asks first, then asks the station to remove it" {
   t.click(MenuItem, label="卸载")
   t.draw()
   presented_in(t)
-  assert_true(t.query(Dialog, label="卸载 Claude Code？") is Some(_) || t.query(AlertDialog, label="卸载 Claude Code？") is Some(_), msg=t.words().map(fn(x) { x.0 }).join("|"))
+  assert_true(t.query(Dialog, label="卸载运行时") is Some(_) || t.query(AlertDialog, label="卸载运行时") is Some(_), msg=t.words().map(fn(x) { x.0 }).join("|"))
+  assert_true(t.find("Claude Code") is Some(_), msg=t.words().map(fn(x) { x.0 }).join("|"))
   assert_true(
     t.find("会从这台 Station 上删掉 Claude Code，已经在用它的对话不能再发消息。账号和对话记录都会保留，之后可以重新安装。") is Some(_),
     msg=t.words().map(fn(x) { x.0 }).join("|"),

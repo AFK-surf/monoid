@@ -391,7 +391,7 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   move_press(t, "全部迁移")
   move_audit(t, "")
   // (how many, and on the same line how many cannot move)
-  assert_true(move_said(t, "全部迁移到 Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
+  assert_true(move_said(t, "全部迁移") && move_said(t, "Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
   move_pick(t, "全部迁移")
   let asked = move_calls(calls, "move.start")
   assert_eq(asked.length(), 1)
@@ -404,7 +404,7 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-all")
   move_audit(t, "")
-  assert_true(move_said(t, "全部迁移到 Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
+  assert_true(move_said(t, "全部迁移") && move_said(t, "Maple") && move_said(t, "9 项 · 1 项无法迁移"), msg=move_all_words(t))
   // all of it there: 移出 workspace, asked as the station's ⋯ asks it
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move")
@@ -414,7 +414,7 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   move_audit(t, "done")
   assert_true(!move_said(t, "全部迁移") && move_said(t, "移出 workspace"), msg=move_all_words(t))
   move_press(t, "移出 workspace")
-  assert_true(move_said(t, "移除「Willow」？"), msg=move_all_words(t))
+  assert_true(move_said(t, "移出工作区") && move_said(t, "Willow"), msg=move_all_words(t))
 }
 
 ///|

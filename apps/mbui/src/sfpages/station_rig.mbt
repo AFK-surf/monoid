@@ -103,7 +103,12 @@ fn rig_mode_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
         fn() { @sf.t("web-pages.rigs.toFull") },
         fn() {
           let at = @signals.untracked(ws)
-          confirm(@sf.t("web-pages.rigs.toFullAsk", args=[("name", @signals.untracked(name))]), @sf.t("web-pages.rigs.toFullNote"), @sf.t("web-pages.rigs.toFull"), fn() {
+          confirm(
+            @sf.t("web-pages.rigs.toFullAsk"),
+            @sf.t("web-pages.rigs.toFullNote"),
+            @sf.t("web-pages.rigs.toFull"),
+            facts=[(@sf.t("common.confirmFact.station"), @signals.untracked(name))],
+            fn() {
             @settings.act(
               core,
               @sf.t("web-pages.rigs.toFull"),
@@ -422,10 +427,11 @@ fn rig_more_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
             fn() {
               let at = @signals.untracked(here)
               confirm(
-                @sf.t("web-pages.rigs.removeAsk", args=[("name", @signals.untracked(name))]),
+                @sf.t("web-pages.rigs.removeAsk"),
                 @sf.t("web-pages.rigs.removeNote"),
                 @sf.t("web-pages.rigs.remove"),
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.station"), @signals.untracked(name))],
                 fn() {
                   @settings.act(
                     core,

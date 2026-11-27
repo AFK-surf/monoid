@@ -75,7 +75,7 @@ pub fn builtin_turn(String) -> Unit
 
 pub fn card_answer(String, String, Bool, who? : String?) -> Answer
 
-pub fn confirm(String, String, String, () -> Unit, danger? : Bool) -> Unit
+pub fn confirm(String, String, String, () -> Unit, danger? : Bool, facts? : Array[(String, String)]) -> Unit
 
 
 pub fn confirm_claude_auth(Bool, () -> Unit) -> Unit

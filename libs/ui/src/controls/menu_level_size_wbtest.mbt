@@ -368,6 +368,7 @@ test "inline confirm level: right edge (200pt room) locks side with smooth posit
             action: "删除",
             danger: true,
             run: fn() {  },
+            facts: [],
           }),
           gone: fn() {  },
         },
@@ -441,6 +442,7 @@ test "inline confirm level: right edge (200pt room) locks side with smooth posit
         action: "删除",
         danger: true,
         run: fn() { deleted.val += 1 },
+        facts: [],
       }),
       gone: fn() {  },
     },
@@ -592,7 +594,7 @@ test "inline confirm level: right edge (200pt room) locks side with smooth posit
       {
         n: 1,
         title: "删除预设「默认开发配置」？",
-        kind: MenuConfirmLevel({ words: "已经用它开的对话不受影响。", warning: "", action: "删除", danger: true, run: fn() {  } }),
+        kind: MenuConfirmLevel({ words: "已经用它开的对话不受影响。", warning: "", action: "删除", danger: true, run: fn() {  }, facts: [] }),
         gone: fn() {  },
       },
     ])

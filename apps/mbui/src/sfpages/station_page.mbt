@@ -128,9 +128,10 @@ fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem
       Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", disabled=is_doing(core, ["rig.setMode"], [("station", text(s, "id"))]), fn() {
         let chats = number(field(field(s, "overview"), "counts"), "sessions").to_int()
         confirm(
-          @sf.t("web-pages.rigs.toTasksAsk", args=[("name", text(s, "name"))]),
+          @sf.t("web-pages.rigs.toTasksAsk"),
           if chats > 0 { @sf.t("web-pages.rigs.toTasksNote", args=[("n", chats.to_string())]) } else { @sf.t("web-pages.rigs.toTasksNoteNone") },
           @sf.t("web-pages.rigs.toTasks"),
+          facts=[(@sf.t("common.confirmFact.station"), text(s, "name"))],
           fn() {
             @settings.act(
               core,
@@ -622,10 +623,11 @@ let st_diag_way_name : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, wei
 fn station_remove_ask(core : Core, here : Here, s : Json?) -> Unit {
   let address = text(s, "station")
   confirm(
-    @sf.t("web-pages.settings.stations.removeConfirm", args=[("name", text(s, "name"))]),
+    @sf.t("web-pages.settings.stations.removeConfirm"),
     @sf.t("web-pages.settings.stations.removeConfirmBody", args=[("name", @sf.product())]),
     @sf.t("web-pages.settings.stations.removeAction"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.station"), text(s, "name"))],
     // closed where its page (or its move page) was pushed on the stack; in the stations' place it stays on the place,
     // which moves on to the first left once the list drops it (places.mbt place_route)
     fn() {

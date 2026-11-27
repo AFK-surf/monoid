@@ -33,7 +33,7 @@ test "a chat whose station is away offers 在其他 station 接着做; Maple pic
   t.click(MenuItem, label="Maple")
   t.run_for(@ui.move_most_ms)
   for words in [
-    "在 Maple 上接着做", "Willow 可能还在运行。从现在起，新对话和 Willow 上的原对话各自继续，不会同步。", "新对话从 Willow 的备份开始。",
+    "切换 Station", "Maple", "Willow 可能还在运行。从现在起，新对话和 Willow 上的原对话各自继续，不会同步。", "新对话从 Willow 的备份开始。",
     "Maple 有这个对话的消息，但没有 Willow 的工作目录：Willow 上的文件和没推送的提交都不在 Maple 上。",
   ] {
     assert_true(t.find(words) is Some(_), msg="\{words}: \{Repr(t.words().map(fn(w) { w.0 }))}")
@@ -59,7 +59,7 @@ test "a chat whose station is away offers 在其他 station 接着做; Maple pic
     }
     _ => fail("not the new chat")
   }
-  assert_true(t.find("在 Maple 上接着做") is None)
+  assert_true(t.find("切换 Station") is None)
 }
 
 ///|

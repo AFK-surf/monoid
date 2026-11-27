@@ -79,6 +79,13 @@ pub fn ask(
 ///|
 /// Asks before something that cannot be undone (in place of the sheet up): its
 /// title, what it does, 取消 and `action` (red when `danger`). Said, it closes and `run` goes on.
-pub fn confirm(title : String, words : String, action : String, run : () -> Unit, danger? : Bool = false) -> Unit {
-  @sf.confirm(title, words, action, run, danger~)
+pub fn confirm(
+  title : String,
+  words : String,
+  action : String,
+  run : () -> Unit,
+  danger? : Bool = false,
+  facts? : Array[(String, String)] = [],
+) -> Unit {
+  @sf.confirm(title, words, action, run, danger~, facts~)
 }

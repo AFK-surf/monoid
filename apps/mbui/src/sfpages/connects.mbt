@@ -866,10 +866,11 @@ fn cn_waiting_app_node(
   let drop = fn() {
     let (name, st, id) = @signals.untracked(fn() { (text(av(), "name"), station(), app_id()) })
     confirm(
-      @sf.t("web-pages.settings.stations.removeConfirm", args=[("name", name)]),
+      @sf.t("web-pages.connects.removeConfirm"),
       @sf.t("web-pages.connects.removeBody", args=[("name", @sf.product())]),
       @sf.t("android-settings.members.remove"),
       danger=true,
+      facts=[(@sf.t("common.confirmFact.app"), name)],
       fn() {
         @settings.act(
           core,

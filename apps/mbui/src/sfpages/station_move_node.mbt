@@ -547,10 +547,18 @@ fn station_move_menu(v : Json?, ask : (Bool) -> Unit) -> Array[@sf.MenuItem?] {
 pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back : Bool) -> Unit {
   let all = field(v, if back { "allBack" } else { "allMove" })
   let to = text(v, "to")
+  let to_name = match text(v, "toName") {
+    "" => to
+    n => n
+  }
+  let action = @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" })
   @sf.confirm(
-    text(all, "title"),
+    action,
     text(all, "text"),
-    @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" }),
+    action,
+    facts=[
+      (@sf.t(if back { "common.confirmFact.sourceStation" } else { "common.confirmFact.targetStation" }), to_name),
+    ],
     fn() {
       if back {
         @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))

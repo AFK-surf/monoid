@@ -104,7 +104,7 @@
   "android-misc.adb.wifi.off": "Not connected",
   "android-misc.archive.deleteNamed": "Delete “{title}”",
   "android-misc.archive.deleteText": "Its session, chat history and workspace folder will be permanently deleted",
-  "android-misc.archive.deleteTitle": "Delete “{title}”?",
+  "android-misc.archive.deleteTitle": "Delete archived chat",
   "android-misc.archive.deleteWhat": "delete",
   "android-misc.archive.deleted": "Deleted",
   "android-misc.archive.note": "Chats archived manually, plus finished chats idle for over a day (not running, not blocked, no unread messages). A chat returns to the list when it gets a new message.",

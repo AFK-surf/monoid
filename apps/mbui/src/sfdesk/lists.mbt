@@ -200,10 +200,11 @@ fn archive_open(it : Json) -> Unit {
 fn archive_delete(src : Source, it : Json) -> Unit {
   let v = Some(it)
   @sf.confirm(
-    @sf.t("web-pages.archive.deleteConfirm", args=[("title", text(v, "title"))]),
+    @sf.t("web-pages.archive.deleteConfirm"),
     @sf.t("web-pages.archive.deleteText"),
     @sf.t("common.delete"),
     danger=true,
+    facts=[(@sf.t("common.confirmFact.chat"), text(v, "title"))],
     fn() {
       act(
         src,

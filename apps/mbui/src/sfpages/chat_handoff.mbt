@@ -114,8 +114,9 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
     })
   }
   open_dialog_nodes(
-    @sf.t("web-pages.chat.handoff.title", args=[("station", to.name)]),
+    @sf.t("web-pages.chat.handoff.title"),
     fn(v, _) {
+      @sf.dialog_facts_card_node(v, [(@sf.t("common.confirmFact.targetStation"), to.name)])
       for line in lines {
         @sf.words_node(v, fn() { line }, fn() { st_memory }) |> ignore
       }

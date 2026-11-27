@@ -73,9 +73,10 @@ pub fn me_node(
   // signing out of one: asked first, then the chats (the account in view goes with it)
   let sign_out = fn(sub : String, email : String) {
     @sf.confirm(
-      @sf.t("web-pages.settings.account.signOutConfirm", args=[("email", email)]),
+      @sf.t("web-pages.settings.account.signOutConfirm"),
       @sf.t("web-pages.settings.account.signOutConfirmBody"),
       @sf.t("web-pages.settings.account.signOutAction"),
+      facts=[(@sf.t("common.confirmFact.account"), email)],
       fn() {
         let undo = (@sfbase.mask_global.val)()
         if sub == @signals.untracked(here).sub {
@@ -99,6 +100,7 @@ pub fn me_node(
       @sf.t("web-pages.settings.account.deleteConfirmBody", args=[("email", h.email)]),
       @sf.t("web-pages.settings.account.deleteAction"),
       danger=true,
+      facts=[(@sf.t("common.confirmFact.account"), h.email)],
       fn() {
         let undo = (@sfbase.mask_global.val)()
         (core.home)()

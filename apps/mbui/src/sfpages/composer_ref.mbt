@@ -8,15 +8,15 @@
 /// The panel of file `id` in draft `key` (`<station>:<chat>`) put up from no card (a screen's fixture: a sheet on a
 /// phone, as from its card).
 pub fn ref_panel_put(src : Source, key : String, station : String, id : String, name : String) -> Unit {
-  @sf.panel_nodes(name, fn(v, close) { ref_panel_body(v, close, src, key, station, id) }, from=Unanchored)
+  @sf.panel_nodes(@sf.t("web-main.composer.refTitle"), fn(v, close) { ref_panel_body(v, close, src, key, station, id, name~) }, from=Unanchored)
 }
 
 ///|
 /// What the panel of file `id` in draft `key` holds, in node `v` (its body's), made once as it opens, bound to what the
-/// draft says of it: where it is, how it goes (what is picked told to the draft as it is picked), this chat's say
+/// draft says of it: its name, where it is, how it goes (what is picked told to the draft as it is picked), this chat's say
 /// (turned, set as it is turned). The file taken out of the draft: the panel closes (`close`), what it showed last kept
 /// as it goes.
-fn ref_panel_body(v : @view.View, close : () -> Unit, src : Source, key : String, station : String, id : String) -> Unit {
+fn ref_panel_body(v : @view.View, close : () -> Unit, src : Source, key : String, station : String, id : String, name? : String = "") -> Unit {
   let w = @signals.untracked(fn() { @sfbase.writing(src, key) })
   let now = fn() { w.files.get().iter().find_first(fn(f) { text(Some(f), "id") == id }) }
   let last : Ref[Json?] = Ref(None)
@@ -36,6 +36,9 @@ fn ref_panel_body(v : @view.View, close : () -> Unit, src : Source, key : String
   })
   let r = fn() { field(file(), "ref") }
   let dir = fn() { flag(r(), "dir") }
+  if name != "" {
+    @sf.dialog_facts_card_node(v, [(@sf.t(if @signals.untracked(dir) { "common.confirmFact.folder" } else { "common.confirmFact.file" }), name)])
+  }
   // where it is: its station and its folder (its words on the panel's words' line, wherever it is drawn)
   v.box(fn(b) {
     @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })

@@ -120,7 +120,7 @@
 {"step":"tap =删除","w":1794099236714.529}
 {"step":"tap =删除","acted":true,"w":1794099236714.636}
 {"step":"wait 300","w":1794099236730.911}
-{"step":"now until 删除「e2e-080726」","w":1794099237047.52}
+{"step":"now until 删除密钥","w":1794099237047.52}
 {"step":"tap =删除","w":1794099237047.556}
 {"step":"tap =删除","acted":true,"w":1794099237047.934}
 {"out":{"id":31,"call":"vault.deleteItem","params":{"workspace":"01M6WAAH2DP72DPMV55PP3WSST","vault":"plain","item":"i_01M6WABJJN7S9K72WWRQSDZWJM"}},"w":1794099237063.74}

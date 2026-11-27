@@ -242,9 +242,9 @@ test "大屏, 中屏: 归档 on a chat keeping watch asks first, in the core's w
     for say in ["取消", "归档"] {
       pops_open(t, @sf.t("web-pages.chat.archive")) |> ignore
       assert_true(t.find("它还在盯着 CI，归档后就不盯了。") is Some(_), msg=win.0)
-      assert_true(t.find("归档「整理发布清单」？") is Some(_), msg=win.0)
+      assert_true(t.find("归档对话") is Some(_) && t.find("整理发布清单") is Some(_), msg=win.0)
       assert_eq(named(calls, "chat.archive").length(), 0)
-      guard t.all(Dialog).iter().find_first(fn(s) { s.label == "归档「整理发布清单」？" }) is Some(d) else {
+      guard t.all(Dialog).iter().find_first(fn(s) { s.label == "归档对话" }) is Some(d) else {
         fail("\{win.0}: no confirm")
       }
       t.click(Button, label=say, within=d)

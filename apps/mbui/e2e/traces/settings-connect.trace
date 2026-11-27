@@ -168,7 +168,7 @@
 {"step":"now tap 删除连接","w":1794099254782.513}
 {"step":"now tap 删除连接","acted":true,"w":1794099254782.741}
 {"step":"wait 300","w":1794099254800.411}
-{"step":"now until 删除「e2e-080726」","w":1794099255117.511}
+{"step":"now until 删除连接","w":1794099255117.511}
 {"step":"tap =删除连接","w":1794099255117.647}
 {"step":"tap =删除连接","acted":true,"w":1794099255117.97}
 {"out":{"id":41,"call":"connect.delete","params":{"station":"01M6WAAH2DP72DPMV55PP3WSST/d28c82e1eea63a88fe9bac533f8e6fb98ed9260ffae49d7f3f1aa3089c29d98c","id":"e2e-080726"}},"w":1794099255133.066}

@@ -423,3 +423,117 @@ test "dialog corner ladder stays isolated from global corner_ladder and rejects 
   t2.draw()
   assert_eq(t2.corner_faults(), [])
 }
+
+///|
+test "confirm verification facts card renders concentrically in wide dialog, small sheet, and inline menu confirm" {
+  // 1) Wide centered dialog: fixed short title + concentric 22pt (dialog_card_corner) verification card
+  presenters_reset()
+  let t_wide = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      presented_nodes(root)
+    },
+    w=960.0,
+    h=680.0,
+    platform=0,
+  )
+  t_wide.draw()
+  confirm(
+    "移出成员",
+    "移出后该成员无法再访问工作区内的对话与资源。",
+    "移出",
+    fn() {  },
+    danger=true,
+    facts=[("成员", "alice@example.com"), ("工作区", "Production Workspace Alpha")],
+  )
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("移出成员") is Some(_), msg="wide confirm shows fixed short title")
+  assert_true(t_wide.find("alice@example.com") is Some(_), msg="wide confirm shows verified member in facts card")
+  assert_true(t_wide.find("Production Workspace Alpha") is Some(_), msg="wide confirm shows verified workspace in facts card")
+  let wide_cards = t_wide.drawn_rect_corners().filter(fn(r) { (r.5.0 - dialog_card_corner).abs() < 0.1 && r.4 != 0L })
+  assert_true(wide_cards.length() >= 1, msg="wide confirm facts card must use concentric dialog_card_corner (22pt)")
+  assert_eq(t_wide.audit(), [])
+  assert_eq(t_wide.corner_faults(), [])
+
+  // 2) Small bottom sheet: fixed short title + concentric 22pt verification card at panel_card_in (16pt) from sheet sides
+  presenters_reset()
+  let t_small = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    platform=1,
+  )
+  t_small.draw()
+  confirm(
+    "结束进程",
+    "强行结束进程可能导致未保存的工作丢失。",
+    "结束",
+    fn() {  },
+    danger=true,
+    facts=[("进程", "python3"), ("PID", "48291"), ("对话", "训练脚本排查")],
+  )
+  t_small.run_for(@ui.move_most_ms)
+  assert_true(t_small.find("结束进程") is Some(_), msg="small confirm sheet shows fixed short title")
+  assert_true(t_small.find("48291") is Some(_), msg="small confirm sheet shows PID in facts card")
+  assert_true(t_small.find("训练脚本排查") is Some(_), msg="small confirm sheet shows chat in facts card")
+  let small_cards = t_small.drawn_rect_corners().filter(fn(r) { (r.5.0 - dialog_card_corner).abs() < 0.1 && r.4 != 0L })
+  assert_true(small_cards.length() >= 1, msg="small sheet confirm facts card must use concentric dialog_card_corner (22pt)")
+  assert_eq(t_small.audit(), [])
+  assert_eq(t_small.corner_faults(), [])
+
+  // 3) Medium/Large inline popover menu confirm: fixed short title + concentric row_corner verification card
+  presenters_reset()
+  let anchor_ref : Ref[@view.View?] = Ref(None)
+  let t_menu = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(page) {
+        page.padding(Is((40.0, 40.0, 40.0, 40.0))) |> ignore
+        let b = button_node(page, fn() { "更多" }, fn() {
+          match anchor_ref.val {
+            Some(a) =>
+              menu(
+                [
+                  Some(
+                    menu_item_of("删除预设", danger=true, further=true, fn() {
+                      confirm(
+                        "删除预设",
+                        "删除后不会影响已创建的对话。",
+                        "删除",
+                        fn() {  },
+                        danger=true,
+                        facts=[("预设", "Production API Gateway Config")],
+                      )
+                    }),
+                  ),
+                ],
+                from=Node(a),
+              )
+            None => ()
+          }
+        })
+        anchor_ref.val = Some(b)
+      })
+      |> ignore
+      presented_nodes(root)
+    },
+    w=960.0,
+    h=680.0,
+    platform=0,
+  )
+  t_menu.draw()
+  t_menu.tap_text("更多")
+  t_menu.run_for(@ui.move_most_ms)
+  t_menu.tap_text("删除预设")
+  t_menu.leave()
+  t_menu.run_for(@ui.move_most_ms)
+  assert_true(t_menu.find("Production API Gateway Config") is Some(_), msg="inline menu confirm shows preset name in facts card")
+  assert_eq(t_menu.audit(), [])
+  assert_eq(t_menu.corner_faults(), [])
+}
