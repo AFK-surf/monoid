@@ -626,9 +626,9 @@ export class ServiceStatus extends ProductionServiceStatus {
     statusLosing.call();
     return super.changelogResponse(channel, upstream, ttlSeconds);
   }
-  override changelogEntries(channel: Parameters<ProductionServiceStatus["changelogEntries"]>[0], ttlSeconds: number) {
+  override changelogFixes(ttlSeconds: number) {
     statusLosing.call();
-    return super.changelogEntries(channel, ttlSeconds);
+    return super.changelogFixes(ttlSeconds);
   }
   override releasedVersions(channel: Parameters<ProductionServiceStatus["releasedVersions"]>[0], upstream: string | null, ttlSeconds: number) {
     statusLosing.call();

@@ -645,9 +645,10 @@ test("POST /v1/releases/out invalidates cached changelog and feeds immediately",
     ]));
     await bucket.put("station-beta.json", JSON.stringify({ build: 1341 }));
 
-    // Still cached before /v1/releases/out.
+    // Still cached before /v1/releases/out (both response cache and fixes cache).
     const stillOld = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
     assert.equal(stillOld.entries[0].text[0], "旧版本");
+    assert.deepEqual(await fixed(h, station), []);
 
     // Release notification invalidates ServiceStatus cache before waking clients/stations.
     const oidcToken = await new SignJWT({
@@ -819,6 +820,11 @@ test("ServiceStatus RPC errors fall back to direct R2 reads and never block /v1/
     const out = await fixed(h, station);
     assert.deepEqual(out.map((f) => [f.number, f.version, f.released.station]), [[1, 1345, 1345]]);
 
+    // Admin feedback list (api.ts markFixed -> changelogFixes) also falls back to direct R2 read.
+    const admin = h.as(aliceTokens, "admin");
+    const listed = (await (await admin("GET", "/v1/admin/feedback")).json()) as any;
+    assert.deepEqual(listed.feedback.map((f: any) => [f.number, f.status, f.fixed_in]), [[1, "fixed", 1345]]);
+
     // POST /v1/releases/out catches invalidateChangelog() error, still returns 200 and broadcasts release.
     const oidcToken = await new SignJWT({
       repository: "o/r",
@@ -835,6 +841,43 @@ test("ServiceStatus RPC errors fall back to direct R2 reads and never block /v1/
     assert.equal(told.status, 200);
     assert.deepEqual(await events.take(), [{ type: "release" }]);
     events.ws.close(1000);
+  } finally {
+    await h.close();
+  }
+});
+
+test("concurrent POST /v1/feedback/fixed coalesces changelog.json read via single-flight and reuses cached fixes", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const stations = await Promise.all(Array.from({ length: 5 }, () => workspace(h)));
+    for (let i = 0; i < stations.length; i++) {
+      assert.equal((await send(h, stations[i]!.station, report({ key: `sf-${i}` }), { channel: "beta" })).status, 201);
+    }
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1350, commit: "d", at: 4, text: ["并发修复"], fixes: [1, 2, 3, 4, 5], parts: ["station"] },
+    ]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1350 }));
+
+    await h.failBucket({});
+    const results = await Promise.all(stations.map(({ station }) => fixed(h, station)));
+    for (let i = 0; i < results.length; i++) {
+      assert.deepEqual(results[i]!.map((f) => [f.number, f.version, f.released.station]), [[i + 1, 1350, 1350]]);
+    }
+    const calls = await h.failBucket();
+    assert.equal(
+      calls.filter((c) => c === "get changelog.json").length,
+      1,
+      `expected single-flight to read changelog.json once, got: ${calls.join(", ")}`,
+    );
+
+    // Subsequent calls (including acknowledging told ids in the batched Directory RPC) hit #fixesCache with 0 R2 gets.
+    await h.failBucket({ get: 12 });
+    const afterTold = await Promise.all(
+      stations.map(({ station }, i) => fixed(h, station, [results[i]![0].id])),
+    );
+    for (const list of afterTold) assert.deepEqual(list, []);
+    assert.deepEqual(await h.failBucket(), []);
   } finally {
     await h.close();
   }

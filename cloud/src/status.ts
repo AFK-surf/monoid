@@ -8,7 +8,7 @@ import { DurableObject } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { bearerToken, clock, denied, nowSeconds, readJson, reply } from "./auth";
-import { parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type Channel, type PlatformReleases } from "./changelog";
+import { changelogFixesOf, parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type ChangelogFix, type Channel, type PlatformReleases } from "./changelog";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
 import { unavailable } from "./releases";
@@ -81,6 +81,8 @@ export class ServiceStatus extends DurableObject<Env> {
   #fileInFlight = new Map<string, Promise<FileReadResult>>();
   #responseCache = new Map<string, { body: string; expiresAt: number }>();
   #responseInFlight = new Map<string, Promise<ChangelogResponseResult>>();
+  #fixesCache: { fixes: ChangelogFix[]; expiresAt: number } | null = null;
+  #fixesInFlight: Promise<ChangelogFix[]> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -95,6 +97,8 @@ export class ServiceStatus extends DurableObject<Env> {
     this.#fileInFlight.clear();
     this.#responseCache.clear();
     this.#responseInFlight.clear();
+    this.#fixesCache = null;
+    this.#fixesInFlight = null;
   }
 
   #readFile(key: string, upstream: string | null, ttlSeconds: number): Promise<FileReadResult> {
@@ -214,9 +218,27 @@ export class ServiceStatus extends DurableObject<Env> {
     return promise;
   }
 
-  async changelogEntries(channel: Channel, ttlSeconds: number): Promise<ChangelogEntry[]> {
-    const { entries } = await this.#readChangelog(channel, ttlSeconds, (file, error) => console.error(`changelog ${file} unavailable:`, error));
-    return entries;
+  changelogFixes(ttlSeconds: number): Promise<ChangelogFix[]> {
+    const now = clock.now();
+    if (this.#fixesCache && this.#fixesCache.expiresAt > now) {
+      return Promise.resolve(this.#fixesCache.fixes);
+    }
+    if (this.#fixesInFlight) return this.#fixesInFlight;
+    const gen = this.#changelogGen;
+    const promise = (async (): Promise<ChangelogFix[]> => {
+      const { entries, expiresAt } = await this.#readChangelog("beta", ttlSeconds, (file, error) => console.error(`changelog ${file} unavailable:`, error));
+      const fixes = changelogFixesOf(entries);
+      if (ttlSeconds > 0 && this.#changelogGen === gen && expiresAt !== null && expiresAt > clock.now()) {
+        this.#fixesCache = { fixes, expiresAt };
+      }
+      return fixes;
+    })();
+    this.#fixesInFlight = promise;
+    const cleanup = () => {
+      if (this.#fixesInFlight === promise) this.#fixesInFlight = null;
+    };
+    this.ctx.waitUntil(promise.then(cleanup, cleanup));
+    return promise;
   }
 
   async releasedVersions(channel: Channel, upstream: string | null, ttlSeconds: number): Promise<PlatformReleases> {

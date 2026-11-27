@@ -19,7 +19,7 @@ import { requestLang, tr, type Lang } from "./i18n.ts";
 import { mailConfigured, sendAdded } from "./mail";
 import type { AdminFeedback, FeedbackStatus } from "./types";
 import { grantKeys, signCredential, validKeyHex, verifyAnySignature, verifyKeySignature } from "./grants";
-import { changelog, changelogCacheSeconds, serveChangelog, serveFixed } from "./changelog";
+import { changelog, changelogCacheSeconds, changelogFixesOf, serveChangelog, serveFixed } from "./changelog";
 import { serveModels } from "./models";
 import { FEEDBACK_LIMITS, receiveFeedback, receiveReply } from "./feedback";
 import { pushKey, registration, stationNotify } from "./push";
@@ -547,16 +547,16 @@ export async function blockAccount(env: Env, sub: string, on: boolean): Promise<
 /** The changelog's fixes marked on the reports (changelog.ts): the Directory does nothing when it is as last time. Admin reads may lag by up to CHANGELOG_CACHE_SECONDS unless invalidated by /v1/releases/out. */
 async function markFixed(env: Env): Promise<void> {
   const ttl = changelogCacheSeconds(env);
-  const entries =
+  const fixes =
     ttl > 0 && env.SERVICE_STATUS
       ? await env.SERVICE_STATUS.getByName("primary")
-          .changelogEntries("beta", ttl)
-          .catch((error) => {
+          .changelogFixes(ttl)
+          .catch(async (error) => {
             console.error("changelog cache unavailable:", error);
-            return changelog(env.RELEASES);
+            return changelogFixesOf(await changelog(env.RELEASES));
           })
-      : await changelog(env.RELEASES);
-  await env.DIRECTORY.getByName("primary").markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
+      : changelogFixesOf(await changelog(env.RELEASES));
+  await env.DIRECTORY.getByName("primary").markFixed(fixes);
 }
 
 /**

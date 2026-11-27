@@ -656,6 +656,12 @@ export class Directory extends DurableObject<Env> {
     this.#feedback.markFixed(fixes);
   }
 
+  fixedForStation(station: string, fixes: { number: number; version: number; parts: string[] }[], told: string[]): { desktopPlatform: string | null; id: string; number: number; title: string; channel: "stable" | "beta"; version: number; parts: Part[]; session: string | null; thread: string | null }[] {
+    this.#feedback.markFixed(fixes);
+    if (told.length) this.#feedback.toldFixed(station, told);
+    return this.#feedback.fixedUntold(station);
+  }
+
   fixedUntold(station: string): { desktopPlatform: string | null; id: string; number: number; title: string; channel: "stable" | "beta"; version: number; parts: Part[]; session: string | null; thread: string | null }[] {
     return this.#feedback.fixedUntold(station);
   }

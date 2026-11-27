@@ -24,6 +24,13 @@ export interface ChangelogEntry {
   parts: Part[];
 }
 
+/** Compact fix record extracted from changelog entries for Directory.markFixed / fixedForStation. */
+export type ChangelogFix = { number: number; version: number; parts: Part[] };
+
+export function changelogFixesOf(entries: ChangelogEntry[]): ChangelogFix[] {
+  return entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts })));
+}
+
 /** The build each part has out on a channel (0.1.<n>: n), null where there is none to read. still.fail cloud is the one deployed: all of it. */
 export type Released = Record<Exclude<Part, "cloud">, number | null>;
 
@@ -52,9 +59,9 @@ type Bucket = ReleaseBucket | undefined;
 type Failed = (file: string, error: unknown) => void;
 const logged: Failed = (file, error) => console.error(`changelog ${file} unavailable:`, error);
 
-const DEFAULT_CACHE_SECONDS = 30;
+const DEFAULT_CACHE_SECONDS = 300;
 
-/** In-memory cache TTL in seconds for changelog and release feeds; unset or invalid falls back to 30, "0" disables caching. */
+/** In-memory cache TTL in seconds for changelog and release feeds; unset or invalid falls back to 300, "0" disables caching. */
 export function changelogCacheSeconds(env?: Pick<Env, "CHANGELOG_CACHE_SECONDS">): number {
   const raw = env?.CHANGELOG_CACHE_SECONDS?.trim();
   if (!raw || !/^\d+$/.test(raw)) return DEFAULT_CACHE_SECONDS;
@@ -212,15 +219,13 @@ export async function fixedFor(env: Env, station: string, told: string[]): Promi
   const dir = env.DIRECTORY.getByName("primary");
   const ttl = changelogCacheSeconds(env);
   const status = ttl > 0 && env.SERVICE_STATUS ? env.SERVICE_STATUS.getByName("primary") : null;
-  const entries = status
-    ? await status.changelogEntries("beta", ttl).catch((error) => {
+  const fixes = status
+    ? await status.changelogFixes(ttl).catch(async (error) => {
         console.error("changelog cache unavailable:", error);
-        return changelog(env.RELEASES);
+        return changelogFixesOf(await changelog(env.RELEASES));
       })
-    : await changelog(env.RELEASES);
-  await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
-  if (told.length) await dir.toldFixed(station, told);
-  const reports = await dir.fixedUntold(station);
+    : changelogFixesOf(await changelog(env.RELEASES));
+  const reports = await dir.fixedForStation(station, fixes, told);
   const have: Partial<Record<Channel, PlatformReleases>> = {};
   const fixed: FixedReport[] = [];
   for (const report of reports) {
