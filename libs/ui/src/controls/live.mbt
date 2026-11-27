@@ -172,7 +172,7 @@ pub fn[T] LiveArray::is_empty(self : LiveArray[T]) -> Bool {
 
 ///|
 pub fn[T] LiveArray::iter(self : LiveArray[T]) -> Iter[T] {
-  let xs = self.read()
+  let xs = self.read().copy()
   let mut i = 0
   Iter(fn() {
     if i < xs.length() {
@@ -274,7 +274,8 @@ pub fn[T, U] LiveArray::mapi(self : LiveArray[T], f : (Int, T) -> U) -> Array[U]
 ///|
 pub fn[T] LiveArray::any(self : LiveArray[T], f : (T) -> Bool) -> Bool {
   let xs = self.read()
-  for i = 0; i < xs.length(); i = i + 1 {
+  let len = xs.length()
+  for i = 0; i < len && i < xs.length(); i = i + 1 {
     if f(xs[i]) {
       return true
     }
@@ -285,7 +286,8 @@ pub fn[T] LiveArray::any(self : LiveArray[T], f : (T) -> Bool) -> Bool {
 ///|
 pub fn[T] LiveArray::all(self : LiveArray[T], f : (T) -> Bool) -> Bool {
   let xs = self.read()
-  for i = 0; i < xs.length(); i = i + 1 {
+  let len = xs.length()
+  for i = 0; i < len && i < xs.length(); i = i + 1 {
     if !f(xs[i]) {
       return false
     }
@@ -306,7 +308,8 @@ pub fn[T] LiveArray::eachi(self : LiveArray[T], f : (Int, T) -> Unit) -> Unit {
 ///|
 pub fn[T] LiveArray::search_by(self : LiveArray[T], f : (T) -> Bool) -> Int? {
   let xs = self.read()
-  for i = 0; i < xs.length(); i = i + 1 {
+  let len = xs.length()
+  for i = 0; i < len && i < xs.length(); i = i + 1 {
     if f(xs[i]) {
       return Some(i)
     }
@@ -327,11 +330,9 @@ pub fn[T] LiveArray::rev_iter(self : LiveArray[T]) -> Iter[T] {
 ///|
 #callsite(autofill(loc))
 pub fn[T] LiveArray::push_iter(self : LiveArray[T], xs : Iter[T], loc~ : SourceLoc) -> Unit {
-  let n = self.data.length()
-  for x in xs {
-    self.data.push(x)
-  }
-  if self.data.length() != n {
+  let items = xs.to_array()
+  if !items.is_empty() {
+    self.data.append(items)
     live_changed(self.changes, loc~)
   }
 }
