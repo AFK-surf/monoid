@@ -759,6 +759,18 @@ fn emit_thread_sse_event(
 /// (local Slack/Feishu/Comma/Group or cross-station `connect.event`) into SQLite
 /// `threads` / `entries` / `deliveries`, respects `left_at` and multi-edit history,
 /// and triggers `SessionHub` actor prompt delivery + live `"thread"` SSE push.
+fn session_belongs_to_ws(
+  sess_ws : Option[String],
+  target_ws : String,
+  home_ws : String,
+) -> Bool {
+  let eff = match sess_ws {
+    Some(w) => if w.length() > 0 { w } else { home_ws }
+    None => home_ws
+  }
+  eff == target_ws
+}
+
 fn handle_connect_inbound_event(
   core : station_whole::WholeCore,
   connects : station_whole::ConnectsOsRuntime,
@@ -766,6 +778,8 @@ fn handle_connect_inbound_event(
   connect_id : String,
   ev : station_connects::ChatEvent,
   now_ms : Int64,
+  on_stop_session : (String) -> Unit = fn(_s : String) -> Unit { () },
+  on_login_code : (String, String) -> Unit = fn(_lid : String, _code : String) -> Unit { () },
 ) -> Bool {
   let meta = match connect_meta.get(connect_id) {
     Some(m) => m
@@ -797,9 +811,64 @@ fn handle_connect_inbound_event(
     }
     _ => None
   }
+  // Security (P0-1): Never allow an inbound connect event from workspace A to touch or inject
+  // into a thread owned by workspace B!
+  match existing_tid {
+    Some(id) => {
+      let vis = match station_whole::thread_visible_in_ws(st_db, id, meta.ws, core.config.home_workspace) {
+        Ok(b) => b
+        Err(_) => false
+      }
+      if !vis {
+        return false
+      }
+    }
+    None => ()
+  }
   match decide_connect_inbound(meta.single, meta.require_mention, routed_elsewhere, existing_tid is Some(_), ev) {
     ConnectInboundDecision::IgnoreAndAck => true
     ConnectInboundDecision::RefuseNoAck => false
+    ConnectInboundDecision::StopTurn => {
+      match existing_tid {
+        Some(tid) => {
+          match st_db.db.all(
+            "SELECT session FROM thread_sessions WHERE thread = ?1 AND left_at IS NULL",
+            [sql_db::int64_to_json(tid)],
+          ) {
+            Ok(rows) => {
+              for i in 0..<rows.length() {
+                let skey = match rows[i].get("session") {
+                  Some(base_codec::Json::Str(s)) => s
+                  _ => ""
+                }
+                if skey.length() > 0 {
+                  match st_db.get_session(skey) {
+                    Ok(Some(srow)) => {
+                      if session_belongs_to_ws(srow.ws, meta.ws, core.config.home_workspace) {
+                        on_stop_session(skey)
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+              }
+            }
+            Err(_) => ()
+          }
+          true
+        }
+        None => true
+      }
+    }
+    ConnectInboundDecision::HandleLoginCode => match ev {
+      station_connects::ChatEvent::LoginCode(_, _, login_id, code, _) => {
+        if login_id.length() > 0 && code.length() > 0 {
+          on_login_code(login_id, code)
+        }
+        true
+      }
+      _ => true
+    }
     ConnectInboundDecision::PersistMessage => match ev {
       station_connects::ChatEvent::Message(m) => {
         if !connects.workspace.should_deliver_thread(connect_id, m.channel, m.thread_ts, m.addressed) {
@@ -837,6 +906,14 @@ fn handle_connect_inbound_event(
                 _ => true
               }
               if skey.length() > 0 {
+                match st_db.get_session(skey) {
+                  Ok(Some(srow)) => {
+                    if !session_belongs_to_ws(srow.ws, meta.ws, core.config.home_workspace) {
+                      return false
+                    }
+                  }
+                  _ => ()
+                }
                 if is_left {
                   had_left_session = true
                 } else {
@@ -851,7 +928,13 @@ fn handle_connect_inbound_event(
           let sess_scope = if meta.single { m.channel } else { m.channel + "/" + m.thread_ts }
           let skey = connect_id + ":" + sess_scope
           let exists_sess = match st_db.get_session(skey) {
-            Ok(Some(_)) => true
+            Ok(Some(existing_row)) => {
+              // Security (P0-1): Refuse reusing an existing session belonging to a different workspace!
+              if !session_belongs_to_ws(existing_row.ws, meta.ws, core.config.home_workspace) {
+                return false
+              }
+              true
+            }
             Ok(None) => false
             Err(_) => return false
           }
@@ -862,15 +945,22 @@ fn handle_connect_inbound_event(
             }
             let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
             // 1:1 with TS `station/src/sessions/hub.ts:2236-2237`:
-            // `<dataDir>/sessions/<connect.id>/<dir>/workspace` (never fall back to `data_dir` root).
-            let dir_name = if !meta.single {
+            // `<dataDir>/sessions/<connect.id>/<dir>/workspace` with strict path sanitization.
+            let safe_cid = sanitize_path_segment(connect_id)
+            let raw_dir_name = if !meta.single {
               m.channel + "-" + m.thread_ts.replace(".", "-")
             } else {
               sess_scope
             }
+            let dir_name = sanitize_path_segment(raw_dir_name)
             let sess_ws_dir = match meta.cwd {
-              Some(c) => c
-              None => nodepath::join(sep, [core.config.data_dir, "sessions", connect_id, dir_name, "workspace"])
+              Some(c) => {
+                if path_has_parent_traversal(c) {
+                  return false
+                }
+                c
+              }
+              None => nodepath::join(sep, [core.config.data_dir, "sessions", safe_cid, dir_name, "workspace"])
             }
             let _ = station_sys::mkdir_p(sess_ws_dir)
             let new_sess = station_store::NewSession::{
@@ -1387,6 +1477,8 @@ pub enum ConnectInboundDecision {
   RefuseNoAck
   PersistMessage
   PersistEdit
+  StopTurn
+  HandleLoginCode
 }
 
 /// Pure, side-effect-free inbound connect routing decision aligned 1:1 with
@@ -1420,10 +1512,73 @@ pub fn decide_connect_inbound(
     }
     // 1:1 with Node `hub.ts:1179` (`acceptOwnNotice`): never insert spurious `author_kind='notice'` rows.
     station_connects::ChatEvent::OwnNotice(_) => ConnectInboundDecision::IgnoreAndAck
-    // Unimplemented event types fail closed (never ACK without handling).
-    station_connects::ChatEvent::Stop(_, _, _, _)
-    | station_connects::ChatEvent::LoginCode(_, _, _, _, _) => ConnectInboundDecision::RefuseNoAck
+    station_connects::ChatEvent::Stop(_, _, _, _) => {
+      if existing_thread_exists {
+        ConnectInboundDecision::StopTurn
+      } else {
+        ConnectInboundDecision::IgnoreAndAck
+      }
+    }
+    station_connects::ChatEvent::LoginCode(_, _, _, _, _) => ConnectInboundDecision::HandleLoginCode
   }
+}
+
+fn hex_nibble(c : Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+fn percent_decode_segment(raw : String) -> String {
+  let b = raw.to_bytes()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 37 && i + 2 < b.length() {
+      let hi = hex_nibble(b[i + 1].to_int() & 0xFF)
+      let lo = hex_nibble(b[i + 2].to_int() & 0xFF)
+      if hi >= 0 && lo >= 0 {
+        out.push(((hi << 4) | lo) as Byte)
+        i = i + 3
+        continue
+      }
+    }
+    out.push(b[i])
+    i = i + 1
+  }
+  let res = Bytes::new(out.length())
+  for j in 0..<out.length() {
+    res[j] = out[j]
+  }
+  res.to_string()
+}
+
+/// Extracts `<key>` from `POST /sessions/<key>/stop` (ignoring query string).
+pub fn extract_session_stop_key(method : String, raw_path : String) -> Option[String] {
+  if method != "POST" {
+    return None
+  }
+  let (path, _, _) = station_http::parse_request_target(raw_path)
+  if !path.starts_with("/sessions/") || !path.ends_with("/stop") {
+    return None
+  }
+  let pb = path.to_bytes()
+  if pb.length() <= 15 {
+    return None
+  }
+  let key_bytes = slice_bytes_local(pb, 10, pb.length() - 5)
+  let raw_key = bytes_to_str_local(key_bytes, key_bytes.length())
+  if raw_key.length() == 0 || raw_key.contains("/") {
+    return None
+  }
+  Some(percent_decode_segment(raw_key))
 }
 
 /// Route `EV_CONFIG_WATCH` `FsChange` events to `core.config_file.on_fs_event(kind, name)`
@@ -3838,6 +3993,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
     match action {
       station_http::HandlerAction::Respond(resp) => {
+        if resp.status >= 200 && resp.status < 300 {
+          match extract_session_stop_key(head.method, head.path) {
+            Some(stop_skey) => {
+              let _ = st.live_runners.stop_session(ctx, stop_skey, host_shim::now_ms())
+            }
+            None => ()
+          }
+        }
         astream.mode = AdminStreamMode::Done
         send_admin_resp_and_finish(ctx, astream.sid, resp)
       }
@@ -5828,6 +5991,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let remote_connects_path = nodepath::join(ctx.sep, [ctx.data, "remote-connects.json"])
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
       let connects_cell : Array[Option[station_whole::ConnectsOsRuntime]] = [None]
+      let live_runners_cell : Array[Option[LiveRunnerManager]] = [None]
       let connect_cbs = station_whole::ConnectsCallbacks::{
         on_event: fn(
           connect_id : String,
@@ -5835,7 +5999,25 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           ev : station_connects::ChatEvent,
         ) -> Bool {
           match connects_cell[0] {
-            Some(crt) => handle_connect_inbound_event(core, crt, connect_meta, connect_id, ev, host_shim::wall_ms())
+            Some(crt) => handle_connect_inbound_event(
+              core,
+              crt,
+              connect_meta,
+              connect_id,
+              ev,
+              host_shim::wall_ms(),
+              on_stop_session=fn(skey : String) -> Unit {
+                match live_runners_cell[0] {
+                  Some(lr) => {
+                    let _ = lr.stop_session(ctx, skey, host_shim::now_ms())
+                  }
+                  None => ()
+                }
+              },
+              on_login_code=fn(lid : String, code : String) -> Unit {
+                let _ = logins.send_input(lid, Some(code), None)
+              },
+            )
             None => false
           }
         },
@@ -6372,6 +6554,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         mcp_srv.listen_loopback(0)
       }
 
+      let live_runners = LiveRunnerManager::new()
+      live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
@@ -6404,7 +6588,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         rig_put_streams: Map::new(),
         adopted_runners: Map::new(),
         adopted_runner_by_sock: Map::new(),
-        live_runners: LiveRunnerManager::new(),
+        live_runners: live_runners,
         next_runner_conn_id: 1,
         carried_handover_failed: None,
         mcp_announced: false,
@@ -6651,47 +6835,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
               }
-              // Actively reconnect ONLY to runners genuinely claimed by `WholeAgents::adopt_sessions`
-              // (`adopt_once == Ok`); bystander runners not owned by any session are NEVER attached!
+              // P0-3: Actively reconnect claimed live runners directly into `st.live_runners` so
+              // in-flight turns continue parsing stdout and finish cleanly, and subsequent prompts
+              // reuse the SAME live runner without socket collisions (while still persisting
+              // `adopted-runners.db` chunks with `keep: 0` for `adoptedOutput`).
+              let adopt_wall_ms = host_shim::wall_ms()
               for ri in 0..<live_runners.length() {
                 let rinfo = live_runners[ri]
                 if rinfo.socket.length() > 0 {
                   match st.core.agents.adopted_session_by_runner_id.get(rinfo.id) {
                     Some(skey) => {
-                      let rcid = st.next_runner_conn_id
-                      st.next_runner_conn_id = st.next_runner_conn_id + 1
-                      let inst_id = station_whole::WholeAgents::runner_instance_id(
-                        rinfo.id,
-                        rinfo.runner_pid,
-                        rinfo.started_at,
-                      )
-                      st.adopted_runners.set(
-                        rcid,
-                        AdoptedRunnerConn::{
-                          runner_id: rinfo.id,
-                          instance_id: inst_id,
-                          runner_pid: rinfo.runner_pid,
-                          started_at: rinfo.started_at,
-                          session_key: skey,
-                          socket_path: rinfo.socket,
-                          keep_from: 0L,
-                          sock_id: -1L,
-                          rx_chunks: [],
-                          rx_total_bytes: 0,
-                          attached_seen: false,
-                          db_initialized: false,
-                          acked_out: 0L,
-                          acked_err: 0L,
-                          lines_received: 0,
-                          exited: false,
-                        },
-                      )
-                      let _ = ctx.mux_role.call_async_raw(
-                        builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_OPEN, 0L),
-                        "unix.open",
-                        base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
-                        None,
-                      )
+                      let _ = st.live_runners.adopt_live_runner(ctx, st.core, rinfo, skey, adopt_wall_ms)
                     }
                     None => ()
                   }
@@ -6759,6 +6913,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             let station_peer_id = station_whole::PeerIdentity::AuthenticatedStation(auth.remote_id, ws, false)
             match st.core.handle_peer_http(station_peer_id, http_method, path, hdrs, body_bytes, now_w) {
               station_http::HandlerAction::Respond(resp) => {
+                if resp.status >= 200 && resp.status < 300 {
+                  match extract_session_stop_key(http_method, path) {
+                    Some(stop_skey) => {
+                      let _ = st.live_runners.stop_session(ctx, stop_skey, host_shim::now_ms())
+                    }
+                    None => ()
+                  }
+                }
                 let rh_arr : Array[base_codec::Json] = []
                 for hi in 0..<resp.headers.length() {
                   rh_arr.push(
@@ -6871,6 +7033,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       local_cid,
                       chat_ev,
                       now_w,
+                      on_stop_session=fn(skey : String) -> Unit {
+                        let _ = st.live_runners.stop_session(ctx, skey, host_shim::now_ms())
+                      },
+                      on_login_code=fn(lid : String, code : String) -> Unit {
+                        let _ = st.logins.send_input(lid, Some(code), None)
+                      },
                     )
                     if ok {
                       let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
@@ -6886,18 +7054,29 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 return
               }
               ConnectEventValidation::LearnAndDeliver(remote_cid, desc) => {
-                let rec = RemoteConnectRecord::{ station: auth.remote_id, described: desc }
-                st.remote_connects.set(remote_cid, rec)
-                st.connect_meta.set(remote_cid, connect_meta_from_described(remote_cid, desc, ws))
-                save_remote_connects_file(
-                  ctx.ops_fs,
-                  st.remote_connects_path,
-                  st.remote_connects,
-                  ctx.self_pid,
-                  ctx.sep,
-                )
+                // Security (P0-1): Validate event payload AND existing workspace ownership BEFORE
+                // mutating `remote_connects`, `connect_meta`, or saving `remote-connects.json`!
+                match st.connect_meta.get(remote_cid) {
+                  Some(existing_meta) => {
+                    if existing_meta.ws != ws {
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("connect workspace mismatch", v2_bytes), None, v2_bytes, is_front)
+                      return
+                    }
+                  }
+                  None => ()
+                }
                 match parse_wire_chat_event(ev_json) {
                   Some(chat_ev) => {
+                    let rec = RemoteConnectRecord::{ station: auth.remote_id, described: desc }
+                    st.remote_connects.set(remote_cid, rec)
+                    st.connect_meta.set(remote_cid, connect_meta_from_described(remote_cid, desc, ws))
+                    save_remote_connects_file(
+                      ctx.ops_fs,
+                      st.remote_connects_path,
+                      st.remote_connects,
+                      ctx.self_pid,
+                      ctx.sep,
+                    )
                     let (ev_ch, ev_tts) = match chat_ev {
                       station_connects::ChatEvent::Message(m) => (m.channel, m.thread_ts)
                       station_connects::ChatEvent::OwnNotice(m) => (m.channel, m.thread_ts)
@@ -6905,7 +7084,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
                     }
-                    // `movedTo` forwarding (1:1 with TS `workspace.ts:365-370`).
+                    // `movedTo` forwarding (P1: use `ask_peer_rpc` so caller is answered only after target confirms).
                     match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
                       Some(moved) => {
                         if moved != ctx.station_key.id {
@@ -6922,9 +7101,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                             ("described", desc),
                             ("event", ev_json),
                           ])
-                          ctx.enqueue_tell(moved, ws, fwd_req)
-                          let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
-                          ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+                          ctx.ask_peer_rpc(moved, ws, fwd_req, fn(res : Result[base_codec::Json, String]) -> Unit {
+                            match res {
+                              Ok(ans) => {
+                                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(ans, false, v2_bytes), None, v2_bytes, is_front)
+                              }
+                              Err(e) => {
+                                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("movedTo forward failed: " + e, v2_bytes), None, v2_bytes, is_front)
+                              }
+                            }
+                          })
                           return
                         }
                       }
@@ -6937,6 +7123,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       remote_cid,
                       chat_ev,
                       now_w,
+                      on_stop_session=fn(skey : String) -> Unit {
+                        let _ = st.live_runners.stop_session(ctx, skey, host_shim::now_ms())
+                      },
+                      on_login_code=fn(lid : String, code : String) -> Unit {
+                        let _ = st.logins.send_input(lid, Some(code), None)
+                      },
                     )
                     if ok {
                       let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])

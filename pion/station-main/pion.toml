@@ -88,6 +88,9 @@ readops_core = { path = "../station/packages/readops_core" }
 readops_chats = { path = "../station/packages/readops_chats" }
 readops_local = { path = "../station/packages/readops_local" }
 readops_usage = { path = "../station/packages/readops_usage" }
+parse_claude = { path = "../station/packages/parse_claude" }
+parse_codex = { path = "../station/packages/parse_codex" }
+parse_acp = { path = "../station/packages/parse_acp" }
 role = { path = "../rules/packages/role" }
 form = { path = "../rules/packages/form" }
 fork = { path = "../rules/packages/fork" }

@@ -2421,21 +2421,42 @@ test("W17C-1: Live stillfail-runner spawning & full agent turn loop (Web/Hub MCP
   const pionBin = resolvePionBinary();
   const readerBin = resolveNativeTool("STILLFAIL_READER", "reader", "stillfail-reader");
   const runnerBin = resolveNativeTool("STILLFAIL_RUNNER", "runner", "stillfail-runner");
-  const launcherBin = resolveNativeTool("STILLFAIL_LAUNCHER", "launcher", "stillfail-launcher");
 
-  // Helper: create a real executable mock `claude` CLI on PATH that speaks Claude `stream-json`
-  // and calls the station's real `/mcp` endpoint with its per-session Bearer token!
-  function writeMockClaude(binDir: string, mode: "reply" | "hold"): string {
+  // Helper: create a real executable mock `claude` CLI on PATH that speaks Claude `stream-json`,
+  // parses real `--mcp-config` & `--append-system-prompt` from `process.argv` (expanding `${STILLFAIL_MCP_TOKEN}`),
+  // verifies `<message ...>` envelope framing, and calls the station's real `/mcp` endpoint!
+  function writeMockClaude(binDir: string, mode: "reply" | "hold", releaseFlagPath = ""): string {
     mkdirSync(binDir, { recursive: true });
     const scriptPath = join(binDir, "claude");
-    const body = mode === "reply"
-      ? `#!${process.execPath}
+    const commonHeader = `#!${process.execPath}
 const readline = require("node:readline");
 const http = require("node:http");
+const fs = require("node:fs");
 
-function mcpCall(urlStr, token, name, args) {
+function argAfter(flag) {
+  const idx = process.argv.indexOf(flag);
+  return idx >= 0 && idx + 1 < process.argv.length ? process.argv[idx + 1] : "";
+}
+
+const sysPrompt = argAfter("--append-system-prompt");
+const mcpCfgRaw = argAfter("--mcp-config");
+let mcpUrl = "";
+let mcpAuth = "";
+if (mcpCfgRaw) {
+  try {
+    const cfg = JSON.parse(mcpCfgRaw);
+    const srv = cfg.mcpServers && cfg.mcpServers.stillfail;
+    if (srv) {
+      mcpUrl = srv.url || "";
+      const rawAuth = (srv.headers && srv.headers.Authorization) || "";
+      mcpAuth = rawAuth.replace(/\\$\\{STILLFAIL_MCP_TOKEN\\}/g, process.env.STILLFAIL_MCP_TOKEN || "");
+    }
+  } catch {}
+}
+
+function mcpCall(name, args) {
   return new Promise((resolve, reject) => {
-    const u = new URL(urlStr);
+    const u = new URL(mcpUrl);
     const payload = JSON.stringify({
       jsonrpc: "2.0",
       id: "mcp-" + Date.now() + "-" + Math.random(),
@@ -2450,7 +2471,7 @@ function mcpCall(urlStr, token, name, args) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
+          "Authorization": mcpAuth,
           "Content-Length": Buffer.byteLength(payload),
         },
       },
@@ -2466,6 +2487,14 @@ function mcpCall(urlStr, token, name, args) {
   });
 }
 
+function extractUserText(msg) {
+  const c = msg && msg.message && msg.message.content;
+  if (Array.isArray(c) && c.length > 0 && typeof c[0].text === "string") return c[0].text;
+  return "";
+}
+`;
+    const body = mode === "reply"
+      ? `${commonHeader}
 process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "mock-claude-sid-1" }) + "\\n");
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", async (line) => {
@@ -2473,11 +2502,15 @@ rl.on("line", async (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === "user") {
-    const mcpUrl = process.env.STILLFAIL_MCP_URL;
-    const token = process.env.STILLFAIL_MCP_TOKEN;
-    if (mcpUrl && token) {
-      await mcpCall(mcpUrl, token, "chat_post", { text: "hello from live pion runner" });
-      await mcpCall(mcpUrl, token, "chat_state", { kind: "all_done", done: "replied via live runner" });
+    const txt = extractUserText(msg);
+    const okArgs = sysPrompt.includes("You work on this machine") && mcpUrl.startsWith("http://127.0.0.1:") && mcpAuth.startsWith("Bearer ");
+    const okEnv = txt.includes("<message ") && txt.includes("</message>");
+    if (okArgs && okEnv) {
+      await mcpCall("chat_post", { text: "hello from live pion runner" });
+      await mcpCall("chat_state", { kind: "all_done", done: "replied via live runner" });
+    } else {
+      await mcpCall("chat_post", { text: "BAD_CONTRACT okArgs=" + okArgs + " okEnv=" + okEnv });
+      await mcpCall("chat_state", { kind: "all_done", done: "contract check failed" });
     }
     process.stdout.write(JSON.stringify({
       type: "result",
@@ -2488,8 +2521,41 @@ rl.on("line", async (line) => {
   }
 });
 `
-      : `#!${process.execPath}
+      : `${commonHeader}
+const releaseFlag = ${JSON.stringify(releaseFlagPath)};
+let turnNum = 0;
 process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "mock-claude-ho-1" }) + "\\n");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === "user") {
+    turnNum += 1;
+    if (turnNum === 1) {
+      while (!fs.existsSync(releaseFlag)) {
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      await mcpCall("chat_post", { text: "turn1 finished on successor" });
+      await mcpCall("chat_state", { kind: "all_done", done: "turn1 done after SIGUSR2" });
+      process.stdout.write(JSON.stringify({
+        type: "result",
+        is_error: false,
+        session_id: "mock-claude-ho-1",
+        usage: { input_tokens: 10, output_tokens: 12 },
+      }) + "\\n");
+    } else {
+      await mcpCall("chat_post", { text: "turn2 reused runner pid=" + process.pid });
+      await mcpCall("chat_state", { kind: "all_done", done: "turn2 done on reused runner" });
+      process.stdout.write(JSON.stringify({
+        type: "result",
+        is_error: false,
+        session_id: "mock-claude-ho-1",
+        usage: { input_tokens: 8, output_tokens: 9 },
+      }) + "\\n");
+    }
+  }
+});
 setInterval(() => {}, 60000);
 `;
     writeFileSync(scriptPath, body, { mode: 0o755 });
@@ -2736,14 +2802,16 @@ setInterval(() => {}, 60000);
   }
 
   // -------------------------------------------------------------------------
-  // Scenario 3: Graceful SIGUSR2 handover -> live stillfail-runner stays alive & is adopted by successor!
+  // Scenario 3: Graceful SIGUSR2 handover -> live stillfail-runner stays alive,
+  // in-flight turn completes on successor via /mcp, AND second prompt reuses SAME runner PID!
   // -------------------------------------------------------------------------
   {
     const dir = freshDir("c1-ho");
     const appDir = join(dir, "app");
     const dataDir = join(dir, "data");
     const mockBinDir = join(dir, "mock-bin-ho");
-    writeMockClaude(mockBinDir, "hold");
+    const releaseFlag = join(dir, "release-turn1.flag");
+    writeMockClaude(mockBinDir, "hold", releaseFlag);
     installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
     mkdirSync(join(dataDir, "mesh"), { recursive: true });
     const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
@@ -2803,10 +2871,12 @@ setInterval(() => {}, 60000);
       );
       assert.equal(createRes.status, 200);
       const created = JSON.parse(createRes.body.toString("utf8"));
+      const sessionKey = created.key as string;
+      const threadId = created.thread as number;
       const msgRes = await adminRequest(
         conn,
         "POST",
-        `/threads/${created.thread}/messages`,
+        `/threads/${threadId}/messages`,
         [["content-type", "application/json"]],
         JSON.stringify({ text: "hold open across SIGUSR2" }),
       );
@@ -2845,6 +2915,54 @@ setInterval(() => {}, 60000);
       }, 25_000);
       assert.notEqual(pionPid2, pionPid1);
       assert.equal(isAlive(liveRunnerPid), true, `live runner PID ${liveRunnerPid} MUST survive SIGUSR2 handover!`);
+
+      // Release Turn 1 on the successor -> must complete via /mcp chat_post + chat_state(all_done) & SQLite running=0!
+      writeFileSync(releaseFlag, "go");
+      await until("W17C-1 S3 turn1 completed on successor", () => {
+        try {
+          const db = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
+          try {
+            const entry = db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'agent' AND text = 'turn1 finished on successor'").get(threadId) as { text: string } | undefined;
+            const turn = db.prepare("SELECT outcome, declared, ended_at FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 1").get(sessionKey) as { outcome: string | null; declared: string | null; ended_at: number | null } | undefined;
+            const sess = db.prepare("SELECT running FROM sessions WHERE key = ?").get(sessionKey) as { running: number } | undefined;
+            if (entry && turn?.outcome === "completed" && turn?.declared === "all_done" && turn?.ended_at !== null && sess?.running === 0) {
+              return true;
+            }
+          } finally {
+            db.close();
+          }
+        } catch {}
+        return null;
+      }, 25_000);
+
+      // Send a SECOND prompt after SIGUSR2 -> must reuse the EXACT SAME live runner PID!
+      const { conn: conn2 } = await until("W17C-1 S3 admin reconnect after SIGUSR2", () => openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt));
+      const msgRes2 = await adminRequest(
+        conn2,
+        "POST",
+        `/threads/${threadId}/messages`,
+        [["content-type", "application/json"]],
+        JSON.stringify({ text: "second prompt after SIGUSR2" }),
+      );
+      assert.equal(msgRes2.status, 200);
+      conn2.close(0, "done2");
+
+      await until("W17C-1 S3 turn2 completed on reused runner", () => {
+        try {
+          const db = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
+          try {
+            const entry = db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'agent' AND text LIKE 'turn2 reused runner%'").get(threadId) as { text: string } | undefined;
+            const sess = db.prepare("SELECT running FROM sessions WHERE key = ?").get(sessionKey) as { running: number } | undefined;
+            if (entry && sess?.running === 0) return true;
+          } finally {
+            db.close();
+          }
+        } catch {}
+        return null;
+      }, 25_000);
+      assert.equal(isAlive(liveRunnerPid), true, "adopted live runner PID must STILL be alive after turn2 reuse");
+      const runnerFilesAfter = readdirSync(runnersDir).filter((f) => f.endsWith(".json"));
+      assert.equal(runnerFilesAfter.length, 1, `must not spawn a second colliding runner after SIGUSR2: ${runnerFilesAfter.join(",")}`);
     } finally {
       launcher.kill("SIGTERM");
       await until("W17C-1 S3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null, 15_000).catch(() => {});
@@ -2855,5 +2973,259 @@ setInterval(() => {}, 60000);
         try { process.kill(liveRunnerPid, "SIGKILL"); } catch {}
       }
     }
+  }
+});
+
+test("W17C-1 R2 (P0-6): Native --internal-replica-restore safety matrix (6c-6j: locked DB, RLIMIT_FSIZE rollback, user_version=99, concurrent writer thread 73, 4-table turns, orphan/0-byte WAL, v13 column repair, v12->v13 cold restore)", async () => {
+  const pionBin = resolvePionBinary();
+
+  const srcDir = freshDir("r2-rest-src");
+  const srcDb = join(srcDir, "stillfail.db");
+  const ws = "ws-r2-rest";
+  const nowMs = Date.now();
+  const originId = "c".repeat(64);
+  const remoteConnectId = "slack-r2@peer-r2";
+  const r13OpId = "99999999-8888-4777-8666-555555555555";
+
+  const srcStore = Store.open(srcDb, join(srcDir, "archives"));
+  srcStore.db.prepare("INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("s:r2-rem", remoteConnectId, "s:r2-rem", "RestoredR2", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, ws);
+  srcStore.db.prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:TR2', 'C_R2', '200.001', 'R2 Restore Thread', ?)").run(nowMs);
+  srcStore.db.prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's:r2-rem', ?, ?)").run(remoteConnectId, nowMs);
+  srcStore.db.prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'UR2', 'before-r2-restore', ?)").run(nowMs);
+  srcStore.db.prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, thread) VALUES (?, ?, 'turn', ?, ?, 'completed', 1)").run("r2-saved-turn", "s:r2-rem", nowMs - 1000, nowMs);
+  srcStore.db.prepare("INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id) VALUES (1, 1, 'accepted', 'ProjR2', 'a@b.com', ?, 'note-r2', '[]', 0, ?)").run(nowMs, r13OpId);
+
+  const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
+  exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-r2" }] });
+  let passRes = exp.pass(nothingTold());
+  while (passRes.more) passRes = exp.pass(nothingTold());
+  const head = passRes.heads[ws];
+  assert.ok(head, "expected Exporter head");
+  const genPath = genDir(ownDir(join(srcDir, "replica")), ws, head.gen);
+  const filesSrcDir = join(srcDir, "exported-files");
+  mkdirSync(filesSrcDir, { recursive: true });
+  for (const hash of Object.keys(head.files)) {
+    const p = exp.sourceOf(hash);
+    if (p) copyFileSync(p, join(filesSrcDir, hash));
+  }
+  exp.close();
+  srcStore.close();
+
+  function stageRestore(dataDir: string): void {
+    const copyDir = join(dataDir, "restore", "copy");
+    mkdirSync(copyDir, { recursive: true });
+    cpSync(genPath, join(copyDir, head.gen), { recursive: true });
+    if (existsSync(filesSrcDir)) cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
+    writeFileSync(
+      join(dataDir, "restore", "ready.json"),
+      JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r2", from: "peer-r2" }),
+    );
+  }
+
+  function runInternalRestore(dataDir: string, dbPath: string, extraCmdPrefix = ""): ReturnType<typeof spawnSync> {
+    if (extraCmdPrefix) {
+      return spawnSync(
+        "sh",
+        ["-c", `${extraCmdPrefix} exec "$@"`, "--", pionBin, "--internal-replica-restore", "--db", dbPath, "--data", dataDir],
+        { encoding: "utf8", timeout: 20_000 },
+      );
+    }
+    return spawnSync(pionBin, ["--internal-replica-restore", "--db", dbPath, "--data", dataDir], {
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+  }
+
+  // (6c-locked-existing-db) Locked DB -> exits non-zero, preserves DB bytes + journal_mode + restore/
+  {
+    const dir = freshDir("r2-6c-lock");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = DELETE; PRAGMA user_version = 13;");
+    db.close();
+    const origBytes = readFileSync(dbPath);
+    const holder = new DatabaseSync(dbPath);
+    holder.exec("BEGIN EXCLUSIVE;");
+    try {
+      const res = runInternalRestore(dataDir, dbPath);
+      assert.notEqual(res.status, 0, `6c-locked must fail, got 0: ${res.stdout}\n${res.stderr}`);
+      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6c-locked preserves restore/ready.json");
+      assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6c-locked leaves DB untouched");
+    } finally {
+      holder.exec("ROLLBACK;");
+      holder.close();
+    }
+  }
+
+  // (6d-io-fail-atomic-retry) Empty 0-table v13 DB + RLIMIT_FSIZE -> fails cleanly, 0 tables, then retry succeeds!
+  {
+    const dir = freshDir("r2-6d-fsize");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const emptyDb = new DatabaseSync(dbPath);
+    emptyDb.exec("PRAGMA user_version = 13;");
+    emptyDb.close();
+    const failRes = runInternalRestore(dataDir, dbPath, 'trap "" XFSZ; ulimit -f 304;');
+    assert.notEqual(failRes.status, 0, `6d-fsize must fail under ulimit -f 304`);
+    assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6d-fsize preserves restore/ready.json");
+    const chk0 = new DatabaseSync(dbPath, { readOnly: true });
+    const t0 = (chk0.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get() as { n: number }).n;
+    chk0.close();
+    assert.equal(t0, 0, "6d-fsize leaves 0 tables after rollback");
+
+    const okRes = runInternalRestore(dataDir, dbPath);
+    assert.equal(okRes.status, 0, `6d-retry must succeed: ${okRes.stdout}\n${okRes.stderr}`);
+    assert.equal(existsSync(join(dataDir, "restore")), false, "6d-retry cleans restore/");
+  }
+
+  // (6e-higher-user-version) user_version=99 -> exits non-zero, preserves DB bytes + restore/
+  {
+    const dir = freshDir("r2-6e-uv99");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA user_version = 99;");
+    db.close();
+    const origBytes = readFileSync(dbPath);
+    const res = runInternalRestore(dataDir, dbPath);
+    assert.notEqual(res.status, 0, "6e-uv99 must fail");
+    assert.ok(`${res.stdout}\n${res.stderr}`.includes("unsupported_user_version:99"), `6e-uv99 stderr: ${res.stderr}`);
+    assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6e-uv99 leaves DB bytes untouched");
+    assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6e-uv99 preserves restore/ready.json");
+  }
+
+  // (6f-concurrent-writer) In-place BEGIN IMMEDIATE preserves inode & concurrent thread 73 commit!
+  {
+    const dir = freshDir("r2-6f-conc");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA user_version = 13;");
+    db.close();
+    const inoBefore = statSync(dbPath).ino;
+    const writer = new DatabaseSync(dbPath);
+    writer.exec("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER NOT NULL, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, project TEXT, project_locked INTEGER NOT NULL DEFAULT 0); INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'chat', 'CHAT', '73.0', 'LocalThread73', 1700000000000);");
+    const proc = spawn(pionBin, ["--internal-replica-restore", "--db", dbPath, "--data", dataDir], { stdio: "pipe" });
+    await new Promise((r) => setTimeout(r, 250));
+    writer.exec("COMMIT;");
+    writer.close();
+    const code = await new Promise<number | null>((resolve) => proc.on("close", resolve));
+    assert.equal(code, 0, "6f-conc must succeed after short writer commit");
+    assert.equal(statSync(dbPath).ino, inoBefore, "6f-conc must preserve inode");
+    const chk = new DatabaseSync(dbPath, { readOnly: true });
+    const row = chk.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
+    chk.close();
+    assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73" });
+  }
+
+  // (6g-partial-4-core-tables-restores-turns)
+  {
+    const dir = freshDir("r2-6g-4tbl");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    Store.open(dbPath, join(dataDir, "archives")).close();
+    const partial = new DatabaseSync(dbPath);
+    const keep = new Set(["threads", "sessions", "entries", "thread_sessions"]);
+    for (const v of partial.prepare("SELECT name FROM sqlite_master WHERE type='view'").all() as { name: string }[]) {
+      partial.exec(`DROP VIEW IF EXISTS "${v.name}";`);
+    }
+    for (const tr of partial.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[]) {
+      partial.exec(`DROP TRIGGER IF EXISTS "${tr.name}";`);
+    }
+    for (const t of partial.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]) {
+      if (!keep.has(t.name)) partial.exec(`DROP TABLE IF EXISTS "${t.name}";`);
+    }
+    partial.close();
+    const res = runInternalRestore(dataDir, dbPath);
+    assert.equal(res.status, 0, `6g-4tbl must succeed: ${res.stdout}\n${res.stderr}`);
+    const chk = new DatabaseSync(dbPath, { readOnly: true });
+    const turnRow = chk.prepare("SELECT outcome FROM turns WHERE id = 'r2-saved-turn'").get() as { outcome: string } | undefined;
+    chk.close();
+    assert.equal(turnRow?.outcome, "completed", "6g-4tbl must restore turns");
+  }
+
+  // (6h-zero-byte-and-missing-db-preserve-wal)
+  for (const mode of ["zero-byte-db", "missing-db"] as const) {
+    const dir = freshDir(`r2-6h-${mode}`);
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const walPath = `${dbPath}-wal`;
+    if (mode === "zero-byte-db") writeFileSync(dbPath, Buffer.alloc(0));
+    const fakeWal = Buffer.alloc(16384, 0x5a);
+    writeFileSync(walPath, fakeWal);
+    const res = runInternalRestore(dataDir, dbPath);
+    assert.notEqual(res.status, 0, `6h-${mode} must exit non-zero`);
+    assert.equal(Buffer.compare(readFileSync(walPath), fakeWal), 0, `6h-${mode} must preserve WAL bytes`);
+    assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, `6h-${mode} must preserve restore/ready.json`);
+  }
+
+  // (6i-historical-v13-adds-missing-columns)
+  {
+    const dir = freshDir("r2-6i-cols");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      PRAGMA user_version = 13;
+      CREATE TABLE proposal_outcomes (thread INTEGER NOT NULL, n INTEGER NOT NULL, status TEXT NOT NULL, project TEXT, resolved_by TEXT NOT NULL, resolved_at INTEGER NOT NULL, info_note TEXT, info_refs TEXT, info_synced INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (thread, n));
+    `);
+    db.close();
+    const res = runInternalRestore(dataDir, dbPath);
+    assert.equal(res.status, 0, `6i-cols must succeed: ${res.stdout}\n${res.stderr}`);
+    const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
+    const outcome = verifyStore.getUnsyncedAcceptOutcome(1, 1);
+    verifyStore.close();
+    assert.ok(outcome !== null && outcome.opId === r13OpId, "6i-cols must repair proposal_outcomes.info_op_id and restore it");
+  }
+
+  // (6j-v12-cold-restore-safety)
+  // 1. Empty v12 DB -> `--internal-replica-restore` atomically upgrades to v13 and restores snapshot.
+  // 2. Non-empty v12 DB -> Pion NEVER silently bumps `user_version` from 12 to 13 (protects v12 archive files).
+  {
+    const dirEmpty = freshDir("r2-6j-v12e");
+    const dataEmpty = join(dirEmpty, "data");
+    stageRestore(dataEmpty);
+    const dbEmpty = join(dataEmpty, "stillfail.db");
+    const d0 = new DatabaseSync(dbEmpty);
+    d0.exec("PRAGMA user_version = 12;");
+    d0.close();
+    const resEmpty = runInternalRestore(dataEmpty, dbEmpty);
+    assert.equal(resEmpty.status, 0, `6j-v12-empty must succeed: ${resEmpty.stdout}\n${resEmpty.stderr}`);
+    assert.equal(existsSync(join(dataEmpty, "restore")), false, "6j-v12-empty must clean restore/");
+    const chkEmpty = new DatabaseSync(dbEmpty, { readOnly: true });
+    const verEmpty = (chkEmpty.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const remoteEmpty = chkEmpty.prepare("SELECT text FROM entries WHERE text = 'before-r2-restore'").all();
+    chkEmpty.close();
+    assert.equal(verEmpty, SCHEMA_VERSION, `6j-v12-empty must upgrade user_version to ${SCHEMA_VERSION}`);
+    assert.ok(remoteEmpty.length >= 1, "6j-v12-empty must restore remote snapshot entry");
+
+    const dirNonEmpty = freshDir("r2-6j-v12n");
+    const dataNonEmpty = join(dirNonEmpty, "data");
+    stageRestore(dataNonEmpty);
+    const dbNonEmpty = join(dataNonEmpty, "stillfail.db");
+    Store.open(dbNonEmpty, join(dataNonEmpty, "archive")).close();
+    const d1 = new DatabaseSync(dbNonEmpty);
+    d1.exec(`
+      INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'chat', 'CHAT', '73.v12', 'LocalV12', ${nowMs});
+      INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (73, 1, 'message', 'person', 'local@example.com', 'local-v12-entry', ${nowMs});
+      PRAGMA user_version = 12;
+    `);
+    d1.close();
+    const resNonEmpty = runInternalRestore(dataNonEmpty, dbNonEmpty);
+    assert.equal(resNonEmpty.status, 0, `6j-v12-nonempty restore completes without mutating user_version: ${resNonEmpty.stderr}`);
+    const chkNonEmpty = new DatabaseSync(dbNonEmpty, { readOnly: true });
+    const verNonEmpty = (chkNonEmpty.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const localRows = chkNonEmpty.prepare("SELECT text FROM entries WHERE text = 'local-v12-entry'").all();
+    chkNonEmpty.close();
+    assert.equal(verNonEmpty, 12, "6j-v12-nonempty must NEVER silently bump v12 user_version to 13");
+    assert.ok(localRows.length >= 1, "6j-v12-nonempty preserves local v12 entry");
   }
 });

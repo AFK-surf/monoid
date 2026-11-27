@@ -859,9 +859,10 @@ test "decide_connect_inbound covers full multi/single-session, requireMention, e
   // OwnNotice: aligned with Node `acceptOwnNotice` (no spurious notice rows).
   assert_true(decide_connect_inbound(false, true, false, true, own_notice) is ConnectInboundDecision::IgnoreAndAck, "ownNotice ignored & ACKed")
 
-  // Unimplemented Stop / LoginCode fail closed.
-  assert_true(decide_connect_inbound(false, true, false, true, stop) is ConnectInboundDecision::RefuseNoAck, "Stop fails closed")
-  assert_true(decide_connect_inbound(false, true, false, true, login) is ConnectInboundDecision::RefuseNoAck, "LoginCode fails closed")
+  // W17C-1 R2 (P0-5): Stop routes to StopTurn on existing threads (IgnoreAndAck otherwise); LoginCode routes to HandleLoginCode.
+  assert_true(decide_connect_inbound(false, true, false, true, stop) is ConnectInboundDecision::StopTurn, "Stop triggers StopTurn on existing thread")
+  assert_true(decide_connect_inbound(false, true, false, false, stop) is ConnectInboundDecision::IgnoreAndAck, "Stop on unknown thread ignored & ACKed")
+  assert_true(decide_connect_inbound(false, true, false, true, login) is ConnectInboundDecision::HandleLoginCode, "LoginCode routes to HandleLoginCode")
 }
 
 test "enabled_external_connects_in_config aligns 1:1 with Node config.ts:174 and remote_connects/strict helpers" {
@@ -1293,4 +1294,116 @@ test "W17C-1 live runner protocol: ready parse, runtime prompt/steer/cancel fram
     ParsedAgentEvent::TurnAborted => ()
     _ => panic("expected ACP TurnAborted")
   }
+}
+
+test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wire, Stop/LoginCode & stop key" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+
+  // P0-1: Profile authorization (allowedIn / borrowed / withheld / enabled / runtime mismatch / unknown)
+  let cfg = parse(
+    "{\"profiles\":[{\"id\":\"p-home\",\"runtime\":\"claude\",\"withheld\":[\"ws-other\"]},{\"id\":\"p-borrowed\",\"runtime\":\"claude\",\"borrowed\":true,\"share\":{\"workspaces\":[\"ws-shared\"]}},{\"id\":\"p-off\",\"runtime\":\"claude\",\"enabled\":false}]}",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-home", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_ok(),
+    "home ws allowed",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-home", station_drivers::RuntimeKind::Claude, "ws-other", "ws-home", "/data", "/").is_err(),
+    "withheld ws refused",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-borrowed", station_drivers::RuntimeKind::Claude, "ws-shared", "ws-home", "/data", "/").is_ok(),
+    "borrowed profile allowed in share.workspaces",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-borrowed", station_drivers::RuntimeKind::Claude, "ws-other", "ws-home", "/data", "/").is_err(),
+    "borrowed profile refused outside share.workspaces",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-off", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_err(),
+    "disabled profile refused",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-home", station_drivers::RuntimeKind::Codex, "ws-home", "ws-home", "/data", "/").is_err(),
+    "runtime mismatch refused",
+  )
+  assert_true(
+    resolve_authorized_profile(cfg, "../evil", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_err(),
+    "unknown/traversal profile refused when profiles configured",
+  )
+  assert_str_eq(sanitize_path_segment("../bad/seg"), ".._bad_seg")
+  assert_str_eq(sanitize_path_segment(".."), "default")
+  assert_true(resolve_safe_session_cwd(Some("/tmp/../etc"), "/data/sessions/a", "/data", "/").is_err(), "traversal cwd rejected")
+  assert_true(resolve_safe_session_cwd(None, "/etc/passwd", "/data", "/").is_err(), "workspace outside data_dir rejected")
+  assert_true(resolve_safe_session_cwd(None, "/data/sessions/s1/workspace", "/data", "/").is_ok(), "workspace inside data_dir ok")
+
+  // P0-2: `<message>` envelope formatting & no double-wrap
+  let env = format_message_envelope("slack", "C1/1700.1", "alice", "1700.1", "hi there")
+  assert_str_eq(env, "<message via=\"slack\" thread=\"C1/1700.1\" from=\"alice\" ts=\"1700.1\">\nhi there\n</message>")
+  assert_str_eq(format_message_envelope("slack", "C1/1700.1", "alice", "1700.1", env), env)
+
+  // P0-4: Codex initialize / thread open / turn/completed status / turn error
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"result\":{\"userAgent\":\"codex\"}}") {
+    ParsedAgentEvent::CodexInitDone => ()
+    _ => panic("expected CodexInitDone")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"id\":\"open\",\"result\":{\"thread\":{\"id\":\"th-42\"}}}") {
+    ParsedAgentEvent::CodexThreadOpened(tid) => assert_str_eq(tid, "th-42")
+    _ => panic("expected CodexThreadOpened")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"interrupted\"}}}") {
+    ParsedAgentEvent::TurnAborted => ()
+    _ => panic("expected TurnAborted for codex interrupted")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"failed\",\"error\":{\"message\":\"401 unauthorized\"}}}}") {
+    ParsedAgentEvent::TurnFailed(msg, _) => assert_true(msg.contains("auth"), "codex error classified")
+    _ => panic("expected TurnFailed for codex failed")
+  }
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"id\":\"turn:1\",\"error\":{\"code\":-32000,\"message\":\"rate limit exceeded\"}}") {
+    ParsedAgentEvent::TurnFailed(_, _) => ()
+    _ => panic("expected TurnFailed for codex turn/start error")
+  }
+
+  // P0-4: ACP permission request preserves integer id + picks `allow_once` or `cancelled`
+  match parse_agent_stdout_line(
+    station_drivers::RuntimeKind::Agy,
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"session/request_permission\",\"params\":{\"options\":[{\"optionId\":\"deny-1\",\"kind\":\"reject_once\"},{\"optionId\":\"ok-once\",\"kind\":\"allow_once\"}]}}",
+  ) {
+    ParsedAgentEvent::AcpPermissionRequest(raw_id, Some(oid)) => {
+      assert_str_eq(oid, "ok-once")
+      let reply = build_acp_permission_reply(raw_id, Some(oid))
+      assert_true(reply.contains("\"id\":7") && reply.contains("\"optionId\":\"ok-once\""), "integer id and allow_once preserved")
+    }
+    _ => panic("expected AcpPermissionRequest with allow_once")
+  }
+  match parse_agent_stdout_line(
+    station_drivers::RuntimeKind::Agy,
+    "{\"jsonrpc\":\"2.0\",\"id\":\"req-9\",\"method\":\"session/request_permission\",\"params\":{\"options\":[{\"optionId\":\"deny-1\",\"kind\":\"reject_once\"}]}}",
+  ) {
+    ParsedAgentEvent::AcpPermissionRequest(raw_id, None) => {
+      let reply = build_acp_permission_reply(raw_id, None)
+      assert_true(reply.contains("\"id\":\"req-9\"") && reply.contains("\"outcome\":\"cancelled\""), "cancelled when no allow_once")
+    }
+    _ => panic("expected AcpPermissionRequest with None option")
+  }
+
+  // P0-5: Connects Stop/LoginCode decisions + `/sessions/<key>/stop` extractor
+  match decide_connect_inbound(false, true, false, true, station_connects::ChatEvent::Stop("C1", "1.1", "1.2", None)) {
+    ConnectInboundDecision::StopTurn => ()
+    _ => panic("expected StopTurn for Stop on existing thread")
+  }
+  match decide_connect_inbound(false, true, false, false, station_connects::ChatEvent::LoginCode("C1", "1.1", "login-1", "123456", "u1")) {
+    ConnectInboundDecision::HandleLoginCode => ()
+    _ => panic("expected HandleLoginCode")
+  }
+  match extract_session_stop_key("POST", "/sessions/chat%3Ac-abc/stop?x=1") {
+    Some(k) => assert_str_eq(k, "chat:c-abc")
+    None => panic("expected decoded session key from /sessions/<key>/stop")
+  }
+  assert_true(extract_session_stop_key("GET", "/sessions/s1/stop") is None, "GET is not stop")
 }

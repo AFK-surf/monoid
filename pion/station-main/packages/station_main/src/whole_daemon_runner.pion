@@ -1,17 +1,22 @@
-// Wave 17C-1: Live `stillfail-runner` process spawning, Unix socket NDJSON+ACK turn execution
-// loop, runtime stdout event parsing (Claude stream-json / ACP JSON-RPC / Codex / generic),
-// `OwnProcessStopGuard` / `AcpTurnGuard` / `AgyStateTracker` lifecycle guards, `<skill-invocation>`
-// delivery, and graceful `SIGUSR2` handover detach (`detach_all_for_handover`).
+// Wave 17C-1 (R2): Live `stillfail-runner` process spawning, Unix socket NDJSON+ACK turn execution
+// loop, runtime stdout event parsing via `parse_claude` / `parse_codex` / `parse_acp`,
+// `OwnProcessStopGuard` / `AcpTurnGuard` / `AgyStateTracker` lifecycle guards, `<message>` envelope
+// + `<skill-invocation>` delivery, strict cross-workspace profile/CWD/SSE isolation,
+// real Codex & ACP wire handshakes, and seamless `SIGUSR2` handover live-turn adoption & reuse.
 
 import "base_codec"
 import "builders_core"
 import "host_shim"
+import "js_json"
 import "nodepath"
+import "parse_acp"
+import "parse_claude"
+import "parse_codex"
 import "sql_db"
 import "station_api"
-import "station_connects"
 import "station_drivers"
 import "station_sessions"
+import "station_store"
 import "station_sys"
 import "station_whole"
 
@@ -29,6 +34,24 @@ pub let LIVE_RUNNER_READY_MS : Int64 = 30000L
 
 /// Maximum single NDJSON control frame size from a live runner (8 MiB).
 pub let LIVE_RUNNER_MAX_LINE_BYTES : Int = 8388608
+
+/// Maximum inner agent stdout line buffer (4 MiB).
+pub let LIVE_RUNNER_MAX_STDOUT_LINE_BYTES : Int = 4194304
+
+/// Maximum bootstrap stdout/stderr buffer while waiting for `{"ready":true}` (256 KiB).
+pub let LIVE_RUNNER_MAX_SPAWN_BUF_BYTES : Int = 262144
+
+/// Maximum queued outbound bytes per live runner socket (4 MiB).
+pub let LIVE_RUNNER_MAX_WRITE_QUEUE_BYTES : Int = 4194304
+
+/// Maximum concurrent live runners per station.
+pub let LIVE_RUNNER_MAX_CONCURRENT : Int = 64
+
+/// Idle eviction TTL for warm non-Codex live runners (30 min).
+pub let LIVE_RUNNER_IDLE_TTL_MS : Int64 = 1800000L
+
+/// Warm idle non-Codex live runner cap.
+pub let LIVE_RUNNER_WARM_CAP : Int = 16
 
 /// Resolves the `stillfail-runner` binary path: `STILLFAIL_RUNNER` > `configured` > `PATH`.
 pub fn resolve_live_runner_bin(configured : String, sep : String, os_name : String) -> Option[String] {
@@ -75,6 +98,142 @@ pub fn is_acp_runtime(kind : station_drivers::RuntimeKind) -> Bool {
     | station_drivers::RuntimeKind::Hermes => true
     _ => false
   }
+}
+
+/// Whether `kind` is Codex app-server JSON-RPC.
+pub fn is_codex_runtime(kind : station_drivers::RuntimeKind) -> Bool {
+  match kind {
+    station_drivers::RuntimeKind::Codex => true
+    _ => false
+  }
+}
+
+/// Sanitizes an untrusted identifier into a safe single path segment (no `/`, `\`, `..`, NUL).
+pub fn sanitize_path_segment(raw : String) -> String {
+  let b = raw.trim().to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57)
+    || (c >= 65 && c <= 90)
+    || (c >= 97 && c <= 122)
+    || c == 45
+    || c == 46
+    || c == 95
+    if ok {
+      sb.write_byte(b[i])
+    } else {
+      sb.write_byte(95 as Byte)
+    }
+  }
+  let out = sb.to_string()
+  if out.length() == 0 || out == "." || out == ".." {
+    "default"
+  } else {
+    out
+  }
+}
+
+/// Checks whether a path contains a `..` parent traversal component or NUL byte.
+pub fn path_has_parent_traversal(path : String) -> Bool {
+  let b = path.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == 0 {
+      return true
+    }
+  }
+  let normalized = path.replace("\\", "/")
+  let parts = normalized.split("/")
+  for i in 0..<parts.length() {
+    if parts[i] == ".." {
+      return true
+    }
+  }
+  false
+}
+
+/// Verifies `path` is contained within `root` (or equal to `root`) without `..` traversal.
+pub fn is_path_within_root(path : String, root : String, sep : String) -> Bool {
+  if path.length() == 0 || root.length() == 0 {
+    return false
+  }
+  if path_has_parent_traversal(path) || path_has_parent_traversal(root) {
+    return false
+  }
+  let p = path.replace("\\", "/")
+  let mut r = root.replace("\\", "/")
+  while r.length() > 1 && r.ends_with("/") {
+    let rb = r.to_bytes()
+    r = bytes_to_str_local(rb, rb.length() - 1)
+  }
+  let _ = sep
+  p == r || p.starts_with(r + "/")
+}
+
+/// Resolves and validates a session CWD against path traversal and workspace root containment.
+pub fn resolve_safe_session_cwd(
+  row_cwd : Option[String],
+  row_workspace : String,
+  data_dir : String,
+  sep : String,
+) -> Result[String, String] {
+  match row_cwd {
+    Some(c) => {
+      let trimmed = c.trim()
+      if trimmed.length() > 0 {
+        if path_has_parent_traversal(trimmed) {
+          return Err("session cwd contains path traversal")
+        }
+        if !nodepath::is_absolute(sep, trimmed) {
+          return Err("session cwd must be an absolute path")
+        }
+        return Ok(trimmed)
+      }
+    }
+    None => ()
+  }
+  let ws_dir = row_workspace.trim()
+  if ws_dir.length() > 0 {
+    if !is_path_within_root(ws_dir, data_dir, sep) {
+      return Err("session workspace escapes station data_dir")
+    }
+    return Ok(ws_dir)
+  }
+  Ok(data_dir)
+}
+
+/// Escapes XML attribute values for `<message ...>` envelopes.
+fn escape_xml_attr(s : String) -> String {
+  s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+}
+
+/// Wraps a human prompt in the standard `<message via="..." thread="..." from="..." ts="...">` envelope.
+pub fn format_message_envelope(
+  via : String,
+  thread_addr : String,
+  from : String,
+  ts : String,
+  text : String,
+) -> String {
+  let trimmed = text.trim()
+  if trimmed.starts_with("<message ") {
+    return text
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("<message via=\"")
+  sb.write_string(escape_xml_attr(if via.length() > 0 { via } else { "web" }))
+  sb.write_string("\" thread=\"")
+  sb.write_string(escape_xml_attr(thread_addr))
+  sb.write_string("\" from=\"")
+  sb.write_string(escape_xml_attr(if from.length() > 0 { from } else { "user" }))
+  if ts.length() > 0 {
+    sb.write_string("\" ts=\"")
+    sb.write_string(escape_xml_attr(ts))
+  }
+  sb.write_string("\">\n")
+  sb.write_string(text)
+  sb.write_string("\n</message>")
+  sb.to_string()
 }
 
 /// Formats a prompt with an optional `<skill-invocation>` wrapper (1:1 with TS skill delivery).
@@ -337,6 +496,28 @@ pub fn encode_runtime_cancel(
   }
 }
 
+/// Builds the ACP `session/request_permission` JSON-RPC reply preserving the raw `id`
+/// and choosing the `kind == "allow_once"` option (or `cancelled` if none is offered).
+pub fn build_acp_permission_reply(
+  raw_id : base_codec::Json,
+  option_id : Option[String],
+) -> String {
+  let outcome = match option_id {
+    Some(oid) => base_codec::json_obj([
+      ("outcome", base_codec::json_str("selected")),
+      ("optionId", base_codec::json_str(oid)),
+    ])
+    None => base_codec::json_obj([("outcome", base_codec::json_str("cancelled"))])
+  }
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("jsonrpc", base_codec::json_str("2.0")),
+      ("id", raw_id),
+      ("result", base_codec::json_obj([("outcome", outcome)])),
+    ]),
+  ) + "\n"
+}
+
 /// Parsed usage counters from a runtime result frame.
 pub struct ParsedUsage {
   pub input : Int64
@@ -354,7 +535,10 @@ pub enum ParsedAgentEvent {
   ToolEnd(String)
   AcpInitDone
   AcpSessionOpened(String)
-  AcpPermissionRequest(String)
+  AcpPermissionRequest(base_codec::Json, Option[String])
+  AgyHolding(Bool)
+  CodexInitDone
+  CodexThreadOpened(String)
   TurnCompleted(Option[String], Option[ParsedUsage])
   TurnFailed(String, Option[ParsedUsage])
   TurnAborted
@@ -384,6 +568,41 @@ fn parse_usage_obj(j : base_codec::Json) -> Option[ParsedUsage] {
   }
 }
 
+fn extract_jsonrpc_error_msg(j : base_codec::Json, fallback : String) -> Option[String] {
+  match base_codec::json_get(j, "error") {
+    Some(err_obj) => match base_codec::json_get(err_obj, "message") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { Some(fallback) }
+      _ => Some(fallback)
+    }
+    None => None
+  }
+}
+
+fn find_acp_allow_once_option(j : base_codec::Json) -> Option[String] {
+  match base_codec::json_get(j, "params") {
+    Some(p) => match base_codec::json_get(p, "options") {
+      Some(base_codec::Json::Arr(opts)) => {
+        for i in 0..<opts.length() {
+          let o = opts[i]
+          let kind = match base_codec::json_get(o, "kind") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          if kind == "allow_once" {
+            match base_codec::json_get(o, "optionId") {
+              Some(base_codec::Json::Str(oid)) => if oid.length() > 0 { return Some(oid) }
+              _ => ()
+            }
+          }
+        }
+        None
+      }
+      _ => None
+    }
+    None => None
+  }
+}
+
 /// Parses a single agent stdout JSON line for Claude / ACP / Codex / generic NDJSON runtimes.
 pub fn parse_agent_stdout_line(
   kind : station_drivers::RuntimeKind,
@@ -404,13 +623,17 @@ pub fn parse_agent_stdout_line(
       Some(base_codec::Json::Str(m)) => m
       _ => ""
     }
-    let id_str = match base_codec::json_get(j, "id") {
+    let raw_id_opt = base_codec::json_get(j, "id")
+    let id_str = match raw_id_opt {
       Some(base_codec::Json::Str(s)) => s
       Some(base_codec::Json::Num(n, _)) => n.to_int64().to_string()
       _ => ""
     }
-    if method == "session/request_permission" && id_str.length() > 0 {
-      return ParsedAgentEvent::AcpPermissionRequest(id_str)
+    if method == "session/request_permission" {
+      match raw_id_opt {
+        Some(raw_id) => return ParsedAgentEvent::AcpPermissionRequest(raw_id, find_acp_allow_once_option(j))
+        None => ()
+      }
     }
     if method == "session/update" {
       match base_codec::json_get(j, "params") {
@@ -436,6 +659,16 @@ pub fn parse_agent_stdout_line(
                 return ParsedAgentEvent::ToolEnd("call:" + call_id)
               }
             }
+            // Check Agy holding / background-task updates via `parse_acp::turn_step` / `agy_update`
+            match kind {
+              station_drivers::RuntimeKind::Agy => {
+                match base_codec::json_get(upd, "holding") {
+                  Some(base_codec::Json::Bool(h)) => return ParsedAgentEvent::AgyHolding(h)
+                  _ => ()
+                }
+              }
+              _ => ()
+            }
           }
           None => ()
         }
@@ -444,9 +677,16 @@ pub fn parse_agent_stdout_line(
       return ParsedAgentEvent::LiveActivity
     }
     if id_str == "init" {
-      return ParsedAgentEvent::AcpInitDone
+      match extract_jsonrpc_error_msg(j, "acp initialize failed") {
+        Some(err_msg) => return ParsedAgentEvent::TurnFailed(err_msg, None)
+        None => return ParsedAgentEvent::AcpInitDone
+      }
     }
     if id_str == "open" {
+      match extract_jsonrpc_error_msg(j, "acp session open failed") {
+        Some(err_msg) => return ParsedAgentEvent::TurnFailed(err_msg, None)
+        None => ()
+      }
       let sid = match base_codec::json_get(j, "result") {
         Some(res) => match base_codec::json_get(res, "sessionId") {
           Some(base_codec::Json::Str(s)) => s
@@ -466,31 +706,97 @@ pub fn parse_agent_stdout_line(
     return ParsedAgentEvent::LiveActivity
   }
 
-  // Codex JSON-RPC notifications / responses
-  match kind {
-    station_drivers::RuntimeKind::Codex => {
-      let method = match base_codec::json_get(j, "method") {
-        Some(base_codec::Json::Str(m)) => m
-        _ => ""
+  // Codex app-server JSON-RPC framing (`initialize` -> `initialized` + `thread/start|resume` -> `turn/start` -> `turn/completed`)
+  if is_codex_runtime(kind) {
+    let method = match base_codec::json_get(j, "method") {
+      Some(base_codec::Json::Str(m)) => m
+      _ => ""
+    }
+    let id_str = match base_codec::json_get(j, "id") {
+      Some(base_codec::Json::Str(s)) => s
+      Some(base_codec::Json::Num(n, _)) => n.to_int64().to_string()
+      _ => ""
+    }
+    if id_str == "init" {
+      match extract_jsonrpc_error_msg(j, "codex initialize failed") {
+        Some(err_msg) => return ParsedAgentEvent::TurnFailed(err_msg, None)
+        None => return ParsedAgentEvent::CodexInitDone
       }
-      if method == "turn/completed" {
-        return ParsedAgentEvent::TurnCompleted(None, parse_usage_obj(j))
+    }
+    if id_str == "open" {
+      match extract_jsonrpc_error_msg(j, "codex thread open failed") {
+        Some(err_msg) => return ParsedAgentEvent::TurnFailed(err_msg, None)
+        None => ()
       }
-      if method == "turn/failed" {
-        let msg = match base_codec::json_get(j, "params") {
-          Some(p) => match base_codec::json_get(p, "message") {
+      let tid = match base_codec::json_get(j, "result") {
+        Some(res) => match base_codec::json_get(res, "thread") {
+          Some(th) => match base_codec::json_get(th, "id") {
             Some(base_codec::Json::Str(s)) => s
-            _ => "codex turn failed"
+            _ => ""
+          }
+          None => match base_codec::json_get(res, "threadId") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+        }
+        None => ""
+      }
+      return ParsedAgentEvent::CodexThreadOpened(tid)
+    }
+    if id_str.starts_with("turn:") {
+      match extract_jsonrpc_error_msg(j, "codex turn/start failed") {
+        Some(err_msg) => {
+          let cls = parse_codex::classify_error(None, err_msg)
+          return ParsedAgentEvent::TurnFailed(cls + ": " + err_msg, None)
+        }
+        None => return ParsedAgentEvent::LiveActivity
+      }
+    }
+    if method == "turn/completed" {
+      let turn_obj = match base_codec::json_get(j, "params") {
+        Some(p) => base_codec::json_get(p, "turn")
+        None => None
+      }
+      let status = match turn_obj {
+        Some(t) => match base_codec::json_get(t, "status") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => "completed"
+        }
+        None => "completed"
+      }
+      if status == "interrupted" {
+        return ParsedAgentEvent::TurnAborted
+      }
+      if status == "failed" {
+        let err_msg = match turn_obj {
+          Some(t) => match base_codec::json_get(t, "error") {
+            Some(e) => match base_codec::json_get(e, "message") {
+              Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "codex turn failed" }
+              _ => "codex turn failed"
+            }
+            None => "codex turn failed"
           }
           None => "codex turn failed"
         }
-        return ParsedAgentEvent::TurnFailed(msg, None)
+        let cls = parse_codex::classify_error(None, err_msg)
+        return ParsedAgentEvent::TurnFailed(cls + ": " + err_msg, parse_usage_obj(j))
       }
-      if method.length() > 0 {
-        return ParsedAgentEvent::LiveActivity
-      }
+      return ParsedAgentEvent::TurnCompleted(None, parse_usage_obj(j))
     }
-    _ => ()
+    if method == "turn/failed" {
+      let msg = match base_codec::json_get(j, "params") {
+        Some(p) => match base_codec::json_get(p, "message") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => "codex turn failed"
+        }
+        None => "codex turn failed"
+      }
+      let cls = parse_codex::classify_error(None, msg)
+      return ParsedAgentEvent::TurnFailed(cls + ": " + msg, None)
+    }
+    if method.length() > 0 {
+      return ParsedAgentEvent::LiveActivity
+    }
   }
 
   // Claude `stream-json` & generic NDJSON drivers
@@ -581,18 +887,180 @@ pub fn parse_agent_stdout_line(
         Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "turn failed" }
         _ => "turn failed"
       }
-      return ParsedAgentEvent::TurnFailed(msg, usage)
+      let cls = parse_claude::failure_of(msg)
+      return ParsedAgentEvent::TurnFailed(cls + ": " + msg, usage)
     }
     return ParsedAgentEvent::TurnCompleted(sid_opt, usage)
   }
   ParsedAgentEvent::Ignore
 }
 
+/// Resolves and strictly authorizes a `Profile` against `cfg_raw`, `session_ws`, `home_ws`,
+/// `enabled`, `allowed_in` (`share.workspaces` / `withheld` / `borrowed`), and `runtime_kind`.
+pub fn resolve_authorized_profile(
+  cfg_raw : base_codec::Json,
+  profile_id : String,
+  runtime_kind : station_drivers::RuntimeKind,
+  session_ws : String,
+  home_ws : String,
+  data_dir : String,
+  sep : String,
+) -> Result[station_drivers::Profile, String] {
+  let req_id = profile_id.trim()
+  let safe_id = sanitize_path_segment(if req_id.length() > 0 { req_id } else { "default" })
+  let fallback_home = nodepath::join(sep, [data_dir, "homes", safe_id])
+  let mut has_profiles_cfg = false
+  match base_codec::json_get(cfg_raw, "profiles") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() > 0 {
+        has_profiles_cfg = true
+      }
+      for i in 0..<arr.length() {
+        let p = arr[i]
+        let pid = match base_codec::json_get(p, "id") {
+          Some(base_codec::Json::Str(s)) => s.trim()
+          _ => ""
+        }
+        if pid == req_id && pid.length() > 0 {
+          let enabled = match base_codec::json_get(p, "enabled") {
+            Some(base_codec::Json::Bool(b)) => b
+            _ => true
+          }
+          if !enabled {
+            return Err("profile is disabled: " + pid)
+          }
+          let borrowed = match base_codec::json_get(p, "borrowed") {
+            Some(base_codec::Json::Bool(b)) => b
+            _ => false
+          }
+          let share_ws : Array[String] = []
+          match base_codec::json_get(p, "share") {
+            Some(sh) => match base_codec::json_get(sh, "workspaces") {
+              Some(base_codec::Json::Arr(ws_arr)) => {
+                for wi in 0..<ws_arr.length() {
+                  match ws_arr[wi] {
+                    base_codec::Json::Str(w) => if w.length() > 0 { share_ws.push(w) }
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+            None => ()
+          }
+          let withheld : Array[String] = []
+          match base_codec::json_get(p, "withheld") {
+            Some(base_codec::Json::Arr(wh_arr)) => {
+              for wi in 0..<wh_arr.length() {
+                match wh_arr[wi] {
+                  base_codec::Json::Str(w) => if w.length() > 0 { withheld.push(w) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          let prof_rt : Option[station_drivers::RuntimeKind] = match base_codec::json_get(p, "runtime") {
+            Some(base_codec::Json::Str(rs)) => station_drivers::runtime_kind_from_str(rs)
+            _ => None
+          }
+          match prof_rt {
+            Some(rk) => {
+              if station_drivers::runtime_kind_to_str(rk) != station_drivers::runtime_kind_to_str(runtime_kind) {
+                return Err("profile runtime mismatch for " + pid)
+              }
+            }
+            None => ()
+          }
+          let home_raw = match base_codec::json_get(p, "home") {
+            Some(base_codec::Json::Str(s)) => s.trim()
+            _ => ""
+          }
+          let home = if home_raw.length() > 0 {
+            if path_has_parent_traversal(home_raw) {
+              return Err("profile home contains path traversal: " + pid)
+            }
+            home_raw
+          } else {
+            fallback_home
+          }
+          let model = match base_codec::json_get(p, "model") {
+            Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+            _ => None
+          }
+          let fast = match base_codec::json_get(p, "fast") {
+            Some(base_codec::Json::Bool(b)) => b
+            _ => false
+          }
+          let env_pairs : Array[(String, String)] = []
+          match base_codec::json_get(p, "env") {
+            Some(base_codec::Json::Obj(entries)) => {
+              for ei in 0..<entries.length() {
+                let (ek, ev) = entries[ei]
+                match ev {
+                  base_codec::Json::Str(vs) => env_pairs.push((ek, vs))
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          let base_p = station_drivers::Profile::default(pid, Some(runtime_kind), home)
+          let prof = station_drivers::Profile::{
+            ..base_p,
+            id: pid,
+            home: home,
+            model: model,
+            fast: fast,
+            env: env_pairs,
+            borrowed: borrowed,
+            share_workspaces: share_ws,
+            withheld: withheld,
+          }
+          let ws_opt = if session_ws.length() > 0 { Some(session_ws) } else { None }
+          let home_opt = if home_ws.length() > 0 { Some(home_ws) } else { None }
+          if !station_drivers::allowed_in(prof, ws_opt, home_opt) {
+            return Err("profile " + pid + " is not allowed in workspace " + session_ws)
+          }
+          return Ok(prof)
+        }
+      }
+    }
+    _ => ()
+  }
+  if has_profiles_cfg && req_id.length() > 0 && req_id != "default" {
+    return Err("unknown profile: " + req_id)
+  }
+  Ok(station_drivers::Profile::default(safe_id, Some(runtime_kind), fallback_home))
+}
+
+/// Safely kills a runner process/group ONLY after verifying `is_runner_live` against OS start time
+/// (prevents PID-reuse collateral kills).
+fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
+  if info.runner_pid <= 1 {
+    return
+  }
+  let alive = station_sys::proc_kill(info.runner_pid, 0, false) == 0
+  if !alive {
+    return
+  }
+  let os_start = station_sys::proc_start_time_ms(info.runner_pid)
+  if !station_drivers::is_runner_live(info, true, os_start) {
+    return
+  }
+  if info.pgid > 1 {
+    let _ = station_sys::proc_kill(info.pgid, station_sys::SIG_TERM, true)
+  }
+  let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_TERM, false)
+}
+
 enum LiveRunnerPhase {
-  Spawning(Int64, station_sys::ChildProcess, String, String, Int64)
+  Spawning(Int64, station_sys::ChildProcess, Bytes, Bytes, Int64)
   Connecting(station_drivers::RunnerInfo)
   AcpInit(station_drivers::RunnerInfo, Int64)
   AcpOpening(station_drivers::RunnerInfo, Int64)
+  CodexInit(station_drivers::RunnerInfo, Int64)
+  CodexOpening(station_drivers::RunnerInfo, Int64)
   Ready(station_drivers::RunnerInfo, Int64)
   Exited
 }
@@ -600,20 +1068,33 @@ enum LiveRunnerPhase {
 struct LiveRunnerSession {
   conn_id : Int
   session_key : String
+  ws : String
+  profile_id : String
+  model_opt : Option[String]
+  person_opt : Option[String]
+  thread_id_opt : Option[Int64]
   runtime_kind : station_drivers::RuntimeKind
   runtime_str : String
   runner_id : String
   is_acp : Bool
+  is_codex : Bool
+  is_adopted : Bool
+  adopted_instance_id : Option[String]
+  mut adopted_db_initialized : Bool
   mut phase : LiveRunnerPhase
   mut pending_prompt : Option[String]
   pending_steers : Array[String]
   mut runtime_session_id : Option[String]
   mut current_turn_id : Option[String]
   mut turn_started_at : Int64
+  mut last_turn_ended_at : Int64
   stop_guard : station_drivers::OwnProcessStopGuard
   acp_guard : station_drivers::AcpTurnGuard
   agy_tracker : station_drivers::AgyStateTracker
+  claude_turn : parse_claude::Turn
+  codex_live : parse_codex::Live
   mcp_config_json : Option[String]
+  codex_thread_params_json : Option[String]
   cwd : String
   mut rx_chunks : Array[Bytes]
   mut rx_total_bytes : Int
@@ -629,6 +1110,7 @@ struct LiveRunnerSession {
   mut attached : Bool
   mut write_inflight : Bool
   write_queue : Array[String]
+  mut write_queue_bytes : Int
 }
 
 /// Manages all live `stillfail-runner` child processes and active agent turns for `whole_daemon`.
@@ -667,6 +1149,29 @@ pub fn LiveRunnerManager::active_count(self : LiveRunnerManager) -> Int {
   n
 }
 
+fn live_runner_sock_of(phase : LiveRunnerPhase) -> Int64 {
+  match phase {
+    LiveRunnerPhase::AcpInit(_, s)
+    | LiveRunnerPhase::AcpOpening(_, s)
+    | LiveRunnerPhase::CodexInit(_, s)
+    | LiveRunnerPhase::CodexOpening(_, s)
+    | LiveRunnerPhase::Ready(_, s) => s
+    _ => -1L
+  }
+}
+
+fn live_runner_info_of(phase : LiveRunnerPhase) -> Option[station_drivers::RunnerInfo] {
+  match phase {
+    LiveRunnerPhase::Connecting(info)
+    | LiveRunnerPhase::AcpInit(info, _)
+    | LiveRunnerPhase::AcpOpening(info, _)
+    | LiveRunnerPhase::CodexInit(info, _)
+    | LiveRunnerPhase::CodexOpening(info, _)
+    | LiveRunnerPhase::Ready(info, _) => Some(info)
+    _ => None
+  }
+}
+
 fn live_runner_send_sock_raw(ctx : DaemonCtx, conn_id : Int, sock_id : Int64, payload : String) -> Unit {
   if sock_id < 0L {
     return
@@ -679,26 +1184,33 @@ fn live_runner_send_sock_raw(ctx : DaemonCtx, conn_id : Int, sock_id : Int64, pa
   )
 }
 
-/// Strictly FIFO-serialized per-socket write queue so concurrent `tcp.write` calls on the same
-/// runner Unix socket can NEVER reorder `attach`, `write`, `ack`, or `leave` frames.
-fn live_runner_send_sess(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : Int64, payload : String) -> Unit {
+/// Strictly FIFO-serialized per-socket write queue with bounded backpressure so concurrent
+/// `tcp.write` calls on the same runner Unix socket NEVER reorder `attach`, `write`, `ack`, or `leave`.
+fn live_runner_send_sess(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : Int64, payload : String) -> Bool {
   if sock_id < 0L {
-    return
+    return false
   }
+  let plen = payload.to_bytes().length()
   if sess.write_inflight {
+    if sess.write_queue_bytes + plen > LIVE_RUNNER_MAX_WRITE_QUEUE_BYTES {
+      ctx.log("[live-runner] write queue exceeded 4 MiB cap for " + sess.session_key)
+      return false
+    }
     sess.write_queue.push(payload)
-    return
+    sess.write_queue_bytes = sess.write_queue_bytes + plen
+    return true
   }
   sess.write_inflight = true
   live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, payload)
+  true
 }
 
 fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : Int64) -> Unit {
   if sess.write_queue.length() == 0 {
     sess.write_inflight = false
+    sess.write_queue_bytes = 0
     return
   }
-  // Coalesce all queued frames into one ordered write buffer.
   let sb = StringBuilder::new()
   for i in 0..<sess.write_queue.length() {
     sb.write_string(sess.write_queue[i])
@@ -706,6 +1218,7 @@ fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id 
   while sess.write_queue.length() > 0 {
     let _ = sess.write_queue.pop()
   }
+  sess.write_queue_bytes = 0
   if sock_id < 0L {
     sess.write_inflight = false
     return
@@ -726,65 +1239,6 @@ fn live_runner_close_sock(ctx : DaemonCtx, conn_id : Int, sock_id : Int64) -> Un
   )
 }
 
-fn live_runner_profile_for(
-  cfg_raw : base_codec::Json,
-  profile_id : String,
-  runtime_kind : station_drivers::RuntimeKind,
-  data_dir : String,
-  sep : String,
-) -> station_drivers::Profile {
-  let fallback_home = nodepath::join(sep, [data_dir, "homes", if profile_id.length() > 0 { profile_id } else { "default" }])
-  let mut prof = station_drivers::Profile::default(
-    if profile_id.length() > 0 { profile_id } else { "default" },
-    Some(runtime_kind),
-    fallback_home,
-  )
-  match base_codec::json_get(cfg_raw, "profiles") {
-    Some(base_codec::Json::Arr(arr)) => {
-      for i in 0..<arr.length() {
-        let p = arr[i]
-        let pid = match base_codec::json_get(p, "id") {
-          Some(base_codec::Json::Str(s)) => s
-          _ => ""
-        }
-        if pid == profile_id && pid.length() > 0 {
-          let home = match base_codec::json_get(p, "home") {
-            Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { fallback_home }
-            _ => fallback_home
-          }
-          let model = match base_codec::json_get(p, "model") {
-            Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-            _ => None
-          }
-          let env_pairs : Array[(String, String)] = []
-          match base_codec::json_get(p, "env") {
-            Some(base_codec::Json::Obj(entries)) => {
-              for ei in 0..<entries.length() {
-                let (ek, ev) = entries[ei]
-                match ev {
-                  base_codec::Json::Str(vs) => env_pairs.push((ek, vs))
-                  _ => ()
-                }
-              }
-            }
-            _ => ()
-          }
-          prof = station_drivers::Profile::{
-            ..prof,
-            id: pid,
-            home: home,
-            model: model,
-            env: env_pairs,
-          }
-          break
-        }
-      }
-    }
-    _ => ()
-  }
-  prof
-}
-
 fn live_runner_emit_session_event(
   core : station_whole::WholeCore,
   ws : String,
@@ -793,6 +1247,7 @@ fn live_runner_emit_session_event(
   declared : Option[String],
   wall_ms : Int64,
 ) -> Unit {
+  let eff_ws = if ws.length() > 0 { ws } else { core.config.home_workspace }
   let fields : Array[(String, base_codec::Json)] = [
     ("session", base_codec::json_str(session_key)),
     ("running", base_codec::json_bool(running)),
@@ -807,12 +1262,12 @@ fn live_runner_emit_session_event(
     viewer: None,
     device: None,
     email: None,
-    workspace: Some(ws),
+    workspace: Some(eff_ws),
     subs: None,
     read_only: None,
     managers: None,
     vault: None,
-    sees_ws: Some(Some(ws)),
+    sees_ws: Some(Some(eff_ws)),
     sees_session: Some(session_key),
     sees_thread: None,
     sees_job: None,
@@ -825,24 +1280,42 @@ fn live_runner_record_turn_start(
   turn_id : String,
   session_key : String,
   profile : String,
+  person : Option[String],
+  thread_id : Option[Int64],
   wall_ms : Int64,
 ) -> Unit {
+  let person_j = match person {
+    Some(p) => if p.length() > 0 { base_codec::json_str(p) } else { base_codec::json_null() }
+    None => base_codec::json_null()
+  }
+  let thread_j = match thread_id {
+    Some(tid) => sql_db::int64_to_json(tid)
+    None => base_codec::json_null()
+  }
   match core.store.require_open() {
     Ok(st) => {
       let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-        let _ = t.run(
-          "INSERT OR REPLACE INTO turns (id, session_key, kind, started_at, profile) VALUES (?1, ?2, 'prompt', ?3, ?4)",
+        match t.run(
+          "INSERT OR REPLACE INTO turns (id, session_key, kind, started_at, profile, person, thread) VALUES (?1, ?2, 'prompt', ?3, ?4, ?5, ?6)",
           [
             base_codec::json_str(turn_id),
             base_codec::json_str(session_key),
             sql_db::int64_to_json(wall_ms),
             base_codec::json_str(profile),
+            person_j,
+            thread_j,
           ],
-        )
-        let _ = t.run(
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
+        match t.run(
           "UPDATE sessions SET running = 1, last_active_at = ?2 WHERE key = ?1",
           [base_codec::json_str(session_key), sql_db::int64_to_json(wall_ms)],
-        )
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
         Ok(())
       })
     }
@@ -863,11 +1336,14 @@ fn live_runner_record_runtime_session_id(
   match core.store.require_open() {
     Ok(st) => {
       let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-        let _ = t.run(
+        match t.run(
           "UPDATE sessions SET runtime_session_id = ?2 WHERE key = ?1",
           [base_codec::json_str(session_key), base_codec::json_str(rt_sid)],
-        )
-        let _ = t.run(
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
+        match t.run(
           "INSERT OR REPLACE INTO runtime_sessions (session_key, id, at, runtime) VALUES (?1, ?2, ?3, ?4)",
           [
             base_codec::json_str(session_key),
@@ -875,7 +1351,10 @@ fn live_runner_record_runtime_session_id(
             sql_db::int64_to_json(wall_ms),
             base_codec::json_str(runtime_str),
           ],
-        )
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
         Ok(())
       })
     }
@@ -885,34 +1364,51 @@ fn live_runner_record_runtime_session_id(
 
 fn live_runner_record_usage(
   core : station_whole::WholeCore,
-  session_key : String,
-  turn_id : Option[String],
-  runtime_str : String,
+  sess : LiveRunnerSession,
   usage : ParsedUsage,
   wall_ms : Int64,
 ) -> Unit {
   match core.store.require_open() {
     Ok(st) => {
-      let uid = session_key + ":" + wall_ms.to_string()
-      let turn_j = match turn_id {
+      let uid = sess.session_key + ":" + wall_ms.to_string()
+      let turn_j = match sess.current_turn_id {
         Some(tid) => base_codec::json_str(tid)
         None => base_codec::json_null()
       }
+      let thread_j = match sess.thread_id_opt {
+        Some(tid) => sql_db::int64_to_json(tid)
+        None => base_codec::json_null()
+      }
+      let person_j = match sess.person_opt {
+        Some(p) => if p.length() > 0 { base_codec::json_str(p) } else { base_codec::json_null() }
+        None => base_codec::json_null()
+      }
+      let model_j = match sess.model_opt {
+        Some(m) => if m.length() > 0 { base_codec::json_str(m) } else { base_codec::json_null() }
+        None => base_codec::json_null()
+      }
       let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-        let _ = t.run(
-          "INSERT OR IGNORE INTO usage (id, at, session, turn, runtime, input, cache_read, cache_write, cache_write_long, output, calls) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, 1)",
+        match t.run(
+          "INSERT OR IGNORE INTO usage (id, at, session, turn, thread, person, profile, runtime, model, input, cache_read, cache_write, cache_write_long, output, calls) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13, 1)",
           [
             base_codec::json_str(uid),
             sql_db::int64_to_json(wall_ms),
-            base_codec::json_str(session_key),
+            base_codec::json_str(sess.session_key),
             turn_j,
-            base_codec::json_str(runtime_str),
+            thread_j,
+            person_j,
+            base_codec::json_str(sess.profile_id),
+            base_codec::json_str(sess.runtime_str),
+            model_j,
             sql_db::int64_to_json(usage.input),
             sql_db::int64_to_json(usage.cache_read),
             sql_db::int64_to_json(usage.cache_write),
             sql_db::int64_to_json(usage.output),
           ],
-        )
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
         Ok(())
       })
     }
@@ -920,12 +1416,20 @@ fn live_runner_record_usage(
   }
 }
 
-fn turn_declared_to_str(d : station_sessions::TurnDeclared) -> Option[String] {
+fn turn_declared_fields(
+  d : station_sessions::TurnDeclared,
+) -> (Option[String], Option[String], Option[Int], Option[String], Option[Bool]) {
   match d {
-    station_sessions::TurnDeclared::AllDone(_) => Some("all_done")
-    station_sessions::TurnDeclared::NeedHuman(_) => Some("need_human")
-    station_sessions::TurnDeclared::Waiting(_, _, _) => Some("waiting")
-    station_sessions::TurnDeclared::None => None
+    station_sessions::TurnDeclared::AllDone(_) => (Some("all_done"), None, None, None, None)
+    station_sessions::TurnDeclared::NeedHuman(nd) => (Some("need_human"), Some(nd), None, None, None)
+    station_sessions::TurnDeclared::Waiting(wf, secs, watch) => (
+      Some("waiting"),
+      None,
+      Some(secs),
+      Some(wf),
+      Some(watch),
+    )
+    station_sessions::TurnDeclared::None => (None, None, None, None, None)
   }
 }
 
@@ -944,19 +1448,41 @@ fn live_runner_finish_turn(
     sess.stop_guard.on_turn_ended()
   }
   sess.kill_escalate_at = None
+  sess.last_turn_ended_at = now_ms
 
   let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
   let action = if outcome == "completed" {
     actor.on_turn_ended(false, wall_ms)
   } else {
     actor.phase = station_sessions::ActorPhase::Idle
+    actor.open_tools = []
+    actor.steer_silent_due_at = None
+    while actor.steered_during_silence.length() > 0 {
+      let _ = actor.steered_during_silence.pop()
+    }
     actor.running_history.push(false)
+    // Re-queue any steers that could not be delivered before failure.
+    while sess.pending_steers.length() > 0 {
+      let s0 = sess.pending_steers[0]
+      let rest : Array[String] = []
+      for si in 1..<sess.pending_steers.length() {
+        rest.push(sess.pending_steers[si])
+      }
+      while sess.pending_steers.length() > 0 {
+        let _ = sess.pending_steers.pop()
+      }
+      for si in 0..<rest.length() {
+        sess.pending_steers.push(rest[si])
+      }
+      actor.queue.push(station_sessions::ActorWork::Prompt(s0))
+    }
+    actor.pump_next_prompt()
     station_sessions::TurnEndAction::Finish(actor.declared)
   }
 
   match action {
     station_sessions::TurnEndAction::Reprompt(reason) => {
-      // Keep running without flashing stopped; send one reminder to the live runner!
+      // Keep running without flashing stopped; send one reminder ONLY if runner is still Ready!
       match sess.phase {
         LiveRunnerPhase::Ready(_, sock_id) => {
           let reminder = if reason == "posted_after_state" {
@@ -975,7 +1501,7 @@ fn live_runner_finish_turn(
           } else {
             sess.stop_guard.busy = true
           }
-          live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
+          let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
           return
         }
         _ => ()
@@ -984,12 +1510,13 @@ fn live_runner_finish_turn(
     _ => ()
   }
 
-  let declared_str : Option[String] = match action {
-    station_sessions::TurnEndAction::Finish(d) => turn_declared_to_str(d)
-    station_sessions::TurnEndAction::ForceAllDone => Some("all_done")
-    station_sessions::TurnEndAction::ForceNeedHuman => Some("need_human")
-    _ => turn_declared_to_str(actor.declared)
+  let eff_declared = match action {
+    station_sessions::TurnEndAction::Finish(d) => d
+    station_sessions::TurnEndAction::ForceAllDone => station_sessions::TurnDeclared::AllDone("done")
+    station_sessions::TurnEndAction::ForceNeedHuman => station_sessions::TurnDeclared::NeedHuman("input needed")
+    _ => actor.declared
   }
+  let (declared_str, need_opt, wait_secs_opt, wait_for_opt, wait_watch_opt) = turn_declared_fields(eff_declared)
   let turn_id_opt = sess.current_turn_id
   sess.current_turn_id = None
   match core.store.require_open() {
@@ -1002,26 +1529,52 @@ fn live_runner_finish_turn(
         Some(s) => base_codec::json_str(s)
         None => base_codec::json_null()
       }
+      let need_j = match need_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wsec_j = match wait_secs_opt {
+        Some(n) => base_codec::json_int(n)
+        None => base_codec::json_null()
+      }
+      let wfor_j = match wait_for_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wwatch_j = match wait_watch_opt {
+        Some(b) => base_codec::json_int(if b { 1 } else { 0 })
+        None => base_codec::json_null()
+      }
       let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
         match turn_id_opt {
           Some(tid) => {
-            let _ = t.run(
-              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5 WHERE id = ?1",
+            match t.run(
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
               [
                 base_codec::json_str(tid),
                 sql_db::int64_to_json(wall_ms),
                 base_codec::json_str(outcome),
                 det_j,
                 decl_j,
+                need_j,
+                wsec_j,
+                wfor_j,
+                wwatch_j,
               ],
-            )
+            ) {
+              Err(e) => return Err(e)
+              Ok(_) => ()
+            }
           }
           None => ()
         }
-        let _ = t.run(
+        match t.run(
           "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
           [base_codec::json_str(sess.session_key), sql_db::int64_to_json(wall_ms)],
-        )
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
         Ok(())
       })
     }
@@ -1029,7 +1582,7 @@ fn live_runner_finish_turn(
   }
   live_runner_emit_session_event(
     core,
-    core.config.home_workspace,
+    sess.ws,
     sess.session_key,
     false,
     declared_str,
@@ -1057,7 +1610,7 @@ fn live_runner_flush_ready(
         sess.stop_guard.busy = true
       }
       let frame = encode_runtime_prompt(sess.runtime_kind, text, rsid, sess.prompt_seq)
-      live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
     }
     None => ()
   }
@@ -1075,7 +1628,7 @@ fn live_runner_flush_ready(
     }
     sess.prompt_seq = sess.prompt_seq + 1
     let frame = encode_runtime_steer(sess.runtime_kind, first, rsid, sess.prompt_seq)
-    live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
+    let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
   }
 }
 
@@ -1101,7 +1654,7 @@ fn live_runner_start_acp_init(
       ("clientCapabilities", base_codec::json_obj([])),
     ]),
   ) + "\n"
-  live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(init_frame))
+  let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(init_frame))
 }
 
 fn live_runner_start_acp_open(
@@ -1146,7 +1699,69 @@ fn live_runner_start_acp_open(
     )
   }
   let open_frame = station_drivers::acp_rpc_frame("open", method, params) + "\n"
-  live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(open_frame))
+  let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(open_frame))
+}
+
+fn live_runner_start_codex_init(
+  ctx : DaemonCtx,
+  sess : LiveRunnerSession,
+  info : station_drivers::RunnerInfo,
+  sock_id : Int64,
+) -> Unit {
+  sess.phase = LiveRunnerPhase::CodexInit(info, sock_id)
+  let init_frame = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("jsonrpc", base_codec::json_str("2.0")),
+      ("id", base_codec::json_str("init")),
+      ("method", base_codec::json_str("initialize")),
+      (
+        "params",
+        base_codec::json_obj([
+          (
+            "clientInfo",
+            base_codec::json_obj([
+              ("name", base_codec::json_str("still.fail")),
+              ("title", base_codec::json_str("still.fail")),
+              ("version", base_codec::json_str("1")),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  ) + "\n"
+  let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(init_frame))
+}
+
+fn live_runner_start_codex_open(
+  ctx : DaemonCtx,
+  sess : LiveRunnerSession,
+  info : station_drivers::RunnerInfo,
+  sock_id : Int64,
+) -> Unit {
+  sess.phase = LiveRunnerPhase::CodexOpening(info, sock_id)
+  let initialized_notif = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n"
+  let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(initialized_notif))
+  let is_resume = match sess.runtime_session_id {
+    Some(rid) => rid.length() > 0
+    None => false
+  }
+  let method = if is_resume { "thread/resume" } else { "thread/start" }
+  let params = match sess.codex_thread_params_json {
+    Some(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => base_codec::json_obj([("cwd", base_codec::json_str(sess.cwd))])
+    }
+    None => base_codec::json_obj([("cwd", base_codec::json_str(sess.cwd))])
+  }
+  let open_frame = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("jsonrpc", base_codec::json_str("2.0")),
+      ("id", base_codec::json_str("open")),
+      ("method", base_codec::json_str(method)),
+      ("params", params),
+    ]),
+  ) + "\n"
+  let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(open_frame))
 }
 
 fn live_runner_handle_agent_line(
@@ -1162,6 +1777,41 @@ fn live_runner_handle_agent_line(
   if sess.is_acp {
     let _ = sess.acp_guard.on_output_heard(now_ms)
   }
+
+  // Feed repo-native parsers (`parse_claude` / `parse_codex` / `parse_acp`) for live state tracking.
+  let trimmed = line.trim()
+  if trimmed.starts_with("{") {
+    match js_json::parse(trimmed) {
+      Ok(jval) => {
+        if sess.is_codex {
+          match jval.get("method") {
+            Some(js_json::JValue::Str(mu)) => {
+              let m = js_json::sanitize_str(mu)
+              let params = match jval.get("params") {
+                Some(p) => p
+                None => js_json::JValue::Obj([])
+              }
+              let _ = sess.codex_live.feed(m, params)
+            }
+            _ => ()
+          }
+        } else if !sess.is_acp {
+          parse_claude::on_frame(
+            jval,
+            sess.claude_turn,
+            fn(_ev : js_json::JValue) -> Unit { () },
+            fn() -> Unit { () },
+            fn() -> Double { now_ms.to_double() },
+            fn(_note : String) -> Unit { () },
+          )
+        } else {
+          let _ = parse_acp::turn_step(jval.get("params"))
+        }
+      }
+      Err(_) => ()
+    }
+  }
+
   match parse_agent_stdout_line(sess.runtime_kind, line) {
     ParsedAgentEvent::Ignore => ()
     ParsedAgentEvent::LiveActivity => ()
@@ -1180,6 +1830,20 @@ fn live_runner_handle_agent_line(
       if sess.is_acp {
         sess.acp_guard.on_live_tool_end(tid)
       }
+    }
+    ParsedAgentEvent::AgyHolding(holding) => {
+      sess.agy_tracker.holding = holding
+      let _ = sess.agy_tracker.sync_holding(
+        ctx.sep,
+        fn(p : String) -> Option[String] {
+          match (ctx.ops_fs.read_bytes)(p) {
+            Ok(b) => Some(b.to_string())
+            Err(_) => None
+          }
+        },
+        now_ms,
+        true,
+      )
     }
     ParsedAgentEvent::AcpInitDone => {
       match sess.phase {
@@ -1202,33 +1866,32 @@ fn live_runner_handle_agent_line(
         _ => ()
       }
     }
-    ParsedAgentEvent::AcpPermissionRequest(req_id) => {
-      let sock_id = match sess.phase {
-        LiveRunnerPhase::AcpInit(_, s)
-        | LiveRunnerPhase::AcpOpening(_, s)
-        | LiveRunnerPhase::Ready(_, s) => s
-        _ => -1L
-      }
+    ParsedAgentEvent::AcpPermissionRequest(raw_id, opt_id) => {
+      let sock_id = live_runner_sock_of(sess.phase)
       if sock_id >= 0L {
-        let reply = base_codec::json_stringify(
-          base_codec::json_obj([
-            ("jsonrpc", base_codec::json_str("2.0")),
-            ("id", base_codec::json_str(req_id)),
-            (
-              "result",
-              base_codec::json_obj([
-                (
-                  "outcome",
-                  base_codec::json_obj([
-                    ("outcome", base_codec::json_str("selected")),
-                    ("optionId", base_codec::json_str("allow")),
-                  ]),
-                ),
-              ]),
-            ),
-          ]),
-        ) + "\n"
-        live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(reply))
+        let reply = build_acp_permission_reply(raw_id, opt_id)
+        let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(reply))
+      }
+    }
+    ParsedAgentEvent::CodexInitDone => {
+      match sess.phase {
+        LiveRunnerPhase::CodexInit(info, sock_id) => {
+          live_runner_start_codex_open(ctx, sess, info, sock_id)
+        }
+        _ => ()
+      }
+    }
+    ParsedAgentEvent::CodexThreadOpened(tid) => {
+      if tid.length() > 0 {
+        sess.runtime_session_id = Some(tid)
+        live_runner_record_runtime_session_id(core, sess.session_key, sess.runtime_str, tid, wall_ms)
+      }
+      match sess.phase {
+        LiveRunnerPhase::CodexOpening(info, sock_id) => {
+          sess.phase = LiveRunnerPhase::Ready(info, sock_id)
+          live_runner_flush_ready(ctx, sess, sock_id, now_ms)
+        }
+        _ => ()
       }
     }
     ParsedAgentEvent::TurnCompleted(sid_opt, usage_opt) => {
@@ -1240,14 +1903,14 @@ fn live_runner_handle_agent_line(
         None => ()
       }
       match usage_opt {
-        Some(u) => live_runner_record_usage(core, sess.session_key, sess.current_turn_id, sess.runtime_str, u, wall_ms)
+        Some(u) => live_runner_record_usage(core, sess, u, wall_ms)
         None => ()
       }
       live_runner_finish_turn(ctx, core, sess, "completed", None, now_ms, wall_ms)
     }
     ParsedAgentEvent::TurnFailed(msg, usage_opt) => {
       match usage_opt {
-        Some(u) => live_runner_record_usage(core, sess.session_key, sess.current_turn_id, sess.runtime_str, u, wall_ms)
+        Some(u) => live_runner_record_usage(core, sess, u, wall_ms)
         None => ()
       }
       live_runner_finish_turn(ctx, core, sess, "failed", Some(msg), now_ms, wall_ms)
@@ -1256,6 +1919,229 @@ fn live_runner_handle_agent_line(
       live_runner_finish_turn(ctx, core, sess, "aborted", None, now_ms, wall_ms)
     }
   }
+}
+
+/// Queries SQLite for the session's bound thread & latest human entry to construct a standard
+/// `<message via="..." thread="..." from="..." ts="...">` envelope.
+fn build_enveloped_prompt_for_session(
+  st : station_store::Store,
+  session_key : String,
+  prompt_text : String,
+) -> (String, Option[Int64], Option[String]) {
+  let mut via = "web"
+  let mut thread_addr = ""
+  let mut from = "user"
+  let mut ts = ""
+  let mut tid_opt : Option[Int64] = None
+  let mut person_opt : Option[String] = None
+  match st.db.first(
+    "SELECT t.id AS tid, t.surface AS surface, t.channel AS channel, t.thread_ts AS thread_ts, e.author AS author, e.ts AS ts FROM thread_sessions ts JOIN threads t ON t.id = ts.thread LEFT JOIN entries e ON e.thread = t.id AND e.author_kind = 'person' WHERE ts.session = ?1 AND ts.left_at IS NULL ORDER BY e.n DESC LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(row)) => {
+      match row.get("tid") {
+        Some(base_codec::Json::Num(n, _)) => tid_opt = Some(n.to_int64())
+        _ => ()
+      }
+      let surface = match row.get("surface") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      let channel = match row.get("channel") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      let thread_ts = match row.get("thread_ts") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      if surface.starts_with("slack:") {
+        via = "slack"
+      } else if surface.starts_with("feishu:") {
+        via = "feishu"
+      } else if surface.starts_with("comma:") {
+        via = "comma"
+      } else if surface.starts_with("group:") {
+        via = "group"
+      } else {
+        via = "web"
+      }
+      if channel.length() > 0 && thread_ts.length() > 0 {
+        thread_addr = channel + "/" + thread_ts
+      } else if thread_ts.length() > 0 {
+        thread_addr = "CHAT/" + thread_ts
+      }
+      match row.get("author") {
+        Some(base_codec::Json::Str(a)) => if a.length() > 0 {
+          from = a
+          person_opt = Some(a)
+        }
+        _ => ()
+      }
+      match row.get("ts") {
+        Some(base_codec::Json::Str(t)) => ts = t
+        _ => ()
+      }
+    }
+    _ => ()
+  }
+  let base_enveloped = format_message_envelope(via, thread_addr, from, ts, prompt_text)
+  let with_skills = station_sessions::append_skill_invocations_to_delivery(base_enveloped, [prompt_text], [])
+  (with_skills, tid_opt, person_opt)
+}
+
+/// Queries SQLite for a session's persisted `runtime_session_id` (for `--resume` / `session/load` / `thread/resume`).
+fn query_persisted_runtime_session_id(
+  st : station_store::Store,
+  session_key : String,
+) -> Option[String] {
+  match st.db.first(
+    "SELECT runtime_session_id FROM sessions WHERE key = ?1 LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(row)) => match row.get("runtime_session_id") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+/// Adopts a live `stillfail-runner` surviving a `SIGUSR2` hot handover directly into `LiveRunnerManager`
+/// so in-flight turns continue parsing stdout and complete cleanly, and subsequent steers/prompts
+/// reuse the SAME live runner without spawning a colliding duplicate!
+pub fn LiveRunnerManager::adopt_live_runner(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  rinfo : station_drivers::RunnerInfo,
+  session_key : String,
+  wall_ms : Int64,
+) -> Bool {
+  if rinfo.socket.length() == 0 {
+    return false
+  }
+  let st = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let row = match st.get_session(session_key) {
+    Ok(Some(r)) => r
+    _ => return false
+  }
+  if core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
+    core.agents.register_adopted_token(session_key, row.token)
+  }
+  let rt_kind = match station_drivers::runtime_kind_from_str(row.runtime) {
+    Some(k) => k
+    None => station_drivers::RuntimeKind::Claude
+  }
+  let sess_ws = match row.ws {
+    Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
+    None => core.config.home_workspace
+  }
+  let rt_sid_opt = query_persisted_runtime_session_id(st, session_key)
+  let (open_turn_id, open_turn_started) : (Option[String], Int64) = match st.db.first(
+    "SELECT id, started_at FROM turns WHERE session_key = ?1 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(trow)) => {
+      let tid = match trow.get("id") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
+      let sat = match trow.get("started_at") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => wall_ms
+      }
+      (tid, sat)
+    }
+    _ => (None, wall_ms)
+  }
+  let tid_opt : Option[Int64] = match st.db.first(
+    "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(r)) => match r.get("thread") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+      _ => None
+    }
+    _ => None
+  }
+  let inst_id = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
+  let cid = self.next_conn_id
+  self.next_conn_id = self.next_conn_id + 1
+  let is_acp = is_acp_runtime(rt_kind)
+  let is_codex = is_codex_runtime(rt_kind)
+  let cwd = match row.cwd {
+    Some(c) => if c.length() > 0 { c } else { row.workspace }
+    None => row.workspace
+  }
+  let sess = LiveRunnerSession::{
+    conn_id: cid,
+    session_key: session_key,
+    ws: sess_ws,
+    profile_id: row.profile,
+    model_opt: row.model,
+    person_opt: row.created_by,
+    thread_id_opt: tid_opt,
+    runtime_kind: rt_kind,
+    runtime_str: row.runtime,
+    runner_id: rinfo.id,
+    is_acp: is_acp,
+    is_codex: is_codex,
+    is_adopted: true,
+    adopted_instance_id: Some(inst_id),
+    adopted_db_initialized: false,
+    phase: LiveRunnerPhase::Connecting(rinfo),
+    pending_prompt: None,
+    pending_steers: [],
+    runtime_session_id: rt_sid_opt,
+    current_turn_id: open_turn_id,
+    turn_started_at: open_turn_started,
+    last_turn_ended_at: host_shim::now_ms(),
+    stop_guard: station_drivers::OwnProcessStopGuard::new(rt_kind),
+    acp_guard: station_drivers::AcpTurnGuard::new(rt_kind),
+    agy_tracker: station_drivers::AgyStateTracker::new("", None),
+    claude_turn: parse_claude::Turn::new(),
+    codex_live: parse_codex::Live::new(),
+    mcp_config_json: None,
+    codex_thread_params_json: None,
+    cwd: cwd,
+    rx_chunks: [],
+    rx_total_bytes: 0,
+    out_line_buf: Bytes::new(0),
+    err_line_buf: Bytes::new(0),
+    acked_out: 0L,
+    acked_err: 0L,
+    out_at: -1L,
+    err_at: -1L,
+    prompt_seq: 0,
+    kill_escalate_at: None,
+    detached_for_handover: false,
+    attached: false,
+    write_inflight: false,
+    write_queue: [],
+    write_queue_bytes: 0,
+  }
+  self.sessions.set(session_key, sess)
+  self.by_conn_id.set(cid, session_key)
+  let actor = core.agents.hub.ensure_actor(session_key, row.runtime)
+  actor.has_process = true
+  if open_turn_id is Some(_) || row.running {
+    actor.phase = station_sessions::ActorPhase::Running
+    if !is_acp {
+      sess.stop_guard.busy = true
+    }
+  }
+  let _ = ctx.mux_role.call_async_raw(
+    builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
+    "unix.open",
+    base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+    None,
+  )
+  ctx.log("[live-runner] adopting live runner " + rinfo.id + " (pid=" + rinfo.runner_pid.to_string() + ") for " + session_key)
+  true
 }
 
 /// Pumps `actor.started_prompts` and active `ActorWork::Steer` items across all Hub actors,
@@ -1310,12 +2196,14 @@ pub fn LiveRunnerManager::pump(
                       None => ""
                     }
                     let frame = encode_runtime_steer(sess.runtime_kind, steer_text, rsid, sess.prompt_seq)
-                    live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
+                    let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame))
                   }
                   LiveRunnerPhase::Spawning(_, _, _, _, _)
                   | LiveRunnerPhase::Connecting(_)
                   | LiveRunnerPhase::AcpInit(_, _)
-                  | LiveRunnerPhase::AcpOpening(_, _) => {
+                  | LiveRunnerPhase::AcpOpening(_, _)
+                  | LiveRunnerPhase::CodexInit(_, _)
+                  | LiveRunnerPhase::CodexOpening(_, _) => {
                     sess.pending_steers.push(steer_text)
                   }
                   LiveRunnerPhase::Exited => ()
@@ -1351,25 +2239,38 @@ fn LiveRunnerManager::dispatch_prompt(
     Ok(Some(r)) => r
     _ => return
   }
+  if row.archived_at is Some(_) {
+    actor.phase = station_sessions::ActorPhase::Idle
+    return
+  }
   if core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
     core.agents.register_adopted_token(session_key, row.token)
+  }
+  let sess_ws = match row.ws {
+    Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
+    None => core.config.home_workspace
   }
   let rt_kind = match station_drivers::runtime_kind_from_str(row.runtime) {
     Some(k) => k
     None => station_drivers::RuntimeKind::Claude
   }
+  let (enveloped_prompt, tid_opt, person_opt) = build_enveloped_prompt_for_session(st, session_key, prompt_text)
+  let eff_person = match person_opt {
+    Some(p) => Some(p)
+    None => row.created_by
+  }
   let turn_id = "turn-" + session_key + "-" + self.next_turn_seq.to_string() + "-" + wall_ms.to_string()
   self.next_turn_seq = self.next_turn_seq + 1
-  live_runner_record_turn_start(core, turn_id, session_key, row.profile, wall_ms)
-  live_runner_emit_session_event(core, core.config.home_workspace, session_key, true, None, wall_ms)
 
-  // If a live runner is already attached and ready for this session, reuse it directly!
+  // If a live runner is already attached and ready/starting for this session, reuse it directly!
   match self.sessions.get(session_key) {
     Some(existing) => match existing.phase {
       LiveRunnerPhase::Ready(_, sock_id) => {
+        live_runner_record_turn_start(core, turn_id, session_key, row.profile, eff_person, tid_opt, wall_ms)
+        live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
         existing.current_turn_id = Some(turn_id)
         existing.turn_started_at = wall_ms
-        existing.pending_prompt = Some(prompt_text)
+        existing.pending_prompt = Some(enveloped_prompt)
         actor.has_process = true
         live_runner_flush_ready(ctx, existing, sock_id, now_ms)
         return
@@ -1377,10 +2278,14 @@ fn LiveRunnerManager::dispatch_prompt(
       LiveRunnerPhase::Spawning(_, _, _, _, _)
       | LiveRunnerPhase::Connecting(_)
       | LiveRunnerPhase::AcpInit(_, _)
-      | LiveRunnerPhase::AcpOpening(_, _) => {
+      | LiveRunnerPhase::AcpOpening(_, _)
+      | LiveRunnerPhase::CodexInit(_, _)
+      | LiveRunnerPhase::CodexOpening(_, _) => {
+        live_runner_record_turn_start(core, turn_id, session_key, row.profile, eff_person, tid_opt, wall_ms)
+        live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
         existing.current_turn_id = Some(turn_id)
         existing.turn_started_at = wall_ms
-        existing.pending_prompt = Some(prompt_text)
+        existing.pending_prompt = Some(enveloped_prompt)
         return
       }
       LiveRunnerPhase::Exited => ()
@@ -1388,61 +2293,122 @@ fn LiveRunnerManager::dispatch_prompt(
     None => ()
   }
 
+  let fail_before_spawn = fn(reason : String) -> Unit {
+    ctx.log("[live-runner] cannot start runner for " + session_key + ": " + reason)
+    actor.phase = station_sessions::ActorPhase::Idle
+    actor.has_process = false
+    actor.open_tools = []
+    actor.steer_silent_due_at = None
+    actor.pump_next_prompt()
+    live_runner_emit_session_event(core, sess_ws, session_key, false, None, wall_ms)
+  }
+
+  if self.active_count() >= LIVE_RUNNER_MAX_CONCURRENT {
+    fail_before_spawn("max concurrent live runners reached")
+    return
+  }
+
   let os_name = station_sys::os_name()
   let runner_bin = match resolve_live_runner_bin(core.config.runner_bin, ctx.sep, os_name) {
     Some(b) => b
     None => {
-      ctx.log("[live-runner] stillfail-runner binary not found for session " + session_key)
-      actor.phase = station_sessions::ActorPhase::Idle
-      actor.has_process = false
+      fail_before_spawn("stillfail-runner binary not found")
       return
     }
   }
-  let cwd = match row.cwd {
-    Some(c) => if c.length() > 0 { c } else if row.workspace.length() > 0 { row.workspace } else { ctx.data }
-    None => if row.workspace.length() > 0 { row.workspace } else { ctx.data }
+  let cwd = match resolve_safe_session_cwd(row.cwd, row.workspace, ctx.data, ctx.sep) {
+    Ok(c) => c
+    Err(e) => {
+      fail_before_spawn(e)
+      return
+    }
+  }
+  let profile = match resolve_authorized_profile(
+    cfg_raw,
+    row.profile,
+    rt_kind,
+    sess_ws,
+    core.config.home_workspace,
+    ctx.data,
+    ctx.sep,
+  ) {
+    Ok(p) => p
+    Err(e) => {
+      fail_before_spawn(e)
+      return
+    }
   }
   let _ = station_sys::mkdir_p(cwd)
   let rdir = station_drivers::runners_dir(ctx.data, ctx.sep)
   let _ = station_sys::mkdir_p(rdir)
-  let profile = live_runner_profile_for(cfg_raw, row.profile, rt_kind, ctx.data, ctx.sep)
+
+  let rt_sid_opt = query_persisted_runtime_session_id(st, session_key)
+  let person_str = match eff_person {
+    Some(p) => p
+    None => ""
+  }
+  let instr = station_drivers::session_instructions(
+    cwd,
+    row.cwd,
+    nodepath::join(ctx.sep, [ctx.data, "repos"]),
+    nodepath::join(ctx.sep, [ctx.data, "agent", "MEMORY.md"]),
+    "",
+    "",
+    core.config.station_id,
+    true,
+    true,
+    person_str,
+  )
   let spec = match core.agents.build_driver_launch_spec(
     session_key,
     rt_kind,
     profile,
     cwd,
+    instructions=instr,
+    resume=rt_sid_opt,
     model=row.model,
     effort=row.effort,
   ) {
     Ok(s) => s
     Err(e) => {
-      ctx.log("[live-runner] build_driver_launch_spec failed for " + session_key + ": " + e)
-      actor.phase = station_sessions::ActorPhase::Idle
-      actor.has_process = false
+      fail_before_spawn("build_driver_launch_spec failed: " + e)
       return
     }
   }
 
-  // Enrich environment with explicit MCP URL and session key so any runtime / mock agent can reach `/mcp`.
-  let mcp_url = "http://127.0.0.1:" + core.agents.config.mcp_port.to_string() + "/mcp"
-  let token = match core.agents.token_for_session(session_key) {
-    Some(t) => t
-    None => row.token
-  }
+  // Security (P0-2): Pass ONLY `spec.env` built by `station_drivers` — never globally inject
+  // `STILLFAIL_MCP_TOKEN` or `STILLFAIL_MCP_URL` for non-Claude runtimes.
   let env_list : Array[String] = []
-  let mut has_mcp_url = false
-  let mut has_mcp_tok = false
-  let mut has_sess_key = false
   for ei in 0..<spec.env.length() {
     let (ek, ev) = spec.env[ei]
-    if ek == "STILLFAIL_MCP_URL" { has_mcp_url = true }
-    if ek == "STILLFAIL_MCP_TOKEN" { has_mcp_tok = true }
-    if ek == "STILLFAIL_SESSION_KEY" { has_sess_key = true }
     env_list.push(ek + "=" + ev)
   }
-  if !has_mcp_url { env_list.push("STILLFAIL_MCP_URL=" + mcp_url) }
-  if !has_mcp_tok { env_list.push("STILLFAIL_MCP_TOKEN=" + token) }
-  if !has_sess_key { env_list.push("STILLFAIL_SESSION_KEY=" + session_key) }
+
+  let is_codex = is_codex_runtime(rt_kind)
+  let codex_params_opt : Option[String] = if is_codex {
+    let mcp_url = "http://127.0.0.1:" + core.agents.config.mcp_port.to_string() + "/mcp"
+    let tok = match core.agents.token_for_session(session_key) {
+      Some(t) => t
+      None => row.token
+    }
+    let copts = station_whole::os_open_options(
+      session_key,
+      profile,
+      cwd,
+      mcp_url,
+      tok,
+      core.agents.config.data_dir,
+      core.agents.config.assets_dir,
+      core.agents.config.runner_bin,
+      instructions=instr,
+      resume=rt_sid_opt,
+      model=row.model,
+      effort=row.effort,
+    )
+    Some(station_drivers::codex_thread_start_params_json(copts, [], []))
+  } else {
+    None
+  }
 
   let rid = station_drivers::runner_id(rt_kind, session_key)
   let runner_args = build_live_runner_args(rdir, rid, cwd, spec.program, spec.args)
@@ -1461,11 +2427,12 @@ fn LiveRunnerManager::dispatch_prompt(
   }
   match station_sys::proc_spawn(ev_id, spawn_opts) {
     Err(e) => {
-      ctx.log("[live-runner] proc_spawn failed for " + session_key + ": " + e)
-      actor.phase = station_sessions::ActorPhase::Idle
-      actor.has_process = false
+      fail_before_spawn("proc_spawn failed: " + e)
     }
     Ok(child) => {
+      // Only write `turn_start` & emit `running=true` AFTER spawn succeeds!
+      live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms)
+      live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
       let cid = self.next_conn_id
       self.next_conn_id = self.next_conn_id + 1
       let is_acp = is_acp_runtime(rt_kind)
@@ -1474,20 +2441,33 @@ fn LiveRunnerManager::dispatch_prompt(
       let sess = LiveRunnerSession::{
         conn_id: cid,
         session_key: session_key,
+        ws: sess_ws,
+        profile_id: profile.id,
+        model_opt: row.model,
+        person_opt: eff_person,
+        thread_id_opt: tid_opt,
         runtime_kind: rt_kind,
         runtime_str: row.runtime,
         runner_id: rid,
         is_acp: is_acp,
-        phase: LiveRunnerPhase::Spawning(ev_id, child, "", "", deadline),
-        pending_prompt: Some(prompt_text),
+        is_codex: is_codex,
+        is_adopted: false,
+        adopted_instance_id: None,
+        adopted_db_initialized: false,
+        phase: LiveRunnerPhase::Spawning(ev_id, child, Bytes::new(0), Bytes::new(0), deadline),
+        pending_prompt: Some(enveloped_prompt),
         pending_steers: [],
-        runtime_session_id: None,
+        runtime_session_id: rt_sid_opt,
         current_turn_id: Some(turn_id),
         turn_started_at: wall_ms,
+        last_turn_ended_at: now_ms,
         stop_guard: station_drivers::OwnProcessStopGuard::new(rt_kind),
         acp_guard: station_drivers::AcpTurnGuard::new(rt_kind),
         agy_tracker: station_drivers::AgyStateTracker::new("", None),
+        claude_turn: parse_claude::Turn::new(),
+        codex_live: parse_codex::Live::new(),
         mcp_config_json: spec.mcp_config_json,
+        codex_thread_params_json: codex_params_opt,
         cwd: cwd,
         rx_chunks: [],
         rx_total_bytes: 0,
@@ -1503,6 +2483,7 @@ fn LiveRunnerManager::dispatch_prompt(
         attached: false,
         write_inflight: false,
         write_queue: [],
+        write_queue_bytes: 0,
       }
       self.sessions.set(session_key, sess)
       self.by_conn_id.set(cid, session_key)
@@ -1541,8 +2522,13 @@ pub fn LiveRunnerManager::handle_sys_event(
       }
       match sev {
         station_sys::SysEvent::ProcStdout(b) => {
-          let next_out = out_buf + b.to_string()
-          match parse_runner_ready_line(next_out) {
+          let next_out = if out_buf.length() + b.length() <= LIVE_RUNNER_MAX_SPAWN_BUF_BYTES {
+            concat_bytes_local(out_buf, b)
+          } else {
+            out_buf
+          }
+          let out_str = bytes_to_str_local(next_out, next_out.length())
+          match parse_runner_ready_line(out_str) {
             Some(info) => {
               // Ready! Detach bootstrap handle WITHOUT killing the runner and connect to its Unix socket.
               let _ = child.close()
@@ -1562,13 +2548,18 @@ pub fn LiveRunnerManager::handle_sys_event(
           }
         }
         station_sys::SysEvent::ProcStderr(b) => {
-          let next_err = err_buf + b.to_string()
+          let next_err = if err_buf.length() + b.length() <= LIVE_RUNNER_MAX_SPAWN_BUF_BYTES {
+            concat_bytes_local(err_buf, b)
+          } else {
+            err_buf
+          }
           sess.phase = LiveRunnerPhase::Spawning(cur_ev, child, out_buf, next_err, deadline)
         }
         station_sys::SysEvent::ProcStdoutEof | station_sys::SysEvent::ProcExit(_) => {
           let _ = child.close()
           self.by_spawn_ev.remove(ev_id)
-          match parse_runner_ready_line(out_buf) {
+          let out_str = bytes_to_str_local(out_buf, out_buf.length())
+          match parse_runner_ready_line(out_str) {
             Some(info) => {
               sess.phase = LiveRunnerPhase::Connecting(info)
               let _ = ctx.mux_role.call_async_raw(
@@ -1579,7 +2570,8 @@ pub fn LiveRunnerManager::handle_sys_event(
               )
             }
             None => {
-              let detail = if err_buf.trim().length() > 0 { err_buf.trim() } else { out_buf.trim() }
+              let err_str = bytes_to_str_local(err_buf, err_buf.length())
+              let detail = if err_str.trim().length() > 0 { err_str.trim() } else { out_str.trim() }
               ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
               sess.phase = LiveRunnerPhase::Exited
               self.by_conn_id.remove(sess.conn_id)
@@ -1630,13 +2622,30 @@ pub fn LiveRunnerManager::handle_role_done(
         None => return true
       }
       if kind == LIVE_RUNNER_TOK_UNIX_WRITE {
-        let cur_sock = match sess.phase {
-          LiveRunnerPhase::AcpInit(_, s)
-          | LiveRunnerPhase::AcpOpening(_, s)
-          | LiveRunnerPhase::Ready(_, s) => s
-          _ => -1L
+        let cur_sock = live_runner_sock_of(sess.phase)
+        match builders_core::decode_shell_done(d) {
+          Ok(_) => live_runner_on_write_done(ctx, sess, cur_sock)
+          Err(e) => {
+            ctx.log("[live-runner] unix write failed for " + skey + ": " + e.message)
+            sess.write_inflight = false
+            while sess.write_queue.length() > 0 {
+              let _ = sess.write_queue.pop()
+            }
+            sess.write_queue_bytes = 0
+            live_runner_close_sock(ctx, conn_id, cur_sock)
+            sess.phase = LiveRunnerPhase::Exited
+            self.by_conn_id.remove(conn_id)
+            match sess.adopted_instance_id {
+              Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+              None => ()
+            }
+            let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+            actor.has_process = false
+            if sess.current_turn_id is Some(_) {
+              live_runner_finish_turn(ctx, core, sess, "failed", Some("runner socket write failed: " + e.message), now_ms, wall_ms)
+            }
+          }
         }
-        live_runner_on_write_done(ctx, sess, cur_sock)
         return true
       }
       if kind == LIVE_RUNNER_TOK_UNIX_OPEN {
@@ -1650,7 +2659,11 @@ pub fn LiveRunnerManager::handle_role_done(
                 }
                 if usid >= 0L {
                   sess.phase = LiveRunnerPhase::Ready(info, usid)
-                  live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_attach())
+                  match sess.adopted_instance_id {
+                    Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, true)
+                    None => ()
+                  }
+                  let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_attach())
                   let _ = ctx.mux_role.call_async_raw(
                     builders_core::MuxToken::Tagged(conn_id, LIVE_RUNNER_TOK_UNIX_READ, usid),
                     "tcp.read",
@@ -1658,22 +2671,47 @@ pub fn LiveRunnerManager::handle_role_done(
                     None,
                   )
                 } else {
+                  if !sess.is_adopted {
+                    safe_kill_runner_info(info)
+                  }
+                  match sess.adopted_instance_id {
+                    Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                    None => ()
+                  }
                   sess.phase = LiveRunnerPhase::Exited
                   self.by_conn_id.remove(conn_id)
                   let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
                   actor.has_process = false
-                  live_runner_finish_turn(ctx, core, sess, "failed", Some("unix.open returned invalid socket id"), now_ms, wall_ms)
+                  if sess.current_turn_id is Some(_) {
+                    live_runner_finish_turn(ctx, core, sess, "failed", Some("unix.open returned invalid socket id"), now_ms, wall_ms)
+                  }
                 }
               }
               Err(e) => {
                 ctx.log("[live-runner] unix.open failed for " + skey + ": " + e.message)
+                if !sess.is_adopted {
+                  safe_kill_runner_info(info)
+                }
+                match sess.adopted_instance_id {
+                  Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                  None => ()
+                }
                 sess.phase = LiveRunnerPhase::Exited
                 self.by_conn_id.remove(conn_id)
                 let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
                 actor.has_process = false
-                live_runner_finish_turn(ctx, core, sess, "failed", Some("runner socket connect failed: " + e.message), now_ms, wall_ms)
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(ctx, core, sess, "failed", Some("runner socket connect failed: " + e.message), now_ms, wall_ms)
+                }
               }
               _ => {
+                if !sess.is_adopted {
+                  safe_kill_runner_info(info)
+                }
+                match sess.adopted_instance_id {
+                  Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                  None => ()
+                }
                 sess.phase = LiveRunnerPhase::Exited
                 self.by_conn_id.remove(conn_id)
               }
@@ -1685,21 +2723,21 @@ pub fn LiveRunnerManager::handle_role_done(
       }
 
       // LIVE_RUNNER_TOK_UNIX_READ
-      let cur_sock = match sess.phase {
-        LiveRunnerPhase::AcpInit(_, s)
-        | LiveRunnerPhase::AcpOpening(_, s)
-        | LiveRunnerPhase::Ready(_, s) => s
-        _ => -1L
-      }
+      let cur_sock = live_runner_sock_of(sess.phase)
       if cur_sock < 0L || sess.detached_for_handover {
         return true
       }
+      let cur_info_opt = live_runner_info_of(sess.phase)
       match builders_core::decode_shell_done(d) {
         Ok((_, Some(chunk))) => {
           if chunk.length() == 0 {
             live_runner_close_sock(ctx, conn_id, cur_sock)
             sess.phase = LiveRunnerPhase::Exited
             self.by_conn_id.remove(conn_id)
+            match sess.adopted_instance_id {
+              Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+              None => ()
+            }
             let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
             actor.has_process = false
             if sess.current_turn_id is Some(_) {
@@ -1709,7 +2747,50 @@ pub fn LiveRunnerManager::handle_role_done(
           }
           let mut scan_from = 0
           let mut exited_now = false
+          let mut fail_close_reason : Option[String] = None
           let mut ack_dirty = false
+          let mut pending_adopted_batch : Array[(String, Int64, Int64, Bytes)] = []
+          let mut batch_out = sess.acked_out
+          let mut batch_err = sess.acked_err
+
+          let flush_adopted_batch = fn() -> Bool {
+            if pending_adopted_batch.length() == 0 {
+              return true
+            }
+            match (sess.adopted_instance_id, cur_info_opt) {
+              (Some(inst_id), Some(info)) => {
+                match core.agents.commit_adopted_runner_chunks(
+                  inst_id,
+                  sess.session_key,
+                  info.id,
+                  info.runner_pid,
+                  info.started_at,
+                  pending_adopted_batch,
+                  wall_ms,
+                ) {
+                  Ok(_) => {
+                    pending_adopted_batch = []
+                    sess.acked_out = batch_out
+                    sess.acked_err = batch_err
+                    ack_dirty = true
+                    true
+                  }
+                  Err(pe) => {
+                    pending_adopted_batch = []
+                    ctx.log("[live-runner] failed to commit adopted chunk (" + inst_id + "): " + pe)
+                    fail_close_reason = Some("adopted runner commit failed: " + pe)
+                    exited_now = true
+                    false
+                  }
+                }
+              }
+              _ => {
+                pending_adopted_batch = []
+                true
+              }
+            }
+          }
+
           while scan_from < chunk.length() {
             let mut nl = -1
             for bi in scan_from..<chunk.length() {
@@ -1725,6 +2806,7 @@ pub fn LiveRunnerManager::handle_role_done(
                 slice_bytes_local(chunk, scan_from, chunk.length())
               }
               if sess.rx_total_bytes + rem.length() > LIVE_RUNNER_MAX_LINE_BYTES {
+                fail_close_reason = Some("runner control frame exceeded 8 MiB cap")
                 exited_now = true
                 break
               }
@@ -1738,6 +2820,7 @@ pub fn LiveRunnerManager::handle_role_done(
             if total_len > LIVE_RUNNER_MAX_LINE_BYTES {
               sess.rx_chunks = []
               sess.rx_total_bytes = 0
+              fail_close_reason = Some("runner control frame exceeded 8 MiB cap")
               exited_now = true
               break
             }
@@ -1766,14 +2849,53 @@ pub fn LiveRunnerManager::handle_role_done(
             }
             match station_drivers::decode_runner_frame(line) {
               Some(station_drivers::RunnerFrame::Attached(out_off, err_off, _)) => {
-                if out_off > sess.acked_out { sess.acked_out = out_off }
-                if err_off > sess.acked_err { sess.acked_err = err_off }
+                if !flush_adopted_batch() {
+                  break
+                }
+                match (sess.adopted_instance_id, cur_info_opt) {
+                  (Some(inst_id), Some(info)) => {
+                    match core.agents.get_or_init_runner_instance(
+                      inst_id,
+                      sess.session_key,
+                      info.id,
+                      info.runner_pid,
+                      info.started_at,
+                      out_off,
+                      err_off,
+                      wall_ms,
+                    ) {
+                      Ok((eff_out, eff_err, _)) => {
+                        sess.acked_out = eff_out
+                        sess.acked_err = eff_err
+                        batch_out = eff_out
+                        batch_err = eff_err
+                        sess.adopted_db_initialized = true
+                      }
+                      Err(pe) => {
+                        fail_close_reason = Some("failed to init adopted runner instance: " + pe)
+                        exited_now = true
+                        break
+                      }
+                    }
+                  }
+                  _ => {
+                    if out_off > sess.acked_out { sess.acked_out = out_off }
+                    if err_off > sess.acked_err { sess.acked_err = err_off }
+                    batch_out = sess.acked_out
+                    batch_err = sess.acked_err
+                  }
+                }
                 if !sess.attached {
                   sess.attached = true
                   match sess.phase {
                     LiveRunnerPhase::Ready(info, s) => {
-                      if sess.is_acp {
+                      if sess.is_adopted {
+                        // Adopted runner is already initialized; flush any pending prompt/steers directly!
+                        live_runner_flush_ready(ctx, sess, s, now_ms)
+                      } else if sess.is_acp {
                         live_runner_start_acp_init(ctx, sess, info, s)
+                      } else if sess.is_codex {
+                        live_runner_start_codex_init(ctx, sess, info, s)
                       } else {
                         live_runner_flush_ready(ctx, sess, s, now_ms)
                       }
@@ -1784,41 +2906,126 @@ pub fn LiveRunnerManager::handle_role_done(
               }
               Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
                 let end_pos = at + payload.length().to_int64()
+                if sess.adopted_instance_id is Some(_) {
+                  if !sess.adopted_db_initialized {
+                    match (sess.adopted_instance_id, cur_info_opt) {
+                      (Some(inst_id), Some(info)) => {
+                        match core.agents.get_or_init_runner_instance(
+                          inst_id,
+                          sess.session_key,
+                          info.id,
+                          info.runner_pid,
+                          info.started_at,
+                          0L,
+                          0L,
+                          wall_ms,
+                        ) {
+                          Ok((eff_out, eff_err, _)) => {
+                            sess.acked_out = eff_out
+                            sess.acked_err = eff_err
+                            batch_out = eff_out
+                            batch_err = eff_err
+                            sess.adopted_db_initialized = true
+                          }
+                          Err(pe) => {
+                            fail_close_reason = Some("adopted init failed: " + pe)
+                            exited_now = true
+                            break
+                          }
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                  let cur_off = if stream == "err" { batch_err } else { batch_out }
+                  if end_pos > cur_off {
+                    let eff_payload = if at < cur_off {
+                      let skip = (cur_off - at).to_int()
+                      if skip < payload.length() {
+                        slice_bytes_local(payload, skip, payload.length())
+                      } else {
+                        Bytes::new(0)
+                      }
+                    } else {
+                      payload
+                    }
+                    let eff_at = if at < cur_off { cur_off } else { at }
+                    if eff_payload.length() > 0 {
+                      pending_adopted_batch.push((stream, eff_at, end_pos, eff_payload))
+                      if stream == "err" {
+                        batch_err = end_pos
+                      } else {
+                        batch_out = end_pos
+                      }
+                    }
+                  }
+                }
                 if stream == "err" {
-                  if end_pos > sess.acked_err {
+                  if !(sess.adopted_instance_id is Some(_)) && end_pos > sess.acked_err {
                     sess.acked_err = end_pos
                     ack_dirty = true
                   }
                 } else {
-                  if sess.out_at < 0L {
-                    sess.out_at = at
-                  }
-                  let combined = if sess.out_line_buf.length() == 0 {
-                    payload
+                  let prev_out = if sess.adopted_instance_id is Some(_) {
+                    if end_pos > batch_out { batch_out } else { at }
                   } else {
-                    concat_bytes_local(sess.out_line_buf, payload)
+                    sess.acked_out
                   }
-                  let mut from = 0
-                  for bi in 0..<combined.length() {
-                    if (combined[bi].to_int() & 0xFF) == 10 {
-                      let whole = slice_bytes_local(combined, from, bi)
-                      from = bi + 1
-                      let text = bytes_to_str_local(whole, whole.length())
-                      live_runner_handle_agent_line(ctx, core, sess, text, now_ms, wall_ms)
+                  let parse_payload = if !(sess.adopted_instance_id is Some(_)) && at < prev_out && end_pos > prev_out {
+                    let skip = (prev_out - at).to_int()
+                    if skip < payload.length() {
+                      slice_bytes_local(payload, skip, payload.length())
+                    } else {
+                      Bytes::new(0)
+                    }
+                  } else if !(sess.adopted_instance_id is Some(_)) && end_pos <= prev_out {
+                    Bytes::new(0)
+                  } else {
+                    payload
+                  }
+                  if parse_payload.length() > 0 {
+                    if sess.out_at < 0L {
+                      sess.out_at = at
+                    }
+                    let combined = if sess.out_line_buf.length() == 0 {
+                      parse_payload
+                    } else {
+                      concat_bytes_local(sess.out_line_buf, parse_payload)
+                    }
+                    if combined.length() > LIVE_RUNNER_MAX_STDOUT_LINE_BYTES {
+                      sess.out_line_buf = Bytes::new(0)
+                    } else {
+                      let mut from = 0
+                      for bi in 0..<combined.length() {
+                        if (combined[bi].to_int() & 0xFF) == 10 {
+                          let whole = slice_bytes_local(combined, from, bi)
+                          from = bi + 1
+                          let text = bytes_to_str_local(whole, whole.length())
+                          live_runner_handle_agent_line(ctx, core, sess, text, now_ms, wall_ms)
+                        }
+                      }
+                      sess.out_line_buf = if from < combined.length() {
+                        slice_bytes_local(combined, from, combined.length())
+                      } else {
+                        Bytes::new(0)
+                      }
                     }
                   }
-                  sess.out_line_buf = if from < combined.length() {
-                    slice_bytes_local(combined, from, combined.length())
-                  } else {
-                    Bytes::new(0)
-                  }
-                  if end_pos > sess.acked_out {
+                  if !(sess.adopted_instance_id is Some(_)) && end_pos > sess.acked_out {
                     sess.acked_out = end_pos
                     ack_dirty = true
                   }
                 }
               }
               Some(station_drivers::RunnerFrame::Exit(code_opt, sig_opt)) => {
+                let _ = flush_adopted_batch()
+                match sess.adopted_instance_id {
+                  Some(inst_id) => {
+                    core.agents.record_adopted_runner_exit(inst_id, code_opt, sig_opt)
+                    core.agents.set_adopted_instance_active(inst_id, false)
+                  }
+                  None => ()
+                }
                 let said = station_drivers::describe_exit(code_opt, sig_opt)
                 let outcome_opt = if sess.is_acp {
                   sess.acp_guard.on_exited(said, "")
@@ -1831,6 +3038,12 @@ pub fn LiveRunnerManager::handle_role_done(
                   }
                   _ => ()
                 }
+                // P1: Mark phase Exited & close socket BEFORE `live_runner_finish_turn` so
+                // `Reprompt` can NEVER attempt to write to an exited socket!
+                let _ = live_runner_send_sess(ctx, sess, cur_sock, station_drivers::encode_runner_done())
+                live_runner_close_sock(ctx, conn_id, cur_sock)
+                sess.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(conn_id)
                 let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
                 actor.has_process = false
                 if sess.current_turn_id is Some(_) {
@@ -1842,10 +3055,6 @@ pub fn LiveRunnerManager::handle_role_done(
                   }
                   live_runner_finish_turn(ctx, core, sess, out_str, det_opt, now_ms, wall_ms)
                 }
-                live_runner_send_sess(ctx, sess, cur_sock, station_drivers::encode_runner_done())
-                live_runner_close_sock(ctx, conn_id, cur_sock)
-                sess.phase = LiveRunnerPhase::Exited
-                self.by_conn_id.remove(conn_id)
                 exited_now = true
                 break
               }
@@ -1853,9 +3062,32 @@ pub fn LiveRunnerManager::handle_role_done(
             }
           }
           if !exited_now {
+            let _ = flush_adopted_batch()
+          }
+          if exited_now {
+            match fail_close_reason {
+              Some(reason) => {
+                ctx.log("[live-runner] closing socket fail-stop for " + skey + ": " + reason)
+                live_runner_close_sock(ctx, conn_id, cur_sock)
+                sess.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(conn_id)
+                match sess.adopted_instance_id {
+                  Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+                  None => ()
+                }
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.has_process = false
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(ctx, core, sess, "failed", Some(reason), now_ms, wall_ms)
+                }
+              }
+              None => ()
+            }
+          } else {
             if ack_dirty {
-              let ack_line = station_drivers::encode_runner_ack(sess.acked_out, sess.acked_err, None)
-              live_runner_send_sess(ctx, sess, cur_sock, ack_line)
+              let keep_opt : Option[Int64] = if sess.adopted_instance_id is Some(_) { Some(0L) } else { None }
+              let ack_line = station_drivers::encode_runner_ack(sess.acked_out, sess.acked_err, keep_opt)
+              let _ = live_runner_send_sess(ctx, sess, cur_sock, ack_line)
             }
             let _ = ctx.mux_role.call_async_raw(
               builders_core::MuxToken::Tagged(conn_id, LIVE_RUNNER_TOK_UNIX_READ, cur_sock),
@@ -1869,6 +3101,10 @@ pub fn LiveRunnerManager::handle_role_done(
           live_runner_close_sock(ctx, conn_id, cur_sock)
           sess.phase = LiveRunnerPhase::Exited
           self.by_conn_id.remove(conn_id)
+          match sess.adopted_instance_id {
+            Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
+            None => ()
+          }
           let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
           actor.has_process = false
           if sess.current_turn_id is Some(_) {
@@ -1893,15 +3129,21 @@ pub fn LiveRunnerManager::stop_session(
     Some(s) => s
     None => return false
   }
-  let sock_id = match sess.phase {
-    LiveRunnerPhase::AcpInit(_, s)
-    | LiveRunnerPhase::AcpOpening(_, s)
-    | LiveRunnerPhase::Ready(_, s) => s
+  match sess.phase {
     LiveRunnerPhase::Spawning(_, child, _, _, _) => {
       let _ = child.kill(station_sys::SIG_TERM, true)
       return true
     }
-    _ => return false
+    LiveRunnerPhase::Connecting(info) => {
+      safe_kill_runner_info(info)
+      return true
+    }
+    LiveRunnerPhase::Exited => return false
+    _ => ()
+  }
+  let sock_id = live_runner_sock_of(sess.phase)
+  if sock_id < 0L {
+    return false
   }
   let act = if sess.is_acp {
     sess.acp_guard.abort(now_ms)
@@ -1917,11 +3159,11 @@ pub fn LiveRunnerManager::stop_session(
         None => ""
       }
       let cancel_frame = encode_runtime_cancel(sess.runtime_kind, rsid, sess.prompt_seq)
-      live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(cancel_frame))
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(cancel_frame))
       true
     }
     station_drivers::AbortAction::KillImmediately(_) => {
-      live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
       // timer: kill grace escalation after SIGTERM (5s)
       sess.kill_escalate_at = Some(now_ms + station_drivers::KILL_GRACE_MS)
       true
@@ -1929,7 +3171,45 @@ pub fn LiveRunnerManager::stop_session(
   }
 }
 
-/// Periodic tick enforcing spawn timeouts, `OwnProcessStopGuard`, `AcpTurnGuard`, and `check_steer_silent`.
+/// Stops and removes a single live runner session cleanly (used for archive/delete/idle eviction).
+fn LiveRunnerManager::reclaim_session(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  skey : String,
+  sess : LiveRunnerSession,
+) -> Unit {
+  match sess.phase {
+    LiveRunnerPhase::Spawning(ev_id, child, _, _, _) => {
+      let _ = child.kill(station_sys::SIG_TERM, true)
+      let _ = child.close()
+      self.by_spawn_ev.remove(ev_id)
+    }
+    LiveRunnerPhase::Connecting(info) => {
+      safe_kill_runner_info(info)
+    }
+    LiveRunnerPhase::AcpInit(_, sock_id)
+    | LiveRunnerPhase::AcpOpening(_, sock_id)
+    | LiveRunnerPhase::CodexInit(_, sock_id)
+    | LiveRunnerPhase::CodexOpening(_, sock_id)
+    | LiveRunnerPhase::Ready(_, sock_id) => {
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_done())
+      live_runner_close_sock(ctx, sess.conn_id, sock_id)
+    }
+    LiveRunnerPhase::Exited => ()
+  }
+  sess.phase = LiveRunnerPhase::Exited
+  self.by_conn_id.remove(sess.conn_id)
+  self.sessions.remove(skey)
+  match core.agents.hub.actors.get(skey) {
+    Some(actor) => actor.has_process = false
+    None => ()
+  }
+}
+
+/// Periodic tick enforcing spawn timeouts, `OwnProcessStopGuard`, `AcpTurnGuard`, `check_steer_silent`,
+/// archived/deleted session reclamation, and warm idle runner eviction.
 pub fn LiveRunnerManager::tick(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -1938,11 +3218,28 @@ pub fn LiveRunnerManager::tick(
   wall_ms : Int64,
 ) -> Unit {
   let keys = self.sessions.keys()
+  let idle_candidates : Array[(String, Int64)] = []
   for i in 0..<keys.length() {
     let skey = keys[i]
     let sess = match self.sessions.get(skey) {
       Some(s) => s
       None => continue
+    }
+    // P0-5: Reclaim runners whose session was archived or deleted in SQLite.
+    match core.store.require_open() {
+      Ok(st) => {
+        let should_reclaim = match st.get_session(skey) {
+          Ok(None) => true
+          Ok(Some(r)) => r.archived_at is Some(_)
+          Err(_) => false
+        }
+        if should_reclaim {
+          ctx.log("[live-runner] reclaiming runner for archived/deleted session " + skey)
+          self.reclaim_session(ctx, core, skey, sess)
+          continue
+        }
+      }
+      Err(_) => ()
     }
     match sess.phase {
       LiveRunnerPhase::Spawning(ev_id, child, _, _, deadline) => {
@@ -1960,6 +3257,8 @@ pub fn LiveRunnerManager::tick(
       }
       LiveRunnerPhase::AcpInit(_, sock_id)
       | LiveRunnerPhase::AcpOpening(_, sock_id)
+      | LiveRunnerPhase::CodexInit(_, sock_id)
+      | LiveRunnerPhase::CodexOpening(_, sock_id)
       | LiveRunnerPhase::Ready(_, sock_id) => {
         let kill_why = if sess.is_acp {
           sess.acp_guard.tick(now_ms)
@@ -1969,7 +3268,7 @@ pub fn LiveRunnerManager::tick(
         match kill_why {
           Some(why) => {
             ctx.log("[live-runner] killing runner for " + skey + ": " + why)
-            live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
+            let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
             // timer: kill grace escalation after SIGTERM (5s)
             sess.kill_escalate_at = Some(now_ms + station_drivers::KILL_GRACE_MS)
           }
@@ -1978,7 +3277,7 @@ pub fn LiveRunnerManager::tick(
         match sess.kill_escalate_at {
           Some(esc) => if now_ms >= esc {
             sess.kill_escalate_at = None
-            live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("KILL", true))
+            let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("KILL", true))
           }
           None => ()
         }
@@ -1987,7 +3286,7 @@ pub fn LiveRunnerManager::tick(
             match actor.check_steer_silent(now_ms, core.agents.hub.is_held()) {
               station_sessions::SteerSilentOutcome::EndHung(_) => {
                 ctx.log("[live-runner] ending hung steered turn for " + skey)
-                live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
+                let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
                 // timer: kill grace escalation after SIGTERM (5s)
                 sess.kill_escalate_at = Some(now_ms + station_drivers::KILL_GRACE_MS)
               }
@@ -1996,8 +3295,42 @@ pub fn LiveRunnerManager::tick(
           }
           None => ()
         }
+        // Track idle non-Codex warm runners for TTL / cap eviction (respecting `agy_tracker.holding`).
+        if !sess.is_codex && sess.current_turn_id is None && !sess.agy_tracker.holding {
+          if now_ms - sess.last_turn_ended_at >= LIVE_RUNNER_IDLE_TTL_MS {
+            ctx.log("[live-runner] evicting idle runner past TTL for " + skey)
+            self.reclaim_session(ctx, core, skey, sess)
+          } else {
+            idle_candidates.push((skey, sess.last_turn_ended_at))
+          }
+        }
       }
       _ => ()
+    }
+  }
+  // Evict oldest idle runners if warm cap exceeded.
+  if idle_candidates.length() > LIVE_RUNNER_WARM_CAP {
+    let mut to_evict = idle_candidates.length() - LIVE_RUNNER_WARM_CAP
+    while to_evict > 0 {
+      let mut oldest_idx = -1
+      let mut oldest_ts = 9223372036854775807L
+      for ci in 0..<idle_candidates.length() {
+        let (ck, cts) = idle_candidates[ci]
+        if ck.length() > 0 && cts < oldest_ts {
+          oldest_ts = cts
+          oldest_idx = ci
+        }
+      }
+      if oldest_idx < 0 {
+        break
+      }
+      let (ev_key, _) = idle_candidates[oldest_idx]
+      idle_candidates[oldest_idx] = ("", 9223372036854775807L)
+      match self.sessions.get(ev_key) {
+        Some(ev_sess) => self.reclaim_session(ctx, core, ev_key, ev_sess)
+        None => ()
+      }
+      to_evict = to_evict - 1
     }
   }
 }
@@ -2044,13 +3377,13 @@ pub fn LiveRunnerManager::detach_all_for_handover(
             let _ = child.close()
             self.by_spawn_ev.remove(ev_id)
           }
-          LiveRunnerPhase::AcpInit(_, sock_id)
-          | LiveRunnerPhase::AcpOpening(_, sock_id)
-          | LiveRunnerPhase::Ready(_, sock_id) => {
-            live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_leave())
-            live_runner_close_sock(ctx, sess.conn_id, sock_id)
+          _ => {
+            let sock_id = live_runner_sock_of(sess.phase)
+            if sock_id >= 0L {
+              let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_leave())
+              live_runner_close_sock(ctx, sess.conn_id, sock_id)
+            }
           }
-          _ => ()
         }
         sess.phase = LiveRunnerPhase::Exited
       }
@@ -2063,7 +3396,7 @@ pub fn LiveRunnerManager::detach_all_for_handover(
 }
 
 /// Full shutdown (`SIGTERM`/`SIGINT`): stops all managed `stillfail-runner` processes cleanly
-/// by exact handle/pgid with zero orphan leakage.
+/// by socket protocol first, then `is_runner_live`-verified pgid/pid (zero PID-reuse kills).
 pub fn LiveRunnerManager::stop_all_on_shutdown(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -2083,25 +3416,17 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
             self.by_spawn_ev.remove(ev_id)
           }
           LiveRunnerPhase::Connecting(info) => {
-            if info.pgid > 1 {
-              let _ = station_sys::proc_kill(info.pgid, station_sys::SIG_TERM, true)
-            }
-            if info.runner_pid > 1 {
-              let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_TERM, false)
-            }
+            safe_kill_runner_info(info)
           }
           LiveRunnerPhase::AcpInit(info, sock_id)
           | LiveRunnerPhase::AcpOpening(info, sock_id)
+          | LiveRunnerPhase::CodexInit(info, sock_id)
+          | LiveRunnerPhase::CodexOpening(info, sock_id)
           | LiveRunnerPhase::Ready(info, sock_id) => {
-            live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
-            live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_done())
+            let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
+            let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_done())
             live_runner_close_sock(ctx, sess.conn_id, sock_id)
-            if info.pgid > 1 {
-              let _ = station_sys::proc_kill(info.pgid, station_sys::SIG_TERM, true)
-            }
-            if info.runner_pid > 1 {
-              let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_TERM, false)
-            }
+            safe_kill_runner_info(info)
           }
           LiveRunnerPhase::Exited => ()
         }

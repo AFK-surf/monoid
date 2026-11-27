@@ -18,6 +18,9 @@ mesh_accept = { workspace = true }
 mesh_door = { workspace = true }
 mesh_wire = { workspace = true }
 nodepath = { workspace = true }
+parse_acp = { workspace = true }
+parse_claude = { workspace = true }
+parse_codex = { workspace = true }
 sql_db = { workspace = true }
 sqlite_ffi = { workspace = true }
 sse = { workspace = true }
