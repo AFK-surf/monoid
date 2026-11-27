@@ -219,9 +219,10 @@ export function pastedRefs(pasted: string, here: string): { start: number; end: 
 /// reference to a chat (`ref`: its title is `text` where they wrote one, `[title](its page)`; a chat's page written bare
 /// is one too, `text` its address, the message's `chats` saying its title). How it is set where they marked it as
 /// Markdown marks it (personMarks below), its marks not in `text`: bold `b`, slanted `i`, struck through `s`, code in a
-/// line `code`, a fenced block of code `pre`; the mark of a list's item `li` (a bullet, or its number as written:
-/// the rest of its line, wrapped, starts where the mark ends).
-export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo; b?: true; i?: true; s?: true; code?: true; pre?: true; li?: true };
+/// line `code`, a fenced block of code `pre`; where in `text` the marks of a list's items start (`li`: each a bullet
+/// or its number as written, up to and with the space after it; the rest of its line, wrapped, starts where the mark
+/// ends: said in the run its words are in, not as runs of their own, which a chat's page of lists would pay for).
+export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo; b?: true; i?: true; s?: true; code?: true; pre?: true; li?: number[] };
 
 /// What a person wrote, in runs (WordsRun): references to chats, and web addresses written bare (bareLinks.ts). The one
 /// reading the clients draw a person's words by (what is not a message yet: draftWords).
@@ -333,7 +334,7 @@ function read(text: string, marks: boolean): { runs: WordsRun[]; set: WordsStyle
       for (const item of items) {
         if (item.from < base + done || item.to > base + part.length) continue;
         referring(part.slice(done, item.from - base), base + done);
-        placed.push({ run: { text: /\d/.test(item.mark) ? `${item.mark} ` : "• ", li: true }, at: item.from, len: item.to - item.from });
+        placed.push({ run: { text: /\d/.test(item.mark) ? `${item.mark} ` : "• ", li: [] }, at: item.from, len: item.to - item.from });
         set.push({ start: item.from, end: item.to, li: true });
         done = item.to - base;
       }
@@ -350,7 +351,25 @@ function read(text: string, marks: boolean): { runs: WordsRun[]; set: WordsStyle
       placed.push({ run: { text: /^ .*\S.* $/.test(part[2]!) ? part[2]!.slice(1, -1) : part[2]!, code: true }, at: from, len: part[0].length });
     }
   }
-  return { runs: emphasized(placed, set), set };
+  return { runs: itemsIn(emphasized(placed, set)), set };
+}
+
+/// `runs` with each item's mark (a run of its own as they are read, `li`) put in the plain run before it, or the one
+/// it begins, where it starts there said in that run's `li`.
+function itemsIn(runs: WordsRun[]): WordsRun[] {
+  if (!runs.some((r) => r.li)) return runs;
+  const plain = (r: WordsRun | undefined) => r !== undefined && r.link === undefined && !r.ref && !r.code && !r.pre && !r.b && !r.i && !r.s;
+  const out: WordsRun[] = [];
+  for (const r of runs) {
+    const last = out[out.length - 1];
+    if (!plain(r) || !plain(last)) {
+      out.push(r.li ? { text: r.text, li: [0] } : r);
+      continue;
+    }
+    if (r.li) (last!.li ??= []).push(last!.text.length);
+    last!.text += r.text;
+  }
+  return out;
 }
 
 function wordsOf(text: string, marks = false): WordsRun[] {

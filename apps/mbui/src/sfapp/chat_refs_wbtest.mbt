@@ -287,6 +287,9 @@ test "a list written in the field: its item's mark drawn the bullet its message 
   t.draw()
   let (_, words, caret, _) = t.ime()
   assert_eq((words, caret), ("- 一\n", 4))
+  // (and as its message's runs say an item's mark, where it starts in the run it is in: a run that leads its line)
+  let runs = words_runs([{ "text": "x\n\u{2022} 一\n12) 二", "li": [2, 6] }], 0L)
+  assert_eq(runs.map(fn(r) { (r.text, r.leads()) }), [("x\n", false), ("\u{2022} ", true), ("一\n", false), ("12) ", true), ("二", false)])
   // a new line after words that are no item asks nothing
   t.type_text("好")
   t.type_text("\n")

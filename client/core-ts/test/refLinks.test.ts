@@ -103,18 +103,12 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
     { text: " 这里", b: true },
   ]);
   assert.deepEqual(personWords("列表：\n- 一\n  * 二 **粗**\n1. 有序"), [
-    { text: "列表：\n" },
-    { text: "• ", li: true },
-    { text: "一\n  " },
-    { text: "• ", li: true },
-    { text: "二 " },
+    { text: "列表：\n• 一\n  • 二 ", li: [4, 10] },
     { text: "粗", b: true },
-    { text: "\n" },
-    { text: "1. ", li: true },
-    { text: "有序" },
+    { text: "\n1. 有序", li: [1] },
   ]);
   // (a mark opens after an item's mark as after a space; what only looks like an item is none)
-  assert.deepEqual(personWords("- _斜_"), [{ text: "• ", li: true }, { text: "斜", i: true }]);
+  assert.deepEqual(personWords("- _斜_"), [{ text: "• ", li: [0] }, { text: "斜", i: true }]);
   assert.deepEqual(personWords("5 - 3 = 2\n1.5 倍\n-x"), [{ text: "5 - 3 = 2\n1.5 倍\n-x" }]);
   assert.deepEqual(personWords("代码：\n```ts\nconst a = *b*;\n- x\n```\n后面"), [{ text: "代码：\n" }, { text: "const a = *b*;\n- x", pre: true }, { text: "\n后面" }]);
   // Words written with no thought of Markdown stay as written: a mark with no partner on its line, a name's or a
