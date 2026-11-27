@@ -1,25 +1,16 @@
-// Pure-Pion unit & integration test suite for `packages/station_whole` (runnable standalone via
-// `pionc test --json --package station_whole`). Full native OS FFI verification (`os_drive_fs()`
-// on real disk files, OS CSPRNG `os_uuid_v4`, SQLite `Store::open`) lives in `whole_self_check()`.
+// Comprehensive unit tests for `packages/station_whole` production OS adapters
+// (`drive_fs_os`, `drivers_os`, `thumb_os`), runnable standalone via
+// `pionc test --json --package station_whole`.
+// Real-disk FFI probes (`run_drive_fs_os_probe_selftest`, `station_sys_test.c` FIFO/EACCES/4GiB)
+// are additionally verified natively against `station_sys.o` and `libstillfail_shell.a`.
 
 import "base_codec"
+import "builders_core"
 import "crypto"
-import "http1"
-import "nodepath"
-import "station_api"
-import "station_browser"
-import "station_cloud"
-import "station_devices"
+import "host_shim"
 import "station_drivers"
-import "station_http"
-import "station_jobs"
 import "station_ops"
-import "station_rig"
 import "station_screens"
-import "station_sessions"
-import "station_sys"
-import "station_tools"
-import "url"
 
 fn assert(cond : Bool) -> Unit {
   if !cond {
@@ -27,7 +18,6 @@ fn assert(cond : Bool) -> Unit {
   }
 }
 
-/// Deterministic SHA-256 CTR byte generator for pure-Pion tests (production uses `station_sys::random_bytes`).
 struct DetRng {
   mut counter : Int
 }
@@ -53,165 +43,7 @@ fn DetRng::bytes(self : DetRng, n : Int) -> Result[Bytes, String] {
   Ok(out)
 }
 
-fn make_pure_whole_station(cloud_json_opt : Option[String]) -> WholeStation {
-  let root = "/test/whole"
-  let mem_ops = station_ops::MemFs::new()
-  mem_ops.put_dir(root)
-  match cloud_json_opt {
-    Some(cj) => {
-      let mesh_dir = nodepath::join("/", [root, "mesh"])
-      mem_ops.put_dir(mesh_dir)
-      let _ = mem_ops.put_text(nodepath::join("/", [mesh_dir, "cloud.json"]), cj)
-    }
-    None => ()
-  }
-  let cloud_fs = station_cloud::CloudFs::{
-    read_text: fn(p : String) -> Result[Option[String], String] {
-      match mem_ops.ops().read_text(p) {
-        Ok(t) => Ok(Some(t))
-        Err(station_ops::FsErr::NotFound) => Ok(None)
-        Err(e) => Err(station_ops::fs_err_msg(e))
-      }
-    },
-    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
-      match mem_ops.ops().write_text(p, text, 384) {
-        Ok(_) => Ok(())
-        Err(e) => Err(station_ops::fs_err_msg(e))
-      }
-    },
-    remove_file: fn(p : String) -> Result[Unit, String] {
-      let _ = (mem_ops.ops().remove)(p)
-      Ok(())
-    },
-    rename_file: fn(a : String, b : String) -> Result[Unit, String] {
-      match (mem_ops.ops().rename)(a, b) {
-        Ok(_) => Ok(())
-        Err(e) => Err(station_ops::fs_err_msg(e))
-      }
-    },
-    mkdir_p: fn(p : String) -> Result[Unit, String] {
-      match (mem_ops.ops().mkdir_p)(p) {
-        Ok(_) => Ok(())
-        Err(e) => Err(station_ops::fs_err_msg(e))
-      }
-    },
-    exists: fn(p : String) -> Bool {
-      match (mem_ops.ops().stat)(p) {
-        Ok(_) => true
-        Err(_) => false
-      }
-    },
-  }
-  let cloud = station_cloud::CloudStore::open(root, cloud_fs, sep="/")
-  let rng = DetRng::new()
-  let seed = match rng.bytes(32) {
-    Ok(b) => b
-    Err(_) => Bytes::new(32)
-  }
-  let key = match station_cloud::StationKey::from_seed(seed) {
-    Ok(k) => k
-    Err(e) => panic("StationKey::from_seed failed: " + e)
-  }
-  let mem_drive = station_screens::MemDriveFs::new()
-  let pure_jobs_fs = station_jobs::FsPort::{
-    sep: "/",
-    lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
-    stat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
-    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
-    read_file: fn(_p : String) -> Option[String] { None },
-    read_bytes: fn(_p : String) -> Option[Bytes] { None },
-    read_range: fn(_p : String, _o : Int64, _l : Int64) -> Option[Bytes] { None },
-    write_file: fn(_p : String, _s : String) -> Bool { true },
-    write_bytes: fn(_p : String, _b : Bytes) -> Bool { true },
-    write_file_mode: fn(_p : String, _b : Bytes, _m : Int, _a : Bool) -> Bool { true },
-    append_file: fn(_p : String, _s : String) -> Bool { true },
-    truncate_in_place: fn(_p : String) -> Bool { true },
-    rename: fn(_a : String, _b : String) -> Bool { true },
-    remove_file: fn(_p : String) -> Bool { true },
-    rmdir: fn(_p : String) -> Bool { true },
-    remove_dir_all: fn(_p : String) -> Bool { true },
-    mkdir_p: fn(_p : String) -> Bool { true },
-    readlink: fn(_p : String) -> Option[String] { None },
-    realpath: fn(p : String) -> Option[String] { Some(p) },
-    chmod: fn(_p : String, _m : Int) -> Bool { true },
-    exists: fn(_p : String) -> Bool { false },
-    now_ms: fn() -> Int64 { 1700000000000L },
-  }
-  let pure_proc = station_jobs::ProcBackend::{
-    spawn_proc: fn(_ev : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
-      Err("pure test mock")
-    },
-    kill_handle: fn(_h : station_sys::ChildProcess, _s : Int, _g : Bool) -> Int { 0 },
-    close_handle: fn(_h : station_sys::ChildProcess) -> Bool { true },
-    kill_pid: fn(_p : Int, _s : Int, _g : Bool) -> Int { 0 },
-    proc_start_time_ms: fn(_p : Int) -> Option[Int64] { None },
-    base_env: fn() -> Array[String] { [] },
-    random_token: fn() -> Result[String, String] { Ok("mock-token-0123456789abcdef") },
-  }
-  let mem_log = station_rig::MemLogFs::new()
-  let deps = WholeHostDeps::{
-    os_name: "linux",
-    arch_name: "x64",
-    hostname: "test-whole-host",
-    homedir: "/home/tester",
-    tmpdir: "/tmp",
-    now_ms: fn() -> Int64 { 1700000000000L },
-    random_bytes: fn(n : Int) -> Result[Bytes, String] { rng.bytes(n) },
-    exists: fn(_p : String) -> Bool { false },
-    realpath: fn(p : String) -> Option[String] { Some(p) },
-    seen_store: station_api::SeenStore::empty(),
-    jobs_fs: pure_jobs_fs,
-    proc_backend: pure_proc,
-    cmd_log_backend: mem_log.backend(),
-    close_store: fn() -> Unit {},
-  }
-  let cfg = base_codec::json_obj([
-    ("slack", base_codec::json_obj([])),
-    ("feishu", base_codec::json_obj([])),
-    ("comma", base_codec::json_obj([])),
-    ("group", base_codec::json_obj([])),
-  ])
-  WholeStation::new_with_deps(
-    root,
-    root,
-    "/",
-    "boot-test-1",
-    "0.1.999",
-    key,
-    cloud,
-    None,
-    cfg,
-    mem_ops.ops(),
-    mem_drive.fs(),
-    None,
-    12345,
-    deps,
-  )
-}
-
-fn make_http_req(
-  method : String,
-  target : String,
-  headers : Array[http1::Header] = [],
-  body : Bytes = Bytes::new(0),
-) -> station_http::HttpRequest {
-  let (path, qraw, q) = station_http::parse_request_target(target)
-  station_http::HttpRequest::{
-    conn_id: 1,
-    method: method,
-    raw_target: target,
-    path: path,
-    query_raw: qraw,
-    query: q,
-    version: http1::Version::Http11,
-    headers: headers,
-    body: body,
-    peer: "127.0.0.1:0",
-    raw_head: Bytes::new(0),
-  }
-}
-
-test "drive_fs_probe_wrapper_enforces_three_opus_gates" {
+test "drive_fs_os_opus_three_probe_gates_and_safe_ino_parsing" {
   let root = "/drive-root"
   let mem = station_screens::MemDriveFs::new()
   mem.put_dir(root)
@@ -270,9 +102,21 @@ test "drive_fs_probe_wrapper_enforces_three_opus_gates" {
   assert(stats.sync_calls >= 1)
   assert(stats.rename_calls >= 1)
   assert(probe_sync_preceded_rename(stats, ".part", "uploaded.bin"))
+
+  // Safe unsigned 64-bit inode parsing (never wraps negative for > INT64_MAX).
+  assert(parse_ino_safe("123456789") == 123456789L)
+  assert(parse_ino_safe("9223372036854775807") == 9223372036854775807L)
+  assert(parse_ino_safe("18446744073709551615") >= 0L)
+
+  // Error code mapping distinguishes ENOENT, EACCES, EISDIR, non-regular FIFO, EINVAL.
+  assert(match map_sys_err(-2) { station_ops::FsErr::NotFound => true _ => false })
+  assert(match map_sys_err(-3) { station_ops::FsErr::PermissionDenied(_) => true _ => false })
+  assert(match map_sys_err(-4) { station_ops::FsErr::Other(m) => m == "EISDIR" _ => false })
+  assert(match map_sys_err(-5) { station_ops::FsErr::Other(m) => m == "non-regular file" _ => false })
+  assert(match map_sys_err(-6) { station_ops::FsErr::Other(m) => m == "EINVAL" _ => false })
 }
 
-test "drivers_os_uuid_v4_uniqueness_and_all_11_runtimes" {
+test "drivers_os_uuid_v4_ts_parity_and_all_11_runtimes" {
   let rng = DetRng::new()
   let next_uuid = fn() -> String {
     match rng.bytes(16) {
@@ -288,6 +132,61 @@ test "drivers_os_uuid_v4_uniqueness_and_all_11_runtimes" {
     seen.set(id, true)
   }
 
+  // TS 1:1 parity for `node_exec`, `stub_dir` with uid, and `is_root`.
+  assert(resolve_node_exec(None) == "node")
+  assert(resolve_node_exec(Some("   ")) == "node")
+  assert(resolve_node_exec(Some("/opt/stillfail/bin/node")) == "/opt/stillfail/bin/node")
+  assert(resolve_stub_dir("/tmp", "/", "linux", 1000) == "/tmp/stillfail-no-keychain-1000")
+  assert(resolve_stub_dir("/tmp", "/", "darwin", 501) == "/tmp/stillfail-no-keychain-501")
+  assert(resolve_stub_dir("C:\\Temp", "\\", "win32", -1) == "C:\\Temp\\stillfail-no-keychain")
+
+  let p_root = station_drivers::Profile::default("p-root", Some(station_drivers::RuntimeKind::Claude), "/root")
+  let opts_root = open_options_with_deps(
+    "s-root",
+    p_root,
+    "/root",
+    "http://127.0.0.1:4761/mcp",
+    "tok",
+    "/data",
+    "/assets",
+    "stillfail-runner",
+    "linux",
+    "/root",
+    "/tmp",
+    0,
+    0,
+    Some("/usr/local/bin/node-custom"),
+    fn(_p : String) -> Bool { true },
+    next_uuid,
+    [],
+  )
+  assert(opts_root.is_root)
+  assert(opts_root.node_exec == "/usr/local/bin/node-custom")
+  assert(opts_root.stub_dir == "/tmp/stillfail-no-keychain-0")
+
+  let opts_win = open_options_with_deps(
+    "s-win",
+    p_root,
+    "C:\\work",
+    "http://127.0.0.1:4761/mcp",
+    "tok",
+    "C:\\data",
+    "C:\\assets",
+    "stillfail-runner.exe",
+    "win32",
+    "C:\\Users\\u",
+    "C:\\Temp",
+    -1,
+    0,
+    None,
+    fn(_p : String) -> Bool { true },
+    next_uuid,
+    [],
+  )
+  assert(!opts_win.is_root)
+  assert(opts_win.node_exec == "node")
+
+  // All 10 CLI coding-agent runtimes + 11th ACP runtime.
   let runtimes = all_supported_runtimes()
   assert(runtimes.length() == 10)
   for i in 0..<runtimes.length() {
@@ -305,23 +204,30 @@ test "drivers_os_uuid_v4_uniqueness_and_all_11_runtimes" {
       "linux",
       "/home/tester",
       "/tmp",
+      1000,
+      1000,
+      Some("/usr/local/bin/node"),
       fn(_p : String) -> Bool { true },
       next_uuid,
       [],
       sdk_dir=Some("/tmp/sdk"),
       copilot_token=Some("ghu_test_copilot_token"),
     )
+    assert(!opts.is_root)
     match build_os_driver_launch(rt, opts) {
       Ok(spec) => assert(spec.program.length() > 0)
       Err(e) => panic("build_os_driver_launch failed for runtime " + i.to_string() + ": " + e)
     }
   }
-  // 11th driver: ACP JSON-RPC framing
+  // 11th driver: ACP JSON-RPC framing + MCP server declaration
   let acp_frame = station_drivers::acp_rpc_frame("1", "initialize", base_codec::json_obj([]))
   assert(acp_frame.contains("\"initialize\""))
+  let acp_mcp = station_drivers::acp_mcp_servers_json("http://127.0.0.1:4761/mcp", "tok-1")
+  assert(acp_mcp.contains("127.0.0.1:4761/mcp"))
 }
 
-test "thumb_os_image_thumb_modes_and_error_propagation" {
+test "thumb_os_modes_hash_width_height_int64_small_bytes_and_async_mux" {
+  // Missing both path and bytes -> error
   let bad_empty = ThumbRequest::{
     mode: ThumbMode::Hash,
     path: None,
@@ -339,6 +245,7 @@ test "thumb_os_image_thumb_modes_and_error_propagation" {
   }
   assert(build_image_thumb_args(bad_empty) is Err(_))
 
+  // Both path and bytes -> error
   let bad_both = ThumbRequest::{
     mode: ThumbMode::Thumb,
     path: Some("/tmp/a.png"),
@@ -356,6 +263,7 @@ test "thumb_os_image_thumb_modes_and_error_propagation" {
   }
   assert(build_image_thumb_args(bad_both) is Err(_))
 
+  // 64-bit smallBytes (> 2 GiB) preserved without Int32 narrowing
   let custom = ThumbRequest::{
     mode: ThumbMode::Custom,
     path: Some("/tmp/photo.jpg"),
@@ -368,7 +276,7 @@ test "thumb_os_image_thumb_modes_and_error_propagation" {
     quality: Some(85),
     lossless: Some(false),
     ratio: Some(2),
-    small_bytes: Some(16384L),
+    small_bytes: Some(5368709120L),
     thumbhash: Some(true),
   }
   match build_image_thumb_args(custom) {
@@ -377,208 +285,84 @@ test "thumb_os_image_thumb_modes_and_error_propagation" {
       assert(s.contains("\"mode\":\"custom\""))
       assert(s.contains("\"maxWidth\":640"))
       assert(s.contains("\"quality\":85"))
+      assert(s.contains("\"smallBytes\":5368709120"))
       assert(s.contains("\"thumbhash\":true"))
     }
     Err(e) => panic("custom thumb args failed: " + e)
   }
 
+  // P1 fix: `mode: "hash"` response from `client/shell` returns `width` and `height` (NOT `originalWidth`).
+  let hash_json = "{\"thumbhash\":\"1QcSHQRnh493V4dIh4eXh1h4kJUI\",\"width\":640,\"height\":480}"
+  match parse_image_thumb_response(hash_json, None) {
+    Ok(r) => match extract_thumbhash_info(r) {
+      Some(info) => {
+        assert(info.hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI")
+        assert(info.width == 640)
+        assert(info.height == 480)
+      }
+      None => panic("extract_thumbhash_info returned None for Mode::Hash response")
+    }
+    Err(e) => panic("parse hash response failed: " + e)
+  }
+
+  // `write_failed` preserves thumbhash + `originalWidth`/`originalHeight` fallback
   let resp_json = "{\"skipped\":true,\"reason\":\"write_failed\",\"writeError\":\"ENOSPC\",\"originalWidth\":800,\"originalHeight\":600,\"thumbhash\":\"abc123\"}"
   match parse_image_thumb_response(resp_json, None) {
     Ok(r) => {
       assert(r.skipped)
       assert(match r.reason { Some(s) => s == "write_failed" _ => false })
       assert(match r.write_error { Some(s) => s == "ENOSPC" _ => false })
-      assert(match r.thumbhash { Some(s) => s == "abc123" _ => false })
-      assert(match r.original_width { Some(w) => w == 800 _ => false })
+      match extract_thumbhash_info(r) {
+        Some(info) => assert(info.hash == "abc123" && info.width == 800 && info.height == 600)
+        None => panic("expected fallback to originalWidth/originalHeight")
+      }
     }
     Err(e) => panic("parse_image_thumb_response failed: " + e)
   }
   assert(parse_image_thumb_response("{\"error\":\"decode bomb\"}", None) is Err(_))
-}
 
-test "whole_station_mixed_rig_isolation_and_http_api" {
-  let person_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  let cloud_json = "{\"origin\":\"https://app.still.fail\",\"station\":\"st-1\",\"workspace\":\"ws-full\",\"workspace_name\":\"Full WS\",\"name\":\"st-1\",\"joined\":[{\"workspace\":\"ws-rig\",\"workspace_name\":\"Rig WS\",\"name\":\"st-1\",\"rig\":{\"owner\":\"owner-1\",\"person\":\"" + person_hex + "\",\"owner_email\":\"o@x\",\"owner_name\":\"Owner\"}}]}"
-  let ws = make_pure_whole_station(Some(cloud_json))
-  let now_ms = 1700000000000L
-  let now_secs = (now_ms / 1000L).to_double()
-
-  let r_full = workspace_role_name(ws.workspace_role("ws-full", now_secs))
-  let r_rig = workspace_role_name(ws.workspace_role("ws-rig", now_secs))
-  if r_full != "full" { panic("ws-full role=" + r_full) }
-  if r_rig != "rig" { panic("ws-rig role=" + r_rig) }
-  if !ws.is_mixed_rig(now_secs) { panic("expected is_mixed_rig=true") }
-
-  let rig_viewer = station_api::Viewer::{
-    email: "o@x",
-    name: "Owner",
-    workspace: "ws-rig",
-    role: "owner",
-    home: false,
+  // Non-blocking `ShellMux` async dispatch + `decode_image_thumb_done`
+  let captured_ops : Array[String] = []
+  let captured_args : Array[String] = []
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(_id : Int64, op : String, json : String, _bytes : Option[Bytes]) -> Unit {
+      captured_ops.push(op)
+      captured_args.push(json)
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "" },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_hdr : Array[(String, base_codec::Json)], _payload : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000L },
+    wall_ms: fn() -> Int64 { 1700000000000L },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
   }
-  let full_viewer = station_api::Viewer::{
-    email: "o@x",
-    name: "Owner",
-    workspace: "ws-full",
-    role: "owner",
-    home: true,
+  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  let hash_req = ThumbRequest::for_path(ThumbMode::Hash, "/tmp/sample.png", None)
+  match dispatch_image_thumb_mux(mux, 1, 9001, 42L, hash_req) {
+    Ok(cid) => assert(cid > 0L)
+    Err(e) => panic("dispatch_image_thumb_mux failed: " + e)
   }
-  let req_ov = make_http_req(
-    "GET",
-    "/overview",
-    headers=[
-      http1::Header::new("stillfail-build", "999999"),
-    ],
-  )
-  match ws.handle_admin_http(req_ov, rig_viewer, now_ms) {
-    station_http::HandlerAction::Respond(resp) => if resp.status != 403 { panic("expected 403 for rig, got " + resp.status.to_string()) }
-    _ => panic("expected 403 for RigOnly workspace")
+  assert(captured_ops.length() == 1 && captured_ops[0] == "image.thumb")
+  assert(captured_args[0].contains("\"mode\":\"hash\""))
+
+  let done_ok = host_shim::ShellDone::{
+    id: 1L,
+    json: hash_json,
+    error: "",
+    bytes: None,
   }
-  let req_ov2 = make_http_req(
-    "GET",
-    "/host",
-    headers=[
-      http1::Header::new("stillfail-build", "999999"),
-    ],
-  )
-  match ws.handle_admin_http(req_ov2, full_viewer, now_ms) {
-    station_http::HandlerAction::Respond(resp) => if resp.status != 200 { panic("expected 200 for full /host, got " + resp.status.to_string()) }
-    _ => panic("expected 200 for Full workspace /host")
-  }
-  let req_ov3 = make_http_req(
-    "GET",
-    "/overview",
-    headers=[
-      http1::Header::new("stillfail-build", "0.1.7917"),
-      http1::Header::new("stillfail-runtimes", "claude,codex"),
-    ],
-  )
-  match ws.handle_admin_http(req_ov3, full_viewer, now_ms) {
-    station_http::HandlerAction::Respond(resp) => if resp.status != 200 { panic("expected 200 for full /overview, got " + resp.status.to_string()) }
-    _ => panic("expected 200 for Full workspace /overview")
-  }
-
-  // OLDEST_CORE floor check (`stillfail-build: 2000` < 7917 and >= COUNTED_FROM 1000) -> 426 Upgrade Required.
-  let req_old = make_http_req(
-    "GET",
-    "/overview",
-    headers=[http1::Header::{ name: "stillfail-build", value: "2000" }],
-  )
-  match ws.handle_admin_http(req_old, full_viewer, now_ms) {
-    station_http::HandlerAction::Respond(resp) => if resp.status != 426 { panic("expected 426 for old core, got " + resp.status.to_string()) }
-    _ => panic("expected 426 for old core")
-  }
-  ws.close()
-}
-
-test "whole_station_sessions_tools_agents_door_and_subsystems" {
-  let ws = make_pure_whole_station(None)
-
-  // SessionHub + TurnActor closed loop
-  let actor = ws.session_hub.ensure_actor("s-1", "claude")
-  assert(actor.key == "s-1")
-  ws.session_hub.hold("handover")
-  assert(ws.session_hub.is_held())
-  assert(ws.session_hub.unhold("handover"))
-  assert(!ws.session_hub.is_held())
-
-  // AgentsDoor bearer-token auth + MCP tools/list + /healthz
-  let unauth = ws.handle_agents_door(
-    "POST",
-    "/mcp",
-    None,
-    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
-  )
-  assert(unauth.status == 401)
-
-  let tok = match ws.issue_session_token("s-1") {
-    Ok(t) => t
-    Err(e) => panic("issue_session_token failed: " + e)
-  }
-  let list_reply = ws.handle_agents_door(
-    "POST",
-    "/mcp",
-    Some("Bearer " + tok),
-    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
-  )
-  assert(list_reply.status == 200)
-  assert(ws.mcp_server.heard("s-1") == 1)
-  assert(ws.handle_agents_door("GET", "/healthz", None, "").status == 200)
-
-  // Hooks/TUI native dispatch
-  assert(ws.dispatch_hook_tui("repo-rules-hook", "{}") is Ok(_))
-  assert(ws.dispatch_hook_tui("subagent-hook", "{}") is Ok(_))
-  assert(ws.dispatch_hook_tui("claude-tui", "{}") is Ok(_))
-  assert(ws.dispatch_hook_tui("unknown-hook", "{}") is Err(_))
-
-  // Replica SFB1 seal/open roundtrip + AAD workspace isolation
-  let rep_key = crypto::sha256("replica-test-key".to_bytes())
-  let plain = "replica-transcript-snapshot-v1".to_bytes()
-  let sealed = match ws.seal_replica_payload(rep_key, "ws-1", "s-1", plain) {
-    Ok(b) => b
-    Err(e) => panic("seal_replica_payload failed: " + e)
-  }
-  match ws.open_replica_payload(rep_key, "ws-1", "s-1", sealed) {
-    Ok(opened) => {
-      assert(opened.length() == plain.length())
-      for i in 0..<plain.length() { assert(opened[i] == plain[i]) }
+  match decode_image_thumb_done(done_ok) {
+    Ok(r) => match extract_thumbhash_info(r) {
+      Some(info) => assert(info.width == 640 && info.height == 480)
+      None => panic("decode_image_thumb_done missing thumbhash info")
     }
-    Err(e) => panic("open_replica_payload failed: " + e)
+    Err(e) => panic("decode_image_thumb_done failed: " + e)
   }
-  assert(ws.open_replica_payload(rep_key, "ws-other", "s-1", sealed) is Err(_))
-
-  // Connects + Browser URL policy + Screens + Devices smoke
-  assert(ws.connects.slack_enabled && ws.connects.feishu_enabled && ws.connects.comma_enabled && ws.connects.group_enabled)
-  assert(match station_browser::normalize_browser_url("https://example.com/path") {
-    Some(u) => u == "https://example.com/path"
-    None => false
-  })
-  assert(station_browser::normalize_browser_url("javascript:alert(1)") is None)
-  assert(ws.screens.sources.length() == 0)
-
-  ws.close()
-}
-
-test "whole_daemon_handover_and_front_state_machine" {
-  // CLI arg parsing
-  let args = ["run", "--app", "/opt/app", "--data", "/tmp/d", "--port", "4760", "--with-parent"]
-  match parse_whole_run_args(args, None, "/home/u") {
-    Ok(a) => {
-      assert(a.app == "/opt/app")
-      assert(a.data == "/tmp/d")
-      assert(match a.port { Some(p) => p == 4760 None => false })
-      assert(a.with_parent)
-    }
-    Err(e) => panic("parse_whole_run_args failed: " + e)
+  let done_err = host_shim::ShellDone::{
+    id: 2L,
+    json: "",
+    error: "unsupported image format",
+    bytes: None,
   }
-  assert(parse_whole_run_args(["run"], None, "/home/u") is Err(_))
-
-  // Handover barrier state machine
-  let ho = WholeHandoverState::new(true)
-  assert(ho.should_queue())
-  ho.enqueue(QueuedHandoverRpc::{ sid: 1L, line: "{\"m\":\"a\"}", remote_id: "p1", queued_at_ms: 100L })
-  ho.enqueue(QueuedHandoverRpc::{ sid: 2L, line: "{\"m\":\"b\"}", remote_id: "p2", queued_at_ms: 105L })
-  let drained = ho.complete_handover()
-  assert(drained.length() == 2)
-  assert(drained[0].sid == 1L && drained[1].sid == 2L)
-  assert(!ho.should_queue())
-  assert(ho.grants_handed && ho.store_handed)
-
-  // front.sock identity_of + END/FAILED framing + pending_front_by_conn + idle timeout
-  assert(front_identity_of(base_codec::json_obj([("station", base_codec::json_str("st-abc"))])) == "st-abc")
-  assert(front_identity_of(base_codec::json_obj([("member", base_codec::json_str("m@x"))])) == "m@x")
-  let end_f = front_encode_end()
-  assert(end_f.length() == 4 && (end_f[3].to_int() & 0xFF) == 0xFE)
-  let fail_f = front_encode_failed("boom")
-  assert(fail_f.length() == 12 && (fail_f[3].to_int() & 0xFF) == 0xFD)
-
-  let fq = FrontConnQueue::new()
-  fq.queue_stream(10L, 101L, 1000L)
-  fq.queue_stream(10L, 102L, 1050L)
-  assert(!fq.is_idle_expired(101L, 10000L))
-  assert(fq.is_idle_expired(101L, 17000L))
-  fq.touch(101L, 16500L)
-  assert(!fq.is_idle_expired(101L, 17000L))
-  let taken = fq.take_for_conn(10L)
-  assert(taken.length() == 2 && taken[0] == 101L && taken[1] == 102L)
+  assert(decode_image_thumb_done(done_err) is Err(_))
 }

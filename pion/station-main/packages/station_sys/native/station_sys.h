@@ -142,8 +142,11 @@ int32_t sts_unlink(const char *path);
 int32_t sts_rmdir(const char *path);
 void *sts_readlink(const char *path, int64_t *out_len);
 void *sts_realpath(const char *path, int64_t *out_len);
+void *sts_realpath_err(const char *path, int64_t *out_len, int32_t *out_err);
 void *sts_lstat(const char *path, int64_t *out_len);
+void *sts_lstat_err(const char *path, int64_t *out_len, int32_t *out_err);
 void *sts_stat(const char *path, int64_t *out_len);
+void *sts_stat_err(const char *path, int64_t *out_len, int32_t *out_err);
 int32_t sts_chmod(const char *path, int32_t mode);
 int32_t sts_truncate_in_place(const char *path, int64_t size);
 void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out_len);
@@ -169,6 +172,8 @@ int32_t sts_write_at(
     int64_t *out_size,
     int32_t *out_short);
 int32_t sts_sync_file(const char *path);
+int32_t sts_getuid(void);
+int32_t sts_geteuid(void);
 int32_t sts_write_file_mode(
     const char *path,
     const uint8_t *data,

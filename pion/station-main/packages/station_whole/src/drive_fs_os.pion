@@ -1,6 +1,7 @@
 // Production OS `DriveFs` adapter over `station_sys` positioned I/O (`pread` / `pwrite` / `fsync`
-// on POSIX; `ReadFile`+`OVERLAPPED` / `WriteFile`+`OVERLAPPED`+`SetEndOfFile`+`FlushFileBuffers`
-// on Windows) plus an instrumenting probe wrapper for Opus gate verification.
+// on POSIX with `O_NONBLOCK` + `S_ISREG` anti-FIFO guard and `O_NOFOLLOW` on `.part` writes;
+// `ReadFile`+`OVERLAPPED` / `WriteFile`+`OVERLAPPED`+`SetEndOfFile`+`FlushFileBuffers` on Windows)
+// plus an instrumenting probe wrapper for Opus gate verification.
 
 import "nodepath"
 import "station_ops"
@@ -14,6 +15,10 @@ fn map_sys_err(code : Int) -> station_ops::FsErr {
     station_ops::FsErr::PermissionDenied("EACCES")
   } else if code == -4 {
     station_ops::FsErr::Other("EISDIR")
+  } else if code == -5 {
+    station_ops::FsErr::Other("non-regular file")
+  } else if code == -6 {
+    station_ops::FsErr::Other("EINVAL")
   } else {
     station_ops::FsErr::Other("EIO")
   }
@@ -53,15 +58,43 @@ fn parse_i64_dec(s : String) -> Int64 {
     idx = 1
   }
   let mut acc = 0.to_int64()
+  let max_div10 = 922337203685477580L
   for i in idx..<raw.length() {
     let b = raw[i].to_int() & 0xFF
     if b >= 48 && b <= 57 {
-      acc = acc * 10.to_int64() + (b - 48).to_int64()
+      let d = (b - 48).to_int64()
+      if acc > max_div10 || (acc == max_div10 && d > 7L) {
+        acc = 9223372036854775807L
+      } else {
+        acc = acc * 10L + d
+      }
     } else {
       break
     }
   }
-  if neg { 0.to_int64() - acc } else { acc }
+  if neg { 0L - acc } else { acc }
+}
+
+/// Safely parses an unsigned 64-bit decimal inode string without signed overflow wraparound.
+/// Values exceeding `Int64` max are folded cleanly into `[0, INT64_MAX]` via bit-masking.
+pub fn parse_ino_safe(s : String) -> Int64 {
+  let raw = s.to_bytes()
+  let mut acc = 0L
+  let max_div10 = 922337203685477580L
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 48 || b > 57 {
+      break
+    }
+    let d = (b - 48).to_int64()
+    if acc > max_div10 || (acc == max_div10 && d > 7L) {
+      // Fold high bit rather than wrapping negative.
+      acc = ((acc & 0x0FFFFFFFFFFFFFFFL) * 10L + d) & 0x7FFFFFFFFFFFFFFFL
+    } else {
+      acc = acc * 10L + d
+    }
+  }
+  acc
 }
 
 fn parse_stat_meta(raw : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
@@ -72,7 +105,7 @@ fn parse_stat_meta(raw : String) -> Result[station_ops::FileMeta, station_ops::F
   let kind = parts[0]
   let size = parse_i64_dec(parts[1])
   let mtime_ms = parse_i64_dec(parts[3])
-  let ino = parse_i64_dec(parts[5])
+  let ino = parse_ino_safe(parts[5])
   let mode = if parts.length() >= 7 { parse_i64_dec(parts[6]).to_int() } else { 420 }
   Ok(station_ops::FileMeta::{
     size: size,
@@ -89,7 +122,11 @@ fn parse_stat_meta(raw : String) -> Result[station_ops::FileMeta, station_ops::F
 /// Real OS `DriveFs` backed by `station_sys` positioned `pread`/`pwrite`/`fsync`.
 pub fn os_drive_fs() -> station_screens::DriveFs {
   station_screens::DriveFs::{
-    read_range: fn(path : String, offset : Int64, length : Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
+    read_range: fn(
+      path : String,
+      offset : Int64,
+      length : Int,
+    ) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
       match station_sys::read_range_meta(path, offset, length.to_int64()) {
         Ok((bytes, total, mtime)) => Ok((bytes, total, mtime))
         Err(code) => Err(map_sys_err(code))
@@ -123,20 +160,26 @@ pub fn os_drive_fs() -> station_screens::DriveFs {
       }
     },
     read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
-      let meta = match station_sys::stat_raw(path) {
-        Some(raw) => match parse_stat_meta(raw) {
+      let meta = match station_sys::stat_raw_err(path) {
+        Ok(raw) => match parse_stat_meta(raw) {
           Ok(m) => m
           Err(e) => return Err(e)
         }
-        None => return Err(station_ops::FsErr::NotFound)
+        Err(code) => return Err(map_sys_err(code))
       }
       if meta.is_dir {
         return Err(station_ops::FsErr::Other("EISDIR"))
       }
-      if meta.size <= 0.to_int64() {
+      if !meta.is_file {
+        return Err(station_ops::FsErr::Other("non-regular file"))
+      }
+      if meta.size <= 0L {
         return Ok(Bytes::new(0))
       }
-      match station_sys::read_range_meta(path, 0.to_int64(), meta.size) {
+      if meta.size > 2147483647L {
+        return Err(station_ops::FsErr::Other("file too large for read_bytes"))
+      }
+      match station_sys::read_range_meta(path, 0L, meta.size) {
         Ok((bytes, _, _)) => Ok(bytes)
         Err(code) => Err(map_sys_err(code))
       }
@@ -149,21 +192,21 @@ pub fn os_drive_fs() -> station_screens::DriveFs {
       }
     },
     stat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
-      match station_sys::stat_raw(path) {
-        Some(raw) => parse_stat_meta(raw)
-        None => Err(station_ops::FsErr::NotFound)
+      match station_sys::stat_raw_err(path) {
+        Ok(raw) => parse_stat_meta(raw)
+        Err(code) => Err(map_sys_err(code))
       }
     },
     lstat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
-      match station_sys::lstat_raw(path) {
-        Some(raw) => parse_stat_meta(raw)
-        None => Err(station_ops::FsErr::NotFound)
+      match station_sys::lstat_raw_err(path) {
+        Ok(raw) => parse_stat_meta(raw)
+        Err(code) => Err(map_sys_err(code))
       }
     },
     realpath: fn(path : String) -> Result[String, station_ops::FsErr] {
-      match station_sys::realpath(path) {
-        Some(p) => Ok(p)
-        None => Err(station_ops::FsErr::NotFound)
+      match station_sys::realpath_err(path) {
+        Ok(p) => Ok(p)
+        Err(code) => Err(map_sys_err(code))
       }
     },
     mkdir_p: fn(path : String) -> Result[Unit, station_ops::FsErr] {
@@ -184,16 +227,20 @@ pub fn os_drive_fs() -> station_screens::DriveFs {
       if station_sys::unlink(path) || station_sys::rmdir(path) {
         Ok(())
       } else {
-        match station_sys::lstat_raw(path) {
-          None => Err(station_ops::FsErr::NotFound)
-          Some(_) => Err(station_ops::FsErr::Other("remove failed"))
+        match station_sys::lstat_raw_err(path) {
+          Err(-2) => Err(station_ops::FsErr::NotFound)
+          Err(code) => Err(map_sys_err(code))
+          Ok(_) => Err(station_ops::FsErr::Other("remove failed"))
         }
       }
     },
     readdir: fn(path : String) -> Result[Array[String], station_ops::FsErr] {
       match station_sys::read_dir(path) {
         Some(list) => Ok(list)
-        None => Err(station_ops::FsErr::NotFound)
+        None => match station_sys::stat_raw_err(path) {
+          Err(code) => Err(map_sys_err(code))
+          Ok(_) => Err(station_ops::FsErr::Other("readdir failed"))
+        }
       }
     },
   }
@@ -217,11 +264,11 @@ pub struct DriveProbeStats {
 
 pub fn DriveProbeStats::new() -> DriveProbeStats {
   DriveProbeStats::{
-    total_bytes_read: 0.to_int64(),
+    total_bytes_read: 0L,
     read_range_calls: 0,
     read_bytes_calls: 0,
     part_read_calls: 0,
-    part_bytes_read: 0.to_int64(),
+    part_bytes_read: 0L,
     write_at_calls: 0,
     sync_calls: 0,
     rename_calls: 0,
@@ -241,7 +288,11 @@ pub fn instrument_drive_fs(
   stats : DriveProbeStats,
 ) -> station_screens::DriveFs {
   station_screens::DriveFs::{
-    read_range: fn(path : String, offset : Int64, length : Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
+    read_range: fn(
+      path : String,
+      offset : Int64,
+      length : Int,
+    ) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
       stats.read_range_calls = stats.read_range_calls + 1
       let is_part = is_part_file_path(path)
       if is_part {
@@ -336,7 +387,11 @@ pub fn instrument_drive_fs(
 }
 
 /// Checks whether a `sync:<src>` occurred strictly before `rename:<src>-><dst>` in `ops_log`.
-pub fn probe_sync_preceded_rename(stats : DriveProbeStats, src_contains : String, dst_contains : String) -> Bool {
+pub fn probe_sync_preceded_rename(
+  stats : DriveProbeStats,
+  src_contains : String,
+  dst_contains : String,
+) -> Bool {
   let mut last_sync_idx = -1
   let mut rename_idx = -1
   for i in 0..<stats.ops_log.length() {
@@ -350,4 +405,88 @@ pub fn probe_sync_preceded_rename(stats : DriveProbeStats, src_contains : String
     }
   }
   last_sync_idx >= 0 && rename_idx > last_sync_idx
+}
+
+/// Real-disk self-test verifying all three Opus DriveFs probes (`read <= len`, `.part` reads == 0,
+/// `fsync` strictly before `rename`) against live OS files via `os_drive_fs()`.
+pub fn run_drive_fs_os_probe_selftest(root : String) -> Result[String, String] {
+  if !station_sys::mkdir_p(root) {
+    return Err("mkdir_p failed: " + root)
+  }
+  let stats = DriveProbeStats::new()
+  let probed_fs = instrument_drive_fs(os_drive_fs(), stats)
+  let drive = station_screens::Drive::new(
+    probed_fs,
+    [root],
+    [],
+    station_sys::os_name() == "win32",
+    root,
+    station_screens::TrashKind::Freedesktop,
+  )
+
+  let big_path = nodepath::join("/", [root, "big.bin"])
+  let big_data = Bytes::new(131072)
+  for i in 0..<131072 {
+    big_data[i] = ((i * 31 + 7) & 0xFF) as Byte
+  }
+  if !station_sys::write_file_mode(big_path, big_data, mode=420, append=false) {
+    return Err("write big.bin failed")
+  }
+  match drive.read(root, "big.bin", 40960L, 64, false) {
+    Ok((chunk, total_sz, _, _)) => {
+      if chunk.length() != 64 || total_sz != 131072L {
+        let _ = station_sys::unlink(big_path)
+        let _ = station_sys::rmdir(root)
+        return Err("drive.read size mismatch")
+      }
+      for i in 0..<64 {
+        if chunk[i] != big_data[40960 + i] {
+          let _ = station_sys::unlink(big_path)
+          let _ = station_sys::rmdir(root)
+          return Err("drive.read byte mismatch")
+        }
+      }
+    }
+    Err(e) => {
+      let _ = station_sys::unlink(big_path)
+      let _ = station_sys::rmdir(root)
+      return Err("drive.read failed: " + e.message)
+    }
+  }
+  if stats.total_bytes_read > 64L || stats.read_bytes_calls != 0 {
+    let _ = station_sys::unlink(big_path)
+    let _ = station_sys::rmdir(root)
+    return Err("drive.read exceeded range budget")
+  }
+
+  let c1 = "chunk-one-real-disk-0123456789".to_bytes()
+  let c2 = "chunk-two-real-disk-abcdefghij".to_bytes()
+  let up_total = (c1.length() + c2.length()).to_int64()
+  let up_id = "os-probe-upload-01"
+  match drive.upload(root, "uploaded.bin", up_id, 0L, up_total, c1, true, false, 1700000000000L) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = station_sys::unlink(big_path)
+      return Err("upload chunk 1 failed: " + e.message)
+    }
+  }
+  match drive.upload(root, "uploaded.bin", up_id, c1.length().to_int64(), up_total, c2, true, false, 1700000000010L) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = station_sys::unlink(big_path)
+      return Err("upload chunk 2 failed: " + e.message)
+    }
+  }
+  let up_path = nodepath::join("/", [root, "uploaded.bin"])
+  let sync_ok = probe_sync_preceded_rename(stats, ".part", "uploaded.bin")
+  let _ = station_sys::unlink(big_path)
+  let _ = station_sys::unlink(up_path)
+  let _ = station_sys::rmdir(root)
+  if stats.part_read_calls != 0 || stats.part_bytes_read != 0L {
+    return Err(".part read count != 0")
+  }
+  if !sync_ok {
+    return Err("fsync did not precede rename")
+  }
+  Ok("drive_fs_os real-disk probe ok (bytes_read=" + stats.total_bytes_read.to_string() + ", part_reads=0, sync_before_rename=true)")
 }

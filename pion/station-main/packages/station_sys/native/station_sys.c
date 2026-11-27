@@ -2123,8 +2123,16 @@ void *sts_readlink(const char *path, int64_t *out_len) {
     return NULL;
 }
 
-void *sts_realpath(const char *path, int64_t *out_len) {
+static int32_t sts_win_map_err(DWORD err) {
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) return -2;
+    if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION || err == ERROR_PRIVILEGE_NOT_HELD) return -3;
+    if (err == ERROR_DIRECTORY) return -4;
+    return -1;
+}
+
+void *sts_realpath_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return NULL;
@@ -2136,11 +2144,17 @@ void *sts_realpath(const char *path, int64_t *out_len) {
         OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS,
         NULL);
+    DWORD open_err = GetLastError();
     free(w);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_err != NULL) *out_err = sts_win_map_err(open_err);
+        return NULL;
+    }
     DWORD need = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED);
     if (need == 0) {
+        DWORD e = GetLastError();
         CloseHandle(h);
+        if (out_err != NULL) *out_err = sts_win_map_err(e);
         return NULL;
     }
     wchar_t *buf = (wchar_t *)malloc((size_t)(need + 1) * sizeof(wchar_t));
@@ -2149,9 +2163,11 @@ void *sts_realpath(const char *path, int64_t *out_len) {
         return NULL;
     }
     DWORD got = GetFinalPathNameByHandleW(h, buf, need + 1, FILE_NAME_NORMALIZED);
+    DWORD gerr = GetLastError();
     CloseHandle(h);
     if (got == 0 || got > need) {
         free(buf);
+        if (out_err != NULL) *out_err = sts_win_map_err(gerr);
         return NULL;
     }
     wchar_t *src = buf;
@@ -2166,17 +2182,25 @@ void *sts_realpath(const char *path, int64_t *out_len) {
     if (u8 == NULL) return NULL;
     void *res = dup_bytes(u8, strlen(u8), out_len);
     free(u8);
+    if (res != NULL && out_err != NULL) *out_err = 0;
     return res;
 }
 
-void *sts_lstat(const char *path, int64_t *out_len) {
+void *sts_realpath(const char *path, int64_t *out_len) {
+    return sts_realpath_err(path, out_len, NULL);
+}
+
+void *sts_lstat_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return NULL;
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (!GetFileAttributesExW(w, GetFileExInfoStandard, &fad)) {
+        DWORD e = GetLastError();
         free(w);
+        if (out_err != NULL) *out_err = sts_win_map_err(e);
         return NULL;
     }
     const char *kind = (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? "link"
@@ -2203,37 +2227,59 @@ void *sts_lstat(const char *path, int64_t *out_len) {
         buf, sizeof(buf), "%s|%llu|0|%lld|%llu|%llu",
         kind, (unsigned long long)fsz, (long long)mtime_ms,
         (unsigned long long)dev, (unsigned long long)ino);
-    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    void *res = n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    if (res != NULL && out_err != NULL) *out_err = 0;
+    return res;
 }
 
-void *sts_stat(const char *path, int64_t *out_len) {
+void *sts_lstat(const char *path, int64_t *out_len) {
+    return sts_lstat_err(path, out_len, NULL);
+}
+
+void *sts_stat_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return NULL;
     HANDLE h = CreateFileW(
         w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD open_err = GetLastError();
     free(w);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_err != NULL) *out_err = sts_win_map_err(open_err);
+        return NULL;
+    }
     BY_HANDLE_FILE_INFORMATION bi;
     if (!GetFileInformationByHandle(h, &bi)) {
+        DWORD e = GetLastError();
         CloseHandle(h);
+        if (out_err != NULL) *out_err = sts_win_map_err(e);
         return NULL;
     }
     CloseHandle(h);
     const char *kind = (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "dir" : "file";
-    uint64_t fsz = ((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow;
+    uint64_t fsz = (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                     ? 0ULL
+                     : (((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow);
     uint64_t ft = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)bi.ftLastWriteTime.dwLowDateTime;
     int64_t mtime_ms = (ft >= 116444736000000000ULL) ? (int64_t)((ft - 116444736000000000ULL) / 10000ULL) : 0;
     uint64_t dev = (uint64_t)bi.dwVolumeSerialNumber;
     uint64_t ino = ((uint64_t)bi.nFileIndexHigh << 32) | (uint64_t)bi.nFileIndexLow;
+    unsigned int mode = (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 0755u : 0644u;
     char buf[192];
     int n = snprintf(
-        buf, sizeof(buf), "%s|%llu|0|%lld|%llu|%llu|420",
+        buf, sizeof(buf), "%s|%llu|0|%lld|%llu|%llu|%u",
         kind, (unsigned long long)fsz, (long long)mtime_ms,
-        (unsigned long long)dev, (unsigned long long)ino);
-    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+        (unsigned long long)dev, (unsigned long long)ino, mode);
+    void *res = n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    if (res != NULL && out_err != NULL) *out_err = 0;
+    return res;
+}
+
+void *sts_stat(const char *path, int64_t *out_len) {
+    return sts_stat_err(path, out_len, NULL);
 }
 
 int32_t sts_chmod(const char *path, int32_t mode) {
@@ -2298,12 +2344,6 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
-static int32_t sts_win_map_err(DWORD err) {
-    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return -2;
-    if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION) return -3;
-    return -1;
-}
-
 void *sts_read_range_meta(
     const char *path,
     int64_t offset,
@@ -2316,7 +2356,11 @@ void *sts_read_range_meta(
     if (out_total_size != NULL) *out_total_size = 0;
     if (out_mtime_ms != NULL) *out_mtime_ms = 0;
     if (out_err != NULL) *out_err = -1;
-    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0 ||
+        len > (int64_t)INT32_MAX || offset > INT64_MAX - len) {
+        if (out_err != NULL) *out_err = -6;
+        return NULL;
+    }
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return NULL;
     HANDLE h = CreateFileW(
@@ -2326,6 +2370,11 @@ void *sts_read_range_meta(
     free(w);
     if (h == INVALID_HANDLE_VALUE) {
         if (out_err != NULL) *out_err = sts_win_map_err(open_err);
+        return NULL;
+    }
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = -5;
         return NULL;
     }
     BY_HANDLE_FILE_INFORMATION bi;
@@ -2398,7 +2447,8 @@ int32_t sts_write_at(
     int32_t *out_short) {
     if (out_size != NULL) *out_size = 0;
     if (out_short != NULL) *out_short = 0;
-    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return -1;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0 ||
+        len > (int64_t)INT32_MAX || offset > INT64_MAX - len) return -6;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return -1;
     DWORD disp = create ? CREATE_ALWAYS : OPEN_EXISTING;
@@ -2409,6 +2459,10 @@ int32_t sts_write_at(
     free(w);
     if (h == INVALID_HANDLE_VALUE) {
         return sts_win_map_err(open_err);
+    }
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        return -5;
     }
     LARGE_INTEGER cur_sz;
     if (!GetFileSizeEx(h, &cur_sz)) {
@@ -2431,10 +2485,10 @@ int32_t sts_write_at(
         ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
         DWORD chunk = (DWORD)((len - written) > 0x7fffffffLL ? 0x7fffffffLL : (len - written));
         DWORD put = 0;
-        if (!WriteFile(h, data + written, chunk, &put, &ov)) {
+        if (!WriteFile(h, data + written, chunk, &put, &ov) || put == 0) {
             DWORD e = GetLastError();
             CloseHandle(h);
-            return sts_win_map_err(e);
+            return put == 0 ? -1 : sts_win_map_err(e);
         }
         written += (int64_t)put;
     }
@@ -2455,15 +2509,18 @@ int32_t sts_write_at(
         }
     }
     LARGE_INTEGER end_sz;
-    if (GetFileSizeEx(h, &end_sz)) {
-        if (out_size != NULL) *out_size = (int64_t)end_sz.QuadPart;
+    if (!GetFileSizeEx(h, &end_sz)) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        return sts_win_map_err(e);
     }
+    if (out_size != NULL) *out_size = (int64_t)end_sz.QuadPart;
     CloseHandle(h);
     return 0;
 }
 
 int32_t sts_sync_file(const char *path) {
-    if (path == NULL || path[0] == '\0') return -1;
+    if (path == NULL || path[0] == '\0') return -6;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return -1;
     HANDLE h = CreateFileW(
@@ -2474,11 +2531,18 @@ int32_t sts_sync_file(const char *path) {
     if (h == INVALID_HANDLE_VALUE) {
         return sts_win_map_err(open_err);
     }
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        return -5;
+    }
     BOOL ok = FlushFileBuffers(h);
     DWORD ferr = GetLastError();
     CloseHandle(h);
     return ok ? 0 : sts_win_map_err(ferr);
 }
+
+int32_t sts_getuid(void) { return -1; }
+int32_t sts_geteuid(void) { return -1; }
 
 static int sts_win_rel_safe(const char *rel) {
     if (rel == NULL || rel[0] == '\0' || rel[0] == '/' || rel[0] == '\\') return 0;
@@ -5890,21 +5954,93 @@ void *sts_readlink(const char *path, int64_t *out_len) {
     return NULL;
 }
 
-void *sts_realpath(const char *path, int64_t *out_len) {
+static int32_t sts_posix_map_errno(int e) {
+    if (e == ENOENT || e == ENOTDIR) return -2;
+    if (e == EACCES || e == EPERM || e == EROFS) return -3;
+    if (e == EISDIR) return -4;
+    if (e == ELOOP || e == ENXIO) return -5;
+    return -1;
+}
+
+static int sts_posix_open_retry(const char *path, int flags, mode_t mode) {
+    int fd;
+    do {
+        fd = open(path, flags, mode);
+    } while (fd < 0 && errno == EINTR);
+    return fd;
+}
+
+static int sts_path_is_part_temp(const char *path) {
+    if (path == NULL) return 0;
+    size_t n = strlen(path);
+    return n >= 5 && memcmp(path + n - 5, ".part", 5) == 0;
+}
+
+void *sts_realpath_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     char *resolved = realpath(path, NULL);
-    if (resolved == NULL) return NULL;
+    if (resolved == NULL) {
+        if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
+        return NULL;
+    }
     void *res = dup_bytes(resolved, strlen(resolved), out_len);
     free(resolved);
+    if (res != NULL && out_err != NULL) *out_err = 0;
+    return res;
+}
+
+void *sts_realpath(const char *path, int64_t *out_len) {
+    return sts_realpath_err(path, out_len, NULL);
+}
+
+void *sts_lstat_err(const char *path, int64_t *out_len, int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
+    if (path == NULL || path[0] == '\0') return NULL;
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
+        return NULL;
+    }
+    const char *kind = S_ISREG(st.st_mode) ? "file"
+                     : S_ISDIR(st.st_mode) ? "dir"
+                     : S_ISLNK(st.st_mode) ? "link"
+                     : "other";
+#ifdef __APPLE__
+    int64_t mtime_ms = (int64_t)st.st_mtimespec.tv_sec * 1000LL + (int64_t)(st.st_mtimespec.tv_nsec / 1000000L);
+#else
+    int64_t mtime_ms = (int64_t)st.st_mtim.tv_sec * 1000LL + (int64_t)(st.st_mtim.tv_nsec / 1000000L);
+#endif
+    char buf[192];
+    int n = snprintf(
+        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu|%u",
+        kind,
+        (long long)st.st_size,
+        (st.st_mode & 0111) != 0 ? 1 : 0,
+        (long long)mtime_ms,
+        (unsigned long long)st.st_dev,
+        (unsigned long long)st.st_ino,
+        (unsigned int)(st.st_mode & 07777));
+    void *res = n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    if (res != NULL && out_err != NULL) *out_err = 0;
     return res;
 }
 
 void *sts_lstat(const char *path, int64_t *out_len) {
+    return sts_lstat_err(path, out_len, NULL);
+}
+
+void *sts_stat_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     struct stat st;
-    if (lstat(path, &st) != 0) return NULL;
+    if (stat(path, &st) != 0) {
+        if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
+        return NULL;
+    }
     const char *kind = S_ISREG(st.st_mode) ? "file"
                      : S_ISDIR(st.st_mode) ? "dir"
                      : S_ISLNK(st.st_mode) ? "link"
@@ -5924,34 +6060,13 @@ void *sts_lstat(const char *path, int64_t *out_len) {
         (unsigned long long)st.st_dev,
         (unsigned long long)st.st_ino,
         (unsigned int)(st.st_mode & 07777));
-    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    void *res = n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    if (res != NULL && out_err != NULL) *out_err = 0;
+    return res;
 }
 
 void *sts_stat(const char *path, int64_t *out_len) {
-    if (out_len != NULL) *out_len = 0;
-    if (path == NULL || path[0] == '\0') return NULL;
-    struct stat st;
-    if (stat(path, &st) != 0) return NULL;
-    const char *kind = S_ISREG(st.st_mode) ? "file"
-                     : S_ISDIR(st.st_mode) ? "dir"
-                     : S_ISLNK(st.st_mode) ? "link"
-                     : "other";
-#ifdef __APPLE__
-    int64_t mtime_ms = (int64_t)st.st_mtimespec.tv_sec * 1000LL + (int64_t)(st.st_mtimespec.tv_nsec / 1000000L);
-#else
-    int64_t mtime_ms = (int64_t)st.st_mtim.tv_sec * 1000LL + (int64_t)(st.st_mtim.tv_nsec / 1000000L);
-#endif
-    char buf[192];
-    int n = snprintf(
-        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu|%u",
-        kind,
-        (long long)st.st_size,
-        (st.st_mode & 0111) != 0 ? 1 : 0,
-        (long long)mtime_ms,
-        (unsigned long long)st.st_dev,
-        (unsigned long long)st.st_ino,
-        (unsigned int)(st.st_mode & 07777));
-    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+    return sts_stat_err(path, out_len, NULL);
 }
 
 int32_t sts_chmod(const char *path, int32_t mode) {
@@ -5999,13 +6114,6 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
-static int32_t sts_posix_map_errno(int e) {
-    if (e == ENOENT || e == ENOTDIR) return -2;
-    if (e == EACCES || e == EPERM || e == EROFS) return -3;
-    if (e == EISDIR) return -4;
-    return -1;
-}
-
 void *sts_read_range_meta(
     const char *path,
     int64_t offset,
@@ -6018,8 +6126,12 @@ void *sts_read_range_meta(
     if (out_total_size != NULL) *out_total_size = 0;
     if (out_mtime_ms != NULL) *out_mtime_ms = 0;
     if (out_err != NULL) *out_err = -1;
-    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0 ||
+        len > (int64_t)INT32_MAX || offset > INT64_MAX - len) {
+        if (out_err != NULL) *out_err = -6;
+        return NULL;
+    }
+    int fd = sts_posix_open_retry(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
     if (fd < 0) {
         if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
         return NULL;
@@ -6034,6 +6146,11 @@ void *sts_read_range_meta(
     if (S_ISDIR(st.st_mode)) {
         close(fd);
         if (out_err != NULL) *out_err = -4;
+        return NULL;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        if (out_err != NULL) *out_err = -5;
         return NULL;
     }
 #ifdef __APPLE__
@@ -6091,9 +6208,13 @@ int32_t sts_write_at(
     int32_t *out_short) {
     if (out_size != NULL) *out_size = 0;
     if (out_short != NULL) *out_short = 0;
-    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return -1;
-    int flags = O_RDWR | O_CLOEXEC | (create ? (O_CREAT | O_TRUNC) : 0);
-    int fd = open(path, flags, (mode_t)0644);
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0 ||
+        len > (int64_t)INT32_MAX || offset > INT64_MAX - len) return -6;
+    int flags = O_RDWR | O_NONBLOCK | O_CLOEXEC | (create ? (O_CREAT | O_TRUNC) : 0);
+    if (sts_path_is_part_temp(path)) {
+        flags |= O_NOFOLLOW;
+    }
+    int fd = sts_posix_open_retry(path, flags, (mode_t)0644);
     if (fd < 0) {
         return sts_posix_map_errno(errno);
     }
@@ -6106,6 +6227,10 @@ int32_t sts_write_at(
     if (S_ISDIR(st.st_mode)) {
         close(fd);
         return -4;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        return -5;
     }
     if (has_at_least && (int64_t)st.st_size < at_least) {
         if (out_size != NULL) *out_size = (int64_t)st.st_size;
@@ -6121,6 +6246,10 @@ int32_t sts_write_at(
             int e = errno;
             close(fd);
             return sts_posix_map_errno(e);
+        }
+        if (put == 0) {
+            close(fd);
+            return -1;
         }
         written += (int64_t)put;
     }
@@ -6146,9 +6275,12 @@ int32_t sts_write_at(
             return sts_posix_map_errno(e);
         }
     }
-    if (fstat(fd, &st) == 0) {
-        if (out_size != NULL) *out_size = (int64_t)st.st_size;
+    if (fstat(fd, &st) != 0) {
+        int e = errno;
+        close(fd);
+        return sts_posix_map_errno(e);
     }
+    if (out_size != NULL) *out_size = (int64_t)st.st_size;
     if (close(fd) != 0) {
         return sts_posix_map_errno(errno);
     }
@@ -6156,13 +6288,27 @@ int32_t sts_write_at(
 }
 
 int32_t sts_sync_file(const char *path) {
-    if (path == NULL || path[0] == '\0') return -1;
-    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (path == NULL || path[0] == '\0') return -6;
+    int fd = sts_posix_open_retry(path, O_RDWR | O_NONBLOCK | O_CLOEXEC, 0);
     if (fd < 0 && (errno == EACCES || errno == EROFS)) {
-        fd = open(path, O_RDONLY | O_CLOEXEC);
+        fd = sts_posix_open_retry(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
     }
     if (fd < 0) {
         return sts_posix_map_errno(errno);
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int e = errno;
+        close(fd);
+        return sts_posix_map_errno(e);
+    }
+    if (S_ISDIR(st.st_mode)) {
+        close(fd);
+        return -4;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        return -5;
     }
     int rc;
     do {
@@ -6172,6 +6318,9 @@ int32_t sts_sync_file(const char *path) {
     close(fd);
     return rc == 0 ? 0 : sts_posix_map_errno(e);
 }
+
+int32_t sts_getuid(void) { return (int32_t)getuid(); }
+int32_t sts_geteuid(void) { return (int32_t)geteuid(); }
 
 int32_t sts_write_file_mode(
     const char *path,

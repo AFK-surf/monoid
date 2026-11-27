@@ -1671,6 +1671,54 @@ int main(void) {
         sts_free(r);
         // Directory rejected with -4 (EISDIR)
         assert(sts_read_range_meta("/tmp", 0, 4, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -4);
+        // Overflow rejected with -6
+        assert(sts_read_range_meta(drv_file, INT64_MAX - 2, 10, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -6);
+        assert(sts_write_at(drv_file, INT64_MAX - 2, (const uint8_t *)"abc", 3, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -6);
+        // FIFO MUST fail immediately without blocking (-5 non-regular)
+        char drv_fifo[256];
+        snprintf(drv_fifo, sizeof(drv_fifo), "/tmp/sts-drive-fifo-%d.pipe", (int)getpid());
+        unlink(drv_fifo);
+        assert(mkfifo(drv_fifo, 0600) == 0);
+        assert(sts_read_range_meta(drv_fifo, 0, 8, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -5);
+        assert(sts_write_at(drv_fifo, 0, (const uint8_t *)"x", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        assert(sts_sync_file(drv_fifo) == -5);
+        unlink(drv_fifo);
+        // `.part` symlink rejected via O_NOFOLLOW (-5)
+        char part_sym[256];
+        snprintf(part_sym, sizeof(part_sym), "/tmp/sts-drive-sym-%d.part", (int)getpid());
+        unlink(part_sym);
+        assert(symlink(drv_file, part_sym) == 0);
+        assert(sts_write_at(part_sym, 0, (const uint8_t *)"Z", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        unlink(part_sym);
+        // Large offset > 4 GiB sparse pwrite + pread
+        int64_t big_off = ((int64_t)1 << 32) + 123;
+        assert(sts_write_at(drv_file, big_off, (const uint8_t *)"OVER4G!", 7, 0, 0, 0, 0, 0, 1, &sz, &is_short) == 0);
+        assert(sz == big_off + 7 && is_short == 0);
+        void *r4g = sts_read_range_meta(drv_file, big_off, 7, &rlen, &rtot, &rmtime, &rerr);
+        assert(r4g != NULL && rerr == 0 && rlen == 7 && rtot == big_off + 7);
+        assert(memcmp(r4g, "OVER4G!", 7) == 0);
+        sts_free(r4g);
+        // EACCES (-3) vs ENOENT (-2) on stat_err / lstat_err / realpath_err
+        int32_t serr = 0;
+        assert(sts_stat_err("/tmp/sts-no-such-file-999999", &st_len, &serr) == NULL && serr == -2);
+        assert(sts_lstat_err("/tmp/sts-no-such-file-999999", &st_len, &serr) == NULL && serr == -2);
+        assert(sts_realpath_err("/tmp/sts-no-such-file-999999", &st_len, &serr) == NULL && serr == -2);
+        if (geteuid() != 0) {
+            char locked_dir[256], locked_child[320];
+            snprintf(locked_dir, sizeof(locked_dir), "/tmp/sts-eacces-%d", (int)getpid());
+            snprintf(locked_child, sizeof(locked_child), "%s/secret.txt", locked_dir);
+            assert(sts_mkdir_p(locked_dir) == 1);
+            assert(sts_write_at(locked_child, 0, (const uint8_t *)"s", 1, 1, 0, 0, 0, 0, 0, &sz, &is_short) == 0);
+            assert(chmod(locked_dir, 0000) == 0);
+            assert(sts_stat_err(locked_child, &st_len, &serr) == NULL && serr == -3);
+            assert(sts_lstat_err(locked_child, &st_len, &serr) == NULL && serr == -3);
+            assert(sts_realpath_err(locked_child, &st_len, &serr) == NULL && serr == -3);
+            assert(chmod(locked_dir, 0700) == 0);
+            unlink(locked_child);
+            rmdir(locked_dir);
+        }
+        // POSIX uid / euid
+        assert(sts_getuid() >= 0 && sts_geteuid() >= 0);
         unlink(drv_file);
     }
 

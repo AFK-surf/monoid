@@ -3,37 +3,12 @@ name = "station_whole"
 version = "0.1.0"
 
 [dependencies]
-base64 = { workspace = true }
 base_codec = { workspace = true }
 builders_core = { workspace = true }
 crypto = { workspace = true }
-form = { workspace = true }
 host_shim = { workspace = true }
-http1 = { workspace = true }
-lock = { workspace = true }
-mesh_accept = { workspace = true }
-mesh_door = { workspace = true }
-mesh_wire = { workspace = true }
 nodepath = { workspace = true }
-sse = { workspace = true }
-station_api = { workspace = true }
-station_browser = { workspace = true }
-station_cloud = { workspace = true }
-station_connects = { workspace = true }
-station_devices = { workspace = true }
 station_drivers = { workspace = true }
-station_hooks_tui = { workspace = true }
-station_http = { workspace = true }
-station_jobs = { workspace = true }
-station_mesh = { workspace = true }
 station_ops = { workspace = true }
-station_replica = { workspace = true }
-station_rig = { workspace = true }
-station_rules_bridge = { workspace = true }
 station_screens = { workspace = true }
-station_sessions = { workspace = true }
-station_store = { workspace = true }
 station_sys = { workspace = true }
-station_tools = { workspace = true }
-station_vault = { workspace = true }
-url = { workspace = true }

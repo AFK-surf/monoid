@@ -1,9 +1,14 @@
 // Production `image.thumb` adapter over `client/shell`'s native `image.thumb` command
-// (`client/shell/src/image_thumb.rs`), providing full parameter encoding, error propagation,
-// and a `station_screens::ThumbPort` implementation.
+// (`client/shell/src/image_thumb.rs`):
+// - Full parameter validation & encoding (including 64-bit `smallBytes` without narrowing);
+// - Exact response decoding (including `Mode::Hash` returning `width`/`height` as well as
+//   `originalWidth`/`originalHeight` from resized/skipped modes, plus full error propagation);
+// - Non-blocking `ShellMux` async dispatch (`dispatch_image_thumb_mux` / `decode_image_thumb_done`)
+//   for single-threaded station event loops, plus a standalone sync helper & `ThumbPort` bridge.
 
 import "base_codec"
 import "builders_core"
+import "host_shim"
 import "station_screens"
 
 pub enum ThumbMode {
@@ -40,7 +45,11 @@ pub struct ThumbRequest {
   pub thumbhash : Option[Bool]
 }
 
-pub fn ThumbRequest::for_path(mode : ThumbMode, path : String, dir : Option[String]) -> ThumbRequest {
+pub fn ThumbRequest::for_path(
+  mode : ThumbMode,
+  path : String,
+  dir : Option[String],
+) -> ThumbRequest {
   ThumbRequest::{
     mode: mode,
     path: Some(path),
@@ -157,7 +166,12 @@ pub fn build_image_thumb_args(req : ThumbRequest) -> Result[base_codec::Json, St
     None => ()
   }
   match req.small_bytes {
-    Some(v) => fields.push(("smallBytes", base_codec::json_int(v.to_int())))
+    Some(v) => {
+      if v < 0L {
+        return Err("image.thumb: smallBytes must be non-negative")
+      }
+      fields.push(("smallBytes", base_codec::json_int64(v)))
+    }
     None => ()
   }
   match req.thumbhash {
@@ -231,7 +245,69 @@ pub fn parse_image_thumb_response(
   })
 }
 
-/// Calls `client/shell`'s native `image.thumb` command via `builders_core::ShellClient`.
+/// Extracts `ThumbHashInfo` from a `ThumbResponse`.
+/// Per `client/shell/src/image_thumb.rs:715-721`, `mode: "hash"` returns `width` and `height`
+/// (while `thumb`/`preview` modes with `thumbhash: true` return `originalWidth`/`originalHeight`).
+pub fn extract_thumbhash_info(resp : ThumbResponse) -> Option[station_screens::ThumbHashInfo] {
+  let h = match resp.thumbhash {
+    Some(v) => v
+    None => return None
+  }
+  let w_opt = match resp.width {
+    Some(w) => Some(w)
+    None => resp.original_width
+  }
+  let h_opt = match resp.height {
+    Some(ht) => Some(ht)
+    None => resp.original_height
+  }
+  match (w_opt, h_opt) {
+    (Some(w), Some(ht)) => Some(station_screens::ThumbHashInfo::{ hash: h, width: w, height: ht })
+    _ => None
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Non-blocking `ShellMux` async dispatch (for single-threaded station event loops)
+// ---------------------------------------------------------------------------
+
+/// Enqueues an asynchronous `image.thumb` request on `mux` without blocking the shared event loop.
+/// Returns the allocated `call_id` so the caller can correlate completion in `decode_image_thumb_done`.
+pub fn dispatch_image_thumb_mux(
+  mux : builders_core::ShellMux,
+  owner : Int,
+  kind : Int,
+  tag : Int64,
+  req : ThumbRequest,
+) -> Result[Int64, String] {
+  let args = match build_image_thumb_args(req) {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  let call_id = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(owner, kind, tag),
+    "image.thumb",
+    base_codec::json_stringify(args),
+    req.bytes,
+  )
+  Ok(call_id)
+}
+
+/// Decodes a `host_shim::ShellDone` completion event from `dispatch_image_thumb_mux`.
+pub fn decode_image_thumb_done(done : host_shim::ShellDone) -> Result[ThumbResponse, String] {
+  if done.error.length() > 0 {
+    return Err("image.thumb shell error: " + done.error)
+  }
+  let raw_json = if done.json.length() > 0 { done.json } else { "{}" }
+  parse_image_thumb_response(raw_json, done.bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Standalone synchronous helper & `station_screens::ThumbPort` bridge
+// ---------------------------------------------------------------------------
+
+/// Calls `client/shell`'s native `image.thumb` command synchronously on a dedicated `ShellClient`
+/// (suitable for isolated CLI/test callers; single-threaded daemons must use `dispatch_image_thumb_mux`).
 pub fn invoke_image_thumb(
   shell : builders_core::ShellClient,
   req : ThumbRequest,
@@ -240,7 +316,7 @@ pub fn invoke_image_thumb(
     Ok(a) => a
     Err(e) => return Err(e)
   }
-  // sync: image.thumb runs on client/shell's bounded spawn_blocking pool and returns a single thumbnail/hash result
+  // sync: standalone helper for dedicated ShellClient callers; event loops use dispatch_image_thumb_mux
   let res = match shell.shell_call_wait("image.thumb", args, req.bytes) {
     Ok(r) => r
     Err(e) => return Err("image.thumb shell error: " + e.message)
@@ -253,51 +329,93 @@ pub fn invoke_image_thumb(
   parse_image_thumb_response(raw_json, raw_bytes)
 }
 
-/// Production `station_screens::ThumbPort` backed by `client/shell` `image.thumb`.
+/// Result-preserving thumbnail helper (propagates shell/decode/write errors rather than dropping them).
+pub fn thumbnail_result(
+  shell : builders_core::ShellClient,
+  image_path : String,
+  thumbs_dir : String,
+  boxed : Bool,
+) -> Result[Option[station_screens::Thumbnail], String] {
+  let mode = if boxed { ThumbMode::Box } else { ThumbMode::Thumb }
+  let req = ThumbRequest::for_path(mode, image_path, Some(thumbs_dir))
+  match invoke_image_thumb(shell, req) {
+    Ok(resp) => {
+      if resp.skipped {
+        return Ok(None)
+      }
+      match (resp.path, resp.mime) {
+        (Some(p), Some(m)) => Ok(Some(station_screens::Thumbnail::{ path: p, mime: m }))
+        _ => Err("image.thumb: missing path or mime in non-skipped response")
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Result-preserving preview helper.
+pub fn preview_result(
+  shell : builders_core::ShellClient,
+  image_path : String,
+  thumbs_dir : String,
+) -> Result[Option[station_screens::Thumbnail], String] {
+  let req = ThumbRequest::for_path(ThumbMode::Preview, image_path, Some(thumbs_dir))
+  match invoke_image_thumb(shell, req) {
+    Ok(resp) => {
+      if resp.skipped {
+        return Ok(None)
+      }
+      match (resp.path, resp.mime) {
+        (Some(p), Some(m)) => Ok(Some(station_screens::Thumbnail::{ path: p, mime: m }))
+        _ => Err("image.thumb: missing path or mime in non-skipped preview response")
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Result-preserving ThumbHash helper (reads `width`/`height` from `mode: "hash"` response).
+pub fn thumbhash_result(
+  shell : builders_core::ShellClient,
+  image_path : String,
+) -> Result[station_screens::ThumbHashInfo, String] {
+  let req = ThumbRequest::for_path(ThumbMode::Hash, image_path, None)
+  match invoke_image_thumb(shell, req) {
+    Ok(resp) => match extract_thumbhash_info(resp) {
+      Some(info) => Ok(info)
+      None => Err("image.thumb: hash response missing thumbhash/width/height")
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// `station_screens::ThumbPort` bridge over `invoke_image_thumb`.
+/// Note: `ThumbPort`'s interface returns `Option` (matching `station/src/drive/thumbs.ts` best-effort
+/// semantics); callers needing structured error reasons should use `thumbnail_result`, `preview_result`,
+/// `thumbhash_result`, or the non-blocking `dispatch_image_thumb_mux` / `decode_image_thumb_done` pair.
 pub fn os_thumb_port(shell : builders_core::ShellClient) -> station_screens::ThumbPort {
   station_screens::ThumbPort::{
-    thumbnail: fn(image_path : String, thumbs_dir : String, boxed : Bool) -> Option[station_screens::Thumbnail] {
-      let mode = if boxed { ThumbMode::Box } else { ThumbMode::Thumb }
-      let req = ThumbRequest::for_path(mode, image_path, Some(thumbs_dir))
-      match invoke_image_thumb(shell, req) {
-        Ok(resp) => {
-          if resp.skipped {
-            return None
-          }
-          match (resp.path, resp.mime) {
-            (Some(p), Some(m)) => Some(station_screens::Thumbnail::{ path: p, mime: m })
-            _ => None
-          }
-        }
+    thumbnail: fn(
+      image_path : String,
+      thumbs_dir : String,
+      boxed : Bool,
+    ) -> Option[station_screens::Thumbnail] {
+      match thumbnail_result(shell, image_path, thumbs_dir, boxed) {
+        Ok(opt) => opt
         Err(_) => None
       }
     },
     preview: fn(image_path : String, thumbs_dir : String) -> Option[station_screens::Thumbnail] {
-      let req = ThumbRequest::for_path(ThumbMode::Preview, image_path, Some(thumbs_dir))
-      match invoke_image_thumb(shell, req) {
-        Ok(resp) => {
-          if resp.skipped {
-            return None
-          }
-          match (resp.path, resp.mime) {
-            (Some(p), Some(m)) => Some(station_screens::Thumbnail::{ path: p, mime: m })
-            _ => None
-          }
-        }
+      match preview_result(shell, image_path, thumbs_dir) {
+        Ok(opt) => opt
         Err(_) => None
       }
     },
-    thumbhash: fn(image_path : String, _mime : Option[String]) -> Option[station_screens::ThumbHashInfo] {
-      let req = ThumbRequest::for_path(ThumbMode::Hash, image_path, None)
-      match invoke_image_thumb(shell, req) {
-        Ok(resp) => {
-          match (resp.thumbhash, resp.original_width, resp.original_height) {
-            (Some(h), Some(w), Some(ht)) => {
-              Some(station_screens::ThumbHashInfo::{ hash: h, width: w, height: ht })
-            }
-            _ => None
-          }
-        }
+    thumbhash: fn(
+      image_path : String,
+      _mime : Option[String],
+    ) -> Option[station_screens::ThumbHashInfo] {
+      match thumbhash_result(shell, image_path) {
+        Ok(info) => Some(info)
         Err(_) => None
       }
     },

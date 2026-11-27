@@ -1,8 +1,10 @@
 // Production OS adapter for `station_drivers`:
-// - Wires all 11 coding-agent runtime drivers, `instructions`, `migrations`, `providers`,
-//   `accounts`, and `runner` adoption.
+// - Wires all 11 coding-agent runtime drivers (10 CLI runtimes + ACP), `instructions`,
+//   `migrations`, `providers`, `accounts`, and `runner` adoption.
 // - Injects real OS CSPRNG `next_uuid` via `station_sys::random_bytes(16)` into
 //   `station_drivers::OpenOptions::new` (never pseudo-random or sequential IDs).
+// - Aligns `is_root` (`geteuid() == 0`, `false` on Windows), `node_exec` (`STILLFAIL_NODE`
+//   with `"node"` fallback), and `stub_dir` (`stillfail-no-keychain-<uid>` on POSIX) 1:1 with TS.
 
 import "nodepath"
 import "station_drivers"
@@ -56,16 +58,42 @@ fn parse_env_pairs(entries : Array[String]) -> Array[(String, String)] {
     }
     if eq > 0 {
       let ks = StringBuilder::new()
-      for k in 0..<eq { ks.write_byte(raw[k]) }
+      for k in 0..<eq {
+        ks.write_byte(raw[k])
+      }
       let vs = StringBuilder::new()
-      for k in (eq + 1)..<raw.length() { vs.write_byte(raw[k]) }
+      for k in (eq + 1)..<raw.length() {
+        vs.write_byte(raw[k])
+      }
       out.push((ks.to_string(), vs.to_string()))
     }
   }
   out
 }
 
-/// Pure dependency-injected `OpenOptions` builder for deterministic unit tests.
+/// Resolves `node_exec` from `STILLFAIL_NODE` (or injected path), falling back to `"node"`.
+pub fn resolve_node_exec(env_stillfail_node : Option[String]) -> String {
+  match env_stillfail_node {
+    Some(p) => {
+      let trimmed = p.trim()
+      if trimmed.length() > 0 { trimmed } else { "node" }
+    }
+    None => "node"
+  }
+}
+
+/// Builds the TS-aligned `stub_dir`: `<tmpdir>/stillfail-no-keychain-<uid>` on POSIX
+/// (`uid >= 0`), or `<tmpdir>\stillfail-no-keychain` on Windows (`uid < 0`).
+pub fn resolve_stub_dir(tmpdir : String, sep : String, os : String, uid : Int) -> String {
+  let leaf = if os != "win32" && uid >= 0 {
+    "stillfail-no-keychain-" + uid.to_string()
+  } else {
+    "stillfail-no-keychain"
+  }
+  nodepath::join(sep, [tmpdir, leaf])
+}
+
+/// Pure dependency-injected `OpenOptions` builder for deterministic unit tests and production wiring.
 pub fn open_options_with_deps(
   key : String,
   profile : station_drivers::Profile,
@@ -78,6 +106,9 @@ pub fn open_options_with_deps(
   os : String,
   home : String,
   tmpdir : String,
+  uid : Int,
+  euid : Int,
+  node_exec_env : Option[String],
   has_path : (String) -> Bool,
   next_uuid : () -> String,
   station_env : Array[(String, String)],
@@ -99,7 +130,9 @@ pub fn open_options_with_deps(
     has_path,
     next_uuid,
   )
-  let stub_dir = nodepath::join(sep, [tmpdir, "stillfail-no-keychain"])
+  let is_root = os != "win32" && euid == 0
+  let node_exec = resolve_node_exec(node_exec_env)
+  let stub_dir = resolve_stub_dir(tmpdir, sep, os, uid)
   station_drivers::OpenOptions::{
     key: base.key,
     profile: base.profile,
@@ -117,13 +150,13 @@ pub fn open_options_with_deps(
     mcp_url: base.mcp_url,
     route: base.route,
     text_only: base.text_only,
-    is_root: base.is_root,
+    is_root: is_root,
     has_keychain: os == "darwin",
     os_name: os,
     sep: sep,
     station_env: station_env,
     agent_env: [],
-    node_exec: base.node_exec,
+    node_exec: node_exec,
     runner_bin: runner_bin,
     assets_dir: assets_dir,
     data_dir: data_dir,
@@ -140,7 +173,8 @@ pub fn open_options_with_deps(
 }
 
 /// Builds production `station_drivers::OpenOptions` via `OpenOptions::new` with OS CSPRNG
-/// `next_uuid`, real OS `home_dir`, real `has_path`, platform `os_name`/`sep`, and station env.
+/// `next_uuid`, real OS `home_dir`, real `has_path`, real `getuid()`/`geteuid()`,
+/// `STILLFAIL_NODE`, platform `os_name`/`sep`, and station env.
 pub fn os_open_options(
   key : String,
   profile : station_drivers::Profile,
@@ -156,7 +190,12 @@ pub fn os_open_options(
   effort : Option[String] = None,
   sdk_dir : Option[String] = None,
   copilot_token : Option[String] = None,
+  node_exec_override : Option[String] = None,
 ) -> station_drivers::OpenOptions {
+  let node_env = match node_exec_override {
+    Some(p) => Some(p)
+    None => station_sys::env_get("STILLFAIL_NODE")
+  }
   open_options_with_deps(
     key,
     profile,
@@ -169,6 +208,9 @@ pub fn os_open_options(
     station_sys::os_name(),
     station_sys::homedir(),
     station_sys::tmpdir(),
+    station_sys::getuid(),
+    station_sys::geteuid(),
+    node_env,
     os_has_path,
     os_next_uuid,
     parse_env_pairs(station_sys::env_all()),
@@ -181,12 +223,14 @@ pub fn os_open_options(
   )
 }
 
-/// All supported coding-agent CLI runtimes (`station_drivers::runtime_kinds()` plus ACP JSON-RPC framing = 11 drivers).
+/// All 10 CLI coding-agent runtimes (`station_drivers::runtime_kinds()`).
+/// Together with the ACP JSON-RPC runtime driver (`acp_rpc_frame` / `acp_mcp_servers_json` /
+/// `acp_outcome`), this covers all 11 coding-agent runtimes.
 pub fn all_supported_runtimes() -> Array[station_drivers::RuntimeKind] {
   station_drivers::runtime_kinds()
 }
 
-/// Builds a launch spec for any of the 11 supported coding-agent runtimes.
+/// Builds a launch spec for any of the 10 CLI coding-agent runtimes.
 pub fn build_os_driver_launch(
   runtime : station_drivers::RuntimeKind,
   opts : station_drivers::OpenOptions,
