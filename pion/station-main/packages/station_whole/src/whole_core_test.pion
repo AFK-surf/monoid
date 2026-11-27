@@ -844,7 +844,7 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
     _ => wc_assert(false, "expected string param 3")
   }
 
-  // 7. R7: Runner instance identity isolation and lossless cross-frame UTF-8 chunk coalescing.
+  // 7. R7/R8: Runner instance identity isolation and per-(instance_id, stream) interleaved UTF-8 coalescing.
   let inst_a = WholeAgents::runner_instance_id("claude-sess-r7", 1001, 1700000000L)
   let inst_b = WholeAgents::runner_instance_id("claude-sess-r7", 1002, 1700000005L)
   wc_assert(inst_a != inst_b, "restarted runner with new PID/startedAt must get distinct instance_id")
@@ -855,12 +855,13 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   zh_part2[0] = (0xAD).to_byte()
   let coalesced = coalesce_runner_output_chunks([
     (inst_a, "out", zh_part1),
+    (inst_a, "err", "note".to_bytes()),
     (inst_a, "out", zh_part2),
     (inst_b, "out", "runner-b".to_bytes()),
   ])
   wc_assert(
-    coalesced.length() == 2 && coalesced[0] == "中" && coalesced[1] == "runner-b",
-    "split UTF-8 across frames must coalesce cleanly without U+FFFD",
+    coalesced.length() == 3 && coalesced[0] == "中" && coalesced[1] == "note" && coalesced[2] == "runner-b",
+    "interleaved stdout/stderr split UTF-8 across frames must coalesce per (instance_id, stream) without U+FFFD",
   )
 
   core.shutdown_pre_handover()

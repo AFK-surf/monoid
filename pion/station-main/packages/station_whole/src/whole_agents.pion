@@ -233,6 +233,7 @@ pub struct WholeAgents {
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   mut adopted_db : Option[sql_db::Db]
+  mut adopted_db_closed : Bool
   job_fs : station_jobs::FsPort
   active_tokens : Array[(String, String)]
   revoked_tokens : Map[String, Bool]
@@ -267,6 +268,7 @@ pub fn WholeAgents::new_with_deps(
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     adopted_db: None,
+    adopted_db_closed: false,
     job_fs: fs,
     active_tokens: [],
     revoked_tokens: Map::new(),
@@ -903,44 +905,59 @@ pub fn WholeAgents::runner_instance_id(
   runner_id + ":" + runner_pid.to_string() + ":" + started_at.to_string()
 }
 
-/// Merge contiguous raw byte chunks from the same `(instance_id, stream)` before UTF-8 decoding
-/// so multi-byte characters split across runner frames never produce `U+FFFD`.
+/// Merge raw byte chunks per `(instance_id, stream)` bucket (preserving first-seen bucket order)
+/// before UTF-8 decoding so multi-byte characters split across runner frames or interleaved
+/// between `stdout`/`stderr` never produce `U+FFFD`.
 pub fn coalesce_runner_output_chunks(
   chunks : Array[(String, String, Bytes)],
 ) -> Array[String] {
-  let out : Array[String] = []
-  let mut cur_inst = ""
-  let mut cur_stream = ""
-  let mut cur_parts : Array[Bytes] = []
-  let mut cur_len = 0
-  let flush = fn() -> Unit {
-    if cur_parts.length() == 0 {
-      return
-    }
-    let merged = Bytes::new(cur_len)
-    let mut pos = 0
-    for pi in 0..<cur_parts.length() {
-      let b = cur_parts[pi]
-      for bi in 0..<b.length() {
-        merged[pos + bi] = b[bi]
-      }
-      pos = pos + b.length()
-    }
-    out.push(sql_db::decode_utf8_lossy_bytes(merged))
-    cur_parts = []
-    cur_len = 0
-  }
+  let bucket_order : Array[String] = []
+  let bucket_parts : Map[String, Array[Bytes]] = Map::new()
+  let bucket_lens : Map[String, Int] = Map::new()
   for i in 0..<chunks.length() {
     let (inst, stream, data) = chunks[i]
-    if cur_parts.length() > 0 && (inst != cur_inst || stream != cur_stream) {
-      flush()
+    let key = inst + "\n" + stream
+    match bucket_parts.get(key) {
+      Some(parts) => {
+        parts.push(data)
+        let prev_len = match bucket_lens.get(key) {
+          Some(n) => n
+          None => 0
+        }
+        bucket_lens.set(key, prev_len + data.length())
+      }
+      None => {
+        bucket_order.push(key)
+        bucket_parts.set(key, [data])
+        bucket_lens.set(key, data.length())
+      }
     }
-    cur_inst = inst
-    cur_stream = stream
-    cur_parts.push(data)
-    cur_len = cur_len + data.length()
   }
-  flush()
+  let out : Array[String] = []
+  for bi in 0..<bucket_order.length() {
+    let key = bucket_order[bi]
+    match bucket_parts.get(key) {
+      Some(parts) => {
+        let total_len = match bucket_lens.get(key) {
+          Some(n) => n
+          None => 0
+        }
+        if total_len > 0 {
+          let merged = Bytes::new(total_len)
+          let mut pos = 0
+          for pi in 0..<parts.length() {
+            let b = parts[pi]
+            for j in 0..<b.length() {
+              merged[pos + j] = b[j]
+            }
+            pos = pos + b.length()
+          }
+          out.push(sql_db::decode_utf8_lossy_bytes(merged))
+        }
+      }
+      None => ()
+    }
+  }
   out
 }
 
@@ -949,8 +966,10 @@ fn WholeAgents::adopted_db_path(self : WholeAgents) -> String {
   self.config.data_dir + sep + "run" + sep + "adopted-runners.db"
 }
 
-/// Close the independent `<data_dir>/run/adopted-runners.db` handle cleanly on handover or shutdown.
+/// Close the independent `<data_dir>/run/adopted-runners.db` handle cleanly on handover or shutdown
+/// and forbid lazy reopen afterwards so the predecessor never re-opens WAL during handover exit.
 pub fn WholeAgents::close_adopted_db(self : WholeAgents) -> Unit {
+  self.adopted_db_closed = true
   match self.adopted_db {
     Some(db) => {
       db.close()
@@ -961,6 +980,9 @@ pub fn WholeAgents::close_adopted_db(self : WholeAgents) -> Unit {
 }
 
 fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String] {
+  if self.adopted_db_closed {
+    return Err("adopted runner db closed for handover")
+  }
   match self.adopted_db {
     Some(db) => return Ok(db)
     None => ()
@@ -1007,6 +1029,9 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
     "byte_len INTEGER NOT NULL, " +
     "data_b64 TEXT NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_runner_output_session ON runner_output(session_key, id);",
+    "CREATE TABLE IF NOT EXISTS runner_session_totals (" +
+    "session_key TEXT PRIMARY KEY, " +
+    "total_bytes INTEGER NOT NULL DEFAULT 0);",
   ]
   for i in 0..<init_sqls.length() {
     match db.exec(init_sqls[i]) {
@@ -1024,7 +1049,9 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
 /// Atomically look up or initialize a runner instance row in `<data_dir>/run/adopted-runners.db`.
 /// Returns `Ok((acked_out, acked_err, existed))`:
 /// - `existed == false`: first time seeing this `(runner_id, pid, started_at)` instance, seeded with `(init_out, init_err)` (e.g. from `Attached`).
-/// - `existed == true`: previously committed on this station; caller must use `(acked_out, acked_err)` and fail-stop if `Attached` jumps past them.
+/// - `existed == true`: previously committed on this station; if `Attached` reports a higher offset
+///   (e.g. Pion -> Node -> Pion rollback-and-return where Node legitimately consumed & ACKed `[db..att)`),
+///   atomically raises the stored baseline to `(max(db_out, init_out), max(db_err, init_err))`.
 pub fn WholeAgents::get_or_init_runner_instance(
   self : WholeAgents,
   instance_id : String,
@@ -1045,7 +1072,28 @@ pub fn WholeAgents::get_or_init_runner_instance(
       "SELECT acked_out, acked_err FROM runner_instances WHERE instance_id = ?1",
       [base_codec::json_str(instance_id)],
     ) {
-      Ok(Some(row)) => Ok((adopted_row_i64(row, "acked_out"), adopted_row_i64(row, "acked_err"), true))
+      Ok(Some(row)) => {
+        let db_out = adopted_row_i64(row, "acked_out")
+        let db_err = adopted_row_i64(row, "acked_err")
+        let eff_out = if init_out > db_out { init_out } else { db_out }
+        let eff_err = if init_err > db_err { init_err } else { db_err }
+        if eff_out > db_out || eff_err > db_err {
+          match tx.run(
+            "UPDATE runner_instances SET acked_out = ?1, acked_err = ?2, updated_at = ?3 WHERE instance_id = ?4",
+            [
+              sql_db::int64_to_json(eff_out),
+              sql_db::int64_to_json(eff_err),
+              sql_db::int64_to_json(now_ms),
+              base_codec::json_str(instance_id),
+            ],
+          ) {
+            Ok(_) => Ok((eff_out, eff_err, true))
+            Err(e) => Err(e)
+          }
+        } else {
+          Ok((db_out, db_err, true))
+        }
+      }
       Ok(None) => {
         match tx.run(
           "INSERT INTO runner_instances (instance_id, session_key, runner_id, runner_pid, started_at, acked_out, acked_err, updated_at) " +
@@ -1074,8 +1122,9 @@ pub fn WholeAgents::get_or_init_runner_instance(
 }
 
 /// Atomically persist one contiguous runner output chunk, advance the instance's committed offset,
-/// and ring-trim oldest `runner_output` rows if the session exceeds 16 MiB (never deleting
-/// `runner_instances` offset rows), all inside a single ACID `BEGIN IMMEDIATE ... COMMIT`.
+/// maintain O(1) `runner_session_totals`, and incrementally ring-trim oldest `runner_output` rows
+/// (`LIMIT 64` batches) when the session exceeds 16 MiB (never deleting `runner_instances` rows),
+/// all inside a single ACID `BEGIN IMMEDIATE ... COMMIT`.
 pub fn WholeAgents::commit_adopted_runner_chunk(
   self : WholeAgents,
   instance_id : String,
@@ -1143,41 +1192,60 @@ pub fn WholeAgents::commit_adopted_runner_chunk(
       Ok(_) => ()
       Err(e) => return Err(e)
     }
-    let total_bytes = match tx.first(
-      "SELECT COALESCE(SUM(byte_len), 0) AS total_bytes FROM runner_output WHERE session_key = ?1",
+    match tx.run(
+      "INSERT INTO runner_session_totals (session_key, total_bytes) VALUES (?1, ?2) " +
+      "ON CONFLICT(session_key) DO UPDATE SET total_bytes = total_bytes + excluded.total_bytes",
+      [base_codec::json_str(session_key), sql_db::int64_to_json(byte_len)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let mut remaining = match tx.first(
+      "SELECT total_bytes FROM runner_session_totals WHERE session_key = ?1",
       [base_codec::json_str(session_key)],
     ) {
       Ok(Some(row)) => adopted_row_i64(row, "total_bytes")
       Ok(None) => 0L
       Err(e) => return Err(e)
     }
-    if total_bytes > RUNNER_OUTPUT_MAX_BYTES {
-      match tx.all(
-        "SELECT id, byte_len FROM runner_output WHERE session_key = ?1 ORDER BY id ASC",
+    while remaining > RUNNER_OUTPUT_MAX_BYTES {
+      let rows = match tx.all(
+        "SELECT id, byte_len FROM runner_output WHERE session_key = ?1 ORDER BY id ASC LIMIT 64",
         [base_codec::json_str(session_key)],
       ) {
-        Ok(rows) => {
-          let mut remaining = total_bytes
-          let mut max_drop_id = -1L
-          for ri in 0..<rows.length() {
-            if remaining <= RUNNER_OUTPUT_MAX_BYTES {
-              break
-            }
-            let rid = adopted_row_i64(rows[ri], "id")
-            let rlen = adopted_row_i64(rows[ri], "byte_len")
-            remaining = remaining - rlen
-            max_drop_id = rid
-          }
-          if max_drop_id >= 0L {
-            match tx.run(
-              "DELETE FROM runner_output WHERE session_key = ?1 AND id <= ?2",
-              [base_codec::json_str(session_key), sql_db::int64_to_json(max_drop_id)],
-            ) {
-              Ok(_) => ()
-              Err(e) => return Err(e)
-            }
-          }
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      if rows.length() == 0 {
+        break
+      }
+      let mut max_drop_id = -1L
+      let mut dropped_bytes = 0L
+      for ri in 0..<rows.length() {
+        if remaining <= RUNNER_OUTPUT_MAX_BYTES {
+          break
         }
+        let rid = adopted_row_i64(rows[ri], "id")
+        let rlen = adopted_row_i64(rows[ri], "byte_len")
+        remaining = remaining - rlen
+        dropped_bytes = dropped_bytes + rlen
+        max_drop_id = rid
+      }
+      if max_drop_id < 0L {
+        break
+      }
+      match tx.run(
+        "DELETE FROM runner_output WHERE session_key = ?1 AND id <= ?2",
+        [base_codec::json_str(session_key), sql_db::int64_to_json(max_drop_id)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match tx.run(
+        "UPDATE runner_session_totals SET total_bytes = MAX(0, total_bytes - ?1) WHERE session_key = ?2",
+        [sql_db::int64_to_json(dropped_bytes), base_codec::json_str(session_key)],
+      ) {
+        Ok(_) => ()
         Err(e) => return Err(e)
       }
     }
@@ -1189,12 +1257,15 @@ pub fn WholeAgents::commit_adopted_runner_chunk(
 }
 
 /// Read persisted post-handover runner output for `session_key` directly from
-/// `<data_dir>/run/adopted-runners.db`, coalescing contiguous chunks of the same
-/// `(instance_id, stream)` before UTF-8 decoding so split multi-byte characters stay intact.
+/// `<data_dir>/run/adopted-runners.db` via the `(session_key, id)` index (`LIMIT 4096`),
+/// coalescing per `(instance_id, stream)` bucket before UTF-8 decoding.
 pub fn WholeAgents::read_adopted_runner_output(
   self : WholeAgents,
   session_key : String,
 ) -> Array[String] {
+  if self.adopted_db_closed {
+    return []
+  }
   if self.adopted_db.is_none() {
     match (self.job_fs.stat)(self.adopted_db_path()) {
       Some(st) => {
@@ -1210,15 +1281,16 @@ pub fn WholeAgents::read_adopted_runner_output(
     Err(_) => return []
   }
   let rows = match db.all(
-    "SELECT instance_id, stream, data_b64 FROM runner_output WHERE session_key = ?1 ORDER BY id ASC",
+    "SELECT instance_id, stream, data_b64 FROM runner_output WHERE session_key = ?1 ORDER BY id DESC LIMIT 4096",
     [base_codec::json_str(session_key)],
   ) {
     Ok(r) => r
     Err(_) => return []
   }
   let chunks : Array[(String, String, Bytes)] = []
-  for i in 0..<rows.length() {
-    let row = rows[i]
+  let mut idx = rows.length() - 1
+  while idx >= 0 {
+    let row = rows[idx]
     let inst = adopted_row_str(row, "instance_id")
     let stream = adopted_row_str(row, "stream")
     let b64 = adopted_row_str(row, "data_b64")
@@ -1226,6 +1298,7 @@ pub fn WholeAgents::read_adopted_runner_output(
       Some(raw) => chunks.push((inst, stream, raw))
       None => ()
     }
+    idx = idx - 1
   }
   coalesce_runner_output_chunks(chunks)
 }

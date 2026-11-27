@@ -2329,13 +2329,15 @@ exec ${JSON.stringify(bin)} "$@"
   const frontAddr = `127.0.0.1:${frontPort}`;
   const memberJwt = signMemberJwt({ ws, device: memberEp.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
 
-  // Create 3 sessions for (a) real pre-ACKed runner, (b) restarted runner A->B, (d) split UTF-8.
+  // Create 4 sessions for (a) real pre-ACKed runner + Pion->Node->Pion, (b) restarted runner A->B,
+  // (d) interleaved stdout/stderr split UTF-8, and (e) 2.25 MiB (>2 MiB) backpressured AdminApi response.
   const { conn: adminConn1, helloReply: hello1 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello1?.ok, true, JSON.stringify(hello1));
   for (const [key, title] of [
     ["sess-r7-real", "R7 Real Runner"],
     ["sess-r7-restart", "R7 Restarted Runner"],
     ["sess-r7-utf8", "R7 Split UTF-8"],
+    ["sess-r8-big", "R8 2.25 MiB Runner"],
   ]) {
     const r = await adminCall(
       adminConn1,
@@ -2351,13 +2353,22 @@ exec ${JSON.stringify(bin)} "$@"
   const runnersDir = join(data, "run", "runners");
   mkdirSync(runnersDir, { recursive: true });
 
-  // (a) Spawn REAL release `stillfail-runner` that writes 23 bytes before handover, waits for trigger,
-  // then writes 15 more bytes (total 38 bytes). Simulate predecessor Node station consuming & ACKing the first 23 bytes!
+  // (a) Spawn REAL release `stillfail-runner` that writes:
+  //   1) 23 bytes before 1st handover (consumed & ACKed by simulated predecessor Node),
+  //   2) 15 bytes after 1st handover (consumed & ACKed by Pion #2 -> out=38),
+  //   3) 14 bytes during simulated Pion->Node rollback (consumed & ACKed by Node -> out=52),
+  //   4) 14 bytes after 2nd handover back to Pion #3 (consumed & ACKed by Pion #3 -> out=66).
   const preText = "predecessor-acked-23-b\n";
   const postText = "post-pion-15-b\n";
+  const midNodeText = "mid-node-14-b\n";
+  const afterPion3Text = "after-pion3-x\n";
   assert.equal(Buffer.byteLength(preText, "utf8"), 23);
   assert.equal(Buffer.byteLength(postText, "utf8"), 15);
+  assert.equal(Buffer.byteLength(midNodeText, "utf8"), 14);
+  assert.equal(Buffer.byteLength(afterPion3Text, "utf8"), 14);
   const triggerFile = join(data, "emit-post-15.flag");
+  const triggerNodeFile = join(data, "emit-node-14.flag");
+  const triggerPion3File = join(data, "emit-pion3-14.flag");
   const runnerReady = await new Promise<{ runner: number; pid: number; pgid: number; socket: string }>((resolve, reject) => {
     const rproc = spawn(
       runnerBin,
@@ -2367,7 +2378,10 @@ exec ${JSON.stringify(bin)} "$@"
         "--cwd", data,
         "--",
         "/bin/sh", "-c",
-        `printf 'predecessor-acked-23-b\\n'; while [ ! -f ${JSON.stringify(triggerFile)} ]; do sleep 0.05; done; printf 'post-pion-15-b\\n'; sleep 30`,
+        `printf 'predecessor-acked-23-b\\n'; ` +
+        `while [ ! -f ${JSON.stringify(triggerFile)} ]; do sleep 0.05; done; printf 'post-pion-15-b\\n'; ` +
+        `while [ ! -f ${JSON.stringify(triggerNodeFile)} ]; do sleep 0.05; done; printf 'mid-node-14-b\\n'; ` +
+        `while [ ! -f ${JSON.stringify(triggerPion3File)} ]; do sleep 0.05; done; printf 'after-pion3-x\\n'; sleep 30`,
       ],
       { stdio: ["ignore", "pipe", "pipe"], detached: true },
     );
@@ -2390,6 +2404,48 @@ exec ${JSON.stringify(bin)} "$@"
     });
   });
   extraPids.push(runnerReady.runner, runnerReady.pid, runnerReady.pgid);
+
+  // (e) Spawn REAL release `stillfail-runner` for `sess-r8-big` writing 2.25 MiB (2,359,296 bytes, 36 x 64 KiB).
+  const expectedBigChunks: Buffer[] = [];
+  for (let i = 0; i < 36; i++) {
+    const b = Buffer.alloc(65536, 65 + (i % 26));
+    b.write(String(i).padStart(4, "0"), 0, "ascii");
+    expectedBigChunks.push(b);
+  }
+  const expectedBigStr = Buffer.concat(expectedBigChunks).toString("utf8");
+  assert.equal(Buffer.byteLength(expectedBigStr, "utf8"), 2_359_296);
+  const bigRunnerReady = await new Promise<{ runner: number; pid: number; pgid: number; socket: string }>((resolve, reject) => {
+    const rproc = spawn(
+      runnerBin,
+      [
+        "--dir", runnersDir,
+        "--id", "claude-sess-r8-big",
+        "--cwd", data,
+        "--",
+        process.execPath, "-e",
+        `for(let i=0;i<36;i++){const b=Buffer.alloc(65536,65+(i%26));b.write(String(i).padStart(4,"0"),0,"ascii");process.stdout.write(b);}setTimeout(()=>{},30000);`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], detached: true },
+    );
+    children.push(rproc);
+    let out = "";
+    let err = "";
+    rproc.stdout?.on("data", (d) => { out += d.toString("utf8"); });
+    rproc.stderr?.on("data", (d) => { err += d.toString("utf8"); });
+    rproc.on("error", reject);
+    rproc.stdout?.on("end", () => {
+      const line = out.split("\n").find((l) => l.startsWith("{"));
+      if (line) {
+        const j = JSON.parse(line);
+        if (j.ready) {
+          resolve(j);
+          return;
+        }
+      }
+      reject(new Error(`real big stillfail-runner failed to start: ${err || out}`));
+    });
+  });
+  extraPids.push(bigRunnerReady.runner, bigRunnerReady.pid, bigRunnerReady.pgid);
 
   // Predecessor attaches, reads the initial 23 bytes, ACKs out=23, keep=0, and leaves cleanly.
   await new Promise<void>((resolve, reject) => {
@@ -2474,12 +2530,14 @@ exec ${JSON.stringify(bin)} "$@"
     }) + "\n",
   );
 
-  // (d) Seed split multi-byte UTF-8 mock runner for `sess-r7-utf8`: `[0xE4, 0xB8]` + `[0xAD]` -> `"中"`.
+  // (d) Seed interleaved stdout/stderr split multi-byte UTF-8 mock runner for `sess-r7-utf8`:
+  // `stdout([0xE4, 0xB8])` -> `stderr("note")` -> `stdout([0xAD])` -> `["中", "note"]` (ZERO U+FFFD).
   const procUtf8 = spawn("sleep", ["30"], { stdio: "ignore" });
   children.push(procUtf8);
   assert.ok(procUtf8.pid && procUtf8.pid > 1);
   const utf8SockPath = join(runnersDir, "claude-sess-r7-utf8.sock");
   let ackOutUtf8 = 0;
+  let ackErrUtf8 = 0;
   const srvUtf8 = createNetServer((sock) => {
     let buf = "";
     sock.on("data", (d) => {
@@ -2494,10 +2552,12 @@ exec ${JSON.stringify(bin)} "$@"
             sock.write(
               JSON.stringify({ op: "attached", out: 0, err: 0, keep: 0 }) + "\n" +
               JSON.stringify({ op: "out", stream: "out", at: 0, data: Buffer.from([0xe4, 0xb8]).toString("base64") }) + "\n" +
+              JSON.stringify({ op: "out", stream: "err", at: 0, data: Buffer.from("note", "utf8").toString("base64") }) + "\n" +
               JSON.stringify({ op: "out", stream: "out", at: 2, data: Buffer.from([0xad]).toString("base64") }) + "\n",
             );
-          } else if (msg.op === "ack" && typeof msg.out === "number") {
-            ackOutUtf8 = msg.out;
+          } else if (msg.op === "ack") {
+            if (typeof msg.out === "number") ackOutUtf8 = msg.out;
+            if (typeof msg.err === "number") ackErrUtf8 = msg.err;
           }
         }
         nl = buf.indexOf("\n");
@@ -2530,7 +2590,7 @@ exec ${JSON.stringify(bin)} "$@"
   // Now emit the 15 post-handover bytes from the real `stillfail-runner` (offsets [23..38)).
   writeFileSync(triggerFile, "go\n");
 
-  await until("runner A and utf8 runner acked", () => ackOutA >= 16 && ackOutUtf8 >= 3, 10_000);
+  await until("runner A and utf8 runner acked", () => ackOutA >= 16 && ackOutUtf8 >= 3 && ackErrUtf8 >= 4, 10_000);
   procA.kill("SIGKILL");
   procUtf8.kill("SIGKILL");
   srvA.close();
@@ -2548,16 +2608,71 @@ exec ${JSON.stringify(bin)} "$@"
     return Array.isArray(j.adoptedOutput) && j.adoptedOutput.join("") === postText;
   }, 10_000);
 
-  // Verify (d): split UTF-8 bytes `[0xE4, 0xB8]` + `[0xAD]` coalesced to `"中"` with ZERO U+FFFD!
+  // Verify (d): interleaved `stdout([0xE4, 0xB8])` -> `stderr("note")` -> `stdout([0xAD])`
+  // coalesced per `(instance_id, stream)` to `["中", "note"]` with ZERO U+FFFD!
   const utf8Sess = await adminCall(adminConn2, "GET", "/sessions/sess-r7-utf8");
   assert.equal(utf8Sess.status, 200, utf8Sess.body.toString("utf8"));
   const utf8Json = JSON.parse(utf8Sess.body.toString("utf8"));
-  assert.equal(
-    utf8Json.adoptedOutput.join(""),
-    "中",
-    `expected split UTF-8 to coalesce to "中" without U+FFFD, got: ${JSON.stringify(utf8Json)}`,
+  assert.deepEqual(
+    utf8Json.adoptedOutput,
+    ["中", "note"],
+    `expected interleaved split UTF-8 to coalesce to ["中", "note"] without U+FFFD, got: ${JSON.stringify(utf8Json)}`,
   );
+  assert.equal(utf8Json.adoptedOutput.join("").includes("\uFFFD"), false);
+
+  // Verify (e): 2.25 MiB (2,359,296 bytes, 36 chunks) over REAL Launcher + MB Front -> HTTP 200, 0 reset, byte-exact!
+  await until("GET /sessions/sess-r8-big returns full 2,359,296 bytes with HTTP 200", async () => {
+    const r = await adminCall(adminConn2, "GET", "/sessions/sess-r8-big");
+    if (r.status !== 200) return false;
+    const j = JSON.parse(r.body.toString("utf8"));
+    if (!Array.isArray(j.adoptedOutput)) return false;
+    const joined = (j.adoptedOutput as string[]).join("");
+    if (joined.length < 2_359_296) return false;
+    assert.equal(joined.length, 2_359_296, `expected exact 2,359,296 bytes, got ${joined.length}`);
+    assert.equal(joined, expectedBigStr, "2.25 MiB adoptedOutput must match byte-for-byte");
+    return true;
+  }, 20_000);
   await adminConn2.close(0, "done");
+
+  // Simulate Pion -> Node rollback step on `sess-r7-real`: intermediate Node steals the runner socket,
+  // verifies Pion #2 ACKed out=38, reads 14 new bytes (`mid-node-14-b\n`) and ACKs out=52, keep=0!
+  await new Promise<void>((resolve, reject) => {
+    const s = createConnection(runnerReady.socket);
+    let buf = "";
+    let got = 0;
+    const timer = setTimeout(() => { s.destroy(); reject(new Error(`mid-node timeout: got ${got}/14 bytes`)); }, 10_000);
+    s.on("error", (e) => { clearTimeout(timer); reject(e); });
+    s.on("connect", () => { s.write('{"op":"attach"}\n'); });
+    s.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attached") {
+            assert.equal(msg.out, 38, `expected Pion #2 ack.out === 38 before Node takeover, got ${JSON.stringify(msg)}`);
+            assert.equal(msg.keep, 0, `expected keep === 0, got ${JSON.stringify(msg)}`);
+            writeFileSync(triggerNodeFile, "go\n");
+          } else if (msg.op === "out" && msg.stream === "out") {
+            const raw = Buffer.from(msg.data, "base64");
+            got += raw.length;
+            if (got >= 14) {
+              s.write(JSON.stringify({ op: "ack", out: 52, err: 0, keep: 0 }) + "\n");
+              s.end();
+            }
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+    s.on("close", () => {
+      clearTimeout(timer);
+      if (got >= 14) resolve();
+      else reject(new Error(`mid-node closed early with ${got}/14 bytes`));
+    });
+  });
 
   // Verify independent `<data>/run/adopted-runners.db` (mode 0600) AND zero schema changes in `stillfail.db`!
   const adoptedDbPath = join(data, "run", "adopted-runners.db");
@@ -2625,17 +2740,19 @@ exec ${JSON.stringify(bin)} "$@"
   await until("restarted runner B acked to 16", () => ackOutB >= 16, 10_000);
   procB.kill("SIGKILL");
 
+  // Trigger final 14 bytes (`after-pion3-x\n`) on `sess-r7-real` after Pion #3 raised baseline from 38 -> 52!
+  writeFileSync(triggerPion3File, "go\n");
+
   const { conn: adminConn3, helloReply: hello3 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello3?.ok, true, JSON.stringify(hello3));
-  // Verify (a) 2nd SIGUSR2 recovery from adopted-runners.db:
-  const sess3 = await adminCall(adminConn3, "GET", "/sessions/sess-r7-real");
-  assert.equal(sess3.status, 200, sess3.body.toString("utf8"));
-  const sess3Json = JSON.parse(sess3.body.toString("utf8"));
-  assert.equal(
-    sess3Json.adoptedOutput.join(""),
-    postText,
-    `2nd SIGUSR2 handover MUST restore post-pion-15-b from adopted-runners.db, got: ${JSON.stringify(sess3Json)}`,
-  );
+  // Verify (a) Pion -> Node -> Pion cutback: Pion #3 raised baseline to 52, persisted `after-pion3-x\n`,
+  // and restored `post-pion-15-b\n` + `after-pion3-x\n` from adopted-runners.db!
+  await until("GET /sessions/sess-r7-real contains post-pion-15-b and after-pion3-x", async () => {
+    const r = await adminCall(adminConn3, "GET", "/sessions/sess-r7-real");
+    if (r.status !== 200) return false;
+    const j = JSON.parse(r.body.toString("utf8"));
+    return Array.isArray(j.adoptedOutput) && j.adoptedOutput.join("") === postText + afterPion3Text;
+  }, 10_000);
   // Verify (b) BOTH runner A and restarted runner B outputs are preserved:
   const restartSess = await adminCall(adminConn3, "GET", "/sessions/sess-r7-restart");
   assert.equal(restartSess.status, 200, restartSess.body.toString("utf8"));
@@ -2647,7 +2764,7 @@ exec ${JSON.stringify(bin)} "$@"
   );
   await adminConn3.close(0, "done");
 
-  // Verify directly with the REAL `stillfail-runner` that it recorded `out === 38` and `keep === 0`!
+  // Verify directly with the REAL `stillfail-runner` that Pion #3 ACKed `out === 66` and `keep === 0`!
   const attachedAck = await new Promise<{ op: string; out: number; err: number; keep: number | null }>((resolve, reject) => {
     const s = createConnection(runnerReady.socket);
     let buf = "";
@@ -2666,7 +2783,7 @@ exec ${JSON.stringify(bin)} "$@"
     });
   });
   assert.equal(attachedAck.op, "attached", JSON.stringify(attachedAck));
-  assert.equal(attachedAck.out, 38, `real runner must have received ack.out === 38, got ${JSON.stringify(attachedAck)}`);
+  assert.equal(attachedAck.out, 66, `real runner must have received Pion #3 ack.out === 66, got ${JSON.stringify(attachedAck)}`);
   assert.equal(attachedAck.keep, 0, `real runner must have received ack.keep === 0, got ${JSON.stringify(attachedAck)}`);
 
   lc.kill("SIGTERM");

@@ -122,6 +122,11 @@ struct DriveDownloadStreamState {
   mut remaining : Int64
 }
 
+struct AdminBodySendingState {
+  body : Bytes
+  mut offset : Int
+}
+
 struct AdminReqHead {
   method : String
   path : String
@@ -135,6 +140,7 @@ enum AdminStreamMode {
   ReadingBody(AdminReqHead, Bytes)
   StreamingDriveUpload(DriveUploadStreamState)
   DriveDownloading(DriveDownloadStreamState)
+  SendingBody(AdminBodySendingState)
   SseStreaming(Int)
   Done
 }
@@ -1238,11 +1244,58 @@ fn build_upstream_http_request(
 pub fn run_whole_daemon(argv : Array[String]) -> Int {
   let mut state_opt : Option[WholeRuntimeState] = None
 
+  let pump_admin_body_chunk = fn(
+    ctx : DaemonCtx,
+    astream : AdminStreamState,
+    bs : AdminBodySendingState,
+  ) -> Unit {
+    while bs.offset < bs.body.length() {
+      if ctx.is_peer_http_write_paused(astream.sid)
+      || ctx.peer_http_write_queued_bytes(astream.sid) > PEER_HTTP_WRITE_LOW_WATER
+      {
+        return
+      }
+      let rem = bs.body.length() - bs.offset
+      let take = if rem > WHOLE_DRIVE_READ_CHUNK { WHOLE_DRIVE_READ_CHUNK } else { rem }
+      let chunk = slice_bytes_local(bs.body, bs.offset, bs.offset + take)
+      bs.offset = bs.offset + take
+      ctx.write_peer_http_chunk(astream.sid, chunk)
+    }
+    ctx.finish_peer_http(astream.sid)
+    astream.mode = AdminStreamMode::Done
+  }
+
   let send_admin_resp_and_finish = fn(ctx : DaemonCtx, sid : Int64, resp : station_http::HttpResponse) -> Unit {
     let head_b = encode_admin_head_line(resp.status, resp.headers, Some(resp.body.length().to_int64()))
     ctx.write_peer_http_chunk(sid, head_b)
-    if resp.body.length() > 0 {
-      ctx.write_peer_http_chunk(sid, resp.body)
+    if resp.body.length() <= WHOLE_DRIVE_READ_CHUNK {
+      if resp.body.length() > 0 {
+        ctx.write_peer_http_chunk(sid, resp.body)
+      }
+      ctx.finish_peer_http(sid)
+      return
+    }
+    match state_opt {
+      Some(st) => {
+        match st.admin_streams.get(sid) {
+          Some(astream) => {
+            let bs = AdminBodySendingState::{ body: resp.body, offset: 0 }
+            astream.mode = AdminStreamMode::SendingBody(bs)
+            pump_admin_body_chunk(ctx, astream, bs)
+            return
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    // Fallback if stream entry is absent: still chunk by 64 KiB.
+    let mut off = 0
+    while off < resp.body.length() {
+      let rem = resp.body.length() - off
+      let take = if rem > WHOLE_DRIVE_READ_CHUNK { WHOLE_DRIVE_READ_CHUNK } else { rem }
+      ctx.write_peer_http_chunk(sid, slice_bytes_local(resp.body, off, off + take))
+      off = off + take
     }
     ctx.finish_peer_http(sid)
   }
@@ -1577,8 +1630,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
     match action {
       station_http::HandlerAction::Respond(resp) => {
-        send_admin_resp_and_finish(ctx, astream.sid, resp)
         astream.mode = AdminStreamMode::Done
+        send_admin_resp_and_finish(ctx, astream.sid, resp)
       }
       station_http::HandlerAction::UpgradeSse(extra_headers) => {
         match st.core.api.events.take_last_opened() {
@@ -1888,7 +1941,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     astream : AdminStreamState,
   ) -> Result[Unit, String] {
     match astream.mode {
-      AdminStreamMode::Done | AdminStreamMode::SseStreaming(_) | AdminStreamMode::DriveDownloading(_) => {
+      AdminStreamMode::Done
+      | AdminStreamMode::SseStreaming(_)
+      | AdminStreamMode::DriveDownloading(_)
+      | AdminStreamMode::SendingBody(_) => {
         astream.rx_buf = Bytes::new(0)
         return Ok(())
       }
@@ -2780,18 +2836,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           att_err,
                           now_w,
                         ) {
-                          Ok((db_out, db_err, existed)) => {
-                            if existed && (att_out > db_out || att_err > db_err) {
-                              ctx.log(
-                                "adopted runner attached gap (" + rconn.instance_id + "): att=(" +
-                                att_out.to_string() + "," + att_err.to_string() + ") > db=(" +
-                                db_out.to_string() + "," + db_err.to_string() + "); closing runner socket fail-stop",
-                              )
-                              rconn.exited = true
-                              break
-                            }
-                            rconn.acked_out = db_out
-                            rconn.acked_err = db_err
+                          Ok((eff_out, eff_err, _existed)) => {
+                            rconn.acked_out = eff_out
+                            rconn.acked_err = eff_err
                             rconn.db_initialized = true
                           }
                           Err(pe) => {
@@ -4071,7 +4118,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           match st.admin_streams.get(sid) {
             Some(astream) => {
               match astream.mode {
-                AdminStreamMode::Done | AdminStreamMode::SseStreaming(_) | AdminStreamMode::DriveDownloading(_) => {
+                AdminStreamMode::Done
+                | AdminStreamMode::SseStreaming(_)
+                | AdminStreamMode::DriveDownloading(_)
+                | AdminStreamMode::SendingBody(_) => {
                   return Ok(())
                 }
                 _ => {
@@ -4229,6 +4279,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               match astream.mode {
                 AdminStreamMode::DriveDownloading(dl) => {
                   pump_drive_download_chunk(ctx, st, astream, dl)
+                }
+                AdminStreamMode::SendingBody(bs) => {
+                  pump_admin_body_chunk(ctx, astream, bs)
                 }
                 _ => ()
               }
