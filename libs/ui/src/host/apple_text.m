@@ -782,6 +782,14 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
       const CFIndex *idx = CTRunGetStringIndicesPtr(run);
       const CGPoint *pos = CTRunGetPositionsPtr(run);
       if (!idx || !pos) {
+        size_t need = (size_t)gc;
+        if (need > shape_glyph_cap) {
+          size_t nc = shape_glyph_cap ? shape_glyph_cap : 256;
+          while (nc < need) nc *= 2;
+          shape_idx = realloc(shape_idx, sizeof(CFIndex) * nc);
+          shape_pos = realloc(shape_pos, sizeof(CGPoint) * nc);
+          shape_glyph_cap = nc;
+        }
         if (!idx) {
           CTRunGetStringIndices(run, CFRangeMake(0, 0), shape_idx);
           idx = shape_idx;

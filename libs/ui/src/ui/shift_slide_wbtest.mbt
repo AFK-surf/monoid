@@ -125,11 +125,36 @@ test "View::offset_snapped snaps to whole device pixels: zero glyph re-phase, ze
       assert_eq(view_paint_work.made, made0, msg="scale \{sc} dx=\{step}: view block rebuilt mid-drag")
       assert_true(ride_drawn.val >= rides0, msg="scale \{sc} dx=\{step}: ride_drawn regressed")
     }
-    // Re-binding with plain View::offset clears offset_snap and restores exact fractional placement.
+    // Re-binding with plain View::offset clears offset_snap and restores exact fractional placement,
+    // and re-binding back to View::offset_snapped re-enables whole-pixel snapping.
     let raw = -12.37
     row_v.val.unwrap().offset(Is((raw, 0.0))) |> ignore
     t.draw()
     let r_exact = row_v.val.unwrap().placed_window_now()
     assert_true((r_exact.0 - raw).abs() < 1.0e-6, msg="scale \{sc}: expected exact \{raw}, got \{r_exact.0}")
+    row_v.val.unwrap().offset_snapped(Is((raw, 0.0))) |> ignore
+    t.draw()
+    let r_resnap = row_v.val.unwrap().placed_window_now()
+    let px_resnap = r_resnap.0 * sc
+    assert_true((px_resnap - px_resnap.round()).abs() < 1.0e-6, msg="scale \{sc}: re-snapped px=\{px_resnap}")
   }
+  // Recycled nodes must clear offset_snap so a reused node with plain View::offset stays fractional.
+  let show_snapped = @signals.signal(true, same=fn(a, b) { a == b })
+  let reused_v : Ref[@view.View?] = Ref(None)
+  let t2 = Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=2, scale=3.0)
+  t2.check_looks(false)
+  set_view_app(fn(root) {
+    root.show(at_once=true, fn() { show_snapped.get() }, fn(a) {
+      a.width(Is(Some(100.0))).height(Is(Some(40.0))).offset_snapped(Is((-12.37, 0.0))) |> ignore
+    })
+    root.show(at_once=true, fn() { !show_snapped.get() }, fn(b) {
+      reused_v.val = Some(b)
+      b.width(Is(Some(100.0))).height(Is(Some(40.0))).offset(Is((-12.37, 0.0))) |> ignore
+    })
+  })
+  t2.draw()
+  show_snapped.set(false)
+  t2.draw()
+  let r_reused = reused_v.val.unwrap().placed_window_now()
+  assert_true((r_reused.0 - -12.37).abs() < 1.0e-6, msg="recycled node kept stale offset_snap: \{r_reused.0}")
 }
