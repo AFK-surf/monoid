@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Composite 3x native OS chrome (iPhone Duo iOS 27.1 trailing Liquid Glass column, Android status
-// bar + virtual-screen notification, macOS desktop + app/Safari window) onto raw 3x apps/mbui
-// screen captures before mapping them onto official 3D device meshes.
+// Composite 3x native OS chrome onto pure apps/mbui 3x captures before mapping onto official 3D CAD meshes:
+//   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
+//   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
+//   - desk:    Apple MacBook Air 15" (2940x1908 @3x = 980x636; seamless macOS full-screen notch band)
+//   - web:     Windows 11 27" 4K Display (4320x2430 @3x = 1440x810; Edge/Chrome bar + Windows 11 taskbar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -20,7 +22,6 @@ mkdirSync(outDir, { recursive: true });
 const ALL_KEYS = ["duo-en", "duo-zh", "android-en", "android-zh", "desk-en", "desk-zh", "web-en", "web-zh"];
 const CHROMIUM = process.env.CHROMIUM_BIN || "chromium";
 
-// Phone status bar icons (cellular + Wi-Fi + battery) — ONLY for Android phone
 function phoneStatusIcons(scale = 1) {
   return `<svg width="${Math.round(74 * scale)}" height="${Math.round(16 * scale)}" viewBox="0 0 74 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <rect x="0" y="9" width="3" height="5" rx="1" fill="#1C1B1A"/>
@@ -34,130 +35,46 @@ function phoneStatusIcons(scale = 1) {
   </svg>`;
 }
 
-// macOS menu bar icons (Wi-Fi + Battery ONLY — no phone cellular bars)
-function macStatusIcons(color = "#1C1B1A", scale = 1) {
-  return `<svg width="${Math.round(52 * scale)}" height="${Math.round(14 * scale)}" viewBox="0 0 52 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M7.2 10.6a1.45 1.45 0 1 1 2.9 0 1.45 1.45 0 0 1-2.9 0ZM4.8 8.2a5.2 5.2 0 0 1 7.7 0l-1.2 1.2a3.5 3.5 0 0 0-5.3 0L4.8 8.2ZM2.4 5.8a8.6 8.6 0 0 1 12.5 0l-1.2 1.2a6.9 6.9 0 0 0-10.1 0L2.4 5.8Z" fill="${color}"/>
-    <rect x="21" y="2" width="24" height="10.2" rx="2.8" stroke="${color}" stroke-opacity="0.52" stroke-width="1.2"/>
-    <rect x="23" y="3.8" width="18.6" height="6.6" rx="1.4" fill="${color}"/>
-    <path d="M46.4 5.2v3.8a1.3 1.3 0 0 0 1.1-1.3V6.5a1.3 1.3 0 0 0-1.1-1.3Z" fill="${color}" fill-opacity="0.52"/>
-  </svg>`;
-}
-
-function appleGlyph(color = "#1C1B1A") {
-  return `<svg width="10" height="12" viewBox="0 0 14 17" fill="${color}"><path d="M11.6 8.9c0-1.9 1.5-2.8 1.6-2.9-.9-1.3-2.2-1.5-2.7-1.5-1.1-.1-2.2.7-2.8.7-.6 0-1.5-.7-2.4-.7-1.2 0-2.4.7-3 1.8-1.3 2.3-.3 5.6.9 7.4.6.9 1.3 1.9 2.3 1.8.9 0 1.3-.6 2.4-.6s1.4.6 2.4.6c1 0 1.6-.9 2.2-1.8.7-1 1-2 1-2.1 0 0-1.9-.7-1.9-2.7ZM9.7 3.2c.5-.6.9-1.5.8-2.3-.7 0-1.6.5-2.1 1.1-.5.5-.9 1.4-.8 2.2.8.1 1.6-.4 2.1-1Z"/></svg>`;
-}
-
-function trafficLights(size = 11, gap = 7) {
-  return `<div style="display:flex;align-items:center;gap:${gap}px;">
-    <span style="width:${size}px;height:${size}px;border-radius:50%;background:#FF5F57;border:0.5px solid rgba(0,0,0,0.16);display:inline-block;"></span>
-    <span style="width:${size}px;height:${size}px;border-radius:50%;background:#FEBC2E;border:0.5px solid rgba(0,0,0,0.16);display:inline-block;"></span>
-    <span style="width:${size}px;height:${size}px;border-radius:50%;background:#28C840;border:0.5px solid rgba(0,0,0,0.16);display:inline-block;"></span>
-  </div>`;
-}
-
-// Native iPhone Duo iOS 27.1 trailing right-edge Liquid Glass column
-function duoTrailingColumn() {
-  return `
-  <div style="position:absolute;top:0;right:6px;width:82px;height:669px;display:flex;flex-direction:column;align-items:center;padding:20px 0 24px;box-sizing:border-box;justify-content:space-between;">
-    <div style="display:flex;flex-direction:column;align-items:center;gap:5px;">
-      <div style="font-size:13.5px;font-weight:700;color:#1C1B1A;letter-spacing:-0.02em;line-height:1;">09:41</div>
-      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-        <circle cx="18" cy="18" r="14.2" stroke="rgba(28,27,26,0.12)" stroke-width="2.4"/>
-        <path d="M 8.0 28.0 A 14.2 14.2 0 1 1 29.8 25.8" stroke="#34C759" stroke-width="2.6" stroke-linecap="round"/>
-        <path d="M18.6 6.2 L16.5 9.4 H18.2 L17.5 12.1 L19.8 8.8 H18.1 L18.6 6.2 Z" fill="#34C759"/>
-        <path d="M16.7 21.3a1.4 1.4 0 1 1 2.6 0 1.4 1.4 0 0 1-2.6 0ZM14.6 19.1a4.7 4.7 0 0 1 6.8 0l-1.1 1.1a3.2 3.2 0 0 0-4.6 0l-1.1-1.1ZM12.5 16.9a7.7 7.7 0 0 1 11.0 0l-1.1 1.1a6.1 6.1 0 0 0-8.8 0l-1.1-1.1Z" fill="#1C1B1A"/>
-        <circle cx="13.8" cy="27.2" r="1.2" fill="#1C1B1A"/>
-        <circle cx="16.6" cy="28.1" r="1.2" fill="#1C1B1A"/>
-        <circle cx="19.4" cy="28.1" r="1.2" fill="#1C1B1A"/>
-        <circle cx="22.2" cy="27.2" r="1.2" fill="rgba(28,27,26,0.32)"/>
-      </svg>
-    </div>
-
-    <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
-      <div style="width:46px;padding:12px 0;border-radius:23px;background:rgba(255,255,255,0.74);border:1px solid rgba(255,255,255,0.88);box-shadow:0 4px 16px rgba(28,27,26,0.08), inset 0 1px 0 rgba(255,255,255,0.9);display:flex;flex-direction:column;align-items:center;gap:18px;color:#2E2C29;">
-        <svg width="19" height="19" viewBox="0 0 20 20" fill="currentColor"><circle cx="4.5" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="15.5" cy="10" r="1.5"/></svg>
-        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v4.2" stroke-linecap="round"/><circle cx="10" cy="6.6" r="0.85" fill="currentColor" stroke="none"/></svg>
-        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"><rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="M8 4v12"/></svg>
-        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="4.2" width="13.6" height="3.2" rx="1"/><path d="M4.6 7.4v7.2a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4V7.4"/><path d="M8.3 11h3.4"/></svg>
-      </div>
-
-      <div style="width:46px;padding:7px 0;border-radius:23px;background:rgba(255,255,255,0.74);border:1px solid rgba(255,255,255,0.88);box-shadow:0 4px 16px rgba(28,27,26,0.08), inset 0 1px 0 rgba(255,255,255,0.9);display:flex;flex-direction:column;align-items:center;gap:12px;">
-        <div style="width:36px;height:36px;border-radius:18px;background:rgba(224,90,43,0.13);display:flex;align-items:center;justify-content:center;color:#D95326;">
-          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7A2.5 2.5 0 0 1 16 5.5v5a2.5 2.5 0 0 1-2.5 2.5H9l-3.2 2.6V13H6.5A2.5 2.5 0 0 1 4 10.5v-5Z"/></svg>
-        </div>
-        <div style="width:36px;height:30px;display:flex;align-items:center;justify-content:center;color:#2E2C29;">
-          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"><path d="M3.2 6.2a1.8 1.8 0 0 1 1.8-1.8h3.4l1.6 1.8h5a1.8 1.8 0 0 1 1.8 1.8v6.2a1.8 1.8 0 0 1-1.8 1.8H5a1.8 1.8 0 0 1-1.8-1.8V6.2Z"/></svg>
-        </div>
-        <div style="width:36px;height:30px;display:flex;align-items:center;justify-content:center;color:#2E2C29;">
-          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="9.5" rx="2"/><path d="M7.5 16.5h5M10 13.5v3"/></svg>
-        </div>
-        <div style="width:36px;height:30px;display:flex;align-items:center;justify-content:center;color:#2E2C29;">
-          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"><circle cx="10" cy="10" r="2.7"/><path d="M10 3.2v1.6M10 15.2v1.6M3.2 10h1.6M15.2 10h1.6M5.2 5.2l1.1 1.1M13.7 13.7l1.1 1.1M14.8 5.2l-1.1 1.1M6.3 13.7l-1.1 1.1"/></svg>
-        </div>
-      </div>
-    </div>
-
-    <div style="width:44px;height:44px;border-radius:22px;background:rgba(255,255,255,0.78);border:1px solid rgba(255,255,255,0.92);box-shadow:0 4px 16px rgba(28,27,26,0.09), inset 0 1px 0 rgba(255,255,255,0.95);display:flex;align-items:center;justify-content:center;color:#2E2C29;">
-      <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"/></svg>
-    </div>
-  </div>`;
-}
-
 function makeHtml(key) {
   const isZh = key.endsWith("-zh");
   const dev = key.split("-")[0];
   const imgUrl = `/img/${key}.png`;
   const font = isZh
-    ? `system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif`
-    : `system-ui, -apple-system, "SF Pro Text", "Inter", sans-serif`;
+    ? `system-ui, -apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif`
+    : `system-ui, -apple-system, 'SF Pro Text', 'Inter', sans-serif`;
 
   if (dev === "duo") {
+    // Apple iPhone 18 Pro Max: 390x848 @3x = 1170x2544 (exact 0.4599 matching EHjrGDHNHzgNjtE).
+    // Apple USDZ already provides the real 3D Dynamic Island & front camera lens mesh above the screen.
     return {
-      w: 951, h: 669, dpr: 3,
-      html: `<!doctype html><html><body style="margin:0;width:951px;height:669px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
-        <img src="${imgUrl}" style="display:block;width:951px;height:669px;">
-        ${duoTrailingColumn()}
+      w: 390, h: 848, dpr: 3,
+      html: `<!doctype html><html><body style="margin:0;width:390px;height:848px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+        <div style="height:38px;background:#F5F3EF;display:flex;align-items:center;justify-content:space-between;padding:4px 24px 0;box-sizing:border-box;position:relative;font-size:13.5px;font-weight:700;color:#1C1B1A;letter-spacing:-0.02em;">
+          <span>9:41</span>
+          ${phoneStatusIcons(0.86)}
+        </div>
+        <img src="${imgUrl}" style="display:block;width:390px;height:796px;">
+        <div style="height:14px;background:#F5F3EF;display:flex;align-items:center;justify-content:center;">
+          <div style="width:132px;height:4.5px;border-radius:3px;background:rgba(28,27,26,0.30);"></div>
+        </div>
       </body></html>`
     };
   }
 
   if (dev === "android") {
-    const nTitle = isZh ? "调试已共享给 2 个对话" : "Debugging shared with 2 chats";
-    const nBody = isZh
-      ? "「手机上的登录页」正在后台使用虚拟屏幕"
-      : "“Login page on phones” is using a virtual screen in the background";
-    const nAction = isZh ? "关闭调试共享" : "Turn off debug sharing";
-    const nMeta = isZh ? "monoid · 2 分钟前" : "monoid · 2m";
-
+    // Samsung Galaxy S25+ (large concentric rounded corners): 390x844 @3x = 1170x2532 (exact 0.4621).
     return {
-      w: 412, h: 892, dpr: 3,
-      html: `<!doctype html><html><body style="margin:0;width:412px;height:892px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
-        <div style="position:absolute;top:0;left:0;right:0;height:28px;background:#F5F3EF;display:flex;align-items:center;justify-content:space-between;padding:0 18px;box-sizing:border-box;font-size:12.5px;font-weight:600;color:#1C1B1A;">
+      w: 390, h: 844, dpr: 3,
+      html: `<!doctype html><html><body style="margin:0;width:390px;height:844px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+        <div style="height:28px;background:#F5F3EF;display:flex;align-items:center;justify-content:space-between;padding:0 22px;box-sizing:border-box;font-size:12.5px;font-weight:600;color:#1C1B1A;">
           <span>9:41</span>
           <div style="display:flex;align-items:center;gap:5px;">
             <span style="font-size:10.5px;font-weight:700;letter-spacing:-0.02em;">5G</span>
             ${phoneStatusIcons(0.84)}
           </div>
         </div>
-        <div style="position:absolute;top:28px;left:0;width:412px;height:82px;overflow:hidden;">
-          <img src="${imgUrl}" style="display:block;width:412px;height:915px;">
-        </div>
-        <div style="position:absolute;z-index:3;top:110px;left:12px;right:12px;background:#FFFFFF;border-radius:18px;padding:11px 14px 11px;box-sizing:border-box;border:1px solid rgba(28,27,26,0.09);box-shadow:0 6px 20px rgba(28,27,26,0.08);">
-          <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px;">
-            <span style="width:16px;height:16px;border-radius:50%;background:#1C1B1A;display:inline-flex;align-items:center;justify-content:center;">
-              <span style="width:6px;height:6px;border-radius:50%;background:#34C759;display:inline-block;"></span>
-            </span>
-            <span style="font-size:11.5px;font-weight:500;color:#6B6860;">${nMeta}</span>
-          </div>
-          <div style="font-size:13.5px;font-weight:700;color:#1C1B1A;line-height:1.28;margin-bottom:3px;">${nTitle}</div>
-          <div style="font-size:12px;color:#4F4C46;line-height:1.35;margin-bottom:6px;">${nBody}</div>
-          <div style="font-size:12px;font-weight:600;color:#C24D24;">${nAction}</div>
-        </div>
-        <div style="position:absolute;top:240px;left:0;width:412px;height:639px;overflow:hidden;">
-          <img src="${imgUrl}" style="display:block;width:412px;height:915px;transform:translateY(-276px);">
-        </div>
-        <div style="position:absolute;bottom:0;left:0;right:0;height:14px;background:#F5F3EF;display:flex;align-items:center;justify-content:center;">
+        <img src="${imgUrl}" style="display:block;width:390px;height:802px;">
+        <div style="height:14px;background:#F5F3EF;display:flex;align-items:center;justify-content:center;">
           <div style="width:116px;height:4px;border-radius:3px;background:rgba(28,27,26,0.28);"></div>
         </div>
       </body></html>`
@@ -165,73 +82,76 @@ function makeHtml(key) {
   }
 
   if (dev === "desk") {
-    const menus = isZh
-      ? ["monoid", "文件", "编辑", "显示", "窗口", "帮助"]
-      : ["monoid", "File", "Edit", "View", "Window", "Help"];
-    const clock = isZh ? "周五 09:41" : "Fri 9:41 AM";
-    const winTitle = isZh ? "Willow — Station" : "Willow — Stations";
+    // Apple MacBook Air 15" Silver: 980x636 @3x = 2940x1908 (exact 1.5409 matching OQzaQDtbMVhhlAr).
     return {
-      w: 1066, h: 692, dpr: 3,
-      html: `<!doctype html><html><body style="margin:0;width:1066px;height:692px;overflow:hidden;position:relative;font-family:${font};background:linear-gradient(138deg,#9F8E7D 0%,#7D6D5E 48%,#5A4D43 100%);">
-        <div style="position:absolute;inset:0;background:radial-gradient(ellipse 75% 60% at 18% 16%, rgba(255,236,210,0.34), transparent 64%), radial-gradient(ellipse 65% 55% at 86% 88%, rgba(34,26,20,0.38), transparent 64%);"></div>
-        <div style="position:relative;z-index:2;height:24px;background:rgba(246,243,238,0.88);border-bottom:1px solid rgba(28,27,26,0.08);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:11.5px;color:#1C1B1A;">
-          <div style="display:flex;align-items:center;gap:14px;">
-            ${appleGlyph("#1C1B1A")}
-            <span style="font-weight:700;">${menus[0]}</span>
-            ${menus.slice(1).map(m => `<span style="font-weight:500;opacity:0.86;">${m}</span>`).join("")}
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;font-weight:500;">
-            ${macStatusIcons("#1C1B1A", 0.90)}
-            <span>${clock}</span>
-          </div>
-        </div>
-        <div style="position:absolute;top:31px;left:43px;width:980px;height:651px;border-radius:11px;overflow:hidden;background:#F5F3EF;box-shadow:0 20px 52px rgba(18,12,8,0.40), 0 0 0 0.75px rgba(28,27,26,0.18);">
-          <div style="height:26px;display:flex;align-items:center;position:relative;border-bottom:1px solid rgba(28,27,26,0.06);box-sizing:border-box;">
-            <div style="width:336px;height:100%;background:#EDE9E0;display:flex;align-items:center;padding-left:12px;box-sizing:border-box;">
-              ${trafficLights(10.5, 6.5)}
-            </div>
-            <div style="flex:1;height:100%;background:#F5F3EF;display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;color:rgba(28,27,26,0.58);padding-right:336px;">
-              ${winTitle}
-            </div>
-          </div>
-          <img src="${imgUrl}" style="display:block;width:980px;height:625px;">
-        </div>
+      w: 980, h: 636, dpr: 3,
+      html: `<!doctype html><html><body style="margin:0;width:980px;height:636px;overflow:hidden;position:relative;font-family:${font};background:#070709;">
+        <div style="height:24px;background:#070709;"></div>
+        <img src="${imgUrl}" style="display:block;width:980px;height:612px;">
       </body></html>`
     };
   }
 
-  const wMenus = isZh
-    ? ["Safari 浏览器", "文件", "编辑", "显示", "历史记录", "书签", "窗口", "帮助"]
-    : ["Safari", "File", "Edit", "View", "History", "Bookmarks", "Window", "Help"];
-  const wClock = isZh ? "周五 09:41" : "Fri 9:41 AM";
+  // web: Windows 11 Workstation 27" 4K Display running Edge/Chrome app.monoid.build
+  // Exact 1440x810 @3x = 4320x2430 (exact 16:9): 40px browser bar + 730px apps/mbui + 40px Windows 11 taskbar
+  const searchLabel = isZh ? "搜索" : "Search";
+  const timeStr = "09:41";
+  const dateStr = isZh ? "2026/11/28" : "11/28/2026";
   return {
-    w: 1360, h: 765, dpr: 3,
-    html: `<!doctype html><html><body style="margin:0;width:1360px;height:765px;overflow:hidden;position:relative;font-family:${font};background:linear-gradient(135deg,#9E8D7C 0%,#7A6A5B 48%,#56493F 100%);">
-      <div style="position:absolute;inset:0;background:radial-gradient(ellipse 70% 58% at 18% 18%, rgba(255,236,210,0.34), transparent 64%), radial-gradient(ellipse 60% 55% at 86% 84%, rgba(34,26,20,0.40), transparent 64%);"></div>
-      <div style="position:relative;z-index:2;height:24px;background:rgba(246,243,238,0.88);border-bottom:1px solid rgba(28,27,26,0.08);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:11.5px;color:#1C1B1A;">
-        <div style="display:flex;align-items:center;gap:14px;">
-          ${appleGlyph("#1C1B1A")}
-          <span style="font-weight:700;">${wMenus[0]}</span>
-          ${wMenus.slice(1).map(m => `<span style="font-weight:500;opacity:0.86;">${m}</span>`).join("")}
+    w: 1440, h: 810, dpr: 3,
+    html: `<!doctype html><html><body style="margin:0;width:1440px;height:810px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+      <div style="height:40px;background:#EBE8E1;border-bottom:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 16px;position:relative;">
+        <div style="display:flex;align-items:center;gap:14px;color:rgba(28,27,26,0.55);">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5 6 8l4.5 4.5"/></svg>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5 10 8l-4.5 4.5"/></svg>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.2-3.2"/><path d="M12.8 2.6v2.6h-2.6"/></svg>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;font-weight:500;">
-          ${macStatusIcons("#1C1B1A", 0.90)}
-          <span>${wClock}</span>
+        <div style="position:absolute;left:50%;transform:translateX(-50%);width:480px;height:26px;border-radius:13px;background:#FFFFFF;border:1px solid rgba(28,27,26,0.09);display:flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;font-weight:500;color:#2E2D2A;">
+          <svg width="9.5" height="10.5" viewBox="0 0 12 14" fill="none"><rect x="1.5" y="6" width="9" height="6.8" rx="1.6" fill="#6F6B64"/><path d="M3.5 6V4.3a2.5 2.5 0 0 1 5 0V6" stroke="#6F6B64" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span>app.monoid.build</span>
+        </div>
+        <div style="display:flex;align-items:center;height:100%;color:#2B2926;">
+          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.1"/></svg></div>
+          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></div>
+          <div style="width:48px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg></div>
         </div>
       </div>
-      <div style="position:absolute;top:34px;left:110px;width:1140px;height:718px;border-radius:12px;overflow:hidden;background:#F5F3EF;box-shadow:0 24px 62px rgba(18,12,8,0.42), 0 0 0 0.75px rgba(28,27,26,0.18);">
-        <div style="height:38px;background:linear-gradient(180deg,#F4F1EB 0%,#EAE6DE 100%);border-bottom:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;padding:0 15px;position:relative;">
-          ${trafficLights(11, 7)}
-          <div style="display:flex;align-items:center;gap:12px;margin-left:18px;color:rgba(28,27,26,0.44);">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5 5.5 8 10 12.5"/></svg>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>
+      <img src="${imgUrl}" style="display:block;width:1440px;height:730px;">
+      <div style="height:40px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;position:relative;padding:0 16px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <rect x="1" y="1" width="7.4" height="7.4" rx="1" fill="#0078D4"/>
+              <rect x="9.6" y="1" width="7.4" height="7.4" rx="1" fill="#1A8CE8"/>
+              <rect x="1" y="9.6" width="7.4" height="7.4" rx="1" fill="#006CBE"/>
+              <rect x="9.6" y="9.6" width="7.4" height="7.4" rx="1" fill="#2CA0F5"/>
+            </svg>
           </div>
-          <div style="position:absolute;left:50%;transform:translateX(-50%);width:368px;height:24px;border-radius:6.5px;background:rgba(255,255,255,0.78);border:1px solid rgba(28,27,26,0.09);display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:500;color:#2E2D2A;letter-spacing:-0.01em;">
-            <svg width="9.5" height="10.5" viewBox="0 0 12 14" fill="none"><rect x="1.5" y="6" width="9" height="6.8" rx="1.6" fill="#6F6B64"/><path d="M3.5 6V4.3a2.5 2.5 0 0 1 5 0V6" stroke="#6F6B64" stroke-width="1.5" stroke-linecap="round"/></svg>
-            <span>app.monoid.build</span>
+          <div style="height:26px;padding:0 12px 0 9px;border-radius:13px;background:rgba(255,255,255,0.88);border:1px solid rgba(28,27,26,0.09);display:flex;align-items:center;gap:6px;font-size:11px;color:#5A5752;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14" stroke-linecap="round"/></svg>
+            <span>${searchLabel}</span>
+          </div>
+          <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
+            <svg width="19" height="19" viewBox="0 0 20 20" fill="none"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4l1.5 1.8H16A1.5 1.5 0 0 1 17.5 7.3V15a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 15V5.5Z" fill="#F2C94C"/><rect x="6" y="13" width="8" height="2.4" rx="0.8" fill="#0078D4"/></svg>
+          </div>
+          <div style="width:32px;height:30px;border-radius:6px;background:rgba(255,255,255,0.75);border:1px solid rgba(28,27,26,0.08);display:flex;align-items:center;justify-content:center;position:relative;">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" fill="#1C1B1A"/><circle cx="7.4" cy="9.6" r="1.15" fill="#FFFFFF"/><circle cx="12.6" cy="9.6" r="1.15" fill="#FFFFFF"/><path d="M7.5 12.6h5" stroke="#EF6334" stroke-width="1.4" stroke-linecap="round"/></svg>
+            <span style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:12px;height:2.5px;border-radius:2px;background:#0078D4;"></span>
+          </div>
+          <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><rect x="2.5" y="3.5" width="15" height="13" rx="2.4" fill="#2C2C2E"/><path d="M6 8l2.5 2.2L6 12.4M10 12.4h3.5" stroke="#E5E5EA" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
         </div>
-        <img src="${imgUrl}" style="display:block;width:1140px;height:680px;">
+        <div style="position:absolute;right:14px;display:flex;align-items:center;gap:12px;color:#1C1B1A;">
+          <div style="display:flex;align-items:center;gap:7px;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7.2 12a1 1 0 1 1 1.6 0 1 1 0 0 1-1.6 0ZM5.2 9.8a4 4 0 0 1 5.6 0M3 7.6a7 7 0 0 1 10 0" stroke="#1C1B1A" stroke-width="1.35" stroke-linecap="round"/></svg>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2.5 6.2h2.6l3.4-2.7v9l-3.4-2.7H2.5V6.2Z" stroke="#1C1B1A" stroke-width="1.25" stroke-linejoin="round"/><path d="M11 5.8a3.2 3.2 0 0 1 0 4.4" stroke="#1C1B1A" stroke-width="1.25" stroke-linecap="round"/></svg>
+          </div>
+          <div style="text-align:right;line-height:1.18;font-size:10.5px;font-weight:500;">
+            <div>${timeStr}</div>
+            <div style="font-size:9.5px;opacity:0.78;">${dateStr}</div>
+          </div>
+        </div>
       </div>
     </body></html>`
   };
