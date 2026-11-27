@@ -1,0 +1,725 @@
+// Process stop-grace & ACP silent-turn stall guards (`4c40d123d8` #9057) and
+// Antigravity CLI background-work eviction guard + `stateDir` removal race barrier
+// (`073a8026e8` #9058, `0ef14d1188` #9120).
+
+import "base_codec"
+import "nodepath"
+
+/// How long a turn asked to stop has to end before its process is killed (`own-process.ts`).
+pub let STOP_GRACE_MS : Int64 = 30000L
+
+/// How long a killed process has after SIGTERM before SIGKILL (`own-process.ts`).
+pub let KILL_GRACE_MS : Int64 = 5000L
+
+/// How long a running ACP turn may hear nothing with no open tool call or background task
+/// before its process is ended (`acp.ts`).
+pub let ACP_STALL_MS : Int64 = 900000L
+
+// ---------------------------------------------------------------------------
+// 1. OwnProcessSession stop-grace state machine (`4c40d123d8` #9057)
+// ---------------------------------------------------------------------------
+
+pub enum AbortAction {
+  NoOp
+  SendCancelAndArm(Int64)
+  KillImmediately(String)
+}
+
+/// Deterministic state machine for `OwnProcessSession` stop/abort lifecycle.
+pub struct OwnProcessStopGuard {
+  pub kind : RuntimeKind
+  pub mut busy : Bool
+  pub mut aborting : Bool
+  pub mut closed : Bool
+  pub mut stop_asked : Bool
+  pub mut stop_deadline_at : Option[Int64]
+  pub mut kill_requested : Bool
+  pub mut kill_reason : Option[String]
+}
+
+pub fn OwnProcessStopGuard::new(kind : RuntimeKind) -> OwnProcessStopGuard {
+  OwnProcessStopGuard::{
+    kind: kind,
+    busy: false,
+    aborting: false,
+    closed: false,
+    stop_asked: false,
+    stop_deadline_at: None,
+    kill_requested: false,
+    kill_reason: None,
+  }
+}
+
+pub fn OwnProcessStopGuard::is_stop_asked(self : OwnProcessStopGuard) -> Bool {
+  self.stop_asked || self.aborting
+}
+
+pub fn OwnProcessStopGuard::stop_over(self : OwnProcessStopGuard) -> Unit {
+  self.stop_asked = false
+  self.aborting = false
+  self.stop_deadline_at = None
+}
+
+/// Request abort:
+/// - First stop while busy: sets `stop_asked` + `aborting`, returns `SendCancelAndArm(now_ms + STOP_GRACE_MS)`.
+/// - Second stop while `stop_asked`: immediately requests kill (`KillImmediately("asked to stop again")`).
+pub fn OwnProcessStopGuard::abort(self : OwnProcessStopGuard, now_ms : Int64) -> AbortAction {
+  if self.closed || !self.busy {
+    return AbortAction::NoOp
+  }
+  if self.is_stop_asked() {
+    self.stop_deadline_at = None
+    self.kill_requested = true
+    self.kill_reason = Some("asked to stop again")
+    return AbortAction::KillImmediately("asked to stop again")
+  }
+  self.stop_asked = true
+  self.aborting = true
+  let deadline = now_ms + STOP_GRACE_MS
+  self.stop_deadline_at = Some(deadline)
+  AbortAction::SendCancelAndArm(deadline)
+}
+
+/// Advance virtual clock: if stop grace deadline expired while still busy, requests kill.
+pub fn OwnProcessStopGuard::tick(self : OwnProcessStopGuard, now_ms : Int64) -> Option[String] {
+  match self.stop_deadline_at {
+    Some(dl) => {
+      if now_ms >= dl {
+        self.stop_deadline_at = None
+        if !self.closed && self.is_stop_asked() && self.busy {
+          let why = "its turn did not stop within " + (STOP_GRACE_MS / 1000L).to_string() + " s"
+          self.kill_requested = true
+          self.kill_reason = Some(why)
+          return Some(why)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+/// Restore stop deadline when adopting a session whose previous station already asked to stop.
+pub fn OwnProcessStopGuard::adopted(self : OwnProcessStopGuard, now_ms : Int64) -> Option[Int64] {
+  if self.aborting && self.busy && !self.closed {
+    self.stop_asked = true
+    let dl = now_ms + STOP_GRACE_MS
+    self.stop_deadline_at = Some(dl)
+    Some(dl)
+  } else {
+    None
+  }
+}
+
+pub fn OwnProcessStopGuard::on_turn_ended(self : OwnProcessStopGuard) -> Unit {
+  self.busy = false
+  self.stop_over()
+}
+
+/// Compute exit outcome for a process that exited during a turn (`OwnProcessSession.exitOutcome`).
+pub fn OwnProcessStopGuard::exit_outcome(self : OwnProcessStopGuard, said : String, why : String) -> TurnOutcome {
+  if self.is_stop_asked() {
+    return TurnOutcome::Aborted
+  }
+  TurnOutcome::Failed(
+    FailureReason::Exited,
+    runtime_kind_to_str(self.kind) + " exited (" + said + ") during the turn" + why,
+  )
+}
+
+pub fn OwnProcessStopGuard::on_exited(self : OwnProcessStopGuard, said : String, why : String) -> Option[TurnOutcome] {
+  self.closed = true
+  let outcome = if self.busy { Some(self.exit_outcome(said, why)) } else { None }
+  self.busy = false
+  self.stop_over()
+  outcome
+}
+
+pub fn OwnProcessStopGuard::on_handover_or_dispose(self : OwnProcessStopGuard) -> Unit {
+  self.closed = true
+  self.stop_over()
+}
+
+// ---------------------------------------------------------------------------
+// 2. AcpSession silent-turn stall guard (`4c40d123d8` #9057)
+// ---------------------------------------------------------------------------
+
+pub struct AcpTurnGuard {
+  pub stop : OwnProcessStopGuard
+  pub open_calls : Array[String]
+  pub mut background_count : Int
+  pub mut stall_deadline_at : Option[Int64]
+  pub mut stalled : Bool
+}
+
+pub fn AcpTurnGuard::new(kind : RuntimeKind) -> AcpTurnGuard {
+  AcpTurnGuard::{
+    stop: OwnProcessStopGuard::new(kind),
+    open_calls: [],
+    background_count: 0,
+    stall_deadline_at: None,
+    stalled: false,
+  }
+}
+
+fn acp_remove_call(calls : Array[String], id : String) -> Unit {
+  let kept : Array[String] = []
+  for i in 0..<calls.length() {
+    if calls[i] != id {
+      kept.push(calls[i])
+    }
+  }
+  while calls.length() > 0 {
+    let _ = calls.pop()
+  }
+  for i in 0..<kept.length() {
+    calls.push(kept[i])
+  }
+}
+
+fn acp_clear_calls(calls : Array[String]) -> Unit {
+  while calls.length() > 0 {
+    let _ = calls.pop()
+  }
+}
+
+/// Re-arm or disarm the ACP stall deadline based on current turn state.
+pub fn AcpTurnGuard::arm_stall(self : AcpTurnGuard, now_ms : Int64) -> Option[Int64] {
+  self.stall_deadline_at = None
+  if self.stop.closed || !self.stop.busy || self.stop.is_stop_asked() || self.open_calls.length() > 0 || self.background_count > 0 {
+    return None
+  }
+  let dl = now_ms + ACP_STALL_MS
+  self.stall_deadline_at = Some(dl)
+  Some(dl)
+}
+
+pub fn AcpTurnGuard::stop_stall(self : AcpTurnGuard) -> Unit {
+  self.stall_deadline_at = None
+}
+
+pub fn AcpTurnGuard::on_prompt(self : AcpTurnGuard, now_ms : Int64) -> Option[Int64] {
+  self.stop.busy = true
+  self.stalled = false
+  acp_clear_calls(self.open_calls)
+  self.background_count = 0
+  self.arm_stall(now_ms)
+}
+
+pub fn AcpTurnGuard::on_turn_started(self : AcpTurnGuard) -> Unit {
+  self.stop.busy = true
+  self.stalled = false
+  acp_clear_calls(self.open_calls)
+  self.background_count = 0
+}
+
+pub fn AcpTurnGuard::on_turn_ended(self : AcpTurnGuard) -> Unit {
+  acp_clear_calls(self.open_calls)
+  self.background_count = 0
+  self.stop_stall()
+  self.stop.on_turn_ended()
+}
+
+pub fn AcpTurnGuard::on_live_tool_start(self : AcpTurnGuard, id : String) -> Unit {
+  if id != "" && !arr_contains_str(self.open_calls, id) {
+    self.open_calls.push(id)
+  }
+}
+
+pub fn AcpTurnGuard::on_live_tool_end(self : AcpTurnGuard, id : String) -> Unit {
+  acp_remove_call(self.open_calls, id)
+}
+
+pub fn AcpTurnGuard::on_live_tasks(self : AcpTurnGuard, count : Int) -> Unit {
+  self.background_count = if count < 0 { 0 } else { count }
+}
+
+/// Called after any output batch is heard from the ACP process: resets the stall deadline.
+pub fn AcpTurnGuard::on_output_heard(self : AcpTurnGuard, now_ms : Int64) -> Option[Int64] {
+  self.arm_stall(now_ms)
+}
+
+/// Seed open tool calls from a handover snapshot or crash-replay `liveState` JSON (`acp.ts` `#seed`).
+/// Seeds `call:*` from `state.live.open` and `sub:<child>:<id>` from `state.children[*][1].live.open`.
+pub fn AcpTurnGuard::seed_from_state(self : AcpTurnGuard, state : base_codec::Json) -> Unit {
+  acp_clear_calls(self.open_calls)
+  self.background_count = 0
+  match json_get_field(state, "live") {
+    Some(live) => match json_get_arr(live, "open") {
+      Some(arr) => {
+        for i in 0..<arr.length() {
+          match arr[i] {
+            base_codec::Json::Str(id) => {
+              if str_starts_with(id, "call:") && !arr_contains_str(self.open_calls, id) {
+                self.open_calls.push(id)
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+    None => ()
+  }
+  match json_get_arr(state, "children") {
+    Some(children) => {
+      for i in 0..<children.length() {
+        match children[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match pair[0] {
+                base_codec::Json::Str(child_id) => {
+                  match json_get_field(pair[1], "live") {
+                    Some(clive) => match json_get_arr(clive, "open") {
+                      Some(carr) => {
+                        for j in 0..<carr.length() {
+                          match carr[j] {
+                            base_codec::Json::Str(cid) => {
+                              if str_starts_with(cid, "call:") {
+                                let full = "sub:" + child_id + ":" + cid
+                                if !arr_contains_str(self.open_calls, full) {
+                                  self.open_calls.push(full)
+                                }
+                              }
+                            }
+                            _ => ()
+                          }
+                        }
+                      }
+                      None => ()
+                    }
+                    None => ()
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn AcpTurnGuard::abort(self : AcpTurnGuard, now_ms : Int64) -> AbortAction {
+  let act = self.stop.abort(now_ms)
+  match act {
+    AbortAction::NoOp => ()
+    _ => self.stop_stall()
+  }
+  act
+}
+
+pub fn AcpTurnGuard::adopted(self : AcpTurnGuard, now_ms : Int64) -> Unit {
+  let _ = self.stop.adopted(now_ms)
+  let _ = self.arm_stall(now_ms)
+}
+
+/// Advance virtual clock for both stop-grace and ACP stall deadlines.
+/// Returns `Some(reason)` when the process must be killed.
+pub fn AcpTurnGuard::tick(self : AcpTurnGuard, now_ms : Int64) -> Option[String] {
+  match self.stop.tick(now_ms) {
+    Some(why) => {
+      self.stop_stall()
+      return Some(why)
+    }
+    None => ()
+  }
+  match self.stall_deadline_at {
+    Some(dl) => {
+      if now_ms >= dl {
+        self.stall_deadline_at = None
+        if !self.stop.closed && self.stop.busy && !self.stop.is_stop_asked() && self.open_calls.length() == 0 && self.background_count == 0 {
+          self.stalled = true
+          let mins = ACP_STALL_MS / 60000L
+          let why = "its turn heard nothing for " + mins.to_string() + " min with no call open"
+          self.stop.kill_requested = true
+          self.stop.kill_reason = Some(why)
+          return Some(why)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+/// Compute exit outcome (`AcpSession.exitOutcome`):
+/// - `Aborted` if stop was asked;
+/// - `Failed(Network, ...)` if killed for ACP stall (so actor offers retry);
+/// - `Failed(Exited, ...)` otherwise.
+pub fn AcpTurnGuard::on_exited(self : AcpTurnGuard, said : String, why : String) -> Option[TurnOutcome] {
+  self.stop_stall()
+  let was_stalled = self.stalled
+  let was_stopped = self.stop.is_stop_asked()
+  let base = self.stop.on_exited(said, why)
+  match base {
+    Some(TurnOutcome::Failed(_, _)) => {
+      if was_stalled && !was_stopped {
+        let mins = ACP_STALL_MS / 60000L
+        return Some(TurnOutcome::Failed(
+          FailureReason::Network,
+          runtime_label(self.stop.kind) + " heard nothing from its model for " + mins.to_string() + " minutes with no tool running: its process was ended",
+        ))
+      }
+      base
+    }
+    _ => base
+  }
+}
+
+pub fn AcpTurnGuard::on_handover_or_dispose(self : AcpTurnGuard) -> Unit {
+  self.stop_stall()
+  self.stop.on_handover_or_dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 3. Antigravity CLI Stop Hook & Background-Work Eviction Guard + stateDir
+//    Removal Race Barrier (`073a8026e8` #9058 & `0ef14d1188` #9120)
+// ---------------------------------------------------------------------------
+
+pub struct AgyBackgroundTask {
+  pub id : String
+  pub kind : String
+  pub description : String
+  pub started_at : Option[Int64]
+}
+
+pub struct AgyStopState {
+  pub fully_idle : Bool
+  pub at : Option[Int64]
+}
+
+pub fn is_valid_agy_session_id(id : String) -> Bool {
+  let raw = id.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95 || b == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate and parse `agy-stop-hook.mjs` stdin payload (`{ hookEventName: "Stop", conversationId, fullyIdle }`).
+pub fn parse_agy_stop_hook_payload(raw : String) -> Option[(String, Bool)] {
+  let v = match json_parse_opt(raw) {
+    Some(j) => j
+    None => return None
+  }
+  if !opt_str_eq(json_get_str(v, "hookEventName"), Some("Stop")) {
+    return None
+  }
+  let conv_id = match json_get_str(v, "conversationId") {
+    Some(id) => if is_valid_agy_session_id(id) { id } else { return None }
+    None => return None
+  }
+  let fully_idle = match json_get_bool(v, "fullyIdle") {
+    Some(b) => b
+    None => return None
+  }
+  Some((conv_id, fully_idle))
+}
+
+/// Parse `<stateDir>/<conversationId>.json` written by `agy-stop-hook.mjs`.
+pub fn parse_agy_state_file(raw : String) -> Option[AgyStopState] {
+  let v = match json_parse_opt(raw) {
+    Some(j) => j
+    None => return None
+  }
+  let fully_idle = match json_get_bool(v, "fullyIdle") {
+    Some(b) => b
+    None => return None
+  }
+  let at = match json_get_num(v, "at") {
+    Some(n) => Some(n.to_int64())
+    None => None
+  }
+  Some(AgyStopState::{ fully_idle: fully_idle, at: at })
+}
+
+/// Per-process directory under `<data>/run/agy-state/<runnerId("agy", key)>/<runId>`.
+pub fn agy_state_dir(data : String, key : String, run_id : String, sep : String) -> String {
+  nodepath::join(sep, [data, "run", "agy-state", runner_id(RuntimeKind::Agy, key), run_id])
+}
+
+/// Find the newest per-process state directory under `<data>/run/agy-state/<runner>`
+/// holding `<sessionId>.json` (`findAgyStateDir` in `station/src/agents/agy.ts`).
+pub fn find_agy_state_dir(
+  data : String,
+  runner : String,
+  session_id : String,
+  sep : String,
+  list_dir : (String) -> Array[String],
+  file_mtime_ms : (String) -> Option[Int64],
+) -> Option[String] {
+  if !is_valid_agy_session_id(session_id) {
+    return None
+  }
+  let parent = nodepath::join(sep, [data, "run", "agy-state", runner])
+  let entries = list_dir(parent)
+  let mut best_dir : Option[String] = None
+  let mut best_mtime : Int64 = -1L
+  for i in 0..<entries.length() {
+    let dir = nodepath::join(sep, [parent, entries[i]])
+    let st_file = nodepath::join(sep, [dir, session_id + ".json"])
+    match file_mtime_ms(st_file) {
+      Some(mt) => {
+        if best_dir.is_none() || mt > best_mtime {
+          best_dir = Some(dir)
+          best_mtime = mt
+        }
+      }
+      None => ()
+    }
+  }
+  best_dir
+}
+
+/// Removal token representing a shared in-flight removal of `stateDir` (`#9120`).
+pub enum StateDirRemoval {
+  Idle
+  InFlight(Int, String)
+}
+
+/// Deterministic state machine for `AgySession`'s background-work eviction guard (#9058)
+/// and shared in-flight `stateDir` removal barrier (#9120).
+pub struct AgyStateTracker {
+  pub mut session_id : String
+  pub mut state_dir : Option[String]
+  pub mut holding : Bool
+  pub mut holding_since : Option[Int64]
+  pub mut watching : Bool
+  pub mut closed : Bool
+  pub mut exited : Bool
+  pub mut state_sync_inflight : Bool
+  pub mut removal : StateDirRemoval
+  pub mut next_removal_id : Int
+  pub removed_dirs : Array[String]
+}
+
+pub fn AgyStateTracker::new(session_id : String, state_dir : Option[String]) -> AgyStateTracker {
+  AgyStateTracker::{
+    session_id: session_id,
+    state_dir: state_dir,
+    holding: false,
+    holding_since: None,
+    watching: false,
+    closed: false,
+    exited: false,
+    state_sync_inflight: false,
+    removal: StateDirRemoval::Idle,
+    next_removal_id: 1,
+    removed_dirs: [],
+  }
+}
+
+pub fn AgyStateTracker::background(self : AgyStateTracker) -> Array[AgyBackgroundTask] {
+  if !self.holding {
+    return []
+  }
+  [
+    AgyBackgroundTask::{
+      id: "agy-background",
+      kind: "command",
+      description: "Antigravity background work",
+      started_at: self.holding_since,
+    },
+  ]
+}
+
+pub fn AgyStateTracker::state_file(self : AgyStateTracker, sep : String) -> Option[String] {
+  match self.state_dir {
+    None => None
+    Some(dir) => {
+      if dir == "" || !is_valid_agy_session_id(self.session_id) {
+        None
+      } else {
+        Some(nodepath::join(sep, [dir, self.session_id + ".json"]))
+      }
+    }
+  }
+}
+
+/// Whether `settled()` still has pending async work (`state_sync_inflight` OR in-flight `stateDir` removal).
+pub fn AgyStateTracker::has_pending_settle(self : AgyStateTracker) -> Bool {
+  if self.state_sync_inflight {
+    return true
+  }
+  match self.removal {
+    StateDirRemoval::InFlight(_, _) => true
+    StateDirRemoval::Idle => false
+  }
+}
+
+/// Begin or join the single shared in-flight `stateDir` removal (`#removeStateDir` in #9120).
+/// Returns `Some((removal_id, dir))` if an async removal is in flight (either newly started or already running),
+/// or `None` if there is no `stateDir` to remove.
+pub fn AgyStateTracker::begin_remove_state_dir(self : AgyStateTracker) -> Option[(Int, String)] {
+  match self.removal {
+    StateDirRemoval::InFlight(rid, dir) => return Some((rid, dir))
+    StateDirRemoval::Idle => ()
+  }
+  let dir = match self.state_dir {
+    Some(d) => d
+    None => return None
+  }
+  self.state_dir = None
+  if dir == "" {
+    return None
+  }
+  let rid = self.next_removal_id
+  self.next_removal_id = self.next_removal_id + 1
+  self.removal = StateDirRemoval::InFlight(rid, dir)
+  Some((rid, dir))
+}
+
+/// Complete an in-flight `stateDir` removal once the async filesystem unlink finishes.
+pub fn AgyStateTracker::complete_remove_state_dir(self : AgyStateTracker, rid : Int) -> Bool {
+  match self.removal {
+    StateDirRemoval::InFlight(cur, dir) => {
+      if cur == rid {
+        self.removal = StateDirRemoval::Idle
+        self.removed_dirs.push(dir)
+        return true
+      }
+      false
+    }
+    StateDirRemoval::Idle => false
+  }
+}
+
+/// Crash-recovery `setStateDir(dir)`: if the process already exited while `findAgyStateDir` was scanning,
+/// immediately starts removing `dir` (without affecting handover/detach where `exited == false`).
+pub fn AgyStateTracker::set_state_dir(self : AgyStateTracker, dir : String) -> Option[(Int, String)] {
+  self.state_dir = Some(dir)
+  if self.exited {
+    self.begin_remove_state_dir()
+  } else {
+    None
+  }
+}
+
+/// Synchronize `holding` from `<stateDir>/<sessionId>.json`:
+/// - Reads state via `read_file`.
+/// - When `fullyIdle == false`, opens the non-recursive watcher (`watching = true`) and performs one
+///   re-read immediately after attaching so a `fullyIdle: true` written between the first read and
+///   watcher start is never missed.
+/// - Returns `true` if `holding` changed and `emit && !closed` (caller should emit `tasks` live event
+///   and notify idle eviction when `holding` became `false`).
+pub fn AgyStateTracker::sync_holding(
+  self : AgyStateTracker,
+  sep : String,
+  read_file : (String) -> Option[String],
+  now_ms : Int64,
+  emit : Bool,
+) -> Bool {
+  if self.closed {
+    return false
+  }
+  let file = match self.state_file(sep) {
+    Some(f) => f
+    None => return false
+  }
+  let first = match read_file(file) {
+    Some(raw) => match parse_agy_state_file(raw) {
+      Some(s) => s
+      None => return false
+    }
+    None => return false
+  }
+  if self.closed {
+    return false
+  }
+  let prev = self.holding
+  let mut next = !first.fully_idle
+  if next {
+    let opened_watcher = !self.watching
+    self.watching = true
+    if opened_watcher && self.watching {
+      match read_file(file) {
+        Some(raw2) => match parse_agy_state_file(raw2) {
+          Some(after) => next = !after.fully_idle
+          None => ()
+        }
+        None => ()
+      }
+    }
+  }
+  self.holding = next
+  if next {
+    if self.holding_since.is_none() {
+      self.holding_since = match first.at {
+        Some(t) => Some(t)
+        None => Some(now_ms)
+      }
+    }
+  } else {
+    self.holding_since = None
+    self.watching = false
+  }
+  next != prev && emit && !self.closed
+}
+
+/// Handover or detach: marks `closed = true`, stops watcher, keeps `state_dir` alive (`exited` stays `false`).
+pub fn AgyStateTracker::on_handover_or_detach(self : AgyStateTracker) -> Unit {
+  self.closed = true
+  self.watching = false
+}
+
+/// Process exit: keeps `holding` intact so the actor sees what background work died with the process,
+/// marks `closed = true` and `exited = true`, stops watcher, and starts shared `stateDir` removal.
+pub fn AgyStateTracker::on_exited(self : AgyStateTracker) -> Option[(Int, String)] {
+  self.closed = true
+  self.exited = true
+  self.watching = false
+  self.begin_remove_state_dir()
+}
+
+/// Dispose: marks `closed = true`, stops watcher, and starts or joins the shared in-flight `stateDir` removal.
+pub fn AgyStateTracker::on_dispose(self : AgyStateTracker) -> Option[(Int, String)] {
+  self.closed = true
+  self.watching = false
+  self.begin_remove_state_dir()
+}
+
+/// Serialize `stateDir`, `holding`, and `holdingSince` for handover snapshot (`AgySession.snapshot`).
+pub fn AgyStateTracker::snapshot_json(self : AgyStateTracker) -> base_codec::Json {
+  let entries : Array[(String, base_codec::Json)] = []
+  match self.state_dir {
+    Some(d) => if d != "" { entries.push(("stateDir", json_str(d))) }
+    None => ()
+  }
+  if self.holding {
+    entries.push(("holding", json_bool(true)))
+    match self.holding_since {
+      Some(ts) => entries.push(("holdingSince", json_int64(ts)))
+      None => ()
+    }
+  }
+  json_obj(entries)
+}
+
+/// Restore `stateDir`, `holding`, and `holdingSince` from a handover snapshot (`AgySession.taken`).
+pub fn AgyStateTracker::restore_from_snapshot(self : AgyStateTracker, snap : base_codec::Json) -> Unit {
+  self.state_dir = match json_get_str(snap, "stateDir") {
+    Some(d) => if d != "" { Some(d) } else { None }
+    None => None
+  }
+  self.holding = opt_bool_eq(json_get_bool(snap, "holding"), Some(true))
+  self.holding_since = if self.holding {
+    match json_get_num(snap, "holdingSince") {
+      Some(n) => Some(n.to_int64())
+      None => None
+    }
+  } else {
+    None
+  }
+}

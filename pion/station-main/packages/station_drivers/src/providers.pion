@@ -591,6 +591,7 @@ fn api_env(runtime : RuntimeKind, key : String, model : Option[String], via : Vi
       share_workspaces: base.share_workspaces,
       withheld: base.withheld,
       max_concurrent_sessions: base.max_concurrent_sessions,
+      direct_quota: base.direct_quota,
     }
     match dsh_route(probe) {
       None => return []
@@ -621,6 +622,7 @@ fn api_env(runtime : RuntimeKind, key : String, model : Option[String], via : Vi
       share_workspaces: base.share_workspaces,
       withheld: base.withheld,
       max_concurrent_sessions: base.max_concurrent_sessions,
+      direct_quota: base.direct_quota,
     }
     match pi_route(probe) {
       None => return []

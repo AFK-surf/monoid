@@ -898,3 +898,72 @@ pub fn pick_profile_for_workspace(
   let eligible = profiles_for(profiles, runtime, workspace, home_workspace)
   pick_profile(eligible, model, signals, strict)
 }
+
+/// Workspace-scoped profile selection enforcing station-level `disabledRuntimes` (`56d3d84e5b` #8793):
+/// refuses immediately when `runtime` is disabled on this station.
+pub fn pick_profile_for_workspace_checked(
+  profiles : Array[Profile],
+  runtime : RuntimeKind,
+  disabled_runtimes : Array[String],
+  workspace : Option[String],
+  home_workspace : Option[String],
+  model : Option[String],
+  signals : PoolSignals,
+  strict : Bool,
+) -> Result[Profile, String] {
+  match check_runtime_enabled(runtime, disabled_runtimes) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  pick_profile_for_workspace(profiles, runtime, workspace, home_workspace, model, signals, strict)
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity CLI `directQuota` policy (`f5bbb1cbf3` #8859)
+// ---------------------------------------------------------------------------
+
+/// Default for `agyQuota(..., direct)`: `false` unless explicitly turned on (`Some(true)`).
+pub fn agy_quota_uses_direct(direct : Option[Bool]) -> Bool {
+  match direct {
+    Some(true) => true
+    _ => false
+  }
+}
+
+/// Whether `profile` should use direct Google Cloud Code API quota fallback beside `agy -p /usage`.
+/// Only true for Antigravity CLI subscription profiles with `direct_quota == true`.
+pub fn agy_direct_quota_enabled(p : Profile) -> Bool {
+  let is_agy = match p.runtime {
+    Some(r) => runtime_kind_eq(r, RuntimeKind::Agy)
+    None => false
+  }
+  access_kind_eq(p.access_kind, AccessKind::Subscription) && is_agy && p.direct_quota
+}
+
+/// Resolve `directQuota` on profile save (`station/src/accounts/index.ts`):
+/// returns `Some(true)` only when explicitly turned on (or preserved `true`); returns `None`
+/// when `false` or omitted so only the default's opposite (`true`) is written to `config.json`.
+pub fn agy_direct_quota_for_save(given : Option[Bool], existing : Option[Bool]) -> Option[Bool] {
+  let resolved = match given {
+    Some(b) => b
+    None => match existing {
+      Some(true) => true
+      _ => false
+    }
+  }
+  if resolved { Some(true) } else { None }
+}
+
+/// Overview view value for `directQuota`: `Some(p.direct_quota)` only for Antigravity CLI
+/// subscription profiles, `None` (omitted) for all other profiles.
+pub fn agy_direct_quota_view(p : Profile) -> Option[Bool] {
+  let is_agy = match p.runtime {
+    Some(r) => runtime_kind_eq(r, RuntimeKind::Agy)
+    None => false
+  }
+  if access_kind_eq(p.access_kind, AccessKind::Subscription) && is_agy {
+    Some(p.direct_quota)
+  } else {
+    None
+  }
+}

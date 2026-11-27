@@ -614,6 +614,7 @@ fn is_account_write_path(path : String) -> Bool {
   let prefixes = [
     "/profiles",
     "/logins",
+    "/runtimes",
     "/automatic-decisions",
     "/archiving",
     "/auto-chats",

@@ -239,6 +239,7 @@ pub struct WholeAgents {
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   pub active_adopted_instances : Map[String, Bool]
+  pub mut disabled_runtimes : Array[String]
   mut adopted_db : Option[sql_db::Db]
   mut adopted_db_closed : Bool
   job_fs : station_jobs::FsPort
@@ -275,6 +276,7 @@ pub fn WholeAgents::new_with_deps(
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     active_adopted_instances: Map::new(),
+    disabled_runtimes: [],
     adopted_db: None,
     adopted_db_closed: false,
     job_fs: fs,
@@ -315,6 +317,53 @@ pub fn WholeAgents::active_token_count(self : WholeAgents) -> Int {
 
 pub fn WholeAgents::actor_count(self : WholeAgents) -> Int {
   self.hub.actors.length()
+}
+
+/// How many turns are currently running on `runtime` (`hub.runningOn` in `09aa2b9d5e` #8861).
+pub fn WholeAgents::running_on(self : WholeAgents, runtime : String) -> Int {
+  let mut count = 0
+  let keys = self.hub.actors.keys()
+  for i in 0..<keys.length() {
+    match self.hub.actors.get(keys[i]) {
+      Some(actor) => {
+        if actor.runtime == runtime {
+          match actor.phase {
+            station_sessions::ActorPhase::Running => count = count + 1
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  count
+}
+
+/// Set station-level `disabledRuntimes` (`56d3d84e5b` #8793) in canonical runtime order.
+pub fn WholeAgents::set_disabled_runtimes(self : WholeAgents, raw : Array[String]) -> Unit {
+  self.disabled_runtimes = station_drivers::normalize_disabled_runtime_names(raw)
+}
+
+/// Apply `PUT /runtimes { runtime, enabled }` (`56d3d84e5b` #8793) and return the new canonical list.
+pub fn WholeAgents::put_disabled_runtime(
+  self : WholeAgents,
+  runtime : String,
+  enabled : Bool,
+) -> Result[Array[String], String] {
+  match station_drivers::apply_disabled_runtime_toggle(self.disabled_runtimes, runtime, enabled) {
+    Ok(next) => {
+      self.disabled_runtimes = next
+      Ok(next)
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn WholeAgents::is_runtime_disabled(self : WholeAgents, runtime : String) -> Bool {
+  match station_drivers::runtime_kind_from_str(runtime) {
+    Some(rk) => station_drivers::is_runtime_disabled(rk, self.disabled_runtimes)
+    None => false
+  }
 }
 
 fn WholeAgents::generate_token_hex(self : WholeAgents) -> Result[String, String] {
@@ -555,6 +604,13 @@ pub fn WholeAgents::create_session(
   let st = match whole_store.require_open() {
     Ok(s) => s
     Err(e) => return Err(e)
+  }
+  if self.is_runtime_disabled(runtime) {
+    let label = match station_drivers::runtime_kind_from_str(runtime) {
+      Some(rk) => station_drivers::runtime_label(rk)
+      None => runtime
+    }
+    return Err("station.runtime.disabled:" + label)
   }
   let token = match self.generate_token_hex() {
     Ok(t) => t
@@ -2082,8 +2138,13 @@ fn WholeAgents::build_domain_handlers(
       let rt_opt = mcp_arg_str(args, "runtime")
       match rt_opt {
         Some(rt) => {
-          if station_drivers::runtime_kind_from_str(rt).is_none() {
-            return station_tools::error_reply("unsupported runtime: " + rt)
+          match station_drivers::runtime_kind_from_str(rt) {
+            None => return station_tools::error_reply("unsupported runtime: " + rt)
+            Some(rk) => {
+              if station_drivers::is_runtime_disabled(rk, self.disabled_runtimes) {
+                return station_tools::error_reply("station.runtime.disabled:" + station_drivers::runtime_label(rk))
+              }
+            }
           }
         }
         None => ()
