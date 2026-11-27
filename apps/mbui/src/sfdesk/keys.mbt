@@ -12,7 +12,7 @@
 /// has it. Esc goes to what the frame opened over the page, the one on top first, then to the open chat's; what took
 /// none of it passes it on to the page.
 pub fn frame_actions(v : @view.View, src : Source) -> Unit {
-  let framed = fn() { !(@sf.layout(v.window_w()) is Small) || @sf.native_able() }
+  let framed = fn() { !(@sf.layout(v.window_w()) is @sf.Layout::Small) || @sf.native_able() }
   let blur = fn() { v.focus_let_go() }
   let act = fn(action : String, f : (Workspace) -> Bool) {
     v.on_action(action, fn(_) {
@@ -36,7 +36,7 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
   })
   act("chat.new", fn(_) {
     // Home's board takes this action itself, including when the focus is elsewhere in the frame.
-    if @sfbase.board_on_now(src) && app.nav.top() is Home {
+    if @sfbase.board_on_now(src) && app.nav.top() is @sfbase.Page::Home {
       false
     } else {
       new_chat()

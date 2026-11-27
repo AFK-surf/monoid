@@ -27,7 +27,14 @@ pub fn lock_prompts(core : Core, free : Bool) -> Unit {
   let prompts = (core.topic)("lockPrompts", Map([])).get().value
   let pairing = items(prompts, "pairing")
   if prompts is Some(_) {
-    prompts_closed.retain(fn(d) { pairing.iter().any(fn(r) { ask_of(r) == d }) })
+    prompts_closed.retain(fn(d) {
+      for i in 0..<pairing.length() {
+        if ask_of(pairing[i]) == d {
+          return true
+        }
+      }
+      false
+    })
   }
   let mut waiting : Json? = None
   for r in pairing {

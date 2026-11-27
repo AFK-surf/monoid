@@ -397,7 +397,15 @@ fn chat_body_keyed(
       (still, kept.sent_as.length())
     },
     same=fn(a, b) {
-      a.1 == b.1 && a.0.length() == b.0.length() && a.0.iter().zip(b.0.iter()).all(fn(x) { physical_equal(x.0, x.1) })
+      if a.1 != b.1 || a.0.length() != b.0.length() {
+        return false
+      }
+      for i in 0..<a.0.length() {
+        if !physical_equal(a.0[i], b.0[i]) {
+          return false
+        }
+      }
+      true
     },
   )
   // (the message whose first row is the list's first: the first, where nothing of the head is over it)
@@ -575,10 +583,20 @@ fn chat_body_keyed(
       chat_body_ends(kept, v, msgs.keys().is_empty(), still, chat_body_answered(v, msgs, still, card), turns)
     },
     same=fn(a, b) {
-      a.0.keys == b.0.keys &&
-      a.1.keys == b.1.keys &&
-      a.0.keys.iter().all(fn(k) { chat_body_row_same(a.0.rows[k], b.0.rows[k]) }) &&
-      a.1.keys.iter().all(fn(k) { chat_body_row_same(a.1.rows[k], b.1.rows[k]) })
+      if a.0.keys != b.0.keys || a.1.keys != b.1.keys {
+        return false
+      }
+      for k in a.0.keys {
+        if !chat_body_row_same(a.0.rows[k], b.0.rows[k]) {
+          return false
+        }
+      }
+      for k in a.1.keys {
+        if !chat_body_row_same(a.1.rows[k], b.1.rows[k]) {
+          return false
+        }
+      }
+      true
     },
   )
   let keys = @signals.computed(

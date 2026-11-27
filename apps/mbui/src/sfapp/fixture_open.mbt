@@ -1150,8 +1150,9 @@ pub fn fixture_corner_modes() -> Array[String] {
     "board-side", "board-add",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
-  for k in @sfpages.share_look_keys()[1:] {
-    modes.push("share-card-" + k)
+  let looks = @sfpages.share_look_keys()
+  for i in 1..<looks.length() {
+    modes.push("share-card-" + looks[i])
   }
   modes
 }

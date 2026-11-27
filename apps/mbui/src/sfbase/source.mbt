@@ -271,9 +271,10 @@ fn topic_read_by(src : Source, name : String, params : Map[String, Json], said :
   if @signals.active_sub() is Some(_) {
     match topic_readers.get(said) {
       Some(readers) =>
-        match readers.search_by(fn(r) { physical_equal(r.0, src) }) {
-          Some(i) => return readers[i].1
-          None => ()
+        for i in 0..<readers.length() {
+          if physical_equal(readers[i].0, src) {
+            return readers[i].1
+          }
         }
       None => ()
     }
@@ -371,7 +372,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     match (topic.value, topic.error) {
       (Some(value), _) => last_put(src, name, params, key, value)
       (None, None) =>
-        match last_said.val.search_by(fn(l) { physical_equal(l.source, src) && l.key == key }) {
+        match last_said_at(src, key) {
           Some(i) => {
             let l = last_said.val[i]
             return { value: Some(l.value), error: None, version: l.version, waiting: false }
@@ -635,9 +636,21 @@ let last_most : Int = topic_policy_last_most
 let last_count : Ref[Int] = Ref(0)
 
 ///|
+/// Where `last_said` holds what `src` last said for `key`.
+fn last_said_at(src : Source, key : String) -> Int? {
+  let ls = last_said.val
+  for i in 0..<ls.length() {
+    if physical_equal(ls[i].source, src) && ls[i].key == key {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
 fn last_put(src : Source, name : String, params : Map[String, Json], key : String, value : Json) -> Unit {
   let clean = sanitize_kept_json(name, value)
-  let at = last_said.val.search_by(fn(l) { physical_equal(l.source, src) && l.key == key })
+  let at = last_said_at(src, key)
   match at {
     Some(i) if physical_equal(last_said.val[i].value, clean) => return
     _ => ()
@@ -1273,6 +1286,31 @@ fn topic_key(name : String, params : Map[String, Json]) -> String {
 let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 
 ///|
+/// Where `followed_topics` holds `src`'s topic of key `key` followed as `independent` says.
+fn followed_at(src : Source, key : String, independent : Bool) -> Int? {
+  let ts = followed_topics.val
+  for i in 0..<ts.length() {
+    let t = ts[i]
+    if physical_equal(t.source, src) && t.key == key && t.independent == independent {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+/// Where `followed_topics` holds the topic of `token`.
+fn followed_token_at(token : Ref[Bool]) -> Int? {
+  let ts = followed_topics.val
+  for i in 0..<ts.length() {
+    if physical_equal(ts[i].token, token) {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
 /// Source `src` let go (its owner's view gone): the topics it follows let go of with it, whatever still watches them, so
 /// none of them holds on to what it reads through (the source it was made of); what that one reads let go of by its own
 /// last watcher as ever, never released here.
@@ -1294,7 +1332,13 @@ fn followed_forget_source(src : Source) -> Unit {
 /// of the core and acquires nothing.
 fn topic_held(name : String, params : Map[String, Json]) -> Bool {
   let key = topic_key(name, params)
-  followed_topics.val.iter().any(fn(t) { t.key == key && t.holder.watched() })
+  let ts = followed_topics.val
+  for i in 0..<ts.length() {
+    if ts[i].key == key && ts[i].holder.watched() {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -1313,6 +1357,17 @@ fn topics_held() -> Array[(Source, String, Map[String, Json])] {
 }
 
 ///|
+/// Whether `declared` holds `src`'s topic of key `key`.
+fn declared_has(declared : Array[(Source, String, Map[String, Json], String)], src : Source, key : String) -> Bool {
+  for i in 0..<declared.length() {
+    if physical_equal(declared[i].0, src) && declared[i].3 == key {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// What is declared (declare_topic) and not let go of: each by its source, name and parameters, and its key (topic_key,
 /// written once as it is declared: what is declared again is looked for by it).
 // kept across runs: put back as a run begins (declared_reset)
@@ -1327,7 +1382,7 @@ let declared_topics : Ref[Array[(Source, String, Map[String, Json], String)]] = 
 /// readers' leaving, its unsubscribe never sent.
 pub fn declare_topic(src : Source, name : String, params : Map[String, Json]) -> TopicState {
   let key = topic_key(name, params)
-  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
+  if !declared_has(declared_topics.val, src, key) {
     declared_topics.val.push((src, name, params.copy(), key))
   }
   let owner = @signals.set_owner(None)
@@ -1350,7 +1405,7 @@ pub fn declared_let_go() -> Unit {
 fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) -> Unit {
   for d in declared {
     let (src, name, params, key) = d
-    match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }) {
+    match followed_at(src, key, false) {
       Some(i) => {
         let holder = followed_topics.val[i].holder
         // Detach + drop + release BEFORE `holder.dispose()` so synchronous re-entrant `on_unwatched`
@@ -1384,7 +1439,7 @@ let page_declared : Ref[Array[(Source, String, Map[String, Json], String)]] = Re
 /// to is let go of as another page comes on top (page_declared_let_go), or another workspace comes in view.
 pub fn declare_page_topic(src : Source, name : String, params : Map[String, Json]) -> Unit {
   let key = topic_key(name, params)
-  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
+  if declared_has(page_declared.val, src, key) {
     return
   }
   page_declared.val.push((src, name, params.copy(), key))
@@ -1459,7 +1514,7 @@ fn existing_followed_topic(
     Some(k) => k
     None => topic_key(name, params)
   }
-  followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }).map(fn(i) { followed_topics.val[i].holder })
+  followed_at(src, key, false).map(fn(i) { followed_topics.val[i].holder })
 }
 
 ///|
@@ -1474,7 +1529,7 @@ fn followed_topic(
     Some(k) => k
     None => topic_key(name, params)
   }
-  match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && t.independent == independent }) {
+  match followed_at(src, key, independent) {
     Some(i) => followed_topics.val[i].holder
     None => {
       // Read first and on every evaluation, so the lifetime ends only when the holder loses its last reader.
@@ -1484,7 +1539,7 @@ fn followed_topic(
         // Another reader may take over in this signal flush, outside event or frame. Check once it is finished.
         @signals.after_flush(fn() {
           @ui.after_frame(fn() {
-            match followed_topics.val.search_by(fn(t) { physical_equal(t.token, token) }) {
+            match followed_token_at(token) {
               Some(i) => {
                 let holder = followed_topics.val[i].holder
                 // Detach BEFORE `holder.dispose()` (and release AFTER `holder.dispose()`): an untracked read since

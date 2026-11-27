@@ -132,7 +132,7 @@ let share_panel_top_share : Double = 0.14
 /// How what is shared is laid out where node `v` is made: as a sheet on 小屏 (a narrow look), as the wide panel in a
 /// dialog in the middle of the window on 中屏 and 大屏 (a wide one), as the presenters show the sheet there.
 fn share_look_of(v : @view.View) -> ShareLook {
-  if @sf.layout(v.window_w()) is Small {
+  if @sf.layout(v.window_w()) is @sf.Layout::Small {
     share_narrow
   } else {
     share_wide_look

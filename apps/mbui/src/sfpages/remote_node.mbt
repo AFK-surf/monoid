@@ -77,11 +77,11 @@ fn remote_online_stations(src : Source, ws : String) -> Array[(String, String)] 
 /// Close a remote workbench tab and release its underlying session unless popped out to a standalone window.
 pub fn remote_close_tab_clean(src : Source, ws : String, key : String) -> Unit {
   match @sfbase.remote_tab_parse(key) {
-    Some(Screen(at)) => {
+    Some(@sfbase.RemoteTab::Screen(at)) => {
       @sfbase.remote_tab_close(src, ws, key)
       screen_left(src, at.station, at.screen)
     }
-    Some(Terminal(at)) => {
+    Some(@sfbase.RemoteTab::Terminal(at)) => {
       @sfbase.remote_tab_close(src, ws, key)
       terminal_left(at.station, at.terminal)
     }
@@ -96,7 +96,7 @@ fn remote_row_confirmed(src : Source, r : RemoteRow) -> Bool {
   if r.kind == "terminal" {
     let tr = src.topic("terminals", { "station": Json::string(r.station) }).get()
     tr.is_confirmed_known() &&
-    items(tr.value, "terminals").iter().any(fn(t) { text(Some(t), "id") == r.id && !flag(Some(t), "ended") })
+    remote_live_terminal(items(tr.value, "terminals"), r.id) is Some(_)
   } else {
     @sfbase.live_screen_confirmed(src.topic("screens", { "station": Json::string(r.station) }).get(), r.id)
   }
@@ -366,17 +366,41 @@ fn remote_rows_of(lines : Array[RemoteLine]) -> Array[RemoteRow] {
 /// there is a row to show.
 fn remote_front_in(src : Source, ws : String, lines : Array[RemoteLine]) -> (String, @sfbase.RemoteTab)? {
   let (tabs, act) = @sfbase.remote_tabs_of(src, ws)
-  match tabs.iter().find_first(fn(p) { p.0 == act }) {
-    Some(p) => Some(p)
-    None =>
-      match remote_rows_of(lines).iter().find_first(fn(r) { remote_row_confirmed(src, r) }) {
-        Some(r) => {
-          let tab = remote_row_tab(r)
-          Some((tab.key(), tab))
-        }
-        None => None
-      }
+  for p in tabs {
+    if p.0 == act {
+      return Some(p)
+    }
   }
+  for r in remote_rows_of(lines) {
+    if remote_row_confirmed(src, r) {
+      let tab = remote_row_tab(r)
+      return Some((tab.key(), tab))
+    }
+  }
+  None
+}
+
+///|
+/// The terminal of id `id` among `terminals` (a station's, as the core lists them) not ended, the first.
+fn remote_live_terminal(terminals : Array[Json], id : String) -> Json? {
+  for t in terminals {
+    let tv = Some(t)
+    if text(tv, "id") == id && !flag(tv, "ended") {
+      return Some(t)
+    }
+  }
+  None
+}
+
+///|
+/// The screen of id `id` among `screens` (a station's, as the core lists them) not still opening, the first.
+fn remote_live_screen(screens : Array[Json], id : String) -> Json? {
+  for sc in screens {
+    if text(Some(sc), "id") == id && !flag(Some(sc), "opening") {
+      return Some(sc)
+    }
+  }
+  None
 }
 
 ///|
@@ -412,7 +436,16 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
   })
   guard !rows.is_empty() else { return }
   let at = match front {
-    Some((_, tab)) => rows.search_by(fn(r) { remote_row_shows(r, tab) })
+    Some((_, tab)) => {
+      let mut shows = None
+      for i in 0..<rows.length() {
+        if remote_row_shows(rows[i], tab) {
+          shows = Some(i)
+          break
+        }
+      }
+      shows
+    }
     None => None
   }
   let n = rows.length()
@@ -430,10 +463,7 @@ fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) ->
   if r.kind == "terminal" {
     let tr = @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(r.station) }).get() })
     guard tr.is_confirmed_known() else { return }
-    let live = items(tr.value, "terminals").iter().find_first(fn(t) {
-      let tv = Some(t)
-      text(tv, "id") == r.id && !flag(tv, "ended")
-    })
+    let live = remote_live_terminal(items(tr.value, "terminals"), r.id)
     guard live is Some(t) else { return }
     let live_cwd = text(Some(t), "cwd")
     let live_watch = !flag(tr.value, "open")
@@ -444,7 +474,7 @@ fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) ->
   } else {
     let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
     guard sr.is_confirmed_known() else { return }
-    let live = items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") })
+    let live = remote_live_screen(items(sr.value, "screens"), r.id)
     guard live is Some(sc) else { return }
     let live_title = text(Some(sc), "title")
     match at {
@@ -462,20 +492,21 @@ fn remote_row_close(src : Source, ws : String, r : RemoteRow) -> Unit {
   if r.kind == "terminal" {
     let tr = @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(r.station) }).get() })
     guard tr.is_confirmed_known() && flag(tr.value, "open") else { return }
-    let exists = items(tr.value, "terminals").iter().any(fn(t) {
-      let tv = Some(t)
-      text(tv, "id") == r.id && !flag(tv, "ended")
-    })
+    let exists = remote_live_terminal(items(tr.value, "terminals"), r.id) is Some(_)
     guard exists else { return }
     on["terminal"] = Json::string(r.id)
     (src.call)("terminal.end", Json::object(on), @sfbase.answer_unread)
   } else {
     let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
     guard sr.is_confirmed_known() && flag(sr.value, "control") else { return }
-    let closable_now = items(sr.value, "screens").iter().any(fn(sc) {
+    let mut closable_now = false
+    for sc in items(sr.value, "screens") {
       let sv = Some(sc)
-      text(sv, "id") == r.id && flag(sv, "closable") && !flag(sv, "opening")
-    })
+      if text(sv, "id") == r.id && flag(sv, "closable") && !flag(sv, "opening") {
+        closable_now = true
+        break
+      }
+    }
     guard closable_now else { return }
     on["screen"] = Json::string(r.id)
     (src.call)("screen.close", Json::object(on), failed_said(@sf.t("web-pages.screen.closeTabWhat")))
@@ -512,10 +543,7 @@ fn remote_row_menu_items(src : Source, ws : String, r : RemoteRow) -> Array[@sf.
             if !tr.is_confirmed_known() {
               None
             } else {
-              match items(tr.value, "terminals").iter().find_first(fn(t) {
-                let tv = Some(t)
-                text(tv, "id") == r.id && !flag(tv, "ended")
-              }) {
+              match remote_live_terminal(items(tr.value, "terminals"), r.id) {
                 Some(t) =>
                   Some(Terminal({ station: r.station, terminal: r.id, watch: !flag(tr.value, "open"), cwd: text(Some(t), "cwd") }))
                 None => None
@@ -526,7 +554,7 @@ fn remote_row_menu_items(src : Source, ws : String, r : RemoteRow) -> Array[@sf.
             if !sr.is_confirmed_known() {
               None
             } else {
-              match items(sr.value, "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == r.id && !flag(Some(sc), "opening") }) {
+              match remote_live_screen(items(sr.value, "screens"), r.id) {
                 Some(sc) =>
                   Some(Screen({ station: r.station, screen: r.id, title: text(Some(sc), "title"), until_gone: false }))
                 None => None
@@ -1101,11 +1129,11 @@ pub fn remote_workbench_node(
   let captured_screen_keys : Map[(String, String), String] = Map([])
   v.reacts(fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) }, fn(now) {
     match now.0 {
-      Some((_, Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+      Some((_, @sfbase.RemoteTab::Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
       _ => ()
     }
     for k in now.1 {
-      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+      if @sfbase.remote_tab_parse(k) is Some(@sfbase.RemoteTab::Screen(at)) {
         if !captured_screen_keys.contains((at.station, at.screen)) {
           captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
         }
@@ -1117,16 +1145,16 @@ pub fn remote_workbench_node(
     fn(cur) {
       let (now, tabs, is_shown) = cur
       match prev_front.val {
-        Some((old_k, Screen(old_at))) => {
+        Some((old_k, @sfbase.RemoteTab::Screen(old_at))) => {
           let still_same = is_shown && (match now {
-            Some((_, Screen(now_at))) => now_at.station == old_at.station && now_at.screen == old_at.screen
+            Some((_, @sfbase.RemoteTab::Screen(now_at))) => now_at.station == old_at.station && now_at.screen == old_at.screen
             _ => false
           })
           if !still_same {
             let kept = !is_shown ||
               tabs.any(fn(k) {
                 k == old_k ||
-                (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
+                (@sfbase.remote_tab_parse(k) is Some(@sfbase.RemoteTab::Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
               })
             if !kept {
               let key = captured_screen_keys.get((old_at.station, old_at.screen)).unwrap_or_else(fn() { screen_key(old_at.station, old_at.screen) })
@@ -1151,11 +1179,11 @@ pub fn remote_workbench_node(
       }
     }
     match prev_front.val {
-      Some((_, Screen(at))) => take(at)
+      Some((_, @sfbase.RemoteTab::Screen(at))) => take(at)
       _ => ()
     }
     for k in @signals.untracked(fn() { @sfbase.remote_tabs_raw(src, ws()).0 }) {
-      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+      if @sfbase.remote_tab_parse(k) is Some(@sfbase.RemoteTab::Screen(at)) {
         take(at)
       }
     }
@@ -1260,7 +1288,7 @@ pub fn remote_workbench_node(
             let (tabs, _) = @signals.untracked(fn() { @sfbase.remote_tabs_of(src, @signals.untracked(ws)) })
             tabs.any(fn(p) {
               p.0 == tab_key.val ||
-              (p.1 is Terminal(x) && x.station == at.station && x.terminal == at.terminal && !at.terminal.has_prefix("new"))
+              (p.1 is @sfbase.RemoteTab::Terminal(x) && x.station == at.station && x.terminal == at.terminal && !at.terminal.has_prefix("new"))
             })
           },
           on_resolved=fn(real_id, real_cwd) {

@@ -179,7 +179,14 @@ fn pm_grouped_rows(
   let groups : Array[(String, String, Array[Json])] = []
   for r in base {
     let g = text(Some(r), "group")
-    match groups.search_by(fn(x) { x.0 == g }) {
+    let mut at = None
+    for i in 0..<groups.length() {
+      if groups[i].0 == g {
+        at = Some(i)
+        break
+      }
+    }
+    match at {
       Some(i) => groups[i].2.push(r)
       None => groups.push((g, text(Some(r), "groupTitle"), [r]))
     }
@@ -483,7 +490,16 @@ pub fn profiles_manage_node(
     if only == "" {
       None
     } else {
-      stations_list().iter().find_first(fn(x) { text(Some(x), "station") == only })
+      {
+        let mut found = None
+        for x in stations_list() {
+          if text(Some(x), "station") == only {
+            found = Some(x)
+            break
+          }
+        }
+        found
+      }
     }
   }, same=json_opt_same)
   let station_read_opt = fn() {
@@ -540,8 +556,17 @@ pub fn profiles_manage_node(
   if only == "" {
     v.reacts(stations_list, fn(sts) {
       let cur = @signals.untracked(fn() { station_filter.get() })
-      if cur != "" && !sts.iter().any(fn(s) { text(Some(s), "station") == cur }) {
-        station_filter.set("")
+      if cur != "" {
+        let mut listed = false
+        for s in sts {
+          if text(Some(s), "station") == cur {
+            listed = true
+            break
+          }
+        }
+        if !listed {
+          station_filter.set("")
+        }
       }
     })
   }
@@ -698,8 +723,17 @@ pub fn profiles_manage_node(
   }
   v.reacts(all_rows, fn(_) {
     let cur = @signals.untracked(fn() { group_filter.get() })
-    if cur != "" && !@signals.untracked(group_choices).iter().any(fn(x) { x.0 == cur }) {
-      group_filter.set("")
+    if cur != "" {
+      let mut listed = false
+      for x in @signals.untracked(group_choices) {
+        if x.0 == cur {
+          listed = true
+          break
+        }
+      }
+      if !listed {
+        group_filter.set("")
+      }
     }
   }, at_start=false)
   let filtered_rows = fn() { filtered_rows_now.get() }
@@ -753,7 +787,15 @@ pub fn profiles_manage_node(
   })
   let all_selected = fn() {
     let c = visible_selectable()
-    c.length() > 0 && c.iter().all(fn(r) { batch.picked(text(Some(r), "key")) })
+    if c.length() == 0 {
+      return false
+    }
+    for r in c {
+      if !batch.picked(text(Some(r), "key")) {
+        return false
+      }
+    }
+    true
   }
   let has_selected = fn() { batch.rows(sorted_rows(), stations=stations_list()).length() > 0 }
   let on_toggle_all = fn(to : Bool) {
@@ -764,13 +806,33 @@ pub fn profiles_manage_node(
   let master_disabled = fn() { batch.busy.get() || visible_selectable().is_empty() }
   let whitelist_empty = fn() {
     match stations_topic().value {
-      Some(Array(sts)) => sts.length() > 0 && !sts.iter().any(share_on_whitelist)
+      Some(Array(sts)) => {
+        if sts.length() == 0 {
+          return false
+        }
+        for s in sts {
+          if share_on_whitelist(s) {
+            return false
+          }
+        }
+        true
+      }
       _ => false
     }
   }
   let show_whitelist_hint = fn() {
-    whitelist_empty() &&
-    (share_filter.get() == 2 || all_rows().iter().any(fn(r) { flag(Some(r), "shared") && flag(Some(r), "shareAuto") }))
+    if !whitelist_empty() {
+      return false
+    }
+    if share_filter.get() == 2 {
+      return true
+    }
+    for r in all_rows() {
+      if flag(Some(r), "shared") && flag(Some(r), "shareAuto") {
+        return true
+      }
+    }
+    false
   }
   // Grouped table items: `"g/<group>"` subheaders interleaved with `"r/<key>"` account rows for both wide and narrow views.
   let table_items : @signals.KeyedList[String, (String, PmTableItem)] = v.keyed_by(

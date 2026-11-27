@@ -116,12 +116,20 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
             // and never draw them through a presenter that physically covers their bounds.
             // Direct kit popovers (the chat menu and services) are not sf presenters.
             // Their visible bounds still cover native controls, including during exit.
-            let covered = semantics.iter().any(fn(p) {
+            let mut covered = false
+            for j in 0..<semantics.length() {
+              let p = semantics[j]
               let (px, py, pw, ph) = p.rect
               // Accessibility-hidden popovers can still be painted over a kept pane.
-              (p.role == @ui.Role::Dialog || p.role == @ui.Role::Menu) &&
-                x < px + pw && x + w > px && y < py + ph && y + h > py
-            })
+              if (p.role == @ui.Role::Dialog || p.role == @ui.Role::Menu) &&
+                x < px + pw &&
+                x + w > px &&
+                y < py + ph &&
+                y + h > py {
+                covered = true
+                break
+              }
+            }
             if w > 0.0 && h > 0.0 && !covered { floating.push({ item, x, y, w, h, blocked }) }
           }
           None => ()
@@ -212,9 +220,11 @@ fn bar_action(
     return false
   }
   let key = "page/" + id
-  match nav_page.search_by(fn(p) { p.0.id == key }) {
-    Some(i) => nav_page.remove(i) |> ignore
-    None => ()
+  for i in 0..<nav_page.length() {
+    if nav_page[i].0.id == key {
+      nav_page.remove(i) |> ignore
+      break
+    }
   }
   // Even the short system column needs its entries to the chat's info and menu. (Read as the page is built: the column
   // come to be short or no longer, what built it builds again and hands as it is now, what it handed before not left
@@ -286,7 +296,14 @@ fn bar_chat(
   }
   // (the short column: its services and screens rows of the "…" (chat_page.mbt), their dot on it)
   let dot = column_short.get() && (jobs is Some((_, true)) || screen is Some((_, true)) || subchats is Some((_, true)))
-  bar_action("chat/more", @sf.t("common.more"), "more", more, rows?=if rows.iter().any(fn(i) { i is Some(_) }) { Some(rows) } else { None }, dot~) |> ignore
+  let mut any_row = false
+  for i in 0..<rows.length() {
+    if rows[i] is Some(_) {
+      any_row = true
+      break
+    }
+  }
+  bar_action("chat/more", @sf.t("common.more"), "more", more, rows?=if any_row { Some(rows) } else { None }, dot~) |> ignore
   bar_action("chat/info", @sf.t("web-pages.chat.info"), "info", info) |> ignore
   let (tabs, _) = side_now(src, r)
   // (the panel's switch, whatever is in it: a screen alone there has a × of its own in its bar, as any panel has; the
@@ -340,7 +357,14 @@ fn bar_chat_waiting() -> Bool {
     if column_short.get() && item.id != "page/chat/info" && item.id != "page/chat/more" {
       continue
     }
-    if !nav_page.iter().any(fn(p) { p.0.id == item.id }) {
+    let mut carried = false
+    for i in 0..<nav_page.length() {
+      if nav_page[i].0.id == item.id {
+        carried = true
+        break
+      }
+    }
+    if !carried {
       nav_page.push((item, fn() {  }))
       bar_chat_carried.push(item.id)
       // (its menu's rows kept as they were, the other chat's: pressed meanwhile, nothing)

@@ -212,7 +212,15 @@ pub fn refs_edited(src : Source, key : String, input : @ui.Field, here : String,
   let (start, took, put) = e.span()
   // one character taken just before the caret: a mark ending there goes whole
   let one_back = wa == wc && anchor == caret && caret == wc - 1 && start == wc - 1 && took == wc && put == start
-  let mark = if one_back && f.marks_in == was { f.marks.search_by(fn(m) { m.1 == wc }) } else { None }
+  let mut mark : Int? = None
+  if one_back && f.marks_in == was {
+    for i in 0..<f.marks.length() {
+      if f.marks[i].1 == wc {
+        mark = Some(i)
+        break
+      }
+    }
+  }
   match mark {
     Some(i) => {
       let a = f.marks[i].0
@@ -859,7 +867,14 @@ pub fn writing_paste(src : Source, w : Writing, station : String, words : String
 /// again with what the core said of them).
 pub fn writing_paste_again(src : Source, w : Writing, id : String) -> Unit {
   guard writing_went.get(id) is Some((station, name, bytes)) else { return }
-  let info = w.files.get().iter().find_first(fn(f) { text(Some(f), "id") == id }).map(fn(f) { field(Some(f), "pasted") })
+  let files = w.files.get()
+  let mut info : Json?? = None
+  for i in 0..<files.length() {
+    if text(Some(files[i]), "id") == id {
+      info = Some(field(Some(files[i]), "pasted"))
+      break
+    }
+  }
   writing_remove(src, w, id)
   match info {
     Some(Some(p)) => writing_add(src, w, station, name, bytes, pasted=p)

@@ -114,7 +114,14 @@ fn sent_discard_now() -> Int {
 /// among its rows `before` (what was there then): one they sent since, which they took away themselves.
 fn sent_was_discarded_after(rk : String, before : Map[String, Bool], since : Int) -> Bool {
   match sent_discarded.get(rk) {
-    Some(a) => a.iter().any(fn(d) { d.0 > since && !before.contains(d.1) })
+    Some(a) => {
+      for d in a {
+        if d.0 > since && !before.contains(d.1) {
+          return true
+        }
+      }
+      false
+    }
     None => false
   }
 }

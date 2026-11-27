@@ -460,7 +460,14 @@ fn adb_lent(view : Json?, focus : String) -> Array[(String, Json?)] {
   }
   let out : Array[(String, Json?)] = []
   let add = fn(l : String) {
-    if l != "" && !out.iter().any(fn(o) { o.0 == l }) {
+    let mut had = false
+    for i in 0..<out.length() {
+      if out[i].0 == l {
+        had = true
+        break
+      }
+    }
+    if l != "" && !had {
       let lent = adb_lend_view(view, l)
       if flag(lent, "sharing") && text(lent, "station") == l {
         out.push((l, lent))
@@ -480,11 +487,14 @@ fn adb_lent(view : Json?, focus : String) -> Array[(String, Json?)] {
 /// A lent station's name, as its workspace's station rows say it (its address's last part till they have).
 fn adb_station_name(core : Core, address : String) -> String {
   match (core.topic)("stations", { "scope": str(workspace_of(address)) }).get().value {
-    Some(Array(a)) =>
-      match a.iter().find_first(fn(s) { text(Some(s), "station") == address }) {
-        Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
-        _ => station_name(address)
+    Some(Array(a)) => {
+      for s in a {
+        if text(Some(s), "station") == address {
+          return if text(Some(s), "name") != "" { text(Some(s), "name") } else { station_name(address) }
+        }
       }
+      station_name(address)
+    }
     _ => station_name(address)
   }
 }

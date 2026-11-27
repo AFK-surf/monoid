@@ -170,8 +170,10 @@ pub fn asked_now(
   }
   let answered = fn() {
     while true {
-      if !leases.iter().all(told) {
-        return false
+      for i in 0..<leases.length() {
+        if !told(leases[i]) {
+          return false
+        }
       }
       let more = match then {
         Some(after) => after(read).filter(fn(a) { !keys.contains(key(a)) })

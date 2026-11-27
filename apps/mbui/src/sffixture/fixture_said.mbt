@@ -22,45 +22,52 @@ pub fn said_longest(s : String) -> String {
 ///|
 /// `value` with the words at `path` (fields by name, `*` each item of a list or a map, `<tag>=<word>` a union's variant
 /// where its tag says that word) at their longest, or made what `leaf` makes of them; the rest as it was.
-pub fn said_stretch(value : Json, path : ArrayView[String], leaf? : (String) -> String = said_longest) -> Json {
-  match path {
-    [step, .. rest] if step.contains("=") =>
-      // (a union's variant: on where its tag says that word)
-      match (step.split("=").collect(), value) {
-        ([tag, word], Object(m)) if m.get(tag.to_owned()) == Some(Json::string(word.to_owned())) =>
-          said_stretch(value, rest, leaf~)
-        _ => value
+pub fn said_stretch(value : Json, path : Array[String], leaf? : (String) -> String = said_longest) -> Json {
+  said_stretch_from(value, path, 0, leaf)
+}
+
+///|
+/// said_stretch's from step `at` of `path` on (the steps before it taken).
+fn said_stretch_from(value : Json, path : Array[String], at : Int, leaf : (String) -> String) -> Json {
+  if at >= path.length() {
+    return match value {
+      String(s) => Json::string(leaf(s))
+      _ => value
+    }
+  }
+  let step = path[at]
+  if step.contains("=") {
+    // (a union's variant: on where its tag says that word)
+    return match (step.split("=").collect(), value) {
+      ([tag, word], Object(m)) if m.get(tag.to_owned()) == Some(Json::string(word.to_owned())) =>
+        said_stretch_from(value, path, at + 1, leaf)
+      _ => value
+    }
+  }
+  if step == "*" {
+    return match value {
+      Array(a) => Json::array(a.map(fn(x) { said_stretch_from(x, path, at + 1, leaf) }))
+      Object(m) => {
+        let o : Map[String, Json] = Map([])
+        for k, v in m {
+          o[k] = said_stretch_from(v, path, at + 1, leaf)
+        }
+        Json::object(o)
       }
-    [] =>
-      match value {
-        String(s) => Json::string(leaf(s))
-        _ => value
-      }
-    ["*", .. rest] =>
-      match value {
-        Array(a) => Json::array(a.map(fn(x) { said_stretch(x, rest, leaf~) }))
-        Object(m) => {
-          let o : Map[String, Json] = Map([])
-          for k, v in m {
-            o[k] = said_stretch(v, rest, leaf~)
-          }
+      _ => value
+    }
+  }
+  match value {
+    Object(m) =>
+      match m.get(step) {
+        Some(v) => {
+          let o = m.copy()
+          o[step] = said_stretch_from(v, path, at + 1, leaf)
           Json::object(o)
         }
-        _ => value
+        None => value
       }
-    [k, .. rest] =>
-      match value {
-        Object(m) =>
-          match m.get(k) {
-            Some(v) => {
-              let o = m.copy()
-              o[k] = said_stretch(v, rest, leaf~)
-              Json::object(o)
-            }
-            None => value
-          }
-        _ => value
-      }
+    _ => value
   }
 }
 
@@ -121,10 +128,10 @@ pub fn said_longest_source(src : Source) -> Source {
         Some(v) if steps.length() > 0 || widest.length() > 0 => {
           let mut v = v
           for path in steps {
-            v = said_stretch(v, path[:])
+            v = said_stretch(v, path)
           }
           for w in widest {
-            v = said_stretch(v, w.0[:], leaf=fn(s) { if s == "" { s } else { w.1 } })
+            v = said_stretch(v, w.0, leaf=fn(s) { if s == "" { s } else { w.1 } })
           }
           { ..t, value: Some(v) }
         }

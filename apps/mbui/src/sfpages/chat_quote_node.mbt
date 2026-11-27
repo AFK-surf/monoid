@@ -32,7 +32,7 @@ fn chat_message_of(rows : ChatBodyList, key : String) -> Message? {
   match rows.read().get(key) {
     Some({ entry: Said(m), .. }) if m.ts != "" => Some(m)
     // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
-    Some({ entry: Out(o), .. }) => Some(outgoing_said(o))
+    Some({ entry: @sfbase.Entry::Out(o), .. }) => Some(outgoing_said(o))
     // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
     Some({ entry: Sent(s), .. }) => Some(elsewhere_said(s))
     _ => None

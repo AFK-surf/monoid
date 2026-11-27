@@ -560,7 +560,7 @@ pub let said_steps : @ref.Ref[Map[String, Array[Array[String]]]?]
 
 pub fn said_steps_of(String) -> Array[Array[String]]
 
-pub fn said_stretch(Json, ArrayView[String]) -> Json
+pub fn said_stretch(Json, Array[String]) -> Json
 
 pub let screens_answer : String
 

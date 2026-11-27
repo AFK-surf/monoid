@@ -387,9 +387,13 @@ fn Viewer::pdf_mark_picked(self : Viewer) -> Unit {
   })
   // (its comment line asks the composer for the focus; here the note's own field has it)
   writing_focused(src, w)
-  let id = match @signals.untracked(fn() { w.quotes.get() }).iter().filter(fn(q) { text(Some(q), "mark") == mark }).last() {
-    Some(q) => text(Some(q), "id")
-    None => ""
+  let quotes = @signals.untracked(fn() { w.quotes.get() })
+  let mut id = ""
+  for i = quotes.length() - 1; i >= 0; i = i - 1 {
+    if text(Some(quotes[i]), "mark") == mark {
+      id = text(Some(quotes[i]), "id")
+      break
+    }
   }
   m.let_go()
   m.note.set("")
@@ -405,8 +409,15 @@ fn Viewer::pdf_note_done(self : Viewer) -> Unit {
   guard id != "" else { return }
   let said = m.note.take().trim(chars=" \n\t").to_owned()
   match self.pdf_draft() {
-    Some((src, w)) if @signals.untracked(fn() { self.pdf_notes() }).iter().any(fn(x) { x.id == id && x.comment != said }) =>
-      writing_comment(src, w, id, said)
+    Some((src, w)) => {
+      let notes = @signals.untracked(fn() { self.pdf_notes() })
+      for i in 0..<notes.length() {
+        if notes[i].id == id && notes[i].comment != said {
+          writing_comment(src, w, id, said)
+          break
+        }
+      }
+    }
     _ => ()
   }
   m.writing.set("")
@@ -479,7 +490,15 @@ fn Viewer::pdf_key(self : Viewer, code : Int, mods : Int) -> Bool {
 /// Note `id` opened: brought into sight on its page and opened to be written, what was said of it in the field.
 fn Viewer::pdf_note_open(self : Viewer, id : String) -> Unit {
   let m = self.pdf_marks
-  guard @signals.untracked(fn() { self.pdf_notes() }).iter().find_first(fn(x) { x.id == id }) is Some(x) else { return }
+  let notes = @signals.untracked(fn() { self.pdf_notes() })
+  let mut found = None
+  for i in 0..<notes.length() {
+    if notes[i].id == id {
+      found = Some(notes[i])
+      break
+    }
+  }
+  guard found is Some(x) else { return }
   self.pdf_note_done()
   m.let_go()
   let (page, v) = match x.what {

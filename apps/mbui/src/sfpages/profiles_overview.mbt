@@ -115,7 +115,12 @@ fn ov_speed_points(pool : ModelPool) -> Array[Double] {
 ///|
 /// Whether any of the span's windows was timed.
 fn ov_speed_known(points : Array[Double]) -> Bool {
-  points.iter().any(fn(v) { v >= 0.0 })
+  for v in points {
+    if v >= 0.0 {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -910,7 +915,14 @@ fn ov_pools_card_node(
       None
     } else {
       let picked = ov_picked_pool.get()
-      match ps.iter().find_first(fn(p) { p.title == picked }) {
+      let mut chosen = None
+      for p in ps {
+        if p.title == picked {
+          chosen = Some(p)
+          break
+        }
+      }
+      match chosen {
         Some(p) => Some(p)
         // (none picked: the one going without soonest, else the first spending past its pace, else the first)
         None => {
@@ -1237,7 +1249,19 @@ fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?, speed_w : 
   let points_now = @signals.computed(fn(_) { active_pool().map(ov_speed_points).unwrap_or([]) }, same=fn(a, b) { a == b })
   let points = fn() { points_now.get() }
   let any_timed = @signals.computed(
-    fn(_) { active_pool().map(fn(p) { p.speed.iter().any(ov_speed_known) }).unwrap_or(false) },
+    fn(_) {
+      match active_pool() {
+        Some(p) => {
+          for points in p.speed {
+            if ov_speed_known(points) {
+              return true
+            }
+          }
+          false
+        }
+        None => false
+      }
+    },
     same=fn(a, b) { a == b },
   )
   parent.show(fn() { any_timed.get() }, at_once=true, fn(sec) { ov_speed_section_node(sec, points, speed_w) })
@@ -1509,7 +1533,15 @@ pub fn profiles_overview_node(
     }
     out
   }, same=fn(a, b) {
-    a.length() == b.length() && a.iter().zip(b.iter()).all(fn(p) { ov_alert_same(p.0, p.1) })
+    if a.length() != b.length() {
+      return false
+    }
+    for i in 0..<a.length() {
+      if !ov_alert_same(a[i], b[i]) {
+        return false
+      }
+    }
+    true
   })
   let alerts = v.keyed_by(fn() { alerts_list.get() }, fn(x) { x.0 }, same=ov_alert_same)
   // (its blocks, worked out once: what reads them is told only as one comes or goes)

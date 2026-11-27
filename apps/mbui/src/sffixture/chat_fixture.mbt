@@ -1131,7 +1131,14 @@ fn fix_tick() -> Unit {
 pub fn fix_clock_set(clock : Ref[Double], ms : Double) -> Unit {
   clock.val = ms
   while true {
-    match fix_timers.search_by(fn(t) { t.0 <= ms }) {
+    let mut due = None
+    for i in 0..<fix_timers.length() {
+      if fix_timers[i].0 <= ms {
+        due = Some(i)
+        break
+      }
+    }
+    match due {
       Some(i) => fix_now(fix_timers.remove(i).1)
       None => break
     }
@@ -4122,7 +4129,12 @@ pub fn fixture_things(q : String, many? : Bool = true) -> Json {
     Json::array(
       list.filter(fn(t) {
         let said = (text(Some(t), "title") + " " + text(field(Some(t), "file"), "name") + " " + text(Some(t), "words") + " " + text(Some(t), "url")).to_lower()
-        words.iter().all(fn(w) { said.contains(w) })
+        for w in words {
+          if !said.contains(w) {
+            return false
+          }
+        }
+        true
       }),
     )
   }

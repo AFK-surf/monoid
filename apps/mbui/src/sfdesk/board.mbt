@@ -16,7 +16,7 @@ let board_frame_src : Ref[Source?] = Ref(None)
 /// stack.
 fn board_bare() -> Bool {
   match board_frame_src.val {
-    Some(src) => @sfbase.board_on_now(src) && app.nav.depth() == 1 && app.nav.top() is Home
+    Some(src) => @sfbase.board_on_now(src) && app.nav.depth() == 1 && app.nav.top() is @sfbase.Page::Home
     None => false
   }
 }
@@ -198,7 +198,7 @@ fn board_archive_go(src : Source) -> Unit {
 /// leaves the panel on that page, as it was).
 fn board_listed_back() -> Unit {
   @sfbase.board_listed.val = fn() {
-    if wide.tape.get() && app.nav.top() is Home {
+    if wide.tape.get() && app.nav.top() is @sfbase.Page::Home {
       wide.tape_ask.set(Some(Side))
     }
   }

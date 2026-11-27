@@ -1594,6 +1594,38 @@ fn meter(short : String, left : Int, level : String, remaining : String, big : S
 }
 
 ///|
+/// A profile's quota windows as the fixture has them: its 5 hours (unless `no_hours`), its week, its month (where
+/// `monthly`) and its models' own weeks (the first `own` of them).
+fn fx_quota_windows() -> Array[Json] {
+  let windows : Array[Json] = []
+  if !fx.no_hours {
+    windows.push(
+      obj([("label", str("5 小时")), ("usedPercent", Json::number(38.0)), ("mark", str("5H")), ("left", Json::number(62.0)), ("level", str("ok")), ("refills", str(if fx.own > 0 { "3 小时 5 分钟后刷新" } else { "2 小时后恢复" }))]),
+    )
+  }
+  // (with its models' own: named and refilling in the words the core says, their real length)
+  windows.push(
+    obj([("label", str(if fx.own > 0 { "每周" } else { "本周" })), ("usedPercent", Json::number(81.0)), ("mark", str("W")), ("left", Json::number(19.0)), ("level", str("amber")), ("refills", str(if fx.own > 0 { "2 天 4 小时后刷新" } else { "星期一恢复" }))]),
+  )
+  if fx.monthly {
+    windows.push(
+      obj([("label", str("每月")), ("usedPercent", Json::number(3.0)), ("mark", str("M")), ("left", Json::number(97.0)), ("level", str("ok")), ("refills", str("11 月 1 日恢复"))]),
+    )
+  }
+  let models = [("Fable", 46, "ok"), ("Opus", 8, "red"), ("Sonnet", 100, "ok")]
+  for i in 0..<models.length() {
+    if i >= fx.own {
+      break
+    }
+    let m = models[i]
+    windows.push(
+      obj([("label", str("每周 · " + m.0)), ("usedPercent", Json::number((100 - m.1).to_double())), ("scope", str(m.0)), ("mark", str(m.0)), ("left", Json::number(m.1.to_double())), ("level", str(m.2)), ("refills", str("2 天 4 小时后刷新"))]),
+    )
+  }
+  windows
+}
+
+///|
 fn fx_profile(id : String, name : String, kind : String, tone : String, check : String, group : String, title : String, more : Array[(String, Json)]) -> Json {
   let rt = if group == "chatgpt" { "codex" } else if group == "agy" { "agy" } else { "claude" }
   let p : Map[String, Json] = {
@@ -1631,25 +1663,7 @@ fn fx_profile(id : String, name : String, kind : String, tone : String, check : 
       ("state", str("ok")),
       (
         "windows",
-        Json::array(
-        (if fx.no_hours {
-          []
-        } else {
-          [obj([("label", str("5 小时")), ("usedPercent", Json::number(38.0)), ("mark", str("5H")), ("left", Json::number(62.0)), ("level", str("ok")), ("refills", str(if fx.own > 0 { "3 小时 5 分钟后刷新" } else { "2 小时后恢复" }))])]
-        }).iter().concat(
-          // (with its models' own: named and refilling in the words the core says, their real length)
-          [obj([("label", str(if fx.own > 0 { "每周" } else { "本周" })), ("usedPercent", Json::number(81.0)), ("mark", str("W")), ("left", Json::number(19.0)), ("level", str("amber")), ("refills", str(if fx.own > 0 { "2 天 4 小时后刷新" } else { "星期一恢复" }))])].iter(),
-        ).concat(
-          (if fx.monthly {
-            [obj([("label", str("每月")), ("usedPercent", Json::number(3.0)), ("mark", str("M")), ("left", Json::number(97.0)), ("level", str("ok")), ("refills", str("11 月 1 日恢复"))])]
-          } else {
-            []
-          }).iter(),
-        ).concat(
-          [("Fable", 46, "ok"), ("Opus", 8, "red"), ("Sonnet", 100, "ok")].iter().take(fx.own).map(fn(m) {
-            obj([("label", str("每周 · " + m.0)), ("usedPercent", Json::number((100 - m.1).to_double())), ("scope", str(m.0)), ("mark", str(m.0)), ("left", Json::number(m.1.to_double())), ("level", str(m.2)), ("refills", str("2 天 4 小时后刷新"))])
-          }),
-        ).collect()),
+        Json::array(fx_quota_windows()),
       ),
       ..(if id == "cc" { fx_cc_resets() } else { [] }),
       ("checkedAt", Json::number(0.0)),
@@ -2105,7 +2119,14 @@ fn fx_station_profile_groups(profiles : Array[Json]) -> Array[Json] {
   for p in profiles {
     let pv = Some(p)
     let kind = text(pv, "group")
-    let at = match groups.search_by(fn(g) { g.0 == kind }) {
+    let mut found = None
+    for i in 0..<groups.length() {
+      if groups[i].0 == kind {
+        found = Some(i)
+        break
+      }
+    }
+    let at = match found {
       Some(i) => i
       None => {
         groups.push((kind, text(pv, "groupTitle"), [], []))
@@ -2121,7 +2142,7 @@ fn fx_station_profile_groups(profiles : Array[Json]) -> Array[Json] {
   groups.map(fn(g) {
     obj([
       ("group", str(g.0)), ("title", str(g.1)),
-      ("profiles", Json::array(g.2.iter().concat(g.3.iter()).map(fn(id) { str(id) }).collect())),
+      ("profiles", Json::array((g.2 + g.3).map(fn(id) { str(id) }))),
       ("attention", Json::number(g.2.length().to_double())),
     ])
   })
@@ -2366,7 +2387,14 @@ fn fx_cx_series(ids : Array[String]) -> Json {
     ("GPT-5", ["gpt-5", "gpt-5-mini"]),
     ("o9", ["o9", "o9-mini"]),
   ]
-  let rest = ids.filter(fn(m) { !series.iter().any(fn(s) { s.1.contains(m) }) })
+  let rest = ids.filter(fn(m) {
+    for s in series {
+      if s.1.contains(m) {
+        return false
+      }
+    }
+    true
+  })
   let all = series.map(fn(s) { obj([("name", str(s.0)), ("models", Json::array(s.1.map(str)))]) })
   if rest.length() > 0 {
     all.push(obj([("name", str("其他")), ("models", Json::array(rest.map(str)))]))
@@ -3233,8 +3261,10 @@ fn fx_archive(q? : String = "") -> Json {
 /// The list `only` (a key) is of ("" none).
 fn only_shown_list(lists : Array[(String, String, Array[(String, String, String, String, Double)])], only : String) -> String {
   for l in lists {
-    if l.2.search_by(fn(it) { it.0 == only }) is Some(_) {
-      return l.0
+    for it in l.2 {
+      if it.0 == only {
+        return l.0
+      }
     }
   }
   ""

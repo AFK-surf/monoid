@@ -281,7 +281,8 @@ fn host_station_address(v : Json?) -> String {
 /// Synchronous authoritative local station address read directly from the host (never waiting on the 3s polling timer).
 fn live_local_station_address(managed : Bool) -> String {
   if managed {
-    let parsed = Some(@json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() })
+    let said = @hostapi.app_said("local_station")
+    let parsed = Some(@json.parse(said) catch { _ => Json::null() })
     host_station_address(parsed)
   } else {
     this_machine()

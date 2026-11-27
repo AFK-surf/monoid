@@ -478,7 +478,7 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
     p => @sfbase.go_place(p, kept=true) |> ignore
   }
   if place != "attention" {
-    let target_serial = if app.nav.top() is Home && place != "board" { None } else { Some(app.nav.top_stay().0) }
+    let target_serial = if app.nav.top() is @sfbase.Page::Home && place != "board" { None } else { Some(app.nav.top_stay().0) }
     @sfbase.bar_placed_wide(from, place, target_serial?)
   }
 }

@@ -684,11 +684,14 @@ pub fn handoff_chat_open(r : ChatRef, reader : TopicLease) -> Unit {
     Chat(chat) if chat.station == r.station && chat.session == r.session => {
       let (serial, _) = @signals.untracked(fn() { app.nav.top_stay() })
       let key = r.station + "\u{1}" + r.session
-      if page_sources.get(serial) is Some(sources) && sources.iter().any(fn(current) {
-        current.chat_ready == key && @signals.untracked(fn() { (current.source.topic_alive)() })
-      }) {
-        reader.release()
-        return
+      if page_sources.get(serial) is Some(sources) {
+        for i in 0..<sources.length() {
+          let current = sources[i]
+          if current.chat_ready == key && @signals.untracked(fn() { (current.source.topic_alive)() }) {
+            reader.release()
+            return
+          }
+        }
       }
       let previous = pending_chat_readers.get(serial)
       let pending : PendingChatReader = { reader, unkeep: None }

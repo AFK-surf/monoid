@@ -784,11 +784,37 @@ fn fix_maker_name(id : String) -> String {
     "kimi" => "Moonshot AI"
     "devin" => "Cognition"
     other =>
-      match fix_providers.iter().find_first(fn(p) { p.2 == other }) {
-        Some(p) => p.3
-        None => other
+      {
+        for p in fix_providers {
+          if p.2 == other {
+            return p.3
+          }
+        }
+        other
       }
   }
+}
+
+///|
+/// The provider of model `m` (fix_providers' first naming it).
+fn fix_provider_of(m : String) -> (String, String, String, String)? {
+  for p in fix_providers {
+    if p.0 == m {
+      return Some(p)
+    }
+  }
+  None
+}
+
+///|
+/// The preset of id `id` among `list` (its `id` said as words).
+fn fix_preset_in(list : Array[Json], id : String) -> Json? {
+  for p in list {
+    if text(Some(p), "id") == id {
+      return Some(p)
+    }
+  }
+  None
 }
 
 ///|
@@ -802,10 +828,7 @@ pub fn fix_model(model : String) -> Json {
     "swe-2" => fix_crowded_model(model, "SWE-2", "SWE", "devin", ["devin"])
     "gpt-6-1-sol" => fix_crowded_model(model, "GPT-6.1 Sol", "Sol", "openai", ["codex"], short_name="Sol")
     "gpt-6-1-terra" => fix_crowded_model(model, "GPT-6.1 Terra", "GPT", "openai", ["codex"], short_name="Terra")
-    m if fix_providers.iter().any(fn(p) { p.0 == m }) => {
-      let p = fix_providers.iter().find_first(fn(p) { p.0 == m }).unwrap()
-      fix_crowded_model(m, p.1, p.1, p.2, ["claude"])
-    }
+    m if fix_provider_of(m) is Some(p) => fix_crowded_model(m, p.1, p.1, p.2, ["claude"])
     "claude-sonnet-5" =>
       {
         "model": "claude-sonnet-5",
@@ -1016,7 +1039,14 @@ pub fn fix_pick() -> Json {
       let makers : Array[(String, String, Int)] = []
       for o in fix_shown_models() {
         let id = text(field(Some(o), "maker"), "id")
-        match makers.search_by(fn(m) { m.0 == id }) {
+        let mut at = None
+        for i in 0..<makers.length() {
+          if makers[i].0 == id {
+            at = Some(i)
+            break
+          }
+        }
+        match at {
           Some(i) => makers[i] = (id, makers[i].1, makers[i].2 + 1)
           None => makers.push((id, fix_maker_name(id), 1))
         }
@@ -1378,7 +1408,7 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     "presetMarks": if n.preset == "" {
       Json::array([])
     } else {
-      match (n.presets + n.others).iter().find_first(fn(p) { text(Some(p), "id") == n.preset }) {
+      match fix_preset_in(n.presets + n.others, n.preset) {
         Some(p) =>
           Json::array(
             items(Some(p), "dirs").map(fn(d) {
@@ -1399,15 +1429,21 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     },
     // (someone else's picked: its own station, as it was made on, and its name)
     "presetStation": Json::string(
-      match n.others.iter().find_first(fn(p) { text(Some(p), "id") == n.preset }) {
+      match fix_preset_in(n.others, n.preset) {
         Some(p) => text(Some(p), "station")
         None => if n.preset == "" { "" } else { text(Some(fix_station(n.station)), "station") }
       },
     ),
     "presetName": Json::string(
-      match (n.presets + n.others).iter().find_first(fn(p) { field(Some(p), "id") == Some(Json::string(n.preset)) }) {
-        Some(p) => (if field(Some(p), "name").unwrap_or(Json::string("")) is String(s) { Some(s) } else { None }).unwrap_or("")
-        None => ""
+      {
+        let mut name = ""
+        for p in n.presets + n.others {
+          if field(Some(p), "id") == Some(Json::string(n.preset)) {
+            name = (if field(Some(p), "name").unwrap_or(Json::string("")) is String(s) { Some(s) } else { None }).unwrap_or("")
+            break
+          }
+        }
+        name
       },
     ),
   }

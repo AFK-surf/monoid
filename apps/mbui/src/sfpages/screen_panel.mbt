@@ -357,7 +357,7 @@ fn figure_ink(level : String) -> @ui.Color {
 ///|
 /// Native events arrive before this frame rebuilds native_over; use the page and system bars, not that transient flag.
 fn screen_panel_side() -> @ui.Side {
-  if @sf.native_side() && app.nav.top() is Screen(_) { Left } else { Bottom }
+  if @sf.native_side() && app.nav.top() is @sfbase.Page::Screen(_) { Left } else { Bottom }
 }
 
 ///|
@@ -707,13 +707,13 @@ fn switch_screen_to(s : ScreenSess, u : ScreenUi, next : String, title : String,
   }
   let next_at : ScreenAt = { station: s.station, screen: next, title, until_gone }
   match @sfbase.lone_page.val {
-    Some(Screen(prev)) => {
+    Some(@sfbase.Page::Screen(prev)) => {
       // (the window shows the next first, so the screen it leaves is no window's when it is let go of)
       @sfbase.lone_page_replace(Screen({ ..next_at, until_gone: false }))
       screen_left(s.src, prev.station, prev.screen)
     }
     _ =>
-      if !u.in_tab && @sfbase.app.nav.top() is Screen(_) {
+      if !u.in_tab && @sfbase.app.nav.top() is @sfbase.Page::Screen(_) {
         @sfbase.open_in_place(Screen(next_at))
       } else {
         @sfbase.open_page(Screen(next_at))

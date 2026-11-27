@@ -245,7 +245,8 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
       (Some(r), Some(n), Some((fs, fp, names))) if fs == r.station && fp == r.parent => {
         let prefix = if r.station == here.station && !typed.contains(":") { "" } else { @sf.lower(n.name) + ":" }
         let found = names.filter(fn(name) { !name.has_prefix(".") && @sf.lower(name).has_prefix(@sf.lower(r.partial)) })
-        for name in found[:if found.length() > go_most { go_most } else { found.length() }] {
+        for i in 0..<(if found.length() > go_most { go_most } else { found.length() }) {
+          let name = found[i]
           let abs = child_of(r.parent, name)
           rows.push((n.name + " › " + abs, prefix + abs + "/", Some((r.station, abs))))
         }

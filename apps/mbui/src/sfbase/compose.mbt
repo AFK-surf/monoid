@@ -179,7 +179,13 @@ let writing_user_seq : Map[String, Int] = Map([])
 ///|
 /// Whether draft `w` has the file `seed` names already (writing_seeds).
 fn writing_has(w : Writing, seed : String) -> Bool {
-  w.state.files.get().iter().any(fn(f) { writing_seeds.get(text(Some(f), "id")) == Some(seed) })
+  let files = w.state.files.get()
+  for i in 0..<files.length() {
+    if writing_seeds.get(text(Some(files[i]), "id")) == Some(seed) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -217,7 +223,15 @@ fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Un
 /// A draft is shared by its source and key, independent of which page or node reads it.
 fn writing_cached(src : Source, key : String) -> Writing {
   writing_cache_tick.val += 1
-  match writing_cache.val.search_by(fn(w) { physical_equal(w.source, src) && w.key == key }) {
+  let mut cached : Int? = None
+  for i in 0..<writing_cache.val.length() {
+    let w = writing_cache.val[i]
+    if physical_equal(w.source, src) && w.key == key {
+      cached = Some(i)
+      break
+    }
+  }
+  match cached {
     Some(i) => {
       writing_cache.val[i].used = writing_cache_tick.val
       writing_cache.val[i].value
@@ -831,8 +845,16 @@ pub fn writing_quote(src : Source, w : Writing, quote : Json, file? : Json, pict
     shown["comment"] = Json::string("")
   }
   writing_act(src, w, "quote", p, moves=true, show=fn(w) {
-    if !w.state.quotes.get().iter().any(fn(q) { text(Some(q), "id") == id }) {
-      w.state.quotes.set(w.state.quotes.get() + [Json::object(shown)])
+    let quotes = w.state.quotes.get()
+    let mut had = false
+    for i in 0..<quotes.length() {
+      if text(Some(quotes[i]), "id") == id {
+        had = true
+        break
+      }
+    }
+    if !had {
+      w.state.quotes.set(quotes + [Json::object(shown)])
     }
     if ask {
       w.state.focus.set(id)
@@ -871,7 +893,15 @@ pub fn writing_comment(src : Source, w : Writing, id : String, words : String) -
 ///|
 /// A quote let go (`composer.unquote`), its picture with it.
 pub fn writing_unquote(src : Source, w : Writing, id : String) -> Unit {
-  match w.state.quotes.get().iter().find_first(fn(q) { text(Some(q), "id") == id }) {
+  let quotes = w.state.quotes.get()
+  let mut quote : Json? = None
+  for i in 0..<quotes.length() {
+    if text(Some(quotes[i]), "id") == id {
+      quote = Some(quotes[i])
+      break
+    }
+  }
+  match quote {
     Some(q) => {
       let own = text(field(Some(q), "own"), "id")
       writing_picture_drop(own)
@@ -967,7 +997,14 @@ pub fn writing_committed(w : Writing) -> Unit {
     guard id != "" else { continue }
     // (a file of the draft as it is now, taken back in meanwhile, kept: what it shows is its own)
     let now = w.state.files.untracked() + w.state.quotes.untracked().filter_map(fn(q) { field(Some(q), "own") })
-    if now.iter().any(fn(f) { text(Some(f), "id") == id }) {
+    let mut kept = false
+    for i in 0..<now.length() {
+      if text(Some(now[i]), "id") == id {
+        kept = true
+        break
+      }
+    }
+    if kept {
       continue
     }
     let picture = writing_pictures.get(id)
@@ -1186,9 +1223,15 @@ pub fn finder_dragged(src : Source, paths : Array[@ui.DroppedPath]) -> Array[Dra
   }
   let station_name = match dv_stations(src, workspace_of(station)).0 {
     Some(list) =>
-      match list.iter().find_first(fn(s) { s.station == station }) {
-        Some(s) => s.name
-        None => ""
+      {
+        let mut name = ""
+        for i in 0..<list.length() {
+          if list[i].station == station {
+            name = list[i].name
+            break
+          }
+        }
+        name
       }
     None => ""
   }

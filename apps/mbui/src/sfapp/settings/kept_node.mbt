@@ -191,7 +191,17 @@ fn kept_block(b : @view.View, core : Core, key : String) -> Unit {
       })
     k if k.has_prefix("going/") => {
       let at = k.exact_view(start=6).to_owned()
-      let kv = fn() { fill_keeping(core).mapi(fn(i, x) { (i.to_string(), x) }).iter().find_first(fn(x) { x.0 == at }).map(fn(x) { x.1 }) }
+      let kv = fn() {
+        let keeping = fill_keeping(core)
+        let mut found = None
+        for i in 0..<keeping.length() {
+          if i.to_string() == at {
+            found = Some(keeping[i])
+            break
+          }
+        }
+        found
+      }
       // (each stopped where it shows: the transfers' list, its message's card; all of them here at once)
       chat_piece(fn() { if at == "0" { Some(0) } else { Some(1) } }, fn() { 3 }, fn(g) {
         @sf.link_row_node(g, fn() { text(kv(), "title") }, fn() {  }, note=fn() { text(kv(), "statusText") }, goes=false)
@@ -201,7 +211,14 @@ fn kept_block(b : @view.View, core : Core, key : String) -> Unit {
       let last : Ref[(Int, Json)?] = Ref(None)
       let now = fn() {
         let all = chats()
-        match all.search_by(fn(x) { kept_chat_key(x) == k }) {
+        let mut at = None
+        for i in 0..<all.length() {
+          if kept_chat_key(all[i]) == k {
+            at = Some(i)
+            break
+          }
+        }
+        match at {
           Some(i) => {
             last.val = Some((i, all[i]))
             last.val
@@ -476,7 +493,16 @@ pub fn kept_chat_node(
   let loose = station == ""
   let chat = fn() {
     match kept.chats.get() {
-      Some(a) if !loose => a.iter().find_first(fn(x) { text(Some(x), "station") == station && count(Some(x), "thread") == thread })
+      Some(a) if !loose => {
+        let mut found = None
+        for i in 0..<a.length() {
+          if text(Some(a[i]), "station") == station && count(Some(a[i]), "thread") == thread {
+            found = Some(a[i])
+            break
+          }
+        }
+        found
+      }
       _ => None
     }
   }
@@ -558,7 +584,14 @@ pub fn kept_chat_node(
           let last : Ref[(Int, Json)?] = Ref(None)
           let now = fn() {
             let all = files()
-            match all.search_by(fn(f) { file_key(f) == k }) {
+            let mut at = None
+            for i in 0..<all.length() {
+              if file_key(all[i]) == k {
+                at = Some(i)
+                break
+              }
+            }
+            match at {
               Some(i) => {
                 last.val = Some((i, all[i]))
                 last.val
@@ -668,7 +701,13 @@ pub fn fill_group_node(v : @view.View, core : Core) -> Unit {
             fill_sizes.map(fn(n) { @sf.choice(n.to_string(), fill_size_said(n)) }),
             most.to_string(),
             fn(k) {
-              let n = fill_sizes.search_by(fn(x) { x.to_string() == k }).map(fn(i) { fill_sizes[i] }).unwrap_or(fill_sizes[0])
+              let mut n = fill_sizes[0]
+              for i in 0..<fill_sizes.length() {
+                if fill_sizes[i].to_string() == k {
+                  n = fill_sizes[i]
+                  break
+                }
+              }
               set("fillMax", if n == fill_sizes[0] { Json::null() } else { Json::number(n) })
             },
             from=Node(row),

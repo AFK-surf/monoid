@@ -211,9 +211,13 @@ fn Viewer::lines_mark_picked(self : Viewer, p : @ui.WordsPicked, from_row : Int,
   })
   // (its comment line asks the composer for the focus; here the note's own field has it)
   writing_focused(src, w)
-  let id = match @signals.untracked(fn() { w.quotes.get() }).iter().filter(fn(q) { text(Some(q), "mark") == mark }).last() {
-    Some(q) => text(Some(q), "id")
-    None => ""
+  let quotes = @signals.untracked(fn() { w.quotes.get() })
+  let mut id = ""
+  for i = quotes.length() - 1; i >= 0; i = i - 1 {
+    if text(Some(quotes[i]), "mark") == mark {
+      id = text(Some(quotes[i]), "id")
+      break
+    }
   }
   @ui.picked_let_go()
   m.note.set("")
@@ -229,8 +233,15 @@ fn Viewer::lines_note_done(self : Viewer) -> Unit {
   guard id != "" else { return }
   let said = m.note.take().trim(chars=" \n\t").to_owned()
   match self.lines_draft() {
-    Some((src, w)) if @signals.untracked(fn() { self.lines_notes() }).iter().any(fn(x) { x.id == id && x.comment != said }) =>
-      writing_comment(src, w, id, said)
+    Some((src, w)) => {
+      let notes = @signals.untracked(fn() { self.lines_notes() })
+      for i in 0..<notes.length() {
+        if notes[i].id == id && notes[i].comment != said {
+          writing_comment(src, w, id, said)
+          break
+        }
+      }
+    }
     _ => ()
   }
   m.writing.set("")
@@ -256,7 +267,15 @@ fn Viewer::lines_note_drop(self : Viewer, id : String) -> Unit {
 /// Note `id` opened: its first line scrolled into sight and opened to be written, what was said of it in the field.
 fn Viewer::lines_note_open(self : Viewer, id : String) -> Unit {
   let m = self.lines_marks
-  guard @signals.untracked(fn() { self.lines_notes() }).iter().find_first(fn(x) { x.id == id }) is Some(x) else { return }
+  let notes = @signals.untracked(fn() { self.lines_notes() })
+  let mut found = None
+  for i in 0..<notes.length() {
+    if notes[i].id == id {
+      found = Some(notes[i])
+      break
+    }
+  }
+  guard found is Some(x) else { return }
   self.lines_note_done()
   (m.locate)(x.lines.0)
   m.note.set(x.comment)

@@ -525,7 +525,7 @@ pub fn chat_row_node(
     let undo_now = fn() {
       match archived_here.untracked() {
         Some(a) if a.name == @signals.untracked(key) && !a.undone => {
-          archived_here.set(Some({ ..a, undone: true }))
+          archived_here.set(Some(ArchivedHere::{ ..a, undone: true }))
           (a.undo)()
           come_back()
         }
@@ -1197,8 +1197,13 @@ fn row_aside_w_node(v : @view.View, item : ChatItem, lead : String) -> Double {
   if row_with_people(item, lead) {
     let shown = if people.length() > aside_most { aside_most } else { people.length() }
     let mut w = aside_in + l.face_d + (shown - 1).to_double() * (l.face_d - face_over)
-    if people.length() > 1 && people[:shown].iter().any(fn(p) { p.id == item.creator }) {
-      w = w + face_gap_w
+    if people.length() > 1 {
+      for i in 0..<shown {
+        if people[i].id == item.creator {
+          w = w + face_gap_w
+          break
+        }
+      }
     }
     if people.length() > shown {
       w = w + more_w(people.length() - shown)

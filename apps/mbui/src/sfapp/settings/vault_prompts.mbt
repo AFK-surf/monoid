@@ -37,7 +37,14 @@ pub fn vault_prompts(core : Core, free : Bool) -> Unit {
   let prompts = (core.topic)("lockPrompts", Map([])).get().value
   let asks = items(prompts, "asks")
   if prompts is Some(_) {
-    key_asks_closed.retain(fn(d) { asks.iter().any(fn(r) { key_ask_of(r) == d }) })
+    key_asks_closed.retain(fn(d) {
+      for i in 0..<asks.length() {
+        if key_ask_of(asks[i]) == d {
+          return true
+        }
+      }
+      false
+    })
   }
   let mut waiting : Json? = None
   for r in asks {

@@ -57,7 +57,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       head=fn(b, k, made) {
         // (and Home / Remote workbench, which draw their own top bar)
         let own_bar = @signals.untracked(fn() {
-          app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home || p == Place("remote"))
+          app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is @sfbase.Page::Home || p == Place("remote"))
         })
         tape_bar_head(b, k, made && !own_bar, tips)
       },
@@ -237,13 +237,13 @@ fn tape_bar_head(b : @view.View, k : Int, made : Bool, tips : @sf.TipLayer) -> U
     }
     // (文件 and a station's drive: a bar of their own, none over them, but a folder laid out narrow, which names
     // itself to it)
-    if app.nav.page_of(k) is Some((Files | Drive(_), _)) && tb.page_said.get() is None {
+    if app.nav.page_of(k) is Some((@sfbase.Page::Files | Drive(_), _)) && tb.page_said.get() is None {
       return None
     }
     match app.nav.page_of(k) {
       Some((p, u)) => {
         under.val = u
-        place.val = p is Place(_)
+        place.val = p is @sfbase.Page::Place(_)
       }
       None => ()
     }
@@ -454,7 +454,7 @@ fn tape_made(
                 shown=pane_shows(k),
                 keep_screen=fn(st, sc) {
                   side_screen_shown(src, st, sc) ||
-                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                  (app.nav.top() is @sfbase.Page::Screen(top) && top.station == st && top.screen == sc)
                 },
               )
             })

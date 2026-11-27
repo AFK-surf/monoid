@@ -462,6 +462,17 @@ pub fn marks_put_down() -> Unit {
 }
 
 ///|
+/// The mark of id `id` among `shapes`, the first.
+fn mark_of(shapes : Array[Mark], id : Int) -> Mark? {
+  for i in 0..<shapes.length() {
+    if shapes[i].id == id {
+      return Some(shapes[i])
+    }
+  }
+  None
+}
+
+///|
 /// The numbered marks' numbers, in the order they were drawn.
 pub fn mark_numbers(shapes : Array[Mark]) -> Map[Int, Int] {
   let out : Map[Int, Int] = Map([])
@@ -581,28 +592,28 @@ fn marks_finger_down(x : Double, y : Double, k : Double) -> Unit {
   if marking.tool == Select || marking.tool == MarkTool::Words {
     // the picked mark's handles first, then the marks, the topmost first
     if marking.tool == Select {
-      match marking.shapes.iter().find_first(fn(s) { s.id == marking.picked }) {
-        Some(s) =>
-          match
-            s
-            .handles(k)
-            .iter()
-            .find_first(fn(h) { ((h.1 - x) * (h.1 - x) + (h.2 - y) * (h.2 - y)).sqrt() < reach * 1.4 }) {
-            Some((h, _, _)) => {
+      match mark_of(marking.shapes, marking.picked) {
+        Some(s) => {
+          let handles = s.handles(k)
+          for i in 0..<handles.length() {
+            let (h, hx, hy) = handles[i]
+            if ((hx - x) * (hx - x) + (hy - y) * (hy - y)).sqrt() < reach * 1.4 {
               marking.drag = Some(Moving(s.id, x, y, s, Some(h), marking.shapes, false))
               return
             }
-            None => ()
           }
+        }
         None => ()
       }
     }
-    let hit = marking.shapes
-      .rev()
-      .iter()
-      .find_first(fn(s) {
-        (marking.tool == Select || s.kind == "words") && s.distance(x, y) <= s.w / 2.0 + reach
-      })
+    let mut hit : Mark? = None
+    for i = marking.shapes.length() - 1; i >= 0; i = i - 1 {
+      let s = marking.shapes[i]
+      if (marking.tool == Select || s.kind == "words") && s.distance(x, y) <= s.w / 2.0 + reach {
+        hit = Some(s)
+        break
+      }
+    }
     match hit {
       Some(s) => {
         // words with the words tool: written again
@@ -692,7 +703,7 @@ pub fn marks_lines(r : (Double, Double, Double, Double), nw : Double) -> (Array[
   }
   // the picked mark's dashed frame (white at 85%, 1 wide, 4 on 3 off), its handles round and white, ringed in the ink
   let handles : Array[(Double, Double)] = []
-  match marking.shapes.iter().find_first(fn(s) { s.id == marking.picked && marking.tool == Select }) {
+  match (if marking.tool == Select { mark_of(marking.shapes, marking.picked) } else { None }) {
     Some(s) => {
       if s.kind != "arrow" {
         let (bx, by, bw, bh) = s.bounds()
@@ -1002,7 +1013,7 @@ pub fn marks_shown_color() -> Int64 {
   match marking.writing {
     Some((_, _, _, _, col)) => col
     None =>
-      match marking.shapes.iter().find_first(fn(s) { s.id == marking.picked }) {
+      match mark_of(marking.shapes, marking.picked) {
         Some(s) => s.color
         None => marking.color
       }
@@ -1039,7 +1050,7 @@ pub fn marks_writing_bottom_in(z : @motion.Zoom, r : (Double, Double, Double, Do
   }
   let k = rw / dmax(1.0, z.nw)
   if marking.note >= 0 {
-    return match marking.shapes.iter().find_first(fn(s) { s.id == marking.note }) {
+    return match mark_of(marking.shapes, marking.note) {
       Some(s) => {
         let py0 = if s.kind == "box" { s.bounds().1 } else { s.pts[1] }
         let py = dmax(22.0 / k, dmin(dmax(22.0 / k, z.nh - 2.0 / k), py0))

@@ -724,7 +724,13 @@ fn leave_archived(item : ChatItem) -> Unit {
     return
   }
   let rows = listed.val
-  let at = rows.search_by(fn(i) { i.station == item.station && i.id == item.id })
+  let mut at = None
+  for k in 0..<rows.length() {
+    if rows[k].station == item.station && rows[k].id == item.id {
+      at = Some(k)
+      break
+    }
+  }
   let next = match at {
     Some(k) if k + 1 < rows.length() => Some(rows[k + 1])
     Some(k) if k > 0 => Some(rows[k - 1])

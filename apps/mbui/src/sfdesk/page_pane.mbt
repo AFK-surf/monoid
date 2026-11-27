@@ -112,7 +112,7 @@ fn pane_shows(k : Int) -> () -> Bool {
   fn() {
     match app.nav.page_of(k) {
       Some((p, _)) if app.nav.shelved(p) != Some(k) &&
-        !(app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) =>
+        !(app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_))) =>
         last.val = app.nav.shows(k)
       _ => ()
     }
@@ -191,7 +191,7 @@ fn pane_made(
             let frame = fn() -> @sf.PageFrame {
               {
                 back: match (page(), under) {
-                  (Place(_), _) => None
+                  (@sfbase.Page::Place(_), _) => None
                   (_, Some(u)) if u is (Setting(_) | Place(_)) => Some(@sfbase.back_label(u))
                   _ => None
                 },
@@ -290,7 +290,7 @@ fn pane_made(
                 shown=pane_shows(k),
                 keep_screen=fn(st, sc) {
                   side_screen_shown(src, st, sc) ||
-                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                  (app.nav.top() is @sfbase.Page::Screen(top) && top.station == st && top.screen == sc)
                 },
               )
             })
@@ -317,7 +317,7 @@ fn pane_made(
       made_k("files-home", fn(a, _core, _here, _stint, frame, width, k) {
         guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
         // (at rest while a page covers it in the pane: shown=)
-        @sfpages.files_home_node(a, src, w.id, frame~, width~, on_back=fn() { @sfbase.go_back() |> ignore }, tips~, shown=pane_shows(k), arrives=fn() { app.nav.top() is Files })
+        @sfpages.files_home_node(a, src, w.id, frame~, width~, on_back=fn() { @sfbase.go_back() |> ignore }, tips~, shown=pane_shows(k), arrives=fn() { app.nav.top() is @sfbase.Page::Files })
       })
     Drive(_) =>
       made_k("files", fn(a, _core, _here, _stint, frame, width, k) {
@@ -724,7 +724,7 @@ fn pane_chat_bar_ends(
 /// non-Chat / non-Home pages).
 fn pane_entry_locks(k : Int) -> Bool {
   match app.nav.page_of(k) {
-    Some((Chat(_) | Home, _)) => false
+    Some((Chat(_) | @sfbase.Page::Home, _)) => false
     Some(_) => true
     None => false
   }

@@ -1800,7 +1800,13 @@ fn triple_body_node(
             fn() { all_efforts().map(fn(e) { e.1 }) },
             fn() {
               let now = effort_now()
-              all_efforts().search_by(fn(e) { e.0 == now }).unwrap_or(-1)
+              let efforts = all_efforts()
+              for i in 0..<efforts.length() {
+                if efforts[i].0 == now {
+                  return i
+                }
+              }
+              -1
             },
             stops,
             said=h_effort,
@@ -2342,7 +2348,16 @@ fn triple_sidekick_node(
   let pick_eff = fn(sid : String) {
     let g = @signals.untracked(active_group)
     let n = @signals.untracked(now)
-    match g.efforts.search_by(fn(w) { w.0 == sid && sid != "" }) {
+    let mut picked = None
+    if sid != "" {
+      for i in 0..<g.efforts.length() {
+        if g.efforts[i].0 == sid {
+          picked = Some(i)
+          break
+        }
+      }
+    }
+    match picked {
       Some(i) => {
         let chosen = g.efforts[i]
         if chosen.0 != n && chosen.2 != "" {
@@ -2419,9 +2434,14 @@ fn triple_sidekick_node(
                   back()
                 } else {
                   let lbl = @signals.untracked(active_eff_lbl)
-                  let chosen = match g.efforts.search_by(fn(w) { w.1 == lbl && lbl != "" }) {
-                    Some(i) => g.efforts[i]
-                    None => g.efforts[0]
+                  let mut chosen = g.efforts[0]
+                  if lbl != "" {
+                    for w in g.efforts {
+                      if w.1 == lbl {
+                        chosen = w
+                        break
+                      }
+                    }
                   }
                   if chosen.0 != n && chosen.2 != "" {
                     pick_save(src, station, of, { "model": Json::string(chosen.2), "runtime": Json::string("devin") })

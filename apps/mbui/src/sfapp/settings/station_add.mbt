@@ -375,20 +375,26 @@ let first_make_line : @ui.Style = @ui.css("row w=Full justify=JEnd")
 /// they came in: adding.order).
 fn joinable_rows(joinable : Json?) -> Array[Json] {
   let items_now = items(joinable, "items")
-  let rows = items_now.filter(fn(s) {
-    !adding.took.iter().any(fn(t) { text(Some(t), "station") == text(Some(s), "station") })
-  })
+  let rows = items_now.filter(fn(s) { !took_it(s) })
   for t in adding.took {
     rows.push(t)
   }
-  rows.sort_by_key(fn(s) { adding.order.get(text(Some(s), "station")).unwrap_or(0) })
-  rows
+  // (each row's place worked out once, then the rows sorted by it)
+  let placed = rows.map(fn(s) { (adding.order.get(text(Some(s), "station")).unwrap_or(0), s) })
+  placed.sort_by_key(fn(p) { p.0 })
+  placed.map(fn(p) { p.1 })
 }
 
 ///|
 /// Whether a station of another workspace was joined from here.
 fn took_it(s : Json) -> Bool {
-  adding.took.iter().any(fn(t) { text(Some(t), "station") == text(Some(s), "station") })
+  let station = text(Some(s), "station")
+  for i in 0..<adding.took.length() {
+    if text(Some(adding.took[i]), "station") == station {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -563,9 +569,12 @@ fn join_station(core : Core, here : Here, manager : Bool, chosen : Json?) -> Uni
 /// out is shown, not picked) and whether it is being joined.
 fn join_chosen(core : Core, here : Here, rows : Array[Json]) -> (Json?, Bool) {
   let open = rows.filter(fn(s) { !flag(Some(s), "needsLock") && !took_it(s) })
-  let chosen = match open.iter().find_first(fn(s) { text(Some(s), "station") == adding.picked.get() }) {
-    Some(s) => Some(s)
-    None => open.get(0)
+  let mut chosen = open.get(0)
+  for i in 0..<open.length() {
+    if text(Some(open[i]), "station") == adding.picked.get() {
+      chosen = Some(open[i])
+      break
+    }
   }
   let busy = match chosen {
     Some(s) => is_doing(core, ["station.join"], [("station", text(Some(s), "station")), ("workspace", here.workspace)])
@@ -802,7 +811,16 @@ fn station_joined(core : Core, here : Here) -> Json? {
     }
     Some(_) =>
       match stations_of(core, here).value {
-        Some(Array(a)) => a.iter().find_first(fn(s) { !adding.known.get().contains(text(Some(s), "id")) })
+        Some(Array(a)) => {
+          let mut fresh = None
+          for i in 0..<a.length() {
+            if !adding.known.get().contains(text(Some(a[i]), "id")) {
+              fresh = Some(a[i])
+              break
+            }
+          }
+          fresh
+        }
         _ => None
       }
     None => None

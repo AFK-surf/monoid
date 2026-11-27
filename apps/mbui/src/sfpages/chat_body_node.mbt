@@ -364,11 +364,11 @@ fn chat_body_rows_tail(kept : ChatBodyKept, w : ChatBodyMade, v : ChatView, all 
 /// from here or an agent's line the same one, read again only as it changed; the rest by what they say).
 fn chat_entry_same(a : Entry, b : Entry) -> Bool {
   match (a, b) {
-    (Top, Top) | (@sfbase.Entry::Empty, @sfbase.Entry::Empty) | (Line, Line) | (Newer, Newer) | (Archived, Archived) | (Feedback, Feedback) | (Foot, Foot) => true
+    (Top, Top) | (@sfbase.Entry::Empty, @sfbase.Entry::Empty) | (@sfbase.Entry::Line, @sfbase.Entry::Line) | (Newer, Newer) | (Archived, Archived) | (Feedback, Feedback) | (Foot, Foot) => true
     (Older(x), Older(y)) => x == y
     (Said(x), Said(y)) => physical_equal(x, y)
     (Sent(x), Sent(y)) => physical_equal(x, y)
-    (Out(x), Out(y)) => physical_equal(x, y)
+    (@sfbase.Entry::Out(x), @sfbase.Entry::Out(y)) => physical_equal(x, y)
     (State(w1, l1, r1), State(w2, l2, r2)) => w1 == w2 && l1 == l2 && r1 == r2
     (Working(x), Working(y)) => physical_equal(x, y)
     (CacheCold(s1, st1, d1, a1), CacheCold(s2, st2, d2, a2)) => s1 == s2 && st1 == st2 && d1 == d2 && a1 == a2
@@ -994,11 +994,11 @@ fn chat_body_node(
       let (ra, rb) = @signals.untracked(fn() { (row_of_listed(a), row_of_listed(b)) })
       let a_mine = match ra {
         Some({ entry: Said(m), .. }) => m.mine && !m.system
-        Some({ entry: Out(o), .. }) => o.state != "failed" && !o.held
+        Some({ entry: @sfbase.Entry::Out(o), .. }) => o.state != "failed" && !o.held
         _ => false
       }
       let b_mine = match rb {
-        Some({ entry: Out(o2), .. }) => o2.joined
+        Some({ entry: @sfbase.Entry::Out(o2), .. }) => o2.joined
         Some({ entry: Said(m2), .. }) => m2.mine && !m2.system && kept.here.contains(b)
         _ => false
       }
@@ -1318,7 +1318,14 @@ fn chat_body_node(
     let on_way = @signals.untracked(sending)
     for k in sent {
       guard !sent_watched.contains(k) else { continue }
-      guard on_way.search_by(fn(l) { "o:" + l.row.id == k }) is Some(i) else { continue }
+      let mut at = None
+      for j in 0..<on_way.length() {
+        if "o:" + on_way[j].row.id == k {
+          at = Some(j)
+          break
+        }
+      }
+      guard at is Some(i) else { continue }
       sent_watched.insert(k)
       sent_looked_for.push((k, on_way[i].newest, on_way[i].before, sent_discard_now()))
       sent_told()
@@ -1363,7 +1370,16 @@ fn chat_body_node(
           (listed.row)(at) is Some(_),
           keys.get().contains(at),
           stage.held_plan(at) is Some(_),
-          sending().iter().any(fn(l) { "o:" + l.row.id == k }),
+          {
+            let mut on_way = false
+            for l in sending() {
+              if "o:" + l.row.id == k {
+                on_way = true
+                break
+              }
+            }
+            on_way
+          },
         )
       })
       if !(listed_has && row_has && staged_has) {

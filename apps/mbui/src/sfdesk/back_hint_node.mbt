@@ -92,15 +92,15 @@ fn BackHint::moved(self : BackHint, x : Double) -> Unit {
 /// navigation callback should run.
 pub fn BackHint::step(self : BackHint, step : @ui.BackStep, forward? : Bool = false) -> Bool {
   match step {
-    Began(x, _) => {
+    @view.BackStep::Began(x, _) => {
       self.began(x, forward~)
       false
     }
-    Moved(x, _) => {
+    @view.BackStep::Moved(x, _) => {
       self.moved(x)
       false
     }
-    LetGo(x, _) =>
+    @view.BackStep::LetGo(x, _) =>
       if self.active.untracked() {
         let a = dmax(0.0, x - self.x0)
         self.across.set(a)
@@ -113,7 +113,7 @@ pub fn BackHint::step(self : BackHint, step : @ui.BackStep, forward? : Bool = fa
       } else {
         false
       }
-    CalledOff => {
+    @view.BackStep::CalledOff => {
       if self.active.untracked() {
         self.committed = false
         self.ready_way.put(0.0)
@@ -122,7 +122,7 @@ pub fn BackHint::step(self : BackHint, step : @ui.BackStep, forward? : Bool = fa
       }
       false
     }
-    Back => {
+    @view.BackStep::Back => {
       if self.active.untracked() {
         self.committed = true
         self.ready_way.put(1.0)

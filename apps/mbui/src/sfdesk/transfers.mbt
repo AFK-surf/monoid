@@ -145,7 +145,7 @@ fn transfers_list(
       w=ftransfers_w,
       side~,
       along~,
-      offset=if side is Right { rail_menu_off } else { @sf.panel_offset },
+      offset=if side is @view.Side::Right { rail_menu_off } else { @sf.panel_offset },
       gone=fn() {
         ftransfers.open.set(false)
         ftransfers.shown = 0

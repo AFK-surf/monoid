@@ -287,7 +287,7 @@ pub fn fixture_outline(f : Fixture, params : Map[String, Json]) -> Json? {
   Some({
     "days": Json::array(days),
     "count": Json::number(n.to_double()),
-    "others": Json::boolean(said.iter().any(fn(dm) { !flag(Some(dm.1), "mine") })),
+    "others": Json::boolean(outline_others_said(said)),
     "held": Json::number(n.to_double()),
     "of": Json::number((if whole { n } else { n + 120 }).to_double()),
     "whole": Json::boolean(whole),
@@ -395,7 +395,15 @@ pub fn fixture_outline_call(f : Fixture, name : String, params : Json) -> Result
   let words = query.to_lower().split(" ").filter(fn(w) { w.length() > 0 }).map(fn(w) { w.to_owned() }).collect()
   let found = all.filter(fn(dm) {
     let said = text(Some(dm.1), "text").to_lower()
-    words.length() > 0 && words.iter().all(fn(w) { said.contains(w) })
+    if words.length() == 0 {
+      return false
+    }
+    for w in words {
+      if !said.contains(w) {
+        return false
+      }
+    }
+    true
   })
   // (the newest found listed, fifty at most, oldest first; how many older are not)
   let listed = if found.length() > outline_found_most {
@@ -419,10 +427,30 @@ pub fn fixture_outline_call(f : Fixture, name : String, params : Json) -> Result
 }
 
 ///|
+/// Whether someone other than the person said any of `said`.
+fn outline_others_said(said : Array[(Int, Json)]) -> Bool {
+  for dm in said {
+    if !flag(Some(dm.1), "mine") {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// The line of `said` with the first of `words` in it, as the core cuts it (refs.ts excerpt): from a few letters before
 /// the words (at a word's start where one is near), "…" where it is cut, one line of outline_words_most columns.
 fn outline_snippet(said : String, words : Array[String]) -> String {
-  let line = said.split("\n").find_first(fn(l) { words.iter().any(fn(w) { l.to_owned().to_lower().contains(w) }) })
+  let line = said
+    .split("\n")
+    .find_first(fn(l) {
+      for w in words {
+        if l.to_owned().to_lower().contains(w) {
+          return true
+        }
+      }
+      false
+    })
   let line = line.map(fn(l) { l.to_owned() }).unwrap_or(said)
   let at = words.fold(init=line.length(), fn(m, w) {
     match line.to_lower().find(w) {

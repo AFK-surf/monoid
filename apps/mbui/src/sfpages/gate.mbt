@@ -17,21 +17,21 @@ pub fn sign_in_node(parent : @view.View, src : Source) -> @view.View {
     fn() { @sf.t("android-settings.signIn.note") },
     fn() {
       match step() {
-        Opening => @sf.t("common.opening")
+        @sfbase.SignInStep::Opening => @sf.t("common.opening")
         Verifying => @sf.t("android-settings.signIn.signingIn")
         InBrowser => @sf.t("android-settings.signIn.reopen")
-        Idle | @sfbase.SignInStep::Failed(_) => @sf.t("android-settings.signIn.google")
+        @sfbase.SignInStep::Idle | @sfbase.SignInStep::Failed(_) => @sf.t("android-settings.signIn.google")
       }
     },
     fn() { @sf.t("android-settings.signIn.many") },
     fn() { (src.sign_in)() },
-    busy=fn() { step() is (Opening | Verifying) },
+    busy=fn() { step() is (@sfbase.SignInStep::Opening | Verifying) },
     said=fn() {
       match step() {
         InBrowser => (@sf.t("android-settings.signIn.waiting"), false)
         @sfbase.SignInStep::Failed("") => (@sf.t("core-logic.accounts.login.failed"), true)
         @sfbase.SignInStep::Failed(why) => (why, true)
-        Idle | Opening | Verifying => ("", false)
+        @sfbase.SignInStep::Idle | @sfbase.SignInStep::Opening | Verifying => ("", false)
       }
     },
   )

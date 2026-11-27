@@ -368,11 +368,15 @@ fn attention_go(src : Source, w : Workspace, ws : String, i : Json, close : () -
 ///|
 /// The unread 待处理 lists (what 全部已读 reads), as it lists them now.
 fn attention_unread(src : Source, w : Workspace) -> Array[Json] {
-  attention_groups(src, w, true)
-  .iter()
-  .flat_map(fn(g) { g.2.iter() })
-  .filter(fn(i) { text(Some(i), "kind") == "done" && number(Some(i), "thread") > 0.0 && field(Some(i), "seq") is Some(Number(_, ..)) })
-  .collect()
+  let out : Array[Json] = []
+  for g in attention_groups(src, w, true) {
+    for i in g.2 {
+      if text(Some(i), "kind") == "done" && number(Some(i), "thread") > 0.0 && field(Some(i), "seq") is Some(Number(_, ..)) {
+        out.push(i)
+      }
+    }
+  }
+  out
 }
 
 ///|
@@ -402,7 +406,13 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
     let gs = attention_groups(src, w, true)
     let tr = if railed { bell_trouble(src, w) } else { "" }
     let has_jobs = railed && open_jobs_any(src, w)
-    let sev = gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
+    let mut sev = gs.length() > 1
+    for i in 0..<gs.length() {
+      if gs[i].0 != w.id {
+        sev = true
+        break
+      }
+    }
     let keys : Array[AttentionBlock] = []
     let names : Map[String, String] = Map([])
     let by_key : Map[(String, String), Json] = Map([])

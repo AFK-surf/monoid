@@ -34,14 +34,36 @@ fn ntab_picks(chat : String) -> Array[Dragged] {
 ///|
 /// Whether `d` is picked for chat `chat`'s message.
 fn ntab_is_picked(chat : String, d : Dragged) -> Bool {
-  ntab_picks(chat).iter().any(fn(x) { x.station == d.station && x.abs == d.abs })
+  ntab_has(ntab_picks(chat), d)
+}
+
+///|
+/// Whether `picks` holds `d` (the same file of the same station).
+fn ntab_has(picks : Array[Dragged], d : Dragged) -> Bool {
+  for i in 0..<picks.length() {
+    if picks[i].station == d.station && picks[i].abs == d.abs {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Station `station` among `stations`, the first.
+fn ftab_station_in(stations : Array[DvStation], station : String) -> DvStation? {
+  for i in 0..<stations.length() {
+    if stations[i].station == station {
+      return Some(stations[i])
+    }
+  }
+  None
 }
 
 ///|
 /// `d` picked for chat `chat`'s message, or no longer (a press's).
 fn ntab_pick(chat : String, d : Dragged) -> Unit {
   let now = @signals.untracked(fn() { ntab_picks(chat) })
-  if now.iter().any(fn(x) { x.station == d.station && x.abs == d.abs }) {
+  if ntab_has(now, d) {
     ntab_picked.set((chat, now.filter(fn(x) { !(x.station == d.station && x.abs == d.abs) })))
   } else {
     ntab_picked.set((chat, [..now, d]))
@@ -100,7 +122,7 @@ pub fn files_tab_node(
     dv_stations(src, ws).0.unwrap_or([]).filter(fn(s) { s.drive && (!only_station || s.station == station) })
   }
   let start = fn() -> DriveAt? {
-    match stations().iter().find_first(fn(s) { s.station == station }) {
+    match ftab_station_in(stations(), station) {
       Some(s) if s.anywhere && s.home != "" => Some({ station, root: Some(s.home), path: "" })
       Some(s) if s.roots.length() == 1 => Some({ station, root: Some(s.roots[0].path), path: "" })
       _ => None
@@ -113,7 +135,7 @@ pub fn files_tab_node(
       None => start()
     }
     match at {
-      Some(a) if a.root is Some(_) && stations().iter().any(fn(s) { s.station == a.station }) => Some(a)
+      Some(a) if a.root is Some(_) && ftab_station_in(stations(), a.station) is Some(_) => Some(a)
       _ => None
     }
   }
@@ -126,7 +148,7 @@ pub fn files_tab_node(
         None => ftab_places_node(b, src, ws, scope, stations)
         Some(at) => {
           let st = fn() {
-            stations().iter().find_first(fn(s) { s.station == at.station }).unwrap_or(@sfbase.dv_station({ "station": Json::string(at.station) }))
+            ftab_station_in(stations(), at.station).unwrap_or(@sfbase.dv_station({ "station": Json::string(at.station) }))
           }
           ftab_folder_node(b, src, ws, chat, scope, at, st, tips)
         }
@@ -193,10 +215,10 @@ fn ftab_place_lines(src : Source, ws : String, stations : Array[DvStation]) -> A
       out.push({ ..r, piece: @sf.card_piece_of(i, rows.length()) })
     }
   }
-  let favs = @sfpages.favorites(src, ws).filter(fn(f) { stations.iter().any(fn(s) { s.station == f.station }) })
+  let favs = @sfpages.favorites(src, ws).filter(fn(f) { ftab_station_in(stations, f.station) is Some(_) })
   if favs.length() > 0 {
     let rows = favs.map(fn(f) -> TabPlace {
-      let name = stations.iter().find_first(fn(s) { s.station == f.station }).map(fn(s) { s.name }).unwrap_or("")
+      let name = ftab_station_in(stations, f.station).map(fn(s) { s.name }).unwrap_or("")
       {
         key: "f|" + f.station + "|" + f.root + "|" + f.path,
         head: false,
@@ -373,9 +395,12 @@ fn ftab_folder_node(
     if st.anywhere {
       ftab_trail(here, st.home)
     } else {
-      let first = match st.roots.iter().find_first(fn(r) { r.path == root }) {
-        Some(r) => r.name
-        None => dv_name(root)
+      let mut first = dv_name(root)
+      for i in 0..<st.roots.length() {
+        if st.roots[i].path == root {
+          first = st.roots[i].name
+          break
+        }
       }
       let out = [(first, root)]
       let mut so_far = ""
@@ -636,9 +661,19 @@ fn ftab_folder_node(
       let picked = ntab_picks(chat).filter(fn(d) { d.station == at.station && !d.dir && dv_parent(d.path) == at.path })
       match picked.last() {
         Some(d) =>
-          match @sfbase.dv_entries(src, at.station, root, at.path).unwrap_or([]).iter().find_first(fn(e) { e.name == d.name }) {
-            Some(e) => One(at, e)
-            None => Nothing
+          {
+            let entries = @sfbase.dv_entries(src, at.station, root, at.path).unwrap_or([])
+            let mut found = None
+            for i in 0..<entries.length() {
+              if entries[i].name == d.name {
+                found = Some(entries[i])
+                break
+              }
+            }
+            match found {
+              Some(e) => One(at, e)
+              None => Nothing
+            }
           }
         None => Nothing
       }

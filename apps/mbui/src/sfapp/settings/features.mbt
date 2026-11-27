@@ -60,7 +60,14 @@ pub fn experimental_on(core : Core, id : String) -> Bool {
 /// channel decides, as its overview's `features` says.
 pub fn station_feature(s : Json?, id : String) -> Bool {
   match field(field(s, "overview"), "features") {
-    Some(Array(ids)) => ids.iter().any(fn(x) { x is String(i) && i == id })
+    Some(Array(ids)) => {
+      for x in ids {
+        if x is String(i) && i == id {
+          return true
+        }
+      }
+      false
+    }
     _ => false
   }
 }

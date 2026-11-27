@@ -369,8 +369,10 @@ pub fn fixture_downloads_call(f : Fixture, name : String, params : Json) -> Resu
         state: "going",
         wanted: true,
       }
-      if fix_keeping.iter().any(fn(was) { fix_keeping_id(was) == fix_keeping_id(k) }) {
-        return Some(Ok({}))
+      for was in fix_keeping {
+        if fix_keeping_id(was) == fix_keeping_id(k) {
+          return Some(Ok({}))
+        }
       }
       fix_keeping.insert(0, k)
       for i in 1..=20 {
@@ -387,7 +389,15 @@ pub fn fixture_downloads_call(f : Fixture, name : String, params : Json) -> Resu
     "fill.start" => {
       // (given way, or after the others: from now on one asked to load, coming first)
       let id = text(p, "id")
-      match fix_keeping.search_by(fn(k) { fix_keeping_id(k) == id && !k.wanted && (k.state == "queued" || k.state == "yielding") }) {
+      let mut given_way = None
+      for i in 0..<fix_keeping.length() {
+        let k = fix_keeping[i]
+        if fix_keeping_id(k) == id && !k.wanted && (k.state == "queued" || k.state == "yielding") {
+          given_way = Some(i)
+          break
+        }
+      }
+      match given_way {
         Some(at) => {
           let k = fix_keeping.remove(at)
           fix_keeping.insert(0, { ..k, state: "going", wanted: true })

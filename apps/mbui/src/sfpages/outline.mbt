@@ -104,9 +104,13 @@ pub fn outline_current(said : Array[Double], top : Double, at_end : Bool) -> Dou
 /// one last gone to while it shows (put under the bar, what is over it under the bar too), else the first in view.
 fn reader_top(rd : @sfbase.Reading, v : ChatView, top : Double) -> Double {
   if rd.flash != "" && top >= 0.0 {
-    match v.messages.iter().find_first(fn(m) { m.ts == rd.flash }) {
-      Some(m) if m.seq >= top && (rd.bottom_seq < 0.0 || m.seq <= rd.bottom_seq) => return m.seq
-      _ => ()
+    for m in v.messages {
+      if m.ts == rd.flash {
+        if m.seq >= top && (rd.bottom_seq < 0.0 || m.seq <= rd.bottom_seq) {
+          return m.seq
+        }
+        break
+      }
     }
   }
   top
@@ -452,7 +456,14 @@ fn outline_body(
     let to = if from + outline_chunk < seqs.length() { from + outline_chunk } else { seqs.length() }
     let chunk = seqs[from:to].to_owned()
     let held = at.held.untracked()
-    guard chunk.iter().any(fn(q) { !held.contains(q) && !at.absent.contains(q) }) else { return }
+    let mut wanted = false
+    for q in chunk {
+      if !held.contains(q) && !at.absent.contains(q) {
+        wanted = true
+        break
+      }
+    }
+    guard wanted else { return }
     at.asking[i] = true
     let asked = params.copy()
     asked["seqs"] = Json::array(chunk.map(fn(q) { Json::number(q) }))

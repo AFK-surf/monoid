@@ -258,7 +258,7 @@ pub fn is_wide(c : @ui.Ctx) -> Bool {
 pub fn wide_at(w : Double) -> Bool {
   // (or where the system lays out its tabs in every pose, the cards across on each screen: an iPhone Duo's outer one too,
   // rail_native.mbt)
-  !(@sf.layout(w) is Small) || @sf.native_able()
+  !(@sf.layout(w) is @sf.Layout::Small) || @sf.native_able()
 }
 
 ///|
@@ -687,7 +687,7 @@ let side_over_rail : Double = 3.0
 /// workspace's, a page under it), else the stack's top popped, but for the new chat beside the chats alone: the page
 /// there is never empty (land: popped, a new chat would come again), so nothing to go back to.
 pub fn wide_back(src : Source) -> (() -> Unit)? {
-  let over_all = app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))
+  let over_all = app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_))
   if wide.tape.get() && !over_all {
     match tape_back_to() {
       Some(p) => Some(fn() { wide.tape_ask.set(Some(p)) })
@@ -723,7 +723,7 @@ pub fn wide_back(src : Source) -> (() -> Unit)? {
 /// falling back to the app's forward history when no panel lies ahead; off the tape, the next entry in the app's history
 /// (sfbase's app_history.mbt). None while a whole-window page is on top.
 pub fn wide_forward(src : Source) -> (() -> Unit)? {
-  let over_all = app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))
+  let over_all = app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_))
   if over_all {
     return None
   }
@@ -888,7 +888,7 @@ fn tape_pull_clamp(at : (Double, Double, Double), p : TapePane, drag : Double) -
 /// taken off, as a phone's are: the page's stack, Ctx::nav_flat's; what is over the whole window put away, the
 /// sidebar's own: wide_back).
 fn tape_back_to() -> TapePane? {
-  if !wide.tape.get() || app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_)) {
+  if !wide.tape.get() || app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_)) {
     return None
   }
   match wide.tape_at.get() {
@@ -902,7 +902,7 @@ fn tape_back_to() -> TapePane? {
 /// Which panel forward brings over on the tape: the page from the sidebar, the side panel from the page when one is
 /// open; None where forward is not the tape's (over-all page, Panel in use, or Page without a side panel).
 fn tape_forward_to() -> TapePane? {
-  if !wide.tape.get() || app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_)) {
+  if !wide.tape.get() || app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_)) {
     return None
   }
   match wide.tape_at.get() {
@@ -920,7 +920,7 @@ fn tape_forward_to() -> TapePane? {
 fn page_back_pops() -> Bool {
   let pages = app.nav.pages()
   let n = pages.length()
-  app.nav.top_over() || (n >= 2 && !(pages[n - 2] is (Home | Settings | Place(_) | Files | Archived)))
+  app.nav.top_over() || (n >= 2 && !(pages[n - 2] is (@sfbase.Page::Home | Settings | @sfbase.Page::Place(_) | @sfbase.Page::Files | @sfbase.Page::Archived)))
 }
 
 ///|

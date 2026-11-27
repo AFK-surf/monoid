@@ -70,7 +70,13 @@ fn SharePick::any(self : SharePick) -> Bool {
 ///|
 /// How many stations are on the whitelist now (`own` counted where it is on it).
 fn SharePick::listed(self : SharePick) -> Int {
-  self.stations.iter().filter(share_on_whitelist).count()
+  let mut n = 0
+  for s in self.stations {
+    if share_on_whitelist(s) {
+      n += 1
+    }
+  }
+  n
 }
 
 ///|
@@ -366,7 +372,12 @@ fn share_station_id(address : String) -> String {
 /// What the batch share button says of the shareable accounts `rows`: 开启分享 where none is shared,
 /// 可用 station where all are, 分享与 station where some are.
 pub fn profiles_batch_label(rows : Array[Json]) -> String {
-  let shared = rows.iter().filter(fn(r) { flag(Some(r), "shared") }).count()
+  let mut shared = 0
+  for r in rows {
+    if flag(Some(r), "shared") {
+      shared += 1
+    }
+  }
   if shared == 0 {
     @sf.t("web-pages.profiles.batch.share")
   } else if shared == rows.length() {
@@ -460,10 +471,14 @@ pub fn pick_stations_many(
   }
   let own = if hosts.length() == 1 { hosts[0] } else { "" }
   let unshared = rows.filter(fn(r) { !flag(Some(r), "shared") })
-  let claude = unshared.iter().any(fn(r) {
+  let mut claude = false
+  for r in unshared {
     let p = field(Some(r), "profile")
-    text(p, "runtime") == "claude" && text(field(p, "access"), "kind") == "subscription"
-  })
+    if text(p, "runtime") == "claude" && text(field(p, "access"), "kind") == "subscription" {
+      claude = true
+      break
+    }
+  }
   let mut auto_ok = true
   let mut rows_all_auto = true
   let mut rows_all_every = true
@@ -646,7 +661,13 @@ pub fn move_profiles_many(
             let target_addr = text(xv, "station")
             let target_id = text(xv, "id")
             let target_name = text(xv, "name")
-            let all_here = movable.iter().all(fn(r) { text(Some(r), "station") == target_addr })
+            let mut all_here = true
+            for r in movable {
+              if text(Some(r), "station") != target_addr {
+                all_here = false
+                break
+              }
+            }
             let can_pick = online && !all_here
             @sf.link_row_node(
               row,

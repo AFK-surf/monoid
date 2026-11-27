@@ -130,16 +130,20 @@ fn remote_tabs_save(src : Source, ws : String, tabs : Array[String], active : St
 pub fn remote_tab_open(src : Source, ws : String, tab : RemoteTab) -> String {
   let (tabs, _) = @signals.untracked(fn() { remote_tabs_raw(src, ws) })
   // Match existing screen or non-"new" terminal by station + id regardless of initial cwd/chat metadata
-  let existing = match tab {
-    Screen(at) =>
-      tabs.iter().find_first(fn(k) {
-        remote_tab_parse(k) is Some(Screen(x)) && x.station == at.station && x.screen == at.screen
-      })
-    Terminal(at) if !terminal_is_new(at.terminal) =>
-      tabs.iter().find_first(fn(k) {
+  let same = fn(k : String) -> Bool {
+    match tab {
+      Screen(at) => remote_tab_parse(k) is Some(Screen(x)) && x.station == at.station && x.screen == at.screen
+      Terminal(at) if !terminal_is_new(at.terminal) =>
         remote_tab_parse(k) is Some(Terminal(x)) && x.station == at.station && x.terminal == at.terminal
-      })
-    _ => None
+      _ => false
+    }
+  }
+  let mut existing : String? = None
+  for i in 0..<tabs.length() {
+    if same(tabs[i]) {
+      existing = Some(tabs[i])
+      break
+    }
   }
   match existing {
     Some(k) => {

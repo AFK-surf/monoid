@@ -27,7 +27,7 @@ fn home_node(
       None => 0.0
     }
   }
-  let watched = fn() { app.nav.top() is Home }
+  let watched = fn() { app.nav.top() is @sfbase.Page::Home }
   let frame : @sfpages.ListsNodeFrame = {
     // under the top bar, the status bar's height and its own (plus the active filter bar when shown); over the bottom bar
     top: fn() { status_top_now(v.window_w()) + bar_h + filter_bar_h() + 8.0 },

@@ -224,14 +224,14 @@ fn rail_gear(src : Source) -> Unit {
     wide.peeking.set(!wide.peeking.get())
   } else if lit == "settings" {
     let dest = match app.nav.pages().get(0) {
-      Some(Home) =>
+      Some(@sfbase.Page::Home) =>
         match @sfbase.workspace_in_view(src).0 {
           Some(w) if @sfbase.board_on_of(src, w.id) => "board"
           _ => "chats"
         }
-      Some(Files | Drive(_)) => "files"
-      Some(Archived) => "archive"
-      Some(Place(p)) => p
+      Some(@sfbase.Page::Files | Drive(_)) => "files"
+      Some(@sfbase.Page::Archived) => "archive"
+      Some(@sfbase.Page::Place(p)) => p
       _ => "chats"
     }
     @sfbase.history_act(fn() {
@@ -246,7 +246,7 @@ fn rail_gear(src : Source) -> Unit {
         None => ()
       }
     })
-    let target_serial = if app.nav.top() is Home && dest != "board" { None } else { Some(app.nav.top_stay().0) }
+    let target_serial = if app.nav.top() is @sfbase.Page::Home && dest != "board" { None } else { Some(app.nav.top_stay().0) }
     @sfbase.bar_placed_wide("settings", dest, target_serial?)
   } else {
     let from = if app.nav.pages().contains(Archived) { "archive" } else { lit }
@@ -448,7 +448,7 @@ fn rail_place_node(
             wide.rail_drag.set(None)
             guard ws() is Some(w) else { return }
             let places = rail_items(src, w.id)
-            let from = places.search_by(fn(x) { x == place }).unwrap_or(0)
+            let from = places.search(place).unwrap_or(0)
             let to = dmax(0.0, dmin((places.length() - 1).to_double(), from.to_double() + (dy / rail_pitch).round())).to_int()
             if to != from {
               let next = places.filter(fn(x) { x != place })

@@ -59,7 +59,7 @@ fn status_top_now(width : Double) -> Double {
   // (whether the buttons are in its top row read first, as the frame began, followed: a node's binding that reads
   // this (the viewers' room, viewer_host_of) is worked out again as it changes, whatever the width said then)
   let inset = @ui.window_inset_now()
-  if top == 0.0 && inset && @sf.layout(width) is Small {
+  if top == 0.0 && inset && @sf.layout(width) is @sf.Layout::Small {
     window_band_now()
   } else {
     top

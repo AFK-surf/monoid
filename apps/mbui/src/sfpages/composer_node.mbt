@@ -3476,10 +3476,10 @@ fn take_in_node(
     // (told once, before the first of what fills its draft is taken in: `before`)
     let mut told = false
     for g in @sfbase.draft_taken(w.key) {
-      if off_files && (g is Dropped(_) || (g is Picked(list) && !list.is_empty())) {
+      if off_files && (g is @sfbase.Given::Dropped(_) || (g is Picked(list) && !list.is_empty())) {
         refused = true
       }
-      let fills = !off_files && (g is Picked(_) || g is Shared(_) || g is Quoted(_) || g is Marked(_) || g is Dropped(_))
+      let fills = !off_files && (g is Picked(_) || g is Shared(_) || g is Quoted(_) || g is Marked(_) || g is @sfbase.Given::Dropped(_))
       if fills && !told {
         told = true
         (before.val)()

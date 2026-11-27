@@ -115,7 +115,13 @@ pub fn relay_open(src : Source, station : String, thread : Double) -> Unit {
 ///|
 /// The connect of id `id` as read (its name, kind, picture).
 pub fn relay_connect(id : String) -> Json? {
-  relaying.connects.get().iter().find_first(fn(c) { text(Some(c), "id") == id })
+  let connects = relaying.connects.get()
+  for i in 0..<connects.length() {
+    if text(Some(connects[i]), "id") == id {
+      return Some(connects[i])
+    }
+  }
+  None
 }
 
 ///|

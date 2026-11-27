@@ -11,6 +11,17 @@
 // there), its name (the first folder's till one is typed), what people want of its chats.
 
 ///|
+/// Whether `dirs` holds the folder of key `k` (dir_key's).
+fn dirs_hold(dirs : Array[Json], k : String) -> Bool {
+  for x in dirs {
+    if dir_key(Some(x)) == k {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Whether the preset picked (`v`'s `preset`) is the person's own: none picked, or among their own (`presets`). One
 /// that is not is someone else's, picked from 其他成员的预设.
 fn preset_picked_own(v : Json?) -> Bool {
@@ -1375,7 +1386,7 @@ fn preset_fields(
     for k in all {
       if done.contains(k.id) {
         match @signals.untracked(fn() { clone_done(src, address, stations, k) }) {
-          Some(d) => if !dirs.iter().any(fn(x) { dir_key(Some(x)) == dir_key(Some(d)) }) { dirs.push(d) }
+          Some(d) => if !dirs_hold(dirs, dir_key(Some(d))) { dirs.push(d) }
           None => ()
         }
       }
@@ -1915,7 +1926,15 @@ fn preset_foot(
   @sf.foot_spacer_node(v)
   @sf.button_node(v, fn() { @sf.t("common.cancel") }, close, tone=Ghost) |> ignore
   let named = fn() { e.name.text().trim(chars=" \n").to_owned() }
-  let ready = fn() { named() != "" && !e.clones.get().iter().any(fn(k) { clone_failed(src, k) is None }) }
+  let ready = fn() {
+    guard named() != "" else { return false }
+    for k in e.clones.get() {
+      if clone_failed(src, k) is None {
+        return false
+      }
+    }
+    true
+  }
   @sf.button_node(
     v,
     fn() { if id == "" { @sf.t("web-main.preset.create") } else { @sf.t("common.save") } },
@@ -2239,7 +2258,7 @@ fn preset_add_keys(src : Source, address : String, stations : Array[Json], e : P
     let station = dir_station(one, address)
     let station_name = preset_station_name(station, text(one, "stationName"), stations)
     let (name, repo) = (text(one, "name"), text(one, "repo"))
-    if dirs.iter().any(fn(d) { dir_key(Some(d)) == k }) ||
+    if dirs_hold(dirs, k) ||
       (q != "" && !name.to_lower().contains(q) && !repo.to_lower().contains(q) && !text(one, "where").to_lower().contains(q) && !station_name.to_lower().contains(q)) {
       continue
     }
@@ -2370,7 +2389,7 @@ fn preset_browse(src : Source, address : String, stations : Array[Json], e : Pre
           "stationName": Json::string(preset_station_name(station, "", stations)),
         })
       }
-      if !e.dirs.untracked().iter().any(fn(x) { dir_key(Some(x)) == dir_key(Some(d)) }) {
+      if !dirs_hold(e.dirs.untracked(), dir_key(Some(d))) {
         e.dirs.set([..e.dirs.untracked(), d])
       }
       @sf.panel_back(to=e.depth) |> ignore
@@ -2406,7 +2425,7 @@ fn preset_clone_open(src : Source, address : String, stations : Array[Json], e :
               address,
               stations,
             )
-            if !e.dirs.untracked().iter().any(fn(x) { dir_key(Some(x)) == dir_key(Some(d)) }) {
+            if !dirs_hold(e.dirs.untracked(), dir_key(Some(d))) {
               e.dirs.set([..e.dirs.untracked(), d])
             }
           } else {

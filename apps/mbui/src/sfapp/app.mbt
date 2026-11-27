@@ -22,7 +22,7 @@ fn init {
   @sfbase.page_for_key.val = @sfdesk.tape_page_for_key
   // an agent's card's jobs (sfpages): the chat's services and jobs as the screen shows them
   @sfbase.chat_jobs_open.val = fn(src, r, w) {
-    if @sf.layout(w) is Small {
+    if @sf.layout(w) is @sf.Layout::Small {
       open_chat_jobs(src, r)
     } else {
       @sfdesk.open_jobs_pop()
@@ -361,13 +361,19 @@ fn pages_left(src : Source) -> Unit {
           }
           // (an entry never drawn: nothing told; what the window's source read of its chat, nothing following it, let
           // go of where no page of that chat is left on the stack)
-          None =>
-            if !app.nav
-              .pages()
-              .iter()
-              .any(fn(q) { q is Chat(x) && x.station == r.station && x.session == r.session }) {
+          None => {
+            let pages = app.nav.pages()
+            let mut shown = false
+            for i in 0..<pages.length() {
+              if pages[i] is Chat(x) && x.station == r.station && x.session == r.session {
+                shown = true
+                break
+              }
+            }
+            if !shown {
               @sfbase.chat_reads_forget_from(src, r)
             }
+          }
         }
       }
       DriveRead(at) => if !kept { reader_left(at) }
@@ -386,8 +392,18 @@ fn pages_left(src : Source) -> Unit {
       // the drive's folders read, watched for changes while shown: let go of once no page of the drive is left on
       // the stack (a folder entered over another, its columns reading those above it, keeps them)
       Files | Drive(_) =>
-        if !kept && !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
-          @sfbase.let_go(src, @sfbase.drive_scope)
+        if !kept {
+          let pages = app.nav.pages()
+          let mut shown = false
+          for i in 0..<pages.length() {
+            if pages[i] is (@sfbase.Page::Files | Drive(_) | DriveRead(_) | DrivePlay(_)) {
+              shown = true
+              break
+            }
+          }
+          if !shown {
+            @sfbase.let_go(src, @sfbase.drive_scope)
+          }
         }
       // (shown still in its chat's side panel, its 全屏 from there gone back to it: kept for the panel)
       Screen(at) =>
@@ -801,7 +817,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         fn(p) {
           let start_ws = @signals.untracked(fn() { pre_sub_ws.get() })
           let own = src.owned_by(p)
-          let narrow = @sf.layout(p.window_w()) is Small && !@sf.native_able()
+          let narrow = @sf.layout(p.window_w()) is @sf.Layout::Small && !@sf.native_able()
           p.reacts(
             fn() {
               own.topic("chats", @sfbase.chats_asked(start_ws, "all")).get() |> ignore
@@ -868,7 +884,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         } else if sh is Stacked {
           Band
         } else if sh is Taped {
-          if app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_)) {
+          if app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_)) {
             Bar
           } else {
             Tape
@@ -920,7 +936,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
               Some(now) => now.id
               None => ""
             }
-            let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
+            let wide = !(@sf.layout(v.window_w()) is @sf.Layout::Small) || @sf.native_able()
             (ws, app.nav.pages(), wide, @sfbase.history_acts_ended())
           },
           fn(said) {
@@ -932,7 +948,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         first_page_node(v, src)
         // what the page on top reads as it is first built, asked as it comes on top (sfbase's page_opens_node)
         @sfbase.page_opens_node(v, src, fn(w, p, ask) {
-          if @sf.layout(v.window_w()) is Small && !@sf.native_able() {
+          if @sf.layout(v.window_w()) is @sf.Layout::Small && !@sf.native_able() {
             page_opens_by(src, w, p, ask)
           } else {
             @sfdesk.pane_opens(src, w.id, p, ask)
@@ -947,7 +963,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
           let width = v.window_w()
           if width <= 0.0 {
             None
-          } else if @sf.layout(width) is Small && !@sf.native_able() {
+          } else if @sf.layout(width) is @sf.Layout::Small && !@sf.native_able() {
             Some(("narrow", home_opens))
           } else {
             // (a page open already, not Home: the pane opens on it, not on what it would land on)
@@ -1030,7 +1046,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   let wid = @ui.current_window_id()
   v.reacts(fn() { shown.get() }, fn(p) {
     match p {
-      Some((Screen(_) | Terminal(_)) as p) if wid > 0 => @ui.set_window_title_of(wid, @sfbase.window_title(p))
+      Some((@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_)) as p) if wid > 0 => @ui.set_window_title_of(wid, @sfbase.window_title(p))
       _ => ()
     }
   })
@@ -1040,13 +1056,13 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
       @sfpages.screen_revokes_now() |> ignore
       @sfbase.workspace_owners_version.get() |> ignore
       match shown.get() {
-        Some(Screen(at)) =>
+        Some(@sfbase.Page::Screen(at)) =>
           match @sfbase.window_here_owner_state(wid, at.station, screen=at.screen) {
             Matched => Some((@sfbase.Page::Screen(at), 0))
             Waiting => Some((@sfbase.Page::Screen(at), 1))
             Denied => Some((@sfbase.Page::Screen(at), 2))
           }
-        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), 0))
+        Some(@sfbase.Page::Terminal(at)) => Some((@sfbase.Page::Terminal(at), 0))
         Some(SideTab(f)) => Some((@sfbase.Page::SideTab(f), 0))
         _ => None
       }
@@ -1054,7 +1070,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((Screen(at), 0)) => {
+        Some((@sfbase.Page::Screen(at), 0)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           // (its frame the window's top, no band over it at any width: the band is a phone's laid out Small, never a
           // window of its own's)
@@ -1066,15 +1082,15 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
             on_close=fn() { lone_closed(q) },
           )
         }
-        Some((Screen(_), 1)) => {
+        Some((@sfbase.Page::Screen(_), 1)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
           @sf.waiting_node(q, fn(_) {  })
         }
-        Some((Screen(_), _)) => {
+        Some((@sfbase.Page::Screen(_), _)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
           q.words(By(fn() { @sf.t("android-misc.screen.denied") })).ink(By(fn() { @sf.theme().p.muted })) |> ignore
         }
-        Some((Terminal(at), _)) =>
+        Some((@sfbase.Page::Terminal(at), _)) =>
           @sfpages.terminal_pane_node(
             q,
             src,
@@ -1322,7 +1338,7 @@ let place_switch : @motion.Way = @motion.Way::new(1.0)
 /// How far over what the system's bars leave of the window's foot the toast is, for the window's tree's (toast's,
 /// followed): the wide frame's 24; the narrow one's over the bar's room.
 fn toast_bottom_now(v : @view.View) -> Double {
-  let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
+  let wide = !(@sf.layout(v.window_w()) is @sf.Layout::Small) || @sf.native_able()
   // (over the system's bars at the window's foot: the toaster keeps clear of them itself, View::clear)
   if wide {
     @sf.toast_bottom
@@ -1579,8 +1595,19 @@ fn first_page_ready_by(
 /// what it shows answered as a frame built it (first_built_ready) and each picture the device holds in it that build
 /// found not decoded decoded since (first_held: the host's word on each, image_decoded's moment).
 fn first_page_done() -> Bool {
-  first_expired.get() ||
-  (first_built_ready.get() && first_held.get().iter().all(fn(k) { @ui.image_any_ready(k) }))
+  if first_expired.get() {
+    return true
+  }
+  if !first_built_ready.get() {
+    return false
+  }
+  let held = first_held.get()
+  for i in 0..<held.length() {
+    if !@ui.image_any_ready(held[i]) {
+      return false
+    }
+  }
+  true
 }
 
 ///|
@@ -1696,7 +1723,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       let wide = match first_wide.val {
         Some(wide) => wide
         None => {
-          let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
+          let wide = !(@sf.layout(v.window_w()) is @sf.Layout::Small) || @sf.native_able()
           first_wide.val = Some(wide)
           wide
         }
@@ -1739,7 +1766,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       // (once gone, gone: back to the chats after is no first page shown again)
       if wide &&
         (match first_top.val { Some((p, _)) => p != app.nav.top(); None => false }) &&
-        !(app.nav.top() is (Home | Chat(_) | NewChat)) {
+        !(app.nav.top() is (@sfbase.Page::Home | Chat(_) | NewChat)) {
         first_left.val = true
       }
       let left = first_left.val

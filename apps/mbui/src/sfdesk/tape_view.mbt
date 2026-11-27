@@ -137,7 +137,7 @@ fn tape_off() -> Unit {
 pub fn tape_holds(src : Source, w : Workspace, width : Double) -> Bool {
   let gated = lit_place() != "settings" && @settings.lock_waiting(settings_core(src, w), w.id)
   let bare = place_bare(lit_place())
-  !gated && !bare && (@sf.layout(width) is Medium || @sf.native_on() || @sf.native_able())
+  !gated && !bare && (@sf.layout(width) is @sf.Layout::Medium || @sf.native_on() || @sf.native_able())
 }
 
 ///|
@@ -612,7 +612,7 @@ fn tape_gesture(p : TapePane, step : @ui.BackStep, sign : Double) -> Unit {
       }
   }
   match step {
-    Began(x, t) =>
+    @view.BackStep::Began(x, t) =>
       if wide.tape_pull.get() is None {
         wide.tape_pull.set(Some(p))
         wide.tape_drag.set(0.0)
@@ -621,7 +621,7 @@ fn tape_gesture(p : TapePane, step : @ui.BackStep, sign : Double) -> Unit {
         wide.tape_back_last = (x, t)
         wide.tape_back_v = 0.0
       }
-    Moved(x, t) | LetGo(x, t) =>
+    @view.BackStep::Moved(x, t) | @view.BackStep::LetGo(x, t) =>
       if wide.tape_backing {
         let (x1, t1) = wide.tape_back_last
         // (let go where it last moved to, as a system's back always says it, later: the speed it last moved at, none
@@ -643,7 +643,7 @@ fn tape_gesture(p : TapePane, step : @ui.BackStep, sign : Double) -> Unit {
           }
         }
       }
-    CalledOff =>
+    @view.BackStep::CalledOff =>
       if wide.tape_backing {
         tape_moves_from(now, fn() {
           wide.tape_pull.set(None)
@@ -651,7 +651,7 @@ fn tape_gesture(p : TapePane, step : @ui.BackStep, sign : Double) -> Unit {
           wide.tape_backing = false
         })
       }
-    Back =>
+    @view.BackStep::Back =>
       if wide.tape_backing {
         match wide.tape_pull.get() {
           Some(q) => tape_to(q, now)
@@ -720,16 +720,16 @@ fn wide_forward_what(src : Source) -> WideBack {
 /// whatever changed meanwhile.
 fn wide_back_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @ui.BackStep) -> Unit {
   let what = match (step, held.val) {
-    (Began(_, _), _) => {
+    (@view.BackStep::Began(_, _), _) => {
       let w = wide_back_what(src)
       held.val = Some(w)
       w
     }
     (_, Some(w)) => w
-    (Back, None) => wide_back_what(src)
+    (@view.BackStep::Back, None) => wide_back_what(src)
     _ => return
   }
-  if step is (LetGo(_, _) | CalledOff | Back) {
+  if step is (@view.BackStep::LetGo(_, _) | @view.BackStep::CalledOff | @view.BackStep::Back) {
     held.val = None
   }
   match what {
@@ -744,16 +744,16 @@ fn wide_back_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @
 /// begins, the whole gesture's (`held`, while it goes); each step to that alone, whatever changed meanwhile.
 fn wide_forward_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @ui.BackStep) -> Unit {
   let what = match (step, held.val) {
-    (Began(_, _), _) => {
+    (@view.BackStep::Began(_, _), _) => {
       let w = wide_forward_what(src)
       held.val = Some(w)
       w
     }
     (_, Some(w)) => w
-    (Back, None) => wide_forward_what(src)
+    (@view.BackStep::Back, None) => wide_forward_what(src)
     _ => return
   }
-  if step is (LetGo(_, _) | CalledOff | Back) {
+  if step is (@view.BackStep::LetGo(_, _) | @view.BackStep::CalledOff | @view.BackStep::Back) {
     held.val = None
   }
   match what {
@@ -852,7 +852,7 @@ fn tape_side_hidden() -> Bool {
 fn tape_top() -> Page {
   let pages = app.nav.pages()
   for i = pages.length() - 1; i >= 0; i = i - 1 {
-    if !(pages[i] is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) {
+    if !(pages[i] is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_))) {
       return pages[i]
     }
   }
@@ -873,7 +873,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     let first = board_ws.val == ""
     board_ws.val = ws
     guard ws != "" && @signals.untracked(fn() { @sfbase.board_on_of(src, ws) }) else { return }
-    guard app.nav.depth() == 1 && app.nav.top() is Home else { return }
+    guard app.nav.depth() == 1 && app.nav.top() is @sfbase.Page::Home else { return }
     if first {
       wide.tape_at.set(Page)
     } else if wide.tape_at.untracked() != Page {
@@ -1313,7 +1313,7 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
               },
               drag=fn(d) {
                 tape_pulled(p, d, down.val.unwrap_or((d.wx, d.at)))
-                if d.kind is (Up | Off) {
+                if d.kind is (@view.DragIs::Up | @view.DragIs::Off) {
                   down.val = None
                 }
               },
@@ -1397,7 +1397,7 @@ fn tape_swiped(p : TapePane, dx : Double, dy : Double) -> TapePane? {
   guard !@sf.pointer_rests() &&
     wide.tape_at.get() == p &&
     !tape_covered(p) &&
-    !(app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) &&
+    !(app.nav.top() is (@sfbase.Page::Screen(_) | @sfbase.Page::Terminal(_) | DriveRead(_) | DrivePlay(_))) &&
     dx.abs() > @ui.press_slop &&
     dx.abs() > dy.abs() * tape_swipe_steep else {
     return None
@@ -1425,7 +1425,7 @@ fn tape_swipes(n : @view.View, p : TapePane) -> Unit {
     match to.val {
       Some(q) => {
         tape_pulled(q, d, (d.wx, d.at))
-        if d.kind is (Up | Off) {
+        if d.kind is (@view.DragIs::Up | @view.DragIs::Off) {
           to.val = None
         }
       }
@@ -1729,7 +1729,7 @@ priv struct TapeEdgesOn {
 /// is beside the gap (@sf.edge_reach: the drags across that land there its own).
 fn tape_edge_reach(edge : @ui.Side) -> (Double, Double) {
   let (into_in, into_page) = @sf.edge_reach(bar_gap_now())
-  if edge is Left {
+  if edge is @view.Side::Left {
     (into_page, into_in)
   } else {
     (into_in, into_page)

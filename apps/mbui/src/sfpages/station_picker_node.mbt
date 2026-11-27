@@ -111,7 +111,7 @@ fn station_pick_list(src : Source, stations : Array[Json]) -> StationPickList {
     }
     match sort.get() {
       Some(ts) => {
-        let asc = ts.dir is Asc
+        let asc = ts.dir is @sf.SortDir::Asc
         let b = busy.get()
         matched.sort_by(fn(a, c) { sp_compare_entries(a, c, ts.col, asc, b) })
       }

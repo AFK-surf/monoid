@@ -155,7 +155,7 @@ fn side_bar_node(
     let bar_linked = fn() { if on_tape { None } else { @sf.bar_keys_link() } }
     let expandable_page = fn() {
       match station_tab_page(r, front()) {
-        Some(Screen(_)) if @sf.soft_keyboard() => None
+        Some(@sfbase.Page::Screen(_)) if @sf.soft_keyboard() => None
         p => p
       }
     }

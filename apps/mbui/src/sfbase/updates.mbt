@@ -972,8 +972,8 @@ fn update_dialog_foot(v : @view.View, src : Source, close : () -> Unit) -> Unit 
       },
       fn() {
         match @signals.untracked(now) {
-          Latest => close()
-          CouldNot(_) => update_ask_now(src)
+          UpdateNow::Latest => close()
+          UpdateNow::CouldNot(_) => update_ask_now(src)
           _ => update_go(src)
         }
       },

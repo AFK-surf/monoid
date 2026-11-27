@@ -477,7 +477,14 @@ fn share_sheet_node(v : @view.View, src : Source) -> Unit {
       Some(Array(_)) => {
         let (all, answered, _) = workspaces_of(src.topic("workspaces", {}).get().value)
         let kept = text(src.topic("prefs", {}).get().value, "workspace")
-        match all.iter().find_first(fn(w) { w.id == kept }) {
+        let mut found = None
+        for i in 0..<all.length() {
+          if all[i].id == kept {
+            found = Some(all[i])
+            break
+          }
+        }
+        match found {
           Some(w) => Some(w.id)
           None if all.length() > 0 && (kept == "" || answered) => Some(all[0].id)
           _ => None
@@ -611,9 +618,12 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
       // 新建对话: on the station new chats start on, which its page lets be changed as any new chat's does
       let stations = items(v, "stations")
       let new_on = text(v, "newOn")
-      let on = match stations.iter().find_first(fn(s) { text(Some(s), "station") == new_on }) {
-        Some(s) => Some(s)
-        None => stations.get(0)
+      let mut on = stations.get(0)
+      for i in 0..<stations.length() {
+        if text(Some(stations[i]), "station") == new_on {
+          on = Some(stations[i])
+          break
+        }
       }
       match on {
         Some(s) if !searching() => out.push(ShareNew(text(Some(s), "station")))

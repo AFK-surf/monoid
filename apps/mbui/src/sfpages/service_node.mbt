@@ -92,7 +92,7 @@ pub fn service_view_node(
       fn() {
         p.said()
         let drawn = match p.marks.shot {
-          Some({ wait: Draw(job), .. }) => job.ready()
+          Some({ wait: @sfbase.ShotWait::Draw(job), .. }) => job.ready()
           _ => false
         }
         (site.grabs_told(), drawn)

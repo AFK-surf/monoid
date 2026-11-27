@@ -193,10 +193,12 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
   let choices = others.map(fn(x) { (text(Some(x), "id"), text(Some(x), "name")) })
   let to : @signals.Signal[String] = @signals.signal(if choices.length() == 1 { choices[0].0 } else { "" }, same=fn(a, b) { a == b })
   let to_name = fn() {
-    match choices.iter().find_first(fn(c) { c.0 == to.get() }) {
-      Some(c) => c.1
-      None => ""
+    for c in choices {
+      if c.0 == to.get() {
+        return c.1
+      }
     }
+    ""
   }
   // (which they are: three at most, the rest said by the count at the row's end)
   let names = fn(key : String) {

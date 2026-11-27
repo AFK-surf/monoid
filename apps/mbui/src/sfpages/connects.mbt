@@ -104,7 +104,12 @@ pub fn connects_node(
   let wait = fn() { field(view(), "wait") }
   let loading = fn() { wait() is None || flag(wait(), "reading") }
   let station_of = fn(address : String) -> Json? {
-    stations().iter().find_first(fn(s) { text(Some(s), "station") == address })
+    for s in stations() {
+      if text(Some(s), "station") == address {
+        return Some(s)
+      }
+    }
+    None
   }
   // the Slack apps the viewer made that no connect has taken yet, each on its station (the connects' `slackApps`: every
   // station's, said with it), with that station's row (its name and whether it is up; till that is read, its name)

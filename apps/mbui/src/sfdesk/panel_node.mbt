@@ -755,7 +755,7 @@ fn side_screen_page_node(
     |> ignore
     // (the page on top over all of it showing the same screen, its 全屏 from here: the one viewer of it is that page's,
     // this one made again as it goes)
-    s.show(at_once=true, fn() { !(app.nav.top() is Screen(top) && top.station == at.station && top.screen == at.screen) }, fn(b) {
+    s.show(at_once=true, fn() { !(app.nav.top() is @sfbase.Page::Screen(top) && top.station == at.station && top.screen == at.screen) }, fn(b) {
       b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       b.pick(at_once=true, fn() {
         let (ww, wh) = b.window()

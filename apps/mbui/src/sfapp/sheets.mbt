@@ -436,7 +436,13 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
         k.show(fn() { holds.get().files }, fn(m) {
           info_more_row_node(m, "folder", fn() { tr("web-pages.chat.files") }, fn() { "" }, fn() {
             let here = @signals.untracked(fn() {
-              dv_stations(src, @sfbase.workspace_of(r.station)).0.unwrap_or([]).iter().any(fn(s) { s.station == r.station && s.drive })
+              let sts = dv_stations(src, @sfbase.workspace_of(r.station)).0.unwrap_or([])
+              for i in 0..<sts.length() {
+                if sts[i].station == r.station && sts[i].drive {
+                  return true
+                }
+              }
+              false
             })
             close()
             if here {
@@ -884,7 +890,15 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       card_tiles_node(t, card, 0.0, entry)
       t.box(fn(g) { g.height(Is(Some(@sf.panel_card_in))) |> ignore }) |> ignore
     })
-    let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
+    let station = fn() {
+      let marks = station_marks(src, @sfbase.workspace_of(r.station))
+      for i in 0..<marks.length() {
+        if marks[i].address == r.station {
+          return Some(marks[i])
+        }
+      }
+      None
+    }
     let chat_cv = fn() { view_of_chat(src, r).0 }
     let offline_note = fn() {
       match chat_cv() {
@@ -1444,7 +1458,15 @@ fn open_station_agents(src : Source, r : ChatRef, station_addr : String) -> Unit
 fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String, close : () -> Unit) -> Unit {
   let chat = fn() { @sfbase.chat_head_json(src, r) }
   let agents = fn() { items(chat(), "agents") }
-  let station = fn() { station_marks(src, @sfbase.workspace_of(addr)).iter().find_first(fn(st) { st.address == addr }) }
+  let station = fn() {
+    let marks = station_marks(src, @sfbase.workspace_of(addr))
+    for i in 0..<marks.length() {
+      if marks[i].address == addr {
+        return Some(marks[i])
+      }
+    }
+    None
+  }
   let offline_note = fn() {
     match @sfbase.chat_view_now(src, r) {
       Some(cv) => cv.offline_note.unwrap_or("")
@@ -1688,15 +1710,25 @@ fn jobs_row_node(
     JobsOne(service, id) => {
       let group = fn() { items(view(), "jobs").filter(fn(j) { flag(Some(j), "service") == service }) }
       // (its job and its piece told only as they change: what reads them not run again as another job does)
-      let job_now = @signals.computed(fn(_) { group().iter().find_first(fn(j) { text(Some(j), "id") == id }) })
+      let job_now = @signals.computed(fn(_) {
+        let g = group()
+        for i in 0..<g.length() {
+          if text(Some(g[i]), "id") == id {
+            return Some(g[i])
+          }
+        }
+        None
+      })
       let job = fn() { job_now.get() }
       // (each a piece of its group's card: the card's top, its foot, one between, or the whole of it)
       let piece_now = @signals.computed(fn(_) {
         let g = group()
-        match g.search_by(fn(j) { text(Some(j), "id") == id }) {
-          Some(i) => @sf.card_piece_of(i, g.length())
-          None => @sf.CardWhole
+        for i in 0..<g.length() {
+          if text(Some(g[i]), "id") == id {
+            return @sf.card_piece_of(i, g.length())
+          }
         }
+        @sf.CardWhole
       })
       let piece = fn() { piece_now.get() }
       @sf.card_piece_node(b, piece, fn(k) { job_row_node(k, job, fn() { job_press(src, r, @signals.untracked(job), close) }) })
@@ -1948,8 +1980,26 @@ fn subchats_sheet_node(v : @view.View, src : Source, r : ChatRef, opened : () ->
   })
   v.reacts(at_start=false, fn() { (rows.get().length(), search_active(), query_trimmed()) }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
   // (已完成 folding under those at work, 已归档 under those or the done ones: both folded, they share one card)
-  let folds_done = fn() { lead_kind.get() == 0 && subchats.get().iter().any(fn(o) { @sfpages.subchat_is_done(o) }) }
-  let folds_archived = fn() { lead_kind.get() != 2 && subchats.get().iter().any(fn(o) { o.archived }) }
+  let folds_done = fn() {
+    guard lead_kind.get() == 0 else { return false }
+    let os = subchats.get()
+    for i in 0..<os.length() {
+      if @sfpages.subchat_is_done(os[i]) {
+        return true
+      }
+    }
+    false
+  }
+  let folds_archived = fn() {
+    guard lead_kind.get() != 2 else { return false }
+    let os = subchats.get()
+    for i in 0..<os.length() {
+      if os[i].archived {
+        return true
+      }
+    }
+    false
+  }
   let shared = fn() { folds_done() && !done_open.get() && folds_archived() }
   let sheet = SubchatsSheet::{
     subchats: fn() { subchats.get() },
@@ -2166,13 +2216,23 @@ fn subchats_sheet_row_node(b : @view.View, row : SubchatSheetRow, sheet : Subcha
       })
       |> ignore
     SubchatsSearchHit(key) => {
-      let hit_now = @signals.computed(fn(_) { (sheet.hits)().iter().find_first(fn(h) { subchat_sheet_key(h.opened) == key }) })
+      let hit_now = @signals.computed(fn(_) {
+        let hs = (sheet.hits)()
+        for i in 0..<hs.length() {
+          if subchat_sheet_key(hs[i].opened) == key {
+            return Some(hs[i])
+          }
+        }
+        None
+      })
       let piece_now = @signals.computed(fn(_) {
         let hs = (sheet.hits)()
-        match hs.search_by(fn(h) { subchat_sheet_key(h.opened) == key }) {
-          Some(i) => @sf.card_piece_of(i, hs.length())
-          None => @sf.CardWhole
+        for i in 0..<hs.length() {
+          if subchat_sheet_key(hs[i].opened) == key {
+            return @sf.card_piece_of(i, hs.length())
+          }
         }
+        @sf.CardWhole
       })
       @sf.card_piece_node(b, fn() { piece_now.get() }, fn(k) {
         subchat_sheet_item_node(
@@ -2261,14 +2321,24 @@ fn subchats_sheet_row_node(b : @view.View, row : SubchatSheetRow, sheet : Subcha
           _ => if (sheet.shared)() { 2 } else { 1 }
         }
       }
-      let item_now = @signals.computed(fn(_) { group().0.iter().find_first(fn(o) { subchat_sheet_key(o) == key }) })
+      let item_now = @signals.computed(fn(_) {
+        let g = group().0
+        for i in 0..<g.length() {
+          if subchat_sheet_key(g[i]) == key {
+            return Some(g[i])
+          }
+        }
+        None
+      })
       let piece_now = @signals.computed(fn(_) {
         let (g, foot) = group()
         let h = headed()
-        match g.search_by(fn(o) { subchat_sheet_key(o) == key }) {
-          Some(i) => @sf.card_piece_of(i + h, g.length() + foot + h)
-          None => @sf.CardWhole
+        for i in 0..<g.length() {
+          if subchat_sheet_key(g[i]) == key {
+            return @sf.card_piece_of(i + h, g.length() + foot + h)
+          }
         }
+        @sf.CardWhole
       })
       @sf.card_piece_node(b, fn() { piece_now.get() }, fn(k) {
         subchat_sheet_item_node(k, fn() { item_now.get() }, sheet.close)

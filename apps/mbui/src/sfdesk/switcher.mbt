@@ -157,7 +157,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
             workspace,
             fn() {
               match workspace() {
-                Some(w) => switcher_offered(src, w, !(@sf.layout(layer.window_w()) is Small) || @sf.native_able())
+                Some(w) => switcher_offered(src, w, !(@sf.layout(layer.window_w()) is @sf.Layout::Small) || @sf.native_able())
                 None => []
               }
             },

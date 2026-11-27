@@ -240,11 +240,14 @@ pub fn station_part_said(whole : Json, part : String) -> Json {
 /// page): no value while they are not known, null where there is no such station.
 pub fn station_said(all : Json?, address : String, part : String) -> Json? {
   match all {
-    Some(Array(a)) =>
-      match a.iter().find_first(fn(s) { text(Some(s), "station") == address }) {
-        Some(s) => Some(if part == "" { station_whole(s) } else { station_part_said(s, part) })
-        None => Some(Json::null())
+    Some(Array(a)) => {
+      for s in a {
+        if text(Some(s), "station") == address {
+          return Some(if part == "" { station_whole(s) } else { station_part_said(s, part) })
+        }
       }
+      Some(Json::null())
+    }
     _ => None
   }
 }
@@ -268,12 +271,15 @@ pub fn connects_of_stations(v : Json?, all : Json?) -> Json? {
         }
       }
       m["slackApps"] = Json::array(apps)
-      m["noProfile"] = Json::boolean(
-        stations.length() > 0 &&
-        stations.iter().all(fn(s) {
-          field(Some(s), "overview") is Some(Object(_)) && items(field(Some(s), "overview"), "profiles").length() == 0
-        }),
-      )
+      let mut none_has = stations.length() > 0
+      for i in 0..<stations.length() {
+        let s = stations[i]
+        if !(field(Some(s), "overview") is Some(Object(_)) && items(field(Some(s), "overview"), "profiles").length() == 0) {
+          none_has = false
+          break
+        }
+      }
+      m["noProfile"] = Json::boolean(none_has)
       Some(Json::object(m))
     }
     _ => v

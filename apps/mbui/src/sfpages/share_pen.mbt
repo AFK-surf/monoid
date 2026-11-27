@@ -167,7 +167,7 @@ fn Pen::dress(
   }
   match (style, base) {
     // (a share of what holds it as its width: said as a share, the rest of the style as it says, style_node's)
-    (Some(f), Some({ w: Some(Pct(_)), .. })) => {
+    (Some(f), Some({ w: Some(@ui.Len::Pct(_)), .. })) => {
       let rest = fn() {
         let s = f()
         @ui.Style::{ ..s, base: @ui.Patch::{ ..s.base, w: None } }
@@ -175,7 +175,7 @@ fn Pen::dress(
       @sf.style_node(b, rest, in_row=self.row)
       b.width_share(By(fn() {
         match f().base.w {
-          Some(Pct(p)) => p / 100.0
+          Some(@ui.Len::Pct(p)) => p / 100.0
           _ => 1.0
         }
       }))

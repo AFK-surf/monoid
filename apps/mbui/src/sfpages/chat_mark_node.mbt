@@ -257,7 +257,15 @@ pub fn row_aside_node(
         if n == 0 {
           0.0
         } else {
-          let has_starter = people.length() > 1 && people[:n].iter().any(fn(p) { p.id == item().creator })
+          let mut has_starter = false
+          if people.length() > 1 {
+            for i in 0..<n {
+              if people[i].id == item().creator {
+                has_starter = true
+                break
+              }
+            }
+          }
           l.face_d + (n - 1).to_double() * (l.face_d - face_over) + (if has_starter { face_gap_w } else { 0.0 })
         }
       }

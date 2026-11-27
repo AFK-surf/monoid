@@ -121,8 +121,8 @@ fn binding_key(binding : String) -> (Int, Int)? {
     None => return None
   }
   let mut mods = 0
-  for p in parts[:parts.length() - 1] {
-    match p {
+  for i in 0..<(parts.length() - 1) {
+    match parts[i] {
       "Mod" => mods = mods | mod_key()
       "Shift" => mods = mods | @ui.mod_shift_key
       "Alt" => mods = mods | @ui.mod_alt
@@ -162,8 +162,15 @@ fn lower_char(ch : Char) -> Char {
 /// The binding a key press makes (Shift+Mod+H: the modifiers in the core's order, Ctrl, Alt, Shift, Mod; keymap.ts
 /// binding), or None for a key that is none here.
 pub fn binding_of(code : Int, mods : Int) -> String? {
-  let key = match key_names.iter().find_first(fn(n) { n.1 == code }) {
-    Some((name, _)) => name
+  let mut named : String? = None
+  for i in 0..<key_names.length() {
+    if key_names[i].1 == code {
+      named = Some(key_names[i].0)
+      break
+    }
+  }
+  let key = match named {
+    Some(name) => name
     None =>
       if code > 1032 && code < 1127 {
         let ch = (code - 1000).unsafe_to_char()
@@ -220,7 +227,13 @@ pub fn binding_label(binding : String) -> String {
   }
   if @ui.keys_system() == 0 {
     let marks = [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Mod", "⌘")]
-    marks.iter().filter(fn(m) { mods.contains(m.0) }).map(fn(m) { m.1 }).collect().join("") + shown
+    let buf = StringBuilder()
+    for i in 0..<marks.length() {
+      if mods.contains(marks[i].0) {
+        buf.write_string(marks[i].1)
+      }
+    }
+    buf.to_string() + shown
   } else {
     let said : Array[String] = ["Mod", "Ctrl", "Alt", "Shift"]
       .filter(fn(m) { mods.contains(m) })
@@ -310,7 +323,7 @@ pub fn keymap_of(prefs : Json?, window_id? : Int) -> @view.Keymap {
       _ => Always
     }
     let when : @view.KeyWhen = match (group, typing) {
-      (Always, w) | (w, Always) => w
+      (@view.KeyWhen::Always, w) | (w, @view.KeyWhen::Always) => w
       (g, w) => All([g, w])
     }
     for b in keys_of(prefs, action) {

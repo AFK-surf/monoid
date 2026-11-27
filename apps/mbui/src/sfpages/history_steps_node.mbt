@@ -195,7 +195,14 @@ fn steps_list_node(
   v.reacts(fn() { (steps_own.focus.get(fk), rows.get().0.length()) }, fn(now) {
     guard now.0 is Some(e) else { return }
     let loaded = items(@signals.untracked(fn() { src.topic("history", params).get().value }), "items")
-    match loaded.search_by(fn(i) { entries_of(Some(i)).map(fn(x) { x.0 <= e && e <= x.1 }).unwrap_or(false) }) {
+    let mut holding = None
+    for j in 0..<loaded.length() {
+      if entries_of(Some(loaded[j])).map(fn(x) { x.0 <= e && e <= x.1 }).unwrap_or(false) {
+        holding = Some(j)
+        break
+      }
+    }
+    match holding {
       Some(at) => {
         if steps_own.only_io.untracked() && flag(loaded.get(at), "work") {
           steps_own.only_io.set(false)
@@ -2315,7 +2322,14 @@ fn group_rows_each_node(
   on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let calls_sig = @signals.computed(
-    fn(_) { rows().iter().any(fn(r) { text(Some(r), "kind") == "step" }) },
+    fn(_) {
+      for r in rows() {
+        if text(Some(r), "kind") == "step" {
+          return true
+        }
+      }
+      false
+    },
     same=fn(a, b) { a == b },
   )
   let count_sig = @signals.computed(fn(_) { rows().length() }, same=fn(a, b) { a == b })
@@ -3500,7 +3514,13 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     let step_hint = if raw_hint != "" { raw_hint } else { fb_hint }
     let step_meta = text(step, "meta")
     let failed = flag(step, "failed")
-    let has_real_call = raw_calls.iter().any(fn(p) { text(Some(p), "kind") != "none" })
+    let mut has_real_call = false
+    for p in raw_calls {
+      if text(Some(p), "kind") != "none" {
+        has_real_call = true
+        break
+      }
+    }
     let result_parts : Array[Json] = []
     for part in raw_results {
       let k = text(Some(part), "kind")

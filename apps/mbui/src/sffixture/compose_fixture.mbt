@@ -4,6 +4,17 @@
 // `version` each change counts. Read back the first time from the chat's seeded draft, as the core reads its kept one.
 
 ///|
+/// The file among `files` quote `q` names as its own, the first.
+fn fix_quoting(files : Array[Json], q : Json) -> Json? {
+  for x in files {
+    if text(Some(x), "quote") == text(Some(q), "id") {
+      return Some(x)
+    }
+  }
+  None
+}
+
+///|
 /// The pictures of a mode's seeded draft drawn from them in its tiles, as a picture picked here is (the composer's
 /// `writing_pictures`): newchat-attach's and chat-attach-pic's (the films of sending them: scripts/motion),
 /// chat-attach-video's picture and video, and chat-uploading's going up.
@@ -57,7 +68,14 @@ pub fn fix_write(f : Fixture, key : String) -> FixWrite {
       // fix_draft_ref); one saying how much of it the station has (`sent`) still going up
       let seeded = items(seed, "files")
       let have = fix_composers.get(key).unwrap_or([])
-      if !seeded.is_empty() && !have.iter().any(fn(x) { text(Some(x), "id").has_prefix("seed-") }) {
+      let mut seeded_in = false
+      for x in have {
+        if text(Some(x), "id").has_prefix("seed-") {
+          seeded_in = true
+          break
+        }
+      }
+      if !seeded.is_empty() && !seeded_in {
         fix_composers[key] = have +
           seeded.mapi(fn(i, a) {
             let f : Map[String, Json] = {
@@ -83,14 +101,20 @@ pub fn fix_write(f : Fixture, key : String) -> FixWrite {
 pub fn fix_compose_view(f : Fixture, key : String) -> Json {
   let w = fix_write(f, key)
   let files = fix_composers.get(key).unwrap_or([])
-  let uploading = files.iter().any(fn(x) { field(Some(x), "done") is None && text(Some(x), "error") == "" })
-  let ready = (w.text.trim(chars=" \n\t").to_owned() != "" ||
-    files.iter().any(fn(x) { text(Some(x), "error") == "" }) ||
-    w.quotes.length() > 0) &&
-    !w.starting
+  let mut uploading = false
+  let mut sound = false
+  for x in files {
+    if field(Some(x), "done") is None && text(Some(x), "error") == "" {
+      uploading = true
+    }
+    if text(Some(x), "error") == "" {
+      sound = true
+    }
+  }
+  let ready = (w.text.trim(chars=" \n\t").to_owned() != "" || sound || w.quotes.length() > 0) && !w.starting
   // a quote's picture in it, not among the files
   let quotes = w.quotes.map(fn(q) {
-    match (q, files.iter().find_first(fn(x) { text(Some(x), "quote") == text(Some(q), "id") })) {
+    match (q, fix_quoting(files, q)) {
       (Object(m), Some(own)) => {
         let n = m.copy()
         n["own"] = own
@@ -217,7 +241,7 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
             let out = m.copy()
             out.remove("id") |> ignore
             out["comment"] = Json::string(text(Some(q), "comment").trim(chars=" \n\t").to_owned())
-            match sent.iter().find_first(fn(f) { text(Some(f), "quote") == text(Some(q), "id") }) {
+            match fix_quoting(sent, q) {
               Some(f) => {
                 let name = match field(field(Some(f), "done"), "name") {
                   Some(String(name)) => name

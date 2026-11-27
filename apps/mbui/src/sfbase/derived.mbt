@@ -236,8 +236,12 @@ fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : B
   }
   let keys : Array[String] = []
   for key, entries in self.kept {
-    if entries.iter().any(fn(e) { physical_equal(e.source, source) && !e.value.watched() }) {
-      keys.push(key)
+    for i in 0..<entries.length() {
+      let e = entries[i]
+      if physical_equal(e.source, source) && !e.value.watched() {
+        keys.push(key)
+        break
+      }
     }
   }
   for key in keys {
@@ -326,11 +330,23 @@ fn kept_forget_source(src : Source, kept? : Bool = false) -> Unit {
 }
 
 ///|
+/// Where `entries` holds `source`'s value that nothing follows, the first such.
+fn[T] unwatched_entry_of(entries : Array[SourceKeptOne[T]], source : Source) -> Int? {
+  for i in 0..<entries.length() {
+    let entry = entries[i]
+    if physical_equal(entry.source, source) && !entry.value.watched() {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
 /// Source `source`'s value for `key` let go of where nothing follows it (one still followed kept as it is).
 fn[T] SourceKept::forget_unwatched_from(self : SourceKept[T], source : Source, key : String) -> Unit {
   match self.kept.get(key) {
     Some(entries) =>
-      match entries.search_by(fn(entry) { physical_equal(entry.source, source) && !entry.value.watched() }) {
+      match unwatched_entry_of(entries, source) {
         Some(i) =>
           if dispose_if_unwatched(entries[i].value) {
             entries.remove(i) |> ignore

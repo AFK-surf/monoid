@@ -339,7 +339,14 @@ fn station_pick_folder(v : @view.View, src : Source, at : PickAt) -> Unit {
     size: 0.0,
     dir: true,
   }
-  let ticked = fn(d : Dragged) { spick.ticked.get().iter().any(fn(x) { x.station == d.station && x.abs == d.abs }) }
+  let ticked = fn(d : Dragged) {
+    for x in spick.ticked.get() {
+      if x.station == d.station && x.abs == d.abs {
+        return true
+      }
+    }
+    false
+  }
   let toggle = fn(d : Dragged) {
     if ticked(d) {
       spick.ticked.set(spick.ticked.get().filter(fn(x) { !(x.station == d.station && x.abs == d.abs) }))

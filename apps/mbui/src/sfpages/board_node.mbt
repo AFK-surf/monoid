@@ -459,7 +459,14 @@ pub fn board_node(
   // (the chat picked, as the card its row is: looked for only while one is picked)
   own.picked = v.selected(fn() {
     match @sfbase.board_pick.get() {
-      Some(p) => items().iter().find_first(fn(i) { @sfbase.row_is(i, p) }).map(@sfbase.row_name)
+      Some(p) => {
+        for i in items() {
+          if @sfbase.row_is(i, p) {
+            return Some(@sfbase.row_name(i))
+          }
+        }
+        None
+      }
       None => None
     }
   })
@@ -467,7 +474,7 @@ pub fn board_node(
   v.on_action("chat.new", fn(_) {
     board_new(own)
     true
-  }, can=fn() { @sfbase.board_on_now(src) && app.nav.top() is Home }) |> ignore
+  }, can=fn() { @sfbase.board_on_now(src) && app.nav.top() is @sfbase.Page::Home }) |> ignore
   v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(ground)) |> ignore
   // (the workspace's stations read as long as the board shows, as its opening asked them (sfbase's board_opens): the
   // line to write a draft in, and its choice of a station, whole as it comes, whichever column shows)
@@ -584,7 +591,13 @@ fn board_wide(
       // (where the columns are to be for column `key`'s to show whole, the chat beside them as it is to be)
       own.reveal = fn(key) {
         let cols = @signals.untracked(own.columns)
-        let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
+        let mut i = 0
+        for j in 0..<cols.length() {
+          if cols[j].0 == key {
+            i = j
+            break
+          }
+        }
         let r = width() -
           (if @signals.untracked(own.side) && key != "draft" { @signals.untracked(beside_w) + board_edge_reach } else { 0.0 })
         let w = laid_w()

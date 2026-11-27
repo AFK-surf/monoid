@@ -523,7 +523,7 @@ fn collapse_state_of(src : Source, ws : String) -> CollapseState {
 
 ///|
 fn collapse_state_has_exc(st : CollapseState, group_key : String) -> Bool {
-  st.exc.iter().any(fn(k) { k == group_key })
+  st.exc.contains(group_key)
 }
 
 ///|
@@ -1134,7 +1134,7 @@ pub fn ProjectListChain::read(self : ProjectListChain, src : Source) -> Projects
     return { items: [], total: 0, unclassified_count: 0, cross_count: 0, has_more: false, loading: true, error: None }
   }
   let has_more = match next_cursor {
-    Some(nc) if nc != "" => !cs.iter().any(fn(c) { c == Some(nc) })
+    Some(nc) if nc != "" => !cs.contains(Some(nc))
     _ => false
   }
   {
@@ -1158,7 +1158,7 @@ pub fn ProjectListChain::load_more(self : ProjectListChain, src : Source) -> Uni
   let last_cur = cs[cs.length() - 1]
   let ts = src.topic("projects", self.page_params(last_cur)).untracked()
   match opt_text(ts.value, "nextCursor") {
-    Some(nc) if nc != "" && !cs.iter().any(fn(c) { c == Some(nc) }) => {
+    Some(nc) if nc != "" && !cs.contains(Some(nc)) => {
       let next = cs.copy()
       next.push(Some(nc))
       self.cursors.set(next)
@@ -1374,7 +1374,7 @@ pub fn TagListChain::read(self : TagListChain, src : Source) -> TagsSnapshot {
     return { items: [], total: 0, has_more: false, loading: true, error: None }
   }
   let has_more = match next_cursor {
-    Some(nc) if nc != "" => !cs.iter().any(fn(c) { c == Some(nc) })
+    Some(nc) if nc != "" => !cs.contains(Some(nc))
     _ => false
   }
   {
@@ -1395,7 +1395,7 @@ pub fn TagListChain::load_more(self : TagListChain, src : Source) -> Unit {
   let last_cur = cs[cs.length() - 1]
   let ts = src.topic("tags", self.page_params(last_cur)).untracked()
   match opt_text(ts.value, "nextCursor") {
-    Some(nc) if nc != "" && !cs.iter().any(fn(c) { c == Some(nc) }) => {
+    Some(nc) if nc != "" && !cs.contains(Some(nc)) => {
       let next = cs.copy()
       next.push(Some(nc))
       self.cursors.set(next)
@@ -1531,7 +1531,7 @@ fn ProjectDetailChain::plan(self : ProjectDetailChain, src : Source) -> ChainAct
           if page_nc != cs[i + 1] {
             let kept = cs[:i + 1].to_owned()
             match page_nc {
-              Some(nc) if nc != "" && !kept.iter().any(fn(c) { c == Some(nc) }) => kept.push(Some(nc))
+              Some(nc) if nc != "" && !kept.contains(Some(nc)) => kept.push(Some(nc))
               _ => ()
             }
             return SetCursors(kept, true)
@@ -1543,7 +1543,7 @@ fn ProjectDetailChain::plan(self : ProjectDetailChain, src : Source) -> ChainAct
     }
   }
   let advance_next : Array[String?]? = match next_cursor {
-    Some(nc) if nc != "" && !loading && !has_error && !cs.iter().any(fn(c) { c == Some(nc) }) => {
+    Some(nc) if nc != "" && !loading && !has_error && !cs.contains(Some(nc)) => {
       let next = cs.copy()
       next.push(Some(nc))
       Some(next)
@@ -1703,7 +1703,7 @@ pub fn ProjectDetailChain::read(self : ProjectDetailChain, src : Source) -> Proj
     }
   }
   let has_more = match next_cursor {
-    Some(nc) if nc != "" => !cs.iter().any(fn(c) { c == Some(nc) })
+    Some(nc) if nc != "" => !cs.contains(Some(nc))
     _ => false
   }
   if has_more && error is None {
@@ -1921,7 +1921,7 @@ pub fn classify_reconcile_tags(station : String, thread : Double, live_tags : Ar
     Some(st) =>
       if classify_visit_stale(key, st) ||
         live_tags == st.desired ||
-        (live_tags != st.base_live && !st.sent_sets.iter().any(fn(s) { s == live_tags })) {
+        (live_tags != st.base_live && !st.sent_sets.contains(live_tags)) {
         classify_desired_tags.remove(key)
       }
     None => ()
@@ -1936,7 +1936,7 @@ fn classify_tag_base(key : String, current_tags : Array[String]) -> (Array[Strin
       if !classify_is_busy(key) &&
         (st.visit != cur_visit ||
           current_tags == st.desired ||
-          (current_tags != st.base_live && !st.sent_sets.iter().any(fn(s) { s == current_tags }))) {
+          (current_tags != st.base_live && !st.sent_sets.contains(current_tags))) {
         classify_desired_tags.remove(key)
         (current_tags.copy(), current_tags.copy(), [], cur_visit)
       } else if st.visit != cur_visit {

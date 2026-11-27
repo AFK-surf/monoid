@@ -50,7 +50,7 @@ fn shell_is(src : Source, width : Double) -> ShellIs {
   if landing_now(src) {
     return Landing
   }
-  let wide = !(@sf.layout(width) is Small) || @sf.native_able()
+  let wide = !(@sf.layout(width) is @sf.Layout::Small) || @sf.native_able()
   match workspace_in_view(src).0 {
     Some(_) if !wide => Stacked
     Some(w) if @sfdesk.tape_holds(src, w, width) => Taped
@@ -87,16 +87,16 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   let fwd_held : Ref[(() -> Unit)?] = Ref(None)
   v.follows_forward(when=fn() { @sfbase.history_forward_step(src) is Some(_) }, fn(step) {
     let f = match (step, fwd_held.val) {
-      (Began(_, _), _) => {
+      (@view.BackStep::Began(_, _), _) => {
         let got = @sfbase.history_forward_step(src)
         fwd_held.val = got
         got
       }
       (_, Some(f)) => Some(f)
-      (Back, None) => @sfbase.history_forward_step(src)
+      (@view.BackStep::Back, None) => @sfbase.history_forward_step(src)
       _ => return
     }
-    if step is (LetGo(_, _) | CalledOff | Back) {
+    if step is (@view.BackStep::LetGo(_, _) | @view.BackStep::CalledOff | @view.BackStep::Back) {
       fwd_held.val = None
     }
     match f {
@@ -601,7 +601,7 @@ fn narrow_made_as(
     Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
-          @sf.layout(p.window_w()) is Small
+          @sf.layout(p.window_w()) is @sf.Layout::Small
         })
       })
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
@@ -918,7 +918,7 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
   v.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (where the frame is not wide: is_wide, by the window as it is)
-    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window_w()) is Small && !@sf.native_able() }, fn(band) {
+    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window_w()) is @sf.Layout::Small && !@sf.native_able() }, fn(band) {
       band.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore
     })
   })

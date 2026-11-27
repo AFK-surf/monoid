@@ -104,7 +104,14 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
       if in_folder(sv) {
         shown_n += 1
         let rt = text(sv, "runtime")
-        match runtimes.search_by(fn(r) { r.0 == rt }) {
+        let mut at = None
+        for i in 0..<runtimes.length() {
+          if runtimes[i].0 == rt {
+            at = Some(i)
+            break
+          }
+        }
+        match at {
           Some(i) => runtimes[i] = (rt, runtimes[i].1 + 1)
           None => runtimes.push((rt, 1))
         }
@@ -113,7 +120,14 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
         own += 1
       } else {
         let f = text(sv, "folder")
-        match folders.search_by(fn(r) { r.0 == f }) {
+        let mut at = None
+        for i in 0..<folders.length() {
+          if folders[i].0 == f {
+            at = Some(i)
+            break
+          }
+        }
+        match at {
           Some(i) => folders[i] = (f, folders[i].1 + 1)
           None => folders.push((f, 1))
         }
@@ -126,7 +140,16 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
   // a choice no longer shown)
   let rt_now = fn() {
     let runtimes = among.get().0
-    if runtimes.length() > 1 && runtimes.iter().any(fn(r) { r.0 == runtime.get() }) {
+    let mut known = false
+    if runtimes.length() > 1 {
+      for i in 0..<runtimes.length() {
+        if runtimes[i].0 == runtime.get() {
+          known = true
+          break
+        }
+      }
+    }
+    if known {
       runtime.get()
     } else {
       ""
@@ -161,10 +184,12 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
   })
   let session_of = fn(id : String) -> Json? {
     let list = all()
-    match list.search_by(fn(s) { text(Some(s), "id") == id }) {
-      Some(i) => Some(list[i])
-      None => None
+    for i in 0..<list.length() {
+      if text(Some(list[i]), "id") == id {
+        return Some(list[i])
+      }
     }
+    None
   }
   @sf.panel_nodes(
     fill("android-chat.new.machine.title", [("station", shown)]),
@@ -230,10 +255,15 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
             },
             fn() {
               let rt = rt_now()
-              match among.get().0.search_by(fn(r) { r.0 == rt }) {
-                Some(i) => i + 1
-                None => 0
+              let runtimes = among.get().0
+              let mut at = 0
+              for i in 0..<runtimes.length() {
+                if runtimes[i].0 == rt {
+                  at = i + 1
+                  break
+                }
               }
+              at
             },
             fn(picked) {
               let runtimes = among.untracked().0

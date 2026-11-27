@@ -12,7 +12,7 @@ test "said_stretch: the words at a path at their longest, each item of a list or
     "by": { "a": { "name": "林" } },
     "note": "在线",
   }
-  let out = said_stretch(said_stretch(v, ["jobs", "*", "name"][:]), ["by", "*", "name"][:])
+  let out = said_stretch(said_stretch(v, ["jobs", "*", "name"]), ["by", "*", "name"])
   let expected : Json = {
     "jobs": [{ "id": "j1", "name": Json::string("盯 CI" + said_more) }, { "id": "j2", "name": "" }],
     "by": { "a": { "name": Json::string("林" + said_more) } },
@@ -20,7 +20,7 @@ test "said_stretch: the words at a path at their longest, each item of a list or
   }
   assert_eq(out, expected)
   // (a path that is not there: as it was)
-  assert_eq(said_stretch(v, ["gone", "name"][:]), v)
+  assert_eq(said_stretch(v, ["gone", "name"]), v)
 }
 
 ///|
@@ -110,7 +110,7 @@ fn figures_cut(t : @ui.Tester) -> Array[String] {
 ///|
 test "said_stretch: a figure made what leaf makes of it, the rest as it was" {
   let v : Json = { "cost": "$4.20", "note": "x" }
-  let out = said_stretch(v, ["cost"][:], leaf=fn(s) { if s == "" { s } else { "$8,888" } })
+  let out = said_stretch(v, ["cost"], leaf=fn(s) { if s == "" { s } else { "$8,888" } })
   let expected : Json = { "cost": "$8,888", "note": "x" }
   assert_eq(out, expected)
 }

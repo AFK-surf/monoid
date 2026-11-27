@@ -769,9 +769,23 @@ pub fn finder_list_node(
         let h = fn(j : Int) { finder_line_h(ls[j], f, grown, narrow) }
         // (from its kind's heading where it is its first line; from the list's top where none is chosen over it)
         let from = if i > 0 && ls[i - 1] is Head(_) { i - 1 } else { i }
-        let from = if ls[:from].iter().any(pickable) { from } else { 0 }
+        let mut over = false
+        for j in 0..<from {
+          if pickable(ls[j]) {
+            over = true
+            break
+          }
+        }
+        let from = if over { from } else { 0 }
         let sight = place.sight_now()
-        let at = sight.bind(fn(s) { ls.search_by(fn(l) { finder_key(l) == s.first }).map(fn(j) { (s, tops[j] + s.into) }) })
+        let at = sight.bind(fn(s) {
+          for j in 0..<ls.length() {
+            if finder_key(ls[j]) == s.first {
+              return Some((s, tops[j] + s.into))
+            }
+          }
+          None
+        })
         match at {
           Some((s, top)) => {
             let room = s.shows - foot_in
