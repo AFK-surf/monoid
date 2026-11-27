@@ -334,7 +334,6 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
     } catch (error) {
       throw new Error(`opened ${link ?? child} on station ${there}, but its first message was not sent: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
     }
-    await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
   };
 
   const before = hub.store.openedWith("", key, k, there ?? "");
@@ -345,20 +344,25 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
       await sendHere(before.child, chat);
       thread = addressOf(chat);
     }
-    if (there !== null) {
-      // Recorded before its first message went (a notice of its turn may come back before that message's answer
-      // does): asked again by its key whether that message came, and sent if not.
+    let again = true;
+    // Recorded before its first message went (a notice of its turn may come back before that message's answer does):
+    // asked again by its key whether that message came, and sent if not. One whose turn has been told of had it.
+    if (there !== null && before.state === null) {
       const call = peersOf(hub, key)!;
       let made: Json;
       try {
         made = await call(there, { method: CREATE, session: key, key: k, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led });
       } catch (error) {
-        throw new Error(`opened ${before.link ?? before.child} on station ${there}, but whether its first message came was not learned: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
+        const why = (error as Error).message;
+        // (refused there, as a chat of that key deleted: asking again with it gives the same answer)
+        if (error instanceof Refused) throw new Error(`opened ${before.link ?? before.child} on station ${there}, but that station now answers: ${why}`);
+        throw new Error(`opened ${before.link ?? before.child} on station ${there}, but whether its first message came was not learned: ${why}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
       }
       if (typeof made?.thread === "string") thread = made.thread;
+      again = made?.said === true;
       await sendThere(call, made, before.child, before.link);
     }
-    return opened({ session: before.child, link: before.link, thread }, there, true, before.led !== false);
+    return opened({ session: before.child, link: before.link, thread }, there, again, before.led !== false);
   }
   // Resolve the calling session's `sub`:
   // 1. Persisted `session_creators.sub` (new sessions)
@@ -475,9 +479,10 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   // Recorded before its first message goes: its agent may end its turn there, and that station tell this one
   // (`noticeForPeer`, which finds it by this record), before the message's own answer comes back here.
   hub.store.insertOpened({ childStation: there, child, parentStation: "", parent: key, key: k, title, link, led });
+  // Said once, with its record: a retry with this key finds the record and says nothing again.
+  await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
   // Its first message, unless it already came (an earlier call with this key opened the chat and sent it).
-  if (made?.said !== true) await sendThere(call, made, child, link);
-  else await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
+  await sendThere(call, made, child, link);
   return opened(result, there, false, led);
 }
 

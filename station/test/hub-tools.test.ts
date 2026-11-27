@@ -1697,6 +1697,8 @@ test("a chat opened on another station whose turn ends before its first message'
   assert.ok(matches(steered, ["演练", "ended its turn all_done", "演练完成"]), steered);
 
   // Its first message not sent: recorded all the same, and the same key again asks whether it came and sends it once.
+  const stationSaid = () => near.said(near.thread("C1", a.threadTs).id).filter((m) => m.authorKind === "station").length;
+  const before = stationSaid();
   messageDown = true;
   asked.length = 0;
   const down = await near.refused(keyA, "chat_create", { for: "me", key: "again", station: "orchard", runtime: "claude", text: "and once more" });
@@ -1705,15 +1707,24 @@ test("a chat opened on another station whose turn ends before its first message'
   const again = near.store.openedBy(keyA).find((o) => o.key === "again")!;
   const thread = far.store.homeChat(again.child)!;
   assert.equal(far.said(thread.id).length, 0);
+  // (the opener's chat said it opened that chat once, when it was made)
+  assert.equal(stationSaid(), before + 1);
   messageDown = false;
   asked.length = 0;
-  await near.call(keyA, "chat_create", { for: "me", key: "again", station: "orchard", runtime: "claude", text: "and once more" });
+  const sent = await near.call(keyA, "chat_create", { for: "me", key: "again", station: "orchard", runtime: "claude", text: "and once more" });
   assert.deepEqual(asked, [CREATE, "session.message"]);
+  assert.ok(sent.startsWith("Opened "), sent);
   assert.equal(far.said(thread.id).length, 1);
   asked.length = 0;
-  await near.call(keyA, "chat_create", { for: "me", key: "again", station: "orchard", runtime: "claude", text: "and once more" });
+  const twice = await near.call(keyA, "chat_create", { for: "me", key: "again", station: "orchard", runtime: "claude", text: "and once more" });
   assert.deepEqual(asked, [CREATE]);
+  assert.ok(twice.includes("nothing new was opened or sent"), twice);
   assert.equal(far.said(thread.id).length, 1);
+  assert.equal(stationSaid(), before + 1);
+  // One whose turn has been told of had its first message: the same key again asks nothing there.
+  asked.length = 0;
+  await near.call(keyA, "chat_create", { for: "me", key: "drill", station: "orchard", runtime: "claude", text: "run the drill" });
+  assert.deepEqual(asked, []);
   await near.close();
   await far.close();
 });
