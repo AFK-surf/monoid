@@ -449,10 +449,10 @@ async function pickFreeUdpPort(): Promise<number> {
 
 const bin = resolvePionBinary();
 
-test("Gate 12.1: --version advertises roles:rig and all 8 CLI commands, --smoke-sys and --smoke-http pass", () => {
+test("Gate 12.1: --version advertises roles:rig,whole and all 8 CLI commands, --smoke-sys and --smoke-http pass", () => {
   const ver = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 });
   assert.equal(ver.status, 0, ver.stderr);
-  assert.equal(ver.stdout.trim(), "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin");
+  assert.equal(ver.stdout.trim(), "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin");
   assert.equal(ver.stdout.trim().split(/\s+/).length, 4);
 
   const sys = spawnSync(bin, ["--smoke-sys"], { encoding: "utf8", timeout: 10_000 });
@@ -468,17 +468,20 @@ test("Gate 12.1: --version advertises roles:rig and all 8 CLI commands, --smoke-
   assert.equal(httpOut.ws, true);
 });
 
-test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready before previous exits, obeys hub.json barrier, drains cleanly", { skip: process.platform === "win32" }, async () => {
-  // (a) Non-rig data dir rejected.
-  const wholeDir = freshDir("whole-reject");
+test("Gate 12.2: auto-routes non-rig & removed_at:null dirs to whole_daemon (never rig_daemon), rig_daemon emits ready before previous exits, obeys hub.json barrier, drains cleanly", { skip: process.platform === "win32" }, async () => {
+  // (a) Non-rig data dir auto-routes to whole_daemon (roles:rig,whole cutover).
+  const wholeDir = freshDir("whole-auto-route");
   mkdirSync(join(wholeDir, "mesh"), { recursive: true });
   writeFileSync(join(wholeDir, "mesh/cloud.json"), JSON.stringify({ workspace: "ws-whole", station: "aa".repeat(32) }));
-  const badRig = startPionRig(bin, wholeDir);
-  assert.notEqual(await badRig.waitExit(), 0, "whole-mode data dir must exit non-zero");
-  assert.ok(badRig.messages.some((m) => typeof m.failed === "string" && m.failed.includes("not a rig-only")));
+  const wholeInst = startPionRig(bin, wholeDir);
+  await until("whole_daemon ready on non-rig dir", () => wholeInst.messages.find((m) => m.ready === true));
+  await until("whole_daemon stderr prefix", () => wholeInst.stderr().includes("[whole]"));
+  assert.equal(wholeInst.stderr().includes("[rig]"), false, "non-rig dir must not enter rig_daemon");
+  wholeInst.sendCtrl({ op: "stop" });
+  assert.equal(await wholeInst.waitExit(), 0, wholeInst.stderr());
 
-  // (b) Launcher-parity `"removed_at": null` rejected (`data.rs:202`).
-  const removedNullDir = freshDir("removed-null-reject");
+  // (b) Launcher-parity `"removed_at": null` is NOT rig-only (`data.rs:202`), so it auto-routes to whole_daemon.
+  const removedNullDir = freshDir("removed-null-auto-route");
   mkdirSync(join(removedNullDir, "mesh"), { recursive: true });
   writeFileSync(
     join(removedNullDir, "mesh/cloud.json"),
@@ -489,8 +492,12 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready 
       removed_at: null,
     }),
   );
-  const remRig = startPionRig(bin, removedNullDir);
-  assert.notEqual(await remRig.waitExit(), 0, "cloud.json with removed_at: null must exit non-zero");
+  const remInst = startPionRig(bin, removedNullDir);
+  await until("whole_daemon ready on removed_at:null dir", () => remInst.messages.find((m) => m.ready === true));
+  await until("whole_daemon stderr prefix on removed_at:null", () => remInst.stderr().includes("[whole]"));
+  assert.equal(remInst.stderr().includes("[rig]"), false, "removed_at: null must not enter rig_daemon");
+  remInst.sendCtrl({ op: "stop" });
+  assert.equal(await remInst.waitExit(), 0, remInst.stderr());
 
   // (c) Handover protocol: `ready` MUST arrive while previous PID is STILL ALIVE (no launcher deadlock),
   //     while `hub.json` and `mcp` wait until previous exits!

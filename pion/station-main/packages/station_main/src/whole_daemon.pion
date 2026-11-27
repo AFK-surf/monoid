@@ -35,12 +35,16 @@ import "mesh_door"
 import "mesh_wire"
 import "nodepath"
 import "station_api"
+import "station_browser"
 import "station_cloud"
+import "station_connects"
+import "station_devices"
 import "station_drivers"
 import "station_http"
 import "station_jobs"
 import "station_mesh"
 import "station_ops"
+import "station_replica"
 import "station_rules_bridge"
 import "station_screens"
 import "station_store"
@@ -215,6 +219,13 @@ struct WholeDriveRpcPutState {
 
 struct WholeRuntimeState {
   core : station_whole::WholeCore
+  replica : station_whole::ReplicaOsRuntime
+  devices : station_whole::DevicesOsRuntime
+  terminals : station_whole::TerminalsOsRuntime
+  logins : station_whole::LoginsOsRuntime
+  browser : station_whole::BrowserOsManager
+  connects : station_whole::ConnectsOsRuntime
+  mut replica_before_store_ok : Bool
   mcp_srv : station_http::HttpServer
   mcp_cb : station_http::ServerCallbacks
   serve : station_mesh::ServeEndpoint
@@ -232,6 +243,289 @@ struct WholeRuntimeState {
   mut handover_exported : Bool
   mut becoming_rig : Bool
   mut next_upkeep_ms : Int64
+}
+
+fn load_devices_from_json(
+  j : base_codec::Json,
+  default_ws : String,
+  devices : station_whole::DevicesOsRuntime,
+  now_secs : Int64,
+) -> Unit {
+  let items : Array[base_codec::Json] = match j {
+    base_codec::Json::Arr(arr) => arr
+    base_codec::Json::Obj(_) => match base_codec::json_get(j, "devices") {
+      Some(base_codec::Json::Arr(arr)) => arr
+      _ => []
+    }
+    _ => []
+  }
+  for i in 0..<items.length() {
+    let it = items[i]
+    let dev_obj = match base_codec::json_get(it, "device") {
+      Some(d) => d
+      None => it
+    }
+    let id = match base_codec::json_get(dev_obj, "id") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    let name = match base_codec::json_get(dev_obj, "name") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => id
+    }
+    let kind_str = match base_codec::json_get(dev_obj, "kind") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    let target = match base_codec::json_get(dev_obj, "target") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    let ws = match base_codec::json_get(it, "ws") {
+      Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { s.trim() } else { default_ws }
+      _ => match base_codec::json_get(it, "workspace") {
+        Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { s.trim() } else { default_ws }
+        _ => default_ws
+      }
+    }
+    let kind_opt = station_devices::parse_device_kind(kind_str)
+    match kind_opt {
+      Some(kind) => {
+        if id.length() > 0 && target.length() > 0 && ws.length() > 0 {
+          let spec = station_devices::DeviceSpec::{
+            id: id,
+            name: name,
+            kind: kind,
+            target: target,
+            baud: None,
+            model: None,
+            protocols: None,
+            paired: None,
+          }
+          let owner_sub = match base_codec::json_get(it, "ownerSub") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => "local"
+          }
+          let owner_email = match base_codec::json_get(it, "ownerEmail") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => "local@station"
+          }
+          let owner_name = match base_codec::json_get(it, "ownerName") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => "local"
+          }
+          let _ = devices.registry.add(ws, owner_sub, owner_email, owner_name, spec, now_secs)
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+fn load_devices_for_whole_daemon(
+  ops_fs : station_ops::OpsFs,
+  data : String,
+  sep : String,
+  cfg_raw : base_codec::Json,
+  home_ws : String,
+  devices : station_whole::DevicesOsRuntime,
+  now_secs : Int64,
+) -> Unit {
+  let dev_path = nodepath::join(sep, [data, "devices.json"])
+  match ops_fs.read_text(dev_path) {
+    Ok(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(j) => load_devices_from_json(j, home_ws, devices, now_secs)
+        _ => ()
+      }
+    }
+    Err(_) => ()
+  }
+  match base_codec::json_get(cfg_raw, "devices") {
+    Some(j) => load_devices_from_json(j, home_ws, devices, now_secs)
+    None => ()
+  }
+}
+
+fn load_connects_from_config(
+  cfg_raw : base_codec::Json,
+  connects : station_whole::ConnectsOsRuntime,
+) -> Unit {
+  let items = match base_codec::json_get(cfg_raw, "connects") {
+    Some(base_codec::Json::Arr(arr)) => arr
+    _ => return
+  }
+  let get_str = fn(obj : base_codec::Json, k : String) -> String {
+    match base_codec::json_get(obj, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  for i in 0..<items.length() {
+    let it = items[i]
+    let enabled = match base_codec::json_get(it, "enabled") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    if !enabled {
+      continue
+    }
+    let cid = get_str(it, "id")
+    let kind = get_str(it, "kind")
+    if cid.length() == 0 {
+      continue
+    }
+    if kind == "slack" {
+      let bot_tok = get_str(it, "botToken")
+      let app_tok = get_str(it, "appToken")
+      if bot_tok.length() > 0 && app_tok.length() > 0 {
+        match connects.register_slack(cid, app_tok, bot_tok) {
+          Ok(_) => {
+            let _ = connects.start_connect(cid)
+          }
+          Err(_) => ()
+        }
+      }
+    } else if kind == "feishu" {
+      let app_id = get_str(it, "appId")
+      let app_sec = get_str(it, "appSecret")
+      if app_id.length() > 0 && app_sec.length() > 0 {
+        match connects.register_feishu(cid, app_id, app_sec) {
+          Ok(_) => {
+            let _ = connects.start_connect(cid)
+          }
+          Err(_) => ()
+        }
+      }
+    } else if kind == "comma" {
+      let url = get_str(it, "url")
+      let tok = get_str(it, "token")
+      let cname = get_str(it, "name")
+      let inst_id = get_str(it, "instanceId")
+      if url.length() > 0 && tok.length() > 0 {
+        connects.register_comma(
+          cid,
+          url,
+          tok,
+          if cname.length() > 0 { cname } else { cid },
+          if inst_id.length() > 0 { inst_id } else { cid },
+        )
+        let _ = connects.start_connect(cid)
+      }
+    } else if kind == "group" {
+      let origin = get_str(it, "origin")
+      let secret = get_str(it, "secretHex")
+      let member_id = get_str(it, "memberId")
+      let bot_name = get_str(it, "botName")
+      if origin.length() > 0 && secret.length() > 0 && member_id.length() > 0 {
+        match connects.register_group(
+          cid,
+          origin,
+          secret,
+          member_id,
+          if bot_name.length() > 0 { bot_name } else { member_id },
+        ) {
+          Ok(_) => {
+            let _ = connects.start_connect(cid)
+          }
+          Err(_) => ()
+        }
+      }
+    }
+  }
+}
+
+fn handle_device_tunnel(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  pstream : ProxyStreamState,
+  ws : String,
+  _session : String,
+  dev_id : String,
+  is_probe : Bool,
+  carry : Bytes,
+  own_ports : Map[Int, Bool],
+  send_refusal : (DaemonCtx, Int64, Int, String) -> Unit,
+) -> Unit {
+  if dev_id.length() == 0 {
+    send_refusal(ctx, pstream.sid, 404, "that machine refused: missing device id")
+    pstream.mode = ProxyStreamMode::Done
+    return
+  }
+  match st.devices.registry.get(ws, dev_id) {
+    None => {
+      // Distinguish cross-workspace unauthorized (403) from unknown device (404).
+      let mut exists_elsewhere = false
+      for di in 0..<st.devices.registry.devices.length() {
+        if st.devices.registry.devices[di].device.id == dev_id {
+          exists_elsewhere = true
+          break
+        }
+      }
+      if exists_elsewhere {
+        send_refusal(ctx, pstream.sid, 403, "that machine refused: device is not authorized for workspace " + ws)
+      } else {
+        send_refusal(ctx, pstream.sid, 404, "that machine refused: no such device " + dev_id)
+      }
+      pstream.mode = ProxyStreamMode::Done
+    }
+    Some(kept) => {
+      // Rig workspaces require explicit owner approval (fail-closed 403 here).
+      if ctx.cloud.rig_in(ws) is Some(_) {
+        send_refusal(ctx, pstream.sid, 403, "that machine refused: rig device requires owner approval")
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      let hp = match kept.device.kind {
+        station_devices::DeviceKind::Tcp
+        | station_devices::DeviceKind::Adb
+        | station_devices::DeviceKind::AirPlay
+        | station_devices::DeviceKind::AndroidTv => {
+          match station_devices::host_port(kept.device.target) {
+            Some(parsed) => parsed
+            None => {
+              send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: invalid target " + kept.device.target)
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+          }
+        }
+        station_devices::DeviceKind::Serial => {
+          send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: serial device does not support tcp tunnel")
+          pstream.mode = ProxyStreamMode::Done
+          return
+        }
+      }
+      if (hp.host == "127.0.0.1" || hp.host == "localhost" || hp.host == "::1") && own_ports.contains(hp.port) {
+        send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      if is_probe {
+        ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+        ctx.finish_peer_http(pstream.sid)
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      if carry.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+        send_refusal(ctx, pstream.sid, 413, "pre-connect payload too large")
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      pstream.mode = ProxyStreamMode::OpeningTcp(hp.port, carry, pstream.peer_ended)
+      let dial_args = base_codec::json_obj([
+        ("host", base_codec::json_str(hp.host)),
+        ("port", base_codec::json_int(hp.port)),
+        ("timeoutMs", base_codec::json_int(5000)),
+      ])
+      let _ = ctx.mux_role.call_async_raw(
+        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_OPEN, pstream.sid),
+        "tcp.dial",
+        base_codec::json_stringify(dial_args),
+        None,
+      )
+    }
+  }
 }
 
 fn str_in_arr(arr : Array[String], target : String) -> Bool {
@@ -2533,7 +2827,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           own_ports,
           fn(_p : Int) -> Bool { false },
           fn(_peer : String, _ws : String) -> Option[String] { None },
-          false,
+          true,
         )
         match station_mesh::authorize_peer_http(roster, pstream.remote_id, head_j, policy) {
           Err(mesh_wire::WireError::HttpRefusal(status, msg, _)) => {
@@ -2597,9 +2891,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             )
             return Ok(())
           }
-          Ok(station_mesh::PeerHttpAction::DeviceTunnel(_, _, _, _)) => {
-            send_proxy_refusal_and_finish(ctx, pstream.sid, 404, "that station has no devices")
-            pstream.mode = ProxyStreamMode::Done
+          Ok(station_mesh::PeerHttpAction::DeviceTunnel(ws, session, dev_id, is_probe)) => {
+            handle_device_tunnel(ctx, st, pstream, ws, session, dev_id, is_probe, carry, own_ports, send_proxy_refusal_and_finish)
             return Ok(())
           }
         }
@@ -2975,7 +3268,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       }
                       Some(station_drivers::RunnerFrame::Exit(code_opt, sig_opt)) => {
                         let _ = flush_batch()
-                        st.core.agents.record_adopted_runner_exit(rconn.session_key, code_opt, sig_opt)
+                        st.core.agents.record_adopted_runner_exit(
+                          rconn.session_key,
+                          code_opt,
+                          sig_opt,
+                          instance_id=rconn.instance_id,
+                        )
                         rconn.exited = true
                         if rconn.sock_id >= 0L {
                           let usid = rconn.sock_id
@@ -3441,12 +3739,18 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     accept_admin_alpn: true,
     validate_mode: fn(
       data : String,
-      _ops_fs : station_ops::OpsFs,
+      ops_fs : station_ops::OpsFs,
       cloud : station_cloud::CloudStore,
       now_secs : Double,
-      _sep : String,
+      sep : String,
     ) -> Result[Unit, String] {
-      if cloud.is_rig_only(now_secs) {
+      // Launcher-parity raw `cloud.json` check (`data.rs:202`: `"removed_at": null` is NOT rig-only).
+      let cloud_path = nodepath::join(sep, [data, "mesh", "cloud.json"])
+      let raw_cloud_is_rig = match ops_fs.read_text(cloud_path) {
+        Ok(raw) => is_rig_raw_cloud_json(raw)
+        Err(_) => false
+      }
+      if raw_cloud_is_rig && cloud.is_rig_only(now_secs) {
         return Err("stillfail-station-pion --whole-daemon refuses rig-only station: " + data)
       }
       Ok(())
@@ -3469,6 +3773,83 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         let ws_roots = parse_drive_roots_for_workspace(ctx.cfg_raw, ws, ws == cfg.home_workspace)
         core.api.set_workspace_drive_roots(ws, ws_roots)
       }
+
+      // Mount all 4 Wave 16C edge OS adapters onto the single `ctx.edge_hub` event pump.
+      let replica_dir = nodepath::join(ctx.sep, [ctx.data, "replica"])
+      let replica = match station_whole::ReplicaOsRuntime::open(ctx.ops_fs, replica_dir) {
+        Ok(r) => r
+        Err(e) => return Err("failed to open ReplicaOsRuntime: " + e)
+      }
+      let devices = station_whole::DevicesOsRuntime::new()
+      let terminals = station_whole::TerminalsOsRuntime::new(ctx.data)
+      let logins = station_whole::LoginsOsRuntime::new(None)
+      let hold_hub = station_browser::AgentHoldHubPort::{
+        people_views: fn(_sid : String) -> Array[station_browser::ScreenWatcherView] { [] },
+        has_taken_view: fn(_sid : String) -> Bool { false },
+        yield_to_agent: fn(_sid : String, _agent : String) -> Int { 0 },
+        join_agent: fn(_sid : String, _agent : String) -> Int { 0 },
+        leave_agent: fn(_sid : String, _tok : Int) -> Unit {},
+      }
+      let browser = station_whole::BrowserOsManager::new(
+        ctx.edge_hub,
+        hold_hub,
+        fn(s : String) -> String { s },
+        fn(_cid : String) -> Option[String] { None },
+      )
+      let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
+      let connects = station_whole::ConnectsOsRuntime::new(
+        connect_bridge,
+        ctx.station_key.id,
+        station_whole::ConnectsCallbacks::noop(),
+      )
+      ctx.edge_hub.set_router(fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Bool {
+        connects.handle_mux_reply(tok, done)
+      })
+      let replica_bs_cell : Array[Bool] = [false]
+      core.api.edge_status_fn = Some(fn() -> base_codec::Json {
+        base_codec::json_obj([
+          (
+            "replica",
+            base_codec::json_obj([
+              ("ready", base_codec::json_bool(true)),
+              ("beforeStoreCalled", base_codec::json_bool(replica_bs_cell[0])),
+              ("inFlightMoves", base_codec::json_int(replica.in_flight_moves.length())),
+            ]),
+          ),
+          (
+            "devices",
+            base_codec::json_obj([
+              ("registered", base_codec::json_int(devices.registry.devices.length())),
+              ("terminals", base_codec::json_int(terminals.live_count())),
+              ("logins", base_codec::json_int(logins.live_count())),
+              ("pendingKills", base_codec::json_int(devices.pending_kill_count() + terminals.pending_kill_count() + logins.pending_kill_count())),
+            ]),
+          ),
+          (
+            "browser",
+            base_codec::json_obj([
+              ("running", base_codec::json_int(browser.running_count())),
+              ("pendingKills", base_codec::json_int(browser.pending_kill_count())),
+            ]),
+          ),
+          (
+            "connects",
+            base_codec::json_obj([
+              ("total", base_codec::json_int(connects.connector_count())),
+              ("stopped", base_codec::json_bool(connects.is_stopped())),
+            ]),
+          ),
+          (
+            "mux",
+            base_codec::json_obj([
+              ("deferredSys", base_codec::json_int(ctx.edge_hub.deferred_sys_count())),
+              ("deferredDone", base_codec::json_int(ctx.edge_hub.deferred_done_count())),
+              ("deferredSysDropped", base_codec::json_int64(ctx.edge_hub.deferred_sys_dropped_count())),
+              ("deferredDoneDropped", base_codec::json_int64(ctx.edge_hub.deferred_done_dropped_count())),
+            ]),
+          ),
+        ])
+      })
 
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
@@ -3547,6 +3928,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let now0 = host_shim::now_ms()
       state_opt = Some(WholeRuntimeState::{
         core: core,
+        replica: replica,
+        devices: devices,
+        terminals: terminals,
+        logins: logins,
+        browser: browser,
+        connects: connects,
+        replica_before_store_ok: false,
         mcp_srv: mcp_srv,
         mcp_cb: mcp_cb,
         serve: station_mesh::ServeEndpoint::new(),
@@ -3613,15 +4001,83 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           let live_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
           let w_now = host_shim::wall_ms()
+          let home_ws = st.core.config.home_workspace
+          let before_store_fn = fn(_dir : String) -> Result[Unit, String] {
+            match st.replica.before_store(home_ws, ctx.station_key.id, "station_store", "primary", w_now) {
+              Ok(_) => {
+                st.replica_before_store_ok = true
+                Ok(())
+              }
+              Err(e) => Err(e)
+            }
+          }
           match st.core.open_after_predecessor_gone(
             true,
-            fn(_dir : String) -> Result[Unit, String] { Ok(()) },
+            before_store_fn,
             handover=snap_opt,
             runners=live_runners,
             wait_ms=5000,
             now_ms=w_now,
           ) {
             Ok(_) => {
+              st.replica.after_store(home_ws, ctx.station_key.id, host_shim::wall_ms())
+              // Refresh edge status closure flag after `ReplicaOsRuntime::before_store` succeeds.
+              let bs_ok = st.replica_before_store_ok
+              st.core.api.edge_status_fn = Some(fn() -> base_codec::Json {
+                base_codec::json_obj([
+                  (
+                    "replica",
+                    base_codec::json_obj([
+                      ("ready", base_codec::json_bool(true)),
+                      ("beforeStoreCalled", base_codec::json_bool(bs_ok)),
+                      ("inFlightMoves", base_codec::json_int(st.replica.in_flight_moves.length())),
+                    ]),
+                  ),
+                  (
+                    "devices",
+                    base_codec::json_obj([
+                      ("registered", base_codec::json_int(st.devices.registry.devices.length())),
+                      ("terminals", base_codec::json_int(st.terminals.live_count())),
+                      ("logins", base_codec::json_int(st.logins.live_count())),
+                      ("pendingKills", base_codec::json_int(st.devices.pending_kill_count() + st.terminals.pending_kill_count() + st.logins.pending_kill_count())),
+                    ]),
+                  ),
+                  (
+                    "browser",
+                    base_codec::json_obj([
+                      ("running", base_codec::json_int(st.browser.running_count())),
+                      ("pendingKills", base_codec::json_int(st.browser.pending_kill_count())),
+                    ]),
+                  ),
+                  (
+                    "connects",
+                    base_codec::json_obj([
+                      ("total", base_codec::json_int(st.connects.connector_count())),
+                      ("stopped", base_codec::json_bool(st.connects.is_stopped())),
+                    ]),
+                  ),
+                  (
+                    "mux",
+                    base_codec::json_obj([
+                      ("deferredSys", base_codec::json_int(ctx.edge_hub.deferred_sys_count())),
+                      ("deferredDone", base_codec::json_int(ctx.edge_hub.deferred_done_count())),
+                      ("deferredSysDropped", base_codec::json_int64(ctx.edge_hub.deferred_sys_dropped_count())),
+                      ("deferredDoneDropped", base_codec::json_int64(ctx.edge_hub.deferred_done_dropped_count())),
+                    ]),
+                  ),
+                ])
+              })
+              // Load registered local devices & configured connects after primary store opens.
+              load_devices_for_whole_daemon(
+                ctx.ops_fs,
+                ctx.data,
+                ctx.sep,
+                ctx.cfg_raw,
+                home_ws,
+                st.devices,
+                w_now / 1000L,
+              )
+              load_connects_from_config(ctx.cfg_raw, st.connects)
               // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
@@ -3640,6 +4096,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                         rinfo.runner_pid,
                         rinfo.started_at,
                       )
+                      st.core.agents.set_adopted_instance_active(inst_id, true)
                       st.adopted_runners.set(
                         rcid,
                         AdoptedRunnerConn::{
@@ -4328,13 +4785,32 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
     },
     on_outbound_reply: fn(_ctx : DaemonCtx, _method : String, _ref_id : String, _until_opt : Option[Int64]) -> Unit {},
+    on_sys_event: fn(_ctx : DaemonCtx, ev_id : Int64, sev : station_sys::SysEvent) -> Unit {
+      match state_opt {
+        Some(st) => {
+          let now_sys = host_shim::now_ms()
+          if st.devices.handle_sys_event(ev_id, sev) {
+            return
+          }
+          if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
+          if st.logins.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
+          if st.browser.handle_sys_event(ev_id, sev) {
+            return
+          }
+          let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+        }
+        None => ()
+      }
+    },
     on_extra_host_event: fn(ctx : DaemonCtx, ev : DaemonExtraEvent) -> Unit {
       match state_opt {
         Some(st) => {
           match ev {
-            DaemonExtraEvent::SysEvent(ev_id, sev) => {
-              let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
-            }
+            DaemonExtraEvent::SysEvent(_, _) => ()
             DaemonExtraEvent::DoorDone(tok, d) => {
               let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
             }
@@ -4368,6 +4844,15 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           st.core.on_tick(wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
+          let _ = st.devices.tick_expiry(wall)
+          let _ = st.devices.adb_runner.tick(now)
+          let _ = st.terminals.tick(now)
+          let _ = st.logins.tick(now)
+          let _ = st.browser.tick(now)
+          let _ = st.connects.tick(wall)
+          let _ = ctx.edge_hub.drain_deferred_done(fn(tok : builders_core::MuxToken, d : host_shim::ShellDone) -> Bool {
+            st.connects.handle_mux_reply(tok, d)
+          })
 
           // Poll member connection deadlines (`REFUSED_CLOSE_MS`, expiry, revocation, lock check).
           let now_s = (wall / 1000L).to_double()
@@ -4501,6 +4986,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.handover_exported || !st.core.store.is_primary_open() {
             return Ok(())
           }
+          st.connects.stop()
+          if st.replica.kept_log.entries.length() > 0 {
+            let _ = st.replica.persist_kept_log()
+          }
           match st.core.export_handover(host_shim::wall_ms()) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
@@ -4590,6 +5079,19 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           st.drive_rpc_puts.clear()
           st.rig_put_streams.clear()
           st.mcp_srv.close_with_callbacks(st.mcp_cb)
+
+          // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
+          st.connects.stop()
+          st.browser.stop_all()
+          let _ = st.browser.drain_kills_with_hub(max_ms=500L)
+          st.terminals.stop_all()
+          let _ = st.terminals.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
+          st.logins.stop_all(host_shim::now_ms())
+          let _ = st.logins.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
+          let _ = st.devices.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
+          if st.replica.kept_log.entries.length() > 0 {
+            let _ = st.replica.persist_kept_log()
+          }
 
           // On `SIGUSR2` hot handover: detach job handles WITHOUT killing running jobs so the
           // new daemon adopts them seamlessly. On full shutdown (`SIGTERM`/`SIGINT`): stop managed jobs.

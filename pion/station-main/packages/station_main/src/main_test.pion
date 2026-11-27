@@ -58,11 +58,25 @@ fn assert_true(cond : Bool, msg : String) -> Unit {
   }
 }
 
-test "version line advertises roles:rig and all 8 CLI commands in W12-CLI-Main" {
+test "version line advertises roles:rig,whole and all 8 CLI commands in W17A-Whole-Cutover" {
   let v = version_line()
-  assert_str_eq(v, "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin")
+  assert_str_eq(v, "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin")
   let tokens = v.split(" ")
   assert_true(tokens.length() == 4, "version line must have exactly 4 whitespace-separated tokens")
+}
+
+test "is_rig_raw_cloud_json matches launcher data.rs::is_rig 1:1" {
+  let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let hex_upper = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+  assert_true(!is_rig_raw_cloud_json("{}"), "empty json is not rig")
+  assert_true(!is_rig_raw_cloud_json("{\"workspace\":\"ws-1\"}"), "whole station is not rig")
+  assert_true(!is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\"}}"), "rig missing person is not rig")
+  assert_true(!is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex_upper + "\"}}"), "uppercase hex person is not rig")
+  assert_true(is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"}}"), "pure home rig is rig")
+  assert_true(is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"},\"joined\":[{}]}"), "malformed joined [{}] stays rig")
+  assert_true(!is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"},\"removed_at\":null}"), "removed_at:null disqualifies rig")
+  assert_true(!is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"},\"joined\":[{\"workspace\":\"ws-2\"}]}"), "mixed full joined workspace is not rig")
+  assert_true(is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"},\"joined\":[{\"workspace\":\"ws-2\",\"rig\":{\"owner\":\"u2\",\"person\":\"" + hex + "\"}}]}"), "all-rig joined workspace is rig")
 }
 
 test "cli_main helpers classify all 8 CLI subcommands, parse env, and decode process_usage" {
@@ -328,8 +342,9 @@ test "dispatch_rig_peer_rpc enforces handover hold, UNGATED allowlist, and grant
 }
 
 test "is_rig_raw_cloud_json matches launcher data.rs removed_at key presence check" {
+  let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   assert_true(
-    is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\",\"rig\":{\"owner\":\"u1\",\"person\":\"p1\"}}"),
+    is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"}}"),
     "valid rig cloud.json accepted",
   )
   assert_true(

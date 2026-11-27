@@ -850,9 +850,9 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let inst_b = WholeAgents::runner_instance_id("claude-sess-r7", 1002, 1700000005L)
   wc_assert(inst_a != inst_b, "restarted runner with new PID/startedAt must get distinct instance_id")
   let ordered = coalesce_runner_output_chunks([
-    (inst_a, "out", "1:start".to_bytes()),
-    (inst_a, "err", "2:warning".to_bytes()),
-    (inst_a, "out", "3:done".to_bytes()),
+    (inst_a, "out", 0L, 7L, "1:start".to_bytes()),
+    (inst_a, "err", 0L, 9L, "2:warning".to_bytes()),
+    (inst_a, "out", 7L, 13L, "3:done".to_bytes()),
   ])
   wc_assert(
     ordered.length() == 3 && ordered[0] == "1:start" && ordered[1] == "2:warning" && ordered[2] == "3:done",
@@ -864,14 +864,43 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let zh_part2 = Bytes::new(1)
   zh_part2[0] = (0xAD).to_byte()
   let coalesced = coalesce_runner_output_chunks([
-    (inst_a, "out", zh_part1),
-    (inst_a, "err", "note".to_bytes()),
-    (inst_a, "out", zh_part2),
-    (inst_b, "out", "runner-b".to_bytes()),
+    (inst_a, "out", 0L, 2L, zh_part1),
+    (inst_a, "err", 0L, 4L, "note".to_bytes()),
+    (inst_a, "out", 2L, 3L, zh_part2),
+    (inst_b, "out", 0L, 8L, "runner-b".to_bytes()),
   ])
   wc_assert(
     coalesced.length() == 3 && coalesced[0] == "note" && coalesced[1] == "中" && coalesced[2] == "runner-b",
     "interleaved split UTF-8 must emit complete stderr immediately and coalesce split stdout without U+FFFD",
+  )
+  // W17A R9 P2: offset gap `[23,38) -> [52,66)` MUST NOT stitch "中"[0..2] with "文"[2..3] into "万" (0xE4 0xB8 0x87)!
+  let wen_tail = Bytes::new(1)
+  wen_tail[0] = (0x87).to_byte()
+  let gapped = coalesce_runner_output_chunks([
+    (inst_a, "out", 23L, 38L, zh_part1),
+    (inst_a, "out", 52L, 66L, wen_tail),
+  ])
+  let gapped_joined = gapped.join("")
+  wc_assert(
+    !gapped_joined.contains("万") && gapped.length() == 2,
+    "offset gap must flush prior incomplete tail and never stitch unrelated bytes into '万'",
+  )
+  // W17A R9 P2: active runner holds back incomplete trailing 1..3B UTF-8 without emitting U+FFFD;
+  // once inactive/exited, it flushes the tail.
+  let active_map : Map[String, Bool] = Map::new()
+  active_map.set(inst_a, true)
+  let live_held = coalesce_runner_output_chunks(
+    [(inst_a, "out", 0L, 2L, zh_part1)],
+    active_instances=active_map,
+  )
+  wc_assert(
+    live_held.length() == 0,
+    "active runner must hold back valid incomplete trailing UTF-8 without emitting U+FFFD",
+  )
+  let exited_flushed = coalesce_runner_output_chunks([(inst_a, "out", 0L, 2L, zh_part1)])
+  wc_assert(
+    exited_flushed.length() == 1 && exited_flushed[0].contains("\u{FFFD}"),
+    "exited runner must flush incomplete trailing UTF-8 as U+FFFD",
   )
 
   core.shutdown_pre_handover()

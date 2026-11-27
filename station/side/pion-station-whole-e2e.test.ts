@@ -1,5 +1,5 @@
-// Wave 16B Real-Machine End-to-End Suite for `stillfail-station-pion` Whole Daemon (`whole_daemon.pion`):
-// 1. `--version` remains `roles:rig` (unchanged until W17A cutover) + `--smoke-js-lower` full Unicode parity.
+// Wave 16B/17A Real-Machine End-to-End Suite for `stillfail-station-pion` Whole Daemon (`whole_daemon.pion`):
+// 1. `--version` advertises `roles:rig,whole` (W17A cutover) + `--smoke-js-lower` full Unicode parity.
 // 2. SQLite handover barrier + >= 3 queued RPCs strict FIFO replay + direct iroh `stillfail/http/1` interop
 //    (using production `station/src/mesh/wire.ts` `writeLine` / `Reader`, half-open SSE without client FIN,
 //    `ownPorts` refusal, and `tcp: true` / `probe: true`).
@@ -506,12 +506,12 @@ async function startLocalTestServices(): Promise<{ httpPort: number; tcpPort: nu
 
 const bin = resolvePionBinary();
 
-test("W16B.1: --version stays roles:rig and --smoke-js-lower passes full 0x0001..=0x1E950 + Final_Sigma + NULL + >4096B parity", () => {
+test("W16B.1: --version advertises roles:rig,whole and --smoke-js-lower passes full 0x0001..=0x1E950 + Final_Sigma + NULL + >4096B parity", () => {
   const ver = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 });
   assert.equal(ver.status, 0, ver.stderr);
   assert.equal(
     ver.stdout.trim(),
-    "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin",
+    "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin",
   );
 
   const jsl = spawnSync(bin, ["--smoke-js-lower"], { encoding: "utf8", timeout: 15_000 });
@@ -689,19 +689,9 @@ test("W16B.3-6: REAL Rust Launcher + MB Front: admin/1 JWT auth, anti-escalation
   writeFileSync(join(app, "station", "main.js"), "process.exit(99);\n");
   writeFileSync(join(app, "BUILD"), "9916\n");
 
-  const wrapperPath = join(app, "station", "stillfail-station-pion");
-  writeFileSync(
-    wrapperPath,
-    `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo 'stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin'
-  exit 0
-fi
-export STILLFAIL_PION_WHOLE_DAEMON=1
-exec ${JSON.stringify(bin)} "$@"
-`,
-  );
-  chmodSync(wrapperPath, 0o755);
+  const installedPion = join(app, "station", "stillfail-station-pion");
+  copyFileSync(bin, installedPion);
+  chmodSync(installedPion, 0o755);
 
   const stSeed = randomBytes(32);
   const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
@@ -750,7 +740,7 @@ exec ${JSON.stringify(bin)} "$@"
       ...process.env,
       STILLFAIL_NODE: process.execPath,
       STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
-      STILLFAIL_STATION_PION: wrapperPath,
+      STILLFAIL_STATION_PION: installedPion,
       STILLFAIL_STATION_ENGINE: "pion",
       STILLFAIL_STATION_ENGINE_STRICT: "1",
       STILLFAIL_NO_DISCOVERY: "1",
@@ -2055,19 +2045,9 @@ test("W16B.11: Corrupt snapshot fails takeover while preserved on disk + real la
   chmodSync(join(app, "station", "stillfail-reader"), 0o755);
   writeFileSync(join(app, "station", "main.js"), "process.exit(99);\n");
   writeFileSync(join(app, "BUILD"), "9916\n");
-  const wrapperPath = join(app, "station", "stillfail-station-pion");
-  writeFileSync(
-    wrapperPath,
-    `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo 'stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin'
-  exit 0
-fi
-export STILLFAIL_PION_WHOLE_DAEMON=1
-exec ${JSON.stringify(bin)} "$@"
-`,
-  );
-  chmodSync(wrapperPath, 0o755);
+  const installedPion = join(app, "station", "stillfail-station-pion");
+  copyFileSync(bin, installedPion);
+  chmodSync(installedPion, 0o755);
 
   const frontPort = await pickFreeUdpPort();
   seedWholeDataDir(data, stSeed, stationId, stationId, drive, "ws-ho-fail", grantKeys);
@@ -2078,7 +2058,7 @@ exec ${JSON.stringify(bin)} "$@"
       ...process.env,
       STILLFAIL_NODE: process.execPath,
       STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
-      STILLFAIL_STATION_PION: wrapperPath,
+      STILLFAIL_STATION_PION: installedPion,
       STILLFAIL_STATION_ENGINE: "pion",
       STILLFAIL_STATION_ENGINE_STRICT: "1",
       STILLFAIL_NO_DISCOVERY: "1",
@@ -2264,19 +2244,9 @@ test("W16B.13: ACID adopted-runners.db — (a) pre-ACKed real stillfail-runner +
   writeFileSync(join(app, "station", "main.js"), "process.exit(99);\n");
   writeFileSync(join(app, "BUILD"), "9916\n");
 
-  const wrapperPath = join(app, "station", "stillfail-station-pion");
-  writeFileSync(
-    wrapperPath,
-    `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo 'stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin'
-  exit 0
-fi
-export STILLFAIL_PION_WHOLE_DAEMON=1
-exec ${JSON.stringify(bin)} "$@"
-`,
-  );
-  chmodSync(wrapperPath, 0o755);
+  const installedPion = join(app, "station", "stillfail-station-pion");
+  copyFileSync(bin, installedPion);
+  chmodSync(installedPion, 0o755);
 
   const stSeed = randomBytes(32);
   const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
@@ -2304,7 +2274,7 @@ exec ${JSON.stringify(bin)} "$@"
       ...process.env,
       STILLFAIL_NODE: process.execPath,
       STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
-      STILLFAIL_STATION_PION: wrapperPath,
+      STILLFAIL_STATION_PION: installedPion,
       STILLFAIL_STATION_ENGINE: "pion",
       STILLFAIL_STATION_ENGINE_STRICT: "1",
       STILLFAIL_NO_DISCOVERY: "1",

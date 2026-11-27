@@ -28,6 +28,7 @@ import "station_http"
 import "station_mesh"
 import "station_ops"
 import "station_sys"
+import "station_whole"
 
 // Non-overlapping ShellMux tag encoding (`id * 4 + tag`) so multiple `ShellMux` instances share
 // one `host_shim::wait` loop without ever colliding regardless of connection count.
@@ -138,19 +139,23 @@ pub struct MuxSlot {
   pub mut next_ev : Option[host_shim::HostEvent]
 }
 
-pub fn make_tagged_mux(tag : Int64, slot : MuxSlot) -> builders_core::ShellMux {
+pub fn make_tagged_mux_on(
+  base : builders_core::MuxTransport,
+  tag : Int64,
+  slot : MuxSlot,
+) -> builders_core::ShellMux {
   let transport = builders_core::MuxTransport::{
     call_async: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
-      host_shim::shell_call(encode_mux_id(id, tag), op, json, bytes)
+      (base.call_async)(encode_mux_id(id, tag), op, json, bytes)
     },
     call_sync: fn(op : String, json : String) -> String {
       // sync: ShellMux transport sync callback (rewrites fetch.cancel IDs)
-      host_shim::shell_sync(op, rewrite_tagged_sync_args(op, json, tag))
+      (base.call_sync)(op, rewrite_tagged_sync_args(op, json, tag))
     },
-    write_stdout_line: host_shim::write_stdout_line,
-    write_stdout_frame: host_shim::write_stdout_frame,
-    now_ms: host_shim::now_ms,
-    wall_ms: host_shim::wall_ms,
+    write_stdout_line: base.write_stdout_line,
+    write_stdout_frame: base.write_stdout_frame,
+    now_ms: base.now_ms,
+    wall_ms: base.wall_ms,
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       let ev = slot.next_ev
       slot.next_ev = None
@@ -158,6 +163,10 @@ pub fn make_tagged_mux(tag : Int64, slot : MuxSlot) -> builders_core::ShellMux {
     },
   }
   builders_core::ShellMux::new(transport, start_stdin=false)
+}
+
+pub fn make_tagged_mux(tag : Int64, slot : MuxSlot) -> builders_core::ShellMux {
+  make_tagged_mux_on(builders_core::MuxTransport::host(), tag, slot)
 }
 
 /// Create a `ShellMux` bound to `MUX_TAG_ROLE` (tag 3) for role-owned async work
@@ -790,6 +799,7 @@ pub struct DaemonCtx {
   pub cloud : station_cloud::CloudStore
   pub station_key : station_cloud::StationKey
   pub control : station_ops::LauncherChannel
+  pub edge_hub : station_whole::EdgeMuxHub
   pub mux_door : builders_core::ShellMux
   pub mux_role : builders_core::ShellMux
   log_fn : (String) -> Unit
@@ -1008,6 +1018,8 @@ pub struct DaemonRoleHooks {
   pub on_admin_conn_close : (DaemonCtx, Int64) -> Unit
   /// Notify role of a completed outbound tell reply (`method`, `ref_id`, `until_opt`).
   pub on_outbound_reply : (DaemonCtx, String, String, Option[Int64]) -> Unit
+  /// Handle role-owned `HostEvent::Sys` events drained from the unified `EdgeMuxHub` (PTY/proc/watch).
+  pub on_sys_event : (DaemonCtx, Int64, station_sys::SysEvent) -> Unit
   /// Handle role-owned `station_sys` events and `MUX_TAG_DOOR` / `MUX_TAG_ROLE` shell completions.
   pub on_extra_host_event : (DaemonCtx, DaemonExtraEvent) -> Unit
   /// Fast per-iteration hook (e.g. ticking `door_srv` and announcing its port).
@@ -1260,7 +1272,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     Some(s) => s.origin.length() > 0 && !cloud.removed()
     None => false
   }
-  cloud.peers_current = !has_origin_init
+  // Align with `station/src/cloud/state.ts:484` (`peersCurrent`): the persisted roster in `cloud.json`
+  // remains usable across restarts and cloud presence outages until the station is removed.
+  cloud.peers_current = !has_origin_init || (!cloud.removed() && cloud.state is Some(_))
 
   // Mesh / front / outbound state.
   let mut mesh_ep_id : Option[Int64] = None
@@ -1297,15 +1311,18 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let front_out_by_sock : Map[Int64, Int64] = Map::new()
   let front_early_out_socks : Map[Int64, Int64] = Map::new()
 
-  // Four non-overlapping tagged ShellMux instances backed by a single host_shim::wait loop.
+  // Single process-wide `EdgeMuxHub` owning `host_shim::wait`, driving all four non-overlapping
+  // tagged `ShellMux` instances via `edge_hub.as_mux_transport()` with zero `HostEvent::Sys` loss.
+  let edge_hub = station_whole::EdgeMuxHub::from_host()
+  let hub_transport = edge_hub.as_mux_transport()
   let slot_loopback = MuxSlot::{ next_ev: None }
   let slot_door = MuxSlot::{ next_ev: None }
   let slot_mesh = MuxSlot::{ next_ev: None }
   let slot_role = MuxSlot::{ next_ev: None }
-  let mux_loopback = make_tagged_mux(MUX_TAG_LOOPBACK, slot_loopback)
-  let mux_door = make_tagged_mux(MUX_TAG_DOOR, slot_door)
-  let mux_mesh = make_tagged_mux(MUX_TAG_MESH, slot_mesh)
-  let mux_role = make_role_mux(slot_role)
+  let mux_loopback = make_tagged_mux_on(hub_transport, MUX_TAG_LOOPBACK, slot_loopback)
+  let mux_door = make_tagged_mux_on(hub_transport, MUX_TAG_DOOR, slot_door)
+  let mux_mesh = make_tagged_mux_on(hub_transport, MUX_TAG_MESH, slot_mesh)
+  let mux_role = make_tagged_mux_on(hub_transport, MUX_TAG_ROLE, slot_role)
 
   let enqueue_tell = fn(peer : String, ws : String, request : base_codec::Json) -> Unit {
     if peer.length() == 0 || peer == station_key.id {
@@ -1852,6 +1869,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     cloud: cloud,
     station_key: station_key,
     control: control,
+    edge_hub: edge_hub,
     mux_door: mux_door,
     mux_role: mux_role,
     log_fn: log,
@@ -2761,23 +2779,36 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
 
     let _ = loopback_srv.tick(loopback_cb)
 
-    // Wait up to 50ms for next OS / shell event.
-    // timer: event loop wait slice (50ms)
-    match host_shim::wait(50L) {
+    // Unified single-owner `EdgeMuxHub` event pump (sole `host_shim::wait` owner).
+    // Drain all deferred `HostEvent::Sys` events each turn so `ShellMux` never swallows PTY/proc/control events.
+    let dispatch_sys_event = fn(ev_id : Int64, payload : Bytes) -> Bool {
+      match station_sys::decode_sys_event(payload) {
+        Some(sev) => {
+          if ev_id == EV_CTRL || ev_id == EV_SIG {
+            control.feed_sys_event(sev)
+          } else if ev_id == EV_RUN_WATCH {
+            answer_daemon_heap()
+          } else {
+            (hooks.on_sys_event)(ctx, ev_id, sev)
+          }
+        }
+        None => ()
+      }
+      true
+    }
+    let _ = edge_hub.drain_deferred_sys(dispatch_sys_event)
+    let mut next_ev = (hub_transport.wait)(0L)
+    if next_ev is None && edge_hub.deferred_sys_count() == 0 {
+      // timer: unified EdgeMuxHub event loop wait slice (50ms)
+      let _ = edge_hub.pump_one(50L)
+      let _ = edge_hub.drain_deferred_sys(dispatch_sys_event)
+      next_ev = (hub_transport.wait)(0L)
+    }
+    let _ = edge_hub.drain_deferred_sys(dispatch_sys_event)
+    match next_ev {
       None => ()
       Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
-        match station_sys::decode_sys_event(payload) {
-          Some(sev) => {
-            if ev_id == EV_CTRL || ev_id == EV_SIG {
-              control.feed_sys_event(sev)
-            } else if ev_id == EV_RUN_WATCH {
-              answer_daemon_heap()
-            } else {
-              (hooks.on_extra_host_event)(ctx, DaemonExtraEvent::SysEvent(ev_id, sev))
-            }
-          }
-          None => ()
-        }
+        let _ = dispatch_sys_event(ev_id, payload)
       }
       Some(host_shim::HostEvent::ShellDone(done)) => {
         let (orig_id, mux_tag) = decode_mux_id(done.id)
@@ -4660,7 +4691,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                         let w_ms = host_shim::wall_ms()
                         let w_s = w_ms / 1000L
                         let phase = presence.on_close(code_opt, why, w_s, now_c)
-                        if has_origin {
+                        if cloud.removed() {
                           cloud.peers_current = false
                         }
                         (hooks.on_cloud_changed)(ctx, w_s, w_ms, false)
@@ -4677,7 +4708,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                       Err(_) => {
                         ws_handle = None
                         let _ = ws_client.close_async(owner_id)
-                        if has_origin {
+                        if cloud.removed() {
                           cloud.peers_current = false
                         }
                         // timer: presence reconnect backoff
@@ -4770,13 +4801,13 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     None => ()
   }
 
-  // Drain remaining `station_sys` worker events up to a bounded 5s deadline before stopping `host_shim`.
+  // Drain remaining `station_sys` worker events up to a bounded 5s deadline via `edge_hub` before stopping `host_shim`.
   // timer: bounded shutdown worker drain deadline (5s)
   let drain_deadline = host_shim::now_ms() + 5000L
   while station_sys::active_workers() > 0 && host_shim::now_ms() < drain_deadline {
-    let _ = host_shim::wait(10L)
+    let _ = edge_hub.pump_one(10L)
   }
-  while host_shim::wait(0L) is Some(_) {}
+  while edge_hub.pump_one(0L) {}
   host_shim::stop()
   if handover_failed { 1 } else { 0 }
 }

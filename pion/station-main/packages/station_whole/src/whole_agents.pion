@@ -232,6 +232,7 @@ pub struct WholeAgents {
   pub mut bound_to_workspace : Bool
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
+  pub active_adopted_instances : Map[String, Bool]
   mut adopted_db : Option[sql_db::Db]
   mut adopted_db_closed : Bool
   job_fs : station_jobs::FsPort
@@ -267,6 +268,7 @@ pub fn WholeAgents::new_with_deps(
     bound_to_workspace: true,
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
+    active_adopted_instances: Map::new(),
     adopted_db: None,
     adopted_db_closed: false,
     job_fs: fs,
@@ -934,6 +936,15 @@ fn utf8_complete_prefix_len(b : Bytes) -> Int {
     0
   }
   if expected > 0 && avail < expected {
+    if avail >= 2 {
+      let b1 = b[idx + 1].to_int() & 0xFF
+      if (lead == 0xE0 && b1 < 0xA0)
+      || (lead == 0xED && b1 > 0x9F)
+      || (lead == 0xF0 && b1 < 0x90)
+      || (lead == 0xF4 && b1 > 0x8F) {
+        return n
+      }
+    }
     idx
   } else {
     n
@@ -950,16 +961,23 @@ fn slice_bytes_agents(b : Bytes, start : Int, end : Int) -> Bytes {
 }
 
 /// Stream chunks in exact commit (`id ASC`) order while holding only 0..3 incomplete trailing UTF-8
-/// bytes per `(instance_id, stream)` key so interleaved stdout/stderr preserves exact commit order
-/// and split multi-byte characters never produce `U+FFFD`.
+/// bytes per `(instance_id, stream)` key across offset-contiguous records (`start_off == last_end_off`).
+/// On an offset gap (e.g. Pion -> Node -> Pion skipping `[23,38) -> [52,66)`), the previous trailing
+/// bytes are flushed before decoding the new chunk so unrelated bytes never stitch into a bogus rune.
+/// For still-active (not yet exited) runner instances in `active_instances`, a valid incomplete
+/// 1..3-byte trailing UTF-8 sequence is held back without emitting `U+FFFD` until the next chunk
+/// arrives or the instance exits.
 pub fn coalesce_runner_output_chunks(
-  chunks : Array[(String, String, Bytes)],
+  chunks : Array[(String, String, Int64, Int64, Bytes)],
+  active_instances : Map[String, Bool] = Map::new(),
 ) -> Array[String] {
   let out : Array[String] = []
   let pending_utf8 : Map[String, Bytes] = Map::new()
+  let pending_inst : Map[String, String] = Map::new()
+  let last_end_off : Map[String, Int64] = Map::new()
   let pending_order : Array[String] = []
   for i in 0..<chunks.length() {
-    let (inst, stream, data) = chunks[i]
+    let (inst, stream, start_off, end_off, data) = chunks[i]
     if data.length() == 0 {
       continue
     }
@@ -969,18 +987,30 @@ pub fn coalesce_runner_output_chunks(
         if prev.length() == 0 {
           data
         } else {
-          let merged = Bytes::new(prev.length() + data.length())
-          for j in 0..<prev.length() {
-            merged[j] = prev[j]
+          let contiguous = match last_end_off.get(key) {
+            Some(prev_end) => prev_end == start_off
+            None => false
           }
-          for j in 0..<data.length() {
-            merged[prev.length() + j] = data[j]
+          if contiguous {
+            let merged = Bytes::new(prev.length() + data.length())
+            for j in 0..<prev.length() {
+              merged[j] = prev[j]
+            }
+            for j in 0..<data.length() {
+              merged[prev.length() + j] = data[j]
+            }
+            merged
+          } else {
+            // Offset gap: flush prior incomplete tail before decoding the new non-contiguous chunk.
+            out.push(sql_db::decode_utf8_lossy_bytes(prev))
+            pending_utf8.set(key, Bytes::new(0))
+            data
           }
-          merged
         }
       }
       None => data
     }
+    last_end_off.set(key, end_off)
     let complete_len = utf8_complete_prefix_len(combined)
     if complete_len > 0 {
       let head = if complete_len == combined.length() {
@@ -996,6 +1026,7 @@ pub fn coalesce_runner_output_chunks(
         pending_order.push(key)
       }
       pending_utf8.set(key, tail)
+      pending_inst.set(key, inst)
     } else if pending_utf8.get(key).is_some() {
       pending_utf8.set(key, Bytes::new(0))
     }
@@ -1005,7 +1036,13 @@ pub fn coalesce_runner_output_chunks(
     match pending_utf8.get(key) {
       Some(rem) => {
         if rem.length() > 0 {
-          out.push(sql_db::decode_utf8_lossy_bytes(rem))
+          let is_active = match pending_inst.get(key) {
+            Some(inst) => active_instances.contains(inst)
+            None => false
+          }
+          if !is_active {
+            out.push(sql_db::decode_utf8_lossy_bytes(rem))
+          }
         }
       }
       None => ()
@@ -1092,6 +1129,95 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
       Err(e) => {
         db.close()
         return Err("init adopted-runners.db failed: " + e.message)
+      }
+    }
+  }
+  // PRAGMA user_version = 1 migration: recompute `runner_session_totals` for all sessions from
+  // `runner_output`, enforce the 16 MiB ring-buffer retention trim, and bump `user_version = 1`
+  // atomically inside a single transaction.
+  let cur_ver = match db.first("PRAGMA user_version;", []) {
+    Ok(Some(row)) => adopted_row_i64(row, "user_version")
+    Ok(None) => 0L
+    Err(e) => {
+      db.close()
+      return Err("read adopted-runners.db user_version failed: " + e.message)
+    }
+  }
+  if cur_ver < 1L {
+    match db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      match tx.run("DELETE FROM runner_session_totals", []) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match tx.run(
+        "INSERT INTO runner_session_totals (session_key, total_bytes) " +
+        "SELECT session_key, COALESCE(SUM(byte_len), 0) FROM runner_output GROUP BY session_key",
+        [],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let over = match tx.all(
+        "SELECT session_key, total_bytes FROM runner_session_totals WHERE total_bytes > ?1",
+        [sql_db::int64_to_json(RUNNER_OUTPUT_MAX_BYTES)],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      for oi in 0..<over.length() {
+        let skey = adopted_row_str(over[oi], "session_key")
+        let mut remaining = adopted_row_i64(over[oi], "total_bytes")
+        while remaining > RUNNER_OUTPUT_MAX_BYTES {
+          let rows = match tx.all(
+            "SELECT id, byte_len FROM runner_output WHERE session_key = ?1 ORDER BY id ASC LIMIT 64",
+            [base_codec::json_str(skey)],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(e)
+          }
+          if rows.length() == 0 {
+            break
+          }
+          let mut max_drop_id = -1L
+          let mut dropped_bytes = 0L
+          for ri in 0..<rows.length() {
+            if remaining <= RUNNER_OUTPUT_MAX_BYTES {
+              break
+            }
+            let rid = adopted_row_i64(rows[ri], "id")
+            let rlen = adopted_row_i64(rows[ri], "byte_len")
+            remaining = remaining - rlen
+            dropped_bytes = dropped_bytes + rlen
+            max_drop_id = rid
+          }
+          if max_drop_id < 0L {
+            break
+          }
+          match tx.run(
+            "DELETE FROM runner_output WHERE session_key = ?1 AND id <= ?2",
+            [base_codec::json_str(skey), sql_db::int64_to_json(max_drop_id)],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match tx.run(
+            "UPDATE runner_session_totals SET total_bytes = MAX(0, total_bytes - ?1) WHERE session_key = ?2",
+            [sql_db::int64_to_json(dropped_bytes), base_codec::json_str(skey)],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      match tx.exec("PRAGMA user_version = 1;") {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(_) => ()
+      Err(e) => {
+        db.close()
+        return Err("migrate adopted-runners.db v1 failed: " + e.message)
       }
     }
   }
@@ -1410,11 +1536,11 @@ pub fn WholeAgents::read_adopted_runner_output(
     Ok(d) => d
     Err(_) => return []
   }
-  let chunks : Array[(String, String, Bytes)] = []
+  let chunks : Array[(String, String, Int64, Int64, Bytes)] = []
   let mut after_id = 0L
   while true {
     let rows = match db.all(
-      "SELECT id, instance_id, stream, data_b64 FROM runner_output WHERE session_key = ?1 AND id > ?2 ORDER BY id ASC LIMIT 512",
+      "SELECT id, instance_id, stream, start_off, end_off, data_b64 FROM runner_output WHERE session_key = ?1 AND id > ?2 ORDER BY id ASC LIMIT 512",
       [base_codec::json_str(session_key), sql_db::int64_to_json(after_id)],
     ) {
       Ok(r) => r
@@ -1428,9 +1554,11 @@ pub fn WholeAgents::read_adopted_runner_output(
       }
       let inst = adopted_row_str(row, "instance_id")
       let stream = adopted_row_str(row, "stream")
+      let start_off = adopted_row_i64(row, "start_off")
+      let end_off = adopted_row_i64(row, "end_off")
       let b64 = adopted_row_str(row, "data_b64")
       match base_codec::base64_decode(b64) {
-        Some(raw) => chunks.push((inst, stream, raw))
+        Some(raw) => chunks.push((inst, stream, start_off, end_off, raw))
         None => ()
       }
     }
@@ -1438,7 +1566,20 @@ pub fn WholeAgents::read_adopted_runner_output(
       break
     }
   }
-  coalesce_runner_output_chunks(chunks)
+  coalesce_runner_output_chunks(chunks, active_instances=self.active_adopted_instances)
+}
+
+/// Mark an adopted runner instance active (streaming) or inactive (exited/disconnected).
+pub fn WholeAgents::set_adopted_instance_active(
+  self : WholeAgents,
+  instance_id : String,
+  active : Bool,
+) -> Unit {
+  if active {
+    self.active_adopted_instances.set(instance_id, true)
+  } else {
+    self.active_adopted_instances.remove(instance_id)
+  }
 }
 
 /// Record clean exit status of an adopted runner for `session_key`.
@@ -1447,8 +1588,12 @@ pub fn WholeAgents::record_adopted_runner_exit(
   session_key : String,
   code : Option[Int],
   signal : Option[String],
+  instance_id : String = "",
 ) -> Unit {
   self.adopted_runner_exits.set(session_key, (code, signal))
+  if instance_id.length() > 0 {
+    self.active_adopted_instances.remove(instance_id)
+  }
 }
 
 /// Build a real OS driver launch spec for any of the 10 CLI coding-agent runtimes using

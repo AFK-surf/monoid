@@ -1085,48 +1085,54 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         }
       }
     },
+    on_sys_event: fn(_ctx : DaemonCtx, ev_id : Int64, sev : station_sys::SysEvent) -> Unit {
+      match state_opt {
+        Some(st) => {
+          if st.active_vault_runs.contains(ev_id) {
+            match st.active_vault_runs.get(ev_id) {
+              Some(run) => {
+                match sev {
+                  station_sys::SysEvent::ProcStdout(chunk) => {
+                    let (next_b, was_cut) = append_capped(run.stdout_buf, chunk, VAULT_OUTPUT_MAX)
+                    run.stdout_buf = next_b
+                    if was_cut {
+                      run.cut = true
+                    }
+                  }
+                  station_sys::SysEvent::ProcStderr(chunk) => {
+                    let (next_b, was_cut) = append_capped(run.stderr_buf, chunk, VAULT_OUTPUT_MAX)
+                    run.stderr_buf = next_b
+                    if was_cut {
+                      run.cut = true
+                    }
+                  }
+                  station_sys::SysEvent::ProcStdoutEof => run.stdout_eof = true
+                  station_sys::SysEvent::ProcStderrEof => run.stderr_eof = true
+                  station_sys::SysEvent::ProcExit(es) => {
+                    run.exited = true
+                    run.exit_code = if es.signal == 0 { Some(es.code) } else { None }
+                    run.exit_signal = if es.signal != 0 { Some(es.signal_name) } else { None }
+                  }
+                  _ => ()
+                }
+                if run.exited && run.stdout_eof && run.stderr_eof {
+                  (st.finish_vault_run)(run)
+                }
+              }
+              None => ()
+            }
+          } else {
+            let _ = st.job_mgr.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+          }
+        }
+        None => ()
+      }
+    },
     on_extra_host_event: fn(_ctx : DaemonCtx, ev : DaemonExtraEvent) -> Unit {
       match state_opt {
         Some(st) => {
           match ev {
-            DaemonExtraEvent::SysEvent(ev_id, sev) => {
-              if st.active_vault_runs.contains(ev_id) {
-                match st.active_vault_runs.get(ev_id) {
-                  Some(run) => {
-                    match sev {
-                      station_sys::SysEvent::ProcStdout(chunk) => {
-                        let (next_b, was_cut) = append_capped(run.stdout_buf, chunk, VAULT_OUTPUT_MAX)
-                        run.stdout_buf = next_b
-                        if was_cut {
-                          run.cut = true
-                        }
-                      }
-                      station_sys::SysEvent::ProcStderr(chunk) => {
-                        let (next_b, was_cut) = append_capped(run.stderr_buf, chunk, VAULT_OUTPUT_MAX)
-                        run.stderr_buf = next_b
-                        if was_cut {
-                          run.cut = true
-                        }
-                      }
-                      station_sys::SysEvent::ProcStdoutEof => run.stdout_eof = true
-                      station_sys::SysEvent::ProcStderrEof => run.stderr_eof = true
-                      station_sys::SysEvent::ProcExit(es) => {
-                        run.exited = true
-                        run.exit_code = if es.signal == 0 { Some(es.code) } else { None }
-                        run.exit_signal = if es.signal != 0 { Some(es.signal_name) } else { None }
-                      }
-                      _ => ()
-                    }
-                    if run.exited && run.stdout_eof && run.stderr_eof {
-                      (st.finish_vault_run)(run)
-                    }
-                  }
-                  None => ()
-                }
-              } else {
-                let _ = st.job_mgr.handle_sys_event(ev_id, sev, host_shim::wall_ms())
-              }
-            }
+            DaemonExtraEvent::SysEvent(_, _) => ()
             DaemonExtraEvent::DoorDone(tok, d) => {
               let _ = st.door_srv.handle_done(tok, d, st.door_cb)
             }

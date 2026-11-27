@@ -261,6 +261,17 @@ pub fn EdgeMuxHub::host(
   )
 }
 
+/// Alias for `EdgeMuxHub::host` used by `daemon_core` as the sole process-wide `host_shim::wait` owner.
+pub fn EdgeMuxHub::from_host(
+  max_deferred_done : Int = EDGE_MUX_MAX_DEFERRED_DONE,
+  max_deferred_sys : Int = EDGE_MUX_MAX_DEFERRED_SYS,
+) -> EdgeMuxHub {
+  EdgeMuxHub::host(
+    max_deferred_done=max_deferred_done,
+    max_deferred_sys=max_deferred_sys,
+  )
+}
+
 /// Convenience wrapper adopting a `ShellMux`'s underlying `MuxTransport` directly with a
 /// disjoint high call-ID space (`EDGE_MUX_CALL_ID_BASE = 1 << 44`).
 /// NOTE: Any coexisting `ShellMux` on the same host shell MUST be constructed via

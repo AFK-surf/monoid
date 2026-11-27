@@ -38,23 +38,83 @@ pub fn parse_rig_run_args(
 /// Launcher-parity `is_rig` check on raw `cloud.json` text (`station/native/launcher/src/data.rs:202`):
 /// returns `true` iff top-level JSON is an object with an object `rig` field AND NO `removed_at` key
 /// (even `"removed_at": null` MUST return `false` to match the Rust launcher).
+fn is_hex32_lower(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let b = s.code_unit_at(i) & 0xFF
+    let ok = (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn rig_self_valid_json(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Obj(_) => {
+      let owner_ok = match base_codec::json_get(v, "owner") {
+        Some(base_codec::Json::Str(s)) => s.length() > 0
+        _ => false
+      }
+      let person_ok = match base_codec::json_get(v, "person") {
+        Some(base_codec::Json::Str(s)) => is_hex32_lower(s)
+        _ => false
+      }
+      owner_ok && person_ok
+    }
+    _ => false
+  }
+}
+
+/// 1:1 parity with `station/native/launcher/src/data.rs::is_rig` and TS `isRig`:
+/// enrolled (`workspace` non-empty string), `removed_at` key absent (even `null` disqualifies),
+/// home `rig` is valid `RigSelf`, and every `joined` item with a non-empty `workspace` has valid `RigSelf`.
 pub fn is_rig_raw_cloud_json(raw : String) -> Bool {
   match base_codec::json_parse(raw) {
     base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fields)) => {
-      let mut has_rig = false
+      let mut enrolled = false
+      let mut home_rig = false
+      let mut joined_rig = true
       for i in 0..<fields.length() {
         let (k, v) = fields[i]
         if k == "removed_at" {
           return false
         }
-        if k == "rig" {
+        if k == "workspace" {
           match v {
-            base_codec::Json::Obj(_) => has_rig = true
+            base_codec::Json::Str(s) => if s.length() > 0 { enrolled = true }
+            _ => ()
+          }
+        } else if k == "rig" {
+          home_rig = rig_self_valid_json(v)
+        } else if k == "joined" {
+          match v {
+            base_codec::Json::Arr(items) => {
+              for ji in 0..<items.length() {
+                let it = items[ji]
+                let has_ws = match base_codec::json_get(it, "workspace") {
+                  Some(base_codec::Json::Str(ws)) => ws.length() > 0
+                  _ => false
+                }
+                if has_ws {
+                  let item_rig_ok = match base_codec::json_get(it, "rig") {
+                    Some(rv) => rig_self_valid_json(rv)
+                    None => false
+                  }
+                  if !item_rig_ok {
+                    joined_rig = false
+                  }
+                }
+              }
+            }
             _ => ()
           }
         }
       }
-      has_rig
+      enrolled && home_rig && joined_rig
     }
     _ => false
   }

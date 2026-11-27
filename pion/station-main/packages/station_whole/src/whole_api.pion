@@ -249,6 +249,7 @@ pub struct WholeApi {
   pub host_cache : station_api::HostCache
   pub cpu_window : station_api::CpuWindow
   pub mut read_only_handover : Bool
+  pub mut edge_status_fn : Option[() -> base_codec::Json]
   request_now_cell : Array[Int64]
 }
 
@@ -285,6 +286,7 @@ pub fn WholeApi::new_with_ports(
     host_cache: station_api::HostCache::new(),
     cpu_window: station_api::CpuWindow::new(),
     read_only_handover: true,
+    edge_status_fn: None,
     request_now_cell: [0L],
   }
 }
@@ -1206,6 +1208,7 @@ pub fn WholeApi::new(
     host_cache: station_api::HostCache::new(),
     cpu_window: station_api::CpuWindow::new(),
     read_only_handover: true,
+    edge_status_fn: None,
     request_now_cell: request_now_cell,
   }
 }
@@ -1483,8 +1486,20 @@ pub fn WholeApi::handle_authenticated_api_with_status(
       waiting: [],
       health: None,
     })
+    let base_status_json = st_out.to_json()
+    let final_status_json = match (self.edge_status_fn, base_status_json) {
+      (Some(edge_fn), base_codec::Json::Obj(fields)) => {
+        let out_fields : Array[(String, base_codec::Json)] = []
+        for fi in 0..<fields.length() {
+          out_fields.push(fields[fi])
+        }
+        out_fields.push(("edge", edge_fn()))
+        base_codec::json_obj(out_fields)
+      }
+      _ => base_status_json
+    }
     return station_http::HandlerAction::Respond(
-      station_api::json_ok(st_out.to_json())
+      station_api::json_ok(final_status_json)
       .with_header(station_api::BUILD_HEADER, self.auth_policy.station_build),
     )
   }

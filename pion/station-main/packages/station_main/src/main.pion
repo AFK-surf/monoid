@@ -1,18 +1,20 @@
-// Entrypoint for `stillfail-station-pion` (W12-Rig-Main + W12-CLI-Main: `roles:rig` daemon,
-// all 8 CLI subcommands `id,status,lock,channel,enroll,update,heap,admin`, and W10-A/W10-B smoke).
+// Entrypoint for `stillfail-station-pion` (`roles:rig,whole` daemon with automatic `is_rig`
+// routing, all 8 CLI subcommands `id,status,lock,channel,enroll,update,heap,admin`, and smoke).
 
 import "base_codec"
 import "builders_core"
 import "host_shim"
 import "jscase"
+import "nodepath"
 import "sql_db"
 import "sse"
 import "station_http"
+import "station_ops"
 import "station_store"
 import "station_sys"
 
 pub fn version_line() -> String {
-  "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin"
+  "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin"
 }
 
 pub fn usage_line() -> String {
@@ -699,8 +701,23 @@ fn should_run_whole_daemon(argv : Array[String]) -> Bool {
     }
   }
   match station_sys::env_get("STILLFAIL_PION_WHOLE_DAEMON") {
-    Some("1") => true
-    _ => false
+    Some("1") => return true
+    _ => ()
+  }
+  // Auto-route 1:1 with `station/native/launcher/src/data.rs::is_rig` & TS `isRig`:
+  // only explicitly rig-only stations (`cloud.json`) run `rig_daemon`; everything else
+  // (including unenrolled or whole stations) routes directly to `whole_daemon`.
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let home = station_sys::homedir()
+  let env_data = station_sys::env_get("STILLFAIL_DATA")
+  let data = match parse_daemon_run_args(argv, env_data, home, sep=sep) {
+    Ok(parsed) => parsed.data
+    Err(_) => station_ops::data_dir([], env_data, home, sep=sep)
+  }
+  let cloud_path = nodepath::join(sep, [data, "mesh", "cloud.json"])
+  match station_sys::read_file_strict(cloud_path) {
+    Ok(raw) => !is_rig_raw_cloud_json(raw.to_string())
+    Err(_) => true
   }
 }
 
