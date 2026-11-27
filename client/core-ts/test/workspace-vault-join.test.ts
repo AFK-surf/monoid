@@ -8,10 +8,10 @@ import { Effect } from "effect";
 import { STORAGE_KEY } from "../src/accounts.ts";
 import { type Entry, entryHash, next } from "../src/lock.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
-import type { HttpRequest, HttpResponse } from "../src/host.ts";
+import type { HttpRequest } from "../src/host.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
-import { type FakeHost, jsonResponse } from "../src/testing.ts";
+import type { FakeHost } from "../src/testing.ts";
 import { hex, utf8 } from "../src/util.ts";
 import {
   type BoxCert, type Item, type JoinAsk, type JoinDismiss, type Vault,
@@ -21,7 +21,7 @@ import { vaultAsks, vaultCome, vaultsView } from "../src/views/vault.ts";
 import { signerKnown } from "../src/views/lock.ts";
 import { account, call } from "./helpers.ts";
 import { withoutMesh } from "./lock-rig.ts";
-import { started, stationLater, stationReplies, status } from "./station-fixture.ts";
+import { started, stationReplies, status } from "./station-fixture.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 
@@ -612,7 +612,7 @@ test("Stage 2 non-safe-mode: vault-joins-changed refreshes /vault/boxes chains s
   }
 });
 
-test("Stage 2 two-station authoritative serialization: delay, disconnect, reconnect, replica isolation, and s1=vault_unknown fallback", async () => {
+test("Stage 2 two-station fail-open liveness: sleeping s1 never blocks requestJoin, cancelJoin, or addMember failover to online s2", async () => {
   const AT = "x-test-station";
   const aliceSeed = fill(221), bobSeed = fill(222);
   const aliceDev = "a9".repeat(32), bobDev = "b9".repeat(32);
@@ -634,8 +634,6 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
   const s1 = joinStation({ roles: { alice: "owner", bob: "member" } });
   const s2 = joinStation({ roles: { alice: "owner", bob: "member" } });
   const stations: Record<string, ReturnType<typeof joinStation>> = { s1, s2 };
-  let holdS1Join: (() => void) | null = null;
-  let holdS1Enabled = false;
 
   const makeTwoStationDevice = async (sub: string, email: string, devId: string, signerSeed: Uint8Array) => {
     const signer = edKey(signerSeed);
@@ -660,24 +658,6 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
           { id: "s2", name: "beta", online: true, last_seen: null },
         ],
       };
-      stationLater(x.host, (req: HttpRequest): Promise<HttpResponse> | undefined => {
-        const sid = req.headers.find(([k]) => k === AT)?.[1] ?? "s1";
-        const path = req.url.replace("https://stillfail.test/admin/api", "");
-        if (holdS1Enabled && sid === "s1" && req.method === "PUT" && path.startsWith("/vault/joins")) {
-          return new Promise<HttpResponse>((resolve) => {
-            holdS1Join = () => {
-              const out = s1.replyFor(sub)(req);
-              if (out instanceof status(200, {}).constructor) {
-                const st = out as { code: number; body: unknown };
-                resolve(jsonResponse(st.code, st.body));
-              } else {
-                resolve(jsonResponse(200, out));
-              }
-            };
-          });
-        }
-        return undefined;
-      });
       stationReplies(x.host, (req: HttpRequest) => {
         const sid = req.headers.find(([k]) => k === AT)?.[1] ?? "s1";
         return stations[sid]?.replyFor(sub)(req);
@@ -694,15 +674,12 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
     vaultCome(s.core.inner, "ws");
     const ui = s.core.connect();
     let nextId = 500;
-    const startCall = (name: string, params: Record<string, unknown> = {}) => {
+    const askRaw = async (name: string, params: Record<string, unknown> = {}) => {
       const id = ++nextId;
       s.host.takeEmitted();
       call(s.core, ui, id, name, { workspace: "ws", ...params });
-      return id;
-    };
-    const awaitCall = async (id: number, name: string, maxSteps = 60) => {
       let found: any;
-      for (let i = 0; i < maxSteps && found === undefined; i++) {
+      for (let i = 0; i < 60 && found === undefined; i++) {
         await s.host.time.pass(50);
         for (const [, m] of s.host.takeEmitted()) {
           const r = m as any;
@@ -713,12 +690,12 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
       return found;
     };
     const ask = async (name: string, params: Record<string, unknown> = {}) => {
-      const r = await awaitCall(startCall(name, params), name);
+      const r = await askRaw(name, params);
       assert.equal(r.error, undefined, `${name}: ${JSON.stringify(r.error)}`);
       return r.ok as any;
     };
     const askErr = async (name: string, params: Record<string, unknown> = {}) => {
-      const r = await awaitCall(startCall(name, params), name);
+      const r = await askRaw(name, params);
       assert.ok(r.error !== undefined, `${name}: expected error, got ${JSON.stringify(r.ok)}`);
       return r.error as { code: string; message: string };
     };
@@ -731,7 +708,7 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
       await s.host.time.pass(400);
       s.host.takeEmitted();
     };
-    return { core: s.core, host: s.host, startCall, awaitCall, ask, askErr, sync };
+    return { core: s.core, host: s.host, ask, askErr, sync };
   };
 
   const alice = await makeTwoStationDevice("alice", "alice@x.com", aliceDev, aliceSeed);
@@ -740,86 +717,43 @@ test("Stage 2 two-station authoritative serialization: delay, disconnect, reconn
     await alice.ask("vault.setup", {});
     const created = await alice.ask("vault.create", { name: "TwoStation Vault", scope: "workspace", members: ["alice"] });
     const wsVaultId = created.id as string;
-    // Ensure both s1 and s2 hold the vault.
     s2.vaults.set(wsVaultId, s1.vaults.get(wsVaultId)!);
     await alice.sync();
     await bob.sync();
 
-    // 1. Bob requests join -> confirms on s1 FIRST, then replicates to s2!
-    s1.joinWriteLog.length = 0;
-    s2.joinWriteLog.length = 0;
-    const reqRes = await bob.ask("vault.requestJoin", { vault: wsVaultId });
-    assert.equal(reqRes.alreadyMember, false);
-    assert.equal(s1.joinWriteLog.length, 1);
-    assert.equal(s2.joinWriteLog.length, 1);
+    // 1. Lower-id station s1 goes to sleep (offline) while s2 stays online:
+    //    Bob MUST still be able to requestJoin & cancelJoin via s2 (fail-open liveness)!
+    s1.setOffline(true);
+    const reqWhileS1Down = await bob.ask("vault.requestJoin", { vault: wsVaultId });
+    assert.equal(reqWhileS1Down.alreadyMember, false);
+    assert.equal(reqWhileS1Down.asked, 1);
     await alice.sync();
     const askRow = (vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId).joinRequests[0];
 
-    // 2. Delay s1 while s2 would answer fast AND lie `alreadyMember: true`: cancelJoin MUST wait for s1,
-    //    never touch s2 before s1 confirms, and ignore s2's lie!
-    s1.joinWriteLog.length = 0;
-    s2.joinWriteLog.length = 0;
-    s2.setLieAlreadyMemberOnJoin(true);
-    holdS1Enabled = true;
-    holdS1Join = null;
-    const cancelCallId = bob.startCall("vault.cancelJoin", { vault: wsVaultId });
-    for (let i = 0; i < 10 && holdS1Join === null; i++) await bob.host.time.pass(50);
-    assert.ok(holdS1Join !== null, "cancelJoin must wait on authoritative s1");
-    assert.equal(s2.joinWriteLog.length, 0, "replica s2 must NOT be written before authoritative s1 confirms");
-    // Now release s1 -> s1 confirms cancelled, THEN s2 is replicated, and s2's alreadyMember lie does NOT override s1!
-    holdS1Enabled = false;
-    (holdS1Join as () => void)();
-    const cancelOut = await bob.awaitCall(cancelCallId, "vault.cancelJoin");
-    assert.equal(cancelOut.error, undefined);
-    assert.deepEqual(cancelOut.ok, { cancelled: true, alreadyMember: false }, "authoritative s1 result must win over replica s2");
-    assert.equal(s1.joinWriteLog.length, 1);
-    assert.equal(s2.joinWriteLog.length, 1);
-    s2.setLieAlreadyMemberOnJoin(false);
+    const cancelWhileS1Down = await bob.ask("vault.cancelJoin", { vault: wsVaultId });
+    assert.deepEqual(cancelWhileS1Down, { cancelled: true, alreadyMember: false });
 
-    // 3. Re-request join, then disconnect s1 while s2 stays online:
-    //    BOTH Bob's cancelJoin AND Alice's explicit addMember MUST fail (never falling over to replica s2)!
+    // Alice trying to approve the cancelled ask fails over to online s2 and gets atomic 409 join_cancelled!
+    const errCancelledOnS2 = await alice.askErr("vault.addMember", {
+      vault: wsVaultId, sub: "bob", askAt: askRow.at, askDevice: askRow.device, askBox: askRow.box, askSig: askRow.sig,
+    });
+    assert.equal(errCancelledOnS2.code, "join_cancelled");
+
+    // 2. Bob re-requests while s1 is STILL sleeping -> Alice approves via online s2 -> succeeds with Bob's wrapped key!
     await bob.ask("vault.requestJoin", { vault: wsVaultId });
     await alice.sync();
     const askRow2 = (vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId).joinRequests[0];
-    s1.setOffline(true);
-    s2.joinWriteLog.length = 0;
-    const cancelOffline = await bob.askErr("vault.cancelJoin", { vault: wsVaultId });
-    assert.equal(cancelOffline.code, "vault_ask_unsent");
-    assert.equal(s2.joinWriteLog.length, 0, "disconnected s1 must NOT fall over to s2 on cancelJoin");
-    const approveOffline = await alice.askErr("vault.addMember", {
+    const approvedOnS2 = await alice.ask("vault.addMember", {
       vault: wsVaultId, sub: "bob", askAt: askRow2.at, askDevice: askRow2.device, askBox: askRow2.box, askSig: askRow2.sig,
     });
-    assert.equal(approveOffline.code, "vault_station_offline");
-    assert.ok(!s2.vaults.get(wsVaultId)!.members.includes("bob"), "disconnected s1 must NOT let addMember commit on s2");
+    assert.equal(approvedOnS2.added, true);
+    assert.equal(approvedOnS2.keyedDevices, 1);
+    assert.ok(s2.vaults.get(wsVaultId)!.members.includes("bob"));
 
-    // 4. Reconnect s1 -> cancelJoin confirms on s1 & replicates to s2, then Alice's stale approval gets 409 join_cancelled!
-    s1.setOffline(false);
-    const cancelAfterReconnect = await bob.ask("vault.cancelJoin", { vault: wsVaultId });
-    assert.deepEqual(cancelAfterReconnect, { cancelled: true, alreadyMember: false });
-    const approveAfterCancel = await alice.askErr("vault.addMember", {
-      vault: wsVaultId, sub: "bob", askAt: askRow2.at, askDevice: askRow2.device, askBox: askRow2.box, askSig: askRow2.sig,
-    });
-    assert.equal(approveAfterCancel.code, "join_cancelled");
-    assert.ok(askRow.sig.length > 0);
-
-    // 5. Vault held ONLY on s2 (`s1` answers 404 vault_unknown): requestJoin, cancelJoin, and explicit addMember
-    //    all skip s1 and serialize cleanly on s2!
-    s1.blockedVaults.add(wsVaultId);
-    s1.vaults.delete(wsVaultId);
-    s1.joins.clear();
-    await alice.sync();
-    await bob.sync();
-    const s2Req = await bob.ask("vault.requestJoin", { vault: wsVaultId });
-    assert.equal(s2Req.alreadyMember, false);
-    assert.equal(s2Req.asked, 1);
-    await alice.sync();
-    const s2Ask = (vaultsView(alice.core.inner, "ws") as any).vaults.find((v: any) => v.id === wsVaultId).joinRequests[0];
-    const s2Cancel = await bob.ask("vault.cancelJoin", { vault: wsVaultId });
-    assert.deepEqual(s2Cancel, { cancelled: true, alreadyMember: false });
-    const s2ApproveCancelled = await alice.askErr("vault.addMember", {
-      vault: wsVaultId, sub: "bob", askAt: s2Ask.at, askDevice: s2Ask.device, askBox: s2Ask.box, askSig: s2Ask.sig,
-    });
-    assert.equal(s2ApproveCancelled.code, "join_cancelled");
+    // 3. When BOTH s1 and s2 are offline, explicit approval refuses local fallback (`vault_station_offline`).
+    s2.setOffline(true);
+    const errBothDown = await alice.askErr("vault.removeMember", { vault: wsVaultId, sub: "bob" });
+    assert.equal(errBothDown.code, "vault_station_offline");
   } finally {
     alice.core.close();
     bob.core.close();

@@ -147,29 +147,10 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
       },
     },
     {
-      method: "GET",
-      pattern: /^\/vault\/vaults\/trail$/,
-      handle: async (r) => {
-        const l = locked(r);
-        if (isAnswer(l)) return l;
-        const of = param(r, "vault");
-        const afterSeqRaw = param(r, "afterSeq");
-        const afterSeq = afterSeqRaw !== undefined && /^-?\d+$/.test(afterSeqRaw) ? Number(afterSeqRaw) : -1;
-        const current = of ? vaults.vault(l.ws, of) : null;
-        if (current === null || !sees(current, r.viewer) || current.scope !== "workspace") {
-          return refuse(404, "vault_unknown", "no such workspace vault here, or not one of yours");
-        }
-        return json(200, JSON.stringify({ trail: vaults.memberTrail(l.ws, current.id, afterSeq, 32) }));
-      },
-    },
-    {
-      // The latest versions of vaults the viewer was a member of, each shown by a version naming them that was validly
-      // signed (`held`): how a device taken out of a vault (or one that was away as it was) knows it was, rather than
-      // taking a station's not listing it for it. Nothing for one the viewer was never shown.
-      // For workspace vaults, verifies real historical membership recorded by this station (working even if the
-      // historical signer was later removed from the vault or demoted from workspace admin), or a witness signed by a
-      // current managing vault member — completely blocking forged witnesses by unjoined admins (for themselves or
-      // third parties).
+      // The latest versions of vaults the viewer was a member of, each shown by a version naming them that its owner's
+      // or a workspace admin's device signed (`held`): how a device taken out of a vault (or one that was away as it
+      // was) knows it was, rather than taking a station's not listing it for it. Nothing for one the viewer was never
+      // shown. Matches scope first and blocks self-forged witnesses by an unjoined workspace admin.
       method: "POST",
       pattern: /^\/vault\/vaults\/latest$/,
       handle: async (r) => {
@@ -181,28 +162,19 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
         for (const h of held as Vault[]) {
           if (h === null || typeof h !== "object" || typeof h.id !== "string" || h.ws !== r.viewer.workspace || !Array.isArray(h.members) || !h.members.includes(r.viewer.sub)) continue;
           if (!signedOk(h, TAG.vault)) continue;
+          const signer = signerOf(l, h.sig.key);
+          if (signer === null) continue;
+          const isWs = h.scope === "workspace";
+          const role = l.members.get(signer.sub)?.role;
+          if (isWs ? !isAdminRole(role) : signer.sub !== h.owner) continue;
           const v = vaults.vault(l.ws, h.id);
           if (v === null) continue;
           if ((v.scope ?? null) !== (h.scope ?? null)) continue;
           if (!Number.isSafeInteger(h.seq) || h.seq > v.seq) continue;
-          if (v.members.includes(r.viewer.sub)) {
-            latest.push(v);
+          if (isWs) {
+            if (!v.members.includes(signer.sub) && signer.sub !== v.owner && signer.sub === r.viewer.sub) continue;
+          } else if (v.owner !== h.owner) {
             continue;
-          }
-          const signer = signerOf(l, h.sig.key);
-          const isWs = h.scope === "workspace";
-          if (!isWs) {
-            if (v.owner !== h.owner || signer === null || signer.sub !== h.owner) continue;
-          } else {
-            const provenMember = vaults.wasVaultMember(l.ws, v.id, r.viewer.sub);
-            const provenWitness = provenMember && (
-              vaults.hasAcceptedTrailSig(l.ws, v.id, h.seq, h.sig.sig)
-              || (signer !== null && vaults.wasVaultMember(l.ws, v.id, signer.sub))
-            );
-            const currentAdminWitness = signer !== null
-              && isAdminRole(l.members.get(signer.sub)?.role)
-              && v.members.includes(signer.sub);
-            if (!provenWitness && !currentAdminWitness) continue;
           }
           latest.push(v);
         }
@@ -217,24 +189,10 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
         if (waiting === false || (waiting !== undefined && (!await waiting || beforeWrite?.() === false))) return refuse(503, "vault_handover", "the previous station has not finished handing over");
         const l = locked(r);
         if (isAnswer(l)) return l;
-        const copy = param(r, "copy") === "1";
-        const rawBody = body(r);
-        let next: Vault;
-        let rawTrail: Vault[] = [];
-        if (copy && rawBody !== null && typeof rawBody === "object" && !Array.isArray(rawBody) && "vault" in (rawBody as Record<string, unknown>)) {
-          const env = rawBody as { vault?: unknown; trail?: unknown };
-          next = env.vault as Vault;
-          if (env.trail !== undefined) {
-            if (!Array.isArray(env.trail) || env.trail.length > 32) {
-              return refuse(400, "vault_invalid", "trail must be an array of at most 32 vault versions");
-            }
-            rawTrail = env.trail as Vault[];
-          }
-        } else {
-          next = rawBody as Vault;
-        }
+        const next = body(r) as Vault;
         if (next === null || typeof next !== "object" || typeof next.id !== "string" || !Array.isArray(next.members)) return refuse(400, "vault_invalid", "a vault, as JSON");
         if (next.ws !== r.viewer.workspace) return refuse(400, "vault_invalid", "a vault of another workspace");
+        const copy = param(r, "copy") === "1";
         const approveSub = param(r, "approveJoinSub");
         const approveAtRaw = param(r, "approveJoinAt");
         const approveDevice = param(r, "approveJoinDevice");
@@ -264,70 +222,22 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           const viewerSeesPrev = prev !== null && sees(prev, r.viewer);
           if (prev !== null && !viewerSeesPrev) {
             if (!copy) return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
-            // On ?copy=1 from a newly-added member whose device spreads `next` to a lagging station, prove `next`
-            // itself is validly signed and names `r.viewer` before touching `prev` or answering anything but 404.
+            // On ?copy=1 from a newly-added member spreading `next` to a lagging station, prove `next` itself is
+            // validly signed and names `r.viewer` before touching `prev` or answering anything other than 404.
             if (!sees(next, r.viewer) || vaultOk(checkLock, null, next, true) !== null) {
               return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
             }
           }
-          // Every workspace vault update — direct, contiguous copy, OR skipped-seq copy — must be anchored by an
-          // existing managing admin in `prev.members`. For skipped-seq copies signed by a newly-added admin, the
-          // caller must supply a cryptographically verified `trail` of intermediate snapshots starting from `prev`.
-          let verifiedTrail: Vault[] | undefined;
-          if (prev !== null && prev.scope === "workspace") {
+          // Direct writes (`!copy`) to an existing workspace vault must be signed by an existing managing admin in
+          // `prev.members`. Replication copies (`copy=1`) rely on `vaultOk` (consistent with workspace-vault admin
+          // takeover semantics in `rules/src/vault/vault.mbt`) so lagging stations always catch up across key rotations
+          // and newly-added admins without requiring an unbreakable historical trail.
+          if (prev !== null && prev.scope === "workspace" && !copy) {
             const signer = typeof next.sig?.key === "string" ? signerOf(checkLock, next.sig.key) : null;
-            const directAuthorized = signer !== null && prev.members.includes(signer.sub) && isAdminRole(l.members.get(signer.sub)?.role);
-            if (!directAuthorized) {
-              if (!copy || !Number.isSafeInteger(next.seq) || next.seq <= prev.seq || rawTrail.length === 0) {
-                return viewerSeesPrev
-                  ? refuse(403, "vault_not_admin", "only an existing managing admin of this workspace vault may update it")
-                  : refuse(404, "vault_unknown", "no such vault here, or not one of yours");
-              }
-              const hops: Vault[] = [];
-              let cur: Vault = prev;
-              let trailOk = true;
-              for (const step of rawTrail) {
-                if (step === null || typeof step !== "object" || !Number.isSafeInteger(step.seq)) {
-                  trailOk = false;
-                  break;
-                }
-                if (step.seq <= prev.seq) continue;
-                if (step.seq <= cur.seq || step.seq >= next.seq || step.ws !== prev.ws || step.id !== prev.id || step.scope !== "workspace" || step.deleted) {
-                  trailOk = false;
-                  break;
-                }
-                const hopLock = workspaceCheckLock(l, cur, step);
-                const hopSigner = typeof step.sig?.key === "string" ? signerOf(hopLock, step.sig.key) : null;
-                if (
-                  hopSigner === null
-                  || !cur.members.includes(hopSigner.sub)
-                  || !isAdminRole(l.members.get(hopSigner.sub)?.role)
-                  || vaultOk(hopLock, cur, step, true) !== null
-                ) {
-                  trailOk = false;
-                  break;
-                }
-                hops.push(step);
-                cur = step;
-              }
-              if (trailOk) {
-                const finalLock = workspaceCheckLock(l, cur, next);
-                const finalSigner = typeof next.sig?.key === "string" ? signerOf(finalLock, next.sig.key) : null;
-                if (
-                  finalSigner === null
-                  || !cur.members.includes(finalSigner.sub)
-                  || !isAdminRole(l.members.get(finalSigner.sub)?.role)
-                  || vaultOk(finalLock, cur, next, true) !== null
-                ) {
-                  trailOk = false;
-                }
-              }
-              if (!trailOk) {
-                return viewerSeesPrev
-                  ? refuse(403, "vault_not_admin", "only an existing managing admin of this workspace vault may update it")
-                  : refuse(404, "vault_unknown", "no such vault here, or not one of yours");
-              }
-              verifiedTrail = hops;
+            if (signer === null || !prev.members.includes(signer.sub) || !isAdminRole(l.members.get(signer.sub)?.role)) {
+              return viewerSeesPrev
+                ? refuse(403, "vault_not_admin", "only an existing managing admin of this workspace vault may update it")
+                : refuse(404, "vault_unknown", "no such vault here, or not one of yours");
             }
           }
           // A copy of a sibling is kept only if every station chooses it over the one currently held.
@@ -362,11 +272,9 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           }
           let writeRes: "saved" | "conflict" | "join_cancelled";
           try {
-            if (approveJoin !== undefined || addedSubs.length > 0 || (verifiedTrail !== undefined && verifiedTrail.length > 0)) {
+            if (approveJoin !== undefined || addedSubs.length > 0) {
               const targetVault = prev ?? next;
               writeRes = vaults.putVaultChecked(next, held?.body ?? null, {
-                prevVault: prev,
-                trail: verifiedTrail,
                 addedSubs,
                 approveJoin,
                 isValidAsk: (a) => joinAskOk(l, a) === null,

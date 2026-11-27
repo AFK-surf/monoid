@@ -1255,7 +1255,6 @@ function backfillJoins(
 }
 
 const MAX_JOIN_PAGES_PER_SYNC = 8;
-const JOIN_WRITE_MS = 10_000;
 
 /// Shared bounded `/vault/joins` reader for both `readStationChecked` and `readJoins`: always fetches page 1 and
 /// resumes any persisted per-station `dismiss` / `cancelled` cursors across syncs (capped at `MAX_JOIN_PAGES_PER_SYNC`
@@ -1522,18 +1521,6 @@ function hostOf(inner: Inner, ws: string, id: string): string {
   return writeHosts(inner, ws, id)[0] ?? "";
 }
 
-/// Deterministic authoritative station for serialized workspace-vault join operations (approval vs request/withdrawal):
-/// always the lowest station id among current workspace stations holding `id` (never reordered by local link
-/// reachability, so admin approval and applicant request/cancel always serialize on the exact same station).
-function canonicalVaultHost(inner: Inner, ws: string, id: string): string {
-  const h = held(inner, ws);
-  const listed = new Set(stationsOf(inner, ws).map((s) => s.id));
-  const named = stateOf(inner, ws).stations;
-  const there = Object.keys(h.on[id] ?? {}).filter((s) => listed.has(s) && (named.size === 0 || named.has(s))).sort();
-  if (there.length > 0) return there[0]!;
-  return h.at[id] ?? "";
-}
-
 /// The stations vault `id` may be written on, in the order tried (`#putVault`, `#putItem`): those holding it that the
 /// workspace has now (as `hostOf` says), the ones whose link is up first, then those not found down, then the rest,
 /// each by id within (so every device whose links agree writes on the same one); `at` alone where none of them holds it.
@@ -1739,35 +1726,7 @@ export function spread(inner: Inner, address: string, opts?: { cap?: AuthScopeCa
       }
       const guard = () => cap.isValid();
       if (want.vault !== null) {
-        let said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault, null, guard));
-        if (
-          said._tag === "Failure"
-          && want.vault.scope === "workspace"
-          && (said.failure.code === "vault_not_admin" || said.failure.code === "vault_unknown")
-          && cap.isValid()
-        ) {
-          // Lagging replica needs the cryptographic membership-change trail anchored at its older `prev` to verify a
-          // skipped-seq copy signed by a newly-added admin. Fetch the trail from an up-to-date peer station and retry.
-          const peers = Object.entries(held(inner, ws).on[want.id] ?? {})
-            .filter(([sid, at]) => sid !== station && at.seq >= want.vault!.seq)
-            .map(([sid]) => sid)
-            .sort();
-          for (const peer of peers) {
-            if (!cap.isValid()) break;
-            const peerAddr = `${ws}/${peer}`;
-            if (!inner.stations.link(peerAddr) || !inner.stations.reachable(peerAddr)) continue;
-            const trailRes = yield* Effect.orElseSucceed(
-              ask(inner, peerAddr, "GET", `/vault/vaults/trail?vault=${encodeURIComponent(want.id)}`, null, null, guard),
-              () => null,
-            );
-            const rawTrail = trailRes !== null ? (arr(get(trailRes, "trail")) as Vault[]) : [];
-            const trail = rawTrail.filter((t) => t.id === want.id && t.seq < want.vault!.seq);
-            if (trail.length > 0 && cap.isValid()) {
-              said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", { vault: want.vault, trail }, null, guard));
-              break;
-            }
-          }
-        }
+        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault, null, guard));
         if (said._tag === "Failure") continue;
         const raw = get(said.success, "vault") as Vault | undefined;
         const v = raw && raw.ws === ws && raw.id === want.vault.id ? raw : want.vault;
@@ -4135,7 +4094,7 @@ class Vaults {
     next: Vault,
     station: string,
     cap: VaultCapability,
-    opts?: { query?: string; allowLocalFallback?: boolean; onlyHost?: boolean },
+    opts?: { query?: string; allowLocalFallback?: boolean },
   ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -4144,9 +4103,7 @@ class Vaults {
       const path = opts?.query ? `/vault/vaults?${opts.query}` : "/vault/vaults";
       const targets = station === ""
         ? []
-        : opts?.onlyHost
-          ? [station]
-          : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
+        : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
       for (const s of targets) {
         const put = self.#stationGuarded(cap, s, "PUT", path, next);
         const res = targets.length > 1
@@ -4534,15 +4491,10 @@ class Vaults {
   /// by `cancelJoin`), the lowest-id station that did not answer `404 vault_unknown` (holding the vault or unreachable)
   /// must confirm the write before succeeding, and its returned verified record determines `finalState` even on equal
   /// timestamps.
-  /// Publish a signed `JoinAsk` (`pending` or `cancelled`):
-  /// 1. Resolves the vault's single deterministic authoritative station by walking current workspace stations (filtered
-  ///    by the lock's named stations when non-empty) in sorted station-id order until the first station that does NOT
-  ///    answer `404 vault_unknown`. Any offline/timeout/5xx/unverifiable failure on a lower-id station fails the write
-  ///    immediately instead of skipping ahead to a replica, so applicant (`requestJoin`/`cancelJoin`) and admin
-  ///    (`addMember` via `canonicalVaultHost`) always serialize on the exact same station.
-  /// 2. Only AFTER the authoritative station confirms (and its returned record passes `fit.join` or `alreadyMember`),
-  ///    replicates best-effort in parallel (preserving station IDs and never letting a replica override the
-  ///    authoritative outcome) to the remaining stations.
+  /// Publish a signed `JoinAsk` (`pending` or `cancelled`) in parallel to all current workspace stations (best-effort
+  /// fail-open liveness so a single sleeping station never stalls join/cancel): every station response carries its
+  /// explicit `id`, succeeds as soon as at least one station confirms and returns a verified record (or `alreadyMember`),
+  /// and continues delivering to the remaining stations in background fibers.
   #publishJoin(
     record: JoinAsk,
     cap: WorkspaceCapability,
@@ -4575,69 +4527,55 @@ class Vaults {
             superseded: get(res, "superseded") === true,
           })),
         );
-      type PublishedJoin = { id: string; join: JoinAsk | undefined; alreadyMember: boolean; superseded: boolean };
-      const fit = fits(inner, self.ws);
-      let authoritative: PublishedJoin | undefined;
-      let authIdx = -1;
-      for (let i = 0; i < ordered.length; i++) {
-        const sid = ordered[i]!;
-        const timedRes = yield* Effect.timeoutOption(Effect.result(sendOne(sid)), JOIN_WRITE_MS);
-        if (Option.isNone(timedRes)) {
-          return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      const published = yield* answersOf(inner, ordered.map(sendOne), tookOrRefused);
+      const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
+      const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
+      if (ok.length === 0) {
+        const stale = errs.find((e) => e.code === "auth_stale");
+        if (stale !== undefined) return yield* Effect.fail(stale);
+        if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
+          return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
         }
-        const outcome = timedRes.value;
-        if (outcome._tag === "Failure") {
-          const e = outcome.failure;
-          if (e.code === "vault_unknown") continue;
-          if (e.code === "auth_stale") return yield* Effect.fail(e);
-          if (e.status === 404) return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
-          if (e.code === "vault_box_missing") return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
-          return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+        if (errs.length > 0 && errs.every((e) => e.code === "vault_box_missing")) {
+          return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
         }
-        authoritative = outcome.success;
-        authIdx = i;
-        break;
+        if (errs.length > 0 && errs.every((e) => e.code === "vault_unknown")) {
+          return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+        }
+        return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
       }
-      if (authoritative === undefined) {
-        return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
-      }
-      if (authoritative.alreadyMember) {
-        const addr = `${self.ws}/${authoritative.id}`;
+      const already = ok.find((item) => item.alreadyMember);
+      if (already !== undefined) {
+        const addr = `${self.ws}/${already.id}`;
         inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr, { force: true }));
-        return { stations: [authoritative.id], alreadyMember: true, finalState: record.state, maxReturnedAt: record.at, superseded: false };
+        return { stations: ok.map((item) => item.id), alreadyMember: true, finalState: record.state, maxReturnedAt: record.at, superseded: false };
       }
-      if (authoritative.join === undefined || !fit.join(authoritative.join)) {
+      const fit = fits(inner, self.ws);
+      const verified = ok.filter((item): item is typeof item & { join: JoinAsk } => item.join !== undefined && fit.join(item.join));
+      if (verified.length === 0) {
         return yield* fail("vault_invalid", t("core-misc.vault.joinNoStation"));
       }
-      const authJoin = authoritative.join;
-      cap.commit(() => {
-        change(inner, self.ws, (h) => {
-          mergeJoin(h, authJoin, fit);
-        });
-      });
-      const rest = ordered.slice(authIdx + 1);
-      const confirmedStations = [authoritative.id];
-      if (rest.length > 0 && cap.isValid()) {
-        const replicaResults = yield* Effect.all(
-          rest.map((sid) =>
-            Effect.timeoutOption(Effect.result(sendOne(sid)), OTHERS_MS).pipe(
-              Effect.map((opt) => ({ id: sid, opt })),
-            ),
-          ),
-          { concurrency: "unbounded" },
-        );
-        for (const r of replicaResults) {
-          if (Option.isSome(r.opt) && r.opt.value._tag === "Success") {
-            confirmedStations.push(r.id);
-          }
+      let effective: JoinAsk = verified[0]!.join;
+      for (const item of verified.slice(1)) {
+        if (
+          item.join.at > effective.at
+          || (item.join.at === effective.at && effective.state === "cancelled" && item.join.state === "pending")
+        ) {
+          effective = item.join;
         }
       }
+      const superseded = verified.some((item) => item.superseded);
+      cap.commit(() => {
+        change(inner, self.ws, (h) => {
+          for (const item of verified) mergeJoin(h, item.join, fit);
+        });
+      });
       return {
-        stations: confirmedStations,
+        stations: verified.map((item) => item.id),
         alreadyMember: false,
-        finalState: authJoin.state,
-        maxReturnedAt: authJoin.at,
-        superseded: authoritative.superseded,
+        finalState: effective.state,
+        maxReturnedAt: effective.at,
+        superseded,
       };
     });
   }
@@ -4826,9 +4764,7 @@ class Vaults {
           const keyedDevices = v.keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
           return { id: v.id, members: v.members, added: false, keyedDevices };
         }
-        // Explicit join approval ALWAYS targets the deterministic authoritative station (`canonicalVaultHost`, never
-        // reordered by local reachability) so approve vs request/cancel serialize on the exact same station.
-        const host = opts?.askAt !== undefined ? canonicalVaultHost(inner, self.ws, v.id) : hostOf(inner, self.ws, v.id);
+        const host = hostOf(inner, self.ws, v.id);
         let askDevice = opts?.askDevice;
         let askBox = opts?.askBox;
         let askSig = opts?.askSig;
@@ -4902,7 +4838,7 @@ class Vaults {
           ? `approveJoinSub=${encodeURIComponent(memberSub)}&approveJoinAt=${opts.askAt}&approveJoinDevice=${encodeURIComponent(askDevice!)}&approveJoinBox=${encodeURIComponent(askBox!)}&approveJoinSig=${encodeURIComponent(askSig!)}`
           : undefined;
         const put = yield* Effect.result(
-          self.#putVault(next, host, cap, query ? { query, allowLocalFallback: false, onlyHost: true } : undefined),
+          self.#putVault(next, host, cap, query ? { query, allowLocalFallback: false } : undefined),
         );
         if (put._tag === "Failure") {
           if (put.failure.code === "join_cancelled") {

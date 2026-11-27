@@ -63,21 +63,6 @@ CREATE TABLE IF NOT EXISTS vault_joins (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS vault_joins_vault_at ON vault_joins (ws, vault, state, at DESC, sub);
 CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss ON vault_joins (ws, vault, sub) WHERE dismiss_body IS NOT NULL;
--- Signed membership-changing snapshots for workspace vaults (for skipped-seq ?copy=1 authorization chains and /latest).
-CREATE TABLE IF NOT EXISTS vault_member_trail (
-  ws TEXT NOT NULL,
-  vault TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  PRIMARY KEY (ws, vault, seq)
-) WITHOUT ROWID;
--- Historical membership log recorded whenever a vault version is accepted (for /vault/vaults/latest even after signer demotion).
-CREATE TABLE IF NOT EXISTS vault_member_history (
-  ws TEXT NOT NULL,
-  vault TEXT NOT NULL,
-  sub TEXT NOT NULL,
-  PRIMARY KEY (ws, vault, sub)
-) WITHOUT ROWID;
 -- A previous station can have validated a write before this station commits a deletion. These checks also apply to
 -- its already-prepared UPSERT statements when it resumes, without scanning old rows during installation.
 CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items
@@ -118,9 +103,6 @@ CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_update AFTER UPDATE OF body ON 
   WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
   BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;
 `;
-
-const sameMembers = (a: Vault, b: Vault): boolean =>
-  Array.isArray(a.members) && Array.isArray(b.members) && a.members.length === b.members.length && a.members.every((m, i) => m === b.members[i]);
 
 const parse = <T>(rows: unknown[]): T[] => rows.map((r) => JSON.parse((r as { body: string }).body) as T);
 
@@ -228,63 +210,26 @@ export class VaultStore {
     return row ? { value: JSON.parse(row.body) as Vault, body: row.body } : null;
   }
 
-  /// Whether `sub` was ever recorded as a member of an accepted version of `(ws, vault)` on this station.
-  wasVaultMember(ws: string, vault: string, sub: string): boolean {
-    return this.#db.prepare("SELECT 1 FROM vault_member_history WHERE ws = ? AND vault = ? AND sub = ?").get(ws, vault, sub) !== undefined;
-  }
-
-  /// Whether this station previously accepted a workspace-vault membership snapshot at `(ws, vault, seq)` with exact `sig`.
-  hasAcceptedTrailSig(ws: string, vault: string, seq: number, sig: string): boolean {
-    const row = this.#db.prepare("SELECT body FROM vault_member_trail WHERE ws = ? AND vault = ? AND seq = ?").get(ws, vault, seq) as { body: string } | undefined;
-    if (!row) return false;
-    try {
-      return (JSON.parse(row.body) as Vault).sig?.sig === sig;
-    } catch {
-      return false;
-    }
-  }
-
-  /// Signed membership-changing snapshots of `(ws, vault)` with `seq > afterSeq`, oldest first (bounded by `limit`).
-  memberTrail(ws: string, vault: string, afterSeq = -1, limit = 32): Vault[] {
-    if (limit <= 0) return [];
-    const cap = Math.min(limit, 32);
-    return parse(
-      this.#db.prepare("SELECT body FROM vault_member_trail WHERE ws = ? AND vault = ? AND seq > ? ORDER BY seq ASC LIMIT ?").all(ws, vault, afterSeq, cap),
-    );
-  }
-
-  #recordHistory(v: Vault, recordTrail: boolean): void {
-    const insHist = this.#db.prepare("INSERT OR IGNORE INTO vault_member_history (ws, vault, sub) VALUES (?, ?, ?)");
-    if (Array.isArray(v.members)) {
-      for (const m of v.members) {
-        if (typeof m === "string" && m !== "") insHist.run(v.ws, v.id, m);
-      }
-    }
-    if (recordTrail && v.scope === "workspace") {
-      this.#db.prepare("INSERT OR REPLACE INTO vault_member_trail (ws, vault, seq, body) VALUES (?, ?, ?, ?)").run(v.ws, v.id, v.seq, JSON.stringify(v));
-    }
-  }
-
   /// A vault's new version, in place of the one before (checked to follow it). Deleted, its items go with it: sealed
   /// under a key no one holds any more.
   putVault(v: Vault): void {
     this.#version++;
-    const prev = this.vault(v.ws, v.id);
     const save = this.#db.prepare("INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET seq = excluded.seq, body = excluded.body");
-    // A savepoint works whether or not the caller is already in a transaction.
-    this.#db.exec("SAVEPOINT vault_put");
-    try {
-      if (prev !== null) this.#recordHistory(prev, prev.scope === "workspace" && !this.hasAcceptedTrailSig(prev.ws, prev.id, prev.seq, prev.sig?.sig ?? ""));
+    if (!v.deleted) {
       save.run(v.ws, v.id, v.seq, JSON.stringify(v));
-      this.#recordHistory(v, prev === null || !sameMembers(prev, v) || Boolean(v.deleted));
-      if (v.deleted) {
-        this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-        this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-        this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-      }
-      this.#db.exec("RELEASE vault_put");
+      return;
+    }
+    // A failure or interruption while deleting the items must not leave the deleted version beside its old items.
+    // A savepoint also works when the caller is already in a transaction.
+    this.#db.exec("SAVEPOINT vault_delete");
+    try {
+      save.run(v.ws, v.id, v.seq, JSON.stringify(v));
+      this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      this.#db.exec("RELEASE vault_delete");
     } catch (error) {
-      try { this.#db.exec("ROLLBACK TO vault_put; RELEASE vault_put"); } catch { /* SQLite may already have rolled back. */ }
+      try { this.#db.exec("ROLLBACK TO vault_delete; RELEASE vault_delete"); } catch { /* SQLite may already have rolled back. */ }
       throw error;
     }
   }
@@ -295,15 +240,14 @@ export class VaultStore {
   }
 
   /// Atomic vault CAS write with optional join-request approval precondition (`approveJoin`, requiring exact
-  /// `(sub, at, device, box, sig)` match + wrapped key for the stored ask's `(device, box)`), newly-added member
-  /// `vault_joins` admission watermark update (`joined_up_to`), and atomic `vault_member_trail` / `vault_member_history`
-  /// updates.
+  /// `(sub, at, device, box, sig)` match + wrapped key for the stored ask's `(device, box)`) and newly-added member
+  /// `vault_joins` admission watermark update (`joined_up_to = MAX(joined_up_to, vault_joins.at)` using the applicant's
+  /// own ask clock, kept separate from signed admin `dismiss_body`/`dismiss_up_to` so a later removal cannot resurrect
+  /// the pre-join request even if the approving admin is later demoted).
   putVaultChecked(
     v: Vault,
     previous: string | null,
     opts?: {
-      prevVault?: Vault | null;
-      trail?: readonly Vault[];
       addedSubs?: readonly string[];
       approveJoin?: { sub: string; at: number; device: string; box: string; sig: string };
       isValidAsk?: (a: JoinAsk) => boolean;
@@ -311,13 +255,17 @@ export class VaultStore {
     },
   ): "saved" | "conflict" | "join_cancelled" {
     const body = JSON.stringify(v);
-    const prevVault = opts?.prevVault !== undefined ? opts.prevVault : (previous !== null ? (JSON.parse(previous) as Vault) : null);
     const save = () => previous === null
       ? this.#db.prepare(`INSERT INTO vaults (ws, id, seq, body)
           SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ?)`)
         .run(v.ws, v.id, v.seq, body, v.ws, v.id).changes > 0
       : this.#db.prepare("UPDATE vaults SET seq = ?, body = ? WHERE ws = ? AND id = ? AND body = ?")
         .run(v.seq, body, v.ws, v.id, previous).changes > 0;
+    const needsTx = Boolean(v.deleted) || opts?.approveJoin !== undefined || (opts?.addedSubs !== undefined && opts.addedSubs.length > 0);
+    if (!needsTx) {
+      this.#version++;
+      return save() ? "saved" : "conflict";
+    }
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       if (opts?.approveJoin !== undefined) {
@@ -352,13 +300,6 @@ export class VaultStore {
         this.#db.exec("ROLLBACK");
         return "conflict";
       }
-      if (prevVault !== null) {
-        this.#recordHistory(prevVault, prevVault.scope === "workspace" && !this.hasAcceptedTrailSig(prevVault.ws, prevVault.id, prevVault.seq, prevVault.sig?.sig ?? ""));
-      }
-      if (opts?.trail && opts.trail.length > 0) {
-        for (const hop of opts.trail) this.#recordHistory(hop, true);
-      }
-      this.#recordHistory(v, prevVault === null || !sameMembers(prevVault, v) || Boolean(v.deleted));
       if (v.deleted) {
         this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
         this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
