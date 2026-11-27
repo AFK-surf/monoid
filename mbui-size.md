@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e032c1f68](https://github.com/AFK-surf/monoid/commit/e032c1f68a1a0a5895d3fa156354cccb22f93f70) style(mbui): refine media progress and video corne | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 102.99 | 134.59 |
 | [f871f191f](https://github.com/AFK-surf/monoid/commit/f871f191fb6b70898b646b5c585d76e25d04dd03) fix(mbui): drop the hover ring on the rail's works | 2.7 | 3.66 | 15.18 | 38.23 | 58.89 | 33.49 | 68.5 | 103.11 | 107.15 |
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
 | [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3548369bf](https://github.com/AFK-surf/monoid/commit/3548369bf6d69f5cd5342ee6231f105a2389ae5a) perf(cloud): cache compact changelog fixes and bat | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
-| [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e032c1f68](https://github.com/AFK-surf/monoid/commit/e032c1f68a1a0a5895d3fa156354cccb22f93f70) style(mbui): refine media progress and video corne | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.75 |
 | [f871f191f](https://github.com/AFK-surf/monoid/commit/f871f191fb6b70898b646b5c585d76e25d04dd03) fix(mbui): drop the hover ring on the rail's works | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3548369bf](https://github.com/AFK-surf/monoid/commit/3548369bf6d69f5cd5342ee6231f105a2389ae5a) perf(cloud): cache compact changelog fixes and bat | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
-| [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.64 |
