@@ -1480,7 +1480,9 @@
         #else
         vec2 zoomC = (u_gb.xy + u_gb.zw) * 0.5;
         #endif
-        sampleBase = zoomC + (p - zoomC) / lensZoom;
+        float zoomMask = (dropRole == 4) ? smoothstep(0.22, 0.52, inward / halfMinor) : 1.0;
+        float invZoom = mix(1.0, 1.0 / lensZoom, zoomMask);
+        sampleBase = zoomC + (p - zoomC) * invZoom;
       }
       #if MB_HAS_DROPLET
       bool isRoleSlid = (dropRole == 1);

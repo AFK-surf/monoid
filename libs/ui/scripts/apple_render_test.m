@@ -4233,6 +4233,73 @@ int main(void) {
           CHECK(top_L < 55.0 && bot_L < 55.0 && left_L >= 42.0 && right_L >= 42.0);
           free(pxd);
         }
+        // --- V9-Tab-Zoom-Edge-Visible: Role 4 with lensZoom=1.16 (-64.16, refr=13.5, chroma=0.04) keeps center 1.16x zoom while exposing bottom bar edge (+25pt) and outer background ---
+        {
+          double tz[5 * MB_INST];
+          // Pass A: no bottom bar edge line, outer blue block below y=66pt, center dark bar at y=48..50pt, slot7=-64.16
+          rect_at(tz, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
+          rect_at(tz + MB_INST, 0, 66.0, VW, VH - 66.0, 0, 40.0 / 255.0, 120.0 / 255.0, 240.0 / 255.0, 0);
+          rect_at(tz + 2 * MB_INST, 65.0, 48.0, 30.0, 2.0, 0, 40.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 0);
+          rect_at(tz + 3 * MB_INST, 35.0, 9.0, 90.0, 62.0, 6, 1.0, 1.0, 1.0, -569);
+          tz[3 * MB_INST + 4] = 31.0; tz[3 * MB_INST + 6] = 1.0; tz[3 * MB_INST + 7] = -64.16;
+          tz[3 * MB_INST + 11] = 0.0; tz[3 * MB_INST + 12] = 1.0; tz[3 * MB_INST + 13] = 13.5;
+          tz[3 * MB_INST + 15] = 1.0; tz[3 * MB_INST + 21] = 13.5; tz[3 * MB_INST + 22] = 0.04; tz[3 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(tz, 4, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
+          present_drain();
+          int awz0 = 0, ahz0 = 0;
+          uint8_t *pxz_noedge = read_texture(canvas, &awz0, &ahz0);
+          // Pass B: add dark bottom bar edge line at y=64.5..66.0 (around cy+25pt=65pt)
+          rect_at(tz + 3 * MB_INST, 10.0, 64.5, 140.0, 1.5, 0, 35.0 / 255.0, 35.0 / 255.0, 35.0 / 255.0, 0);
+          rect_at(tz + 4 * MB_INST, 35.0, 9.0, 90.0, 62.0, 6, 1.0, 1.0, 1.0, -570);
+          tz[4 * MB_INST + 4] = 31.0; tz[4 * MB_INST + 6] = 1.0; tz[4 * MB_INST + 7] = -64.16;
+          tz[4 * MB_INST + 11] = 0.0; tz[4 * MB_INST + 12] = 1.0; tz[4 * MB_INST + 13] = 13.5;
+          tz[4 * MB_INST + 15] = 1.0; tz[4 * MB_INST + 21] = 13.5; tz[4 * MB_INST + 22] = 0.04; tz[4 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(tz, 5, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
+          present_drain();
+          int awz1 = 0, ahz1 = 0;
+          uint8_t *pxz_edge = read_texture(canvas, &awz1, &ahz1);
+          // Pass C: same as Pass A but slot7=-64.0 (lensZoom=1.0) to verify center 1.16x magnification
+          rect_at(tz + 3 * MB_INST, 35.0, 9.0, 90.0, 62.0, 6, 1.0, 1.0, 1.0, -571);
+          tz[3 * MB_INST + 4] = 31.0; tz[3 * MB_INST + 6] = 1.0; tz[3 * MB_INST + 7] = -64.0;
+          tz[3 * MB_INST + 11] = 0.0; tz[3 * MB_INST + 12] = 1.0; tz[3 * MB_INST + 13] = 13.5;
+          tz[3 * MB_INST + 15] = 1.0; tz[3 * MB_INST + 21] = 13.5; tz[3 * MB_INST + 22] = 0.04; tz[3 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(tz, 4, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
+          present_drain();
+          int awz2 = 0, ahz2 = 0;
+          uint8_t *pxz_nozoom = read_texture(canvas, &awz2, &ahz2);
+          double edge_diff = 0.0;
+          for (int py = 186; py <= 204; py++) {
+            uint8_t *ca = A_PX(pxz_noedge, awz0, 240, py);
+            uint8_t *cb = A_PX(pxz_edge, awz1, 240, py);
+            double la = 0.2126 * ca[2] + 0.7152 * ca[1] + 0.0722 * ca[0];
+            double lb = 0.2126 * cb[2] + 0.7152 * cb[1] + 0.0722 * cb[0];
+            double d = fabs(la - lb);
+            if (d > edge_diff) edge_diff = d;
+          }
+          double outer_br = -255.0;
+          for (int py = 201; py <= 209; py++) {
+            uint8_t *ca = A_PX(pxz_noedge, awz0, 240, py);
+            double br = (double)ca[0] - (double)ca[2];
+            if (br > outer_br) outer_br = br;
+          }
+          uint8_t *cz1 = A_PX(pxz_noedge, awz0, 240, 153);
+          uint8_t *cz0 = A_PX(pxz_nozoom, awz2, 240, 153);
+          double l_zoom = 0.2126 * cz1[2] + 0.7152 * cz1[1] + 0.0722 * cz1[0];
+          double l_nozoom = 0.2126 * cz0[2] + 0.7152 * cz0[1] + 0.0722 * cz0[0];
+          double center_zoom_diff = l_nozoom - l_zoom;
+          printf("apple_render: v9_tab_zoom_edge_visible edge_diff=%.1f outer_br=%.1f center_zoom_diff=%.1f (L_zoom=%.1f L_nozoom=%.1f)\n",
+                 edge_diff, outer_br, center_zoom_diff, l_zoom, l_nozoom);
+          CHECK(edge_diff >= 40.0 && outer_br >= 60.0 && center_zoom_diff >= 60.0);
+          free(pxz_noedge);
+          free(pxz_edge);
+          free(pxz_nozoom);
+        }
         // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
         mb_render_set_size(VW, VH, 2);
         for (int ph = 0; ph < 2; ph++) {
