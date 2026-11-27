@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.14 | 137.95 |
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
 | [cb5e6a579](https://github.com/AFK-surf/monoid/commit/cb5e6a57984860893580ac366bf1e4e4b9d11f3a) ci(mbui): key iOS unit store by compiler and SDK,  | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 | [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 | [466583200](https://github.com/AFK-surf/monoid/commit/466583200a8a7779268e0506cf2af3efbc35cc63) fix(mbui): take folders only from the chosen stati | 2.66 | 3.59 | 14.9 | 37.86 | 57.94 | 33.19 | 67.75 | 101.84 | 120.34 |
-| [3b815d77d](https://github.com/AFK-surf/monoid/commit/3b815d77d93bb5255bea32599be7f116c8716304) fix(ci): deduplicate cache-prune listings and pagi | 2.65 | 3.59 | 14.9 | 37.86 | 57.94 | 33.19 | 67.75 | 102.25 | 127.34 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.82 |
 | [cb5e6a579](https://github.com/AFK-surf/monoid/commit/cb5e6a57984860893580ac366bf1e4e4b9d11f3a) ci(mbui): key iOS unit store by compiler and SDK,  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.71 |
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.79 |
 | [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.77 |
 | [466583200](https://github.com/AFK-surf/monoid/commit/466583200a8a7779268e0506cf2af3efbc35cc63) fix(mbui): take folders only from the chosen stati | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
-| [3b815d77d](https://github.com/AFK-surf/monoid/commit/3b815d77d93bb5255bea32599be7f116c8716304) fix(ci): deduplicate cache-prune listings and pagi | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
