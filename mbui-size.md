@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 2.7 | 3.66 | 15.19 | 38.24 | 58.92 | 33.5 | 68.53 | 103.14 | 129.35 |
 | [4912e2dc1](https://github.com/AFK-surf/monoid/commit/4912e2dc1c8b82bfb73b1e9ab4fa8f817636cda8) refactor(ui): clear mbt2pion publish diagnostics i | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 | [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
 | [cb5e6a579](https://github.com/AFK-surf/monoid/commit/cb5e6a57984860893580ac366bf1e4e4b9d11f3a) ci(mbui): key iOS unit store by compiler and SDK,  | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
-| [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 2.67 | 3.61 | 14.99 | 38.03 | 58.24 | 33.32 | 67.99 | 103.02 | 131.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.59 |
 | [4912e2dc1](https://github.com/AFK-surf/monoid/commit/4912e2dc1c8b82bfb73b1e9ab4fa8f817636cda8) refactor(ui): clear mbt2pion publish diagnostics i | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 58.02 |
 | [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [31da00470](https://github.com/AFK-surf/monoid/commit/31da004703f0d4e6e788e3a5164fcb0650671d81) fix(mbui): drop the rest ground behind chat bar ta | 0.59 | 0.78 | 3.02 | 4.05 | 7.52 | 2.23 | 6.31 | 57.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.82 |
 | [cb5e6a579](https://github.com/AFK-surf/monoid/commit/cb5e6a57984860893580ac366bf1e4e4b9d11f3a) ci(mbui): key iOS unit store by compiler and SDK,  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.71 |
 | [62e5252c4](https://github.com/AFK-surf/monoid/commit/62e5252c49c56c0f952eb5fabdeae3c5a4dd9c7c) feat(ui): split phone player top bar into bare tit | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.44 |
-| [8f6b37be3](https://github.com/AFK-surf/monoid/commit/8f6b37be3b0c02b179b5f3314b541c7391723dc2) fix(android): track Choreographer vsync generation | 0.59 | 0.77 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.56 |
