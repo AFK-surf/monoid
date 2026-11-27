@@ -133,6 +133,9 @@ pub(all) struct Look {
   /// the widest it has swung from 1 under that binding: View::scale's max_shift (Node::scaled_at)
   mut scale_shift : Double
   mut scale_peak : Double
+  /// whether this node's scale moves popovers placed beside it or its descendants (View::scale's `moves_besides`: false
+  /// for transient press feedback so a clicked button's bounce never drifts an opening menu's laid-out origin)
+  mut scale_for_beside : Bool
   /// how far what it draws itself is turned (radians; not what it holds), and whether about the middle of what it draws
   /// (else its own): View::turn
   mut turn : Double
@@ -2102,6 +2105,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.pivot = At(0.5, 0.5)
       n.look.scale_shift = 0.0
       n.look.scale_peak = 0.0
+      n.look.scale_for_beside = true
       n.look.drawn_as = ""
       n.look.clips = false
       n.look.words_center = false
@@ -2244,6 +2248,17 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.placed = false
       n.unwalked_from = -1
       n.out = false
+      n.lx = 0.0
+      n.ly = 0.0
+      n.la = 1.0
+      n.lw = 0.0
+      n.lh = 0.0
+      n.ls = 1.0
+      n.lpx = 0.0
+      n.lpy = 0.0
+      n.drawn_box = (0.0, 0.0, 0.0, 0.0)
+      n.drawn_words = 0
+      n.drawn_stale = true
       n.content = None
       self.draws_rev = self.draws_rev + 1
       self.draws_any_rev = self.draws_any_rev + 1
@@ -2291,7 +2306,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, scale_for_beside: true, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         offset_snap: false,
@@ -5779,7 +5794,7 @@ pub fn Tree::input_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, 
       b = self.tucked_bound(t, b)
     }
     if n.bounds_input {
-      let (x, y, sc) = self.placed(i)
+      let (x, y, sc) = self.placed(i, drawn=true)
       let (x1, y1) = (x + n.flex.width * sc, y + n.flex.height * sc)
       b = (dmax(b.0, x), dmax(b.1, y), dmin(b.2, x1), dmin(b.3, y1))
     }
@@ -5815,7 +5830,7 @@ pub fn Tree::draw_clip_bounds(self : Tree, id : NodeId) -> (Double, Double, Doub
       b = self.tucked_bound(t, b)
     }
     if n.look.clips {
-      let (x, y, sc) = self.placed(i)
+      let (x, y, sc) = self.placed(i, drawn=true)
       let ch = dmax(0.0, n.flex.height + n.look.clips_past + self.fades_past_now(i)) * sc
       let (x1, y1) = (x + n.flex.width * sc, y + ch)
       b = if n.clips_down {
@@ -5853,7 +5868,7 @@ fn Tree::tucked_bound(
   b : (Double, Double, Double, Double),
 ) -> (Double, Double, Double, Double) {
   let (host, cover) = tucked
-  let (_, hy, _) = self.placed(host)
+  let (_, hy, _) = self.placed(host, drawn=true)
   (b.0, dmax(b.1, hy + @signals.untracked(cover)), b.2, b.3)
 }
 
@@ -7734,15 +7749,21 @@ pub fn View::scale(
   s : Live[Double],
   about? : Pivot = At(0.5, 0.5),
   max_shift? : Double = 0.0,
+  moves_besides? : Bool = true,
   loc~ : SourceLoc,
 ) -> View {
   if self.live() is Some(n) {
     n.look.scale_peak = 0.0
+    if n.look.scale_for_beside != moves_besides {
+      n.look.scale_for_beside = moves_besides
+      self.tree.places_rev = self.tree.places_rev + 1
+    }
   }
   self.bind(loc~, Scale, s, Place, fn(s) {
     let n = self.tree.nodes[self.at]
     n.look.scale = s
     n.look.scale_shift = max_shift
+    n.look.scale_for_beside = moves_besides
     let d = (s - 1.0).abs()
     if d > n.look.scale_peak {
       n.look.scale_peak = d
@@ -17418,7 +17439,12 @@ pub fn Tree::drawn_place(self : Tree, id : NodeId) -> (Double, Double, Double, D
 /// Where node `at` is drawn in the window, how opaque and how big (its scale and its holders'), as it was last placed:
 /// composed from the window down as each_drawn_scaled composes it (a slot adds nothing of its own). The one way the
 /// window's terms and a node's are told apart: where it is drawn, where it takes a finger, where it is read out.
-fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Double, Double, Double) {
+fn Tree::projected(
+  self : Tree,
+  at : Int,
+  drawn? : Bool = false,
+  for_beside? : Bool = false,
+) -> (Double, Double, Double, Double) {
   let chain = []
   let mut i = at
   while i >= 0 {
@@ -17463,10 +17489,11 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
     // places an old view, takes a finger or is read out goes by where it is laid out, the old view moved where it is
     // drawn as it is painted, Ctx::moved_shift)
     let (ox, oy) = if drawn { m.look.drawn_off } else { (0.0, 0.0) }
-    x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
-    y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
+    let ms = if for_beside && !m.look.scale_for_beside { 1.0 } else { m.ls }
+    x = x + s * (m.lx + sx + ox + (1.0 - ms) * m.lpx)
+    y = y + s * (m.ly + sy + oy + (1.0 - ms) * m.lpy)
     a = a * m.la * (if k < chain.length() - 1 && self.flights.length() > 0 { self.held_a(chain[k + 1]) } else { 1.0 })
-    s = s * m.ls
+    s = s * ms
     // (on a flight's way: where the flight has it, shared.mbt)
     match m.lift {
       Some(l) => {

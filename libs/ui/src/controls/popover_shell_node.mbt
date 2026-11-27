@@ -166,7 +166,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
         about=At(0.5, 0.5),
       )
       |> ignore
-      node.offset(
+      node.drawn_off(
         By(fn() {
           let t = pm.t_way.shown(node)
           let closing = pm.is_closing.get()
@@ -182,6 +182,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
             }
           }
         }),
+        exact=true,
       )
       |> ignore
     }
@@ -320,7 +321,7 @@ pub fn anchored_popover_bridge(
       let (sp0, _) = trig.fx.get()
       trig.fx.set((sp0, pill_layer))
       let prev_owner = @signals.set_owner(None)
-      trig.pill.offset(
+      trig.pill.drawn_off(
         By(fn() {
           let (_, closing, f) = eval_trig()
           if closing {
@@ -329,6 +330,7 @@ pub fn anchored_popover_bridge(
             (0.0, 0.0)
           }
         }),
+        exact=true,
       )
       |> ignore
       trig.pill.scale(
@@ -344,6 +346,7 @@ pub fn anchored_popover_bridge(
           }
         }),
         about=At(0.5, 0.5),
+        moves_besides=false,
       )
       |> ignore
       trig.pill.ground_drawn(
@@ -425,6 +428,9 @@ pub fn anchored_popover_bridge(
         []
       }
       for child in bound_children {
+        if !child.was_placed() {
+          continue
+        }
         let (cx0, cy0, cw0, ch0) = child.placed_window_now()
         let child_cx_local = cx0 + cw0 * 0.5 - pill_x
         let child_cx_off = child_cx_local - pill_w * 0.5
@@ -443,7 +449,7 @@ pub fn anchored_popover_bridge(
           }),
         )
         |> ignore
-        child.offset(
+        child.drawn_off(
           By(fn() {
             let t = t_way.shown(child)
             match trig.direction {
@@ -467,6 +473,7 @@ pub fn anchored_popover_bridge(
                 }
             }
           }),
+          exact=true,
         )
         |> ignore
       }
@@ -501,19 +508,24 @@ pub fn anchored_popover_bridge(
         if trig.pill.alive() {
           if pm.has_press_scale {
             let prev = @signals.set_owner(None)
-            trig.pill.scale(By(fn() { 1.0 + 0.05 * trig.press_way.shown(trig.pill) }), about=At(0.5, 0.5)) |> ignore
+            trig.pill.scale(
+              By(fn() { 1.0 + 0.05 * trig.press_way.shown(trig.pill) }),
+              about=At(0.5, 0.5),
+              moves_besides=false,
+            )
+            |> ignore
             @signals.set_owner(prev) |> ignore
           } else {
             trig.pill.scale(Is(1.0), about=At(0.5, 0.5)) |> ignore
           }
-          trig.pill.offset(Is((0.0, 0.0))) |> ignore
+          trig.pill.drawn_off(Is((0.0, 0.0)), exact=false) |> ignore
           trig.pill.ground_drawn(Is(@view.ground_as_laid)) |> ignore
           trig.pill.alpha(Is(1.0)) |> ignore
         }
         for child in bound_children {
           if child.alive() {
             child.alpha(Is(1.0)) |> ignore
-            child.offset(Is((0.0, 0.0))) |> ignore
+            child.drawn_off(Is((0.0, 0.0)), exact=false) |> ignore
           }
         }
       }

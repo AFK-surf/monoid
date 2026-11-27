@@ -825,7 +825,7 @@ MB_CORNER_SL
 "    // neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)\n"
 "    float2 off = abs(I.rect.zw * u.scale - I.c2.zw);\n"
 "    float2 r0 = I.rect.xy * u.scale, r0i = floor(r0 + 0.5);\n"
-"    bool exact = I.rot.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
+"    bool exact = I.rot.x == 0.0 && max(off.x, off.y) <= 0.05 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
 "    float2 tex = exact ? floor(p * u.scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
 "    float2 uv = clamp(at + tex, at + 0.5, at + I.c2.zw - 0.5);\n"
 "    float4 t = colour ? catlas.sample(s, uv) : float4(atlas.sample(s, uv).r);\n"

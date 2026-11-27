@@ -671,7 +671,7 @@ static const char *FS =
     "    // neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)\n"
     "    vec2 off = abs(v_rect.zw * u_scale - v_c2.zw);\n"
     "    vec2 r0 = v_rect.xy * u_scale, r0i = floor(r0 + 0.5);\n"
-    "    bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
+    "    bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.05 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
     "    vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;\n"
     "    vec2 uv = clamp(at + tex, at + 0.5, at + v_c2.zw - 0.5);\n"
     "    vec4 t = colour ? textureLod(u_catlas, uv / vec2(textureSize(u_catlas, 0)), 0.0)\n"
