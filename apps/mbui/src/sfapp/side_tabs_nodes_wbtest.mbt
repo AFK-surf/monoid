@@ -606,3 +606,99 @@ test "大屏: parked passive live tabs preserve #7344 history continuity and nev
   side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("s-c1")) }) |> ignore
   assert_true(t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is Some(_), msg="history renders once Core answers")
 }
+
+///|
+test "大屏: the right panel's + menu groups chat/history items, marks open tabs, switches open tabs, and opens closed tabs" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-tabs-side", window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  // Open tabs in chat-tabs-side: ["s-c1", "jobs"], front: "jobs".
+  t.click(Button, label=@sf.t("web-pages.chat.openPanelTab"))
+  t.run_for(@ui.move_most_ms)
+  // Group headings: This chat & Run history present; Remote absent (no remote capabilities in chat-tabs-side).
+  assert_true(t.find(@sf.t("web-main.switcher.group.chat")) is Some(_), msg="This chat heading shown")
+  assert_true(t.find(@sf.t("android-chat.history.title")) is Some(_), msg="Run history heading shown")
+  assert_true(t.find(@sf.t("web-pages.remote.title")) is None, msg="Remote heading hidden when no remote capabilities")
+  // Chat & history rows present; sub-chats & reopen hidden when unavailable.
+  assert_true(t.find(@sf.t("web-pages.chat.files")) is Some(_), msg="Station files offered")
+  assert_true(t.find(@sf.t("web-pages.chat.jobs")) is Some(_), msg="Jobs offered")
+  assert_true(t.find(@sf.t("web-main.things.title")) is Some(_), msg="Media/Files/Links offered")
+  assert_true(t.find(@sf.t("web-main.letters.title")) is Some(_), msg="Agent messages offered")
+  assert_true(t.find(@sf.t("web-pages.chat.subchats")) is None, msg="Sub-chats hidden when none")
+  assert_true(t.find(@sf.t("web-pages.chat.reopenTab")) is None, msg="Reopen hidden when can_reopen is false")
+  // Open tabs ("s-c1" and "jobs") are marked with the muted "Open" hint, not checkmarks.
+  let open_hints = t.words().filter(fn(w) { w.0 == @sf.t("web-pages.chat.tabOpen") })
+  assert_eq(open_hints.length(), 2, msg="two open tabs should show Open hint: \{Repr(open_hints)}")
+  assert_eq(t.corner_faults(), [])
+  assert_eq(t.contrast_faults(), [])
+  // Clicking an already-open tab ("s-c1" -> Claude · Opus 5.5) switches to it via chat.tabs.front, not chat.tabs.open.
+  let before_calls = calls.length()
+  side_tap_rightmost(t, "Claude · Opus 5.5")
+  t.run_for(@ui.move_most_ms)
+  let after_switch = calls[before_calls:].to_owned()
+  assert_true(
+    after_switch.iter().any(fn(c) { c.name == "chat.tabs.front" && text(Some(c.params), "tab") == "s-c1" }),
+    msg="already-open tab switches via chat.tabs.front: \{Repr(after_switch.map(fn(c) { (c.name, c.params) }))}",
+  )
+  assert_false(
+    after_switch.iter().any(fn(c) { c.name == "chat.tabs.open" && text(Some(c.params), "tab") == "s-c1" }),
+    msg="already-open tab must not emit chat.tabs.open",
+  )
+  // End-to-end tab open & reopen via + menu on the live fixture (avoids kept-answers misses and verifies tab state).
+  new_run()
+  let src = fixture("chat")
+  open_chat(side_tab_chat)
+  let t_live = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t_live.run_for(@ui.move_most_ms)
+  @sfdesk.side_change(src, side_tab_chat, "open", Some("s-c1"))
+  t_live.frame()
+  @sfdesk.side_change(src, side_tab_chat, "open", Some("jobs"))
+  t_live.run_for(@ui.move_most_ms)
+  // Pick closed "Station files" from + menu -> opens "files" in front.
+  t_live.click(Button, label=@sf.t("web-pages.chat.openPanelTab"))
+  t_live.run_for(@ui.move_most_ms)
+  side_tap_rightmost(t_live, @sf.t("web-pages.chat.files"))
+  t_live.run_for(@ui.move_most_ms)
+  assert_eq(side_now(side_tab_chat), (["s-c1", "jobs", "files"], "files"))
+  // Open "letters", switch to "s-c1", then close tabs to the right of "jobs" so can_reopen becomes true.
+  @sfdesk.side_change(src, side_tab_chat, "open", Some("letters"))
+  t_live.frame()
+  @sfdesk.side_change(src, side_tab_chat, "front", Some("s-c1"))
+  t_live.frame()
+  @sfdesk.side_change(src, side_tab_chat, "closeRight", Some("jobs"))
+  t_live.run_for(@ui.move_most_ms)
+  t_live.click(Button, label=@sf.t("web-pages.chat.openPanelTab"))
+  t_live.run_for(@ui.move_most_ms)
+  assert_true(t_live.find(@sf.t("web-pages.chat.reopenTab")) is Some(_), msg="Reopen offered once a tab was closed")
+  assert_eq(t_live.corner_faults(), [])
+  assert_eq(t_live.contrast_faults(), [])
+  side_tap_rightmost(t_live, @sf.t("web-pages.chat.reopenTab"))
+  t_live.run_for(@ui.move_most_ms)
+  assert_eq(side_now(side_tab_chat).0, ["s-c1", "jobs", "files", "letters"])
+}
+
+///|
+test "大屏: the right panel's + menu shows sub-chats and remote groups when available, and panel-open right-click opens it" {
+  // 1. Sub-chats group item appears and shows Open hint when subchats tab is open.
+  let t1 = wide_tester([], mode="chat-subchats-panel", window_inset=true)
+  t1.run_for(@ui.move_most_ms)
+  t1.click(Button, label=@sf.t("web-pages.chat.openPanelTab"))
+  t1.run_for(@ui.move_most_ms)
+  assert_true(t1.find(@sf.t("web-pages.chat.subchats")) is Some(_), msg="Sub-chats offered when opened is non-empty")
+  assert_true(t1.find(@sf.t("web-pages.chat.tabOpen")) is Some(_), msg="Open sub-chats tab marked Open")
+  assert_eq(t1.corner_faults(), [])
+  assert_eq(t1.contrast_faults(), [])
+  // 2. When panel is closed in a chat with remote screens, right-clicking panel-open opens the same menu with Remote group.
+  let t2 = wide_tester([], mode="chat-station-screens", window_inset=true)
+  t2.run_for(@ui.move_most_ms)
+  let open_btn = t2.get(Button, label=@sf.t("web-pages.chat.openPanel"))
+  let (bx, by, bw, bh) = open_btn.rect
+  t2.right_click(bx + bw / 2.0, by + bh / 2.0)
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find(@sf.t("web-main.switcher.group.chat")) is Some(_), msg="panel-open right-click opens menu")
+  assert_true(t2.find(@sf.t("web-pages.remote.title")) is Some(_), msg="Remote group shown in chat-station-screens")
+  assert_true(t2.find("Willow 的桌面") is Some(_), msg="Desktop screen listed under Remote")
+  assert_true(t2.find("登录 - GitHub · agent 正在操作") is Some(_), msg="Agent-driven browser screen listed under Remote")
+  assert_eq(t2.corner_faults(), [])
+  assert_eq(t2.contrast_faults(), [])
+}

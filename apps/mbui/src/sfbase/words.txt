@@ -3594,3 +3594,5 @@ web-pages.stations.unprotected.leadOwner
 web-pages.stations.unprotected.leadOwnerDevice
 web-pages.stations.unprotected.leadMember
 web-pages.stations.unprotected.toSecurity
+web-pages.chat.openPanelTab
+web-pages.chat.tabOpen

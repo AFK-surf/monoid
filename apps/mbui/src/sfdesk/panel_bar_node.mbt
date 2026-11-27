@@ -206,7 +206,23 @@ fn side_bar_node(
     // the panel's switch stays in its top right corner, open or closed; in the short column, the column's
     // (histories_ticked)
     bar.show(at_once=true, fn() { !column_short.get() }, fn(e) {
-      e.shrink(Is(0.0)) |> ignore
+      e.row(Is(true)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+      let plus_ref : Ref[@view.View?] = Ref(None)
+      plus_ref.val = Some(
+        @sf.icon_button_node(
+          e,
+          "plus",
+          fn() { @sf.t("web-pages.chat.openPanelTab") },
+          fn() {
+            match plus_ref.val {
+              Some(at) => side_mode_menu_open(src, r, view, at.placed_window_now(), End)
+              None => ()
+            }
+          },
+          tips~,
+          linked=bar_linked,
+        ),
+      )
       @sf.icon_button_node(
         e,
         "panel-close",
@@ -263,6 +279,7 @@ priv struct SideTabMenuReq {
   anchor : (Double, Double, Double, Double)
   along : @ui.Along
   offset : Double
+  title : String
   entries : () -> Array[(@sf.MenuItem?, String)]
 }
 
@@ -301,6 +318,7 @@ fn side_tab_menu_open(
   along : @ui.Along,
   offset : Double,
   entries : () -> Array[(@sf.MenuItem?, String)],
+  title? : String = "",
 ) -> Unit {
   side_tab_menu_count.val += 1
   let id = side_tab_menu_count.val
@@ -309,7 +327,7 @@ fn side_tab_menu_open(
     side_tab_menu_reqs.remove(gid)
   }
   side_tab_menu_gone.clear()
-  side_tab_menu_reqs[id] = { id, anchor, along, offset, entries }
+  side_tab_menu_reqs[id] = { id, anchor, along, offset, title, entries }
   side_tab_menu_ids.set(kept + [id])
   side_tab_menu_now.set(id)
 }
@@ -348,7 +366,7 @@ fn side_tab_menu_node(v : @view.View) -> Unit {
       open,
       fn(layer) { @sf.fixed_anchor(layer, req.anchor) },
       fn() { items().map(fn(x) { x.0 }) },
-      "",
+      req.title,
       req.along,
       req.offset,
       false,
@@ -524,4 +542,132 @@ fn side_title_node(n : @view.View, src : Source, r : ChatRef, view : () -> ChatV
     side_mark_node(m, src, r, view, tab, fn() { true })
     @sf.words_node(m, fn() { side_tab_names(src, r, view(), tab).0 }, fn() { side_title_words }) |> ignore
   })
+}
+
+///|
+/// Opens the right side panel's tab picker menu anchored at `anchor`: grouped into this chat's tabs, agent run
+/// histories, remote capabilities (terminal, browser, active screens), and reopening a closed tab. Uses icons on the
+/// left (no checkmarks) and shows a muted "Open" hint on the right for tabs already open in the panel.
+fn side_mode_menu_open(
+  src : Source,
+  r : ChatRef,
+  view : () -> ChatView?,
+  anchor : (Double, Double, Double, Double),
+  along : @ui.Along,
+) -> Unit {
+  side_tab_menu_open(
+    anchor,
+    along,
+    @sf.floating_trigger_gap,
+    title=@sf.t("web-pages.chat.openPanelTab"),
+    fn() {
+      let v = @signals.untracked(view)
+      let open_tabs = @signals.untracked(fn() { side_now(src, r).0 })
+      let open_hint = @sf.t("web-pages.chat.tabOpen")
+      let key_hint = fn(action : String) -> String {
+        @settings.key_label(@signals.untracked(fn() { src.topic("prefs", {}).get().value }), action)
+      }
+      let out : Array[(@sf.MenuItem?, String)] = []
+      let add_sep = fn() {
+        if !out.is_empty() && !(out[out.length() - 1].0 is None) {
+          out.push((None, ""))
+        }
+      }
+      let add_tab = fn(label : String, icon : String, tab : String) {
+        let is_open = open_tabs.contains(tab)
+        out.push((
+          Some(
+            @sf.menu_item_of(label, icon~, fn() {
+              if is_open {
+                side_front_pressed(src, r, tab)
+              } else {
+                side_tab_open(src, r, tab)
+              }
+            }),
+          ),
+          if is_open { open_hint } else { "" },
+        ))
+      }
+      // Group 1: This chat (Files, Jobs, Media/Files/Links, Agent messages, Sub-chats)
+      out.push((Some(@sf.menu_item_of(@sf.t("web-main.switcher.group.chat"), heading=true, fn() {  })), ""))
+      add_tab(@sf.t("web-pages.chat.files"), "folder", "files")
+      add_tab(@sf.t("web-pages.chat.jobs"), "boxes", "jobs")
+      if v.bind(fn(cv) { cv.thread }) is Some(_) {
+        add_tab(@sf.t("web-main.things.title"), "photo", "things")
+        add_tab(@sf.t("web-main.letters.title"), "chats", "letters")
+      }
+      match v {
+        Some(cv) if !cv.opened.is_empty() => add_tab(@sf.t("web-pages.chat.subchats"), "spawned", "subchats")
+        _ => ()
+      }
+      match v {
+        Some(cv) => {
+          // Group 2: Agent run histories
+          if !cv.agents.is_empty() {
+            add_sep()
+            out.push((Some(@sf.menu_item_of(@sf.t("android-chat.history.title"), heading=true, fn() {  })), ""))
+            for a in cv.agents {
+              add_tab(a.who, "thread", a.key)
+            }
+          }
+          // Group 3: Remote (Terminal, Browser, active Screens)
+          let can_term = cv.can_terminal() && (@sfbase.terminals_capable_fn.val)()
+          let can_browser = cv.can_browser()
+          if can_term || can_browser || !cv.screens.is_empty() {
+            add_sep()
+            out.push((Some(@sf.menu_item_of(@sf.t("web-pages.remote.title"), heading=true, fn() {  })), ""))
+            if can_term {
+              out.push((
+                Some(
+                  @sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
+                    station_page_beside(src, r, Terminal({ station: r.station, terminal: "new", watch: false, cwd: "" }))
+                    |> ignore
+                  }),
+                ),
+                "",
+              ))
+            }
+            if can_browser {
+              let user_browser_ids = cv.screens
+                .filter(fn(s) { s.id.has_prefix("browser:u_") })
+                .map(fn(s) { s.id })
+              out.push((
+                Some(
+                  @sf.menu_item_of(@sf.t("web-pages.screen.openBrowserRow"), icon="web", fn() {
+                    @sfbase.open_remote_browser(src, r.station, user_browser_ids)
+                  }),
+                ),
+                "",
+              ))
+            }
+            for s in cv.screens {
+              let sid = s.id
+              let title = s.title
+              let stab = station_tab_key("screen", r.station, screen=sid)
+              let is_open = open_tabs.contains(stab)
+              out.push((
+                Some(
+                  @sf.menu_item_of(@sfbase.chat_screen_label(s), icon=@sfbase.chat_screen_icon(s), fn() {
+                    station_page_beside(src, r, Screen({ station: r.station, screen: sid, title, until_gone: false }))
+                    |> ignore
+                  }),
+                ),
+                if is_open { open_hint } else { "" },
+              ))
+            }
+          }
+          // Footer: Reopen closed tab
+          if cv.tabs.can_reopen {
+            add_sep()
+            out.push((
+              Some(@sf.menu_item_of(@sf.t("web-pages.chat.reopenTab"), fn() { side_reopen(src, r) })),
+              key_hint("panel.tab.reopen"),
+            ))
+          }
+        }
+        None => ()
+      }
+      out
+    },
+  )
 }
