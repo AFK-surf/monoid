@@ -1803,7 +1803,8 @@ fn WholeAgents::build_domain_handlers(
       let mut has_cursor = false
       let mut cur_at : Int64 = 0L
       let mut cur_rid : Int64 = 0L
-      while hits.length() < limit {
+      let mut scanned_rows = 0
+      while hits.length() < limit && scanned_rows < MAX_UNICODE_SCAN_ROWS {
         let sql_params : Array[base_codec::Json] = [
           base_codec::json_str(home_ws),
           base_codec::json_str(caller_ws),
@@ -1840,6 +1841,7 @@ fn WholeAgents::build_domain_handlers(
             if rows.length() == 0 {
               break
             }
+            scanned_rows = scanned_rows + rows.length()
             for i in 0..<rows.length() {
               let r = rows[i]
               let rid = match r.get("rid") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }

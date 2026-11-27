@@ -967,11 +967,12 @@ pub fn WholeApi::new(
             Err(e) => Err(station_api::ApiError::new(500, e.message))
           }
         }
-        // Bounded keyset-paginated batch scan (`LIMIT 500`) + exact `jscase::lower` filtering.
+        // Bounded keyset-paginated batch scan (`LIMIT 500`, hard cap `MAX_UNICODE_SCAN_ROWS`) + exact `jscase::lower` filtering.
         let mut has_cursor = false
         let mut cur_at : Int64 = 0L
         let mut cur_id : Int64 = 0L
-        while chat_collected < sql_limit {
+        let mut scanned_rows = 0
+        while chat_collected < sql_limit && scanned_rows < MAX_UNICODE_SCAN_ROWS {
           let t_params : Array[base_codec::Json] = [
             base_codec::json_str(home_ws_str),
             base_codec::json_str(asker.workspace),
@@ -1009,6 +1010,7 @@ pub fn WholeApi::new(
               if rows.length() == 0 {
                 break
               }
+              scanned_rows = scanned_rows + rows.length()
               for i in 0..<rows.length() {
                 let r = rows[i]
                 let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
@@ -1150,11 +1152,12 @@ pub fn WholeApi::new(
             Err(e) => Err(station_api::ApiError::new(500, e.message))
           }
         }
-        // Bounded keyset-paginated batch scan (`LIMIT 500`) + exact `jscase::lower` filtering.
+        // Bounded keyset-paginated batch scan (`LIMIT 500`, hard cap `MAX_UNICODE_SCAN_ROWS`) + exact `jscase::lower` filtering.
         let mut has_cursor = false
         let mut cur_at : Int64 = 0L
         let mut cur_rid : Int64 = 0L
-        while msg_collected < sql_limit {
+        let mut scanned_rows = 0
+        while msg_collected < sql_limit && scanned_rows < MAX_UNICODE_SCAN_ROWS {
           let e_params : Array[base_codec::Json] = [
             base_codec::json_str(home_ws_str),
             base_codec::json_str(asker.workspace),
@@ -1192,6 +1195,7 @@ pub fn WholeApi::new(
               if rows.length() == 0 {
                 break
               }
+              scanned_rows = scanned_rows + rows.length()
               for i in 0..<rows.length() {
                 let r = rows[i]
                 let rid = match r.get("rid") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }

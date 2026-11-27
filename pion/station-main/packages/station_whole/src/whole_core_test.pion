@@ -7,6 +7,7 @@ import "base_codec"
 import "crypto"
 import "form"
 import "http1"
+import "jscase"
 import "station_api"
 import "station_http"
 import "station_jobs"
@@ -820,21 +821,92 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
   wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
 
-  // 6. R8: SQL-safe terms (ASCII + caseless CJK/emoji) push down into SQL `LIKE ... ESCAPE '\'`,
-  // while cased non-ASCII terms (Cyrillic, Greek, German, Turkish) route to bounded keyset pagination + `jscase::lower`.
-  wc_assert(is_sql_like_safe_term("hello_100%"), "ASCII term is SQL-safe")
-  wc_assert(is_sql_like_safe_term("工资"), "CJK term is SQL-safe")
-  wc_assert(is_sql_like_safe_term("例会纪要"), "CJK term is SQL-safe")
-  wc_assert(!is_sql_like_safe_term("Санкт-Петербург"), "Cyrillic hyphenated term needs Unicode keyset scan")
-  wc_assert(!is_sql_like_safe_term("Άννα"), "Greek accented term needs Unicode keyset scan")
-  wc_assert(!is_sql_like_safe_term("äRGÉR"), "German accented term needs Unicode keyset scan")
-  wc_assert(!is_sql_like_safe_term("İ"), "Turkish İ needs Unicode keyset scan")
-  wc_assert(!has_unicode_case_term(["old", "工资"]), "ASCII + CJK stays on fast SQL LIKE path")
-  wc_assert(has_unicode_case_term(["old", "Санкт-Петербург"]), "Cyrillic triggers keyset pagination")
-  let (cjk_sql, cjk_params) = build_like_clauses("e.text", ["工资", "old"], 3)
-  wc_assert(cjk_sql.contains("LIKE ?3 ESCAPE '\\'") && cjk_sql.contains("LIKE ?4 ESCAPE '\\'") && cjk_params.length() == 2, "SQL-safe terms push down LIKE")
-  let (uni_sql, uni_params) = build_like_clauses("e.text", ["Санкт-Петербург", "old"], 3)
-  wc_assert(uni_sql.contains("LIKE ?3 ESCAPE '\\'") && uni_params.length() == 1, "cased non-ASCII term skipped in SQL LIKE while keeping SQL-safe companion terms")
+  // 6. R9: Exact SQL LIKE expansion (ASCII <= 2 ambig, caseless CJK) + necessary non-ASCII prefilters.
+  wc_assert(is_sql_like_exact_term("hello_100%"), "ASCII without k/trailing-i is SQL-exact")
+  wc_assert(is_sql_like_exact_term("old"), "old is SQL-exact")
+  wc_assert(is_sql_like_exact_term("anchor"), "anchor is SQL-exact")
+  wc_assert(is_sql_like_exact_term("mix"), "mix (non-trailing i) is SQL-exact")
+  wc_assert(is_sql_like_exact_term("300k"), "300k (1 ambig) is SQL-exact 2-way OR")
+  wc_assert(is_sql_like_exact_term("mi"), "mi (1 trailing-i ambig) is SQL-exact 2-way OR")
+  wc_assert(is_sql_like_exact_term("wiki"), "wiki (2 ambig) is SQL-exact 4-way OR")
+  wc_assert(!is_sql_like_exact_term("kkk"), "kkk (3 ambig) triggers keyset scan")
+  wc_assert(is_sql_like_exact_term("工资"), "CJK term is SQL-exact")
+  wc_assert(is_sql_like_exact_term("例会纪要"), "CJK term is SQL-exact")
+  wc_assert(!is_sql_like_exact_term("Санкт-Петербург"), "Cyrillic triggers keyset scan with prefilter")
+  wc_assert(!is_sql_like_exact_term("Άννα"), "Greek triggers keyset scan with prefilter")
+  wc_assert(!is_sql_like_exact_term("äRGÉR"), "German accented triggers keyset scan with prefilter")
+  wc_assert(!is_sql_like_exact_term("İ"), "Turkish İ triggers keyset scan with prefilter")
+  wc_assert(!has_unicode_case_term(["old", "工资", "300k", "mi"]), "exact SQL terms stay off keyset scan")
+  wc_assert(has_unicode_case_term(["old", "Санкт-Петербург"]), "Cyrillic triggers keyset scan")
+
+  let (k_sql, k_params) = build_like_clauses("e.text", ["300k"], 3)
+  wc_assert(k_sql.contains(" OR ") && k_params.length() == 2, "300k expands to 2-way OR (300k / 300K)")
+  let (mi_sql, mi_params) = build_like_clauses("e.text", ["mi"], 3)
+  wc_assert(mi_sql.contains(" OR ") && mi_params.length() == 2, "mi expands to 2-way OR (mi / mİ)")
+  let (mix_sql, mix_params) = build_like_clauses("e.text", ["mix"], 3)
+  wc_assert(!mix_sql.contains(" OR ") && mix_params.length() == 1, "mix is single exact LIKE (non-trailing i)")
+  let (wiki_sql, wiki_params) = build_like_clauses("e.text", ["wiki"], 3)
+  wc_assert(wiki_sql.contains(" OR ") && wiki_params.length() == 4, "wiki expands to 4-way OR")
+  let (ru_sql, ru_params) = build_like_clauses("e.text", ["Санкт-Петербург"], 3)
+  wc_assert(ru_sql.contains(" OR ") && ru_params.length() == 6, "Cyrillic pushes 3 distinct char OR prefilters (6 params)")
+  let (miss_sql, miss_params) = build_like_clauses("e.text", ["Ärgerxyzmiss"], 3)
+  wc_assert(miss_sql.contains("LIKE ?3 ESCAPE '\\'") && miss_params.length() == 3, "Ärgerxyzmiss pushes unambiguous substring + ä/Ä OR")
 
   core.shutdown_pre_handover()
+}
+
+test "whole_core_r9_exhaustive_unicode_preimages_and_prefilter_soundness" {
+  // Machine-exhaustive proof over all scalar values 0x0080..=0x1E950 (skipping surrogates 0xD800..=0xDFFF):
+  // For every non-ASCII scalar `c`, every code point `t != c` emitted by `jscase::lower(encode_utf8_cp(c))`
+  // MUST appear in `non_ascii_preimages(t)`.
+  let mut checked = 0
+  let mut mapped = 0
+  for cp in 0x0080..<0x1E951 {
+    if cp >= 0xD800 && cp <= 0xDFFF {
+      continue
+    }
+    checked = checked + 1
+    let low = jscase::lower(encode_utf8_cp(cp))
+    let out_pts = decode_utf8_points(low)
+    for j in 0..<out_pts.length() {
+      let t = out_pts[j]
+      if t != cp {
+        mapped = mapped + 1
+        let pre = non_ascii_preimages(t)
+        let mut found = false
+        for pi in 0..<pre.length() {
+          if pre[pi] == cp {
+            found = true
+            break
+          }
+        }
+        wc_assert(
+          found,
+          "non_ascii_preimages(" + t.to_string() + ") missing source cp=" + cp.to_string(),
+        )
+      }
+    }
+  }
+  // Also explicitly verify final sigma U+03C2 <- U+03A3, U+00E5 <- [U+00C5, U+212B],
+  // U+03C9 <- [U+03A9, U+2126], U+006B <- [U+212A], U+0069 & U+0307 <- [U+0130].
+  let check_has = fn(t : Int, f : Int) -> Unit {
+    let pre = non_ascii_preimages(t)
+    let mut ok = false
+    for i in 0..<pre.length() {
+      if pre[i] == f {
+        ok = true
+      }
+    }
+    wc_assert(ok, "missing expected preimage " + f.to_string() + " -> " + t.to_string())
+  }
+  check_has(0x03C2, 0x03A3)
+  check_has(0x03C3, 0x03A3)
+  check_has(0x00E5, 0x00C5)
+  check_has(0x00E5, 0x212B)
+  check_has(0x03C9, 0x03A9)
+  check_has(0x03C9, 0x2126)
+  check_has(0x006B, 0x212A)
+  check_has(0x0069, 0x0130)
+  check_has(0x0307, 0x0130)
+  wc_assert(checked > 120000 && mapped > 1400, "exhaustive loop must cover full Unicode lower table")
 }
