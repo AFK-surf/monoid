@@ -2771,11 +2771,11 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       assert.ok(editedRows.length >= 1, `${mode} expected edited text persisted in stillfail.db`);
     }
 
-    // (6c-init-fail-retry) Astra R9: 0-byte read-only (0444) table-less `stillfail.db` -> Pion fails BEFORE
-    // `exec_replace` preserving `<data>/restore/` -> `chmod 0644` (without deleting DB or re-staging!) ->
-    // real Launcher retries in same dir -> Pion initializes missing tables & `exec_replace`s into Node -> restore + edit succeed!
+    // (6c-locked-existing-db) Opus R10 P2: Existing rollback-journal DB locked with `BEGIN EXCLUSIVE`
+    // + pending `restore/ready.json` -> Pion MUST exit 1 without opening DB for writes, preserving
+    // `<data>/restore/`, byte-identical DB contents, and `journal_mode=delete`!
     {
-      const dir = freshDir("ext-gate-r10-init-retry");
+      const dir = freshDir("ext-gate-r11-locked-db");
       const appDir = join(dir, "app");
       const dataDir = join(dir, "data");
       installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
@@ -2793,36 +2793,116 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
           workspace: ws,
           workspace_name: "R8RestWS",
           station: stationId,
-          name: "r10-init-retry",
+          name: "r11-locked-db",
           peers: [{ id: peerId, name: "peer-r8", relay: null }],
           relay_urls: [],
           grant_keys: grantKeys,
         }),
       );
 
-      // Plant a 0-byte read-only table-less `stillfail.db` simulating a transient SQLite write failure.
       const dbPath = join(dataDir, "stillfail.db");
-      writeFileSync(dbPath, "");
-      chmodSync(dbPath, 0o444);
+      const seed = new DatabaseSync(dbPath);
+      seed.exec("PRAGMA journal_mode = DELETE;");
+      seed.exec("CREATE TABLE threads (id INTEGER PRIMARY KEY); CREATE TABLE sessions (key TEXT PRIMARY KEY);");
+      seed.close();
+      const origBytes = readFileSync(dbPath);
 
-      // 1. Direct Pion run (`!strict`, with real Node `--app`): MUST exit non-zero, log init failure,
-      //    and preserve BOTH `<data>/restore/ready.json` and `<data>/restore/copy/`!
-      const failRun = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      const locker = new DatabaseSync(dbPath);
+      locker.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
+      const out: string[] = [];
+      const child = spawn(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
         env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-        encoding: "utf8",
-        timeout: 15_000,
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      assert.notEqual(failRun.status, 0, `read-only 0-byte db init failure must exit non-zero, got ${failRun.status}`);
-      assert.ok(
-        `${failRun.stdout}\n${failRun.stderr}`.includes("failed to initialize target db before restore handoff"),
-        `expected init failure stderr, got: ${failRun.stdout}\n${failRun.stderr}`,
-      );
-      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on init failure");
-      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on init failure");
+      child.stdout.on("data", (d) => out.push(String(d)));
+      child.stderr.on("data", (d) => out.push(String(d)));
+      const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
+      try { locker.exec("ROLLBACK; PRAGMA locking_mode = NORMAL"); } catch {}
+      try { locker.close(); } catch {}
 
-      // 2. Clear fault (`chmod 0644` — keep the same 0-byte `stillfail.db` and DO NOT re-stage restore!)
-      //    and boot via real Launcher -> Pion detects missing core tables, initializes schema, `exec_replace`s into Node!
-      chmodSync(dbPath, 0o644);
+      assert.equal(code, 1, `6c-locked-existing-db must exit 1, got ${code}: ${out.join("")}`);
+      assert.ok(
+        out.join("").includes("target db not ready for restore handoff"),
+        `6c-locked-existing-db expected restore handoff refusal stderr, got: ${out.join("")}`,
+      );
+      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6c-locked-existing-db must preserve restore/ready.json");
+      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6c-locked-existing-db must preserve restore/copy");
+      assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6c-locked-existing-db must not modify locked DB bytes");
+      const verify = new DatabaseSync(dbPath);
+      const jm = (verify.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode;
+      verify.close();
+      assert.equal(jm.toLowerCase(), "delete", "6c-locked-existing-db must preserve journal_mode=delete");
+    }
+
+    // (6d-io-fail-atomic-retry) Astra R10 P1: Empty 0-table DB (`PRAGMA user_version = 13`) + real
+    // SQLite write failure (`RLIMIT_FSIZE` with `SIGXFSZ` ignored) during atomic temp-DB init ->
+    // Pion exits 1, leaves `stillfail.db` untouched with 0 tables and zero `.init.*.tmp` debris,
+    // preserves `<data>/restore/` -> clearing the limit and booting real Launcher in same dir
+    // atomically initializes schema, `exec_replace`s into Node, restores `s:r8-rem` + `thread_sessions`,
+    // and persists first peer `connect.event` edit!
+    {
+      const dir = freshDir("ext-gate-r11-io-retry");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r11-io-retry",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      // Seed a valid 0-table SQLite file with `PRAGMA user_version = 13`.
+      const dbPath = join(dataDir, "stillfail.db");
+      const emptyDb = new DatabaseSync(dbPath);
+      emptyDb.exec("PRAGMA user_version = 13;");
+      emptyDb.close();
+
+      // 1. Trigger a real mid-migration SQLite write failure via `ulimit -f 16` (8 KiB max file size)
+      //    with `SIGXFSZ` ignored so SQLite observes `EFBIG` (`SQLITE_IOERR`/`SQLITE_FULL`) while
+      //    creating tables inside `Store::open(tmp_db)`.
+      const failRun = spawnSync(
+        "sh",
+        ["-c", 'trap "" XFSZ; ulimit -f 16; exec "$@"', "--", pionBin, "run", "--app", appDir, "--data", dataDir, "--port", "0"],
+        {
+          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+          encoding: "utf8",
+          timeout: 15_000,
+        },
+      );
+      assert.equal(failRun.status, 1, `6d-io-fail-atomic-retry must exit 1 under RLIMIT_FSIZE, got ${failRun.status}: ${failRun.stdout}\n${failRun.stderr}`);
+      assert.ok(
+        `${failRun.stdout}\n${failRun.stderr}`.includes("failed to initialize target db before restore handoff") ||
+          `${failRun.stdout}\n${failRun.stderr}`.includes("failed to flush initialized target db before restore handoff"),
+        `6d-io-fail-atomic-retry expected init failure stderr, got: ${failRun.stdout}\n${failRun.stderr}`,
+      );
+      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on mid-init IO failure");
+      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on mid-init IO failure");
+      assert.deepEqual(
+        readdirSync(dataDir).filter((f) => f.includes(".init.") && f.includes(".tmp")),
+        [],
+        "temp init DB files must be cleaned up on failure",
+      );
+      const checkZero = new DatabaseSync(dbPath, { readOnly: true });
+      const tblCount = (checkZero.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table'").get() as { n: number }).n;
+      checkZero.close();
+      assert.equal(tblCount, 0, "stillfail.db MUST remain 0-table (never half-initialized) after atomic init failure");
+
+      // 2. Lift fault (same dataDir, same 0-table `stillfail.db`, NO re-staging!) and boot via real Launcher.
       const udpPort = await pickFreeUdpPort();
       const logs: string[] = [];
       const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
@@ -2840,12 +2920,12 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       launcher.stderr.on("data", (d) => logs.push(String(d)));
 
       await until(
-        "6c-init-fail-retry exec_replace into Node after chmod 0644",
+        "6d-io-fail-atomic-retry exec_replace into Node after lifting RLIMIT_FSIZE",
         () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
         20_000,
       );
       const nodePid = await until(
-        "6c-init-fail-retry Node pid serving /healthz 200",
+        "6d-io-fail-atomic-retry Node pid serving /healthz 200",
         async () => {
           const p = readHubPid(dataDir);
           const port = readPorts(dataDir).admin ?? 0;
@@ -2861,15 +2941,15 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       );
       assert.equal(isAlive(nodePid), true);
       await until(
-        "6c-init-fail-retry Node replica restore completed",
+        "6d-io-fail-atomic-retry Node replica restore completed",
         () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
         15_000,
       );
       const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
-      assert.equal(restoredOut.error, null, `6c-init-fail-retry restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
+      assert.equal(restoredOut.error, null, `6d-io-fail-atomic-retry restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
 
-      const editedText = "edited-after-6c-init-fail-retry";
-      const evResp = await until("6c-init-fail-retry connect.event edit on Node", async () => {
+      const editedText = "edited-after-6d-atomic-retry";
+      const evResp = await until("6d-io-fail-atomic-retry connect.event edit on Node", async () => {
         try {
           return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
             method: "connect.event",
@@ -2891,16 +2971,71 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       assert.deepEqual(evResp.result, { ok: true });
 
       launcher.kill("SIGTERM");
-      await until("6c-init-fail-retry launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+      await until("6d-io-fail-atomic-retry launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
 
       const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
       const sessRow = verifyStore.getSession("s:r8-rem");
-      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, "6c-init-fail-retry expected restored cross-station session s:r8-rem");
+      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, "6d-io-fail-atomic-retry expected restored cross-station session s:r8-rem");
+      const tsCount = (verifyStore.db.prepare("SELECT COUNT(*) AS n FROM thread_sessions").get() as { n: number }).n;
+      assert.equal(tsCount, 1, "6d-io-fail-atomic-retry expected thread_sessions === 1");
+      const origRows = verifyStore.db
+        .prepare("SELECT text FROM entries WHERE text LIKE ?")
+        .all("%before-r8-restore%") as { text: string }[];
       const editedRows = verifyStore.db
         .prepare("SELECT text FROM entries WHERE text LIKE ?")
         .all(`%${editedText}%`) as { text: string }[];
       verifyStore.close();
-      assert.ok(editedRows.length >= 1, "6c-init-fail-retry expected edited text persisted in stillfail.db");
+      assert.ok(origRows.length >= 1, "6d-io-fail-atomic-retry expected original restored message in stillfail.db");
+      assert.ok(editedRows.length >= 1, "6d-io-fail-atomic-retry expected edited text persisted in stillfail.db");
+    }
+
+    // (6e-higher-user-version) Astra R10: Higher `user_version` (e.g. 99) -> Pion MUST exit 1,
+    // zero writes to `stillfail.db`, and preserve `<data>/restore/`!
+    {
+      const dir = freshDir("ext-gate-r11-higher-uv");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r11-higher-uv",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      const dbPath = join(dataDir, "stillfail.db");
+      const futureDb = new DatabaseSync(dbPath);
+      futureDb.exec("PRAGMA user_version = 99;");
+      futureDb.close();
+      const origBytes = readFileSync(dbPath);
+
+      const res = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(res.status, 1, `6e-higher-user-version must exit 1, got ${res.status}: ${res.stdout}\n${res.stderr}`);
+      assert.ok(
+        `${res.stdout}\n${res.stderr}`.includes("unsupported_user_version:99"),
+        `6e-higher-user-version expected unsupported_user_version:99, got: ${res.stdout}\n${res.stderr}`,
+      );
+      assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6e-higher-user-version must not modify DB bytes");
+      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6e-higher-user-version must preserve restore/ready.json");
+      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6e-higher-user-version must preserve restore/copy");
     }
   }
 

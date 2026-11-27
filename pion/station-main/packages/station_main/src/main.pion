@@ -967,27 +967,126 @@ fn resolve_node_and_main_js(argv : Array[String], sep : String, os_name : String
   }
 }
 
-/// Read-only check verifying `stillfail.db` exists and already contains both core tables
-/// (`threads` and `sessions`). Returns `false` if missing, 0-byte, missing tables, or unreadable.
-fn db_has_core_tables(db_path : String) -> Bool {
-  if station_sys::lstat_raw(db_path) is None {
-    return false
+enum DbRestoreState {
+  NeedsAtomicInit
+  Ready
+  Unknown(String)
+}
+
+fn parse_stat_file_size(raw : String) -> Option[Int64] {
+  let parts = raw.split("|")
+  if parts.length() < 2 || parts[0] != "file" {
+    return None
+  }
+  let size_str = parts[1]
+  if size_str.length() == 0 {
+    return None
+  }
+  let mut acc = 0L
+  for i in 0..<size_str.length() {
+    let c = size_str.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10L + (c - 48).to_int64()
+  }
+  Some(acc)
+}
+
+fn file_is_nonempty(path : String) -> Bool {
+  match station_sys::lstat_raw(path) {
+    None => false
+    Some(raw) => match parse_stat_file_size(raw) {
+      Some(sz) => sz > 0L
+      None => true
+    }
+  }
+}
+
+fn query_single_i64(db : sqlite_ffi::Db, sql : String) -> Result[Int64, String] {
+  match db.prepare(sql) {
+    Ok(stmt) => {
+      let rc = stmt.step()
+      let out_val = if rc == 100 { stmt.column_int64(0) } else { 0L }
+      let err = if rc == 100 { "" } else { db.errmsg() }
+      let _ = stmt.finalize()
+      if rc == 100 {
+        Ok(out_val)
+      } else {
+        Err("step_rc=" + rc.to_string() + ":" + err)
+      }
+    }
+    Err(se) => Err("prepare_rc=" + se.code.to_string() + ":" + se.message)
+  }
+}
+
+/// Strict 3-state read-only inspection of `stillfail.db` before a pending replica restore handoff.
+/// Never opens the database for writes; any SQLite/lock/version/partial-schema anomaly returns
+/// `Unknown` so the caller fails closed without mutating an existing database or losing `restore/`.
+fn inspect_db_for_restore(db_path : String) -> DbRestoreState {
+  let wal_nonempty = file_is_nonempty(db_path + "-wal")
+  match station_sys::lstat_raw(db_path) {
+    None =>
+    if wal_nonempty {
+      return DbRestoreState::Unknown("orphan_wal_without_db")
+    } else {
+      return DbRestoreState::NeedsAtomicInit
+    }
+    Some(raw) =>
+    match parse_stat_file_size(raw) {
+      Some(sz) =>
+      if sz == 0L && !wal_nonempty {
+        return DbRestoreState::NeedsAtomicInit
+      }
+      None => ()
+    }
   }
   let db = match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY, 2000) {
     Ok(d) => d
-    Err(_) => return false
+    Err(se) => return DbRestoreState::Unknown("open_ro_rc=" + se.code.to_string() + ":" + se.message)
   }
-  let ok = match db.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('threads', 'sessions')") {
-    Ok(stmt) => {
-      let rc = stmt.step()
-      let count = if rc == 100 { stmt.column_int64(0) } else { 0L }
-      let _ = stmt.finalize()
-      rc == 100 && count == 2L
+  match query_single_i64(db, "PRAGMA user_version") {
+    Err(e) => {
+      let _ = db.close()
+      return DbRestoreState::Unknown("user_version:" + e)
     }
-    Err(_) => false
+    Ok(v) =>
+    if v > 13L {
+      let _ = db.close()
+      return DbRestoreState::Unknown("unsupported_user_version:" + v.to_string())
+    }
+  }
+  let total_tables = match query_single_i64(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table'") {
+    Ok(n) => n
+    Err(e) => {
+      let _ = db.close()
+      return DbRestoreState::Unknown("total_tables:" + e)
+    }
+  }
+  let core_tables = match query_single_i64(
+    db,
+    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('threads', 'sessions', 'entries', 'thread_sessions')",
+  ) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = db.close()
+      return DbRestoreState::Unknown("core_tables:" + e)
+    }
   }
   let _ = db.close()
-  ok
+  if total_tables == 0L {
+    DbRestoreState::NeedsAtomicInit
+  } else if core_tables == 4L {
+    DbRestoreState::Ready
+  } else {
+    DbRestoreState::Unknown("incomplete_schema")
+  }
+}
+
+fn cleanup_temp_db_files(tmp_db : String) -> Unit {
+  let _ = station_sys::unlink(tmp_db)
+  let _ = station_sys::unlink(tmp_db + "-wal")
+  let _ = station_sys::unlink(tmp_db + "-shm")
 }
 
 /// Entry gate executed BEFORE `host_shim::start`, BEFORE `ready`, BEFORE touching inherited launcher
@@ -1037,16 +1136,55 @@ fn maybe_handoff_external_connects_to_node(argv : Array[String]) -> Option[Int] 
       }
       if has_pending_restore {
         let db_path = nodepath::join(sep, [data, "stillfail.db"])
-        if !db_has_core_tables(db_path) {
-          let _ = station_sys::register_sqlite_js_lower()
-          match station_store::Store::open(db_path) {
-            Ok(st_init) => st_init.close()
-            Err(se) => {
-              let _ = host_shim::write_stderr_line(
-                "stillfail-station-pion: failed to initialize target db before restore handoff (preserving restore/ready.json): "
-                + se.message,
-              )
-              return Some(1)
+        match inspect_db_for_restore(db_path) {
+          DbRestoreState::Ready => ()
+          DbRestoreState::Unknown(reason) => {
+            let _ = host_shim::write_stderr_line(
+              "stillfail-station-pion: target db not ready for restore handoff ("
+              + reason
+              + "), preserving restore/ready.json",
+            )
+            return Some(1)
+          }
+          DbRestoreState::NeedsAtomicInit => {
+            let tmp_db = db_path + ".init." + host_shim::pid().to_string() + ".tmp"
+            cleanup_temp_db_files(tmp_db)
+            let _ = station_sys::register_sqlite_js_lower()
+            match station_store::Store::open(tmp_db) {
+              Ok(st_init) =>
+              match st_init.db.exec("PRAGMA journal_mode = DELETE;") {
+                Ok(()) => {
+                  st_init.close()
+                  if !station_sys::rename(tmp_db, db_path) {
+                    cleanup_temp_db_files(tmp_db)
+                    let _ = host_shim::write_stderr_line(
+                      "stillfail-station-pion: failed to install initialized target db before restore handoff (preserving restore/ready.json): rename failed",
+                    )
+                    return Some(1)
+                  }
+                  let _ = station_sys::unlink(tmp_db + "-wal")
+                  let _ = station_sys::unlink(tmp_db + "-shm")
+                  let _ = station_sys::unlink(db_path + "-wal")
+                  let _ = station_sys::unlink(db_path + "-shm")
+                }
+                Err(se) => {
+                  st_init.close()
+                  cleanup_temp_db_files(tmp_db)
+                  let _ = host_shim::write_stderr_line(
+                    "stillfail-station-pion: failed to flush initialized target db before restore handoff (preserving restore/ready.json): "
+                    + se.message,
+                  )
+                  return Some(1)
+                }
+              }
+              Err(se) => {
+                cleanup_temp_db_files(tmp_db)
+                let _ = host_shim::write_stderr_line(
+                  "stillfail-station-pion: failed to initialize target db before restore handoff (preserving restore/ready.json): "
+                  + se.message,
+                )
+                return Some(1)
+              }
             }
           }
         }
