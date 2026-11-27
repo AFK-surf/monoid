@@ -2226,54 +2226,9 @@ static void test_liquid_over_hole(void) {
   }
 }
 
-static void test_perf59_pace_cull_and_donor(void) {
-  // (a) win_pace_plan(): double-vsync elimination without busy spin or reveal regression.
-  {
-    const int64_t period_120 = 83333;   // ~8.333 ms at 10 MHz QPC
-    const int64_t period_240 = 41667;   // ~4.167 ms at 10 MHz QPC
-    WinPaceState st = {};
-
-    // 1. Fast non-blocking Present1 (vblank occurred before Present1 started): must DwmFlush once.
-    WinPaceDecision d = win_pace_plan(&st, 1, 0, 1, 1000000, 1000500, 1, 995000, period_120, 50, 1000600);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-
-    // 2. Blocking Present1 spanning a fresh DWM vblank on 120 Hz (beats=1): consumes beat -> 0 extra flushes.
-    d = win_pace_plan(&st, 1, 0, 1, 1000000, 1060000, 1, 1055000, period_120, 51, 1060100);
-    CHECK(d.consumed_present_beat == 1 && d.flushes == 0 && d.next_cframe == 51);
-    st.has_cframe = 1;
-    st.last_cframe = d.next_cframe;
-    st.has_beat = 1;
-    st.last_beat_qpc = 1060100;
-
-    // 3. Same cFrame on next call must NOT skip DwmFlush (guards against busy spin).
-    d = win_pace_plan(&st, 1, 0, 1, 1060200, 1061000, 1, 1060500, period_120, 51, 1061100);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-
-    // 4. must_flush=1 (cloaked window reveal) forces DwmFlush even when Present1 spanned a fresh vblank.
-    d = win_pace_plan(&st, 1, 1, 1, 1060200, 1145000, 1, 1143000, period_120, 52, 1145100);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-
-    // 5. 240 Hz (beats=2): blocking 1 beat -> 1 remaining flush; blocking 2 beats -> 0 flushes.
-    st.has_cframe = 1;
-    st.last_cframe = 100;
-    st.has_beat = 1;
-    st.last_beat_qpc = 2000000;
-    d = win_pace_plan(&st, 2, 0, 1, 2020000, 2042000, 1, 2041667, period_240, 101, 2042100);
-    CHECK(d.consumed_present_beat == 1 && d.flushes == 1 && d.next_cframe == 101);
-    d = win_pace_plan(&st, 2, 0, 1, 2050000, 2084000, 1, 2083334, period_240, 102, 2084100);
-    CHECK(d.consumed_present_beat == 1 && d.flushes == 0 && d.next_cframe == 102);
-
-    // 6. Missing timing, missing present span, or future vblank (> p_end): safe fallback to 1 flush.
-    d = win_pace_plan(&st, 1, 0, 1, 3000000, 3060000, 0, 3050000, period_120, 200, 3060100);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-    d = win_pace_plan(&st, 1, 0, 0, 3000000, 3060000, 1, 3050000, period_120, 200, 3060100);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-    d = win_pace_plan(&st, 1, 0, 1, 3000000, 3060000, 1, 3065000, period_120, 200, 3060100);
-    CHECK(d.consumed_present_beat == 0 && d.flushes == 1);
-  }
-
-  // (b) encode_rects() partial-redraw CPU scissor culling, single-pass segs_upload, glass pre_hits, and bit-exact
-  //     WARP pixel parity vs whole-frame redraw.
+static void test_perf59_cull_and_donor(void) {
+  // (a) encode_rects() partial-redraw CPU scissor culling, lens culling, single-pass segs_upload, lazy multi-rect
+  //     glass pre_hits (with stale-gen in-place refresh), and bit-exact WARP pixel parity vs whole-frame redraw.
   {
     auto read_offscreen_bgra = [](int w, int h) -> uint8_t * {
       if (!dev || !ctx || !off_target) return NULL;
@@ -2304,6 +2259,13 @@ static void test_perf59_pace_cull_and_donor(void) {
     };
 
     const int W = 128, H = 128;
+    const double saved_vw = vw, saved_vh = vh, saved_vscale = vscale;
+    const int saved_fb_w = fb_w, saved_fb_h = fb_h;
+    vw = (double)W;
+    vh = (double)H;
+    vscale = 1.0;
+    fb_w = W;
+    fb_h = H;
     const int N_GRID = 180;
     const int TOTAL = N_GRID + 5;  // 180 rects + 1 frosted glass + 1 lens(header+child) + 1 path + 1 seg
     double *sc = (double *)calloc((size_t)TOTAL * MB_INST, sizeof(double));
@@ -2356,6 +2318,8 @@ static void test_perf59_pace_cull_and_donor(void) {
       CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
       int full_submitted = encode_inst_submitted;
       CHECK(full_submitted >= N_GRID);
+      CHECK(encode_lens_drawn == 1);
+      CHECK(encode_pre_hits_used == 0);
 
       // Mutate bottom-left path color only; mark 2 disjoint dirty rects:
       // rect 0 touches left edge of warm glass (8, 8, 16, 24), rect 1 covers path (12, 84, 32, 32).
@@ -2369,7 +2333,7 @@ static void test_perf59_pace_cull_and_donor(void) {
       CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
       int partial_submitted = encode_inst_submitted;
       int segs_delta = segs_upload_calls - segs_before;
-      int pre_used = encode_pre_hits_used;
+      int lens_after_cull = encode_lens_drawn;
       uint8_t *px_partial = read_offscreen_bgra(W, H);
 
       // Whole-frame reference draw of the mutated scene
@@ -2386,32 +2350,84 @@ static void test_perf59_pace_cull_and_donor(void) {
           if (px_partial[i] != px_ref[i]) diff_bytes++;
         }
       }
-      printf("win_gpu: perf-59 partial full_sub=%d part_sub=%d segs_delta=%d pre_hits=%d diff_bytes=%d\n",
-             full_submitted, partial_submitted, segs_delta, pre_used, diff_bytes);
+      printf("win_gpu: perf-59 partial full_sub=%d part_sub=%d lens_drawn=%d segs_delta=%d diff_bytes=%d\n",
+             full_submitted, partial_submitted, lens_after_cull, segs_delta, diff_bytes);
       CHECK(segs_delta == 1);
-      CHECK(pre_used >= 1);
+      CHECK(lens_after_cull == 0);
       CHECK(partial_submitted < full_submitted / 2);
       CHECK(diff_bytes == 0);
       free(px_partial);
-      free(px_ref);
 
-      // Two separate dirty rects both overlapping the same warm glass panel reuse pre_hits twice with 0 diff.
+      // Two disjoint dirty rects both overlapping the same warm glass panel:
+      // rect 0 populates pre_hits[0] on slot_same hit, rect 1 reuses pre_hits[0] (encode_pre_hits_used == 1), 0 diff.
       mb_host_render_dirty(8.0, 8.0, 16.0, 24.0);
       mb_host_render_dirty(72.0, 8.0, 16.0, 24.0);
       segs_before = segs_upload_calls;
       CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
-      CHECK(segs_upload_calls - segs_before == 1);
-      CHECK(encode_pre_hits_used == 2);
+      int two_rect_pre = encode_pre_hits_used;
+      int two_rect_segs = segs_upload_calls - segs_before;
+      uint8_t *px_two = read_offscreen_bgra(W, H);
+      int diff_two = 0;
+      if (px_two && px_ref) {
+        for (size_t i = 0; i < (size_t)W * (size_t)H * 4u; i++) {
+          if (px_two[i] != px_ref[i]) diff_two++;
+        }
+      }
+      printf("win_gpu: perf-59 multi_glass pre_hits=%d segs_delta=%d diff_two=%d\n",
+             two_rect_pre, two_rect_segs, diff_two);
+      CHECK(two_rect_segs == 1);
+      CHECK(two_rect_pre == 1);
+      CHECK(diff_two == 0);
+      free(px_two);
+      free(px_ref);
+
+      // Stale-gen WinPreHit entry is ignored and overwritten in place (never shadows fresh slot).
+      int warm_slot = -1;
+      for (int s = 0; s < MB_GLASS_SLOTS; s++) {
+        if (gslots[s].valid && gslots[s].bt.srv) {
+          warm_slot = s;
+          break;
+        }
+      }
+      CHECK(warm_slot >= 0);
+      if (warm_slot >= 0) {
+        Grab gm;
+        CHECK(grab_of_with_donors(&gm, last_inst, glass_idx, glass_idx + 1, TOTAL, W, H, NULL) == 1);
+        WinPreHit ph[16];
+        int ph_n = 1;
+        ph[0].tid = -590;
+        ph[0].start = glass_idx;
+        ph[0].slot = warm_slot;
+        ph[0].gen = gslots[warm_slot].gen - 1u;  // stale gen!
+        ph[0].grab = gm;
+        int switched = 0;
+        cut_on = 0;
+        encode_pre_hits_used = 0;
+        CHECK(capture(rtv, W, H, last_inst, glass_idx, glass_idx + 1, TOTAL, TOTAL - 1, last_bg, gslots_clock,
+                      &switched, NULL, ph, &ph_n) == 1);
+        CHECK(encode_pre_hits_used == 0);
+        CHECK(ph_n == 1);
+        CHECK(ph[0].gen == gslots[ph[0].slot].gen);
+        // Subsequent call with the refreshed in-place entry hits pre_hits!
+        CHECK(capture(rtv, W, H, last_inst, glass_idx, glass_idx + 1, TOTAL, TOTAL - 1, last_bg, gslots_clock,
+                      &switched, NULL, ph, &ph_n) == 1);
+        CHECK(encode_pre_hits_used == 1);
+      }
       free(sc);
     }
+    vw = saved_vw;
+    vh = saved_vh;
+    vscale = saved_vscale;
+    fb_w = saved_fb_w;
+    fb_h = saved_fb_h;
   }
 
-  // (c) compute_donor_plan() occlusion cache: 64 shared-box bare adaptive glyphs scan occlusion once.
+  // (b) compute_donor_plan() occlusion cache: shared box deduplicates scans, and different cur_glass_start never aliases.
   {
     auto pack_bare = [](float hx, float hy) -> float { return -(floorf(hx) * 4096.0f + floorf(hy)); };
     const int N_GLYPHS = 64;
     const int N_TOTAL = 3 + N_GLYPHS;
-    float *f = (float *)calloc((size_t)(N_TOTAL + 1) * MB_INST, sizeof(float));
+    float *f = (float *)calloc((size_t)(N_TOTAL + 8) * MB_INST, sizeof(float));
     CHECK(f != NULL);
     if (f) {
       auto set_rect = [](float *p, float x, float y, float w, float h, float kind, float tid) {
@@ -2441,7 +2457,6 @@ static void test_perf59_pace_cull_and_donor(void) {
       // Insert an opaque occluder between donor (idx 1) and pill (idx 3) overlapping box B only.
       memmove(f + 3 * MB_INST, f + 2 * MB_INST, (size_t)(1 + N_GLYPHS) * MB_INST * sizeof(float));
       set_rect(f + 2 * MB_INST, 150.0f, 16.0f, 16.0f, 16.0f, 0.0f, 0.0f);
-      // Glyphs 0..31 on unoccluded box A (cx=80, cy=24, hx=12, hy=8); glyphs 32..63 on occluded box B (cx=158, cy=24, hx=12, hy=8).
       for (int g = 0; g < N_GLYPHS; g++) {
         float *gp = f + (size_t)(4 + g) * MB_INST;
         gp[21] = (g < 32) ? 80.0f : 158.0f;
@@ -2453,6 +2468,39 @@ static void test_perf59_pace_cull_and_donor(void) {
       CHECK(donor_occ_scans == 2);
       for (int g = 0; g < 32; g++) CHECK(donor_of_buf[4 + g] == -595);
       for (int g = 32; g < N_GLYPHS; g++) CHECK(donor_of_buf[4 + g] == 0);
+
+      // Same occ_sr box under two different cur_glass_start pills with an occluder between pill 1 and pill 2:
+      // pill 1's glyphs are unoccluded (delegated), pill 2's glyphs are occluded (not delegated), donor_occ_scans == 2.
+      memset(f, 0, (size_t)(N_TOTAL + 8) * MB_INST * sizeof(float));
+      set_rect(f, 0, 0, 200, 160, 0, 0);
+      set_rect(f + MB_INST, 0, 0, 200, 56, 5, -595.0f);
+      f[MB_INST + 6] = 1.0f; f[MB_INST + 7] = 6.0f; f[MB_INST + 11] = 0.0f; f[MB_INST + 15] = 1.0f;
+      f[MB_INST + 22] = -1.0f; f[MB_INST + 54] = 56.0f; f[MB_INST + 55] = 24.0f;
+      // Pill 1 at idx 2 (-596) + 4 glyphs at idx 3..6 on box (120, 24, 16, 8)
+      set_rect(f + 2 * MB_INST, 8, 12, 24, 24, 6, -596.0f);
+      f[2 * MB_INST + 4] = 12.0f; f[2 * MB_INST + 6] = 1.0f; f[2 * MB_INST + 7] = 1.4f;
+      f[2 * MB_INST + 11] = 0.4f; f[2 * MB_INST + 14] = -1.0f; f[2 * MB_INST + 15] = 1.0f;
+      f[2 * MB_INST + 21] = 4.0f; f[2 * MB_INST + 23] = 2.0f;
+      for (int g = 0; g < 4; g++) {
+        float *gp = f + (size_t)(3 + g) * MB_INST;
+        set_rect(gp, 110.0f + (float)g * 4.0f, 18.0f, 6.0f, 10.0f, 7.0f, 0.0f);
+        gp[21] = 120.0f; gp[22] = 24.0f; gp[23] = pack_bare(16.0f, 8.0f);
+      }
+      // Opaque occluder at idx 7 overlapping box (120, 24, 16, 8)
+      set_rect(f + 7 * MB_INST, 112.0f, 18.0f, 16.0f, 12.0f, 0.0f, 0.0f);
+      // Pill 2 at idx 8 (-597, same blur/refract/rim -> identical occ_sr!) + 4 glyphs at idx 9..12 on the same box
+      memcpy(f + 8 * MB_INST, f + 2 * MB_INST, MB_INST * sizeof(float));
+      f[8 * MB_INST + 20] = -597.0f;
+      for (int g = 0; g < 4; g++) {
+        float *gp = f + (size_t)(9 + g) * MB_INST;
+        set_rect(gp, 110.0f + (float)g * 4.0f, 18.0f, 6.0f, 10.0f, 7.0f, 0.0f);
+        gp[21] = 120.0f; gp[22] = 24.0f; gp[23] = pack_bare(16.0f, 8.0f);
+      }
+      compute_donor_plan(f, 13, 200.0f, 160.0f, 2.0f);
+      CHECK(donor_delegated_count == 4);
+      CHECK(donor_occ_scans == 2);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[3 + g] == -595);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[9 + g] == 0);
       free(f);
     }
   }
@@ -2541,8 +2589,8 @@ int main(void) {
   // 9. Liquid glass over native-view holes (kind == 9) produces translucent premultiplied output.
   test_liquid_over_hole();
 
-  // 10. Perf-59: win_pace_plan(), encode_rects() CPU culling/pre_hits/segs_upload & WARP parity, donor occlusion cache.
-  test_perf59_pace_cull_and_donor();
+  // 10. Perf-59: encode_rects() CPU culling/lens/pre_hits/segs_upload & WARP parity, donor occlusion cache.
+  test_perf59_cull_and_donor();
 
   if (failed) return 1;
   printf("win_gpu: ok\n");

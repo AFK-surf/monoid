@@ -4486,6 +4486,7 @@ struct WinPreHit {
 
 static int encode_inst_submitted;
 static int encode_pre_hits_used;
+static int encode_lens_drawn;
 static int segs_upload_calls;
 
 static int grab_in_rect(const Grab *m, const D3D11_RECT *r) {
@@ -4546,9 +4547,11 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   double key[7] = {(double)pw, (double)ph, vscale, (double)bg[0], (double)bg[1], (double)bg[2], 1.0};
   int known = 0;
   int slot = -1;
+  int pre_idx = -1;
   int n_pre = (pre_hits && pre_hits_n) ? *pre_hits_n : 0;
   for (int h = 0; h < n_pre; h++) {
     if (pre_hits[h].tid == tid && pre_hits[h].start == start) {
+      pre_idx = h;
       if (cut_on && !grab_in_rect(&pre_hits[h].grab, &cut)) return 0;
       int hs = pre_hits[h].slot;
       if (hs >= 0 && hs < MB_GLASS_SLOTS && gslots[hs].valid && gslots[hs].bt.srv && gslots[hs].gen == pre_hits[h].gen) {
@@ -4566,6 +4569,16 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (cut_on && !grab_in_rect(&m, &cut)) return 0;
     known = under_take(f, start, count, pieces, &m);
     slot = known ? slot_same(&m, key) : -1;
+    if (slot >= 0 && pre_hits && pre_hits_n && gslots[slot].valid && gslots[slot].bt.srv) {
+      int h = pre_idx >= 0 ? pre_idx : (*pre_hits_n < 16 ? (*pre_hits_n)++ : -1);
+      if (h >= 0) {
+        pre_hits[h].tid = tid;
+        pre_hits[h].start = start;
+        pre_hits[h].slot = slot;
+        pre_hits[h].gen = gslots[slot].gen;
+        pre_hits[h].grab = m;
+      }
+    }
   }
   int reblurred = 0;
   if (slot >= 0) {
@@ -4578,13 +4591,15 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (slot >= 0) {
       if (known && !encode_missing) {
         slot_keep(slot, &m, key);
-        if (pre_hits && pre_hits_n && *pre_hits_n < 16 && gslots[slot].valid && gslots[slot].bt.srv) {
-          int h = (*pre_hits_n)++;
-          pre_hits[h].tid = tid;
-          pre_hits[h].start = start;
-          pre_hits[h].slot = slot;
-          pre_hits[h].gen = gslots[slot].gen;
-          pre_hits[h].grab = m;
+        if (pre_hits && pre_hits_n && gslots[slot].valid && gslots[slot].bt.srv) {
+          int h = pre_idx >= 0 ? pre_idx : (*pre_hits_n < 16 ? (*pre_hits_n)++ : -1);
+          if (h >= 0) {
+            pre_hits[h].tid = tid;
+            pre_hits[h].start = start;
+            pre_hits[h].slot = slot;
+            pre_hits[h].gen = gslots[slot].gen;
+            pre_hits[h].grab = m;
+          }
         }
       }
       slot_show(&m, slot);
@@ -4738,6 +4753,7 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
   encode_missing = 0;
   encode_inst_submitted = 0;
   encode_pre_hits_used = 0;
+  encode_lens_drawn = 0;
   ctx->OMSetRenderTargets(1, &target, NULL);
   if (!is_partial) {
     cut_on = 0;
@@ -4756,8 +4772,8 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
   int32_t pieces = count;
   while (pieces > 0 && (int)(f[(size_t)(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
 
-  // Pre-scan glass captures once across all dirty rects: size blur levels once and record cache-hit slots so
-  // multi-rect partial redraws never re-run under_take() / slot_same() per rect.
+  // Size blur levels once across all dirty rects; capture() lazily populates pre_hits only when pass_n > 1 so
+  // single-rect and whole-frame redraws pay zero extra under_take() / slot_same() work.
   WinPreHit pre_hits[16];
   int pre_hits_n = 0;
   if (count > 0) {
@@ -4769,6 +4785,7 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
         if (cn < 0) cn = 0;
         if (s0 + 1 + cn > count) cn = count - s0 - 1;
         s0 += 1 + cn;
+        scan_bound = 0;
         continue;
       }
       int stid = (int)f[(size_t)s0 * MB_INST + 20];
@@ -4788,47 +4805,7 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
       }
       s0 = e0;
     }
-    if (any_glass) {
-      if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
-      double key[7] = {(double)pw, (double)ph, vscale, (double)bg[0], (double)bg[1], (double)bg[2], 1.0};
-      int pre_bound = 0;
-      for (int32_t s0 = 0; s0 < count;) {
-        int skind = (int)(f[(size_t)s0 * MB_INST + 5] + 0.5f);
-        if (skind == 8) {
-          int32_t cn = (int32_t)(f[(size_t)s0 * MB_INST + 12] + 0.5f);
-          if (cn < 0) cn = 0;
-          if (s0 + 1 + cn > count) cn = count - s0 - 1;
-          s0 += 1 + cn;
-          pre_bound = 0;
-          continue;
-        }
-        int stid = (int)f[(size_t)s0 * MB_INST + 20];
-        int32_t e0 = s0 + 1;
-        if (stid < 0) {
-          while (e0 < count && (int)f[(size_t)e0 * MB_INST + 20] == stid) e0++;
-          if (stid != pre_bound) {
-            pre_bound = stid;
-            if (skind == 5 || skind == 6) {
-              Grab gm;
-              if (grab_of_with_donors(&gm, f, s0, e0, count, pw, ph, donor_of) &&
-                  (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) &&
-                  under_take(f, s0, count, pieces, &gm)) {
-                int sl = slot_same(&gm, key);
-                if (sl >= 0 && gslots[sl].bt.srv && pre_hits_n < 16) {
-                  pre_hits[pre_hits_n].tid = stid;
-                  pre_hits[pre_hits_n].start = s0;
-                  pre_hits[pre_hits_n].slot = sl;
-                  pre_hits[pre_hits_n].gen = gslots[sl].gen;
-                  pre_hits[pre_hits_n].grab = gm;
-                  pre_hits_n++;
-                }
-              }
-            }
-          }
-        }
-        s0 = e0;
-      }
-    }
+    if (any_glass && (max_w > lv_w || max_h > lv_h)) ensure_levels(max_w, max_h);
   }
 
   float sx = vw > 0.0 ? (float)pw / (float)vw : (float)vscale;
@@ -4868,7 +4845,7 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
         if (new_capture) {
           int switched = 0;
           shows = capture(target, pw, ph, f, start, end, count, pieces, bg, frame_clock, &switched, donor_of,
-                          pre_hits, &pre_hits_n);
+                          pass_n > 1 ? pre_hits : NULL, pass_n > 1 ? &pre_hits_n : NULL);
           bound = tid;
           if (shows && last_captured_slot >= 0 && last_captured_slot < MB_GLASS_SLOTS &&
               is_donor_elig_tid(tid) && n_donors < MB_MAX_DONORS && gsrv) {
@@ -5021,6 +4998,7 @@ static void encode_rects(ID3D11RenderTargetView *target, int pw, int ph, int32_t
         ctx->PSSetShader(kind_ps(8), NULL, 0);
         ctx->DrawInstanced(6, 1, 0, (UINT)start);
         encode_inst_submitted++;
+        encode_lens_drawn++;
         bound = 0;
         start += 1 + child_n;
         continue;
@@ -5539,50 +5517,6 @@ int mb_frame_beats(void) {
 // what the frames presented since the last mb_render_pace owe the compositor's beat: 0 nothing, 1 the wait, 2 a window
 // occluded (a hidden or minimized window does not wait for vsync: paced as if it did)
 static int pace_owed;
-static int pace_present_span;
-static int64_t pace_present_t0;
-static int64_t pace_present_t1;
-
-struct WinPaceState {
-  int has_beat;
-  int64_t last_beat_qpc;
-  int has_cframe;
-  uint64_t last_cframe;
-};
-
-struct WinPaceDecision {
-  int flushes;
-  int consumed_present_beat;
-  uint64_t next_cframe;
-};
-
-static WinPaceState pace_state;
-
-// Pure state-machine decision for DComp frame pacing (mb_render_pace_ex): avoids double-vsync waits when a blocking
-// Present1(1, 0) already spanned a fresh DWM composition beat (qpc_vblank in (p_start, p_end] and cframe != last_cframe),
-// while guaranteeing at least 1 DwmFlush() whenever a cloaked window awaits reveal (must_flush) or Present1 did not
-// consume a new beat, and capping cadence to 1 frame per `beats` DWM beats (e.g. 240 Hz -> 120 fps).
-static WinPaceDecision win_pace_plan(const WinPaceState *st, int beats, int must_flush, int has_present_span,
-                                     int64_t p_start, int64_t p_end, int timing_ok, int64_t qpc_vblank,
-                                     int64_t qpc_period, uint64_t cframe, int64_t now_qpc) {
-  if (beats < 1) beats = 1;
-  WinPaceDecision d = {1, 0, 0};
-  int present_beat = !must_flush && has_present_span && timing_ok && p_end > p_start &&
-                     qpc_vblank > p_start && qpc_vblank <= p_end &&
-                     (!st->has_cframe || cframe != st->last_cframe);
-  if (present_beat) {
-    int passed = 1;
-    if (st->has_beat && qpc_period > 0 && now_qpc > st->last_beat_qpc) {
-      int p = (int)((double)(now_qpc - st->last_beat_qpc) / (double)qpc_period + 0.5);
-      if (p > passed) passed = p;
-    }
-    d.flushes = beats > passed ? (beats - passed) : 0;
-    d.consumed_present_beat = 1;
-    d.next_cframe = cframe;
-    return d;
-  }
-  return d;
-}
 
 // Records DXGI present statistics for the active RenderWin; returns 1 iff visibly presented (not occluded/failed).
 static int win_record_present_stats(HRESULT hr) {
@@ -5731,8 +5665,6 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
   // a hidden or minimized window does not wait for vsync; pace it as if it did. A flip model's swap chain is told the
   // parts that changed (what the compositor takes again; none: a pixel's), all of its buffer the canvas's
   HRESULT hr;
-  LARGE_INTEGER p_t0 = {}, p_t1 = {};
-  QueryPerformanceCounter(&p_t0);
   if (flip_chain && n >= 0 && !rw->swap_needs_full) {
     RECT dr[MB_PARTS];
     for (int i = 0; i < n; i++) dr[i] = {parts[i].left, parts[i].top, parts[i].right, parts[i].bottom};
@@ -5744,16 +5676,10 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
   } else {
     hr = chain->Present(1, 0);
   }
-  QueryPerformanceCounter(&p_t1);
   commit_presented();
   rw->commit_owed = 0;
   int visible_ok = win_record_present_stats(hr);
   if (visible_ok) {
-    if (!pace_present_span || (p_t1.QuadPart - p_t0.QuadPart) > (pace_present_t1 - pace_present_t0)) {
-      pace_present_t0 = p_t0.QuadPart;
-      pace_present_t1 = p_t1.QuadPart;
-      pace_present_span = 1;
-    }
     rw->shown_ok = 1;
     rw->swap_needs_full = 0;
     rw->shown_streams = streams;
@@ -5834,8 +5760,6 @@ int mb_render_adaptive_step(int wid) {
   }
   ad_finalize_frame(rw, np < 0, rw->ad_frame_serial);
   HRESULT hr;
-  LARGE_INTEGER p_t0 = {}, p_t1 = {};
-  QueryPerformanceCounter(&p_t0);
   if (flip_chain && np >= 0 && !rw->swap_needs_full) {
     RECT dr[MB_PARTS];
     for (int i = 0; i < np; i++) dr[i] = {parts[i].left, parts[i].top, parts[i].right, parts[i].bottom};
@@ -5847,14 +5771,8 @@ int mb_render_adaptive_step(int wid) {
   } else {
     hr = chain->Present(1, 0);
   }
-  QueryPerformanceCounter(&p_t1);
   int visible_ok = win_record_present_stats(hr);
   if (visible_ok) {
-    if (!pace_present_span || (p_t1.QuadPart - p_t0.QuadPart) > (pace_present_t1 - pace_present_t0)) {
-      pace_present_t0 = p_t0.QuadPart;
-      pace_present_t1 = p_t1.QuadPart;
-      pace_present_span = 1;
-    }
     rw->swap_needs_full = 0;
   } else {
     rw->shown_ok = 0;
@@ -5878,86 +5796,30 @@ int mb_render_adaptive_step(int wid) {
   // for the next alone. Waiting them all after the work, a frame whose work took 4.2 to 8.3 ms at 240 Hz (a fast drag
   // of ScreenReplay's playhead over a 4K picture) came every 12.5 ms instead of 8.3, half its frames so, 92 to 97 a
   // second in an uneven step; counted from the last, 118 to 120 a second, 8.3 ms apart (2026-11-15).
-void mb_render_pace_ex(int must_flush) {
+void mb_render_pace(void) {
   int owed = pace_owed;
-  int has_span = pace_present_span;
-  int64_t p_t0 = pace_present_t0;
-  int64_t p_t1 = pace_present_t1;
   pace_owed = 0;
-  pace_present_span = 0;
   if (!owed) return;
-  if (owed == 2) {
-    Sleep(16);
-    return;
-  }
-  if (!dcomp) return;
-  int beats = mb_frame_beats();
-  int timing_ok = 0;
-  DWM_TIMING_INFO ti = {};
-  ti.cbSize = sizeof ti;
-  LARGE_INTEGER now = {};
-  if (has_span && !must_flush) {
-    QueryPerformanceCounter(&now);
-    timing_ok = SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod > 0;
-  }
-  WinPaceDecision dec = win_pace_plan(&pace_state, beats, must_flush, has_span, p_t0, p_t1, timing_ok,
-                                      (int64_t)ti.qpcVBlank, (int64_t)ti.qpcRefreshPeriod, (uint64_t)ti.cFrame,
-                                      now.QuadPart);
-  if (dec.consumed_present_beat) {
-    pace_state.has_cframe = 1;
-    pace_state.last_cframe = dec.next_cframe;
-    for (int i = 0; i < dec.flushes; i++) {
-      if (FAILED(DwmFlush())) {
-        Sleep(1);
-        pace_state.has_cframe = 0;
-        break;
-      }
-    }
-    if (dec.flushes > 0) {
-      DWM_TIMING_INFO ti2 = {};
-      ti2.cbSize = sizeof ti2;
-      if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti2))) {
-        pace_state.has_cframe = 1;
-        pace_state.last_cframe = (uint64_t)ti2.cFrame;
-      } else {
-        pace_state.has_cframe = 0;
-      }
-    }
-  } else {
+  if (owed == 2) Sleep(16);
+  else if (dcomp) {
+    static LARGE_INTEGER last_beat;
+    int beats = mb_frame_beats();
     if (FAILED(DwmFlush())) {
       Sleep(1);
-      pace_state.has_cframe = 0;
-    } else {
-      if (beats > 1) {
-        LARGE_INTEGER after = {};
-        QueryPerformanceCounter(&after);
-        DWM_TIMING_INFO ti2 = {};
-        ti2.cbSize = sizeof ti2;
-        // (the beats since the last frame's, to the nearest: a DwmFlush comes back a little after its beat)
-        int passed = 1;
-        if (pace_state.has_beat && SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti2)) && ti2.qpcRefreshPeriod)
-          passed = (int)((double)(after.QuadPart - pace_state.last_beat_qpc) / (double)ti2.qpcRefreshPeriod + 0.5);
-        for (int i = passed < 1 ? 1 : passed; i < beats; i++)
-          if (FAILED(DwmFlush())) break;
-      }
-      DWM_TIMING_INFO ti2 = {};
-      ti2.cbSize = sizeof ti2;
-      if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti2))) {
-        pace_state.has_cframe = 1;
-        pace_state.last_cframe = (uint64_t)ti2.cFrame;
-      } else {
-        pace_state.has_cframe = 0;
-      }
+    } else if (beats > 1) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      DWM_TIMING_INFO ti = {};
+      ti.cbSize = sizeof ti;
+      // (the beats since the last frame's, to the nearest: a DwmFlush comes back a little after its beat)
+      int passed = 1;
+      if (last_beat.QuadPart && SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod)
+        passed = (int)((double)(now.QuadPart - last_beat.QuadPart) / (double)ti.qpcRefreshPeriod + 0.5);
+      for (int i = passed < 1 ? 1 : passed; i < beats; i++)
+        if (FAILED(DwmFlush())) break;
     }
+    QueryPerformanceCounter(&last_beat);
   }
-  LARGE_INTEGER beat_now = {};
-  QueryPerformanceCounter(&beat_now);
-  pace_state.last_beat_qpc = beat_now.QuadPart;
-  pace_state.has_beat = 1;
-}
-
-void mb_render_pace(void) {
-  mb_render_pace_ex(0);
 }
 
 // Without a window (mbui-render, src/render): WARP's device whatever the machine has (the same rasterizer on every

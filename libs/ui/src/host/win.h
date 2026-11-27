@@ -71,7 +71,6 @@ void mb_render_set_video_support(int on);
 // the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
 // presented, not after each window's: two windows drawing on did not halve their rate
 void mb_render_pace(void);
-void mb_render_pace_ex(int must_flush);
 void mb_render_pace_skipped(void);
 // pw, ph: the client area in pixels; w, h: the same in points
 void mb_render_set_size(int pw, int ph, double w, double h, double scale);
