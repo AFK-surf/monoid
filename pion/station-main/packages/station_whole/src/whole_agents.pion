@@ -1,0 +1,1362 @@
+// Real SessionHub + Drivers launch/adoption + Jobs + MCP Server & CSPRNG Bearer Token
+// lifecycle for `station_whole`.
+//
+// Security invariants:
+// - Per-session MCP tokens are 32-byte OS CSPRNG (`station_sys::random_bytes(32)` -> 64 hex chars).
+// - Token lookup uses constant-time byte comparison (`ct_eq_str`) against active tokens.
+// - Missing, wrong, or revoked tokens are rejected with HTTP 401.
+// - Non-loopback Host headers or any browser `Origin` header are rejected with HTTP 403 via
+//   `station_tools::check_local_origin`.
+// - Core MCP tool calls (`chat_*`, `search`, `job_*`, `session_*`, `project_*`) read and write
+//   the live SQLite `station_store::Store`, `SessionHub`, and `JobManager`.
+
+import "base_codec"
+import "crypto"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_drivers"
+import "station_jobs"
+import "station_sessions"
+import "station_store"
+import "station_sys"
+import "station_tools"
+
+pub struct WholeAgentsConfig {
+  pub data_dir : String
+  pub assets_dir : String
+  pub runner_bin : String
+  pub mcp_port : Int
+  pub home_ws : Option[String]
+}
+
+pub struct McpHttpResponse {
+  pub status : Int
+  pub content_type : String
+  pub body : String
+}
+
+/// Constant-time string equality over raw UTF-8 bytes (no early exit on byte mismatch).
+pub fn ct_eq_str(a : String, b : String) -> Bool {
+  let ab = a.to_bytes()
+  let bb = b.to_bytes()
+  if ab.length() != bb.length() {
+    return false
+  }
+  let mut diff = 0
+  for i in 0..<ab.length() {
+    diff = diff | ((ab[i].to_int() & 0xFF) ^ (bb[i].to_int() & 0xFF))
+  }
+  diff == 0
+}
+
+fn parse_fs_stat(raw : String) -> Option[station_jobs::FsStat] {
+  let parts = split_pipe_fields(raw)
+  if parts.length() < 6 {
+    return None
+  }
+  Some(station_jobs::FsStat::{
+    kind: parts[0],
+    size: parse_i64_dec(parts[1]),
+    mtime_ms: parse_i64_dec(parts[3]),
+    mode: if parts.length() >= 7 { parse_i64_dec(parts[6]).to_int() } else { 420 },
+  })
+}
+
+/// Production `station_jobs::FsPort` backed by `station_sys`.
+pub fn os_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  station_jobs::FsPort::{
+    sep: sep,
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match station_sys::lstat_raw(p) {
+        Some(raw) => parse_fs_stat(raw)
+        None => None
+      }
+    },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match station_sys::stat_raw(p) {
+        Some(raw) => parse_fs_stat(raw)
+        None => None
+      }
+    },
+    read_dir: fn(p : String) -> Option[Array[String]] { station_sys::read_dir(p) },
+    read_file: fn(p : String) -> Option[String] {
+      match station_sys::read_file_strict(p) {
+        Ok(b) => Some(b.to_string())
+        Err(_) => None
+      }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] {
+      match station_sys::read_file_strict(p) {
+        Ok(b) => Some(b)
+        Err(_) => None
+      }
+    },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      match station_sys::read_range_meta(p, off, len) {
+        Ok((b, _, _)) => Some(b)
+        Err(_) => None
+      }
+    },
+    write_file: fn(p : String, s : String) -> Bool {
+      station_sys::write_file_atomic(p, s.to_bytes(), mode=384)
+    },
+    write_bytes: fn(p : String, b : Bytes) -> Bool {
+      station_sys::write_file_atomic(p, b, mode=384)
+    },
+    write_file_mode: fn(p : String, b : Bytes, mode : Int, append : Bool) -> Bool {
+      station_sys::write_file_mode(p, b, mode=mode, append=append)
+    },
+    append_file: fn(p : String, s : String) -> Bool {
+      station_sys::write_file_mode(p, s.to_bytes(), mode=384, append=true)
+    },
+    truncate_in_place: fn(p : String) -> Bool { station_sys::truncate_in_place(p, 0L) },
+    rename: fn(a : String, b : String) -> Bool { station_sys::rename(a, b) },
+    remove_file: fn(p : String) -> Bool { station_sys::unlink(p) },
+    rmdir: fn(p : String) -> Bool { station_sys::rmdir(p) },
+    remove_dir_all: fn(p : String) -> Bool { station_sys::rmdir(p) },
+    mkdir_p: fn(p : String) -> Bool { station_sys::mkdir_p(p) },
+    readlink: fn(p : String) -> Option[String] { station_sys::readlink(p) },
+    realpath: fn(p : String) -> Option[String] {
+      match station_sys::realpath_err(p) {
+        Ok(r) => Some(r)
+        Err(_) => None
+      }
+    },
+    chmod: fn(p : String, mode : Int) -> Bool { station_sys::chmod(p, mode) },
+    exists: fn(p : String) -> Bool { station_sys::lstat_raw(p).is_some() },
+    now_ms: now_ms,
+  }
+}
+
+/// Pure in-memory `station_jobs::FsPort` for unit tests without disk side effects.
+pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
+  let files : Map[String, Bytes] = Map::new()
+  station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match files.get(p) {
+        Some(b) => Some(station_jobs::FsStat::{
+          kind: "file",
+          size: b.length().to_int64(),
+          mtime_ms: now_ms(),
+          mode: 384,
+        })
+        None => None
+      }
+    },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match files.get(p) {
+        Some(b) => Some(station_jobs::FsStat::{
+          kind: "file",
+          size: b.length().to_int64(),
+          mtime_ms: now_ms(),
+          mode: 384,
+        })
+        None => None
+      }
+    },
+    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
+    read_file: fn(p : String) -> Option[String] {
+      match files.get(p) {
+        Some(b) => Some(b.to_string())
+        None => None
+      }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] { files.get(p) },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      match files.get(p) {
+        Some(b) => {
+          let start = if off < 0L { 0 } else if off.to_int() > b.length() { b.length() } else { off.to_int() }
+          let avail = b.length() - start
+          let take = if len.to_int() < avail { len.to_int() } else { avail }
+          let out = Bytes::new(take)
+          for i in 0..<take {
+            out[i] = b[start + i]
+          }
+          Some(out)
+        }
+        None => None
+      }
+    },
+    write_file: fn(p : String, s : String) -> Bool {
+      files.set(p, s.to_bytes())
+      true
+    },
+    write_bytes: fn(p : String, b : Bytes) -> Bool {
+      files.set(p, b)
+      true
+    },
+    write_file_mode: fn(p : String, b : Bytes, _m : Int, _append : Bool) -> Bool {
+      files.set(p, b)
+      true
+    },
+    append_file: fn(p : String, s : String) -> Bool {
+      let prev = match files.get(p) {
+        Some(b) => b.to_string()
+        None => ""
+      }
+      files.set(p, (prev + s).to_bytes())
+      true
+    },
+    truncate_in_place: fn(p : String) -> Bool {
+      files.set(p, Bytes::new(0))
+      true
+    },
+    rename: fn(a : String, b : String) -> Bool {
+      match files.get(a) {
+        Some(v) => {
+          files.set(b, v)
+          let _ = files.remove(a)
+          true
+        }
+        None => false
+      }
+    },
+    remove_file: fn(p : String) -> Bool {
+      let _ = files.remove(p)
+      true
+    },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    readlink: fn(_p : String) -> Option[String] { None },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(p : String) -> Bool { files.get(p).is_some() },
+    now_ms: now_ms,
+  }
+}
+
+/// Full-station agents subsystem: `SessionHub`, `DriversRuntime`, `McpServer`, `JobManager`,
+/// and per-session CSPRNG Bearer token table.
+pub struct WholeAgents {
+  pub config : WholeAgentsConfig
+  pub hub : station_sessions::SessionHub
+  pub drivers : DriversRuntime
+  pub mcp : station_tools::McpServer
+  pub jobs : station_jobs::JobManager
+  pub mut bound_to_workspace : Bool
+  active_tokens : Array[(String, String)]
+  revoked_tokens : Map[String, Bool]
+  session_runtimes : Map[String, String]
+  session_is_subagent : Map[String, Bool]
+  random_bytes_fn : (Int) -> Result[Bytes, String]
+}
+
+/// Pure dependency-injected `WholeAgents` constructor (no OS FFI references).
+pub fn WholeAgents::new_with_deps(
+  config : WholeAgentsConfig,
+  fs : station_jobs::FsPort,
+  backend : station_jobs::ProcBackend,
+  rng : (Int) -> Result[Bytes, String],
+) -> WholeAgents {
+  let notify_url = "http://127.0.0.1:" + config.mcp_port.to_string() + "/job-notify"
+  let jobs = station_jobs::JobManager::new(
+    config.data_dir,
+    fs,
+    backend,
+    notify_url,
+    fn(_job_id : String, _text : String) -> Unit { () },
+    fn(_rec : station_jobs::JobRecord) -> Unit { () },
+  )
+  WholeAgents::{
+    config: config,
+    hub: station_sessions::SessionHub::new(),
+    drivers: DriversRuntime::new([]),
+    mcp: station_tools::McpServer::new(),
+    jobs: jobs,
+    bound_to_workspace: true,
+    active_tokens: [],
+    revoked_tokens: Map::new(),
+    session_runtimes: Map::new(),
+    session_is_subagent: Map::new(),
+    random_bytes_fn: rng,
+  }
+}
+
+pub fn WholeAgents::new(
+  config : WholeAgentsConfig,
+  job_fs : Option[station_jobs::FsPort] = None,
+  job_backend : Option[station_jobs::ProcBackend] = None,
+  random_bytes_fn : Option[(Int) -> Result[Bytes, String]] = None,
+  now_ms : () -> Int64 = fn() -> Int64 { 0L },
+) -> WholeAgents {
+  let fs = match job_fs {
+    Some(f) => f
+    None => os_job_fs_port(now_ms)
+  }
+  let backend = match job_backend {
+    Some(b) => b
+    None => station_jobs::real_proc_backend()
+  }
+  let rng = match random_bytes_fn {
+    Some(r) => r
+    None => station_sys::random_bytes
+  }
+  WholeAgents::new_with_deps(config, fs, backend, rng)
+}
+
+pub fn WholeAgents::active_token_count(self : WholeAgents) -> Int {
+  self.active_tokens.length()
+}
+
+pub fn WholeAgents::actor_count(self : WholeAgents) -> Int {
+  self.hub.actors.length()
+}
+
+/// Issue a fresh 32-byte CSPRNG hex MCP bearer token for `session_key`, revoking any prior token.
+pub fn WholeAgents::issue_session_token(
+  self : WholeAgents,
+  session_key : String,
+) -> Result[String, String] {
+  let raw = match (self.random_bytes_fn)(32) {
+    Ok(b) => b
+    Err(e) => return Err("CSPRNG failed while issuing MCP token: " + e)
+  }
+  if raw.length() < 32 {
+    return Err("CSPRNG returned fewer than 32 bytes for MCP token")
+  }
+  let tok = crypto::bytes_to_hex(raw)
+  let _ = self.revoke_session_token(session_key)
+  self.active_tokens.push((tok, session_key))
+  Ok(tok)
+}
+
+/// Register an existing persisted token (e.g. during session adoption after handover).
+pub fn WholeAgents::register_adopted_token(
+  self : WholeAgents,
+  session_key : String,
+  token : String,
+) -> Unit {
+  if token.length() == 0 {
+    return
+  }
+  if self.revoked_tokens.get(token).is_some() {
+    return
+  }
+  let _ = self.revoke_session_token(session_key)
+  self.active_tokens.push((token, session_key))
+}
+
+/// Immediately revoke the active MCP bearer token for `session_key`.
+pub fn WholeAgents::revoke_session_token(self : WholeAgents, session_key : String) -> Bool {
+  let kept : Array[(String, String)] = []
+  let mut removed = false
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if sk == session_key {
+      self.revoked_tokens.set(tok, true)
+      removed = true
+    } else {
+      kept.push((tok, sk))
+    }
+  }
+  self.active_tokens.clear()
+  for i in 0..<kept.length() {
+    self.active_tokens.push(kept[i])
+  }
+  removed
+}
+
+/// Revoke all active MCP tokens (used on shutdown).
+pub fn WholeAgents::revoke_all_tokens(self : WholeAgents) -> Unit {
+  for i in 0..<self.active_tokens.length() {
+    let (tok, _) = self.active_tokens[i]
+    self.revoked_tokens.set(tok, true)
+  }
+  self.active_tokens.clear()
+}
+
+/// Look up the active token for `session_key`.
+pub fn WholeAgents::token_for_session(self : WholeAgents, session_key : String) -> Option[String] {
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if sk == session_key {
+      return Some(tok)
+    }
+  }
+  None
+}
+
+/// Constant-time lookup of `candidate` token against all active tokens.
+pub fn WholeAgents::resolve_token_ct(self : WholeAgents, candidate : String) -> Option[String] {
+  if candidate.length() == 0 {
+    return None
+  }
+  let mut matched : Option[String] = None
+  for i in 0..<self.active_tokens.length() {
+    let (tok, sk) = self.active_tokens[i]
+    if ct_eq_str(tok, candidate) {
+      matched = Some(sk)
+    }
+  }
+  match matched {
+    Some(sk) => {
+      if self.revoked_tokens.get(candidate).is_some() {
+        None
+      } else {
+        Some(sk)
+      }
+    }
+    None => None
+  }
+}
+
+pub fn WholeAgents::set_subagent(self : WholeAgents, session_key : String, is_sub : Bool) -> Unit {
+  self.session_is_subagent.set(session_key, is_sub)
+}
+
+/// Create a real session + default thread in SQLite, ensure its `SessionActor`, and issue a
+/// 32-byte CSPRNG MCP bearer token. Returns `(mcp_token, thread_id)`.
+pub fn WholeAgents::create_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+  connect : String,
+  title : Option[String],
+  created_by : Option[String],
+  runtime : String,
+  profile : String,
+  model : Option[String],
+  workspace : String,
+  ws : Option[String],
+  now_ms : Int64,
+) -> Result[(String, Int64), String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let token = match self.issue_session_token(key) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let row = station_store::NewSession::{
+    key: key,
+    connect: connect,
+    sess_scope: "all",
+    title: title,
+    created_by: created_by,
+    created_by_sub: None,
+    runtime: runtime,
+    profile: profile,
+    model: model,
+    effort: None,
+    workspace: workspace,
+    cwd: Some(workspace),
+    token: token,
+    created_at: now_ms,
+    last_active_at: now_ms,
+    ws: ws,
+    told_notes: 0L,
+  }
+  match st.insert_session(row) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = self.revoke_session_token(key)
+      return Err("insert_session failed: " + e.message)
+    }
+  }
+  let tid = match st.ensure_thread("chat", "CHAT", key, title, created_by, now_ms, home=Some(key)) {
+    Ok(id) => id
+    Err(e) => return Err("ensure_thread failed: " + e.message)
+  }
+  match st.join_thread(tid, key, connect, now_ms) {
+    Ok(_) => ()
+    Err(e) => return Err("join_thread failed: " + e.message)
+  }
+  let _ = self.hub.ensure_actor(key, runtime)
+  self.session_runtimes.set(key, runtime)
+  Ok((token, tid))
+}
+
+/// Archive a session in SQLite and immediately revoke its MCP bearer token.
+pub fn WholeAgents::archive_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+  by : String,
+  now_ms : Int64,
+) -> Result[Unit, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::archive_session(st.db, key, now_ms, by) {
+    Ok(_) => ()
+    Err(e) => return Err("archive_session failed: " + e.message)
+  }
+  let _ = self.revoke_session_token(key)
+  match self.hub.actors.get(key) {
+    Some(a) => {
+      let _ = a.evict()
+    }
+    None => ()
+  }
+  Ok(())
+}
+
+/// Delete a session from SQLite and immediately revoke its MCP bearer token.
+pub fn WholeAgents::delete_session(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  key : String,
+) -> Result[Bool, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let deleted = match st.delete_session(key) {
+    Ok(b) => b
+    Err(e) => return Err("delete_session failed: " + e.message)
+  }
+  let _ = self.revoke_session_token(key)
+  let _ = self.hub.actors.remove(key)
+  let _ = self.session_runtimes.remove(key)
+  Ok(deleted)
+}
+
+/// Adopt handed-over sessions from SQLite + live `RunnerInfo` via `SessionHub::adopt` and
+/// `DriversRuntime::adoption` (`RunnerAdoptionMachine`).
+pub fn WholeAgents::adopt_sessions(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  snapshots : Array[station_sessions::HandoverSnapshot],
+  runners : Array[station_drivers::RunnerInfo],
+  now_ms : Int64,
+) -> Result[Array[station_sessions::AdoptOutcome], String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  self.drivers.adoption = station_drivers::RunnerAdoptionMachine::new(runners)
+  let rows_map : Map[String, station_sessions::HubSessionRow] = Map::new()
+  let adopt_ok : Map[String, Bool] = Map::new()
+  for i in 0..<snapshots.length() {
+    let snap = snapshots[i]
+    match st.get_session(snap.key) {
+      Ok(Some(row)) => {
+        let cb = match row.created_by {
+          Some(c) => c
+          None => ""
+        }
+        let ab = match row.archived_by {
+          Some(b) => b
+          None => ""
+        }
+        rows_map.set(
+          row.key,
+          station_sessions::HubSessionRow::{
+            key: row.key,
+            runtime: row.runtime,
+            profile: row.profile,
+            runtime_session_id: None,
+            ran_on: Some(row.profile),
+            ws: row.ws,
+            created_by: cb,
+            archived_at: row.archived_at,
+            archived_by: ab,
+            handed_over: false,
+            online: true,
+            has_pending: false,
+          },
+        )
+        let ok = if snap.has_agent {
+          match station_drivers::runtime_kind_from_str(snap.runtime) {
+            Some(rk) => {
+              let rid = station_drivers::runner_id(rk, row.key)
+              match self.drivers.adoption.adopt_once(rid) {
+                Ok(_) => true
+                Err(_) => false
+              }
+            }
+            None => false
+          }
+        } else {
+          true
+        }
+        adopt_ok.set(row.key, ok)
+        self.session_runtimes.set(row.key, row.runtime)
+        if row.archived_at.is_none() && row.token.length() > 0 {
+          self.register_adopted_token(row.key, row.token)
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err("get_session during adopt failed: " + e.message)
+    }
+  }
+  Ok(self.hub.adopt(snapshots, rows_map, adopt_ok, now_ms))
+}
+
+/// Build a real OS driver launch spec for any of the 10 CLI coding-agent runtimes using
+/// `drivers_os` (OS CSPRNG UUID v4, real `geteuid()`, `STILLFAIL_NODE`, `stub_dir`).
+pub fn WholeAgents::build_driver_launch_spec(
+  self : WholeAgents,
+  session_key : String,
+  runtime : station_drivers::RuntimeKind,
+  profile : station_drivers::Profile,
+  cwd : String,
+  instructions : String = "",
+  resume : Option[String] = None,
+  model : Option[String] = None,
+  effort : Option[String] = None,
+) -> Result[station_drivers::DriverLaunchSpec, String] {
+  let token = match self.token_for_session(session_key) {
+    Some(t) => t
+    None => return Err("no active MCP token for session: " + session_key)
+  }
+  let mcp_url = "http://127.0.0.1:" + self.config.mcp_port.to_string() + "/mcp"
+  let opts = os_open_options(
+    session_key,
+    profile,
+    cwd,
+    mcp_url,
+    token,
+    self.config.data_dir,
+    self.config.assets_dir,
+    self.config.runner_bin,
+    instructions=instructions,
+    resume=resume,
+    model=model,
+    effort=effort,
+  )
+  build_os_driver_launch(runtime, opts)
+}
+
+/// Export handover snapshots for all tracked actors.
+pub fn WholeAgents::export_session_snapshots(
+  self : WholeAgents,
+) -> Array[station_sessions::HandoverSnapshot] {
+  let out : Array[station_sessions::HandoverSnapshot] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<self.active_tokens.length() {
+    let (_, key) = self.active_tokens[i]
+    if seen.get(key).is_some() {
+      continue
+    }
+    seen.set(key, true)
+    match self.hub.actors.get(key) {
+      Some(actor) => {
+        out.push(station_sessions::HandoverSnapshot::{
+          key: key,
+          runtime: actor.runtime,
+          has_agent: actor.has_process,
+          has_turn: actor.is_busy(),
+          notices: [],
+        })
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// Real SQLite-backed MCP Tool Dispatch
+// ---------------------------------------------------------------------------
+
+fn mcp_arg_str(args : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn mcp_arg_int(args : base_codec::Json, key : String, fallback : Int) -> Int {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => fallback
+  }
+}
+
+fn mcp_arg_bool(args : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn resolve_thread_id_for_to(
+  st : station_store::Store,
+  session_key : String,
+  to_opt : Option[String],
+) -> Result[Int64, String] {
+  match to_opt {
+    Some(to_raw) => {
+      let slash = to_raw.index_of("/")
+      if slash > 0 {
+        let ch = to_raw.slice(0, slash)
+        let ts = to_raw.slice(slash + 1, to_raw.length())
+        match st.db.first(
+          "SELECT id FROM threads WHERE channel = ?1 AND thread_ts = ?2 LIMIT 1",
+          [base_codec::json_str(ch), base_codec::json_str(ts)],
+        ) {
+          Ok(Some(r)) => match r.get("id") {
+            Some(base_codec::Json::Num(n, _)) => return Ok(n.to_int64())
+            _ => ()
+          }
+          _ => ()
+        }
+      }
+      match base_codec::parse_int64_str(to_raw) {
+        Some(tid) => return Ok(tid)
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match st.db.first(
+    "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(r)) => match r.get("thread") {
+      Some(base_codec::Json::Num(n, _)) => Ok(n.to_int64())
+      _ => Err("no thread bound to session " + session_key)
+    }
+    Ok(None) => Err("no thread bound to session " + session_key)
+    Err(e) => Err("lookup thread failed: " + e.message)
+  }
+}
+
+fn thread_row_to_json(t : station_store::ThreadRow) -> base_codec::Json {
+  base_codec::json_obj([
+    ("id", base_codec::json_int64(t.id)),
+    ("surface", base_codec::json_str(t.surface)),
+    ("channel", base_codec::json_str(t.channel)),
+    ("threadTs", base_codec::json_str(t.thread_ts)),
+    (
+      "title",
+      match t.title {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      },
+    ),
+    (
+      "project",
+      match t.project {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      },
+    ),
+    ("tags", json_str_array(t.tags)),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+  ])
+}
+
+fn WholeAgents::build_domain_handlers(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  now_ms : Int64,
+) -> station_tools::DomainHandlers {
+  let base = station_tools::default_domain_handlers()
+  let chat_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    if tool == "chat_post" {
+      let text = match mcp_arg_str(args, "text") {
+        Some(s) => s
+        None => ""
+      }
+      let title_opt = mcp_arg_str(args, "title")
+      let kind_opt = mcp_arg_str(args, "kind")
+      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "to")) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match title_opt {
+        Some(t) => {
+          if t.length() > 0 {
+            let _ = st.update_thread_metadata(tid, Some(t), None, None, None)
+          }
+        }
+        None => ()
+      }
+      if text.length() > 0 {
+        let msg = station_store::NewMessage::{
+          thread: tid,
+          ts: None,
+          author_kind: "agent",
+          author: session,
+          agent_identity: None,
+          text: Some(text),
+          attachments: None,
+          quotes: None,
+          declared: kind_opt,
+          client: None,
+          card: None,
+          options: None,
+          proposal: None,
+          at: now_ms,
+        }
+        match st.insert_message(msg) {
+          Ok((n, _)) => {
+            let ends = match kind_opt {
+              Some(k) => {
+                match self.hub.actors.get(session) {
+                  Some(actor) => {
+                    let decl = if k == "all_done" {
+                      let d = match mcp_arg_str(args, "done") { Some(s) => s, None => "done" }
+                      station_sessions::TurnDeclared::AllDone(d)
+                    } else if k == "need_human" {
+                      let nd = match mcp_arg_str(args, "need") { Some(s) => s, None => "input needed" }
+                      station_sessions::TurnDeclared::NeedHuman(nd)
+                    } else {
+                      let fw = match mcp_arg_str(args, "for") { Some(s) => s, None => "work" }
+                      let sc = mcp_arg_int(args, "seconds", 60)
+                      let wt = match mcp_arg_bool(args, "watch") { Some(b) => b, None => false }
+                      station_sessions::TurnDeclared::Waiting(fw, sc, wt)
+                    }
+                    actor.record_post(decl)
+                  }
+                  None => ()
+                }
+                true
+              }
+              None => false
+            }
+            let payload = base_codec::json_stringify(
+              base_codec::json_obj([
+                ("thread", base_codec::json_int64(tid)),
+                ("n", base_codec::json_int64(n)),
+                ("session", base_codec::json_str(session)),
+              ]),
+            )
+            if ends {
+              return station_tools::text_reply_ending_turn(payload)
+            }
+            return station_tools::text_reply(payload)
+          }
+          Err(e) => return station_tools::error_reply("chat_post insert_message failed: " + e.message)
+        }
+      }
+      return station_tools::text_reply("updated thread " + tid.to_string())
+    }
+    if tool == "chat_state" {
+      let kind = match mcp_arg_str(args, "kind") {
+        Some(k) => k
+        None => return station_tools::error_reply("kind is required")
+      }
+      match self.hub.actors.get(session) {
+        Some(actor) => {
+          let decl = if kind == "all_done" {
+            let d = match mcp_arg_str(args, "done") { Some(s) => s, None => "done" }
+            station_sessions::TurnDeclared::AllDone(d)
+          } else if kind == "need_human" {
+            let nd = match mcp_arg_str(args, "need") { Some(s) => s, None => "input needed" }
+            station_sessions::TurnDeclared::NeedHuman(nd)
+          } else {
+            let fw = match mcp_arg_str(args, "for") { Some(s) => s, None => "work" }
+            let sc = mcp_arg_int(args, "seconds", 60)
+            let wt = match mcp_arg_bool(args, "watch") { Some(b) => b, None => false }
+            station_sessions::TurnDeclared::Waiting(fw, sc, wt)
+          }
+          actor.record_state(decl)
+        }
+        None => ()
+      }
+      return station_tools::text_reply_ending_turn("recorded state: " + kind)
+    }
+    if tool == "chat_list" {
+      let q = match mcp_arg_str(args, "query") {
+        Some(s) => s
+        None => ""
+      }
+      let limit = mcp_arg_int(args, "limit", 20)
+      let filter = station_store::ChatListFilter::{
+        model: mcp_arg_str(args, "model"),
+        created_by: mcp_arg_str(args, "created_by"),
+        archived: mcp_arg_bool(args, "archived"),
+        project: mcp_arg_str(args, "project"),
+        offset: mcp_arg_int(args, "offset", 0),
+      }
+      match st.search_chat_threads(None, self.config.home_ws, q, filter, limit) {
+        Ok((threads, total)) => {
+          let items : Array[base_codec::Json] = []
+          for i in 0..<threads.length() {
+            items.push(thread_row_to_json(threads[i]))
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("total", base_codec::json_int(total)),
+                ("chats", base_codec::json_arr(items)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("chat_list failed: " + e.message)
+      }
+    }
+    if tool == "chat_history" || tool == "chat_read" {
+      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "to")) {
+        Ok(id) => id
+        Err(_) => match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "chat")) {
+          Ok(id) => id
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      let limit = mcp_arg_int(args, "limit", 30)
+      match st.db.all(
+        "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' ORDER BY n DESC LIMIT ?2",
+        [sql_db::int64_to_json(tid), base_codec::json_int(limit)],
+      ) {
+        Ok(rows) => {
+          let msgs : Array[base_codec::Json] = []
+          let mut idx = rows.length() - 1
+          while idx >= 0 {
+            let r = rows[idx]
+            let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            let ak_j = match r.get("author_kind") { Some(v) => v, None => base_codec::json_str("") }
+            let au_j = match r.get("author") { Some(v) => v, None => base_codec::json_str("") }
+            let tx_j = match r.get("text") { Some(v) => v, None => base_codec::json_str("") }
+            let at_j = match r.get("at") { Some(v) => v, None => base_codec::json_int(0) }
+            msgs.push(
+              base_codec::json_obj([
+                ("n", n_j),
+                ("authorKind", ak_j),
+                ("author", au_j),
+                ("text", tx_j),
+                ("at", at_j),
+              ]),
+            )
+            idx = idx - 1
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("thread", base_codec::json_int64(tid)),
+                ("messages", base_codec::json_arr(msgs)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("chat_history failed: " + e.message)
+      }
+    }
+    if tool == "chat_configure" {
+      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "chat")) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let proj = mcp_arg_str(args, "project")
+      let tags_opt : Option[Array[String]] = match base_codec::json_get(args, "tags") {
+        Some(base_codec::Json::Arr(_)) => Some(parse_str_array_field(args, "tags"))
+        _ => None
+      }
+      match st.update_thread_metadata(tid, None, proj, None, tags_opt) {
+        Ok(updated) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("updated", base_codec::json_bool(updated)),
+              ("thread", base_codec::json_int64(tid)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply("chat_configure failed: " + e.message)
+      }
+    }
+    if tool == "chat_archive" {
+      let target = match mcp_arg_str(args, "chat") {
+        Some(c) => c
+        None => return station_tools::error_reply("chat is required")
+      }
+      match self.archive_session(whole_store, target, "manual", now_ms) {
+        Ok(_) => return station_tools::text_reply("archived " + target)
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "chat_create" {
+      let raw_id = match (self.random_bytes_fn)(8) {
+        Ok(b) => crypto::bytes_to_hex(b)
+        Err(e) => return station_tools::error_reply("CSPRNG failed: " + e)
+      }
+      let new_key = "chat-" + raw_id
+      let title_opt = mcp_arg_str(args, "title")
+      let runtime = match mcp_arg_str(args, "runtime") {
+        Some(r) => if r.length() > 0 { r } else { "claude" }
+        None => "claude"
+      }
+      let profile = match mcp_arg_str(args, "profile") {
+        Some(p) => if p.length() > 0 { p } else { "default" }
+        None => "default"
+      }
+      let ws_dir = match mcp_arg_str(args, "cwd") {
+        Some(c) => if c.length() > 0 { c } else { self.config.data_dir }
+        None => self.config.data_dir
+      }
+      match self.create_session(
+        whole_store,
+        new_key,
+        "chat",
+        title_opt,
+        None,
+        runtime,
+        profile,
+        mcp_arg_str(args, "model"),
+        ws_dir,
+        self.config.home_ws,
+        now_ms,
+      ) {
+        Ok((_, tid)) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("session", base_codec::json_str(new_key)),
+              ("thread", base_codec::json_int64(tid)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "session_send" {
+      let target = match mcp_arg_str(args, "to") {
+        Some(t) => t
+        None => return station_tools::error_reply("to is required")
+      }
+      let body_text = match mcp_arg_str(args, "text") {
+        Some(t) => t
+        None => match mcp_arg_str(args, "message") {
+          Some(m) => m
+          None => return station_tools::error_reply("text is required")
+        }
+      }
+      match st.get_session(target) {
+        Ok(Some(_)) => ()
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply("session lookup failed: " + e.message)
+      }
+      let tid = match resolve_thread_id_for_to(st, target, None) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let msg = station_store::NewMessage::{
+        thread: tid,
+        ts: None,
+        author_kind: "agent",
+        author: session,
+        agent_identity: None,
+        text: Some(body_text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: None,
+        options: None,
+        proposal: None,
+        at: now_ms,
+      }
+      match st.insert_message(msg, deliver_to=[target]) {
+        Ok((n, _)) => {
+          let actor = self.hub.ensure_actor(target, "claude")
+          let _ = actor.submit_input(body_text)
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("delivered", base_codec::json_bool(true)),
+                ("to", base_codec::json_str(target)),
+                ("thread", base_codec::json_int64(tid)),
+                ("n", base_codec::json_int64(n)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("session_send failed: " + e.message)
+      }
+    }
+    if tool == "session_history" {
+      let target = match mcp_arg_str(args, "chat") {
+        Some(c) => if c.length() > 0 { c } else { session }
+        None => session
+      }
+      let limit = mcp_arg_int(args, "limit", 20)
+      match st.db.all(
+        "SELECT id, started_at, ended_at, declared FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT ?2",
+        [base_codec::json_str(target), base_codec::json_int(limit)],
+      ) {
+        Ok(rows) => {
+          let turns : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let id_j = match r.get("id") { Some(v) => v, None => base_codec::json_null() }
+            let st_j = match r.get("started_at") { Some(v) => v, None => base_codec::json_int(0) }
+            let en_j = match r.get("ended_at") { Some(v) => v, None => base_codec::json_null() }
+            let dc_j = match r.get("declared") { Some(v) => v, None => base_codec::json_null() }
+            turns.push(
+              base_codec::json_obj([
+                ("id", id_j),
+                ("startedAt", st_j),
+                ("endedAt", en_j),
+                ("declared", dc_j),
+              ]),
+            )
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("session", base_codec::json_str(target)),
+                ("turns", base_codec::json_arr(turns)),
+              ]),
+            ),
+          )
+        }
+        Err(e) => return station_tools::error_reply("session_history failed: " + e.message)
+      }
+    }
+    station_tools::error_reply("unsupported chat tool: " + tool)
+  }
+
+  let search_handler = fn(_session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool != "search" {
+      return station_tools::error_reply("unsupported search tool: " + tool)
+    }
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let q = match mcp_arg_str(args, "query") {
+      Some(s) => s
+      None => return station_tools::error_reply("query is required")
+    }
+    let limit = mcp_arg_int(args, "limit", 5)
+    let words = station_api::search_terms(q)
+    let hits : Array[base_codec::Json] = []
+    match st.db.all(
+      "SELECT e.thread, e.n, e.text, e.at, t.title FROM entries e LEFT JOIN threads t ON t.id = e.thread WHERE e.kind = 'message' ORDER BY e.at DESC LIMIT 200",
+      [],
+    ) {
+      Ok(rows) => {
+        for i in 0..<rows.length() {
+          if hits.length() >= limit {
+            break
+          }
+          let r = rows[i]
+          let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let ttl = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if station_api::has_all_terms(ttl + " " + txt, words) {
+            let tid_j = match r.get("thread") { Some(v) => v, None => base_codec::json_int(0) }
+            let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            hits.push(
+              base_codec::json_obj([
+                ("kind", base_codec::json_str("message")),
+                ("thread", tid_j),
+                ("n", n_j),
+                ("title", base_codec::json_str(ttl)),
+                ("excerpt", base_codec::json_str(station_api::make_excerpt(txt, words))),
+              ]),
+            )
+          }
+        }
+      }
+      Err(e) => return station_tools::error_reply("search failed: " + e.message)
+    }
+    station_tools::text_reply(
+      base_codec::json_stringify(base_codec::json_obj([("hits", base_codec::json_arr(hits))])),
+    )
+  }
+
+  let job_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool == "job_start" {
+      let command = match mcp_arg_str(args, "command") {
+        Some(c) => c
+        None => return station_tools::error_reply("command is required")
+      }
+      let name = match mcp_arg_str(args, "name") {
+        Some(n) => n
+        None => ""
+      }
+      let cwd = match mcp_arg_str(args, "cwd") {
+        Some(c) => if c.length() > 0 { c } else { self.config.data_dir }
+        None => self.config.data_dir
+      }
+      let port_opt : Option[Int] = match base_codec::json_get(args, "port") {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+      let watch = match mcp_arg_bool(args, "watch") {
+        Some(b) => b
+        None => false
+      }
+      let req = station_jobs::JobStartRequest::{
+        session: session,
+        name: name,
+        command: command,
+        cwd: cwd,
+        port: port_opt,
+        watch: watch,
+        id: None,
+        queued: false,
+        screen: false,
+        small: false,
+        pipe_stdio: false,
+      }
+      match self.jobs.start(req, now_ms) {
+        Ok(rec) => return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "job_list" {
+      let list = self.jobs.list(session_opt=Some(session))
+      let out : Array[base_codec::Json] = []
+      for i in 0..<list.length() {
+        out.push(list[i].to_json())
+      }
+      return station_tools::text_reply(
+        base_codec::json_stringify(base_codec::json_obj([("jobs", base_codec::json_arr(out))])),
+      )
+    }
+    if tool == "job_stop" {
+      let id = match mcp_arg_str(args, "id") {
+        Some(s) => s
+        None => return station_tools::error_reply("id is required")
+      }
+      match self.jobs.stop(id, now_ms) {
+        Ok(rec) => return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    if tool == "job_log" {
+      let id = match mcp_arg_str(args, "id") {
+        Some(s) => s
+        None => return station_tools::error_reply("id is required")
+      }
+      let lines = mcp_arg_int(args, "lines", 50)
+      match self.jobs.log(id, lines=lines) {
+        Ok(text) => return station_tools::text_reply(text)
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    station_tools::error_reply("unsupported job tool: " + tool)
+  }
+
+  let project_handler = fn(_session : String, tool : String, _args : base_codec::Json) -> station_tools::ToolReply {
+    if tool != "project_manage" {
+      return station_tools::error_reply("unsupported project tool: " + tool)
+    }
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    match st.db.all(
+      "SELECT project, COUNT(*) AS cnt FROM threads WHERE project IS NOT NULL AND project != '' GROUP BY project ORDER BY project",
+      [],
+    ) {
+      Ok(rows) => {
+        let projs : Array[base_codec::Json] = []
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
+          projs.push(base_codec::json_obj([("name", base_codec::json_str(name)), ("count", cnt)]))
+        }
+        station_tools::text_reply(
+          base_codec::json_stringify(base_codec::json_obj([("projects", base_codec::json_arr(projs))])),
+        )
+      }
+      Err(e) => station_tools::error_reply("project_manage failed: " + e.message)
+    }
+  }
+
+  station_tools::DomainHandlers::{
+    chat: chat_handler,
+    job: job_handler,
+    remote: base.remote,
+    secret: base.secret,
+    device: base.device,
+    screen: base.screen,
+    browser: base.browser,
+    project: project_handler,
+    search: search_handler,
+    managed_mcp: base.managed_mcp,
+    system: base.system,
+  }
+}
+
+/// Pure dependency-injected `/mcp` HTTP handler (no SQLite FFI references).
+pub fn WholeAgents::handle_mcp_http_with_handlers(
+  self : WholeAgents,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  handlers : station_tools::DomainHandlers,
+) -> McpHttpResponse {
+  if path != "/mcp" {
+    return McpHttpResponse::{
+      status: 404,
+      content_type: "application/json",
+      body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str("not found"))])),
+    }
+  }
+  match station_tools::check_local_origin(host_header, origin_header, [self.config.mcp_port]) {
+    Some(err_msg) => {
+      return McpHttpResponse::{
+        status: 403,
+        content_type: "application/json",
+        body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(err_msg))])),
+      }
+    }
+    None => ()
+  }
+  let tools_host = station_tools::ToolsHost::{
+    resolve_token: fn(tok : String) -> Option[String] { self.resolve_token_ct(tok) },
+    call_context: fn(session : String) -> station_tools::CallContext {
+      station_tools::CallContext::{
+        session: session,
+        unbound_reason: if self.bound_to_workspace {
+          None
+        } else {
+          Some(station_tools::UNBOUND_REFUSAL)
+        },
+      }
+    },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { station_tools::station_tools() },
+    dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { [] },
+    listing_of: fn(session : String) -> Option[station_tools::Listing] {
+      let rt = match self.session_runtimes.get(session) {
+        Some(r) => r
+        None => "claude"
+      }
+      station_tools::listing_for(rt, false)
+    },
+    call_tool: fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+      station_tools::dispatch_tool(handlers, session, tool, args)
+    },
+  }
+  let reply = self.mcp.handle(method, authorization, body, tools_host)
+  let (st, ct, text) = station_tools::encode_json_reply(reply)
+  McpHttpResponse::{ status: st, content_type: ct, body: text }
+}
+
+/// Handle a local HTTP request to `/mcp`:
+/// 1. Enforces path == `/mcp`.
+/// 2. Enforces `station_tools::check_local_origin` (rejects cross-site `Origin` or non-loopback `Host` with `403`).
+/// 3. Enforces `POST` (`405`), `extract_bearer_token`, and constant-time active token verification (`401`).
+/// 4. Dispatches JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`) via `McpServer::handle`
+///    and `station_tools::dispatch_tool` against live SQLite `WholeStore` + `SessionHub` + `JobManager`.
+pub fn WholeAgents::handle_mcp_http(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  now_ms : Int64,
+) -> McpHttpResponse {
+  let handlers = self.build_domain_handlers(whole_store, now_ms)
+  self.handle_mcp_http_with_handlers(
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    handlers,
+  )
+}

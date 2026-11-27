@@ -1,0 +1,487 @@
+// Real SQLite primary store lifecycle, predecessor-exit write guard, and handover snapshot
+// persistence for `station_whole`.
+//
+// Invariant: SQLite primary write connection (`<data>/stillfail.db`) MUST NEVER be opened
+// until the caller confirms the predecessor process has exited (`predecessor_gone == true`),
+// and `before_store` (reserved for `station_replica` restore) has completed successfully.
+
+import "base_codec"
+import "http1"
+import "nodepath"
+import "station_api"
+import "station_sessions"
+import "station_store"
+import "station_sys"
+import "station_vault"
+
+pub enum StorePhase {
+  PreHandover
+  PrimaryOpen
+  Closed
+}
+
+pub fn store_phase_name(p : StorePhase) -> String {
+  match p {
+    StorePhase::PreHandover => "pre-handover"
+    StorePhase::PrimaryOpen => "primary-open"
+    StorePhase::Closed => "closed"
+  }
+}
+
+/// Serializable handover snapshot exported before shutdown/restart and restored after
+/// the predecessor exits and the new primary SQLite store is opened.
+pub struct WholeHandoverSnapshot {
+  pub version : Int
+  pub exported_at : Int64
+  pub kept_sends : Array[station_api::KeptSend]
+  pub session_snapshots : Array[station_sessions::HandoverSnapshot]
+  pub active_job_ids : Array[String]
+  pub active_vault_grant_ids : Array[String]
+  pub handed_station_ids : Array[String]
+}
+
+pub fn WholeHandoverSnapshot::empty(exported_at : Int64) -> WholeHandoverSnapshot {
+  WholeHandoverSnapshot::{
+    version: 1,
+    exported_at: exported_at,
+    kept_sends: [],
+    session_snapshots: [],
+    active_job_ids: [],
+    active_vault_grant_ids: [],
+    handed_station_ids: [],
+  }
+}
+
+fn json_str_array(items : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    out.push(base_codec::json_str(items[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn parse_str_array_field(obj : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn kept_send_to_json(ks : station_api::KeptSend) -> base_codec::Json {
+  let hdrs : Array[base_codec::Json] = []
+  for i in 0..<ks.headers.length() {
+    hdrs.push(
+      base_codec::json_arr([
+        base_codec::json_str(ks.headers[i].name),
+        base_codec::json_str(ks.headers[i].value),
+      ]),
+    )
+  }
+  base_codec::json_obj([
+    ("viewer", base_codec::json_str(ks.viewer)),
+    ("workspace", base_codec::json_str(ks.workspace)),
+    ("thread", base_codec::json_int(ks.thread)),
+    ("key", base_codec::json_str(ks.key)),
+    ("atMs", base_codec::json_int64(ks.at_ms)),
+    ("status", base_codec::json_int(ks.status)),
+    ("headers", base_codec::json_arr(hdrs)),
+    ("bodyB64", base_codec::json_str(ks.body_b64)),
+  ])
+}
+
+fn kept_send_from_json(v : base_codec::Json) -> Option[station_api::KeptSend] {
+  let viewer = match json_opt_str(v, "viewer") {
+    Some(s) => s
+    None => return None
+  }
+  let workspace = match json_opt_str(v, "workspace") {
+    Some(s) => s
+    None => ""
+  }
+  let thread = match json_opt_int(v, "thread") {
+    Some(t) => t
+    None => return None
+  }
+  let key = match json_opt_str(v, "key") {
+    Some(s) => s
+    None => return None
+  }
+  let at_ms = match json_opt_i64(v, "atMs") {
+    Some(t) => t
+    None => 0L
+  }
+  let status = match json_opt_int(v, "status") {
+    Some(st) => st
+    None => 200
+  }
+  let body_b64 = match json_opt_str(v, "bodyB64") {
+    Some(s) => s
+    None => ""
+  }
+  let headers : Array[http1::Header] = []
+  match base_codec::json_get(v, "headers") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(n), base_codec::Json::Str(hdr_val)) => {
+                  headers.push(http1::Header::{ name: n, value: hdr_val })
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  Some(station_api::KeptSend::{
+    viewer: viewer,
+    workspace: workspace,
+    thread: thread,
+    key: key,
+    at_ms: at_ms,
+    status: status,
+    headers: headers,
+    body_b64: body_b64,
+  })
+}
+
+fn session_snap_to_json(s : station_sessions::HandoverSnapshot) -> base_codec::Json {
+  base_codec::json_obj([
+    ("key", base_codec::json_str(s.key)),
+    ("runtime", base_codec::json_str(s.runtime)),
+    ("hasAgent", base_codec::json_bool(s.has_agent)),
+    ("hasTurn", base_codec::json_bool(s.has_turn)),
+    ("notices", json_str_array(s.notices)),
+  ])
+}
+
+fn session_snap_from_json(v : base_codec::Json) -> Option[station_sessions::HandoverSnapshot] {
+  let key = match json_opt_str(v, "key") {
+    Some(s) => s
+    None => return None
+  }
+  let runtime = match json_opt_str(v, "runtime") {
+    Some(s) => s
+    None => "claude"
+  }
+  let has_agent = match json_opt_bool(v, "hasAgent") {
+    Some(b) => b
+    None => false
+  }
+  let has_turn = match json_opt_bool(v, "hasTurn") {
+    Some(b) => b
+    None => false
+  }
+  Some(station_sessions::HandoverSnapshot::{
+    key: key,
+    runtime: runtime,
+    has_agent: has_agent,
+    has_turn: has_turn,
+    notices: parse_str_array_field(v, "notices"),
+  })
+}
+
+pub fn WholeHandoverSnapshot::to_json(self : WholeHandoverSnapshot) -> base_codec::Json {
+  let ks_arr : Array[base_codec::Json] = []
+  for i in 0..<self.kept_sends.length() {
+    ks_arr.push(kept_send_to_json(self.kept_sends[i]))
+  }
+  let sess_arr : Array[base_codec::Json] = []
+  for i in 0..<self.session_snapshots.length() {
+    sess_arr.push(session_snap_to_json(self.session_snapshots[i]))
+  }
+  base_codec::json_obj([
+    ("version", base_codec::json_int(self.version)),
+    ("exportedAt", base_codec::json_int64(self.exported_at)),
+    ("keptSends", base_codec::json_arr(ks_arr)),
+    ("sessions", base_codec::json_arr(sess_arr)),
+    ("activeJobIds", json_str_array(self.active_job_ids)),
+    ("activeVaultGrantIds", json_str_array(self.active_vault_grant_ids)),
+    ("handedStationIds", json_str_array(self.handed_station_ids)),
+  ])
+}
+
+pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSnapshot, String] {
+  let j = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return Err("invalid handover snapshot JSON: " + e)
+  }
+  let version = match json_opt_int(j, "version") {
+    Some(v) => v
+    None => 1
+  }
+  let exported_at = match json_opt_i64(j, "exportedAt") {
+    Some(t) => t
+    None => 0L
+  }
+  let kept_sends : Array[station_api::KeptSend] = []
+  match base_codec::json_get(j, "keptSends") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match kept_send_from_json(items[i]) {
+          Some(ks) => kept_sends.push(ks)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let session_snapshots : Array[station_sessions::HandoverSnapshot] = []
+  match base_codec::json_get(j, "sessions") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match session_snap_from_json(items[i]) {
+          Some(ss) => session_snapshots.push(ss)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  Ok(WholeHandoverSnapshot::{
+    version: version,
+    exported_at: exported_at,
+    kept_sends: kept_sends,
+    session_snapshots: session_snapshots,
+    active_job_ids: parse_str_array_field(j, "activeJobIds"),
+    active_vault_grant_ids: parse_str_array_field(j, "activeVaultGrantIds"),
+    handed_station_ids: parse_str_array_field(j, "handedStationIds"),
+  })
+}
+
+/// Primary SQLite + Vault + Handover state container for the full station.
+pub struct WholeStore {
+  pub data_dir : String
+  pub db_path : String
+  pub mut phase : StorePhase
+  mut store : Option[station_store::Store]
+  pub vault_grants : station_vault::GrantStore
+  pub vault_incoming : station_vault::IncomingRegistry
+  pub mut before_store_ran : Bool
+  pub mut last_restored_handover_at : Option[Int64]
+  pub mut active_vault_grant_ids : Array[String]
+}
+
+/// Construct `WholeStore` in `PreHandover` phase with an explicit path separator (no FFI calls).
+pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) -> WholeStore {
+  let db_path = nodepath::join(sep, [data_dir, "stillfail.db"])
+  WholeStore::{
+    data_dir: data_dir,
+    db_path: db_path,
+    phase: StorePhase::PreHandover,
+    store: None,
+    vault_grants: station_vault::GrantStore::new(),
+    vault_incoming: station_vault::IncomingRegistry::new(),
+    before_store_ran: false,
+    last_restored_handover_at: None,
+    active_vault_grant_ids: [],
+  }
+}
+
+/// Construct `WholeStore` in `PreHandover` phase without opening SQLite.
+pub fn WholeStore::new_pre_handover(data_dir : String) -> WholeStore {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  WholeStore::new_pre_handover_with_sep(data_dir, sep)
+}
+
+pub fn WholeStore::is_primary_open(self : WholeStore) -> Bool {
+  match self.phase {
+    StorePhase::PrimaryOpen => self.store.is_some()
+    _ => false
+  }
+}
+
+/// Returns the open primary `station_store::Store` or fails closed if still in `PreHandover` or `Closed`.
+pub fn WholeStore::require_open(self : WholeStore) -> Result[station_store::Store, String] {
+  match self.phase {
+    StorePhase::PrimaryOpen => match self.store {
+      Some(st) => Ok(st)
+      None => Err("primary SQLite store handle missing")
+    }
+    StorePhase::PreHandover => Err(
+      "primary SQLite store not open: predecessor exit must be confirmed before writing",
+    )
+    StorePhase::Closed => Err("primary SQLite store is closed")
+  }
+}
+
+/// Pure predecessor-exit guard and `before_store` runner (shared by unit tests and live SQLite open).
+pub fn WholeStore::check_open_guard(
+  self : WholeStore,
+  predecessor_gone : Bool,
+  before_store : (String) -> Result[Unit, String],
+) -> Result[Bool, String] {
+  if !predecessor_gone {
+    return Err("refused to open primary SQLite store before predecessor process exit is confirmed")
+  }
+  match self.phase {
+    StorePhase::PrimaryOpen => return Ok(false)
+    StorePhase::Closed => return Err("cannot reopen a closed WholeStore")
+    StorePhase::PreHandover => ()
+  }
+  match before_store(self.data_dir) {
+    Ok(_) => {
+      self.before_store_ran = true
+      Ok(true)
+    }
+    Err(e) => Err("before_store hook failed: " + e)
+  }
+}
+
+/// Strictly opens `<data_dir>/stillfail.db` ONLY after the caller confirms the predecessor process
+/// has exited (`predecessor_gone == true`), running `before_store(data_dir)` first (reserved for
+/// `station_replica` restore) and then `station_store::Store::open(...)` with schema migrations.
+pub fn WholeStore::open_primary_after_predecessor_gone(
+  self : WholeStore,
+  predecessor_gone : Bool,
+  before_store : (String) -> Result[Unit, String],
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0L,
+) -> Result[Unit, String] {
+  let should_open = match self.check_open_guard(predecessor_gone, before_store) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !should_open {
+    return Ok(())
+  }
+  if !station_sys::mkdir_p(self.data_dir) {
+    return Err("failed to create station data directory: " + self.data_dir)
+  }
+  match station_store::Store::open(self.db_path, wait_ms=wait_ms, now_ms=now_ms) {
+    Ok(st) => {
+      self.store = Some(st)
+      self.phase = StorePhase::PrimaryOpen
+      Ok(())
+    }
+    Err(e) => Err("failed to open primary SQLite store: " + e.message)
+  }
+}
+
+pub fn WholeStore::record_handover_in(
+  self : WholeStore,
+  id : String,
+  ctx_json : String,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::save_handover_in(st.db, id, ctx_json) {
+    Ok(_) => Ok(())
+    Err(e) => Err("save_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::load_handover_in(
+  self : WholeStore,
+  id : String,
+) -> Result[Option[String], String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::load_handover_in(st.db, id) {
+    Ok(v) => Ok(v)
+    Err(e) => Err("load_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::delete_handover_in(self : WholeStore, id : String) -> Result[Bool, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::delete_handover_in(st.db, id) {
+    Ok(b) => Ok(b)
+    Err(e) => Err("delete_handover_in failed: " + e.message)
+  }
+}
+
+pub fn WholeStore::handed_stations(self : WholeStore) -> Result[Array[String], String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::handed_stations(st.db) {
+    Ok(list) => Ok(list)
+    Err(e) => Err("handed_stations failed: " + e.message)
+  }
+}
+
+/// Register a vault grant and track its ID for handover export.
+pub fn WholeStore::register_vault_grant(
+  self : WholeStore,
+  grant : station_vault::GrantRecord,
+  now_sec : Int64,
+) -> Result[Unit, String] {
+  match self.vault_grants.register(grant, now_sec) {
+    Ok(_) => {
+      let mut found = false
+      for i in 0..<self.active_vault_grant_ids.length() {
+        if self.active_vault_grant_ids[i] == grant.id {
+          found = true
+          break
+        }
+      }
+      if !found {
+        self.active_vault_grant_ids.push(grant.id)
+      }
+      Ok(())
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Apply a handover snapshot to `AdminApi` (`keep_sends`) and persist handover audit state into SQLite.
+pub fn WholeStore::apply_handover_restore(
+  self : WholeStore,
+  snap : WholeHandoverSnapshot,
+  admin_api : station_api::AdminApi,
+  ws_override : Option[String],
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  admin_api.keep_sends(snap.kept_sends, ws_override)
+  self.last_restored_handover_at = Some(snap.exported_at)
+  let snap_json = base_codec::json_stringify(snap.to_json())
+  match station_store::save_handover_in(st.db, "whole-core-last", snap_json) {
+    Ok(_) => Ok(())
+    Err(e) => Err("persist restored handover snapshot failed: " + e.message)
+  }
+}
+
+/// Mark `WholeStore` closed without invoking SQLite FFI (used when `store` was never opened).
+pub fn WholeStore::close_pre_handover(self : WholeStore) -> Unit {
+  self.store = None
+  self.phase = StorePhase::Closed
+}
+
+/// Cleanly flush and close the primary SQLite connection.
+pub fn WholeStore::close(self : WholeStore) -> Unit {
+  match self.store {
+    Some(st) => {
+      st.close()
+      self.store = None
+    }
+    None => ()
+  }
+  self.phase = StorePhase::Closed
+}
