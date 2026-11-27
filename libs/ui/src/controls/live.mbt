@@ -174,7 +174,7 @@ pub fn[T] LiveArray::is_empty(self : LiveArray[T]) -> Bool {
 pub fn[T] LiveArray::iter(self : LiveArray[T]) -> Iter[T] {
   let xs = self.read()
   let mut i = 0
-  Iter::new(fn() {
+  Iter(fn() {
     if i < xs.length() {
       let v = xs[i]
       i = i + 1
