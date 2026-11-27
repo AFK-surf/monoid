@@ -245,7 +245,8 @@ fn profiles_place_node(
     fn(p, at) {
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       match at {
-        Some(("", "")) =>
+        Some(("", "")) => {
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
           @sfpages.profiles_overview_node(
             p,
             core,
@@ -265,6 +266,7 @@ fn profiles_place_node(
             width~,
             tips?,
           )
+        }
         Some((a, id)) => {
           // Release any ahead-read handed over by show_answered after the frame draws
           // (idempotent with profile_node's own shown_read).
@@ -280,7 +282,6 @@ fn profiles_place_node(
     pin=fn(k) { k == Some(("", "")) },
     on_take=fn(_, k) {
       match k {
-        Some(("", "")) => ()
         Some((a, id)) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
         None => ()
       }

@@ -527,11 +527,33 @@ fn steps_clock_start(
     })
   }
 
-  match next_target(anchor_logic.val, anchor_wall.val) {
-    Some((d, w)) => arm(d, w)
-    None => ()
-  }
+  let cancelled = Ref(false)
+  let first_enter = Ref(true)
+  v.when_active(
+    while_covered=true,
+    fn() {
+      if cancelled.val {
+        return fn() {  }
+      }
+      anchor_logic.val = v.logic_at()
+      anchor_wall.val = (src.now)()
+      if !first_enter.val {
+        tick.set(tick.untracked() + 1)
+      }
+      first_enter.val = false
+      match next_target(anchor_logic.val, anchor_wall.val) {
+        Some((d, w)) => arm(d, w)
+        None => ()
+      }
+      fn() {
+        (stop.val)()
+        stop.val = fn() {  }
+      }
+    },
+  )
+  |> ignore
   fn() {
+    cancelled.val = true
     (stop.val)()
     stop.val = fn() {  }
   }

@@ -119,13 +119,18 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
   )
   // 1. Starts in Reading (no rows yet); leaving Reading must drop it rather than parking it.
   t.draw()
+  let tree = @ui.view_tree().unwrap()
   let pr = place_root.val.unwrap()
-  assert_eq(t.subtree_timeline_count(pr), 0, msg="Reading skeleton has 0 timeline entries")
-  // 2. Empty rows -> First; leaving First must also drop it without parking.
+  assert_eq(tree.due_count(), 0, msg="Reading skeleton has 0 timeline entries across whole tree")
+  // 2. Empty rows -> First; leaving Reading must drop its nodes (let_go > 0).
+  t.tree_frames_from_now()
   rows.set(Some(Json::array([])))
   t.draw()
-  assert_eq(t.subtree_timeline_count(pr), 0, msg="First empty view has 0 timeline entries")
-  // 3. Populate 5 stations -> defaults to st1 (this_machine), poller active (> 0).
+  let reading_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  assert_true(reading_let_go > 0, msg="leaving Reading must drop skeleton without parking (let_go=\{reading_let_go})")
+  assert_eq(tree.due_count(), 0, msg="First empty view has 0 timeline entries across whole tree")
+  // 3. Populate 5 stations -> defaults to st1 (this_machine); leaving First must drop it (let_go > 0), poller active (> 0).
+  t.tree_frames_from_now()
   rows.set(
     Some(
       Json::array([
@@ -138,18 +143,24 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
     ),
   )
   t.draw()
-  assert_true(t.subtree_timeline_count(pr) > 0, msg="active this_machine station must own while_active_every poller")
-  // 4. Switch to st2: st1 is parked and its poller timeline drops to 0.
+  let first_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  assert_true(first_let_go > 0, msg="leaving First must drop empty view without parking (let_go=\{first_let_go})")
+  let active_timelines = t.subtree_timeline_count(pr)
+  assert_true(active_timelines > 0, msg="active this_machine station must own while_active_every poller")
+  assert_eq(tree.due_count(), active_timelines, msg="whole-tree due_count matches active st1 timelines")
+  // 4. Switch to st2: st1 is parked (parent == -1) and whole-tree due_count drops to 0 (proving parked st1 cleared its poller).
   place_pick_station(ws_id, ws_id + "/st2")
   t.draw()
-  assert_eq(t.subtree_timeline_count(pr), 0, msg="parked st1 must clear its poller timeline to 0")
-  // 5. Hot-return to st1: 0 nodes made, poller resumes (> 0).
+  assert_eq(tree.due_count(), 0, msg="parked st1 must remove its poller from Tree::timeline (due_count == 0)")
+  assert_eq(t.next_wake(), None, msg="no timer wake pending while st1 is parked")
+  // 5. Hot-return to st1: 0 nodes made, poller resumes (> 0) and matches whole-tree due_count.
   t.tree_frames_from_now()
   place_pick_station(ws_id, ws_id + "/st1")
   t.draw()
   let back_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   assert_eq(back_made, 0, msg="hot return to parked st1 must build 0 nodes")
   assert_true(t.subtree_timeline_count(pr) > 0, msg="woken st1 must resume its poller")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(pr), msg="woken st1 whole-tree due_count matches mounted count")
   // 6. Visit st3, st4, then st5 (> keeps_max=4): evicts oldest st2; revisiting st2 rebuilds.
   place_pick_station(ws_id, ws_id + "/st3")
   t.draw()
@@ -161,12 +172,17 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
   t.run_for(@ui.frame_period_default * 2.0)
   let evict_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
   assert_true(evict_let_go > 0, msg="opening 5th station must evict oldest parked station")
-  assert_eq(t.subtree_timeline_count(pr), 0, msg="all parked stations (including st1) have 0 timeline entries")
+  assert_eq(tree.due_count(), 0, msg="all parked stations (including st1) must own 0 entries in Tree::timeline")
   t.tree_frames_from_now()
   place_pick_station(ws_id, ws_id + "/st2")
   t.draw()
   let rebuild_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   assert_true(rebuild_made > 0, msg="evicted st2 must rebuild on revisit")
+  // 7. Disposing the place (as on workspace switch) releases all parked station branches and leaves 0 timers.
+  t.tree_frames_from_now()
+  rows.set(None)
+  t.draw()
+  assert_eq(tree.due_count(), 0, msg="no timers remain after returning to Reading")
   @sfbase.place_pick.remove(@sfbase.place_key(ws_id, "stations"))
   @ui.run_let_go()
 }

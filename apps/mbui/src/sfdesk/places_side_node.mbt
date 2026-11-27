@@ -598,6 +598,7 @@ fn profile_side_row_node(
     }
     let at = match route {
       Route::Profile(station, id) => @sfbase.profile_shown_at(station, id)
+      Route::Profiles("") => @sfbase.profile_shown_at("", "")
       _ => ""
     }
     @sfbase.show_answered(src, @sfbase.route_asks(w.id, route), at, fn() {
