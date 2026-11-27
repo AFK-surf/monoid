@@ -457,6 +457,8 @@ struct Node {
   mut parent : Int
   /// A last-resort ellipsis in its own words was deliberately allowed, without changing their sizing.
   mut allow_ellipsis : Bool
+  /// Whether `View::offset_snapped` snaps `look.dx`/`look.dy` onto `Tree::pixel_grid` (half-up) in `Tree::place`.
+  mut offset_snap : Bool
   /// its words, and all made in it, at the size they are said, whatever the system's size of words (View::box's
   /// `words_as_said`, taken from what it is made in as it is made: View::words_scale answers 1)
   mut words_as_said : Bool
@@ -2139,6 +2141,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.went = None
       n.parent = parent
       n.allow_ellipsis = false
+      n.offset_snap = false
       n.words_as_said = words_as_said
       n.slot = false
       n.along_row = false
@@ -2291,6 +2294,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
+        offset_snap: false,
         words_as_said,
         kids: [],
         owner: None,
@@ -6433,6 +6437,28 @@ pub fn View::alpha(self : View, a : Live[Double], loc~ : SourceLoc) -> View {
 /// laid out again).
 #callsite(autofill(loc))
 pub fn View::offset(self : View, d : Live[(Double, Double)], loc~ : SourceLoc) -> View {
+  if self.live() is Some(n) && n.offset_snap {
+    n.offset_snap = false
+    self.tree.place_marked_at(self.at)
+  }
+  self.bind(loc~, Offset, d, Place, fn(d) {
+    let n = self.tree.nodes[self.at]
+    n.look.dx = d.0
+    n.look.dy = d.1
+  })
+  self
+}
+
+///|
+/// Like `View::offset`, snapping `dx`/`dy` onto the host's device pixel grid (half-up, matching `View::shift`) in
+/// `Tree::place` so sliding whole panes or message columns never shift retained rows or text onto fractional pixels
+/// (avoiding four-phase glyph re-phasing and `ride_kept_for` misses mid-drag or mid-slide).
+#callsite(autofill(loc))
+pub fn View::offset_snapped(self : View, d : Live[(Double, Double)], loc~ : SourceLoc) -> View {
+  if self.live() is Some(n) && !n.offset_snap {
+    n.offset_snap = true
+    self.tree.place_marked_at(self.at)
+  }
   self.bind(loc~, Offset, d, Place, fn(d) {
     let n = self.tree.nodes[self.at]
     n.look.dx = d.0
@@ -15991,6 +16017,12 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
   let w = n.flex.width
   let h = n.flex.height
   let g = self.pixel_grid
+  let mut dx = n.look.dx
+  let mut dy = n.look.dy
+  if g > 0.0 && n.offset_snap && (dx != 0.0 || dy != 0.0) {
+    dx = (dx * g + 0.5).floor() / g
+    dy = (dy * g + 0.5).floor() / g
+  }
   let mut sx = n.look.sx * w
   let mut sy = n.look.sy * h
   if g > 0.0 && (sx != 0.0 || sy != 0.0) {
@@ -15999,10 +16031,10 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
     sx = (sx * g + 0.5).floor() / g
     sy = (sy * g + 0.5).floor() / g
   }
-  let x = n.flex.left + n.look.dx + sx + n.moved.0 + n.flip_across.0
+  let x = n.flex.left + dx + sx + n.moved.0 + n.flip_across.0
   // (a page's list's first row on the host's pixels where it sets them so: Tree::rows_placed)
   let (iy, _, fo, fa) = n.flip_in
-  let y = self.rows_placed(at, n.flex.top + n.look.dy + sy + n.moved.1 + iy)
+  let y = self.rows_placed(at, n.flex.top + dy + sy + n.moved.1 + iy)
   let a = n.look.alpha * fa
   let mut px = 0.0
   let mut py = 0.0

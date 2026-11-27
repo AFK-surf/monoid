@@ -118,3 +118,45 @@ test "lazy Shaped::breaks: nowrap and multi-run rich_prep skip per-run line_brea
   let lay = rich_lines(r, prep, 80.0)
   assert_true(lay.line_start.length() > 1)
 }
+
+///|
+test "layout_text defers line_breaks until soft-wrap overflow and matches eager breaks bit-for-bit" {
+  let _ = Tester::new(fn(_) {  }, w=400.0, h=300.0)
+  // 1. wrap=true text that fits on one line (or only splits on hard newlines) leaves s.brk empty.
+  let single = "单行自适应标题 Single Line Title 2026"
+  let tl_fit = layout_text(single, 14.0, 400, 1000.0, true)
+  assert_true(tl_fit.shaped.brk.is_empty())
+  assert_eq(tl_fit.line_start.length(), 1)
+  let hard_only = "第一行 short\n第二行 ok\r\n第三行 fine"
+  let tl_hard = layout_text(hard_only, 14.0, 400, 1000.0, true)
+  assert_true(tl_hard.shaped.brk.is_empty())
+  assert_eq(tl_hard.line_start.length(), 3)
+  // 2. When a previously unfitted Shaped overflows at a narrow width, s.brk is computed on demand and matches eager layout.
+  let samples = [
+    "Hello world! AV To Wa Yo, testing punctuation (parens) and trailing spaces   end.",
+    "中文排版的「括号」与句号。逗号，不能出现在行首！English + 12345 混排测试。",
+    "first line fits\nsecond line overflows with long words supercalifragilistic and 中文内容",
+    "no-spaces-very-long-identifier-without-break-opportunities-until-hyphens",
+    "a b c d e f g h i j k l m n o p",
+  ]
+  for idx, text in samples {
+    for max_w in [45.0, 80.0, 140.0] {
+      for indent in [0.0, 18.0] {
+        // Fresh lazy run (clear shape cache so s.brk starts empty).
+        clear_shapes()
+        let lazy_tl = layout_text(text, 14.0, 400, max_w, true, indent~)
+        // Fresh eager run (pre-populate s.brk before layout_text).
+        clear_shapes()
+        let eager_s = shape(text, 14.0, 400)
+        ignore(eager_s.breaks(text))
+        let eager_tl = layout_text(text, 14.0, 400, max_w, true, indent~)
+        assert_eq(lazy_tl.line_start, eager_tl.line_start, msg="sample \{idx} w=\{max_w} indent=\{indent}: line_start")
+        assert_eq(lazy_tl.line_end, eager_tl.line_end, msg="sample \{idx} w=\{max_w} indent=\{indent}: line_end")
+        assert_eq(lazy_tl.line_w, eager_tl.line_w, msg="sample \{idx} w=\{max_w} indent=\{indent}: line_w")
+        assert_eq(lazy_tl.xs, eager_tl.xs, msg="sample \{idx} w=\{max_w} indent=\{indent}: xs")
+        assert_eq(lazy_tl.w, eager_tl.w, msg="sample \{idx} w=\{max_w} indent=\{indent}: w")
+        assert_eq(lazy_tl.h, eager_tl.h, msg="sample \{idx} w=\{max_w} indent=\{indent}: h")
+      }
+    }
+  }
+}

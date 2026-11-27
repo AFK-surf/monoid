@@ -398,7 +398,7 @@ pub fn chat_page_made(
               .lays_anew(By(fn() { memo_by(col).laid }))
               |> ignore
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
               let bound = Ref(false)
               col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
@@ -416,7 +416,7 @@ pub fn chat_page_made(
             // later one let go of)
             None =>
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
           }
           // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's

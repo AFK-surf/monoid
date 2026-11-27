@@ -2031,6 +2031,8 @@ pub fn View::moves_window(Self, Live[Bool]) -> Self
 pub fn View::notch(Self, Live[(Double, Double, Double)], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::offset(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::offset_snapped(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
 pub fn View::on_action(Self, String, (ActionAt) -> Bool, can? : () -> Bool) -> Self
 pub fn View::on_buttons(Self, (Buttons) -> Unit, mask? : Int32) -> Self
 pub fn View::on_double_press(Self, () -> Unit) -> Self

@@ -78,3 +78,58 @@ test "View::shift snaps to whole pixels: zero seam between adjacent pages, zero 
     }
   }
 }
+
+///|
+test "View::offset_snapped snaps to whole device pixels: zero glyph re-phase, zero rebuild, offset clears snap" {
+  for sc in [3.5, 3.0, 2.75] {
+    let dx = @signals.signal(0.0, same=fn(a, b) { a == b })
+    let row_v : Ref[@view.View?] = Ref(None)
+    let text_id : Ref[@view.NodeId?] = Ref(None)
+    let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=2, scale=sc)
+    t.check_looks(false)
+    set_view_app(fn(root) {
+      root.box(fn(stage) {
+        stage.width(Is(Some(400.0))).height(Is(Some(200.0))) |> ignore
+        stage.box(fn(row) {
+          row_v.val = Some(row)
+          row
+          .width(Is(Some(800.0)))
+          .height(Is(Some(200.0)))
+          .offset_snapped(By(fn() { (dx.get(), 0.0) }))
+          .ground(Is(0xFF223344L))
+          |> ignore
+          row.box(fn(lbl) {
+            text_id.val = Some(lbl.id())
+            lbl.words(Is("横向拖拽三栏胶片 tape drag text")) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    let block0 = view_blocks.get(text_id.val.unwrap()).unwrap()
+    let kept0 = block0.kept.map(fn(k) { k.0 })
+    let made0 = view_paint_work.made
+    let half_tie = -0.5 / sc
+    for step in [half_tie, -12.37, -47.83, -120.19, -245.5, -310.91] {
+      let rides0 = ride_drawn.val
+      dx.set(step)
+      t.draw()
+      let r = row_v.val.unwrap().placed_window_now()
+      let px = r.0 * sc
+      assert_true((px - px.round()).abs() < 1.0e-6, msg="scale \{sc} dx=\{step}: px=\{px}")
+      let kept1 = view_blocks.get(text_id.val.unwrap()).unwrap().kept.map(fn(k) { k.0 })
+      assert_eq(kept1, kept0, msg="scale \{sc} dx=\{step}: glyph phases changed mid-drag")
+      assert_eq(view_paint_work.made, made0, msg="scale \{sc} dx=\{step}: view block rebuilt mid-drag")
+      assert_true(ride_drawn.val >= rides0, msg="scale \{sc} dx=\{step}: ride_drawn regressed")
+    }
+    // Re-binding with plain View::offset clears offset_snap and restores exact fractional placement.
+    let raw = -12.37
+    row_v.val.unwrap().offset(Is((raw, 0.0))) |> ignore
+    t.draw()
+    let r_exact = row_v.val.unwrap().placed_window_now()
+    assert_true((r_exact.0 - raw).abs() < 1.0e-6, msg="scale \{sc}: expected exact \{raw}, got \{r_exact.0}")
+  }
+}

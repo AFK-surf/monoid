@@ -21,7 +21,7 @@ fn new_side_node(col : @view.View, src : Source, w : Workspace, key : String, ti
   .shrink(Is(0.0))
   .width(By(fn() { Some(if over() { 0.0 } else { at() }) }))
   .clips(By(fn() { !over() && at() < side_whole(src, col) }))
-  .offset(By(fn() { (pane_aside_at(src, col), 0.0) }))
+  .offset_snapped(By(fn() { (pane_aside_at(src, col), 0.0) }))
   |> ignore
   // (shown while open, and while it slides out as its tab was closed: side_leaving)
   col.show(at_once=true, fn() { open() || side_leaving(key) is Some(_) }, fn(p) {
@@ -29,7 +29,7 @@ fn new_side_node(col : @view.View, src : Source, w : Workspace, key : String, ti
     .grow(Is(1.0))
     .min_height(Is(Some(0.0)))
     .width(By(fn() { Some(side_whole(src, p)) }))
-    .offset(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
+    .offset_snapped(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
     .ground(By(fn() { if over() { 0L } else { @sf.theme().p.bg } }))
     |> ignore
     p.show(at_once=true, over, fn(bg) {

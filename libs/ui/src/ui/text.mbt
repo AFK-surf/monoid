@@ -2653,8 +2653,10 @@ fn layout_text(
       _ => ()
     }
   }
-  let brk = if wrap { s.breaks(text) } else { [] }
+  // Defer UAX #14 line_breaks until wrapping actually overflows a line (reusing cached s.brk if already populated),
+  // avoiding line-break analysis for every single-line or hard-newline-only `wrap=true` text block.
   let n = s.starts.length()
+  let mut brk : Array[Int] = if wrap && s.brk.length() == n { s.brk } else { [] }
   let xs = Array::make(n, 0.0)
   let line_of = Array::make(n, 0)
   let line_start = []
@@ -2708,15 +2710,26 @@ fn layout_text(
     if !hang_at.is_empty() && hang_at.contains(s.starts[i]) && x < max_w / 2.0 {
       hang = x
     }
-    if wrap && i > ls && brk[i] != 0 {
+    if wrap && i > ls && !brk.is_empty() && brk[i] != 0 {
       last_break = i
     }
     let a = s.adv[i]
     if wrap && x + a > max_w + 0.01 && i > ls && c != 32 {
-      let brk = if last_break > ls { last_break } else { i }
-      finish(ls, brk)
-      ls = brk
-      i = brk
+      if brk.is_empty() {
+        brk = s.breaks(text)
+        let mut j = i
+        while j > ls {
+          if brk[j] != 0 {
+            last_break = j
+            break
+          }
+          j = j - 1
+        }
+      }
+      let brk_at = if last_break > ls { last_break } else { i }
+      finish(ls, brk_at)
+      ls = brk_at
+      i = brk_at
       x = hang
       last_break = -1
       continue
