@@ -74,7 +74,9 @@ fn EditorState::look_shown(self : EditorState) -> (String, Array[(Int, Int, Int6
 /// what is being composed moved along by it, one it is within grown over it: as look_shown moves its colours. None
 /// of a secret.
 fn EditorState::sets_shown(self : EditorState) -> Array[WordsSet] {
-  guard self.sets is Some(f) && !self.secret else { return [] }
+  guard !field_sets.is_empty() && !self.secret else { return [] }
+  guard field_sets.search_by(fn(k) { physical_equal(k.0, self) }) is Some(at) else { return [] }
+  let f = field_sets[at].1
   let set = f(self.text)
   let ml = self.marked.length()
   if ml == 0 || set.is_empty() {
@@ -1232,8 +1234,6 @@ pub(all) struct FieldLaid {
   min_lines : Int
   max_lines : Int
   trim : Bool
-  /// the stretches of its words set otherwise than the rest (Field::sets): what they are measured with
-  set : Array[WordsSet]
 }
 
 ///|
@@ -1249,7 +1249,7 @@ pub fn Field::laid(
 ) -> FieldLaid {
   // (its line, where none is said, the theme's of the tree that holds it, followed: as its editor's is, built in it)
   let text_line = if line > 0.0 { 0.0 } else { tree_theme().text_line }
-  { words: self.composed_said(), font_size, line, text_line, min_lines, max_lines, trim, set: self.st.sets_shown() }
+  { words: self.composed_said(), font_size, line, text_line, min_lines, max_lines, trim }
 }
 
 ///|
@@ -1258,11 +1258,18 @@ pub fn Field::laid(
 /// wide as its words come to on their lines), in the system's size of words as it is now (what the tree's words are
 /// measured in too: Tree::words_again as it changes).
 pub fn FieldLaid::size(self : FieldLaid, w : Double?) -> (Double, Double) {
+  self.size_set(w, [])
+}
+
+///|
+/// FieldLaid::size of words with stretches of them set otherwise than the rest (`set`: Field::sets, as its field
+/// shows them now).
+fn FieldLaid::size_set(self : FieldLaid, w : Double?, set : Array[WordsSet]) -> (Double, Double) {
   let z = g().editor_sizing(self.font_size, self.line, self.max_lines, true, self.text_line)
   let (tw, th) = editor_words_laid(self.words, z.font_size, Node::new().weight, match w {
     Some(w) => w
     None => 1.0e9
-  }, z.wrap, z.line, self.trim, set=self.set)
+  }, z.wrap, z.line, self.trim, set~)
   (
     match w {
       Some(w) => w
@@ -1696,7 +1703,8 @@ fn Ctx::paint_field(
       let (x1, l1) = st.place_of(tl, s.to)
       let inset = dmax(0.0, (tl.line_h - fb.font_size * 1.35) / 2.0)
       for l in l0..=l1 {
-        let sx = if l == l0 { x0 } else { 0.0 }
+        // (a line after its first from where its words start: hung in where a mark leads the line)
+        let sx = if l == l0 { x0 } else if tl.line_end[l] > tl.line_start[l] { tl.xs[tl.line_start[l]] } else { 0.0 }
         let ex = if l == l1 { x1 } else { tl.line_w[l] }
         if ex > sx {
           self.emit_rect(st.ox + sx, st.oy + l.to_double() * tl.line_h + inset, ex - sx, tl.line_h - 2.0 * inset, 4.0, s.ground, 0.0, 0L, alpha)
@@ -1728,7 +1736,8 @@ fn Ctx::paint_field(
       let (x0, l0) = st.place_of(tl, s.from)
       let (x1, l1) = st.place_of(tl, s.to)
       for l in l0..=l1 {
-        let sx = if l == l0 { x0 } else { 0.0 }
+        // (a line after its first from where its words start: hung in where a mark leads the line)
+        let sx = if l == l0 { x0 } else if tl.line_end[l] > tl.line_start[l] { tl.xs[tl.line_start[l]] } else { 0.0 }
         let ex = if l == l1 { x1 } else { tl.line_w[l] }
         if ex > sx {
           let base = st.oy + l.to_double() * tl.line_h + tl.ascent
@@ -2056,7 +2065,6 @@ fn EditorState::fresh(text : String, now : Double) -> EditorState {
     words: false,
     look: None,
     looked: None,
-    sets: None,
     blink_again: false,
     undos: [],
     redos: [],
@@ -2134,7 +2142,23 @@ pub fn Field::new(text? : String = "") -> Field {
 /// same order, only how wide and in what face. What `set` reads (a signal) lays the field out again as it changes.
 /// Stretches in order and apart; none said, or none given of some words: all alike.
 pub fn Field::sets(self : Field, set : (String) -> Array[WordsSet]) -> Unit {
-  self.st.sets = Some(set)
+  match field_sets.search_by(fn(k) { physical_equal(k.0, self.st) }) {
+    Some(at) => field_sets[at] = (self.st, set)
+    None => field_sets.push((self.st, set))
+  }
+}
+
+///|
+/// The fields whose words are set in stretches (Field::sets), each with what says them: beside the fields, not in
+/// them (an editor's state as it is laid out in memory is what every unit that reads one was compiled with), and few
+/// (a composer's): looked up by which field it is.
+// kept across runs: put back as a run begins (fields_sets_forget, with the tree's fields)
+let field_sets : Array[(EditorState, (String) -> Array[WordsSet])] = []
+
+///|
+fn field_sets_forget() -> Unit {
+  field_sets.clear()
+  field_sets.shrink_to_fit()
 }
 
 ///|

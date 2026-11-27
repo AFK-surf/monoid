@@ -2169,9 +2169,6 @@ fn composer_field_node(
       None => ()
     }
   }
-  // (its words set as their message will be where they are marked, the marks kept and lighter: refs_sets_by)
-  let mark_ink_share = 0.55
-  w.field.sets(@sfbase.refs_sets_by(w.key, fn() { @sf.alpha(@sf.theme().p.subtle, mark_ink_share) }))
   let typed = @ui.field(
     words,
     w.field,

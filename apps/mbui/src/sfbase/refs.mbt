@@ -26,7 +26,7 @@ priv struct RefField {
   mut runs : Json
   mut runs_of : String
   /// how the core says its words are set as they are written (`ref.styles`: from, to, and what holds of them: 1 bold,
-  /// 2 slanted, 4 struck through, 8 code, 16 a mark itself, 32 a block of code), the words they are placed in (moved along with each edit
+  /// 2 slanted, 4 struck through, 8 code, 16 a mark itself, 32 a block of code, 64 the mark of a list's item), the words they are placed in (moved along with each edit
   /// till the core has read the words), and the words the core last read them in
   mut styles : Array[(Int, Int, Int)]
   mut styles_in : String
@@ -173,6 +173,8 @@ fn refs_marks_moved(f : RefField, was : String, now : String) -> Unit {
 fn refs_follow(src : Source, key : String, input : @ui.Field) -> Unit {
   let f = ref_field(key)
   f.input = Some(input)
+  // (its words set as their message will be where they are marked, the marks kept and lighter: refs_sets_by)
+  input.sets(refs_sets_by(key, fn() { @sf.alpha(@sf.theme().p.subtle, mark_ink_share) }))
   @signals.effect(fn() {
     let now = input.text()
     @signals.untracked(fn() {
@@ -222,6 +224,21 @@ pub fn refs_edited(src : Source, key : String, input : @ui.Field, here : String,
   // the marks the edit did not touch, where they are now
   refs_marks_moved(f, was, now)
   refs_styles_moved(f, was, now)
+  // a new line begun after what may be a list's item (its line begun, after blanks, with `-`, `*` or a digit): the
+  // core asked what follows (`ref.enter`: refLinks.ts itemAfter, the next item's mark, or the list ended), put in
+  // while the words are still as that edit left them
+  if put == start + 1 && took == start && anchor == caret && now.unsafe_get(start).to_int() == 10 && refs_line_may_be_item(now, start) {
+    (src.call)("ref.enter", { "text": Json::string(now), "caret": Json::number(put.to_double()) }, fn(r) {
+      match r {
+        Ok(v) if ref_words(f) == now =>
+          match field(Some(v), "put") {
+            Some(Object(_)) as p => refs_put(key, input, text(p, "text"), caret=number(p, "caret").to_int())
+            _ => ()
+          }
+        _ => ()
+      }
+    })
+  }
   // what was put in at once: the chats' links in it
   if put - start > 1 && !locked {
     let pasted = now.clamped_view(start=start, end=put).to_owned()
@@ -293,6 +310,23 @@ fn refs_ask_marks(src : Source, key : String, now : String) -> Unit {
 }
 
 ///|
+/// Whether the line of `words` that ends at `end` begins, after blanks, with what a list's item's mark begins with
+/// (`-`, `*`, a digit): not a reading of it (the core's: `ref.enter`), only whether to ask.
+fn refs_line_may_be_item(words : String, end : Int) -> Bool {
+  let mut at = end
+  while at > 0 && words.unsafe_get(at - 1).to_int() != 10 {
+    at -= 1
+  }
+  while at < end && words.unsafe_get(at).to_int() == 32 {
+    at += 1
+  }
+  guard at < end else { return false }
+  let c = words.unsafe_get(at).to_int()
+  // (`-`, `*`, a digit)
+  c == 45 || c == 42 || (c >= 48 && c <= 57)
+}
+
+///|
 /// How the words of `f` placed in `was` are set, once an edit of them leaves them as `now` (@ui.words_changed), till
 /// the core has read these: a stretch before the edit as it is, one after it moved with it, one the edit is in or
 /// touches grown or shrunk by it (what is written inside bold words is bold at once, not a frame later), gone where
@@ -338,7 +372,7 @@ fn refs_ask_styles(src : Source, key : String, now : String) -> Unit {
           (
             number(Some(s), "start").to_int(),
             number(Some(s), "end").to_int(),
-            has("b", 1) | has("i", 2) | has("s", 4) | has("code", 8) | has("mark", 16) | has("pre", 32),
+            has("b", 1) | has("i", 2) | has("s", 4) | has("code", 8) | has("mark", 16) | has("pre", 32) | has("li", 64),
           )
         })
         f.styles_in = now
@@ -348,6 +382,10 @@ fn refs_ask_styles(src : Source, key : String, now : String) -> Unit {
     }
   })
 }
+
+///|
+/// How much of the ink of words said lighter (the theme's `subtle`) a mark kept in the field has.
+let mark_ink_share : Double = 0.55
 
 ///|
 /// How draft `key`'s field sets its words as they are written (@ui.Field::sets): what the core read as marked in them
@@ -380,6 +418,7 @@ pub fn refs_sets_by(key : String, mark_ink : () -> Int64) -> (String) -> Array[@
         // (code in a line on code's ground, as its message's run is: @view.runs_plain's)
         ground: if (bits & 8) != 0 && (bits & 32) == 0 && (bits & 16) == 0 { @view.runs_plain.code_ground } else { 0L },
         strike: (bits & 4) != 0 && (bits & 16) == 0,
+        leads: (bits & 64) != 0,
       }
       one
     })
@@ -420,7 +459,26 @@ pub fn refs_look_by(key : String, accent : () -> Int64) -> (String) -> (String, 
   fn(s) {
     let f = ref_field(key)
     f.marks_of.get() |> ignore
-    if s != f.marks_in || f.marks.is_empty() {
+    // (a list's item's `-` or `*` drawn the bullet its message draws: one letter for one, the field's offsets hold)
+    f.styles_of.get() |> ignore
+    let raw = s
+    let s = if raw == f.styles_in && f.styles.any(fn(x) { (x.2 & 64) != 0 }) {
+      let sb = StringBuilder()
+      let mut done = 0
+      for x in f.styles {
+        let at = x.0
+        if (x.2 & 64) != 0 && at >= done && at < raw.length() && (raw.unsafe_get(at).to_int() == 45 || raw.unsafe_get(at).to_int() == 42) {
+          sb.write_string(raw.clamped_view(start=done, end=at).to_owned())
+          sb.write_char('\u{2022}')
+          done = at + 1
+        }
+      }
+      sb.write_string(raw.clamped_view(start=done).to_owned())
+      sb.to_string()
+    } else {
+      raw
+    }
+    if raw != f.marks_in || f.marks.is_empty() {
       return (s, [])
     }
     let ink = accent()

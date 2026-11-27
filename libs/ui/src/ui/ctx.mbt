@@ -270,8 +270,6 @@ struct EditorState {
   mut look : ((String) -> (String, Array[(Int, Int, Int64)]))?
   /// what `look` made of the words it was last given, worked out once a build (the words, what shows, the colours)
   mut looked : (String, String, Array[(Int, Int, Int64)])?
-  /// the stretches of its words set otherwise than the rest, as the app says of them (Field::sets): none, all alike
-  mut sets : ((String) -> Array[WordsSet])?
   /// the caret's blinking starts again (shown at once) the next time the editor is built: the app wrote what it holds
   /// (Field::new, set, take)
   mut blink_again : Bool

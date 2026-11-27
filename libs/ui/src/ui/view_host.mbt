@@ -626,6 +626,7 @@ fn view_forget() -> Unit {
   // (the first window's tree forgotten only as the first window's run is: a window beside it let go leaves it)
   if window_now.now == 0 {
     window_zero_tree.val = None
+    field_sets_forget()
   }
   let c = g()
   targets_forget()

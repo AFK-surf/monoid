@@ -24,6 +24,7 @@ pub using @text {
   code,
   strike,
   link,
+  leads,
 }
 
 ///|
@@ -542,6 +543,7 @@ fn rich_key(r : Rich) -> Int64 {
     h = mix(h, stable_hash(run.text))
     h = mix(h, run.weight.to_int64())
     h = mix(h, run.scale.reinterpret_as_int64())
+    h = mix(h, if run.leads() { 1L } else { 0L })
     h = mix(
       h,
       match run.face {
@@ -1202,6 +1204,15 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
     }
   }
 
+  // (where a run that leads its line ends, the rest of that line wrapped starts: the clusters such runs end before,
+  // and how far in the line being set hangs; none of them, nothing hangs)
+  let hang_at : Array[Int] = []
+  for k, run in r.runs {
+    if run.leads() && run_c1[k] > run_c0[k] {
+      hang_at.push(run_c1[k])
+    }
+  }
+  let mut hang = 0.0
   let mut ls = 0
   let mut i = 0
   let mut x = 0.0
@@ -1215,8 +1226,12 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
       ls = i + 1
       i = i + 1
       x = 0.0
+      hang = 0.0
       last_break = -1
       continue
+    }
+    if !hang_at.is_empty() && hang_at.contains(i) && x < max_w / 2.0 {
+      hang = x
     }
     if r.wrap && i > ls && brk[i] != 0 {
       last_break = i
@@ -1228,7 +1243,7 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
       finish(ls, b)
       ls = b
       i = b
-      x = 0.0
+      x = hang
       last_break = -1
       continue
     }

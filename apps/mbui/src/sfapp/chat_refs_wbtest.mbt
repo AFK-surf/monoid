@@ -260,6 +260,41 @@ test "words written with Markdown's marks are set in the field as their message 
 }
 
 ///|
+test "a list written in the field: its item's mark drawn the bullet its message has and leading its line; Enter after an item begins the next, Enter on an item with no words ends the list" {
+  let calls : Array[Made] = []
+  let t = fake_core(calls, platform=0)
+  t.tap_text("发消息")
+  t.type_text("- 一")
+  t.draw()
+  t.draw()
+  let sets = @sfbase.refs_sets_by("ws1/st1:s-c1", fn() { 0L })
+  assert_eq(sets("- 一").map(fn(s : @ui.WordsSet) { (s.from, s.to, s.leads) }), [(0, 2, true)])
+  // (the field holds what was written; what it draws has the bullet in the mark's place)
+  let look = @sfbase.refs_look_by("ws1/st1:s-c1", fn() { 0L })
+  assert_eq(look("- 一").0, "\u{2022} 一")
+  let (_, words, _, _) = t.ime()
+  assert_eq(words, "- 一")
+  // a new line after the item: the core asked, the next item's mark put in, the caret after it
+  t.type_text("\n")
+  t.draw()
+  t.draw()
+  assert_eq(named(calls, "ref.enter").length(), 1)
+  let (_, words, caret, _) = t.ime()
+  assert_eq((words, caret), ("- 一\n- ", 6))
+  // a new line on the item with no words: its mark and the break taken out
+  t.type_text("\n")
+  t.draw()
+  t.draw()
+  let (_, words, caret, _) = t.ime()
+  assert_eq((words, caret), ("- 一\n", 4))
+  // a new line after words that are no item asks nothing
+  t.type_text("好")
+  t.type_text("\n")
+  t.draw()
+  assert_eq(named(calls, "ref.enter").length(), 2)
+}
+
+///|
 test "the same words with a mark sent again are read again: their row draws the mark, not its brackets" {
   let calls : Array[Made] = []
   let t = fake_core(calls)

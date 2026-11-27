@@ -1,7 +1,7 @@
 // What is written, read as every client reads it, for a client that asks the core (`ref.at`, `ref.before`, `ref.marks`, `ref.words`,
-// `ref.styles`, `ref.pasted`, `paste.info`: the mbui app's composer; the web reads refLinks.ts and pasted.ts as they are) and a name
+// `ref.styles`, `ref.enter`, `ref.pasted`, `paste.info`: the mbui app's composer; the web reads refLinks.ts and pasted.ts as they are) and a name
 // typed for a file or folder (`drive.check`: every client's).
-import { draftStyles, draftWords, markBefore, marksIn, pastedRefs, refAt } from "./refLinks.ts";
+import { draftStyles, draftWords, itemAfter, markBefore, marksIn, pastedRefs, refAt } from "./refLinks.ts";
 import { PASTE_THRESHOLD, pasted } from "./pasted.ts";
 import { nameProblem } from "./drive.ts";
 
@@ -16,6 +16,7 @@ export function wordsAnswer(what: string, text: string, caret: number, here: str
     case "ref.marks": return { marks: marksIn(text) };
     case "ref.words": return { runs: draftWords(text) };
     case "ref.styles": return { styles: draftStyles(text) };
+    case "ref.enter": return { put: itemAfter(text, caret) };
     case "ref.pasted": return { refs: pastedRefs(text, here) };
     case "drive.check": return { problem: nameProblem(text) };
     default: return { ...pasted(text), threshold: PASTE_THRESHOLD };

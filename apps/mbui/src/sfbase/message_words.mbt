@@ -16,7 +16,8 @@ let ref_at_alpha : Double = 0.7
 /// here, its outbox row's, or before the core has it its `ref.words`: draftWords): a reference to a chat `@` a little
 /// lighter and its title in `accent` (one written bare reading as `chat_title` says; a composer's mark its title), a web
 /// address a link; each set as the core says they marked it (`b` bold, `i` slanted, `s` struck through, `code` code in
-/// its line, `pre` a block of code: the code face alone, its lines as written).
+/// its line, `pre` a block of code: the code face alone, its lines as written; `li` the mark of a list's item, the
+/// rest of its line wrapped to where it ends).
 pub fn words_runs(parts : Array[Json], accent : Int64, chat_title? : (String) -> String? = fn(_) { None }) -> Array[@ui.Run] {
   let out : Array[@ui.Run] = []
   for p in parts {
@@ -32,7 +33,7 @@ pub fn words_runs(parts : Array[Json], accent : Int64, chat_title? : (String) ->
         out.push(@ui.span("@", link~, color=@sf.alpha(accent, ref_at_alpha), bold~, italic~, strike~))
         out.push(@ui.span(title, link~, color=accent, bold~, italic~, strike~))
       }
-      _ => out.push(@ui.span(words, link~, bold~, italic~, strike~, code=set("code"), mono=set("pre")))
+      _ => out.push(@ui.span(words, link~, bold~, italic~, strike~, code=set("code"), mono=set("pre"), ground=if set("li") { Some(@ui.leads) } else { None }))
     }
   }
   out

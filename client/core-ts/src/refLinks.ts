@@ -219,8 +219,9 @@ export function pastedRefs(pasted: string, here: string): { start: number; end: 
 /// reference to a chat (`ref`: its title is `text` where they wrote one, `[title](its page)`; a chat's page written bare
 /// is one too, `text` its address, the message's `chats` saying its title). How it is set where they marked it as
 /// Markdown marks it (personMarks below), its marks not in `text`: bold `b`, slanted `i`, struck through `s`, code in a
-/// line `code`, a fenced block of code `pre`.
-export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo; b?: true; i?: true; s?: true; code?: true; pre?: true };
+/// line `code`, a fenced block of code `pre`; the mark of a list's item `li` (a bullet, or its number as written:
+/// the rest of its line, wrapped, starts where the mark ends).
+export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo; b?: true; i?: true; s?: true; code?: true; pre?: true; li?: true };
 
 /// What a person wrote, in runs (WordsRun): references to chats, and web addresses written bare (bareLinks.ts). The one
 /// reading the clients draw a person's words by (what is not a message yet: draftWords).
@@ -253,16 +254,17 @@ const wordsKept = new Map<string, WordsRun[]>();
 const FENCE = /(?<=^|\n) {0,3}```[^`\n]*\n([\s\S]*?)\n {0,3}```[ \t]*(?=\n|$)/g;
 /// Code in a line: between as many backticks either side, none of that many inside.
 const CODE = /(?<!`)(`+)(?!`)([^\n]*?[^`\n])\1(?!`)/g;
-/// A list's item: its mark at the start of a line, words after it.
-const ITEM = /^( *)[-*] (?=\S)/gm;
+/// A list's item: its mark at the start of a line (`-`, `*`, or a number and `.` or `)`), a space, words after it.
+const ITEM = /^( *)([-*]|\d{1,9}[.)]) (?=\S)/gm;
 
 /// A run and where it stands in what is written: from `at`, `len` long there (its marks with it).
 type Placed = { run: WordsRun; at: number; len: number };
 
 /// How a stretch of what is being written is set in the field it is written in (draftStyles), from `start` to `end`
 /// of it: as its message's run will be (`b`, `i`, `s`; `code`: code's face, `pre` too in a block), or a mark itself
-/// (`mark`: `**`, a backtick, a fence's line), which stays in the field, drawn lighter.
-export type WordsStyle = { start: number; end: number; b?: true; i?: true; s?: true; code?: true; pre?: true; mark?: true };
+/// (`mark`: `**`, a backtick, a fence's line), which stays in the field, drawn lighter; or the mark of a list's item
+/// (`li`: `- `, `1. `), drawn as its message draws it, the rest of its line wrapped to where it ends.
+export type WordsStyle = { start: number; end: number; b?: true; i?: true; s?: true; code?: true; pre?: true; mark?: true; li?: true };
 
 /// `text` cut by `pattern` (splitBy), each part with where it starts, `base` on.
 function cut(text: string, base: number, pattern: RegExp): { at: number; part: string | RegExpExecArray }[] {
@@ -309,7 +311,7 @@ function read(text: string, marks: boolean): { runs: WordsRun[]; set: WordsStyle
       else placed.push({ run: { text: each[1]!, ref: true }, at, len: each[0].length });
     }
   };
-  if (!/[*_~`]/.test(text) && !/^ *- \S/m.test(text)) {
+  if (!/[*_~`]/.test(text) && !/^ *(?:-|\d{1,9}[.)]) \S/m.test(text)) {
     referring(text, 0);
     return { runs: placed.map((p) => p.run), set };
   }
@@ -324,9 +326,22 @@ function read(text: string, marks: boolean): { runs: WordsRun[]; set: WordsStyle
       placed.push({ run: { text: code, pre: true }, at, len: all });
       continue;
     }
-    for (const { at: from, part } of cut(block.replace(ITEM, "$1• "), at, CODE)) {
+    // (its items' marks, where each stands: runs of their own, a bullet for `-` and `*`, a number as written)
+    const items = [...block.matchAll(ITEM)].map((m) => ({ from: at + m.index + m[1]!.length, to: at + m.index + m[0].length, mark: m[2]! }));
+    const itemized = (part: string, base: number) => {
+      let done = 0;
+      for (const item of items) {
+        if (item.from < base + done || item.to > base + part.length) continue;
+        referring(part.slice(done, item.from - base), base + done);
+        placed.push({ run: { text: /\d/.test(item.mark) ? `${item.mark} ` : "• ", li: true }, at: item.from, len: item.to - item.from });
+        set.push({ start: item.from, end: item.to, li: true });
+        done = item.to - base;
+      }
+      referring(part.slice(done), base + done);
+    };
+    for (const { at: from, part } of cut(block, at, CODE)) {
       if (typeof part === "string") {
-        referring(part, from);
+        itemized(part, from);
         continue;
       }
       const ticks = part[1]!.length;
@@ -380,15 +395,16 @@ function emphasized(placed: Placed[], set: WordsStyle[]): WordsRun[] {
   };
   for (let r = 0; r < placed.length; r++) {
     const { run, at: base } = placed[r]!;
-    if (run.link !== undefined || run.ref || run.code || run.pre) {
+    if (run.link !== undefined || run.ref || run.code || run.pre || run.li) {
       if (run.text.includes("\n") || run.pre) open = [];
       if (!(run.pre && run.text === "")) pieces.push({ text: run.text, at: base, run });
       continue;
     }
     const text = run.text;
     // (what stands before its first letter and after its last: another run's words, a letter to these marks)
-    const before = r > 0 ? "a" : "";
-    const after = r + 1 < placed.length ? "a" : "";
+    // (an item's mark ends in its space)
+    const before = r > 0 ? (placed[r - 1]!.run.li ? " " : "a") : "";
+    const after = r + 1 < placed.length ? (placed[r + 1]!.run.li ? " " : "a") : "";
     let at = 0;
     let words = 0;
     const said = (end: number) => {
@@ -451,10 +467,24 @@ function emphasized(placed: Placed[], set: WordsStyle[]): WordsRun[] {
     if (p.gone) continue;
     const set: { b?: true; i?: true; s?: true } = { ...(on.b > 0 ? { b: true as const } : {}), ...(on.i > 0 ? { i: true as const } : {}), ...(on.s > 0 ? { s: true as const } : {}) };
     const last = out[out.length - 1];
-    if (!p.run && last && last.link === undefined && !last.ref && !last.code && !last.pre && !last.b === !set.b && !last.i === !set.i && !last.s === !set.s) last.text += p.text;
-    else out.push(p.run ? (p.run.pre ? p.run : { ...p.run, ...set }) : { text: p.text, ...set });
+    if (!p.run && last && last.link === undefined && !last.ref && !last.code && !last.pre && !last.li && !last.b === !set.b && !last.i === !set.i && !last.s === !set.s) last.text += p.text;
+    else out.push(p.run ? (p.run.pre || p.run.li ? p.run : { ...p.run, ...set }) : { text: p.text, ...set });
   }
   return out;
+}
+
+/// A new line begun at `caret` of what is being written (the line break just before it), after a list's item: what is
+/// written with the next item's mark put in after the break (a number one more), the caret after it; after an item
+/// with no words, its mark and the break taken out instead (the list ended, the caret on the line left empty). Null
+/// where the line before is no item.
+export function itemAfter(text: string, caret: number): { text: string; caret: number } | null {
+  if (caret < 1 || text[caret - 1] !== "\n") return null;
+  const start = text.lastIndexOf("\n", caret - 2) + 1;
+  const m = /^( *)(?:([-*])|(\d{1,9})([.)])) (.*)$/.exec(text.slice(start, caret - 1));
+  if (!m) return null;
+  if (m[5]!.trim() === "") return { text: text.slice(0, start) + text.slice(caret), caret: start };
+  const mark = `${m[1]}${m[2] ?? `${Number(m[3]) + 1}${m[4]}`} `;
+  return { text: text.slice(0, caret) + mark + text.slice(caret), caret: caret + mark.length };
 }
 
 /// How the field what is being written is in sets it (WordsStyle), its marks kept and drawn lighter, what they mark
@@ -471,7 +501,7 @@ export function draftStyles(text: string): WordsStyle[] {
     for (const s of set) if (s.start <= start && end <= s.end && s.end > s.start) Object.assign(here, s, { start, end });
     if (Object.keys(here).length === 2) continue;
     const last = out[out.length - 1];
-    if (last && last.end === start && !last.b === !here.b && !last.i === !here.i && !last.s === !here.s && !last.code === !here.code && !last.pre === !here.pre && !last.mark === !here.mark) last.end = end;
+    if (last && last.end === start && !last.b === !here.b && !last.i === !here.i && !last.s === !here.s && !last.code === !here.code && !last.pre === !here.pre && !last.mark === !here.mark && !last.li && !here.li) last.end = end;
     else out.push(here);
   }
   return out;

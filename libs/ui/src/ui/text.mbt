@@ -2475,7 +2475,8 @@ fn one_line(texts : Array[String]) -> Array[String]? {
 /// A stretch of a field's words set otherwise than the rest of them (Field::sets): from `from` to `to` of what it
 /// shows (UTF-16 offsets), in `weight` (0: the field's), with `style` added to the field's (@hostapi.style_italic,
 /// style_mono), in `color` (0: the field's), on a ground of their own behind them (`ground`; 0: none), a line through
-/// them (`strike`).
+/// them (`strike`); or leading their line (`leads`: the mark of a list's item), the rest of that line, wrapped,
+/// starting where they end.
 #derive(Eq, Debug)
 pub(all) struct WordsSet {
   from : Int
@@ -2485,6 +2486,7 @@ pub(all) struct WordsSet {
   color : Int64
   ground : Int64
   strike : Bool
+  leads : Bool
 }
 
 ///|
@@ -2537,8 +2539,14 @@ fn shape_set(text : String, size : Double, weight : Int, style : Int, set : Arra
     pieces.push((a, b, if s.weight == 0 { weight } else { s.weight }, style | s.style))
     at = b
   }
+  // (all in the field's font: shaped as it is, unless a stretch leads its line: then a shape of this text's and
+  // these stretches' own, whose layout kept on it is no other text's)
   if pieces.is_empty() {
-    return shape(text, size, weight, style~)
+    if !set.any(fn(s) { s.leads }) {
+      return shape(text, size, weight, style~)
+    }
+    pieces.push((0, n, weight, style))
+    at = n
   }
   if at < n {
     pieces.push((at, n, weight, style))
@@ -2652,6 +2660,15 @@ fn layout_text(
   let line_start = []
   let line_end = []
   let line_w = []
+  // (where a stretch that leads its line ends, the rest of that line wrapped starts: how far in the line being set
+  // hangs; no such stretch, nothing hangs)
+  let hang_at : Array[Int] = []
+  for st in set {
+    if st.leads {
+      hang_at.push(st.to)
+    }
+  }
+  let mut hang = 0.0
   let mut ls = 0
   let mut i = 0
   // the first line may start indented
@@ -2684,8 +2701,12 @@ fn layout_text(
       ls = i + 1
       i = i + 1
       x = 0.0
+      hang = 0.0
       last_break = -1
       continue
+    }
+    if !hang_at.is_empty() && hang_at.contains(s.starts[i]) && x < max_w / 2.0 {
+      hang = x
     }
     if wrap && i > ls && brk[i] != 0 {
       last_break = i
@@ -2696,7 +2717,7 @@ fn layout_text(
       finish(ls, brk)
       ls = brk
       i = brk
-      x = 0.0
+      x = hang
       last_break = -1
       continue
     }
