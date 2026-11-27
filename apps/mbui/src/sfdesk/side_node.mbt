@@ -164,11 +164,12 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 /// open end's all the way (list_brand, list_band), so their rows are not laid out again at each frame; else where the
 /// block's move has got, as the band itself is drawn.
 fn side_band_at(a : SideAt, held : Bool) -> BandAt {
+  let band = if held { a.list_band } else { a.band }
   {
     brand: if held { a.list_brand } else { a.brand },
-    band: if held { a.list_band } else { a.band },
+    band,
     tape: a.tape,
-    in_bar: a.bar,
+    in_bar: !a.tape && band >= 0.5,
     roots: @ui.tree_corner_roots_now(),
   }
 }
@@ -311,10 +312,7 @@ fn lists_band_node(
   ground? : () -> Int64,
 ) -> Unit {
   let list_at = side_list_at(@signals.untracked(at))
-  let band_at = fn() {
-    let a = at()
-    ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
-  }
+  let band_at = fn() { side_band_at(at(), false) }
   let view = fn() {
     match workspace() {
       Some(w) => chats_of(src, w.id, "all").0
@@ -322,18 +320,17 @@ fn lists_band_node(
     }
   }
   o.box(fn(band) {
-    // Pure progressive variable-blur scroll-edge over the lists (solid fallback keeps the sidebar's mixed ground).
+    // Pure progressive variable-blur scroll-edge over the lists (solid fallback keeps the block's mixed ground).
     let band_bg = fn() {
       let a = at()
-      let bg = if a.tape {
+      if a.tape {
         match ground {
           Some(g) => g()
           None => a.ground
         }
       } else {
-        apart_ground()
+        a.ground
       }
-      @sf.mix(bg, a.band, @sf.theme().p.sidebar)
     }
     band.adaptive_ink(Is(true)).fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
     // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
@@ -746,15 +743,14 @@ fn remote_band_node(o : @view.View, at : () -> SideAt, ground? : () -> Int64) ->
   o.box(fn(band) {
     let band_bg = fn() {
       let a = at()
-      let bg = if a.tape {
+      if a.tape {
         match ground {
           Some(g) => g()
           None => a.ground
         }
       } else {
-        apart_ground()
+        a.ground
       }
-      @sf.mix(bg, a.band, @sf.theme().p.sidebar)
     }
     band.fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
     band.box(fn(scrim) {

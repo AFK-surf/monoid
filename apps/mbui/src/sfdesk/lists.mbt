@@ -64,7 +64,7 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
       .height_share(Is(1.0))
       |> ignore
       @signals.untracked(fn() { scrim.pointed() }) |> ignore
-      @sf.scroll_edge_fill_decorate(scrim, fn() { @sf.mix(apart_ground(), at().band, @sf.theme().p.sidebar) }) |> ignore
+      @sf.scroll_edge_fill_decorate(scrim, fn() { at().ground }) |> ignore
     })
     |> ignore
     band.show(at_once=true, fn() { trouble() is Some(_) }, fn(k) {

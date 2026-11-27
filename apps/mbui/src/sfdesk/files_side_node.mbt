@@ -10,10 +10,7 @@
 fn files_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   let list_at = side_list_at(@signals.untracked(at))
-  let band_at = fn() {
-    let a = at()
-    ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
-  }
+  let band_at = fn() { side_band_at(at(), false) }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
   s
   .grow(Is(1.0))

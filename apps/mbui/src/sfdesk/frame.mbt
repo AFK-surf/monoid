@@ -431,6 +431,7 @@ fn dock_side_at(
   {
     box: (inside + rail, top + f.mt, f.side_w, dock_h),
     laid_w: f.side_w,
+    rail_w: rail,
     block: (inside, top + f.mt, dock_w, dock_h),
     // (on the tape, open, a panel of its own: the ground it floats on; else where the move has its ground)
     ground: if wide.tape.get() && !bar { dock_ground(bar) } else { f.ground },
@@ -537,10 +538,7 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit, gro
       // reach past it under the sidebar (nothing of it cut there)
       g.box(fn(r) {
         r
-        .width(By(fn() {
-          let a = at()
-          Some(a.box.0 - a.block.0)
-        }))
+        .width(By(fn() { Some(at().rail_w) }))
         .height(By(fn() { Some(at().block.3) }))
         .shrink(Is(0.0))
         |> ignore
@@ -571,7 +569,8 @@ fn dock_round_node(v : @view.View, at : () -> SideAt) -> Unit {
 let dock_line : Double = 1.0
 
 ///|
-/// Where the block lays its sidebar out (dock_side_at): its box (x, y, w, h) in what holds the block, the block's own
+/// Where the block lays its sidebar out (dock_side_at): its box (x, y, w, h) in what holds the block (pinned in window
+/// coordinates while folding/unfolding, so `box.0` is decoupled from `block.0 + rail_w`), the block's own
 /// (x, y, w, h), its corners (linked as its look's are, else one radius: dock_round_node) and its line (how wide, its
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
 /// move has got), where that move has got between open and the floating bar (the band's), whether the
@@ -583,6 +582,9 @@ priv struct SideAt {
   /// (pane_side_at's), as wide as where it is shown all the way, `box` only cutting and placing it, so its rows are not
   /// laid out and their words not measured again at each frame the block folds to its bar or opens from it
   laid_w : Double
+  /// how wide the rail is drawn in the block (dock_node's rail column, decoupled from `box.0` while `box` is pinned
+  /// during a fold/unfold transition)
+  rail_w : Double
   block : (Double, Double, Double, Double)
   ground : Int64
   shadow : (Double, Double, Int64)

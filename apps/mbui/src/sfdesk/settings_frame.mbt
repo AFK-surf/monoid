@@ -94,10 +94,7 @@ fn settings_reset() -> Unit {
 fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   let list_at = side_list_at(@signals.untracked(at))
-  let band_at = fn() {
-    let a = at()
-    ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
-  }
+  let band_at = fn() { side_band_at(at(), false) }
   let lit = fn() {
     match app.nav.top() {
       Setting(r) => Some(r)

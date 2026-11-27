@@ -375,6 +375,9 @@ priv struct FoldGoes {
   /// sidebar layout width held from a mid-fold press down until a drag starts or the press ends, so a press or light
   /// tap to fold mid-transition does not snap inner sidebar content narrower before folding
   mut press_laid_w : Double?
+  /// the last fully-shown look (`showing >= 0.99`) across a collapse/unfold/reversal so the sidebar's box, top spacer
+  /// and band stay pinned in window coordinates behind the animating dock clip instead of drifting or re-snapping
+  mut shown_look : FoldLook?
 }
 
 ///|
@@ -396,6 +399,7 @@ let fold_goes : FoldGoes = {
   ready: fn(_) { true },
   most: 0.0,
   press_laid_w: None,
+  shown_look: None,
 }
 
 ///|
@@ -413,6 +417,7 @@ fn fold_goes_reset() -> Unit {
   fold_goes.made.clear()
   fold_goes.shown = []
   fold_goes.press_laid_w = None
+  fold_goes.shown_look = None
 }
 
 ///|
@@ -498,6 +503,18 @@ fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
     }
     None => 0.0
   }
+  if to.showing >= 0.99 {
+    fold_goes.shown_look = Some(to)
+  } else if from.showing >= 0.99 {
+    fold_goes.shown_look = match old_move {
+      // Interrupting a same-band Open <-> Open resize, or reversing in the final 1% of Folded -> Open:
+      // keep the already-laid-out target `b` instead of pinning fractional mid-flight coordinates.
+      Some((a, b, _)) if b.showing >= 0.99 && (a.showing < 0.99 || a.band == b.band) => Some(b)
+      _ => Some(from)
+    }
+  } else if fold_goes.shown_look is None {
+    fold_goes.shown_look = Some(from)
+  }
   fold_goes.from = Some(from)
   fold_goes.to = Some(to)
   fold_goes.way.put(0.0)
@@ -522,11 +539,22 @@ fn fold_put(to : FoldLook, at : Double) -> Unit {
   // an expanded-width resize, settle the way immediately so direct manipulation tracks the pointer with zero jump or
   // drift; while showing is crossing 0, keep the fold move running smoothly and only update its target)
   if fold_goes.way.goes_at(at) && (!wide.edge_held.get() || fold_showing_toggling(at)) {
+    let cur_mid = match (fold_goes.from, fold_goes.to) {
+      (Some(a), Some(was)) if a.showing >= 0.99 && was.showing >= 0.99 && to.showing < 0.99 && a.band != was.band =>
+        Some(fold_along(at, to))
+      _ => None
+    }
     fold_goes.to = Some(to)
+    if to.showing >= 0.99 {
+      fold_goes.shown_look = Some(to)
+    } else if cur_mid is Some(mid) {
+      fold_goes.shown_look = Some(mid)
+    }
   } else {
     fold_goes.way.put(1.0)
     fold_goes.from = Some(to)
     fold_goes.to = Some(to)
+    fold_goes.shown_look = if to.showing >= 0.99 { Some(to) } else { None }
   }
   fold_glass_goes(to, at)
   fold_said()
@@ -582,6 +610,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   fold_goes.was = None
   fold_goes.shift = 0.0
   fold_goes.press_laid_w = None
+  fold_goes.shown_look = None
   fold_goes.way.put(1.0)
   fold_goes.glass.put(0.0)
   let side_at_c = @signals.computed(fn(_) { pane_side_at(src, v) })
@@ -602,6 +631,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     fold_goes.was = None
     fold_goes.left_tape = None
     fold_goes.press_laid_w = None
+    fold_goes.shown_look = None
   })
   |> ignore
   // what the page's pane shows as the page on top changes, at its cause's moment (page_wait.mbt)
@@ -779,9 +809,41 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       let glass = fold_goes.glass.value_at(t)
       let f = { ..fold_along(t, now), glass: glass }
       let top = if side_full_height(r.bar) { 0.0 } else { r.top }
-      // (what it holds laid out at its target width while a fold or same-band expanded width switch animates, drawn cut
-      // and placed where the move has got: not laid out and its words measured again at each frame of it, nothing of it
-      // seen to move but its edge; open <-> floating changes band 0 <-> 1 and must interpolate smoothly with `f`)
+      let d = dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t))))
+      // (what the sidebar holds shows as its glass does while that comes or goes, folded: never on no ground)
+      // (only as the drawer comes from or goes back to the folded rail: between open and shown a while it shows whole)
+      let at_rail = match (fold_goes.from, fold_goes.to) {
+        (Some(a), Some(b)) => a.showing <= 0.0 || b.showing <= 0.0
+        _ => false
+      }
+      let seen = if r.bar && at_rail && (glass > 0.0 || fold_goes.glass.goes_at(t)) { glass } else { 1.0 }
+      // While collapsing, unfolding or reversing mid-fold (`showing` crossing 0), pin the sidebar's box, layout width,
+      // top spacer (`brand`) and band insets to the fully-shown endpoint (`shown_look`) while the dock clip (`block`)
+      // reveals/hides it. Otherwise `cut.offset.y` (`f.mt`) and `side_top_node` (`f.brand`) trade height across two
+      // separate rounding steps (`Tree::rows_placed` vs `each_drawn_in_order`), and `box.0` drifts through fractional X
+      // when `rail_extra != 0`, causing ±1px vertical jumping and every-frame glyph re-phasing.
+      // (`press_laid_w` is only set while `showing >= 0.99` on same-band resizes, mutually exclusive with toggling.)
+      if fold_showing_toggling(t) && fold_goes.press_laid_w is None {
+        if fold_goes.shown_look is Some(h) {
+          let h_bar = h.band >= 0.5
+          let h_top = if side_full_height(h_bar) { 0.0 } else { r.top }
+          let (_, h_dock_h) = dock_size(h_bar, h, h.col, h_top, r.foot, wh)
+          let h_rail = if @sf.native_on() { 0.0 } else { h.rail_w }
+          let h_box = (h.x + h.ml + h_rail, h_top + h.mt, h.side_w, h_dock_h)
+          return {
+            ..d,
+            box: h_box,
+            laid_w: h.side_w,
+            brand: h.brand,
+            band: h.band,
+            list_brand: h.brand,
+            list_band: h.band,
+            seen,
+          }
+        }
+      }
+      // (what it holds laid out at its target width while a same-band expanded width switch animates, drawn cut and
+      // placed where the move has got; open <-> floating changes band 0 <-> 1 and interpolates smoothly with `f`)
       let laid_w = match fold_goes.press_laid_w {
         Some(lw) => lw
         None =>
@@ -794,25 +856,13 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
           }
       }
       let (list_brand, _, list_band) = fold_held_at(t, f)
-      // (what the sidebar holds shows as its glass does while that comes or goes, folded: never on no ground)
-      // (only as the drawer comes from or goes back to the folded rail: between open and shown a while it shows whole)
-      let at_rail = match (fold_goes.from, fold_goes.to) {
-        (Some(a), Some(b)) => a.showing <= 0.0 || b.showing <= 0.0
-        _ => false
-      }
-      let seen = if r.bar && at_rail && (glass > 0.0 || fold_goes.glass.goes_at(t)) { glass } else { 1.0 }
-      {
-        ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))),
-        laid_w,
-        list_brand,
-        list_band,
-        seen,
-      }
+      { ..d, laid_w, list_brand, list_band, seen }
     }
     None =>
       {
         box: (0.0, 0.0, 0.0, 0.0),
         laid_w: 0.0,
+        rail_w: 0.0,
         block: (0.0, 0.0, 0.0, 0.0),
         ground: 0L,
         shadow: (0.0, 0.0, 0L),

@@ -61,10 +61,12 @@ fn update_band(at? : BandAt = band_at_old()) -> @ui.Style {
 /// it and band_row_h in height. Make up the difference below so the groups do not jump when the update appears.
 fn update_back_band(at? : BandAt = band_at_old()) -> @ui.Style {
   let band = update_band(at~).then(settings_back_band)
-  if at.in_bar || at.tape {
+  if at.tape {
     band
   } else {
-    let bottom = @sf.room_of(update_back_room + @sf.row_least() - @sf.band_row_h())
+    let open_pb = update_back_room + @sf.row_least() - @sf.band_row_h()
+    let bar_pb = @ui.Space::S2_5.px()
+    let bottom = @sf.room_of(band_between(open_pb, bar_pb, at~))
     band.then(@ui.style(pb=bottom))
   }
 }

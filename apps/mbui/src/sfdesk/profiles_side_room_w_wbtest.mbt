@@ -36,6 +36,7 @@ fn test_side_at(laid_w : Double, tape : Bool) -> SideAt {
   {
     box: (0.0, 0.0, laid_w, 600.0),
     laid_w,
+    rail_w: 0.0,
     block: (0.0, 0.0, laid_w, 600.0),
     ground: 0L,
     shadow: (0.0, 0.0, 0L),
