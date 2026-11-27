@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 133.73 |
 | [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
 | [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [fd3ebabc5](https://github.com/AFK-surf/monoid/commit/fd3ebabc587450382c37abfbd790c18432779085) fix(mbui): put the desktop sign-in page in the mid | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
-| [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.93 | 135.89 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b29538437](https://github.com/AFK-surf/monoid/commit/b29538437809b6fc38e2627854de6b368cbed3e1) fix(station): keep heap watch failures from crashi | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [393e388aa](https://github.com/AFK-surf/monoid/commit/393e388aa729496674e510fa5d27634c8ad3130e) fix(ui): keep a sidebar row lit while the pointer  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.64 |
 | [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
 | [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 58.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [10685d264](https://github.com/AFK-surf/monoid/commit/10685d2642b2298e74133c1c784bc0eed5b3a50e) feat(core,mbui): add repair and update shortcuts t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.67 |
 | [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.44 |
 | [fd3ebabc5](https://github.com/AFK-surf/monoid/commit/fd3ebabc587450382c37abfbd790c18432779085) fix(mbui): put the desktop sign-in page in the mid | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.92 |
-| [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.8 |
