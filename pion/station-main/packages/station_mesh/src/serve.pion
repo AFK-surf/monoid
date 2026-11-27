@@ -264,3 +264,106 @@ pub fn ServeEndpoint::close_connection(
   self.remotes.remove(conn_id)
   self.accept.on_served(conn_id)
 }
+
+// ── Waiting moved-lock refusal & admission recovery (`station/src/mesh/serve.ts` #9067) ──
+
+/// Exact `NOT_GIVEN` waiting refusal message (`station/src/cloud/state.ts`).
+pub let NOT_GIVEN_WAITING : String = "this station has not yet been given this workspace's settings by a trusted device: connect from a device of the workspace's owner, or wait for another of its stations to bring them"
+
+pub enum RefusalKind {
+  LockRefusal(String)
+  CredentialError(String)
+}
+
+/// Build a member door `Refusal` (1:1 with `refusalOf` + `admission` catch in `station/src/mesh/serve.ts`).
+/// Waiting moved-lock refusals (`NOT_GIVEN_WAITING` / `NOT_GIVEN`) return `{ error, code: "lock_station", why: "waiting" }`
+/// with close reason `"lock_station"` and ZERO lock metadata (`lock`, `person`, `entries`, `left`, `out`).
+pub fn refusal_of_lock(
+  kind : RefusalKind,
+  extra_fields : Array[(String, base_codec::Json)] = [],
+) -> mesh_door::Refusal {
+  match kind {
+    RefusalKind::LockRefusal(msg) => {
+      if msg == NOT_GIVEN_WAITING || msg == NOT_GIVEN {
+        let line = base_codec::json_obj([
+          ("error", base_codec::json_str(msg)),
+          ("code", base_codec::json_str("lock_station")),
+          ("why", base_codec::json_str("waiting")),
+        ])
+        return mesh_door::Refusal::{
+          line: line,
+          code: 1,
+          reason: "lock_station",
+          error: msg,
+        }
+      }
+      let fields : Array[(String, base_codec::Json)] = [("error", base_codec::json_str(msg))]
+      let mut is_lock_station = false
+      for i in 0..<extra_fields.length() {
+        let (k, v) = extra_fields[i]
+        if k == "code" {
+          match v {
+            base_codec::Json::Str(s) => if s == "lock_station" { is_lock_station = true }
+            _ => ()
+          }
+        }
+        fields.push((k, v))
+      }
+      mesh_door::Refusal::{
+        line: base_codec::json_obj(fields),
+        code: 1,
+        reason: if is_lock_station { "lock_station" } else { "lock_unconfirmed" },
+        error: msg,
+      }
+    }
+    RefusalKind::CredentialError(msg) => {
+      mesh_door::Refusal::{
+        line: base_codec::json_obj([("error", base_codec::json_str(msg))]),
+        code: 1,
+        reason: "credential_refused",
+        error: msg,
+      }
+    }
+  }
+}
+
+/// Member admission with moved-lock waiting recovery (1:1 with `admission.check` in `station/src/mesh/serve.ts`).
+/// When the workspace is in `waiting` state:
+/// 1. Verifies the credential against `grant_keys` (which uses `roster_of`, i.e. pinned chain `cloud_keys`).
+/// 2. Runs `bring_for_state(hello, workspace)` to let an authenticated hello bring missing root/bodies out of `waiting`.
+/// 3. If the station exits `waiting`, re-verifies the credential against live `grant_keys` and `full_memberships`
+///    BEFORE invoking `on_verified`, `on_seen_device`, or `in_lock_bringing`, so rotated `cloud_keys` or joined
+///    workspaces resolving to `off` (`leftOut == "home"`) leak zero lock metadata and never admit.
+/// 4. While still `waiting`, enforces the `NOT_GIVEN` waiting refusal directly (`lock_station`, `why: "waiting"`,
+///    zero lock metadata) without calling `on_verified`, `on_seen_device`, or delegating to `in_lock_bringing`.
+pub fn admit_member_with_waiting_recovery(
+  hello : base_codec::Json,
+  verify_cred : (base_codec::Json) -> Result[MemberSession, (RefusalKind, Array[(String, base_codec::Json)])],
+  is_waiting : (String) -> Bool,
+  bring_for_state : (base_codec::Json, String) -> Bool,
+  on_verified : (String) -> Unit,
+  on_seen_device : (MemberSession) -> Unit,
+  in_lock_bringing : (MemberSession, base_codec::Json) -> Result[(MemberSession, base_codec::Json), (RefusalKind, Array[(String, base_codec::Json)])],
+) -> Result[(MemberSession, base_codec::Json), mesh_door::Refusal] {
+  let mut sess = match verify_cred(hello) {
+    Ok(s) => s
+    Err((kind, extras)) => return Err(refusal_of_lock(kind, extra_fields=extras))
+  }
+  if is_waiting(sess.workspace) {
+    if bring_for_state(hello, sess.workspace) && !is_waiting(sess.workspace) {
+      sess = match verify_cred(hello) {
+        Ok(s) => s
+        Err((kind, extras)) => return Err(refusal_of_lock(kind, extra_fields=extras))
+      }
+    }
+  }
+  if is_waiting(sess.workspace) {
+    return Err(refusal_of_lock(RefusalKind::LockRefusal(NOT_GIVEN_WAITING)))
+  }
+  on_verified(sess.user_sub)
+  on_seen_device(sess)
+  match in_lock_bringing(sess, hello) {
+    Ok(res) => Ok(res)
+    Err((kind, extras)) => Err(refusal_of_lock(kind, extra_fields=extras))
+  }
+}

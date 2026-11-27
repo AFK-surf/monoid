@@ -729,3 +729,343 @@ test "ways validate_relay_url strictly validates IPv6 literals" {
   assert(validate_relay_url("https://[2001:db8::1]:8443/Relay") is Some(_))
   assert(validate_relay_url("https://[::1]/Relay") is Some(_))
 }
+
+// ── #9048: concurrent relay RTT ranking (`RelayRanker`) ──
+
+fn opt_str_is(opt : Option[String], want : String) -> Bool {
+  match opt {
+    Some(s) => s == want
+    None => false
+  }
+}
+
+fn opt_bool_is(opt : Option[Bool], want : Bool) -> Bool {
+  match opt {
+    Some(b) => b == want
+    None => false
+  }
+}
+
+fn opt_ping_is(opt : Option[(String, Int64)], relay : String, ms : Int64) -> Bool {
+  match opt {
+    Some((r, t)) => r == relay && t == ms
+    None => false
+  }
+}
+
+fn json_str_field_is(j : base_codec::Json, key : String, want : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s == want
+    _ => false
+  }
+}
+
+test "RelayRanker picks lowest-RTT relay over slow home, reuses it on steady ticks, and handles failure/recovery/additions" {
+  let slow = "https://120.24.233.158/"
+  let fast = "https://34.146.162.106/"
+  let faster = "https://34.146.162.107/"
+  let slow_bare = bare_relay_url(slow)
+  let fast_bare = bare_relay_url(fast)
+  let faster_bare = bare_relay_url(faster)
+
+  let ranker = RelayRanker::new()
+  let mut rank_calls = 0
+  let seq_pinged : Array[String] = []
+  let down : Map[String, Bool] = Map::new()
+  let rtt_map : Map[String, Int64] = Map::new()
+  rtt_map.set(slow_bare, 250L)
+  rtt_map.set(fast_bare, 15L)
+  rtt_map.set(faster_bare, 5L)
+
+  let do_rank = fn(relays : Array[String]) -> Array[RelayRankSample] {
+    rank_calls = rank_calls + 1
+    let out : Array[RelayRankSample] = []
+    for i in 0..<relays.length() {
+      let b = bare_relay_url(relays[i])
+      if down.contains(b) {
+        out.push(RelayRankSample::{ relay: relays[i], rtt_ms: None })
+      } else {
+        out.push(RelayRankSample::{ relay: relays[i], rtt_ms: rtt_map.get(b) })
+      }
+    }
+    out
+  }
+  let do_seq = fn(b : String) -> (Bool, Option[Int64]) {
+    seq_pinged.push(b)
+    if down.contains(b) {
+      (false, None)
+    } else {
+      (true, rtt_map.get(b))
+    }
+  }
+
+  // 1. Initial startup tick ranks both relays and picks fast (15ms) over slow home (250ms).
+  let r1 = ranker.check_tick(10000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r1.up)
+  assert(opt_str_is(r1.reachable, fast))
+  assert(r1.rest.length() == 1 && r1.rest[0] == slow)
+  assert(opt_ping_is(r1.pinged, fast_bare, 15L))
+  assert(opt_bool_is(r1.public_relays, false))
+  assert(rank_calls == 1)
+  assert(seq_pinged.length() == 0)
+
+  // 2. Steady-state 30s tick: only pings preferred fast relay, no re-rank, never pings slow.
+  let r2 = ranker.check_tick(40000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r2.up)
+  assert(opt_str_is(r2.reachable, fast))
+  assert(opt_ping_is(r2.pinged, fast_bare, 15L))
+  assert(rank_calls == 1)
+  assert(seq_pinged.length() == 1 && seq_pinged[0] == fast_bare)
+
+  // 3. Preferred fast goes down: steady tick falls back to slow and clears preferred.
+  down.set(fast_bare, true)
+  let r3 = ranker.check_tick(70000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r3.up)
+  assert(opt_str_is(r3.reachable, slow))
+  assert(ranker.preferred_relay() is None)
+
+  // 4. Next tick re-ranks while fast is down -> slow becomes preferred.
+  let r4 = ranker.check_tick(100000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r4.up)
+  assert(opt_str_is(r4.reachable, slow))
+  assert(opt_str_is(ranker.preferred_relay(), slow))
+  assert(rank_calls == 2)
+
+  // 5. Fast recovers, but before RELAY_RANK_MS (600s) steady ticks stay on slow.
+  down.remove(fast_bare)
+  let before_seq = seq_pinged.length()
+  let r5 = ranker.check_tick(130000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r5.up && opt_str_is(r5.reachable, slow))
+  assert(rank_calls == 2)
+  assert(seq_pinged.length() == before_seq + 1 && seq_pinged[before_seq] == slow_bare)
+
+  // 6. After RELAY_RANK_MS (100000 + 600000 = 700000): re-ranks and switches back to fast.
+  let r6 = ranker.check_tick(100000L + RELAY_RANK_MS, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r6.up && opt_str_is(r6.reachable, fast))
+  assert(opt_ping_is(r6.pinged, fast_bare, 15L))
+  assert(rank_calls == 3)
+
+  // 7. Adding a new faster relay triggers immediate re-rank on next tick.
+  let r7 = ranker.check_tick(730000L, [slow, fast, faster], Some(slow), true, false, do_rank, do_seq)
+  assert(r7.up && opt_str_is(r7.reachable, faster))
+  assert(opt_ping_is(r7.pinged, faster_bare, 5L))
+  assert(rank_calls == 4)
+}
+
+test "RelayRanker falls back to sequential check on rank timeout and preserves public_relays semantics" {
+  let slow = "https://120.24.233.158/"
+  let fast = "https://34.146.162.106/"
+  let slow_bare = bare_relay_url(slow)
+  let fast_bare = bare_relay_url(fast)
+
+  let ranker = RelayRanker::new()
+  let mut rank_timeout = true
+  let mut all_down = false
+  let do_rank = fn(relays : Array[String]) -> Array[RelayRankSample] {
+    let out : Array[RelayRankSample] = []
+    for i in 0..<relays.length() {
+      let b = bare_relay_url(relays[i])
+      if rank_timeout || all_down {
+        out.push(RelayRankSample::{ relay: relays[i], rtt_ms: None })
+      } else {
+        out.push(RelayRankSample::{ relay: relays[i], rtt_ms: Some(if b == fast_bare { 20L } else { 120L }) })
+      }
+    }
+    out
+  }
+  let do_seq = fn(b : String) -> (Bool, Option[Int64]) {
+    if all_down { (false, None) } else { (true, Some(if b == slow_bare { 120L } else { 20L })) }
+  }
+
+  // Concurrent rank misses (5s timeout) -> sequential fallback finds home (slow) up, public relays stay off.
+  let r1 = ranker.check_tick(1000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r1.up && opt_str_is(r1.reachable, slow))
+  assert(opt_ping_is(r1.pinged, slow_bare, 120L))
+  assert(opt_bool_is(r1.public_relays, false))
+
+  // All relays unreachable -> public relays turned on.
+  all_down = true
+  let r2 = ranker.check_tick(31000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(!r2.up && r2.reachable is None)
+  assert(opt_bool_is(r2.public_relays, true))
+
+  // Relays recover -> concurrent rank picks fast and turns public relays off again.
+  all_down = false
+  rank_timeout = false
+  let r3 = ranker.check_tick(61000L, [slow, fast], Some(slow), true, false, do_rank, do_seq)
+  assert(r3.up && opt_str_is(r3.reachable, fast))
+  assert(opt_ping_is(r3.pinged, fast_bare, 20L))
+  assert(opt_bool_is(r3.public_relays, false))
+}
+
+// ── #9067: moved-lock waiting refusal & re-verification before verified/seenDevices ──
+
+test "refusal_of_lock maps NOT_GIVEN waiting to lock_station without leaking lock metadata" {
+  let r = refusal_of_lock(
+    RefusalKind::LockRefusal(NOT_GIVEN_WAITING),
+    extra_fields=[("lock", base_codec::json_str("should-not-leak")), ("person", base_codec::json_arr([]))],
+  )
+  assert(r.code == 1)
+  assert(r.reason == "lock_station")
+  assert(json_str_field_is(r.line, "code", "lock_station"))
+  assert(json_str_field_is(r.line, "why", "waiting"))
+  assert(json_str_field_is(r.line, "error", NOT_GIVEN_WAITING))
+  assert(base_codec::json_get(r.line, "lock") is None)
+  assert(base_codec::json_get(r.line, "person") is None)
+}
+
+test "admit_member_with_waiting_recovery re-verifies rotated keys after exiting waiting before verified/seenDevices" {
+  let mut waiting = true
+  let mut key_rotated = false
+  let mut verified_calls = 0
+  let mut seen_calls = 0
+  let mut in_lock_calls = 0
+
+  let verify = fn(hello : base_codec::Json) -> Result[MemberSession, (RefusalKind, Array[(String, base_codec::Json)])] {
+    let key = match base_codec::json_get(hello, "key") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let want = if key_rotated { "k-new" } else { "k-old" }
+    if key != want {
+      return Err((RefusalKind::CredentialError("unknown credential key"), []))
+    }
+    Ok(MemberSession::{
+      workspace: "ws1",
+      user_sub: "alice",
+      email: "alice@x",
+      role: "owner",
+      device_id: "dev1",
+      expires_unix: 9999999L,
+    })
+  }
+
+  // 1. Waiting without bringing root: returns lock_station waiting and skips verified/seenDevices.
+  let h1 = base_codec::json_obj([("key", base_codec::json_str("k-old"))])
+  let res1 = admit_member_with_waiting_recovery(
+    h1,
+    verify,
+    fn(_ws : String) -> Bool { waiting },
+    fn(_h : base_codec::Json, _ws : String) -> Bool { false },
+    fn(_sub : String) -> Unit { verified_calls = verified_calls + 1 },
+    fn(_s : MemberSession) -> Unit { seen_calls = seen_calls + 1 },
+    fn(_s : MemberSession, _h : base_codec::Json) -> Result[(MemberSession, base_codec::Json), (RefusalKind, Array[(String, base_codec::Json)])] {
+      in_lock_calls = in_lock_calls + 1
+      Err((RefusalKind::LockRefusal(NOT_GIVEN_WAITING), []))
+    },
+  )
+  match res1 {
+    Err(refusal) => {
+      assert(refusal.reason == "lock_station")
+      assert(json_str_field_is(refusal.line, "code", "lock_station"))
+      assert(json_str_field_is(refusal.line, "why", "waiting"))
+      assert(base_codec::json_get(refusal.line, "lock") is None)
+    }
+    Ok(_) => panic("expected lock_station waiting refusal")
+  }
+  assert(verified_calls == 0 && seen_calls == 0 && in_lock_calls == 0)
+
+  // 2. Old key brings root + rotated cloud_keys: exits waiting -> re-verify fails BEFORE verified/seenDevices/in_lock_bringing!
+  let res2 = admit_member_with_waiting_recovery(
+    h1,
+    verify,
+    fn(_ws : String) -> Bool { waiting },
+    fn(_h : base_codec::Json, _ws : String) -> Bool {
+      waiting = false
+      key_rotated = true
+      true
+    },
+    fn(_sub : String) -> Unit { verified_calls = verified_calls + 1 },
+    fn(_s : MemberSession) -> Unit { seen_calls = seen_calls + 1 },
+    fn(s : MemberSession, _h : base_codec::Json) -> Result[(MemberSession, base_codec::Json), (RefusalKind, Array[(String, base_codec::Json)])] {
+      in_lock_calls = in_lock_calls + 1
+      Ok((s, base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+    },
+  )
+  match res2 {
+    Err(refusal) => {
+      assert(refusal.reason == "credential_refused")
+      assert(base_codec::json_get(refusal.line, "code") is None)
+      assert(base_codec::json_get(refusal.line, "lock") is None)
+      assert(refusal.error == "unknown credential key")
+    }
+    Ok(_) => panic("old key must not admit after exiting waiting to rotated cloud_keys")
+  }
+  assert(!waiting && verified_calls == 0 && seen_calls == 0 && in_lock_calls == 0)
+
+  // 3. Reconnecting with new key succeeds and records verified + seenDevices.
+  let h2 = base_codec::json_obj([("key", base_codec::json_str("k-new"))])
+  let res3 = admit_member_with_waiting_recovery(
+    h2,
+    verify,
+    fn(_ws : String) -> Bool { waiting },
+    fn(_h : base_codec::Json, _ws : String) -> Bool { false },
+    fn(_sub : String) -> Unit { verified_calls = verified_calls + 1 },
+    fn(_s : MemberSession) -> Unit { seen_calls = seen_calls + 1 },
+    fn(s : MemberSession, _h : base_codec::Json) -> Result[(MemberSession, base_codec::Json), (RefusalKind, Array[(String, base_codec::Json)])] {
+      in_lock_calls = in_lock_calls + 1
+      Ok((s, base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+    },
+  )
+  assert(res3 is Ok(_))
+  assert(verified_calls == 1 && seen_calls == 1 && in_lock_calls == 1)
+}
+
+test "P1-2: NOT_GIVEN matches NOT_GIVEN_WAITING identically" {
+  assert(NOT_GIVEN == NOT_GIVEN_WAITING)
+}
+
+test "P2-9: RelayRanker matches out-of-order samples by URL and retries failed apply_public_relays" {
+  let ranker = RelayRanker::new()
+  let slow = "https://slow.relay.example:443/"
+  let fast = "https://fast.relay.example:443/"
+  // Return samples in REVERSED order with normalized URLs (without trailing slash)
+  let r1 = ranker.check_tick(
+    1000L,
+    [slow, fast],
+    Some(slow),
+    true,
+    false,
+    fn(_rs : Array[String]) -> Array[RelayRankSample] {
+      [
+        RelayRankSample::{ relay: "https://fast.relay.example:443", rtt_ms: Some(15L) },
+        RelayRankSample::{ relay: "https://slow.relay.example:443", rtt_ms: Some(250L) },
+      ]
+    },
+    fn(_b : String) -> (Bool, Option[Int64]) { (false, None) },
+  )
+  assert(r1.up && opt_str_is(r1.reachable, fast))
+  assert(opt_ping_is(r1.pinged, bare_relay_url(fast), 15L))
+
+  // Now simulate all relays down, with apply_public_relays failing first then succeeding on next tick
+  let mut apply_calls = 0
+  let mut allow_apply = false
+  let do_apply = fn(_v : Bool) -> Bool {
+    apply_calls = apply_calls + 1
+    allow_apply
+  }
+  let r2 = ranker.check_tick(
+    31000L,
+    [slow, fast],
+    Some(slow),
+    true,
+    false,
+    fn(_rs : Array[String]) -> Array[RelayRankSample] { [] },
+    fn(_b : String) -> (Bool, Option[Int64]) { (false, None) },
+    apply_public_relays=do_apply,
+  )
+  assert(!r2.up && r2.public_relays is None && apply_calls == 1)
+
+  allow_apply = true
+  let r3 = ranker.check_tick(
+    61000L,
+    [slow, fast],
+    Some(slow),
+    true,
+    false,
+    fn(_rs : Array[String]) -> Array[RelayRankSample] { [] },
+    fn(_b : String) -> (Bool, Option[Int64]) { (false, None) },
+    apply_public_relays=do_apply,
+  )
+  assert(!r3.up && opt_bool_is(r3.public_relays, true) && apply_calls == 2)
+}

@@ -2316,6 +2316,86 @@ fn verify_on_personal_lock(
   }
 }
 
+/// Bring missing moved-lock root chain (`lock.person`) and statement bodies (`lock.bodies`) from
+/// an authenticated hello while a workspace is in `waiting` state (`station/src/mesh/serve.ts` `broughtForState`).
+fn bring_waiting_lock(
+  cloud : station_cloud::CloudStore,
+  hello : base_codec::Json,
+  ws : String,
+  now_secs : Double,
+) -> Bool {
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  let root = match cloud.chain(ws=joined_ws) {
+    Some(kl) => match kl.state {
+      Some(st) => match st.moved {
+        Some(r) => r
+        None => return false
+      }
+      None => return false
+    }
+    None => return false
+  }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    Some(eff) => if !eff.waiting { return false }
+    None => return false
+  }
+  let lobj = match base_codec::json_get(hello, "lock") {
+    Some(o) => o
+    None => return false
+  }
+  let mut any = false
+  match base_codec::json_get(lobj, "person") {
+    Some(base_codec::Json::Arr(items)) => {
+      if items.length() > 0 && items.length() <= 64 {
+        let arr : Array[form::Json] = []
+        for i in 0..<items.length() {
+          arr.push(station_rules_bridge::base_to_form(items[i]))
+        }
+        match lock::person_chain(arr, root, station_rules_bridge::lock_crypto()) {
+          Ok(ch) => {
+            if ch.entries.length() > 0 {
+              match upsert_and_save_person_chain(cloud, root, ch.entries) {
+                Ok(_) => any = true
+                Err(_) => ()
+              }
+            }
+          }
+          Err(_) => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(lobj, "bodies") {
+    Some(base_codec::Json::Arr(items)) => {
+      if items.length() > 0 && items.length() <= 64 {
+        let arr : Array[form::Json] = []
+        for i in 0..<items.length() {
+          arr.push(station_rules_bridge::base_to_form(items[i]))
+        }
+        let commits_fn = fn(_h : String) -> Array[lock::Commit] {
+          let out : Array[lock::Commit] = []
+          for ci in 0..<cloud.person_chains.length() {
+            let (g, ch) = cloud.person_chains[ci]
+            out.push(lock::Commit::{ genesis: g, chain: ch })
+          }
+          out
+        }
+        match cloud.take_bodies(joined_ws, arr, commits_fn) {
+          Ok(r) => if r.taken > 0 { any = true }
+          Err(_) => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  any
+}
+
 /// Evaluate workspace lock + personal lock for a member (`station/src/mesh/serve.ts:641-672` `inLock`/`stillIn`).
 fn verify_member_lock(
   cloud : station_cloud::CloudStore,
@@ -2336,7 +2416,7 @@ fn verify_member_lock(
     None => Ok(None)
     Some(eff) => {
       if eff.waiting {
-        return Err("workspace lock state is still syncing")
+        return Err(station_mesh::NOT_GIVEN_WAITING)
       }
       match eff.state {
         None => Err("this station's workspace lock is broken")
@@ -2408,213 +2488,281 @@ fn verify_member_credential(
       error: msg,
     })
   }
-  if remote_id.length() == 0 {
-    return refuse("missing peer device id", 3, "unauthorized")
-  }
-  let cred = match base_codec::json_get(hello, "credential") {
-    Some(base_codec::Json::Str(s)) => s
-    _ => return refuse("missing credential", 3, "unauthorized")
-  }
-  let parts = cred.split(".")
-  if parts.length() != 3 {
-    return refuse("malformed credential", 3, "unauthorized")
-  }
-  let head_b64 = parts[0]
-  let body_b64 = parts[1]
-  let sig_b64 = parts[2]
+  let verify_cred_step = fn(h : base_codec::Json) -> Result[VerifiedMember, mesh_door::Refusal] {
+    if remote_id.length() == 0 {
+      return refuse("missing peer device id", 3, "unauthorized")
+    }
+    let cred = match base_codec::json_get(h, "credential") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return refuse("missing credential", 3, "unauthorized")
+    }
+    let parts = cred.split(".")
+    if parts.length() != 3 {
+      return refuse("malformed credential", 3, "unauthorized")
+    }
+    let head_b64 = parts[0]
+    let body_b64 = parts[1]
+    let sig_b64 = parts[2]
 
-  let head_bytes = match station_rules_bridge::decode_base64url_flex(head_b64) {
-    Ok(b) => b
-    Err(_) => return refuse("malformed credential header", 3, "unauthorized")
-  }
-  let head_j = match base_codec::json_parse(bytes_to_str_local(head_bytes, head_bytes.length())) {
-    base_codec::JsonParseResult::Ok(j) => j
-    base_codec::JsonParseResult::Err(_) => return refuse("invalid credential header json", 3, "unauthorized")
-  }
-  let alg = match base_codec::json_get(head_j, "alg") {
-    Some(base_codec::Json::Str(s)) => s
-    _ => ""
-  }
-  let typ = match base_codec::json_get(head_j, "typ") {
-    Some(base_codec::Json::Str(s)) => s
-    _ => ""
-  }
-  let spec = station_cloud::spec_of(cloud.provider())
-  if alg != "EdDSA" || !str_in_arr(spec.credential.types, typ) {
-    return refuse("not a member's credential", 3, "unauthorized")
-  }
-  let kid_opt : Option[String] = match base_codec::json_get(head_j, "kid") {
-    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-    _ => None
-  }
-
-  let body_bytes = match station_rules_bridge::decode_base64url_flex(body_b64) {
-    Ok(b) => b
-    Err(_) => return refuse("malformed credential payload", 3, "unauthorized")
-  }
-  let claims = match base_codec::json_parse(bytes_to_str_local(body_bytes, body_bytes.length())) {
-    base_codec::JsonParseResult::Ok(j) => j
-    base_codec::JsonParseResult::Err(_) => return refuse("invalid credential payload json", 3, "unauthorized")
-  }
-  let claim_str = fn(k : String) -> String {
-    match base_codec::json_get(claims, k) {
+    let head_bytes = match station_rules_bridge::decode_base64url_flex(head_b64) {
+      Ok(b) => b
+      Err(_) => return refuse("malformed credential header", 3, "unauthorized")
+    }
+    let head_j = match base_codec::json_parse(bytes_to_str_local(head_bytes, head_bytes.length())) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => return refuse("invalid credential header json", 3, "unauthorized")
+    }
+    let alg = match base_codec::json_get(head_j, "alg") {
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
-  }
-  let claim_i64 = fn(k : String) -> Int64 {
-    match base_codec::json_get(claims, k) {
-      Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
-        Some(v) => v
-        None => n.to_int64()
+    let typ = match base_codec::json_get(head_j, "typ") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let spec = station_cloud::spec_of(cloud.provider())
+    if alg != "EdDSA" || !str_in_arr(spec.credential.types, typ) {
+      return refuse("not a member's credential", 3, "unauthorized")
+    }
+    let kid_opt : Option[String] = match base_codec::json_get(head_j, "kid") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+
+    let body_bytes = match station_rules_bridge::decode_base64url_flex(body_b64) {
+      Ok(b) => b
+      Err(_) => return refuse("malformed credential payload", 3, "unauthorized")
+    }
+    let claims = match base_codec::json_parse(bytes_to_str_local(body_bytes, body_bytes.length())) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => return refuse("invalid credential payload json", 3, "unauthorized")
+    }
+    let claim_str = fn(k : String) -> String {
+      match base_codec::json_get(claims, k) {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
       }
-      _ => 0L
     }
-  }
-
-  let iss = claim_str("iss")
-  if !str_in_arr(spec.credential.issuers, iss) {
-    return refuse("credential not issued by control plane", 3, "unauthorized")
-  }
-  let ws = claim_str("ws")
-  if ws.length() == 0 {
-    return refuse("credential missing workspace", 3, "unauthorized")
-  }
-  let full_ms = cloud.full_memberships(now_secs)
-  let mut matched_m : Option[station_cloud::Membership] = None
-  for i in 0..<full_ms.length() {
-    if full_ms[i].workspace == ws {
-      matched_m = Some(full_ms[i])
-      break
-    }
-  }
-  let membership = match matched_m {
-    Some(m) => m
-    None => return refuse("credential is for another workspace", 3, "unauthorized")
-  }
-
-  let home_ws = match cloud.home() {
-    Some(h) => h
-    None => ""
-  }
-  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
-  let gkeys = cloud.grant_keys(now_secs, ws=joined_ws)
-  let jwk_arr : Array[base_codec::Json] = match base_codec::json_get(gkeys, "keys") {
-    Some(base_codec::Json::Arr(a)) => a
-    _ => []
-  }
-  let mut matched_x : Option[String] = None
-  for ki in 0..<jwk_arr.length() {
-    let jwk = jwk_arr[ki]
-    let jkid = match base_codec::json_get(jwk, "kid") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => ""
-    }
-    let kid_ok = match kid_opt {
-      None => true
-      Some(want) => jkid == want
-    }
-    if kid_ok {
-      match base_codec::json_get(jwk, "x") {
-        Some(base_codec::Json::Str(xs)) => {
-          matched_x = Some(xs)
-          break
+    let claim_i64 = fn(k : String) -> Int64 {
+      match base_codec::json_get(claims, k) {
+        Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
+          Some(v) => v
+          None => n.to_int64()
         }
-        _ => ()
+        _ => 0L
       }
     }
-  }
-  let x_b64 = match matched_x {
-    Some(xs) => xs
-    None => return refuse("unknown credential key", 3, "unauthorized")
-  }
-  let pub_bytes = match station_rules_bridge::decode_base64url_flex(x_b64) {
-    Ok(b) => if b.length() == 32 { b } else { return refuse("invalid credential public key", 3, "unauthorized") }
-    Err(_) => return refuse("invalid credential public key", 3, "unauthorized")
-  }
-  let sig_bytes = match station_rules_bridge::decode_base64url_flex(sig_b64) {
-    Ok(b) => if b.length() == 64 { b } else { return refuse("invalid credential signature length", 3, "unauthorized") }
-    Err(_) => return refuse("malformed credential signature", 3, "unauthorized")
-  }
-  let key_id = "ed25519:" + base_codec::hex_encode(pub_bytes)
-  let signing_input = (head_b64 + "." + body_b64).to_bytes()
-  if !station_rules_bridge::signature_ok(key_id, sig_bytes, signing_input) {
-    return refuse("credential signature invalid", 3, "unauthorized")
-  }
 
-  let device = claim_str("device")
-  if device != remote_id {
-    return refuse("credential is for another device", 3, "unauthorized")
-  }
-  let exp = claim_i64("exp")
-  if exp <= now_secs.to_int64() {
-    return refuse("credential expired", 3, "credential_expired")
-  }
-  let sub = claim_str("sub")
-  let email = claim_str("email")
-  let name = claim_str("name")
-  let mut role = claim_str("role")
-  if role != "owner" && role != "admin" && role != "member" && role != "viewer" {
-    return refuse("invalid member role in credential", 3, "unauthorized")
-  }
-  let iat = claim_i64("iat")
-  let sid_claim = claim_str("sid")
-
-  // Enforce workspace revocations (`sub` or `sid` issued up to `rev.at`).
-  for ri in 0..<membership.revocations.length() {
-    let r = membership.revocations[ri]
-    if iat <= r.at && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sid_claim)) {
-      return refuse("credential revoked", 3, "credential_revoked")
+    let iss = claim_str("iss")
+    if !str_in_arr(spec.credential.issuers, iss) {
+      return refuse("credential not issued by control plane", 3, "unauthorized")
     }
-  }
+    let ws = claim_str("ws")
+    if ws.length() == 0 {
+      return refuse("credential missing workspace", 3, "unauthorized")
+    }
+    let full_ms = cloud.full_memberships(now_secs)
+    let mut matched_m : Option[station_cloud::Membership] = None
+    for i in 0..<full_ms.length() {
+      if full_ms[i].workspace == ws {
+        matched_m = Some(full_ms[i])
+        break
+      }
+    }
+    let membership = match matched_m {
+      Some(m) => m
+      None => return refuse("credential is for another workspace", 3, "unauthorized")
+    }
 
-  let mut lock_base : Option[String] = None
-  let mut lock_proof_str : Option[String] = None
-  match base_codec::json_get(hello, "lock") {
-    Some(lobj) => {
-      match (base_codec::json_get(lobj, "device"), base_codec::json_get(lobj, "proof")) {
-        (Some(base_codec::Json::Str(db)), Some(base_codec::Json::Str(dp))) => {
-          if db.length() == 64 && dp.length() == 128 {
-            lock_base = Some(db)
-            lock_proof_str = Some(dp)
+    let home_ws = match cloud.home() {
+      Some(hp) => hp
+      None => ""
+    }
+    let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+    let gkeys = cloud.grant_keys(now_secs, ws=joined_ws)
+    let jwk_arr : Array[base_codec::Json] = match base_codec::json_get(gkeys, "keys") {
+      Some(base_codec::Json::Arr(a)) => a
+      _ => []
+    }
+    let mut matched_x : Option[String] = None
+    for ki in 0..<jwk_arr.length() {
+      let jwk = jwk_arr[ki]
+      let jkid = match base_codec::json_get(jwk, "kid") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      let kid_ok = match kid_opt {
+        None => true
+        Some(want) => jkid == want
+      }
+      if kid_ok {
+        match base_codec::json_get(jwk, "x") {
+          Some(base_codec::Json::Str(xs)) => {
+            matched_x = Some(xs)
+            break
           }
+          _ => ()
         }
-        _ => ()
       }
     }
-    None => ()
-  }
+    let x_b64 = match matched_x {
+      Some(xs) => xs
+      None => return refuse("unknown credential key", 3, "unauthorized")
+    }
+    let pub_bytes = match station_rules_bridge::decode_base64url_flex(x_b64) {
+      Ok(b) => if b.length() == 32 { b } else { return refuse("invalid credential public key", 3, "unauthorized") }
+      Err(_) => return refuse("invalid credential public key", 3, "unauthorized")
+    }
+    let sig_bytes = match station_rules_bridge::decode_base64url_flex(sig_b64) {
+      Ok(b) => if b.length() == 64 { b } else { return refuse("invalid credential signature length", 3, "unauthorized") }
+      Err(_) => return refuse("malformed credential signature", 3, "unauthorized")
+    }
+    let key_id = "ed25519:" + base_codec::hex_encode(pub_bytes)
+    let signing_input = (head_b64 + "." + body_b64).to_bytes()
+    if !station_rules_bridge::signature_ok(key_id, sig_bytes, signing_input) {
+      return refuse("credential signature invalid", 3, "unauthorized")
+    }
 
-  let cred_role = role
-  // Enforce pinned workspace lock + personal lock (`onPersonalLock`).
-  match verify_member_lock(cloud, ws, sub, remote_id, lock_base, lock_proof_str, Some(hello), now_secs) {
-    Err(why) => return refuse(why, 3, "lock_unconfirmed")
-    Ok(Some(lock_role)) => {
-      if member_role_rank(lock_role) < member_role_rank(role) {
-        role = lock_role
+    let device = claim_str("device")
+    if device != remote_id {
+      return refuse("credential is for another device", 3, "unauthorized")
+    }
+    let exp = claim_i64("exp")
+    if exp <= now_secs.to_int64() {
+      return refuse("credential expired", 3, "credential_expired")
+    }
+    let sub = claim_str("sub")
+    let email = claim_str("email")
+    let name = claim_str("name")
+    let role = claim_str("role")
+    if role != "owner" && role != "admin" && role != "member" && role != "viewer" {
+      return refuse("invalid member role in credential", 3, "unauthorized")
+    }
+    let iat = claim_i64("iat")
+    let sid_claim = claim_str("sid")
+
+    // Enforce workspace revocations (`sub` or `sid` issued up to `rev.at`).
+    for ri in 0..<membership.revocations.length() {
+      let r = membership.revocations[ri]
+      if iat <= r.at && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sid_claim)) {
+        return refuse("credential revoked", 3, "credential_revoked")
       }
     }
-    Ok(None) => ()
+
+    let mut lock_base : Option[String] = None
+    let mut lock_proof_str : Option[String] = None
+    match base_codec::json_get(h, "lock") {
+      Some(lobj) => {
+        match (base_codec::json_get(lobj, "device"), base_codec::json_get(lobj, "proof")) {
+          (Some(base_codec::Json::Str(db)), Some(base_codec::Json::Str(dp))) => {
+            if db.length() == 64 && dp.length() == 128 {
+              lock_base = Some(db)
+              lock_proof_str = Some(dp)
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+
+    let eff_email = if email.length() > 0 { email } else { sub }
+    let eff_name = if name.length() > 0 { name } else { eff_email }
+    Ok(VerifiedMember::{
+      session: station_mesh::MemberSession::{
+        workspace: ws,
+        user_sub: sub,
+        email: eff_email,
+        role: role,
+        device_id: remote_id,
+        expires_unix: exp,
+      },
+      name: eff_name,
+      iat: iat,
+      sid_claim: sid_claim,
+      cred_role: role,
+      lock_base: lock_base,
+      lock_proof: lock_proof_str,
+    })
   }
 
-  let eff_email = if email.length() > 0 { email } else { sub }
-  let eff_name = if name.length() > 0 { name } else { eff_email }
-  Ok(VerifiedMember::{
-    session: station_mesh::MemberSession::{
-      workspace: ws,
-      user_sub: sub,
-      email: eff_email,
-      role: role,
-      device_id: remote_id,
-      expires_unix: exp,
+  let mut last_vm : Option[VerifiedMember] = None
+  let mut cred_refusal : Option[mesh_door::Refusal] = None
+  let is_waiting_ws = fn(w : String) -> Bool {
+    let home_ws = match cloud.home() {
+      Some(hp) => hp
+      None => ""
+    }
+    let jw : Option[String] = if w == home_ws { None } else { Some(w) }
+    match cloud.locked(now_secs, ws=jw) {
+      Some(eff) => eff.waiting
+      None => false
+    }
+  }
+  let res = station_mesh::admit_member_with_waiting_recovery(
+    hello,
+    fn(h : base_codec::Json) -> Result[station_mesh::MemberSession, (station_mesh::RefusalKind, Array[(String, base_codec::Json)])] {
+      match verify_cred_step(h) {
+        Ok(vm) => {
+          last_vm = Some(vm)
+          Ok(vm.session)
+        }
+        Err(refusal) => {
+          cred_refusal = Some(refusal)
+          Err((station_mesh::RefusalKind::CredentialError(refusal.error), []))
+        }
+      }
     },
-    name: eff_name,
-    iat: iat,
-    sid_claim: sid_claim,
-    cred_role: cred_role,
-    lock_base: lock_base,
-    lock_proof: lock_proof_str,
-  })
+    is_waiting_ws,
+    fn(h : base_codec::Json, w : String) -> Bool { bring_waiting_lock(cloud, h, w, now_secs) },
+    fn(_sub : String) -> Unit { () },
+    fn(_sess : station_mesh::MemberSession) -> Unit { () },
+    fn(sess : station_mesh::MemberSession, h : base_codec::Json) -> Result[(station_mesh::MemberSession, base_codec::Json), (station_mesh::RefusalKind, Array[(String, base_codec::Json)])] {
+      let vm = match last_vm {
+        Some(v) => v
+        None => return Err((station_mesh::RefusalKind::CredentialError("missing verified member"), []))
+      }
+      match verify_member_lock(cloud, sess.workspace, sess.user_sub, remote_id, vm.lock_base, vm.lock_proof, Some(h), now_secs) {
+        Err(why) => Err((station_mesh::RefusalKind::LockRefusal(why), []))
+        Ok(Some(lock_role)) => {
+          let eff_role = if member_role_rank(lock_role) < member_role_rank(sess.role) { lock_role } else { sess.role }
+          Ok((
+            station_mesh::MemberSession::{
+              workspace: sess.workspace,
+              user_sub: sess.user_sub,
+              email: sess.email,
+              role: eff_role,
+              device_id: sess.device_id,
+              expires_unix: sess.expires_unix,
+            },
+            base_codec::Json::Null,
+          ))
+        }
+        Ok(None) => Ok((sess, base_codec::Json::Null))
+      }
+    },
+  )
+  match res {
+    Ok((final_sess, _)) => {
+      let vm = match last_vm {
+        Some(v) => v
+        None => return refuse("missing verified member", 3, "unauthorized")
+      }
+      Ok(VerifiedMember::{
+        session: final_sess,
+        name: vm.name,
+        iat: vm.iat,
+        sid_claim: vm.sid_claim,
+        cred_role: vm.cred_role,
+        lock_base: vm.lock_base,
+        lock_proof: vm.lock_proof,
+      })
+    }
+    Err(refusal) => match cred_refusal {
+      Some(cr) => Err(cr)
+      None => Err(refusal)
+    }
+  }
 }
 
 fn parse_admin_headers(j_opt : Option[base_codec::Json]) -> Array[http1::Header] {

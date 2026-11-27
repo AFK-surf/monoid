@@ -417,3 +417,305 @@ pub fn PeerRelays::diff_for(
     }
   }
 }
+
+// ── Concurrent relay RTT ranking (`station/src/mesh/relays.ts` #9048) ──
+
+/// How often `RelayRanker` concurrently re-ranks all relays by measured RTT to pick the nearest live one (10 min).
+pub let RELAY_RANK_MS : Int64 = 600000L
+
+/// Timeout for each request in the concurrent relay ranking pass (5 s; falls back to sequential 10 s check if all miss).
+pub let RELAY_RANK_TIMEOUT_MS : Int64 = 5000L
+
+/// Strip trailing slashes from a relay URL (`bare` in `relays.ts`).
+pub fn bare_relay_url(url : String) -> String {
+  let mut end = url.length()
+  while end > 0 && url.code_unit_at(end - 1) == 47 {
+    end = end - 1
+  }
+  if end == url.length() { url } else { url.slice(0, end) }
+}
+
+pub struct RelayRankSample {
+  pub relay : String
+  pub rtt_ms : Option[Int64]
+}
+
+pub struct RelayPingOutcome {
+  pub up : Bool
+  pub reachable : Option[String]
+  pub rest : Array[String]
+  pub pinged : Option[(String, Int64)]
+  pub public_relays : Option[Bool]
+}
+
+pub struct RelayRanker {
+  mut preferred : Option[(String, Int64)]
+  mut ranked : Array[String]
+  mut ranked_ours : Array[String]
+  mut public_added : Option[Bool]
+}
+
+pub fn RelayRanker::new() -> RelayRanker {
+  RelayRanker::{
+    preferred: None,
+    ranked: [],
+    ranked_ours: [],
+    public_added: None,
+  }
+}
+
+pub fn RelayRanker::preferred_relay(self : RelayRanker) -> Option[String] {
+  match self.preferred {
+    Some((r, _)) => Some(r)
+    None => None
+  }
+}
+
+pub fn RelayRanker::ranked_relays(self : RelayRanker) -> Array[String] {
+  self.ranked.copy()
+}
+
+pub fn RelayRanker::need_rank(
+  self : RelayRanker,
+  now_ms : Int64,
+  relays : Array[String],
+  net_enabled : Bool,
+) -> Bool {
+  if !net_enabled || relays.length() <= 1 {
+    return false
+  }
+  match self.preferred {
+    None => true
+    Some((pref, at)) => {
+      if !has_url(relays, pref) || now_ms - at >= RELAY_RANK_MS {
+        return true
+      }
+      for i in 0..<relays.length() {
+        if !has_url(self.ranked_ours, relays[i]) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+pub fn RelayRanker::order_for_fallback(
+  self : RelayRanker,
+  relays : Array[String],
+  home : Option[String],
+  net_enabled : Bool,
+) -> Array[String] {
+  let use_rank = net_enabled && relays.length() > 1
+  if use_rank {
+    match self.preferred {
+      Some((pref, _)) => {
+        let order : Array[String] = []
+        let pref_norm = same_url(pref)
+        for i in 0..<relays.length() {
+          if same_url(relays[i]) == pref_norm {
+            push_unique_url(order, relays[i])
+          }
+        }
+        for i in 0..<self.ranked.length() {
+          if has_url(relays, self.ranked[i]) {
+            push_unique_url(order, self.ranked[i])
+          }
+        }
+        for i in 0..<relays.length() {
+          push_unique_url(order, relays[i])
+        }
+        return order
+      }
+      None => ()
+    }
+  }
+  match home {
+    None => relays.copy()
+    Some(h) => {
+      let hb = bare_relay_url(h)
+      let order : Array[String] = []
+      for i in 0..<relays.length() {
+        if bare_relay_url(relays[i]) == hb {
+          order.push(relays[i])
+        }
+      }
+      for i in 0..<relays.length() {
+        if bare_relay_url(relays[i]) != hb {
+          order.push(relays[i])
+        }
+      }
+      order
+    }
+  }
+}
+
+/// Run one 30 s relay check tick (1:1 with `keepRelays` ping in `station/src/mesh/relays.ts`).
+/// - `rank_measure(relays)`: concurrently runs 2-step warm-up + timed ping (5 s timeout) for each relay.
+///   Samples are matched to `relays` by canonical `same_url(sample.relay)` rather than positional index.
+/// - `seq_ping(bare_url)`: runs a single sequential ping (10 s timeout); returns `(ok, measured_rtt_ms_if_net)`.
+/// - `apply_public_relays(enabled)`: applies `public_relays` change on the endpoint; `self.public_added` is
+///   only updated when it returns `true` (so transient failures retry on the next tick).
+pub fn RelayRanker::check_tick(
+  self : RelayRanker,
+  now_ms : Int64,
+  relays : Array[String],
+  home : Option[String],
+  net_enabled : Bool,
+  all_ours_off : Bool,
+  rank_measure : (Array[String]) -> Array[RelayRankSample],
+  seq_ping : (String) -> (Bool, Option[Int64]),
+  apply_public_relays : (Bool) -> Bool = fn(_v) { true },
+) -> RelayPingOutcome {
+  let mut up = false
+  let mut reachable : Option[String] = None
+  let mut rest : Array[String] = []
+  let mut pinged : Option[(String, Int64)] = None
+  let use_rank = net_enabled && relays.length() > 1
+  if !use_rank {
+    self.preferred = None
+    self.ranked = []
+    self.ranked_ours = []
+  }
+  if self.need_rank(now_ms, relays, net_enabled) {
+    let samples = rank_measure(relays)
+    let rtt_by_url : Map[String, Int64] = Map::new()
+    for si in 0..<samples.length() {
+      let s = samples[si]
+      match s.rtt_ms {
+        Some(ms) => {
+          let norm = same_url(s.relay)
+          match rtt_by_url.get(norm) {
+            Some(prev) => if ms < prev { rtt_by_url.set(norm, ms) }
+            None => rtt_by_url.set(norm, ms)
+          }
+        }
+        None => ()
+      }
+    }
+    let ok_sorted : Array[(String, Int64, Int)] = []
+    for idx in 0..<relays.length() {
+      match rtt_by_url.get(same_url(relays[idx])) {
+        Some(ms) => ok_sorted.push((relays[idx], ms, idx))
+        None => ()
+      }
+    }
+    // Stable sort by (rtt_ms ASC, idx ASC)
+    let mut i = 1
+    while i < ok_sorted.length() {
+      let cur = ok_sorted[i]
+      let mut j = i - 1
+      while j >= 0 && (ok_sorted[j].1 > cur.1 || (ok_sorted[j].1 == cur.1 && ok_sorted[j].2 > cur.2)) {
+        ok_sorted[j + 1] = ok_sorted[j]
+        j = j - 1
+      }
+      ok_sorted[j + 1] = cur
+      i = i + 1
+    }
+    if ok_sorted.length() > 0 {
+      let fastest = ok_sorted[0]
+      let next_ranked : Array[String] = []
+      let ok_idx : Map[Int, Bool] = Map::new()
+      for k in 0..<ok_sorted.length() {
+        next_ranked.push(ok_sorted[k].0)
+        ok_idx.set(ok_sorted[k].2, true)
+      }
+      for idx in 0..<relays.length() {
+        if !ok_idx.contains(idx) {
+          next_ranked.push(relays[idx])
+        }
+      }
+      up = true
+      reachable = Some(fastest.0)
+      self.preferred = Some((fastest.0, now_ms))
+      self.ranked = next_ranked
+      self.ranked_ours = relays.copy()
+      for k in 1..<self.ranked.length() {
+        rest.push(self.ranked[k])
+      }
+      pinged = Some((bare_relay_url(fastest.0), fastest.1))
+    } else {
+      self.preferred = None
+      self.ranked = []
+      self.ranked_ours = []
+    }
+  }
+  if !up {
+    let order = self.order_for_fallback(relays, home, net_enabled)
+    let mut found = false
+    for idx in 0..<order.length() {
+      if found {
+        break
+      }
+      let relay = order[idx]
+      let b = bare_relay_url(relay)
+      for _try in 0..<2 {
+        let (ok, ms_opt) = seq_ping(b)
+        if ok {
+          up = true
+          reachable = Some(relay)
+          rest = []
+          for k in (idx + 1)..<order.length() {
+            rest.push(order[k])
+          }
+          if net_enabled {
+            match ms_opt {
+              Some(ms) => pinged = Some((b, ms))
+              None => ()
+            }
+          }
+          found = true
+          break
+        }
+      }
+    }
+    if use_rank {
+      match self.preferred {
+        Some((pref, _)) => {
+          let same_pref = match reachable {
+            Some(r) => bare_relay_url(r) == bare_relay_url(pref)
+            None => false
+          }
+          if !up || !same_pref {
+            self.preferred = None
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  let mut pub_change : Option[Bool] = None
+  let cur_pub_is_false = match self.public_added {
+    Some(false) => true
+    _ => false
+  }
+  let cur_pub_is_true = match self.public_added {
+    Some(true) => true
+    _ => false
+  }
+  let want_pub : Option[Bool] = if !up && all_ours_off {
+    if !cur_pub_is_false { Some(false) } else { None }
+  } else if !up && !cur_pub_is_true {
+    Some(true)
+  } else if up && !cur_pub_is_false {
+    Some(false)
+  } else {
+    None
+  }
+  match want_pub {
+    Some(v) => {
+      if apply_public_relays(v) {
+        self.public_added = Some(v)
+        pub_change = Some(v)
+      }
+    }
+    None => ()
+  }
+  RelayPingOutcome::{
+    up: up,
+    reachable: reachable,
+    rest: rest,
+    pinged: pinged,
+    public_relays: pub_change,
+  }
+}

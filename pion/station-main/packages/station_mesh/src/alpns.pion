@@ -12,7 +12,7 @@ pub let ENROLLMENT_ALPN : String = "stillfail/mesh-enrollment/1"
 
 pub let STOPPING : String = "station stopping"
 pub let UNPROTECTED : String = "that station is not in the workspace lock"
-pub let NOT_GIVEN : String = "this station is waiting for the moved workspace lock"
+pub let NOT_GIVEN : String = "this station has not yet been given this workspace's settings by a trusted device: connect from a device of the workspace's owner, or wait for another of its stations to bring them"
 
 pub fn station_alpns() -> Array[String] {
   [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN, ENROLLMENT_ALPN]

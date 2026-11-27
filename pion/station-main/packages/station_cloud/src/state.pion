@@ -1910,7 +1910,7 @@ pub fn CloudStore::grant_keys(
   now_secs : Double,
   ws : Option[String] = None,
 ) -> base_codec::Json {
-  match self.locked(now_secs, ws=ws) {
+  match self.roster_of(now_secs, ws=ws) {
     None => match self.state {
       Some(s) => s.grant_keys
       None => base_codec::json_null()
