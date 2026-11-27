@@ -109,6 +109,7 @@ test "lazy RichPrep::breaks skips UAX #14 when wrap=false and computes + caches 
   assert_true(prep_nowrap.brk.is_empty(), msg="wrap=false must not eagerly compute UAX #14 breaks")
 
   let lay_wrap = layout_rich(r_wrap, 1.0e9)
+  assert_true(rich_kept_of(r_wrap).prep.brk.is_empty(), msg="non-overflowing wrap=true must defer UAX #14 breaks")
   assert_eq(lay_nowrap.line_start, lay_wrap.line_start)
   assert_eq(lay_nowrap.line_end, lay_wrap.line_end)
   assert_eq(lay_nowrap.w, lay_wrap.w)

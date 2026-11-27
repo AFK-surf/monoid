@@ -1277,10 +1277,10 @@ fn scan_shape_flags(text : String) -> Int {
       }
       if c == 0x00A5 ||
         c == 0x00A7 ||
-        c == 0x00B0 ||
-        c == 0x00B1 ||
-        c == 0x00D7 ||
-        c == 0x00F7 ||
+        c == 0x00AB ||
+        (c >= 0x00B0 && c <= 0x00B3) ||
+        c == 0x00B9 ||
+        (c >= 0x00BB && c <= 0x00FF) ||
         c == 0x2013 ||
         c == 0x201A ||
         c == 0x201B ||
@@ -1288,7 +1288,17 @@ fn scan_shape_flags(text : String) -> Int {
         c == 0x2032 ||
         c == 0x2033 ||
         c == 0x20AC ||
-        c == 0x2103 {
+        c == 0x2103 ||
+        (c >= 0x2190 && c <= 0x2193) ||
+        c == 0x2212 ||
+        c == 0x221E ||
+        c == 0x2248 ||
+        c == 0x2260 ||
+        c == 0x2264 ||
+        c == 0x2265 ||
+        (c >= 0x2500 && c <= 0x257F) ||
+        c == 0x2713 ||
+        c == 0x2717 {
         continue
       }
       simple = false
