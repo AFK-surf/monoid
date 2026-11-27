@@ -184,11 +184,12 @@ fn chat_quote_node(
   rows : ChatBodyList,
 ) -> Unit {
   let draft = r.station + ":" + r.session
-  // Register this chat's single-message text selection actions (quote, share as image) for sfdesk/context_menu.
+  let wid = @ui.current_window_id()
+  // Register this chat's single-message text selection actions (row_key, quote, share as image) for sfdesk/context_menu.
   excerpt_share_register(v, fn() {
     match @signals.untracked(fn() { chat_picked_message(v, rows) }) {
       Some((p, m)) if p.text.trim(chars=" \n\t\r") != "" =>
-        Some((fn() { chat_quote_of(src, draft, p, m) }, fn() { chat_excerpt_share_of(src, here, p, m) }))
+        Some((p.of[0], fn() { chat_quote_of(src, draft, p, m) }, fn() { chat_excerpt_share_of(src, here, p, m) }))
       _ => None
     }
   })
@@ -298,10 +299,28 @@ fn chat_quote_node(
                 }
                 None => Node(end)
               }
+              let k = @signals.untracked(s.key)
               let link = @signals.untracked(s.link)
               let words = @signals.untracked(s.words)
+              let clear_more = fn() {
+                if @signals.untracked(fn() { @sfbase.message_more.get() }) == k {
+                  @sfbase.message_more.set("")
+                }
+              }
+              let menu_items = @sfbase.message_items(link, words, s.go).map(fn(it) {
+                it.map(fn(mi) {
+                  {
+                    ..mi,
+                    select: fn() {
+                      clear_more()
+                      (mi.select)()
+                    },
+                  }
+                })
+              })
+              @sfbase.message_more.set(k)
               @ui.picked_let_go()
-              @sf.menu(@sfbase.message_items(link, words, s.go), from=anchor, along=End)
+              @sf.menu(menu_items, from=anchor, along=End, gone=clear_more)
             },
           })
         None => ()
@@ -329,8 +348,8 @@ fn chat_quote_node(
   let quote_in = fn(host : @view.View) {
     host.pick(
       fn() {
-        // Hide the floating selection pill while a right-click context menu is open so it never clutters or duplicates 引用.
-        if @sfbase.context_menu_open.get() || @sfbase.message_menu.get() != "" {
+        // Hide this window's floating selection pill while a right-click context menu is open in the same window.
+        if @sfbase.context_menu_window.get() == Some(wid) {
           return None
         }
         chat_quotable(v, rows).map(fn(q) {

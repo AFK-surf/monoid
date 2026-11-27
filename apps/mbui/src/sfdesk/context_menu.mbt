@@ -26,7 +26,7 @@ pub struct ContextMenu {
   mut share_link : String
   mut share_words : String
   mut share_key : String
-  mut share_excerpt : (() -> Unit, () -> Unit)?
+  mut share_excerpt : (String, () -> Unit, () -> Unit)?
 }
 
 ///|
@@ -344,6 +344,19 @@ fn context_menu_slots(v : @view.View, wid : Int) -> Unit {
 }
 
 ///|
+/// Whether the open context menu targets selected text on the right-clicked row (as opposed to right-clicking a
+/// different message while another message still has a text selection).
+fn context_is_selection() -> Bool {
+  if context.field != 0 || context.words.trim(chars=" \n\t") == "" {
+    return false
+  }
+  match (context.share, context.share_excerpt) {
+    (Some(_), Some((picked_key, _, _))) => picked_key == context.share_key
+    _ => true
+  }
+}
+
+///|
 /// What the menu holds as context says it now: a link's items, an image's, a field's editing (each as it can be done
 /// then) or the words picked's, a message's; a line between them. Each item, chosen, does its own as the menu has
 /// closed.
@@ -372,7 +385,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
     let image = context.image
     item("desktop.contextMenu.copyImage", "copy", fn() { context_copying.set(image) }, false)
   }
-  let has_selection = context.field == 0 && context.words.trim(chars=" \n\t") != ""
+  let has_selection = context_is_selection()
   if context.field != 0 {
     let (field, can) = (context.field, context.field_can)
     group()
@@ -386,12 +399,12 @@ fn context_items() -> Array[@sf.MenuItem?] {
       item(x.1, x.2, fn() { @ui.field_edit_now(field, what) }, (can & what) == 0)
     }
   } else if has_selection {
-    // When message text is selected, show only the focused selection actions (引用 / 复制 / 分享为图片) without mixing
-    // whole-message actions (复制消息 / 复制消息链接 / 多选) underneath.
+    // When message text is selected on the right-clicked row, show only the focused selection actions
+    // (引用 / 复制 / 分享为图片) without mixing whole-message actions (复制消息 / 复制消息链接 / 多选) underneath.
     group()
     let words = context.words
     match context.share_excerpt {
-      Some((go_quote, go_excerpt)) => {
+      Some((_, go_quote, go_excerpt)) => {
         item("web-main.chat.quote", "quote", go_quote, false)
         item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
         item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
@@ -419,10 +432,17 @@ fn context_items() -> Array[@sf.MenuItem?] {
 }
 
 ///|
-/// The message the menu is open for told (sfbase's message_menu): its row lit while it is, none once it is gone.
+/// The message the menu is open for told (sfbase's message_menu): its row lit while a whole-message menu is open
+/// (not while a focused text-selection menu is open), none once it is gone.
 fn context_lit() -> Unit {
-  @sfbase.context_menu_open.set(context.open)
-  @sfbase.message_menu.set(if context.open && context.share is Some(_) { context.share_key } else { "" })
+  @sfbase.context_menu_window.set(if context.open { Some(context.window) } else { None })
+  @sfbase.message_menu.set(
+    if context.open && context.share is Some(_) && !context_is_selection() {
+      context.share_key
+    } else {
+      ""
+    },
+  )
 }
 
 ///|

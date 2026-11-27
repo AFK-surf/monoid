@@ -120,19 +120,49 @@ test "大屏: 划词浮条并列「引用 | 分享图」，右键菜单与浮条
   assert_eq(t.audit(), [])
   t.key_told(@ui.key_escape, 0, t.time())
   t.run_for(@ui.move_most_ms)
-  // 2. Drag again, then right-click inside selection: floating pill hides and only 3 selection actions appear.
+  // 2. Drag again, then right-click inside selection: floating pill hides, row is NOT whole-message-lit, and only 3 selection actions appear.
   t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("分享图") is Some(_), msg="expected floating pill 分享图 before right-click")
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("分享图") is None, msg="floating pill 分享图 must hide while right-click menu is open")
-  assert_true(t.find("引用") is Some(_), msg="expected 引用 in selection context menu")
+  assert_eq(@sfbase.message_menu.get(), "", msg="selection menu must not highlight the whole message row")
+  assert_eq(t.words().filter(fn(wd) { wd.0 == "引用" }).length(), 1, msg="expected single 引用 inside context menu (pill hidden)")
   assert_true(t.find("复制") is Some(_), msg="expected 复制 in selection context menu")
   assert_true(t.find("分享为图片") is Some(_), msg="expected 分享为图片 in selection context menu")
   // Whole-message items must NOT clutter the focused text-selection menu.
   assert_true(t.find("复制消息") is None, msg="expected no 复制消息 in text-selection context menu")
   assert_true(t.find("多选") is None, msg="expected no 多选 in text-selection context menu")
+  // 2b. Dismissing the menu via Escape restores the floating pill (no stuck hidden state).
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("分享图") is Some(_), msg="floating pill 分享图 must reappear after Escape closes context menu")
+  assert_true(t.find("引用") is Some(_), msg="floating pill 引用 must reappear after Escape closes context menu")
+  // 2c. Selecting text in message A, then right-clicking a DIFFERENT message B must show B's whole-message menu (never A's selection menu).
+  let (bx, by, bw, bh) = words_rect(t, "改好后的样子：")
+  t.right_click(bx + bw / 2.0, by + bh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息") is Some(_), msg="right-clicking another message B while A has selection must show B's 复制消息")
+  assert_true(t.find("多选") is Some(_), msg="right-clicking another message B while A has selection must show B's 多选")
+  assert_true(t.find("分享为图片") is None, msg="right-clicking another message B must not show A's 分享为图片")
+  assert_true(@sfbase.message_menu.get() != "", msg="whole-message menu on B should highlight B's row")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  // 2d. Right-clicking A's selection again and clicking 复制 copies selection, resets context_menu_window cleanly,
+  // and a subsequent selection shows the floating pill again.
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("复制")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.clipboard().contains("第二屏"), msg="expected 复制 to copy selected words")
+  assert_eq(@sfbase.context_menu_window.get(), None, msg="context_menu_window must reset after 复制 closes menu")
+  // 3. Drag A again (pill reappears cleanly), right-click A's selection and open 分享为图片.
+  t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("分享图") is Some(_), msg="floating pill must appear cleanly on next selection after 复制")
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
   t.tap_text("分享为图片")
   t.run_for(@ui.move_most_ms)
   // Share card stage opened with Copy image & Save image buttons and zero audit faults.
