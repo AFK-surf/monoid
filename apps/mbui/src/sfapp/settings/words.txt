@@ -256,9 +256,13 @@ android-settings.add.emailsPlaceholder
 android-settings.add.fromSlack
 android-settings.add.guest
 android-settings.add.in
+android-settings.add.isAdded
+android-settings.add.isMember
 android-settings.add.joined
+android-settings.add.listSep
 android-settings.add.many
 android-settings.add.note
+android-settings.add.notEmail
 android-settings.add.one
 android-settings.add.picked
 android-settings.add.problemSep
@@ -266,6 +270,7 @@ android-settings.add.role
 android-settings.add.sep
 android-settings.add.title
 android-settings.add.unmailed
+android-settings.add.whole
 android-settings.agentEnv.empty
 android-settings.agentEnv.note
 android-settings.agentEnv.title

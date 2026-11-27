@@ -13,12 +13,25 @@
   "android-settings.add.fromSlack": "Pick from Slack",
   "android-settings.add.guest": "Guest",
   "android-settings.add.in": "Added",
+  "android-settings.add.isAdded": {
+    "one": "{list} is already added and joins on first sign-in to {app}.",
+    "other": "{list} are already added and join on first sign-in to {app}."
+  },
+  "android-settings.add.isMember": {
+    "one": "{list} is already a member.",
+    "other": "{list} are already members."
+  },
   "android-settings.add.joined": {
     "one": "1 joined.",
     "other": "{n} joined."
   },
+  "android-settings.add.listSep": ", ",
   "android-settings.add.many": "Add {n}",
   "android-settings.add.note": "Added to “{name}” directly, without needing to accept, and told by email. People who've used {app} join immediately; others join when they first sign in with this email.",
+  "android-settings.add.notEmail": {
+    "one": "{list} isn't a valid email; write it like name@example.com.",
+    "other": "{list} aren't valid emails; write them like name@example.com."
+  },
   "android-settings.add.one": "Add",
   "android-settings.add.picked": {
     "one": "{picked} of 1 selected",
@@ -32,6 +45,7 @@
     "one": "1 notification email wasn't sent; add them again to resend.",
     "other": "{n} notification emails weren't sent; add them again to resend."
   },
+  "android-settings.add.whole": "Enter a full email, like name@example.com.",
   "android-settings.all": "All",
   "android-settings.appearance.theme": "Theme",
   "android-settings.appearance.title": "Appearance",
