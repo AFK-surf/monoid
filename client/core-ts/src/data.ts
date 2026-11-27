@@ -1055,6 +1055,11 @@ export class Data {
     return db !== undefined && !db.readOnly && !this.#ephemeral.has(db);
   }
 
+  /// Whether the station's owning account DB is a writable persistent DB (false on read-only or ephemeral fallback DBs).
+  isStationWritable(station: string): boolean {
+    return this.isPersistentDb(this.of(station));
+  }
+
   /// The databases open now, in signed-in account order.
   dbs(): AccountDb[] {
     if (!this.#ordered) return [...this.#dbs.values()];

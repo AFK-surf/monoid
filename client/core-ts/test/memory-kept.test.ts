@@ -80,10 +80,9 @@ test("what_a_station_said_beyond_the_tables_shows_after_a_restart_before_any_net
   const again = await shown(core, host, 300);
   assert.equal(v(again, 1).loaded, true);
   assert.deepEqual(v(again, 1).logins.map((l: { id: string }) => l.id), ["l0"]);
-  assert.equal(v(again, 2).known, false, "screens is ephemeral and never resurrected from disk across restarts");
-  assert.equal(v(again, 2).confirmed, false, "ephemeral screens stay unconfirmed until station replies");
-  assert.deepEqual(v(again, 2).screens, []);
-  assert.equal(core.inner.data.stationMemory(S, "screens"), undefined, "screens is never persisted to disk");
+  assert.equal(v(again, 2).known, true, "keeper-cached screens show immediately for display on writable DB");
+  assert.equal(v(again, 2).confirmed, false, "keeper-cached screens stay unconfirmed until station replies in current authGen");
+  assert.deepEqual(v(again, 2).screens.map((s: { id: string }) => s.id), ["desktop"]);
   assert.equal(v(again, 3), undefined, "jobLog is ephemeral and never resurrected from disk across restarts");
   assert.notEqual(v(again, 4), undefined);
   assert.deepEqual(v(again, 5).transfers.map((t: { id: string }) => t.id), ["t1"]);

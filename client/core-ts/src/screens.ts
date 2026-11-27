@@ -850,6 +850,14 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     );
 
     const deniedAbort = Deferred.makeUnsafe<void>();
+    let denied = false;
+    const markDenied = () => {
+      denied = true;
+      Deferred.doneUnsafe(deniedAbort, Effect.void);
+      if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
+      if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
+    };
+    const isViewDenied = () => denied || inner.stations.isDenied("screens", station);
     open.set(name, {
       station,
       workspace: ofAddress(station),
@@ -918,9 +926,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       },
       listed: () => {
         if (inner.stations.isDenied("screens", station)) {
-          Deferred.doneUnsafe(deniedAbort, Effect.void);
-          if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
-          if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
+          markDenied();
           return;
         }
         resume();
@@ -931,16 +937,15 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
 
     // If the station already explicitly refused GET /screens (401/403) in this auth generation, fail closed immediately.
-    if (inner.stations.isDenied("screens", station)) {
+    if (isViewDenied()) {
       state.phase = "denied";
       state.message = t("core-views.screen.denied");
       tell();
       return null;
     }
-    // A station whose screens are not known yet is asked first: one from before screens would take the view's stream
-    // for a request and never answer it.
-    if (inner.stations.screens(station) === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
-    if (inner.stations.isDenied("screens", station)) {
+    // Always confirm screens with the station in the current authGen before opening a stream (even when cold-start keeper cache has a row).
+    if (!inner.stations.isConfirmed("screens", station)) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
+    if (isViewDenied()) {
       state.phase = "denied";
       state.message = t("core-views.screen.denied");
       tell();
@@ -955,16 +960,28 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // A tab this device is opening (`screen.openBrowser` with its id): the view is there at once, connecting, while its
     // station makes it; opened once the station lists it (gone, if it refused it).
     for (;;) {
+      if (isViewDenied()) {
+        state.phase = "denied";
+        state.message = t("core-views.screen.denied");
+        tell();
+        return null;
+      }
       relisted = yield* Deferred.make<void>();
       if (get(listedItem(), "opening") !== true) break;
       tell();
-      yield* Deferred.await(relisted);
+      yield* Effect.raceFirst(Deferred.await(relisted), Deferred.await(deniedAbort));
     }
     relisted = null;
+    if (isViewDenied()) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      tell();
+      return null;
+    }
     // A view is opened only of a screen the station listed: not listed as it was held, its
     // list is read again first.
     if (listedItem() === undefined) yield* Effect.ignore(inner.stations.readScreens(station), { log: "Unhandled", message: "screens read" });
-    if (inner.stations.isDenied("screens", station)) {
+    if (isViewDenied()) {
       state.phase = "denied";
       state.message = t("core-views.screen.denied");
       tell();
@@ -1002,11 +1019,15 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
             yield* Effect.addFinalizer(() => Scope.close(ready.scope, Exit.void));
             ({ socket, asked: sent } = ready);
           } else {
-            if (inner.stations.isDenied("screens", station)) return { denied: true } as Outcome;
+            if (isViewDenied()) return { denied: true } as Outcome;
             sent = { ...bounds, control: wanted };
-            const opened = yield* Effect.result(inner.stations.requests.screenView(addr, c.screen, sent, ctx));
-            if (opened._tag === "Failure") return { failed: opened.failure } as Outcome;
-            socket = opened.success;
+            const opened = yield* Effect.raceFirst(
+              Effect.map(Effect.result(inner.stations.requests.screenView(addr, c.screen, sent, ctx)), (r) => ({ r }) as const),
+              Effect.as(Deferred.await(deniedAbort), { denied: true } as const),
+            );
+            if ("denied" in opened || isViewDenied()) return { denied: true } as Outcome;
+            if (opened.r._tag === "Failure") return { failed: opened.r.failure } as Outcome;
+            socket = opened.r.success;
           }
           const control = sent.control;
           const queue = yield* Queue.unbounded<Uint8Array>();
@@ -1046,7 +1067,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           const onReplaced = socket.replaced ? socket.replaced() : wire.replaced ? wire.replaced(addr) : null;
           if (onReplaced !== null) yield* Effect.forkScoped(Effect.andThen(onReplaced, Effect.sync(() => Deferred.doneUnsafe(again, Effect.void))));
           for (;;) {
-            if (inner.stations.isDenied("screens", station)) return { denied: true } as Outcome;
+            if (isViewDenied()) return { denied: true } as Outcome;
             const next = yield* Effect.raceFirst(
               Effect.raceFirst(
                 Effect.map(Effect.result(socket.reply.body.take), (r) => ({ r }) as const),
@@ -1054,18 +1075,28 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
               ),
               Effect.as(Deferred.await(deniedAbort), { denied: true } as const),
             );
-            if ("denied" in next || inner.stations.isDenied("screens", station)) return { denied: true } as Outcome;
+            if ("denied" in next || isViewDenied()) return { denied: true } as Outcome;
             if ("reopen" in next) {
-              if (inner.stations.isDenied("screens", station)) return { denied: true } as Outcome;
+              if (isViewDenied()) return { denied: true } as Outcome;
               // The next stream opened while this one stays: the station has a view of this client's all along.
               const scope = yield* Scope.make();
+              let handedOff = false;
+              yield* Effect.addFinalizer(() => (handedOff ? Effect.void : Scope.close(scope, Exit.void)));
               const nextAsk = { ...bounds, control: wanted };
-              const opened = yield* Effect.result(Scope.provide(inner.stations.requests.screenView(addr, c.screen, nextAsk, ctx), scope));
-              if (opened._tag === "Failure") {
+              const opened = yield* Effect.raceFirst(
+                Effect.map(Effect.result(Scope.provide(inner.stations.requests.screenView(addr, c.screen, nextAsk, ctx), scope)), (r) => ({ r }) as const),
+                Effect.as(Deferred.await(deniedAbort), { denied: true } as const),
+              );
+              if ("denied" in opened || isViewDenied()) {
                 yield* Scope.close(scope, Exit.void);
-                return { failed: opened.failure } as Outcome;
+                return { denied: true } as Outcome;
               }
-              return { reopen: { socket: opened.success, scope, asked: nextAsk } } as Outcome;
+              if (opened.r._tag === "Failure") {
+                yield* Scope.close(scope, Exit.void);
+                return { failed: opened.r.failure } as Outcome;
+              }
+              handedOff = true;
+              return { reopen: { socket: opened.r.success, scope, asked: nextAsk } } as Outcome;
             }
             if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true, seen } as Outcome;
             reader.push(next.r.success);
@@ -1279,16 +1310,24 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     for (;;) {
       const outcome: Outcome = yield* attempt(ready);
       ready = null;
-      if ("denied" in outcome || inner.stations.isDenied("screens", station)) {
+      if ("reopen" in outcome) {
+        if (isViewDenied()) {
+          yield* Scope.close(outcome.reopen.scope, Exit.void);
+          state.phase = "denied";
+          state.message = t("core-views.screen.denied");
+          delete state.cursor;
+          tell();
+          return null;
+        }
+        ready = outcome.reopen;
+        continue;
+      }
+      if ("denied" in outcome || isViewDenied()) {
         state.phase = "denied";
         state.message = t("core-views.screen.denied");
         delete state.cursor;
         tell();
         return null;
-      }
-      if ("reopen" in outcome) {
-        ready = outcome.reopen;
-        continue;
       }
       if ("ended" in outcome) {
         // Its screen gone (a tab closed) is over for good, as one no longer listed: nothing to open again.
@@ -1321,7 +1360,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       state.message = t("core-views.screen.reconnecting");
       tell();
       yield* Effect.raceFirst(Effect.sleep(REOPEN_MS[misses]!), Deferred.await(deniedAbort));
-      if (inner.stations.isDenied("screens", station)) {
+      if (isViewDenied()) {
         state.phase = "denied";
         state.message = t("core-views.screen.denied");
         delete state.cursor;

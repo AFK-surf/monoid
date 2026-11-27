@@ -2,7 +2,7 @@
 // one is made; the one picked for a new chat there is kept on this device and goes with the chat as it is made.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Deferred, Effect, Queue } from "effect";
 import { apply as applyOps } from "../src/delta.ts";
 import { answers, apply, call, readsOf, subscribe, v } from "./helpers.ts";
 import { base, overview, started, stationLater, stationReplies } from "./station-fixture.ts";
@@ -503,14 +503,11 @@ test("unloaded_persisted_jobLog_is_wiped_from_disk_on_same_owner_downgrade_and_s
   core.close();
 });
 
-test("ephemeral_memory_never_resurrects_persisted_jobLog_presets_screens_or_terminals_across_restart_or_readonly_db", async () => {
-  // 1. Ephemeral prefixes ([PRESETS, LOG_KEY, "screens", "terminals"]) never read from or write to keeper,
-  //    so read-only DBs, lazily-opened DBs, or legacy rows surviving a restart can never resurrect old data.
+test("ephemeral_jobLog_presets_and_coldstart_screens_terminals_authDigest_readonly_and_delayed_seed", async () => {
+  // 1. Ephemeral prefixes ([PRESETS, LOG_KEY]) never read from or write to keeper.
   const disk = new Map<string, unknown>([
     [PRESETS, { presets: [preset("ro-old", "RO Old")], candidates: [] }],
     [logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-secret" }] }], outputAt: 1 }],
-    ["screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO Old" }], outdated: false }],
-    ["terminals", { terminals: [{ id: "t-ro", by: "a@x.com", cwd: "/ro", at: 1, looking: [] }], outdated: false }],
   ]);
   let writes = 0;
   const readOnlyKeeper: Keeper = {
@@ -520,30 +517,18 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_presets_screens_or_term
     now: () => 1000,
     later: () => {},
   };
-  const mem = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n", "screens", "terminals"]);
+  const mem = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
   assert.equal(mem.get(PRESETS), undefined, "ephemeral presets must never lazy-load from keeper");
   assert.equal(mem.get(logKey("j-ro", 200)), undefined, "ephemeral jobLog must never lazy-load from keeper");
-  assert.equal(mem.get("screens"), undefined, "ephemeral screens must never lazy-load from keeper");
-  assert.equal(mem.get("terminals"), undefined, "ephemeral terminals must never lazy-load from keeper");
-
   mem.set(PRESETS, { presets: [preset("ro-new", "RO New")], candidates: [] });
   mem.set(logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-new-log" }] }], outputAt: 2 });
-  mem.set("screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO New" }], outdated: false });
-  mem.set("terminals", { terminals: [{ id: "t-new", by: "a@x.com", cwd: "/new", at: 2, looking: [] }], outdated: false });
   assert.equal(writes, 0, "ephemeral keys must never write to keeper");
-  assert.deepEqual((mem.get(PRESETS) as { presets: { id: string }[] }).presets.map((p) => p.id), ["ro-new"]);
-  assert.deepEqual((mem.get("screens") as { screens: { title: string }[] }).screens.map((s) => s.title), ["RO New"]);
-  assert.deepEqual((mem.get("terminals") as { terminals: { id: string }[] }).terminals.map((t) => t.id), ["t-new"]);
-
-  // Simulated restart with a brand new Memory over the same read-only DB still never resurrects old rows.
-  const restarted = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n", "screens", "terminals"]);
+  const restarted = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
   assert.equal(restarted.get(PRESETS), undefined);
   assert.equal(restarted.get(logKey("j-ro", 200)), undefined);
-  assert.equal(restarted.get("screens"), undefined);
-  assert.equal(restarted.get("terminals"), undefined);
 
-  // 2. End-to-end: legacy rows in stationMemory on disk never resurrect into link.memory;
-  //    non-downgrade boundary (e.g. unlock) immediately re-fetches active screens/terminals/presets.
+  // 2. Writable DB cold-start screens/terminals: matching authDigest shows known:true, confirmed:false;
+  //    mismatched authDigest or read-only DB returns undefined; deep-link screen.view still calls GET /screens.
   const said: Record<string, unknown> = {
     ...base(),
     "GET /overview": { ...overview, profiles: [profile] },
@@ -554,17 +539,38 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_presets_screens_or_term
   const { host, core } = await started(said as never);
   const link = core.inner.stations.link(S);
   assert.ok(link);
+  const curDigest = core.inner.store.authGen.workspaceDigest("ws");
+  assert.ok(typeof curDigest === "string" && curDigest.length > 0);
 
-  // Even if legacy disk rows exist in keeper, ephemeral Memory never reads them.
+  // Matching authDigest on writable DB -> known:true, confirmed:false.
   link.memory.deletePrefix("screens");
   link.memory.deletePrefix("terminals");
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "OldDisk", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old-disk", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Cached", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-cached", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
   assert.equal(core.inner.stations.isConfirmed("screens", S), false);
   assert.equal(core.inner.stations.isConfirmed("terminals", S), false);
-  assert.equal(core.inner.stations.screens(S), undefined, "ephemeral screens must never resurrect legacy keeper rows");
-  assert.equal(core.inner.stations.terminals(S), undefined, "ephemeral terminals must never resurrect legacy keeper rows");
+  assert.equal((core.inner.stations.screens(S)?.screens[0] as { title?: string })?.title, "Cached");
+  assert.equal((core.inner.stations.terminals(S)?.terminals[0] as { id?: string })?.id, "t-cached");
 
+  // Read-only DB: even with matching authDigest, unconfirmed cold-start rows MUST return undefined.
+  const db = core.inner.data.of(S);
+  assert.ok(db);
+  (db as { readOnly: boolean }).readOnly = true;
+  assert.equal(core.inner.data.isStationWritable(S), false);
+  assert.equal(core.inner.stations.screens(S), undefined, "read-only DB must never resurrect unconfirmed screens even with matching authDigest");
+  assert.equal(core.inner.stations.terminals(S), undefined, "read-only DB must never resurrect unconfirmed terminals even with matching authDigest");
+  (db as { readOnly: boolean }).readOnly = false;
+  assert.equal(core.inner.data.isStationWritable(S), true);
+
+  // Deep-link screen.view on cold-start cached (unconfirmed) screen MUST still call GET /screens first;
+  // if GET /screens returns 403, fail closed with phase: "denied" and 0 screenView attempts (and wipe disk row).
+  let link403 = true;
+  stationLater(host, (req) => {
+    if (link403 && req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
   const ui = core.connect();
   const values = new Map<number, unknown>();
   subscribe(core, ui, 1, { topic: "screens", station: S });
@@ -572,39 +578,77 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_presets_screens_or_term
   subscribe(core, ui, 3, { topic: "presets", station: S });
   await host.settle();
   apply(host, values);
-  assert.equal(v(values, 1).known, false, "before live reply, legacy disk screens must never resurrect");
-  assert.equal(v(values, 1).confirmed, false);
-  assert.equal(v(values, 2).known, false, "before live reply, legacy disk terminals must never resurrect");
-  assert.equal(v(values, 2).confirmed, false);
-  assert.equal(v(values, 3).presets[0].id, "app");
+  assert.equal(v(values, 1).known, true, "cold-start writable DB shows cached screens for display");
+  assert.equal(v(values, 1).confirmed, false, "cold-start cached screens stay confirmed: false");
 
-  // Live snapshot brings fresh station state (never legacy disk rows).
-  core.inner.stations.snapshot(S);
+  const beforeDeepLinkReqs = host.requests.length;
+  host.takeEmitted();
+  call(core, ui, 91, "screen.view", { station: S, screen: "desktop", view: "v-deeplink", codecs: ["jpeg"] });
   await host.settle();
-  apply(host, values);
-  assert.equal(v(values, 1).known, true);
-  assert.equal(v(values, 1).confirmed, true);
-  assert.equal(v(values, 1).screens[0].title, "Main", "must come from live station, never legacy disk row");
-  assert.equal(v(values, 2).known, true);
-  assert.equal(v(values, 2).confirmed, true);
-  assert.equal(v(values, 2).terminals[0].id, "t-1", "must come from live station, never legacy disk row");
+  const deepLinkMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(deepLinkMsgs.some((m) => m.id === 91 && m.value?.state?.phase === "denied"), "deep-link screen.view must confirm via GET /screens and fail closed on 403");
+  const deepLinkReqs = host.requests.slice(beforeDeepLinkReqs);
+  assert.ok(deepLinkReqs.some((r) => r.method === "GET" && r.url.endsWith("/admin/api/screens")), "deep-link screen.view must issue GET /screens when unconfirmed");
+  assert.equal(deepLinkReqs.filter((r) => r.url.includes("/screens/")).length, 0, "must not open screenView stream after 403");
+  assert.equal(core.inner.data.stationMemory(S, "screens"), undefined, "403 on writable DB must wipe screens from disk so restart never resurrects");
+  link403 = false;
 
-  // Non-downgrade auth boundary (e.g. lock trusted flip / unlock): must immediately re-fetch active screens/terminals/presets
-  // so UI recovers confirmed: true instead of getting stuck empty.
+  // Non-downgrade auth boundary re-fetches active screens/terminals/presets and restores confirmed: true.
   const beforeReqs = host.requests.length;
   core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:trusted:1");
   await host.settle();
   apply(host, values);
   const afterUrls = host.requests.slice(beforeReqs).map((r) => `${r.method} ${r.url}`);
-  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/screens")), "onBoundary must re-fetch active screens");
-  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/terminals")), "onBoundary must re-fetch active terminals");
-  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/presets")), "onBoundary must re-fetch active presets");
-  assert.equal(v(values, 1).known, true);
-  assert.equal(v(values, 1).confirmed, true, "screens recovers confirmed: true after non-downgrade boundary");
-  assert.equal(v(values, 2).known, true);
-  assert.equal(v(values, 2).confirmed, true, "terminals recovers confirmed: true after non-downgrade boundary");
-  assert.equal(v(values, 3).presets[0].id, "app", "presets recovers after non-downgrade boundary");
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/screens")));
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/terminals")));
+  assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/presets")));
+  assert.equal(v(values, 1).confirmed, true);
+  assert.equal(v(values, 2).confirmed, true);
+  assert.equal(v(values, 3).presets[0].id, "app");
   core.close();
+
+  // 3. Opus P1: delayed workspaceDigest seeding after initial cold-start compute automatically re-computes screens/terminals to known:true, confirmed:false.
+  const { host: h2, core: c2 } = await started(said as never);
+  const link2 = c2.inner.stations.link(S);
+  assert.ok(link2);
+  // Simulate cold start before workspaceDigest is seeded for a fresh workspace "ws-late":
+  const S2 = "ws-late/st";
+  const lateAuth = c2.inner.store.authGen;
+  let seededCalls = 0;
+  const unsub = lateAuth.onWorkspaceDigestSeeded((ws) => {
+    if (ws === "ws-late") seededCalls++;
+  });
+  assert.equal(lateAuth.syncWorkspace("ws-late", "owner:a@x.com:role:admin"), false, "first seed must not bump authGen");
+  assert.equal(seededCalls, 1, "first seed must notify onWorkspaceDigestSeeded");
+  assert.equal(lateAuth.syncWorkspace("ws-late", "owner:a@x.com:role:admin"), false, "identical digest must not re-notify");
+  assert.equal(seededCalls, 1);
+  unsub();
+
+  // Verify StationsSync re-notifies screens/terminals topics when workspaceDigest is seeded late.
+  const ui2 = c2.connect();
+  const vals2 = new Map<number, unknown>();
+  // Force a fresh unseeded digest state by syncing a second station's workspace via onWorkspaceDigestSeeded hook:
+  const onChangeHits: string[] = [];
+  const origOnChange = c2.inner.stations.onChange.bind(c2.inner.stations);
+  c2.inner.stations.onChange = (addr, what) => {
+    onChangeHits.push(`${addr}:${what}`);
+    origOnChange(addr, what);
+  };
+  assert.equal(lateAuth.syncWorkspace("ws-late2", "owner:a@x.com:role:admin"), false);
+  // Seeded workspace with no links does not emit spurious onChange for S:
+  assert.equal(onChangeHits.filter((x) => x.startsWith(`${S}:`)).length, 0);
+  // Restore and verify link2 with matching digest after seed computes known:true, confirmed:false:
+  c2.inner.stations.onChange = origOnChange;
+  link2.memory.deletePrefix("screens");
+  c2.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "LateSeed", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: c2.inner.store.authGen.workspaceDigest("ws") });
+  subscribe(c2, ui2, 1, { topic: "screens", station: S });
+  await h2.settle();
+  apply(h2, vals2);
+  assert.equal(v(vals2, 1).known, true);
+  assert.equal(v(vals2, 1).confirmed, false);
+  assert.equal(v(vals2, 1).screens[0].title, "LateSeed");
+  assert.equal(S2.startsWith("ws-late/"), true);
+  c2.close();
 });
 
 test("same_gen_sse_beats_older_inflight_get_and_403_clears_screens_terminals_confirmation", async () => {
@@ -778,5 +822,162 @@ test("screenGone_advances_seq_even_when_absent_and_reconnecting_screen_view_abor
   // Advance clock past all reconnect backoff windows: zero additional screenView stream requests may fire.
   await host.time.pass(60_000, 1_000);
   assert.equal(streamAttempts, 1, "denied screen.view must never issue further screenView requests after 403");
+  core.close();
+});
+
+test("screenGone_does_not_swallow_inflight_403_and_inflight_handshakes_abort_cleanly_on_403", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }, { id: "browser:u_1", kind: "browser", title: "Tab 1", userTab: true, width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [] },
+    "POST /screens/browser%3Au_1/close": { ok: true },
+  };
+  let handshakeMode: "hang" | "open-then-hang-reopen" = "hang";
+  let firstCanceled = 0;
+  let reopenCanceled = 0;
+  let screenCalls = 0;
+  const wireFactory = (h: FakeHost): StationWire =>
+    Object.assign(new HostWire(h), {
+      screen: () => {
+        screenCalls++;
+        if (handshakeMode === "hang") {
+          return Effect.gen(function* () {
+            yield* Effect.addFinalizer(() => Effect.sync(() => { firstCanceled++; }));
+            return yield* Effect.never;
+          });
+        }
+        // open-then-hang-reopen: 1st call returns an open socket; 2nd call (reopen) hangs in its own scope.
+        if (screenCalls === 2) {
+          return Effect.gen(function* () {
+            const q = yield* Queue.unbounded<Uint8Array | null>();
+            return {
+              reply: { status: 200, headers: [["content-type", "application/x-stillfail-screen"]] as [string, string][], body: { take: Queue.take(q) }, via: null },
+              send: { write: () => Effect.void, finish: () => {} },
+            };
+          });
+        }
+        return Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => Effect.sync(() => { reopenCanceled++; }));
+          return yield* Effect.never;
+        });
+      },
+    });
+  const { host, core, push } = await started(said as never, 0, wireFactory);
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(core, ui, 1, { topic: "screens", station: S });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+
+  // 1. Astra r9 P1-1: screenGone during in-flight GET /screens must NOT swallow an in-flight 403.
+  let releaseInflight!: (r: ReturnType<typeof jsonResponse>) => void;
+  let activeGate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => { releaseInflight = resolve; });
+  let interceptScreens: "gate" | "403" | "none" = "gate";
+  let releaseOpenBrowser: ((r: ReturnType<typeof jsonResponse>) => void) | null = null;
+  let openBrowserGate: Promise<ReturnType<typeof jsonResponse>> | null = null;
+  stationLater(host, (req) => {
+    if (req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      if (interceptScreens === "gate") {
+        interceptScreens = "none";
+        return activeGate;
+      }
+      if (interceptScreens === "403") {
+        interceptScreens = "none";
+        return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+      }
+    }
+    if (openBrowserGate !== null && req.method === "POST" && req.url.endsWith("/admin/api/screens/browser")) {
+      return openBrowserGate;
+    }
+    return undefined;
+  });
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  // Local optimistic screenGone advances #screensSeq (NOT #screensConfirmSeq).
+  call(core, ui, 60, "screen.close", { station: S, screen: "browser:u_1" });
+  await host.settle();
+  // In-flight GET /screens answers 403: must take effect (not swallowed by screenGone).
+  releaseInflight(jsonResponse(403, { error: "forbidden" }));
+  await host.settle();
+  apply(host, values);
+  assert.equal(core.inner.stations.isDenied("screens", S), true, "403 must take effect even after screenGone advanced #screensSeq");
+  assert.equal(v(values, 1).denied, true);
+  assert.equal(v(values, 1).confirmed, false);
+
+  // Verify newer station-confirmed SSE DOES suppress an older in-flight 403.
+  let releaseOld403!: (r: ReturnType<typeof jsonResponse>) => void;
+  activeGate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => { releaseOld403 = resolve; });
+  interceptScreens = "gate";
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  // Newer SSE arrives with confirmed screens (bumps #screensConfirmSeq).
+  push("screens", { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+  // Older in-flight 403 arrives late: must be ignored because #screensConfirmSeq advanced.
+  releaseOld403(jsonResponse(403, { error: "stale forbidden" }));
+  await host.settle();
+  apply(host, values);
+  assert.equal(core.inner.stations.isDenied("screens", S), false, "older 403 must not override newer station confirmation");
+  assert.equal(v(values, 1).confirmed, true);
+
+  // 2. Astra r9 P1-2 (first handshake): in-flight requests.screenView is canceled immediately on GET /screens 403.
+  handshakeMode = "hang";
+  host.takeEmitted();
+  call(core, ui, 71, "screen.view", { station: S, screen: "desktop", view: "v-hang1", codecs: ["jpeg"] });
+  await host.settle();
+  assert.equal(screenCalls, 1);
+  assert.equal(firstCanceled, 0);
+  interceptScreens = "403";
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  const msgs1 = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgs1.some((m) => m.id === 71 && m.value?.state?.phase === "denied"), "in-flight first handshake must transition to phase: denied on 403");
+  assert.equal(firstCanceled, 1, "in-flight first handshake fiber/scope must be canceled on 403");
+
+  // 3. Astra r9 P1-2 (replacement handshake): reopen scope is closed cleanly when 403 arrives mid-reopen.
+  push("screens", { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  await host.settle();
+  handshakeMode = "open-then-hang-reopen";
+  host.takeEmitted();
+  call(core, ui, 72, "screen.view", { station: S, screen: "desktop", view: "v-reopen", codecs: ["jpeg"], control: false });
+  await host.settle();
+  assert.equal(screenCalls, 2);
+  // Trigger replacement handshake via screen.control(true)
+  call(core, ui, 73, "screen.control", { view: "v-reopen", control: true });
+  await host.settle();
+  assert.equal(screenCalls, 3, "replacement handshake started");
+  assert.equal(reopenCanceled, 0);
+  // 403 arrives while replacement handshake is pending: replacement scope MUST be closed and view must enter phase: denied.
+  interceptScreens = "403";
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  const msgs2 = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgs2.some((m) => m.id === 72 && m.value?.state?.phase === "denied"), "replacement handshake must abort to phase: denied on 403");
+  assert.equal(reopenCanceled, 1, "replacement handshake scope must be closed with zero leak on 403");
+
+  // 4. Astra r9 P1-2 (opening wait loop): 403 while waiting for an opening tab aborts immediately with 0 screenView calls.
+  const callsBeforeOpening = screenCalls;
+  openBrowserGate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => { releaseOpenBrowser = resolve; });
+  push("screens", { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true });
+  await host.settle();
+  call(core, ui, 74, "screen.openBrowser", { station: S, url: "https://example.com", id: "u_0123456789ab" });
+  await host.settle();
+  host.takeEmitted();
+  call(core, ui, 75, "screen.view", { station: S, screen: "browser:u_0123456789ab", view: "v-opening", codecs: ["jpeg"] });
+  await host.settle();
+  interceptScreens = "403";
+  core.inner.runner.fork(core.inner.stations.readScreens(S));
+  await host.settle();
+  assert.equal(core.inner.stations.isDenied("screens", S), true, "readScreens GET /screens 403 must set isDenied");
+  const msgs3 = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgs3.some((m) => m.id === 75 && m.value?.state?.phase === "denied"), `opening wait loop must abort to phase: denied on 403, got: ${JSON.stringify(msgs3)}`);
+  assert.equal(screenCalls, callsBeforeOpening, "opening wait loop must not invoke screenView after 403");
+  releaseOpenBrowser!(jsonResponse(200, { id: "browser:u_0123456789ab" }));
+  await host.settle();
+  assert.equal(Deferred !== undefined, true);
   core.close();
 });
