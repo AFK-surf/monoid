@@ -3254,7 +3254,7 @@ pub fn way_in_node(@view.View, () -> String, () -> String, () -> String, () -> S
 pub fn way_in_note_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
-pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit, middle? : Bool, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn way_in_title_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
