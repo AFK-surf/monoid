@@ -25,6 +25,8 @@ typedef struct {
   // (the frames' thread's) the quarter-pixel phases of it drawn here or asked to be drawn ahead (bit `sub`: glyph
   // keys' bits 26..27, text.mbt glyph_col_sub), so each is asked of the queue once
   uint8_t subs_queued;
+  // (the frames' thread's) 1 while this glyph is queued in fg_pending awaiting end-of-frame batch prewarm
+  uint8_t fg_queued;
 } glyph_entry;
 
 static NSMutableDictionary<NSString *, NSNumber *> *keys;
@@ -518,7 +520,7 @@ static int intern_at(NSString *cluster, double size, int weight, int style, doub
     entries = realloc(entries, sizeof(glyph_entry) * cap_entries);
   }
   int id_ = n_entries++;
-  entries[id_] = (glyph_entry){size, weight, style, 0, 0, 0, 0, 0, dx, 0};
+  entries[id_] = (glyph_entry){size, weight, style, 0, 0, 0, 0, 0, dx, 0, 0};
   [texts addObject:cluster];
   keys[k] = @(id_);
   return id_;
@@ -1001,11 +1003,11 @@ static void place(int full_key, MBDrawn *d) {
 }
 
 // ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), and the remaining subpixel
-// phases of a foreground-rasterized glyph once it is requested at a second distinct phase (horizontal subpixel motion),
-// drawn on queues of their own: each glyph's first phase on ahead_q, the rest interleaved on ahead_rest_q (so a page
-// pushed in horizontally via view_rephase finds its remaining phases ready, while cold foreground bursts do not queue
-// 3x extra per-glyph GCD work for static text); each phase taken as it is first asked for when ready, or drawn
-// immediately on the frames' thread without ever blocking on a background worker (skip mask). ----
+// phases of glyphs first rasterized on the frames' thread (deferred until frame end via mb_text_flush_ahead so cold
+// foreground bursts pay zero per-glyph GCD overhead and avoid mid-frame CoreText lock contention while still warming
+// the remaining phases during the inter-frame idle window for horizontal motion), drawn on queues of their own; each
+// phase taken as it is first asked for when ready, or drawn immediately on the frames' thread without ever blocking
+// on a background worker (skip mask). ----
 
 // One glyph asked to be drawn ahead at some of its phases: what it is drawn from (set before a queue has it, not
 // changed after); under ahead_lock, by phase (bit `sub`), those asked and not begun (`want`), those of them drawn
@@ -1045,6 +1047,10 @@ static NSMutableDictionary<NSNumber *, MBAhead *> *ahead_of;
 static NSMutableOrderedSet<MBAhead *> *ahead_order;
 // (the frames' thread's) the batch of glyphs asked now (mb_host_glyphs_ahead), counted
 static unsigned ahead_batch;
+// (the frames' thread's) glyphs rasterized in foreground during the current frame awaiting one batched ahead_rest_q
+// dispatch at frame end (mb_text_flush_ahead)
+static int *fg_pending;
+static int n_fg_pending, cap_fg_pending;
 
 // A phase of `a` drawn: the lowest of its first not begun, or (`first` NO) of the rest; nothing where none is left.
 static void draw_ahead(MBAhead *a, BOOL first) {
@@ -1105,7 +1111,11 @@ static BOOL drop_oldest_drawn(void) {
 
 // Everything asked for let go: the faces or the scale changed, and what is drawn in them with it.
 static void ahead_forget(void) {
-  for (int i = 0; i < n_entries; i++) entries[i].subs_queued = 0;
+  for (int i = 0; i < n_entries; i++) {
+    entries[i].subs_queued = 0;
+    entries[i].fg_queued = 0;
+  }
+  n_fg_pending = 0;
   if (!ahead_order.count) return;
   pthread_mutex_lock(&ahead_lock);
   for (MBAhead *a in ahead_order) {
@@ -1139,6 +1149,12 @@ static void keys_sweep(void) {
     entries = NULL;
     cap_entries = 0;
   }
+  if (cap_fg_pending > 1024) {
+    free(fg_pending);
+    fg_pending = NULL;
+    cap_fg_pending = 0;
+  }
+  n_fg_pending = 0;
   for (int i = 0; i < n_bmp; i++) {
     for (int p = 0; p < 256; p++) free(bmp_cache[i].pages[p]);
   }
@@ -1153,6 +1169,7 @@ static void keys_sweep(void) {
 
 int32_t mb_host_atlas_generation(void) {
   keys_sweep();
+  mb_text_flush_ahead();
   return generation;
 }
 
@@ -1282,6 +1299,30 @@ void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
       if (!ahead_ask(k, want, (uint8_t)(want & bit), asked)) continue;
     }
     ahead_go(asked, firsts);
+    mb_text_flush_ahead();
+  }
+}
+
+// Dispatch the remaining subpixel phases of all glyphs rasterized on the frames' thread during this frame as a single
+// ahead_rest_q batch (called at end of mb_render_present, at end of mb_host_glyphs_ahead, and on frame-start
+// mb_host_atlas_generation).
+void mb_text_flush_ahead(void) {
+  if (n_fg_pending == 0) return;
+  @autoreleasepool {
+    ahead_ensure();
+    NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
+    for (int i = 0; i < n_fg_pending; i++) {
+      int k = fg_pending[i];
+      if (k < 0 || k >= n_entries) continue;
+      entries[k].fg_queued = 0;
+      uint8_t rest = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
+      // (if an empty skipped MBAhead still sits in ahead_of[@(k)], wait until reclaimed by drop_oldest_drawn)
+      if (rest && !ahead_of[@(k)]) {
+        ahead_ask(k, rest, 0, asked);
+      }
+    }
+    n_fg_pending = 0;
+    ahead_go(asked, [NSMutableArray new]);
   }
 }
 
@@ -1324,26 +1365,30 @@ static MBDrawn *drawn_ahead(int key, int sub) {
 }
 
 // Glyph `full_key` (its cluster's and its phase) drawn, from what was drawn ahead of it when ready, else here; the
-// remaining subpixel phases are queued onto ahead_rest_q only once a foreground-rasterized glyph is requested at a
-// second distinct phase (horizontal subpixel motion), avoiding per-glyph GCD overhead and 3x wasted rasterization on
-// cold static text / scale-change bursts.
+// remaining subpixel phases are recorded in fg_pending and dispatched in one batch by mb_text_flush_ahead at frame end
+// rather than per-glyph mid-frame, eliminating per-glyph GCD/ObjC overhead and mid-frame CoreText lock contention while
+// keeping subsequent horizontal motion frames warm.
 static void rasterize(int full_key) {
   int key = key_base(full_key), sub = key_sub(full_key);
   glyph_entry *e = &entries[key];
-  uint8_t bit = (uint8_t)(1 << sub);
-  BOOL moved = e->subs_queued != 0 && (e->subs_queued & bit) == 0;
   MBDrawn *d = drawn_ahead(key, sub);
   if (!d) {
     d = draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(sub), text_scale);
   }
-  e->subs_queued |= bit;
-  if (moved) {
-    uint8_t rest = (uint8_t)(SUB_ALL & ~e->subs_queued);
-    if (rest && !ahead_of[@(key)]) {
-      ahead_ensure();
-      NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
-      ahead_ask(key, rest, 0, asked);
-      ahead_go(asked, [NSMutableArray new]);
+  e->subs_queued |= (uint8_t)(1 << sub);
+  uint8_t rest = (uint8_t)(SUB_ALL & ~e->subs_queued);
+  if (rest && !e->fg_queued && !ahead_of[@(key)]) {
+    if (n_fg_pending == cap_fg_pending) {
+      int ncap = cap_fg_pending ? cap_fg_pending * 2 : 64;
+      int *p = realloc(fg_pending, (size_t)ncap * sizeof(int));
+      if (p) {
+        fg_pending = p;
+        cap_fg_pending = ncap;
+      }
+    }
+    if (n_fg_pending < cap_fg_pending) {
+      fg_pending[n_fg_pending++] = key;
+      e->fg_queued = 1;
     }
   }
   place(full_key, d);

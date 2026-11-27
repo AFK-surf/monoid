@@ -362,6 +362,8 @@ static BOOL drawn_eq(MBDrawn *d, MBDrawn *r) {
 // old MBAhead new-batch double-phase with duplicate key, full-queue continuation, foreground rasterize lazy phases,
 // and non-blocking skip mask (including worker discard and empty-entry reclamation).
 static void ahead_rewarm(void) {
+  // Settle any face changes left over by earlier tests before exercising generation-based flushing.
+  mb_host_atlas_generation();
   ahead_ensure();
   drain_ahead_queues();
 
@@ -508,22 +510,34 @@ static void ahead_rewarm(void) {
     CHECK(ahead_order.count == 0, "rewarm 5: ahead_order not clean (%lu)", (unsigned long)ahead_order.count);
   }
 
-  // 6. Foreground rasterize lazy phases: first sight queues nothing; second distinct phase queues remaining 2 phases.
+  // 6. Foreground rasterize deferred batch prewarm: rasterize records pending glyphs without dispatching mid-frame;
+  // mb_text_flush_ahead / mb_host_atlas_generation dispatches remaining phases as one batch onto ahead_rest_q.
   {
-    int k = key_of(@"懒", 19, 0);
-    CHECK(k >= 0, "rewarm 6: no key");
+    int k1 = key_of(@"批", 19, 0);
+    int k2 = key_of(@"刷", 19, 0);
+    CHECK(k1 >= 0 && k2 >= 0, "rewarm 6: no keys");
     double out[8] = {0};
-    mb_host_glyph(k | (0 << 26), out);
+    mb_host_glyph(k1 | (0 << 26), out);
+    mb_host_glyph(k2 | (2 << 26), out);
     drain_ahead_queues();
-    CHECK(entries[k].subs_queued == 0x1, "rewarm 6: first foreground rasterize queued %u", entries[k].subs_queued);
-    CHECK(ahead_of[@(k)] == nil, "rewarm 6: first foreground rasterize unexpectedly created MBAhead");
+    CHECK(entries[k1].subs_queued == 0x1 && entries[k1].fg_queued == 1,
+          "rewarm 6: k1 mid-frame state wrong (subs=%u fg=%u)", entries[k1].subs_queued, entries[k1].fg_queued);
+    CHECK(entries[k2].subs_queued == 0x4 && entries[k2].fg_queued == 1,
+          "rewarm 6: k2 mid-frame state wrong (subs=%u fg=%u)", entries[k2].subs_queued, entries[k2].fg_queued);
+    CHECK(ahead_of[@(k1)] == nil && ahead_of[@(k2)] == nil,
+          "rewarm 6: foreground rasterize dispatched MBAhead mid-frame");
 
-    mb_host_glyph(k | (2 << 26), out);
+    // Flush via frame-boundary hook (mb_host_atlas_generation calls mb_text_flush_ahead).
+    mb_host_atlas_generation();
     drain_ahead_queues();
-    CHECK(entries[k].subs_queued == SUB_ALL, "rewarm 6: second phase queued %u", entries[k].subs_queued);
-    CHECK(drawn_ahead(k, 1) != nil && drawn_ahead(k, 3) != nil, "rewarm 6: remaining phases 1 & 3 not drawn ahead");
-    CHECK(drawn_ahead(k, 0) == nil && drawn_ahead(k, 2) == nil, "rewarm 6: already-drawn phases 0 & 2 redrawn");
-    CHECK(ahead_of[@(k)] == nil, "rewarm 6: ahead_of not cleared");
+    CHECK(entries[k1].subs_queued == SUB_ALL && entries[k1].fg_queued == 0, "rewarm 6: k1 not flushed");
+    CHECK(entries[k2].subs_queued == SUB_ALL && entries[k2].fg_queued == 0, "rewarm 6: k2 not flushed");
+    for (int s = 1; s < SUB_COUNT; s++) CHECK(drawn_ahead(k1, s) != nil, "rewarm 6: k1 phase %d missing", s);
+    CHECK(drawn_ahead(k1, 0) == nil, "rewarm 6: k1 phase 0 redrawn");
+    CHECK(drawn_ahead(k2, 0) != nil && drawn_ahead(k2, 1) != nil && drawn_ahead(k2, 3) != nil,
+          "rewarm 6: k2 remaining phases missing");
+    CHECK(drawn_ahead(k2, 2) == nil, "rewarm 6: k2 phase 2 redrawn");
+    CHECK(ahead_of[@(k1)] == nil && ahead_of[@(k2)] == nil, "rewarm 6: ahead_of not cleared");
   }
 
   // 7. Non-blocking skip mask: (a) drawn_ahead never blocks on an actively drawing phase and unskip works on re-request;

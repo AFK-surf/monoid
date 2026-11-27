@@ -5065,6 +5065,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     // (what was said of it, nothing changed, not left for the next)
     dirty_told = dirty_whole = dirty_n = 0;
     through_n = 0;
+    mb_text_flush_ahead();
     return;
   }
   MBFrame *fr = [MBFrame new];
@@ -5145,6 +5146,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   shown_h = vh;
   shown_scale = vscale;
   shown_streams = streams;
+  mb_text_flush_ahead();
 }
 
 void mb_render_set_fixed_dt(double dt) {
