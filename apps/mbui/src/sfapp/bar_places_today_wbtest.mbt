@@ -274,7 +274,9 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // 用量's controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's pick)
   // (连接 -3 made, 用量 -2, 额度 -3: their pages' and its list's room under the last block their list's end_room, no block of it)
   // (额度 +8: three-tier list adds 概览/批量管理 collection card, removing top-bar 多选/+ buttons; bottom bar keeps ＋; PR-B4 fill_chip_node + quota_chips_node flattening lowers further)
-  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (240, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // (连接 131 -> 159: unified compact grouped connect rows with inline session count & structured metadata slots;
+  // 额度 240 -> 219: compact grouped profile rows drop per-row cards and capsules)
+  let works = [(159, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (219, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

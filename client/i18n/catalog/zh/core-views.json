@@ -555,6 +555,7 @@
   "core-views.profiles.group.cursor": "Cursor 订阅",
   "core-views.profiles.group.devin": "Devin 订阅",
   "core-views.profiles.group.agy": "Google",
+  "core-views.profiles.group.colab": "Google Colab",
   "core-views.profiles.group.key": "API Key",
   "core-views.profiles.group.service": "服务账号",
   "core-views.profiles.waitSync": "等待同步",

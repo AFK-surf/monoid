@@ -567,7 +567,7 @@ test "profiles list and sidebar show non-window quota explanations and uninspect
   let x_of = fn(prefix : String) -> Double {
     runs.iter().find_first(fn(r) { r.text.has_prefix(prefix) }).unwrap().x0
   }
-  let mark_x = x_of("Devin 团队") - 18.0 - 6.0
+  let mark_x = x_of("Devin 团队") - 20.0 - 8.0
   assert_eq(x_of("Devin 不向 station 提供套餐用量"), mark_x)
   assert_eq(x_of("尚未查询额度"), mark_x)
   assert_eq(x_of("尚未检查"), mark_x)

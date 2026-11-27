@@ -746,6 +746,7 @@
   "web-pages.connects.removeHere": "从这里移除",
   "web-pages.connects.stationFirst": "先添加 station",
   "web-pages.connects.stationOffline": "station 离线",
+  "web-pages.connects.statusSessions": "{status}，{n} 个会话",
   "web-pages.connects.waiting": "尚未连接的 Slack app",
   "web-pages.connects.whichStation": "添加到 station",
   "web-pages.errors.inviteCodeExpired": "邀请码已过期",

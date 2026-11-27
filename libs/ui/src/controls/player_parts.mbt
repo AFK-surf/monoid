@@ -567,10 +567,10 @@ fn player_format(mime : String) -> String? {
 /// What a double tap did, said a moment: 快退 15 秒, 快进 15 秒, 已暂停, 继续播放.
 fn phone_note_words(note : @player.MediaNote) -> String {
   match note {
-    Back(ms) => t("android-misc.drive.player.back", args=[("n", (ms / 1000.0).to_int().to_string())])
-    Ahead(ms) => t("android-misc.drive.player.ahead", args=[("n", (ms / 1000.0).to_int().to_string())])
-    Paused => t("android-misc.drive.player.paused")
-    Played => t("android-misc.drive.player.playing")
+    @player.MediaNote::Back(ms) => t("android-misc.drive.player.back", args=[("n", (ms / 1000.0).to_int().to_string())])
+    @player.MediaNote::Ahead(ms) => t("android-misc.drive.player.ahead", args=[("n", (ms / 1000.0).to_int().to_string())])
+    @player.MediaNote::Paused => t("android-misc.drive.player.paused")
+    @player.MediaNote::Played => t("android-misc.drive.player.playing")
   }
 }
 

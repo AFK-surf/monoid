@@ -260,8 +260,8 @@ export class Directory extends DurableObject<Env> {
     return this.#workspaces.setWay(sub, id, way, on);
   }
 
-  manages(sub: string, id: string): void {
-    this.#workspaces.manages(sub, id);
+  manages(sub: string, id: string, station?: string): void {
+    this.#workspaces.manages(sub, id, station);
   }
 
   updateWorkspace(sub: string, id: string, input: { name?: unknown; emoji?: unknown; icon?: unknown }): WorkspaceView {

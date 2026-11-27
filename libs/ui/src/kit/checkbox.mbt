@@ -84,12 +84,12 @@ pub fn checkbox_look_of(
       opacity=if s.disabled { 0.45 } else { 1.0 },
       fn() {
         match s.check {
-          On =>
+          @view.Check::On =>
             c.text("✓", size=size * 0.7, weight=700, color=mark.unwrap_or(t.on_primary), wrap=false, line=size)
             |> ignore
-          Mixed =>
+          @view.Check::Mixed =>
             c.box(w=Px(size * 0.5), h=Px(2.0), radius=1.0, bg=mark.unwrap_or(t.on_primary), fn() {  }) |> ignore
-          Off => ()
+          @view.Check::Off => ()
         }
         focus_ring(c, s.focus_shown, radius)
       },

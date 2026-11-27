@@ -57,9 +57,9 @@ fn pill_morph_eval(
   let horizontal_side = pm.side is (Left | Right)
   let vertical = pm.direction == Vertical
   let along_val = match pm.along {
-    Start => -1.0
-    End => 1.0
-    Middle => 0.0
+    @view.Along::Start => -1.0
+    @view.Along::End => 1.0
+    @view.Along::Middle => 0.0
   }
   let align_x = if horizontal_side { 0.0 } else { along_val }
   let align_y = if horizontal_side { along_val } else { 0.0 }
@@ -683,13 +683,13 @@ fn anchored_popover_shell_by(
     Some(pm) => {
       pm.shell_ref.val = Some(p)
       let off = match side {
-        Bottom | Top => -(pm.ah + pm.pill_pad)
-        Left | Right => -(pm.aw + pm.pill_pad)
+        @view.Side::Bottom | @view.Side::Top => -(pm.ah + pm.pill_pad)
+        @view.Side::Left | @view.Side::Right => -(pm.aw + pm.pill_pad)
       }
       let aoff = match along {
-        End => pm.pill_pad
-        Start => -pm.pill_pad
-        Middle => 0.0
+        @view.Along::End => pm.pill_pad
+        @view.Along::Start => -pm.pill_pad
+        @view.Along::Middle => 0.0
       }
       (off, aoff)
     }

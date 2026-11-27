@@ -50,16 +50,10 @@ test "连接 with a waiting Slack app and pictured and unpictured connects: card
       assert_true(((cont.1 + cont.3 / 2.0) - wait_mid).abs() <= 1.0, msg="\{at}: continue \{Repr(cont)} at \{wait_mid} in \{Repr(wait_card)}")
       if w >= 1100.0 {
         let owner = drawn(t, "林（你）")
-        let online = t.words().filter(fn(word) { word.0 == "在线" && (word.2 - owner.1).abs() < 8.0 })[0]
-        assert_true(online.1 > owner.0 + owner.2 + 8.0, msg="\{at}: owner \{Repr(owner)} before online \{Repr(online)}")
-        let row_top = pictured_title.1
-        let sub = drawn(t, "每个 thread 一个会话 · Claude Code · Opus 5.5")
-        let row_mid = if by_side {
-          (row_top + sub.1 + sub.3) / 2.0
-        } else {
-          pictured_title.1 + pictured_title.3 / 2.0
-        }
-        assert_true(((owner.1 + owner.3 / 2.0) - row_mid).abs() <= 2.0, msg="\{at}: owner \{Repr(owner)} vs \{row_mid}")
+        let mode_short = t.words().filter(fn(word) { word.0 == "多会话" && (word.2 - owner.1).abs() < 8.0 })[0]
+        assert_true(mode_short.1 > owner.0 + owner.2 + 4.0, msg="\{at}: owner \{Repr(owner)} before modeShort \{Repr(mode_short)}")
+        let sub = drawn(t, "Claude Code")
+        assert_true(((owner.1 + owner.3 / 2.0) - (sub.1 + sub.3 / 2.0)).abs() <= 2.0, msg="\{at}: owner \{Repr(owner)} aligned with line 2 \{Repr(sub)}")
       }
     }
   }
@@ -336,4 +330,198 @@ fn edges_at(t : @ui.Tester, x : Double, y : Double) -> String {
   t.drawn_instances().filter(fn(a) { a[5] == 0.0 && x >= a[0] && x <= a[0] + a[2] && y >= a[1] && y <= a[1] + a[3] }).map(fn(a) {
     "\{a[0]},\{a[1]} \{a[2]}x\{a[3]} e\{a[6]} a\{a[15]}"
   }).join("; ")
+}
+
+///|
+fn cn_compact_item(station : String, station_name : String, id : String, name : String, presence : String, status : String, sessions : Int) -> Json {
+  {
+    "station": Json::string(station),
+    "stationName": Json::string(station_name),
+    "connect": {
+      "id": Json::string(id),
+      "name": Json::string(name),
+      "team": "Acme",
+      "kind": "slack",
+      "mode": "multi-session",
+      "presence": Json::string(presence),
+      "statusText": Json::string(status),
+      "sessions": Json::number(sessions.to_double()),
+      "runtimeText": "Claude Code",
+      "modelName": "Opus 5.5",
+      "bind": { "runtime": "claude", "model": "claude-opus-5-5" },
+      "modeShort": "多会话",
+      "modeText": "每个 thread 一个会话",
+    },
+  }
+}
+
+///|
+fn cn_compact_tester(items : Array[Json], w~ : Double, h~ : Double, platform~ : Int, words_scale? : Double = 1.0) -> @ui.Tester {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let ws : Workspace = { id: "ws-cn-compact", name: "W", emoji: "", icon: "", email: "" }
+  let stations : Array[Json] = [
+    { "station": "ws1/s1", "id": "s1", "name": "Willow", "online": true },
+    { "station": "ws1/s2", "id": "s2", "name": "Maple", "online": true },
+  ]
+  let src = @sfbase.made_source(
+    topic=fn(name, _) {
+      match name {
+        "connects" => Some({ "items": Json::array(items), "slackApps": [], "wait": { "reading": false, "failing": [] }, "noProfile": false })
+        "stations" => Some(Json::array(stations))
+        _ => None
+      }
+    },
+  )
+  let core = @sfbase.settings_core(src, ws)
+  let here = fn() { @settings.here_of(core, ws.id, ws.name) }
+  let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+  let t = @ui.Tester::new(fn(ctx) { @sf.begin(ctx) |> ignore }, w~, h~, platform~)
+  t.set_font_scale(words_scale)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(p) {
+      p.width(Is(Some(w))).height(Is(Some(h))) |> ignore
+      connects_node(p, src, core, here, "", on_back=fn() {  }, frame~, stint=fn() { 1 }, width=fn() { w })
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "connects_node: 390x844 unified single card fits >= 7 connects, no middot, shows station/runtime/model/modeShort, passes 320pt and 1.3x audit" {
+  let items : Array[Json] = [
+    cn_compact_item("ws1/s1", "Willow", "c1", "Bot-One", "online", "在线", 4),
+    cn_compact_item("ws1/s1", "Willow", "c2", "Bot-Two", "online", "在线", 0),
+    cn_compact_item("ws1/s2", "Maple", "c3", "Bot-Three", "busy", "连接中", 1),
+    cn_compact_item("ws1/s2", "Maple", "c4", "Bot-Four", "error", "认证失败", 0),
+    cn_compact_item("ws1/s1", "Willow", "c5", "Bot-Five", "offline", "离线", 0),
+    cn_compact_item("ws1/s2", "Maple", "c6", "Bot-Six", "online", "在线", 12),
+    cn_compact_item("ws1/s1", "Willow", "c7", "Bot-Seven", "online", "在线", 2),
+  ]
+  let t = cn_compact_tester(items, w=390.0, h=844.0, platform=2)
+  assert_eq(t.audit(), [], msg="390x844 connects audit failed")
+
+  // >= 7 connects visible on first screen without scrolling, inside one unified card (6 hairlines for 7 rows)
+  let names = ["Bot-One", "Bot-Two", "Bot-Three", "Bot-Four", "Bot-Five", "Bot-Six", "Bot-Seven"]
+  let mut visible = 0
+  for name in names {
+    match t.find(name) {
+      Some((_, y)) if y < 820.0 => visible += 1
+      _ => ()
+    }
+  }
+  assert_true(visible >= 7, msg="expected >= 7 connects visible on 390x844, got \{visible}")
+  assert_eq(sl_seps_drawn(t).length(), 6, msg="expected single unified card with 6 hairlines for 7 connects")
+
+  // Line 2 shows station, runtime, model, modeShort as independent nodes without `" · "`
+  assert_true(t.find("Willow") is Some(_), msg="station name shown")
+  assert_true(t.find("Maple") is Some(_), msg="second station name shown")
+  assert_true(t.find("Claude Code") is Some(_), msg="runtime shown")
+  assert_true(t.find("Opus 5.5") is Some(_), msg="model shown")
+  assert_true(t.find("多会话") is Some(_), msg="modeShort shown")
+  let middots = t.words().filter(fn(w) { w.0.contains(" · ") }).map(fn(w) { w.0 })
+  assert_eq(middots, [], msg="unexpected middot concatenation: \{Repr(middots)}")
+
+  // Screen-reader a11y label includes both online status and session count when sessions > 0
+  t.set_a11y(true)
+  t.draw()
+  let said = t.a11y_said()
+  assert_true(
+    said.contains("在线") && said.contains("4") && said.contains("会话"),
+    msg="expected online connect a11y_said to include status and session count, got \{said}",
+  )
+
+  // 320pt narrow and 1.3x font scale audit
+  let t320 = cn_compact_tester(items, w=320.0, h=640.0, platform=2)
+  assert_eq(t320.audit(), [], msg="320pt connects audit failed")
+  let t13 = cn_compact_tester(items, w=390.0, h=844.0, platform=2, words_scale=1.3)
+  assert_eq(t13.audit(), [], msg="390pt 1.3x connects audit failed")
+}
+
+///|
+test "connects_node: 320pt truncates super-long station, runtime, and model names without audit faults" {
+  let long_item : Json = {
+    "station": "ws1/s1",
+    "stationName": "tokyo-studio-production-build-host-01",
+    "connect": {
+      "id": "c-long",
+      "kind": "slack",
+      "name": "Super-Long-Deployment-Monitor-Bot",
+      "team": "Acme Engineering Workspace",
+      "presence": "online",
+      "statusText": "在线",
+      "sessions": 18,
+      "runtimeText": "Antigravity CLI Runtime",
+      "modelName": "Claude Opus 5.5 Extended Thinking",
+      "bind": { "runtime": "claude", "model": "claude-opus-5-5" },
+      "modeShort": "多会话",
+      "modeText": "每个 thread 一个会话",
+    },
+  }
+  let t = cn_compact_tester([long_item], w=320.0, h=640.0, platform=2)
+  assert_eq(t.audit(), [], msg="320pt long station/runtime/model connects audit failed")
+  let t13 = cn_compact_tester([long_item], w=320.0, h=640.0, platform=2, words_scale=1.3)
+  assert_eq(t13.audit(), [], msg="320pt 1.3x long station/runtime/model connects audit failed")
+}
+
+///|
+test "connects_node: English online a11y label uses singular '1 session' when sessions == 1" {
+  let items : Array[Json] = [
+    cn_compact_item("ws1/s1", "Willow", "c-one", "Solo-Bot", "online", "Online", 1),
+    cn_compact_item("ws1/s1", "Willow", "c-many", "Many-Bot", "online", "Online", 3),
+  ]
+  let t = cn_compact_tester(items, w=390.0, h=844.0, platform=2)
+  @sf.set_language(Some("en"))
+  t.set_a11y(true)
+  t.draw()
+  let said = t.a11y_said()
+  @sf.set_language(None)
+  assert_true(said.contains("Online, 1 session"), msg="expected singular 'Online, 1 session', got \{said}")
+  assert_true(!said.contains("1 sessions"), msg="unexpected plural '1 sessions' in \{said}")
+  assert_true(said.contains("Online, 3 sessions"), msg="expected plural 'Online, 3 sessions', got \{said}")
+}
+
+///|
+test "connects_node: unified card hairlines fade smoothly on mouse hover and touch press-and-hold" {
+  let items : Array[Json] = [
+    cn_compact_item("ws1/s1", "Willow", "c1", "Conn-A", "online", "在线", 3),
+    cn_compact_item("ws1/s1", "Willow", "c2", "Conn-B", "online", "在线", 0),
+    cn_compact_item("ws1/s2", "Maple", "c3", "Conn-C", "offline", "离线", 0),
+  ]
+  let rest_color = @sf.rule_color()
+  let rest_alpha = (rest_color & 0xFFL).to_int()
+
+  // Mouse hover on middle row fades both adjacent hairlines
+  let tm = cn_compact_tester(items, w=390.0, h=844.0, platform=0)
+  let seps = sl_seps_drawn(tm)
+  assert_eq(seps.length(), 2, msg="expected 2 connects hairlines at rest, got \{seps.length()}")
+  let (bx, by, bw, bh) = tm.rect_of("Conn-B").unwrap()
+  tm.move_to(bx + bw / 2.0, by + bh / 2.0)
+  tm.run_for(@sf.dur_ms + 30.0)
+  assert_eq(sl_sep_alpha_at(tm, seps[0].0), 0, msg="hover Conn-B fades A|B")
+  assert_eq(sl_sep_alpha_at(tm, seps[1].0), 0, msg="hover Conn-B fades B|C")
+  tm.move_to(4.0, 4.0)
+  tm.run_for(@sf.dur_ms + 30.0)
+  assert_eq(sl_sep_alpha_at(tm, seps[0].0), rest_alpha, msg="leaving Conn-B restores A|B")
+  assert_eq(sl_sep_alpha_at(tm, seps[1].0), rest_alpha, msg="leaving Conn-B restores B|C")
+
+  // Touch press-and-hold fades both adjacent hairlines and restores on release
+  let tf = cn_compact_tester(items, w=390.0, h=844.0, platform=2)
+  let fseps = sl_seps_drawn(tf)
+  assert_eq(fseps.length(), 2, msg="touch expected 2 connects hairlines")
+  let (fbx, fby, fbw, fbh) = tf.rect_of("Conn-B").unwrap()
+  tf.press_at(fbx + fbw / 2.0, fby + fbh / 2.0)
+  tf.run_for(@sf.dur_ms + 30.0)
+  assert_eq(sl_sep_alpha_at(tf, fseps[0].0), 0, msg="touch hold Conn-B fades A|B")
+  assert_eq(sl_sep_alpha_at(tf, fseps[1].0), 0, msg="touch hold Conn-B fades B|C")
+  tf.release(4.0, 4.0)
+  tf.run_for(@sf.dur_ms + 30.0)
+  assert_eq(sl_sep_alpha_at(tf, fseps[0].0), rest_alpha, msg="touch release restores A|B")
+  assert_eq(sl_sep_alpha_at(tf, fseps[1].0), rest_alpha, msg="touch release restores B|C")
 }

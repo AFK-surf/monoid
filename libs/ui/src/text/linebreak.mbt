@@ -117,44 +117,52 @@ priv struct Units {
 ///|
 fn Units::make(s : String) -> Units {
   let n = s.length()
-  let u = {
-    start: Array(capacity=n),
-    cls: Array(capacity=n),
-    flags: Array(capacity=n),
-    ri_run: Array(capacity=n),
-  }
+  let start = Array(capacity=n)
+  let cls = Array(capacity=n)
+  let flags = Array(capacity=n)
+  let ri_run = Array(capacity=n)
   let mut i = 0
   while i < n {
-    let c = code_point_at(s, i)
+    let u0 = s.unsafe_get(i).to_int()
+    let (c, step) = if u0 >= 0xD800 && u0 < 0xDC00 && i + 1 < n {
+      let u1 = s.unsafe_get(i + 1).to_int()
+      if u1 >= 0xDC00 && u1 < 0xE000 {
+        (0x10000 + ((u0 - 0xD800) << 10) + (u1 - 0xDC00), 2)
+      } else {
+        (u0, 1)
+      }
+    } else {
+      (u0, 1)
+    }
     let p = line_table.get(c)
     let k = p & 63
-    let m = u.cls.length()
-    if (k == CM || k == ZWJ) && m > 0 && !has(NO_BASE, u.cls[m - 1]) {
+    let m = cls.length()
+    if (k == CM || k == ZWJ) && m > 0 && !has(NO_BASE, cls[m - 1]) {
       // LB9: X (CM | ZWJ)* is X
-      let f = (u.flags[m - 1] | u_zwj_end) ^ u_zwj_end
-      u.flags[m - 1] = if k == ZWJ { f | u_zwj_end } else { f }
+      let f = (flags[m - 1] | u_zwj_end) ^ u_zwj_end
+      flags[m - 1] = if k == ZWJ { f | u_zwj_end } else { f }
     } else {
-      let (cls, flags) = if k == CM || k == ZWJ {
+      let (c_cls, c_flags) = if k == CM || k == ZWJ {
         (AL, 0) // LB10
       } else {
         (k, (p >> 6) | (if c == 0x25CC { u_dotted } else { 0 }))
       }
-      u.start.push(i)
-      u.cls.push(cls)
-      u.flags.push(if k == ZWJ { flags | u_zwj_end } else { flags })
-      u.ri_run.push(
-        if cls != RI {
+      start.push(i)
+      cls.push(c_cls)
+      flags.push(if k == ZWJ { c_flags | u_zwj_end } else { c_flags })
+      ri_run.push(
+        if c_cls != RI {
           0
         } else if m > 0 {
-          u.ri_run[m - 1] + 1
+          ri_run[m - 1] + 1
         } else {
           1
         },
       )
     }
-    i = i + cp_len(c)
+    i = i + step
   }
-  u
+  { start, cls, flags, ri_run }
 }
 
 ///|
@@ -193,7 +201,16 @@ fn Units::brahmic(self : Units, k : Int) -> Bool {
 fn Units::decide(self : Units, u : Int) -> Int {
   let a = self.cls[u - 1]
   let b = self.cls[u]
-  let nb = self.at(u + 1)
+  // Fast exits for dominant ASCII/CJK transitions (exact under LB4..LB31):
+  if a == ID && b == ID {
+    return if (self.flags[u - 1] & u_zwj_end) != 0 { 0 } else { 1 }
+  }
+  if a == AL && (b == AL || b == NU) {
+    return 0
+  }
+  if a == NU && (b == NU || b == AL) {
+    return 0
+  }
   // LB4, LB5: hard line breaks
   if a == BK {
     return 2
@@ -205,15 +222,18 @@ fn Units::decide(self : Units, u : Int) -> Int {
     return 2
   }
   // LB6, LB7
-  if has(HARD, b) || b == SP || b == ZW {
+  if b == SP || b == ZW || has(HARD, b) {
     return 0
   }
+  // Single skip_sp for LB8, LB14, LB15a, LB16, LB17 (no scan when `a != SP`).
+  let before_sp = if a == SP { self.skip_sp(u - 2) } else { u - 1 }
+  let bs = self.at(before_sp)
   // LB8: ZW SP* ÷
-  if self.at(self.skip_sp(u - 1)) == ZW {
+  if bs == ZW {
     return 1
   }
   // LB8a: ZWJ ×
-  if self.flag(u - 1, u_zwj_end) {
+  if (self.flags[u - 1] & u_zwj_end) != 0 {
     return 0
   }
   // LB11, LB12, LB12a
@@ -227,12 +247,11 @@ fn Units::decide(self : Units, u : Int) -> Int {
   if has(LB13, b) {
     return 0
   }
-  let before_sp = self.skip_sp(u - 1)
-  let bs = self.at(before_sp)
   // LB14: OP SP* ×
   if bs == OP {
     return 0
   }
+  let nb = self.at(u + 1)
   // LB15a: (sot | BK | CR | LF | NL | OP | QU | GL | SP | ZW) [Pi&QU] SP* ×
   if bs == QU && self.flag(before_sp, u_pi) {
     let k = self.at(before_sp - 1)

@@ -64,6 +64,10 @@ let chip_box_dark_overlay : @ui.Style = @ui.css("bg=A(Bg,O70)")
 
 ///|
 // kept across runs: a value (no field of it changes)
+let chip_box_centered : @ui.Style = @ui.css("justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
 let chip_box_small : @ui.Style = chip_box.then(@ui.style(h=Fixed(fill_chip_small_h)))
 
 ///|

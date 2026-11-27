@@ -153,7 +153,18 @@ pub fn check_groups_node(
     out
   }
   let count = fn() { every().filter(fn(g) { on(g) }).length() }
-  let admin_any = fn() { sections().iter().any(fn(s) { s.groups.iter().any(fn(g) { g.admin }) }) }
+  let admin_any = fn() {
+    let ss = sections()
+    for i in 0..<ss.length() {
+      let gs = ss[i].groups
+      for j in 0..<gs.length() {
+        if gs[j].admin {
+          return true
+        }
+      }
+    }
+    false
+  }
   parent.show(loc~, fn() { every().length() > 0 }, fn(b) {
     style_node(loc~, b, fn() { check_groups })
     b.box(fn(l) {
@@ -187,7 +198,14 @@ pub fn check_groups_node(
       ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { x.1.title + "\u{1}" + x.0.to_string() }, fn(sec, x) {
         let section = @signals.untracked(fn() { x.get().1 })
         let groups = section.groups
-        let all = fn() { groups.iter().all(fn(g) { on(g.id) }) }
+        let all = fn() {
+          for i in 0..<groups.length() {
+            if !on(groups[i].id) {
+              return false
+            }
+          }
+          true
+        }
         sec.box(fn(s) {
           style_node(loc~, s, fn() { check_section })
           s.box(fn(h) {

@@ -1678,6 +1678,7 @@ fn vt_group_mark_node(parent : @view.View, group : String) -> Unit {
   match group {
     "key" => @sf.icon_node(parent, "key", vt_glyph, By(fn() { @sf.theme().p.text })) |> ignore
     "service" => @sf.provider_logo_node(parent, "", "service", vt_glyph, "") |> ignore
+    "colab" => @sf.provider_logo_node(parent, "", "service", vt_glyph, "colab") |> ignore
     // signed in to an account: its provider's
     "kimi" => @sf.provider_logo_node(parent, "claude", "api-provider", vt_glyph, "kimi") |> ignore
     "opencode" => @sf.provider_logo_node(parent, "claude", "opencode-go", vt_glyph, "") |> ignore

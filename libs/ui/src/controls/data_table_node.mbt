@@ -482,6 +482,9 @@ pub fn data_table_node(
             None => fn() { dt_default_capped_h }
           }
           let render_plain = fn(list : @view.View) {
+            if !is_card {
+              list.gap(Is(lit_apart)) |> ignore
+            }
             match scope.empty_fn {
               Some(make_empty) =>
                 list.show(at_once=true, fn() { keys().is_empty() }, fn(em) { make_empty(em) })

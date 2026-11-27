@@ -432,15 +432,15 @@ fn went_side(
 /// transform origin).
 fn grown_from(shows : @ui.Look, went : @ui.Side, along : @ui.Along) -> @ui.Look {
   let across = match along {
-    Start => 0.0
-    Middle => 0.5
-    End => 1.0
+    @view.Along::Start => 0.0
+    @view.Along::Middle => 0.5
+    @view.Along::End => 1.0
   }
   let (ox, oy) = match went {
-    Bottom => (across, 0.0)
-    Top => (across, 1.0)
-    Right => (0.0, across)
-    Left => (1.0, across)
+    @view.Side::Bottom => (across, 0.0)
+    @view.Side::Top => (across, 1.0)
+    @view.Side::Right => (0.0, across)
+    @view.Side::Left => (1.0, across)
   }
   { ..shows, ox, oy }
 }

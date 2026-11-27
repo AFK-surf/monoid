@@ -91,9 +91,9 @@ pub fn stations_list_node(
   let rigs_by = v.keyed_by(fn() { rigs_now.get() }, fn(x) { text(Some(x), "id") })
   let devices_by = v.keyed_by(fn() { devices_now.get() }, fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") })
   // (per-group lit-row trackers so each hairline divider fades smoothly when either adjacent row is hovered or pressed)
-  let station_lit = SlRowLit::new()
-  let rig_lit = SlRowLit::new()
-  let device_lit = SlRowLit::new()
+  let station_lit = @sf.CardRowLit::new()
+  let rig_lit = @sf.CardRowLit::new()
+  let device_lit = @sf.CardRowLit::new()
   let add = fn() { @settings.place_action(core, here(), "stations") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "stations") {
@@ -303,74 +303,6 @@ fn sl_prev_of(keys : () -> Array[String], target : String) -> () -> String? {
 }
 
 ///|
-/// Tracks interactive row nodes in a grouped card by key so each hairline separator fades smoothly
-/// while either adjacent row (above or below) is hovered, pressed (mouse or finger), or focused.
-/// Mirrors `@sf.Segments` (`segment_rule_node.mbt`), with an optional bottom action entry (`bots`)
-/// when an unprotected station shows its `加入安全模式` button (or non-interactive joining spinner)
-/// below the main row.
-priv struct SlRowLit {
-  made : @signals.Signal[Int]
-  tops : Map[String, @view.View]
-  bots : Map[String, (@view.View, Bool)]
-}
-
-fn SlRowLit::new() -> SlRowLit {
-  { made: @signals.signal(0), tops: {}, bots: {} }
-}
-
-fn SlRowLit::bind_top(self : SlRowLit, key : String, v : @view.View) -> Unit {
-  if key == "" {
-    return
-  }
-  self.tops[key] = v
-  self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
-  v.owns(fn() {
-    if self.tops.get(key) is Some(w) && w.id() == v.id() {
-      self.tops.remove(key)
-      self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
-    }
-  })
-  |> ignore
-}
-
-fn SlRowLit::bind_bot(self : SlRowLit, key : String, v : @view.View, active : Bool) -> Unit {
-  if key == "" {
-    return
-  }
-  self.bots[key] = (v, active)
-  self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
-  v.owns(fn() {
-    if self.bots.get(key) is Some((w, _)) && w.id() == v.id() {
-      self.bots.remove(key)
-      self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
-    }
-  })
-  |> ignore
-}
-
-fn SlRowLit::lit_top(self : SlRowLit, key : String) -> Bool {
-  self.made.get() |> ignore
-  match self.tops.get(key) {
-    Some(v) => @sf.lit_node(v)
-    None => false
-  }
-}
-
-fn SlRowLit::lit_bot(self : SlRowLit, key : String) -> Bool {
-  self.made.get() |> ignore
-  match self.bots.get(key) {
-    // When `active` is false (e.g. non-interactive joining spinner), return false without reading
-    // `pointed()` so the spinner never becomes `points_alone` and never falls back to the main row.
-    Some((v, active)) => active && @sf.lit_node(v)
-    None =>
-      match self.tops.get(key) {
-        Some(v) => @sf.lit_node(v)
-        None => false
-      }
-  }
-}
-
-///|
 /// The stations to come while they are read: three made up, as the list shows them, in their bones.
 // kept across runs: a value (no field of it changes)
 let stations_sample : Array[Json] = [5, 3, 7].mapi(fn(i, n) {
@@ -447,40 +379,6 @@ fn copy_item(label : String, words : String) -> @sf.MenuItem? {
 }
 
 ///|
-/// Hairline separator above non-first rows inside a grouped card, aligned with row content edges.
-/// Smoothly fades out while either adjacent row (above or below) is hovered, pressed (mouse or finger), or focused,
-/// and smoothly fades back when released or left.
-fn sl_card_sep_node(
-  card : @view.View,
-  piece : () -> @sf.CardPiece,
-  lit? : SlRowLit,
-  key? : String = "",
-  prev_key? : () -> String? = fn() { None },
-) -> Unit {
-  card.show(at_once=true, fn() { piece() is (CardBetween | CardFoot) }, fn(sep) {
-    @sf.style_node(sep, fn() { sl_sep_line })
-    sep.height(Is(Some(@sf.rule_w))) |> ignore
-    match lit {
-      Some(group) if key != "" => {
-        let gone = @motion.hover_fade(
-          sep,
-          fn() {
-            group.lit_top(key) ||
-            (match prev_key() {
-              Some(p) => group.lit_bot(p)
-              None => false
-            })
-          },
-          duration_ms=@sf.dur_ms,
-        )
-        sep.ground(By(fn() { @sf.alpha(@sf.rule_color(), 1.0 - gone()) })) |> ignore
-      }
-      _ => sep.ground(By(fn() { @sf.rule_color() })) |> ignore
-    }
-  })
-}
-
-///|
 /// A compact station row inside its group's card (`card_piece_node`):
 /// - Line 1: 18pt mark + single-line station name + optional 本机 pill + right-aligned live state (green dot +
 ///   running count, reconnecting spinner, or grey offline ring), flush right with no trailing chevron.
@@ -498,7 +396,7 @@ fn sl_station_row_node(
   shown : () -> Bool,
   menu_address? : String = "",
   sample? : Bool = false,
-  lit? : SlRowLit,
+  lit? : @sf.CardRowLit,
   key? : String = "",
   prev_key? : () -> String? = fn() { None },
 ) -> Unit {
@@ -523,8 +421,8 @@ fn sl_station_row_node(
     }
   }
   b.grow(Is(1.0)) |> ignore
-  @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
+  @sf.card_piece_node(b, piece, wide_group=true, wide_group_ends_pad=true, fn(card) {
+    @sf.card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
@@ -949,13 +847,13 @@ fn sl_rig_row_node(
   r : () -> Json?,
   piece : () -> @sf.CardPiece,
   press : () -> Unit,
-  lit? : SlRowLit,
+  lit? : @sf.CardRowLit,
   key? : String = "",
   prev_key? : () -> String? = fn() { None },
 ) -> Unit {
   b.grow(Is(1.0)) |> ignore
-  @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
+  @sf.card_piece_node(b, piece, wide_group=true, wide_group_ends_pad=true, fn(card) {
+    @sf.card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
@@ -1003,14 +901,14 @@ fn sl_device_row_node(
   d : () -> Json?,
   piece : () -> @sf.CardPiece,
   press : () -> Unit,
-  lit? : SlRowLit,
+  lit? : @sf.CardRowLit,
   key? : String = "",
   prev_key? : () -> String? = fn() { None },
 ) -> Unit {
   let online = fn() { !(field(d(), "online") is Some(False)) }
   b.grow(Is(1.0)) |> ignore
-  @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
+  @sf.card_piece_node(b, piece, wide_group=true, wide_group_ends_pad=true, fn(card) {
+    @sf.card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
@@ -1066,11 +964,6 @@ let sl_first_art_w : Double = 240.0
 ///|
 /// Station, rig and device mark size on a compact row: a row's (station_mark_side's), each kind's alike.
 let sl_mark_side : Double = @sfbase.station_mark_side(@sfbase.StationMarkAt::Row)
-
-///|
-/// Hairline separator inset matching the row's 12pt horizontal padding inside card_piece_node.
-// kept across runs: a value (no field of it changes)
-let sl_sep_line : @ui.Style = @ui.css("mx=S3")
 
 ///|
 /// Compact two-line row: symmetric 12pt horizontal and 10pt vertical padding, 4pt line gap.

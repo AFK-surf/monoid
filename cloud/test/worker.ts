@@ -637,6 +637,10 @@ export class ServiceStatus extends ProductionServiceStatus {
     else if (result.ok) changelogStats.full++;
     return result;
   }
+  override warmChangelog(channel: Parameters<ProductionServiceStatus["warmChangelog"]>[0], upstream: string | null, ttlSeconds: number) {
+    statusLosing.call();
+    return super.warmChangelog(channel, upstream, ttlSeconds);
+  }
   override changelogFixes(ttlSeconds: number) {
     statusLosing.call();
     return super.changelogFixes(ttlSeconds);

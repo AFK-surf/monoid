@@ -136,12 +136,15 @@ for t in $targets; do
   done
   export MBC_LIGHT_TESTS="$light"
   # (release/*: a whole app's program built alone keeps mbui's and the library's units at its own level (mbc's
-  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008)
+  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008. Leave
+  # sfapp_pages_test light: its default-rate run is ~44 s across 4 cores (~110 s even fully unoptimised, well under
+  # 5 minutes), while cold-compiling ui_/stillfail_sfgraphic_ at -O2 on 4-core runners added ~60 s and pushed
+  # pages test build past its 234 s cut on release/2026-11-28 (46025875592); unchanged units still hit main's -O2
+  # store via mbc's alt_argv.)
   if [ "$release_light" = 1 ]; then
     case " $light " in
       *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
       *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
-      *" sfapp_pages_test/sfapp_pages_test.blackbox_test "*) [ -n "${PAGES_TEST_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
       *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
     esac
   fi

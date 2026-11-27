@@ -1610,7 +1610,7 @@ fn pm_wide_table_row(
     c.pick(at_once=true, show_chips, fn(slot, chips_on) {
       slot.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       if chips_on {
-        @sfbase.quota_compact_node(slot, quota, tips~)
+        @sfbase.quota_table_chips_node(slot, quota, tips~)
       } else {
         slot.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
         let status_cell = @sf.words_node(
@@ -1894,7 +1894,7 @@ fn pm_narrow_row_block(
           .alpha(By(fn() { if selectable() { 1.0 } else { pl_away } }))
           .on_press(toggle_pick)
           |> ignore
-          @sfbase.quota_compact_node(qbox, quota, tips~)
+          @sfbase.quota_table_chips_node(qbox, quota, tips~)
         })
       })
       |> ignore
