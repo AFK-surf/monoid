@@ -2344,6 +2344,16 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
+static int32_t sts_win_map_open_err(const wchar_t *w, DWORD err) {
+    if (err == ERROR_ACCESS_DENIED && w != NULL) {
+        DWORD attrs = GetFileAttributesW(w);
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            return -5;
+        }
+    }
+    return sts_win_map_err(err);
+}
+
 void *sts_read_range_meta(
     const char *path,
     int64_t offset,
@@ -2367,12 +2377,26 @@ void *sts_read_range_meta(
         w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, NULL);
     DWORD open_err = GetLastError();
-    free(w);
     if (h == INVALID_HANDLE_VALUE) {
-        if (out_err != NULL) *out_err = sts_win_map_err(open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err);
+        free(w);
+        if (out_err != NULL) *out_err = mapped;
         return NULL;
     }
+    free(w);
     if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = -5;
+        return NULL;
+    }
+    FILE_ATTRIBUTE_TAG_INFO ati;
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = sts_win_map_err(e);
+        return NULL;
+    }
+    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
         CloseHandle(h);
         if (out_err != NULL) *out_err = -5;
         return NULL;
@@ -2382,11 +2406,6 @@ void *sts_read_range_meta(
         DWORD e = GetLastError();
         CloseHandle(h);
         if (out_err != NULL) *out_err = sts_win_map_err(e);
-        return NULL;
-    }
-    if (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-        CloseHandle(h);
-        if (out_err != NULL) *out_err = -4;
         return NULL;
     }
     uint64_t fsz = ((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow;
@@ -2456,9 +2475,15 @@ int32_t sts_write_at(
         w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, disp, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD open_err = GetLastError();
-    free(w);
     if (h == INVALID_HANDLE_VALUE) {
-        return sts_win_map_err(open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err);
+        free(w);
+        return mapped;
+    }
+    free(w);
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        return -5;
     }
     FILE_ATTRIBUTE_TAG_INFO ati;
     if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
@@ -2467,10 +2492,6 @@ int32_t sts_write_at(
         return sts_win_map_err(e);
     }
     if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
-        CloseHandle(h);
-        return -5;
-    }
-    if (GetFileType(h) != FILE_TYPE_DISK) {
         CloseHandle(h);
         return -5;
     }
@@ -2548,11 +2569,18 @@ int32_t sts_sync_file(const char *path) {
     if (w == NULL) return -1;
     HANDLE h = CreateFileW(
         w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
     DWORD open_err = GetLastError();
-    free(w);
     if (h == INVALID_HANDLE_VALUE) {
-        return sts_win_map_err(open_err);
+        int32_t mapped = sts_win_map_open_err(w, open_err);
+        free(w);
+        return mapped;
+    }
+    free(w);
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        return -5;
     }
     FILE_ATTRIBUTE_TAG_INFO ati;
     if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
@@ -2561,10 +2589,6 @@ int32_t sts_sync_file(const char *path) {
         return sts_win_map_err(e);
     }
     if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
-        CloseHandle(h);
-        return -5;
-    }
-    if (GetFileType(h) != FILE_TYPE_DISK) {
         CloseHandle(h);
         return -5;
     }

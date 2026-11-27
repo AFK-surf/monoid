@@ -400,6 +400,43 @@ static void test_win_drive_io_and_reparse(void) {
     assert(sz == 20 && is_short == 0);
     assert(sts_sync_file(target_path) == 0);
 
+    // Directory MUST return -5 (non-regular file) across write_at / sync_file / read_range_meta.
+    {
+        int64_t rlen = 0, rtot = 0, rmtime = 0;
+        int32_t rerr = 0;
+        assert(sts_write_at(ex_dir, 0, (const uint8_t *)"x", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        assert(sts_write_at(ex_dir, 0, (const uint8_t *)"x", 1, 1, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        assert(sts_sync_file(ex_dir) == -5);
+        assert(sts_read_range_meta(ex_dir, 0, 16, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -5);
+    }
+
+    // Non-disk device (\\.\NUL) MUST return -5 across write_at / sync_file / read_range_meta.
+    {
+        int64_t rlen = 0, rtot = 0, rmtime = 0;
+        int32_t rerr = 0;
+        assert(sts_write_at("\\\\.\\NUL", 0, (const uint8_t *)"x", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        assert(sts_sync_file("\\\\.\\NUL") == -5);
+        assert(sts_read_range_meta("\\\\.\\NUL", 0, 16, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -5);
+    }
+
+    // Read-only regular file MUST still return -3 (EACCES) on sts_write_at.
+    {
+        char ro_path[384];
+        snprintf(ro_path, sizeof(ro_path), "%s\\readonly.bin", ex_dir);
+        assert(sts_write_at(ro_path, 0, (const uint8_t *)"ro", 2, 1, 0, 0, 0, 0, 0, &sz, &is_short) == 0);
+        int wro_n = MultiByteToWideChar(CP_UTF8, 0, ro_path, -1, NULL, 0);
+        assert(wro_n > 0);
+        wchar_t *wro = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wro_n);
+        assert(wro != NULL);
+        assert(MultiByteToWideChar(CP_UTF8, 0, ro_path, -1, wro, wro_n) > 0);
+        assert(SetFileAttributesW(wro, FILE_ATTRIBUTE_READONLY) != 0);
+        assert(sts_write_at(ro_path, 0, (const uint8_t *)"x", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -3);
+        assert(SetFileAttributesW(wro, FILE_ATTRIBUTE_NORMAL) != 0);
+        free(wro);
+        assert(sts_unlink(ro_path) == 1);
+    }
+    printf("  [PASS] win drive_io (dir -> -5, \\\\.\\NUL -> -5, readonly file -> -3)\n");
+
     // Attempt to create a Windows symlink `evil.part -> target.bin`.
     int wt_n = MultiByteToWideChar(CP_UTF8, 0, target_path, -1, NULL, 0);
     int wl_n = MultiByteToWideChar(CP_UTF8, 0, part_sym, -1, NULL, 0);
