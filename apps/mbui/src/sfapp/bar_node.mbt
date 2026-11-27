@@ -608,8 +608,7 @@ fn bar_glass_capsule(
         bar_k_until(),
       )
       let t = bar_moment(g, Ball, until)
-      let a = bar_ball_at(t)
-      let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
+      let spot : (Double, Double)? = None
       (spot, bar_merge_at(t))
     })
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's

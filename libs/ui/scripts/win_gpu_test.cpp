@@ -984,7 +984,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     tb[3 * MB_INST + 4] = 22.5; tb[3 * MB_INST + 6] = 1.0; tb[3 * MB_INST + 7] = -64.0;
     tb[3 * MB_INST + 12] = 1.0; tb[3 * MB_INST + 13] = 9.0; tb[3 * MB_INST + 15] = 1.0; tb[3 * MB_INST + 21] = 9.0;
     uint8_t *px_icon = render_rgba_pixels_of(tb, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
-    fill_p0_rect(tb + MB_INST, 132.4, 35.0, 1.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
+    fill_p0_rect(tb + MB_INST, 131.5, 35.0, 1.5, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
     fill_p0_rect(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, 0.0, -566.0);
     tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
     tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0; tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0;
@@ -1001,8 +1001,8 @@ static void test_v8_v9_droplet_roi_gates(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      uint8_t *a_lip = W_PX(px_empty, AW3, 403, 120);
-      uint8_t *c_lip = W_PX(px_lip, AW3, 403, 120);
+      uint8_t *a_lip = W_PX(px_empty, AW3, 402, 120);
+      uint8_t *c_lip = W_PX(px_lip, AW3, 402, 120);
       int lip_delta = abs((int)c_lip[0] - (int)a_lip[0]) + abs((int)c_lip[1] - (int)a_lip[1]);
       printf("win_gpu: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
       CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 30);
@@ -1012,7 +1012,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     free(px_lip);
   }
 
-  // V9g: Role 4 Tab strictly monotonic (no mirror-fold ghosting at inward=0.5..3.5pt from bar at inward=5.5pt)
+  // V9g: Role 4 Tab no mirror-fold ghosting at inward=0.67..3.67pt from bar at inward=5.5pt
   {
     double tg[3 * MB_INST];
     fill_p0_rect(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
@@ -1023,7 +1023,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     uint8_t *pxg = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
     CHECK(pxg != NULL);
     if (pxg) {
-      uint8_t *co = W_PX(pxg, AW3, 117, 120);
+      uint8_t *co = W_PX(pxg, AW3, 123, 120);
       double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
       double l_clean = 255.0;
       for (int px_x = 99; px_x <= 108; px_x++) {
@@ -1032,26 +1032,26 @@ static void test_v8_v9_droplet_roi_gates(void) {
         if (lv < l_clean) l_clean = lv;
       }
       printf("win_gpu: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
-      CHECK(l_bar < 130.0 && l_clean > 200.0);
+      CHECK(l_bar < 130.0 && l_clean > 220.0);
       free(pxg);
     }
   }
 
-  // V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 58pt Role 4 droplet (4pt overhang clarity & no dead-black side border)
+  // V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 62pt Role 4 droplet (6pt overhang clarity & no dead-black side border)
   {
     double td[3 * MB_INST];
     fill_p0_rect(td, 0, 0, VW, VH, 0, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 1.0, 0);
     fill_p0_rect(td + MB_INST, 10, 15, 140, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0, -567.0);
     td[MB_INST + 4] = 25.0; td[MB_INST + 6] = 1.0; td[MB_INST + 7] = 0.0;
     td[MB_INST + 12] = 0.6; td[MB_INST + 13] = 14.0; td[MB_INST + 15] = 1.0; td[MB_INST + 21] = 20.0;
-    fill_p0_rect(td + 2 * MB_INST, 35, 11, 90, 58, 6, 1.0, 1.0, 1.0, 0.0, -568.0);
-    td[2 * MB_INST + 4] = 29.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
+    fill_p0_rect(td + 2 * MB_INST, 35, 9, 90, 62, 6, 1.0, 1.0, 1.0, 0.0, -568.0);
+    td[2 * MB_INST + 4] = 31.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
     td[2 * MB_INST + 12] = 1.0; td[2 * MB_INST + 13] = 9.0; td[2 * MB_INST + 15] = 1.0; td[2 * MB_INST + 21] = 9.0;
     uint8_t *pxd = render_rgba_pixels_of(td, 3, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
     CHECK(pxd != NULL);
     if (pxd) {
-      uint8_t *ct = W_PX(pxd, AW3, 240, 39);
-      uint8_t *cb = W_PX(pxd, AW3, 240, 201);
+      uint8_t *ct = W_PX(pxd, AW3, 240, 36);
+      uint8_t *cb = W_PX(pxd, AW3, 240, 204);
       uint8_t *cl = W_PX(pxd, AW3, 106, 120);
       uint8_t *cr = W_PX(pxd, AW3, 373, 120);
       double top_L = 0.2126 * ct[0] + 0.7152 * ct[1] + 0.0722 * ct[2];
@@ -1059,7 +1059,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
       double left_L = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
       double right_L = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
       printf("win_gpu: v9_tab_dark_clarity top_L=%.1f bot_L=%.1f left_L=%.1f right_L=%.1f\n", top_L, bot_L, left_L, right_L);
-      CHECK(top_L < 75.0 && bot_L < 75.0 && left_L >= 42.0 && right_L >= 42.0);
+      CHECK(top_L < 55.0 && bot_L < 55.0 && left_L >= 36.0 && right_L >= 36.0);
       free(pxd);
     }
   }

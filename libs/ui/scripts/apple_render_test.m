@@ -4192,7 +4192,7 @@ int main(void) {
             int df = abs((int)b_out[ch] - (int)a_out[ch]);
             if (df > out_diff) out_diff = df;
           }
-          rect_at(tb + MB_INST, 132.4, 35.0, 1.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
+          rect_at(tb + MB_INST, 131.5, 35.0, 1.5, 10.0, 0, 1.0, 0.55, 0.0, 0);
           rect_at(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -566);
           tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
           tb[2 * MB_INST + 11] = 0.0; tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0;
@@ -4203,8 +4203,8 @@ int main(void) {
           present_drain();
           int aw2 = 0, ah2 = 0;
           uint8_t *px_lip = read_texture(canvas, &aw2, &ah2);
-          uint8_t *a_lip = A_PX(px_empty, aw0, 403, 120);
-          uint8_t *c_lip = A_PX(px_lip, aw2, 403, 120);
+          uint8_t *a_lip = A_PX(px_empty, aw0, 402, 120);
+          uint8_t *c_lip = A_PX(px_lip, aw2, 402, 120);
           int lip_delta = abs((int)c_lip[2] - (int)a_lip[2]) + abs((int)c_lip[1] - (int)a_lip[1]);
           printf("apple_render: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
           CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 30);
@@ -4212,7 +4212,7 @@ int main(void) {
           free(px_icon);
           free(px_lip);
         }
-        // --- V9g: Role 4 Tab strictly monotonic (no mirror-fold ghosting at inward=0.5..3.5pt from bar at inward=5.5pt) ---
+        // --- V9g: Role 4 Tab no mirror-fold ghosting at inward=0.67..3.67pt from bar at inward=5.5pt ---
         {
           double tg[3 * MB_INST];
           rect_at(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
@@ -4227,7 +4227,7 @@ int main(void) {
           present_drain();
           int awg = 0, ahg = 0;
           uint8_t *pxg = read_texture(canvas, &awg, &ahg);
-          uint8_t *co = A_PX(pxg, awg, 117, 120);
+          uint8_t *co = A_PX(pxg, awg, 123, 120);
           double l_bar = 0.2126 * co[2] + 0.7152 * co[1] + 0.0722 * co[0];
           double l_clean = 255.0;
           for (int px_x = 99; px_x <= 108; px_x++) {
@@ -4236,10 +4236,10 @@ int main(void) {
             if (lv < l_clean) l_clean = lv;
           }
           printf("apple_render: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
-          CHECK(l_bar < 130.0 && l_clean > 200.0);
+          CHECK(l_bar < 130.0 && l_clean > 220.0);
           free(pxg);
         }
-        // --- V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 58pt Role 4 droplet (4pt overhang clarity & no dead-black side border) ---
+        // --- V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 62pt Role 4 droplet (6pt overhang clarity & no dead-black side border) ---
         {
           double td[3 * MB_INST];
           rect_at(td, 0, 0, VW, VH, 0, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 0);
@@ -4247,8 +4247,8 @@ int main(void) {
           td[MB_INST + 4] = 25.0; td[MB_INST + 6] = 1.0; td[MB_INST + 7] = 0.0;
           td[MB_INST + 11] = 0x67 / 255.0; td[MB_INST + 12] = 0.6; td[MB_INST + 13] = 14.0;
           td[MB_INST + 15] = 1.0; td[MB_INST + 21] = 20.0; td[MB_INST + 22] = 0.0; td[MB_INST + 23] = 0.0;
-          rect_at(td + 2 * MB_INST, 35, 11, 90, 58, 6, 1.0, 1.0, 1.0, -568);
-          td[2 * MB_INST + 4] = 29.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
+          rect_at(td + 2 * MB_INST, 35, 9, 90, 62, 6, 1.0, 1.0, 1.0, -568);
+          td[2 * MB_INST + 4] = 31.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
           td[2 * MB_INST + 11] = 0.0; td[2 * MB_INST + 12] = 1.0; td[2 * MB_INST + 13] = 9.0;
           td[2 * MB_INST + 15] = 1.0; td[2 * MB_INST + 21] = 9.0; td[2 * MB_INST + 22] = 0.0; td[2 * MB_INST + 23] = 0.0;
           glass_forget();
@@ -4257,8 +4257,8 @@ int main(void) {
           present_drain();
           int awd = 0, ahd = 0;
           uint8_t *pxd = read_texture(canvas, &awd, &ahd);
-          uint8_t *ct = A_PX(pxd, awd, 240, 39);
-          uint8_t *cb = A_PX(pxd, awd, 240, 201);
+          uint8_t *ct = A_PX(pxd, awd, 240, 36);
+          uint8_t *cb = A_PX(pxd, awd, 240, 204);
           uint8_t *cl = A_PX(pxd, awd, 106, 120);
           uint8_t *cr = A_PX(pxd, awd, 373, 120);
           double top_L = 0.2126 * ct[2] + 0.7152 * ct[1] + 0.0722 * ct[0];
@@ -4266,7 +4266,7 @@ int main(void) {
           double left_L = 0.2126 * cl[2] + 0.7152 * cl[1] + 0.0722 * cl[0];
           double right_L = 0.2126 * cr[2] + 0.7152 * cr[1] + 0.0722 * cr[0];
           printf("apple_render: v9_tab_dark_clarity top_L=%.1f bot_L=%.1f left_L=%.1f right_L=%.1f\n", top_L, bot_L, left_L, right_L);
-          CHECK(top_L < 75.0 && bot_L < 75.0 && left_L >= 42.0 && right_L >= 42.0);
+          CHECK(top_L < 55.0 && bot_L < 55.0 && left_L >= 36.0 && right_L >= 36.0);
           free(pxd);
         }
         // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
