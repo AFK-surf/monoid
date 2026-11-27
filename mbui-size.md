@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.93 | 135.89 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 | [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.4 | 132.81 |
 | [dd013ddef](https://github.com/AFK-surf/monoid/commit/dd013ddef0cc30e406c4aae4d5ef57651b136c43) feat(station-main): add station_tools MCP server,  | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.75 | 113.44 |
-| [9a704269f](https://github.com/AFK-surf/monoid/commit/9a704269f6b73ca3760d751aa7e7b2583e17575a) feat(station-main): add station_hooks_tui package  | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.75 | 113.44 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.8 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.64 |
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.79 |
 | [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.77 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.49 |
 | [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.41 |
 | [dd013ddef](https://github.com/AFK-surf/monoid/commit/dd013ddef0cc30e406c4aae4d5ef57651b136c43) feat(station-main): add station_tools MCP server,  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.71 |
-| [9a704269f](https://github.com/AFK-surf/monoid/commit/9a704269f6b73ca3760d751aa7e7b2583e17575a) feat(station-main): add station_hooks_tui package  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.33 |
