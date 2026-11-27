@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 2.72 | 3.68 | 15.26 | 38.39 | 59.12 | 33.64 | 68.73 | 103.5 | 141.68 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
 | [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
 | [e352d3138](https://github.com/AFK-surf/monoid/commit/e352d3138e4714abbf6309d4b0183a5a34d1828b) fix(cloud): allow rig owners to upload custom stat | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
 | [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
 | [42bf07e01](https://github.com/AFK-surf/monoid/commit/42bf07e012517d7a7df70ae2e6c6b1f07d49ef4e) perf(station): reuse fresh Helper grants in macOS  | 2.69 | 3.64 | 15.11 | 38.14 | 58.65 | 33.41 | 68.32 | 102.91 | 130.28 |
-| [387a9d744](https://github.com/AFK-surf/monoid/commit/387a9d744083b417403f1ee91bae198134fd9672) fix(ui): keep adaptive glass ink dark over kind 9  | 2.69 | 3.64 | 15.11 | 38.14 | 58.65 | 33.41 | 68.32 | 102.91 | 130.28 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.74 |
 | [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.43 |
 | [e352d3138](https://github.com/AFK-surf/monoid/commit/e352d3138e4714abbf6309d4b0183a5a34d1828b) fix(cloud): allow rig owners to upload custom stat | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.75 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d85d5ddf4](https://github.com/AFK-surf/monoid/commit/d85d5ddf462d064033901c44ebbc6cf026e2a993) feat(station-main): wire WholeCore into whole_daem | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
 | [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [42bf07e01](https://github.com/AFK-surf/monoid/commit/42bf07e012517d7a7df70ae2e6c6b1f07d49ef4e) perf(station): reuse fresh Helper grants in macOS  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 65.88 |
-| [387a9d744](https://github.com/AFK-surf/monoid/commit/387a9d744083b417403f1ee91bae198134fd9672) fix(ui): keep adaptive glass ink dark over kind 9  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
