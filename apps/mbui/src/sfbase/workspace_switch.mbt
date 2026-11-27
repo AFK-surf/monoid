@@ -50,6 +50,23 @@ fn init {
 // kept across runs: put back as a run begins (switch_reset)
 let switch_asked : @signals.Signal[(String, Double)] = @signals.signal(("", -1.0), same=fn(a, b) { a == b })
 
+/// The workspace this shell window is leaving during the 300ms switch wait ("" none).
+// kept across runs: put back as a run begins (switch_reset)
+let switch_leaving_ws : Ref[String] = Ref("")
+
+///|
+/// Whether `v`'s window is currently in the 300ms switch wait leaving `ws` (so old-workspace
+/// actions in this window should be blocked without affecting other windows staying on `ws`).
+pub fn is_window_switching_away(v : @view.View, ws : String) -> Bool {
+  ws != "" &&
+  switch_leaving_ws.val == ws &&
+  switch_asked.untracked().0 != "" &&
+  (match switch_shell.val {
+    Some((sv, _, _, _)) => physical_equal(sv.tree, v.tree)
+    None => false
+  })
+}
+
 ///|
 /// What the switch waiting holds: the source it holds with, under what name, and what its screen opens on (the shell's
 /// `opens`).
@@ -183,6 +200,11 @@ pub fn switch_workspace_to(src : Source, ws : String, closes? : () -> Unit = fn(
   if done {
     switch_pick(v)
   } else {
+    // Synchronously unbind this window's foreground transient actions and focus/IME before entering
+    // the 300ms wait for workspace B's first screen (does not affect other windows staying on A).
+    board_transient_reset()
+    v.tree.focus_to(None) |> ignore
+    switch_leaving_ws.val = here.unwrap_or("")
     switch_asked.set((ws, v.cause_at()))
   }
 }
@@ -197,6 +219,7 @@ fn switch_called_off() -> Unit {
     }
     None => ()
   }
+  switch_leaving_ws.val = ""
   switch_asked.set(("", -1.0))
   switch_closed()
 }
@@ -208,6 +231,7 @@ fn switch_called_off() -> Unit {
 fn switch_pick(v : @view.View) -> Unit {
   guard switch_wait.val is Some(w) else { return }
   switch_wait.val = None
+  switch_leaving_ws.val = ""
   switch_asked.set(("", -1.0))
   switch_picked(w.src, w.ws)
   switch_closed()
@@ -544,6 +568,7 @@ pub fn shell_opens(src : Source, ws : String, ask : (String, Map[String, Json]) 
 fn switch_reset() -> Unit {
   switch_shell.val = None
   switch_wait.val = None
+  switch_leaving_ws.val = ""
   switch_asked.set(("", -1.0))
   switch_held_more.set(0)
   switch_handing.val = []

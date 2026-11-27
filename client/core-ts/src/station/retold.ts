@@ -7,7 +7,7 @@
 //
 // What was told is kept only while some read asked before it is out.
 
-type Told = { n: number; station: string; name: string; data: unknown };
+type Told = { n: number; station: string; name: string; data: unknown; readGen: number };
 
 export class Retold {
   /// How many things were told.
@@ -25,13 +25,13 @@ export class Retold {
   }
 
   /// Something a station's stream told (`name`, its data), kept for the reads out.
-  told(station: string, name: string, data: unknown): void {
+  told(station: string, name: string, data: unknown, readGen: number): void {
     this.#n++;
-    if (this.#out.size > 0) this.#told.push({ n: this.#n, station, name, data });
+    if (this.#out.size > 0) this.#told.push({ n: this.#n, station, name, data, readGen });
   }
 
   /// What `station`'s stream told after `read` was asked, in order.
-  since(read: number, station: string): { name: string; data: unknown }[] {
+  since(read: number, station: string): { name: string; data: unknown; readGen: number }[] {
     const asked = this.#out.get(read);
     if (asked === undefined) return [];
     return this.#told.filter((t) => t.n > asked && t.station === station);

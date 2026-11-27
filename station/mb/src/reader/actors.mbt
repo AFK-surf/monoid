@@ -27,6 +27,10 @@ priv struct Turn {
   mut tools_count : Int
   mut last_tool_at : Double
   mut wait_watch : Bool
+  // (when its runtime last said anything live, and the tool calls it has begun and not ended: what tells a turn still
+  // at work from one whose runtime hung after it was steered to check its wait, `fire_steer_silent`)
+  mut last_live_at : Double
+  open_tools : Array[String]
 }
 
 ///|
@@ -149,6 +153,14 @@ priv struct Actor {
   mut mid_waits : Int
   mut mid_waiting_until : Double
   mut mid_waiting_seconds : Double
+  /// Deadline armed once the mid-turn wait timer steered its turn to check: a runtime that stays silent past it is
+  /// taken as hung (`fire_steer_silent`). `steer_silent_since`, when that silence is counted from.
+  mut steer_silent : Int?
+  mut steer_silents : Int
+  mut steer_silent_until : Double
+  mut steer_silent_since : Double
+  /// how many of `steered` were steered in before the steer that armed it
+  mut steer_silent_steered : Int
   /// Timestamp of the last `chat_post` observed by this actor (0.0 if none in this actor's lifetime).
   mut last_post_at : Double
   /// When the current continuous waiting chain last posted (or started waiting); None outside a waiting chain.
@@ -414,6 +426,11 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         mid_waits: 0,
         mid_waiting_until: 0.0,
         mid_waiting_seconds: 0.0,
+        steer_silent: None,
+        steer_silents: 0,
+        steer_silent_until: 0.0,
+        steer_silent_since: 0.0,
+        steer_silent_steered: 0,
         last_post_at: 0.0,
         silent_waiting_since: None,
         progress_reminded_at: 0.0,

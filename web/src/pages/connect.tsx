@@ -97,7 +97,10 @@ function Connect() {
       const now = managedOf(value);
       setListed(now);
       if (now?.managed.length === 1) setWorkspace((w) => w || now.managed[0]!.id);
-    }, () => setListed({ managed: [] }));
+    }, () => setListed({ managed: [] }), () => {
+      setListed(null);
+      setWorkspace("");
+    });
   }, [signedIn]);
 
   const page = (title: string, lead: string, action?: [string, string]) => (

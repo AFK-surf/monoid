@@ -16,6 +16,26 @@
 // vault_request_node).
 
 ///|
+fn clear_vault_ui_secrets(ws : String, vault : String) -> Unit {
+  @settings.clear_opened_secrets(ws~, vault~)
+  clear_vault_editors_for(ws, vault)
+  if ws == "" && vault == "" {
+    if !recovery_words.is_empty() {
+      recovery_words.clear()
+      recovery_words_changed()
+    }
+  } else if vault == "" && recovery_words.contains(ws) {
+    recovery_words.remove(ws)
+    recovery_words_changed()
+  }
+}
+
+///|
+fn init {
+  @sfbase.clear_vault_secrets.val = clear_vault_ui_secrets
+}
+
+///|
 /// 密钥 (VaultSettings, VaultScreen) made once as nodes in node `v` (page_node, as vault_items_node is): as the core's
 /// `vaults` says where the viewer stands, what has to come first (vault_first_keys), else the library (its blocks by
 /// their keys: vault_library_keys), each block bound to what it shows.
@@ -29,6 +49,7 @@ pub fn vault_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
 ) -> Unit {
+  @sfbase.clear_vault_secrets.val = clear_vault_ui_secrets
   let ws = fn() { here().workspace }
   let view = fn() { (core.topic)("vaults", { "workspace": str(ws()) }).get() }
   // (what the library's blocks show of it: each vault but how many items it keeps, which changes with every one added
@@ -411,7 +432,9 @@ fn vault_kept_node(b : @view.View, core : Core, here : () -> Here, v : () -> Jso
           vault_do_row_node(p, fn() { @sf.t("web-pages.vault.lib.sealed") }, fn() { @sf.t("web-pages.vault.opened") }, fn() {
             @sf.t("web-pages.vault.lockNow")
           }, fn() { is_doing(core, ["vault.lock"], [("workspace", ws())]) }, fn() {
-            vault_act(core, @signals.untracked(ws), "lock", [], @sf.t("web-pages.vault.lockNow"))
+            let undo = (@sfbase.mask_vault_all.val)()
+            clear_vault_ui_secrets("", "")
+            vault_act(core, @signals.untracked(ws), "lock", [], @sf.t("web-pages.vault.lockNow"), failed=fn(_) { undo() })
           })
         _ =>
           @sf.link_row_node(p, fn() { @sf.t("web-pages.vault.lib.sealed") }, fn() {  }, note=fn() { @sf.t("web-pages.vault.lib.sealedWhy") }, goes=false)

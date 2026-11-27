@@ -122,7 +122,7 @@ export const FAMILIES: Record<string, string> = {
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",
   fetch: "sockets", webSocketMessage: "sockets", webSocketClose: "sockets", webSocketError: "sockets",
-  enroll: "stations", isStation: "stations", verifyProvisionKey: "stations", createProvisionedEnrollment: "stations", pushTargets: "stations", addFeedback: "stations", fixedUntold: "stations", reporterReply: "stations", toldFixed: "stations", markFixed: "stations",
+  enroll: "stations", isStation: "stations", verifyProvisionKey: "stations", createProvisionedEnrollment: "stations", pushTargets: "stations", addFeedback: "stations", fixedForStation: "stations", fixedUntold: "stations", reporterReply: "stations", toldFixed: "stations", markFixed: "stations",
   registerPush: "push", unregisterPush: "push", dropPush: "push", pushApps: "push",
   tellAll: "broadcast", tellStations: "broadcast", modelsMade: "broadcast", tellAdmins: "broadcast", alarm: "broadcast",
 };

@@ -22,8 +22,9 @@ import { CoreError } from "./error.ts";
 import type { Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import * as present from "./present.ts";
-import { topicDebug, topicKey, type ClientId, type CoreMessage, type RequestId, type Topic } from "./protocol.ts";
-import { KEPT_PER_CLIENT, topicsWhere } from "./topic-policy.ts";
+import { topicDebug, topicKey, type ClientId, type CoreMessage, type RequestId, type Topic, type WireGen } from "./protocol.ts";
+import { AuthGenTracker, topicScopeOf, type AuthBoundaryEvent } from "./auth-gen.ts";
+import { DEVICE_GLOBAL_TOPIC_SET, evaluateTopicPolicy, isKnownTopic, KEPT_PER_CLIENT, sanitizeKeptValue, topicsWhere } from "./topic-policy.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { Kind, type Span, type Tracer } from "./trace.ts";
 import { readAfresh } from "./markdown.ts";
@@ -150,6 +151,9 @@ type Entry = {
   openedTold?: boolean;
   /// Its subscribers told it waits on a station (Source.waits), while it has no value.
   waiting?: boolean;
+  /// Authoritative authorization and vault generations when `value`/`input`/`sent` were produced.
+  authGen: number;
+  vaultGen: number;
 };
 
 type ReactiveInput = { mode: "direct"; value?: Value } | { mode: "derived" };
@@ -160,30 +164,40 @@ function whole(v: Value): Out {
   return "ok" in v ? { value: v.ok } : { error: v.err };
 }
 
-function to(out: Out, id: RequestId): CoreMessage {
-  if ("value" in out) return { id, value: out.value };
-  if ("delta" in out) return { id, delta: out.delta };
-  return { id, error: out.error };
+function to(out: Out, id: RequestId, gen?: WireGen): CoreMessage {
+  if ("value" in out) return gen ? { id, value: out.value, ...gen } : { id, value: out.value };
+  if ("delta" in out) return gen ? { id, delta: out.delta, ...gen } : { id, delta: out.delta };
+  return gen ? { id, error: out.error, ...gen } : { id, error: out.error };
 }
 
 export class Store {
   readonly host: Host;
   readonly runner: Runner;
+  /// Authoritative `(account, workspace)` authorization generation and independent per-vault lock generation tracker.
+  readonly authGen = new AuthGenTracker();
   readonly #topics = new Map<string, Entry>();
   readonly #subscriptions = new Map<string, Topic>();
   /// A keyed subscriber's `from` (`client/id` to the id of the client's other subscription), till its first value goes.
   readonly #from = new Map<string, RequestId>();
   /// A subscriber's `have` (`client/id` to the token of what it holds), till its first value goes (#first).
   readonly #have = new Map<string, string>();
-  /// What each client holds of the topics it let go of keeping them (`keep`), by topic key: the value it was last sent,
-  /// whose token its `{id, v}` said, and that token; at most KEPT_PER_CLIENT, the least recently let go of first.
-  /// A subscription asked again with that token gets what changed from it (#first), not the value whole. It is
-  /// cheap: the value is the object that went out (shared, read-only: never a copy, never changed), the one the topic's
-  /// entry holds as `sent` while it lives, so it costs memory only once the topic is evicted or has moved on; and a
-  /// token is given only as a client lets go of a topic it keeps, nothing of the value read for it. One is forgotten as
-  /// a subscription of that client to that topic gets its first message (whatever it is: the client takes what it kept
-  /// out with it too), and all of a client's as it goes (dropClient).
-  readonly #kept = new Map<ClientId, Map<string, { ok: unknown; v: string }>>();
+  /// Connected clients registered with a connection instance id (`Core.connect`).
+  readonly #connIds = new Map<ClientId, number>();
+  /// Clients whose initial `{ id: 0, auth }` snapshot has not been emitted yet.
+  readonly #pendingSnapshots = new Set<ClientId>();
+  readonly #authNotReady = new Set<ClientId>();
+  readonly #authFailed = new Set<ClientId>();
+  readonly #deferredEmits = new Map<ClientId, { msg: CoreMessage; isRpc: boolean }[]>();
+  /// Clients for which protected write RPCs must carry explicit `CallAuth` (all production hosts + `syncAuth` + auth-aware clients).
+  readonly #authEnforced = new Set<ClientId>();
+  /// Optional authorization gate checked before reading held data or computing/emitting topic values.
+  #authorize: ((topic: Topic, authGen: number, vaultGen: number) => boolean) | null = null;
+  /// What each client holds of the topics it let go of keeping them (`keep`), by topic key: the value it was last sent
+  /// (sanitized for `station`/`profiles`/`stationPart(profiles)`), its token, and the `(authGen, vaultGen)` it belonged to.
+  readonly #kept = new Map<ClientId, Map<string, { topic: Topic; ok: unknown; v: string; authGen: number; vaultGen: number }>>();
+  /// Records `(conn, topicKey, topic, authGen, vaultGen)` per client for every `keep` token issued, so `#first` token
+  /// fast-path (`tokenOf(value.ok) === have`) enforces client, connection, exact topicKey, and generation match even after `#kept` evicts past 96.
+  readonly #tokenScope = new Map<ClientId, Map<string, { conn: number; key: string; topic: Topic; authGen: number; vaultGen: number }>>();
   #source: Source | null = null;
   #idleCount = 0;
   /// The topic of words typed let go of last, of each kind (wordsKind): kept made as any topic is (#flushOf).
@@ -216,6 +230,273 @@ export class Store {
     this.runner = runner;
     this.#tracer = tracer;
     this.#moments = new Moments(() => host.nowMs(), runner);
+    this.authGen.onBoundary((event) => this.#onAuthBoundary(event));
+  }
+
+  /// Registers a connected client with its unique connection instance id and emits (or schedules) the authoritative auth snapshot.
+  /// When `ready` is false (production `Core.connect()` while `device/auth` `connSeq` is being persisted), no `{ id: 0, auth }`
+  /// snapshot or conn-tagged message is emitted until `markClientAuthReady(client)` is called after persistence succeeds.
+  registerClient(client: ClientId, connId: number, immediate = true, ready = true): void {
+    this.#connIds.set(client, connId);
+    if (!ready) {
+      this.#authNotReady.add(client);
+      this.#pendingSnapshots.add(client);
+      return;
+    }
+    this.#authNotReady.delete(client);
+    if (immediate) {
+      this.#pendingSnapshots.delete(client);
+      this.#deferredEmits.delete(client);
+      this.host.emit(client, { id: 0, auth: this.authGen.snapshot(connId) });
+      return;
+    }
+    this.#pendingSnapshots.add(client);
+    this.runner.fork(Effect.yieldNow.pipe(Effect.andThen(Effect.sync(() => this.#flushAuthSnapshot(client)))));
+  }
+
+  /// Updates `client`'s `connId` before `markClientAuthReady` (e.g., if reloading `device/auth` discovered a higher persisted `connSeq`).
+  updateClientConn(client: ClientId, connId: number): void {
+    if (!this.#connIds.has(client)) return;
+    this.#connIds.set(client, connId);
+  }
+
+  /// Marks `client`'s `connId` as durably persisted, emits the authoritative `{ id: 0, auth }` snapshot, and drains any
+  /// deferred emissions. Any deferred message tagged with a stale `conn !== activeConn` is rejected as `auth_stale`
+  /// (for RPCs, without `conn`) or dropped (for non-RPCs).
+  markClientAuthReady(client: ClientId): void {
+    const activeConn = this.#connIds.get(client);
+    if (activeConn === undefined) return;
+    const wasAuthFailed = this.#authFailed.has(client);
+    this.#authNotReady.delete(client);
+    this.#authFailed.delete(client);
+    this.#flushAuthSnapshot(client);
+    const queued = this.#deferredEmits.get(client);
+    if (queued) {
+      this.#deferredEmits.delete(client);
+      for (const entry of queued) {
+        const msgConn =
+          "conn" in entry.msg && typeof (entry.msg as { conn?: unknown }).conn === "number"
+            ? (entry.msg as { conn: number }).conn
+            : undefined;
+        if (msgConn !== undefined && msgConn !== activeConn) {
+          if (entry.isRpc && "id" in entry.msg && typeof entry.msg.id === "number" && entry.msg.id > 0) {
+            this.host.emit(client, { id: entry.msg.id, error: new CoreError("auth_stale", t("core-misc.auth.stale")) });
+          }
+          continue;
+        }
+        this.host.emit(client, entry.msg);
+      }
+    }
+    if (wasAuthFailed) {
+      for (const [at, topic] of this.#subscriptions) {
+        const slash = at.indexOf("/");
+        if (slash < 0 || Number(at.slice(0, slash)) !== client) continue;
+        if (DEVICE_GLOBAL_TOPIC_SET.has(topic.topic)) continue;
+        const entry = this.#topics.get(topicKey(topic));
+        if (entry === undefined || entry.sent === undefined) continue;
+        if (!this.#isAuthorized(topic)) continue;
+        const id = Number(at.slice(slash + 1));
+        const gen = this.#wireGen(client, topic);
+        this.host.emit(client, to(whole(entry.sent), id, gen));
+      }
+    }
+  }
+
+  /// Whether `client`'s handshake `device/auth` persistence failed (and has not yet recovered via `syncAuth` or auto-retry).
+  isAuthFailed(client: ClientId): boolean {
+    return this.#authFailed.has(client);
+  }
+
+  /// Aborts an unpersisted handshake for `client`: marks `#authFailed` (preserving `#authEnforced`), never emits the
+  /// unpersisted `connId`, fails only queued RPCs (`isRpc === true`) explicitly without `conn` (never misreporting
+  /// subscription values as RPC errors), and clears handshake state so recovery can establish a fresh `connId`.
+  failClientAuth(client: ClientId, _err: unknown): void {
+    const queued = this.#deferredEmits.get(client);
+    this.#authFailed.add(client);
+    this.#deferredEmits.delete(client);
+    this.#connIds.delete(client);
+    this.#pendingSnapshots.delete(client);
+    this.#authNotReady.delete(client);
+    if (queued) {
+      const seenRpc = new Set<number>();
+      for (const { msg, isRpc } of queued) {
+        if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0 && !seenRpc.has(msg.id)) {
+          seenRpc.add(msg.id);
+          this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", t("core-logic.status.db.full")) });
+        }
+      }
+    }
+  }
+
+  /// Emits the pending initial `{ id: 0, auth }` snapshot for `client` if ready and not yet sent.
+  flushAuthSnapshot(client: ClientId): void {
+    this.#flushAuthSnapshot(client);
+  }
+
+  #flushAuthSnapshot(client: ClientId): void {
+    if (this.#authNotReady.has(client)) return;
+    if (!this.#pendingSnapshots.delete(client)) return;
+    const connId = this.#connIds.get(client);
+    if (connId === undefined) return;
+    this.host.emit(client, { id: 0, auth: this.authGen.snapshot(connId) });
+  }
+
+  /// Emits `msg` to `client`, deferring until `device/auth` persistence completes if `client` is awaiting handshake
+  /// persistence. If persistence failed (`#authFailed`), RPCs receive an explicit `storage_failed` error without `conn`,
+  /// only conn-free device-global frames pass through, and all protected subscription frames are dropped. Once ready,
+  /// any late message tagged with a stale `conn !== activeConn` is rejected as `auth_stale` (RPC) or dropped.
+  emitClient(client: ClientId, msg: CoreMessage, isRpc = false, deviceGlobal = false): void {
+    if (this.#authNotReady.has(client)) {
+      let q = this.#deferredEmits.get(client);
+      if (!q) this.#deferredEmits.set(client, (q = []));
+      q.push({ msg, isRpc });
+      return;
+    }
+    if (this.#authFailed.has(client)) {
+      if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0) {
+        this.host.emit(client, {
+          id: msg.id,
+          error: new CoreError("storage_failed", t("core-logic.status.db.full")),
+        });
+      } else if (deviceGlobal && !("conn" in msg && typeof (msg as { conn?: unknown }).conn === "number")) {
+        this.host.emit(client, msg);
+      }
+      return;
+    }
+    const activeConn = this.#connIds.get(client);
+    const msgConn =
+      "conn" in msg && typeof (msg as { conn?: unknown }).conn === "number"
+        ? (msg as { conn: number }).conn
+        : undefined;
+    if (activeConn !== undefined && msgConn !== undefined && msgConn !== activeConn) {
+      if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0) {
+        this.host.emit(client, { id: msg.id, error: new CoreError("auth_stale", t("core-misc.auth.stale")) });
+      }
+      return;
+    }
+    this.#flushAuthSnapshot(client);
+    this.host.emit(client, msg);
+  }
+
+  /// Returns the connection instance id of a registered client (0 if unregistered).
+  connOf(client: ClientId): number {
+    return this.#connIds.get(client) ?? 0;
+  }
+
+  /// Marks a connected client as requiring explicit `CallAuth` on protected write RPCs.
+  setAuthEnforced(client: ClientId): void {
+    this.#authEnforced.add(client);
+  }
+
+  /// Whether protected write RPCs from `client` must carry explicit `CallAuth`.
+  isAuthEnforced(client: ClientId): boolean {
+    return this.#authEnforced.has(client);
+  }
+
+  /// Sets the authorization gate consulted before reading held records, computing derived topics, or writing back.
+  setAuthorize(authorize: ((topic: Topic, authGen: number, vaultGen: number) => boolean) | null): void {
+    this.#authorize = authorize;
+  }
+
+  /// Captures the current `(authGen, vaultGen)` for a topic so async producers can validate write-backs.
+  readGen(topic: Topic): { authGen: number; vaultGen: number } {
+    return { authGen: this.authGen.authGenOf(topic), vaultGen: this.authGen.vaultGenOf(topic) };
+  }
+
+  /// Whether `topic` is currently authorized to read/emit positive cached data (errors are never blocked).
+  isAuthorized(topic: Topic): boolean {
+    return this.#isAuthorized(topic);
+  }
+
+  #isAuthorized(topic: Topic): boolean {
+    if (this.#authorize === null) return true;
+    return this.#authorize(topic, this.authGen.authGenOf(topic), this.authGen.vaultGenOf(topic));
+  }
+
+  #wireGen(client: ClientId, topic: Topic): WireGen | undefined {
+    const conn = this.#connIds.get(client);
+    if (conn === undefined) return undefined;
+    const scope = topicScopeOf(topic);
+    const authGen = this.authGen.authGenOf(topic);
+    if (scope.kind === "vault" || scope.kind === "vaultWorkspace") {
+      const vaultGen = this.authGen.vaultGenOf(topic);
+      return { conn, authGen, vaultGen };
+    }
+    return { conn, authGen };
+  }
+
+  #recordTokenScope(client: ClientId, topic: Topic, v: string, authGen: number, vaultGen: number): void {
+    const conn = this.#connIds.get(client) ?? 0;
+    let byClient = this.#tokenScope.get(client);
+    if (byClient === undefined) this.#tokenScope.set(client, (byClient = new Map()));
+    const key = topicKey(topic);
+    const entryKey = `${key}\u0001${v}`;
+    byClient.delete(entryKey);
+    byClient.set(entryKey, { conn, key, topic, authGen, vaultGen });
+    if (byClient.size > KEPT_PER_CLIENT * 4) {
+      byClient.delete(byClient.keys().next().value!);
+    }
+  }
+
+  #tokenMatchesScope(client: ClientId, topic: Topic, v: string, authGen: number, vaultGen: number): boolean {
+    const byClient = this.#tokenScope.get(client);
+    if (!byClient) return false;
+    const key = topicKey(topic);
+    const rec = byClient.get(`${key}\u0001${v}`);
+    if (!rec) return false;
+    const conn = this.#connIds.get(client) ?? 0;
+    return rec.conn === conn && rec.key === key && rec.authGen === authGen && rec.vaultGen === vaultGen;
+  }
+
+  /// Invalidates the entire projection pipeline (entry.sent, entry.input, entry.value, entry.read,
+  /// pending queues, #kept, #from, #have) for all topics matching `event`, leaving unrelated scopes untouched.
+  #onAuthBoundary(event: AuthBoundaryEvent): void {
+    for (const [key, entry] of this.#topics) {
+      if (!this.authGen.matches(entry.topic, event)) continue;
+      entry.sent = undefined;
+      entry.value = undefined;
+      entry.kept = undefined;
+      entry.output?.stop();
+      entry.output = undefined;
+      entry.outputDirty = true;
+      entry.stale = true;
+      entry.waiting = false;
+      entry.authGen = this.authGen.authGenOf(entry.topic);
+      entry.vaultGen = this.authGen.vaultGenOf(entry.topic);
+      entry.input.set({ mode: "derived" });
+      if (this.#firstPending.get(key) === entry) this.#firstPending.delete(key);
+      if (this.#updatesPending.get(key) === entry) this.#updatesPending.delete(key);
+      for (const [client, id] of entry.subscribers) {
+        const at = `${client}/${id}`;
+        this.#from.delete(at);
+        this.#have.delete(at);
+      }
+      if (entry.subscribers.length > 0) {
+        entry.emitScheduled = true;
+        this.#updatesPending.set(key, entry);
+        this.#wakePending(false);
+      } else {
+        entry.emitScheduled = false;
+      }
+    }
+    for (const kept of this.#kept.values()) {
+      for (const [key, rec] of [...kept]) {
+        if (this.authGen.matches(rec.topic, event)) kept.delete(key);
+      }
+    }
+    for (const byClient of this.#tokenScope.values()) {
+      for (const [key, rec] of [...byClient]) {
+        if (this.authGen.matches(rec.topic, event)) byClient.delete(key);
+      }
+    }
+    for (const [client, connId] of this.#connIds) {
+      if (this.#authNotReady.has(client)) continue;
+      if (this.#pendingSnapshots.delete(client)) {
+        this.host.emit(client, { id: 0, auth: this.authGen.snapshot(connId) });
+      } else {
+        this.host.emit(client, { id: 0, auth: this.authGen.toBoundaryMessage(connId, event) });
+      }
+    }
   }
 
   setSource(source: Source): void {
@@ -245,11 +526,38 @@ export class Store {
     const usage = signal(0, () => this.#release(topic));
     const input = signal<ReactiveInput>({ mode: "direct" });
     const read = computed(() => {
+      const authorized = this.#isAuthorized(topic);
+      const curAuthGen = this.authGen.authGenOf(topic);
+      const curVaultGen = this.authGen.vaultGenOf(topic);
       const state = input.get();
-      if (state.mode === "direct") return state.value;
-      return this.#compute(topic) ?? entry.value;
+      if (state.mode === "direct") {
+        if (entry.authGen !== curAuthGen || entry.vaultGen !== curVaultGen) return undefined;
+        if (!authorized && state.value !== undefined && "ok" in state.value) return undefined;
+        return state.value;
+      }
+      const computedValue = this.#compute(topic);
+      if (computedValue !== undefined) {
+        if (!authorized && "ok" in computedValue) return undefined;
+        return computedValue;
+      }
+      if (entry.authGen !== curAuthGen || entry.vaultGen !== curVaultGen) return undefined;
+      if (!authorized && entry.value !== undefined && "ok" in entry.value) return undefined;
+      return entry.value;
     });
-    entry = { topic, usage, input, read, selections: new WeakMap(), subscribers: [], watchers: [], stale: false, emitScheduled: false, idle: null };
+    entry = {
+      topic,
+      usage,
+      input,
+      read,
+      selections: new WeakMap(),
+      subscribers: [],
+      watchers: [],
+      stale: false,
+      emitScheduled: false,
+      idle: null,
+      authGen: this.authGen.authGenOf(topic),
+      vaultGen: this.authGen.vaultGenOf(topic),
+    };
     return entry;
   }
 
@@ -262,12 +570,30 @@ export class Store {
   }
 
   /// Adds a subscriber; sends the cached value at once if there is one, and starts the topic if it was not live.
-  subscribe(client: ClientId, id: RequestId, topic: Topic, keyed = false, from?: RequestId, have?: string): void {
+  subscribe(
+    client: ClientId,
+    id: RequestId,
+    topic: Topic,
+    keyed = false,
+    from?: RequestId,
+    have?: string,
+    clientGen?: WireGen,
+  ): void {
     this.unsubscribe(client, id);
     const key = topicKey(topic);
     this.#subscriptions.set(`${client}/${id}`, topic);
-    if (keyed && from !== undefined) this.#from.set(`${client}/${id}`, from);
-    if (have !== undefined) this.#have.set(`${client}/${id}`, have);
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    const conn = this.#connIds.get(client);
+    const clientGenOk =
+      clientGen === undefined ||
+      ((clientGen.conn === undefined || conn === undefined || clientGen.conn === conn) &&
+        (clientGen.authGen === undefined || clientGen.authGen === curAuthGen) &&
+        (clientGen.vaultGen === undefined || clientGen.vaultGen === curVaultGen));
+    if (clientGenOk) {
+      if (keyed && from !== undefined) this.#from.set(`${client}/${id}`, from);
+      if (have !== undefined) this.#have.set(`${client}/${id}`, have);
+    }
     let entry = this.#topics.get(key);
     const started = entry === undefined;
     if (!entry) {
@@ -275,20 +601,36 @@ export class Store {
       this.#topics.set(key, entry);
     }
     const resumed = entry.idle !== null;
-    // Its last client output predates changes made while the page was closed. A new subscriber must receive the
-    // current value whole, rather than that old value followed by a delta.
-    if (entry.outputDirty && entry.subscribers.length === 0) entry.sent = undefined;
+    const authorized = this.#isAuthorized(topic);
+    // Its last client output predates changes made while the page was closed, or a generation boundary.
+    if (entry.authGen !== curAuthGen || entry.vaultGen !== curVaultGen || !authorized) {
+      entry.sent = undefined;
+      entry.value = undefined;
+      entry.outputDirty = true;
+      entry.stale = true;
+      entry.authGen = curAuthGen;
+      entry.vaultGen = curVaultGen;
+      entry.input.set({ mode: "derived" });
+    } else if (entry.outputDirty && entry.subscribers.length === 0) {
+      entry.sent = undefined;
+    }
     entry.subscribers.push([client, id, keyed]);
     entry.idle = null;
-    const cached = entry.sent;
+    const cached = authorized ? entry.sent : undefined;
     if (cached === undefined && this.#updatesPending.get(key) === entry) {
       this.#updatesPending.delete(key);
       this.#firstPending.set(key, entry);
       this.#wakePending(true);
     }
-    if (cached !== undefined) this.host.emit(client, this.#first(client, id, topic, keyed, cached) ?? to(whole(cached), id));
-    else {
-      if (entry.waiting === true) this.host.emit(client, { id, waiting: true });
+    const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
+    if (cached !== undefined) {
+      const gen = this.#wireGen(client, topic);
+      this.emitClient(client, this.#first(client, id, topic, keyed, cached, gen) ?? to(whole(cached), id, gen), false, deviceGlobal);
+    } else {
+      if (entry.waiting === true) {
+        const gen = this.#wireGen(client, topic);
+        this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true }, false, deviceGlobal);
+      }
       if (entry.opening === undefined && this.#tracer !== null && OPENED.has(topic.topic)) {
         const span = this.#tracer.root(`${topic.topic}.open`, Kind.Internal);
         // (made anew, or kept from a page shown a moment ago and let go: its view made again either way)
@@ -391,11 +733,27 @@ export class Store {
     this.#have.delete(at);
     const entry = this.#topics.get(topicKey(topic));
     if (keep) {
-      // (what went to it last: the value it holds, every message to it going out in order; none, where none went)
-      const had = entry?.subscribers.some(([c, i]) => c === client && i === id) ? entry.sent : undefined;
-      const v = had !== undefined && "ok" in had ? tokenOf(had.ok) : null;
-      if (had !== undefined && "ok" in had && v !== null) this.#keep(client, topicKey(topic), had.ok, v);
-      this.host.emit(client, { id, v });
+      const known = isKnownTopic(topic.topic);
+      const policy = known ? evaluateTopicPolicy(topic.topic, topic) : null;
+      const gen = this.#wireGen(client, topic);
+      const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
+      if ((policy !== null && (policy.sensitive || policy.retention === "live" || policy.keep <= 0)) || !this.#isAuthorized(topic)) {
+        // Unconditional security ceiling: sensitive/live topics never retain kept values; still complete unsubscribe.
+        this.emitClient(client, gen ? { id, v: null, ...gen } : { id, v: null }, false, deviceGlobal);
+      } else {
+        // (what went to it last: the value it holds, every message to it going out in order; none, where none went)
+        const curAuthGen = this.authGen.authGenOf(topic);
+        const curVaultGen = this.authGen.vaultGenOf(topic);
+        const sameGen = entry !== undefined && entry.authGen === curAuthGen && entry.vaultGen === curVaultGen;
+        const had = sameGen && entry.subscribers.some(([c, i]) => c === client && i === id) ? entry.sent : undefined;
+        const sanitized = had !== undefined && "ok" in had ? sanitizeKeptValue(topic.topic, had.ok, topic) : undefined;
+        const v = sanitized !== undefined ? tokenOf(sanitized) : null;
+        if (sanitized !== undefined && v !== null) {
+          this.#keep(client, topicKey(topic), topic, sanitized, v, curAuthGen, curVaultGen);
+          this.#recordTokenScope(client, topic, v, curAuthGen, curVaultGen);
+        }
+        this.emitClient(client, gen ? { id, v, ...gen } : { id, v }, false, deviceGlobal);
+      }
     }
     if (!entry) return;
     entry.subscribers = entry.subscribers.filter(([c, i]) => !(c === client && i === id));
@@ -459,15 +817,22 @@ export class Store {
     const ids = [...this.#subscriptions.keys()].filter((k) => k.startsWith(`${client}/`)).map((k) => Number(k.slice(k.indexOf("/") + 1)));
     for (const id of ids) this.unsubscribe(client, id);
     this.#kept.delete(client);
+    this.#connIds.delete(client);
+    this.#pendingSnapshots.delete(client);
+    this.#authNotReady.delete(client);
+    this.#authFailed.delete(client);
+    this.#deferredEmits.delete(client);
+    this.#authEnforced.delete(client);
+    this.#tokenScope.delete(client);
   }
 
   /// Client `client` let go of topic `key` keeping `ok`, of token `v`: remembered for it (#kept), the least recently
   /// let go of forgotten past KEPT_PER_CLIENT.
-  #keep(client: ClientId, key: string, ok: unknown, v: string): void {
+  #keep(client: ClientId, key: string, topic: Topic, ok: unknown, v: string, authGen: number, vaultGen: number): void {
     let kept = this.#kept.get(client);
     if (kept === undefined) this.#kept.set(client, (kept = new Map()));
     kept.delete(key);
-    kept.set(key, { ok, v });
+    kept.set(key, { topic, ok, v, authGen, vaultGen });
     if (kept.size > KEPT_PER_CLIENT) kept.delete(kept.keys().next().value!);
   }
 
@@ -476,11 +841,23 @@ export class Store {
     return this.#kept.get(client)?.size ?? 0;
   }
 
-  /// Stores a topic's new value (or its error) and schedules sending it. A topic that is not live is ignored.
-  set(topic: Topic, value: Value): void {
+  /// Returns the sanitized kept value remembered for `client` and `topic` (for tests).
+  keptValueOf(client: ClientId, topic: Topic): unknown {
+    return this.#kept.get(client)?.get(topicKey(topic))?.ok;
+  }
+
+  /// Stores a topic's new value (or its error) and schedules sending it. A topic that is not live, unauthorized,
+  /// or whose captured `expectedGen` is older than the current generation is ignored.
+  set(topic: Topic, value: Value, expectedGen?: { authGen: number; vaultGen: number }): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry) return;
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    if (expectedGen && (expectedGen.authGen !== curAuthGen || expectedGen.vaultGen !== curVaultGen)) return;
+    if ("ok" in value && !this.#isAuthorized(topic)) return;
     if ("ok" in value) sharedValue(value.ok);
+    entry.authGen = curAuthGen;
+    entry.vaultGen = curVaultGen;
     entry.value = value;
     const schedule = !entry.emitScheduled;
     entry.emitScheduled = true;
@@ -491,10 +868,14 @@ export class Store {
   }
 
   /// Replaces a topic's value by what `change` makes of it (a new value: the one kept is shared, and never changed in
-  /// place), then schedules sending it. Does nothing if the topic has no value yet.
-  update(topic: Topic, change: (value: unknown) => unknown): void {
+  /// place), then schedules sending it. Does nothing if the topic has no value yet or generation changed.
+  update(topic: Topic, change: (value: unknown) => unknown, expectedGen?: { authGen: number; vaultGen: number }): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry || !entry.value || !("ok" in entry.value)) return;
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    if (expectedGen && (expectedGen.authGen !== curAuthGen || expectedGen.vaultGen !== curVaultGen)) return;
+    if (entry.authGen !== curAuthGen || entry.vaultGen !== curVaultGen || !this.#isAuthorized(topic)) return;
     entry.value = { ok: sharedValue(change(entry.value.ok)) };
     const schedule = !entry.emitScheduled;
     entry.emitScheduled = true;
@@ -559,14 +940,23 @@ export class Store {
     return entry;
   }
 
-  /// The topic's value or error; undefined while it has neither.
+  /// The topic's value or error; undefined while it has neither or while unauthorized for positive data.
   value(topic: Topic): Value | undefined {
     const entry = this.#entryForRead(topic);
+    const authorized = this.#isAuthorized(topic);
     // Held values come straight from Data, but changes to their topics must still invalidate their readers.
-    const held = this.#heldValue(topic);
+    const held = authorized ? this.#heldValue(topic) : undefined;
     if (entry && (held !== undefined || (this.#held !== null && holds(topic)))) void entry.input.get();
     if (held !== undefined) {
       return { ok: held };
+    }
+    if (!authorized) {
+      if (entry) {
+        const cur = entry.value;
+        if (cur !== undefined && "err" in cur) return cur;
+        void entry.input.get();
+      }
+      return undefined;
     }
     const value = entry?.read.get();
     if (value === undefined) return undefined;
@@ -664,7 +1054,7 @@ export class Store {
     const key = topicKey(topic);
     const entry = this.#topics.get(key);
     if (!entry) return;
-    const first = entry.sent === undefined && entry.subscribers.length > 0;
+    const first = entry.sent === undefined && entry.openedTold !== true && entry.subscribers.length > 0;
     this.#firstPending.delete(key);
     this.#updatesPending.delete(key);
     (first ? this.#firstPending : this.#updatesPending).set(key, entry);
@@ -811,6 +1201,16 @@ export class Store {
     const job = entry.job;
     entry.job = undefined;
     job?.();
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    const authorized = this.#isAuthorized(topic);
+    if (entry.authGen !== curAuthGen || entry.vaultGen !== curVaultGen) {
+      entry.value = undefined;
+      entry.sent = undefined;
+      entry.authGen = curAuthGen;
+      entry.vaultGen = curVaultGen;
+      entry.input.set({ mode: "derived" });
+    }
     const isHeld = this.#held !== null && holds(topic);
     let computed: Value | undefined;
     const workFrom = entry.opening ? this.host.monotonicMs() : 0;
@@ -826,7 +1226,7 @@ export class Store {
         for (const [, w] of [...entry.watchers]) w();
         return;
       }
-      const held = this.#heldValue(topic);
+      const held = authorized ? this.#heldValue(topic) : undefined;
       // A direct set after an invalidation is visible immediately; the queued recomputation still follows it.
       if (held === undefined && entry.input.get().mode !== "derived") entry.input.set({ mode: "derived" });
       if (held !== undefined) computed = { ok: held };
@@ -845,6 +1245,15 @@ export class Store {
     }
     const now = this.#topics.get(topicKey(topic));
     if (!now) return;
+    if (this.authGen.authGenOf(topic) !== curAuthGen || this.authGen.vaultGenOf(topic) !== curVaultGen) {
+      return;
+    }
+    if (!this.#isAuthorized(topic) && (computed === undefined || "ok" in computed) && (now.value === undefined || "ok" in now.value)) {
+      now.value = undefined;
+      now.sent = undefined;
+      now.outputDirty = true;
+      return;
+    }
     let changed: (() => void)[] = [];
     // What equals the last value is the last value's (collections.ts share): what did not change goes on as the same
     // objects, which the diff and the items' shaping step over.
@@ -871,7 +1280,11 @@ export class Store {
       // then shows what is to come at once, and otherwise waits for what the device holds).
       if (now.waiting !== true && now.subscribers.length > 0 && this.#source?.waits?.(topic) === true) {
         now.waiting = true;
-        for (const [client, id] of now.subscribers) this.host.emit(client, { id, waiting: true });
+        const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
+        for (const [client, id] of now.subscribers) {
+          const gen = this.#wireGen(client, topic);
+          this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true }, false, deviceGlobal);
+        }
         now.opening?.span.set("stillfail.waiting", true);
       }
       return;
@@ -939,12 +1352,14 @@ export class Store {
       now.opening = undefined;
     }
     for (const w of changed) w();
+    const deviceGlobal = DEVICE_GLOBAL_TOPIC_SET.has(topic.topic);
     for (const [client, id, keyed] of subscribers) {
       const o = keyed ? keyedOut : out;
+      const gen = this.#wireGen(client, topic);
       // (its first value: `same`, or what changed from what the client holds, where it says so)
-      const first = sent === undefined ? this.#first(client, id, topic, keyed, value) : null;
-      if (first) this.host.emit(client, first);
-      else if (o) this.host.emit(client, to(o, id));
+      const first = sent === undefined ? this.#first(client, id, topic, keyed, value, gen) : null;
+      if (first) this.emitClient(client, first, false, deviceGlobal);
+      else if (o) this.emitClient(client, to(o, id, gen), false, deviceGlobal);
     }
     if (topic.topic === "chats" && !("err" in value) && this.onFirstChats !== null && subscribers.length > 0) {
       if (this.onFirstChats(String(topic.scope ?? ""))) this.onFirstChats = null;
@@ -989,49 +1404,85 @@ export class Store {
   /// An error, nothing remembered, another token (another run's, one forgotten): none. Its `from` and `have` are
   /// forgotten either way, and what was remembered of the topic for the client: its first message gone, the client keeps
   /// none of it after.
-  #first(client: ClientId, id: RequestId, topic: Topic, keyed: boolean, value: Value): CoreMessage | null {
+  #first(client: ClientId, id: RequestId, topic: Topic, keyed: boolean, value: Value, gen?: WireGen): CoreMessage | null {
     const at = `${client}/${id}`;
     const have = this.#have.get(at);
     this.#have.delete(at);
     const kept = this.#kept.get(client);
     const had = kept?.get(topicKey(topic));
     if (had !== undefined) kept!.delete(topicKey(topic));
-    // The value the client holds still (the same object: its token), nothing worked out; else what changed from what
-    // it holds, where that is remembered (#kept), worked out item by item, never by hashing the value whole (4-5 ms in
-    // Hermes for a chat of 46 KB, longer than sending it whole took): none changed (a value made again equal), `same`.
-    const same = have !== undefined && "ok" in value && tokenOf(value.ok) === have;
+    const known = isKnownTopic(topic.topic);
+    const policy = known ? evaluateTopicPolicy(topic.topic, topic) : null;
+    if (policy?.sensitive) {
+      this.#from.delete(at);
+      return null;
+    }
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    const allowKeep = policy === null || (policy.retention !== "live" && policy.keep > 0);
+    const validHad = allowKeep && had !== undefined && had.v === have && had.authGen === curAuthGen && had.vaultGen === curVaultGen ? had : undefined;
+    // The value the client holds still (the same object in the same connection/authGen/vaultGen), nothing worked out;
+    // else what changed from what it holds, where that is remembered (#kept). For `station`/`profiles`, `had.ok` is
+    // sanitized so fresh sensitive fields are patched in via delta rather than skipped with `same: true`.
+    const same =
+      allowKeep &&
+      have !== undefined &&
+      "ok" in value &&
+      tokenOf(value.ok) === have &&
+      this.#tokenMatchesScope(client, topic, have, curAuthGen, curVaultGen);
     const spec = keyed ? specOf(topic) : null;
-    const ops = !same && have !== undefined && had !== undefined && had.v === have && "ok" in value ? (spec ? diffKeyed(had.ok, value.ok, spec) : diff(had.ok, value.ok)) : null;
+    const ops = !same && have !== undefined && validHad !== undefined && "ok" in value ? (spec ? diffKeyed(validHad.ok, value.ok, spec) : diff(validHad.ok, value.ok)) : null;
     if (same || (ops !== null && ops.length === 0)) {
       this.#from.delete(at);
-      return { id, same: true };
+      return gen ? { id, same: true, ...gen } : { id, same: true };
     }
-    const from = keyed ? this.#firstFrom(client, id, topic, value) : null;
+    const from = keyed ? this.#firstFrom(client, id, topic, value, gen) : null;
     this.#from.delete(at);
     if (from !== null) return from;
     if (ops === null || !("ok" in value)) return null;
-    if (spec) return heavier(ops as AnyOp[], value.ok) ? null : { id, delta: ops, kept: true };
-    return largerThan(ops as Op[], value.ok) ? null : { id, delta: ops, kept: true };
+    if (spec) return heavier(ops as AnyOp[], value.ok) ? null : gen ? { id, delta: ops, kept: true, ...gen } : { id, delta: ops, kept: true };
+    return largerThan(ops as Op[], value.ok) ? null : gen ? { id, delta: ops, kept: true, ...gen } : { id, delta: ops, kept: true };
   }
 
   /// The first value `value` of topic `topic` going to subscriber `id` of `client` as what changed from what its
   /// `from` has: that subscription's topic's value as last sent, which the client holds, the messages to it going in
-  /// order. None when it has no `from`, or that one is gone, has another topic's name, has no value, or the difference
-  /// would be heavier than the value: it goes whole then. Its `from` is forgotten either way, its first value gone.
-  #firstFrom(client: ClientId, id: RequestId, topic: Topic, value: Value): CoreMessage | null {
+  /// order. None when it has no `from`, or that one is gone, has another topic's name, has no value, crosses an
+  /// auth/vault generation, is `sensitive`, or the difference would be heavier than the value: it goes whole then.
+  #firstFrom(client: ClientId, id: RequestId, topic: Topic, value: Value, gen?: WireGen): CoreMessage | null {
     const at = `${client}/${id}`;
     const from = this.#from.get(at);
     if (from === undefined) return null;
     this.#from.delete(at);
+    const topicPolicy = evaluateTopicPolicy(topic.topic, topic);
+    if (topicPolicy.sensitive) return null;
     const other = this.#subscriptions.get(`${client}/${from}`);
     if (!other || other.topic !== topic.topic || !("ok" in value)) return null;
+    const otherPolicy = evaluateTopicPolicy(other.topic, other);
+    if (otherPolicy.sensitive || otherPolicy.retention !== topicPolicy.retention) return null;
+    if (!equal(topicScopeOf(topic), topicScopeOf(other))) return null;
+    const topicKeys = Object.keys(topic).filter((k) => k !== "limit");
+    const otherKeys = Object.keys(other).filter((k) => k !== "limit");
+    if (topicKeys.length !== otherKeys.length || !topicKeys.every((k) => Object.hasOwn(other, k) && equal(topic[k], other[k]))) {
+      return null;
+    }
     const entry = this.#topics.get(topicKey(other));
     const base = entry?.sent;
-    if (!entry || !base || !("ok" in base) || !entry.subscribers.some(([c, i, k]) => c === client && i === from && k)) return null;
+    const curAuthGen = this.authGen.authGenOf(topic);
+    const curVaultGen = this.authGen.vaultGenOf(topic);
+    if (
+      !entry ||
+      !base ||
+      !("ok" in base) ||
+      entry.authGen !== curAuthGen ||
+      entry.vaultGen !== curVaultGen ||
+      !entry.subscribers.some(([c, i, k]) => c === client && i === from && k)
+    ) {
+      return null;
+    }
     const spec = specOf(topic);
     if (!spec) return null;
     const ops = diffKeyed(base.ok, value.ok, spec);
-    return heavier(ops, value.ok) ? null : { id, delta: ops, from };
+    return heavier(ops, value.ok) ? null : gen ? { id, delta: ops, from, ...gen } : { id, delta: ops, from };
   }
 
   #evict(topic: Topic, idle: number): void {

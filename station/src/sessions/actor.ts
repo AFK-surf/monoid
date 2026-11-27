@@ -268,7 +268,9 @@ export type Snapshot = {
   key: string;
   runtime: RuntimeKind;
   agent: unknown | null;
-  turn: { id: string; authRetried: boolean; codexRetried?: boolean; by: TurnFor; declared: string | null; wait: number | null } | null;
+  turn: { id: string; authRetried: boolean; codexRetried?: boolean; by: TurnFor; declared: string | null; wait: number | null;
+    /// Tool calls begun and not ended (once steered to check its wait: since then; optional: a station from before does not say).
+    openTools?: string[] } | null;
   /// Undeclared turn end deferred while the session was held (optional: a station from before does not say).
   deferredEnd?: { lost: boolean; unheard?: boolean; recorded: string | null } | null;
   workingFor: Working[];
@@ -278,6 +280,8 @@ export type Snapshot = {
   /// Remaining mid-turn wait when an in-flight turn declared waiting without ending yet (optional: a station from before does not say).
   midWaitingMs?: number | null;
   midWaitingSeconds?: number;
+  /// How long a turn steered to check its wait may yet stay silent before it is ended as hung (optional: a station from before does not say).
+  steerSilentMs?: number | null;
   /// How long the current waiting chain has gone without posting in the chat, and how long since the last progress reminder (optional).
   silentWaitingMs?: number | null;
   progressRemindedMs?: number | null;

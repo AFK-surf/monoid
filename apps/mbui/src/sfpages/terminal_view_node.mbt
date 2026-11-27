@@ -11,7 +11,7 @@
 
 ///|
 priv struct TermSess {
-  view : String
+  mut view : String
   kept : Ref[@hostapi.Terminal?]
   cur_size : Ref[(Int, Int)]
   call_ref : Ref[Int?]
@@ -381,7 +381,6 @@ pub fn terminal_pane_node(
       fresh
     }
   }
-  let view = sess.view
   let state = sess.state
   let drawn = sess.drawn
   let modes_sig = sess.modes_sig
@@ -514,7 +513,15 @@ pub fn terminal_pane_node(
     }
   }
   let resize_cancel : Ref[() -> Unit] = Ref(fn() {  })
+  let alive : Ref[Bool] = Ref(true)
+  let in_open : Ref[Bool] = Ref(false)
+  let cur_watch : Ref[Bool] = Ref(at.watch)
+  let reopen_ref : Ref[() -> Unit] = Ref(fn() {  })
   let open_stream = fn(term_id : String, watch_mode : Bool, init_cwd : String) {
+    in_open.val = true
+    cur_watch.val = watch_mode
+    terminal_views.val += 1
+    sess.view = "terminal-" + terminal_views.val.to_string()
     (resize_cancel.val)()
     resize_cancel.val = fn() {  }
     match call_ref.val {
@@ -530,7 +537,7 @@ pub fn terminal_pane_node(
     let params : Array[(String, Json)] = [
       ("station", str(at.station)),
       ("terminal", str(actual_term)),
-      ("view", str(view)),
+      ("view", str(sess.view)),
       ("cols", Json::number(c0.to_double())),
       ("rows", Json::number(r0.to_double())),
       ("control", Json::boolean(!watch_mode)),
@@ -598,9 +605,19 @@ pub fn terminal_pane_node(
             }
           _ => ()
         }
-      }, @sfbase.answer_unread),
+      }, fn(r) {
+        match r {
+          Err(e) if text(Some(e), "code") == "auth_stale" =>
+            if alive.val && sess.mounted > 0 && !in_open.val {
+              (reopen_ref.val)()
+            }
+          _ => ()
+        }
+      }),
     )
+    in_open.val = false
   }
+  reopen_ref.val = fn() { open_stream(sess.terminal_id, cur_watch.val, at.cwd) }
   if !reused {
     open_stream(at.terminal, at.watch, at.cwd)
   } else {
@@ -608,6 +625,7 @@ pub fn terminal_pane_node(
   }
   let fling_cancel : Ref[() -> Unit] = Ref(fn() {  })
   v.owns(fn() {
+    alive.val = false
     (resize_cancel.val)()
     resize_cancel.val = fn() {  }
     (fling_cancel.val)()
@@ -693,13 +711,30 @@ pub fn terminal_pane_node(
   let meta = fn() {
     if ended() { @sf.t("web-pages.terminal.ended") } else { cwd() }
   }
-  let set_control = fn(control : Bool) {
-    (src.call)("terminal.take", obj([("view", str(view)), ("control", Json::boolean(control))]), @sfbase.answer_unread)
+  let station_ws = match at.station.find("/") {
+    Some(i) => at.station[:i].to_owned()
+    None => ""
   }
-  let take = fn() { (src.call)("terminal.take", obj([("view", str(view))]), @sfbase.answer_unread) }
+  let set_control = fn(control : Bool) {
+    if @sfbase.is_window_switching_away(v, station_ws) {
+      return
+    }
+    cur_watch.val = !control
+    (src.call)("terminal.take", obj([("view", str(sess.view)), ("control", Json::boolean(control))]), @sfbase.answer_unread)
+  }
+  let take = fn() {
+    if @sfbase.is_window_switching_away(v, station_ws) {
+      return
+    }
+    cur_watch.val = false
+    (src.call)("terminal.take", obj([("view", str(sess.view))]), @sfbase.answer_unread)
+  }
   let raw_send = fn(said : String) {
+    if @sfbase.is_window_switching_away(v, station_ws) {
+      return
+    }
     guard @signals.untracked(types) && !@signals.untracked(ended) && said != "" else { return }
-    (src.call)("terminal.input", obj([("view", str(view)), ("text", str(said))]), @sfbase.answer_unread)
+    (src.call)("terminal.input", obj([("view", str(sess.view)), ("text", str(said))]), @sfbase.answer_unread)
   }
   let scroll_to_bottom = fn() {
     match kept.val {
@@ -1063,6 +1098,9 @@ pub fn terminal_pane_node(
               e,
               fn() { @sf.t("web-pages.terminal.end") },
               fn() {
+                if @sfbase.is_window_switching_away(v, station_ws) {
+                  return
+                }
                 let id = @signals.untracked(cur_terminal_id)
                 (src.call)("terminal.end", obj([("station", str(at.station)), ("terminal", str(id))]), @sfbase.answer_unread)
                 done()
@@ -1296,7 +1334,7 @@ pub fn terminal_pane_node(
       let send_resize = fn() {
         (src.call)(
           "terminal.resize",
-          obj([("view", str(view)), ("cols", Json::number(c.to_double())), ("rows", Json::number(r.to_double()))]),
+          obj([("view", str(sess.view)), ("cols", Json::number(c.to_double())), ("rows", Json::number(r.to_double()))]),
           @sfbase.answer_unread,
         )
       }

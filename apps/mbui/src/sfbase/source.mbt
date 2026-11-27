@@ -345,10 +345,10 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     }
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
-  if src.topic_scope is None && topic_policy_lasting(name, Json::object(params)) && (src.reads_ahead)() {
+  if src.topic_scope is None && !topic_policy_sensitive(name, Json::object(params)) && topic_policy_lasting(name, Json::object(params)) && (src.reads_ahead)() {
     let key = topic_key(name, params)
     match (topic.value, topic.error) {
-      (Some(value), _) => last_put(src, key, value)
+      (Some(value), _) => last_put(src, name, params, key, value)
       (None, None) =>
         match last_said.val.search_by(fn(l) { physical_equal(l.source, src) && l.key == key }) {
           Some(i) => {
@@ -399,6 +399,157 @@ pub fn topic_shown_kept(name : String) -> Bool {
 }
 
 ///|
+/// Parameter-aware `topic_shown_kept` (handles `byParam` topics such as `stationPart` and unconditional `sensitive` ceiling).
+pub fn topic_shown_kept_params(name : String, params : Json) -> Bool {
+  topic_policy_show_kept(name, params, true)
+}
+
+///|
+fn sanitize_profile_item_json(item : Json) -> Json {
+  match item {
+    Object(obj) => {
+      let has_login = obj.contains("login")
+      let has_nested_login = match obj.get("profile") {
+        Some(Object(p)) => p.contains("login")
+        _ => false
+      }
+      if !has_login && !has_nested_login {
+        return item
+      }
+      let out : Map[String, Json] = Map([])
+      for k, v in obj {
+        if k == "login" {
+          continue
+        }
+        if k == "profile" && has_nested_login {
+          match v {
+            Object(p) => {
+              let clean_p : Map[String, Json] = Map([])
+              for pk, pv in p {
+                if pk != "login" {
+                  clean_p[pk] = pv
+                }
+              }
+              out[k] = Json::object(clean_p)
+            }
+            _ => out[k] = v
+          }
+        } else {
+          out[k] = v
+        }
+      }
+      Json::object(out)
+    }
+    _ => item
+  }
+}
+
+///|
+fn sanitize_profile_array_json(arr : Json) -> (Bool, Json) {
+  match arr {
+    Array(items) => {
+      let mut changed = false
+      let out : Array[Json] = []
+      for item in items {
+        let clean = sanitize_profile_item_json(item)
+        if !physical_equal(clean, item) {
+          changed = true
+        }
+        out.push(clean)
+      }
+      if changed { (true, Json::array(out)) } else { (false, arr) }
+    }
+    _ => (false, arr)
+  }
+}
+
+///|
+/// Strips sensitive / privilege / active-login fields (`machineLogins`, `logins`, `manages`,
+/// `profiles[].login`, `overview.profiles[].login`) from kept values of aggregate topics
+/// (`profiles`, `station`, `stationPart(part="profiles")`) before storing in `Client::kept` or `last_said`,
+/// so cached values and first-frame SWR contain zero sensitive fields while fresh answers remain intact.
+pub fn sanitize_kept_json(name : String, value : Json) -> Json {
+  match (name, value) {
+    ("stationPart", Array(_)) => sanitize_profile_array_json(value).1
+    ("profiles", Object(obj)) => {
+      let has_top = obj.contains("machineLogins") || obj.contains("manages")
+      let (items_changed, clean_items) = match obj.get("items") {
+        Some(a) => sanitize_profile_array_json(a)
+        None => (false, Json::null())
+      }
+      let (profiles_changed, clean_profiles) = match obj.get("profiles") {
+        Some(a) => sanitize_profile_array_json(a)
+        None => (false, Json::null())
+      }
+      if !has_top && !items_changed && !profiles_changed {
+        return value
+      }
+      let out : Map[String, Json] = Map([])
+      for k, v in obj {
+        if k == "machineLogins" || k == "manages" {
+          continue
+        }
+        if k == "items" && items_changed {
+          out[k] = clean_items
+        } else if k == "profiles" && profiles_changed {
+          out[k] = clean_profiles
+        } else {
+          out[k] = v
+        }
+      }
+      Json::object(out)
+    }
+    ("station", Object(obj)) => {
+      let has_top = obj.contains("machineLogins") || obj.contains("manages")
+      let (ov_profiles_changed, clean_ov_profiles) = match obj.get("overview") {
+        Some(Object(ov)) =>
+          match ov.get("profiles") {
+            Some(a) => sanitize_profile_array_json(a)
+            None => (false, Json::null())
+          }
+        _ => (false, Json::null())
+      }
+      let has_ov = match obj.get("overview") {
+        Some(Object(ov)) => ov.contains("machineLogins") || ov.contains("logins") || ov_profiles_changed
+        _ => false
+      }
+      if !has_top && !has_ov {
+        return value
+      }
+      let out : Map[String, Json] = Map([])
+      for k, v in obj {
+        if k == "machineLogins" || k == "manages" {
+          continue
+        }
+        if k == "overview" && has_ov {
+          match v {
+            Object(ov) => {
+              let clean_ov : Map[String, Json] = Map([])
+              for ok, ov_v in ov {
+                if ok == "machineLogins" || ok == "logins" {
+                  continue
+                }
+                if ok == "profiles" && ov_profiles_changed {
+                  clean_ov[ok] = clean_ov_profiles
+                } else {
+                  clean_ov[ok] = ov_v
+                }
+              }
+              out[k] = Json::object(clean_ov)
+            }
+            _ => out[k] = v
+          }
+        } else {
+          out[k] = v
+        }
+      }
+      Json::object(out)
+    }
+    _ => value
+  }
+}
+
+///|
 /// How many values the core's client keeps of every name together (@core.Client::keep's `most`): as many as the core
 /// remembers for it (client/core-ts topic-policy.ts KEPT_PER_CLIENT) where `views` (MBUI_SWR_VIEWS), its 64 of before else.
 pub fn kept_most_by(views : Bool) -> Int {
@@ -410,6 +561,8 @@ pub fn kept_most_by(views : Bool) -> Int {
 /// each value kept: what is worked out of a topic by its version never takes this for the answer that follows it.
 priv struct LastSaid {
   source : Source
+  name : String
+  params : Map[String, Json]
   key : String
   value : Json
   version : Int
@@ -419,6 +572,29 @@ priv struct LastSaid {
 /// The newest last (last_most of them: a list asked for many ways, the oldest forgotten).
 // kept across runs: put back as a run begins (reset)
 let last_said : Ref[Array[LastSaid]] = Ref([])
+
+///|
+/// Live count and serialized UTF-8 byte size of the client's lasting lists `last_said` cache
+/// (places SWR lists only; parked pages release their own topic holds via `rest(drop_holds=true)` and are not in this cache).
+pub fn last_said_stats() -> (Int, Int) {
+  let mut bytes = 0
+  for entry in last_said.val {
+    let s = entry.value.stringify()
+    for ch in s {
+      let cp = ch.to_int()
+      if cp <= 0x7F {
+        bytes += 1
+      } else if cp <= 0x7FF {
+        bytes += 2
+      } else if cp <= 0xFFFF {
+        bytes += 3
+      } else {
+        bytes += 4
+      }
+    }
+  }
+  (last_said.val.length(), bytes)
+}
 
 ///|
 let chats_kept : Int = topic_policy_keep("chat", empty_topic_params, true)
@@ -431,16 +607,72 @@ let last_most : Int = topic_policy_last_most
 let last_count : Ref[Int] = Ref(0)
 
 ///|
-fn last_put(src : Source, key : String, value : Json) -> Unit {
+fn last_put(src : Source, name : String, params : Map[String, Json], key : String, value : Json) -> Unit {
+  let clean = sanitize_kept_json(name, value)
   let at = last_said.val.search_by(fn(l) { physical_equal(l.source, src) && l.key == key })
   match at {
-    Some(i) if physical_equal(last_said.val[i].value, value) => return
+    Some(i) if physical_equal(last_said.val[i].value, clean) => return
     _ => ()
   }
   last_count.val += 1
   let kept = last_said.val.filter(fn(l) { !(physical_equal(l.source, src) && l.key == key) })
-  kept.push({ source: src, key, value, version: -2 - last_count.val })
+  kept.push({ source: src, name, params: params.copy(), key, value: clean, version: -2 - last_count.val })
   last_said.val = if kept.length() > last_most { kept[kept.length() - last_most:].to_owned() } else { kept }
+}
+
+///|
+/// Local synchronous vault-lock masking hook installed by the app host (`@core.client.mask_scope(VaultAll)`),
+/// invoked by `sfpages/vault.mbt` on the lock button press before next paint/input.
+// kept across runs: installed once by the app host as it starts
+pub let mask_vault_all : Ref[() -> () -> Unit] = Ref(fn() { fn() {  } })
+
+///|
+/// Local synchronous global-scope masking hook installed by the app host (`@core.client.mask_scope(Global)`),
+/// invoked by `sfpages/account.mbt` when the user confirms sign-out or account deletion.
+/// Returns an undo closure that restores subscriptions if the control call fails.
+// kept across runs: installed once by the app host as it starts
+pub let mask_global : Ref[() -> () -> Unit] = Ref(fn() { fn() {  } })
+
+///|
+/// Clears transient vault secrets held in page memory (such as `recovery_words` in `sfpages/vault.mbt`)
+/// when an auth/vault boundary fires. Wired by `sfpages/vault.mbt`.
+// kept across runs: installed once by sfpages/vault.mbt init
+pub let clear_vault_secrets : Ref[(String, String) -> Unit] = Ref(fn(_, _) {  })
+
+///|
+/// Synchronously invalidates `last_said`, active `Graph` and transferable `Lease` followers, and derived `Kept` caches
+/// belonging to `src` for every topic matched by `matches` (leaves unrelated workspaces and unaffected vaults intact).
+pub fn invalidate_auth_scope(src : Source, matches : (String, Map[String, Json]) -> Bool) -> Unit {
+  last_said.val = last_said.val.filter(fn(l) {
+    !(physical_equal(l.source, src) && matches(l.name, l.params))
+  })
+  // Never call `holder.dispose()` on a watched `FollowedTopic`: `Computed::dispose` unlinks its upstream
+  // `Sub.changes` without notifying downstream readers (`app_is` / `root.pick`), permanently freezing the UI.
+  // Dispose only unwatched followers; for live watched followers, bump `lifetime` after clearing caches so they
+  // re-evaluate immediately (dropping stale `last_said`) while staying subscribed to future core updates.
+  let watched = followed_invalidate_unwatched(src, matches)
+  kept_forget_matching(src, fn(key) {
+    match key.find("\u{1}") {
+      Some(i) => {
+        let name = key[:i].to_owned()
+        let raw = key[i + 1:].to_owned()
+        let parsed = @json.parse(raw) catch { _ => Json::object({}) }
+        let params = match parsed {
+          Object(m) => m
+          _ => Map([])
+        }
+        matches(name, params)
+      }
+      None => matches(key, Map([]))
+    }
+  })
+  if !watched.is_empty() {
+    @signals.start_batch()
+    for t in watched {
+      t.lifetime.set(t.lifetime.untracked() + 1)
+    }
+    @signals.end_batch()
+  }
 }
 
 ///|
@@ -963,6 +1195,7 @@ priv struct FollowedTopic {
   params : Map[String, Json]
   independent : Bool
   holder : @signals.Computed[TopicState]
+  lifetime : @signals.Signal[Int]
   token : Ref[Bool]
 }
 
@@ -1214,7 +1447,7 @@ fn followed_topic(
           None => read_topic_state(src, name, params)
         }
       })
-      followed_topics.val.push({ source: src, key, name, params: params.copy(), independent, holder, token })
+      followed_topics.val.push({ source: src, key, name, params: params.copy(), independent, holder, lifetime, token })
       holder
     }
   }
@@ -1354,4 +1587,35 @@ pub let answer_unread : (Result[Json, Json]) -> Unit = @settings.answer_unread
 /// Whether `done` is answer_unread: the call's answer read by nobody (a source's `call`, as it asks the core).
 pub fn unread_answer(done : (Result[Json, Json]) -> Unit) -> Bool {
   physical_equal(done, answer_unread)
+}
+
+///|
+/// Disposes and removes unwatched `FollowedTopic` entries matching `(src, matches)`, returning still-watched
+/// followers so `invalidate_auth_scope` can bump their `lifetime` signal without severing live reactive graphs.
+fn followed_invalidate_unwatched(src : Source, matches : (String, Map[String, Json]) -> Bool) -> Array[FollowedTopic] {
+  let unwatched : Array[FollowedTopic] = []
+  let watched : Array[FollowedTopic] = []
+  let kept : Array[FollowedTopic] = []
+  for t in followed_topics.val {
+    if physical_equal(t.source, src) && matches(t.name, t.params) {
+      if t.holder.watched() {
+        kept.push(t)
+        watched.push(t)
+      } else {
+        unwatched.push(t)
+      }
+    } else {
+      kept.push(t)
+    }
+  }
+  if !unwatched.is_empty() {
+    followed_topics.val = kept
+    for t in unwatched {
+      if !t.independent {
+        topic_readers_drop(src, t.key)
+      }
+      t.holder.dispose()
+    }
+  }
+  watched
 }

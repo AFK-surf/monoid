@@ -577,6 +577,8 @@ export function accessOf(v: unknown): J | null {
 /// A view open now, by its client and the name its UI gave it.
 type Open = {
   station: string;
+  workspace: string;
+  authGen: number;
   screen: string;
   ack(ts: number, waitUs?: number): void;
   keyframe(): void;
@@ -604,6 +606,12 @@ function openIn(inner: Inner): Map<string, Open> {
     opened.set(inner, views);
   }
   return views;
+}
+
+/// Returns the `(workspace, authGen)` captured when an open screen `view` was opened for `client`, if any.
+export function screenViewAuthOf(inner: Inner, client: ClientId, view: string): { workspace: string; authGen: number } | undefined {
+  const rec = openIn(inner).get(key(client, view));
+  return rec ? { workspace: rec.workspace, authGen: rec.authGen } : undefined;
 }
 
 /// The station's list of screens changed: the views of its screens hear (who is on them).
@@ -839,6 +847,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
 
     open.set(name, {
       station,
+      workspace: ofAddress(station),
+      authGen: inner.store.authGen.workspaceAuthGen(ofAddress(station)),
       screen: c.screen,
       ack: (ts, waitUs) => write(ackFrame(ts, waitUs ?? 0)),
       keyframe: () => write(keyframeFrame()),

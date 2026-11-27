@@ -53,6 +53,7 @@ import type { Answer } from "./request.ts";
 import type { Clock } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { EventLog, KEPT_MS, type Kept, type Logged } from "./event-log.ts";
+import type { OverviewRound } from "./overview.ts";
 
 const PING_MS = 25_000;
 const HOST_MS = 10_000;
@@ -223,6 +224,239 @@ export function changedKeysFromMemos(prev: OverviewMemo, next: OverviewMemo): st
   return changed.sort();
 }
 
+/// Per-flush shared serialization caches: objects shared across viewers in one `Events.flush()` round are serialized
+/// once instead of once per viewer/device, and normalized views (`disk`, `processes`, `copies`) are reused as well.
+type OverviewJsonCache = {
+  raw: WeakMap<object, string>;
+  normProcs: WeakMap<object, string>;
+  normCopies: WeakMap<object, string>;
+  normDisk: WeakMap<object, Map<string, { disk: DiskBucket | null; json: string | undefined }>>;
+};
+
+function newOverviewJsonCache(): OverviewJsonCache {
+  return { raw: new WeakMap(), normProcs: new WeakMap(), normCopies: new WeakMap(), normDisk: new WeakMap() };
+}
+
+function stringifyCached(val: unknown, cache?: WeakMap<object, string>): string | undefined {
+  if (cache !== undefined && val !== null && typeof val === "object") {
+    if (cache.has(val)) return cache.get(val);
+    const s = JSON.stringify(val) as string | undefined;
+    if (s !== undefined) cache.set(val, s);
+    return s;
+  }
+  return JSON.stringify(val) as string | undefined;
+}
+
+function normalizeDiskComparable(disk: unknown, prevDisk: DiskBucket | null, cache?: OverviewJsonCache): { disk: DiskBucket | null; json: string | undefined } {
+  if (disk === null || typeof disk !== "object" || Array.isArray(disk)) {
+    return { disk: null, json: stringifyCached(disk, cache?.raw) };
+  }
+  const prevKey = prevDisk === null ? "" : `${prevDisk.regime}:${prevDisk.index}:${prevDisk.total}`;
+  let byPrev = cache?.normDisk.get(disk);
+  const hit = byPrev?.get(prevKey);
+  if (hit !== undefined) return hit;
+  const d = disk as Record<string, unknown>;
+  const free = d.freeBytes;
+  let told: DiskBucket | null = null;
+  let norm: unknown = disk;
+  if (typeof free === "number") {
+    const total = typeof d.totalBytes === "number" ? d.totalBytes : 0;
+    let bucket = "ok";
+    const stepped = free <= LOW_DISK_BYTES ? diskStepBucket("low", free, LOW_DISK_STEP, d.totalBytes, prevDisk)
+      : total > 0 && free * 10 <= total ? diskStepBucket("pct", free, pctDiskStep(total), d.totalBytes, prevDisk)
+      : null;
+    if (stepped !== null) {
+      bucket = stepped.label;
+      told = stepped.bucket;
+    }
+    norm = { ...d, freeBytes: bucket };
+  } else told = diskBucketOf(free, d.totalBytes);
+  const res = { disk: told, json: JSON.stringify(norm) as string | undefined };
+  if (cache !== undefined) {
+    if (byPrev === undefined) cache.normDisk.set(disk, (byPrev = new Map()));
+    byPrev.set(prevKey, res);
+  }
+  return res;
+}
+
+function normalizeProcessesComparable(processes: unknown, cache?: OverviewJsonCache): string | undefined {
+  if (!Array.isArray(processes)) return stringifyCached(processes, cache?.raw);
+  if (cache?.normProcs.has(processes)) return cache.normProcs.get(processes);
+  const norm = processes.map((p) => {
+    if (p === null || typeof p !== "object" || Array.isArray(p)) return p;
+    const { rssMb: _, ...rest } = p as Record<string, unknown>;
+    return rest;
+  });
+  const json = JSON.stringify(norm) as string | undefined;
+  if (cache !== undefined && json !== undefined) cache.normProcs.set(processes, json);
+  return json;
+}
+
+function normalizeCopiesComparable(copies: unknown, cache?: OverviewJsonCache): string | undefined {
+  if (copies === null || typeof copies !== "object" || Array.isArray(copies)) return stringifyCached(copies, cache?.raw);
+  if (cache?.normCopies.has(copies)) return cache.normCopies.get(copies);
+  const c = copies as Record<string, unknown>;
+  const headTo = typeof c.to === "number" ? c.to : 0;
+  const normTarget = (item: unknown) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+    const t = item as Record<string, unknown>;
+    const { to: tTo, at: tAt, ...rest } = t;
+    const synced = typeof tTo === "number" && headTo > 0 ? tTo >= headTo : tTo === headTo;
+    return { ...rest, synced, at: typeof tAt === "number" ? Math.floor(tAt / COPIES_AT_STEP_MS) : (tAt ?? null) };
+  };
+  // (whether it has chats at all decides what is offered on it: the count beyond that is progress)
+  const { to: _to, chats, ...restCopies } = c;
+  const normCopies: Record<string, unknown> = { ...restCopies, hasData: headTo > 0, hasChats: typeof chats === "number" ? chats > 0 : (chats ?? null) };
+  if (Array.isArray(c.keepers)) normCopies.keepers = c.keepers.map(normTarget);
+  if (c.backup !== null && typeof c.backup === "object" && !Array.isArray(c.backup)) {
+    const b = c.backup as Record<string, unknown>;
+    normCopies.backup = Array.isArray(b.s3) ? { ...b, s3: b.s3.map(normTarget) } : b;
+  }
+  const json = JSON.stringify(normCopies) as string | undefined;
+  if (cache !== undefined && json !== undefined) cache.normCopies.set(copies, json);
+  return json;
+}
+
+/// Lightweight comparable memo kept per device in memory: stores each top-level key's serialized value (shared by
+/// reference across devices in a flush round) instead of pinning a flat ~160 KB string per device in V8 old space.
+type OverviewKeyMemo = {
+  keyValues: Map<string, string> | null;
+  order: string[];
+  whole: string | null;
+  disk: DiskBucket | null;
+  hasMachine: boolean;
+  at: number;
+};
+
+/// Top-level overview keys stripped or normalized during change detection: always refreshed with their raw values in
+/// `overview-patch` so clients keep seeing fresh host/disk/process memory/copy progress on every push.
+const OVERVIEW_REFRESH_KEYS = ["machine", "disk", "processes", "copies"] as const;
+
+function buildOverviewKeyMemo(value: unknown, prevDisk: DiskBucket | null, cache: OverviewJsonCache, at: number): OverviewKeyMemo {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { keyValues: null, order: [], whole: JSON.stringify(value), disk: null, hasMachine: false, at };
+  }
+  const src = value as Record<string, unknown>;
+  if (typeof src.toJSON === "function") {
+    const memo = overviewComparableMemo(value, prevDisk);
+    return { keyValues: null, order: [], whole: memo.text, disk: memo.disk, hasMachine: false, at };
+  }
+  const keyValues = new Map<string, string>();
+  const order: string[] = [];
+  let told: DiskBucket | null = null;
+  let hasMachine = false;
+  for (const key of Object.keys(src)) {
+    if (key === "machine") {
+      if (src.machine !== undefined && stringifyCached(src.machine, cache.raw) !== undefined) hasMachine = true;
+      continue;
+    }
+    let serialized: string | undefined;
+    if (key === "disk") {
+      const d = normalizeDiskComparable(src.disk, prevDisk, cache);
+      told = d.disk;
+      serialized = d.json;
+    } else if (key === "processes") {
+      serialized = normalizeProcessesComparable(src.processes, cache);
+    } else if (key === "copies") {
+      serialized = normalizeCopiesComparable(src.copies, cache);
+    } else {
+      serialized = stringifyCached(src[key], cache.raw);
+    }
+    if (serialized === undefined) continue;
+    keyValues.set(key, serialized);
+    order.push(key);
+  }
+  return { keyValues, order, whole: null, disk: told, hasMachine, at };
+}
+
+function memoToText(memo: OverviewKeyMemo): string {
+  if (memo.keyValues === null) return memo.whole!;
+  const parts: string[] = [];
+  for (const key of memo.order) parts.push(`${JSON.stringify(key)}:${memo.keyValues.get(key)!}`);
+  return `{${parts.join(",")}}`;
+}
+
+function memosEqual(a: OverviewKeyMemo, b: OverviewKeyMemo): boolean {
+  if (a.keyValues === null || b.keyValues === null) return memoToText(a) === memoToText(b);
+  if (a.order.length !== b.order.length) return false;
+  for (let i = 0; i < a.order.length; i++) {
+    const key = a.order[i]!;
+    if (key !== b.order[i] || a.keyValues.get(key) !== b.keyValues.get(key)) return false;
+  }
+  return true;
+}
+
+function changedKeysFromKeyMemos(prev: OverviewKeyMemo, next: OverviewKeyMemo): string[] {
+  if (prev.keyValues === null || next.keyValues === null) return overviewChangedKeys(memoToText(prev), memoToText(next));
+  const changed: string[] = [];
+  for (const [key, val] of prev.keyValues) if (next.keyValues.get(key) !== val) changed.push(key);
+  for (const key of next.keyValues.keys()) if (!prev.keyValues.has(key)) changed.push(key);
+  return changed.sort();
+}
+
+/// Serializes the exact raw `overview` payload reusing key JSON strings already produced for `memo` and `cache`.
+/// Byte-for-byte identical to `JSON.stringify(value)` while skipping re-serialization of unchanged shared keys.
+export function serializeRawOverview(value: unknown, memo?: OverviewKeyMemo, cache?: OverviewJsonCache): string {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value);
+  const src = value as Record<string, unknown>;
+  if (typeof src.toJSON === "function") return JSON.stringify(src);
+  const parts: string[] = [];
+  const kv = memo?.keyValues ?? null;
+  for (const key of Object.keys(src)) {
+    let serialized: string | undefined;
+    if (kv !== null && key !== "machine" && key !== "disk" && key !== "processes" && key !== "copies") {
+      serialized = kv.get(key);
+    } else {
+      serialized = stringifyCached(src[key], cache?.raw);
+    }
+    if (serialized === undefined) continue;
+    parts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${parts.join(",")}}`;
+}
+
+/// Serializes a top-level `overview-patch` (`{"set":{...},"del":[...]}`) between `prevMemo` and `nextMemo`.
+/// Reuses serialized key values already produced for `nextMemo` and `cache`, and always refreshes the raw values of
+/// normalized/stripped keys (`machine`, `disk`, `processes`, `copies`) so clients never drift on sub-bucket telemetry.
+/// Returns null when a top-level patch cannot represent the value (caller falls back to full `overview`).
+export function serializeOverviewPatch(
+  value: unknown,
+  prevMemo: OverviewKeyMemo,
+  nextMemo: OverviewKeyMemo,
+  changedKeys: readonly string[],
+  cache?: OverviewJsonCache,
+): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const src = value as Record<string, unknown>;
+  if (typeof src.toJSON === "function" || prevMemo.keyValues === null || nextMemo.keyValues === null) return null;
+  const delKeys: string[] = [];
+  for (const key of prevMemo.keyValues.keys()) if (!nextMemo.keyValues.has(key)) delKeys.push(key);
+  if (prevMemo.hasMachine && !nextMemo.hasMachine) delKeys.push("machine");
+  delKeys.sort();
+
+  const setKeySet = new Set<string>();
+  for (const key of changedKeys) if (nextMemo.keyValues.has(key)) setKeySet.add(key);
+  for (const key of OVERVIEW_REFRESH_KEYS) {
+    if (Object.hasOwn(src, key) && src[key] !== undefined) setKeySet.add(key);
+  }
+  const setParts: string[] = [];
+  for (const key of [...setKeySet].sort()) {
+    let serialized: string | undefined;
+    if (key === "machine" || key === "disk" || key === "processes" || key === "copies") {
+      serialized = stringifyCached(src[key], cache?.raw);
+    } else {
+      serialized = nextMemo.keyValues.get(key);
+    }
+    if (serialized === undefined) continue;
+    setParts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  if (setParts.length === 0 && delKeys.length === 0) return null;
+  const parts: string[] = [];
+  if (setParts.length > 0) parts.push(`"set":{${setParts.join(",")}}`);
+  if (delKeys.length > 0) parts.push(`"del":${JSON.stringify(delKeys)}`);
+  return `{${parts.join(",")}}`;
+}
+
 /// Top-level keys whose serialized value differs between two comparable overview snapshots (names only, never values).
 export function overviewChangedKeys(previous: string, next: string): string[] {
   try {
@@ -288,7 +522,7 @@ export type EventsDeps = {
   /// Whether a live result still belongs to a session visible to this viewer, in one lookup when available.
   liveSeen?(viewer: Viewer, key: string): boolean;
   /// The overview as `viewer` sees it, in `lang` (GET /overview); none until the agents' side is up.
-  overview?(viewer: Viewer, lang: Lang): Promise<unknown>;
+  overview?(viewer: Viewer, lang: Lang, round?: OverviewRound): Promise<unknown>;
   /// A session's process state (the overview counts running and warm ones).
   processState?(key: string): string;
   /// Someone follows again, after nobody did (allowances are read again then).
@@ -318,6 +552,10 @@ export type EventsDeps = {
 /// A viewer's streams in one language: what their sidebar and overview are told by. A person in two of the station's
 /// workspaces is two viewers.
 const viewerKey = (viewer: Viewer, lang: Lang) => `${viewer.email}\0${viewer.workspace}\0${lang}`;
+/// A device's overview identity: per-device fields (`device`, `lockDevice`, `lockId`) belong to each device alone,
+/// so tracking overviews per device avoids false pushes when another device reconnects and delivers lock changes to
+/// the affected device alone.
+const overviewKey = (viewer: Viewer, lang: Lang) => `${viewer.email}\0${viewer.workspace}\0${lang}\0${viewer.device}`;
 
 /// Whom an event is for, as data (what is kept goes over to the next process with it): the streams all it says holds
 /// of; nothing said, every one.
@@ -326,6 +564,8 @@ export type To = {
   lang?: Lang;
   /// That viewer's in that language (`viewerKey`): their sidebar, their overview, a thread as they have it.
   viewer?: string;
+  /// That device alone (within `viewer`): per-device overviews carrying that device's own `viewer` state.
+  device?: string;
   /// Whose viewer has that email (in any case), is in that workspace, is one of those people (`sub`), may only read or
   /// not (`readOnly`), or manages the station (`managers`: workspace owner or admin).
   email?: string;
@@ -346,6 +586,7 @@ export type To = {
 export const isFor = (to: To, { viewer, lang }: { viewer: Viewer; lang: Lang }, whose: Pick<EventsDeps, "seen" | "inVault"> = {}): boolean =>
   (to.lang === undefined || to.lang === lang) &&
   (to.viewer === undefined || to.viewer === viewerKey(viewer, lang)) &&
+  (to.device === undefined || to.device === viewer.device) &&
   (to.email === undefined || to.email.toLowerCase() === viewer.email.toLowerCase()) &&
   (to.workspace === undefined || to.workspace === viewer.workspace) &&
   (to.subs === undefined || to.subs.includes(viewer.sub)) &&
@@ -355,10 +596,11 @@ export const isFor = (to: To, { viewer, lang }: { viewer: Viewer; lang: Lang }, 
   (to.sees === undefined || ("ws" in to.sees ? sees(viewer, to.sees.ws) : (whose.seen?.(viewer, to.sees) ?? true)));
 
 /// What goes over to the next process (`eventsHandoverFile`), by whom (`pid`) and when it was written: what the log
-/// keeps, what each viewer's streams were told last of their overview, by `viewerKey`, who followed last, and the shared
+/// keeps, what each device's streams were told last of their overview, by `overviewKey`, who followed last, and the shared
 /// chat list as it was told last.
 type Handed = {
   pid: number; at: number; log: Kept<To>; overviews: [string, string][]; last: { viewer: Viewer; lang: Lang } | null;
+  overviewSeqs?: [string, number][];
   shared?: { rows: [string, string][]; until: number };
   langs?: Lang[];
 };
@@ -381,6 +623,8 @@ type Client = {
   running: boolean;
   /// When non-null (`spare=1`), only these open session keys receive `live` events.
   spare: Set<string> | null;
+  /// Opted into top-level `overview-patch` deltas after a baseline (`overviewPatch=1`).
+  overviewPatch: boolean;
   /// What is told of those it is told as they are now meanwhile, until it is (`heldNow`): then, after it.
   heldWaits?: Map<string, unknown[]>;
   send(event: string, data: unknown): void;
@@ -410,16 +654,29 @@ export class Events {
   private sharedTold: Map<string, string> | null = null;
   private sharedReading: Promise<void> | null = null;
   private openingShared = 0;
+  /// Handed-over comparable overview texts from the previous process, promoted into `overviewMemo` on first compare.
   private overviewTold = new Map<string, string>();
-  /// What each `overviewTold` text was made with (its disk bucket, its keys serialized), in this process alone: a
-  /// memo whose text is not the told one is not used.
-  private overviewMemo = new Map<string, OverviewMemo>();
+  /// Timestamp (`handed.at`) of entries taken up into `overviewTold`, so untouched entries expire after `KEPT_MS`.
+  private overviewToldTakenAt = -Infinity;
+  /// Lightweight per-device comparable memos sharing serialized key strings across devices in a flush round.
+  private overviewMemo = new Map<string, OverviewKeyMemo>();
+  /// Latest `EventLog` sequence number sent as an `overview` per `overviewKey`, so resuming streams catch missed
+  /// overviews without pinning ~160 KB snapshots per device inside `EventLog.#kept`.
+  private overviewToldSeq = new Map<string, number>();
   private deps: EventsDeps;
   /// What changed since the last round: sessions (their events), the overview, and the sessions and threads whose rows
   /// of the shared chat list to read again (`items`), or all of it (`whole`).
   private dirty = Events.clean();
   private static clean() {
-    return { sessions: new Set<string>(), overview: false, overviewReasons: new Set<string>(), overviewOf: new Set<string>(), whole: false, items: { sessions: new Set<string>(), threads: new Set<number>() } };
+    return {
+      sessions: new Set<string>(),
+      overview: false,
+      overviewReasons: new Set<string>(),
+      overviewOf: new Set<string>(),
+      overviewMissed: new Map<string, Client[]>(),
+      whole: false,
+      items: { sessions: new Set<string>(), threads: new Set<number>() },
+    };
   }
   /// The process state last told per session.
   private states = new Map<string, string>();
@@ -509,7 +766,9 @@ export class Events {
           const overviews = new Map<string, string>(handed.overviews);
           this.log = taken;
           this.overviewTold = overviews;
+          this.overviewToldTakenAt = handed.at;
           this.overviewMemo.clear();
+          this.overviewToldSeq = new Map<string, number>(Array.isArray(handed.overviewSeqs) ? handed.overviewSeqs : []);
           this.last = handed.last;
           if (handed.last?.lang) this.langs.add(handed.last.lang);
           if (Array.isArray(handed.langs)) for (const l of handed.langs) if (l === "zh" || l === "en") this.langs.add(l);
@@ -575,13 +834,40 @@ export class Events {
     const last = this.last && { viewer: { ...this.last.viewer, lockDevice: undefined }, lang: this.last.lang };
     const shared = this.sharedTold !== null ? { rows: [...this.sharedTold] as [string, string][], until: at + KEPT_MS } : undefined;
     const langs = [...this.langs];
-    const handed: Handed = { pid: process.pid, at, log: this.log.kept(), overviews: [...this.overviewTold], last, shared, ...(langs.length > 0 ? { langs } : {}) };
+    const active = new Set(this.clients.map((c) => overviewKey(c.viewer, c.lang)));
+    const overviews: [string, string][] = [];
+    const keptKeys = new Set<string>();
+    for (const [k, memo] of this.overviewMemo) {
+      if (!active.has(k) && at - memo.at > KEPT_MS) continue;
+      overviews.push([k, memoToText(memo)]);
+      keptKeys.add(k);
+    }
+    for (const [k, text] of this.overviewTold) {
+      if (this.overviewMemo.has(k)) continue;
+      // Drop legacy device-less `viewerKey` entries (only 2 `\0` separators) and expired untouched entries.
+      if (k.split("\0").length < 4) continue;
+      if (!active.has(k) && at - this.overviewToldTakenAt > KEPT_MS) continue;
+      overviews.push([k, text]);
+      keptKeys.add(k);
+    }
+    const overviewSeqs: [string, number][] = [];
+    for (const [k, seq] of this.overviewToldSeq) if (keptKeys.has(k)) overviewSeqs.push([k, seq]);
+    const handed: Handed = {
+      pid: process.pid,
+      at,
+      log: this.log.kept(),
+      overviews,
+      ...(overviewSeqs.length > 0 ? { overviewSeqs } : {}),
+      last,
+      shared,
+      ...(langs.length > 0 ? { langs } : {}),
+    };
     try {
       await mkdir(dirname(file), { recursive: true });
       const tmp = `${file}.tmp-${process.pid}.${++this.handings}`;
       await writeFile(tmp, JSON.stringify(handed), { mode: 0o600 });
       await rename(tmp, file);
-      log.info("events", "what was told is handed over", { ...this.log.state(), viewers: this.overviewTold.size });
+      log.info("events", "what was told is handed over", { ...this.log.state(), viewers: overviews.length });
     } catch (error) {
       log.warn("events", "what was told is not handed over; its streams are not resumed", { error: (error as Error).message });
     }
@@ -732,6 +1018,7 @@ export class Events {
       this.sharedTold = null;
       this.overviewTold.clear();
       this.overviewMemo.clear();
+      this.overviewToldSeq.clear();
       this.langs.clear();
     });
   }
@@ -759,7 +1046,7 @@ export class Events {
   /// told after it is told first, and their sidebar and overview as they are now (RESUMED says so), or `missed`.
   /// `brief`: the sessions followed have their transcript entries in brief (read/transcript.ts `brief`).
   /// `logins`: those logins' terminals, each a `login-screen` event (all its rows first, then the rows that changed).
-  async open(viewer: Viewer, lang: Lang, host: boolean, live: [string, number, number | null][], logs: [string, number][], since: string | null = null, brief = false, logins: string[] = [], running = false, spare: string[] | null = null): Promise<Answer> {
+  async open(viewer: Viewer, lang: Lang, host: boolean, live: [string, number, number | null][], logs: [string, number][], since: string | null = null, brief = false, logins: string[] = [], running = false, spare: string[] | null = null, overviewPatch = false): Promise<Answer> {
     // Following the sessions at work itself, it follows none by name: a client that asks both is one that does not know
     // yet whether this station does (an older one follows those it names).
     const follows = running && this.deps.held !== undefined;
@@ -791,6 +1078,7 @@ export class Events {
       host,
       running: follows,
       spare: spared,
+      overviewPatch,
       // Its own (a session's steps, a log, a host sample, `missed`): not of the log, and without an id (event-log.ts).
       send: (event, data) => push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
       raw: push,
@@ -801,8 +1089,9 @@ export class Events {
     // Said first: it makes its rows from here on, and reads from this station what only the station can say of them.
     client.send("made", { rows: true, marks: true, shared: true });
     // Coming back where all that was told since is kept.
-    const k = viewerKey(viewer, lang);
-    const resumes = since !== null && sharedHistory && this.log.has(since);
+    const ok = overviewKey(viewer, lang);
+    const sinceN = since !== null && sharedHistory ? this.log.seqOf(since) : null;
+    const resumes = sinceN !== null;
     if (since !== null && !resumes) {
       // Why, for the log: a station whose streams are never resumed has every client read it again each time.
       log.info("events", "a stream is not resumed", { since, ...this.log.state() });
@@ -810,8 +1099,9 @@ export class Events {
     }
     // Afresh: their overview is told as it next is.
     if (!resumes) {
-      this.overviewTold.delete(k);
-      this.overviewMemo.delete(k);
+      this.overviewTold.delete(ok);
+      this.overviewMemo.delete(ok);
+      this.overviewToldSeq.delete(ok);
     }
     // The sessions at work its viewer sees, as each is now: from here on what each does comes as it does it (heldTold).
     if (follows && this.deps.heldNow !== undefined) {
@@ -864,10 +1154,16 @@ export class Events {
     // In the same turn as it joins: what was told since is told again, and what is told from now comes as to the rest.
     if (resumes) for (const told of this.log.after(since!)) if (this.reaches(client, told.to)) client.raw(told.text);
     const head = resumes ? this.log.at() : null;
-    // Coming back: their overview as it is now, against what their streams were told of it last. Theirs alone: every
-    // viewer's made again at each device that came back held the main thread for seconds on a station of many devices.
+    // Coming back: their overview as it is now, against what their device's streams were told of it last. Theirs alone:
+    // every device's made again at each device that came back held the main thread for seconds on a station of many devices.
     if (resumes) {
-      this.dirty.overviewOf.add(viewerKey(viewer, lang));
+      this.dirty.overviewOf.add(ok);
+      const toldSeq = this.overviewToldSeq.get(ok);
+      if (toldSeq !== undefined && toldSeq > sinceN) {
+        const missed = this.dirty.overviewMissed.get(ok);
+        if (missed !== undefined) missed.push(client);
+        else this.dirty.overviewMissed.set(ok, [client]);
+      }
       this.wake();
     }
     if (this.clients.length === 1) {
@@ -1009,6 +1305,55 @@ export class Events {
     const { text } = this.log.append(event, data, to, this.time.now(), of);
     const whose = this.whose();
     for (const c of this.clients) if (isFor(to, c, whose)) c.raw(text);
+  }
+
+  /// Tells one device's streams an `overview` (or top-level `overview-patch` to opted-in synced streams) with a
+  /// monotonic `EventLog` sequence id, without pinning ~160 KB snapshots per device in `EventLog.#kept` (resuming
+  /// streams compare `overviewToldSeq` instead and receive a full `overview` catch-up).
+  private emitOverview(
+    value: unknown,
+    prevMemo: OverviewKeyMemo | undefined,
+    nextMemo: OverviewKeyMemo,
+    changedKeys: readonly string[] | null,
+    cache: OverviewJsonCache,
+    ok: string,
+    vk: string,
+    device: string,
+    missed?: readonly Client[],
+  ): { bytes: number; patched: boolean } {
+    if (!this.listening()) return { bytes: 0, patched: false };
+    const n = this.log.nextSeq();
+    this.overviewToldSeq.set(ok, n);
+    const to: To = { viewer: vk, device };
+    const missedSet = missed !== undefined && missed.length > 0 ? new Set(missed) : null;
+    const canPatch = prevMemo !== undefined && changedKeys !== null;
+    const patchClients: Client[] = [];
+    const fullClients: Client[] = [];
+    for (const c of this.clients) {
+      if (!isFor(to, c, this.deps)) continue;
+      if (canPatch && c.overviewPatch && !(missedSet?.has(c))) patchClients.push(c);
+      else fullClients.push(c);
+    }
+    let bytes = 0;
+    let patched = false;
+    if (patchClients.length > 0) {
+      const patchJson = serializeOverviewPatch(value, prevMemo!, nextMemo, changedKeys!, cache);
+      if (patchJson !== null) {
+        const patchSse = `id: ${this.log.run}.${n}\nevent: overview-patch\ndata: ${patchJson}\n\n`;
+        for (const c of patchClients) c.raw(patchSse);
+        bytes += Buffer.byteLength(patchJson);
+        patched = true;
+      } else {
+        for (const c of patchClients) fullClients.push(c);
+      }
+    }
+    if (fullClients.length > 0) {
+      const rawJson = serializeRawOverview(value, nextMemo, cache);
+      const fullSse = `id: ${this.log.run}.${n}\nevent: overview\ndata: ${rawJson}\n\n`;
+      for (const c of fullClients) c.raw(fullSse);
+      bytes += Buffer.byteLength(rawJson);
+    }
+    return { bytes, patched };
   }
 
   /// `seen` and `inVault` for one event told to every stream: the session, thread or job it names looked up once
@@ -1236,52 +1581,85 @@ export class Events {
         }
       }
       const seen = new Set<string>();
-      const wanted = (k: string) => overview || dirty.overviewOf.has(k);
-      const viewers = this.clients.filter((c) => wanted(viewerKey(c.viewer, c.lang)) && !seen.has(viewerKey(c.viewer, c.lang)) && seen.add(viewerKey(c.viewer, c.lang)));
+      const wanted = (ok: string) => overview || dirty.overviewOf.has(ok);
+      const targets = this.clients.filter((c) => {
+        const ok = overviewKey(c.viewer, c.lang);
+        return wanted(ok) && !seen.has(ok) && seen.add(ok);
+      });
+      const round: OverviewRound = new Map();
+      const jsonCache = newOverviewJsonCache();
+      const now = this.time.now();
       const changedKeys = new Set<string>();
       let pushed = 0;
+      let patched = 0;
       let suppressed = 0;
       let initial = 0;
       let totalBytes = 0;
-      // A few viewers at a time, the event loop let go between them: each viewer's overview is made whole (some
-      // 160 KB), and made for every viewer at once they would all be held, and the thread with them, together.
-      for (let i = 0; i < viewers.length; i += OVERVIEW_VIEWER_BATCH) {
+      // A few devices at a time, the event loop let go between them: station-wide and workspace-scoped parts are shared
+      // in `round` and serialized once via `jsonCache`, while each device keeps its own `viewer` state and comparison.
+      for (let i = 0; i < targets.length; i += OVERVIEW_VIEWER_BATCH) {
         if (!this.listening()) break;
-        const chunk = viewers.slice(i, i + OVERVIEW_VIEWER_BATCH);
+        const chunk = targets.slice(i, i + OVERVIEW_VIEWER_BATCH);
         await Promise.all(
           chunk.map(async ({ viewer, lang }) => {
             try {
-              const value = await this.deps.overview!(viewer, lang);
+              const value = await this.deps.overview!(viewer, lang, round);
               if (!this.listening()) return;
-              // Told only as it changed for them: a stream that comes back has every viewer's made again.
-              const k = viewerKey(viewer, lang);
-              const prev = this.overviewTold.get(k);
-              const prevMemo = this.overviewMemo.get(k);
-              const memoed = prevMemo !== undefined && prevMemo.text === prev;
+              // Told only as it changed for this device: a stream that comes back has its device's overview checked.
+              const vk = viewerKey(viewer, lang);
+              const ok = overviewKey(viewer, lang);
+              const prevMemo = this.overviewMemo.get(ok);
+              // Legacy handover fallback: older processes keyed `overviewTold` by `viewerKey` without `device`.
+              const prevText = prevMemo !== undefined ? undefined : (this.overviewTold.get(ok) ?? this.overviewTold.get(vk));
               // What was told is parsed only when this process did not make it (taken up from the one before).
-              const prevDisk = prev === undefined ? null : memoed ? prevMemo.disk : previousDiskBucket(prev);
-              const next = overviewComparableMemo(value, prevDisk);
-              if (prev === next.text) {
-                if (prev !== undefined) this.overviewMemo.set(k, next);
+              const prevDisk = prevMemo !== undefined ? prevMemo.disk : prevText !== undefined ? previousDiskBucket(prevText) : null;
+              const next = buildOverviewKeyMemo(value, prevDisk, jsonCache, now);
+              let unchanged = false;
+              let nextText: string | undefined;
+              if (prevMemo !== undefined) {
+                unchanged = memosEqual(prevMemo, next);
+              } else if (prevText !== undefined) {
+                nextText = memoToText(next);
+                unchanged = prevText === nextText;
+              }
+              if (unchanged) {
+                this.overviewMemo.set(ok, next);
+                this.overviewTold.delete(ok);
                 suppressed++;
+                const missed = dirty.overviewMissed.get(ok);
+                const toldSeq = this.overviewToldSeq.get(ok);
+                if (missed !== undefined && missed.length > 0 && toldSeq !== undefined) {
+                  const active = missed.filter((c) => this.clients.includes(c));
+                  if (active.length > 0) {
+                    // Allocate a fresh monotonic id (above any `log.after(since)` events already sent to `active`) so
+                    // clients' `Last-Event-ID` cursor never rewinds back to `toldSeq`.
+                    const n = this.log.nextSeq();
+                    const rawJson = serializeRawOverview(value, next, jsonCache);
+                    const sse = `id: ${this.log.run}.${n}\nevent: overview\ndata: ${rawJson}\n\n`;
+                    for (const c of active) c.raw(sse);
+                  }
+                }
                 return;
               }
-              if (prev === undefined) initial++;
+              let deviceChangedKeys: string[] | null = null;
+              if (prevMemo === undefined && prevText === undefined) initial++;
               else {
-                const keys = memoed && prevMemo.keys !== null && next.keys !== null ? changedKeysFromMemos(prevMemo, next) : overviewChangedKeys(prev, next.text);
+                const keys = prevMemo !== undefined ? changedKeysFromKeyMemos(prevMemo, next) : overviewChangedKeys(prevText!, nextText ?? memoToText(next));
+                deviceChangedKeys = keys;
                 for (const key of keys) changedKeys.add(key);
               }
+              this.overviewMemo.set(ok, next);
+              this.overviewTold.delete(ok);
+              const delivered = this.emitOverview(value, prevMemo, next, deviceChangedKeys, jsonCache, ok, vk, viewer.device, dirty.overviewMissed.get(ok));
               pushed++;
-              totalBytes += Buffer.byteLength(next.text);
-              this.overviewTold.set(k, next.text);
-              this.overviewMemo.set(k, next);
-              this.emit("overview", value, { viewer: k }, `overview\0${k}`);
+              if (delivered.patched) patched++;
+              totalBytes += delivered.bytes;
             } catch (error) {
               log.warn("events", "overview not told", { error: (error as Error).message });
             }
           }),
         );
-        if (i + OVERVIEW_VIEWER_BATCH < viewers.length) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (i + OVERVIEW_VIEWER_BATCH < targets.length) await new Promise<void>((resolve) => setImmediate(resolve));
       }
       if (pushed > 0) {
         const triggers = [...dirty.overviewReasons].sort();
@@ -1289,6 +1667,7 @@ export class Events {
           mode: overview ? "broadcast" : "viewer",
           triggers: triggers.length > 0 ? triggers : [overview ? "direct" : "resume"],
           viewers: pushed,
+          ...(patched > 0 ? { patched } : {}),
           suppressed,
           initial,
           changedKeys: [...changedKeys].sort(),

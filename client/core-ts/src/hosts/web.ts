@@ -499,7 +499,7 @@ export function startWeb(emit: (client: ClientId, message: unknown) => void, tes
     core.inner.runner.onDefect = (error) => void core.inner.data.damageKept().then(() => onFatal(t("core-misc.host.crashed", { reason: error instanceof Error ? error.message : String(error) }), error));
     core.keepTime();
     return {
-      connect: (): number => core.connect(),
+      connect: (): number => core.connect({ authHandshake: true, requireCallAuth: true }),
       disconnect: (client: number): void => core.disconnect(client),
       receive: (client: number, message: unknown, bytes?: Uint8Array): void => core.receiveRaw(client, message, bytes),
     };

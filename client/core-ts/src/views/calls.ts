@@ -16,6 +16,7 @@ import * as prefs from "../prefs.ts";
 import * as refs from "../refs.ts";
 import type { SpanContext } from "../trace.ts";
 import { StationAddr } from "../station/addr.ts";
+import { ofAddress } from "../workspace.ts";
 import { MOVED } from "../station/requests.ts";
 import type { SendTraceHandle } from "../station/send-trace.ts";
 import { arr as arrU, get as getU, hex } from "../util.ts";
@@ -306,9 +307,10 @@ export class ViewCalls {
         }
         const [session, thread, answer] = made.success;
         const sends = this.#local.pendingMade(key, session, thread);
+        const readGen = this.#inner.store.authGen.workspaceAuthGen(ofAddress(station));
         yield* Effect.all(
           [
-            this.#inner.stations.afterWrite(station, { kind: "session", key: null }, answer),
+            this.#inner.stations.afterWrite(station, { kind: "session", key: null }, answer, readGen),
             Effect.forEach(sends, ([id]) => {
               const trace = this.#takeTrace(id);
               trace?.bindSession(session);

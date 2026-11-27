@@ -7,10 +7,35 @@ import {
   isKnownTopic,
   KEPT_MOST_BEFORE_VIEWS,
   LASTING_KEPT,
+  sanitizeKeptValue,
   TOPIC_NAMES,
   TOPIC_POLICY,
   topicsWhere,
 } from "../src/topic-policy.ts";
+
+const EXPECTED_SENSITIVE = [
+  "accounts",
+  "admin",
+  "adminItem",
+  "adminList",
+  "adminOverview",
+  "adminRelays",
+  "devices",
+  "joinable",
+  "lock",
+  "lockDraft",
+  "lockPrompts",
+  "loginSessions",
+  "machineLogin",
+  "machineLoginScreen",
+  "machineLogins",
+  "memberships",
+  "rigs",
+  "slackTokens",
+  "vaultItems",
+  "vaultUses",
+  "vaults",
+];
 
 const EXPECTED_LASTING = [
   "archive",
@@ -25,7 +50,6 @@ const EXPECTED_LASTING = [
   "stations",
   "terminals",
   "usage",
-  "vaults",
   "workspace",
 ];
 
@@ -46,7 +70,6 @@ const EXPECTED_VIEWS_KEPT: Record<string, number> = {
   projects: 8,
   railCard: 16,
   station: 16,
-  stationPart: 24,
   tags: 8,
 };
 
@@ -87,6 +110,80 @@ describe("topic-policy SSOT", () => {
       [...topicsWhere((p) => p.unseen === true)].sort(),
       ["downloads", "driveTransfers", "notify", "workspaceMarks"],
     );
+  });
+
+  it("enforces all 21 unconditional sensitive topics and stationPart byParam branches", () => {
+    const sensitive = [...topicsWhere((p) => p.retention === "sensitive")].sort();
+    assert.equal(sensitive.length, 21);
+    assert.deepEqual(sensitive, EXPECTED_SENSITIVE);
+    for (const name of EXPECTED_SENSITIVE) {
+      const ev = evaluateTopicPolicy(name, { workspace: "w1", scope: "w1" });
+      assert.equal(ev.retention, "sensitive", `${name} must be sensitive`);
+      assert.equal(ev.sensitive, true);
+      assert.equal(ev.keep, 0);
+      assert.equal(ev.keepBeforeViews, 0);
+      assert.equal(ev.lasting, false);
+      assert.equal(ev.showKept, false);
+    }
+
+    for (const part of ["machineLogins", "logins"]) {
+      const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part });
+      assert.equal(ev.retention, "sensitive");
+      assert.equal(ev.sensitive, true);
+      assert.equal(ev.keep, 0);
+      assert.equal(ev.showKept, false);
+    }
+    for (const part of ["archiving", "automaticDecisions", "unknownPart", ""]) {
+      const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part });
+      assert.equal(ev.retention, "live");
+      assert.equal(ev.sensitive, false);
+      assert.equal(ev.keep, 0);
+      assert.equal(ev.showKept, false);
+    }
+    const missingPart = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1" });
+    assert.equal(missingPart.retention, "live");
+    assert.equal(missingPart.keep, 0);
+    assert.equal(missingPart.showKept, false);
+
+    for (const part of ["profiles", "updates", "copies"]) {
+      const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part });
+      assert.equal(ev.retention, "swr");
+      assert.equal(ev.sensitive, false);
+      assert.equal(ev.keep, 24);
+      assert.equal(ev.showKept, true);
+    }
+  });
+
+  it("sanitizes profiles and station kept values without mutating originals", () => {
+    const rawProfiles = {
+      items: [{ key: "p1", name: "Claude" }],
+      machineLogins: [{ station: "w1/s1", logins: [{ id: "ml1" }] }],
+      manages: true,
+    };
+    const cleanProfiles = sanitizeKeptValue("profiles", rawProfiles) as Record<string, unknown>;
+    assert.deepEqual(cleanProfiles, { items: [{ key: "p1", name: "Claude" }] });
+    assert.equal("machineLogins" in cleanProfiles, false);
+    assert.equal("manages" in cleanProfiles, false);
+    assert.equal(rawProfiles.manages, true);
+
+    const rawStation = {
+      station: "w1/s1",
+      name: "Box",
+      overview: {
+        counts: { running: 1 },
+        machineLogins: [{ id: "ml1" }],
+        logins: [{ id: "l1" }],
+      },
+    };
+    const cleanStation = sanitizeKeptValue("station", rawStation) as Record<string, unknown>;
+    assert.deepEqual(cleanStation, {
+      station: "w1/s1",
+      name: "Box",
+      overview: { counts: { running: 1 } },
+    });
+    assert.equal("machineLogins" in (cleanStation.overview as Record<string, unknown>), false);
+    assert.equal("logins" in (cleanStation.overview as Record<string, unknown>), false);
+    assert.equal(rawStation.overview.machineLogins.length, 1);
   });
 
   it("preserves exact lasting, homeLasting, views_kept, and chat capacities", () => {

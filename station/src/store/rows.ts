@@ -839,8 +839,13 @@ export const JOBS_UP = "SELECT * FROM (SELECT * FROM jobs WHERE state = 'running
 
 /// The latest running service, or one waiting to restart, holding a port. The two state-and-port seeks do not read
 /// other services or commands (jobs.ts startId).
-/// The sessions in sight on profile ?1 not handed away, at most ?2 (by the index of those in sight).
-export const LIVE_ON_PROFILE = "SELECT key FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND profile = ?1 AND key NOT IN (SELECT session FROM handed_over) LIMIT ?2";
+/// The sessions in sight on profile ?1 not handed away, at most ?2 (covering index seek on `sessions_live_profile`).
+export const LIVE_ON_PROFILE = "SELECT key FROM sessions INDEXED BY sessions_live_profile WHERE archived_at IS NULL AND profile = ?1 AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = sessions.key) LIMIT ?2";
+/// One live witness session key per profile in ?1 (JSON array) that has at least one unarchived, non-handed-over
+/// session here: O(log N) covering-index seek per profile (`sessions_live_profile`), stopping at the first live row.
+export const LIVE_WITNESSES_ON_PROFILES = "SELECT p.value AS profile, (SELECT s.key FROM sessions s INDEXED BY sessions_live_profile WHERE s.archived_at IS NULL AND s.profile = p.value AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = s.key) LIMIT 1) AS key FROM json_each(?1) p";
+/// The profile of one session `?1` if it is currently unarchived and not handed away (O(1) primary-key lookup).
+export const LIVE_PROFILE_OF_SESSION = "SELECT s.profile AS profile FROM sessions s WHERE s.key = ?1 AND s.archived_at IS NULL AND NOT EXISTS (SELECT 1 FROM handed_over h WHERE h.session = s.key) LIMIT 1";
 /// Each of sessions ?1's last job made (its rowid within the session's index) and where it stands: one statement.
 export const LAST_JOBS_OF = "SELECT session_key AS k, rowid AS r, ended_at AS e, state FROM jobs WHERE rowid IN (SELECT MAX(rowid) FROM jobs INDEXED BY jobs_by_session WHERE session_key IN (SELECT value FROM json_each(?1)) GROUP BY session_key)";
 export const JOB_AT_PORT = `SELECT id, name, port FROM (

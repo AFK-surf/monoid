@@ -37,7 +37,7 @@ export function startEngine(os: string): void {
     start(cloudOrigin: string, beta: boolean, said?: string, boot?: string) {
       core = startBridged(shell, cloudOrigin, beta, said ?? os, (reason) => native.fatal(reason), bootOf(boot));
     },
-    connect: (): number => core!.connect(),
+    connect: (): number => core!.connect({ authHandshake: true, requireCallAuth: true }),
     receive: (client: number, json: string) => core!.receive(client, json),
     receiveBytes: (client: number, json: string, bytes: ArrayBuffer) => core!.receive(client, json, new Uint8Array(bytes)),
     disconnect: (client: number) => core!.disconnect(client),

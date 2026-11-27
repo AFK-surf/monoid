@@ -103,6 +103,8 @@ export class CloudSync {
   /// Workspaces whose initial or live workspace/feedback sync was deferred while an earlier account DB was still
   /// unopened or unreadable; re-dispatched in `recomputeOwners` once verified ownership is established.
   readonly #deferredWorkspaceSync = new Set<string>();
+  /// Authoritative full-read baseline `(owner, authGen)` per workspace; delta patches require an exact match.
+  readonly #confirmedBase = new Map<string, { owner: string; gen: number }>();
   readonly #deferredFeedbackSync = new Set<string>();
   /// Authoritative `/v1/me` payloads (or `null` for `NOT_BETA` rejection) held in memory by `(sub, loginGen, sessionId)`
   /// when an account has no writable DB or its DB write has not yet been confirmed committed on disk. Always takes
@@ -1274,7 +1276,7 @@ export class CloudSync {
   /// operator's lists, which no event tells. Until 2026-11-15 every account was read whole after every write (`/v1/me`,
   /// every workspace, the sign-ins), an invitation only looked at too: in the locks' end to end 75 of a run's 443
   /// requests to the cloud were `/v1/me`, and an owner's own act was turned away by the account's limit.
-  afterWrite(sub: string, method: string, path: string, answer: unknown): Effect.Effect<void> {
+  afterWrite(sub: string, method: string, path: string, answer: unknown, preReadGen?: number): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const scheduler = core.scheduler;
@@ -1286,13 +1288,22 @@ export class CloudSync {
       const reaches = made || joined
         || at === "/v1/me" || at.startsWith("/v1/me/")
         || (method === "DELETE" && ws !== null && (ws[2] === undefined || (ws[2] === "members" && ws[3] !== undefined && decodeURIComponent(ws[3]) === sub)));
+      const readGen = preReadGen ?? (id !== null ? core.store.authGen.workspaceAuthGen(id) : 0);
       // (first: a workspace made, or joined, is the account's once its `/v1/me` lists it, and its view is then held as answered)
       if (reaches) yield* Effect.ignore(scheduler.ask("cloud", this.#meKey(sub), Priority.asked, this.#listed(sub)), { log: "Unhandled", message: "me read" });
       // (the view as the write answered it: the answer itself, or its `view`, people added)
       const view = viewIn(answer) ?? (isObject(answer) ? viewIn(answer.view) : null);
       const viewOf = view === null ? null : made || joined ? (view.id as string) : id;
-      if (viewOf !== null && view!.id === viewOf && core.workspaces.owner(viewOf) === sub) this.#took(viewOf, view);
       const reads: Effect.Effect<void>[] = [];
+      if (viewOf !== null && view!.id === viewOf && core.workspaces.owner(viewOf) === sub) {
+        if (viewOf === id) {
+          this.#took(viewOf, view, readGen);
+        } else {
+          // Newly discovered workspace (e.g., invitation accept / workspace creation): perform a full authoritative
+          // `#workspace(viewOf)` reread under current authGen rather than stamping post-write gen onto the response.
+          reads.push(Effect.ignore(scheduler.ask("cloud", `workspace/${viewOf}`, Priority.asked, this.#workspace(viewOf)), { log: "Unhandled", message: "workspace read" }));
+        }
+      }
       // (a write inside a workspace still this account's that did not answer with its view; a bug report's answer is
       // read by its own path, core/execute.ts)
       const inside = ws !== null && ws[2] !== undefined && ws[2] !== "feedback" && view === null && !reaches && core.workspaces.owner(id!) === sub;
@@ -1345,8 +1356,10 @@ export class CloudSync {
       if (!core.accounts.list().some((a) => a.sub === sub)) return;
       const snap = core.data.accountSessionSnapshot([sub]);
       const sid = core.accounts.sessionId(sub);
+      const gen = core.store.readGen({ topic: "accounts" });
       const answer = yield* Effect.result(core.provider.me(sub));
       if (core.data.accountSignedOutSince(snap) || !core.accounts.list().some((a) => a.sub === sub) || core.accounts.sessionId(sub) !== sid) return;
+      if (core.store.readGen({ topic: "accounts" }).authGen !== gen.authGen) return;
       if (answer._tag === "Success") {
         const relays = relaysOf(answer.success);
         if (this.#relaySource !== null && !core.accounts.list().some((a) => a.sub === this.#relaySource)) {
@@ -1383,8 +1396,9 @@ export class CloudSync {
   }
 
   /// A workspace's view as the cloud gave it (its read, or a write of this device's answered with it), held.
-  #took(id: string, view: unknown): void {
+  #took(id: string, view: unknown, readGen: number, fullRead = false): void {
     const core = this.#core;
+    if (core.store.authGen.workspaceAuthGen(id) !== readGen) return;
     const topic: Topic = { topic: "workspace", workspace: id };
     this.errors.delete(id);
     this.forgetGoneStations(id, view);
@@ -1394,6 +1408,11 @@ export class CloudSync {
     const offline = new Set((isObject(was) && Array.isArray(was.stations) ? was.stations : []).flatMap((s) => (isObject(s) && typeof s.id === "string" && s.online === false ? [s.id] : [])));
     // (its stations' names and marks as the stations keep them laid over the cloud's list: station-marks-kept.ts)
     core.data.set(topic, overlaid(view, keptMarks(core.data, id)));
+    core.confirmWorkspaceAuth?.(id, topic, readGen);
+    if (fullRead) {
+      const owner = core.workspaces.owner(id);
+      if (owner !== null) this.#confirmedBase.set(id, { owner, gen: readGen });
+    }
     for (const s of isObject(view) && Array.isArray(view.stations) ? view.stations : []) {
       if (isObject(s) && typeof s.id === "string" && s.online === true && offline.has(s.id)) core.stations?.cameOnline(`${id}/${s.id}`);
     }
@@ -1409,12 +1428,14 @@ export class CloudSync {
         return;
       }
       const topic: Topic = { topic: "workspace", workspace: id };
+      const gen = core.store.readGen(topic);
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}`, null));
       if (core.workspaces.owner(id) !== sub) {
         if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(id);
         return;
       }
-      if (answer._tag === "Success") this.#took(id, answer.success);
+      if (core.store.readGen(topic).authGen !== gen.authGen) return;
+      if (answer._tag === "Success") this.#took(id, answer.success, gen.authGen, true);
       else {
         const error = answer.failure;
         // Gone (deleted, or the account left it): what is held of it goes.
@@ -1452,11 +1473,14 @@ export class CloudSync {
         if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
         return;
       }
+      const wsTopic: Topic = { topic: "workspace", workspace: id };
+      const gen = core.store.readGen(wsTopic);
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}/feedback`, null));
       if (core.workspaces.owner(id) !== sub) {
         if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
         return;
       }
+      if (core.store.readGen(wsTopic).authGen !== gen.authGen) return;
       if (answer._tag === "Success") core.data.put("feedback", id, isObject(answer.success) ? answer.success : { feedback: [] });
       else if (answer.failure.status === 404 || answer.failure.status === 403) {
         core.data.forgetRecord("feedback", id);
@@ -1481,7 +1505,9 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const topic: Topic = { topic: "loginSessions", account: sub };
+      const gen = core.store.readGen(topic);
       const answer = yield* Effect.result(core.provider.request(sub, "GET", "/v1/auth/sessions", null));
+      if (!core.accounts.list().some((a) => a.sub === sub) || core.store.readGen(topic).authGen !== gen.authGen) return;
       if (answer._tag === "Success") {
         const sessions = isObject(answer.success) ? answer.success.sessions : undefined;
         this.errors.delete(topicKey(topic));
@@ -1539,7 +1565,9 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const topic: Topic = { topic: "admin", account: sub, list };
+      const gen = core.store.readGen(topic);
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/admin/${list}`, null));
+      if (!core.accounts.list().some((a) => a.sub === sub) || core.store.readGen(topic).authGen !== gen.authGen) return null;
       if (answer._tag === "Success") {
         this.errors.delete(topicKey(topic));
         core.data.set(topic, answer.success);
@@ -1615,6 +1643,7 @@ export class CloudSync {
         }
       }
     }
+    for (const w of core.workspaces.all()) core.syncWorkspaceAuth?.(w.id);
     core.data.flushPendingDrafts();
     core.views?.vaultChanged(null);
     this.onReach?.();
@@ -1709,6 +1738,11 @@ export class CloudSync {
     const core = this.#core;
     if (this.hasUnverifiedAccounts() || core.accounts.list().some((a) => this.#meOf(a.sub) === undefined)) return;
     const workspaces = new Set(core.workspaces.owned().map(([id]) => id));
+    for (const [id, base] of [...this.#confirmedBase]) {
+      if (!workspaces.has(id) || core.workspaces.owner(id) !== base.owner || core.store.authGen.workspaceAuthGen(id) !== base.gen) {
+        this.#confirmedBase.delete(id);
+      }
+    }
     // (a workspace's own, held as a station's are: its new chat's draft)
     core.data.retain((station) => {
       const at = station.indexOf("/");
@@ -2263,12 +2297,18 @@ export class CloudSync {
         if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(event.id);
         return;
       }
+      if (sub !== owner) {
+        // Never merge an event from a different account's socket (e.g. an admin socket's invitations/added delta)
+        // into the owning account's view; enqueue a full authoritative reread under the owner instead.
+        core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
+        return;
+      }
       const lock = event.lock;
       const topic = { topic: "workspace", workspace: event.id } as const;
       // Only its lock moved on, as the event says: in place, no request (the lock itself is read of the stations,
       // views/lock.ts; each entry signed had every device of its members ask for the workspace again, using up the
       // account's budget).
-      if (isObject(lock) && "head" in lock && isObject(core.data.shared(topic))) {
+      if (!core.pendingAuthConfirm.has(event.id) && isObject(lock) && "head" in lock && isObject(core.data.shared(topic))) {
         const head = isObject(lock.head) ? lock.head : null;
         core.data.update(topic, (w) => {
           if (!isObject(w)) return w;
@@ -2279,19 +2319,24 @@ export class CloudSync {
         // Only its requests to be let in moved (the cloud's, which apps from before ask and drop): nothing this core
         // shows of the workspace says them (its view's `lock_requests` is held as the cloud last gave it, read by none),
         // so nothing is asked; every device of every member read the whole workspace for each.
-      } else if (!this.#changedIn(event.id, event)) core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
+      } else if (!this.#changedIn(sub, event.id, event)) core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
     } else if (event.type === "station" && typeof event.workspace === "string" && typeof event.id === "string" && typeof event.online === "boolean") {
-      // A station came online or went: in place, no request.
+      if (core.workspaces.owner(event.workspace) !== sub) return;
+      // A station came online or went: in place, no request (unless workspace is pending auth confirmation, in which case force a full reread).
       const online = event.online;
       const id = event.id;
-      core.data.update({ topic: "workspace", workspace: event.workspace }, (w) => {
-        const station = isObject(w) && Array.isArray(w.stations) ? w.stations.find((s) => isObject(s) && s.id === id) : undefined;
-        if (isObject(station)) {
-          station.online = online;
-          station.last_seen = Math.floor(core.host.nowMs() / 1000);
-        }
-        return w;
-      });
+      if (core.pendingAuthConfirm.has(event.workspace)) {
+        core.scheduler.enqueue("cloud", `workspace/${event.workspace}`, Priority.shown, this.#workspace(event.workspace));
+      } else {
+        core.data.update({ topic: "workspace", workspace: event.workspace }, (w) => {
+          const station = isObject(w) && Array.isArray(w.stations) ? w.stations.find((s) => isObject(s) && s.id === id) : undefined;
+          if (isObject(station)) {
+            station.online = online;
+            station.last_seen = Math.floor(core.host.nowMs() / 1000);
+          }
+          return w;
+        });
+      }
       // Back: tried now rather than when its wait ends (station/sync.ts OFFLINE_RETRY_MS).
       if (online) core.stations?.cameOnline(`${event.workspace}/${id}`);
       this.onReach?.();
@@ -2318,13 +2363,19 @@ export class CloudSync {
   /// What a `workspace` event says changed of the view (cloud directory.ts `#told`), taken in place: nothing to do where
   /// the view held is that version or later (this device's own write answered with it), patched where it is the version
   /// before; false otherwise (none held, none said, a change missed: read whole then).
-  #changedIn(id: string, event: Record<string, unknown>): boolean {
+  #changedIn(sub: string, id: string, event: Record<string, unknown>): boolean {
     const held = this.#core.data.shared({ topic: "workspace", workspace: id });
     const [before, after] = Array.isArray(event.rev) ? event.rev : [];
+    if (this.#core.pendingAuthConfirm.has(id)) return false;
+    const owner = this.#core.workspaces.owner(id);
+    if (sub !== owner) return false;
+    const readGen = this.#core.store.authGen.workspaceAuthGen(id);
+    const base = this.#confirmedBase.get(id);
+    if (!base || base.owner !== owner || base.gen !== readGen) return false;
     if (!isObject(held) || typeof before !== "number" || typeof after !== "number") return false;
     if (typeof held.rev === "number" && held.rev >= after) return true;
     if (held.rev !== before) return false;
-    this.#took(id, patched(held, event, after));
+    this.#took(id, patched(held, event, after), readGen);
     return true;
   }
 

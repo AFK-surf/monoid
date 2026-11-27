@@ -549,7 +549,18 @@ pub fn steps_seconds(
   minute_past_hour? : Bool = false,
 ) -> () -> Int {
   let tick : @signals.Signal[Int] = @signals.signal(0)
-  steps_clock_start(v, src, since, till, minute_past_hour, tick) |> ignore
+  let first_enter = Ref(true)
+  v.when_active(
+    while_covered=true,
+    fn() {
+      if !first_enter.val {
+        tick.set(tick.untracked() + 1)
+      }
+      first_enter.val = false
+      steps_clock_start(v, src, since, till, minute_past_hour, tick)
+    },
+  )
+  |> ignore
   fn() { tick.get() }
 }
 

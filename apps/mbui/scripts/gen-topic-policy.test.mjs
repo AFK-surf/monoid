@@ -7,9 +7,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { generateTopicPolicyMbt } from "./gen-topic-policy.mjs";
 
-describe("gen-topic-policy fail-fast validation", () => {
+describe("gen-topic-policy fail-fast validation and byParam codegen", () => {
   const baseTopics = {
-    a: { scope: ["string", "req"] },
+    a: { scope: ["string", "req"], part: ["string", "req"] },
     b: { scope: ["string", "req"], query: ["string", "def"] },
   };
   const basePolicy = {
@@ -17,18 +17,51 @@ describe("gen-topic-policy fail-fast validation", () => {
     b: { retention: "live" },
   };
 
-  it("rejects byParam until per-param codegen is implemented", () => {
+  it("generates byParam branches and rejects invalid byParam definitions", () => {
+    const out = generateTopicPolicyMbt(baseTopics, {
+      ...basePolicy,
+      a: {
+        retention: "live",
+        byParam: {
+          key: "part",
+          values: {
+            logins: { retention: "sensitive" },
+            profiles: { retention: "swr", keep: 24, showKept: true },
+          },
+        },
+      },
+    });
+    assert.match(out, /topic_policy_param_str\(params, "part"\)/);
+    assert.match(out, /Some\("logins"\) => true/);
+    assert.match(out, /Some\("profiles"\) => if views && !topic_policy_typed\(params\) \{ 24 \} else \{ 0 \}/);
+
     assert.throws(
       () =>
         generateTopicPolicyMbt(baseTopics, {
           ...basePolicy,
-          a: { retention: "swr", keep: 8, showKept: true, byParam: { key: "part", values: {} } },
+          a: { retention: "live", byParam: { key: "missingKey", values: { x: { retention: "sensitive" } } } },
         }),
-      /byParam is not yet supported/,
+      /is not declared in TOPICS/,
+    );
+    assert.throws(
+      () =>
+        generateTopicPolicyMbt(baseTopics, {
+          ...basePolicy,
+          a: { retention: "live", byParam: { key: "part", values: {} } },
+        }),
+      /byParam\.values must not be empty/,
     );
   });
 
-  it("rejects live topics with keep / lasting / showKept / keepBeforeViews", () => {
+  it("rejects sensitive and live topics with keep / lasting / showKept / keepBeforeViews", () => {
+    assert.throws(
+      () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "sensitive", keep: 4 } }),
+      /sensitive topic cannot set/,
+    );
+    assert.throws(
+      () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "sensitive", lasting: true } }),
+      /sensitive topic cannot set/,
+    );
     assert.throws(
       () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "live", keep: 4 } }),
       /live topic cannot set/,

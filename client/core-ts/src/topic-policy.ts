@@ -4,17 +4,19 @@
 // `apps/mbui/scripts/gen-topic-policy.mjs` imports this module directly to generate
 // `apps/mbui/src/sfbase/topic_policy_gen.mbt`.
 //
-// PR-B2a baseline note: `retention` labels here map 100% to the pre-SSOT production baseline
-// (for example, `vaults` and `profiles` remain `swr`/`lasting` in PR-B2a for zero behavioral
-// drift). Before PR-B2s enables unconditional `sensitive` caps and authorization generations,
-// every topic's `retention` and sensitivity boundary must be reviewed item by item.
+// PR-B2s unconditional security ceiling: `sensitive` topics and `stationPart(machineLogins|logins)`
+// unconditionally forbid retention (`keep`, `showKept`, `lasting`, `have`, `same`, `from`) in both
+// Core Store and Client regardless of legacy tables, trace switches, or client hints.
+// `station` and `profiles` sanitize sensitive fields (`machineLogins`, `logins`, `manages`) when
+// stored in `#kept` / `Client::kept` / `last_said` so first-frame SWR holds zero sensitive fields.
 import { TOPICS, type TopicName } from "./protocol.ts";
 
 /// Retention tier for a topic:
+/// - `sensitive`: unconditional security ceiling; never kept, never shown stale, never `have`/`same`/`from`.
 /// - `live`: never kept or shown stale; always waits for fresh values.
 /// - `delta`: kept for `have`/`same`/`kept: true` delta compression, never shown before the core answers.
 /// - `swr`: kept and shown immediately while the core answers (either via `lasting` `last_said` or `showKept`).
-export type TopicRetention = "live" | "delta" | "swr";
+export type TopicRetention = "sensitive" | "live" | "delta" | "swr";
 
 export type TopicPolicyBase = {
   readonly retention: TopicRetention;
@@ -46,6 +48,7 @@ export type TopicPolicy = TopicPolicyBase & {
 
 export type EvaluatedTopicPolicy = {
   readonly retention: TopicRetention;
+  readonly sensitive: boolean;
   readonly lasting: boolean;
   readonly homeLasting: boolean;
   readonly keep: number;
@@ -63,6 +66,7 @@ export const KEPT_MOST_BEFORE_VIEWS = 64;
 /// Per-topic keep capacity for `lasting` lists (`sfbase` `last_most`).
 export const LASTING_KEPT = 64;
 
+const SENSITIVE: TopicPolicy = { retention: "sensitive" };
 const LIVE: TopicPolicy = { retention: "live" };
 /// Bar/rail opening lists (`lasting` in `sfbase` `last_said`): shown immediately when a place is
 /// re-opened until the core answers. Leaving a place drops its subscriptions, and returning used to
@@ -85,7 +89,7 @@ const viewKept = (keep: number): TopicPolicy => ({ retention: "swr", keep, showK
 const CHAT_DELTA: TopicPolicy = { retention: "delta", keep: 8, keepBeforeViews: 4 };
 
 export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
-  accounts: LIVE,
+  accounts: SENSITIVE,
   workspaces: LIVE,
   workspace: LASTING,
   link: LIVE,
@@ -107,15 +111,15 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   slackApp: LIVE,
   jobs: LIVE,
   jobLog: LIVE,
-  machineLogins: LIVE,
-  machineLogin: LIVE,
-  machineLoginScreen: LIVE,
-  loginSessions: LIVE,
-  admin: LIVE,
-  adminList: LIVE,
-  adminItem: LIVE,
-  adminOverview: LIVE,
-  adminRelays: LIVE,
+  machineLogins: SENSITIVE,
+  machineLogin: SENSITIVE,
+  machineLoginScreen: SENSITIVE,
+  loginSessions: SENSITIVE,
+  admin: SENSITIVE,
+  adminList: SENSITIVE,
+  adminItem: SENSITIVE,
+  adminOverview: SENSITIVE,
+  adminRelays: SENSITIVE,
   chats: HOME_LASTING,
   projects: viewKept(8),
   project: viewKept(16),
@@ -123,7 +127,21 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   chatRow: viewKept(32),
   stations: LASTING,
   station: viewKept(16),
-  stationPart: viewKept(24),
+  stationPart: {
+    retention: "live",
+    byParam: {
+      key: "part",
+      values: {
+        machineLogins: SENSITIVE,
+        logins: SENSITIVE,
+        archiving: LIVE,
+        automaticDecisions: LIVE,
+        profiles: viewKept(24),
+        updates: viewKept(24),
+        copies: viewKept(24),
+      },
+    },
+  },
   profiles: LASTING,
   profile: viewKept(16),
   profilesOverview: { retention: "live", lazyWhenIdle: true },
@@ -180,10 +198,10 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   doing: LIVE,
   adbShare: LIVE,
   adbCard: LIVE,
-  rigs: LIVE,
-  devices: LIVE,
+  rigs: SENSITIVE,
+  devices: SENSITIVE,
   previewLoad: LIVE,
-  slackTokens: LIVE,
+  slackTokens: SENSITIVE,
   connectFlow: LIVE,
   decisionForm: LIVE,
   policyForm: LIVE,
@@ -194,25 +212,44 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   fonts: LIVE,
   workspaceMarks: { retention: "live", unseen: true },
   workspaceWays: LIVE,
-  lock: LIVE,
-  joinable: LIVE,
-  memberships: LIVE,
+  lock: SENSITIVE,
+  joinable: SENSITIVE,
+  memberships: SENSITIVE,
   screens: LASTING,
   terminals: LASTING,
   screenCard: LIVE,
   terminalCard: LIVE,
-  lockDraft: LIVE,
-  lockPrompts: LIVE,
-  vaults: LASTING,
-  vaultItems: LIVE,
+  lockDraft: SENSITIVE,
+  lockPrompts: SENSITIVE,
+  vaults: SENSITIVE,
+  vaultItems: SENSITIVE,
   driveTransfers: { retention: "live", unseen: true },
   driveBrowse: LIVE,
   filesTabs: LIVE,
   downloads: { retention: "live", unseen: true },
-  vaultUses: LIVE,
+  vaultUses: SENSITIVE,
 };
 
 export const TOPIC_NAMES: readonly TopicName[] = Object.keys(TOPICS) as TopicName[];
+
+/// Single source of truth for device-global and transport-only topics exempt from `(account, workspace)` `authGen`.
+/// Generated into MoonBit (`topic_policy_device_global`) by `apps/mbui/scripts/gen-topic-policy.mjs`.
+/// Note: `downloads` is NOT device-global (it carries station/path/filename user data).
+export const DEVICE_GLOBAL_TOPICS: readonly TopicName[] = [
+  "releases",
+  "fonts",
+  "changelog",
+  "prefs",
+  "doing",
+  "adbShare",
+  // Transport link/reachability state written directly by StationsSync (not user data):
+  "link",
+  "connection",
+  "way",
+  "net",
+];
+
+export const DEVICE_GLOBAL_TOPIC_SET: ReadonlySet<string> = new Set(DEVICE_GLOBAL_TOPICS);
 
 export function isKnownTopic(name: string): name is TopicName {
   return Object.hasOwn(TOPICS, name);
@@ -228,6 +265,7 @@ export function topicsWhere(predicate: (policy: TopicPolicy, name: TopicName) =>
 
 const LIVE_EVALUATED: EvaluatedTopicPolicy = {
   retention: "live",
+  sensitive: false,
   lasting: false,
   homeLasting: false,
   keep: 0,
@@ -246,7 +284,7 @@ function hasSearchParam(params: Readonly<Record<string, unknown>> | null | undef
 }
 
 /// Evaluates the effective policy for `(name, params)`, accounting for own-property lookup,
-/// optional `byParam` overrides, and search-parameter (`q` / non-empty `query`) downgrade to `live`.
+/// optional `byParam` overrides, unconditional `sensitive` ceiling, and search-parameter (`q` / non-empty `query`) downgrade to `live`.
 export function evaluateTopicPolicy(
   name: string,
   params?: Readonly<Record<string, unknown>> | null,
@@ -259,6 +297,20 @@ export function evaluateTopicPolicy(
     if (typeof rawVal === "string" && Object.hasOwn(base.byParam.values, rawVal)) {
       effective = { ...base, ...base.byParam.values[rawVal] };
     }
+  }
+  if (effective.retention === "sensitive") {
+    return {
+      retention: "sensitive",
+      sensitive: true,
+      lasting: false,
+      homeLasting: false,
+      keep: 0,
+      keepBeforeViews: 0,
+      showKept: false,
+      askedByWords: Boolean(effective.askedByWords),
+      lazyWhenIdle: Boolean(effective.lazyWhenIdle),
+      unseen: Boolean(effective.unseen),
+    };
   }
   const typed = hasSearchParam(params);
   const lasting = Boolean(effective.lasting) && !typed;
@@ -279,6 +331,7 @@ export function evaluateTopicPolicy(
   const retention: TopicRetention = typed && effective.retention === "swr" ? "live" : effective.retention;
   return {
     retention,
+    sensitive: false,
     lasting,
     homeLasting,
     keep,
@@ -288,4 +341,105 @@ export function evaluateTopicPolicy(
     lazyWhenIdle: Boolean(effective.lazyWhenIdle),
     unseen: Boolean(effective.unseen),
   };
+}
+
+function stripLoginField(item: unknown): unknown {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+  const obj = item as Record<string, unknown>;
+  const hasLogin = Object.hasOwn(obj, "login");
+  const nestedProfile = obj.profile;
+  const nestedObj =
+    nestedProfile !== null && typeof nestedProfile === "object" && !Array.isArray(nestedProfile)
+      ? (nestedProfile as Record<string, unknown>)
+      : null;
+  const hasNestedLogin = nestedObj !== null && Object.hasOwn(nestedObj, "login");
+  if (!hasLogin && !hasNestedLogin) return item;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(obj)) {
+    if (k === "login") continue;
+    if (k === "profile" && hasNestedLogin && nestedObj !== null) {
+      const cleanProfile: Record<string, unknown> = {};
+      for (const pk of Object.keys(nestedObj)) {
+        if (pk === "login") continue;
+        cleanProfile[pk] = nestedObj[pk];
+      }
+      out.profile = cleanProfile;
+    } else {
+      out[k] = obj[k];
+    }
+  }
+  return out;
+}
+
+function stripLoginArray(arr: unknown): { changed: boolean; value: unknown } {
+  if (!Array.isArray(arr)) return { changed: false, value: arr };
+  let changed = false;
+  const mapped = arr.map((item) => {
+    const clean = stripLoginField(item);
+    if (clean !== item) changed = true;
+    return clean;
+  });
+  return changed ? { changed: true, value: mapped } : { changed: false, value: arr };
+}
+
+/// Strips sensitive / privilege / active-login fields from aggregate topics (`profiles`, `station`,
+/// and `stationPart(part="profiles")`) before retaining them in `#kept` / `Client::kept` / `last_said`,
+/// so cached values and first-frame SWR contain zero sensitive fields (`machineLogins`, `logins`,
+/// `manages`, `profiles[].login`, `overview.profiles[].login`) while preserving fresh values.
+/// Returns the original reference unchanged when nothing needs stripping.
+export function sanitizeKeptValue(
+  name: string,
+  value: unknown,
+  params?: Readonly<Record<string, unknown>> | null,
+): unknown {
+  if (name === "stationPart") {
+    const part = params && typeof params === "object" ? params.part : undefined;
+    if (part === undefined || part === "profiles") {
+      return stripLoginArray(value).value;
+    }
+    return value;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const obj = value as Record<string, unknown>;
+  if (name === "profiles") {
+    const hasTop = Object.hasOwn(obj, "machineLogins") || Object.hasOwn(obj, "manages");
+    const itemsClean = stripLoginArray(obj.items);
+    const profilesClean = stripLoginArray(obj.profiles);
+    if (!hasTop && !itemsClean.changed && !profilesClean.changed) return value;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj)) {
+      if (k === "machineLogins" || k === "manages") continue;
+      if (k === "items" && itemsClean.changed) out.items = itemsClean.value;
+      else if (k === "profiles" && profilesClean.changed) out.profiles = profilesClean.value;
+      else out[k] = obj[k];
+    }
+    return out;
+  }
+  if (name === "station") {
+    const hasTop = Object.hasOwn(obj, "machineLogins") || Object.hasOwn(obj, "manages");
+    const ov = obj.overview;
+    const ovObj = ov !== null && typeof ov === "object" && !Array.isArray(ov) ? (ov as Record<string, unknown>) : null;
+    const ovProfilesClean = ovObj !== null ? stripLoginArray(ovObj.profiles) : { changed: false, value: undefined };
+    const hasOv =
+      ovObj !== null &&
+      (Object.hasOwn(ovObj, "machineLogins") || Object.hasOwn(ovObj, "logins") || ovProfilesClean.changed);
+    if (!hasTop && !hasOv) return value;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj)) {
+      if (k === "machineLogins" || k === "manages") continue;
+      if (k === "overview" && hasOv && ovObj !== null) {
+        const cleanOv: Record<string, unknown> = {};
+        for (const ok of Object.keys(ovObj)) {
+          if (ok === "machineLogins" || ok === "logins") continue;
+          if (ok === "profiles" && ovProfilesClean.changed) cleanOv.profiles = ovProfilesClean.value;
+          else cleanOv[ok] = ovObj[ok];
+        }
+        out.overview = cleanOv;
+      } else {
+        out[k] = obj[k];
+      }
+    }
+    return out;
+  }
+  return value;
 }

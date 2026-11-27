@@ -864,3 +864,58 @@ test("the source workspace with no safe mode, its person's own lock not read fro
     r.core.close();
   }
 });
+
+test("cross-workspace vault r14: uncached #approveCross rejects with auth_stale and 0 grants when source vault single-locks during #request", async () => {
+  const r = await multiWsRig();
+  try {
+    await r.ask("vault.setup", { workspace: "ws" });
+    await r.ask("vault.setup", { workspace: "wsB" });
+    const personalA = [...r.stA.vaults.values()].find((v) => v.scope !== "workspace")!.id;
+    const itemA = await r.ask("vault.putItem", {
+      workspace: "ws",
+      vault: personalA,
+      plain: { kind: "token", name: "GH", fields: { value: "ghp_r14" }, domains: [], notes: "" },
+      listing: { name: "GH", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] },
+    });
+    // Put cross request on stB WITHOUT pre-caching it in wsB held.requests (uncached cross request!)
+    const keeperPriv = fill(33);
+    const crossReq: Request = {
+      id: "r_cross_uncached_r14",
+      ws: "wsB",
+      vault: personalA,
+      item: itemA.id,
+      session: "s1",
+      chat: "CHAT/1.0",
+      mode: "proxy",
+      hosts: ["api.github.com"],
+      reason: "cross use",
+      owner: "me@x.com",
+      box: boxPublic(keeperPriv),
+      at: 2000,
+      status: "pending",
+      cross: { workspace: "ws", workspaceName: "W", vaultName: "Personal" },
+    };
+    r.stB.requests.push(crossReq);
+    // While #request fetches /vault/requests from stB, trigger a single-vault lock on source vault ws/personalA!
+    let bumped = false;
+    const origCall = r.core.inner.stations.requests.call.bind(r.core.inner.stations.requests);
+    r.core.inner.stations.requests.call = (station: StationAddr, method: string, path: string, body: unknown, ...rest: [any?]) => {
+      if (!bumped && method === "GET" && path === "/vault/requests" && station.workspace === "wsB") {
+        bumped = true;
+        r.core.inner.store.authGen.bumpVault("ws", personalA);
+      }
+      return origCall(station, method, path, body, ...rest);
+    };
+    let errCode: string | undefined;
+    try {
+      await r.ask("vault.approve", { workspace: "wsB", request: "r_cross_uncached_r14", scope: "once" });
+    } catch (e: any) {
+      errCode = e?.code ?? (String(e).includes("auth_stale") ? "auth_stale" : String(e));
+    }
+    assert.equal(errCode, "auth_stale", "uncached #approveCross must fail with auth_stale when source vault single-locks during #request");
+    assert.equal(bumped, true, "source vault single-lock must have fired during #request");
+    assert.equal(r.stB.grants.length, 0, "stale uncached #approveCross must issue 0 grants");
+  } finally {
+    r.core.close();
+  }
+});

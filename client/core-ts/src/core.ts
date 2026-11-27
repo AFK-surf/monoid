@@ -28,12 +28,13 @@ import { t } from "./i18n.ts";
 import { markdown } from "./markdown.ts";
 import { AHEAD_AFTER_MS, MdAhead } from "./md-ahead.ts";
 import * as prefs from "./prefs.ts";
-import { Beside, parseClientMessage, type ClientId, type ClientMessage, type CoreMessage, type RequestId } from "./protocol.ts";
+import { Beside, parseClientMessage, topicKey, type CallAuth, type ClientId, type ClientMessage, type CoreMessage, type RequestId, type Topic, type WireGen } from "./protocol.ts";
 import { TRACES } from "./route.ts";
 import { laterSleep, Runner } from "./runtime.ts";
 import { stationId } from "./station/addr.ts";
 import { Status, Waited } from "./status.ts";
 import { Store } from "./store.ts";
+import { topicScopeOf } from "./auth-gen.ts";
 import { CloudSync } from "./sync/cloud.ts";
 import { Priority, Scheduler } from "./sync/scheduler.ts";
 import { Kind, SAMPLE, Tracer, service } from "./trace.ts";
@@ -42,11 +43,11 @@ import { ownBuild } from "./station/oldest.ts";
 import { spent, spentClock, spentSince } from "./spent.ts";
 import { checkWith, keepVerified } from "./vault/verified.ts";
 import { Wakes, WakingHost } from "./wake.ts";
-import { Workspaces } from "./workspace.ts";
+import { ofAddress, Workspaces } from "./workspace.ts";
 import { install as installStationCalls } from "./station/calls.ts";
-import { install as installScreens } from "./screens.ts";
-import { install as installTerminals } from "./terminals.ts";
-import { install as installFarview } from "./farview.ts";
+import { install as installScreens, screenViewAuthOf } from "./screens.ts";
+import { install as installTerminals, terminalViewAuthOf } from "./terminals.ts";
+import { install as installFarview, farviewViewAuthOf } from "./farview.ts";
 import { Composers, install as installComposer } from "./composer.ts";
 import { StationsSync } from "./station/sync.ts";
 import { SendTrace } from "./station/send-trace.ts";
@@ -220,6 +221,13 @@ export class Inner {
   composers!: Composers;
   /// The accounts as last shown, so a change UIs cannot see (a refreshed token) is not one.
   shownAccounts: AccountView[] = [];
+  /// Recomputes authoritative `(account, workspace)` authorization digest for `ws`.
+  syncWorkspaceAuth?: (ws: string) => void;
+  /// Workspaces whose `authGen` advanced on a same-owner downgrade/revocation/safeMode boundary and are awaiting
+  /// fresh post-boundary per-topic/per-station data confirmation before releasing held `Data` records.
+  pendingAuthConfirm = new Map<string, { gen: number; confirmedKeys: Set<string> }>();
+  /// Confirms fresh post-boundary data for `ws` (per `topic` when given, or whole workspace if omitted) and wakes blocked subscribers.
+  confirmWorkspaceAuth?: (ws: string, topic: Topic, readGen: number) => void;
 }
 
 /// The start's span (`core.start`): each step's ms as it ends (`step`); then, once the person's own lock of every account
@@ -275,9 +283,15 @@ function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string
 }
 const START_TOLD_MS = 30_000;
 
+/// Process-wide monotonic connection instance counter (seeded from persisted device storage on `Core.make`),
+/// ensuring Core restarts never regress `conn` to a value `<=` the client's previous `conn_id`.
+let nextConnSeq = 0;
+
 export class Core {
   readonly inner: Inner;
   #nextClient = 1;
+  readonly #connectedClients = new Set<ClientId>();
+  readonly #authRetryFibers = new Map<ClientId, ReturnType<Runner["fork"]>>();
 
   private constructor(inner: Inner) {
     this.inner = inner;
@@ -334,6 +348,17 @@ export class Core {
       const early = new EarlyReads(inner.host, inner.runner, inner.accounts.list().map((a) => a.sub));
       inner.workspaces = new Workspaces(inner.host, inner.runner, inner.waited);
       inner.store = new Store(inner.host, inner.runner, inner.tracer);
+      inner.syncWorkspaceAuth = (ws: string) => syncWorkspaceAuth(inner, ws);
+      inner.confirmWorkspaceAuth = (ws: string, topic: Topic, readGen: number) => {
+        const pending = inner.pendingAuthConfirm.get(ws);
+        if (pending === undefined) return;
+        if (inner.store.authGen.workspaceAuthGen(ws) !== readGen) return;
+        const k = topicKey(topic);
+        if (!pending.confirmedKeys.has(k)) {
+          pending.confirmedKeys.add(k);
+          inner.store.changed(topic);
+        }
+      };
       const store = inner.store;
       // Each signed-in account's database, opened before any network: the first view is answered from it.
       inner.data = new Data(inner.host, inner.runner, {
@@ -376,6 +401,43 @@ export class Core {
       start.set("stillfail.ms.db_import", Math.round(dbTiming.importMs));
       start.set("stillfail.db_deferred", restSubs.length);
       start.step("db");
+      // Seed monotonic cross-restart connection id counter from device storage and wall clock (microseconds + jitter)
+      // so even an unclean crash before flushing device storage or same-ms startup never collides with a previous connId.
+      const storedConn = inner.data.device.get("auth", "connSeq");
+      const floorConn = Math.floor(Date.now() * 1000) + Math.floor(Math.random() * 1000);
+      if (floorConn > nextConnSeq) nextConnSeq = floorConn;
+      if (typeof storedConn === "number" && Number.isInteger(storedConn) && storedConn > nextConnSeq) {
+        nextConnSeq = storedConn;
+      }
+      if (!inner.data.device.isUnloaded("auth")) {
+        inner.data.device.put("auth", "connSeq", nextConnSeq);
+        yield* Effect.ignore(inner.data.device.flushTable("auth"));
+      }
+      // Authorization gate: refuse reading/emitting positive held Data records for workspaces or accounts not currently
+      // authorized by a signed-in account, or while awaiting fresh post-boundary per-topic/per-station confirmation
+      // after same-owner downgrade/revocation/safeMode changes. Pure local topics (`draft`, `prefs`) are never gated.
+      store.setAuthorize((topic, authGen) => {
+        if (topic.topic === "draft" || topic.topic === "prefs") return true;
+        // Gate held Data records (`holds(topic)`): derived view topics (`lock`, `vaults`, `station`, `adb`, etc.)
+        // must always be allowed to recompute and emit fresh empty / `{ gone: true }` / locked states.
+        if (!holds(topic)) return true;
+        const scope = topicScopeOf(topic);
+        if (scope.kind === "device" || scope.kind === "global") return true;
+        if (scope.kind === "account") {
+          return scope.account === "" || inner.accounts.list().some((a) => a.sub === scope.account);
+        }
+        const ws = scope.workspace;
+        if (ws === "" || ws === "all" || ws === "*") return true;
+        const owner = inner.workspaces.owner(ws);
+        if (owner === null || !inner.accounts.list().some((a) => a.sub === owner)) return false;
+        // Pure local `drivePlace` still requires workspace ownership above, but never waits on post-downgrade station re-read.
+        if (topic.topic === "drivePlace") return true;
+        const pending = inner.pendingAuthConfirm.get(ws);
+        if (pending !== undefined && authGen >= pending.gen && !pending.confirmedKeys.has(topicKey(topic))) {
+          return false;
+        }
+        return true;
+      });
       // (signatures checked once on this device, kept with its own values: vault/verified.ts)
       keepVerified({ get: (k) => inner.data.device.get("verified", k), put: (k, ok) => void inner.data.device.put("verified", k, ok) });
       // (checked by the host's own, where it has one: a native app's shell, libcrux)
@@ -395,8 +457,14 @@ export class Core {
         : inner.data.shared(topic), (topic) => inner.data.release(topic));
       inner.data.onChange((topic) => {
         if (topic.topic === "*") {
+          for (const [ws] of inner.workspaces.owned()) syncWorkspaceAuth(inner, ws);
           for (const t of store.liveTopics()) if (holds(t)) store.changed(t);
-        } else store.changed(topic);
+        } else {
+          if (topic.topic === "workspace" && typeof topic.workspace === "string") {
+            syncWorkspaceAuth(inner, topic.workspace);
+          }
+          store.changed(topic);
+        }
       });
       // Why a station down is not reached is said again as still.fail cloud is reached, or no longer is.
       inner.status.onCloud = () => inner.stations?.recause();
@@ -505,10 +573,10 @@ export class Core {
               inner.runner.fork(movedBySelf(inner, ws));
               // (where its chain moved, the state in force made anew of the person's log now, the vaults following it:
               // views/lock.ts `inForceOf`, whether or not anything shown reads it)
-              if (movedHere(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => void inForceOf(inner, ws)))));
+              if (movedHere(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (inForceOf(inner, ws), syncWorkspaceAuth(inner, ws))))));
               // (no safe mode: the vault goes by this very lock, views/vault.ts `personalLockOf`; its page and the chats'
               // cards answered again, what it takes held, as a workspace's lock coming does)
-              else if (!safeNow(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => vaultCalls.vaultCome(inner, ws)))));
+              else if (!safeNow(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => (syncWorkspaceAuth(inner, ws), vaultCalls.vaultCome(inner, ws))))));
             }
           },
           told: (sub, chain) => tellStations(inner, sub, chain),
@@ -538,9 +606,13 @@ export class Core {
         call: (station, method, path, body) => inner.stations.requests.call(station, method, path, body, { quiet: true }),
         // (a station's mode changed: the workspace's view it answers with is held at once, as a write through `op` is,
         // so its page follows with no event of the cloud's; core/execute.ts)
-        cloud: (sub, method, path, body) =>
-          Effect.tap(inner.provider.request(sub, method, path, body), (answer) =>
-            method === "PATCH" ? rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, method, path, answer), null) : Effect.void),
+        cloud: (sub, method, path, body) => {
+          const wsMatch = /^\/v1\/workspaces\/([^/]+)/.exec(path.split("?")[0]!);
+          const wsId = wsMatch ? decodeURIComponent(wsMatch[1]!) : null;
+          const preReadGen = wsId !== null ? inner.store.authGen.workspaceAuthGen(wsId) : undefined;
+          return Effect.tap(inner.provider.request(sub, method, path, body), (answer) =>
+            method === "PATCH" ? rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, method, path, answer, preReadGen), null) : Effect.void);
+        },
         first: (asks, at) => answersOf(inner, asks, tookOrRefused, at),
         lock: {
           locked: (workspace) => signsAs(inner, workspace).locked,
@@ -574,7 +646,16 @@ export class Core {
       handlers.device = (_i, call) => inner.devices.run((call as Extract<Call, { kind: "device" }>).call);
       inner.stations.also.push({ read: (address) => inner.devices.read(address), event: (address, name, data) => inner.devices.heard(address, name, data) });
       // This person's chats' grants of their phone, as each station says them.
-      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : name === "adb-revoke" ? inner.adb.heardRevoke(address, data) : undefined), resume: true });
+      inner.stations.also.push({
+        read: (address) => inner.adb.readGrants(address),
+        event: (address, name, data, readGen) =>
+          name === "adb-grant"
+            ? inner.adb.heard(address, data, readGen)
+            : name === "adb-revoke"
+              ? inner.adb.heardRevoke(address, data)
+              : undefined,
+        resume: true,
+      });
       handlers.ask = (_i, call) => asks.run((call as Extract<Call, { kind: "ask" }>).ask, inner.accounts);
       inner.changelog = new Changelog(inner.host, inner.store, inner.data);
       inner.router.owners.push(inner.changelog);
@@ -672,8 +753,25 @@ export class Core {
           }),
         );
       };
+      const seedAuthWhenLockLoaded = (subs: readonly string[]) => {
+        for (const sub of subs) {
+          inner.runner.fork(
+            inner.adb.personal().whenLoaded(sub).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  for (const [ws, owner] of inner.workspaces.owned()) {
+                    if (owner === sub) syncWorkspaceAuth(inner, ws);
+                  }
+                }),
+              ),
+            ),
+          );
+        }
+      };
       inner.shownAccounts = inner.accounts.list();
+      inner.store.authGen.syncAccounts(inner.shownAccounts.map((a) => a.sub));
       inner.adb.accountsKnown();
+      seedAuthWhenLockLoaded(inner.shownAccounts.map((a) => a.sub));
       inner.tracer.setExport((body) => {
         const account = inner.accounts.list()[0];
         // Sent again when the network or the cloud was down; not one the cloud refused (it would be refused again).
@@ -682,8 +780,11 @@ export class Core {
       });
       // An account signed in has its database opened; one signed out, removed (before what it reached is let go).
       inner.accounts.onChange((removed) => {
+        const subs = inner.accounts.list().map((a) => a.sub);
+        inner.store.authGen.syncAccounts(subs);
         inner.adb.accountsKnown();
-        inner.runner.fork(Effect.andThen(inner.data.accounts(inner.accounts.list().map((a) => a.sub), removed), Effect.sync(() => inner.cloudSync.accountsChanged())));
+        seedAuthWhenLockLoaded(subs);
+        inner.runner.fork(Effect.andThen(inner.data.accounts(subs, removed), Effect.sync(() => inner.cloudSync.accountsChanged())));
       });
       // From now on the core keeps what it holds current, whatever the UI shows.
       inner.provider.start();
@@ -790,13 +891,134 @@ export class Core {
     this.inner.store.setClock();
   }
 
+  #cancelAuthRetry(client: ClientId): void {
+    const fiber = this.#authRetryFibers.get(client);
+    if (fiber !== undefined) {
+      this.#authRetryFibers.delete(client);
+      this.inner.runner.interrupt(fiber);
+    }
+  }
+
+  #scheduleAuthPersistRetry(client: ClientId): void {
+    if (!this.#connectedClients.has(client) || this.#authRetryFibers.has(client)) return;
+    const DELAYS_MS = [2_000, 5_000, 10_000, 30_000];
+    let fiber!: ReturnType<Runner["fork"]>;
+    const retry = Effect.gen({ self: this }, function* () {
+      for (let attempt = 0; ; attempt++) {
+        const delay = DELAYS_MS[Math.min(attempt, DELAYS_MS.length - 1)]!;
+        // timer: bounded exponential backoff retry for device/auth persistence after storage failure.
+        yield* Effect.sleep(delay);
+        if (!this.#connectedClients.has(client) || !this.inner.store.isAuthFailed(client)) return;
+        const attemptRes = yield* Effect.result(
+          Effect.gen({ self: this }, function* () {
+            const device = this.inner.data.device;
+            if (device.isUnloaded("auth")) {
+              const loaded = yield* device.reload("auth");
+              if (!loaded) return yield* Effect.fail(new HostError("device/auth has not been read"));
+            }
+            let finalConnId = ++nextConnSeq;
+            const diskSeq = Number(device.get("auth", "connSeq") ?? 0);
+            if (Number.isFinite(diskSeq) && diskSeq >= finalConnId) {
+              nextConnSeq = Math.max(nextConnSeq, Math.floor(diskSeq) + 1);
+              finalConnId = nextConnSeq;
+            }
+            device.put("auth", "connSeq", finalConnId);
+            yield* device.flushTable("auth");
+            return finalConnId;
+          }),
+        );
+        if (attemptRes._tag === "Success") {
+          if (!this.#connectedClients.has(client) || !this.inner.store.isAuthFailed(client)) return;
+          this.inner.store.registerClient(client, attemptRes.success, false, false);
+          this.inner.store.markClientAuthReady(client);
+          return;
+        }
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (this.#authRetryFibers.get(client) === fiber) this.#authRetryFibers.delete(client);
+        }),
+      ),
+    );
+    fiber = this.inner.runner.fork(retry);
+    this.#authRetryFibers.set(client, fiber);
+  }
+
+  /// Persists a monotonic `connId` in `device/auth` before allowing any `{ id: 0, auth }` snapshot or conn-tagged
+  /// message to be emitted to `client`. Recovers from cold-start `#unloaded` `device/auth` via `reload("auth")` and
+  /// fails explicitly (without leaking unpersisted `connId` or hanging callers) if persistence fails, then schedules
+  /// bounded exponential-backoff background recovery.
+  #persistClientAuth(client: ClientId, initialConnId: number): void {
+    this.#cancelAuthRetry(client);
+    this.inner.store.registerClient(client, initialConnId, false, false);
+    const failPersist = (err: unknown) => {
+      this.inner.store.failClientAuth(client, err);
+      // Do NOT call `runner.onDefect` (all production hosts treat `onDefect` as fatal and crash-loop on disk full);
+      // record a non-fatal warning on the tracer instead, and schedule bounded backoff recovery.
+      const span = this.inner.tracer.root("core.auth_persist_failed", Kind.Internal);
+      span.set("stillfail.error", err instanceof Error ? err.message : String(err));
+      span.fail();
+      span.end();
+      this.#scheduleAuthPersistRetry(client);
+    };
+    try {
+      this.inner.runner.fork(
+        Effect.gen({ self: this }, function* () {
+          const device = this.inner.data.device;
+          if (device.isUnloaded("auth")) {
+            const loaded = yield* device.reload("auth");
+            if (!loaded) return yield* Effect.fail(new HostError("device/auth has not been read"));
+          }
+          const diskSeq = Number(device.get("auth", "connSeq") ?? 0);
+          let finalConnId = initialConnId;
+          if (Number.isFinite(diskSeq) && diskSeq >= finalConnId) {
+            nextConnSeq = Math.max(nextConnSeq, Math.floor(diskSeq) + 1);
+            finalConnId = nextConnSeq;
+            this.inner.store.updateClientConn(client, finalConnId);
+          }
+          device.put("auth", "connSeq", finalConnId);
+          yield* device.flushTable("auth");
+          this.inner.store.markClientAuthReady(client);
+        }).pipe(Effect.catch((err) => Effect.sync(() => failPersist(err)))),
+      );
+    } catch (err) {
+      failPersist(err);
+    }
+  }
+
   /// A UI connected; its messages and emissions use this id.
-  connect(): ClientId {
-    return this.#nextClient++;
+  /// When `options.authHandshake` is true (all production hosts), registers the connection with a strictly
+  /// monotonic cross-restart `connId` and schedules the initial `{ id: 0, auth }` snapshot.
+  connect(options?: { authHandshake?: boolean; requireCallAuth?: boolean }): ClientId {
+    const client = this.#nextClient++;
+    this.#connectedClients.add(client);
+    if (options?.authHandshake === true) {
+      const connId = ++nextConnSeq;
+      if (options?.requireCallAuth === true) {
+        this.inner.store.setAuthEnforced(client);
+      }
+      this.#persistClientAuth(client, connId);
+    }
+    return client;
+  }
+
+  /// Immediately flushes the authoritative `{ id: 0, auth }` snapshot for `client` (or registers it if unregistered)
+  /// and enforces explicit `CallAuth` on protected write RPCs from this client.
+  syncAuth(client: ClientId): void {
+    this.inner.store.setAuthEnforced(client);
+    if (this.inner.store.connOf(client) === 0) {
+      const connId = ++nextConnSeq;
+      this.#persistClientAuth(client, connId);
+    } else {
+      this.inner.store.flushAuthSnapshot(client);
+    }
   }
 
   /// A UI went away: its subscriptions end, its calls that hold something open for it stop.
   disconnect(client: ClientId): void {
+    this.#connectedClients.delete(client);
+    this.#cancelAuthRetry(client);
     this.inner.store.dropClient(client);
     this.inner.attention.attend.gone(client);
     this.inner.forms.disconnect(this.inner, client);
@@ -834,8 +1056,17 @@ export class Core {
   receive(client: ClientId, message: ClientMessage): void {
     const inner = this.inner;
     switch (message.kind) {
-      case "subscribe":
-        return inner.store.subscribe(client, message.id, message.subscribe, message.keyed === true, message.from, message.have);
+      case "subscribe": {
+        const clientGen =
+          message.conn !== undefined || message.authGen !== undefined || message.vaultGen !== undefined
+            ? {
+                ...(message.conn !== undefined ? { conn: message.conn } : {}),
+                ...(message.authGen !== undefined ? { authGen: message.authGen } : {}),
+                ...(message.vaultGen !== undefined ? { vaultGen: message.vaultGen } : {}),
+              }
+            : undefined;
+        return inner.store.subscribe(client, message.id, message.subscribe, message.keyed === true, message.from, message.have, clientGen);
+      }
       case "unsubscribe":
         return inner.store.unsubscribe(client, message.id, message.keep === true);
       case "cancel": {
@@ -848,11 +1079,11 @@ export class Core {
         return;
       }
       case "call":
-        return this.#call(client, message.id, message.call, message.params, message.bytes);
+        return this.#call(client, message.id, message.call, message.params, message.bytes, message.auth);
     }
   }
 
-  #call(client: ClientId, id: RequestId, name: string, params: unknown, bytes: Uint8Array | undefined): void {
+  #call(client: ClientId, id: RequestId, name: string, params: unknown, bytes: Uint8Array | undefined, auth?: CallAuth): void {
     const inner = this.inner;
     const asked = heavy(name) ? null : params;
     let call: Call;
@@ -864,6 +1095,49 @@ export class Core {
       inner.host.emit(client, answer(id, { err: asCoreError(e) }));
       return;
     }
+    const target = callAuthTarget(inner, client, call, name);
+    const conn = inner.store.connOf(client);
+    if (auth !== undefined) inner.store.setAuthEnforced(client);
+    if (inner.store.isAuthFailed(client) && (target.protectedWrite || auth !== undefined || inner.store.isAuthEnforced(client))) {
+      inner.host.emit(client, answer(id, { err: new CoreError("storage_failed", t("core-logic.status.db.full")) }));
+      return;
+    }
+    const enforced = conn > 0 && inner.store.isAuthEnforced(client);
+    const verifyFor = (tgt: ReturnType<typeof callAuthTarget>): CoreError | null => {
+      if (auth === undefined && (!tgt.protectedWrite || !enforced)) return null;
+      return inner.store.authGen.verifyCallAuth(
+        auth,
+        conn,
+        (ws) => inner.workspaces.owner(ws),
+        new Set(inner.accounts.list().map((a) => a.sub)),
+        tgt,
+        tgt.protectedWrite && enforced,
+      );
+    };
+    const authErr = verifyFor(target);
+    if (authErr !== null) {
+      inner.host.emit(client, answer(id, { err: authErr }));
+      return;
+    }
+    const genWs = target.workspace ?? auth?.workspace;
+    const genVault = target.vault ?? auth?.vault;
+    const callGen: WireGen | undefined =
+      conn > 0
+        ? {
+            conn,
+            authGen: genWs !== undefined ? inner.store.authGen.workspaceAuthGen(genWs) : inner.store.authGen.globalGen,
+            ...(target.isVault
+              ? {
+                  vaultGen:
+                    genWs !== undefined && genVault !== undefined
+                      ? inner.store.authGen.vaultGen(genWs, genVault)
+                      : genWs !== undefined
+                        ? inner.store.authGen.vaultWorkspaceGen(genWs)
+                        : inner.store.authGen.vaultGlobalGen,
+                }
+              : {}),
+          }
+        : undefined;
     // Under way from now until it answers, for every page to show where it is (doing.ts).
     // What people use (use-counts.ts): each call by its name, but what the UI says of itself (`client.*`).
     if (!name.startsWith("client.")) inner.useCounts.used(name);
@@ -888,7 +1162,17 @@ export class Core {
         const stream = Array.isArray(head.headers) && head.headers.some((h) => Array.isArray(h) && typeof h[0] === "string" && h[0].toLowerCase() === "content-type" && typeof h[1] === "string" && h[1].startsWith("text/event-stream"));
         if (stream) loads.end(resource, inner.host.nowMs(), null);
       }
-      inner.host.emit(client, bytes === undefined ? { id, value } : { id, value, bytes });
+      inner.store.emitClient(
+        client,
+        bytes === undefined
+          ? callGen
+            ? { id, value, ...callGen }
+            : { id, value }
+          : callGen
+            ? { id, value, bytes, ...callGen }
+            : { id, value, bytes },
+        true,
+      );
     };
     const key = `${client}/${id}`;
     const stoppable = cancellable(call);
@@ -898,11 +1182,22 @@ export class Core {
       const there = movedChats.aimed(inner, params);
       if (get(there, "station") === get(aimed, "station") && get(there, "thread") === get(aimed, "thread")) return Effect.fail(error);
       return Effect.try({ try: () => parseCall(name, there, bytes), catch: asCoreError }).pipe(
-        Effect.flatMap((c) => execute(inner, c, progress, [client, id], span.context)),
+        Effect.flatMap((c) => {
+          const redirectedErr = verifyFor(callAuthTarget(inner, client, c, name));
+          if (redirectedErr !== null) return Effect.fail(redirectedErr);
+          return execute(inner, c, progress, [client, id], span.context);
+        }),
         Effect.mapError(asCoreError),
       );
     };
-    const run = execute(inner, call, progress, [client, id], span.context).pipe(
+    // Re-verify authorization immediately before starting execution, without interrupting already-started
+    // non-stoppable writes or turning a committed write into a false `auth_stale` error.
+    const guarded = Effect.suspend(() => {
+      const preErr = verifyFor(target);
+      if (preErr !== null) return Effect.fail(preErr);
+      return execute(inner, call, progress, [client, id], span.context);
+    });
+    const run = guarded.pipe(
       Effect.mapError(asCoreError),
       Effect.catch(again),
       // Stopped (a UI cancelled it, or went): it says so.
@@ -918,14 +1213,15 @@ export class Core {
           if (doing !== null) {
             inner.doing.end(doing);
           }
-          inner.host.emit(client, answer(id, { err: cancelled }));
+          inner.store.emitClient(client, answer(id, { err: cancelled }, callGen), true);
         }),
       ),
       Effect.exit,
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
           if (stoppable) inner.calls.delete(key);
-          const result: { ok: unknown } | { err: CoreError } = exit._tag === "Success" ? { ok: exit.value } : { err: failureOf(exit.cause) };
+          const result: { ok: unknown } | { err: CoreError } =
+            exit._tag === "Success" ? { ok: exit.value } : { err: failureOf(exit.cause) };
           if ("err" in result) failedIn(span, result.err);
           if (loads && resource) {
             const said = "ok" in result ? (result.ok instanceof Beside ? result.ok.value : result.ok) : undefined;
@@ -941,7 +1237,7 @@ export class Core {
               failed = doing;
             } else inner.doing.end(doing);
           }
-          inner.host.emit(client, answer(id, result));
+          inner.store.emitClient(client, answer(id, result, callGen), true);
           if (failed !== null) {
             yield* Effect.sleep(FAILED_SHOWN_MS);
             inner.doing.end(failed);
@@ -990,9 +1286,10 @@ function failureOf(cause: Cause.Cause<unknown>): CoreError {
   return asCoreError(Cause.squash(cause));
 }
 
-export function answer(id: RequestId, result: { ok: unknown } | { err: CoreError }): CoreMessage {
-  if (!("ok" in result)) return { id, error: result.err };
-  return result.ok instanceof Beside ? { id, ok: result.ok.value, bytes: result.ok.bytes } : { id, ok: result.ok };
+export function answer(id: RequestId, result: { ok: unknown } | { err: CoreError }, gen?: WireGen): CoreMessage {
+  if (!("ok" in result)) return gen ? { id, error: result.err, ...gen } : { id, error: result.err };
+  if (result.ok instanceof Beside) return gen ? { id, ok: result.ok.value, bytes: result.ok.bytes, ...gen } : { id, ok: result.ok.value, bytes: result.ok.bytes };
+  return gen ? { id, ok: result.ok, ...gen } : { id, ok: result.ok };
 }
 
 /// The relays a `/v1/me` names: `relay_urls`, still.fail's own first, or `relay_url` alone from a cloud from before.
@@ -1013,6 +1310,214 @@ export function entriesOf(me: unknown): string[] {
 export function entryTargetsOf(me: unknown): Record<string, string> {
   if (!isObject(me) || !isObject(me.relay_entry_targets)) return {};
   return Object.fromEntries(Object.entries(me.relay_entry_targets).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+/// Resolves the authoritative authorization target (`account`, `workspace`, `vault`) and whether a parsed
+/// `Call` is a protected write RPC that must carry matching `CallAuth` on a handshaked connection.
+function callAuthTarget(
+  inner: Inner,
+  client: ClientId,
+  call: Call,
+  name: string,
+): { protectedWrite: boolean; account?: string; workspace?: string; vault?: string; isVault?: boolean; viewAuthGen?: number } {
+  switch (call.kind) {
+    case "vault": {
+      const action = call.name;
+      const readOnly = action === "state" || action === "prompts";
+      const ws = call.workspace;
+      const v = typeof call.params.vault === "string" && call.params.vault.length > 0 ? call.params.vault : undefined;
+      return {
+        protectedWrite: !readOnly,
+        isVault: !readOnly && action !== "lock",
+        ...(ws.length > 0 ? { workspace: ws } : {}),
+        ...(v !== undefined ? { vault: v } : {}),
+      };
+    }
+    case "lock": {
+      const action = call.name;
+      const readOnly = action === "state" || action === "prompts";
+      const ws = call.workspace;
+      return {
+        protectedWrite: !readOnly,
+        ...(ws.length > 0 ? { workspace: ws } : {}),
+      };
+    }
+    case "terminal": {
+      if (call.call.kind === "view") {
+        return { protectedWrite: false, workspace: ofAddress(call.call.station) };
+      }
+      const bound = terminalViewAuthOf(inner, client, call.call.view);
+      return {
+        protectedWrite: true,
+        ...(bound ? { workspace: bound.workspace, viewAuthGen: bound.authGen } : {}),
+      };
+    }
+    case "screen": {
+      if (call.call.kind === "view") {
+        return { protectedWrite: false, workspace: ofAddress(call.call.station) };
+      }
+      const isWrite =
+        call.call.kind === "input" ||
+        call.call.kind === "clipboard" ||
+        call.call.kind === "control" ||
+        call.call.kind === "micOn" ||
+        call.call.kind === "mic";
+      const bound = screenViewAuthOf(inner, client, call.call.view);
+      return {
+        protectedWrite: isWrite,
+        ...(bound ? { workspace: bound.workspace, viewAuthGen: bound.authGen } : {}),
+      };
+    }
+    case "farview": {
+      if (call.call.kind === "view") {
+        return { protectedWrite: false, workspace: ofAddress(call.call.station) };
+      }
+      const bound = farviewViewAuthOf(inner, client, call.call.view);
+      return {
+        protectedWrite: true,
+        ...(bound ? { workspace: bound.workspace, viewAuthGen: bound.authGen } : {}),
+      };
+    }
+    case "signOut":
+    case "deleteAccount":
+      return { protectedWrite: true, account: call.account };
+    case "chatSend":
+    case "chatSendTo":
+    case "chatCreate":
+    case "chatArchive":
+    case "chatChange":
+    case "chatRetry":
+    case "chatRetryIn":
+    case "chatDiscard":
+    case "chatDiscardIn":
+    case "decisionAnswer":
+    case "decisionReply":
+    case "decisionDismiss":
+    case "draftPut":
+    case "stationUpload":
+    case "stationUploadPart":
+    case "driveUploadPart":
+    case "chatXshare":
+    case "chatXshareAdd": {
+      const st = callStation(call);
+      const ws = "workspace" in call && typeof call.workspace === "string" && call.workspace.length > 0 ? call.workspace : st ? ofAddress(st) : undefined;
+      return { protectedWrite: true, ...(ws ? { workspace: ws } : {}) };
+    }
+    case "composer": {
+      const ws = call.key.startsWith("new:")
+        ? call.key.slice(4)
+        : call.key.includes("/")
+          ? ofAddress(call.key)
+          : undefined;
+      return { protectedWrite: true, ...(ws ? { workspace: ws } : {}) };
+    }
+    case "stationJoin":
+    case "feedbackDismiss":
+      return { protectedWrite: true, workspace: call.workspace };
+    case "shareIn":
+      return { protectedWrite: true, workspace: call.scope };
+    case "op": {
+      const method = call.op.method.toUpperCase();
+      if (method === "GET") return { protectedWrite: false };
+      let ws: string | undefined;
+      if ("station" in call.op.target) ws = ofAddress(call.op.target.station);
+      else {
+        const m = /^\/v1\/workspaces\/([^/]+)/.exec(call.op.path);
+        if (m) ws = decodeURIComponent(m[1]!);
+      }
+      const account = "cloud" in call.op.target && call.op.target.cloud ? call.op.target.cloud : undefined;
+      return { protectedWrite: true, ...(ws ? { workspace: ws } : {}), ...(account ? { account } : {}) };
+    }
+    default: {
+      if (name.startsWith("vault.") || name.startsWith("lock.")) {
+        const st = callStation(call);
+        return { protectedWrite: true, ...(st ? { workspace: ofAddress(st) } : {}) };
+      }
+      return { protectedWrite: false };
+    }
+  }
+}
+
+function roleRank(role: unknown): number {
+  switch (role) {
+    case "owner":
+      return 3;
+    case "admin":
+      return 2;
+    case "member":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function isAuthDowngrade(prevDigest: string | undefined, next: [string | null, unknown, boolean, boolean, boolean]): boolean {
+  if (prevDigest === undefined) return false;
+  let prev: unknown;
+  try {
+    prev = JSON.parse(prevDigest);
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(prev) || prev.length < 5) return true;
+  const [prevOwner, prevRole, prevMember, prevSafe, prevTrusted] = prev;
+  const [nextOwner, nextRole, nextMember, nextSafe, nextTrusted] = next;
+  if (prevOwner !== nextOwner) return true;
+  if (prevMember === true && !nextMember) return true;
+  if (roleRank(nextRole) < roleRank(prevRole)) return true;
+  if (prevTrusted === true && !nextTrusted) return true;
+  if (prevSafe === false && nextSafe === true) return true;
+  return false;
+}
+
+/// Recomputes the authoritative authorization digest for `ws` (owner, role, membership, safe mode, trusted device)
+/// and advances `authGen(ws)` if and only if the digest changed.
+/// Cold-start guard: before `ws` is seeded, unknown owner / unloaded `wsView` / loading personal lock never seed
+/// or advance `authGen`, preventing cold-start "unknown -> known" false invalidations.
+/// On downgrade/revocation/enter-safeMode boundary ONLY, marks `pendingAuthConfirm` so stale held `Data` records
+/// are gated per `(ws, topicKey)` until fresh post-boundary confirmation arrives.
+export function syncWorkspaceAuth(inner: Inner, ws: string): void {
+  const owner = inner.workspaces.owner(ws);
+  const wsView = inner.data.shared({ topic: "workspace", workspace: ws });
+  const prevDigest = inner.store.authGen.workspaceDigest(ws);
+  const alreadySeeded = prevDigest !== undefined;
+  const deps = vaultCalls.dependentVaultWorkspaces(inner, ws);
+  if (owner === null || wsView === undefined) {
+    if (!alreadySeeded) return;
+    const nextTuple: [string | null, unknown, boolean, boolean, boolean] = [owner, null, false, false, false];
+    const digest = JSON.stringify(nextTuple);
+    const changed = inner.store.authGen.syncWorkspace(ws, digest, deps);
+    if (changed && isAuthDowngrade(prevDigest, nextTuple)) {
+      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set() });
+      inner.stations?.refreshWorkspace(ws);
+    }
+    return;
+  }
+  const role = get(wsView, "role") ?? null;
+  let safe = false;
+  let trusted = true;
+  try {
+    if (inner.adb !== undefined && !inner.adb.personal().isLoaded(owner)) {
+      return;
+    }
+    safe = safeNow(inner, ws);
+    const s = signsAs(inner, ws);
+    trusted = !s.locked || s.as !== null;
+  } catch {
+    // Lock state not yet initialized; do not seed or advance until lock loads.
+    return;
+  }
+  const nextTuple: [string | null, unknown, boolean, boolean, boolean] = [owner, role, true, safe, trusted];
+  const digest = JSON.stringify(nextTuple);
+  const changed = inner.store.authGen.syncWorkspace(ws, digest, deps);
+  if (changed) {
+    if (isAuthDowngrade(prevDigest, nextTuple)) {
+      inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set() });
+      inner.stations?.refreshWorkspace(ws);
+    } else {
+      inner.pendingAuthConfirm.delete(ws);
+    }
+  }
 }
 
 export function gone(): CoreError {

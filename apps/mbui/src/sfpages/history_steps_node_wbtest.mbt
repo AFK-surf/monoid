@@ -1188,3 +1188,56 @@ test "steps_seconds with minute_past_hour steps once per minute past an hour" {
   }
   assert_eq((wakes, @signals.untracked(tick)), (3, 3), msg="minute granularity past 1 hour")
 }
+
+///|
+test "steps_seconds and agent_card_seconds pause on pick_kept park (due_count == 0) and tick + resume on wake" {
+  let wall = Ref(10_000.0)
+  let base = @sffixture.fixture("history")
+  let src : @sfbase.Source = { ..base, now: fn() { wall.val } }
+  let active_tab : @signals.Signal[Int] = @signals.signal(0)
+  let card_since : @signals.Signal[(Double, Double?)?] = @signals.signal(Some((10_000.0, None)))
+  let step_tick_ref : Ref[(() -> Int)?] = Ref(None)
+  let card_tick_ref : Ref[(() -> Int)?] = Ref(None)
+  let tree = @view.Tree::new(time=fn() { wall.val }, fn(root) {
+    root.pick_kept(
+      fn() { active_tab.get() },
+      fn(p, tab) {
+        if tab == 0 {
+          step_tick_ref.val = Some(steps_seconds(p, src, 10_000.0))
+          card_tick_ref.val = Some(agent_card_seconds(p, src, fn() { card_since.get() }))
+        }
+      },
+      at_once=true,
+    )
+  })
+  let step_tick = step_tick_ref.val.unwrap()
+  let card_tick = card_tick_ref.val.unwrap()
+  assert_eq(tree.due_count(), 2, msg="both steps_seconds and agent_card_seconds timers active before park")
+  // Repeated `since` transitions while active must replace the single timer cleanly without leaking.
+  card_since.set(Some((10_500.0, None)))
+  tree.advance(wall.val)
+  card_since.set(None)
+  tree.advance(wall.val)
+  assert_eq(tree.due_count(), 1, msg="clearing agent_card_seconds leaves only steps_seconds")
+  card_since.set(Some((10_800.0, None)))
+  tree.advance(wall.val)
+  assert_eq(tree.due_count(), 2, msg="re-arming agent_card_seconds restores 2 timers total")
+  // Park tab 0 by switching to tab 1: whole-tree due_count drops to 0.
+  let before_step = @signals.untracked(step_tick)
+  let before_card = @signals.untracked(card_tick)
+  active_tab.set(1)
+  tree.advance(wall.val)
+  assert_eq(tree.due_count(), 0, msg="parked steps_seconds and agent_card_seconds must leave 0 timers on timeline")
+  // Advance wall clock while parked: neither clock wakes or ticks.
+  wall.val = wall.val + 5_000.0
+  tree.advance(wall.val)
+  assert_eq(tree.due_count(), 0, msg="parked clocks stay at 0 timers across time advance")
+  assert_eq(@signals.untracked(step_tick), before_step, msg="parked steps_seconds must not tick")
+  assert_eq(@signals.untracked(card_tick), before_card, msg="parked agent_card_seconds must not tick")
+  // Wake tab 0 back: both ticks increment immediately and re-arm their timers.
+  active_tab.set(0)
+  tree.advance(wall.val)
+  assert_eq(@signals.untracked(step_tick), before_step + 1, msg="woken steps_seconds must tick +1 immediately")
+  assert_eq(@signals.untracked(card_tick), before_card + 1, msg="woken agent_card_seconds must tick +1 immediately")
+  assert_eq(tree.due_count(), 2, msg="woken clocks must restore both timeline entries")
+}

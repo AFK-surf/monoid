@@ -4498,3 +4498,411 @@ test("denying or approving a request already expired on the station drops it fro
   assert.deepEqual(vaults().requests, [], "expired request is removed from vaults after vault_refused");
   r.core.close();
 });
+
+test("vault calls r14: encrypted approve positive/negative and #remove single-vault lock during deleteItem #ready reject with auth_stale and 0 writes", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "token", name: "API", fields: { value: "sec-1" }, domains: [], notes: "" },
+    listing: { name: "API", kind: "token", modes: ["env"], hosts: [] },
+  })) as { id: string };
+
+  // 1. Real encrypted vault.approve positive control -> POST /vault/grants === 1
+  const keeper = fill(9);
+  const reqOk: Request = { id: "r_ok_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "need", box: boxPublic(keeper), at: 1, status: "pending" };
+  r.st.requests.push(reqOk);
+  await r.ask("vault.approve", { request: "r_ok_r14", scope: "once" });
+  assert.equal(r.st.grants.length, 1, "positive control must post /vault/grants once");
+
+  // 2. Real encrypted vault.approve negative: workspaceAuthGen bumps during #request async fetch -> auth_stale & 0 new grants
+  const reqStale: Request = { id: "r_stale_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "need", box: boxPublic(keeper), at: 2, status: "pending" };
+  r.st.requests.push(reqStale);
+  let bumpOnReq = true;
+  stationReplies(r.host, (httpReq) => {
+    if (bumpOnReq && httpReq.method === "GET" && httpReq.url.includes("/vault/requests")) {
+      bumpOnReq = false;
+      r.core.inner.store.authGen.bumpWorkspace("ws");
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.approve", { request: "r_stale_r14", scope: "once" }), "auth_stale");
+  assert.equal(r.st.grants.length, 1, "stale approve must issue 0 new /vault/grants");
+
+  // 3. #remove: single-vault lock on target vault during deleteItem #ready() -> auth_stale, 0 deletion writes, 0 /vault/removed
+  const reqRm: Request = { id: "r_rm_r14", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 3, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRm);
+  r.push("vault-request", reqRm);
+  await r.host.time.pass(200);
+  r.take();
+  // Bump single-vault lock right when #ready() reads device signer / lock
+  let bumpOnRemove = true;
+  const origStorageGet = r.host.storageGet.bind(r.host);
+  r.host.storageGet = (key) => {
+    if (bumpOnRemove) {
+      bumpOnRemove = false;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+    }
+    return origStorageGet(key);
+  };
+  const versionBefore = r.st.items.get(id)!.version;
+  await fails(r.ask("vault.approve", { request: "r_rm_r14", scope: "once" }), "auth_stale");
+  assert.equal(r.st.items.get(id)!.version, versionBefore, "stale #remove must not write a deleted item version");
+  assert.equal(r.st.items.get(id)!.deleted, undefined, "stale #remove must leave item undeleted");
+  assert.equal(r.st.removed.length, 0, "stale #remove must not POST /vault/removed");
+  r.core.close();
+});
+
+test("vault calls r15: #putItem offline-fallback gate, accepted-PUT preservation, and #keepSaved create gate", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "token", name: "API", fields: { value: "sec-1" }, domains: [], notes: "" },
+    listing: { name: "API", kind: "token", modes: ["env"], hosts: [] },
+  })) as { id: string };
+
+  // 1a. #putItem offline fallback: station returns 503 (localFallback) and single-vault lock fires during PUT ->
+  // local changeItems must NOT write deleted version, returns auth_stale!
+  const reqRmOffline: Request = { id: "r_rm_off_r15", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 10, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRmOffline);
+  r.push("vault-request", reqRmOffline);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedOnPutFail = false;
+  stationReplies(r.host, (httpReq) => {
+    if (!bumpedOnPutFail && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedOnPutFail = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.approve", { request: "r_rm_off_r15", scope: "once" }), "auth_stale");
+  assert.equal(bumpedOnPutFail, true);
+  assert.equal(r.st.items.get(id)!.deleted, undefined, "offline-fallback stale #putItem must not commit deletion");
+  assert.equal(r.st.removed.length, 0);
+
+  // 1b. #putItem when station ALREADY accepted PUT and lock fires right on response -> local preserves real committed
+  // item version, while subsequent /vault/removed decision is NOT posted (returns auth_stale).
+  const reqRmAccepted: Request = { id: "r_rm_acc_r15", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 11, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRmAccepted);
+  r.push("vault-request", reqRmAccepted);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedAfterAccept = false;
+  stationReplies(r.host, (httpReq) => {
+    const res = r.st.reply(httpReq);
+    if (!bumpedAfterAccept && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedAfterAccept = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+    }
+    return res;
+  });
+  await fails(r.ask("vault.approve", { request: "r_rm_acc_r15", scope: "once" }), "auth_stale");
+  assert.equal(bumpedAfterAccept, true);
+  assert.equal(r.st.items.get(id)!.deleted, true, "station-accepted PUT must be preserved");
+  assert.equal(r.st.removed.length, 0, "post-commit stale boundary must still prevent /vault/removed");
+  r.core.close();
+
+  // 2. #keepSaved when no personal vault exists and #boxKey wait triggers authGen bump -> auth_stale & 0 vaults created
+  const r2 = await rig();
+  r2.putLock();
+  await r2.ask("vault.setup", {});
+  const onlyV = [...r2.st.vaults.values()][0]!;
+  await r2.ask("vault.delete", { vault: onlyV.id });
+  const vaultsBefore = r2.st.vaults.size;
+  const keeper = fill(12);
+  const reqSave: Request = {
+    id: "r_save_r15",
+    ws: "ws",
+    vault: "",
+    item: "i_01JASAVE000000000000000R15",
+    session: "k1",
+    chat: "7",
+    mode: "proxy",
+    reason: "save",
+    hosts: ["example.com"],
+    box: boxPublic(keeper),
+    at: 20,
+    status: "pending",
+    owner: "a@x.com",
+    save: { kind: "token", name: "Tok", modes: ["proxy"], hosts: ["example.com"], typed: true },
+  };
+  r2.st.requests.push(reqSave);
+  r2.push("vault-request", reqSave);
+  await r2.host.time.pass(200);
+  r2.take();
+  let bumpedOnBox = false;
+  const origSecGet = r2.host.secureGet!.bind(r2.host);
+  r2.host.secureGet = (key, reason) => {
+    if (!bumpedOnBox) {
+      bumpedOnBox = true;
+      r2.core.inner.store.authGen.bumpWorkspace("ws");
+    }
+    return origSecGet(key, reason);
+  };
+  await fails(r2.ask("vault.approve", { request: "r_save_r15", scope: "once", typed: { secret: "sk-123" } }), "auth_stale");
+  assert.equal(bumpedOnBox, true);
+  assert.equal(r2.st.vaults.size, vaultsBefore, "stale #keepSaved after #boxKey must NOT auto-create a personal vault");
+  r2.core.close();
+});
+
+test("vault calls r16: #key->#give stops on single-vault lock and browser renewal #putItem blocks offline fallback on single-vault lock", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "browser", name: "Site", fields: { cookies: "old=1" }, domains: ["example.com"], notes: "" },
+    listing: { name: "Site", kind: "browser", modes: ["browser"], hosts: ["example.com"] },
+  })) as { id: string };
+
+  // Browser cookie renewal: seal newer cookies to this device's box pub; on PUT /vault/items station returns 503
+  // (localFallback) AND single-vault lock fires -> renewal #putItem fails auth_stale (0 local item overwrite) and
+  // approve returns auth_stale with 0 /vault/grants!
+  const boxPub = v.keys[0]!.cert.box;
+  const eph = fill(44);
+  const renewalId = "ren_r16";
+  const sealedCookies = sealWith(boxPub, new TextEncoder().encode(JSON.stringify({ cookies: "new=2" })), saveContext("ws", renewalId), eph);
+  const keeper = fill(45);
+  const reqRenew: Request = {
+    id: "r_renew_r16",
+    ws: "ws",
+    vault: v.id,
+    item: id,
+    session: "k1",
+    chat: "7",
+    mode: "browser",
+    reason: "browse",
+    box: boxPublic(keeper),
+    at: 30,
+    status: "pending",
+    renewal: { id: renewalId, sealed: [{ device: v.keys[0]!.cert.device, box: boxPub, secret: sealedCookies }] },
+  };
+  r.st.requests.push(reqRenew);
+  r.push("vault-request", reqRenew);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedOnRenewPut = false;
+  let vaultPutCount = 0;
+  stationReplies(r.host, (httpReq) => {
+    if (httpReq.method === "PUT" && httpReq.url.includes("/vault/vaults")) vaultPutCount++;
+    if (!bumpedOnRenewPut && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedOnRenewPut = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  const versionBefore = r.st.items.get(id)!.version;
+  await fails(r.ask("vault.approve", { request: "r_renew_r16", scope: "once" }), "auth_stale");
+  await r.host.time.pass(100);
+  assert.equal(bumpedOnRenewPut, true, "browser renewal PUT must have been attempted and hit single-vault lock");
+  assert.equal(r.st.items.get(id)!.version, versionBefore, "stale browser renewal #putItem must not commit new item version");
+  const localRenewItem = (r.core.inner.data.record("vaultItems", `ws/${v.id}`) as Record<string, Item> | undefined)?.[id];
+  assert.equal(localRenewItem?.version, versionBefore, "stale browser renewal #putItem must not advance Core local vaultItems copy");
+  assert.equal(r.st.grants.length, 0, "stale browser renewal approve must issue 0 grants");
+  assert.equal(vaultPutCount, 0, "background #give forked from #key must not PUT /vault/vaults after single-vault lock");
+  r.core.close();
+});
+
+test("vault calls r17: #key->#give positive/negative with eligible peer device, and direct putItem/deleteItem offline-fallback gates", async () => {
+  // 1. Direct vault.putItem & vault.deleteItem RPCs: 503 localFallback + single-vault lock -> auth_stale & 0 local vaultItems writes
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "token", name: "Direct", fields: { value: "v0" }, domains: [], notes: "" },
+    listing: { name: "Direct", kind: "token", modes: ["env"], hosts: [] },
+  })) as { id: string };
+  const ver0 = r.st.items.get(id)!.version;
+  let bumpPut = true;
+  stationReplies(r.host, (httpReq) => {
+    if (bumpPut && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpPut = false;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(
+    r.ask("vault.putItem", {
+      vault: v.id,
+      id,
+      plain: { kind: "token", name: "Direct", fields: { value: "v1-stale" }, domains: [], notes: "" },
+      listing: { name: "Direct", kind: "token", modes: ["env"], hosts: [] },
+    }),
+    "auth_stale",
+  );
+  assert.equal(r.st.items.get(id)!.version, ver0, "stale direct putItem must not update station");
+  assert.equal(
+    (r.core.inner.data.record("vaultItems", `ws/${v.id}`) as Record<string, Item> | undefined)?.[id]?.version,
+    ver0,
+    "stale direct putItem must not advance Core local vaultItems",
+  );
+
+  let bumpDel = true;
+  stationReplies(r.host, (httpReq) => {
+    if (bumpDel && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpDel = false;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.deleteItem", { vault: v.id, item: id }), "auth_stale");
+  assert.equal(r.st.items.get(id)!.deleted, undefined, "stale direct deleteItem must not delete on station");
+  assert.equal(
+    (r.core.inner.data.record("vaultItems", `ws/${v.id}`) as Record<string, Item> | undefined)?.[id]?.deleted,
+    undefined,
+    "stale direct deleteItem must not mark deleted in Core local vaultItems",
+  );
+  r.core.close();
+
+  // 2. #key -> #give positive vs negative control with an eligible unkeyed peer device of the same owner
+  for (const mode of ["positive", "negative"] as const) {
+    const r2 = await rig();
+    r2.putLock();
+    await r2.ask("vault.setup", {});
+    const v2 = [...r2.st.vaults.values()][0]!;
+    const { id: itemId } = (await r2.ask("vault.putItem", {
+      vault: v2.id,
+      plain: { kind: "token", name: "G", fields: { value: "g-val" }, domains: [], notes: "" },
+      listing: { name: "G", kind: "token", modes: ["env"], hosts: [] },
+    })) as { id: string };
+    // Publish a valid box cert for the existing peer device (r2.phone.hex) of the same owner (s1) already in the lock
+    const peerDevId = r2.phone.hex;
+    const peerBoxPub = boxPublic(fill(77));
+    const peerCert: BoxCert = sign({ v: 1 as const, ws: "ws", device: peerDevId, box: peerBoxPub, at: 500 }, TAG.box, r2.phone);
+    r2.st.boxes.set(peerDevId, peerCert);
+    // Sync the peer cert into Core's held boxes without unlocking/giving yet
+    const h = r2.core.inner.data.record("vault", "ws") as { boxes: Record<string, BoxCert> };
+    r2.core.inner.data.put("vault", "ws", { ...h, boxes: { ...h.boxes, [peerDevId]: peerCert } });
+    // Clear cached vault key so approve calls #key -> #boxKey -> #give
+    await r2.ask("vault.lock", {});
+
+    const keeper = fill(78);
+    const req: Request = { id: `r_give_${mode}`, ws: "ws", vault: v2.id, item: itemId, session: "k1", chat: "7", mode: "env", reason: "need", box: boxPublic(keeper), at: 40, status: "pending" };
+    r2.st.requests.push(req);
+    r2.push("vault-request", req);
+    await r2.host.time.pass(200);
+    r2.take();
+
+    let vaultPuts = 0;
+    let bumpedInGive = false;
+    let secGets = 0;
+    if (mode === "negative") {
+      const origSecGet = r2.host.secureGet!.bind(r2.host);
+      r2.host.secureGet = (k, reason) => {
+        secGets++;
+        // Call 1 is approve's #ready() Signer.load, call 2 is #key's #boxKey, call 3 is background #give's #ready() Signer.load!
+        if (!bumpedInGive && secGets >= 3) {
+          bumpedInGive = true;
+          r2.core.inner.store.authGen.bumpVault("ws", v2.id);
+        }
+        return origSecGet(k, reason);
+      };
+    }
+    stationReplies(r2.host, (httpReq) => {
+      if (httpReq.method === "PUT" && httpReq.url.includes("/vault/vaults")) vaultPuts++;
+      return r2.st.reply(httpReq);
+    });
+    if (mode === "positive") {
+      await r2.ask("vault.approve", { request: `r_give_${mode}`, scope: "once" });
+      await r2.host.time.pass(200);
+      assert.equal(vaultPuts, 1, "positive control: #key -> #give must PUT /vault/vaults once for eligible peer device");
+    } else {
+      // approve itself may succeed or fail auth_stale depending on fiber ordering; either way #give must NOT PUT /vault/vaults!
+      await r2.ask("vault.approve", { request: `r_give_${mode}`, scope: "once" }).catch(() => {});
+      await r2.host.time.pass(200);
+      assert.equal(bumpedInGive, true, "single-vault lock must have fired during background #give #ready()");
+      assert.equal(vaultPuts, 0, "negative control: single-vault lock must prevent background #give from PUT /vault/vaults");
+    }
+    r2.core.close();
+  }
+});
+
+test("vault calls r18: recover with startSnap allows newly-discovered vault when unrelated vault locks, and blocks when target vault locks on 503", async () => {
+  for (const mode of ["unrelated-lock", "target-lock"] as const) {
+    const r = await rig();
+    r.putLock();
+    const setupRes = (await r.ask("vault.setup", {})) as { words: string; made: string };
+    await r.ask("vault.delete", { vault: setupRes.made });
+    const vOther = (await r.ask("vault.create", { name: "Team", scope: "workspace" })) as { id: string };
+    // Create a second personal vault on station that is NOT keyed for this device (only keyed to r.phone + recovery key!)
+    const { pub: recPub } = recoveryPair(fromWords(setupRes.words));
+    const vNewKey = fill(88);
+    const vNewId = "v_01JANEW0000000000000000R18";
+    const ctx = keyContext("ws", vNewId, 0);
+    const phoneCert: BoxCert = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(fill(89)), at: 2000 }, TAG.box, r.phone);
+    const vNew: Vault = sign(
+      {
+        v: 1 as const,
+        ws: "ws",
+        id: vNewId,
+        seq: 0,
+        owner: "s1",
+        name: "Recovered",
+        members: ["s1"],
+        epoch: 0,
+        keys: [{ cert: phoneCert, wrapped: sealWith(phoneCert.box, vNewKey, ctx, fill(90)) }],
+        recovery: sealWith(recPub, vNewKey, ctx, fill(91)),
+        at: 2000,
+      },
+      TAG.vault,
+      r.me.signer!,
+    );
+    // Inject vNew into held vaults DURING recover's #ready() (so it was NOT present at recover() entry!)
+    let injected = false;
+    const origSecGet = r.host.secureGet!.bind(r.host);
+    r.host.secureGet = (k, reason) => {
+      if (!injected) {
+        injected = true;
+        const h = r.core.inner.data.record("vault", "ws") as { vaults: Record<string, Vault>; at: Record<string, string>; on: Record<string, Record<string, { seq: number; epoch: number; items: Record<string, number> }>> };
+        r.st.vaults.set(vNewId, vNew);
+        r.core.inner.data.put("vault", "ws", {
+          ...h,
+          vaults: { ...h.vaults, [vNewId]: vNew },
+          at: { ...h.at, [vNewId]: "st" },
+          on: { ...h.on, [vNewId]: { st: { seq: 0, epoch: 0, items: {} } } },
+        });
+        if (mode === "unrelated-lock") {
+          // Lock unrelated vault vOther during #ready() -> must NOT block recovering vNew!
+          r.core.inner.store.authGen.bumpVault("ws", vOther.id);
+        }
+      }
+      return origSecGet(k, reason);
+    };
+    let bumpedTarget = false;
+    stationReplies(r.host, (httpReq) => {
+      if (mode === "target-lock" && !bumpedTarget && httpReq.method === "PUT" && httpReq.url.includes("/vault/vaults")) {
+        bumpedTarget = true;
+        r.core.inner.store.authGen.bumpVault("ws", vNewId);
+        return status(503, { error: "unavailable" });
+      }
+      return r.st.reply(httpReq);
+    });
+
+    if (mode === "unrelated-lock") {
+      const res = (await r.ask("vault.recover", { words: setupRes.words })) as { recovered: number };
+      assert.equal(injected, true);
+      assert.ok(res.recovered >= 1, "recovering newly-discovered vNew must succeed even if unrelated vOther locked");
+      assert.equal(r.st.vaults.get(vNewId)!.seq, 1, "vNew must be re-keyed for this device on station");
+    } else {
+      await fails(r.ask("vault.recover", { words: setupRes.words }), "auth_stale");
+      assert.equal(injected, true);
+      assert.equal(bumpedTarget, true);
+      const localV = (r.core.inner.data.record("vault", "ws") as { vaults: Record<string, Vault> }).vaults[vNewId];
+      assert.equal(localV?.seq, 0, "stale recover on 503 must NOT commit seq 1 locally offline");
+    }
+    r.core.close();
+  }
+});

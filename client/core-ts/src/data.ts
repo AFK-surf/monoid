@@ -55,8 +55,8 @@ const LIST_TOPIC: Record<ListKind, string> = { chats: "chatRows", archived: "arc
 export const driveDoc = (root: string, path: string) => `drive\n${root}\n${path}`;
 /// What a station said beyond the tables (station/memory.ts) is kept among its documents as `memory\n<key>`.
 const MEMORY = "memory\n";
-/// Where a file of a drive was left (the `drivePlace` topic), as the device keeps it.
-const placeOf = (topic: Topic) => `${String(topic.station)}\n${String(topic.root)}\n${String(topic.path)}`;
+/// Where a file of a drive was left (the `drivePlace` topic), scoped by workspace owner account so switching accounts never leaks places.
+const placeOf = (owner: string, topic: Topic) => `${owner}\u0000${String(topic.station)}\u0000${String(topic.root)}\u0000${String(topic.path)}`;
 /// The most places of files kept: the oldest go.
 const PLACES_KEPT = 500;
 
@@ -89,7 +89,7 @@ export function dbName(sub: string): string {
 /// The device's own values (not an account's): kept in the host's storage, one storage value per table, read at start.
 /// (`verified`: signatures checked on this device, vault/verified.ts; `keys`: this device's own keys' public halves as last read,
 /// shown while they are read again at start, views/lock.ts `KEYS_SHOWN`)
-export const DEVICE_TABLES = ["prefs", "changelog", "choice", "chat_ref", "drive_place", "verified", "keys"] as const;
+export const DEVICE_TABLES = ["prefs", "changelog", "choice", "chat_ref", "drive_place", "verified", "keys", "auth"] as const;
 export type DeviceTable = (typeof DEVICE_TABLES)[number];
 
 /// Compact immutable snapshot of the recovery-relevant fields read from disk `device/choice` before in-memory
@@ -130,6 +130,7 @@ class Device {
   readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
   /// Compact pre-merge recovery snapshot of disk `device/choice`, cleared once recovery & concurrent verifications end.
   #choiceRecovery: ChoiceRecoverySnapshot | null = null;
+  readonly #tableSeq = new Map<string, number>();
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
@@ -190,6 +191,10 @@ class Device {
           && Array.isArray(cur[key])
         ) {
           merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+        } else if (table === "auth" && key === "connSeq") {
+          const diskVal = Number(merged[key] ?? 0);
+          const memVal = Number(cur[key] ?? 0);
+          merged[key] = frozen(Math.max(Number.isFinite(diskVal) ? diskVal : 0, Number.isFinite(memVal) ? memVal : 0));
         } else {
           merged[key] = cur[key];
         }
@@ -245,12 +250,24 @@ class Device {
     });
   }
 
-  /// A table's latest value written; still to be written if it fails. Refuses to overwrite a table whose original
-  /// persisted contents have not been read yet.
+  /// A table's latest value written; `#dirty` is cleared only after `storageSet` succeeds (and no newer `put` occurred).
+  /// Refuses to overwrite a table whose original persisted contents have not been read yet.
   #write(table: string): Effect.Effect<void, HostError> {
-    if (this.#unloaded.has(table)) return Effect.fail(new HostError(`device/${table} has not been read`));
-    this.#dirty.delete(table);
-    return Effect.tapError(this.#host.storageSet(`device/${table}`, toJsonBytes(this.#tables.get(table) ?? {})), () => Effect.sync(() => void this.#dirty.add(table)));
+    return Effect.suspend(() => {
+      if (this.#unloaded.has(table)) return Effect.fail(new HostError(`device/${table} has not been read`));
+      const seq = this.#tableSeq.get(table) ?? 0;
+      const bytes = toJsonBytes(this.#tables.get(table) ?? {});
+      return Effect.tap(this.#host.storageSet(`device/${table}`, bytes), () =>
+        Effect.sync(() => {
+          if ((this.#tableSeq.get(table) ?? 0) === seq) this.#dirty.delete(table);
+        }),
+      );
+    });
+  }
+
+  /// Immediately writes `table` to host storage if dirty (used for crash-safe monotonic `device/auth` persistence).
+  flushTable(table: string): Effect.Effect<void, HostError> {
+    return Effect.suspend(() => (this.#dirty.has(table) ? this.#write(table) : Effect.void));
   }
 
   /// Stops the writer (once the write it began is done) and writes each table changed since: what a core closing does
@@ -312,6 +329,7 @@ class Device {
       if (equal(t[key], value)) return false;
       t[key] = frozen(structuredClone(value));
     }
+    this.#tableSeq.set(table, (this.#tableSeq.get(table) ?? 0) + 1);
     this.#dirty.add(table);
     Queue.offerUnsafe(this.#writes, table);
     this.onChange(table, key);
@@ -1298,7 +1316,10 @@ export class Data {
     this.#readQuery(topic);
     const s = (k: string) => String(topic[k]);
     if (topic.topic === "prefs") return this.device.get("prefs", "device");
-    if (topic.topic === "drivePlace") return this.device.get("drive_place", placeOf(topic));
+    if (topic.topic === "drivePlace") {
+      const owner = typeof topic.station === "string" ? this.of(topic.station)?.sub : undefined;
+      return owner ? this.device.get("drive_place", placeOf(owner, topic)) : undefined;
+    }
     if (topic.topic === "draft") {
       const key = `${s("station")}${SEP}${s("chat")}`;
       const soon = this.#soon.get(key);
@@ -1349,6 +1370,19 @@ export class Data {
   #rawOverview(topic: Topic): unknown {
     const station = String(topic.station);
     return this.of(station)?.stationDoc(station, "overview");
+  }
+
+  /// Applies a top-level `overview-patch` (`set` / `del`) onto the stored raw overview without baking temporary
+  /// optimistic overlays (`#modelEdits` / `#loginSteps`) into SQLite. Returns false when no base overview is held yet.
+  patchOverview(station: string, set: Record<string, unknown> | null, del: readonly string[] | null): boolean {
+    const topic: Topic = { topic: "overview", station };
+    const prev = this.#rawOverview(topic);
+    if (!isObject(prev)) return false;
+    const next: Record<string, unknown> = { ...prev };
+    if (set !== null) for (const [k, v] of Object.entries(set)) next[k] = v;
+    if (del !== null) for (const k of del) delete next[k];
+    this.set(topic, next);
+    return true;
   }
 
   /// Whether a list topic's rows are loaded (a view reads them at once), or it holds none.
@@ -1462,7 +1496,9 @@ export class Data {
       return;
     }
     if (topic.topic === "drivePlace") {
-      if (this.device.put("drive_place", placeOf(topic), value)) this.#tell(topic);
+      const owner = typeof topic.station === "string" ? this.of(topic.station)?.sub : undefined;
+      if (!owner) return;
+      if (this.device.put("drive_place", placeOf(owner, topic), value)) this.#tell(topic);
       const keys = this.device.keys("drive_place");
       if (keys.length > PLACES_KEPT) {
         const changed = (k: string) => Number(get(this.device.get("drive_place", k), "changed") ?? 0);

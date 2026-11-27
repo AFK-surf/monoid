@@ -4,12 +4,46 @@ import { CoreClient, CoreError, WAKE_ANSWER_MS, type Channel, type Opener } from
 
 /** A worker stand-in: records what the client posts and answers on demand. */
 class FakeWorkers {
-  opened: { sent: unknown[]; closed: boolean; reply: (data: unknown) => void; fail: (reason: string) => void }[] = [];
+  opened: {
+    conn: number;
+    sent: unknown[];
+    closed: boolean;
+    reply: (data: unknown) => void;
+    replyRaw: (data: unknown) => void;
+    handshake: (overrides?: Record<string, unknown>) => void;
+    fail: (reason: string) => void;
+  }[] = [];
   delays: number[] = [];
+  #autoHandshake: boolean;
+  #nextConn = 1;
+
+  constructor(options: { autoHandshake?: boolean } = {}) {
+    this.#autoHandshake = options.autoHandshake ?? true;
+  }
+
   opener: Opener = (onMessage, onFail) => {
-    const worker = { sent: [] as unknown[], closed: false, reply: onMessage, fail: onFail };
+    const conn = this.#nextConn++;
+    const replyRaw = (data: unknown) => onMessage(data);
+    const reply = (data: unknown) => {
+      if (this.#autoHandshake && typeof data === "object" && data !== null) {
+        const m = data as Record<string, unknown>;
+        if (typeof m.id === "number" && m.id > 0 && ("value" in m || "delta" in m || "ok" in m || "waiting" in m || "error" in m)) {
+          onMessage({ conn, authGen: 1, vaultGen: 1, ...m });
+          return;
+        }
+      }
+      onMessage(data);
+    };
+    const handshake = (overrides: Record<string, unknown> = {}) => {
+      onMessage({
+        id: 0,
+        auth: { conn, global: 1, aggregate: 1, vaultGlobal: 1, scopes: {}, vaults: {}, ...overrides },
+      });
+    };
+    const worker = { conn, sent: [] as unknown[], closed: false, reply, replyRaw, handshake, fail: onFail };
     this.opened.push(worker);
     const channel: Channel = { post: (message) => worker.sent.push(structuredClone(message)), close: () => { worker.closed = true; } };
+    if (this.#autoHandshake) queueMicrotask(() => { if (!worker.closed) handshake(); });
     return channel;
   };
   get last() {
@@ -18,7 +52,9 @@ class FakeWorkers {
     return worker;
   }
   client(): CoreClient {
-    return new CoreClient(this.opener, { schedule: (ms, run) => { this.delays.push(ms); run(); } });
+    const c = new CoreClient(this.opener, { schedule: (ms, run) => { this.delays.push(ms); run(); } });
+    if (this.#autoHandshake && this.opened.length > 0) this.last.handshake();
+    return c;
   }
 }
 
@@ -28,8 +64,8 @@ test("a call is answered by the message with its id", async () => {
   const first = client.call("station.request", { station: "local", method: "GET", path: "/overview" });
   const second = client.call("auth.signOut", { account: "a" });
   assert.deepEqual(workers.last.sent, [
-    { id: 1, call: "station.request", params: { station: "local", method: "GET", path: "/overview" } },
-    { id: 2, call: "auth.signOut", params: { account: "a" } },
+    { id: 1, call: "station.request", params: { station: "local", method: "GET", path: "/overview" }, auth: { conn: 1, authGen: 1 } },
+    { id: 2, call: "auth.signOut", params: { account: "a" }, auth: { conn: 1, authGen: 1, account: "a" } },
   ]);
   workers.last.reply({ id: 2, error: { code: "signed_out", message: "已退出", status: 401 } });
   workers.last.reply({ id: 1, ok: { hosts: 1 } });
@@ -209,4 +245,170 @@ test("deltas apply to the subscription's value, copying only along their paths",
   workers.last.reply({ id: 1, delta: [{ path: ["other"], set: 3 }] });
   workers.last.reply({ id: 1, value: { fresh: true } });
   assert.deepEqual(seen.slice(3), ["offline", { fresh: true }]);
+});
+
+test("pre-handshake protected calls queue and get signed on handshake snapshot; aborted queued calls are never sent", async () => {
+  const workers = new FakeWorkers({ autoHandshake: false });
+  const client = workers.client();
+  const ac = new AbortController();
+  const keptCall = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
+  const abortedCall = client.call("vault.open", { workspace: "ws1", vault: "v1", item: "i1" }, undefined, ac.signal);
+  // Nothing sent before handshake for protected calls.
+  assert.deepEqual(workers.last.sent, []);
+  ac.abort();
+  await assert.rejects(abortedCall, (e: unknown) => e instanceof CoreError && e.code === "cancelled");
+  // Aborting a queued call never posts `{ cancel: true }`.
+  assert.deepEqual(workers.last.sent, []);
+  workers.last.handshake({ conn: 7, global: 2, scopes: { ws1: 4 }, vaultGlobal: 1, vaults: { "ws1/v1": 3 } });
+  assert.deepEqual(workers.last.sent, [
+    { id: 1, call: "station.request", params: { station: "ws1/s1", method: "POST", path: "/x" }, auth: { conn: 7, authGen: 4, workspace: "ws1" } },
+  ]);
+  workers.last.replyRaw({ id: 1, conn: 7, authGen: 4, ok: { done: true } });
+  assert.deepEqual(await keptCall, { done: true });
+});
+
+test("reconnect / bfcache recovery rejects old-page protected writes as auth_stale while allowing auth.complete", async () => {
+  const workers = new FakeWorkers({ autoHandshake: false });
+  const client = new CoreClient(workers.opener, { schedule: (_ms, run) => run(), endWithPage: true });
+  workers.last.handshake({ conn: 1, global: 1 });
+  client.suspend();
+  client.resume();
+  assert.equal(workers.opened.length, 2);
+  // auth.complete goes out immediately even before the new worker's handshake.
+  const complete = client.call("auth.complete", { query: "?code=ok" });
+  // Protected write from the old page during reconnect window (`everHandshaked && authConn === 0`) is rejected immediately.
+  const staleAfterResume = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/p" });
+  await assert.rejects(staleAfterResume, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+  assert.deepEqual(workers.last.sent, [{ id: 1, call: "auth.complete", params: { query: "?code=ok" } }]);
+  workers.last.replyRaw({ id: 1, ok: { signedIn: true } });
+  assert.deepEqual(await complete, { signedIn: true });
+  // After new handshake arrives, fresh calls succeed with new conn/gen.
+  workers.last.handshake({ conn: 2, global: 3, scopes: { ws1: 3 } });
+  const freshAfterHandshake = client.call("station.request", { station: "ws1/s1", method: "GET", path: "/p" });
+  assert.deepEqual(workers.last.sent.at(-1), {
+    id: 3,
+    call: "station.request",
+    params: { station: "ws1/s1", method: "GET", path: "/p" },
+    auth: { conn: 2, authGen: 3, workspace: "ws1" },
+  });
+  workers.last.replyRaw({ id: 3, conn: 2, authGen: 3, ok: { ok: 1 } });
+  assert.deepEqual(await freshAfterHandshake, { ok: 1 });
+});
+
+test("device-global topics, self-triggered write ok, missing-gen sensitive read, monotonic same-conn snapshot, and boundary onWaiting", async () => {
+  const workers = new FakeWorkers({ autoHandshake: false });
+  const client = workers.client();
+  const linkSeen: unknown[] = [];
+  const wsSeen: unknown[] = [];
+  let wsWaiting = 0;
+  client.subscribe({ topic: "link", station: "ws1/s1" }, (v) => linkSeen.push(v), () => undefined);
+  client.subscribe({ topic: "overview", station: "ws1/s1" }, (v) => wsSeen.push(v), () => undefined, () => { wsWaiting++; });
+  // Before handshake, non-device-global subscription values are rejected, while device-global link is accepted.
+  workers.last.replyRaw({ id: 2, value: { stale: "pre-handshake" } });
+  assert.deepEqual(wsSeen, []);
+  workers.last.replyRaw({ id: 1, value: { state: "online" } });
+  assert.deepEqual(linkSeen, [{ state: "online" }]);
+
+  workers.last.handshake({ conn: 5, global: 4, aggregate: 4, scopes: { ws1: 4 }, vaultGlobal: 2, vaults: { "ws1/v1": 2 } });
+  const prefsSeen: unknown[] = [];
+  client.subscribe({ topic: "prefs" }, (v) => prefsSeen.push(v), () => undefined);
+  // Device-global prefs & link with authGen: 0 are accepted even though global is 4.
+  workers.last.replyRaw({ id: 3, conn: 5, authGen: 0, value: { lang: "zh" } });
+  workers.last.replyRaw({ id: 1, conn: 5, authGen: 0, value: { state: "ready" } });
+  assert.deepEqual(prefsSeen, [{ lang: "zh" }]);
+  assert.deepEqual(linkSeen, [{ state: "online" }, { state: "ready" }]);
+  // Missing conn or missing/stale authGen for non-device topic is dropped.
+  workers.last.replyRaw({ id: 2, value: { stale: "no-conn" } });
+  workers.last.replyRaw({ id: 2, conn: 5, value: { stale: "no-gen" } });
+  workers.last.replyRaw({ id: 2, conn: 5, authGen: 3, value: { stale: "old-gen" } });
+  assert.deepEqual(wsSeen, []);
+  workers.last.replyRaw({ id: 2, conn: 5, authGen: 4, value: { fresh: 4 } });
+  assert.deepEqual(wsSeen, [{ fresh: 4 }]);
+  // Same-conn full snapshot must never lower watermarks.
+  workers.last.handshake({ conn: 5, global: 1, aggregate: 1, scopes: { ws1: 1 }, vaultGlobal: 1, vaults: { "ws1/v1": 1 } });
+  workers.last.replyRaw({ id: 2, conn: 5, authGen: 3, value: { stale: "regressed" } });
+  assert.deepEqual(wsSeen, [{ fresh: 4 }]);
+  // Workspace boundary clears sub.value, notifies onWaiting, and re-subscribes.
+  workers.last.replyRaw({ id: 0, auth: { conn: 5, global: 4, aggregate: 5, workspace: "ws1", authGen: 5 } });
+  assert.equal(wsWaiting, 1);
+  assert.deepEqual(workers.last.sent.at(-1), { id: 2, subscribe: { topic: "overview", station: "ws1/s1" }, keyed: true });
+  // Ordinary committed write (`auth.signOut`) succeeds even after self-triggered global boundary!
+  const signOut = client.call("auth.signOut", { account: "a" });
+  workers.last.replyRaw({ id: 0, auth: { conn: 5, global: 6, aggregate: 6 } });
+  workers.last.replyRaw({ id: 4, conn: 5, authGen: 4, ok: { signedOut: true } });
+  assert.deepEqual(await signOut, { signedOut: true });
+  // Sensitive read (`vault.open`) missing authGen/vaultGen is rejected as auth_stale.
+  const openMissingGen = client.call("vault.open", { workspace: "ws1", vault: "v1", item: "i1" });
+  workers.last.replyRaw({ id: 5, conn: 5, ok: { plain: { secret: "x" } } });
+  await assert.rejects(openMissingGen, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+  // Stale stream progress rejects immediately with auth_stale (never hangs or delivers stale data).
+  const progressSeen: unknown[] = [];
+  const pCall = client.call("station.file", { station: "ws1/s1" }, (v) => progressSeen.push(v));
+  workers.last.replyRaw({ id: 6, conn: 5, authGen: 4, value: { bytes: 10 } });
+  await assert.rejects(pCall, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+  assert.deepEqual(progressSeen, []);
+  // Credential-returning `workspace.createProvisionKey` is protected: rejects on boundary instead of delivering key.
+  const provKey = client.call("workspace.createProvisionKey", { workspace: "ws1", name: "n" });
+  workers.last.replyRaw({ id: 0, auth: { conn: 5, global: 6, aggregate: 7, workspace: "ws1", authGen: 7 } });
+  workers.last.replyRaw({ id: 7, conn: 5, authGen: 6, ok: { key: "secret-prov" } });
+  await assert.rejects(provKey, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+  // Same-conn full snapshot advancing watermark clears affected non-device subscribers (`onWaiting`).
+  workers.last.replyRaw({ id: 2, conn: 5, authGen: 7, value: { fresh: 7 } });
+  const waitingBeforeSnap = wsWaiting;
+  workers.last.handshake({ conn: 5, global: 6, aggregate: 8, scopes: { ws1: 8 }, vaultGlobal: 2, vaults: { "ws1/v1": 2 } });
+  assert.equal(wsWaiting, waitingBeforeSnap + 1);
+  // Out-of-order `dependentVaultGens` advances dependent workspace even when `authGen` is not greater than prev.
+  let vaultsBWaiting = 0;
+  client.subscribe({ topic: "vaults", workspace: "wsB" }, () => undefined, () => undefined, () => { vaultsBWaiting++; });
+  workers.last.replyRaw({ id: 8, conn: 5, authGen: 6, vaultGen: 2, value: { vaults: [] } });
+  workers.last.replyRaw({ id: 0, auth: { conn: 5, global: 6, aggregate: 8, workspace: "ws1", authGen: 8, dependentVaultGens: { wsB: 5 } } });
+  assert.equal(vaultsBWaiting, 1);
+  // `#restart()` clears non-device subscribers and ignores incremental boundaries until full snapshot arrives!
+  workers.last.replyRaw({ id: 2, conn: 5, authGen: 8, value: { fresh: 8 } });
+  const waitingBeforeRestart = wsWaiting;
+  workers.last.fail("crash");
+  assert.equal(wsWaiting, waitingBeforeRestart + 1);
+  // Incremental boundary while `#authConn === 0` must NOT lift reconnect write gate.
+  workers.last.replyRaw({ id: 0, auth: { conn: 6, global: 9, aggregate: 9 } });
+  const blockedDuringReconnect = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
+  await assert.rejects(blockedDuringReconnect, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Full snapshot lifts gate; test workspace.enroll boundary rejection + rejoin/resume consumer clear & `#authConn = 0`.
+  workers.last.replyRaw({ id: 0, auth: { conn: 6, global: 9, aggregate: 9, scopes: { ws1: 9 }, vaultGlobal: 1, vaults: {} } });
+  const enrollCall = client.call("workspace.enroll", { workspace: "ws1" });
+  const enrollReq = (workers.last.sent as { id?: number; call?: string }[]).findLast((m) => m.call === "workspace.enroll");
+  assert.ok(enrollReq?.id !== undefined);
+  workers.last.replyRaw({ id: 0, auth: { conn: 6, global: 9, aggregate: 10, workspace: "ws1", authGen: 10 } });
+  workers.last.replyRaw({ id: enrollReq.id, ok: { token: "stale-enroll" }, conn: 6, authGen: 9 });
+  await assert.rejects(enrollCall, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Rejoin clears non-device-global subscribers and resets `#authConn = 0` until a new full handshake snapshot arrives.
+  const wsSub = (workers.last.sent as { id?: number; subscribe?: { topic?: string } }[]).findLast((m) => m.subscribe?.topic === "overview");
+  assert.ok(wsSub?.id !== undefined);
+  workers.last.replyRaw({ id: wsSub.id, value: [{ id: "live-row" }], conn: 6, authGen: 10 });
+  const waitingBeforeRejoin = wsWaiting;
+  workers.last.replyRaw({ rejoin: true });
+  assert.equal(wsWaiting, waitingBeforeRejoin + 1, "rejoin must clear non-device-global subscriber and notify onWaiting");
+  const blockedAfterRejoin = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
+  await assert.rejects(blockedAfterRejoin, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Retired conn=6 snapshot and values must be rejected while awaiting a strictly newer conn (> 6).
+  const seenBeforeStale = wsSeen.length;
+  workers.last.replyRaw({ id: 0, auth: { conn: 6, global: 10, aggregate: 10, scopes: { ws1: 10 }, vaultGlobal: 1, vaults: {} } });
+  workers.last.replyRaw({ id: wsSub.id, value: { stale: "conn-6-after-rejoin" }, conn: 6, authGen: 10 });
+  assert.equal(wsSeen.length, seenBeforeStale, "retired conn=6 value must be ignored after rejoin");
+  const stillBlocked = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
+  await assert.rejects(stillBlocked, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Strictly newer conn=7 full snapshot restores connection and accepts values/writes.
+  workers.last.replyRaw({ id: 0, auth: { conn: 7, global: 10, aggregate: 10, scopes: { ws1: 10 }, vaultGlobal: 1, vaults: {} } });
+  const wsSubAfter = (workers.last.sent as { id?: number; subscribe?: { topic?: string } }[]).findLast((m) => m.subscribe?.topic === "overview");
+  assert.ok(wsSubAfter?.id !== undefined);
+  workers.last.replyRaw({ id: wsSubAfter.id, value: { fresh: "conn-7" }, conn: 7, authGen: 10 });
+  assert.deepEqual(wsSeen.at(-1), { fresh: "conn-7" });
+  const recoveredWrite = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/ok" });
+  const recoveredReq = (workers.last.sent as { id?: number; call?: string; auth?: { conn?: number } }[]).findLast((m) => m.call === "station.request");
+  assert.equal(recoveredReq?.auth?.conn, 7);
+  workers.last.replyRaw({ id: recoveredReq!.id, ok: { done: true }, conn: 7, authGen: 10 });
+  assert.deepEqual(await recoveredWrite, { done: true });
 });

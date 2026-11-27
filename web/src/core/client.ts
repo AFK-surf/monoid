@@ -7,6 +7,7 @@ import { BUILT_AT } from "./built.ts";
 import { BETA } from "../channel.ts";
 import { applyDelta, type DeltaOp } from "./delta.ts";
 import { t } from "../i18n.ts";
+import { DEVICE_GLOBAL_TOPIC_SET } from "../../../client/core-ts/src/topic-policy.ts";
 
 /** What a UI can subscribe to (`Topic` in client/core-ts/src/protocol.ts). */
 export type Topic =
@@ -214,13 +215,37 @@ export interface Channel {
  */
 export type Opener = (onMessage: (data: unknown) => void, onFail: (reason: string) => void) => Channel;
 
+interface CallAuthCtx {
+  conn: number;
+  ws?: string;
+  vault?: string;
+  authGen: number;
+  vaultGen?: number;
+  isVault: boolean;
+  isProtectedRead: boolean;
+}
+
 interface Pending {
   /** Its answer, with the bytes beside it when it carries some (a file read). */
   resolve: (value: unknown, bytes?: Uint8Array) => void;
   reject: (error: Error) => void;
   /** How far the call has got, for one that says so (a file asked for with `progress`); `bytes` beside a value that carries some (a screen view's frame). */
   onProgress?: ((value: unknown, bytes?: Uint8Array) => void) | undefined;
+  /** Authorization context under which this call was signed and sent. */
+  authCtx?: CallAuthCtx | undefined;
 }
+
+const AUTH_QUEUE_EXEMPT_CALLS = new Set(["auth.begin", "auth.complete", "auth.password"]);
+const PROTECTED_READ_CALLS = new Set([
+  "vault.open",
+  "vault.openItem",
+  "vault.export",
+  "vault.setup",
+  "workspace.createProvisionKey",
+  "workspace.enroll",
+  "station.file",
+  "station.file.part",
+]);
 
 interface Subscription {
   topic: Topic;
@@ -289,6 +314,16 @@ export class CoreClient {
   readonly #endWithPage: boolean;
   /** The page left and its worker ended with it (`endWithPage`): a new one starts once it is back. */
   #left = false;
+  /** Authoritative connection & generation state from Core `{ id: 0, auth }` handshake/boundary messages. */
+  #authConn = 0;
+  #minAuthConn = 0;
+  #everHandshaked = false;
+  #authGlobal = 1;
+  #authAggregate = 1;
+  #authScopes = new Map<string, number>();
+  #authVaultGlobal = 1;
+  #authVaults = new Map<string, number>();
+  #pendingAuthCalls: { id: number; call: string; params: unknown; bytes?: Uint8Array }[] = [];
 
   constructor(open: Opener, options: ClientOptions = {}) {
     this.#open = open;
@@ -311,15 +346,51 @@ export class CoreClient {
     return this.#ask(name, params, bytes, onProgress, signal, (resolve) => (value, got) => resolve(got === undefined ? { value } : { value, bytes: got }));
   }
 
+  #needsAuthQueue(name: string): boolean {
+    if (name.startsWith("client.") || name.startsWith("prefs.") || name.startsWith("changelog.")) return false;
+    if (AUTH_QUEUE_EXEMPT_CALLS.has(name)) return false;
+    return name.includes(".");
+  }
+
   #ask<T>(name: string, params: unknown, bytes: Uint8Array | undefined, onProgress: Pending["onProgress"], signal: AbortSignal | undefined, answered: (resolve: (v: T) => void) => Pending["resolve"]): Promise<T> {
     if (this.#closed) return Promise.reject(new CoreError({ code: "closed", message: t("web-main.core.closed") }));
     if (signal?.aborted) return Promise.reject(new CoreError({ code: "cancelled", message: t("web-main.core.cancelled") }));
     const id = this.#nextId++;
+    const needsAuth = this.#needsAuthQueue(name);
+    if (needsAuth && this.#authConn === 0 && this.#everHandshaked) {
+      // Fail-closed tradeoff during reconnect (`#everHandshaked && #authConn === 0`): reject old-page
+      // protected calls with `auth_stale` and let the caller/user retry after the new handshake rather
+      // than queuing and silently re-signing pre-reconnect page intent under a potentially new identity.
+      return Promise.reject(new CoreError({ code: "auth_stale", message: t("core-misc.auth.stale") }));
+    }
     const promise = new Promise<T>((resolve, reject) => {
-      this.#calls.set(id, { resolve: answered(resolve), reject, onProgress });
-      this.#send(bytes === undefined ? { id, call: name, params } : { id, call: name, params, bytes });
+      const pending: Pending = { resolve: answered(resolve), reject, onProgress };
+      this.#calls.set(id, pending);
+      if (needsAuth && this.#authConn === 0) {
+        this.#pendingAuthCalls.push(bytes === undefined ? { id, call: name, params } : { id, call: name, params, bytes });
+      } else {
+        const signed = this.#callAuthFor(name, params);
+        if (signed !== undefined) pending.authCtx = signed.ctx;
+        const auth = signed?.auth;
+        this.#send(
+          bytes === undefined
+            ? auth !== undefined
+              ? { id, call: name, params, auth }
+              : { id, call: name, params }
+            : auth !== undefined
+              ? { id, call: name, params, bytes, auth }
+              : { id, call: name, params, bytes },
+        );
+      }
       signal?.addEventListener("abort", () => {
         if (!this.#calls.has(id)) return;
+        const queuedIdx = this.#pendingAuthCalls.findIndex((q) => q.id === id);
+        if (queuedIdx >= 0) {
+          this.#pendingAuthCalls.splice(queuedIdx, 1);
+          this.#calls.delete(id);
+          reject(new CoreError({ code: "cancelled", message: t("web-main.core.cancelled") }));
+          return;
+        }
         // The core answers `cancelled`; with no worker to tell, it is so here and now.
         if (this.#channel) {
           this.#post({ id, cancel: true });
@@ -375,6 +446,7 @@ export class CoreClient {
    */
   resume(): void {
     if (this.#left) return this.#back();
+    this.#invalidateConnectionState();
     this.#rejectCalls(t("web-main.core.resumed"));
     if (this.#channel) for (const [id, sub] of this.#subs) this.#post({ id, subscribe: sub.topic, keyed: true });
     this.#refocus();
@@ -385,6 +457,7 @@ export class CoreClient {
    * subscription and where the page is.
    */
   #back(): void {
+    this.#invalidateConnectionState();
     this.#rejectCalls(t("web-main.core.resumed"));
     this.#left = false;
     this.#connect();
@@ -458,6 +531,7 @@ export class CoreClient {
     }
     this.#channel = channel;
     this.#up = false;
+    this.#authConn = 0;
     for (const [id, sub] of this.#subs) this.#post({ id, subscribe: sub.topic, keyed: true });
     const queued = this.#queue;
     this.#queue = [];
@@ -465,9 +539,300 @@ export class CoreClient {
     this.#refocus();
   }
 
+  #callAuthFor(name: string, params: unknown): { auth: Record<string, unknown>; ctx: CallAuthCtx } | undefined {
+    if (this.#authConn <= 0 || !this.#needsAuthQueue(name)) return undefined;
+    const p = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : null;
+    let ws: string | undefined;
+    if (p) {
+      if (typeof p.workspace === "string" && p.workspace !== "") ws = p.workspace;
+      else if (typeof p.scope === "string" && p.scope !== "") ws = p.scope;
+      else if (typeof p.station === "string" && p.station.includes("/")) ws = p.station.slice(0, p.station.indexOf("/"));
+      else if (typeof p.key === "string") {
+        if (p.key.startsWith("new:") && p.key.length > 4) ws = p.key.slice(4);
+        else if (p.key.includes("/")) ws = p.key.slice(0, p.key.indexOf("/"));
+      }
+    }
+    const authGen = ws !== undefined ? Math.max(this.#authGlobal, this.#authScopes.get(ws) ?? 0) : this.#authGlobal;
+    const auth: Record<string, unknown> = { conn: this.#authConn, authGen };
+    if (ws !== undefined) auth.workspace = ws;
+    if (p && typeof p.account === "string" && p.account !== "") auth.account = p.account;
+    let vault: string | undefined;
+    let vaultGen: number | undefined;
+    const isVault = name.startsWith("vault.") && name !== "vault.lock";
+    if (isVault) {
+      vault = p && typeof p.vault === "string" && p.vault !== "" ? p.vault : undefined;
+      if (vault !== undefined) auth.vault = vault;
+      const vKey = ws !== undefined && vault !== undefined ? `${ws}/${vault}` : ws;
+      vaultGen = Math.max(this.#authVaultGlobal, vKey !== undefined ? (this.#authVaults.get(vKey) ?? 0) : 0);
+      auth.vaultGen = vaultGen;
+    }
+    const ctx: CallAuthCtx = {
+      conn: this.#authConn,
+      ...(ws !== undefined ? { ws } : {}),
+      ...(vault !== undefined ? { vault } : {}),
+      authGen,
+      ...(vaultGen !== undefined ? { vaultGen } : {}),
+      isVault,
+      isProtectedRead: PROTECTED_READ_CALLS.has(name),
+    };
+    return { auth, ctx };
+  }
+
+  #invalidateSub(id: number, sub: Subscription): void {
+    if ("value" in sub) {
+      delete sub.value;
+      sub.onWaiting?.();
+    }
+    if (this.#channel) {
+      this.#post({ id, subscribe: sub.topic, keyed: true });
+    }
+  }
+
+  #takeAuth(auth: Record<string, unknown>): void {
+    const conn = typeof auth.conn === "number" ? auth.conn : 0;
+    if (conn <= 0 || conn < this.#authConn) return;
+    if (this.#authConn === 0 && conn <= this.#minAuthConn) return;
+    const hasSnapshot = typeof auth.scopes === "object" && auth.scopes !== null && typeof auth.vaults === "object" && auth.vaults !== null;
+    if (hasSnapshot) {
+      const sameConn = conn === this.#authConn;
+      this.#authConn = conn;
+      this.#everHandshaked = true;
+      const snapGlobal = typeof auth.global === "number" && auth.global > 0 ? auth.global : 1;
+      const snapAgg = typeof auth.aggregate === "number" && auth.aggregate > 0 ? auth.aggregate : snapGlobal;
+      const snapVaultGlobal = typeof auth.vaultGlobal === "number" && auth.vaultGlobal > 0 ? auth.vaultGlobal : 1;
+      let globalAdvanced = false;
+      let aggAdvanced = false;
+      let vaultGlobalAdvanced = false;
+      const advancedWs = new Set<string>();
+      const advancedVaultKeys = new Set<string>();
+      if (sameConn) {
+        // Same connection full snapshot must never regress monotonic watermarks.
+        if (snapGlobal > this.#authGlobal) { this.#authGlobal = snapGlobal; globalAdvanced = true; }
+        if (snapAgg > this.#authAggregate) { this.#authAggregate = snapAgg; aggAdvanced = true; }
+        if (snapVaultGlobal > this.#authVaultGlobal) { this.#authVaultGlobal = snapVaultGlobal; vaultGlobalAdvanced = true; }
+        for (const [k, v] of Object.entries(auth.scopes as Record<string, unknown>)) {
+          if (typeof v === "number" && v > (this.#authScopes.get(k) ?? 0)) {
+            this.#authScopes.set(k, v);
+            advancedWs.add(k);
+          }
+        }
+        for (const [k, v] of Object.entries(auth.vaults as Record<string, unknown>)) {
+          if (typeof v === "number" && v > (this.#authVaults.get(k) ?? 0)) {
+            this.#authVaults.set(k, v);
+            advancedVaultKeys.add(k);
+          }
+        }
+      } else {
+        this.#authGlobal = snapGlobal;
+        this.#authAggregate = snapAgg;
+        this.#authVaultGlobal = snapVaultGlobal;
+        this.#authScopes.clear();
+        for (const [k, v] of Object.entries(auth.scopes as Record<string, unknown>)) {
+          if (typeof v === "number") this.#authScopes.set(k, v);
+        }
+        this.#authVaults.clear();
+        for (const [k, v] of Object.entries(auth.vaults as Record<string, unknown>)) {
+          if (typeof v === "number") this.#authVaults.set(k, v);
+        }
+      }
+      // Clear any non-device-global subscribers whose held value belongs to an older connection or generation.
+      for (const [id, sub] of this.#subs) {
+        if (DEVICE_GLOBAL_TOPIC_SET.has(sub.topic.topic) || !("value" in sub)) continue;
+        if (!sameConn || globalAdvanced) {
+          this.#invalidateSub(id, sub);
+          continue;
+        }
+        if (aggAdvanced && (sub.topic.topic === "workspaces" || sub.topic.topic === "lockPrompts" || sub.topic.topic === "downloads")) {
+          this.#invalidateSub(id, sub);
+          continue;
+        }
+        if (vaultGlobalAdvanced && this.#isVaultTopic(sub.topic)) {
+          this.#invalidateSub(id, sub);
+          continue;
+        }
+        let hit = false;
+        for (const ws of advancedWs) {
+          if (this.#topicMatchesWorkspace(sub.topic, ws)) { hit = true; break; }
+        }
+        if (!hit && this.#isVaultTopic(sub.topic)) {
+          const ws = this.#topicWorkspace(sub.topic);
+          const t = sub.topic as Record<string, unknown>;
+          const v = typeof t.vault === "string" && t.vault !== "" ? t.vault : undefined;
+          if (ws !== undefined && (advancedVaultKeys.has(ws) || (v !== undefined && advancedVaultKeys.has(`${ws}/${v}`)))) {
+            hit = true;
+          }
+        }
+        if (hit) this.#invalidateSub(id, sub);
+      }
+      const queued = this.#pendingAuthCalls;
+      this.#pendingAuthCalls = [];
+      for (const q of queued) {
+        const pending = this.#calls.get(q.id);
+        if (!pending) continue;
+        const signed = this.#callAuthFor(q.call, q.params);
+        if (signed !== undefined) pending.authCtx = signed.ctx;
+        const callAuth = signed?.auth;
+        this.#send(
+          q.bytes === undefined
+            ? callAuth !== undefined
+              ? { id: q.id, call: q.call, params: q.params, auth: callAuth }
+              : { id: q.id, call: q.call, params: q.params }
+            : callAuth !== undefined
+              ? { id: q.id, call: q.call, params: q.params, bytes: q.bytes, auth: callAuth }
+              : { id: q.id, call: q.call, params: q.params, bytes: q.bytes },
+        );
+      }
+      return;
+    }
+    // Never let an incremental boundary advance `#authConn` from 0 before a full handshake snapshot arrives.
+    if (this.#authConn === 0) return;
+    this.#authConn = conn;
+    if (typeof auth.aggregate === "number" && auth.aggregate > this.#authAggregate) this.#authAggregate = auth.aggregate;
+    if (typeof auth.global === "number" && auth.global > this.#authGlobal) {
+      this.#authGlobal = auth.global;
+      for (const [id, sub] of this.#subs) {
+        if (!DEVICE_GLOBAL_TOPIC_SET.has(sub.topic.topic)) this.#invalidateSub(id, sub);
+      }
+    }
+    if (typeof auth.workspace === "string" && typeof auth.authGen === "number") {
+      const prev = this.#authScopes.get(auth.workspace) ?? 0;
+      const wsAdvanced = auth.authGen > prev;
+      if (wsAdvanced) this.#authScopes.set(auth.workspace, auth.authGen);
+      // Merge cross-workspace `dependentVaultGens` independently of `authGen > prev` so out-of-order
+      // dependent workspace updates still advance each dependent workspace's own watermark.
+      const deps = new Set<string>();
+      if (wsAdvanced && Array.isArray(auth.dependentWorkspaces)) {
+        for (const dep of auth.dependentWorkspaces) {
+          if (typeof dep === "string") deps.add(dep);
+        }
+      }
+      if (typeof auth.dependentVaultGens === "object" && auth.dependentVaultGens !== null) {
+        for (const [dep, vg] of Object.entries(auth.dependentVaultGens as Record<string, unknown>)) {
+          if (typeof vg === "number" && vg > (this.#authVaults.get(dep) ?? 0)) {
+            this.#authVaults.set(dep, vg);
+            deps.add(dep);
+          }
+        }
+      }
+      if (wsAdvanced || deps.size > 0) {
+        for (const [id, sub] of this.#subs) {
+          if (
+            (wsAdvanced && this.#topicMatchesWorkspace(sub.topic, auth.workspace)) ||
+            (sub.topic.topic === "vaults" && typeof sub.topic.workspace === "string" && deps.has(sub.topic.workspace))
+          ) {
+            this.#invalidateSub(id, sub);
+          }
+        }
+      }
+    }
+    if (auth.vaultAll === true && typeof auth.vaultGen === "number") {
+      if (auth.vaultGen > this.#authVaultGlobal) {
+        this.#authVaultGlobal = auth.vaultGen;
+        for (const [id, sub] of this.#subs) {
+          if (this.#isVaultTopic(sub.topic)) this.#invalidateSub(id, sub);
+        }
+      }
+    } else if (typeof auth.workspace === "string" && typeof auth.vault === "string" && typeof auth.vaultGen === "number") {
+      const k = `${auth.workspace}/${auth.vault}`;
+      if (auth.vaultGen > (this.#authVaults.get(k) ?? 0)) this.#authVaults.set(k, auth.vaultGen);
+      if (auth.vaultGen > (this.#authVaults.get(auth.workspace) ?? 0)) this.#authVaults.set(auth.workspace, auth.vaultGen);
+      const deps = new Set<string>([auth.workspace]);
+      if (Array.isArray(auth.dependentWorkspaces)) {
+        for (const dep of auth.dependentWorkspaces) {
+          if (typeof dep === "string") {
+            deps.add(dep);
+            if (auth.vaultGen > (this.#authVaults.get(dep) ?? 0)) this.#authVaults.set(dep, auth.vaultGen);
+          }
+        }
+      }
+      for (const [id, sub] of this.#subs) {
+        if (sub.topic.topic === "vaults" && typeof sub.topic.workspace === "string" && deps.has(sub.topic.workspace)) {
+          this.#invalidateSub(id, sub);
+        } else if (
+          (sub.topic.topic === "vaultItems" || sub.topic.topic === "vaultUses") &&
+          sub.topic.workspace === auth.workspace &&
+          sub.topic.vault === auth.vault
+        ) {
+          this.#invalidateSub(id, sub);
+        }
+      }
+    }
+  }
+
+  #isVaultTopic(topic: Topic): boolean {
+    return topic.topic === "vaults" || topic.topic === "vaultItems" || topic.topic === "vaultUses";
+  }
+
+  #topicWorkspace(topic: Topic): string | undefined {
+    const t = topic as Record<string, unknown>;
+    if (typeof t.workspace === "string" && t.workspace !== "") return t.workspace;
+    if (typeof t.scope === "string" && t.scope !== "") return t.scope;
+    if (typeof t.station === "string" && t.station.includes("/")) return t.station.slice(0, t.station.indexOf("/"));
+    return undefined;
+  }
+
+  #topicMatchesWorkspace(topic: Topic, ws: string): boolean {
+    if (topic.topic === "workspaces" || topic.topic === "lockPrompts" || topic.topic === "downloads") return true;
+    return this.#topicWorkspace(topic) === ws;
+  }
+
+  #isMsgStaleForSub(msg: { conn?: number; authGen?: number; vaultGen?: number }, topic: Topic): boolean {
+    if (DEVICE_GLOBAL_TOPIC_SET.has(topic.topic)) {
+      return this.#authConn > 0 && msg.conn !== this.#authConn;
+    }
+    if (this.#authConn <= 0) return true;
+    if (msg.conn !== this.#authConn) return true;
+    const ws = this.#topicWorkspace(topic);
+    const curAuth =
+      topic.topic === "workspaces" || topic.topic === "lockPrompts" || topic.topic === "downloads"
+        ? Math.max(this.#authGlobal, this.#authAggregate)
+        : ws !== undefined
+          ? Math.max(this.#authGlobal, this.#authScopes.get(ws) ?? 0)
+          : this.#authGlobal;
+    if (typeof msg.authGen !== "number" || msg.authGen < curAuth) return true;
+    if (this.#isVaultTopic(topic)) {
+      const t = topic as Record<string, unknown>;
+      const vKey = ws !== undefined && typeof t.vault === "string" && t.vault !== "" ? `${ws}/${t.vault}` : ws;
+      const curVault = Math.max(this.#authVaultGlobal, vKey !== undefined ? (this.#authVaults.get(vKey) ?? 0) : 0);
+      if (typeof msg.vaultGen !== "number" || msg.vaultGen < curVault) return true;
+    }
+    return false;
+  }
+
+  #isMsgStaleForCall(msg: { conn?: number; authGen?: number; vaultGen?: number }, call: Pending, isProgress: boolean): boolean {
+    const guarded = isProgress || call.onProgress !== undefined || (call.authCtx?.isProtectedRead ?? false);
+    if (!guarded || this.#authConn <= 0) return false;
+    if (msg.conn !== this.#authConn) return true;
+    const ctx = call.authCtx;
+    if (!ctx) return false;
+    if (ctx.conn !== this.#authConn) return true;
+    const curAuth = ctx.ws !== undefined ? Math.max(this.#authGlobal, this.#authScopes.get(ctx.ws) ?? 0) : this.#authGlobal;
+    if (typeof msg.authGen !== "number" || msg.authGen !== curAuth || ctx.authGen !== curAuth) return true;
+    if (ctx.isVault) {
+      const vKey = ctx.ws !== undefined && ctx.vault !== undefined ? `${ctx.ws}/${ctx.vault}` : ctx.ws;
+      const curVault = Math.max(this.#authVaultGlobal, vKey !== undefined ? (this.#authVaults.get(vKey) ?? 0) : 0);
+      if (typeof msg.vaultGen !== "number" || msg.vaultGen !== curVault) return true;
+      if (ctx.vaultGen !== undefined && ctx.vaultGen !== curVault) return true;
+    }
+    return false;
+  }
+
   /** A core that forgot this page (a worker started anew, a page back from the cache) hears where it is again. */
   #refocus(): void {
     if (Object.keys(this.#focus).length) this.call("client.focus", this.#focus).catch(() => undefined);
+  }
+
+  /** Resets connection auth state and clears all non-device-global subscribers synchronously on reconnect/resume/rejoin. */
+  #invalidateConnectionState(): void {
+    if (this.#authConn > this.#minAuthConn) this.#minAuthConn = this.#authConn;
+    this.#authConn = 0;
+    this.#pendingAuthCalls = [];
+    for (const sub of this.#subs.values()) {
+      if (!DEVICE_GLOBAL_TOPIC_SET.has(sub.topic.topic)) {
+        delete sub.value;
+        sub.onWaiting?.();
+      }
+    }
   }
 
   #restart(reason: string): void {
@@ -475,6 +840,7 @@ export class CoreClient {
     this.#onFault(Object.assign(new Error(reason), { name: "CoreFailed" }));
     this.#channel?.close();
     this.#channel = null;
+    this.#invalidateConnectionState();
     // Whether they ran is unknown: the caller decides whether to try again.
     this.#rejectCalls(t("web-main.core.restarted"));
     this.#retry();
@@ -490,6 +856,7 @@ export class CoreClient {
     const calls = [...this.#calls.values()];
     this.#calls.clear();
     this.#queue = [];
+    this.#pendingAuthCalls = [];
     for (const call of calls) call.reject(new CoreError({ code: "core_restarted", message }));
   }
 
@@ -540,11 +907,24 @@ export class CoreClient {
     // A healthy answer: the worker is up again.
     this.#failures = 0;
     this.#up = true;
+    const rawAuth = (data as { auth?: unknown }).auth;
+    if (message.id === 0 && typeof rawAuth === "object" && rawAuth !== null) {
+      this.#takeAuth(rawAuth as Record<string, unknown>);
+      return;
+    }
     if (message.id === undefined) return;
+    const wireGen = data as { conn?: number; authGen?: number; vaultGen?: number };
     const call = this.#calls.get(message.id);
     if (call) {
+      const isProgress = "value" in message && !message.error;
+      if (!message.error && this.#isMsgStaleForCall(wireGen, call, isProgress)) {
+        this.#calls.delete(message.id);
+        if (isProgress && this.#channel) this.#post({ id: message.id, cancel: true });
+        call.reject(new CoreError({ code: "auth_stale", message: t("core-misc.auth.stale") }));
+        return;
+      }
       // Values under a call's id tell how far it has got; its answer comes after them.
-      if ("value" in message && !message.error) {
+      if (isProgress) {
         call.onProgress?.(message.value, message.bytes);
         return;
       }
@@ -555,6 +935,7 @@ export class CoreClient {
     }
     const sub = this.#subs.get(message.id);
     if (!sub) return; // unsubscribed while a value was on its way
+    if (this.#isMsgStaleForSub(wireGen, sub.topic)) return;
     if (message.error) {
       delete sub.value;
       sub.onError(new CoreError(message.error));

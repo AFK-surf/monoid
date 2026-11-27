@@ -477,9 +477,27 @@ fn main {
   @hostapi.set_site_name("stillfail")
   // what the places open on, and the last few chats, are kept by the core's client as they are let go of, asked again
   // with their version
+  @core.client.sensitive(@sfbase.topic_policy_sensitive)
+  @core.client.device_global(@sfbase.topic_policy_device_global)
+  @core.client.sanitize_kept(@sfbase.sanitize_kept_json)
+  @core.client.on_auth_boundary(fn(scope) {
+    match scope {
+      Global | VaultAll => (@sfbase.clear_vault_secrets.val)("", "")
+      Workspace(ws) => (@sfbase.clear_vault_secrets.val)(ws, "")
+      Vault(ws, v) => (@sfbase.clear_vault_secrets.val)(ws, v)
+      VaultWorkspace(_) => ()
+    }
+    @sfbase.invalidate_auth_scope(core_source, fn(name, params) {
+      @core.topic_matches_scope_params(name, params, scope)
+    })
+  })
+  |> ignore
+  @core.auth_stale_message.val = fn() { @sf.t("core-misc.auth.stale") }
+  @sfbase.mask_vault_all.val = fn() { @core.client.mask_scope(@core.AuthScope::VaultAll) }
+  @sfbase.mask_global.val = fn() { @core.client.mask_scope(@core.AuthScope::Global) }
   @core.client.keep(@sfbase.topic_kept, most=fn() { @sfbase.kept_most_by(true) })
   // (a page's, a panel's or a card's own topic opened again shown at once as it was, till the core answers)
-  @core.client.show_kept(@sfbase.topic_shown_kept)
+  @core.client.show_kept_params(@sfbase.topic_shown_kept_params)
   // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
   @core.client.tells_before(@sfbase.chats_told_before)
   // SVG pictures (a chat's .svg files) parsed and drawn by mbui's own SVG renderer into premultiplied MBRAWPRE bytes

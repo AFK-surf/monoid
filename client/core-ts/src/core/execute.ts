@@ -209,6 +209,9 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
             const enrolling = op.method === "POST" ? /^\/v1\/workspaces\/([^/]+)\/(?:enrollments|provision-keys)$/.exec(op.path) : null;
             // The roster's writes end by CLOUD_WRITE_MS. One whose lock's entry is pending (no station took it) and that
             // fails here leaves nothing changed: that entry is dropped too, as the failure says (nothing saved).
+            const wsMatch = /^\/v1\/workspaces\/([^/]+)/.exec(op.path.split("?")[0]!);
+            const wsId = wsMatch ? decodeURIComponent(wsMatch[1]!) : null;
+            const preReadGen = wsId !== null ? inner.store.authGen.workspaceAuthGen(wsId) : undefined;
             const asked = inner.provider.request(sub, op.method, op.path, op.body, ctx);
             const bounded = roster || adding || enrolling
               ? Effect.flatMap(Effect.timeoutOption(asked, CLOUD_WRITE_MS), (o) => (o._tag === "Some" ? Effect.succeed(o.value) : Effect.fail(cloudSilent()))) // timer: a deadline on what a call waits for
@@ -233,7 +236,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
             if (made) prefs.inviteUsed(inner.data);
             // What the write changed that no event of the cloud's tells is read again first, for a while
             // (`REREAD_WAIT_MS`): the write is done, and the topics follow as they are read (sync/cloud.ts `afterWrite`).
-            if (op.method !== "GET") yield* rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, op.method, op.path, written), ctx);
+            if (op.method !== "GET") yield* rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, op.method, op.path, written, preReadGen), ctx);
             // An answer on a bug report: its replies read again (the cloud says so too, on the events socket).
             const answered = op.method === "POST" ? /^\/v1\/workspaces\/([^/]+)\/feedback\//.exec(op.path) : null;
             if (answered) inner.cloudSync.feedbackChanged(decodeURIComponent(answered[1]!));

@@ -3512,3 +3512,4 @@ web-main.projects.loading
 web-main.projects.more_projects
 web-main.projects.more_tags
 web-main.projects.scope
+core-misc.auth.stale
