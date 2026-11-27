@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.66 | 131.94 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [b2d40a09f](https://github.com/AFK-surf/monoid/commit/b2d40a09f7b4bb380b9645e63756b38076953db7) feat(pion-station): port vault discovery/asks, saf | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
 | [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 2.7 | 3.66 | 15.19 | 38.24 | 58.92 | 33.5 | 68.53 | 103.14 | 129.35 |
 | [4912e2dc1](https://github.com/AFK-surf/monoid/commit/4912e2dc1c8b82bfb73b1e9ab4fa8f817636cda8) refactor(ui): clear mbt2pion publish diagnostics i | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
-| [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 2.7 | 3.66 | 15.19 | 38.23 | 58.92 | 33.5 | 68.53 | 103.37 | 120.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
 | [b2d40a09f](https://github.com/AFK-surf/monoid/commit/b2d40a09f7b4bb380b9645e63756b38076953db7) feat(pion-station): port vault discovery/asks, saf | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
 | [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.77 |
 | [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.59 |
 | [4912e2dc1](https://github.com/AFK-surf/monoid/commit/4912e2dc1c8b82bfb73b1e9ab4fa8f817636cda8) refactor(ui): clear mbt2pion publish diagnostics i | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 58.02 |
-| [8ff4458de](https://github.com/AFK-surf/monoid/commit/8ff4458de9750c2ed47998ecf42847eefbc6a7d7) chore(ui/ui): idiomatic array loops & explicit typ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
