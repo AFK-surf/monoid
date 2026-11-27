@@ -45,6 +45,7 @@ const LAZY_WHEN_IDLE: ReadonlySet<string> = topicsWhere((p) => p.lazyWhenIdle ==
 /// A topic of words typed by its kind: its name and where it looks.
 function wordsKind(topic: Topic): string {
   if (topic.topic === "chatSubchats") return `${topic.topic}\u0001${String(topic.station ?? "")}\u0001${String(topic.thread ?? "")}\u0001${String(topic.session ?? "")}`;
+  if (topic.topic === "stationSearch") return `${topic.topic}\u0001${String(topic.station ?? "")}`;
   return `${topic.topic}\u0001${String(topic.scope ?? "")}`;
 }
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of

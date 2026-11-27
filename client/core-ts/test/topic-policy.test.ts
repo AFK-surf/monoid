@@ -104,7 +104,7 @@ describe("topic-policy SSOT", () => {
     assert.equal(KEPT_MOST_BEFORE_VIEWS, 64);
     assert.equal(LASTING_KEPT, 64);
 
-    assert.deepEqual([...ASKED_BY_WORDS].sort(), ["chatSearch", "chatSubchats", "search"]);
+    assert.deepEqual([...ASKED_BY_WORDS].sort(), ["chatSearch", "chatSubchats", "search", "stationSearch"]);
     assert.deepEqual([...topicsWhere((p) => p.lazyWhenIdle === true)].sort(), ["profilesOverview"]);
     assert.deepEqual(
       [...topicsWhere((p) => p.unseen === true)].sort(),

@@ -163,7 +163,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   archivedRows: LIVE,
   archive: LASTING,
   search: { retention: "live", askedByWords: true },
-  stationSearch: LIVE,
+  stationSearch: { retention: "live", askedByWords: true },
   linkPreview: LIVE,
   filePeek: LIVE,
   messagePeek: LIVE,
