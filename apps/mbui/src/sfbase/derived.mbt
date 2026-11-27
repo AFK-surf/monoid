@@ -259,7 +259,7 @@ fn[T] SourceKept::forget_matching(self : SourceKept[T], source : Source, matches
       Some(entries) => {
         let rest = entries.filter(fn(e) {
           if physical_equal(e.source, source) {
-            e.value.dispose()
+            if !e.value.watched() { e.value.dispose() }
             kept_count.made -= 1
             false
           } else {

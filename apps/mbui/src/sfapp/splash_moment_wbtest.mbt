@@ -141,3 +141,70 @@ test "splash_from is recorded at the first sized frame rather than during set_vi
   assert_true(t0 > start, msg="first frame advances past construction time")
   assert_eq(splash_from.val, t0, msg="splash_from should equal first sized frame time \{t0}, not construction time \{start}")
 }
+
+///|
+test "cold-start auth handshake leaves app_tree reactive so accounts transitions off Starting" {
+  new_run()
+  let client = @core.Client::new(fn(_) {  })
+  client.sensitive(@sfbase.topic_policy_sensitive)
+  client.device_global(@sfbase.topic_policy_device_global)
+  let src = signal_client_source(client)
+  let unsub = client.on_auth_boundary(fn(scope) {
+    @sfbase.invalidate_auth_scope(src, fn(name, params) {
+      @core.topic_matches_scope_params(name, params, scope)
+    })
+  })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  assert_true(app_is(src) == Starting)
+  assert_eq(@ui.journal_shown(), "Starting")
+  let acc_id = client.peek_topic("accounts").unwrap().id
+  // First-handshake `{ id: 0, auth }` snapshot emitted by production Core before deferred topic values
+  client.receive_json({
+    "id": 0,
+    "auth": {
+      "conn": 1795765092123456.0,
+      "global": 1,
+      "aggregate": 1,
+      "vaultGlobal": 1,
+      "scopes": {},
+      "vaults": {},
+    },
+  })
+  // Empty accounts -> must transition off Starting to SignedOut ("Sign in")
+  client.receive_json({
+    "id": Json::number(acc_id.to_double()),
+    "value": [],
+    "conn": 1795765092123456.0,
+    "authGen": 1,
+  })
+  t.frame()
+  assert_true(app_is(src) == SignedOut, msg="accounts=[] after first auth handshake must leave Starting")
+  assert_eq(@ui.journal_shown(), "Sign in", msg="app_tree journal must update from Starting to Sign in")
+  // Subsequent Global auth boundary (sign-in -> sign-out) must also keep app_tree reactive
+  client.receive_json({
+    "id": 0,
+    "auth": { "conn": 1795765092123456.0, "global": 2, "aggregate": 2 },
+  })
+  client.receive_json({
+    "id": Json::number(acc_id.to_double()),
+    "value": [{ "sub": "u1", "email": "a@example.com", "name": "Alice" }],
+    "conn": 1795765092123456.0,
+    "authGen": 2,
+  })
+  t.frame()
+  assert_true(app_is(src) == SignedIn, msg="signed-in accounts after global auth boundary must reach SignedIn")
+  client.receive_json({
+    "id": 0,
+    "auth": { "conn": 1795765092123456.0, "global": 3, "aggregate": 3 },
+  })
+  client.receive_json({
+    "id": Json::number(acc_id.to_double()),
+    "value": [],
+    "conn": 1795765092123456.0,
+    "authGen": 3,
+  })
+  t.frame()
+  assert_true(app_is(src) == SignedOut, msg="sign-out after global auth boundary must return to SignedOut")
+  assert_eq(@ui.journal_shown(), "Sign in")
+  unsub()
+}
