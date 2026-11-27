@@ -2,10 +2,12 @@
 // one is made; the one picked for a new chat there is kept on this device and goes with the chat as it is made.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Effect } from "effect";
 import { apply as applyOps } from "../src/delta.ts";
 import { answers, apply, call, readsOf, subscribe, v } from "./helpers.ts";
 import { base, overview, started, stationLater, stationReplies } from "./station-fixture.ts";
 import type { HttpRequest } from "../src/host.ts";
+import { CoreError } from "../src/error.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import { logKey, PRESETS } from "../src/station/link.ts";
@@ -501,12 +503,14 @@ test("unloaded_persisted_jobLog_is_wiped_from_disk_on_same_owner_downgrade_and_s
   core.close();
 });
 
-test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_restart_or_readonly_db", async () => {
-  // 1. Ephemeral prefixes ([PRESETS, LOG_KEY]) never read from or write to keeper,
+test("ephemeral_memory_never_resurrects_persisted_jobLog_presets_screens_or_terminals_across_restart_or_readonly_db", async () => {
+  // 1. Ephemeral prefixes ([PRESETS, LOG_KEY, "screens", "terminals"]) never read from or write to keeper,
   //    so read-only DBs, lazily-opened DBs, or legacy rows surviving a restart can never resurrect old data.
   const disk = new Map<string, unknown>([
     [PRESETS, { presets: [preset("ro-old", "RO Old")], candidates: [] }],
     [logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-secret" }] }], outputAt: 1 }],
+    ["screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO Old" }], outdated: false }],
+    ["terminals", { terminals: [{ id: "t-ro", by: "a@x.com", cwd: "/ro", at: 1, looking: [] }], outdated: false }],
   ]);
   let writes = 0;
   const readOnlyKeeper: Keeper = {
@@ -516,22 +520,30 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
     now: () => 1000,
     later: () => {},
   };
-  const mem = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
+  const mem = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n", "screens", "terminals"]);
   assert.equal(mem.get(PRESETS), undefined, "ephemeral presets must never lazy-load from keeper");
   assert.equal(mem.get(logKey("j-ro", 200)), undefined, "ephemeral jobLog must never lazy-load from keeper");
+  assert.equal(mem.get("screens"), undefined, "ephemeral screens must never lazy-load from keeper");
+  assert.equal(mem.get("terminals"), undefined, "ephemeral terminals must never lazy-load from keeper");
 
   mem.set(PRESETS, { presets: [preset("ro-new", "RO New")], candidates: [] });
   mem.set(logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-new-log" }] }], outputAt: 2 });
+  mem.set("screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO New" }], outdated: false });
+  mem.set("terminals", { terminals: [{ id: "t-new", by: "a@x.com", cwd: "/new", at: 2, looking: [] }], outdated: false });
   assert.equal(writes, 0, "ephemeral keys must never write to keeper");
   assert.deepEqual((mem.get(PRESETS) as { presets: { id: string }[] }).presets.map((p) => p.id), ["ro-new"]);
+  assert.deepEqual((mem.get("screens") as { screens: { title: string }[] }).screens.map((s) => s.title), ["RO New"]);
+  assert.deepEqual((mem.get("terminals") as { terminals: { id: string }[] }).terminals.map((t) => t.id), ["t-new"]);
 
   // Simulated restart with a brand new Memory over the same read-only DB still never resurrects old rows.
-  const restarted = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n"]);
+  const restarted = new Memory(readOnlyKeeper, [], [PRESETS, "jobLog\n", "screens", "terminals"]);
   assert.equal(restarted.get(PRESETS), undefined);
   assert.equal(restarted.get(logKey("j-ro", 200)), undefined);
+  assert.equal(restarted.get("screens"), undefined);
+  assert.equal(restarted.get("terminals"), undefined);
 
-  // 2. Cold-start keeper-cached screens/terminals have known: false until confirmed in current authGen;
-  //    non-downgrade boundary (e.g. unlock) clears #openingTabs and immediately re-fetches active screens/terminals/presets.
+  // 2. End-to-end: legacy rows in stationMemory on disk never resurrect into link.memory;
+  //    non-downgrade boundary (e.g. unlock) immediately re-fetches active screens/terminals/presets.
   const said: Record<string, unknown> = {
     ...base(),
     "GET /overview": { ...overview, profiles: [profile] },
@@ -543,32 +555,15 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   const link = core.inner.stations.link(S);
   assert.ok(link);
 
-  // Cold-start keeper cache WITH matching authDigest -> known: true, confirmed: false (0 flicker, actions blocked).
-  const curDigest = core.inner.store.authGen.workspaceDigest("ws");
-  assert.ok(typeof curDigest === "string" && curDigest.length > 0, "workspaceDigest is populated");
+  // Even if legacy disk rows exist in keeper, ephemeral Memory never reads them.
   link.memory.deletePrefix("screens");
   link.memory.deletePrefix("terminals");
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
-  assert.equal(core.inner.stations.isConfirmed("screens", S), false, "keeper-only screens must not be confirmed");
-  assert.equal(core.inner.stations.isConfirmed("terminals", S), false, "keeper-only terminals must not be confirmed");
-  assert.ok(core.inner.stations.screens(S) !== undefined, "matching authDigest allows cold-start display");
-  assert.ok(core.inner.stations.terminals(S) !== undefined, "matching authDigest allows cold-start display");
-
-  // Cold-start keeper cache with MISMATCHED authDigest (e.g. downgrade/switch account + read-only DB across Link rebuild/restart):
-  // MUST return undefined so pre-boundary screens/terminals never resurrect even on a read-only DB.
-  link.memory.deletePrefix("screens");
-  link.memory.deletePrefix("terminals");
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "WrongAuth", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: "stale-owner-digest" });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-stale", by: "other@x.com", cwd: "/secret", at: 1, looking: [] }], outdated: false, authDigest: "stale-owner-digest" });
-  assert.equal(core.inner.stations.screens(S), undefined, "mismatched authDigest must hide keeper-cached screens");
-  assert.equal(core.inner.stations.terminals(S), undefined, "mismatched authDigest must hide keeper-cached terminals");
-
-  // Restore matching authDigest to test cold-start topic projection -> boundary refetch recovery.
-  link.memory.deletePrefix("screens");
-  link.memory.deletePrefix("terminals");
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Old", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "OldDisk", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-old-disk", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false });
+  assert.equal(core.inner.stations.isConfirmed("screens", S), false);
+  assert.equal(core.inner.stations.isConfirmed("terminals", S), false);
+  assert.equal(core.inner.stations.screens(S), undefined, "ephemeral screens must never resurrect legacy keeper rows");
+  assert.equal(core.inner.stations.terminals(S), undefined, "ephemeral terminals must never resurrect legacy keeper rows");
 
   const ui = core.connect();
   const values = new Map<number, unknown>();
@@ -577,11 +572,22 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   subscribe(core, ui, 3, { topic: "presets", station: S });
   await host.settle();
   apply(host, values);
-  assert.equal(v(values, 1).known, true, "cold-start keeper screens stay known: true for display");
-  assert.equal(v(values, 1).confirmed, false, "cold-start keeper screens stay confirmed: false before station reply");
-  assert.equal(v(values, 2).known, true, "cold-start keeper terminals stay known: true for display");
-  assert.equal(v(values, 2).confirmed, false, "cold-start keeper terminals stay confirmed: false before station reply");
+  assert.equal(v(values, 1).known, false, "before live reply, legacy disk screens must never resurrect");
+  assert.equal(v(values, 1).confirmed, false);
+  assert.equal(v(values, 2).known, false, "before live reply, legacy disk terminals must never resurrect");
+  assert.equal(v(values, 2).confirmed, false);
   assert.equal(v(values, 3).presets[0].id, "app");
+
+  // Live snapshot brings fresh station state (never legacy disk rows).
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).known, true);
+  assert.equal(v(values, 1).confirmed, true);
+  assert.equal(v(values, 1).screens[0].title, "Main", "must come from live station, never legacy disk row");
+  assert.equal(v(values, 2).known, true);
+  assert.equal(v(values, 2).confirmed, true);
+  assert.equal(v(values, 2).terminals[0].id, "t-1", "must come from live station, never legacy disk row");
 
   // Non-downgrade auth boundary (e.g. lock trusted flip / unlock): must immediately re-fetch active screens/terminals/presets
   // so UI recovers confirmed: true instead of getting stuck empty.
@@ -598,20 +604,6 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   assert.equal(v(values, 2).known, true);
   assert.equal(v(values, 2).confirmed, true, "terminals recovers confirmed: true after non-downgrade boundary");
   assert.equal(v(values, 3).presets[0].id, "app", "presets recovers after non-downgrade boundary");
-
-  // Memory.clearKey keeps key in #looked so a read-only keeper cannot lazy-reload old screens/terminals.
-  const roDisk = new Map<string, unknown>([
-    ["screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO" }], outdated: false }],
-  ]);
-  const roMem = new Memory({
-    read: (k) => roDisk.get(k),
-    write: () => {},
-    bound: () => {},
-    now: () => 1000,
-    later: () => {},
-  });
-  roMem.clearKey("screens");
-  assert.equal(roMem.get("screens"), undefined, "clearKey must keep key in #looked so read-only keeper cannot resurrect it");
   core.close();
 });
 
@@ -700,5 +692,91 @@ test("same_gen_sse_beats_older_inflight_get_and_403_clears_screens_terminals_con
   const streamReqs = host.requests.slice(beforeStreamReqs).filter((r) => r.url.includes("/screens/"));
   assert.equal(streamReqs.length, 0, "screen.view must not open a screen stream when screens is denied");
   screensForbidden = false;
+  core.close();
+});
+
+test("screenGone_advances_seq_even_when_absent_and_reconnecting_screen_view_aborts_on_403", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }, { id: "browser:u_1", kind: "browser", title: "Tab 1", userTab: true, width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [] },
+    "POST /screens/browser%3Au_1/close": { ok: true },
+  };
+  let streamAttempts = 0;
+  const wireFactory = (h: FakeHost): StationWire =>
+    Object.assign(new HostWire(h), {
+      screen: () => {
+        streamAttempts++;
+        return Effect.fail(new CoreError("network", "transient drop"));
+      },
+    });
+  const { host, core } = await started(said as never, 0, wireFactory);
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(core, ui, 1, { topic: "screens", station: S });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+
+  // 1. Start a slow GET /screens returning stale browser:u_1; meanwhile close browser:u_1 (even if already absent locally).
+  let releaseStaleScreens!: (r: ReturnType<typeof jsonResponse>) => void;
+  const staleScreensGate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => { releaseStaleScreens = resolve; });
+  let screensMode: "stale" | "forbidden" | "none" = "stale";
+  stationLater(host, (req) => {
+    if (req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      if (screensMode === "stale") {
+        screensMode = "none";
+        return staleScreensGate;
+      }
+      if (screensMode === "forbidden") {
+        screensMode = "none";
+        return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+      }
+    }
+    return undefined;
+  });
+
+  // Clear local screens memory so screenGone sees !changed (absent), then start stale GET and call screen.close.
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  core.inner.stations.link(S)?.memory.deletePrefix("screens");
+  call(core, ui, 50, "screen.close", { station: S, screen: "browser:u_1" });
+  await host.settle();
+
+  // Release the older in-flight GET: #screensWithout unconditionally bumped #screensSeq, so stale GET must be dropped.
+  releaseStaleScreens(jsonResponse(200, {
+    screens: [
+      { id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] },
+      { id: "browser:u_1", kind: "browser", title: "Tab 1", userTab: true, width: 1280, height: 800, viewers: [], controlledBy: [] },
+    ],
+    browser: true,
+  }));
+  await host.settle();
+  apply(host, values);
+  assert.equal(core.inner.stations.screens(S), undefined, "older in-flight GET /screens must be dropped after screenGone even when local list was absent");
+
+  // 2. Active screen.view in reconnect backoff receives 403 on GET /screens:
+  //    must immediately abort to phase: "denied" and emit zero further screenView stream requests.
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+
+  host.takeEmitted();
+  call(core, ui, 88, "screen.view", { station: S, screen: "desktop", view: "v-reconn", codecs: ["jpeg"] });
+  await host.settle();
+  assert.equal(streamAttempts, 1, "initial screenView attempt made before backoff");
+
+  // While viewer is sleeping in reconnect backoff, GET /screens returns 403.
+  screensMode = "forbidden";
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  const emittedAfter403 = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(emittedAfter403.some((m) => m.id === 88 && m.value?.state?.phase === "denied"), "reconnecting screen.view must abort immediately to phase: denied on 403");
+
+  // Advance clock past all reconnect backoff windows: zero additional screenView stream requests may fire.
+  await host.time.pass(60_000, 1_000);
+  assert.equal(streamAttempts, 1, "denied screen.view must never issue further screenView requests after 403");
   core.close();
 });

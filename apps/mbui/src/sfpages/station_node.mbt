@@ -1256,12 +1256,30 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
 /// since when; 转为只看 and 断开 at its end for one the viewer may let go of, and 全部断开 once there is more than one.
 fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : String, screen : () -> Json?) -> Unit {
   let id = text(@signals.untracked(screen), "id")
-  let asked = fn(name : String, what : String, params : Array[(String, Json)]) {
+  let asked = fn(name : String, what : String, params : Array[(String, Json)], view_id : String?) {
     let sr = @signals.untracked(fn() { all_screens_read(core, address) })
-    if !sr.is_confirmed_known() ||
-      !flag(sr.value, "control") ||
-      !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") }) {
+    if !sr.is_confirmed_known() || !flag(sr.value, "control") {
       return
+    }
+    let live_screen = items(sr.value, "screens")
+      .iter()
+      .find_first(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "opening") })
+    match live_screen {
+      None => return
+      Some(sc) => {
+        let views = items(Some(sc), "views")
+        let ok = match view_id {
+          Some(vid) =>
+            views.iter().any(fn(v) {
+              let vv = Some(v)
+              text(vv, "id") == vid && flag(vv, "may") && (name != "screen.watchOnly" || flag(vv, "control"))
+            })
+          None => views.iter().any(fn(v) { flag(Some(v), "may") })
+        }
+        if !ok {
+          return
+        }
+      }
     }
     @settings.act(core, what, name, obj([("station", str(address)), ("screen", str(id)), ("account", str(@signals.untracked(here).sub)), ..params]))
   }
@@ -1289,7 +1307,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
               @sf.button_node(
                 w,
                 fn() { what },
-                fn() { asked("screen.watchOnly", what, [("view", str(view))]) },
+                fn() { asked("screen.watchOnly", what, [("view", str(view))], Some(view)) },
                 tone=Ghost,
                 busy=fn() { is_doing(core, ["screen.watchOnly"], on) },
                 disabled=fn() { !all_screens_confirmed(core, address) },
@@ -1300,7 +1318,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
             @sf.button_node(
               l,
               fn() { what },
-              fn() { asked("screen.endView", what, [("view", str(view))]) },
+              fn() { asked("screen.endView", what, [("view", str(view))], Some(view)) },
               tone=Ghost,
               busy=fn() { is_doing(core, ["screen.endView"], on) },
               disabled=fn() { !all_screens_confirmed(core, address) },
@@ -1318,7 +1336,7 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
         @sf.button_node(
           l,
           fn() { what },
-          fn() { asked("screen.endViews", what, []) },
+          fn() { asked("screen.endViews", what, [], None) },
           tone=Ghost,
           busy=fn() { is_doing(core, ["screen.endViews"], [("screen", id)]) },
           disabled=fn() { !all_screens_confirmed(core, address) },

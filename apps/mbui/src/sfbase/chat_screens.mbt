@@ -417,7 +417,7 @@ pub fn chat_remote_open(
         )
       },
       let_go=fn() { let_go(src, scope) },
-      most=@sf.open_hold_ms,
+      most=if !v.can_browser() && v.screens.length() == 1 { 5000.0 } else { @sf.open_hold_ms },
     )
     |> ignore
     return

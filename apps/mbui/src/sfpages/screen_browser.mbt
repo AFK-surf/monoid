@@ -604,7 +604,7 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
   }
   let use_tabs = if fresh_tabs.is_empty() { tabs } else { fresh_tabs }
   let at = use_tabs.search_by(fn(t) { text(Some(t), "id") == id }).unwrap_or(-1)
-  let rest = use_tabs.filter(fn(t) { text(Some(t), "id") != id })
+  let rest = use_tabs.filter(fn(t) { text(Some(t), "id") != id && !flag(Some(t), "opening") })
   if rest.is_empty() {
     close()
     return

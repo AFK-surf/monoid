@@ -50,13 +50,6 @@ test "who is on a screen: each view's device and mode; a member lets one go or a
     @sf.set_words(@sfbase.fill)
     let calls : Array[(String, Json)] = []
     let base = @sffixture.fixture("settings")
-    let src : Source = {
-      ..base,
-      call: fn(name, params, done) {
-        if name.has_prefix("screen.") { calls.push((name, params)) }
-        done(Ok(Json::null()))
-      },
-    }
     let view = fn(id : String, name : String, control : Bool, more : Map[String, Json]) -> Json {
       let m : Map[String, Json] = {
         "id": Json::string(id),
@@ -76,6 +69,32 @@ test "who is on a screen: each view's device and mode; a member lets one go or a
         view("v2", "Bob", false, may),
         view("v3", "Agent「部署」", true, { "agent": Json::boolean(true) }),
       ]),
+    }
+    let src : Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "screens" {
+          {
+            value: Some(
+              obj([
+                ("screens", Json::array([screen])),
+                ("outdated", Json::boolean(false)),
+                ("control", Json::boolean(true)),
+                ("known", Json::boolean(true)),
+                ("confirmed", Json::boolean(true)),
+              ]),
+            ),
+            error: None,
+            version: 1,
+          }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+      call: fn(name, params, done) {
+        if name.has_prefix("screen.") { calls.push((name, params)) }
+        done(Ok(Json::null()))
+      },
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {

@@ -482,7 +482,7 @@ export class Links {
     const memory = new Memory(
       keeper,
       [[LOG_KEY, LOGS_KEPT], [LINK_PREVIEW_KEY, LINK_PREVIEWS_KEPT], [FILE_PEEK_KEY, FILE_PEEKS_KEPT], [MESSAGE_PEEK_KEY, MESSAGE_PEEKS_KEPT]],
-      [PRESETS, LOG_KEY],
+      [PRESETS, LOG_KEY, "screens", "terminals"],
     );
     const link = new Link(address, addr, scoped, memory);
     this.#links.set(address, link);

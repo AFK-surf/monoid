@@ -1434,8 +1434,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         .map(fn(sc) { text(Some(sc), "id") })
       let t_outdated = ts.is_confirmed() && flag(tval, "confirmed") && flag(tval, "outdated")
       let s_outdated = ss.is_confirmed() && flag(sval, "confirmed") && flag(sval, "outdated")
-      let can_term = if t_confirmed { flag(tval, "open") } else if t_outdated { false } else { @signals.untracked(fn() { (s.src.asks_terminals)() }) }
-      let can_browse = if s_confirmed { flag(sval, "browser") && flag(sval, "control") } else if s_outdated { false } else { true }
+      let t_denied = ts.is_confirmed() && flag(tval, "denied")
+      let s_denied = ss.is_confirmed() && flag(sval, "denied")
+      let can_term = if t_confirmed { flag(tval, "open") } else if t_outdated || t_denied { false } else { @signals.untracked(fn() { (s.src.asks_terminals)() }) }
+      let can_browse = if s_confirmed { flag(sval, "browser") && flag(sval, "control") } else if s_outdated || s_denied { false } else { true }
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
         let sid = text(Some(sc), "id")
