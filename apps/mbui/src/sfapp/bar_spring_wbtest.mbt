@@ -357,8 +357,13 @@ test "bar: tab switch and slow manual drag obey capillary contact/break hysteres
     let gap = (act_size + act_gap) * bar.k_at(t.time()) - act_size
     if gap <= bar_bond_contact_gap {
       slow_bonded = bar.bond_bonded
+      let s0 = t.time()
       t.run_for(bloom_ms)
-      slow_merge = bar_merge_at(t.time())
+      let mut s = s0
+      while s <= t.time() {
+        slow_merge = dmax(slow_merge, bar_merge_at(s))
+        s += 2.0
+      }
       break
     }
     dy += 4.0
@@ -366,4 +371,229 @@ test "bar: tab switch and slow manual drag obey capillary contact/break hysteres
   t.release(xs[1], y - dy)
   t.run_for(settle_ms)
   assert_eq((slow_bonded, slow_merge >= 18.0, bar_merge_at(t.time()) == 0.0), (true, true, true), msg="slow_merge=\{slow_merge}")
+}
+
+///|
+fn bar_test_sd_rr(px : Double, py : Double, x : Double, y : Double, w : Double, h : Double, r : Double) -> Double {
+  let cx = x + w * 0.5
+  let cy = y + h * 0.5
+  let qx = (px - cx).abs() - (w * 0.5 - r)
+  let qy = (py - cy).abs() - (h * 0.5 - r)
+  let ox = dmax(qx, 0.0)
+  let oy = dmax(qy, 0.0)
+  (ox * ox + oy * oy).sqrt() + dmin(dmax(qx, qy), 0.0) - r
+}
+
+///|
+fn bar_test_smin_k(a : Double, b : Double, k : Double) -> Double {
+  if k <= 0.0 {
+    dmin(a, b)
+  } else {
+    let h = dmax(k - (a - b).abs(), 0.0) / k
+    dmin(a, b) - h * h * k * 0.25
+  }
+}
+
+///|
+/// Measures how far the merged liquid glass SDF (`smin_k(capsule, disc, merge)`) bulges past the panel's outer right
+/// edge (`x = w`) or bottom edge (`y = row_top + bar_track`) at moment `t`, matching the GPU `sd_group` shader.
+fn bar_test_sdf_overshoot(t : Double, w : Double, row_top : Double, reach : Double) -> (Double, Double) {
+  let k = bar.k_at(t)
+  let o = bar.o.value_at(t)
+  let clip_top = bar_glass_top(reach, o)
+  let panel = row_top + bar_track
+  let cap_w = bar_cur_capsule_w(w, k, bar.collapse_at(t))
+  let cap_h = panel - clip_top
+  let cap_r = dmin(rad, cap_h * 0.5)
+  let (alpha, sc) = bar_disc_look_at(t)
+  let merge = bar_merge_at(t)
+  let dx = bar_disc_dx_at(t)
+  let ds = act_size * sc
+  let dcx = w - act_size * 0.5 + dx
+  let dcy = row_top + act_size * 0.5
+  let sd_g = fn(px : Double, py : Double) {
+    let da = bar_test_sd_rr(px, py, 0.0, clip_top, cap_w, cap_h, cap_r)
+    if alpha <= 0.001 || ds <= 0.001 {
+      da
+    } else {
+      let db = bar_test_sd_rr(px, py, dcx - ds * 0.5, dcy - ds * 0.5, ds, ds, ds * 0.5)
+      bar_test_smin_k(da, db, merge)
+    }
+  }
+  let bound_right = if alpha > 0.001 && ds > 0.001 { dmax(w, dcx + ds * 0.5) } else { w }
+  let bound_bot = if alpha > 0.001 && ds > 0.001 { dmax(panel, dcy + ds * 0.5) } else { panel }
+  let mut max_right = 0.0
+  let mut yi = clip_top
+  while yi <= bound_bot + 1.0 {
+    if sd_g(bound_right, yi) <= 0.0 {
+      let mut lo = bound_right
+      let mut hi = bound_right + 16.0
+      for _ in 0..<14 {
+        let mid = 0.5 * (lo + hi)
+        if sd_g(mid, yi) <= 0.0 {
+          lo = mid
+        } else {
+          hi = mid
+        }
+      }
+      max_right = dmax(max_right, lo - bound_right)
+    }
+    yi += 2.0
+  }
+  let mut max_bot = 0.0
+  let mut xi = dmax(0.0, w - 90.0)
+  while xi <= bound_right + 12.0 {
+    if sd_g(xi, bound_bot) <= 0.0 {
+      let mut lo = bound_bot
+      let mut hi = bound_bot + 16.0
+      for _ in 0..<14 {
+        let mid = 0.5 * (lo + hi)
+        if sd_g(xi, mid) <= 0.0 {
+          lo = mid
+        } else {
+          hi = mid
+        }
+      }
+      max_bot = dmax(max_bot, lo - bound_bot)
+    }
+    xi += 2.0
+  }
+  (max_right, max_bot)
+}
+
+///|
+test "bar: holding open panel with finger tremor never re-opens ＋ notch or flashes corner bulge" {
+  let step_ms = 16.0
+  let open_settle_ms = 300.0
+  let release_settle_ms = 600.0
+  let top = bar_track / 2.0 - 4.0
+  let foot = -(bar_track / 2.0 + 2.0)
+  for case in [(foot, 80.0), (top, 36.0), (0.0, 56.0), (0.0, 80.0)] {
+    let (lift, up) = case
+    let t = tester("home")
+    let (xs, y0) = bar_places_at()
+    let row_top = y0 - 22.0
+    let y = y0 - lift
+    let at_y = Ref(y)
+    let slide_to = fn(py : Double) {
+      let from = at_y.val
+      for step in 1..<=6 {
+        t.move_to(xs[1], from + (py - from) * step.to_double() / 6.0)
+        t.run_for(step_ms)
+      }
+      at_y.val = py
+    }
+    t.press_at(xs[1], y)
+    slide_to(y - up)
+    t.run_for(open_settle_ms)
+    // Hold open with ±0.5pt finger tremor, including sliding down to right above `closes` (sampling the entire lean
+    // transition and any spring undershoot with no warm-up skip)
+    for hold_y in [y - up, row_top - closes - 1.0] {
+      let mut worst_k = 0.0
+      let mut worst_merge = 0.0
+      let mut worst_alpha = 0.0
+      let sample_hold = fn(from : Double, to : Double) {
+        let mut s = from
+        while s <= to {
+          worst_k = dmax(worst_k, bar.k_at(s))
+          worst_merge = dmax(worst_merge, bar_merge_at(s))
+          worst_alpha = dmax(worst_alpha, bar_disc_look_at(s).0)
+          s += 2.0
+        }
+      }
+      let from = at_y.val
+      for step in 1..<=6 {
+        let py = from + (hold_y - from) * step.to_double() / 6.0
+        t.move_to(xs[1], py)
+        let s0 = t.time()
+        t.run_for(step_ms)
+        sample_hold(s0, t.time())
+      }
+      at_y.val = hold_y
+      for i in 0..<24 {
+        let j = if i % 2 == 0 { 0.5 } else { -0.5 }
+        t.move_to(xs[1] + j, hold_y + j)
+        let s0 = t.time()
+        t.run_for(step_ms)
+        sample_hold(s0, t.time())
+      }
+      assert_eq(
+        (bar.open, worst_k, worst_merge, worst_alpha),
+        (true, 0.0, 0.0, 0.0),
+        msg="lift=\{lift} up=\{up} hold_y=\{hold_y}: o_to=\{bar.o.to} k=\{worst_k} merge=\{worst_merge} alpha=\{worst_alpha}",
+      )
+    }
+    t.release(xs[1], row_top - closes - 1.0)
+    t.run_for(release_settle_ms)
+  }
+}
+
+///|
+test "bar: ＋ buds smoothly from capsule with zero single-frame corner bloat across open, close, and tab switch" {
+  let settle_ms = 1000.0
+  let drag_step_ms = 16.0
+  let t = tester("home")
+  let (xs, y) = bar_places_at()
+  let told = bar.told.unwrap()
+  let l = bar_laid(told)
+  let mut max_right = 0.0
+  let mut max_bot = 0.0
+  let mut max_step_right = 0.0
+  let mut max_step_bot = 0.0
+  let prev_r = Ref(-1.0)
+  let prev_b = Ref(-1.0)
+  let reset_step = fn() {
+    prev_r.val = -1.0
+    prev_b.val = -1.0
+  }
+  let sample_span = fn(t0 : Double, t1 : Double) {
+    let mut s = t0
+    while s <= t1 {
+      let (r, b) = bar_test_sdf_overshoot(s, l.w, l.row_top, l.reach)
+      max_right = dmax(max_right, r)
+      max_bot = dmax(max_bot, b)
+      if prev_r.val >= 0.0 {
+        max_step_right = dmax(max_step_right, (r - prev_r.val).abs())
+        max_step_bot = dmax(max_step_bot, (b - prev_b.val).abs())
+      }
+      prev_r.val = r
+      prev_b.val = b
+      s += 8.0
+    }
+  }
+  let drag_sampled = fn(y_from : Double, y_to : Double) {
+    reset_step()
+    t.press_at(xs[1], y_from)
+    for step in 1..<=10 {
+      let py = y_from + (y_to - y_from) * step.to_double() / 10.0
+      t.move_to(xs[1], py)
+      let s0 = t.time()
+      t.run_for(drag_step_ms)
+      sample_span(s0, t.time())
+    }
+    t.release(xs[1], y_to)
+    sample_span(t.time(), dmax(bar_rest(), t.time()))
+    t.run_for(settle_ms)
+  }
+  // 1. Open panel (sampled every 8ms during drag AND post-release spring)
+  drag_sampled(y, y - 80.0)
+  // 2. Close panel (sampled every 8ms during drag AND post-release spring)
+  drag_sampled(y - 56.0, y)
+  // 3. Tab switch: Chats -> Remote -> Chats
+  reset_step()
+  let s0 = t.time()
+  assert_true(@sfbase.go_place("remote"))
+  t.draw()
+  sample_span(s0, dmax(bar_rest(), t.time()))
+  t.run_for(settle_ms)
+  reset_step()
+  let s1 = t.time()
+  assert_true(@sfbase.go_place("chats"))
+  t.draw()
+  sample_span(s1, dmax(bar_rest(), t.time()))
+  t.run_for(settle_ms)
+  assert_true(
+    max_right <= 0.5 && max_bot <= 1.2 && max_step_right <= 0.6 && max_step_bot <= 0.6,
+    msg="liquid glass corner bloat: max_right=\{max_right}pt max_bot=\{max_bot}pt step_r=\{max_step_right}pt step_b=\{max_step_bot}pt",
+  )
 }

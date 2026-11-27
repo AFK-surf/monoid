@@ -996,16 +996,32 @@ fn BarModel::schedule_bond(self : BarModel, _prev_k_end : Double, at~ : Double) 
 }
 
 ///|
+/// Notch fraction below which the `＋` circle stays completely absorbed inside the capsule (unrendered, merge = 0) and
+/// at which it finishes emerging to its resting position and full size (before physical contact breaks at k = 5/6).
+let bar_disc_k_start : Double = 0.05
+
+///|
+let bar_disc_k_full : Double = 0.80
+
+///|
 /// Capillary liquid bridge merge radius between the capsule and `＋` circle at moment `t` (ms).
+/// While the `＋` circle buds out from inside the capsule (`k` in `(0.30, 0.76)`), the smooth-min radius ramps
+/// smoothly from a hairline `0.05` (keeping both shapes in one `sd_group` with zero double-glass rim) up to full
+/// `bond_merge`, preventing overlapping-shape smooth-min inflation at the panel's bottom-right corner.
 fn bar_merge_at(t : Double) -> Double {
-  if bar.k_at(t) <= 0.002 || bar.collapse_at(t) > 0.05 {
+  let k = bar.k_at(t)
+  if k <= bar_disc_k_start || bar.collapse_at(t) > 0.05 {
     return 0.0
   }
   let m = bar.bond_merge.value_at(t)
   if !bar.bond_bonded && m < 0.05 {
-    0.0
+    return 0.0
+  }
+  let scaled = dmax(0.0, m) * bar_smoothstep(0.30, 0.76, k)
+  if k <= bar_disc_k_full {
+    dmax(0.05, scaled)
   } else {
-    dmax(0.0, m)
+    scaled
   }
 }
 
@@ -1611,9 +1627,15 @@ fn bar_glass_top(reach : Double, o : Double) -> Double {
 }
 
 ///|
-/// The notch closes with the panel. Its width eases to rest as the rows reach the full bar.
+/// How open the panel is when the notch finishes closing. A finger holding the panel open leans it down to `1 - lean`
+/// (0.75) and the open spring can dip slightly below 1.0 as it settles; finishing by 0.7 keeps the notch smoothly eased
+/// to rest (no linear snap) while ensuring holding the open panel never re-opens the notch or flashes `＋`.
+let bar_notch_shut : Double = 0.7
+
+///|
+/// The notch closes with the panel. Its width eases to rest as the rows near the full bar.
 fn bar_panel_notch(k : Double, open : Double) -> Double {
-  k * (1.0 - bar_smoothstep(0.0, 1.0, open))
+  k * (1.0 - bar_smoothstep(0.0, bar_notch_shut, open))
 }
 
 ///|
