@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.7 | 131.79 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.68 | 128.91 |
 | [663f65061](https://github.com/AFK-surf/monoid/commit/663f65061c4469b33bffa414095e4a0863b0fcb6) fix(ui): read a Markdown file in a document's colu | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.68 | 128.91 |
 | [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.94 | 131.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
-| [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2021aa205](https://github.com/AFK-surf/monoid/commit/2021aa205b0ea1a380250e4b8cdd30f2211d1f96) fix(ui): check text coverage at the drawn corners  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
 | [2fa36d827](https://github.com/AFK-surf/monoid/commit/2fa36d827b55adccfd88b88f9da55dec6d67b835) fix(mbc): build readable debug symbols for empty M | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.79 |
 | [663f65061](https://github.com/AFK-surf/monoid/commit/663f65061c4469b33bffa414095e4a0863b0fcb6) fix(ui): read a Markdown file in a document's colu | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.61 |
 | [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.67 |
 | [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.54 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.56 |
-| [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.98 |
