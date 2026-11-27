@@ -408,7 +408,7 @@ async function rig(web = false, two = false, more: Answers = {}, also?: Record<s
     ui = s.core.connect();
     r.core = s.core;
   };
-  const r = { ...s, st, st2, phone, other, lock, me, ask, watch, take, restart, putLock: () => s.core.inner.data.put("lock", "ws", lock) };
+  const r = { ...s, st, st2, phone, other, lock, me, ask, watch, take, restart, putLock: () => { s.core.inner.data.put("lock", "ws", lock); s.core.inner.syncWorkspaceAuth?.("ws"); } };
   return r;
 }
 
@@ -420,7 +420,7 @@ function grow(r: Awaited<ReturnType<typeof rig>>, kind: string, body: unknown, b
   const entry: Entry = { ...e, sig: { key: signer.id, alg: "Ed25519", sig: signer.signBytes(new Uint8Array([...utf8("stillfail-lock/1 sig\0"), ...unhex(entryHash(e))])) } };
   r.lock.entries.push(entry);
   r.lock.head = { seq: entry.seq, hash: entryHash(entry), genesis: r.lock.head.genesis };
-  r.putLock();
+  r.core.inner.data.put("lock", "ws", r.lock);
 }
 
 const fails = async (p: Promise<unknown>, code: string) => {

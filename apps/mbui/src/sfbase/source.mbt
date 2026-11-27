@@ -1287,15 +1287,14 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) 
     match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }) {
       Some(i) => {
         let holder = followed_topics.val[i].holder
-        // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
-        // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
-        // 2026-11-12, every switch of workspace left what was declared and never read subscribed:
-        // src/sfapp/declared_let_go_wbtest.mbt)
-        if dispose_if_unwatched(holder) {
+        // Detach + drop + release BEFORE `holder.dispose()` so synchronous re-entrant `on_unwatched`
+        // callbacks outside a frame/batch never observe the entry a second time.
+        retire_if_unwatched(holder, fn() {
           followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
           topic_readers_drop(src, key)
           (src.release)(name, params)
-        }
+        })
+        |> ignore
       }
       None => ()
     }
@@ -1418,17 +1417,21 @@ fn followed_topic(
             match followed_topics.val.search_by(fn(t) { physical_equal(t.token, token) }) {
               Some(i) => {
                 let holder = followed_topics.val[i].holder
-                // (its holder let go of what it read before the subscription is released, as let_go_unread's: an untracked
-                // read of it since it lost its last reader (existing_followed_topic, read_held_found) linked it to the
-                // subscription again, which the client would then never end)
-                if dispose_if_unwatched(holder) {
-                  // A removed Array slot keeps its old value alive; replace the array before releasing.
-                  followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
-                  if !independent {
-                    topic_readers_drop(src, key)
-                  }
-                  (src.release)(name, params)
-                }
+                // Detach BEFORE `holder.dispose()` (and release AFTER `holder.dispose()`): an untracked read since
+                // it lost its last reader linked it to the subscription again, while detaching first prevents any
+                // synchronous re-entrant `on_unwatched` from observing this entry twice.
+                retire_if_unwatched(
+                  holder,
+                  fn() {
+                    // A removed Array slot keeps its old value alive; replace the array before releasing.
+                    followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
+                    if !independent {
+                      topic_readers_drop(src, key)
+                    }
+                  },
+                  after_dispose=fn() { (src.release)(name, params) },
+                )
+                |> ignore
               }
               None => ()
             }
@@ -1585,9 +1588,10 @@ pub fn unread_answer(done : (Result[Json, Json]) -> Unit) -> Bool {
 }
 
 ///|
-/// Invalidates `FollowedTopic` entries matching `(src, matches)` through `invalidate_live_or_dispose`:
-/// unwatched entries are disposed and dropped, while watched entries stay linked and have their
-/// `lifetime` signal queued into `pending_bumps`.
+/// Invalidates `FollowedTopic` entries matching `(src, matches)`:
+/// unwatched entries are detached from `followed_topics` and `topic_readers` BEFORE disposal (preventing
+/// re-entrant `on_unwatched` double-release), while watched entries stay linked and have their `lifetime`
+/// signal queued into `pending_bumps`.
 fn followed_invalidate_matching(
   src : Source,
   matches : (String, Map[String, Json]) -> Bool,
@@ -1597,10 +1601,11 @@ fn followed_invalidate_matching(
   let kept : Array[FollowedTopic] = []
   for t in followed_topics.val {
     if physical_equal(t.source, src) && matches(t.name, t.params) {
-      if invalidate_live_or_dispose(t.holder, t.lifetime, pending_bumps) {
-        dropped.push(t)
-      } else {
+      if t.holder.watched() {
+        pending_bumps.push(t.lifetime)
         kept.push(t)
+      } else {
+        dropped.push(t)
       }
     } else {
       kept.push(t)
@@ -1612,6 +1617,7 @@ fn followed_invalidate_matching(
       if !t.independent {
         topic_readers_drop(src, t.key)
       }
+      dispose_if_unwatched(t.holder) |> ignore
     }
   }
 }

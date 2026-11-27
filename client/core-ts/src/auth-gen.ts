@@ -159,25 +159,22 @@ export class CompositeCapability extends BaseCapability {
   }
 }
 
-/// First-class immutable capability anchored to a full `AuthBoundary` snapshot captured at call entry.
-/// Derives `WorkspaceCapability` and `VaultCapability` anchored to the original entry snapshot so
-/// multi-step / cross-workspace async flows never sample post-await generations by mistake.
-export class AuthCapability extends BaseCapability {
+/// First-class immutable snapshot factory anchored to a full `AuthBoundary` captured at call entry.
+/// Does NOT implement `AuthScopeCapability` directly: callers must explicitly derive a scoped
+/// `WorkspaceCapability`, `VaultCapability`, or `CompositeCapability` via `.workspace(...)`,
+/// `.vault(...)`, or `AuthCapability.all(...)` so global snapshots can never be misused to guard
+/// workspace- or vault-scoped writes.
+export class AuthCapability {
   readonly tracker: AuthGenTracker;
   readonly snap: AuthBoundary;
   readonly globalGen: number;
   readonly vaultGlobalGen: number;
 
   constructor(tracker: AuthGenTracker, snap: AuthBoundary = tracker.snapshot(0)) {
-    super();
     this.tracker = tracker;
     this.snap = snap;
     this.globalGen = snap.global ?? 1;
     this.vaultGlobalGen = snap.vaultGlobal ?? 1;
-  }
-
-  isValid(): boolean {
-    return this.tracker.globalGen === this.globalGen && this.tracker.vaultGlobalGen === this.vaultGlobalGen;
   }
 
   workspace(ws: string, opts?: WorkspaceCapabilityOptions): WorkspaceCapability {
@@ -216,7 +213,8 @@ export class AuthCapability extends BaseCapability {
 }
 
 /// First-class immutable capability bound to one workspace (and optionally its owner `sub`,
-/// `vaultGlobalGen`, and `vaultWorkspaceGen`).
+/// `vaultGlobalGen`, and `vaultWorkspaceGen`), always anchored to an entry `AuthBoundary` snapshot
+/// so subsequent `narrowVault(...)` calls never sample post-await generations.
 export class WorkspaceCapability extends BaseCapability {
   readonly tracker: AuthGenTracker;
   readonly ws: string;
@@ -226,7 +224,7 @@ export class WorkspaceCapability extends BaseCapability {
   readonly trackVaultGlobal: boolean;
   readonly sub: string | null;
   readonly #resolveOwner: (() => string | null) | null;
-  readonly #snap: AuthBoundary | null;
+  readonly #snap: AuthBoundary;
 
   constructor(
     tracker: AuthGenTracker,
@@ -237,7 +235,7 @@ export class WorkspaceCapability extends BaseCapability {
     trackVaultGlobal: boolean,
     sub: string | null,
     resolveOwner: (() => string | null) | null,
-    snap: AuthBoundary | null,
+    snap: AuthBoundary,
   ) {
     super();
     this.tracker = tracker;
@@ -260,10 +258,7 @@ export class WorkspaceCapability extends BaseCapability {
   }
 
   narrowVault(vaultId: string): VaultCapability {
-    const vaultGen =
-      this.#snap !== null
-        ? snapVaultGen(this.#snap, this.ws, vaultId)
-        : this.tracker.vaultGen(this.ws, vaultId);
+    const vaultGen = snapVaultGen(this.#snap, this.ws, vaultId);
     return new VaultCapability(
       this.tracker,
       this.ws,
@@ -293,7 +288,7 @@ export class VaultCapability extends BaseCapability {
   readonly vaultGlobalGen: number;
   readonly sub: string | null;
   readonly #resolveOwner: (() => string | null) | null;
-  readonly #snap: AuthBoundary | null;
+  readonly #snap: AuthBoundary;
 
   constructor(
     tracker: AuthGenTracker,
@@ -304,7 +299,7 @@ export class VaultCapability extends BaseCapability {
     vaultGlobalGen: number,
     sub: string | null,
     resolveOwner: (() => string | null) | null,
-    snap: AuthBoundary | null,
+    snap: AuthBoundary,
   ) {
     super();
     this.tracker = tracker;
@@ -328,16 +323,12 @@ export class VaultCapability extends BaseCapability {
 
   forVault(vaultId: string): VaultCapability {
     if (vaultId === this.vaultId) return this;
-    const vaultGen =
-      this.#snap !== null
-        ? snapVaultGen(this.#snap, this.ws, vaultId)
-        : this.tracker.vaultGen(this.ws, vaultId);
     return new VaultCapability(
       this.tracker,
       this.ws,
       vaultId,
       this.wsAuthGen,
-      vaultGen,
+      snapVaultGen(this.#snap, this.ws, vaultId),
       this.vaultGlobalGen,
       this.sub,
       this.#resolveOwner,
@@ -587,39 +578,21 @@ export class AuthGenTracker {
     return new AuthCapability(this, this.snapshot(0));
   }
 
-  /// Captures an immutable `WorkspaceCapability` for `ws` (without vault-global coupling by default).
+  /// Captures an immutable `WorkspaceCapability` for `ws` anchored to the current `AuthBoundary` snapshot
+  /// (without vault-global coupling by default).
   workspaceCapability(ws: string, opts?: WorkspaceCapabilityOptions): WorkspaceCapability {
-    return new WorkspaceCapability(
-      this,
-      ws,
-      this.workspaceAuthGen(ws),
-      this.#vaultGlobalGen,
-      opts?.trackWsVault ? this.vaultWorkspaceGen(ws) : null,
-      opts?.trackVaultGlobal ?? false,
-      opts?.sub ?? null,
-      opts?.resolveOwner ?? null,
-      null,
-    );
+    return this.capture().workspace(ws, opts);
   }
 
-  /// Captures an immutable `WorkspaceCapability` for vault operations in `ws` (`trackVaultGlobal: true`).
+  /// Captures an immutable `WorkspaceCapability` for vault operations in `ws` (`trackVaultGlobal: true`),
+  /// anchored to the current `AuthBoundary` snapshot.
   vaultWorkspaceCapability(ws: string, opts?: Omit<WorkspaceCapabilityOptions, "trackVaultGlobal">): WorkspaceCapability {
-    return this.workspaceCapability(ws, { ...opts, trackVaultGlobal: true });
+    return this.capture().workspace(ws, { ...opts, trackVaultGlobal: true });
   }
 
-  /// Captures an immutable `VaultCapability` for `(ws, vaultId)`.
+  /// Captures an immutable `VaultCapability` for `(ws, vaultId)` anchored to the current `AuthBoundary` snapshot.
   vaultCapability(ws: string, vaultId: string, opts?: OwnerBinding): VaultCapability {
-    return new VaultCapability(
-      this,
-      ws,
-      vaultId,
-      this.workspaceAuthGen(ws),
-      this.vaultGen(ws, vaultId),
-      this.#vaultGlobalGen,
-      opts?.sub ?? null,
-      opts?.resolveOwner ?? null,
-      null,
-    );
+    return this.capture().vault(ws, vaultId, opts);
   }
 
   /// Builds a targeted boundary message for an incremental event.

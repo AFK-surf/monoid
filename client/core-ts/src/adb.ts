@@ -18,7 +18,7 @@ import { StationAddr } from "./station/addr.ts";
 import { Retold } from "./station/retold.ts";
 import { LANG_HEADER } from "./station/requests.ts";
 import type { RequestHead } from "./station/wire.ts";
-import { AuthCapability, type AuthBoundaryEvent, type WorkspaceCapability, snapWsAuthGen } from "./auth-gen.ts";
+import { AuthCapability, type AuthBoundaryEvent, type AuthScopeCapability, type WorkspaceCapability, snapWsAuthGen } from "./auth-gen.ts";
 import type { Store } from "./store.ts";
 import { fromUtf8, parseJson, utf8 } from "./util.ts";
 import { ofAddress } from "./workspace.ts";
@@ -537,9 +537,12 @@ class Lend {
   }
 
   /// An ask of station `station` on its link now: what it answered (JSON), or its words as the error.
-  askAt(station: string, ask: J): Effect.Effect<unknown, CoreError> {
+  /// When `guard` is supplied, re-checks it before dialling and immediately before sending on the link.
+  askAt(station: string, ask: J, guard?: () => boolean): Effect.Effect<unknown, CoreError> {
     return Effect.gen({ self: this }, function* () {
+      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
       const [mesh, link] = yield* this.#link(station);
+      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
       const reply = yield* link.ask(head(), { adb: { ...ask, phone: mesh.deviceId() } });
       const parts: Uint8Array[] = [];
       for (;;) {
@@ -587,7 +590,9 @@ class AdbStationGrants {
   /// Resolves a `WorkspaceCapability` for `heard` when given either an existing capability or an
   /// external `(readGen, expectedSub)` pair from the station event stream.
   capabilityFor(station: string, capOrGen?: WorkspaceCapability | number, expectedSub?: string): WorkspaceCapability | null {
-    if (capOrGen !== undefined && typeof capOrGen !== "number") return capOrGen;
+    if (capOrGen !== undefined && typeof capOrGen !== "number") {
+      return capOrGen.ws === ofAddress(station) ? capOrGen : null;
+    }
     const cap = this.capability(station);
     if (cap === null) return null;
     if (capOrGen !== undefined && capOrGen !== cap.wsAuthGen) return null;
@@ -832,8 +837,8 @@ export class Adb {
     return this.#stationGrants.get(station);
   }
 
-  #askGuarded(cap: WorkspaceCapability, station: string, ask: J): Effect.Effect<unknown, CoreError> {
-    return cap.guard(this.#legacy.askAt(station, ask));
+  #askGuarded(cap: AuthScopeCapability, station: string, ask: J): Effect.Effect<unknown, CoreError> {
+    return cap.guard(this.#legacy.askAt(station, ask, () => cap.isValid()));
   }
 
   /// The grants as they stand kept on the device (the live ones and the requests waiting: those ended let go),
@@ -977,11 +982,25 @@ export class Adb {
       this.#sync();
       // Carried to the person's other stations meanwhile: what they keep, the phones read and are told.
       const others = signed.size === 0 ? [] : (this.#env.stationsOf?.(startSub) ?? []).filter((s) => s !== station);
+      const otherCaps = new Map<string, AuthScopeCapability>();
+      for (const other of others) {
+        const otherCap = this.#stationGrants.capability(other);
+        if (otherCap !== null && otherCap.sub === startSub) {
+          otherCaps.set(other, AuthCapability.all(cap, otherCap));
+        }
+      }
       const carried = Deferred.makeUnsafe<boolean>();
       this.#env.runner.fork(Effect.andThen(
-        Effect.forEach(others, (other) => Effect.result(Effect.forEach([...signed.values()], (s) => (
-          this.#askGuarded(cap, other, { op: "revoke", request: s.body.request, signed: s, relay: true })
-        ), { discard: true })), { concurrency: "unbounded" }),
+        Effect.forEach(others, (other) => {
+          const relayCap = otherCaps.get(other);
+          return Effect.result(
+            relayCap === undefined
+              ? Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")))
+              : Effect.forEach([...signed.values()], (s) => (
+                this.#askGuarded(relayCap, other, { op: "revoke", request: s.body.request, signed: s, relay: true })
+              ), { discard: true }),
+          );
+        }, { concurrency: "unbounded" }),
         (results) => Deferred.succeed(carried, results.some((r) => r._tag === "Success")),
       ));
       const told = yield* Effect.result(Effect.forEach(ids, (id) => {

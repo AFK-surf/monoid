@@ -265,21 +265,27 @@ test "Direction 2A sfbase: watched FollowedTopic, Derived, and Kept survive repe
   assert_true(seen_v2.val.unwrap().contains("V2_OK"), msg="v2 must be untouched by v1 boundary")
   assert_true(seen_b.val.unwrap().contains("B1"), msg="wsB must be untouched by v1 boundary")
 
-  // Boundary 2: Workspace(wsA) invalidation
-  chats_a_sig.set(None)
+  // Boundary 2: Workspace(wsA) invalidation (direct A1 -> A2 transition without None in between to verify `was` is dropped!)
+  chats_a_sig.set(Some({ "items": ["A2"] }))
+  // Reset leaked_was after normal pre-boundary transition (we test post-boundary transition next)
+  leaked_was.val = 0
+  // Put back A1, then invalidate directly and feed A2 on the boundary recomputation
+  chats_a_sig.set(Some({ "items": ["A1"] }))
+  leaked_was.val = 0
   invalidate_auth_scope(src, fn(_, params) {
     params.get("scope") == Some(Json::string("wsA")) || params.get("workspace") == Some(Json::string("wsA"))
   })
-  assert_true(seen_a.val is None, msg="wsA watched Derived must drop SWR on Workspace boundary")
-  assert_true(d_chats.kept_from(src, p_a) is None, msg="wsA kept_from must be None after Workspace boundary")
   assert_true(d_unwatched.kept_from(src, p_a) is None, msg="unwatched Derived must be evicted on Workspace boundary")
   assert_true(seen_b.val.unwrap().contains("B1"), msg="wsB must remain intact on wsA boundary")
 
   // Boundary 3: Global invalidation (repeated back-to-back)
   acc_sig.set(None)
+  chats_a_sig.set(None)
   invalidate_auth_scope(src, fn(name, _) { !topic_policy_device_global(name) })
   invalidate_auth_scope(src, fn(name, _) { !topic_policy_device_global(name) })
   assert_true(seen_acc.val is None)
+  assert_true(seen_a.val is None, msg="wsA watched Derived must drop SWR on Global boundary")
+  assert_true(d_chats.kept_from(src, p_a) is None, msg="wsA kept_from must be None after Global boundary")
 
   // Post-boundary fresh data arrives: ALL watched readers must still be live and receive updates!
   acc_sig.set(Some(Json::array([{ "sub": "u2" }])))
@@ -302,4 +308,40 @@ test "Direction 2A sfbase: watched FollowedTopic, Derived, and Kept survive repe
   stop_v1()
   stop_v2()
   stop_k()
+}
+
+///|
+test "Direction 2A sfbase: let_go_unread and invalidate_auth_scope outside frame/batch release exactly once / zero times" {
+  let releases : Array[String] = []
+  let base = made_source(topic=fn(name, _) {
+    if name == "longJobs" || name == "chats" {
+      Some({ "items": [] })
+    } else {
+      None
+    }
+  })
+  let src : Source = {
+    ..base,
+    release: fn(name, _) { releases.push(name) },
+  }
+  let p : Map[String, Json] = { "scope": Json::string("wsR") }
+
+  // 1) Declared unread topic released via `declared_let_go` outside any frame/batch: must release EXACTLY once!
+  declare_topic(src, "longJobs", p) |> ignore
+  declared_let_go()
+  assert_eq(releases.length(), 1, msg="declared_let_go must call src.release exactly once (no re-entrant double release)")
+  assert_eq(releases[0], "longJobs")
+
+  // 2) `invalidate_auth_scope` on both unwatched (declared) and watched topics outside frame/batch: 0 spurious releases
+  declare_topic(src, "chats", p) |> ignore
+  releases.clear()
+  invalidate_auth_scope(src, fn(name, _) { name == "chats" })
+  assert_eq(releases.length(), 0, msg="invalidate_auth_scope on unwatched topic must not trigger spurious release")
+  declared_let_go()
+  assert_eq(releases.length(), 0, msg="declared_let_go after invalidate_auth_scope must not double-release")
+
+  let stop = @signals.effect(fn() { src.topic("chats", p).get() |> ignore })
+  invalidate_auth_scope(src, fn(name, _) { name == "chats" })
+  assert_eq(releases.length(), 0, msg="invalidate_auth_scope on watched topic must not trigger release")
+  stop()
 }

@@ -6,9 +6,9 @@
 // (`c.watched() == true`). Disposing a watched computed severs its upstream dependency links
 // without notifying downstream readers (`app_tree` / `app_is` / `root.pick`), permanently freezing
 // the UI. Instead, all external disposal/invalidation flows funnel through these single-point
-// helpers: unwatched computeds are disposed and evicted, while watched computeds stay linked and
-// have their `epoch` / `lifetime` signal bumped in a single batch so downstream readers immediately
-// re-evaluate and remain live for future updates.
+// helpers: unwatched computeds are detached before disposal (preventing re-entrant `on_unwatched`
+// double-release), while watched computeds stay linked and have their `epoch` / `lifetime` signal
+// bumped in a single batch so downstream readers immediately re-evaluate and remain live.
 
 ///|
 /// Disposes `c` ONLY when no live downstream reader watches it (`!c.watched()`).
@@ -18,6 +18,29 @@ fn[T] dispose_if_unwatched(c : @signals.Computed[T]) -> Bool {
     false
   } else {
     c.dispose()
+    true
+  }
+}
+
+///|
+/// Retires `c` ONLY when no live downstream reader watches it (`!c.watched()`), preserving exact
+/// caller-specified ordering around `Computed::dispose()`:
+/// - `before_dispose()` runs first (removing the entry from registry arrays before `c.dispose()` so
+///   any synchronous re-entrant `on_unwatched` callback triggered by `c.dispose()` cannot see it again).
+/// - `c.dispose()` runs next.
+/// - `after_dispose()` runs last.
+/// Returns `true` if retired, `false` if still watched.
+fn[T] retire_if_unwatched(
+  c : @signals.Computed[T],
+  before_dispose : () -> Unit,
+  after_dispose? : () -> Unit = fn() {  },
+) -> Bool {
+  if c.watched() {
+    false
+  } else {
+    before_dispose()
+    c.dispose()
+    after_dispose()
     true
   }
 }

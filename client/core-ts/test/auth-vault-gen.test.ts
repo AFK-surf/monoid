@@ -1364,5 +1364,91 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     const ownerFail = await Effect.runPromise(Effect.result(adbCap.assertValid()));
     assert.equal(ownerFail._tag, "Failure");
     assert.equal(ownerFail.failure.code, "auth_stale");
+
+    // 5. Opus P2: workspaceCapability().narrowVault() stays anchored to entry snapshot even if vault bumps after capture
+    const wsCapEntry = tracker.vaultWorkspaceCapability("ws-anchor");
+    tracker.bumpVault("ws-anchor", "v-late");
+    const narrowedLate = wsCapEntry.narrowVault("v-late");
+    assert.equal(
+      narrowedLate.isValid(),
+      false,
+      "narrowVault() derived from workspaceCapability() must anchor to entry snapshot, not post-bump current gen",
+    );
+    // And AuthCapability does NOT expose guard/commit directly (must narrow to workspace/vault/all)
+    assert.equal("guard" in entryCap, false, "AuthCapability must not expose guard() directly");
+    assert.equal("commit" in entryCap, false, "AuthCapability must not expose commit() directly");
+  });
+
+  it("Direction 2A P1-2/P1-3/P1-4: HostWire transport guard blocks stale send before fetch, and stale ACK commit is suppressed", async () => {
+    const tracker = new AuthGenTracker();
+    const { HostWire } = await import("../src/station/wire.ts");
+    const { StationAddr } = await import("../src/station/addr.ts");
+
+    let fetchCalls = 0;
+    const host = new FakeHost();
+    host.fetch = () =>
+      Effect.sync(() => {
+        fetchCalls++;
+        return { status: 200, headers: [], body: new TextEncoder().encode("{}") };
+      });
+    const wire = new HostWire(host);
+    const addr = new StationAddr("ws-wire", "st-1");
+    const head = { method: "PUT", path: "/vault/items", headers: [] as [string, string][] };
+
+    // 1. P1-3: guard returns false before send -> HostWire aborts with auth_stale and 0 fetch calls
+    const cap = tracker.vaultCapability("ws-wire", "v1");
+    tracker.bumpVault("ws-wire", "v1");
+    const staleRes = await Effect.runPromise(
+      Effect.scoped(Effect.result(wire.request(addr, head, new Uint8Array(), undefined, () => cap.isValid()))),
+    );
+    assert.equal(staleRes._tag, "Failure");
+    assert.equal(staleRes.failure.code, "auth_stale");
+    assert.equal(fetchCalls, 0, "transport-level guard must abort with auth_stale before calling host.fetch");
+
+    // 2. P1-4: ACK arrives after auth boundary -> cap.commit suppresses local write-back cleanly
+    const cap2 = tracker.vaultCapability("ws-wire", "v2");
+    let localWrites = 0;
+    const okRes = await Effect.runPromise(
+      Effect.scoped(wire.request(addr, head, new Uint8Array(), undefined, () => cap2.isValid())),
+    );
+    assert.equal(okRes.status, 200);
+    assert.equal(fetchCalls, 1);
+    // Boundary fires while awaiting ACK
+    tracker.bumpVault("ws-wire", "v2");
+    const committed = cap2.commit(() => {
+      localWrites++;
+      return true;
+    });
+    assert.equal(committed, undefined, "post-ACK commit must be suppressed once capability is stale");
+    assert.equal(localWrites, 0, "stale ACK must never mutate local cache");
+
+    // 3. P1-3: Requests.call forwards guard to StationWire.request so invalidation while waiting for a link aborts with auth_stale and 0 sends
+    const { CoreError } = await import("../src/error.ts");
+    const cap3 = tracker.vaultCapability("ws-wire", "v3");
+    let linkWaited = false;
+    let wireSent = 0;
+    const waitGate = Effect.runSync(Deferred.make<void>());
+    const fakeWire = {
+      request: (_station: InstanceType<typeof StationAddr>, _head: { method: string; path: string; headers: [string, string][] }, _body: Uint8Array, _onProgress?: unknown, guard?: () => boolean) =>
+        Effect.gen(function* () {
+          if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
+          linkWaited = true;
+          yield* Deferred.await(waitGate);
+          if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
+          wireSent++;
+          return { status: 200, headers: [] as [string, string][], body: { take: Effect.succeed(null) }, via: null };
+        }),
+    };
+    const coreWire = await Core.create(new FakeHost(), { wire: () => fakeWire, iroh: null });
+    const pending = Effect.runPromise(Effect.result(coreWire.inner.stations.requests.call(addr, "PUT", "/vault/items", {}, { guard: () => cap3.isValid() })));
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(linkWaited, true, "request must be waiting inside transport");
+    tracker.bumpVault("ws-wire", "v3");
+    Effect.runSync(Deferred.succeed(waitGate, undefined));
+    const waitRes = await pending;
+    assert.equal(waitRes._tag, "Failure");
+    assert.equal(waitRes.failure.code, "auth_stale");
+    assert.equal(wireSent, 0, "invalidation while waiting for link must abort before sending");
+    await coreWire.close();
   });
 });
