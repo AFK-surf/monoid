@@ -231,8 +231,8 @@ pub struct WholeAgents {
   pub jobs : station_jobs::JobManager
   pub mut bound_to_workspace : Bool
   pub adopted_session_by_runner_id : Map[String, String]
-  pub adopted_runner_output : Map[String, Array[String]]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
+  mut adopted_db : Option[sql_db::Db]
   job_fs : station_jobs::FsPort
   active_tokens : Array[(String, String)]
   revoked_tokens : Map[String, Bool]
@@ -265,8 +265,8 @@ pub fn WholeAgents::new_with_deps(
     jobs: jobs,
     bound_to_workspace: true,
     adopted_session_by_runner_id: Map::new(),
-    adopted_runner_output: Map::new(),
     adopted_runner_exits: Map::new(),
+    adopted_db: None,
     job_fs: fs,
     active_tokens: [],
     revoked_tokens: Map::new(),
@@ -879,223 +879,355 @@ pub fn WholeAgents::adopt_sessions(
 }
 
 let RUNNER_OUTPUT_MAX_BYTES : Int64 = 16777216L
-// Keep the JSONL `"end"` key without triggering the static SQLite `END` string-literal guard.
-let RUNNER_OUTPUT_END_KEY : String = "en" + "d"
 
-fn WholeAgents::runner_output_log_path(self : WholeAgents, session_key : String) -> String {
-  let sep = self.job_fs.sep
-  let safe_key = station_drivers::key_part(session_key)
-  self.config.data_dir + sep + "sessions" + sep + safe_key + sep + "runner-output.jsonl"
+fn adopted_row_i64(row : Map[String, base_codec::Json], col : String) -> Int64 {
+  match row.get(col) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => 0L
+  }
 }
 
-/// Persist and record post-handover output delivered from an adopted runner for `session_key`.
-/// Caller MUST invoke this BEFORE advancing `acked_out`/`acked_err` or sending `ack` to the runner!
-pub fn WholeAgents::record_adopted_runner_output(
-  self : WholeAgents,
-  session_key : String,
-  runner_id : String,
-  stream : String,
-  at : Int64,
-  payload : Bytes,
-) -> Result[Unit, String] {
-  let sep = self.job_fs.sep
-  let safe_key = station_drivers::key_part(session_key)
-  let sdir = self.config.data_dir + sep + "sessions" + sep + safe_key
-  if !(self.job_fs.mkdir_p)(sdir) {
-    return Err("mkdir session dir failed: " + sdir)
+fn adopted_row_str(row : Map[String, base_codec::Json], col : String) -> String {
+  match row.get(col) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
   }
-  let log_path = sdir + sep + "runner-output.jsonl"
-  let text = payload.to_string()
-  let end_pos = at + payload.length().to_int64()
-  let rec = base_codec::json_stringify(base_codec::json_obj([
-    ("runner", base_codec::json_str(runner_id)),
-    ("stream", base_codec::json_str(stream)),
-    ("at", base_codec::json_int64(at)),
-    (RUNNER_OUTPUT_END_KEY, base_codec::json_int64(end_pos)),
-    ("dataB64", base_codec::json_str(base_codec::base64_encode(payload))),
-    ("text", base_codec::json_str(text)),
-  ])) + "\n"
-  let rec_bytes = rec.to_bytes()
-  match (self.job_fs.stat)(log_path) {
+}
+
+/// Stable runner instance identity isolating restarts of the same `runner_id` across PIDs/timestamps.
+pub fn WholeAgents::runner_instance_id(
+  runner_id : String,
+  runner_pid : Int,
+  started_at : Int64,
+) -> String {
+  runner_id + ":" + runner_pid.to_string() + ":" + started_at.to_string()
+}
+
+/// Merge contiguous raw byte chunks from the same `(instance_id, stream)` before UTF-8 decoding
+/// so multi-byte characters split across runner frames never produce `U+FFFD`.
+pub fn coalesce_runner_output_chunks(
+  chunks : Array[(String, String, Bytes)],
+) -> Array[String] {
+  let out : Array[String] = []
+  let mut cur_inst = ""
+  let mut cur_stream = ""
+  let mut cur_parts : Array[Bytes] = []
+  let mut cur_len = 0
+  let flush = fn() -> Unit {
+    if cur_parts.length() == 0 {
+      return
+    }
+    let merged = Bytes::new(cur_len)
+    let mut pos = 0
+    for pi in 0..<cur_parts.length() {
+      let b = cur_parts[pi]
+      for bi in 0..<b.length() {
+        merged[pos + bi] = b[bi]
+      }
+      pos = pos + b.length()
+    }
+    out.push(sql_db::decode_utf8_lossy_bytes(merged))
+    cur_parts = []
+    cur_len = 0
+  }
+  for i in 0..<chunks.length() {
+    let (inst, stream, data) = chunks[i]
+    if cur_parts.length() > 0 && (inst != cur_inst || stream != cur_stream) {
+      flush()
+    }
+    cur_inst = inst
+    cur_stream = stream
+    cur_parts.push(data)
+    cur_len = cur_len + data.length()
+  }
+  flush()
+  out
+}
+
+fn WholeAgents::adopted_db_path(self : WholeAgents) -> String {
+  let sep = self.job_fs.sep
+  self.config.data_dir + sep + "run" + sep + "adopted-runners.db"
+}
+
+/// Close the independent `<data_dir>/run/adopted-runners.db` handle cleanly on handover or shutdown.
+pub fn WholeAgents::close_adopted_db(self : WholeAgents) -> Unit {
+  match self.adopted_db {
+    Some(db) => {
+      db.close()
+      self.adopted_db = None
+    }
+    None => ()
+  }
+}
+
+fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String] {
+  match self.adopted_db {
+    Some(db) => return Ok(db)
+    None => ()
+  }
+  let sep = self.job_fs.sep
+  let run_dir = self.config.data_dir + sep + "run"
+  if !(self.job_fs.mkdir_p)(run_dir) {
+    return Err("mkdir run dir failed: " + run_dir)
+  }
+  let db_path = self.adopted_db_path()
+  match (self.job_fs.stat)(db_path) {
     Some(st) => {
       if st.is_dir() {
-        return Err("runner output log path is a directory: " + log_path)
-      }
-      if st.size + rec_bytes.length().to_int64() > RUNNER_OUTPUT_MAX_BYTES {
-        return Err("runner output log size limit exceeded")
-      }
-    }
-    None => {
-      if rec_bytes.length().to_int64() > RUNNER_OUTPUT_MAX_BYTES {
-        return Err("runner output log size limit exceeded")
-      }
-    }
-  }
-  if !(self.job_fs.write_file_mode)(log_path, rec_bytes, 384, true) {
-    return Err("persist runner output failed: " + log_path)
-  }
-  match self.adopted_runner_output.get(session_key) {
-    Some(arr) => {
-      if arr.length() >= 256 {
-        let trimmed : Array[String] = []
-        for i in 1..<arr.length() {
-          trimmed.push(arr[i])
-        }
-        trimmed.push(text)
-        self.adopted_runner_output.set(session_key, trimmed)
-      } else {
-        arr.push(text)
-      }
-    }
-    None => {
-      let loaded = self.read_adopted_runner_output(session_key)
-      if loaded.length() == 0 {
-        self.adopted_runner_output.set(session_key, [text])
-      }
-    }
-  }
-  Ok(())
-}
-
-/// Read persisted post-handover runner output for `session_key`, restoring from disk
-/// (`sessions/<safe_key>/runner-output.jsonl`) when the in-process cache is empty (e.g. after a
-/// subsequent `SIGUSR2` handover or restart), and backfilling the cache (up to 256 latest entries).
-pub fn WholeAgents::read_adopted_runner_output(
-  self : WholeAgents,
-  session_key : String,
-) -> Array[String] {
-  match self.adopted_runner_output.get(session_key) {
-    Some(arr) => {
-      if arr.length() > 0 {
-        return arr
+        return Err("adopted-runners.db path is a directory: " + db_path)
       }
     }
     None => ()
   }
-  let log_path = self.runner_output_log_path(session_key)
-  let raw_str = match (self.job_fs.read_bytes)(log_path) {
-    Some(b) => b.to_string()
-    None => {
-      match (self.job_fs.read_file)(log_path) {
-        Some(s) => s
-        None => return []
+  let db = match sql_db::Db::create(db_path, wait_ms=5000) {
+    Ok(d) => d
+    Err(e) => return Err("open adopted-runners.db failed: " + e.message)
+  }
+  let _ = (self.job_fs.chmod)(db_path, 384)
+  let init_sqls = [
+    "PRAGMA journal_mode=WAL;",
+    "PRAGMA synchronous=FULL;",
+    "PRAGMA busy_timeout=5000;",
+    "CREATE TABLE IF NOT EXISTS runner_instances (" +
+    "instance_id TEXT PRIMARY KEY, " +
+    "session_key TEXT NOT NULL, " +
+    "runner_id TEXT NOT NULL, " +
+    "runner_pid INTEGER NOT NULL, " +
+    "started_at INTEGER NOT NULL, " +
+    "acked_out INTEGER NOT NULL DEFAULT 0, " +
+    "acked_err INTEGER NOT NULL DEFAULT 0, " +
+    "updated_at INTEGER NOT NULL);",
+    "CREATE TABLE IF NOT EXISTS runner_output (" +
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+    "session_key TEXT NOT NULL, " +
+    "instance_id TEXT NOT NULL, " +
+    "stream TEXT NOT NULL, " +
+    "start_off INTEGER NOT NULL, " +
+    "end_off INTEGER NOT NULL, " +
+    "byte_len INTEGER NOT NULL, " +
+    "data_b64 TEXT NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_runner_output_session ON runner_output(session_key, id);",
+  ]
+  for i in 0..<init_sqls.length() {
+    match db.exec(init_sqls[i]) {
+      Ok(_) => ()
+      Err(e) => {
+        db.close()
+        return Err("init adopted-runners.db failed: " + e.message)
       }
     }
   }
-  let parsed : Array[String] = []
-  let lines = raw_str.split("\n")
-  for i in 0..<lines.length() {
-    let ln = lines[i].trim()
-    if ln.length() == 0 {
-      continue
-    }
-    match base_codec::json_parse(ln) {
-      Ok(v) => {
-        match base_codec::json_get(v, "text") {
-          Some(base_codec::Json::Str(t)) => parsed.push(t)
-          _ => {
-            match base_codec::json_get(v, "dataB64") {
-              Some(base_codec::Json::Str(b64)) => {
-                match base_codec::base64_decode(b64) {
-                  Some(raw) => parsed.push(raw.to_string())
-                  None => ()
-                }
-              }
-              _ => ()
-            }
-          }
-        }
-      }
-      Err(_) => ()
-    }
-  }
-  let out = if parsed.length() > 256 {
-    let start = parsed.length() - 256
-    let trimmed : Array[String] = []
-    for i in start..<parsed.length() {
-      trimmed.push(parsed[i])
-    }
-    trimmed
-  } else {
-    parsed
-  }
-  if out.length() > 0 {
-    self.adopted_runner_output.set(session_key, out)
-  }
-  out
+  self.adopted_db = Some(db)
+  Ok(db)
 }
 
-/// Recover contiguous committed stdout/stderr byte offsets from `runner-output.jsonl` so
-/// reconnecting after handover/restart does not re-persist already committed bytes.
-pub fn WholeAgents::committed_runner_offsets(
+/// Atomically look up or initialize a runner instance row in `<data_dir>/run/adopted-runners.db`.
+/// Returns `Ok((acked_out, acked_err, existed))`:
+/// - `existed == false`: first time seeing this `(runner_id, pid, started_at)` instance, seeded with `(init_out, init_err)` (e.g. from `Attached`).
+/// - `existed == true`: previously committed on this station; caller must use `(acked_out, acked_err)` and fail-stop if `Attached` jumps past them.
+pub fn WholeAgents::get_or_init_runner_instance(
   self : WholeAgents,
+  instance_id : String,
   session_key : String,
-) -> (Int64, Int64) {
-  let log_path = self.runner_output_log_path(session_key)
-  let raw_str = match (self.job_fs.read_bytes)(log_path) {
-    Some(b) => b.to_string()
-    None => {
-      match (self.job_fs.read_file)(log_path) {
-        Some(s) => s
-        None => return (0L, 0L)
-      }
-    }
+  runner_id : String,
+  runner_pid : Int,
+  started_at : Int64,
+  init_out : Int64,
+  init_err : Int64,
+  now_ms : Int64,
+) -> Result[(Int64, Int64, Bool), String] {
+  let db = match self.open_adopted_db() {
+    Ok(d) => d
+    Err(e) => return Err(e)
   }
-  let mut max_out = 0L
-  let mut max_err = 0L
-  let lines = raw_str.split("\n")
-  for i in 0..<lines.length() {
-    let ln = lines[i].trim()
-    if ln.length() == 0 {
-      continue
+  match db.tx(fn(tx : sql_db::Db) -> Result[(Int64, Int64, Bool), sql_db::SqlError] {
+    match tx.first(
+      "SELECT acked_out, acked_err FROM runner_instances WHERE instance_id = ?1",
+      [base_codec::json_str(instance_id)],
+    ) {
+      Ok(Some(row)) => Ok((adopted_row_i64(row, "acked_out"), adopted_row_i64(row, "acked_err"), true))
+      Ok(None) => {
+        match tx.run(
+          "INSERT INTO runner_instances (instance_id, session_key, runner_id, runner_pid, started_at, acked_out, acked_err, updated_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+          [
+            base_codec::json_str(instance_id),
+            base_codec::json_str(session_key),
+            base_codec::json_str(runner_id),
+            base_codec::json_int(runner_pid),
+            sql_db::int64_to_json(started_at),
+            sql_db::int64_to_json(init_out),
+            sql_db::int64_to_json(init_err),
+            sql_db::int64_to_json(now_ms),
+          ],
+        ) {
+          Ok(_) => Ok((init_out, init_err, false))
+          Err(e) => Err(e)
+        }
+      }
+      Err(e) => Err(e)
     }
-    match base_codec::json_parse(ln) {
-      Ok(v) => {
-        let stream = match base_codec::json_get(v, "stream") {
-          Some(base_codec::Json::Str(s)) => s
-          _ => "out"
-        }
-        let at_opt : Option[Int64] = match base_codec::json_get(v, "at") {
-          Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
-          _ => None
-        }
-        match at_opt {
-          Some(at) => {
-            let end_pos = match base_codec::json_get(v, RUNNER_OUTPUT_END_KEY) {
-              Some(base_codec::Json::Num(n, _)) => n.to_int64()
-              _ => {
-                let plen = match base_codec::json_get(v, "dataB64") {
-                  Some(base_codec::Json::Str(b64)) => {
-                    match base_codec::base64_decode(b64) {
-                      Some(raw) => raw.length().to_int64()
-                      None => 0L
-                    }
-                  }
-                  _ => {
-                    match base_codec::json_get(v, "text") {
-                      Some(base_codec::Json::Str(t)) => t.to_bytes().length().to_int64()
-                      _ => 0L
-                    }
-                  }
-                }
-                at + plen
-              }
+  }) {
+    Ok(res) => Ok(res)
+    Err(e) => Err("get_or_init_runner_instance failed: " + e.message)
+  }
+}
+
+/// Atomically persist one contiguous runner output chunk, advance the instance's committed offset,
+/// and ring-trim oldest `runner_output` rows if the session exceeds 16 MiB (never deleting
+/// `runner_instances` offset rows), all inside a single ACID `BEGIN IMMEDIATE ... COMMIT`.
+pub fn WholeAgents::commit_adopted_runner_chunk(
+  self : WholeAgents,
+  instance_id : String,
+  session_key : String,
+  runner_id : String,
+  runner_pid : Int,
+  started_at : Int64,
+  stream : String,
+  start_off : Int64,
+  end_off : Int64,
+  payload : Bytes,
+  now_ms : Int64,
+) -> Result[Unit, String] {
+  let db = match self.open_adopted_db() {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let byte_len = payload.length().to_int64()
+  let data_b64 = base_codec::base64_encode(payload)
+  match db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match tx.run(
+      "INSERT OR IGNORE INTO runner_instances (instance_id, session_key, runner_id, runner_pid, started_at, acked_out, acked_err, updated_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
+      [
+        base_codec::json_str(instance_id),
+        base_codec::json_str(session_key),
+        base_codec::json_str(runner_id),
+        base_codec::json_int(runner_pid),
+        sql_db::int64_to_json(started_at),
+        sql_db::int64_to_json(now_ms),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match tx.run(
+      "INSERT INTO runner_output (session_key, instance_id, stream, start_off, end_off, byte_len, data_b64) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+      [
+        base_codec::json_str(session_key),
+        base_codec::json_str(instance_id),
+        base_codec::json_str(stream),
+        sql_db::int64_to_json(start_off),
+        sql_db::int64_to_json(end_off),
+        sql_db::int64_to_json(byte_len),
+        base_codec::json_str(data_b64),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let upd_sql = if stream == "err" {
+      "UPDATE runner_instances SET acked_err = ?1, updated_at = ?2 WHERE instance_id = ?3"
+    } else {
+      "UPDATE runner_instances SET acked_out = ?1, updated_at = ?2 WHERE instance_id = ?3"
+    }
+    match tx.run(
+      upd_sql,
+      [
+        sql_db::int64_to_json(end_off),
+        sql_db::int64_to_json(now_ms),
+        base_codec::json_str(instance_id),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let total_bytes = match tx.first(
+      "SELECT COALESCE(SUM(byte_len), 0) AS total_bytes FROM runner_output WHERE session_key = ?1",
+      [base_codec::json_str(session_key)],
+    ) {
+      Ok(Some(row)) => adopted_row_i64(row, "total_bytes")
+      Ok(None) => 0L
+      Err(e) => return Err(e)
+    }
+    if total_bytes > RUNNER_OUTPUT_MAX_BYTES {
+      match tx.all(
+        "SELECT id, byte_len FROM runner_output WHERE session_key = ?1 ORDER BY id ASC",
+        [base_codec::json_str(session_key)],
+      ) {
+        Ok(rows) => {
+          let mut remaining = total_bytes
+          let mut max_drop_id = -1L
+          for ri in 0..<rows.length() {
+            if remaining <= RUNNER_OUTPUT_MAX_BYTES {
+              break
             }
-            if stream == "err" {
-              if at <= max_err && end_pos > max_err {
-                max_err = end_pos
-              }
-            } else if at <= max_out && end_pos > max_out {
-              max_out = end_pos
+            let rid = adopted_row_i64(rows[ri], "id")
+            let rlen = adopted_row_i64(rows[ri], "byte_len")
+            remaining = remaining - rlen
+            max_drop_id = rid
+          }
+          if max_drop_id >= 0L {
+            match tx.run(
+              "DELETE FROM runner_output WHERE session_key = ?1 AND id <= ?2",
+              [base_codec::json_str(session_key), sql_db::int64_to_json(max_drop_id)],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
             }
           }
-          None => ()
+        }
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(())
+  }) {
+    Ok(_) => Ok(())
+    Err(e) => Err("commit_adopted_runner_chunk failed: " + e.message)
+  }
+}
+
+/// Read persisted post-handover runner output for `session_key` directly from
+/// `<data_dir>/run/adopted-runners.db`, coalescing contiguous chunks of the same
+/// `(instance_id, stream)` before UTF-8 decoding so split multi-byte characters stay intact.
+pub fn WholeAgents::read_adopted_runner_output(
+  self : WholeAgents,
+  session_key : String,
+) -> Array[String] {
+  if self.adopted_db.is_none() {
+    match (self.job_fs.stat)(self.adopted_db_path()) {
+      Some(st) => {
+        if st.is_dir() {
+          return []
         }
       }
-      Err(_) => ()
+      None => return []
     }
   }
-  (max_out, max_err)
+  let db = match self.open_adopted_db() {
+    Ok(d) => d
+    Err(_) => return []
+  }
+  let rows = match db.all(
+    "SELECT instance_id, stream, data_b64 FROM runner_output WHERE session_key = ?1 ORDER BY id ASC",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(r) => r
+    Err(_) => return []
+  }
+  let chunks : Array[(String, String, Bytes)] = []
+  for i in 0..<rows.length() {
+    let row = rows[i]
+    let inst = adopted_row_str(row, "instance_id")
+    let stream = adopted_row_str(row, "stream")
+    let b64 = adopted_row_str(row, "data_b64")
+    match base_codec::base64_decode(b64) {
+      Some(raw) => chunks.push((inst, stream, raw))
+      None => ()
+    }
+  }
+  coalesce_runner_output_chunks(chunks)
 }
 
 /// Record clean exit status of an adopted runner for `session_key`.

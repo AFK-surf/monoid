@@ -2248,16 +2248,16 @@ test("W16B.12: Live connection role downgrade via signed workspace lock takes ef
   assert.equal(await wd.waitExit(), 0, wd.stderr());
 });
 
-test("W16B.13: Real stillfail-runner O(1) JSONL persistence + 2nd SIGUSR2 disk recovery + write-failure fail-stop ACK", { skip: process.platform === "win32" }, async () => {
+test("W16B.13: ACID adopted-runners.db — (a) pre-ACKed real stillfail-runner + 2nd SIGUSR2, (b) restarted runner instance isolation, (c) DB failure fail-stop ACK, (d) split UTF-8 coalescing", { skip: process.platform === "win32" }, async () => {
   const launcher = resolveLauncherBinary();
   const readerBin = resolveReaderBinary();
   const runnerBin = resolveRunnerBinary();
   const addon = resolveMeshAddon();
   const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
 
-  const app = freshDir("r6-runner-app");
-  const data = freshDir("r6-runner-data");
-  const drive = freshDir("r6-runner-drive");
+  const app = freshDir("r7-runner-app");
+  const data = freshDir("r7-runner-data");
+  const drive = freshDir("r7-runner-drive");
   mkdirSync(join(app, "station"), { recursive: true });
   copyFileSync(readerBin, join(app, "station", "stillfail-reader"));
   chmodSync(join(app, "station", "stillfail-reader"), 0o755);
@@ -2293,7 +2293,7 @@ exec ${JSON.stringify(bin)} "$@"
   });
   endpoints.push(memberEp);
 
-  const ws = "ws-r6-runner";
+  const ws = "ws-r7-runner";
   const frontPort = await pickFreeUdpPort();
   seedWholeDataDir(data, stSeed, stationId, memberEp.id(), drive, ws, grantKeys);
 
@@ -2323,47 +2323,51 @@ exec ${JSON.stringify(bin)} "$@"
       return typeof j.pid === "number" && j.pid > 0 ? j.pid : null;
     } catch { return null; }
   };
-  const pid1 = await until("r6 pid1 ready", () => readHubPid(), 15_000);
+  const pid1 = await until("r7 pid1 ready", () => readHubPid(), 15_000);
   await until(`launcher confirms Node ${pid1} has taken over`, () => logs.includes(`Node ${pid1} has taken over`), 15_000);
 
   const frontAddr = `127.0.0.1:${frontPort}`;
   const memberJwt = signMemberJwt({ ws, device: memberEp.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
 
-  // Create two sessions via AdminApi before 1st handover: one for real `stillfail-runner`, one for fail-stop write error.
+  // Create 3 sessions for (a) real pre-ACKed runner, (b) restarted runner A->B, (d) split UTF-8.
   const { conn: adminConn1, helloReply: hello1 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello1?.ok, true, JSON.stringify(hello1));
-  const createReal = await adminCall(
-    adminConn1,
-    "POST",
-    "/sessions",
-    { "content-type": "application/json" },
-    Buffer.from(JSON.stringify({ key: "sess-r6-real", title: "R6 Real Runner" })),
-  );
-  assert.equal(createReal.status, 200, createReal.body.toString("utf8"));
-  const createFail = await adminCall(
-    adminConn1,
-    "POST",
-    "/sessions",
-    { "content-type": "application/json" },
-    Buffer.from(JSON.stringify({ key: "sess-r6-failstop", title: "R6 FailStop" })),
-  );
-  assert.equal(createFail.status, 200, createFail.body.toString("utf8"));
+  for (const [key, title] of [
+    ["sess-r7-real", "R7 Real Runner"],
+    ["sess-r7-restart", "R7 Restarted Runner"],
+    ["sess-r7-utf8", "R7 Split UTF-8"],
+  ]) {
+    const r = await adminCall(
+      adminConn1,
+      "POST",
+      "/sessions",
+      { "content-type": "application/json" },
+      Buffer.from(JSON.stringify({ key, title })),
+    );
+    assert.equal(r.status, 200, r.body.toString("utf8"));
+  }
   await adminConn1.close(0, "done");
 
-  // (a) Spawn REAL release `stillfail-runner` for `sess-r6-real`!
   const runnersDir = join(data, "run", "runners");
   mkdirSync(runnersDir, { recursive: true });
-  const expectedText = "r6-real-runner-line-1\nr6-real-runner-line-2\n";
+
+  // (a) Spawn REAL release `stillfail-runner` that writes 23 bytes before handover, waits for trigger,
+  // then writes 15 more bytes (total 38 bytes). Simulate predecessor Node station consuming & ACKing the first 23 bytes!
+  const preText = "predecessor-acked-23-b\n";
+  const postText = "post-pion-15-b\n";
+  assert.equal(Buffer.byteLength(preText, "utf8"), 23);
+  assert.equal(Buffer.byteLength(postText, "utf8"), 15);
+  const triggerFile = join(data, "emit-post-15.flag");
   const runnerReady = await new Promise<{ runner: number; pid: number; pgid: number; socket: string }>((resolve, reject) => {
     const rproc = spawn(
       runnerBin,
       [
         "--dir", runnersDir,
-        "--id", "claude-sess-r6-real",
+        "--id", "claude-sess-r7-real",
         "--cwd", data,
         "--",
         "/bin/sh", "-c",
-        "printf 'r6-real-runner-line-1\\nr6-real-runner-line-2\\n'; sleep 30",
+        `printf 'predecessor-acked-23-b\\n'; while [ ! -f ${JSON.stringify(triggerFile)} ]; do sleep 0.05; done; printf 'post-pion-15-b\\n'; sleep 30`,
       ],
       { stdio: ["ignore", "pipe", "pipe"], detached: true },
     );
@@ -2387,18 +2391,47 @@ exec ${JSON.stringify(bin)} "$@"
   });
   extraPids.push(runnerReady.runner, runnerReady.pid, runnerReady.pgid);
 
-  // (c) Pre-occupy `sessions/sess-r6-failstop/runner-output.jsonl` as a directory to trigger write failure,
-  // and seed a claimed mock runner that sends two contiguous 12-byte frames `[0..12)` and `[12..24)`.
-  mkdirSync(join(data, "sessions", "sess-r6-failstop", "runner-output.jsonl"), { recursive: true });
-  const failProc = spawn("sleep", ["30"], { stdio: "ignore" });
-  children.push(failProc);
-  assert.ok(failProc.pid && failProc.pid > 1);
-  const failSockPath = join(runnersDir, "claude-sess-r6-failstop.sock");
-  let failAttached = false;
-  let failClosed = false;
-  let failAckOut = 0;
-  let failAckCount = 0;
-  const failSrv = createNetServer((sock) => {
+  // Predecessor attaches, reads the initial 23 bytes, ACKs out=23, keep=0, and leaves cleanly.
+  await new Promise<void>((resolve, reject) => {
+    const s = createConnection(runnerReady.socket);
+    let buf = "";
+    let got = 0;
+    const timer = setTimeout(() => { s.destroy(); reject(new Error(`predecessor timeout: got ${got}/23 bytes`)); }, 8_000);
+    s.on("error", (e) => { clearTimeout(timer); reject(e); });
+    s.on("connect", () => { s.write('{"op":"attach"}\n'); });
+    s.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "out" && msg.stream === "out") {
+            const chunk = Buffer.from(msg.data, "base64");
+            got = Math.max(got, msg.at + chunk.length);
+            if (got >= 23) {
+              s.write('{"op":"ack","out":23,"err":0,"keep":0}\n{"op":"leave"}\n');
+            }
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+    s.on("close", () => {
+      clearTimeout(timer);
+      if (got >= 23) resolve();
+      else reject(new Error(`predecessor closed early with ${got}/23 bytes`));
+    });
+  });
+
+  // (b) Seed Runner A for `sess-r7-restart` (16 bytes `[0..16)` + clean exit).
+  const procA = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(procA);
+  assert.ok(procA.pid && procA.pid > 1);
+  const restartSockPath = join(runnersDir, "claude-sess-r7-restart.sock");
+  let ackOutA = 0;
+  const srvA = createNetServer((sock) => {
     let buf = "";
     sock.on("data", (d) => {
       buf += d.toString("utf8");
@@ -2409,104 +2442,212 @@ exec ${JSON.stringify(bin)} "$@"
         if (line) {
           const msg = JSON.parse(line);
           if (msg.op === "attach") {
-            failAttached = true;
-            const f1 = Buffer.from("frame-one-12", "utf8");
-            const f2 = Buffer.from("frame-two-12", "utf8");
+            const payload = Buffer.from("runner-A-16byte!", "utf8");
+            assert.equal(payload.length, 16);
             sock.write(
-              JSON.stringify({ op: "out", stream: "out", at: 0, data: f1.toString("base64") }) + "\n" +
-              JSON.stringify({ op: "out", stream: "out", at: 12, data: f2.toString("base64") }) + "\n",
+              JSON.stringify({ op: "attached", out: 0, err: 0, keep: 0 }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 0, data: payload.toString("base64") }) + "\n",
             );
-          } else if (msg.op === "ack") {
-            failAckCount++;
-            if (typeof msg.out === "number") failAckOut = msg.out;
+          } else if (msg.op === "ack" && typeof msg.out === "number") {
+            ackOutA = msg.out;
+            if (ackOutA >= 16) {
+              sock.write(JSON.stringify({ op: "exit", code: 0 }) + "\n");
+            }
           }
         }
         nl = buf.indexOf("\n");
       }
     });
-    sock.on("close", () => { failClosed = true; });
   });
-  servers.push(failSrv);
-  await new Promise<void>((r) => failSrv.listen(failSockPath, () => r()));
+  servers.push(srvA);
+  await new Promise<void>((r) => srvA.listen(restartSockPath, () => r()));
+  const startedAtA = Date.now();
   writeFileSync(
-    join(runnersDir, "claude-sess-r6-failstop.json"),
+    join(runnersDir, "claude-sess-r7-restart.json"),
     JSON.stringify({
-      id: "claude-sess-r6-failstop",
-      runner: failProc.pid,
-      pid: failProc.pid,
-      pgid: failProc.pid,
+      id: "claude-sess-r7-restart",
+      runner: procA.pid,
+      pid: procA.pid,
+      pgid: procA.pid,
+      startedAt: startedAtA,
+      socket: restartSockPath,
+    }) + "\n",
+  );
+
+  // (d) Seed split multi-byte UTF-8 mock runner for `sess-r7-utf8`: `[0xE4, 0xB8]` + `[0xAD]` -> `"中"`.
+  const procUtf8 = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(procUtf8);
+  assert.ok(procUtf8.pid && procUtf8.pid > 1);
+  const utf8SockPath = join(runnersDir, "claude-sess-r7-utf8.sock");
+  let ackOutUtf8 = 0;
+  const srvUtf8 = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attach") {
+            sock.write(
+              JSON.stringify({ op: "attached", out: 0, err: 0, keep: 0 }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 0, data: Buffer.from([0xe4, 0xb8]).toString("base64") }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 2, data: Buffer.from([0xad]).toString("base64") }) + "\n",
+            );
+          } else if (msg.op === "ack" && typeof msg.out === "number") {
+            ackOutUtf8 = msg.out;
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+  });
+  servers.push(srvUtf8);
+  await new Promise<void>((r) => srvUtf8.listen(utf8SockPath, () => r()));
+  writeFileSync(
+    join(runnersDir, "claude-sess-r7-utf8.json"),
+    JSON.stringify({
+      id: "claude-sess-r7-utf8",
+      runner: procUtf8.pid,
+      pid: procUtf8.pid,
+      pgid: procUtf8.pid,
       startedAt: Date.now(),
-      socket: failSockPath,
+      socket: utf8SockPath,
     }) + "\n",
   );
 
   // 1st SIGUSR2 handover: pid1 -> pid2
   process.kill(lc.pid!, "SIGUSR2");
-  const pid2 = await until("r6 pid2 after 1st SIGUSR2", () => {
+  const pid2 = await until("r7 pid2 after 1st SIGUSR2", () => {
     const p = readHubPid();
     return p && p !== pid1 ? p : null;
   }, 20_000);
-  await until("r6 pid1 exited", () => !isAlive(pid1), 15_000);
+  await until("r7 pid1 exited", () => !isAlive(pid1), 15_000);
   await until(`launcher confirms Node ${pid2} has taken over`, () => logs.includes(`Node ${pid2} has taken over`), 15_000);
 
-  // Assert (c): write failure closed runner socket immediately and NEVER advanced ACK past 0!
-  await until("failstop runner attached and closed on write error", () => failAttached && failClosed, 10_000);
-  assert.equal(failAckOut, 0, `write failure MUST keep ack.out at 0 (before gap), got ${failAckOut}`);
-  assert.equal(failAckCount, 0, `write failure MUST send 0 ACKs, got ${failAckCount}`);
-  failProc.kill("SIGKILL");
+  // Now emit the 15 post-handover bytes from the real `stillfail-runner` (offsets [23..38)).
+  writeFileSync(triggerFile, "go\n");
 
-  // Assert (a): real `stillfail-runner` output persisted as valid 0600 JSONL and exposed via GET /sessions/sess-r6-real!
+  await until("runner A and utf8 runner acked", () => ackOutA >= 16 && ackOutUtf8 >= 3, 10_000);
+  procA.kill("SIGKILL");
+  procUtf8.kill("SIGKILL");
+  srvA.close();
+  srvUtf8.close();
+  try { rmSync(restartSockPath, { force: true }); } catch {}
+  try { rmSync(utf8SockPath, { force: true }); } catch {}
+
   const { conn: adminConn2, helloReply: hello2 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello2?.ok, true, JSON.stringify(hello2));
-  await until("GET /sessions/sess-r6-real adoptedOutput contains real runner output", async () => {
-    const r = await adminCall(adminConn2, "GET", "/sessions/sess-r6-real");
+  // Verify (a): Pion adopted pre-ACKed real runner at out=23 and persisted the 15 new bytes!
+  await until("GET /sessions/sess-r7-real adoptedOutput contains post-pion-15-b", async () => {
+    const r = await adminCall(adminConn2, "GET", "/sessions/sess-r7-real");
     if (r.status !== 200) return false;
     const j = JSON.parse(r.body.toString("utf8"));
-    return Array.isArray(j.adoptedOutput) && j.adoptedOutput.join("").includes(expectedText);
+    return Array.isArray(j.adoptedOutput) && j.adoptedOutput.join("") === postText;
   }, 10_000);
+
+  // Verify (d): split UTF-8 bytes `[0xE4, 0xB8]` + `[0xAD]` coalesced to `"中"` with ZERO U+FFFD!
+  const utf8Sess = await adminCall(adminConn2, "GET", "/sessions/sess-r7-utf8");
+  assert.equal(utf8Sess.status, 200, utf8Sess.body.toString("utf8"));
+  const utf8Json = JSON.parse(utf8Sess.body.toString("utf8"));
+  assert.equal(
+    utf8Json.adoptedOutput.join(""),
+    "中",
+    `expected split UTF-8 to coalesce to "中" without U+FFFD, got: ${JSON.stringify(utf8Json)}`,
+  );
   await adminConn2.close(0, "done");
 
-  const logPath = join(data, "sessions", "sess-r6-real", "runner-output.jsonl");
-  assert.equal(existsSync(logPath), true, `expected ${logPath} on disk`);
-  assert.equal(statSync(logPath).mode & 0o777, 0o600, "runner-output.jsonl must be 0600");
-  const jsonlLines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-  assert.ok(jsonlLines.length >= 1, "expected at least 1 JSONL record");
-  let decodedAll = "";
-  for (const rawLine of jsonlLines) {
-    const rec = JSON.parse(rawLine);
-    assert.equal(rec.runner, "claude-sess-r6-real");
-    assert.equal(rec.stream, "out");
-    assert.equal(typeof rec.at, "number");
-    assert.equal(typeof rec.end, "number");
-    assert.equal(typeof rec.dataB64, "string");
-    assert.equal(typeof rec.text, "string");
-    const fromB64 = Buffer.from(rec.dataB64, "base64").toString("utf8");
-    assert.equal(fromB64, rec.text, "dataB64 must round-trip losslessly to text");
-    decodedAll += fromB64;
-  }
-  assert.equal(decodedAll, expectedText, `JSONL decoded output mismatch: ${JSON.stringify(decodedAll)}`);
+  // Verify independent `<data>/run/adopted-runners.db` (mode 0600) AND zero schema changes in `stillfail.db`!
+  const adoptedDbPath = join(data, "run", "adopted-runners.db");
+  assert.equal(existsSync(adoptedDbPath), true, `expected ${adoptedDbPath} on disk`);
+  assert.equal(statSync(adoptedDbPath).mode & 0o777, 0o600, "adopted-runners.db must be 0600");
+  const mainDb = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+  const mainTables = (mainDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((r) => r.name);
+  mainDb.close();
+  assert.equal(mainTables.includes("runner_instances"), false, "stillfail.db must NOT contain runner_instances");
+  assert.equal(mainTables.includes("runner_output"), false, "stillfail.db must NOT contain runner_output");
 
-  // (b) Trigger 2nd normal SIGUSR2 handover: pid2 -> pid3, and assert GET /sessions/sess-r6-real
-  // recovers `adoptedOutput` from disk (NEVER `[]`)!
+  // (b) Restart a NEW runner B for the SAME session `sess-r7-restart` (same runner_id, new PID & startedAt)
+  // sending a different 16-byte payload at `[0..16)`.
+  const procB = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(procB);
+  assert.ok(procB.pid && procB.pid > 1 && procB.pid !== procA.pid);
+  let ackOutB = 0;
+  const srvB = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attach") {
+            const payload = Buffer.from("runner-B-16byte!", "utf8");
+            assert.equal(payload.length, 16);
+            sock.write(
+              JSON.stringify({ op: "attached", out: 0, err: 0, keep: 0 }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 0, data: payload.toString("base64") }) + "\n",
+            );
+          } else if (msg.op === "ack" && typeof msg.out === "number") {
+            ackOutB = msg.out;
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+  });
+  servers.push(srvB);
+  await new Promise<void>((r) => srvB.listen(restartSockPath, () => r()));
+  writeFileSync(
+    join(runnersDir, "claude-sess-r7-restart.json"),
+    JSON.stringify({
+      id: "claude-sess-r7-restart",
+      runner: procB.pid,
+      pid: procB.pid,
+      pgid: procB.pid,
+      startedAt: startedAtA + 5000,
+      socket: restartSockPath,
+    }) + "\n",
+  );
+
+  // 2nd normal SIGUSR2 handover: pid2 -> pid3
   process.kill(lc.pid!, "SIGUSR2");
-  const pid3 = await until("r6 pid3 after 2nd SIGUSR2", () => {
+  const pid3 = await until("r7 pid3 after 2nd SIGUSR2", () => {
     const p = readHubPid();
     return p && p !== pid2 ? p : null;
   }, 20_000);
-  await until("r6 pid2 exited", () => !isAlive(pid2), 15_000);
+  await until("r7 pid2 exited", () => !isAlive(pid2), 15_000);
+
+  await until("restarted runner B acked to 16", () => ackOutB >= 16, 10_000);
+  procB.kill("SIGKILL");
 
   const { conn: adminConn3, helloReply: hello3 } = await openAdminConn(memberEp, stationId, frontAddr, memberJwt);
   assert.equal(hello3?.ok, true, JSON.stringify(hello3));
-  const sess3 = await adminCall(adminConn3, "GET", "/sessions/sess-r6-real");
+  // Verify (a) 2nd SIGUSR2 recovery from adopted-runners.db:
+  const sess3 = await adminCall(adminConn3, "GET", "/sessions/sess-r7-real");
   assert.equal(sess3.status, 200, sess3.body.toString("utf8"));
   const sess3Json = JSON.parse(sess3.body.toString("utf8"));
+  assert.equal(
+    sess3Json.adoptedOutput.join(""),
+    postText,
+    `2nd SIGUSR2 handover MUST restore post-pion-15-b from adopted-runners.db, got: ${JSON.stringify(sess3Json)}`,
+  );
+  // Verify (b) BOTH runner A and restarted runner B outputs are preserved:
+  const restartSess = await adminCall(adminConn3, "GET", "/sessions/sess-r7-restart");
+  assert.equal(restartSess.status, 200, restartSess.body.toString("utf8"));
+  const restartJson = JSON.parse(restartSess.body.toString("utf8"));
+  const restartAll = (restartJson.adoptedOutput as string[]).join("");
   assert.ok(
-    Array.isArray(sess3Json.adoptedOutput) && sess3Json.adoptedOutput.join("").includes(expectedText),
-    `2nd SIGUSR2 handover MUST restore adoptedOutput from disk (not []), got: ${JSON.stringify(sess3Json)}`,
+    restartAll.includes("runner-A-16byte!") && restartAll.includes("runner-B-16byte!"),
+    `restarted runner B must NOT be skipped; expected both A and B outputs, got: ${JSON.stringify(restartJson)}`,
   );
   await adminConn3.close(0, "done");
 
-  // Verify directly with the REAL `stillfail-runner` that it recorded `out >= expectedText.length` and `keep === 0`!
+  // Verify directly with the REAL `stillfail-runner` that it recorded `out === 38` and `keep === 0`!
   const attachedAck = await new Promise<{ op: string; out: number; err: number; keep: number | null }>((resolve, reject) => {
     const s = createConnection(runnerReady.socket);
     let buf = "";
@@ -2525,14 +2666,95 @@ exec ${JSON.stringify(bin)} "$@"
     });
   });
   assert.equal(attachedAck.op, "attached", JSON.stringify(attachedAck));
-  assert.ok(
-    attachedAck.out >= Buffer.byteLength(expectedText, "utf8"),
-    `real runner must have received ack.out >= ${Buffer.byteLength(expectedText, "utf8")}, got ${JSON.stringify(attachedAck)}`,
-  );
+  assert.equal(attachedAck.out, 38, `real runner must have received ack.out === 38, got ${JSON.stringify(attachedAck)}`);
   assert.equal(attachedAck.keep, 0, `real runner must have received ack.keep === 0, got ${JSON.stringify(attachedAck)}`);
 
-  // Clean launcher shutdown -> zero orphans
   lc.kill("SIGTERM");
   assert.equal(await Promise.race([lcExit, new Promise<null>((r) => setTimeout(() => r(null), 15_000))]), 0, logs);
-  await until("r6 pid3 exited cleanly", () => !isAlive(pid3), 10_000);
+  await until("r7 pid3 exited cleanly", () => !isAlive(pid3), 10_000);
+
+  // (c) DB write failure fail-stop: pre-occupy `<dataFail>/run/adopted-runners.db` as a directory,
+  // send `[0..12)` and `[12..24)` -> assert socket closes fail-stop with `ack.out === 0` (`ackCount === 0`)!
+  const dataFail = freshDir("r7-failstop-data");
+  const driveFail = freshDir("r7-failstop-drive");
+  const failFrontPort = await pickFreeUdpPort();
+  seedWholeDataDir(dataFail, stSeed, stationId, memberEp.id(), driveFail, ws, grantKeys);
+  const wdFail1 = startWholeDaemon(bin, dataFail);
+  await until("failstop setup daemon ready", () => wdFail1.messages.find((m) => m.ready === true), 10_000);
+  const failMeshAddr = await until("failstop setup mesh bound", () => wdFail1.meshAddr(), 10_000);
+  const { conn: fAdmin, helloReply: fHello } = await openAdminConn(memberEp, stationId, failMeshAddr, memberJwt);
+  assert.equal(fHello?.ok, true);
+  const fCreate = await adminCall(
+    fAdmin,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "sess-r7-failstop", title: "R7 FailStop" })),
+  );
+  assert.equal(fCreate.status, 200);
+  await fAdmin.close(0, "done");
+  wdFail1.sendCtrl({ op: "stop" });
+  assert.equal(await wdFail1.waitExit(), 0, wdFail1.stderr());
+
+  // Block `<dataFail>/run/adopted-runners.db` as a directory and seed a claimed mock runner.
+  mkdirSync(join(dataFail, "run", "adopted-runners.db"), { recursive: true });
+  const failRunnersDir = join(dataFail, "run", "runners");
+  mkdirSync(failRunnersDir, { recursive: true });
+  const failProc = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(failProc);
+  assert.ok(failProc.pid && failProc.pid > 1);
+  const failSockPath = join(failRunnersDir, "claude-sess-r7-failstop.sock");
+  let failAttached = false;
+  let failClosed = false;
+  let failAckOut = 0;
+  let failAckCount = 0;
+  const failSrv = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attach") {
+            failAttached = true;
+            sock.write(
+              JSON.stringify({ op: "attached", out: 0, err: 0, keep: 0 }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 0, data: Buffer.from("frame-one-12", "utf8").toString("base64") }) + "\n" +
+              JSON.stringify({ op: "out", stream: "out", at: 12, data: Buffer.from("frame-two-12", "utf8").toString("base64") }) + "\n",
+            );
+          } else if (msg.op === "ack") {
+            failAckCount++;
+            if (typeof msg.out === "number") failAckOut = msg.out;
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+    sock.on("close", () => { failClosed = true; });
+  });
+  servers.push(failSrv);
+  await new Promise<void>((r) => failSrv.listen(failSockPath, () => r()));
+  writeFileSync(
+    join(failRunnersDir, "claude-sess-r7-failstop.json"),
+    JSON.stringify({
+      id: "claude-sess-r7-failstop",
+      runner: failProc.pid,
+      pid: failProc.pid,
+      pgid: failProc.pid,
+      startedAt: Date.now(),
+      socket: failSockPath,
+    }) + "\n",
+  );
+
+  const wdFail2 = startWholeDaemon(bin, dataFail, { STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${failFrontPort}` });
+  await until("failstop daemon ready", () => wdFail2.messages.find((m) => m.ready === true), 10_000);
+  await until("failstop runner attached and closed on DB error", () => failAttached && failClosed, 10_000);
+  assert.equal(failAckOut, 0, `DB write failure MUST keep ack.out at 0 (before gap), got ${failAckOut}`);
+  assert.equal(failAckCount, 0, `DB write failure MUST send 0 ACKs, got ${failAckCount}`);
+  failProc.kill("SIGKILL");
+  wdFail2.sendCtrl({ op: "stop" });
+  assert.equal(await wdFail2.waitExit(), 0, wdFail2.stderr());
 });

@@ -844,24 +844,23 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
     _ => wc_assert(false, "expected string param 3")
   }
 
-  // 7. R6: O(1) append persistence (`write_file_mode(..., 384, true)`), cold-cache disk recovery,
-  // contiguous committed offsets, and 16 MiB size cap.
+  // 7. R7: Runner instance identity isolation and lossless cross-frame UTF-8 chunk coalescing.
+  let inst_a = WholeAgents::runner_instance_id("claude-sess-r7", 1001, 1700000000L)
+  let inst_b = WholeAgents::runner_instance_id("claude-sess-r7", 1002, 1700000005L)
+  wc_assert(inst_a != inst_b, "restarted runner with new PID/startedAt must get distinct instance_id")
+  let zh_part1 = Bytes::new(2)
+  zh_part1[0] = (0xE4).to_byte()
+  zh_part1[1] = (0xB8).to_byte()
+  let zh_part2 = Bytes::new(1)
+  zh_part2[0] = (0xAD).to_byte()
+  let coalesced = coalesce_runner_output_chunks([
+    (inst_a, "out", zh_part1),
+    (inst_a, "out", zh_part2),
+    (inst_b, "out", "runner-b".to_bytes()),
+  ])
   wc_assert(
-    core.agents.record_adopted_runner_output("sess-r6", "claude-sess-r6", "out", 0L, "hello-1\n".to_bytes()).is_ok(),
-    "first adopted runner output frame must persist",
-  )
-  wc_assert(
-    core.agents.record_adopted_runner_output("sess-r6", "claude-sess-r6", "out", 8L, "world-2\n".to_bytes()).is_ok(),
-    "second adopted runner output frame must append",
-  )
-  let (co_out, co_err) = core.agents.committed_runner_offsets("sess-r6")
-  wc_assert(co_out == 16L && co_err == 0L, "committed offsets must recover (16, 0)")
-  // Clear in-memory cache to simulate post-handover cold start and verify disk recovery.
-  let _ = core.agents.adopted_runner_output.remove("sess-r6")
-  let recovered = core.agents.read_adopted_runner_output("sess-r6")
-  wc_assert(
-    recovered.length() == 2 && recovered[0] == "hello-1\n" && recovered[1] == "world-2\n",
-    "read_adopted_runner_output must restore both frames from JSONL",
+    coalesced.length() == 2 && coalesced[0] == "中" && coalesced[1] == "runner-b",
+    "split UTF-8 across frames must coalesce cleanly without U+FFFD",
   )
 
   core.shutdown_pre_handover()

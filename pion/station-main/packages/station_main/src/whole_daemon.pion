@@ -82,12 +82,17 @@ let RUNNER_TOK_UNIX_CLOSE : Int = 5104
 
 struct AdoptedRunnerConn {
   runner_id : String
+  instance_id : String
+  runner_pid : Int
+  started_at : Int64
   session_key : String
   socket_path : String
   keep_from : Int64
   mut sock_id : Int64
   mut rx_chunks : Array[Bytes]
   mut rx_total_bytes : Int
+  mut attached_seen : Bool
+  mut db_initialized : Bool
   mut acked_out : Int64
   mut acked_err : Int64
   mut lines_received : Int
@@ -2762,11 +2767,69 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       continue
                     }
                     match station_drivers::decode_runner_frame(line) {
+                      Some(station_drivers::RunnerFrame::Attached(att_out, att_err, _keep)) => {
+                        rconn.attached_seen = true
+                        let now_w = host_shim::wall_ms()
+                        match st.core.agents.get_or_init_runner_instance(
+                          rconn.instance_id,
+                          rconn.session_key,
+                          rconn.runner_id,
+                          rconn.runner_pid,
+                          rconn.started_at,
+                          att_out,
+                          att_err,
+                          now_w,
+                        ) {
+                          Ok((db_out, db_err, existed)) => {
+                            if existed && (att_out > db_out || att_err > db_err) {
+                              ctx.log(
+                                "adopted runner attached gap (" + rconn.instance_id + "): att=(" +
+                                att_out.to_string() + "," + att_err.to_string() + ") > db=(" +
+                                db_out.to_string() + "," + db_err.to_string() + "); closing runner socket fail-stop",
+                              )
+                              rconn.exited = true
+                              break
+                            }
+                            rconn.acked_out = db_out
+                            rconn.acked_err = db_err
+                            rconn.db_initialized = true
+                          }
+                          Err(pe) => {
+                            ctx.log("failed to init adopted runner instance (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                            rconn.exited = true
+                            break
+                          }
+                        }
+                      }
                       Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
+                        let now_w = host_shim::wall_ms()
+                        if !rconn.db_initialized {
+                          match st.core.agents.get_or_init_runner_instance(
+                            rconn.instance_id,
+                            rconn.session_key,
+                            rconn.runner_id,
+                            rconn.runner_pid,
+                            rconn.started_at,
+                            0L,
+                            0L,
+                            now_w,
+                          ) {
+                            Ok((db_out, db_err, _)) => {
+                              rconn.acked_out = db_out
+                              rconn.acked_err = db_err
+                              rconn.db_initialized = true
+                            }
+                            Err(pe) => {
+                              ctx.log("failed to init adopted runner instance (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                              rconn.exited = true
+                              break
+                            }
+                          }
+                        }
                         let current_acked = if stream == "err" { rconn.acked_err } else { rconn.acked_out }
                         let end_pos = at + payload.length().to_int64()
                         if end_pos <= current_acked {
-                          // Already committed on disk (duplicate replay): skip duplicate write and re-ACK.
+                          // Already committed on disk (duplicate replay): skip duplicate insert and re-ACK.
                           let ack_line = station_drivers::encode_runner_ack(
                             rconn.acked_out,
                             rconn.acked_err,
@@ -2783,8 +2846,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                         } else if at > current_acked {
                           // Offset gap: fail-stop immediately without advancing ACK across the gap.
                           ctx.log(
-                            "adopted runner offset gap (" + rconn.runner_id + "): at=" + at.to_string() +
-                            " > acked=" + current_acked.to_string() + "; closing runner socket",
+                            "adopted runner offset gap (" + rconn.instance_id + "): at=" + at.to_string() +
+                            " > acked=" + current_acked.to_string() + "; closing runner socket fail-stop",
                           )
                           rconn.exited = true
                           break
@@ -2795,13 +2858,18 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           } else {
                             (at, payload)
                           }
-                          // Persist and deliver to owning session FIRST; NEVER advance offsets or send ACK on failure!
-                          match st.core.agents.record_adopted_runner_output(
+                          // Atomically commit chunk + offset in `adopted-runners.db` BEFORE advancing ACK!
+                          match st.core.agents.commit_adopted_runner_chunk(
+                            rconn.instance_id,
                             rconn.session_key,
                             rconn.runner_id,
+                            rconn.runner_pid,
+                            rconn.started_at,
                             stream,
                             write_at,
+                            end_pos,
                             write_payload,
+                            now_w,
                           ) {
                             Ok(_) => {
                               if stream == "err" {
@@ -2826,7 +2894,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                               }
                             }
                             Err(pe) => {
-                              ctx.log("failed to persist adopted runner output (" + rconn.runner_id + "): " + pe + "; closing runner socket fail-stop")
+                              ctx.log("failed to commit adopted runner chunk (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
                               rconn.exited = true
                               break
                             }
@@ -3491,19 +3559,28 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     Some(skey) => {
                       let rcid = st.next_runner_conn_id
                       st.next_runner_conn_id = st.next_runner_conn_id + 1
-                      let (init_out, init_err) = st.core.agents.committed_runner_offsets(skey)
+                      let inst_id = station_whole::WholeAgents::runner_instance_id(
+                        rinfo.id,
+                        rinfo.runner_pid,
+                        rinfo.started_at,
+                      )
                       st.adopted_runners.set(
                         rcid,
                         AdoptedRunnerConn::{
                           runner_id: rinfo.id,
+                          instance_id: inst_id,
+                          runner_pid: rinfo.runner_pid,
+                          started_at: rinfo.started_at,
                           session_key: skey,
                           socket_path: rinfo.socket,
                           keep_from: 0L,
                           sock_id: -1L,
                           rx_chunks: [],
                           rx_total_bytes: 0,
-                          acked_out: init_out,
-                          acked_err: init_err,
+                          attached_seen: false,
+                          db_initialized: false,
+                          acked_out: 0L,
+                          acked_err: 0L,
                           lines_received: 0,
                           exited: false,
                         },
@@ -4349,6 +4426,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               match station_ops::write_private(ctx.ops_fs, ho_path, body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep) {
                 Ok(_) => {
                   st.handover_exported = true
+                  st.core.agents.close_adopted_db()
                   Ok(())
                 }
                 Err(_) => {
