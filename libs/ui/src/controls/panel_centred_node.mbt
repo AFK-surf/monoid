@@ -130,6 +130,8 @@ fn panel_centred_node(
       // the body's box starts that much lower and its column's top room is that much less, so what scrolls in it stops
       // clear of the button and what it holds stands where it did)
       let close_under = fn() {
+        // 0 with dialog_r=38 and dialog_corner_key_side=36 (capsule_in(38, 36) = 20 <= dialog_pad = 24);
+        // kept parameterized in case dialog_r or key diameter changes.
         if top_share == 0.0 && !x.nodes.heads &&
           !untitled() &&
           now().2 == "" {

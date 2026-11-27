@@ -589,6 +589,7 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
   let grounds = c.layer_grounds()
   let pictures = c.pictures()
   let ladder = c.corner_ladder
+  let runs = ladder_runs(ladder)
   let off_ladder : Set[Int] = Set([])
   let holds = c.round_held(grounds, pictures)
   for i in 0..<c.count {
@@ -826,24 +827,28 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // hugging its edge (under half the ladder's step in: a segmented control's thumb in its track, a table's head
       // inside its line), nor what is in the ladder's last (a small block's own marks): concentric with it and nothing
       // more
-      if ladder.length() > 0 &&
+      let active = match ladder_for(runs, ra / u) {
+        Some(r) => r
+        None => ladder
+      }
+      if active.length() > 0 &&
         even &&
         in_step &&
-        dmax(dx, dy) / u >= ladder_hug(ladder) &&
-        ra / u > ladder[ladder.length() - 1] + 0.5 {
+        dmax(dx, dy) / u >= ladder_hug(active) &&
+        ra / u > active[active.length() - 1] + 0.5 {
         let round_a = ra >= dmin(a.fw, a.fh) / 2.0 - 0.5
         // (not one round as it is because it lies in a corner of its own, concentric with it there: a panel in the
         // window's, a composer at a panel's foot, its corners all alike as that one; nor the window, round as the
         // system has it; nor one whose corners are linked, round as what they come from has them: a strip along the
         // window's edge, the window's less its inset all round)
         if !round_a &&
-          !on_ladder(ladder, ra / u) &&
+          !on_ladder(active, ra / u) &&
           !off_ladder.contains(p) &&
           !c.follows_corner(ct, k, grounds) &&
           c.nodes[ct.ground].links is None {
           off_ladder.insert(p)
           out.push(
-            "\{c.named(p)} (corner \{ra}\{scaled_said(ra, u)}): something lies in its \{corner}, and its corner is not one of the ladder's \{list_text(ladder)}",
+            "\{c.named(p)} (corner \{ra}\{scaled_said(ra, u)}): something lies in its \{corner}, and its corner is not one of the ladder's \{list_text(active)}",
           )
         }
         let placed_off = match off_at {
@@ -852,9 +857,9 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
         }
         // (the window's corner is the system's, never the ladder's, though it may come near one of its steps: a Mac's 16
         // zoomed out to 0.9, 17.78; what lies in it follows it, not the ladder)
-        if !round && !ct.window && on_ladder(ladder, ra / u) && !on_ladder(ladder, rb / u) && !placed_off {
+        if !round && !ct.window && on_ladder(active, ra / u) && !on_ladder(active, rb / u) && !placed_off {
           out.push(
-            "\{c.named(i)} (corner \{rb}\{scaled_said(rb, u)}) in the \{corner} of \{c.named(p)} (corner \{ra}): \{dx} from its edges, so a corner not one of the ladder's \{list_text(ladder)} (\{ladder_in(ladder, ra / u)})",
+            "\{c.named(i)} (corner \{rb}\{scaled_said(rb, u)}) in the \{corner} of \{c.named(p)} (corner \{ra}): \{dx} from its edges, so a corner not one of the ladder's \{list_text(active)} (\{ladder_in(active, ra / u)})",
           )
         }
       }
@@ -1058,6 +1063,38 @@ fn scaled_said(r : Double, u : Double) -> String {
   } else {
     ", \{r / u} as said, drawn \{u} as big"
   }
+}
+
+///|
+/// Split `ladder` into independent strictly-decreasing runs (an upward jump starts a new ladder, e.g. page ladder
+/// `[42, 26, 24, 18, 10]` followed by dialog ladder `[38, 22, 14, 6]`), so concentric checks stay strict within each
+/// ladder without allowing cross-ladder mixing.
+fn ladder_runs(ladder : Array[Double]) -> Array[Array[Double]] {
+  let runs : Array[Array[Double]] = []
+  let mut cur : Array[Double] = []
+  for x in ladder {
+    if !cur.is_empty() && x > cur[cur.length() - 1] + 0.5 {
+      runs.push(cur)
+      cur = [x]
+    } else {
+      cur.push(x)
+    }
+  }
+  if !cur.is_empty() {
+    runs.push(cur)
+  }
+  runs
+}
+
+///|
+/// Find the independent ladder run containing container corner `ra`.
+fn ladder_for(runs : Array[Array[Double]], ra : Double) -> Array[Double]? {
+  for run in runs {
+    if on_ladder(run, ra) {
+      return Some(run)
+    }
+  }
+  None
 }
 
 ///|

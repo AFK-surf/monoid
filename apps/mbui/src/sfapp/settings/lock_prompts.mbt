@@ -73,48 +73,47 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
     let places = fn() { items(shown(), "workspaces") }
     let handover = fn() { items(shown(), "handoverVaults") }
     let has_grants = fn() { flag(shown(), "willSign") || !handover().is_empty() }
+    let person_text = fn() {
+      let s = shown()
+      let name_part = match text(s, "name") {
+        "" => text(s, "email")
+        n => n
+      }
+      let email = text(s, "email")
+      if email != "" && email != name_part { name_part + " · " + email } else { name_part }
+    }
+    let has_meta = fn() {
+      let s = shown()
+      text(s, "deviceText") != "" || person_text() != "" || text(s, "deviceCode") != "" || text(s, "build") != ""
+    }
     v.box(fn(col) {
       @sf.style_node(col, fn() { pair_column })
       // Prominent requester + device + verification code block at top of body so variable-length identity details
       // stay scannable and never stretch the dialog/sheet title.
-      col.box(fn(m) {
+      col.show(has_meta, fn(m) {
         @sf.style_node(m, fn() { pair_meta_box.then(@sf.panel_card_out_node(m)) })
         m.radius(Is(@sf.quiet_card_corner)) |> ignore
-        @sf.words_node(m, fn() { text(shown(), "deviceText") }, fn() { pair_device_hero }) |> ignore
-        m.box(fn(line) {
-          @sf.style_node(line, fn() { pair_meta_line })
-          line
-          .words_runs(
-            By(fn() {
-              let s = shown()
-              let name_part = match text(s, "name") {
-                "" => text(s, "email")
-                n => n
-              }
-              let email = text(s, "email")
-              let person = if email != "" && email != name_part { name_part + " · " + email } else { name_part }
-              [
-                @ui.span(tr("web-pages.security.pairRequester") + "  ", color=@sf.theme().p.muted),
-                @ui.span(person, bold=true, color=@sf.theme().p.text),
-              ]
-            }),
-            look=@ui.style_words(pair_body),
-          )
-          |> ignore
+        m.show(fn() { text(shown(), "deviceText") != "" }, fn(dev) {
+          @sf.words_node(dev, fn() { text(shown(), "deviceText") }, fn() { pair_device_hero }) |> ignore
         })
-        |> ignore
+        m.show(fn() { person_text() != "" }, fn(line) {
+          @sf.style_node(line, fn() { pair_meta_kv })
+          line.wraps(Is(Some(2.0))) |> ignore
+          @sf.words_node(line, fn() { tr("web-pages.security.pairRequester") }, fn() { pair_meta_key }) |> ignore
+          @sf.words_node(line, person_text, fn() { pair_meta_val }) |> ignore
+        })
         m.show(fn() { text(shown(), "deviceCode") != "" }, fn(line) {
-          @sf.style_node(line, fn() { pair_meta_line })
-          line
-          .words_runs(
-            By(fn() {
-              [
-                @ui.span(tr("web-pages.security.pairDeviceCode") + "  ", color=@sf.theme().p.muted),
-                @ui.span(text(shown(), "deviceCode"), mono=true, bold=true, color=@sf.theme().p.text),
-              ]
-            }),
-            look=@ui.style_words(pair_code_line),
-          )
+          @sf.style_node(line, fn() { pair_meta_kv })
+          line.wraps(Is(Some(2.0))) |> ignore
+          @sf.words_node(line, fn() { tr("web-pages.security.pairDeviceCode") }, fn() { pair_meta_key }) |> ignore
+          line.box(fn(code_box) {
+            code_box
+            .words_runs(
+              By(fn() { [@ui.span(text(shown(), "deviceCode"), mono=true, bold=true, color=@sf.theme().p.text)] }),
+              look=@ui.style_words(pair_code_val),
+            )
+            |> ignore
+          })
           |> ignore
         })
         m.show(fn() { text(shown(), "build") != "" }, fn(line) {
@@ -122,7 +121,6 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
           |> ignore
         })
       })
-      |> ignore
       @sf.words_node(col, fn() { tr("web-pages.security.pairBody") }, fn() { pair_body }) |> ignore
       // (asked into the person's own lock, no workspace's: said so)
       col.show(fn() { places().is_empty() }, fn(p) {
@@ -207,14 +205,22 @@ let pair_meta_box : @ui.Style = @ui.css("w=Full p=S4 gap=S1_5 bg=A(Fg,O5) clip")
 let pair_device_hero : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, w=Full)
 
 ///|
-/// Prominent verification code line inside the pairing verification card.
+/// Key-value row inside the pairing verification card (label + value separated by 8pt gap, wrapping cleanly).
 // kept across runs: a value (no field of it changes)
-let pair_code_line : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=Fg, tracking=Wider, w=Full)
+let pair_meta_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
 
 ///|
-/// Full-width line holder inside the meta block.
 // kept across runs: a value (no field of it changes)
-let pair_meta_line : @ui.Style = @ui.css("w=Full")
+let pair_meta_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pair_meta_val : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg)
+
+///|
+/// Prominent verification code value inside the pairing verification card.
+// kept across runs: a value (no field of it changes)
+let pair_code_val : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=Fg, tracking=Wider)
 
 ///|
 /// A granted capability or handed-over vault row under 批准后将授予.

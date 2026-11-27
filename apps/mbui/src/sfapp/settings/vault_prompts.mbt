@@ -142,35 +142,19 @@ fn key_ask_sheet(core : Core, r : Json) -> Unit {
               }
             }
             info.box(fn(line) {
-              @sf.style_node(line, fn() { key_ask_line })
-              line
-              .words_runs(
-                By(fn() {
-                  [
-                    @ui.span(tr("web-pages.vault.promptOwner") + "  ", color=@sf.theme().p.muted),
-                    @ui.span(owner_text(), color=@sf.theme().p.text),
-                  ]
-                }),
-                look=@ui.style_words(key_ask_body),
-              )
-              |> ignore
+              @sf.style_node(line, fn() { key_ask_kv })
+              line.wraps(Is(Some(2.0))) |> ignore
+              @sf.words_node(line, fn() { tr("web-pages.vault.promptOwner") }, fn() { key_ask_kv_key }) |> ignore
+              @sf.words_node(line, owner_text, fn() { key_ask_kv_val }) |> ignore
             })
             |> ignore
           }
           if at_text != "" {
             info.box(fn(line) {
-              @sf.style_node(line, fn() { key_ask_line })
-              line
-              .words_runs(
-                By(fn() {
-                  [
-                    @ui.span(tr("web-pages.vault.promptAskedAt") + "  ", color=@sf.theme().p.muted),
-                    @ui.span(at_text, color=@sf.theme().p.text),
-                  ]
-                }),
-                look=@ui.style_words(key_ask_body),
-              )
-              |> ignore
+              @sf.style_node(line, fn() { key_ask_kv })
+              line.wraps(Is(Some(2.0))) |> ignore
+              @sf.words_node(line, fn() { tr("web-pages.vault.promptAskedAt") }, fn() { key_ask_kv_key }) |> ignore
+              @sf.words_node(line, fn() { at_text }, fn() { key_ask_kv_val }) |> ignore
             })
             |> ignore
           }
@@ -219,6 +203,19 @@ let key_ask_info : @ui.Style = @ui.css("w=Full p=S4 gap=S2_5 bg=A(Fg,O5) clip")
 /// Stacked label + prominent value inside the verification block.
 // kept across runs: a value (no field of it changes)
 let key_ask_field : @ui.Style = @ui.css("w=Full gap=S0_5")
+
+///|
+/// Key-value row inside the info block (label + value separated by 8pt gap, wrapping cleanly).
+// kept across runs: a value (no field of it changes)
+let key_ask_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
+
+///|
+// kept across runs: a value (no field of it changes)
+let key_ask_kv_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+
+///|
+// kept across runs: a value (no field of it changes)
+let key_ask_kv_val : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg)
 
 ///|
 /// Full-width line holder inside the info block so inline runs wrap cleanly.

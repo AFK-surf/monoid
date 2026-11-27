@@ -55,7 +55,7 @@ let agent_title_head : @ui.Style = @ui.css("w=Full pt=S1").then(
 
 ///|
 /// An agent's head Row 1: its mark on the left and its compact stop pill on the right (32 high,
-/// right edge concentric with the sheet's `pane_corner`).
+/// right edge concentric with the sheet's `dialog_r`, using `mr` which is `-2pt` to outdent past `panel_words`).
 // kept across runs: a value (no field of it changes)
 let agent_title_row1 : @ui.Style = @ui.css("row w=Full align=ACenter").then(
   @ui.style(min_h=Fixed(agent_stop_h), pl=@sf.room_of(agent_words_in), mr=@sf.room_of(agent_stop_corner_in)),

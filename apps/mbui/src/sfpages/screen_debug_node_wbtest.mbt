@@ -188,7 +188,7 @@ test "日志's 卸载 App opens its list beside its row, with keyboard and mouse
 ///|
 // kept across runs: the recording, never written
 let logs_phone_app_words : Array[(String, Double, Double, Double, Double)] = [
-  ("日志", 28.5, 282.0, 32.0, 24.0),
+  ("日志", 179.0, 282.0, 32.0, 24.0),
   ("App", 66.5, 331.5, 21.0, 19.5),
   ("日志", 181.0, 331.5, 28.0, 19.5),
   ("设备", 299.0, 331.5, 28.0, 19.5),
@@ -224,7 +224,7 @@ let logs_phone_app_said : Array[(String, String, Double, Double, Double, Double)
 ///|
 // kept across runs: the recording, never written
 let logs_phone_device_words : Array[(String, Double, Double, Double, Double)] = [
-  ("日志", 28.5, 282.0, 32.0, 24.0),
+  ("日志", 179.0, 282.0, 32.0, 24.0),
   ("App", 66.5, 331.5, 21.0, 19.5),
   ("日志", 181.0, 331.5, 28.0, 19.5),
   ("设备", 299.0, 331.5, 28.0, 19.5),
@@ -278,7 +278,7 @@ let logs_phone_device_said : Array[(String, String, Double, Double, Double, Doub
 ///|
 // kept across runs: the recording, never written
 let logs_phone_device2_words : Array[(String, Double, Double, Double, Double)] = [
-  ("日志", 28.5, 282.0, 32.0, 24.0),
+  ("日志", 179.0, 282.0, 32.0, 24.0),
   ("App", 66.5, 331.5, 21.0, 19.5),
   ("日志", 181.0, 331.5, 28.0, 19.5),
   ("设备", 299.0, 331.5, 28.0, 19.5),
@@ -337,7 +337,7 @@ let logs_phone_device2_said : Array[(String, String, Double, Double, Double, Dou
 ///|
 // kept across runs: the recording, never written
 let logs_phone_logs_words : Array[(String, Double, Double, Double, Double)] = [
-  ("日志", 28.5, 282.0, 32.0, 24.0),
+  ("日志", 179.0, 282.0, 32.0, 24.0),
   ("App", 66.5, 331.5, 21.0, 19.5),
   ("日志", 181.0, 331.5, 28.0, 19.5),
   ("设备", 299.0, 331.5, 28.0, 19.5),

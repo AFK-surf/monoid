@@ -344,3 +344,82 @@ test "a stepped centred dialog's back key matches its close button's 36pt Liquid
     }
   }
 }
+
+///|
+test "dialog corner ladder stays isolated from global corner_ladder and rejects cross-ladder mixing" {
+  assert_eq(corner_ladder, [42.0, 26.0, 24.0, 18.0, 10.0])
+  assert_eq(dialog_corner_ladder, [38.0, 22.0, 14.0, 6.0])
+  // Desktop pane card row-end action keeps (16, 10), unaffected by dialog_small_corner (6).
+  assert_eq(corner_step(card_corner, 24.0), Some((16.0, 10.0)))
+  assert_eq(corner_step(dialog_card_corner, 16.0, ladder=dialog_corner_ladder), Some((16.0, 6.0)))
+  // Cross-ladder nesting (14pt box 12pt inside a 26pt page card) is still caught by corner_faults.
+  let cross_tree = fn(root : @view.View) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(card) {
+      card
+      .width(Is(Some(240.0)))
+      .height(Is(Some(140.0)))
+      .padding(Is((12.0, 12.0, 12.0, 12.0)))
+      .radius(Is(card_corner))
+      .ground(Is(0xFFFFFFFFL))
+      |> ignore
+      card.box(fn(child) {
+        child
+        .width(Is(Some(120.0)))
+        .height(Is(Some(48.0)))
+        .radius(Is(dialog_row_corner))
+        .ground(Is(0xEEEEEEFFL))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  let t = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=cross_tree,
+    w=400.0,
+    h=300.0,
+    platform=0,
+    corners_held=false,
+  )
+  t.check_looks(false)
+  t.draw()
+  let cf = t.corner_faults()
+  assert_true(cf.length() > 0, msg="expected cross-ladder corner fault for 14pt inside 26pt card")
+  assert_true(cf[0].contains("[42, 26, 24, 18, 10]"), msg="fault should cite only the global ladder: \{cf[0]}")
+
+  // Same-ladder nesting (14pt box 8pt inside a 22pt dialog card) passes cleanly.
+  let dialog_tree = fn(root : @view.View) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(card) {
+      card
+      .width(Is(Some(240.0)))
+      .height(Is(Some(140.0)))
+      .padding(Is((8.0, 8.0, 8.0, 8.0)))
+      .radius(Is(dialog_card_corner))
+      .ground(Is(0xFFFFFFFFL))
+      |> ignore
+      card.box(fn(child) {
+        child
+        .width(Is(Some(120.0)))
+        .height(Is(Some(48.0)))
+        .radius(Is(dialog_row_corner))
+        .ground(Is(0xEEEEEEFFL))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  let t2 = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=dialog_tree,
+    w=400.0,
+    h=300.0,
+    platform=0,
+  )
+  t2.check_looks(false)
+  t2.draw()
+  assert_eq(t2.corner_faults(), [])
+}

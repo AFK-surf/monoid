@@ -1880,12 +1880,12 @@ pub fn row_end_key_grown(v : @view.View) -> Double {
 /// Where what stands `t` under a container's top, in its corner of `corner`, stands in from its top and end to be
 /// concentric with it, and how round: at the ladder's step (corner_ladder) nearest at or above `t`, none where it stands
 /// out of the corner's reach or the ladder has no step there.
-fn corner_step(corner : Double, t : Double) -> (Double, Double)? {
+fn corner_step(corner : Double, t : Double, ladder? : Array[Double] = corner_ladder) -> (Double, Double)? {
   if t >= corner || t <= 0.0 {
     return None
   }
   let mut at : (Double, Double)? = None
-  for r in corner_ladder {
+  for r in ladder {
     if r < corner - 0.5 && corner - r <= t + 0.5 {
       match at {
         Some((_, was)) if was <= r => ()
@@ -1925,7 +1925,8 @@ pub fn row_corner_key_look(k : @view.View, w : Double) -> () -> Double {
     let (pad, corner) = list_card_in(k)
     let ends = if in_pane_node(k) { card_pad - wide_row_over } else { pad }
     let top = ends + wide_row_over
-    match corner_step(corner, top) {
+    let ladder = if k.lent(panel_in_lent) is Some(p) && !p.small { dialog_corner_ladder } else { corner_ladder }
+    match corner_step(corner, top, ladder~) {
       Some((e, r)) => (dmax(0.0, top - e), dmax(0.0, pad + text_in - e), r)
       None => (0.0, 0.0, line() / 2.0)
     }
@@ -1983,7 +1984,8 @@ pub fn row_corner_button_node(
   // there, at a step of the ladder's (corner_ladder: the corner rule's), the nearest at or above its top, its ground
   // grown as much over and under its words, which stay where line_end_node has them; none where it stands out of the
   // corner's reach, row_end_button_node's)
-  let stands = fn() -> (Double, Double)? { corner_step(corner, top()) }
+  let ladder = if parent.lent(panel_in_lent) is Some(p) && !p.small { dialog_corner_ladder } else { corner_ladder }
+  let stands = fn() -> (Double, Double)? { corner_step(corner, top(), ladder~) }
   let grown = fn() {
     match stands() {
       Some((e, _)) => dmax(0.0, top() - e)

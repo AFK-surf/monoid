@@ -140,7 +140,7 @@ fn track_glass_ink() -> Int64 {
 
 ///|
 /// How far a sheet reaches on under the window's foot (sheet_node's: its foot's corners out of sight).
-let sheet_under : Double = pane_corner
+let sheet_under : Double = dialog_r
 
 ///|
 /// The scrim under a sheet at its fullest: black at 28%.

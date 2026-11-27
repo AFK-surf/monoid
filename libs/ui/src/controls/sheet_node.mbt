@@ -823,6 +823,9 @@ fn sheet_node(
             }
             let inset = sheet_float_inset * float_t
             let foot_clear = sheet_foot_clear(float_t)
+            // Keep bottom corners at rigid `dialog_r` (38pt) while floating so they slide smoothly into view from
+            // `sheet_under = dialog_r` below the viewport instead of passing through intermediate [22, 34] radii
+            // that violate corner concentricity against 36pt footer controls during interactive drag.
             let bottom_r = dialog_r
             let extra = if is_ground { dmax(0.0, -fb) * (1.0 - float_t) } else { 0.0 }
             let dh = if is_ground {

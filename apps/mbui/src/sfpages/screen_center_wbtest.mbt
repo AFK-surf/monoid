@@ -384,7 +384,7 @@ test "the tiles stand on the panel's words' edges, its labels' and rows': 控制
 ///|
 // kept across runs: the recording, never written
 let center_phone_words : Array[(String, Double, Double, Double, Double)] = [
-    ("控制中心", 30.0, 169.5, 64.0, 24.0),
+    ("控制中心", 163.0, 169.5, 64.0, 24.0),
     ("快捷操作", 46.0, 209.5, 298.0, 18.0),
     ("全屏", 81.0, 270.5, 24.0, 16.0),
     ("粘贴", 183.0, 270.5, 24.0, 16.0),
@@ -433,7 +433,7 @@ let center_wide_words : Array[(String, Double, Double, Double, Double)] = [
 ///|
 // kept across runs: the recording, never written
 let center_looking_words : Array[(String, Double, Double, Double, Double)] = [
-    ("控制中心", 30.0, 285.5, 64.0, 24.0),
+    ("控制中心", 163.0, 285.5, 64.0, 24.0),
     ("快捷操作", 46.0, 325.5, 298.0, 18.0),
     ("全屏", 83.5, 386.5, 24.0, 16.0),
     ("画面", 46.0, 423.5, 298.0, 18.0),

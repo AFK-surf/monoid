@@ -90,7 +90,7 @@ priv struct PanelRowAt {
 /// 2026-11-13); square where it reaches them, a sheet's row across it.
 fn panel_row_corner(at : PanelIn, out : Double) -> Double {
   if at.sides - out > 0.5 {
-    dialog_row_corner
+    if at.col is Some(_) && !at.small { dialog_row_corner } else { row_corner }
   } else {
     0.0
   }
@@ -465,7 +465,15 @@ fn panel_row_by(
       }
       // (a sheet's list's: a sheet's row's corner, as a pick's rows are (pick_row_node), its words a row's padding in; a
       // card's corner there made a capsule of it, its words in the curve of its ends)
-      let corner = if sheet_listed { row_corner } else if across > 0.0 { dialog_card_corner } else { small_panel_inner(r_menu) }
+      let corner = if at.small || at.col is None {
+        small_panel_inner(r_menu)
+      } else if sheet_listed {
+        row_corner
+      } else if across > 0.0 {
+        dialog_card_corner
+      } else {
+        dialog_row_corner
+      }
       if foot is Some(_) {
         style_node(r, fn() { menu_row_capsule })
       } else {
@@ -491,7 +499,11 @@ fn panel_row_by(
       }
       r
       .padding(By(fn() {
-        let top_over = if top_face { dmax(0.0, face_in()) } else { menu_row_over }
+        let top_over = if top_face {
+          if corner >= row_corner { dmax(menu_row_over, face_in()) } else { dmax(0.0, face_in()) }
+        } else {
+          menu_row_over
+        }
         (face_in(), top_over, words_at(), menu_row_over)
       }))
       .gap(Is(if plain { menu_row_gap } else { panel_row_gap }))

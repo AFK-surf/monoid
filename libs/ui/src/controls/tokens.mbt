@@ -238,7 +238,28 @@ pub let small_corner : Double = @ui.concentric(row_corner, corner_inset)
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let corner_ladder : Array[Double] = [pane_corner, card_corner, dialog_r, r_menu, dialog_card_corner, row_corner, dialog_row_corner, small_corner, dialog_small_corner]
+pub let corner_ladder : Array[Double] = [pane_corner, card_corner, r_menu, row_corner, small_corner]
+
+///|
+/// Concentric corner ladder for 38pt iOS 27 dialogs and bottom sheets (38 -> 22 -> 14 -> 6), kept separate from the
+/// page/pane `corner_ladder` (42 -> 26 -> 24 -> 18 -> 10) so non-panel pages keep their exact geometry.
+// kept across runs: a value (no field of it changes)
+let dialog_corner_ladder : Array[Double] = [dialog_r, dialog_card_corner, dialog_row_corner, dialog_small_corner]
+
+///|
+/// Both independent ladders concatenated in decreasing runs for `Theme::corner_ladder` (validated per run in `corners.mbt`).
+// kept across runs: a value (no field of it changes)
+let theme_corner_ladder : Array[Double] = [
+  pane_corner,
+  card_corner,
+  r_menu,
+  row_corner,
+  small_corner,
+  dialog_r,
+  dialog_card_corner,
+  dialog_row_corner,
+  dialog_small_corner,
+]
 
 ///|
 /// How far apart two things that light up under the hand stand at least (Theme::lit_apart, the spacing rules): the
@@ -1894,7 +1915,7 @@ fn ui_theme_of(t : Theme) -> @ui.Theme {
     // a line of words that say none 1.4 of their size, as the web's root (`line-height: 1.4`) and Android's (Theme.kt
     // WebType: 1.4.em)
     text_line: 1.4,
-    corner_ladder,
+    corner_ladder: theme_corner_ladder,
     corner_fit: Some(corner_fit),
     lit_apart,
     lit_reach,

@@ -49,7 +49,9 @@ pub fn bar_pill_key_press_node(v : @view.View) -> Unit {
 /// A single-layer liquid glass pill container in `parent` for a group of top bar controls made by `body`:
 /// `height` tall (default `40.0`, full capsule radius `height / 2.0`), padded `pad` all around (default `3.0`,
 /// concentric with 34pt `round_key_node` at `height=40.0, pad=3.0` and 32pt `icon_button_node` at `height=36.0, pad=2.0`),
-/// children `gap` apart (default `2.0`). Never nest inside another glass surface.
+/// children `gap` apart (default `2.0`). Never nest inside another glass surface (sole owner-approved exception:
+/// iOS 27 `NavigationBarPlatterContainer_v2` concentric `<`/`×` corner keys in `corner_pill_key_node` inside 38pt
+/// dialogs/sheets, which degrade cleanly to `panel_ground` + `panel_edge()` hairline under `MBUI_GLASS=solid`).
 #callsite(autofill(loc))
 pub fn bar_pill_group_node(
   parent : @view.View,

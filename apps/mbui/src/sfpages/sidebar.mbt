@@ -411,7 +411,7 @@ fn cvp_nav_row_node(
     .gap(Is(8.0))
     .lines_up(Is(Some(Middle)))
     |> ignore
-    @sf.concentric_radius_node(row, fn() { @sf.row_corner })
+    @sf.concentric_radius_node(row, fn() { if @sf.in_small_panel_node(row) { @sf.row_corner } else { @sf.quiet_row_corner } })
     @sf.hover_ground_node(row)
     @sf.icon_node(row, icon, 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
     @sf.words_node(row, label, fn() { cvp_nav_words })
