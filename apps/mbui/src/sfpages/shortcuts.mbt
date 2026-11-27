@@ -52,6 +52,7 @@ pub fn shortcuts_node(
   }
   let stop = fn() {
     if keys_recorder.val == me {
+      keys_recorder.val = 0
       keys_recording.set("")
     }
   }
@@ -139,8 +140,9 @@ pub fn shortcuts_node(
     }
   })
   |> ignore
-  // (no longer on top of its stack, or let go: what it records, none; another's left as it is)
+  // (no longer on top of its stack, parked/covered, or let go: what it records, none; another's left as it is)
   v.reacts(active, fn(on) { if !on { stop() } })
+  v.on_rest(stop, while_covered=true) |> ignore
   v.owns(stop) |> ignore
   @sf.page_node(
     v,

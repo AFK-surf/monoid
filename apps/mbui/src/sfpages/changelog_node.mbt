@@ -73,7 +73,13 @@ pub fn changelog_node(
   )
   let topic = fn() { read(shown()) }
   let value = fn() { topic().value }
-  // opened: what the update brought is read, once each news (as it is said)
+  let page_active = Ref(false)
+  v.when_active(while_covered=true, fn() {
+    page_active.val = true
+    fn() { page_active.val = false }
+  })
+  |> ignore
+  // opened: what the update brought is read, once each news (as it is said), never while parked or covered
   v.reacts(
     fn() {
       match field(value(), "news") {
@@ -82,7 +88,7 @@ pub fn changelog_node(
       }
     },
     fn(news) {
-      if news != "" && news != changelog_seen.val {
+      if page_active.val && news != "" && news != changelog_seen.val {
         changelog_seen.val = news
         (core.call)("changelog.seen", obj([]), @sfbase.answer_unread)
       }

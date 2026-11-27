@@ -45,6 +45,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
         None => None
       }
     })
+    @sfbase.configure_wide_kept_left_limits()
     @ui.nav_flat_view(
       panel,
       app.nav,
@@ -68,8 +69,8 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       shown=fn(ks) { shown_keys.set(ks) },
       // (back its while the page is in use: the side panel's, the sidebar's first)
       takes_back=fn() { wide.tape_at.get() == Page },
-      // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
-      keeps_left=@sfbase.chat_page_left_key,
+      // (wide allowlist: chats and 5 audited settings kept at rest, per-kind quotas chat<=3, setting<=3, total<=6)
+      keeps_left=fn(p) { @sfbase.wide_page_left_key(src, p) },
       keeps_made=true,
       transition=@ui.NavTransition::layered(),
     )

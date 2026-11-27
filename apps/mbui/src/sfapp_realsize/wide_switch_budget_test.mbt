@@ -686,3 +686,58 @@ test "wide switch budget (dim 6): full wide rotation stays within live node and 
   assert_eq(t.unasked_faults(), [], msg="dim 6 unasked faults")
   assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="dim 6 parked timeline count == 0")
 }
+
+///|
+/// PR-B3c gate: allowlisted settings hot return on Large & Medium (made == 0, parked timers == 0, at_rest, a11y/focus
+/// isolation), plus Small layout stays unchanged (settings never park).
+test "wide switch budget (PR-B3c): allowlisted settings hot return builds 0 nodes with 0 parked timers and a11y isolation" {
+  let wide_windows : Array[(String, Double, Double, Int)] = [
+    ("large-1280x800", 1280.0, 800.0, 0),
+    ("medium-600x900", 600.0, 900.0, 0),
+  ]
+  for win in wide_windows {
+    let (label, w, h, platform) = win
+    let (t, _c, _src, _ws, chat_ref) = wide_budget_open(w, h, platform, a11y=true)
+    let tree = @ui.view_tree().unwrap()
+    // Cold open About, Changelog, and Shortcuts (allowlisted wide settings).
+    let c_about = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(About)]) })
+    assert_true(c_about.0 > 0, msg="\{label} About cold open builds nodes")
+    let about_serial = @signals.untracked(fn() { @sfbase.app.nav.top_stay().0 })
+    let c_cl = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(Changelog)]) })
+    assert_true(c_cl.0 > 0, msg="\{label} Changelog cold open builds nodes")
+    assert_true(@signals.untracked(fn() { @sfbase.app.nav.is_kept_left(about_serial) }), msg="\{label} About parked")
+    let cl_serial = @signals.untracked(fn() { @sfbase.app.nav.top_stay().0 })
+    // Switch back to Chat: both About and Changelog are parked.
+    let _ = wide_budget_step(t, fn() { @sfbase.nav_over_home([Chat(chat_ref)]) })
+    assert_true(@signals.untracked(fn() { @sfbase.app.nav.is_kept_left(about_serial) }), msg="\{label} About stays parked")
+    assert_true(@signals.untracked(fn() { @sfbase.app.nav.is_kept_left(cl_serial) }), msg="\{label} Changelog stays parked")
+    // A11y/focus isolation while settings are parked: parked setting content is absent from active tree.
+    assert_true(t.find(@sf.t("common.legal.terms")) is None, msg="\{label} parked About must be isolated from active tree")
+    assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="\{label} 0 parked timers while settings parked")
+    // Hot return to About & Changelog: setting-to-setting hot return builds strictly 0 nodes on both Large & Medium;
+    // on Large, Chat -> About also builds 0 nodes (on Medium tape, leaving Chat adjusts 3 shell/chat-bar nodes while About itself builds 0).
+    let h_about = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(About)]) })
+    let h_cl = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(Changelog)]) })
+    let h_about2 = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(About)]) })
+    if label == "large-1280x800" {
+      assert_eq(h_about.0, 0, msg="\{label} Chat->About hot return must build 0 nodes: \{Repr(h_about)}")
+    } else {
+      assert_true(h_about.0 < c_about.0 / 10, msg="\{label} Chat->About hot return must reuse parked About: h_about=\{Repr(h_about)} cold=\{Repr(c_about)}")
+    }
+    assert_true(t.find(@sf.t("common.legal.terms")) is Some(_), msg="\{label} woken About renders terms row")
+    assert_eq((h_cl.0, h_cl.1), (0, 0), msg="\{label} Changelog hot return must build 0 nodes: \{Repr(h_cl)}")
+    assert_eq((h_about2.0, h_about2.1), (0, 0), msg="\{label} About hot return must build 0 nodes: \{Repr(h_about2)}")
+    t.run_for(@sfapptest.kept_glide_over_ms)
+    assert_true(t.at_rest(), msg="\{label} PR-B3c at_rest")
+    assert_eq(t.unasked_faults(), [], msg="\{label} PR-B3c unasked faults")
+    assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="\{label} PR-B3c parked timeline count == 0")
+    @ui.run_let_go()
+  }
+  // Small screen stays unchanged (settings do not park).
+  let (ts, _cs, _srcs, _wss, chat_s) = wide_budget_open(390.0, 844.0, 2)
+  let _ = wide_budget_step(ts, fn() { @sfbase.nav_over_home([Setting(About)]) })
+  let small_about = @signals.untracked(fn() { @sfbase.app.nav.top_stay().0 })
+  let _ = wide_budget_step(ts, fn() { @sfbase.nav_over_home([Chat(chat_s)]) })
+  assert_false(@signals.untracked(fn() { @sfbase.app.nav.is_kept_left(small_about) }), msg="Small layout must not park settings")
+  @ui.run_let_go()
+}

@@ -344,6 +344,10 @@ fn pages_left(src : Source) -> Unit {
     if @sfbase.left_page_cancelled(i) {
       continue
     }
+    let kept = match @sfbase.left_page_serial(i) {
+      Some(s) => @signals.untracked(fn() { app.nav.is_kept_left(s) })
+      None => false
+    }
     match p {
       Chat(r) => {
         match page_src {
@@ -366,28 +370,28 @@ fn pages_left(src : Source) -> Unit {
             }
         }
       }
-      DriveRead(at) => reader_left(at)
+      DriveRead(at) => if !kept { reader_left(at) }
       // (a drive's film played: where it was kept and its player closed as its page's nodes are let go, sfpages'
       // play_page_node)
       DrivePlay(_) => ()
       // (one put beside its chat as a tab, drawn there or over the whole window: the tab's, let go as it closes)
-      Service(station, job) => if !@sfdesk.service_tab_held(station, job) { service_left(src, station, job) }
+      Service(station, job) => if !kept && !@sfdesk.service_tab_held(station, job) { service_left(src, station, job) }
       PreviewFile(station, key, path, _) => {
         let job = "file:" + key + "\n" + path
-        if !@sfdesk.service_tab_held(station, job) {
+        if !kept && !@sfdesk.service_tab_held(station, job) {
           service_left(src, station, job)
         }
       }
-      History(r, key, _) => history_left(src, r, key)
+      History(r, key, _) => if !kept { history_left(src, r, key) }
       // the drive's folders read, watched for changes while shown: let go of once no page of the drive is left on
       // the stack (a folder entered over another, its columns reading those above it, keeps them)
       Files | Drive(_) =>
-        if !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
+        if !kept && !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
           @sfbase.let_go(src, @sfbase.drive_scope)
         }
       // (shown still in its chat's side panel, its 全屏 from there gone back to it: kept for the panel)
       Screen(at) =>
-        if !@sfdesk.side_screen_shown(src, at.station, at.screen) {
+        if !kept && !@sfdesk.side_screen_shown(src, at.station, at.screen) {
           @sfpages.screen_left(src, at.station, at.screen)
         }
       _ => ()
@@ -901,6 +905,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
           // (a first page come after signing in waited for the person too: not told, first_page_timing)
           first_page_timing.val = None
           @sfbase.note_workspace_pref("")
+          @sfbase.kept_left_auth_gen_bump()
           signed_out_tree(v, src)
         }
         SignedIn => {

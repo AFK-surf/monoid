@@ -377,6 +377,10 @@ pub fn opens_ahead_node(
       // screen, read by nothing more than this already reads; not as what it opens on is only asked anew)
       match (shelf_workspace.val, now) {
         (Some(was), Some(ws)) if was != ws => app.nav.shelf_empty()
+        (Some(_), None) => {
+          app.nav.shelf_empty()
+          shelf_workspace.val = None
+        }
         _ => ()
       }
       if now is Some(ws) {

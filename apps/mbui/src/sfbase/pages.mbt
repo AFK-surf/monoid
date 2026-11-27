@@ -1036,6 +1036,12 @@ pub fn left_page_cancelled(index : Int) -> Bool {
 }
 
 ///|
+/// The navigation entry serial that recorded `left_pages[index]`, if any.
+pub fn left_page_serial(index : Int) -> Int? {
+  left_page_serials.get(index)
+}
+
+///|
 /// Clears `left_pages` and its per-index metadata once `pages_left` finishes.
 pub fn left_pages_clear() -> Unit {
   left_pages.clear()
@@ -1327,7 +1333,8 @@ fn page_entry_parked(serial : Int, p : Page) -> Unit {
 ///|
 /// Entry `serial` let go for good (Nav's on_entry_gone): what was kept for it as it was put by let go (none, where it
 /// left without being put by: page_entry_left let go of all of it then).
-fn page_entry_gone(serial : Int, _p : Page) -> Unit {
+fn page_entry_gone(serial : Int, p : Page) -> Unit {
+  let was_parked = entries_kept.contains(serial)
   entries_kept.remove(serial)
   page_sources.remove(serial)
   // (its chat's reader let go by the entry it is bound to as that goes in the frame after (page_chat_reader's
@@ -1342,6 +1349,23 @@ fn page_entry_gone(serial : Int, _p : Page) -> Unit {
       }
     }
     None => ()
+  }
+  match p {
+    Setting(r) => @settings.left(r)
+    Archived => @settings.left(@settings.Route::Archive)
+    Settings => @settings.left(@settings.Route::Home)
+    // a place of the bar's whose page is the settings' (bar.mbt place_page)
+    Place(name) => @settings.place_left(name)
+    _ => ()
+  }
+  // A non-chat page that was parked on kept_left skipped terminal release in pages_left while parked;
+  // now that it is permanently evicted, enqueue it for terminal cleanup in pages_left.
+  if was_parked && !(p is Chat(_)) {
+    let index = left_pages.length()
+    left_page_serials[index] = serial
+    left_pages_cancelled.remove(index)
+    left_pages.push(p)
+    left_said.set(serial)
   }
 }
 
@@ -1421,14 +1445,6 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
   }
   left_pages.push(p)
   left_said.set(serial)
-  match p {
-    Setting(r) => @settings.left(r)
-    Archived => @settings.left(@settings.Route::Archive)
-    Settings => @settings.left(@settings.Route::Home)
-    // a place of the bar's whose page is the settings' (bar.mbt place_page)
-    Place(name) => @settings.place_left(name)
-    _ => ()
-  }
 }
 
 ///|
@@ -1619,6 +1635,7 @@ pub fn reset() -> Unit {
   // (none said; which saying was last kept: the next a new one, as ever)
   app.toast.set({ ..toast_none, n: @signals.untracked(fn() { app.toast.get().n }) })
   left_pages_clear()
+  kept_left_auth_gen.val = 0
   active_chat_readers.clear()
   entry_parks.clear()
   entries_kept.clear()
@@ -1793,4 +1810,70 @@ pub let place_pick : @sf.LiveMap[String, @settings.Route] = @sf.LiveMap::new()
 /// `place_pick`'s key for `place` in the workspace `ws`.
 pub fn place_key(ws : String, place : String) -> String {
   ws + "\n" + place
+}
+
+///|
+/// Auth generation mixed into wide-layout parked setting keys; bumped on logout or any auth boundary.
+let kept_left_auth_gen : Ref[Int] = Ref(0)
+
+///|
+/// Advance `kept_left_auth_gen` and immediately empty `app.nav`'s parked shelf and `kept_left` pool.
+pub fn kept_left_auth_gen_bump() -> Unit {
+  kept_left_auth_gen.val += 1
+  app.nav.shelf_empty()
+}
+
+///|
+/// The `keeps_left` kind for allowlisted setting pages in wide layouts.
+pub fn setting_page_kind() -> String {
+  "setting"
+}
+
+///|
+fn wide_setting_left_key(src : Source, route_name : String) -> (String, String)? {
+  let ws = @signals.untracked(fn() { workspace_in_view(src).0 })
+  guard ws is Some(w) else { return None }
+  let owner = workspace_owner_of(w.id)
+  let key = "setting\u{1}" +
+    w.id +
+    "\u{1}" +
+    owner +
+    "\u{1}" +
+    kept_left_auth_gen.val.to_string() +
+    "\u{1}" +
+    route_name
+  Some((key, setting_page_kind()))
+}
+
+///|
+/// Explicit allowlist for wide-layout (`Paned` / `Taped`) `keeps_left` parking.
+/// Only `Chat(r)` and the 5 audited low-risk setting routes (`Changelog`, `Appearance`, `About`, `Fonts`, `Shortcuts`)
+/// may park; every sensitive/other route and any future route returns `None` (destroyed immediately on leave).
+pub fn wide_page_left_key(src : Source, p : Page) -> (String, String)? {
+  match p {
+    Chat(r) => chat_page_left_key(Chat(r))
+    Setting(Changelog) => wide_setting_left_key(src, "Changelog")
+    Setting(Appearance) => wide_setting_left_key(src, "Appearance")
+    Setting(About) => wide_setting_left_key(src, "About")
+    Setting(Fonts) => wide_setting_left_key(src, "Fonts")
+    Setting(Shortcuts) => wide_setting_left_key(src, "Shortcuts")
+    _ => None
+  }
+}
+
+///|
+/// Configure wide-layout `kept_left` per-kind quotas: `chat <= 3`, `setting <= 3`, total `<= 6`, any other kind `0`.
+pub fn configure_wide_kept_left_limits() -> Unit {
+  app.nav.set_kept_left_limits(
+    most_of=fn(kind) {
+      if kind == chat_page_kind() {
+        3
+      } else if kind == setting_page_kind() {
+        3
+      } else {
+        0
+      }
+    },
+    total=6,
+  )
 }

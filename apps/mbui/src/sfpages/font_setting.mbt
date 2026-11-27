@@ -7,6 +7,9 @@ fn font_setting_reset() -> Unit {
   local_try_given.val = ""
   font_picker_open.set(-1)
   local_open.set(false)
+  fonts_picker_owner.set(0)
+  fonts_drag_owner.val = 0
+  fonts_undo_owner.val = 0
   fx_local_up.val = false
   fx_code_up.val = false
   advanced_open.set(false)
@@ -16,6 +19,21 @@ fn font_setting_reset() -> Unit {
   code_scale_drag.set(None)
   fonts_undo_snap.set(None)
 }
+
+///|
+/// Monotonic instance counter and per-instance owners for global font picker / drag / undo state,
+/// so parking or evicting an old `Fonts` page instance never closes a newer instance's panel or drags.
+// kept across runs: monotonic instance counter, never reused across runs
+let fonts_instances : Ref[Int] = Ref(0)
+
+///|
+let fonts_picker_owner : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+let fonts_drag_owner : Ref[Int] = Ref(0)
+
+///|
+let fonts_undo_owner : Ref[Int] = Ref(0)
 
 ///|
 /// The face pointed at in the faces' rows, tried in the preview card before it is chosen ("" none; "\u{1}" the slot's
@@ -261,6 +279,7 @@ fn font_advanced_custom_count(typo : Json?) -> Int {
 /// Flat context for the fonts settings page so every section uses top-level functions instead of nested closures.
 priv struct FontPageCtx {
   core : Core
+  me : Int
 }
 
 ///|
@@ -641,6 +660,7 @@ fn sanitize_typography_snapshot(typo : Json?) -> Json? {
 ///|
 fn FontPageCtx::reset_all(self : FontPageCtx) -> Unit {
   let p = @signals.untracked(fn() { self.prefs() })
+  fonts_undo_owner.val = self.me
   fonts_undo_snap.set(Some((field(p, "fonts"), sanitize_typography_snapshot(field(p, "typography")))))
   (self.core.call)(
     "prefs.set",
@@ -653,6 +673,9 @@ fn FontPageCtx::reset_all(self : FontPageCtx) -> Unit {
 fn FontPageCtx::undo_reset(self : FontPageCtx) -> Unit {
   match fonts_undo_snap.untracked() {
     Some((old_fonts, old_typo)) => {
+      if fonts_undo_owner.val == self.me {
+        fonts_undo_owner.val = 0
+      }
       fonts_undo_snap.set(None)
       let patch : Map[String, Json] = Map([])
       patch["fonts"] = match old_fonts {
@@ -781,8 +804,11 @@ fn font_slot_picker_panel_node(
       @sfbase.face_retry(id)
     }
     @settings.set_font(ctx.core, slot, if id == "" { None } else { Some(id) })
-    font_picker_open.set(-1)
-    local_open.set(false)
+    if fonts_picker_owner.untracked() == ctx.me {
+      fonts_picker_owner.set(0)
+      font_picker_open.set(-1)
+      local_open.set(false)
+    }
     close()
   }
   v.box(fn(list) {
@@ -899,8 +925,11 @@ fn font_slot_picker_panel_node(
                   clear_fonts_undo()
                   @sfbase.face_retry(local_prefix + f)
                   @settings.set_font(ctx.core, slot, Some(local_prefix + f))
-                  font_picker_open.set(-1)
-                  local_open.set(false)
+                  if fonts_picker_owner.untracked() == ctx.me {
+                    fonts_picker_owner.set(0)
+                    font_picker_open.set(-1)
+                    local_open.set(false)
+                  }
                   close()
                 }, fn(b) {
                   let hot = fn() { f == picked_local() || @sf.lit_node(b) }

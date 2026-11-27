@@ -643,6 +643,7 @@ pub let clear_vault_secrets : Ref[(String, String) -> Unit] = Ref(fn(_, _) {  })
 /// Synchronously invalidates `last_said`, active `Graph` and transferable `Lease` followers, and derived `Kept` caches
 /// belonging to `src` for every topic matched by `matches` (leaves unrelated workspaces and unaffected vaults intact).
 pub fn invalidate_auth_scope(src : Source, matches : (String, Map[String, Json]) -> Bool) -> Unit {
+  kept_left_auth_gen_bump()
   last_said.val = last_said.val.filter(fn(l) {
     !(physical_equal(l.source, src) && matches(l.name, l.params))
   })

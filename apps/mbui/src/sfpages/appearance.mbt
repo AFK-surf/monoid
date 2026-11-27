@@ -33,6 +33,24 @@ pub fn appearance_node(
     }
     k
   }
+  let page_active = Ref(false)
+  let zoom_presented = Ref(0)
+  let close_popups = fn() {
+    if zoom_presented.val != 0 && @sf.presented_open_of(zoom_presented.val) {
+      @sf.close_presented_of(zoom_presented.val)
+    }
+    zoom_presented.val = 0
+    @sfbase.accent_preview(None)
+  }
+  v.when_active(while_covered=true, fn() {
+    page_active.val = true
+    fn() {
+      page_active.val = false
+      close_popups()
+    }
+  })
+  |> ignore
+  v.owns(close_popups) |> ignore
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.appearance.title") },
@@ -43,9 +61,13 @@ pub fn appearance_node(
     fn() { if wide() { ["settings"] } else { keys() } },
     fn(b, key) {
       if key == "settings" {
-        @sf.group_node(b, fn(g) { g.each(keys, fn(k) { k }, fn(r, k) { appearance_setting(r, core, k.untracked()) }) })
+        @sf.group_node(b, fn(g) {
+          g.each(keys, fn(k) { k }, fn(r, k) {
+            appearance_setting(r, core, k.untracked(), page_active, zoom_presented)
+          })
+        })
       } else {
-        appearance_setting(b, core, key)
+        appearance_setting(b, core, key, page_active, zoom_presented)
       }
     },
   )
@@ -54,7 +76,13 @@ pub fn appearance_node(
 ///|
 /// One of 外观's settings, by its key: 主题, 主题色, 背景着色, 字体 (the faces chosen, opening their page), 动画, 震动, 语言, 缩放,
 /// 拖入的文件, 侧栏. Each choice the core's prefs (`prefs.set`), shown at once.
-fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
+fn appearance_setting(
+  v : @view.View,
+  core : Core,
+  key : String,
+  page_active : Ref[Bool],
+  zoom_presented : Ref[Int],
+) -> Unit {
   let prefs = fn() { (core.topic)("prefs", Map([])).get().value }
   // a choice of a few (Segmented, Seg): the kept value, or the one just chosen while the core takes it
   let choice = fn(title : String, note : String, options : Array[(String, String)], now : () -> String) {
@@ -190,8 +218,11 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
               @sf.choice(z.0, (if z.0 == "" { "100" } else { z.0 }) + "%")
             })
             @sf.pick(@sf.t("desktop.menu.zoom"), choices, @signals.untracked(zoom), fn(value) {
-              @settings.set_pref(core, "windowZoom", value)
+              if page_active.val {
+                @settings.set_pref(core, "windowZoom", value)
+              }
             }, from=Node(b), search=false)
+            zoom_presented.val = @sf.last_presented()
           }),
         )
       })
