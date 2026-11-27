@@ -11,6 +11,7 @@ import "station_cloud"
 import "station_devices"
 import "station_jobs"
 import "station_mesh"
+import "station_vault"
 import "station_whole"
 
 fn w17c2_kept_device(ws : String, spec : station_devices::DeviceSpec) -> station_devices::KeptDevice {
@@ -371,40 +372,43 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     rig_due: [],
     full_pending: Map::new(),
   })
-  // Three person chains: u-owner (owner in ws-A), u-admin (admin in ws-A), u-other (owner in ws-B only)
+  // Four person chains: u-owner (owner in ws-A), u-admin (admin in ws-A), u-departed (historical vault owner only), u-other (ws-B only)
   let c_owner = w17c2_person_genesis("u-owner", "0101010101010101010101010101010101010101010101010101010101010101")
   let c_admin = w17c2_person_genesis("u-admin", "0202020202020202020202020202020202020202020202020202020202020202")
+  let c_departed = w17c2_person_genesis("u-departed", "0404040404040404040404040404040404040404040404040404040404040404")
   let c_other = w17c2_person_genesis("u-other", "0303030303030303030303030303030303030303030303030303030303030303")
-  cloud.set_person_chains([c_owner, c_admin, c_other])
+  cloud.set_person_chains([c_owner, c_admin, c_departed, c_other])
 
-  let seen_members : Map[String, Map[String, (String, String)]] = Map::new()
-  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner")
-  record_seen_member(seen_members, "ws-A", "u-admin", "admin@a.test", "admin")
-  record_seen_member(seen_members, "ws-B", "u-other", "other@b.test", "owner")
-
-  let known_members = fn(ws : String) -> (Map[String, String], Map[String, String]) {
-    let emails : Map[String, String] = Map::new()
-    let roles : Map[String, String] = Map::new()
-    match seen_members.get(ws) {
-      Some(m) => {
-        let ks = m.keys()
-        for i in 0..<ks.length() {
-          match m.get(ks[i]) {
-            Some((em, rl)) => {
-              emails.set(ks[i], em)
-              roles.set(ks[i], rl)
-            }
-            None => ()
-          }
-        }
-      }
-      None => ()
-    }
-    (emails, roles)
+  // Real VaultStore containing a historical vault owned by departed member `u-departed`
+  let vs = station_vault::VaultStore::in_memory()
+  let departed_vault = form::Json::Obj([
+    ("id", form::Json::Str("v-hist")),
+    ("ws", form::Json::Str("ws-A")),
+    ("owner", form::Json::Str("u-departed")),
+    ("members", form::Json::Arr([form::Json::Str("u-departed")])),
+    ("version", form::Json::Num(1.0)),
+    ("deleted", form::Json::Bool(false)),
+  ])
+  match vs.put_vault(departed_vault) {
+    Ok(_) => ()
+    Err(e) => panic("put_vault failed: " + e)
   }
 
-  // 1. ws-A personal lock preserves owner & admin roles and excludes ws-B's u-other
-  match resolve_vault_lock_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf) {
+  let seen_members : Map[String, Map[String, SeenMember]] = Map::new()
+  // u-owner expires at 1700005000, u-admin expires at 1700000200
+  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner", 1700000000L, "sid-owner", 1700005000L)
+  record_seen_member(seen_members, "ws-A", "u-admin", "admin@a.test", "admin", 1700000000L, "sid-admin", 1700000200L)
+  record_seen_member(seen_members, "ws-B", "u-other", "other@b.test", "owner", 1700000000L, "sid-other", 1700005000L)
+
+  let known_at = fn(now_s : Double) -> (String) -> (Map[String, String], Map[String, String]) {
+    fn(ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, cloud, ws, now_s)
+    }
+  }
+
+  // 1. ws-A personal lock preserves owner & admin roles and excludes ws-B's u-other AND historical departed u-departed
+  let t1 = 1700000100.0
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
     Some(ls) => {
       match ls.members.get("u-owner") {
         Some(m) => if m.role != "owner" || m.email != "owner@a.test" { panic("owner role/email must be preserved, got " + m.role) }
@@ -417,34 +421,89 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
       if ls.members.contains("u-other") || ls.persons.contains("u-other") {
         panic("ws-A personal lock must not include ws-B member u-other")
       }
+      if ls.members.contains("u-departed") || ls.persons.contains("u-departed") {
+        panic("ws-A personal lock must not re-admit historical departed vault member u-departed")
+      }
     }
     None => panic("expected personal vault lock for ws-A when security mode is off")
   }
 
-  // 2. ws-A GET /vault/boxes chains contain u-owner & u-admin and MUST NOT contain ws-B's u-other
-  let chains_a = resolve_vault_chains_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf)
+  // 2. ws-A GET /vault/boxes chains contain u-owner & u-admin and MUST NOT contain ws-B's u-other or departed u-departed
+  let chains_a = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf)
   if form::json_field(Some(chains_a), "u-owner") is None || form::json_field(Some(chains_a), "u-admin") is None {
     panic("expected u-owner and u-admin chains in ws-A")
   }
   if !(form::json_field(Some(chains_a), "u-other") is None) {
     panic("ws-A chains leaked ws-B member u-other!")
   }
+  if !(form::json_field(Some(chains_a), "u-departed") is None) {
+    panic("ws-A chains leaked historical departed member u-departed!")
+  }
 
-  // 3. Unknown workspace returns None / {}
-  if !(resolve_vault_lock_for_ws(cloud, None, known_members, "ws-unknown", 1700000100.0, vf) is None) {
+  // 3. Credential expiry: at t2 = 1700000300 (past u-admin's exp_unix=1700000200), u-admin immediately disappears
+  let t2 = 1700000300.0
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf) {
+    Some(ls) => {
+      if ls.members.contains("u-admin") || ls.persons.contains("u-admin") {
+        panic("expired member u-admin must disappear from personal_vault_lock")
+      }
+      if !ls.members.contains("u-owner") {
+        panic("non-expired u-owner must remain")
+      }
+    }
+    None => panic("expected personal vault lock for remaining active u-owner")
+  }
+  let chains_t2 = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf)
+  if !(form::json_field(Some(chains_t2), "u-admin") is None) {
+    panic("expired member u-admin must disappear from GET /vault/boxes chains")
+  }
+
+  // 4. Mesh revocation: revoking u-owner immediately removes them from both personal_vault_lock and GET /vault/boxes
+  revoke_seen_member(seen_members, "ws-A", "u-owner")
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf) is None) {
+    panic("after all active members expired/revoked, personal_vault_lock must be None (no historical fallback)")
+  }
+  let chains_revoked = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t2), "ws-A", t2, vf)
+  if !(form::json_field(Some(chains_revoked), "u-owner") is None) {
+    panic("revoked member u-owner must disappear from GET /vault/boxes chains")
+  }
+  // Also verify cloud revocation list filters even if still present in seen_members
+  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner", 1700000000L, "sid-owner", 1700005000L)
+  match cloud.state {
+    Some(st_cloud) => {
+      st_cloud.revocations = [station_cloud::Revocation::{ kind: "sub", id: "u-owner", at: 1700000050L }]
+    }
+    None => ()
+  }
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) is None) {
+    // Only u-admin should remain if not expired at t1; u-owner must be absent!
+    match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
+      Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") {
+        panic("cloud-revoked u-owner must not appear in personal_vault_lock")
+      }
+      None => ()
+    }
+  }
+  let chains_cloud_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf)
+  if !(form::json_field(Some(chains_cloud_rev), "u-owner") is None) {
+    panic("cloud-revoked u-owner must not appear in GET /vault/boxes chains")
+  }
+
+  // 5. Unknown workspace returns None / {}
+  if !(resolve_vault_lock_for_ws(cloud, None, known_at(t1), "ws-unknown", t1, vf) is None) {
     panic("unknown workspace must not get a vault lock")
   }
 
-  // 4. Broken workspace lock (security mode ON, state: None) MUST NOT fall back to personal lock!
+  // 6. Broken workspace lock (security mode ON, state: None) MUST NOT fall back to personal lock!
   cloud.lock = Some(station_cloud::KeptLock::{
     entries: [],
     aside: [],
     state: None,
   })
-  if !(resolve_vault_lock_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf) is None) {
+  if !(resolve_vault_lock_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf) is None) {
     panic("broken workspace lock must fail closed (None), never fall back to personal lock")
   }
-  let chains_broken = resolve_vault_chains_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf)
+  let chains_broken = resolve_vault_chains_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf)
   if !(form::json_field(Some(chains_broken), "u-owner") is None) {
     panic("broken workspace lock must return empty chains {}")
   }

@@ -314,7 +314,9 @@ test "wave17c2 R4: vault structured JSON errors, ConfigFile::try_update atomic a
     Ok(_) => panic("memory must return honest 501")
   }
 
-  // 4. `ConfigFile::try_update` aborts atomically on Err without writing disk or firing listeners
+  // 4. `ConfigFile::try_update` aborts atomically on Err without writing disk or firing listeners,
+  //    AND while watched (`enable_virtual_watch`), unconditionally re-reads latest disk snapshot
+  //    (preserving undelivered external edits and refusing corrupt JSON without overwriting disk).
   let cfg_file = match station_ops::ConfigFile::open(mem_fs.ops(), "/tmp/w17c2-api-test") {
     Ok(c) => c
     Err(_) => panic("failed to open ConfigFile in fixture")
@@ -331,6 +333,41 @@ test "wave17c2 R4: vault structured JSON errors, ConfigFile::try_update atomic a
   if cfg_file.edits != edits_before || listener_calls != 0 {
     panic("ConfigFile::try_update must not write disk or fire listeners on Err")
   }
+  cfg_file.enable_virtual_watch()
+  // External process writes to disk before fs.watch delivers an event:
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", "{\"externalKey\":\"from-outside\"}\n".to_bytes(), 384)
+  match cfg_file.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Ok(json_obj_set(raw, "localKey", Some(base_codec::json_str("from-api"))))
+  }) {
+    Ok(_) => {
+      match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+        Ok(b) => {
+          let txt = b.to_string()
+          if !txt.contains("externalKey") || !txt.contains("from-outside") || !txt.contains("localKey") || !txt.contains("from-api") {
+            panic("watched try_update overwrote external disk edit: " + txt)
+          }
+        }
+        Err(_) => panic("missing config.json after watched try_update")
+      }
+    }
+    Err(_) => panic("watched try_update failed on valid external disk JSON")
+  }
+  // External process writes corrupt JSON before fs.watch delivers an event:
+  let corrupt_txt = "{corrupt-json"
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", corrupt_txt.to_bytes(), 384)
+  match cfg_file.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Ok(json_obj_set(raw, "shouldNotWrite", Some(base_codec::json_bool(true))))
+  }) {
+    Err(station_ops::ConfigError::InvalidJson(_)) => {
+      match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+        Ok(b) => if b.to_string() != corrupt_txt { panic("watched try_update must NOT overwrite corrupt disk JSON") }
+        Err(_) => panic("missing config.json")
+      }
+    }
+    _ => panic("watched try_update must fail with InvalidJson on corrupt disk JSON")
+  }
+  // Restore valid config.json for subsequent assertions
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", "{}\n".to_bytes(), 384)
 
   // 5. `drive.roots.put`: non-manager 403, relative 400, traversal 400, POSIX Windows drive-letter 400, normalization
   match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_member), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/ok")]))])) {

@@ -185,12 +185,23 @@ pub fn parse_device_tunnel_http_req(carry : Bytes) -> Option[(String, String, Ar
 // 2. Wire WholeCore Runtime Hooks (`CloudStore` lock_of, restart, logins, signins)
 // ---------------------------------------------------------------------------
 
+pub struct SeenMember {
+  pub email : String
+  pub role : String
+  pub iat : Int64
+  pub sid_claim : String
+  pub exp_unix : Int64
+}
+
 pub fn record_seen_member(
-  seen_members : Map[String, Map[String, (String, String)]],
+  seen_members : Map[String, Map[String, SeenMember]],
   ws : String,
   sub : String,
   email : String,
   role : String,
+  iat : Int64,
+  sid_claim : String,
+  exp_unix : Int64,
 ) -> Unit {
   if ws.length() == 0 || sub.length() == 0 {
     return
@@ -198,12 +209,85 @@ pub fn record_seen_member(
   let m = match seen_members.get(ws) {
     Some(existing) => existing
     None => {
-      let fresh : Map[String, (String, String)] = Map::new()
+      let fresh : Map[String, SeenMember] = Map::new()
       seen_members.set(ws, fresh)
       fresh
     }
   }
-  m.set(sub, (email, role))
+  m.set(sub, SeenMember::{
+    email: email,
+    role: role,
+    iat: iat,
+    sid_claim: sid_claim,
+    exp_unix: exp_unix,
+  })
+}
+
+pub fn revoke_seen_member(
+  seen_members : Map[String, Map[String, SeenMember]],
+  ws : String,
+  sub : String,
+) -> Unit {
+  match seen_members.get(ws) {
+    Some(m) => m.remove(sub)
+    None => ()
+  }
+}
+
+/// Filter `seen_members` for `ws` against live `full_memberships(now_secs)`, credential expiry
+/// (`exp_unix`), and cloud revocations (`sub`/`sid` with `iat <= r.at`).
+pub fn active_seen_members_for_ws(
+  seen_members : Map[String, Map[String, SeenMember]],
+  cloud : station_cloud::CloudStore,
+  ws : String,
+  now_secs : Double,
+) -> (Map[String, String], Map[String, String]) {
+  let emails : Map[String, String] = Map::new()
+  let roles : Map[String, String] = Map::new()
+  let ms = cloud.full_memberships(now_secs)
+  let mut revs : Option[Array[station_cloud::Revocation]] = None
+  for i in 0..<ms.length() {
+    if ms[i].workspace == ws {
+      revs = Some(ms[i].revocations)
+      break
+    }
+  }
+  let ws_revs = match revs {
+    Some(r) => r
+    None => return (emails, roles)
+  }
+  match seen_members.get(ws) {
+    Some(m) => {
+      let subs = m.keys()
+      for i in 0..<subs.length() {
+        let sub = subs[i]
+        match m.get(sub) {
+          Some(sm) => {
+            if sm.exp_unix > 0L && now_secs > sm.exp_unix.to_double() {
+              continue
+            }
+            let mut revoked = false
+            for ri in 0..<ws_revs.length() {
+              let r = ws_revs[ri]
+              if sm.iat <= r.at
+              && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sm.sid_claim && sm.sid_claim.length() > 0))
+              {
+                revoked = true
+                break
+              }
+            }
+            if !revoked {
+              emails.set(sub, sm.email)
+              roles.set(sub, sm.role)
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  (emails, roles)
 }
 
 fn person_chain_sub(chain : Array[form::Json]) -> Option[String] {
@@ -247,6 +331,7 @@ fn build_personal_lock_sources(
   verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> station_cloud::PersonalLockSources {
   let (member_emails, member_roles) = known_members(ws)
+  // Active authorized subjects ONLY (never merge historical departed vault owners/members).
   let ws_subs : Map[String, Bool] = Map::new()
   let ek = member_emails.keys()
   for i in 0..<ek.length() {
@@ -267,32 +352,32 @@ fn build_personal_lock_sources(
             let owner = match form::json_field(Some(v), "owner") { Some(form::Json::Str(s)) => s, _ => "" }
             let del = match form::json_field(Some(v), "deleted") { Some(form::Json::Bool(true)) => true, _ => false }
             let sk = match form::json_field(form::json_field(Some(v), "sig"), "key") { Some(form::Json::Str(s)) => s, _ => "" }
-            let mem_arr : Array[String] = []
-            match form::json_field(Some(v), "members") {
-              Some(form::Json::Arr(xs)) => {
-                for j in 0..<xs.length() {
-                  match xs[j] {
-                    form::Json::Str(s) => {
-                      mem_arr.push(s)
-                      if !del && s.length() > 0 {
-                        ws_subs.set(s, true)
+            // Only keep vault records for currently active authorized subjects so historical
+            // departed members can never re-enter `personal_vault_lock` or `GET /vault/boxes`.
+            if !del && ws_subs.contains(owner) {
+              let mem_arr : Array[String] = []
+              match form::json_field(Some(v), "members") {
+                Some(form::Json::Arr(xs)) => {
+                  for j in 0..<xs.length() {
+                    match xs[j] {
+                      form::Json::Str(s) => {
+                        if ws_subs.contains(s) {
+                          mem_arr.push(s)
+                        }
                       }
+                      _ => ()
                     }
-                    _ => ()
                   }
                 }
+                _ => ()
               }
-              _ => ()
+              vault_summaries.push(station_cloud::VaultRecordSummary::{
+                owner: owner,
+                deleted: false,
+                sig_key: sk,
+                members: mem_arr,
+              })
             }
-            if !del && owner.length() > 0 {
-              ws_subs.set(owner, true)
-            }
-            vault_summaries.push(station_cloud::VaultRecordSummary::{
-              owner: owner,
-              deleted: del,
-              sig_key: sk,
-              members: mem_arr,
-            })
           }
         }
         Err(_) => ()
@@ -311,8 +396,8 @@ fn build_personal_lock_sources(
     }
     None => ()
   }
-  // Filter `person_chains` strictly to members belonging to target workspace `ws`
-  // so another workspace's personal chains never leak into this workspace's vault lock or GET /vault/boxes.
+  // Filter `person_chains` strictly to currently active members of target workspace `ws`
+  // so revoked/expired/departed/other-workspace personal chains never leak into vault lock or GET /vault/boxes.
   let filtered_chains : Array[(String, Array[form::Json])] = []
   for ci in 0..<cloud.person_chains.length() {
     let (g, ch) = cloud.person_chains[ci]
@@ -343,7 +428,7 @@ fn build_personal_lock_sources(
 /// - If workspace security mode is active (`Some(eff)`): returns `eff.state` when `!eff.waiting`,
 ///   and `None` when `eff.waiting` or broken (`eff.state == None`), NEVER falling back to personal lock.
 /// - Only when security mode is explicitly off (`None`): builds `personal_vault_lock` scoped strictly
-///   to `ws`'s verified members, roles, vaults, and person chains.
+///   to `ws`'s active non-expired non-revoked members, roles, and person chains.
 pub fn resolve_vault_lock_for_ws(
   cloud : station_cloud::CloudStore,
   vault_store : Option[station_vault::VaultStore],
@@ -364,7 +449,7 @@ pub fn resolve_vault_lock_for_ws(
     Some(eff) => if eff.waiting { None } else { eff.state }
     None => {
       let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
-      if sources.chains.length() > 0 || sources.member_emails.keys().length() > 0 || sources.member_roles.keys().length() > 0 || sources.vaults.length() > 0 {
+      if sources.chains.length() > 0 || sources.member_emails.keys().length() > 0 || sources.member_roles.keys().length() > 0 {
         Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=verify_fn))
       } else {
         None
@@ -375,7 +460,7 @@ pub fn resolve_vault_lock_for_ws(
 
 /// Resolve the selected personal chains for `GET /vault/boxes` in `ws`:
 /// returns `{}` whenever `ws` is not a full membership or security mode is not explicitly off,
-/// and otherwise returns strictly the chains belonging to `ws`'s members.
+/// and otherwise returns strictly the chains belonging to `ws`'s active non-expired non-revoked members.
 pub fn resolve_vault_chains_for_ws(
   cloud : station_cloud::CloudStore,
   vault_store : Option[station_vault::VaultStore],
@@ -415,35 +500,21 @@ pub fn wire_whole_core_runtime_hooks(
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
-  seen_members : Map[String, Map[String, (String, String)]],
+  seen_members : Map[String, Map[String, SeenMember]],
 ) -> Unit {
   let _ = browser
-  let known_members = fn(ws : String) -> (Map[String, String], Map[String, String]) {
-    let emails : Map[String, String] = Map::new()
-    let roles : Map[String, String] = Map::new()
-    match seen_members.get(ws) {
-      Some(m) => {
-        let subs = m.keys()
-        for i in 0..<subs.length() {
-          match m.get(subs[i]) {
-            Some((em, rl)) => {
-              emails.set(subs[i], em)
-              roles.set(subs[i], rl)
-            }
-            None => ()
-          }
-        }
-      }
-      None => ()
-    }
-    (emails, roles)
-  }
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
+    }
     resolve_vault_lock_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
   core.api.hooks.chains_of = Some(fn(ws : String) -> form::Json {
     let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
+    }
     resolve_vault_chains_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
   // Honest 501 until real hot handover restart is wired (never fake restart by stopping the daemon).

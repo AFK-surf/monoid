@@ -388,17 +388,27 @@ pub fn ConfigFile::on_fs_event(self : ConfigFile, kind : station_sys::FsChangeKi
   changed
 }
 
-/// Atomically reload, clone, run fallible `edit` (aborting with `CheckFailed` without writing disk
-/// or firing listeners when `edit` returns `Err`), validate with `check`, write atomically (0600),
-/// update `last_written_text`/`seen`/`i18n`, and notify listeners.
+/// Atomically re-read latest disk snapshot (even while `watching == true`), strictly validate
+/// JSON object syntax, clone, run fallible `edit` (aborting with `CheckFailed` without writing disk,
+/// mutating memory, or firing listeners when `edit` returns `Err`), validate with `check`, write
+/// atomically (0600), update `value`/`last_written_text`/`seen`/`i18n`, and notify listeners.
 pub fn ConfigFile::try_update(
   self : ConfigFile,
   edit : (base_codec::Json) -> Result[base_codec::Json, String],
 ) -> Result[base_codec::Json, ConfigError] {
-  let cur = self.raw()
-  match self.invalid {
-    Some(inv) => return Err(ConfigError::InvalidJson(inv))
-    None => ()
+  let disk_text = match self.read_text_or_none() {
+    Ok(t) => t
+    Err(e) => return Err(ConfigError::Io(e))
+  }
+  let cur = match disk_text {
+    None => base_codec::json_obj([])
+    Some(t) => match parse_json_text(self.path, t, self.i18n.lang, self.i18n.product, self.i18n.product.id) {
+      Ok(v) => match v {
+        base_codec::Json::Obj(_) => v
+        _ => return Err(ConfigError::CheckFailed("config.json must be a JSON object"))
+      }
+      Err(inv) => return Err(ConfigError::InvalidJson(inv))
+    }
   }
   let next = match edit(clone_json(cur)) {
     Ok(v) => v
@@ -418,6 +428,7 @@ pub fn ConfigFile::try_update(
     Err(e) => return Err(ConfigError::Io(e))
   }
   self.value = next
+  self.invalid = None
   self.last_written_text = Some(text)
   self.edits = self.edits + 1
   self.asked = self.asked + 1
