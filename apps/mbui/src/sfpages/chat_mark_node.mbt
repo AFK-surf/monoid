@@ -270,9 +270,12 @@ pub fn row_aside_node(
         |> ignore
         face.box(fn(at) {
           // (where it lies over the face before it, and who started it ringed round its face and the ground round
-          // that: a ring of what holds the face, laid out nowhere of its own; the two set together, as either changes)
+          // that: a ring of what holds the face, laid out nowhere of its own; sized to the face so its outer ring
+          // stays circular rather than stretching to the slot's overlap/starter-gap width; the two set together)
           at
           .over(Is(true))
+          .width(Is(Some(l.face_d)))
+          .height(Is(Some(l.face_d)))
           .radius(Is(1.0e6))
           .sets_together(fn() { (first(), starter(), @sf.theme().p.text) }, fn(w) {
             let (first, starter, ink) = w

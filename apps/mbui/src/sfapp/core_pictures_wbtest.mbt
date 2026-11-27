@@ -134,6 +134,56 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
 }
 
 ///|
+test "a row's starter outer ring is a circle concentric with their avatar in first, middle, and last position" {
+  let person = fn(id : String, name : String) -> Json {
+    { "id": ToJson::to_json(id), "shown": { "name": ToJson::to_json(name), "display": ToJson::to_json(name), "mine": ToJson::to_json(false) } }
+  }
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let rgba = fn(a : Array[Double]) {
+    (ch(a[12]) << 24) | (ch(a[13]) << 16) | (ch(a[14]) << 8) | ch(a[15])
+  }
+  for platform in [0, 2] {
+    for creator_id in ["lin", "mo", "kai"] {
+      fresh_app()
+      let src = fixture("home")
+      let item = chat_item({
+        "id": "c1",
+        "people": [person("lin", "Lin"), person("mo", "Mo"), person("kai", "Kai")],
+        "creator": { "id": ToJson::to_json(creator_id) },
+      })
+      let ground = 0x123456FFL
+      let t = @ui.Tester::tree(
+        fn(root) {
+          @ui.set_tree_theme(@sf.ui_theme_now)
+          let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+          let tips = @sf.TipLayer::new(fn() { Some(popup) })
+          root.box(fn(b) {
+            @sfpages.row_aside_node(b, src, tips, fn() { item }, "people", fn() { ground }, fn() { 0 })
+          })
+          |> ignore
+        },
+        platform~,
+      )
+      let face_d = @sf.theme().chat_list.face_d
+      let ink = @sf.theme().p.text
+      let face = drawn_in(t, @sf.avatar_color(creator_id))
+      assert_eq(face.length(), 1, msg="platform \{platform}, creator \{creator_id}: starter avatar missing")
+      let (_, ax, ay, aw) = face[0]
+      assert_eq(aw, face_d, msg="platform \{platform}, creator \{creator_id}: avatar width")
+      let outer_rings = t.drawn_instances().filter(fn(a) {
+        a[5] == 0.0 && a[6] > 0.0 && rgba(a) == ink
+      })
+      assert_eq(outer_rings.length(), 1, msg="platform \{platform}, creator \{creator_id}: expected 1 outer ink ring")
+      let r = outer_rings[0]
+      // outer ring is 2 pt past the face_d × face_d avatar on all four sides (1 pt ground gap + 1 pt ink stroke)
+      let expected_d = face_d + 4.0
+      assert_eq((r[0], r[1], r[2], r[3]), (ax - 2.0, ay - 2.0, expected_d, expected_d), msg="platform \{platform}, creator \{creator_id}: outer ring off-center or stretched")
+      assert_eq(r[6], 1.0, msg="platform \{platform}, creator \{creator_id}: outer ring stroke width")
+    }
+  }
+}
+
+///|
 test "a picture's answer told to all that read it: one that could not be had then had on another page put up, at once or later, read again by the first too" {
   for later in [false, true] {
     let answers : Array[Bytes?] = [None, Some(b"GIF89a")]
