@@ -1320,6 +1320,30 @@ test "synchronous stream rejection leaves call zero so manual reopen works" {
 }
 
 ///|
+test "stale callbacks from a paused or superseded view do not clobber the active view" {
+  let r = screen_rig()
+  let s = r.sess()
+  let first_value = r.views[0].0
+  let first_done = r.views[0].1
+  s.pause(s.src)
+  // Late value or failure from the paused view must be ignored.
+  first_value({ "state": { "phase": "live", "title": "stale" } }, None)
+  first_done(Err({ "code": "offline", "message": "stale failure" }))
+  assert_eq(s.failure.get(), None, msg="paused view's late on_done must not set failure")
+  // Reopening allocates a new view; late callbacks from the superseded view must not clobber it.
+  s.open(s.src)
+  let active_call = s.call
+  let active_view = s.view
+  assert_true(active_call != 0)
+  first_value({ "state": { "phase": "ended", "message": "old" } }, None)
+  first_done(Err({ "code": "offline", "message": "old failure" }))
+  assert_eq(s.call, active_call, msg="superseded view's late on_done must not zero active call")
+  assert_eq(s.view, active_view)
+  assert_eq(s.failure.get(), None, msg="superseded view's late on_done must not fail active view")
+  screen_done(r.t)
+}
+
+///|
 test "out of sight the view is let go of, the last frame kept; back in sight it opens again" {
   let r = screen_rig()
   let v0 = text(Some(r.told("screen.view")[0]), "view")
