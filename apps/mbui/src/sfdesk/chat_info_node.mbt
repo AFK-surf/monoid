@@ -361,13 +361,24 @@ fn info_things_node(
 let info_row_round : @ui.Style = @ui.style(radius=@sf.panel_in)
 
 ///|
+// kept across runs: a value (no field of it changes)
+let info_row_round_sheet : @ui.Style = @ui.style(radius=@sf.radius_between(@sf.quiet_row_corner))
+
+///|
+/// Concentric corner radius for chat info rows: `panel_in` (18pt) in a small 24pt popover panel, `quiet_row_corner`
+/// (14pt) in a 38pt sheet/dialog.
+fn info_row_round_in(b : @view.View) -> @ui.Style {
+  if @sf.in_small_panel_node(b) { info_row_round } else { info_row_round_sheet }
+}
+
+///|
 /// A row of the info (info_row's, ui.tsx PanelRow) in `parent` (@sf.panel_content_row_node's button): its icon (14, muted) at the panel's words' inset, as
 /// the facts' words and the agents' marks over it, and words 10 apart, what is at its end (`end`, while it says
 /// something) muted, under its words where the line has not the room; round with the panel, the pointer's ground over
 /// it (info_tool's hovered); `press` as it is pressed.
 fn info_row_node(parent : @view.View, icon : String, label : () -> String, end : () -> String, press : () -> Unit) -> Unit {
   @sf.panel_content_row_node(parent, label, fn(_) { press() }, highlighted=@sf.lit_node, fn(b) {
-    @sf.style_node(b, fn() { info_tool().then(info_row_round) })
+    @sf.style_node(b, fn() { info_tool().then(info_row_round_in(b)) })
     @sf.focus_ring_node(b)
     b.box(fn(i) {
       @sf.style_node(i, fn() { info_tool_icon }, in_row=true)
@@ -393,7 +404,7 @@ fn info_row_node(parent : @view.View, icon : String, label : () -> String, end :
 fn info_pull_node(b : @view.View, src : Source, r : ChatRef, pull : () -> Json?, press : () -> Unit, done : () -> Unit) -> Unit {
   let title = fn() { @sfpages.pull_title(pull()) }
   let url = fn() { text(pull(), "url") }
-  @sf.style_node(b, fn() { info_tool().then(info_row_round) })
+  @sf.style_node(b, fn() { info_tool().then(info_row_round_in(b)) })
   b.says(By(fn() { Some(@view.said(Link, label=title())) })) |> ignore
   @sf.hover_ground_node(b, color=fn() { @sf.theme().p.hover })
   @sf.menu_presses_node(b, press, fn(x, y, _) {
