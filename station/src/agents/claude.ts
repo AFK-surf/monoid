@@ -568,10 +568,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.proc.write(JSON.stringify({ type: "control_request", request_id: `background-${uuid()}`, request: { subtype: "background_tasks" } }));
   }
 
-  async abort() {
-    if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
-    this.turn.aborting = true;
-    this.proc.tell("aborting");
+  /// Asked to stop its running turn (own-process.ts `abort`).
+  protected cancel() {
     this.proc.write(interruptRequest());
   }
 

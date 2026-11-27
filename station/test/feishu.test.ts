@@ -434,6 +434,24 @@ test("surface: a turn for a message that called nobody shows no card until the a
   }
 });
 
+test("surface: a post with replyTo goes under that message, in its thread; one without stays where the conversation is", async () => {
+  const r = await surfaceRig();
+  try {
+    r.fake.message({ id: "om_a", text: "看看", at: true });
+    r.fake.message({ id: "om_b", text: "补充" });
+    await r.fake.until("heard", () => r.events.length === 2);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_a", replyTo: "om_b" }, "在话题里", []);
+    const under = r.fake.calls("POST", "/open-apis/im/v1/messages/om_b/reply");
+    assert.equal(under.length, 1);
+    assert.equal(under[0]!.body.reply_in_thread, true);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_a" }, "在群里", []);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").length, 1);
+    assert.equal(r.fake.calls("POST", /\/reply$/).length, 1);
+  } finally {
+    await r.close();
+  }
+});
+
 test("surface: turns woken by no one's message here (a letter, a notice), after one an @ called, show no card and recall none (FB-61)", async () => {
   const r = await surfaceRig();
   try {
@@ -674,6 +692,16 @@ test("hub: a Feishu connect's chat is one session, its threads on the connect's 
     assert.ok(answer.startsWith("Posted to oc_g/om_a"), answer);
     const card = r.fake.calls("POST", "/open-apis/im/v1/messages").map((c) => JSON.parse(c.body.content)).find((c) => JSON.stringify(c).includes("button"));
     assert.deepEqual(card.body.elements.filter((e: Json) => e.tag === "button").map((b: Json) => b.text.content), ["A", "B"]);
+    // Where it answers is the agent's: under a message of the conversation it names, in that message's thread; a ts
+    // the conversation does not have is refused, nothing posted.
+    const posts = () => r.fake.calls("POST", /^\/open-apis\/im\/v1\/messages(\/[^/]+\/reply)?$/).length;
+    const before = posts();
+    assert.ok((await rig.call(key, "chat_post", { to: "oc_g/om_a", text: "在话题里答", reply_to: "om_b" })).startsWith("Posted to oc_g/om_a"));
+    const under = r.fake.calls("POST", "/open-apis/im/v1/messages/om_b/reply");
+    assert.equal(under.length, 1);
+    assert.equal(under[0]!.body.reply_in_thread, true);
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_g/om_a", text: "答", reply_to: "om_nowhere" }), "reply_to must be the ts of a message in oc_g/om_a, got om_nowhere");
+    assert.equal(posts(), before + 1);
     const loginPost = await rig.call(key, "chat_post", { to: "oc_g/om_a", text: "登录 https://app.still.fail/w/ws/s/st/login/abc", card: { type: "login", login: "abc" } });
     assert.ok(loginPost.startsWith("Posted to oc_g/om_a"), loginPost);
     assert.deepEqual(rig.store.cardAt(thread.id, rig.store.messagesBefore(thread.id, null, 1)[0]!.ts), { type: "login", login: "abc" });
