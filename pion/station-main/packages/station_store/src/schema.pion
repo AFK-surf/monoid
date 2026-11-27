@@ -1253,10 +1253,84 @@ pub fn init_schema(
       Err(e) => Err(e)
     }
   } else {
-    // Existing v13 database (or empty DB already stamped at v13): run idempotent checks.
-    match run_v13_migrations(db, now_ms) {
-      Ok(_) => Ok(cur_ver)
+    // Existing v13 database (or empty DB already stamped at v13): run idempotent checks
+    // atomically inside a single write transaction so mid-migration IO/RLIMIT failures roll back cleanly.
+    match db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+      match run_v13_migrations(t, now_ms) {
+        Ok(_) => Ok(cur_ver)
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(v) => Ok(v)
       Err(e) => Err(e)
     }
   }
+}
+
+/// Atomically verify or initialize a restore target database in-place inside a single
+/// SQLite `BEGIN IMMEDIATE` transaction without changing `journal_mode`, replacing inodes,
+/// or touching WAL files.
+pub fn ensure_restore_target_schema(
+  db_path : String,
+  wait_ms : Int = 2000,
+  now_ms : Int64 = 0.to_int64(),
+) -> Result[Unit, sql_db::SqlError] {
+  let db = match sql_db::Db::create(db_path, wait_ms=wait_ms) {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let restore_tables_sql =
+  "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (" +
+  "'threads', 'sessions', 'thread_sessions', 'entries', 'letters', 'turns', " +
+  "'runtime_sessions', 'closed_cards', 'entry_proposals', 'proposal_outcomes', " +
+  "'reads', 'hidden_chats', 'muted_chats', 'kept_chats', 'dismissed', 'pins', 'opened_chats')"
+  let res = db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let cur_ver = match user_version(t) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if cur_ver > SCHEMA_VERSION {
+      return Err(sql_db::sql_error(1, "unsupported_user_version:" + cur_ver.to_string()))
+    }
+    let has_any_table = match t.first(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1",
+      [],
+    ) {
+      Ok(Some(_)) => true
+      Ok(None) => false
+      Err(e) => return Err(e)
+    }
+    if has_any_table && cur_ver != SCHEMA_VERSION {
+      return Err(sql_db::sql_error(1, "unsupported_existing_schema_version:" + cur_ver.to_string()))
+    }
+    let existing_restore_tables = match t.first(restore_tables_sql, []) {
+      Ok(Some(r)) => row_i64(r, "n", 0.to_int64())
+      Ok(None) => 0.to_int64()
+      Err(e) => return Err(e)
+    }
+    if cur_ver == SCHEMA_VERSION && existing_restore_tables == 17.to_int64() {
+      return Ok(())
+    }
+    match run_v13_migrations(t, now_ms) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    if cur_ver < SCHEMA_VERSION {
+      match t.exec("PRAGMA user_version = " + SCHEMA_VERSION.to_string()) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let final_restore_tables = match t.first(restore_tables_sql, []) {
+      Ok(Some(r)) => row_i64(r, "n", 0.to_int64())
+      Ok(None) => 0.to_int64()
+      Err(e) => return Err(e)
+    }
+    if final_restore_tables != 17.to_int64() {
+      return Err(sql_db::sql_error(1, "incomplete_restore_schema"))
+    }
+    Ok(())
+  })
+  db.close()
+  res
 }

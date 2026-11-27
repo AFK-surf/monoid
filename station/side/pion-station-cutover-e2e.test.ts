@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
 import { createSocket as createUdpSocket } from "node:dgram";
 import {
   chmodSync,
@@ -29,6 +29,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -43,6 +44,7 @@ import { WebSocketServer } from "ws";
 import { DeviceRegistry } from "../src/devices/registry.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
 import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
+import { SCHEMA_VERSION } from "../src/store/schema.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
@@ -2394,6 +2396,9 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     srcStore.db
       .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_R8', 'before-r8-restore', ?)")
       .run(nowMs);
+    srcStore.db
+      .prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, thread) VALUES (?, ?, 'turn', ?, ?, 'completed', 1)")
+      .run("r11-saved-turn", "s:r8-rem", nowMs - 1000, nowMs);
 
     const originId = "b".repeat(64);
     const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
@@ -2872,35 +2877,31 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       emptyDb.exec("PRAGMA user_version = 13;");
       emptyDb.close();
 
-      // 1. Trigger a real mid-migration SQLite write failure via `ulimit -f 16` (8 KiB max file size)
-      //    with `SIGXFSZ` ignored so SQLite observes `EFBIG` (`SQLITE_IOERR`/`SQLITE_FULL`) while
-      //    creating tables inside `Store::open(tmp_db)`.
-      const failRun = spawnSync(
-        "sh",
-        ["-c", 'trap "" XFSZ; ulimit -f 16; exec "$@"', "--", pionBin, "run", "--app", appDir, "--data", dataDir, "--port", "0"],
-        {
-          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
-          encoding: "utf8",
-          timeout: 15_000,
-        },
-      );
-      assert.equal(failRun.status, 1, `6d-io-fail-atomic-retry must exit 1 under RLIMIT_FSIZE, got ${failRun.status}: ${failRun.stdout}\n${failRun.stderr}`);
-      assert.ok(
-        `${failRun.stdout}\n${failRun.stderr}`.includes("failed to initialize target db before restore handoff") ||
-          `${failRun.stdout}\n${failRun.stderr}`.includes("failed to flush initialized target db before restore handoff"),
-        `6d-io-fail-atomic-retry expected init failure stderr, got: ${failRun.stdout}\n${failRun.stderr}`,
-      );
-      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on mid-init IO failure");
-      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on mid-init IO failure");
-      assert.deepEqual(
-        readdirSync(dataDir).filter((f) => f.includes(".init.") && f.includes(".tmp")),
-        [],
-        "temp init DB files must be cleaned up on failure",
-      );
-      const checkZero = new DatabaseSync(dbPath, { readOnly: true });
-      const tblCount = (checkZero.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table'").get() as { n: number }).n;
-      checkZero.close();
-      assert.equal(tblCount, 0, "stillfail.db MUST remain 0-table (never half-initialized) after atomic init failure");
+      // 1. Trigger real mid-migration SQLite write failures at RLIMIT_FSIZE=155648 (304*512B)
+      //    and RLIMIT_FSIZE=229376 (448*512B) with `SIGXFSZ` ignored so SQLite observes `EFBIG`
+      //    inside `ensure_restore_target_schema`'s single `BEGIN IMMEDIATE` transaction and rolls back cleanly.
+      for (const fsizeBlocks of [304, 448]) {
+        const failRun = spawnSync(
+          "sh",
+          ["-c", `trap "" XFSZ; ulimit -f ${fsizeBlocks}; exec "$@"`, "--", pionBin, "run", "--app", appDir, "--data", dataDir, "--port", "0"],
+          {
+            env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+            encoding: "utf8",
+            timeout: 15_000,
+          },
+        );
+        assert.equal(failRun.status, 1, `6d-io-fail-atomic-retry must exit 1 under ulimit -f ${fsizeBlocks}, got ${failRun.status}: ${failRun.stdout}\n${failRun.stderr}`);
+        assert.ok(
+          `${failRun.stdout}\n${failRun.stderr}`.includes("target db not ready for restore handoff"),
+          `6d-io-fail-atomic-retry expected restore handoff refusal stderr under ulimit -f ${fsizeBlocks}, got: ${failRun.stdout}\n${failRun.stderr}`,
+        );
+        assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on mid-init IO failure");
+        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on mid-init IO failure");
+        const checkZero = new DatabaseSync(dbPath, { readOnly: true });
+        const tblCount = (checkZero.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get() as { n: number }).n;
+        checkZero.close();
+        assert.equal(tblCount, 0, `stillfail.db MUST remain 0-table after rollback under ulimit -f ${fsizeBlocks}`);
+      }
 
       // 2. Lift fault (same dataDir, same 0-table `stillfail.db`, NO re-staging!) and boot via real Launcher.
       const udpPort = await pickFreeUdpPort();
@@ -2981,11 +2982,15 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       const origRows = verifyStore.db
         .prepare("SELECT text FROM entries WHERE text LIKE ?")
         .all("%before-r8-restore%") as { text: string }[];
+      const turnRow = verifyStore.db
+        .prepare("SELECT outcome FROM turns WHERE id = ?")
+        .get("r11-saved-turn") as { outcome: string } | undefined;
       const editedRows = verifyStore.db
         .prepare("SELECT text FROM entries WHERE text LIKE ?")
         .all(`%${editedText}%`) as { text: string }[];
       verifyStore.close();
       assert.ok(origRows.length >= 1, "6d-io-fail-atomic-retry expected original restored message in stillfail.db");
+      assert.equal(turnRow?.outcome, "completed", "6d-io-fail-atomic-retry expected restored turn r11-saved-turn");
       assert.ok(editedRows.length >= 1, "6d-io-fail-atomic-retry expected edited text persisted in stillfail.db");
     }
 
@@ -3036,6 +3041,281 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       assert.equal(Buffer.compare(readFileSync(dbPath), origBytes), 0, "6e-higher-user-version must not modify DB bytes");
       assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6e-higher-user-version must preserve restore/ready.json");
       assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6e-higher-user-version must preserve restore/copy");
+    }
+
+    // (6f-concurrent-writer-preserves-commit) Astra R11 P1 #1: On an empty v13 WAL DB, another SQLite
+    // connection holds a write transaction creating `threads` and inserting local thread 73.
+    // Because `ensure_restore_target_schema` coordinates via SQLite `BEGIN IMMEDIATE` in-place (zero
+    // rename/inode swap), BOTH timings preserve inode and thread 73 on the canonical `stillfail.db` path!
+    {
+      const setupWalV13 = (tag: string) => {
+        const dir = freshDir(tag);
+        const appDir = join(dir, "app");
+        const dataDir = join(dir, "data");
+        installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+        mkdirSync(join(dataDir, "mesh"), { recursive: true });
+        const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+        assert.equal(idRes.status, 0, idRes.stderr);
+        const stationId = idRes.stdout.trim();
+        stageR8Restore(dataDir);
+        writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+        writeFileSync(
+          join(dataDir, "mesh", "cloud.json"),
+          JSON.stringify({
+            origin: `http://127.0.0.1:${cloudPort}`,
+            workspace: ws,
+            workspace_name: "R8RestWS",
+            station: stationId,
+            name: tag,
+            peers: [{ id: peerId, name: "peer-r8", relay: null }],
+            relay_urls: [],
+            grant_keys: grantKeys,
+          }),
+        );
+        const dbPath = join(dataDir, "stillfail.db");
+        const initDb = new DatabaseSync(dbPath);
+        initDb.exec("PRAGMA journal_mode = WAL; PRAGMA user_version = 13;");
+        initDb.close();
+        return { appDir, dataDir, dbPath, inoBefore: statSync(dbPath).ino };
+      };
+
+      const createThreadsSql =
+        "CREATE TABLE threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER NOT NULL, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, project TEXT, project_locked INTEGER NOT NULL DEFAULT 0, tags TEXT, UNIQUE(surface, channel, thread_ts));";
+
+      // (a) Concurrent writer commits after 300ms (inside busy_timeout=2000) while real Launcher starts:
+      {
+        const { appDir, dataDir, dbPath, inoBefore } = setupWalV13("ext-gate-r12-conc-300ms");
+        const writer = new DatabaseSync(dbPath);
+        writer.exec(`BEGIN IMMEDIATE; ${createThreadsSql} INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'web', 'CHAT', '73.000', 'LocalThread73', ${Date.now()});`);
+        const commitTimer = setTimeout(() => {
+          try { writer.exec("COMMIT"); } catch {}
+          try { writer.close(); } catch {}
+        }, 300);
+
+        const udpPort = await pickFreeUdpPort();
+        const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+          env: {
+            ...process.env,
+            STILLFAIL_NO_DISCOVERY: "1",
+            STILLFAIL_NO_DHT: "1",
+            STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+            STILLFAIL_READER_ENGINE: "mb",
+          },
+          stdio: "ignore",
+        });
+        children.push(launcher);
+        await until("6f-a Node serving /healthz 200", async () => {
+          const p = readHubPid(dataDir);
+          const port = readPorts(dataDir).admin ?? 0;
+          if (p > 0 && isAlive(p) && port > 0) {
+            try {
+              const r = await httpCall(port, "GET", "/healthz");
+              if (r.status === 200) return p;
+            } catch {}
+          }
+          return null;
+        }, 25_000);
+        clearTimeout(commitTimer);
+        try { writer.close(); } catch {}
+        launcher.kill("SIGTERM");
+        await until("6f-a launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+        assert.equal(statSync(dbPath).ino, inoBefore, "6f-a stillfail.db inode MUST NOT change");
+        const ro = new DatabaseSync(dbPath, { readOnly: true });
+        const row = ro.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
+        ro.close();
+        assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73" }, "6f-a local thread 73 MUST survive concurrent restore handoff");
+      }
+
+      // (b) Concurrent writer holds lock >2000ms (3.5s) -> Pion exits 1 preserving restore/ -> writer commits:
+      {
+        const { appDir, dataDir, dbPath, inoBefore } = setupWalV13("ext-gate-r12-conc-3500ms");
+        const writer = new DatabaseSync(dbPath);
+        writer.exec(`BEGIN IMMEDIATE; ${createThreadsSql} INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'web', 'CHAT', '73.000', 'LocalThread73Long', ${Date.now()});`);
+        const out: string[] = [];
+        const child = spawn(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout.on("data", (d) => out.push(String(d)));
+        child.stderr.on("data", (d) => out.push(String(d)));
+        const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c)));
+        writer.exec("COMMIT");
+        writer.close();
+
+        assert.equal(code, 1, `6f-b must exit 1 on >2000ms writer lock, got ${code}: ${out.join("")}`);
+        assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6f-b must preserve restore/ready.json");
+        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "6f-b must preserve restore/copy");
+        assert.equal(statSync(dbPath).ino, inoBefore, "6f-b stillfail.db inode MUST NOT change");
+        const ro = new DatabaseSync(dbPath, { readOnly: true });
+        const row = ro.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
+        ro.close();
+        assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73Long" }, "6f-b local thread 73 MUST survive after writer commits");
+      }
+    }
+
+    // (6g-partial-4-core-tables-restores-turns) Astra R11 P1 #2: Residual v13 DB with ONLY the 4 core
+    // tables (`threads`, `sessions`, `entries`, `thread_sessions`, missing `turns`/`letters`) + snapshot
+    // containing completed `turns` row (`r11-saved-turn`) -> Pion completes all 17 restorable tables inside
+    // `BEGIN IMMEDIATE` before `exec_replace` -> Node restores `r11-saved-turn` (`completed`) and cleans `restore/`!
+    {
+      const dir = freshDir("ext-gate-r12-partial-4tbl");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r12-partial-4tbl",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      // Build a real v13 DB and drop every table except the 4 core tables.
+      const dbPath = join(dataDir, "stillfail.db");
+      Store.open(dbPath, join(dataDir, "archives")).close();
+      const partial = new DatabaseSync(dbPath);
+      const keep = new Set(["threads", "sessions", "entries", "thread_sessions"]);
+      const views = partial.prepare("SELECT name FROM sqlite_master WHERE type='view'").all() as { name: string }[];
+      for (const v of views) partial.exec(`DROP VIEW IF EXISTS "${v.name}";`);
+      const triggers = partial.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[];
+      for (const tr of triggers) partial.exec(`DROP TRIGGER IF EXISTS "${tr.name}";`);
+      const tables = partial
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .all() as { name: string }[];
+      for (const t of tables) {
+        if (!keep.has(t.name)) partial.exec(`DROP TABLE IF EXISTS "${t.name}";`);
+      }
+      partial.close();
+
+      const udpPort = await pickFreeUdpPort();
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: "ignore",
+      });
+      children.push(launcher);
+      await until(
+        "6g Node replica restore completed",
+        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
+        25_000,
+      );
+      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+      assert.equal(restoredOut.error, null, `6g restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
+      assert.equal(existsSync(join(dataDir, "restore")), false, "6g restore/ must be cleaned after full restore");
+
+      launcher.kill("SIGTERM");
+      await until("6g launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
+      const turnRow = verifyStore.db
+        .prepare("SELECT outcome FROM turns WHERE id = ?")
+        .get("r11-saved-turn") as { outcome: string } | undefined;
+      const tsCount = (verifyStore.db.prepare("SELECT COUNT(*) AS n FROM thread_sessions").get() as { n: number }).n;
+      const origRows = verifyStore.db
+        .prepare("SELECT text FROM entries WHERE text LIKE ?")
+        .all("%before-r8-restore%") as { text: string }[];
+      verifyStore.close();
+      assert.equal(turnRow?.outcome, "completed", "6g MUST restore completed turn r11-saved-turn");
+      assert.equal(tsCount, 1, "6g expected thread_sessions === 1");
+      assert.ok(origRows.length >= 1, "6g expected original restored message");
+    }
+
+    // (6h-zero-byte-and-missing-db-preserve-wal) Astra R11 P1 #3: Both missing DB + real >10KB WAL
+    // AND 0-byte DB + real >10KB WAL MUST exit 1 before touching SQLite, leaving WAL and restore/
+    // SHA-256 byte-for-byte identical (and 0-byte DB still 0 bytes)!
+    {
+      // Create a genuine >10 KiB WAL file from a real SQLite WAL database.
+      const walSeedDir = freshDir("ext-gate-r12-wal-seed");
+      const walSeedPath = join(walSeedDir, "seed.db");
+      const walSeed = new DatabaseSync(walSeedPath);
+      walSeed.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE payload (id INTEGER PRIMARY KEY, body TEXT);");
+      const ins = walSeed.prepare("INSERT INTO payload (body) VALUES (?)");
+      for (let i = 0; i < 40; i++) ins.run("W".repeat(512));
+      const realWalBytes = readFileSync(`${walSeedPath}-wal`);
+      walSeed.close();
+      assert.ok(realWalBytes.length > 10_000, `expected >10KB real WAL, got ${realWalBytes.length}`);
+      const sha256 = (buf: Buffer) => createHash("sha256").update(buf).digest("hex");
+      const expectedWalHash = sha256(realWalBytes);
+
+      for (const mode of ["missing-db", "zero-byte-db"] as const) {
+        const dir = freshDir(`ext-gate-r12-wal-${mode}`);
+        const appDir = join(dir, "app");
+        const dataDir = join(dir, "data");
+        installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+        mkdirSync(join(dataDir, "mesh"), { recursive: true });
+        const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+        assert.equal(idRes.status, 0, idRes.stderr);
+        const stationId = idRes.stdout.trim();
+        stageR8Restore(dataDir);
+        writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+        writeFileSync(
+          join(dataDir, "mesh", "cloud.json"),
+          JSON.stringify({
+            origin: `http://127.0.0.1:${cloudPort}`,
+            workspace: ws,
+            workspace_name: "R8RestWS",
+            station: stationId,
+            name: `r12-wal-${mode}`,
+            peers: [{ id: peerId, name: "peer-r8", relay: null }],
+            relay_urls: [],
+            grant_keys: grantKeys,
+          }),
+        );
+        const dbPath = join(dataDir, "stillfail.db");
+        const walPath = `${dbPath}-wal`;
+        if (mode === "zero-byte-db") writeFileSync(dbPath, "");
+        writeFileSync(walPath, realWalBytes);
+        const readyHashBefore = sha256(readFileSync(join(dataDir, "restore", "ready.json")));
+
+        const res = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+          env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+          encoding: "utf8",
+          timeout: 15_000,
+        });
+        assert.equal(res.status, 1, `6h-${mode} must exit 1, got ${res.status}: ${res.stdout}\n${res.stderr}`);
+        assert.equal(sha256(readFileSync(walPath)), expectedWalHash, `6h-${mode} WAL SHA-256 MUST be untouched`);
+        assert.equal(
+          sha256(readFileSync(join(dataDir, "restore", "ready.json"))),
+          readyHashBefore,
+          `6h-${mode} restore/ready.json SHA-256 MUST be untouched`,
+        );
+        assert.equal(existsSync(join(dataDir, "restore", "copy")), true, `6h-${mode} restore/copy MUST be preserved`);
+        if (mode === "zero-byte-db") {
+          assert.equal(statSync(dbPath).size, 0, "6h-zero-byte-db must remain 0 bytes");
+        } else {
+          assert.equal(existsSync(dbPath), false, "6h-missing-db must remain absent");
+        }
+      }
+    }
+
+    // Schema version parity guard (Opus R11 nit): `station_store/src/schema.pion` SCHEMA_VERSION === TS SCHEMA_VERSION.
+    {
+      const pionSchemaSrc = readFileSync(
+        join(root, "pion", "station-main", "packages", "station_store", "src", "schema.pion"),
+        "utf8",
+      );
+      const m = pionSchemaSrc.match(/pub let SCHEMA_VERSION\s*:\s*Int\s*=\s*(\d+)/);
+      assert.ok(m, "expected SCHEMA_VERSION constant in station_store/src/schema.pion");
+      assert.equal(Number(m[1]), SCHEMA_VERSION, "Pion station_store SCHEMA_VERSION must match TS SCHEMA_VERSION");
     }
   }
 
