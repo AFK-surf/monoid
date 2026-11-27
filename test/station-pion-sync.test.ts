@@ -63,6 +63,20 @@ test("nodeOnlyReasonsInMessage enforces strict case-sensitive trailer block pars
     ),
     ["Node-Station-Only: Node 22 EventEmitter listener cap workaround".replace(/^Node-Station-Only: /, "")],
   );
+  // Valid trailer before git commit -v scissors line + verbose diff
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      "fix(station): verbose commit\n\nNode-Station-Only: Node-only V8 heap snapshot API with no Pion equivalent\n# ------------------------ >8 ------------------------\ndiff --git a/station/src/a.ts b/station/src/a.ts\n+export const x = 1;\n",
+    ),
+    ["Node-only V8 heap snapshot API with no Pion equivalent"],
+  );
+  // Valid trailer alongside git cherry-pick -x provenance line
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      "fix(station): cherry picked fix\n\nNode-Station-Only: Node 22 EventEmitter listener cap workaround\n(cherry picked from commit 0123456789abcdef0123456789abcdef01234567)\n",
+    ),
+    ["Node 22 EventEmitter listener cap workaround"],
+  );
   // Indented, quoted, wrong case, or mid-body lines must NOT be accepted as trailers
   assert.deepEqual(
     nodeOnlyReasonsInMessage("fix(station): x\n\n  Node-Station-Only: indented fake trailer"),
@@ -114,6 +128,7 @@ test("judge allows synced changes, exempt paths, and explicit trailers; refuses 
   assert.equal(valid.ok, true);
   assert.match(valid.exemptedBy ?? "", /EventEmitter/);
   assert.equal(reasonRefused("Node 22 timer unref fix"), undefined);
+  assert.equal(reasonRefused("Node-only V8 heap snapshot API with no Pion equivalent"), undefined);
 });
 
 test("CLI enforces PR-level semantics across multi-commit PRs, amend, merge from origin/main, renames, and deletions", () => {
@@ -163,10 +178,19 @@ test("CLI enforces PR-level semantics across multi-commit PRs, amend, merge from
     assert.equal(runGuard(["HEAD", "index", msgFile]), 1);
     assert.equal(runGuard(["HEAD", "index", msgFile], { STILLFAIL_ALLOW_NODE_ONLY_STATION: "1" }), 1);
 
-    // 2. Indented fake trailer in body is refused; valid trailer in trailer block passes.
+    // 2. Indented fake trailer in body is refused; valid trailer in trailer block passes
+    //    (including git commit -v scissors line + diff and git cherry-pick -x provenance).
     writeFileSync(msgFile, "fix(vault): fake\n\n  Node-Station-Only: indented body text is not a trailer\n");
     assert.equal(runGuard(["HEAD", "index", msgFile]), 1);
-    writeFileSync(msgFile, "fix(vault): node only\n\nNode-Station-Only: Node crypto Buffer polyfill bug with no Pion counterpart\n");
+    writeFileSync(
+      msgFile,
+      "fix(vault): verbose commit\n\nNode-Station-Only: Node-only V8 heap snapshot API with no Pion equivalent\n# ------------------------ >8 ------------------------\ndiff --git a/station/src/vault/store.ts b/station/src/vault/store.ts\n+export const v = 2;\n",
+    );
+    assert.equal(runGuard(["HEAD", "index", msgFile]), 0);
+    writeFileSync(
+      msgFile,
+      "fix(vault): node only\n\nNode-Station-Only: Node crypto Buffer polyfill bug with no Pion counterpart\n(cherry picked from commit 0123456789abcdef0123456789abcdef01234567)\n",
+    );
     assert.equal(runGuard(["HEAD", "index", msgFile]), 0);
     git(["commit", "-q", "-F", msgFile]);
     const exemptedTip = git(["rev-parse", "HEAD"]).trim();

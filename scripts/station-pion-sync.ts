@@ -28,8 +28,10 @@ const STATION_SRC_EXEMPT: readonly RegExp[] = [
 ];
 const PION_STATION_SOURCE = /^pion\/station-main\/.*\.(pion|c|h)$/;
 
-const VAGUE_PREFIX = /^(todo|wip|later|skip|none|n\/a|na|temp|temporary|fix|fixme|node[- ]?only|follow[- ]?up|sync\s+later|will\s+sync)\b/i;
+const VAGUE_PREFIX = /^(todo|wip|later|skip|none|n\/a|na|temp|temporary|fix|fixme|follow[- ]?up|sync\s+later|will\s+sync)\b/i;
+const SCISSORS_LINE = /^# -+ >8 -+$/;
 const TRAILER_LINE = /^[A-Za-z0-9-]+:[ \t]*.*$/;
+const CHERRY_PICK_LINE = /^\(cherry picked from commit [0-9a-f]+\)$/;
 const NODE_ONLY_TRAILER = /^Node-Station-Only:[ \t]+(.*)$/;
 
 export function requiresPionSync(path: string): boolean {
@@ -43,27 +45,30 @@ export function isPionStationSource(path: string): boolean {
 
 /** Extract `Node-Station-Only:` trailer values strictly from a commit message's final trailer paragraph. */
 export function nodeOnlyReasonsInMessage(message: string): string[] {
-  const lines = message
-    .split(/\r?\n/)
-    .filter((l) => !l.startsWith("#"));
+  const rawLines = message.split(/\r?\n/);
+  const cut = rawLines.findIndex((l) => SCISSORS_LINE.test(l));
+  const lines = (cut >= 0 ? rawLines.slice(0, cut) : rawLines).filter((l) => !l.startsWith("#"));
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end--;
   if (end === 0) return [];
   let start = end;
   while (start > 0 && lines[start - 1]!.trim() !== "") start--;
   const paragraph = lines.slice(start, end);
-  // Every line in the final paragraph must be a git trailer or folded continuation line,
-  // and at least one line must be a trailer (ignoring pure prose paragraphs or quoted lines).
+  // Every line in the final paragraph must be a git trailer, folded continuation line,
+  // or a `git cherry-pick -x` provenance line (ignoring pure prose paragraphs or quoted lines).
   let seenTrailer = false;
   for (const line of paragraph) {
     if (TRAILER_LINE.test(line)) {
       seenTrailer = true;
+    } else if (CHERRY_PICK_LINE.test(line)) {
+      continue;
     } else if (/^[ \t]+\S/.test(line) && seenTrailer) {
       continue;
     } else {
       return [];
     }
   }
+  if (!seenTrailer) return [];
   const out: string[] = [];
   for (const line of paragraph) {
     const m = NODE_ONLY_TRAILER.exec(line);
