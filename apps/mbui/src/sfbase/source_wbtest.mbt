@@ -256,6 +256,45 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="loaded A that lost ws-1 must be immediately Denied")
   set_startup_window_owner(Some("acct-b"))
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="unloaded B with cached ws-1 must stay Waiting")
+  // Astra P1-1: repeating identical or unrelated-field snapshots while B is still loaded=false must stay idempotently Pending!
+  workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  let snap_a_lost_b_pending_inv : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "invitations": Json::array([Json::object({ "id": Json::string("inv-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a_lost_b_pending_inv))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="repeated snapshots while B is loaded=false must keep explicit owner None")
+  assert_true(workspace_is_pending("ws-1"), msg="repeated snapshots while B is loaded=false must keep ws-1 Pending")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="B window must remain Waiting across repeated pending snapshots")
+  // Astra P1-2: cold start [A(loaded=false, []), B(loaded=false, [ws-1])] must keep ws-1 Pending and B Waiting!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  set_startup_window_owner(Some("acct-b"))
+  let snap_both_unloaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_both_unloaded))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="both-unloaded cold start with empty A cache must not let B claim ws-1")
+  assert_true(workspace_is_pending("ws-1"), msg="both-unloaded cold start must keep ws-1 Pending")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="B window must stay Waiting on both-unloaded cold start")
   // Once B finishes loading with ws-1: A stays Denied, B transitions to Matched!
   let snap_b_loaded : Json = Json::array([
     Json::object({

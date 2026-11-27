@@ -4243,3 +4243,159 @@ test "active native route transitioning Owned(A) -> Pending synchronously cancel
   h.st_direct = orig_direct
   @ui.run_let_go()
 }
+
+///|
+test "Pending stays idempotent across repeated snapshots while B is loaded=false (0 new RPCs) and both-unloaded cold start keeps B Waiting" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:idemp-1", title: "Idemp", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1)
+  // A loses ws-1 while B is loaded=false -> Pending!
+  let snap_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let snap_pending_inv : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "invitations": Json::array([Json::object({ "id": Json::string("inv-2") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_pending))
+  t.draw()
+  // Repeat identical + invitations-changed snapshots while B is still loaded=false: 0 new screen.view RPCs!
+  @sfbase.workspace_owners_sync_json(Some(snap_pending))
+  t.draw()
+  @sfbase.workspace_owners_sync_json(Some(snap_pending_inv))
+  t.draw()
+  t.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 1, msg="repeated pending snapshots must emit 0 additional screen.view RPCs")
+  // B confirms loaded=true -> opens screen.view for B!
+  let snap_b_ok : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_ok))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 2, msg="B confirmation must open screen.view")
+  @ui.run_let_go()
+  // Both-unloaded cold start: [A(loaded=false, []), B(loaded=false, [ws-1])] -> 0 screen.view RPCs until loaded!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  opens.val = 0
+  let snap_both_unloaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both_unloaded))
+  let t2 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t2.draw()
+  t2.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="both-unloaded cold start must emit 0 screen.view RPCs")
+  @sfbase.workspace_owners_sync_json(Some(snap_b_ok))
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="screen_node must open screen.view once A and B finish loading")
+  @ui.run_let_go()
+}

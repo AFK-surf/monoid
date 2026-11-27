@@ -652,9 +652,15 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
       for w in ws_list {
         let id = text(Some(w), "id")
         if id != "" && !seen.contains(id) {
-          match workspace_owners.get(id) {
-            Some(p) if p != owner && loaded_owners.contains(p) => pending_ws[id] = true
-            _ => seen[id] = owner
+          if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+            pending_ws[id] = true
+          } else if workspace_pending_ws.contains(id) {
+            pending_ws[id] = true
+          } else {
+            match workspace_owners.get(id) {
+              Some(p) if p != owner && loaded_owners.contains(p) => pending_ws[id] = true
+              _ => seen[id] = owner
+            }
           }
         }
       }
