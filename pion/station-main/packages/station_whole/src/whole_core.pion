@@ -1,0 +1,1055 @@
+// Unified `WholeCore` transport-independent full-station business facade + real `MixedRig`
+// backend execution over `station_rig` and `station_jobs::RemoteManager`.
+//
+// Lifecycle contract for `Wave 14-Daemon-Core` (`daemon_core.pion`):
+//   1. `WholeCore::init_pre_handover(...)` — prepares `WholeStore` (SQLite NOT open yet),
+//      `WholeAgents`, `WholeApi` (`read_only_handover = true`), `RemoteManager`, and `MixedRig`
+//      (`pure_rig = false`, `held = true`, driven by live `host_shim::wall_ms` clock).
+//   2. `open_after_predecessor_gone(predecessor_gone, before_store, ...)` — atomically opens
+//      primary SQLite, restores handover snapshot (if any), adopts all active SQLite tokens
+//      (including crash restarts with no snapshot) and active jobs, and ONLY after every step
+//      succeeds releases `read_only_handover` and Rig `held`.
+//   3. Steady state: `handle_peer_rpc`, `handle_peer_http`, `handle_mcp_http`, `on_tick`.
+//   4. Handover & exit: `export_handover`, `shutdown` (`active_object_count() == 0`).
+
+import "base_codec"
+import "form"
+import "host_shim"
+import "http1"
+import "nodepath"
+import "station_api"
+import "station_drivers"
+import "station_http"
+import "station_jobs"
+import "station_rig"
+import "station_rules_bridge"
+import "station_screens"
+import "station_sessions"
+import "station_sys"
+
+pub struct WholeCoreConfig {
+  pub station_id : String
+  pub station_build : String
+  pub data_dir : String
+  pub drive_roots : Array[String]
+  pub drive_protected : Array[String]
+  pub assets_dir : String
+  pub runner_bin : String
+  pub mcp_port : Int
+  pub home_workspace : String
+  pub allowed_workspaces : Array[String]
+  /// Workspaces in which this full station operates strictly as an isolated `MixedRig`.
+  pub rig_workspaces : Array[String]
+  pub rig_owner_email : String
+  pub rig_owner_name : String
+  pub rig_person_lock_id : String
+}
+
+fn contains_ws(list : Array[String], ws : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i] == ws {
+      return true
+    }
+  }
+  false
+}
+
+/// Build production `station_rig::RigCrypto` backed by `station_rules_bridge` (Ed25519 +
+/// WebAuthn DER P-256 passkeys, optional `libcrux` shell verifier).
+pub fn production_rig_crypto(
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> station_rig::RigCrypto {
+  station_rig::RigCrypto::{
+    lock_crypto: station_rules_bridge::lock_crypto_with(verify_fn),
+    verify_raw: fn(key_id : String, sig : Bytes, msg : Bytes) -> Bool {
+      station_rules_bridge::signature_ok_with(key_id, sig, msg, verify_fn, der=false)
+    },
+  }
+}
+
+fn os_command_log_backend() -> station_rig::LogBackend {
+  station_rig::LogBackend::{
+    ensure_dir: fn(dir : String) -> Bool { station_sys::mkdir_p(dir) },
+    stat_size: fn(path : String) -> Int64 {
+      match station_sys::stat_raw(path) {
+        Some(raw) => {
+          let parts = split_pipe_fields(raw)
+          if parts.length() >= 2 { parse_i64_dec(parts[1]) } else { 0L }
+        }
+        None => 0L
+      }
+    },
+    rename: fn(from : String, to : String) -> Bool { station_sys::rename(from, to) },
+    append: fn(path : String, data : Bytes) -> Bool {
+      station_sys::write_file_mode(path, data, mode=384, append=true)
+    },
+    read_tail: fn(path : String, max_bytes : Int64) -> Option[(Bytes, Int64)] {
+      match station_sys::stat_raw(path) {
+        Some(raw) => {
+          let parts = split_pipe_fields(raw)
+          let sz = if parts.length() >= 2 { parse_i64_dec(parts[1]) } else { 0L }
+          let off = if sz > max_bytes { sz - max_bytes } else { 0L }
+          let want = sz - off
+          match station_sys::read_range_meta(path, off, want) {
+            Ok((b, _, _)) => Some((b, off))
+            Err(_) => None
+          }
+        }
+        None => None
+      }
+    },
+  }
+}
+
+fn form_param_str(params : form::Json, key : String) -> Option[String] {
+  match params {
+    form::Json::Obj(entries) => match form::json_obj_get(entries, key) {
+      Some(form::Json::Str(s)) => Some(s)
+      _ => None
+    }
+    _ => None
+  }
+}
+
+fn form_param_int(params : form::Json, key : String, fallback : Int) -> Int {
+  match params {
+    form::Json::Obj(entries) => match form::json_obj_get(entries, key) {
+      Some(form::Json::Num(n)) => n.to_int()
+      _ => fallback
+    }
+    _ => fallback
+  }
+}
+
+fn build_rig_request_obj(method : String, params : form::Json) -> form::Json {
+  let entries : Array[(String, form::Json)] = [("method", form::Json::Str(method))]
+  match params {
+    form::Json::Obj(ps) => {
+      for i in 0..<ps.length() {
+        let (k, v) = ps[i]
+        if k != "method" {
+          entries.push((k, v))
+        }
+      }
+    }
+    _ => ()
+  }
+  form::Json::Obj(entries)
+}
+
+fn remote_task_spec_form(t : station_jobs::RemoteTaskRecord) -> form::Json {
+  let back_arr : Array[form::Json] = []
+  for i in 0..<t.back_paths.length() {
+    back_arr.push(form::Json::Str(t.back_paths[i]))
+  }
+  let fields : Array[(String, form::Json)] = [
+    ("name", form::Json::Str(t.name)),
+    ("command", form::Json::Str(t.command)),
+    ("back", form::Json::Arr(back_arr)),
+    ("screen", form::Json::Bool(t.screen)),
+    ("small", form::Json::Bool(t.small)),
+  ]
+  match t.mirror_name {
+    Some(m) => fields.push(("dir", form::Json::Str(m)))
+    None => ()
+  }
+  form::Json::Obj(fields)
+}
+
+/// Convert a `RemoteTaskRecord` + its backing `JobRecord` into wire `job` JSON.
+/// Returns `null` when the task has not yet started (`t.job_id is None`), matching
+/// `rig_helpers.pion:341-373`. When started, preserves full `JobRecord` fields (`session`,
+/// `cwd`, `port`, `pgid`, `log`, `watch`, `restarts`, `startedAt`, `endedAt`, `exitCode`).
+fn remote_task_job_form(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> form::Json {
+  match t.job_id {
+    None => form::Json::Null
+    Some(jid) => {
+      match remote.jobs.get(jid) {
+        Some(j) => {
+          let fields : Array[(String, form::Json)] = [
+            ("id", form::Json::Str(j.id)),
+            ("session", form::Json::Str(j.session)),
+            ("name", form::Json::Str(j.name)),
+            ("command", form::Json::Str(j.command)),
+            ("cwd", form::Json::Str(j.cwd)),
+            (
+              "port",
+              match j.port {
+                Some(p) => form::Json::Num(p.to_double())
+                None => form::Json::Null
+              },
+            ),
+            ("state", form::Json::Str(station_jobs::job_state_to_str(j.state))),
+            (
+              "pgid",
+              match j.pgid {
+                Some(p) => form::Json::Num(p.to_double())
+                None => form::Json::Null
+              },
+            ),
+            (
+              "exitCode",
+              match j.exit_code {
+                Some(c) => form::Json::Num(c.to_double())
+                None => form::Json::Null
+              },
+            ),
+            ("startedAt", form::Json::Num(j.started_at.to_double())),
+            (
+              "endedAt",
+              match j.ended_at {
+                Some(e) => form::Json::Num(e.to_double())
+                None => form::Json::Null
+              },
+            ),
+            ("restarts", form::Json::Num(j.restarts.to_double())),
+            ("log", form::Json::Str(j.log_path)),
+            ("watch", form::Json::Bool(j.watch)),
+          ]
+          if j.queued {
+            fields.push(("queued", form::Json::Bool(true)))
+          }
+          if j.screen {
+            fields.push(("screen", form::Json::Bool(true)))
+          }
+          if j.small {
+            fields.push(("small", form::Json::Bool(true)))
+          }
+          form::Json::Obj(fields)
+        }
+        None => {
+          let fields : Array[(String, form::Json)] = [
+            ("id", form::Json::Str(jid)),
+            ("key", form::Json::Str(t.key)),
+            ("name", form::Json::Str(t.name)),
+            ("command", form::Json::Str(t.command)),
+            ("state", form::Json::Str(station_jobs::remote_task_state_str(t.state))),
+            ("startedAt", form::Json::Num(t.created_at.to_double())),
+            ("screen", form::Json::Bool(t.screen)),
+            ("small", form::Json::Bool(t.small)),
+          ]
+          match t.exit_code {
+            Some(c) => fields.push(("exitCode", form::Json::Num(c.to_double())))
+            None => ()
+          }
+          form::Json::Obj(fields)
+        }
+      }
+    }
+  }
+}
+
+fn task_notices_form(
+  remote : station_jobs::RemoteManager,
+  t : station_jobs::RemoteTaskRecord,
+) -> form::Json {
+  let out : Array[form::Json] = []
+  match t.job_id {
+    Some(jid) => {
+      match remote.jobs.get(jid) {
+        Some(j) => {
+          for i in 0..<j.notices.length() {
+            out.push(
+              form::Json::Obj([
+                ("at", form::Json::Num(j.notices[i].at.to_double())),
+                ("text", form::Json::Str(j.notices[i].text)),
+              ]),
+            )
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  form::Json::Arr(out)
+}
+
+/// Recursively measure regular file bytes strictly inside `dir` (never includes parent metadata
+/// files; returns `(0L, true)` for an empty or missing directory, and `(bytes, false)` if the
+/// traversal exceeds `max_dirs` without finishing).
+pub fn measure_dir_bytes(
+  fs : station_jobs::FsPort,
+  dir : String,
+  max_dirs : Int = 4096,
+) -> (Int64, Bool) {
+  match (fs.lstat)(dir) {
+    None => return (0L, true)
+    Some(st) => {
+      if st.is_symlink() {
+        return (0L, true)
+      }
+      if !st.is_dir() {
+        return (st.size, true)
+      }
+    }
+  }
+  let mut total = 0L
+  let stack : Array[String] = [dir]
+  let mut visited = 0
+  while stack.length() > 0 && visited < max_dirs {
+    let cur = stack[stack.length() - 1]
+    let _ = stack.pop()
+    visited = visited + 1
+    match (fs.read_dir)(cur) {
+      Some(names) => {
+        for i in 0..<names.length() {
+          let child = nodepath::join(fs.sep, [cur, names[i]])
+          match (fs.lstat)(child) {
+            Some(cst) => {
+              if cst.is_symlink() {
+                continue
+              }
+              if cst.is_dir() {
+                stack.push(child)
+              } else if cst.size > 0L {
+                total = total + cst.size
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  (total, stack.length() == 0)
+}
+
+fn mirror_to_form(m : station_jobs::MirrorRecord) -> form::Json {
+  form::Json::Obj([
+    ("name", form::Json::Str(m.name)),
+    ("state", form::Json::Str(station_jobs::mirror_state_str(m.state))),
+    ("bytes", form::Json::Num(m.bytes.to_double())),
+    ("lastUsedAt", form::Json::Num(m.last_used_at.to_double())),
+  ])
+}
+
+/// Transport-independent full-station business core (`WholeStore` + `WholeAgents` + `WholeApi` +
+/// `RemoteManager` + isolated `MixedRig`).
+pub struct WholeCore {
+  pub config : WholeCoreConfig
+  pub store : WholeStore
+  pub agents : WholeAgents
+  pub api : WholeApi
+  pub remote : station_jobs::RemoteManager
+  pub rig : station_rig::Rig
+  pub clock_ms : () -> Int64
+  pub mut started_at_ms : Int64
+  pub mut ready : Bool
+  pub mut shut_down : Bool
+}
+
+fn build_rig_for_core(
+  config : WholeCoreConfig,
+  remote : station_jobs::RemoteManager,
+  clock_ms : () -> Int64,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+  grants_read : () -> Option[String],
+  grants_write : (String) -> Unit,
+  log_path : String,
+  log_backend : station_rig::LogBackend,
+  held_initial : Bool,
+) -> station_rig::Rig {
+  let rig_ws_list = config.rig_workspaces
+  let st_id = config.station_id
+  let owner_email = config.rig_owner_email
+  let owner_name = config.rig_owner_name
+  let person_lock = config.rig_person_lock_id
+  let rig_crypto = production_rig_crypto(verify_fn)
+
+  let grants = station_rig::RigGrants::new(station_rig::GrantsDeps::{
+    read_text: grants_read,
+    write_text: grants_write,
+    now_ms: clock_ms,
+    self_for: fn(ws : String) -> Option[station_rig::RigWs] {
+      if contains_ws(rig_ws_list, ws) {
+        Some(station_rig::RigWs::{
+          id: st_id,
+          workspace: ws,
+          owner: owner_email,
+          person: person_lock,
+        })
+      } else {
+        None
+      }
+    },
+    workspaces: fn() -> Array[station_rig::RigWs] {
+      let out : Array[station_rig::RigWs] = []
+      for i in 0..<rig_ws_list.length() {
+        out.push(station_rig::RigWs::{
+          id: st_id,
+          workspace: rig_ws_list[i],
+          owner: owner_email,
+          person: person_lock,
+        })
+      }
+      out
+    },
+    busy: fn(ws : String, peer : String, sess : String) -> Bool {
+      let tasks = remote.list_scoped(ws, peer, sess)
+      for i in 0..<tasks.length() {
+        if !station_jobs::remote_task_is_done(tasks[i].state) {
+          return true
+        }
+      }
+      false
+    },
+    stop: fn(ws : String, peer : String, sess : String) -> Unit {
+      let _ = remote.cancel_session_tasks(ws, peer, sess, clock_ms())
+    },
+    running: fn() -> Array[station_rig::RunningChat] { [] },
+    ended: fn(_e : station_rig::Ended) -> Unit { () },
+    cut: fn(_ws : String, _dev : String, _st : Option[String], _sess : Option[String]) -> Unit { () },
+    changed: fn(_ws : String) -> Unit { () },
+    held: held_initial,
+    crypto: rig_crypto,
+  })
+  let commands = station_rig::CommandLog::new(log_path, log_backend)
+  let rig = station_rig::Rig::new(
+    grants,
+    commands,
+    station_rig::RigModuleDeps::{
+      boot: st_id,
+      now_ms: clock_ms,
+      is_rig_workspace: fn(ws : String) -> Bool { contains_ws(rig_ws_list, ws) },
+      owner_meta: fn(ws : String) -> Option[station_rig::RigOwnerMeta] {
+        if contains_ws(rig_ws_list, ws) {
+          Some(station_rig::RigOwnerMeta::{ owner_email: owner_email, owner_name: owner_name })
+        } else {
+          None
+        }
+      },
+      on_pending_lock: fn(_ws : String, _hash : String) -> Unit { () },
+      on_full_pending: fn(_ws : String, _at : Int64) -> Unit { () },
+      on_join: fn(_ws : String, _name : String, _owner : Option[String], _token : String) -> Result[station_rig::JoinResult, String] {
+        Err("join not wired in WholeCore")
+      },
+      reach_device: fn(_dev : station_rig::Device) -> Result[() -> Unit, String] {
+        Err("device tunneling not enabled")
+      },
+      stop_session: fn(ws : String, peer : String, sess : String) -> Unit {
+        let _ = remote.cancel_session_tasks(ws, peer, sess, clock_ms())
+      },
+      running: fn() -> Array[station_rig::RunningChat] { [] },
+    },
+  )
+  rig.pure_rig = false
+  rig.devices_enabled = false
+  rig
+}
+
+/// Pure dependency-injected `WholeCore` constructor (zero OS or SQLite FFI references,
+/// suitable for standalone `pionc test` with injectable mutable clock & real `RemoteManager`).
+pub fn WholeCore::init_pre_handover_with_deps(
+  config : WholeCoreConfig,
+  drive_fs : station_screens::DriveFs,
+  thumb_port : Option[station_screens::ThumbPort],
+  job_fs : station_jobs::FsPort,
+  job_backend : station_jobs::ProcBackend,
+  rng : (Int) -> Result[Bytes, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+  clock_ms : () -> Int64,
+  held_rig : Bool = false,
+) -> WholeCore {
+  let store = WholeStore::new_pre_handover_with_sep(config.data_dir, "/")
+  let agents_cfg = WholeAgentsConfig::{
+    data_dir: config.data_dir,
+    assets_dir: config.assets_dir,
+    runner_bin: config.runner_bin,
+    mcp_port: config.mcp_port,
+    home_ws: config.home_workspace,
+  }
+  let agents = WholeAgents::new_with_deps(agents_cfg, job_fs, job_backend, rng)
+  let remote = station_jobs::RemoteManager::new(
+    config.data_dir,
+    job_fs,
+    agents.jobs,
+    station_jobs::noop_remote_callbacks(),
+  )
+  let auth_policy = PeerAuthPolicy::{
+    station_id: config.station_id,
+    station_build: config.station_build,
+    home_workspace: config.home_workspace,
+    allowed_workspaces: config.allowed_workspaces,
+    verify_fn: verify_fn,
+  }
+  let protected : Array[String] = [config.data_dir]
+  for i in 0..<config.drive_protected.length() {
+    let p = config.drive_protected[i]
+    if p.length() > 0 && p != config.data_dir {
+      protected.push(p)
+    }
+  }
+  let trash_root = if config.drive_roots.length() > 0 { config.drive_roots[0] } else { config.data_dir }
+  let drive = station_screens::Drive::new(
+    drive_fs,
+    config.drive_roots,
+    protected,
+    false,
+    trash_root,
+    station_screens::TrashKind::Freedesktop,
+  )
+  let screens = station_screens::ScreenHub::new()
+  let events = station_api::EventsHub::new(config.station_id, station_api::EventKeeps::default())
+  let api = WholeApi::new_with_ports(
+    auth_policy,
+    drive,
+    config.drive_roots,
+    thumb_port,
+    screens,
+    events,
+    station_api::SeenStore::empty(),
+    station_api::ApiHost::stub(),
+  )
+  let rig = build_rig_for_core(
+    config,
+    remote,
+    clock_ms,
+    verify_fn,
+    fn() -> Option[String] { None },
+    fn(_s : String) -> Unit { () },
+    config.data_dir + "/rig-commands.jsonl",
+    station_rig::MemLogFs::new().backend(),
+    held_rig,
+  )
+  WholeCore::{
+    config: config,
+    store: store,
+    agents: agents,
+    api: api,
+    remote: remote,
+    rig: rig,
+    clock_ms: clock_ms,
+    started_at_ms: clock_ms(),
+    ready: false,
+    shut_down: false,
+  }
+}
+
+/// Clean shutdown when `store` was never opened (no SQLite FFI call).
+pub fn WholeCore::shutdown_pre_handover(self : WholeCore) -> Unit {
+  if self.shut_down {
+    return
+  }
+  self.shut_down = true
+  self.ready = false
+  self.api.read_only_handover = true
+  self.rig.close()
+  self.agents.clear_runtime_state_on_shutdown()
+  self.store.close_pre_handover()
+}
+
+/// Production `WholeCore` initializer in pre-handover stage:
+/// - Does NOT open SQLite (`store.phase == StorePhase::PreHandover`).
+/// - Keeps `api.read_only_handover == true` and `rig.grants.held == true` until
+///   `open_after_predecessor_gone` completes all steps cleanly.
+/// - Uses live clock (`host_shim::wall_ms`), `station_jobs::sys_fs`, real `RemoteManager`,
+///   and real `station_rules_bridge` crypto.
+pub fn WholeCore::init_pre_handover(
+  config : WholeCoreConfig,
+  drive_fs : Option[station_screens::DriveFs] = None,
+  thumb_port : Option[station_screens::ThumbPort] = None,
+  job_fs : Option[station_jobs::FsPort] = None,
+  job_backend : Option[station_jobs::ProcBackend] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+  random_bytes_fn : Option[(Int) -> Result[Bytes, String]] = None,
+  clock_ms : Option[() -> Int64] = None,
+  use_mem_rig_log : Bool = false,
+) -> WholeCore {
+  let live_clock : () -> Int64 = match clock_ms {
+    Some(c) => c
+    None => host_shim::wall_ms
+  }
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let effective_job_fs = match job_fs {
+    Some(f) => f
+    None => station_jobs::sys_fs(sep=sep)
+  }
+  let store = WholeStore::new_pre_handover(config.data_dir)
+  let agents_cfg = WholeAgentsConfig::{
+    data_dir: config.data_dir,
+    assets_dir: config.assets_dir,
+    runner_bin: config.runner_bin,
+    mcp_port: config.mcp_port,
+    home_ws: config.home_workspace,
+  }
+  let agents = WholeAgents::new(
+    agents_cfg,
+    job_fs=Some(effective_job_fs),
+    job_backend=job_backend,
+    random_bytes_fn=random_bytes_fn,
+  )
+  let remote = station_jobs::RemoteManager::new(
+    config.data_dir,
+    effective_job_fs,
+    agents.jobs,
+    station_jobs::noop_remote_callbacks(),
+  )
+  let auth_policy = PeerAuthPolicy::{
+    station_id: config.station_id,
+    station_build: config.station_build,
+    home_workspace: config.home_workspace,
+    allowed_workspaces: config.allowed_workspaces,
+    verify_fn: verify_fn,
+  }
+  let api = WholeApi::new(
+    store,
+    agents,
+    auth_policy,
+    config.drive_roots,
+    drive_protected=config.drive_protected,
+    drive_fs=drive_fs,
+    thumb_port=thumb_port,
+  )
+  let grants_path = nodepath::join(sep, [config.data_dir, "rig-grants.json"])
+  let log_path = nodepath::join(sep, [config.data_dir, "rig-commands.jsonl"])
+  let log_backend = if use_mem_rig_log {
+    station_rig::MemLogFs::new().backend()
+  } else {
+    os_command_log_backend()
+  }
+  let rig = build_rig_for_core(
+    config,
+    remote,
+    live_clock,
+    verify_fn,
+    fn() -> Option[String] {
+      if use_mem_rig_log {
+        return None
+      }
+      match station_sys::read_file_strict(grants_path) {
+        Ok(b) => Some(b.to_string())
+        Err(_) => None
+      }
+    },
+    fn(text : String) -> Unit {
+      if !use_mem_rig_log {
+        let _ = station_sys::write_file_atomic(grants_path, text.to_bytes(), mode=384)
+      }
+    },
+    log_path,
+    log_backend,
+    true,
+  )
+  WholeCore::{
+    config: config,
+    store: store,
+    agents: agents,
+    api: api,
+    remote: remote,
+    rig: rig,
+    clock_ms: live_clock,
+    started_at_ms: live_clock(),
+    ready: false,
+    shut_down: false,
+  }
+}
+
+/// Atomically transition `WholeCore` from pre-handover to live primary writer ONLY after
+/// predecessor exit is confirmed (`predecessor_gone == true`).
+/// Keeps `read_only_handover == true`, `ready == false`, and Rig `held == true` until ALL steps
+/// succeed:
+///   1. Open primary SQLite (`before_store` runs at most once)
+///   2. Apply handover snapshot & adopt handover sessions (if `handover == Some`)
+///   3. Adopt ALL active non-revoked session tokens from SQLite (covers crash restarts too)
+///   4. Adopt running jobs from SQLite
+///   5. Release Rig `held` (`reload()`), clear `read_only_handover = false`, and set `ready = true`.
+pub fn WholeCore::open_after_predecessor_gone(
+  self : WholeCore,
+  predecessor_gone : Bool,
+  before_store : (String) -> Result[Unit, String],
+  handover : Option[WholeHandoverSnapshot] = None,
+  runners : Array[station_drivers::RunnerInfo] = [],
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0L,
+) -> Result[Unit, String] {
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  match self.store.open_primary_after_predecessor_gone(
+    predecessor_gone,
+    before_store,
+    wait_ms=wait_ms,
+    now_ms=eff_now,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match handover {
+    Some(snap) => {
+      match self.store.apply_handover_restore(snap, self.api.admin, None) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match self.agents.adopt_sessions(self.store, snap.session_snapshots, runners, eff_now) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  // Unconditionally adopt all active (non-archived, non-revoked) tokens from SQLite
+  // so crash restarts without a handover snapshot still recover active sessions.
+  match self.agents.adopt_all_active_tokens_from_store(self.store) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Adopt persisted running jobs from SQLite.
+  match self.store.adopt_active_jobs(self.agents.jobs, eff_now) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Only after EVERY step succeeds do we lift the read-only handover, MCP readiness & Rig held barriers!
+  self.rig.grants.reload()
+  self.api.read_only_handover = false
+  self.ready = true
+  Ok(())
+}
+
+/// Dispatch an authenticated peer RPC with strict `MixedRig` workspace isolation and REAL
+/// `RemoteManager` task/mirror/session execution (zero `{"ok":true}` stubs!).
+pub fn WholeCore::handle_peer_rpc(
+  self : WholeCore,
+  peer_station : String,
+  workspace : String,
+  method : String,
+  params : form::Json,
+  now_ms : Int64,
+) -> Result[form::Json, String] {
+  if self.shut_down {
+    return Err("station is shutting down")
+  }
+  if peer_station.length() == 0 || workspace.length() == 0 {
+    return Err("unauthenticated peer or missing workspace")
+  }
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+
+  // MixedRig isolation boundary: rig workspaces can NEVER invoke full-station RPCs.
+  if contains_ws(self.config.rig_workspaces, workspace) {
+    if !station_rig::is_rig_allowed(method) {
+      return Err("method not allowed for rig workspace: " + method)
+    }
+    if method == "describe" {
+      return Ok(self.rig.described(workspace))
+    }
+    // Pass top-level params directly alongside `method` (matching `station_rig` wire contract).
+    let req_obj = build_rig_request_obj(method, params)
+    if method.starts_with("rig.") {
+      match self.rig.heard(peer_station, req_obj, workspace) {
+        Ok(res) => return Ok(res)
+        Err(refusal) => return Err(station_rig::refusal_code_str(refusal.code) + ": " + refusal.message)
+      }
+    }
+    // Enforce signed grant / live-clock expiry / revocation / freeze / ungated allowlist!
+    match self.rig.guard_request(workspace, peer_station, req_obj) {
+      Ok(_) => ()
+      Err(refusal) => return Err(station_rig::refusal_code_str(refusal.code) + ": " + refusal.message)
+    }
+    // Real `RemoteManager` execution for rig RPCs (wire-aligned with `rig_helpers.pion` & `remote.ts`):
+    let session = match form_param_str(params, "session") {
+      Some(s) => s
+      None => ""
+    }
+    if method == "task.list" {
+      let tasks = self.remote.list_scoped(workspace, peer_station, session)
+      let arr : Array[form::Json] = []
+      for i in 0..<tasks.length() {
+        let r = tasks[i]
+        arr.push(
+          form::Json::Obj([
+            ("key", form::Json::Str(r.key)),
+            ("spec", remote_task_spec_form(r)),
+            ("job", remote_task_job_form(self.remote, r)),
+          ]),
+        )
+      }
+      return Ok(form::Json::Obj([("tasks", form::Json::Arr(arr))]))
+    }
+    if method == "task.get" {
+      let key = match form_param_str(params, "key") {
+        Some(k) => k
+        None => return Err("task.get requires key")
+      }
+      match self.remote.get_scoped(workspace, peer_station, session, key) {
+        Some(rec) => {
+          let log_v = match self.remote.log_scoped(
+            workspace,
+            peer_station,
+            session,
+            key,
+            lines=station_jobs::JOB_LOG_LINES_DEFAULT,
+          ) {
+            Ok(txt) => form::Json::Str(txt)
+            Err(_) => form::Json::Null
+          }
+          let fields : Array[(String, form::Json)] = [
+            ("key", form::Json::Str(rec.key)),
+            ("job", remote_task_job_form(self.remote, rec)),
+            ("log", log_v),
+            ("notices", task_notices_form(self.remote, rec)),
+          ]
+          if rec.push_ref is Some(_) {
+            fields.push(("push", form::Json::Bool(true)))
+          }
+          return Ok(form::Json::Obj(fields))
+        }
+        None => return Err("unknown remote task: " + key)
+      }
+    }
+    if method == "task.log" {
+      let key = match form_param_str(params, "key") {
+        Some(k) => k
+        None => return Err("task.log requires key")
+      }
+      let lines = form_param_int(params, "lines", station_jobs::JOB_LOG_LINES_DEFAULT)
+      match self.remote.get_scoped(workspace, peer_station, session, key) {
+        Some(rec) => {
+          match self.remote.log_scoped(workspace, peer_station, session, key, lines=lines) {
+            Ok(text) => return Ok(
+              form::Json::Obj([
+                ("key", form::Json::Str(rec.key)),
+                ("job", remote_task_job_form(self.remote, rec)),
+                ("log", form::Json::Str(text)),
+                ("notices", task_notices_form(self.remote, rec)),
+              ]),
+            )
+            Err(e) => return Err(e)
+          }
+        }
+        None => return Err("unknown remote task: " + key)
+      }
+    }
+    if method == "task.stop" {
+      let key = match form_param_str(params, "key") {
+        Some(k) => k
+        None => return Err("task.stop requires key")
+      }
+      match self.remote.stop_scoped(workspace, peer_station, session, key, eff_now) {
+        Ok(rec) => return Ok(
+          form::Json::Obj([
+            ("key", form::Json::Str(rec.key)),
+            ("job", remote_task_job_form(self.remote, rec)),
+          ]),
+        )
+        Err(e) => return Err(e)
+      }
+    }
+    if method == "task.mirrors" {
+      let ms = self.remote.mirrors_scoped(workspace, peer_station, session)
+      let arr : Array[form::Json] = []
+      for i in 0..<ms.length() {
+        arr.push(mirror_to_form(ms[i]))
+      }
+      return Ok(form::Json::Obj([("mirrors", form::Json::Arr(arr))]))
+    }
+    if method == "task.clean" {
+      let mirror = match form_param_str(params, "mirror") {
+        Some(m) => m
+        None => return Err("task.clean requires mirror")
+      }
+      match self.remote.clean_mirror_scoped(workspace, peer_station, session, mirror, eff_now) {
+        Ok(removed) => return Ok(form::Json::Obj([("removed", form::Json::Bool(removed))]))
+        Err(e) => return Err(e)
+      }
+    }
+    if method == "session.size" {
+      let (exists, _) = self.remote.session_work_size(workspace, peer_station, session)
+      let work_dir = if exists {
+        self.remote.session_work_dir(workspace, peer_station, session, eff_now)
+      } else {
+        ""
+      }
+      // Measure ONLY the session's `work_dir` contents (excluding parent room metadata files),
+      // and report `complete: false` if the directory walk hits the 4096-dir cap.
+      let (work_bytes, complete) = if exists && work_dir.length() > 0 {
+        measure_dir_bytes(self.remote.fs, work_dir)
+      } else {
+        (0L, true)
+      }
+      return Ok(
+        form::Json::Obj([
+          ("present", form::Json::Bool(exists)),
+          ("pending", form::Json::Bool(false)),
+          ("path", form::Json::Str(work_dir)),
+          ("bytes", form::Json::Num(work_bytes.to_double())),
+          ("complete", form::Json::Bool(complete)),
+        ]),
+      )
+    }
+    if method == "session.close" {
+      let closed = self.remote.close_session_room(workspace, peer_station, session, eff_now)
+      return Ok(form::Json::Obj([("closed", form::Json::Bool(closed))]))
+    }
+    return Err("rig rpc method not wired in WholeCore: " + method)
+  }
+
+  // Full-station workspace RPCs.
+  if !contains_ws(self.config.allowed_workspaces, workspace) {
+    return Err("workspace not authorized: " + workspace)
+  }
+  if method == "describe" {
+    return Ok(
+      form::Json::Obj([
+        ("station", form::Json::Str(self.config.station_id)),
+        ("build", form::Json::Str(self.config.station_build)),
+        ("mode", form::Json::Str("full")),
+        ("primaryOpen", form::Json::Bool(self.store.is_primary_open())),
+        ("activeObjects", form::Json::Num(self.active_object_count().to_double())),
+      ]),
+    )
+  }
+  Err("unsupported peer rpc method: " + method)
+}
+
+/// Dispatch an authenticated peer HTTP API request via `WholeApi`.
+pub fn WholeCore::handle_peer_http(
+  self : WholeCore,
+  peer : PeerIdentity,
+  method : String,
+  path : String,
+  headers : Array[http1::Header],
+  body : Bytes,
+  now_ms : Int64,
+) -> station_http::HandlerAction {
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  self.api.handle_authenticated_api(self.store, self.agents, peer, method, path, headers, body, eff_now)
+}
+
+/// Pure DI `/mcp` HTTP dispatcher with unified `ready` / `shut_down` 503 gate (no SQLite FFI).
+pub fn WholeCore::handle_mcp_http_with_handlers(
+  self : WholeCore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  handlers : station_tools::DomainHandlers,
+) -> McpHttpResponse {
+  if self.shut_down || !self.ready {
+    return McpHttpResponse::{
+      status: 503,
+      content_type: "application/json",
+      body: base_codec::json_stringify(
+        base_codec::json_obj([("error", base_codec::json_str("station is not ready for MCP requests"))]),
+      ),
+    }
+  }
+  self.agents.handle_mcp_http_with_handlers(
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    handlers,
+  )
+}
+
+/// Dispatch a local `/mcp` HTTP request via `WholeAgents`.
+/// Refuses requests with HTTP 503 until `open_after_predecessor_gone` completes cleanly (`self.ready`).
+pub fn WholeCore::handle_mcp_http(
+  self : WholeCore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  now_ms : Int64,
+) -> McpHttpResponse {
+  if self.shut_down || !self.ready {
+    return McpHttpResponse::{
+      status: 503,
+      content_type: "application/json",
+      body: base_codec::json_stringify(
+        base_codec::json_obj([("error", base_codec::json_str("station is not ready for MCP requests"))]),
+      ),
+    }
+  }
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  self.agents.handle_mcp_http(
+    self.store,
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    eff_now,
+  )
+}
+
+/// Periodic maintenance tick driven by `daemon_core`'s event loop (never spawns background timers).
+pub fn WholeCore::on_tick(self : WholeCore, now_ms : Int64) -> Unit {
+  if self.shut_down {
+    return
+  }
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  self.rig.grants.tick()
+  let _ = self.store.vault_grants.purge_expired(eff_now / 1000L)
+  let _ = self.api.screens.prune_held(eff_now)
+  let _ = self.agents.jobs.tick_stops(eff_now)
+  let _ = self.agents.jobs.tick_restarts(eff_now)
+}
+
+/// Export a complete handover snapshot (all idempotency `kept_sends` without row cap, active
+/// sessions, active jobs, active unexpired vault grant IDs, handed stations).
+pub fn WholeCore::export_handover(
+  self : WholeCore,
+  now_ms : Int64,
+) -> Result[WholeHandoverSnapshot, String] {
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  let _ = match self.store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let handed_stations = match self.store.handed_stations() {
+    Ok(hs) => hs
+    Err(e) => return Err(e)
+  }
+  // Export ALL `POST /threads/:id/messages` slots directly from `AdminApi` (no 10,000-row cap!).
+  let kept_sends = self.api.admin.kept_sends_identity()
+  let session_snaps = self.agents.export_session_snapshots()
+  let jobs_list = self.agents.jobs.list()
+  let active_job_ids : Array[String] = []
+  for i in 0..<jobs_list.length() {
+    active_job_ids.push(jobs_list[i].id)
+  }
+  let active_vault_ids = self.store.active_vault_grant_ids_at(eff_now / 1000L)
+  Ok(WholeHandoverSnapshot::{
+    version: HANDOVER_SNAPSHOT_VERSION,
+    exported_at: eff_now,
+    kept_sends: kept_sends,
+    session_snapshots: session_snaps,
+    active_job_ids: active_job_ids,
+    active_vault_grant_ids: active_vault_ids,
+    handed_station_ids: handed_stations,
+  })
+}
+
+/// Clean shutdown: close rig, clear all in-memory actors/tokens/jobs, flush & close SQLite.
+/// Guarantees `active_object_count() == 0` upon return.
+pub fn WholeCore::shutdown(self : WholeCore) -> Unit {
+  if self.shut_down {
+    return
+  }
+  self.shut_down = true
+  self.ready = false
+  self.api.read_only_handover = true
+  self.rig.close()
+  self.agents.clear_runtime_state_on_shutdown()
+  self.store.close()
+}
+
+/// Count of live runtime objects held by `WholeCore` (0 after `shutdown()`).
+pub fn WholeCore::active_object_count(self : WholeCore) -> Int {
+  let store_open = if self.store.is_primary_open() { 1 } else { 0 }
+  store_open +
+  self.agents.actor_count() +
+  self.agents.active_token_count() +
+  self.agents.jobs.list().length() +
+  self.rig.wired_count()
+}

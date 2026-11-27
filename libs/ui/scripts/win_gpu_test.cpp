@@ -2226,6 +2226,289 @@ static void test_liquid_over_hole(void) {
   }
 }
 
+static void test_perf59_cull_and_donor(void) {
+  // (a) encode_rects() partial-redraw CPU scissor culling, lens culling, single-pass segs_upload, lazy multi-rect
+  //     glass pre_hits (with stale-gen in-place refresh), and bit-exact WARP pixel parity vs whole-frame redraw.
+  {
+    auto read_offscreen_bgra = [](int w, int h) -> uint8_t * {
+      if (!dev || !ctx || !off_target) return NULL;
+      D3D11_TEXTURE2D_DESC td = {};
+      off_target->GetDesc(&td);
+      if ((int)td.Width != w || (int)td.Height != h) return NULL;
+      td.Usage = D3D11_USAGE_STAGING;
+      td.BindFlags = 0;
+      td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      td.MiscFlags = 0;
+      ID3D11Texture2D *staging = NULL;
+      if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) return NULL;
+      ctx->CopyResource(staging, off_target);
+      D3D11_MAPPED_SUBRESOURCE m = {};
+      uint8_t *out = NULL;
+      if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+        out = (uint8_t *)malloc((size_t)w * (size_t)h * 4u);
+        if (out) {
+          for (int y = 0; y < h; y++) {
+            memcpy(out + (size_t)y * (size_t)w * 4u, (const uint8_t *)m.pData + (size_t)y * (size_t)m.RowPitch,
+                   (size_t)w * 4u);
+          }
+        }
+        ctx->Unmap(staging, 0);
+      }
+      staging->Release();
+      return out;
+    };
+
+    const int W = 128, H = 128;
+    const double saved_vw = vw, saved_vh = vh, saved_vscale = vscale;
+    const int saved_fb_w = fb_w, saved_fb_h = fb_h;
+    vw = (double)W;
+    vh = (double)H;
+    vscale = 1.0;
+    fb_w = W;
+    fb_h = H;
+    const int N_GRID = 180;
+    const int TOTAL = N_GRID + 5;  // 180 rects + 1 frosted glass + 1 lens(header+child) + 1 path + 1 seg
+    double *sc = (double *)calloc((size_t)TOTAL * MB_INST, sizeof(double));
+    CHECK(sc != NULL);
+    if (sc) {
+      int idx = 0;
+      // 180 small rects distributed across 128x128 (mostly outside the bottom-left / top-left dirty rects).
+      for (int i = 0; i < N_GRID; i++) {
+        int col = i % 15;
+        int row = i / 15;
+        double rx = 4.0 + (double)col * 8.0;
+        double ry = 4.0 + (double)row * 10.0;
+        fill_p0_rect(sc + (size_t)idx * MB_INST, rx, ry, 6.0, 6.0, 0.0,
+                     0.15 + 0.05 * (col % 10), 0.25 + 0.04 * (row % 10), 0.70, 1.0, 0.0);
+        idx++;
+      }
+      // Frosted glass panel spanning x=[8, 88], y=[8, 32] (tid = -590, blur = 1.0)
+      int glass_idx = idx++;
+      fill_p0_rect(sc + (size_t)glass_idx * MB_INST, 8.0, 8.0, 80.0, 24.0, 5.0, 0.9, 0.9, 0.95, 0.35, -590.0);
+      sc[(size_t)glass_idx * MB_INST + 6] = 1.0;
+      sc[(size_t)glass_idx * MB_INST + 7] = 1.0;
+      sc[(size_t)glass_idx * MB_INST + 15] = 1.0;
+      // kind == 8 lens at bottom-right (84, 84, 36, 36) with 1 child rect (must be culled when dirty rects are left)
+      int lens_idx = idx++;
+      fill_p0_rect(sc + (size_t)lens_idx * MB_INST, 84.0, 84.0, 36.0, 36.0, 8.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+      sc[(size_t)lens_idx * MB_INST + 7] = 2.0;
+      sc[(size_t)lens_idx * MB_INST + 12] = 1.0;
+      sc[(size_t)lens_idx * MB_INST + 15] = 1.0;
+      int lens_child = idx++;
+      fill_p0_rect(sc + (size_t)lens_child * MB_INST, 92.0, 92.0, 20.0, 20.0, 0.0, 0.95, 0.35, 0.15, 1.0, 0.0);
+      // kind == 11 filled path at bottom-left (16, 88, 24, 24) + kind == 12 segment trailer
+      int path_idx = idx++;
+      fill_p0_rect(sc + (size_t)path_idx * MB_INST, 16.0, 88.0, 24.0, 24.0, 11.0, 0.90, 0.80, 0.20, 1.0, 0.0);
+      sc[(size_t)path_idx * MB_INST + 4] = 0.0;
+      sc[(size_t)path_idx * MB_INST + 12] = 0.0;
+      sc[(size_t)path_idx * MB_INST + 13] = 4.0;
+      int seg_idx = idx++;
+      double *sd = sc + (size_t)seg_idx * MB_INST;
+      sd[5] = 12.0;
+      sd[0] = 0.0; sd[1] = 0.0; sd[2] = 1.0; sd[3] = 0.0;
+      sd[8] = 1.0; sd[9] = 0.0; sd[10] = 1.0; sd[11] = 1.0;
+      sd[12] = 1.0; sd[13] = 1.0; sd[14] = 0.0; sd[15] = 1.0;
+      sd[16] = 0.0; sd[17] = 1.0; sd[18] = 0.0; sd[19] = 0.0;
+      CHECK(idx == TOTAL);
+
+      // Full baseline draw into off_target (128x128 @ 1x)
+      glass_forget();
+      off_ok = 0;
+      dirty_told = dirty_whole = dirty_n = 0;
+      CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
+      int full_submitted = encode_inst_submitted;
+      CHECK(full_submitted >= N_GRID);
+      CHECK(encode_lens_drawn == 1);
+      CHECK(encode_pre_hits_used == 0);
+
+      // Mutate bottom-left path color only; mark 2 disjoint dirty rects:
+      // rect 0 touches left edge of warm glass (8, 8, 16, 24), rect 1 covers path (12, 84, 32, 32).
+      // Right-side rects & bottom-right kind==8 lens are untouched and outside both rects.
+      sc[(size_t)path_idx * MB_INST + 8] = 0.20;
+      sc[(size_t)path_idx * MB_INST + 9] = 0.90;
+      sc[(size_t)path_idx * MB_INST + 10] = 0.45;
+      int segs_before = segs_upload_calls;
+      mb_host_render_dirty(8.0, 8.0, 16.0, 24.0);
+      mb_host_render_dirty(12.0, 84.0, 32.0, 32.0);
+      CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
+      int partial_submitted = encode_inst_submitted;
+      int segs_delta = segs_upload_calls - segs_before;
+      int lens_after_cull = encode_lens_drawn;
+      uint8_t *px_partial = read_offscreen_bgra(W, H);
+
+      // Whole-frame reference draw of the mutated scene
+      glass_forget();
+      off_ok = 0;
+      dirty_told = dirty_whole = dirty_n = 0;
+      CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
+      uint8_t *px_ref = read_offscreen_bgra(W, H);
+
+      CHECK(px_partial != NULL && px_ref != NULL);
+      int diff_bytes = 0;
+      if (px_partial && px_ref) {
+        for (size_t i = 0; i < (size_t)W * (size_t)H * 4u; i++) {
+          if (px_partial[i] != px_ref[i]) diff_bytes++;
+        }
+      }
+      printf("win_gpu: perf-59 partial full_sub=%d part_sub=%d lens_drawn=%d segs_delta=%d diff_bytes=%d\n",
+             full_submitted, partial_submitted, lens_after_cull, segs_delta, diff_bytes);
+      CHECK(segs_delta == 1);
+      CHECK(lens_after_cull == 0);
+      // Without culling, 2 dirty rects submit 2 * full_submitted (~368); culling cuts it well below 1 * full_submitted.
+      CHECK(partial_submitted < full_submitted);
+      CHECK(diff_bytes == 0);
+      free(px_partial);
+
+      // Two disjoint dirty rects both overlapping the same warm glass panel:
+      // rect 0 populates pre_hits[0] on slot_same hit, rect 1 reuses pre_hits[0] (encode_pre_hits_used == 1), 0 diff.
+      mb_host_render_dirty(8.0, 8.0, 16.0, 24.0);
+      mb_host_render_dirty(72.0, 8.0, 16.0, 24.0);
+      segs_before = segs_upload_calls;
+      CHECK(submit(sc, TOTAL, 0.10, 0.15, 0.20) == 1);
+      int two_rect_pre = encode_pre_hits_used;
+      int two_rect_segs = segs_upload_calls - segs_before;
+      uint8_t *px_two = read_offscreen_bgra(W, H);
+      int diff_two = 0;
+      if (px_two && px_ref) {
+        for (size_t i = 0; i < (size_t)W * (size_t)H * 4u; i++) {
+          if (px_two[i] != px_ref[i]) diff_two++;
+        }
+      }
+      printf("win_gpu: perf-59 multi_glass pre_hits=%d segs_delta=%d diff_two=%d\n",
+             two_rect_pre, two_rect_segs, diff_two);
+      CHECK(two_rect_segs == 1);
+      CHECK(two_rect_pre == 1);
+      CHECK(diff_two == 0);
+      free(px_two);
+      free(px_ref);
+
+      // Stale-gen WinPreHit entry is ignored and overwritten in place (never shadows fresh slot).
+      int warm_slot = -1;
+      for (int s = 0; s < MB_GLASS_SLOTS; s++) {
+        if (gslots[s].valid && gslots[s].bt.srv) {
+          warm_slot = s;
+          break;
+        }
+      }
+      CHECK(warm_slot >= 0);
+      if (warm_slot >= 0) {
+        Grab gm;
+        CHECK(grab_of_with_donors(&gm, last_inst, glass_idx, glass_idx + 1, TOTAL, W, H, NULL) == 1);
+        WinPreHit ph[16];
+        int ph_n = 1;
+        ph[0].tid = -590;
+        ph[0].start = glass_idx;
+        ph[0].slot = warm_slot;
+        ph[0].gen = gslots[warm_slot].gen - 1u;  // stale gen!
+        ph[0].grab = gm;
+        int switched = 0;
+        cut_on = 0;
+        encode_pre_hits_used = 0;
+        CHECK(capture(rtv, W, H, last_inst, glass_idx, glass_idx + 1, TOTAL, TOTAL - 1, last_bg, gslots_clock,
+                      &switched, NULL, ph, &ph_n) == 1);
+        CHECK(encode_pre_hits_used == 0);
+        CHECK(ph_n == 1);
+        CHECK(ph[0].gen == gslots[ph[0].slot].gen);
+        // Subsequent call with the refreshed in-place entry hits pre_hits!
+        CHECK(capture(rtv, W, H, last_inst, glass_idx, glass_idx + 1, TOTAL, TOTAL - 1, last_bg, gslots_clock,
+                      &switched, NULL, ph, &ph_n) == 1);
+        CHECK(encode_pre_hits_used == 1);
+        glass_forget();
+      }
+      free(sc);
+    }
+    vw = saved_vw;
+    vh = saved_vh;
+    vscale = saved_vscale;
+    fb_w = saved_fb_w;
+    fb_h = saved_fb_h;
+  }
+
+  // (b) compute_donor_plan() occlusion cache: shared box deduplicates scans, and different cur_glass_start never aliases.
+  {
+    auto pack_bare = [](float hx, float hy) -> float { return -(floorf(hx) * 4096.0f + floorf(hy)); };
+    const int N_GLYPHS = 64;
+    const int N_TOTAL = 3 + N_GLYPHS;
+    float *f = (float *)calloc((size_t)(N_TOTAL + 8) * MB_INST, sizeof(float));
+    CHECK(f != NULL);
+    if (f) {
+      auto set_rect = [](float *p, float x, float y, float w, float h, float kind, float tid) {
+        memset(p, 0, MB_INST * sizeof(float));
+        p[0] = x; p[1] = y; p[2] = w; p[3] = h; p[5] = kind;
+        p[11] = 1.0f; p[16] = -1e9f; p[17] = -1e9f; p[18] = 1e9f; p[19] = 1e9f; p[20] = tid;
+      };
+      // 0: bg, 1: donor kind 5 (-595), 2: pill kind 6 (-596), 3..66: 64 bare adaptive glyphs sharing box (120, 24, 30, 10)
+      set_rect(f, 0, 0, 200, 160, 0, 0);
+      set_rect(f + MB_INST, 0, 0, 200, 56, 5, -595.0f);
+      f[MB_INST + 6] = 1.0f; f[MB_INST + 7] = 6.0f; f[MB_INST + 11] = 0.0f; f[MB_INST + 15] = 1.0f;
+      f[MB_INST + 22] = -1.0f; f[MB_INST + 54] = 56.0f; f[MB_INST + 55] = 24.0f;
+      set_rect(f + 2 * MB_INST, 8, 12, 24, 24, 6, -596.0f);
+      f[2 * MB_INST + 4] = 12.0f; f[2 * MB_INST + 6] = 1.0f; f[2 * MB_INST + 7] = 1.4f;
+      f[2 * MB_INST + 11] = 0.4f; f[2 * MB_INST + 14] = -1.0f; f[2 * MB_INST + 15] = 1.0f;
+      f[2 * MB_INST + 21] = 4.0f; f[2 * MB_INST + 23] = 2.0f;
+      for (int g = 0; g < N_GLYPHS; g++) {
+        float *gp = f + (size_t)(3 + g) * MB_INST;
+        set_rect(gp, 92.0f + (float)(g % 32) * 1.5f, 16.0f + (float)(g / 32) * 8.0f, 6.0f, 8.0f, 7.0f, 0.0f);
+        gp[21] = 120.0f; gp[22] = 24.0f; gp[23] = pack_bare(30.0f, 10.0f);
+      }
+      compute_donor_plan(f, N_TOTAL, 200.0f, 160.0f, 2.0f);
+      CHECK(donor_delegated_count == N_GLYPHS);
+      CHECK(donor_occ_scans == 1);
+      for (int g = 0; g < N_GLYPHS; g++) CHECK(donor_of_buf[3 + g] == -595);
+
+      // Insert an opaque occluder between donor (idx 1) and pill (idx 3) overlapping box B only.
+      memmove(f + 3 * MB_INST, f + 2 * MB_INST, (size_t)(1 + N_GLYPHS) * MB_INST * sizeof(float));
+      set_rect(f + 2 * MB_INST, 150.0f, 16.0f, 16.0f, 16.0f, 0.0f, 0.0f);
+      for (int g = 0; g < N_GLYPHS; g++) {
+        float *gp = f + (size_t)(4 + g) * MB_INST;
+        gp[21] = (g < 32) ? 80.0f : 158.0f;
+        gp[22] = 24.0f;
+        gp[23] = pack_bare(12.0f, 8.0f);
+      }
+      compute_donor_plan(f, N_TOTAL + 1, 200.0f, 160.0f, 2.0f);
+      CHECK(donor_delegated_count == 32);
+      CHECK(donor_occ_scans == 2);
+      for (int g = 0; g < 32; g++) CHECK(donor_of_buf[4 + g] == -595);
+      for (int g = 32; g < N_GLYPHS; g++) CHECK(donor_of_buf[4 + g] == 0);
+
+      // Same occ_sr box under two different cur_glass_start pills with an occluder between pill 1 and pill 2:
+      // pill 1's glyphs are unoccluded (delegated), pill 2's glyphs are occluded (not delegated), donor_occ_scans == 2.
+      memset(f, 0, (size_t)(N_TOTAL + 8) * MB_INST * sizeof(float));
+      set_rect(f, 0, 0, 200, 160, 0, 0);
+      set_rect(f + MB_INST, 0, 0, 200, 56, 5, -595.0f);
+      f[MB_INST + 6] = 1.0f; f[MB_INST + 7] = 6.0f; f[MB_INST + 11] = 0.0f; f[MB_INST + 15] = 1.0f;
+      f[MB_INST + 22] = -1.0f; f[MB_INST + 54] = 56.0f; f[MB_INST + 55] = 24.0f;
+      // Pill 1 at idx 2 (-596) + 4 glyphs at idx 3..6 on box (120, 24, 16, 8)
+      set_rect(f + 2 * MB_INST, 8, 12, 24, 24, 6, -596.0f);
+      f[2 * MB_INST + 4] = 12.0f; f[2 * MB_INST + 6] = 1.0f; f[2 * MB_INST + 7] = 1.4f;
+      f[2 * MB_INST + 11] = 0.4f; f[2 * MB_INST + 14] = -1.0f; f[2 * MB_INST + 15] = 1.0f;
+      f[2 * MB_INST + 21] = 4.0f; f[2 * MB_INST + 23] = 2.0f;
+      for (int g = 0; g < 4; g++) {
+        float *gp = f + (size_t)(3 + g) * MB_INST;
+        set_rect(gp, 110.0f + (float)g * 4.0f, 18.0f, 6.0f, 10.0f, 7.0f, 0.0f);
+        gp[21] = 120.0f; gp[22] = 24.0f; gp[23] = pack_bare(16.0f, 8.0f);
+      }
+      // Opaque occluder at idx 7 overlapping box (120, 24, 16, 8)
+      set_rect(f + 7 * MB_INST, 112.0f, 18.0f, 16.0f, 12.0f, 0.0f, 0.0f);
+      // Pill 2 at idx 8 (-597, same blur/refract/rim -> identical occ_sr!) + 4 glyphs at idx 9..12 on the same box
+      memcpy(f + 8 * MB_INST, f + 2 * MB_INST, MB_INST * sizeof(float));
+      f[8 * MB_INST + 20] = -597.0f;
+      for (int g = 0; g < 4; g++) {
+        float *gp = f + (size_t)(9 + g) * MB_INST;
+        set_rect(gp, 110.0f + (float)g * 4.0f, 18.0f, 6.0f, 10.0f, 7.0f, 0.0f);
+        gp[21] = 120.0f; gp[22] = 24.0f; gp[23] = pack_bare(16.0f, 8.0f);
+      }
+      compute_donor_plan(f, 13, 200.0f, 160.0f, 2.0f);
+      CHECK(donor_delegated_count == 4);
+      CHECK(donor_occ_scans == 2);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[3 + g] == -595);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[9 + g] == 0);
+      free(f);
+    }
+  }
+  printf("win_gpu: perf-59 ok\n");
+}
+
 int main(void) {
   // 1. Initial values before any frame.
   CHECK(mb_host_gpu_ms() == -1.0);
@@ -2307,6 +2590,9 @@ int main(void) {
 
   // 9. Liquid glass over native-view holes (kind == 9) produces translucent premultiplied output.
   test_liquid_over_hole();
+
+  // 10. Perf-59: encode_rects() CPU culling/lens/pre_hits/segs_upload & WARP parity, donor occlusion cache.
+  test_perf59_cull_and_donor();
 
   if (failed) return 1;
   printf("win_gpu: ok\n");

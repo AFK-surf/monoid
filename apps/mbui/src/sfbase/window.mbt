@@ -130,6 +130,7 @@ pub fn window_text(p : Page) -> String? {
             "station": Json::string(at.station),
             "screen": Json::string(at.screen),
             "title": Json::string(at.title),
+            "owner": Json::string(window_page_owner(p)),
           },
         },
         window_title(p),
@@ -171,7 +172,44 @@ pub fn window_text(p : Page) -> String? {
 }
 
 ///|
-/// The page a window of its own was started to show (window_text's), None when it names none.
+/// Creation owner parsed from `MBUI_WINDOW` for a child-process standalone screen window (`Run(what)`).
+/// `None` for the normal primary app window; `Some(owner)` (possibly `""` if missing) for a child-process screen
+/// window, evaluated fail-closed by `window_here_owner_state`.
+// kept across runs: put back by pages.mbt's reset
+let startup_window_owner : Ref[String?] = Ref(None)
+
+///|
+/// Transient `(station, screen, owner, claimed_wid)` held ONLY across the synchronous first-frame render inside
+/// `@ui.window_open_here(what)` for a `Page::Screen` before `windows_here_owner[wid]` is populated.
+/// The first unregistered positive `wid` matching `(station, screen)` claims it; any other unregistered `wid`
+/// is denied. Cleared immediately on return.
+// kept across runs: put back by pages.mbt's reset
+let windows_here_opening_owner : Ref[(String, String, String, Int?)?] = Ref(None)
+
+///|
+/// Set the creation owner for a child-process standalone screen window (called only at real startup entrypoints).
+pub fn set_startup_window_owner(owner : String?) -> Unit {
+  startup_window_owner.val = owner
+}
+
+///|
+/// Pure parser: extract the creation `owner` field from a `window_text` JSON payload when it describes a `screen`
+/// window (`Some(owner)` with `""` if missing; `None` for non-screen payloads or invalid JSON). Has no side effects.
+pub fn window_page_owner_of(s : String) -> String? {
+  let v = @json.parse(s) catch { _ => return None }
+  guard v is Object(m) else { return None }
+  match m.get("screen") {
+    Some(Object(at)) =>
+      match at.get("owner") {
+        Some(String(o)) => Some(o)
+        _ => Some("")
+      }
+    _ => None
+  }
+}
+
+///|
+/// The page a window of its own was started to show (window_text's), None when it names none. Pure function (no side effects).
 pub fn window_page(s : String) -> Page? {
   let v = @json.parse(s) catch { _ => return None }
   guard v is Object(m) else { return None }
@@ -240,13 +278,22 @@ pub fn open_window(p : Page) -> Bool {
           SideTab(f) => tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
           _ => ()
         }
+        let owner = window_page_owner(p)
+        windows_here_opening_owner.val = match p {
+          Screen(at) => Some((at.station, at.screen, owner, None))
+          _ => None
+        }
         let wid = @ui.window_open_here(what)
+        windows_here_opening_owner.val = None
         if wid > 0 {
           windows_open[key] = Here(wid)
           windows_here_show[wid] = p
+          windows_here_owner[wid] = owner
           windows_here_told(p, wid)
-          (window_page_given.val)(p, wid)
+          (window_page_given.val)(p, wid, owner)
           return true
+        } else if p is SideTab(f) {
+          tab_viewer_moves_cancel(f.chat.station + ":" + f.chat.session, f.tab)
         }
       }
       if p is SideTab(_) {
@@ -270,6 +317,22 @@ let windows_open : Map[String, WindowOpened] = Map([])
 ///|
 /// The page each window of this run beside its first shows, by the window's id (open_window), while it is open.
 let windows_here_show : Map[Int, Page] = Map([])
+
+///|
+/// Creation account owner of each standalone window (by window id), so subject switches cannot alias windows.
+let windows_here_owner : Map[Int, String] = Map([])
+
+///|
+fn window_page_owner(p : Page) -> String {
+  match p {
+    Screen(at) =>
+      match at.station.find("/") {
+        Some(i) => workspace_owner_of(at.station.exact_view(end=i).to_owned())
+        None => workspace_owner_of("")
+      }
+    _ => account_principal_now()
+  }
+}
 
 ///|
 /// The chats' tabs a window of this run beside its first shows, by window_key, and its id: what the panel beside the
@@ -339,9 +402,11 @@ pub let window_tab_left : Ref[(TabFull) -> Unit] = Ref(fn(_) {  })
 /// it from then on opening it there.
 pub fn window_gives_back(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
+  let owner = windows_here_owner.get(wid).unwrap_or_else(fn() { window_page_owner(p) })
   windows_here_show.remove(wid)
+  windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
-  match window_key(p) {
+  match window_key_for_owner(p, owner) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
@@ -353,26 +418,33 @@ pub fn window_gives_back(wid : Int) -> Unit {
 }
 
 ///|
-/// What is told as a window of this run beside its first has closed, of the page it showed (sfpages': a screen no
-/// window shows now let go of).
+/// What is told as a window of this run beside its first has closed, of the page it showed and its creation owner
+/// (sfpages': a screen no window shows now let go of without aliasing another subject).
 // kept across runs: a wire, set once in sfpages' fn init
-pub let window_page_left : Ref[(Page) -> Unit] = Ref(fn(_) {  })
+pub let window_page_left : Ref[(Page, String) -> Unit] = Ref(fn(_, _) {  })
 
 ///|
 /// What is told as page `p` is given to window `wid` of this run, as it opens (sfpages': a screen's pictures that
-/// window's to show from then on, before the frame it left draws again).
+/// window's to show from then on, before the frame it left draws again), with its creation owner.
 // kept across runs: a wire, set once in sfpages' fn init
-pub let window_page_given : Ref[(Page, Int) -> Unit] = Ref(fn(_, _) {  })
+pub let window_page_given : Ref[(Page, Int, String) -> Unit] = Ref(fn(_, _, _) {  })
+
+///|
+/// What `p` is for a specific `owner` account, whichever way it was opened (its title aside): None for a page that
+/// goes in no window. Scoped by `owner` so a new subject cannot reuse or front another subject's standalone window.
+fn window_key_for_owner(p : Page, owner : String) -> String? {
+  match p {
+    Screen(at) => Some(owner + "\u{2}screen\n" + at.station + "\n" + at.screen)
+    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
+    SideTab(f) if f.tab != "" => Some(owner + "\u{2}tab\n" + f.chat.station + "\n" + f.chat.session + "\n" + f.tab)
+    _ => None
+  }
+}
 
 ///|
 /// What `p` is, whichever way it was opened (its title aside): None for a page that goes in no window.
 fn window_key(p : Page) -> String? {
-  match p {
-    Screen(at) => Some("screen\n" + at.station + "\n" + at.screen)
-    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
-    SideTab(f) if f.tab != "" => Some("tab\n" + f.chat.station + "\n" + f.chat.session + "\n" + f.tab)
-    _ => None
-  }
+  window_key_for_owner(p, window_page_owner(p))
 }
 
 ///|
@@ -386,7 +458,95 @@ pub fn window_here_page(wid : Int) -> Page? {
 /// Whether a window of this run beside its first shows `screen` on `station` now: its view, handed over as the window
 /// opened, is that window's to let go of, not the page it left here.
 pub fn window_has_screen(station : String, screen : String) -> Bool {
-  windows_here_show.values().any(fn(p) { p is Screen(at) && at.station == station && at.screen == screen })
+  let ws = match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
+  }
+  window_has_screen_for_owner(workspace_owner_of(ws), station, screen)
+}
+
+///|
+/// Whether a standalone window belonging to `owner` shows `screen` on `station` now.
+pub fn window_has_screen_for_owner(owner : String, station : String, screen : String) -> Bool {
+  for wid, p in windows_here_show {
+    if p is Screen(at) && at.station == station && at.screen == screen && windows_here_owner.get(wid) == Some(owner) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Tri-state ownership verification for standalone screen windows:
+/// - `Matched`: creation owner verified against active workspace owner; safe to mount `screen_node`.
+/// - `Waiting`: child-process standalone screen window waiting for the first complete `workspaces` snapshot (never
+///   falls back to `subs[0]` and never opens `screen.view` while waiting).
+/// - `Denied`: owner missing, revoked, or mismatched; must not mount `screen_node`.
+#derive(Eq)
+pub(all) enum WindowOwnerState {
+  Matched
+  Waiting
+  Denied
+}
+
+///|
+/// Evaluate tri-state ownership for window `wid` showing `screen` on `station`.
+pub fn window_here_owner_state(wid : Int, station : String, screen? : String = "") -> WindowOwnerState {
+  let ws = match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
+  }
+  let expected_opt : String? = if wid > 0 {
+    match windows_here_owner.get(wid) {
+      Some(o) => Some(o)
+      None =>
+        if !windows_here_show.contains(wid) {
+          match windows_here_opening_owner.val {
+            Some((st, sc, o, claimed)) if sc != "" && screen != "" && st == station && sc == screen =>
+              match claimed {
+                None => {
+                  windows_here_opening_owner.val = Some((st, sc, o, Some(wid)))
+                  Some(o)
+                }
+                Some(cwid) if cwid == wid => Some(o)
+                _ => None
+              }
+            _ => None
+          }
+        } else {
+          None
+        }
+    }
+  } else {
+    match startup_window_owner.val {
+      None => return Matched
+      Some(expected) => Some(expected)
+    }
+  }
+  guard expected_opt is Some(expected) else { return Denied }
+  if expected == "" || workspace_is_revoked(ws) {
+    return Denied
+  }
+  if wid <= 0 && !workspace_owners_synced() {
+    return Waiting
+  }
+  match workspace_explicit_owner_of(ws) {
+    Some(actual) => if actual == expected { Matched } else { Denied }
+    None =>
+      if !workspace_owners_synced() {
+        Waiting
+      } else if workspace_owner_pending_for(ws, expected) {
+        Waiting
+      } else {
+        Denied
+      }
+  }
+}
+
+///|
+/// Convenience predicate returning `true` iff `window_here_owner_state(wid, station, screen~) == Matched`.
+pub fn window_here_owner_matches(wid : Int, station : String, screen? : String = "") -> Bool {
+  window_here_owner_state(wid, station, screen~) == Matched
 }
 
 ///|
@@ -409,9 +569,11 @@ pub fn lone_page_replace(next : Page) -> Unit {
     Some(p) => windows_here_untold(p, wid)
     None => ()
   }
+  let prev_owner = windows_here_owner.get(wid).unwrap_or("")
   windows_here_show[wid] = next
+  windows_here_owner[wid] = window_page_owner(next)
   windows_here_told(next, wid)
-  match was.bind(window_key) {
+  match was.bind(fn(w) { window_key_for_owner(w, prev_owner) }) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
@@ -425,15 +587,17 @@ pub fn lone_page_replace(next : Page) -> Unit {
 /// Window `wid` of this run closed (@ui.when_window_closed): forgotten, and what it showed told (window_page_left).
 fn window_here_gone(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
+  let owner = windows_here_owner.get(wid).unwrap_or_else(fn() { window_page_owner(p) })
   windows_here_show.remove(wid)
+  windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
-  match window_key(p) {
+  match window_key_for_owner(p, owner) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
   match p {
     SideTab(f) => (window_tab_left.val)(f)
-    _ => (window_page_left.val)(p)
+    _ => (window_page_left.val)(p, owner)
   }
 }
 

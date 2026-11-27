@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "builders_core"
+import "host_shim"
 import "js_json"
 import "nodepath"
 import "sql_db"
@@ -106,6 +107,13 @@ fn tr_bytes_of(
   zstd : Bool = false,
   exact : Bool = false,
 ) -> Result[Option[Bytes], String] {
+  if !zstd && !exact && from >= 0.to_int64() {
+    match host_shim::read_file_slice(path, from, length) {
+      host_shim::FileSlice::Ok(b) => return Ok(Some(b))
+      host_shim::FileSlice::Missing => return Ok(None)
+      host_shim::FileSlice::Fallback => ()
+    }
+  }
   let fields : Array[(String, base_codec::Json)] = [
     ("path", base_codec::json_str(path)),
     ("from", base_codec::json_num(from.to_double())),
@@ -178,6 +186,575 @@ fn record_of(line : String) -> Option[js_json::JValue] {
     return None
   }
   js_json::jval_try_parse(text)
+}
+
+fn bytes_eq_ascii(b : Bytes, start : Int, end : Int, ascii : String) -> Bool {
+  let n = ascii.length()
+  if end - start != n {
+    return false
+  }
+  for i in 0..<n {
+    if (b[start + i].to_int() & 0xFF) != ascii.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+fn str_eq_ascii(s : String, start : Int, end : Int, ascii : String) -> Bool {
+  let n = ascii.length()
+  if end - start != n {
+    return false
+  }
+  for i in 0..<n {
+    if s.code_unit_at(start + i) != ascii.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+/// Zero-allocation raw-byte JSON value skipper for top-level pre-filtering.
+fn skip_json_value_bytes(b : Bytes, pos : Int, end : Int) -> Int {
+  let mut i = pos
+  if i >= end {
+    return -1
+  }
+  let c = b[i].to_int() & 0xFF
+  if c == 0x22 {
+    i = i + 1
+    while i < end {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x22 {
+        return i + 1
+      }
+      if ch == 0x5C {
+        i = i + 2
+        if i > end {
+          return -1
+        }
+      } else if ch < 0x20 {
+        return -1
+      } else {
+        i = i + 1
+      }
+    }
+    return -1
+  }
+  if c == 0x7B || c == 0x5B {
+    let mut depth = 1
+    i = i + 1
+    while i < end && depth > 0 {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x22 {
+        i = i + 1
+        while i < end {
+          let sc = b[i].to_int() & 0xFF
+          if sc == 0x22 {
+            i = i + 1
+            break
+          }
+          if sc == 0x5C {
+            i = i + 2
+            if i > end {
+              return -1
+            }
+          } else if sc < 0x20 {
+            return -1
+          } else {
+            i = i + 1
+          }
+        }
+      } else if ch == 0x7B || ch == 0x5B {
+        depth = depth + 1
+        i = i + 1
+      } else if ch == 0x7D || ch == 0x5D {
+        depth = depth - 1
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    }
+    return if depth == 0 { i } else { -1 }
+  }
+  let start = i
+  while i < end {
+    let ch = b[i].to_int() & 0xFF
+    if ch == 0x2C || ch == 0x7D || ch == 0x5D || ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+      break
+    }
+    i = i + 1
+  }
+  if i == start { -1 } else { i }
+}
+
+fn skip_json_value_str(s : String, pos : Int, end : Int) -> Int {
+  let mut i = pos
+  if i >= end {
+    return -1
+  }
+  let c = s.code_unit_at(i)
+  if c == 0x22 {
+    i = i + 1
+    while i < end {
+      let ch = s.code_unit_at(i)
+      if ch == 0x22 {
+        return i + 1
+      }
+      if ch == 0x5C {
+        i = i + 2
+        if i > end {
+          return -1
+        }
+      } else if ch < 0x20 {
+        return -1
+      } else {
+        i = i + 1
+      }
+    }
+    return -1
+  }
+  if c == 0x7B || c == 0x5B {
+    let mut depth = 1
+    i = i + 1
+    while i < end && depth > 0 {
+      let ch = s.code_unit_at(i)
+      if ch == 0x22 {
+        i = i + 1
+        while i < end {
+          let sc = s.code_unit_at(i)
+          if sc == 0x22 {
+            i = i + 1
+            break
+          }
+          if sc == 0x5C {
+            i = i + 2
+            if i > end {
+              return -1
+            }
+          } else if sc < 0x20 {
+            return -1
+          } else {
+            i = i + 1
+          }
+        }
+      } else if ch == 0x7B || ch == 0x5B {
+        depth = depth + 1
+        i = i + 1
+      } else if ch == 0x7D || ch == 0x5D {
+        depth = depth - 1
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    }
+    return if depth == 0 { i } else { -1 }
+  }
+  let start = i
+  while i < end {
+    let ch = s.code_unit_at(i)
+    if ch == 0x2C || ch == 0x7D || ch == 0x5D || ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+      break
+    }
+    i = i + 1
+  }
+  if i == start { -1 } else { i }
+}
+
+fn skip_runtime_kind(runtime : String) -> Int {
+  if runtime == "claude" {
+    1
+  } else if runtime == "pi" {
+    2
+  } else if runtime == "grok" {
+    3
+  } else if runtime == "dsh" || runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "agy" || runtime == "copilot" {
+    0
+  } else {
+    4
+  }
+}
+
+/// Zero-allocation raw-byte pre-filter for JSONL records whose `type` (or Claude `isMeta: true`)
+/// guarantees `record_of` + `timeline_of` produces zero entries and zero `ReadState` mutations.
+/// Bails out (returns `false`) whenever any top-level key or `"type"` value contains a `\` escape.
+fn can_skip_record_bytes(runtime : String, b : Bytes, start : Int, raw_end : Int) -> Bool {
+  let rt_kind = skip_runtime_kind(runtime)
+  if rt_kind == 0 {
+    return false
+  }
+  let mut end = raw_end
+  if end > start && (b[end - 1].to_int() & 0xFF) == 0x0D {
+    end = end - 1
+  }
+  let mut i = start
+  while i < end {
+    let ch = b[i].to_int() & 0xFF
+    if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  if i >= end {
+    return true
+  }
+  if (b[i].to_int() & 0xFF) != 0x7B {
+    return false
+  }
+  i = i + 1
+  let mut type_state = 0
+  let mut is_meta = false
+  let mut first = true
+  while true {
+    while i < end {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if (b[i].to_int() & 0xFF) == 0x7D {
+      i = i + 1
+      while i < end {
+        let ch = b[i].to_int() & 0xFF
+        if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+          i = i + 1
+        } else {
+          break
+        }
+      }
+      if i != end {
+        return false
+      }
+      if type_state == 0 {
+        return true
+      }
+      if rt_kind == 1 && type_state == 2 && is_meta {
+        return true
+      }
+      return false
+    }
+    if !first {
+      if (b[i].to_int() & 0xFF) != 0x2C {
+        return false
+      }
+      i = i + 1
+      while i < end {
+        let ch = b[i].to_int() & 0xFF
+        if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+          i = i + 1
+        } else {
+          break
+        }
+      }
+      if i >= end {
+        return false
+      }
+    }
+    first = false
+    if (b[i].to_int() & 0xFF) != 0x22 {
+      return false
+    }
+    i = i + 1
+    let key_start = i
+    while i < end {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x22 {
+        break
+      }
+      if ch == 0x5C || ch < 0x20 {
+        return false
+      }
+      i = i + 1
+    }
+    if i >= end {
+      return false
+    }
+    let key_end = i
+    i = i + 1
+    while i < end {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end || (b[i].to_int() & 0xFF) != 0x3A {
+      return false
+    }
+    i = i + 1
+    while i < end {
+      let ch = b[i].to_int() & 0xFF
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if bytes_eq_ascii(b, key_start, key_end, "type") {
+      if (b[i].to_int() & 0xFF) == 0x22 {
+        i = i + 1
+        let val_start = i
+        while i < end {
+          let ch = b[i].to_int() & 0xFF
+          if ch == 0x22 {
+            break
+          }
+          if ch == 0x5C || ch < 0x20 {
+            return false
+          }
+          i = i + 1
+        }
+        if i >= end {
+          return false
+        }
+        let val_end = i
+        i = i + 1
+        type_state = if rt_kind == 1 {
+          if bytes_eq_ascii(b, val_start, val_end, "user") || bytes_eq_ascii(b, val_start, val_end, "assistant") {
+            2
+          } else if bytes_eq_ascii(b, val_start, val_end, "attachment") {
+            1
+          } else {
+            0
+          }
+        } else if rt_kind == 2 {
+          if bytes_eq_ascii(b, val_start, val_end, "message") { 1 } else { 0 }
+        } else if rt_kind == 3 {
+          if bytes_eq_ascii(b, val_start, val_end, "user") ||
+          bytes_eq_ascii(b, val_start, val_end, "reasoning") ||
+          bytes_eq_ascii(b, val_start, val_end, "assistant") ||
+          bytes_eq_ascii(b, val_start, val_end, "tool_result") {
+            1
+          } else {
+            0
+          }
+        } else {
+          if bytes_eq_ascii(b, val_start, val_end, "response_item") { 1 } else { 0 }
+        }
+      } else {
+        let next = skip_json_value_bytes(b, i, end)
+        if next < 0 {
+          return false
+        }
+        i = next
+        type_state = 0
+      }
+    } else if rt_kind == 1 && bytes_eq_ascii(b, key_start, key_end, "isMeta") {
+      let next = skip_json_value_bytes(b, i, end)
+      if next < 0 {
+        return false
+      }
+      is_meta = bytes_eq_ascii(b, i, next, "true")
+      i = next
+    } else {
+      let next = skip_json_value_bytes(b, i, end)
+      if next < 0 {
+        return false
+      }
+      i = next
+    }
+  }
+  false
+}
+
+/// Zero-allocation `String` counterpart of `can_skip_record_bytes` for `history_search`.
+fn can_skip_record_str(runtime : String, s : String) -> Bool {
+  let rt_kind = skip_runtime_kind(runtime)
+  if rt_kind == 0 {
+    return false
+  }
+  let mut end = s.length()
+  if end > 0 && s.code_unit_at(end - 1) == 0x0D {
+    end = end - 1
+  }
+  let mut i = 0
+  while i < end {
+    let ch = s.code_unit_at(i)
+    if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  if i >= end {
+    return true
+  }
+  if s.code_unit_at(i) != 0x7B {
+    return false
+  }
+  i = i + 1
+  let mut type_state = 0
+  let mut is_meta = false
+  let mut first = true
+  while true {
+    while i < end {
+      let ch = s.code_unit_at(i)
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if s.code_unit_at(i) == 0x7D {
+      i = i + 1
+      while i < end {
+        let ch = s.code_unit_at(i)
+        if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+          i = i + 1
+        } else {
+          break
+        }
+      }
+      if i != end {
+        return false
+      }
+      if type_state == 0 {
+        return true
+      }
+      if rt_kind == 1 && type_state == 2 && is_meta {
+        return true
+      }
+      return false
+    }
+    if !first {
+      if s.code_unit_at(i) != 0x2C {
+        return false
+      }
+      i = i + 1
+      while i < end {
+        let ch = s.code_unit_at(i)
+        if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+          i = i + 1
+        } else {
+          break
+        }
+      }
+      if i >= end {
+        return false
+      }
+    }
+    first = false
+    if s.code_unit_at(i) != 0x22 {
+      return false
+    }
+    i = i + 1
+    let key_start = i
+    while i < end {
+      let ch = s.code_unit_at(i)
+      if ch == 0x22 {
+        break
+      }
+      if ch == 0x5C || ch < 0x20 {
+        return false
+      }
+      i = i + 1
+    }
+    if i >= end {
+      return false
+    }
+    let key_end = i
+    i = i + 1
+    while i < end {
+      let ch = s.code_unit_at(i)
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end || s.code_unit_at(i) != 0x3A {
+      return false
+    }
+    i = i + 1
+    while i < end {
+      let ch = s.code_unit_at(i)
+      if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D {
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if str_eq_ascii(s, key_start, key_end, "type") {
+      if s.code_unit_at(i) == 0x22 {
+        i = i + 1
+        let val_start = i
+        while i < end {
+          let ch = s.code_unit_at(i)
+          if ch == 0x22 {
+            break
+          }
+          if ch == 0x5C || ch < 0x20 {
+            return false
+          }
+          i = i + 1
+        }
+        if i >= end {
+          return false
+        }
+        let val_end = i
+        i = i + 1
+        type_state = if rt_kind == 1 {
+          if str_eq_ascii(s, val_start, val_end, "user") || str_eq_ascii(s, val_start, val_end, "assistant") {
+            2
+          } else if str_eq_ascii(s, val_start, val_end, "attachment") {
+            1
+          } else {
+            0
+          }
+        } else if rt_kind == 2 {
+          if str_eq_ascii(s, val_start, val_end, "message") { 1 } else { 0 }
+        } else if rt_kind == 3 {
+          if str_eq_ascii(s, val_start, val_end, "user") ||
+          str_eq_ascii(s, val_start, val_end, "reasoning") ||
+          str_eq_ascii(s, val_start, val_end, "assistant") ||
+          str_eq_ascii(s, val_start, val_end, "tool_result") {
+            1
+          } else {
+            0
+          }
+        } else {
+          if str_eq_ascii(s, val_start, val_end, "response_item") { 1 } else { 0 }
+        }
+      } else {
+        let next = skip_json_value_str(s, i, end)
+        if next < 0 {
+          return false
+        }
+        i = next
+        type_state = 0
+      }
+    } else if rt_kind == 1 && str_eq_ascii(s, key_start, key_end, "isMeta") {
+      let next = skip_json_value_str(s, i, end)
+      if next < 0 {
+        return false
+      }
+      is_meta = str_eq_ascii(s, i, next, "true")
+      i = next
+    } else {
+      let next = skip_json_value_str(s, i, end)
+      if next < 0 {
+        return false
+      }
+      i = next
+    }
+  }
+  false
 }
 
 fn lines_of(b : Bytes, cut : Int) -> Array[Int] {
@@ -296,23 +873,21 @@ fn TailRun::take(self : TailRun, piece : Bytes) -> Result[Unit, String] {
   let mut from = 0
   for ei in 0..<ends.length() {
     let end = ends[ei]
-    let chunk_str = sql_db::decode_utf8_lossy_bytes(bytes_slice(bytes, from, end))
-    let lines = str_split_lf(chunk_str)
-    let records : Array[js_json::JValue] = []
-    for li in 0..<lines.length() {
-      match record_of(lines[li]) {
-        Some(r) => records.push(r)
+    let line_end = if end > from && (bytes[end - 1].to_int() & 0xFF) == 10 { end - 1 } else { end }
+    let entries : Array[Entry] = []
+    if !can_skip_record_bytes(tail.runtime, bytes, from, line_end) {
+      let chunk_str = sql_db::decode_utf8_lossy_bytes(bytes_slice(bytes, from, line_end))
+      match record_of(chunk_str) {
+        Some(r) => {
+          match timeline_of(tail.runtime, r, tail.state, entries) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
         None => ()
       }
     }
     from = end
-    let entries : Array[Entry] = []
-    for ri in 0..<records.length() {
-      match timeline_of(tail.runtime, records[ri], tail.state, entries) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
     match tail.collect {
       Some(out) => {
         for k in 0..<entries.length() {
@@ -829,10 +1404,12 @@ fn read_between(
     let mut at = 0
     for i in 0..<data.length() {
       if (data[i].to_int() & 0xFF) == 10 {
-        match handle_line(bytes_slice(data, at, i)) {
-          Ok(true) => ()
-          Ok(false) => return Ok(None)
-          Err(e) => return Err(e)
+        if !can_skip_record_bytes(runtime, data, at, i) {
+          match handle_line(bytes_slice(data, at, i)) {
+            Ok(true) => ()
+            Ok(false) => return Ok(None)
+            Err(e) => return Err(e)
+          }
         }
         at = i + 1
       }

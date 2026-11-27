@@ -185,6 +185,8 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
   // shown a moment over it while 外观's dot is pointed at (accent_preview) kept till it ends
   accent_set_here.val = @settings.pref_from(prefs, "accent")
   @sf.set_accent(accent_shown.val.unwrap_or(accent_set_here.val))
+  // the grounds in the accent's hue unless this device turned that off (the prefs' `groundTint`: off): then in none
+  @sf.set_ground_tint(@settings.pref_from(prefs, "groundTint") != "off")
   // (the host told once the prefs are read: not the system's first, then the one chosen)
   if prefs is Some(_) {
     let mode = @settings.appearance(prefs)

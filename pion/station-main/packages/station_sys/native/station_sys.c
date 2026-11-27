@@ -8251,3 +8251,5 @@ void *sts_network_interfaces(int64_t *out_len) {
 }
 
 #endif // _WIN32
+
+#include "station_js_lower.h"

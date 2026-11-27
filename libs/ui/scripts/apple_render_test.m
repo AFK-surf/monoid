@@ -5494,6 +5494,84 @@ int main(void) {
 
         // 4. Lens subtree counterexample
         {
+          // Perf-59: compute_donor_plan() occlusion query cache deduplicates scans across bare glyphs sharing one box.
+          const int N_GLYPHS = 64;
+          const int N_TOTAL = 3 + N_GLYPHS;
+          float *fc = calloc((size_t)(N_TOTAL + 1) * MB_INST, sizeof(float));
+          CHECK(fc != NULL);
+          if (fc) {
+            double tmp[MB_INST];
+            rect_at(tmp, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);
+            for (int k = 0; k < MB_INST; k++) fc[k] = (float)tmp[k];
+            rect_at(tmp, 0, 0, 400, 96, 5, 0, 0, 0, -295);
+            tmp[6] = 1.0; tmp[7] = 8.0; tmp[11] = 0.0; tmp[15] = 1.0;
+            tmp[22] = -1.0; tmp[54] = 96.0; tmp[55] = 48.0;
+            for (int k = 0; k < MB_INST; k++) fc[MB_INST + k] = (float)tmp[k];
+            rect_at(tmp, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -296);
+            tmp[4] = 20.0; tmp[6] = 1.0; tmp[7] = 1.4; tmp[11] = 0.4; tmp[14] = -1.0; tmp[15] = 1.0;
+            tmp[21] = 8.0; tmp[23] = 4.0;
+            for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+            for (int g = 0; g < N_GLYPHS; g++) {
+              rect_at(tmp, 120.0 + (g % 32) * 3.0, 34.0, 10.0, 18.0, 7, 0.9, 0.9, 0.9, 0);
+              tmp[21] = 160.0; tmp[22] = 46.0; tmp[23] = bare_ink(48.0, 16.0);
+              for (int k = 0; k < MB_INST; k++) fc[(size_t)(3 + g) * MB_INST + k] = (float)tmp[k];
+            }
+            compute_donor_plan(fc, N_TOTAL, 400.0f, 300.0f, 2.0f);
+            CHECK(donor_delegated_count == N_GLYPHS);
+            CHECK(donor_occ_scans == 1);
+            for (int g = 0; g < N_GLYPHS; g++) CHECK(donor_of_buf[3 + g] == -295);
+
+            // Insert opaque occluder between donor and pill overlapping box B (cx=280), leaving box A (cx=120) clear.
+            memmove(fc + 3 * MB_INST, fc + 2 * MB_INST, (size_t)(1 + N_GLYPHS) * MB_INST * sizeof(float));
+            rect_at(tmp, 260, 34, 40, 24, 0, 1.0, 1.0, 1.0, 0);
+            for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+            for (int g = 0; g < N_GLYPHS; g++) {
+              float *gp = fc + (size_t)(4 + g) * MB_INST;
+              gp[21] = (g < 32) ? 120.0f : 280.0f;
+              gp[22] = 46.0f;
+              gp[23] = (float)bare_ink(24.0, 14.0);
+            }
+            compute_donor_plan(fc, N_TOTAL + 1, 400.0f, 300.0f, 2.0f);
+            CHECK(donor_delegated_count == 32);
+            CHECK(donor_occ_scans == 2);
+            for (int g = 0; g < 32; g++) CHECK(donor_of_buf[4 + g] == -295);
+            for (int g = 32; g < N_GLYPHS; g++) CHECK(donor_of_buf[4 + g] == 0);
+
+            // Same occ_sr box under two different cur_glass_start pills with an occluder between pill 1 and pill 2:
+            // pill 1's glyphs are delegated, pill 2's glyphs are occluded, donor_occ_scans == 2.
+            memset(fc, 0, (size_t)(N_TOTAL + 1) * MB_INST * sizeof(float));
+            rect_at(tmp, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);
+            for (int k = 0; k < MB_INST; k++) fc[k] = (float)tmp[k];
+            rect_at(tmp, 0, 0, 400, 96, 5, 0, 0, 0, -295);
+            tmp[6] = 1.0; tmp[7] = 8.0; tmp[11] = 0.0; tmp[15] = 1.0;
+            tmp[22] = -1.0; tmp[54] = 96.0; tmp[55] = 48.0;
+            for (int k = 0; k < MB_INST; k++) fc[MB_INST + k] = (float)tmp[k];
+            rect_at(tmp, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -296);
+            tmp[4] = 20.0; tmp[6] = 1.0; tmp[7] = 1.4; tmp[11] = 0.4; tmp[14] = -1.0; tmp[15] = 1.0;
+            tmp[21] = 8.0; tmp[23] = 4.0;
+            for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+            for (int g = 0; g < 4; g++) {
+              rect_at(tmp, 140.0 + g * 8.0, 34.0, 10.0, 18.0, 7, 0.9, 0.9, 0.9, 0);
+              tmp[21] = 160.0; tmp[22] = 46.0; tmp[23] = bare_ink(24.0, 14.0);
+              for (int k = 0; k < MB_INST; k++) fc[(size_t)(3 + g) * MB_INST + k] = (float)tmp[k];
+            }
+            rect_at(tmp, 144, 34, 32, 24, 0, 1.0, 1.0, 1.0, 0);
+            for (int k = 0; k < MB_INST; k++) fc[7 * MB_INST + k] = (float)tmp[k];
+            memcpy(fc + 8 * MB_INST, fc + 2 * MB_INST, MB_INST * sizeof(float));
+            fc[8 * MB_INST + 20] = -297.0f;
+            for (int g = 0; g < 4; g++) {
+              memcpy(fc + (size_t)(9 + g) * MB_INST, fc + (size_t)(3 + g) * MB_INST, MB_INST * sizeof(float));
+            }
+            compute_donor_plan(fc, 13, 400.0f, 300.0f, 2.0f);
+            CHECK(donor_delegated_count == 4);
+            CHECK(donor_occ_scans == 2);
+            for (int g = 0; g < 4; g++) CHECK(donor_of_buf[3 + g] == -295);
+            for (int g = 0; g < 4; g++) CHECK(donor_of_buf[9 + g] == 0);
+            free(fc);
+            printf("apple_render: perf-59 ok\n");
+          }
+        }
+        {
           glass_forget();
           double ln[5 * MB_INST];
           rect_at(ln, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);

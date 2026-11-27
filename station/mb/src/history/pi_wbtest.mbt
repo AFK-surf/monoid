@@ -37,3 +37,58 @@ test "Pi's messages as entries" {
 
   ))
 }
+
+///|
+test "can_skip_record_bytes pre-filter matches timeline_of across edge cases" {
+  let skip = (rt : String, s : String) => can_skip_record_bytes(rt, @utf8.encode(s)[:])
+  // Claude ignored types (including huge nested payloads with "type":"user" inside)
+  assert_true(skip("claude", "{\"type\":\"api-request\",\"payload\":{\"type\":\"user\",\"data\":\"AAAA\"}}"))
+  assert_true(skip("claude", "{\"uuid\":\"1\",\"type\":\"progress\",\"data\":{\"x\":1}}"))
+  assert_true(skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"x\"}}"))
+  assert_true(skip("claude", "   \r"))
+  // Non-object and malformed JSON conservatively fall back to full parser
+  assert_false(skip("claude", "[1,2,3]"))
+  assert_false(skip("claude", "{\"type\":\"progress\"} trailing"))
+  assert_false(skip("claude", "{\"type\":\"progress\""))
+  // Claude kept types, duplicate keys (last wins, matching jsjson::parse), escapes, attachment with isMeta
+  assert_false(skip("claude", "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"))
+  assert_false(skip("claude", "{\"type\":\"assistant\",\"message\":{\"content\":\"hi\"}}"))
+  assert_false(skip("claude", "{\"type\":\"attachment\",\"isMeta\":true,\"attachment\":{\"type\":\"queued_command\"}}"))
+  assert_false(skip("claude", "{\"type\":\"api-request\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"))
+  assert_false(skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"isMeta\":false}"))
+  assert_false(skip("claude", "{\"type\":\"user\",\"isMeta\":\"true\"}"))
+  assert_false(skip("claude", "{\"\\u0074ype\":\"user\"}"))
+  assert_false(skip("claude", "{\"type\":\"\\u0075ser\"}"))
+  let dup_ignored = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"type\":\"progress\"}"
+  assert_true(skip("claude", dup_ignored))
+  let out_ign : Array[Entry] = []
+  timeline_of("claude", @jsjson.parse(dup_ignored), ReadState::new(), out_ign)
+  assert_eq(out_ign.length(), 0)
+  let dup_kept = "{\"type\":\"progress\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"
+  assert_false(skip("claude", dup_kept))
+  let out_kept : Array[Entry] = []
+  timeline_of("claude", @jsjson.parse(dup_kept), ReadState::new(), out_kept)
+  assert_eq(out_kept.length(), 1)
+  // Codex, Pi, Grok, and non-skipped DSH/Cursor
+  assert_true(skip("codex", "{\"type\":\"event_msg\",\"payload\":{\"type\":\"response_item\"}}"))
+  assert_false(skip("codex", "{\"type\":\"response_item\",\"payload\":{}}"))
+  assert_true(skip("pi", "{\"type\":\"compaction\",\"summary\":\"x\"}"))
+  assert_false(skip("pi", "{\"type\":\"message\",\"message\":{}}"))
+  assert_true(skip("grok", "{\"type\":\"meta\"}"))
+  assert_false(skip("grok", "{\"type\":\"tool_result\"}"))
+  assert_false(skip("dsh", "{\"type\":\"ignored\",\"time\":1e20}"))
+  assert_false(skip("cursor", "{\"type\":\"ignored\",\"time\":1e20}"))
+}
+
+///|
+test "clip and first_chars handle astral code points without per-char array allocation" {
+  let sb = StringBuilder::new()
+  for _ in 0..<4002 {
+    sb.write_string("🚀")
+  }
+  let s = sb.to_string()
+  let clipped = clip(s)
+  assert_true(clipped.has_suffix("\n… (2 more characters)"))
+  assert_eq(first_chars("a🚀b中", 2), "a🚀")
+  assert_eq(first_chars("a🚀b中", 10), "a🚀b中")
+}

@@ -780,6 +780,8 @@ fn shapes_thin() -> Unit {
 
 ///|
 fn clear_shapes() -> Unit {
+  set_shapes.clear()
+  set_shapes.shrink_to_fit()
   // (and who spaces words and how the host's face draws the marks set closer: found again as a run starts or the
   // faces change)
   spaced_said.val = None
@@ -822,6 +824,8 @@ let font_shapes_gone : FontShapes = {
 /// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
 /// `words_shaped_in` or evicting unrelated global window text caches.
 fn forget_words_for_face(face : Int) -> Unit {
+  set_shapes.clear()
+  set_shapes.shrink_to_fit()
   text_cache.last_font = None
   text_cache.seg_last_font_0 = None
   text_cache.seg_last_font_1 = None
@@ -2468,6 +2472,132 @@ fn one_line(texts : Array[String]) -> Array[String]? {
 }
 
 ///|
+/// A stretch of a field's words set otherwise than the rest of them (Field::sets): from `from` to `to` of what it
+/// shows (UTF-16 offsets), in `weight` (0: the field's), with `style` added to the field's (@hostapi.style_italic,
+/// style_mono), in `color` (0: the field's), on a ground of their own behind them (`ground`; 0: none), a line through
+/// them (`strike`); or leading their line (`leads`: the mark of a list's item), the rest of that line, wrapped,
+/// starting where they end.
+#derive(Eq, Debug)
+pub(all) struct WordsSet {
+  from : Int
+  to : Int
+  weight : Int
+  style : Int
+  color : Int64
+  ground : Int64
+  strike : Bool
+  leads : Bool
+}
+
+///|
+/// A text shaped in stretches (shape_set), kept as shaped while it is asked for the same way.
+priv struct SetShaped {
+  text : String
+  set : Array[WordsSet]
+  size : Double
+  weight : Int
+  style : Int
+  shaped : Shaped
+}
+
+///|
+/// The last texts shaped in stretches, the latest last (a field's words as they are written: few fields show at once).
+// kept across runs: a cache of what was shaped, let go with the shapes (clear_shapes)
+let set_shapes : Array[SetShaped] = []
+
+///|
+let set_shapes_most : Int = 8
+
+///|
+/// `text` shaped with stretches of it (`set`: in order, apart) in a weight or a style of their own, the rest as
+/// `shape` shapes it: each stretch shaped by itself in its font and put where it stands, as `shape` puts a companion
+/// face's (its clusters, advances and glyphs; line breaks worked out of the whole text on demand). Words written right
+/// to left are shaped whole, in the field's font alone: their order is the whole text's.
+fn shape_set(text : String, size : Double, weight : Int, style : Int, set : Array[WordsSet]) -> Shaped {
+  for i, k in set_shapes {
+    if k.text == text && k.size == size && k.weight == weight && k.style == style && k.set == set {
+      if i + 1 < set_shapes.length() {
+        set_shapes.remove(i) |> ignore
+        set_shapes.push(k)
+      }
+      return k.shaped
+    }
+  }
+  let n = text.length()
+  // (the stretches that change the font, and the words between them)
+  let pieces : Array[(Int, Int, Int, Int)] = []
+  let mut at = 0
+  for s in set {
+    let a = imax(s.from, at)
+    let b = imin(s.to, n)
+    if b <= a || (s.weight == 0 && s.style == 0) {
+      continue
+    }
+    if a > at {
+      pieces.push((at, a, weight, style))
+    }
+    pieces.push((a, b, if s.weight == 0 { weight } else { s.weight }, style | s.style))
+    at = b
+  }
+  // (all in the field's font: shaped as it is, unless a stretch leads its line: then a shape of this text's and
+  // these stretches' own, whose layout kept on it is no other text's)
+  if pieces.is_empty() {
+    if !set.any(fn(s) { s.leads }) {
+      return shape(text, size, weight, style~)
+    }
+    pieces.push((0, n, weight, style))
+    at = n
+  }
+  if at < n {
+    pieces.push((at, n, weight, style))
+  }
+  let starts = []
+  let lens = []
+  let adv = []
+  let keys = []
+  let cu = []
+  let mut simple = true
+  for p in pieces {
+    let (a, b, w, st) = p
+    let s = shape(text.unsafe_substring(start=a, end=b), size, w, style=st)
+    if s.bidi is Some(_) {
+      return shape(text, size, weight, style~)
+    }
+    simple = simple && s.simple
+    for k in 0..<s.starts.length() {
+      starts.push(s.starts[k] + a)
+      lens.push(s.lens[k])
+      adv.push(s.adv[k])
+      keys.push(s.keys[k])
+      cu.push(s.cu[k])
+    }
+  }
+  let shaped = {
+    starts,
+    lens,
+    adv,
+    keys,
+    cu,
+    brk: [],
+    len: n,
+    bidi: None,
+    simple,
+    pad: 0.0,
+    lay: None,
+    lay_max: 0.0,
+    lay_line: 0.0,
+    lay_trim: false,
+    lay_wrap: false,
+    used: text_cache.frame,
+  }
+  if set_shapes.length() >= set_shapes_most {
+    set_shapes.remove(0) |> ignore
+  }
+  set_shapes.push({ text, set, size, weight, style, shaped })
+  shaped
+}
+
+///|
 /// Whether cluster i ends a line by itself: a line terminator that is not CR immediately before LF (when the host
 /// emits CR and LF as two clusters).
 fn Shaped::hard_end(self : Shaped, i : Int) -> Bool {
@@ -2488,8 +2618,13 @@ fn layout_text(
   style? : Int = 0,
   keep_tabular? : Bool = false,
   cjk_override? : @view.CjkOverride? = None,
+  set? : Array[WordsSet] = [],
 ) -> TextLayout {
-  let s = shape(text, size, weight, style~, spacing~, keep_tabular~, cjk_override~)
+  let s = if set.is_empty() {
+    shape(text, size, weight, style~, spacing~, keep_tabular~, cjk_override~)
+  } else {
+    shape_set(text, size, weight, style, set)
+  }
   // greedy wrapping gives the same lines in any width from the widest
   // line up to the one they were made in (as Node::text_layout)
   if indent == 0.0 {
@@ -2525,6 +2660,15 @@ fn layout_text(
   let line_start = []
   let line_end = []
   let line_w = []
+  // (where a stretch that leads its line ends, the rest of that line wrapped starts: how far in the line being set
+  // hangs; no such stretch, nothing hangs)
+  let hang_at : Array[Int] = []
+  for st in set {
+    if st.leads {
+      hang_at.push(st.to)
+    }
+  }
+  let mut hang = 0.0
   let mut ls = 0
   let mut i = 0
   // the first line may start indented
@@ -2557,8 +2701,12 @@ fn layout_text(
       ls = i + 1
       i = i + 1
       x = 0.0
+      hang = 0.0
       last_break = -1
       continue
+    }
+    if !hang_at.is_empty() && hang_at.contains(s.starts[i]) && x < max_w / 2.0 {
+      hang = x
     }
     if wrap && i > ls && brk[i] != 0 {
       last_break = i
@@ -2569,7 +2717,7 @@ fn layout_text(
       finish(ls, brk)
       ls = brk
       i = brk
-      x = 0.0
+      x = hang
       last_break = -1
       continue
     }

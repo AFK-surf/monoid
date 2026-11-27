@@ -1406,7 +1406,7 @@ fn Ctx::commit_at(self : Ctx, i : Int, px : Double, py : Double, gen : Int) -> U
 fn Ctx::lay_out_field(self : Ctx, st : EditorState, fb : FieldBox) -> Unit {
   let iw = dmax(fb.w - fb.pad_l - fb.pad_r, 0.0)
   let ih = dmax(fb.h - fb.pad_t - fb.pad_b, 0.0)
-  let tl = layout_text(st.shown(), fb.font_size, fb.weight, iw, fb.wrap, line=fb.line_h, trim=fb.trim, style=faces_style(st.words, 0))
+  let tl = layout_text(st.shown(), fb.font_size, fb.weight, iw, fb.wrap, line=fb.line_h, trim=fb.trim, style=faces_style(st.words, 0), set=st.sets_shown())
   st.tl = Some(tl)
   // taller than the field: scrolled so that the caret's line shows; a field of more lines, where it was scrolled
   // to (the wheel, a finger, its bar: Ctx::editor) until the caret or the words change

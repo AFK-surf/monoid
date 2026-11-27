@@ -132,3 +132,15 @@ pub fn link(text : String, href : String) -> Run {
   span(text, link=href)
 }
 
+///|
+/// The shape of a mark that leads its line (the bullet or the number of a list's item): a label with no ground of
+/// its own and no room, the rest of its line, wrapped, starting where it ends (a paragraph's lines: Run::leads).
+/// Said as a run's `ground` with no `bg`: nothing is drawn of it.
+pub let leads : Ground = { room: 0.0, height: 0.0, corner: 0.0, after: 0.0 }
+
+///|
+/// Whether the run leads its line (its `ground` the shape `leads`, no ground drawn of it).
+pub fn Run::leads(self : Run) -> Bool {
+  self.bg == 0L && !self.code && self.ground is Some(g) && g.height == 0.0 && g.room == 0.0
+}
+

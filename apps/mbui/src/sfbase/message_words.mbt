@@ -15,19 +15,50 @@ let ref_at_alpha : Double = 0.7
 /// A person's words in the runs the core read them in (a message's `words`: refLinks.ts personWords; what was sent from
 /// here, its outbox row's, or before the core has it its `ref.words`: draftWords): a reference to a chat `@` a little
 /// lighter and its title in `accent` (one written bare reading as `chat_title` says; a composer's mark its title), a web
-/// address a link.
+/// address a link; each set as the core says they marked it (`b` bold, `i` slanted, `s` struck through, `code` code in
+/// its line, `pre` a block of code: the code face alone, its lines as written; `li` where the marks of a list's
+/// items start in it, the rest of each one's line wrapped to where its mark ends).
 pub fn words_runs(parts : Array[Json], accent : Int64, chat_title? : (String) -> String? = fn(_) { None }) -> Array[@ui.Run] {
   let out : Array[@ui.Run] = []
   for p in parts {
     let words = text(Some(p), "text")
     let link = text(Some(p), "link")
+    let set = fn(key : String) { field(Some(p), key) is Some(True) }
+    let bold = set("b")
+    let italic = set("i")
+    let strike = set("s")
     match field(Some(p), "ref") {
       Some(True) => {
         let title = if words == link { chat_title(link).unwrap_or(link) } else { words }
-        out.push(@ui.span("@", link~, color=@sf.alpha(accent, ref_at_alpha)))
-        out.push(@ui.span(title, link~, color=accent))
+        out.push(@ui.span("@", link~, color=@sf.alpha(accent, ref_at_alpha), bold~, italic~, strike~))
+        out.push(@ui.span(title, link~, color=accent, bold~, italic~, strike~))
       }
-      _ => out.push(if link != "" { @ui.link(words, link) } else { @ui.plain(words) })
+      _ => {
+        // (the marks of a list's items in it, each from where `li` says up to and with its space: runs that lead
+        // their lines, @ui.leads; the words between as they are)
+        let mut at = 0
+        for o in items(Some(p), "li") {
+          let from = match o {
+            Number(n, ..) => n.to_int()
+            _ => -1
+          }
+          guard from >= at && from < words.length() else { continue }
+          let mut to = from
+          while to < words.length() && words.unsafe_get(to).to_int() != 32 {
+            to += 1
+          }
+          to = if to < words.length() { to + 1 } else { to }
+          if from > at {
+            out.push(@ui.span(words.unsafe_substring(start=at, end=from), link~, bold~, italic~, strike~))
+          }
+          out.push(@ui.span(words.unsafe_substring(start=from, end=to), ground=Some(@ui.leads)))
+          at = to
+        }
+        let rest = if at == 0 { words } else { words.unsafe_substring(start=at, end=words.length()) }
+        if at == 0 || rest != "" {
+          out.push(@ui.span(rest, link~, bold~, italic~, strike~, code=set("code"), mono=set("pre")))
+        }
+      }
     }
   }
   out

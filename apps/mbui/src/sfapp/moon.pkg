@@ -13,6 +13,7 @@ import {
   "ui/hostapi",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",
+  "stillfail/sfcore",
   "stillfail/sfdesk",
   "stillfail/sfpages",
   "stillfail/sffixture",

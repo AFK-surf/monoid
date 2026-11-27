@@ -502,3 +502,73 @@ test "ascii_lower and matcher_matches_with_lower reuse lowered chunk across word
   let (h4, _) = matcher_matches_with_lower(m4, chunk, cached)
   expect_bs(h4, "m4 exact non-ascii matched")
 }
+
+test "can_skip_record_bytes and can_skip_record_str match timeline_of edge cases" {
+  let check_skip = fn(rt : String, s : String, want : Bool, label : String) -> Unit {
+    let b = s.to_bytes()
+    expect_bs(can_skip_record_bytes(rt, b, 0, b.length()) == want, "bytes " + label)
+    expect_bs(can_skip_record_str(rt, s) == want, "str " + label)
+  }
+  check_skip("claude", "{\"type\":\"api-request\",\"payload\":{\"type\":\"user\",\"data\":\"AAAA\"}}", true, "claude api-request")
+  check_skip("claude", "{\"uuid\":\"1\",\"type\":\"progress\",\"data\":{\"x\":1}}", true, "claude progress")
+  check_skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"x\"}}", true, "claude isMeta true")
+  check_skip("claude", "   \r", true, "blank")
+  check_skip("claude", "[1,2,3]", false, "array conservative fallback")
+  check_skip("claude", "{\"type\":\"progress\"} trailing", false, "trailing garbage conservative fallback")
+  check_skip("claude", "{\"type\":\"progress\"", false, "truncated conservative fallback")
+  check_skip("claude", "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}", false, "claude user")
+  check_skip("claude", "{\"type\":\"assistant\",\"message\":{\"content\":\"hi\"}}", false, "claude assistant")
+  check_skip("claude", "{\"type\":\"attachment\",\"isMeta\":true,\"attachment\":{\"type\":\"queued_command\"}}", false, "claude attachment+isMeta")
+  let dup_kept = "{\"type\":\"api-request\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"
+  check_skip("claude", dup_kept, false, "claude dup key last wins kept")
+  expect_bs(
+    match js_json::parse(dup_kept) {
+      Ok(r) => {
+        match r.get("type") {
+          Some(js_json::JValue::Str(u)) => js_json::text(u) == "user"
+          _ => false
+        }
+      }
+      Err(_) => false
+    },
+    "dup_kept full parse resolves last key 'user'",
+  )
+  let dup_ignored = "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"type\":\"progress\"}"
+  check_skip("claude", dup_ignored, true, "claude dup key last wins ignored")
+  expect_bs(
+    match js_json::parse(dup_ignored) {
+      Ok(r) => {
+        match r.get("type") {
+          Some(js_json::JValue::Str(u)) => js_json::text(u) == "progress"
+          _ => false
+        }
+      }
+      Err(_) => false
+    },
+    "dup_ignored full parse resolves last key 'progress'",
+  )
+  check_skip("claude", "{\"type\":\"user\",\"isMeta\":true,\"isMeta\":false}", false, "claude dup isMeta false")
+  check_skip("claude", "{\"type\":\"user\",\"isMeta\":\"true\"}", false, "claude isMeta string")
+  check_skip("claude", "{\"\\u0074ype\":\"user\"}", false, "escaped key fallback")
+  check_skip("claude", "{\"type\":\"\\u0075ser\"}", false, "escaped val fallback")
+  check_skip("codex", "{\"type\":\"event_msg\",\"payload\":{\"type\":\"response_item\"}}", true, "codex event_msg")
+  check_skip("codex", "{\"type\":\"response_item\",\"payload\":{}}", false, "codex response_item")
+  check_skip("pi", "{\"type\":\"compaction\",\"summary\":\"x\"}", true, "pi compaction")
+  check_skip("pi", "{\"type\":\"message\",\"message\":{}}", false, "pi message")
+  check_skip("grok", "{\"type\":\"meta\"}", true, "grok meta")
+  check_skip("grok", "{\"type\":\"tool_result\"}", false, "grok tool_result")
+  check_skip("dsh", "{\"type\":\"ignored\",\"time\":1e20}", false, "dsh never skipped")
+  check_skip("cursor", "{\"type\":\"ignored\",\"time\":1e20}", false, "cursor never skipped")
+}
+
+test "clip and first_chars handle astral code points without per-char array allocation" {
+  let sb = StringBuilder::new()
+  for _ in 0..<4002 {
+    sb.write_string("🚀")
+  }
+  let s = sb.to_string()
+  let clipped = clip(s)
+  expect_bs(str_has_suffix(clipped, "\n… (2 more characters)"), "clipped suffix: " + clipped)
+  expect_bs(first_chars("a🚀b中", 2) == "a🚀", "first_chars 2")
+  expect_bs(first_chars("a🚀b中", 10) == "a🚀b中", "first_chars 10")
+}

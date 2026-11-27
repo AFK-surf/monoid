@@ -1291,6 +1291,8 @@ let zh : Map[String, String] = {
   "web-pages.appearance.motion.system": "跟随系统",
   "web-pages.appearance.motion.title": "动画",
   "web-pages.appearance.theme.description": "浅色、深色或跟随系统。以下设置只对这台设备生效",
+  "web-pages.appearance.tint.description": "页面和侧栏的底色带一点主题色；关闭后是纯白和中性灰，不带色相",
+  "web-pages.appearance.tint.title": "背景着色",
   "web-pages.archive.search": "搜索归档",
   "web-pages.archivePolicy.add": "添加",
   "web-pages.archivePolicy.archive": "推荐归档",

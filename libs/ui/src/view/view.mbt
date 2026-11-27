@@ -2624,12 +2624,77 @@ pub fn View::drawn_while(self : View, goes : (Double) -> Bool) -> Double {
 }
 
 ///|
+// kept across runs: per-Tree side table + 1-slot MRU cache for `View::cycle` readers, cleared on `Tree::dispose`
+let tree_cycle_readers : Array[(Tree, Map[Int, (Int, Double)])] = []
+
+///|
+// kept across runs: 1-slot MRU cache for `Tree::cycle_readers_opt` / `cycle_readers_get`, cleared on `Tree::dispose`
+let last_cycle_readers : Ref[(Tree, Map[Int, (Int, Double)])?] = Ref(None)
+
+///|
+fn Tree::cycle_readers_opt(self : Tree) -> Map[Int, (Int, Double)]? {
+  match last_cycle_readers.val {
+    Some((t, m)) if physical_equal(t, self) => return Some(m)
+    _ => ()
+  }
+  for entry in tree_cycle_readers {
+    if physical_equal(entry.0, self) {
+      last_cycle_readers.val = Some(entry)
+      return Some(entry.1)
+    }
+  }
+  None
+}
+
+///|
+fn Tree::cycle_readers_get(self : Tree) -> Map[Int, (Int, Double)] {
+  match last_cycle_readers.val {
+    Some((t, m)) if physical_equal(t, self) => return m
+    _ => ()
+  }
+  for entry in tree_cycle_readers {
+    if physical_equal(entry.0, self) {
+      last_cycle_readers.val = Some(entry)
+      return entry.1
+    }
+  }
+  let m : Map[Int, (Int, Double)] = Map([])
+  let pair = (self, m)
+  tree_cycle_readers.push(pair)
+  last_cycle_readers.val = Some(pair)
+  m
+}
+
+///|
+fn Tree::cycle_readers_clear(self : Tree) -> Unit {
+  match last_cycle_readers.val {
+    Some((t, _)) if physical_equal(t, self) => last_cycle_readers.val = None
+    _ => ()
+  }
+  match tree_cycle_readers.search_by(fn(e) { physical_equal(e.0, self) }) {
+    Some(i) => {
+      let (_, m) = tree_cycle_readers.remove(i)
+      m.clear()
+      if tree_cycle_readers.is_empty() {
+        tree_cycle_readers.shrink_to_fit()
+      }
+    }
+    None => ()
+  }
+}
+
+///|
 /// Where a cycle of `period` ms is as what is drawn is drawn (0 to 1, from moment 0 on), followed: for a wait drawn by
 /// it as long as it shows (a spinner's turn, a band of progress not known), which never ends and is no motion
 /// (Tree::cycle_read); as Ctx::cycle is an old view's.
 pub fn View::cycle(self : View, period : Double) -> Double {
   self.tree.clock_read_in_binding("cycle")
   let t = self.tree.beat.get()
+  let readers = self.tree.cycle_readers_get()
+  let read = (self.gen, t)
+  if readers.get(self.at) != Some(read) {
+    readers[self.at] = read
+  }
   if period <= 0.0 {
     return 0.0
   }
@@ -2682,30 +2747,42 @@ pub fn View::cycle_resident(self : View, period : Double) -> Double {
 /// over it, left out, zero-alpha, or scrolled/slid completely outside the window or its ancestors' clip bounds draws no
 /// step: none woken for it): what hosts the tree wakes for its next step then.
 pub fn Tree::resident_read(self : Tree) -> Bool {
-  if !self.resident.watched() || self.resident_readers.is_empty() {
+  if !self.resident.watched_awake() || self.resident_readers.is_empty() {
     return false
   }
   self.resident_found(self.resident.untracked())
 }
 
 ///|
-/// Whether node `at` can draw anywhere inside the window and its ancestors' clip bounds at the moment's layout/offsets:
-/// a resident decoration slid off-screen (e.g. a closed sidebar panel) or scrolled past its clip rect draws zero pixels
-/// and need not wake the display link every step.
-fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
-  if self.last_w <= 0.0 || self.last_h <= 0.0 {
-    return true
-  }
+/// Whether node `at` is attached (or lifted), awake (not inside a covered/deep sleep scope), not laid out nowhere, and
+/// intersects the window and its ancestors' clip bounds at the moment's layout/offsets. When `allow_self_alpha_zero` is
+/// true, `at`'s own zero opacity does not hide it (a `View::cycle` fade-from-0 starts at alpha 0 at `t == 0`), while
+/// any zero-alpha ancestor still hides it.
+fn Tree::node_visible(self : Tree, at : Int, allow_self_alpha_zero~ : Bool) -> Bool {
   let chain = []
   let mut i = at
+  let mut top = -1
+  let mut lifted = false
   while i >= 0 {
-    if !self.nodes[i].slot {
+    top = i
+    let nd = self.nodes[i]
+    if nd.lift is Some(_) {
+      lifted = true
+    }
+    if !nd.slot {
       chain.push(i)
     }
-    i = self.nodes[i].parent
+    i = nd.parent
   }
-  if chain.is_empty() {
+  if chain.is_empty() || (!lifted && top != 0) {
     return false
+  }
+  let (has_covered, has_deep) = self.effective_sleep(at)
+  if has_covered || has_deep {
+    return false
+  }
+  if self.last_w <= 0.0 || self.last_h <= 0.0 {
+    return true
   }
   let mut x = 0.0
   let mut y = 0.0
@@ -2768,12 +2845,12 @@ fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
         y = y + dy
       }
     }
-    if a <= 0.0001 || s <= 0.0 {
+    if s <= 0.0 || (a <= 0.0001 && (!allow_self_alpha_zero || idx != at)) {
       return false
     }
     if k > 0 && m.clips_said {
       let my0 = y
-      let my1 = y + m.lh * s
+      let my1 = y + dmax(0.0, m.lh + m.look.clips_past + self.fades_past_now(idx)) * s
       if my0 > cy0 {
         cy0 = my0
       }
@@ -2808,6 +2885,14 @@ fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
     }
   }
   true
+}
+
+///|
+/// Whether node `at` can draw anywhere inside the window and its ancestors' clip bounds at the moment's layout/offsets:
+/// a resident decoration slid off-screen (e.g. a closed sidebar panel) or scrolled past its clip rect draws zero pixels
+/// and need not wake the display link every step.
+fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
+  self.node_visible(at, allow_self_alpha_zero=false)
 }
 
 ///|
@@ -2905,10 +2990,39 @@ pub fn Tree::resident_next(self : Tree) -> Double {
 }
 
 ///|
-/// Whether a wait reads the clock (View::cycle): what hosts the tree draws its frames one after another as an old view's
-/// cycle has them drawn, a wait, not a motion (Tree::clock_read).
+/// Whether an awake, visible wait reads the clock (View::cycle): what hosts the tree draws its frames one after another
+/// as an old view's cycle has them drawn, a wait, not a motion (Tree::clock_read). Parked/covered subtrees, left-out
+/// nodes, zero-alpha ancestors, and nodes slid/scrolled completely outside the window or their ancestors' clip bounds
+/// draw nothing and wake no frames.
 pub fn Tree::cycle_read(self : Tree) -> Bool {
-  self.beat.watched()
+  if !self.beat.watched_awake() {
+    return false
+  }
+  let readers = match self.cycle_readers_opt() {
+    Some(r) if !r.is_empty() => r
+    _ => return false
+  }
+  let now = self.beat.untracked()
+  let settled = self.looks_due.is_empty() && self.places_due.is_empty() && self.bindings_due.is_empty()
+  let gone = []
+  for at, r in readers {
+    let (gen, read) = r
+    if !self.alive_id(({ at, gen } : NodeId)) || (settled && read != now) {
+      gone.push(at)
+    }
+  }
+  for at in gone {
+    readers.remove(at)
+  }
+  if readers.is_empty() {
+    return false
+  }
+  for at, _ in readers {
+    if self.node_visible(at, allow_self_alpha_zero=true) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -3063,6 +3177,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.unsettled_clean = false
   self.answer_unsettled = false
   self.rest_book_clear()
+  self.cycle_readers_clear()
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()

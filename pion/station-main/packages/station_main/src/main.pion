@@ -530,6 +530,16 @@ fn main(_world : World) -> Unit {
     return
   }
   if argv.length() >= 2 {
+    match classify_hooks_tui_command(argv[1]) {
+      Some(cmd) => {
+        let rc = run_hooks_tui_command(cmd, argv)
+        if rc != 0 {
+          host_shim::exit_process(rc)
+        }
+        return
+      }
+      None => ()
+    }
     let cli_args : Array[String] = []
     let mut i = 1
     while i < argv.length() {

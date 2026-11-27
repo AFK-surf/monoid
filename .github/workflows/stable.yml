@@ -576,7 +576,7 @@ jobs:
           python3 scripts/promote-web.py --revision "$RELEASE_REVISION"
 
   # The station's native parts of the release's revision, each where the release or the store (natives/: main's
-  # natives-store copies the release's there, which keeps only 20 of a part, a few hours of main's) has it or else
+  # natives-store copies the release's there, which keeps only 10 of a part, a few hours of main's) has it or else
   # built and published here, beside the apps' builds, so that the station job only fetches them: there, the readers of
   # the day before's main, found in neither, were built one after another on Mini1 and the job cut at its 10 minutes
   # every run (2026-11-19). Seconds when all are there. The release's checkout is older than this workflow, its

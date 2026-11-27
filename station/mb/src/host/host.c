@@ -21,6 +21,8 @@ static void wait_cond(cond_t *c, lock_t *l) { SleepConditionVariableSRW(c, l, IN
 #else
 #include <pthread.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
@@ -424,5 +426,189 @@ int32_t sfh_pid(void) {
   return (int32_t)GetCurrentProcessId();
 #else
   return (int32_t)getpid();
+#endif
+}
+
+#define SFH_DIRECT_SLICE_MAX (256LL * 1024LL * 1024LL)
+
+static moonbit_bytes_t sfh_slice_status(uint8_t tag) {
+  moonbit_bytes_t out = moonbit_make_bytes(1, 0);
+  out[0] = tag;
+  return out;
+}
+
+/// Direct binary slice read of a regular file (bypasses Rust shell hex-over-JSON IPC).
+/// Returns `[0]` on open failure, `[2]` on fallback (non-regular/invalid/>256 MiB/I/O error),
+/// or `[1, bytes...]` on success.
+moonbit_bytes_t sfh_read_file_slice(moonbit_bytes_t path_b, int64_t from, int64_t length) {
+  const char *path = (const char *)path_b;
+  if (path == NULL || path[0] == '\0' || from < 0) {
+    return sfh_slice_status(2);
+  }
+#ifdef _WIN32
+  int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+  if (wlen <= 0) return sfh_slice_status(0);
+  wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+  if (wpath == NULL) abort();
+  if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen) <= 0) {
+    free(wpath);
+    return sfh_slice_status(0);
+  }
+  HANDLE h = CreateFileW(
+    wpath,
+    GENERIC_READ,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    NULL,
+    OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL,
+    NULL);
+  free(wpath);
+  if (h == INVALID_HANDLE_VALUE) return sfh_slice_status(0);
+  if (GetFileType(h) != FILE_TYPE_DISK) {
+    CloseHandle(h);
+    return sfh_slice_status(2);
+  }
+  if (length == 0) {
+    CloseHandle(h);
+    return sfh_slice_status(1);
+  }
+  LARGE_INTEGER fsz_li;
+  if (!GetFileSizeEx(h, &fsz_li)) {
+    CloseHandle(h);
+    return sfh_slice_status(2);
+  }
+  int64_t fsz = (int64_t)fsz_li.QuadPart;
+  if (from >= fsz) {
+    CloseHandle(h);
+    return sfh_slice_status(1);
+  }
+  int64_t avail = fsz - from;
+  int64_t target = (length >= 0 && length < avail) ? length : avail;
+  if (target > SFH_DIRECT_SLICE_MAX) {
+    CloseHandle(h);
+    return sfh_slice_status(2);
+  }
+  LARGE_INTEGER seek_li;
+  seek_li.QuadPart = from;
+  if (!SetFilePointerEx(h, seek_li, NULL, FILE_BEGIN)) {
+    CloseHandle(h);
+    return sfh_slice_status(2);
+  }
+  size_t cap = target > 0 ? (size_t)target : 1;
+  uint8_t *buf = (uint8_t *)malloc(cap);
+  if (buf == NULL) {
+    CloseHandle(h);
+    abort();
+  }
+  size_t got = 0;
+  while (1) {
+    if (length >= 0 && got >= (size_t)target) break;
+    if (length < 0 && got == cap) {
+      size_t next_cap = cap < 65536 ? 65536 : cap * 2;
+      if (next_cap > (size_t)SFH_DIRECT_SLICE_MAX) next_cap = (size_t)SFH_DIRECT_SLICE_MAX;
+      if (next_cap <= cap) {
+        free(buf);
+        CloseHandle(h);
+        return sfh_slice_status(2);
+      }
+      uint8_t *nbuf = (uint8_t *)realloc(buf, next_cap);
+      if (nbuf == NULL) {
+        free(buf);
+        CloseHandle(h);
+        abort();
+      }
+      buf = nbuf;
+      cap = next_cap;
+    }
+    size_t rem = (length >= 0 ? (size_t)target : cap) - got;
+    DWORD want = rem > 0x40000000u ? (DWORD)0x40000000u : (DWORD)rem;
+    DWORD rd = 0;
+    if (!ReadFile(h, buf + got, want, &rd, NULL)) {
+      free(buf);
+      CloseHandle(h);
+      return sfh_slice_status(2);
+    }
+    if (rd == 0) break;
+    got += (size_t)rd;
+  }
+  CloseHandle(h);
+  moonbit_bytes_t out = moonbit_make_bytes((int32_t)(1 + got), 0);
+  out[0] = 1;
+  if (got > 0) memcpy(out + 1, buf, got);
+  free(buf);
+  return out;
+#else
+  int fd = -1;
+  do {
+    fd = open(path, O_RDONLY);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) return sfh_slice_status(0);
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    close(fd);
+    return sfh_slice_status(2);
+  }
+  if (length == 0) {
+    close(fd);
+    return sfh_slice_status(1);
+  }
+  int64_t fsz = (int64_t)st.st_size;
+  if (from >= fsz) {
+    close(fd);
+    return sfh_slice_status(1);
+  }
+  int64_t avail = fsz - from;
+  int64_t target = (length >= 0 && length < avail) ? length : avail;
+  if (target > SFH_DIRECT_SLICE_MAX) {
+    close(fd);
+    return sfh_slice_status(2);
+  }
+  size_t cap = target > 0 ? (size_t)target : 1;
+  uint8_t *buf = (uint8_t *)malloc(cap);
+  if (buf == NULL) {
+    close(fd);
+    abort();
+  }
+  size_t got = 0;
+  while (1) {
+    if (length >= 0 && got >= (size_t)target) break;
+    if (length < 0 && got == cap) {
+      size_t next_cap = cap < 65536 ? 65536 : cap * 2;
+      if (next_cap > (size_t)SFH_DIRECT_SLICE_MAX) next_cap = (size_t)SFH_DIRECT_SLICE_MAX;
+      if (next_cap <= cap) {
+        free(buf);
+        close(fd);
+        return sfh_slice_status(2);
+      }
+      uint8_t *nbuf = (uint8_t *)realloc(buf, next_cap);
+      if (nbuf == NULL) {
+        free(buf);
+        close(fd);
+        abort();
+      }
+      buf = nbuf;
+      cap = next_cap;
+    }
+    size_t rem = (length >= 0 ? (size_t)target : cap) - got;
+    if (rem > 0x40000000u) rem = 0x40000000u;
+    ssize_t r = pread(fd, buf + got, rem, (off_t)(from + (int64_t)got));
+    if (r > 0) {
+      got += (size_t)r;
+    } else if (r == 0) {
+      break;
+    } else if (errno == EINTR) {
+      continue;
+    } else {
+      free(buf);
+      close(fd);
+      return sfh_slice_status(2);
+    }
+  }
+  close(fd);
+  moonbit_bytes_t out = moonbit_make_bytes((int32_t)(1 + got), 0);
+  out[0] = 1;
+  if (got > 0) memcpy(out + 1, buf, got);
+  free(buf);
+  return out;
 #endif
 }

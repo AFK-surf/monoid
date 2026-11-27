@@ -1,11 +1,20 @@
 // The Router's reads and writes in the workspace's chats through a Comma connect (surface.ts), apart from the part
 // that wires them (module.ts), so that they can be tried alone.
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { join } from "node:path";
 import type { Hub } from "../sessions/hub.ts";
 import { say } from "../sessions/lifecycle.ts";
+import { withLock, workspaceFile } from "../sessions/archive.ts";
+import { roomOfSoon } from "../sessions/footprint.ts";
+import { clean, within } from "../ops/paths.ts";
 import { wall } from "../ops/fibers.ts";
 import { MANUAL, MessageWriteBusy } from "../store/store.ts";
 import type { WorkspaceReads } from "./peer.ts";
 import { BUILD_DAYS, chatOf, type CommaStats, validRequesterEmail } from "./stats.ts";
+
+const READ_FILE_PART = 256 * 1024;
+const READ_FILE_MAX_BYTES = 50 * 1024 * 1024;
 
 type Json = any;
 type RouterWrite = { id: string; thread: number; n: number; pending: number };
@@ -93,9 +102,109 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
     messages: messages.slice(0, limit).map((m) => ({
       seq: m.n, author_kind: m.authorKind, author: m.person?.name ?? m.person?.email ?? m.author, text: m.text, at: m.at,
       ...(m.card !== null && typeof m.card === "object" && !Array.isArray(m.card) ? { card: m.card } : {}),
+      ...(Array.isArray(m.files) && m.files.length > 0 ? { files: m.files } : {}),
     })),
     through: got.last,
   };
+}
+
+export type RouterReadFile = {
+  thread: number;
+  seq: number;
+  file: string;
+  offset: number;
+};
+
+/// Reads one bounded chunk (`READ_FILE_PART`) of a file recorded on message `seq` of chat `thread` in workspace `home`.
+/// Only files recorded in `entries.attachments` inside one of the chat's sessions' `uploads` directories are served.
+export async function routerReadFile(
+  hub: Hub,
+  dataDir: string,
+  home: string | null,
+  req: RouterReadFile,
+): Promise<Json> {
+  if (!Number.isSafeInteger(req.thread) || req.thread <= 0) throw new Error("no such chat");
+  if (!Number.isSafeInteger(req.seq) || req.seq <= 0) throw new Error("seq must be a positive integer");
+  if (typeof req.file !== "string" || req.file.trim() === "") throw new Error("file is required");
+  if (!Number.isSafeInteger(req.offset) || req.offset < 0) throw new Error("offset must be a non-negative integer");
+
+  if (hub.store.getThread(req.thread) === null) throw new Error("no such chat of the workspace");
+  const members = hub.store.threadSessions(req.thread);
+  const sessions = members
+    .map((m) => hub.store.getSession(m.session))
+    .filter((s): s is NonNullable<typeof s> => s !== null);
+  const visible =
+    members.length === 0
+      ? hub.wsOf(null) === home
+      : sessions.some((s) => (hub.wsOf(s) ?? null) === home);
+  if (!visible) throw new Error("no such chat of the workspace");
+
+  const row = hub.store.db
+    .prepare(
+      "SELECT attachments FROM entries WHERE thread = ? AND ((n = ? AND kind = 'message') OR (target = ? AND kind = 'edit')) ORDER BY n DESC LIMIT 1",
+    )
+    .get(req.thread, req.seq, req.seq) as { attachments?: string | null } | undefined;
+  if (!row || typeof row.attachments !== "string" || row.attachments === "") {
+    return { missing: "no such file" };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.attachments);
+  } catch {
+    return { missing: "no such file" };
+  }
+  if (!Array.isArray(parsed)) return { missing: "no such file" };
+  const found = parsed.find(
+    (item): item is { name: string; path: string } =>
+      item !== null &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      (item as Record<string, unknown>).name === req.file &&
+      typeof (item as Record<string, unknown>).path === "string" &&
+      (item as Record<string, unknown>).path !== "",
+  );
+  if (!found) return { missing: "no such file" };
+
+  const attPath = clean(found.path);
+  const dirs = sessions.map((s) => ({
+    workspace: clean(s.workspace),
+    uploads: clean(join(s.workspace, "uploads")),
+  }));
+  const owner = dirs.find((d) => within(attPath, d.uploads));
+  if (!owner) return { missing: "no such file" };
+
+  const flags = (constants.O_RDONLY ?? 0) | (constants.O_NOFOLLOW ?? 0);
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(attPath, flags);
+  } catch {
+    fh = null;
+  }
+  if (fh !== null) {
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) return { missing: "no such file" };
+      const size = st.size;
+      if (size > READ_FILE_MAX_BYTES) return { missing: "file too large" };
+      if (req.offset > size) return { missing: "offset past end" };
+      const part = Buffer.alloc(Math.max(0, Math.min(READ_FILE_PART, size - req.offset)));
+      const { bytesRead } = part.length > 0 ? await fh.read(part, 0, part.length, req.offset) : { bytesRead: 0 };
+      return { name: found.name, size, offset: req.offset, data: part.subarray(0, bytesRead).toString("base64") };
+    } finally {
+      await fh.close().catch(() => {});
+    }
+  }
+
+  const room = await roomOfSoon(dataDir, owner.workspace);
+  if (room === null) return { missing: "no longer on its station" };
+  const relative = attPath.slice(owner.workspace.length + 1).replace(/\\/g, "/");
+  const bytes = await withLock(room, () => workspaceFile(room, relative));
+  if (bytes === null) return { missing: "no longer on its station" };
+  const size = bytes.length;
+  if (size > READ_FILE_MAX_BYTES) return { missing: "file too large" };
+  if (req.offset > size) return { missing: "offset past end" };
+  const part = bytes.subarray(req.offset, Math.min(size, req.offset + READ_FILE_PART));
+  return { name: found.name, size, offset: req.offset, data: part.toString("base64") };
 }
 
 /// The Router's message in chat `thread` of this station, as `requester` of the Comma connect `connect` (named so in

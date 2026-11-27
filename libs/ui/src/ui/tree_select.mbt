@@ -429,6 +429,48 @@ fn tree_sel_at(x : Double, y : Double, finger? : Bool = false) -> SelTarget? {
 }
 
 ///|
+/// Whether window point `(x, y)` lies inside live, input-allowed `words_picked` scope `within` and is not owned by a
+/// different `words_picked` scope (a sibling pane or an `apart=true` sub-scope).
+fn tree_in_scope(tree : @view.Tree, within : @view.NodeId, x : Double, y : Double) -> Bool {
+  guard tree.view_of(within) is Some(v) && !v.shown_nowhere() && tree.allows(within) else { return false }
+  match tree.drop_at(x, y) {
+    Some(OnNode(hit_id)) =>
+      match tree.view_of(hit_id).bind(fn(hv) { hv.lent(words_picks) }) {
+        Some(hit_scope) => return hit_scope == within
+        None => ()
+      }
+    _ => ()
+  }
+  let (rx, ry, rw, rh) = v.rect()
+  let (bx0, by0, bx1, by1) = tree.seen_bounds(within)
+  let x0 = dmax(rx, bx0)
+  let y0 = dmax(ry, by0)
+  let x1 = dmin(rx + rw, bx1)
+  let y1 = dmin(ry + rh, by1)
+  x >= x0 && x < x1 && y >= y0 && y < y1
+}
+
+///|
+/// Whether a primary mouse press at `(x, y)` with `mods` extends the current tree selection anchor (`picked.from`) via
+/// Shift+click within the same `words_picked` scope instead of clearing it.
+fn tree_shift_picks(tree : @view.Tree, x : Double, y : Double, mods : Int) -> Bool {
+  guard pointing() is Mouse &&
+    (mods & mod_shift_key) != 0 &&
+    !cmd_pick_held(mods=Some(mods)) &&
+    picked.from.base != NoSel &&
+    !picked.finger else {
+    return false
+  }
+  guard picked.layer is TreeScope(_, within) else { return false }
+  guard tree.target_at(x, y) is Nothing else { return false }
+  guard !g().selection_blocked(x, y) else { return false }
+  match tree_sel_at(x, y) {
+    Some(t) => t.layer == picked.layer
+    None => tree_in_scope(tree, within, x, y)
+  }
+}
+
+///|
 /// Whether a mouse at (x, y) is over a paragraph of the window's tree that can be picked (tree_sel_at's, where a press
 /// there picks), found by where each is drawn and cut alone, none laid out for it: what the pointer's shape is over
 /// (view_over_words), worked out as often as the pointer moves.
@@ -483,13 +525,11 @@ priv struct TreeEdge {
 let tree_edge : Ref[TreeEdge?] = Ref(None)
 
 ///|
-/// Words of the window's tree being picked from paragraph `t` (a press on it, the pointer held): the column it is in
-/// scrolls toward the pointer held past its top or its foot, the row it is in past its start or its end (tree_edge_to),
-/// as an old view's list does (select_edge) and a browser's overflowing box does.
-fn tree_edge_from(t : SelTarget) -> Unit {
+/// Start edge auto-scrolling for the scroll containers holding tree node `id`.
+fn tree_edge_from_node(id : @view.NodeId) -> Unit {
   tree_edge_stop()
-  match (view_app.val, t.node) {
-    (Some(tree), Some(id)) =>
+  match view_app.val {
+    Some(tree) =>
       match tree.view_of(id) {
         Some(v) => {
           let scroll = v.scroll_holding()
@@ -500,7 +540,18 @@ fn tree_edge_from(t : SelTarget) -> Unit {
         }
         None => ()
       }
-    _ => ()
+    None => ()
+  }
+}
+
+///|
+/// Words of the window's tree being picked from paragraph `t` (a press on it, the pointer held): the column it is in
+/// scrolls toward the pointer held past its top or its foot, the row it is in past its start or its end (tree_edge_to),
+/// as an old view's list does (select_edge) and a browser's overflowing box does.
+fn tree_edge_from(t : SelTarget) -> Unit {
+  match t.node {
+    Some(id) => tree_edge_from_node(id)
+    None => tree_edge_stop()
   }
 }
 

@@ -680,6 +680,46 @@ test "a field of the tree's: what its look reads changed, its words and node not
 }
 
 ///|
+test "a field of the tree's with stretches of its words set (Field::sets): as many letters drawn, a stretch's ink over its own, a line through one struck out; none said of them, drawn all alike again" {
+  let on = @signals.signal(true, same=fn(a, b) { a == b })
+  let f = Field::new(text="ab cd e")
+  let red = 0xFF0000FFL
+  // (said once the run has begun: a run forgets what the one before said of its fields; its words put in after)
+  let t = field_in(true, f, 200.0, [])
+  f.sets(fn(d) {
+    if on.get() && d.length() >= 5 {
+      [
+        { from: 0, to: 2, weight: 700, style: 0, color: red, ground: 0L, strike: false, leads: false },
+        { from: 3, to: 5, weight: 0, style: @hostapi.style_italic | @hostapi.style_mono, color: 0L, ground: 0x00FF00FFL, strike: true, leads: false },
+      ]
+    } else {
+      []
+    }
+  })
+  f.set("ab cd ef")
+  t.draw()
+  let set = t.drawn_glyphs().map(fn(gl) { gl.2 })
+  let lines = t.drawn_rects().filter(fn(r) { r.3 <= 1.0 && r.2 > 4.0 }).length()
+  assert_eq(t.drawn_rects().filter(fn(r) { r.4 == 0x00FF00FFL }).length(), 1)
+  on.set(false)
+  t.frame()
+  let plain = t.drawn_glyphs().map(fn(gl) { gl.2 })
+  let lines_plain = t.drawn_rects().filter(fn(r) { r.3 <= 1.0 && r.2 > 4.0 }).length()
+  assert_eq(set.length(), plain.length())
+  assert_eq(set.filter(fn(k) { k == red }).length(), 2)
+  assert_eq((set[0], set[1]), (red, red))
+  assert_eq(plain.filter(fn(k) { k == red }).length(), 0)
+  assert_eq((lines, lines_plain), (1, 0))
+  assert_eq(t.drawn_rects().filter(fn(r) { r.4 == 0x00FF00FFL }).length(), 0)
+  // (written in as before, at the caret after the words put in: the stretches of the words the app says them of)
+  on.set(true)
+  t.type_text("!")
+  t.draw()
+  assert_eq(f.text(), "ab cd ef!")
+  assert_eq(t.drawn_glyphs().map(fn(gl) { gl.2 }).filter(fn(k) { k == red }).length(), 2)
+}
+
+///|
 test "a field of the tree's: what its look reads changed, its size not: the host handed its words' place to draw again, the frame asked for" {
   let ink = @signals.signal(0xFF0000FFL, same=fn(a, b) { a == b })
   let f = Field::new(text="abc")

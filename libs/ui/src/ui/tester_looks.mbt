@@ -38,9 +38,9 @@ fn scroll_said(c : Ctx) -> Array[String] {
 }
 
 ///|
-/// The instances of `a`, `n` of them, that draw something: those its clip (16-19) or its outer clip (40-43), where it
-/// has one, cut wholly away left out; and how many.
-fn looks_seen(a : FixedArray[Double], n : Int) -> (FixedArray[Double], Int) {
+/// The instances of `a`, `n` of them, that draw something inside the window (`w` by `h`): those its clip (16-19),
+/// its outer clip (40-43), or the window itself cut wholly away left out; and how many.
+fn looks_seen(a : FixedArray[Double], n : Int, w : Double, h : Double) -> (FixedArray[Double], Int) {
   let out = FixedArray::make(n * inst_size + 1, 0.0)
   let mut k = 0
   let away = fn(b : Int, c : Int) {
@@ -51,9 +51,41 @@ fn looks_seen(a : FixedArray[Double], n : Int) -> (FixedArray[Double], Int) {
     (dmin(a[b] + a[b + 2], a[b + c + 2]) <= dmax(a[b], a[b + c]) ||
     dmin(a[b + 1] + a[b + 3], a[b + c + 3]) <= dmax(a[b + 1], a[b + c + 1]))
   }
+  let off_window = fn(b : Int) {
+    if w <= 0.0 || h <= 0.0 {
+      return false
+    }
+    let kind = a[b + 5].to_int()
+    if kind == 12 || kind == 6 || kind == 7 {
+      return false
+    }
+    let grow = if kind == 2 {
+      3.0 * a[b + 7] + 2.0
+    } else if kind == 8 {
+      3.0 * dmax(a[b + 7], 0.0) + dmax(a[b + 14], 0.0) + 4.0
+    } else {
+      0.0
+    }
+    let mut x0 = a[b] - grow
+    let mut y0 = a[b + 1] - grow
+    let mut x1 = a[b] + dmax(a[b + 2], 0.0) + grow
+    let mut y1 = a[b + 1] + dmax(a[b + 3], 0.0) + grow
+    if a[b + 32] != 0.0 {
+      let px = a[b + 33]
+      let py = a[b + 34]
+      let dx = dmax((x0 - px).abs(), (x1 - px).abs())
+      let dy = dmax((y0 - py).abs(), (y1 - py).abs())
+      let rr = (dx * dx + dy * dy).sqrt()
+      x0 = px - rr
+      y0 = py - rr
+      x1 = px + rr
+      y1 = py + rr
+    }
+    x1 <= 0.0 || x0 >= w || y1 <= 0.0 || y0 >= h
+  }
   for q in 0..<n {
     let b = q * inst_size
-    if away(b, 16) || away(b, 40) {
+    if away(b, 16) || away(b, 40) || off_window(b) {
       continue
     }
     a.blit_to(out, len=inst_size, src_offset=b, dst_offset=k * inst_size)
@@ -81,8 +113,8 @@ fn looks_compare(
   let kind = if painted { "painted alone" } else { "of its looks alone" }
   // (what is drawn of each: one its clips cut wholly away draws nothing, as a host draws it (a page's list's rows past
   // where it shows, kept in its group, cut by its header's clip: view_ride.mbt's inst_cut_to))
-  let (alone, n) = looks_seen(alone, n)
-  let (whole, m) = looks_seen(c.inst, c.ninst)
+  let (alone, n) = looks_seen(alone, n, c.window_w, c.window_h)
+  let (whole, m) = looks_seen(c.inst, c.ninst, c.window_w, c.window_h)
   let (first, slot) = drawn_parted(alone, n, whole, m)
   if first >= 0 {
     let inst = fn(a : FixedArray[Double], q : Int, k : Int) {

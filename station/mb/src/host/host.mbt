@@ -25,6 +25,10 @@ extern "C" fn wall_ms_ffi() -> Int64 = "sfh_wall_ms"
 extern "C" fn shell_sync_ffi(op : Bytes, json : Bytes) -> Bytes = "sfh_shell_sync"
 
 ///|
+#borrow(path)
+extern "C" fn read_file_slice_ffi(path : Bytes, from : Int64, length : Int64) -> Bytes = "sfh_read_file_slice"
+
+///|
 #borrow(op, json, bytes)
 extern "C" fn shell_call_ffi(id : Int64, op : Bytes, json : Bytes, bytes : Bytes, has : Int) = "sfh_shell_call"
 
@@ -66,6 +70,38 @@ fn cstr(s : String) -> Bytes {
     out[i] = b[i]
   }
   Bytes::from_array(out)
+}
+
+///|
+/// Direct binary slice read outcome (`Host::read_file_slice`).
+pub enum FileSlice {
+  Slice(Bytes)
+  Missing
+  Fallback
+}
+
+///|
+/// Direct binary slice read of a regular file (bypasses Rust shell hex-over-JSON IPC).
+pub fn Host::read_file_slice(
+  self : Host,
+  path : String,
+  from? : Int64 = 0L,
+  length? : Int64,
+) -> FileSlice {
+  ignore(self)
+  let req_len = match length {
+    Some(n) => if n < 0L { return Fallback } else { n }
+    None => -1L
+  }
+  let raw = read_file_slice_ffi(cstr(path), from, req_len)
+  if raw.length() == 0 {
+    return Fallback
+  }
+  match raw[0] {
+    b'\x01' => Slice(raw[1:].to_owned())
+    b'\x00' => Missing
+    _ => Fallback
+  }
 }
 
 ///|

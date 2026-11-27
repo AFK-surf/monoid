@@ -1,0 +1,1421 @@
+// Production OS I/O adapters for the 3 native `.mjs` helper replacements in `station_hooks_tui`:
+// - `repo-rules-hook` (`station/assets/agents/repo-rules-hook.mjs`)
+// - `subagent-hook` (`station/assets/agents/subagent-hook.mjs`)
+// - `claude-tui` (`station/assets/agents/claude-tui.mjs`, modes: `hook`, `mcp <url>`, `<node> <runner> <claude> ...`)
+//
+// Zero stubs, zero placeholders:
+// - Full unbounded stdin reads via `host_shim` (`start_stdin = true`)
+// - Real `station_sys` filesystem (`stat_raw`, `realpath`, `read_file_strict`, `write_file_atomic`,
+//   `mkdir_p`, `unlink`, `getcwd`, `tmpdir`, `env_get`, `env_all`), OS CSPRNG UUID v4 (`random_bytes`),
+//   child process spawning (`proc_spawn`, `new_pgid: true`), and signal watching (`signal_watch`)
+// - Real `station_http::HttpClient` (`fetch_async` + `mux.cancel` + `decode_fetch_done`) for `claude-tui mcp`
+// - Real loopback `127.0.0.1` TCP client (`tcp.open`/`tcp.write`/`tcp.read`/`tcp.close`) and listener
+//   (`tcp.listen`/`tcp.accept`/`tcp.read`/`tcp.write`/`tcp.close`/`listen.close`) via `client/shell`
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "nodepath"
+import "station_hooks_tui"
+import "station_http"
+import "station_sys"
+
+/// Native helper command routed through `station_hooks_tui`.
+pub enum HooksTuiCommand {
+  RepoRulesHook
+  SubagentHook
+  ClaudeTui
+}
+
+/// Classify `argv[1]` as one of the 3 native `.mjs` helper replacements (by direct subcommand
+/// name or script path ending with `/<name>.mjs` / `\<name>.mjs`).
+pub fn classify_hooks_tui_command(arg : String) -> Option[HooksTuiCommand] {
+  if arg == "repo-rules-hook" || station_hooks_tui::is_repo_rules_hook_arg(arg) {
+    return Some(HooksTuiCommand::RepoRulesHook)
+  }
+  if arg == "subagent-hook" || station_hooks_tui::is_subagent_hook_arg(arg) {
+    return Some(HooksTuiCommand::SubagentHook)
+  }
+  if arg == "claude-tui" || arg == "claude-tui.mjs" {
+    return Some(HooksTuiCommand::ClaudeTui)
+  }
+  match station_hooks_tui::claude_tui_mode(["stillfail-station-pion", arg, "hook"]) {
+    Some(_) => Some(HooksTuiCommand::ClaudeTui)
+    None => None
+  }
+}
+
+/// Parse `station_sys::stat_raw` (`kind|size|exec|mtime_ms|dev|ino|mode`) into `(mtime_ms, is_dir)`.
+pub fn parse_stat_mtime_is_dir(raw : String) -> Option[(Double, Bool)] {
+  let parts = raw.split("|")
+  if parts.length() < 4 {
+    return None
+  }
+  let is_dir = parts[0] == "dir"
+  let mtime_str = parts[3]
+  if mtime_str.length() == 0 {
+    return None
+  }
+  let mut neg = false
+  let mut start = 0
+  if mtime_str.code_unit_at(0) == 45 {
+    neg = true
+    start = 1
+  }
+  if start >= mtime_str.length() {
+    return None
+  }
+  let mut acc = 0L
+  let mut i = start
+  while i < mtime_str.length() {
+    let c = mtime_str.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10L + (c - 48).to_int64()
+    i = i + 1
+  }
+  let signed = if neg { 0L - acc } else { acc }
+  Some((signed.to_double(), is_dir))
+}
+
+/// Parse permission bits (`mode & 0o777`) from `station_sys::lstat_raw` (`kind|size|exec|mtime_ms|dev|ino|mode`).
+/// Only regular files (`"file"`) preserve their existing mode; symlinks (`"link"`, mode 0777) and other non-files
+/// return `None` so `write_file_atomic` receives `-1` and honors process `umask`.
+pub fn parse_stat_mode(raw : String) -> Option[Int] {
+  let parts = raw.split("|")
+  if parts.length() < 7 || parts[0] != "file" {
+    return None
+  }
+  let mode_str = parts[6]
+  if mode_str.length() == 0 {
+    return None
+  }
+  let mut acc = 0
+  for i in 0..<mode_str.length() {
+    let c = mode_str.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  Some(acc & 511)
+}
+
+/// Parse `client/shell` `fs.lstat` JSON reply (`{"value":{"kind":"file"|"dir"|...,"mtimeMs":...}}`)
+/// preserving signed fractional `mtimeMs` (including pre-1970 negative timestamps) matching Node's `statSync(path).mtimeMs`.
+pub fn parse_fs_lstat_reply(raw : String) -> Option[(Double, Bool)] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(top) => match base_codec::json_get(top, "value") {
+      Some(base_codec::Json::Obj(fs)) => {
+        let is_dir = match base_codec::json_obj_get(fs, "kind") {
+          Some(base_codec::Json::Str(k)) => k == "dir"
+          _ => false
+        }
+        let mtime = match base_codec::json_obj_get(fs, "mtimeMs") {
+          Some(base_codec::Json::Num(n, _)) => n
+          _ => return None
+        }
+        Some((mtime, is_dir))
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+fn hooks_hex_byte(sb : StringBuilder, b : Int) -> Unit {
+  let hex = "0123456789abcdef".to_bytes()
+  sb.write_byte(hex[(b >> 4) & 0xF])
+  sb.write_byte(hex[b & 0xF])
+}
+
+/// Format 16 OS CSPRNG bytes as a lowercase RFC 4122 UUID v4 string.
+pub fn hooks_uuid_v4_from_bytes(raw : Bytes) -> Option[String] {
+  if raw.length() < 16 {
+    return None
+  }
+  let b : Array[Int] = []
+  for i in 0..<16 {
+    b.push(raw[i].to_int() & 0xFF)
+  }
+  b[6] = (b[6] & 0x0F) | 0x40
+  b[8] = (b[8] & 0x3F) | 0x80
+  let sb = StringBuilder::new()
+  for i in 0..<16 {
+    if i == 4 || i == 6 || i == 8 || i == 10 {
+      sb.write_byte(45 as Byte) // '-'
+    }
+    hooks_hex_byte(sb, b[i])
+  }
+  Some(sb.to_string())
+}
+
+fn hooks_os_uuid_v4() -> String {
+  match station_sys::random_bytes(16) {
+    Ok(raw) => match hooks_uuid_v4_from_bytes(raw) {
+      Some(id) => id
+      None => ""
+    }
+    Err(_) => ""
+  }
+}
+
+/// Merge `extra` `(KEY, VALUE)` overrides onto `base` `KEY=VALUE` env entries without duplicates.
+pub fn merge_env_overrides(
+  base : Array[String],
+  extra : Array[(String, String)],
+) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<base.length() {
+    let entry = base[i]
+    let eq = entry.index_of("=")
+    let mut overridden = false
+    if eq > 0 {
+      let key = entry.slice(0, eq)
+      for j in 0..<extra.length() {
+        let (ek, _) = extra[j]
+        if ek == key {
+          overridden = true
+          break
+        }
+      }
+    }
+    if !overridden {
+      out.push(entry)
+    }
+  }
+  for j in 0..<extra.length() {
+    let (ek, ev) = extra[j]
+    out.push(ek + "=" + ev)
+  }
+  out
+}
+
+/// Resolve an absolute path to the current executable from `argv0`, `cwd`, and `PATH`
+/// (pure helper with injectable `realpath` / `is_exec` for unit testing).
+pub fn resolve_self_executable_with(
+  argv0 : String,
+  cwd : String,
+  path_env : Option[String],
+  sep : String,
+  os_name : String,
+  realpath_fn : (String) -> Option[String],
+  is_exec_fn : (String) -> Bool,
+) -> Option[String] {
+  if os_name == "linux" {
+    match realpath_fn("/proc/self/exe") {
+      Some(p) => if p.length() > 0 { return Some(p) }
+      None => ()
+    }
+  }
+  if argv0.length() == 0 {
+    return None
+  }
+  let has_sep = argv0.contains("/") || argv0.contains("\\")
+  if has_sep {
+    let candidate = if nodepath::is_absolute(sep, argv0) {
+      nodepath::join(sep, [argv0])
+    } else {
+      nodepath::join(sep, [cwd, argv0])
+    }
+    match realpath_fn(candidate) {
+      Some(r) => return Some(r)
+      None => if is_exec_fn(candidate) { return Some(candidate) } else { return None }
+    }
+  }
+  let path_delim = if os_name == "win32" { ";" } else { ":" }
+  match path_env {
+    Some(p) => {
+      let dirs = p.split(path_delim)
+      for i in 0..<dirs.length() {
+        let d = dirs[i]
+        if d.length() == 0 {
+          continue
+        }
+        let cand = nodepath::join(sep, [d, argv0])
+        if is_exec_fn(cand) {
+          match realpath_fn(cand) {
+            Some(r) => return Some(r)
+            None => return Some(cand)
+          }
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+/// Normalize `claude-tui` `run`-mode argv before rewriting hooks/MCP callbacks:
+/// - In native `claude-tui <node> <runner> <claude> ...` mode (`argv[1] == "claude-tui"`),
+///   replace `argv[2]` with the resolved absolute path of `stillfail-station-pion` so callbacks
+///   (`<abs-bin> claude-tui hook|mcp`) succeed from any cwd even when the caller passed Node.
+/// - In `.mjs` path mode, preserve `argv[1]` verbatim so `claude_tui_mode` always dispatches on
+///   the caller's original entry path even when it is a symlink (e.g. `./claude-tui.mjs -> claude-tui-v3.mjs`).
+pub fn rewrite_native_claude_tui_argv(
+  argv : Array[String],
+  self_exe : Option[String],
+) -> Result[Array[String], String] {
+  if argv.length() >= 5 && argv[1] == "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
+    let exe = match self_exe {
+      Some(p) => if p.length() > 0 { p } else {
+        return Err("claude-tui: failed to resolve absolute path of current executable")
+      }
+      None => return Err("claude-tui: failed to resolve absolute path of current executable")
+    }
+    let out : Array[String] = []
+    for i in 0..<argv.length() {
+      if i == 2 {
+        out.push(exe)
+      } else {
+        out.push(argv[i])
+      }
+    }
+    return Ok(out)
+  }
+  Ok(argv)
+}
+
+/// Resolve the absolute callback script path for `.mjs` `run`-mode invocations (`argv[1] != "claude-tui"`),
+/// combining `cwd` (for relative paths) and `realpath` (for symlinks like `./claude-tui.mjs -> claude-tui-v3.mjs`)
+/// to match Node's `fileURLToPath(import.meta.url)` without altering mode dispatch on `argv[1]`.
+pub fn resolve_claude_tui_callback_script(
+  argv : Array[String],
+  cwd : String,
+  sep : String,
+  realpath_fn : (String) -> Option[String],
+) -> Option[String] {
+  if argv.length() >= 5 && argv[1] != "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
+    let cand = if nodepath::is_absolute(sep, argv[1]) {
+      argv[1]
+    } else if cwd.length() > 0 {
+      nodepath::join(sep, [cwd, argv[1]])
+    } else {
+      argv[1]
+    }
+    return match realpath_fn(cand) {
+      Some(r) => Some(r)
+      None => Some(cand)
+    }
+  }
+  None
+}
+
+fn hooks_bytes_to_string(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn hooks_byte_array_to_string(buf : Array[Byte]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<buf.length() {
+    sb.write_byte(buf[i])
+  }
+  sb.to_string()
+}
+
+fn hooks_append_bytes(dst : Array[Byte], src : Bytes) -> Unit {
+  for i in 0..<src.length() {
+    dst.push(src[i])
+  }
+}
+
+/// Read all bytes from stdin until EOF without size truncation (assumes `host_shim::start(..., true)` already ran).
+fn hooks_read_stdin_all_started() -> String {
+  let chunks : Array[Bytes] = []
+  let mut total = 0
+  while true {
+    match host_shim::wait(1000L) {
+      Some(host_shim::HostEvent::StdinData(b)) => {
+        chunks.push(b)
+        total = total + b.length()
+      }
+      Some(host_shim::HostEvent::StdinEof) => break
+      _ => ()
+    }
+  }
+  if total == 0 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<chunks.length() {
+    let c = chunks[i]
+    for j in 0..<c.length() {
+      sb.write_byte(c[j])
+    }
+  }
+  sb.to_string()
+}
+
+/// Read all bytes from stdin until EOF without size truncation (starts stdin reader thread only).
+fn hooks_read_stdin_all_standalone() -> String {
+  let _ = host_shim::start("", true)
+  hooks_read_stdin_all_started()
+}
+
+/// Run `repo-rules-hook` with 100% real `station_sys`, `client/shell` `fs.lstat` (`follow: true`,
+/// signed fractional `mtimeMs` matching Node `statSync().mtimeMs`), and `host_shim` OS I/O.
+fn run_repo_rules_hook_os() -> Int {
+  let is_win = station_sys::os_name() == "win32"
+  let sep = if is_win { "\\" } else { "/" }
+  let cwd = match station_sys::getcwd() {
+    Some(c) => c
+    None => "."
+  }
+  let shell_dir = station_sys::tmpdir() +
+  "/stillfail-repo-rules-shell-" +
+  host_shim::pid().to_string() +
+  "-" +
+  host_shim::wall_ms().to_string()
+  let shell_started = host_shim::start(shell_dir, true)
+  if !shell_started {
+    let _ = host_shim::start("", true)
+  }
+  let env = station_hooks_tui::RepoRulesEnv::{
+    sep: sep,
+    windows: is_win,
+    cwd: cwd,
+    home: station_sys::env_get("HOME"),
+    tmpdir: station_sys::tmpdir(),
+    stillfail_repo_rules: station_sys::env_get("STILLFAIL_REPO_RULES"),
+    exists: fn(path : String) -> Bool {
+      match station_sys::stat_raw(path) {
+        Some(_) => true
+        None => false
+      }
+    },
+    stat: fn(path : String) -> Option[(Double, Bool)] {
+      if shell_started {
+        let req = base_codec::json_stringify(
+          base_codec::json_obj([
+            ("path", base_codec::json_str(path)),
+            ("follow", base_codec::json_bool(true)),
+          ]),
+        )
+        // sync: short-lived CLI hook stat via client/shell fs.lstat (follow: true) for signed fractional mtimeMs parity with Node statSync
+        let raw = host_shim::shell_sync("fs.lstat", req)
+        return parse_fs_lstat_reply(raw)
+      }
+      match station_sys::stat_raw(path) {
+        Some(raw) => parse_stat_mtime_is_dir(raw)
+        None => None
+      }
+    },
+    realpath: fn(path : String) -> Option[String] {
+      station_sys::realpath(path)
+    },
+    read_file: fn(path : String) -> Option[String] {
+      match station_sys::read_file_strict(path) {
+        Ok(b) => Some(hooks_bytes_to_string(b))
+        Err(_) => None
+      }
+    },
+    write_file: fn(path : String, content : String) -> Bool {
+      let dir = nodepath::dirname(sep, path)
+      if dir != "" && dir != "." && dir != path {
+        let _ = station_sys::mkdir_p(dir)
+      }
+      let mode = match station_sys::lstat_raw(path) {
+        Some(raw) => match parse_stat_mode(raw) {
+          Some(m) => m
+          None => -1
+        }
+        None => -1
+      }
+      station_sys::write_file_atomic(path, content.to_bytes(), mode)
+    },
+    remove_file: fn(path : String) -> Unit {
+      let _ = station_sys::unlink(path)
+    },
+  }
+  let io = station_hooks_tui::RepoRulesHookIo::{
+    env: env,
+    read_stdin: hooks_read_stdin_all_started,
+    write_stdout: fn(s : String) -> Unit {
+      let _ = host_shim::write_stdout(s.to_bytes())
+    },
+  }
+  let rc = station_hooks_tui::run_repo_rules_hook(io)
+  if shell_started {
+    host_shim::stop()
+    let _ = station_sys::rmdir(shell_dir)
+  }
+  rc
+}
+
+/// Run `subagent-hook` with 100% real `host_shim` OS I/O.
+fn run_subagent_hook_os(argv : Array[String]) -> Int {
+  let io = station_hooks_tui::SubagentHookIo::{
+    read_stdin: hooks_read_stdin_all_standalone,
+    write_stdout: fn(s : String) -> Unit {
+      let _ = host_shim::write_stdout(s.to_bytes())
+    },
+  }
+  station_hooks_tui::run_subagent_hook(io, argv)
+}
+
+// ---------------------------------------------------------------------------
+// Production `ClaudeTuiIo` driver (`hook`, `mcp <url>`, and `run` modes)
+// ---------------------------------------------------------------------------
+
+let TUI_TOK_NOTIFY_OPEN : Int = 6101
+let TUI_TOK_NOTIFY_WRITE : Int = 6102
+let TUI_TOK_NOTIFY_READ : Int = 6103
+let TUI_TOK_NOTIFY_CLOSE : Int = 6104
+let TUI_TOK_HOOK_LISTEN : Int = 6111
+let TUI_TOK_HOOK_ACCEPT : Int = 6112
+let TUI_TOK_HOOK_READ : Int = 6113
+let TUI_TOK_HOOK_WRITE : Int = 6114
+let TUI_TOK_HOOK_CLOSE : Int = 6115
+let TUI_TOK_HOOK_LISTEN_CLOSE : Int = 6116
+
+let TUI_PTY_EVENT_ID : Int64 = 7101L
+let TUI_SIG_EVENT_ID : Int64 = 7102L
+/// 256 MiB single-line ceiling for stdio MCP / TUI runner framing (matching Node readline).
+let TUI_MAX_STDIN_LINE_BYTES : Int = 268435456
+/// Bounded grace period (ms) after SIGHUP/SIGINT/SIGTERM before force-killing the relay group.
+let TUI_TERM_GRACE_MS : Int64 = 2000L
+
+struct HookConnBuf {
+  buf : Array[Byte]
+}
+
+struct TuiNotifyState {
+  mut seq : Int
+  mut active_seq : Int
+  mut done : Bool
+  mut failed : Option[String]
+  mut conn_id : Int
+  mut answer : Array[Byte]
+}
+
+struct TuiDriver {
+  mux : builders_core::ShellMux
+  http_client : station_http::HttpClient
+  line_reader : host_shim::LineReader
+  mut stdin_eof_seen : Bool
+  mut stdin_fatal_err : Bool
+  mut stdin_raw : Array[Byte]
+  mut collect_raw_stdin : Bool
+  // MCP mode state
+  mut next_mcp_req_id : Int
+  mcp_id_to_key : Map[Int, String]
+  mcp_key_to_call : Map[String, Int64]
+  mcp_aborted : Map[String, Bool]
+  mcp_queue : Array[station_hooks_tui::McpEvent]
+  mut mcp_queue_head : Int
+  // Local hook client (`notify_local_hook`) state
+  notify : TuiNotifyState
+  // Run mode hook server state
+  mut hook_listen_id : Int
+  mut hook_listen_port : Int
+  mut hook_listen_done : Bool
+  mut hook_listen_err : Option[String]
+  mut hook_closed : Bool
+  hook_conns : Map[Int, HookConnBuf]
+  mut hook_pending_writes : Int
+  // Run mode PTY relay + signal grace + deadline + event queue
+  mut pty_child : Option[station_sys::ChildProcess]
+  mut pty_exited : Bool
+  mut sig_watching : Bool
+  mut term_signal : Int
+  mut term_grace_deadline_ms : Int64
+  mut deadline_active : Bool
+  mut deadline_gen : Int
+  mut deadline_at_ms : Int64
+  run_queue : Array[station_hooks_tui::TuiRunEvent]
+  mut run_queue_head : Int
+}
+
+fn tui_json_int_field(j : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+fn tui_find_newline(buf : Array[Byte]) -> Int {
+  for i in 0..<buf.length() {
+    if (buf[i].to_int() & 0xFF) == 10 {
+      return i
+    }
+  }
+  -1
+}
+
+fn TuiDriver::push_mcp(self : TuiDriver, ev : station_hooks_tui::McpEvent) -> Unit {
+  self.mcp_queue.push(ev)
+}
+
+fn TuiDriver::pop_mcp(self : TuiDriver) -> Option[station_hooks_tui::McpEvent] {
+  if self.mcp_queue_head >= self.mcp_queue.length() {
+    return None
+  }
+  let ev = self.mcp_queue[self.mcp_queue_head]
+  self.mcp_queue_head = self.mcp_queue_head + 1
+  if self.mcp_queue_head == self.mcp_queue.length() {
+    self.mcp_queue.clear()
+    self.mcp_queue_head = 0
+  }
+  Some(ev)
+}
+
+fn TuiDriver::push_run(self : TuiDriver, ev : station_hooks_tui::TuiRunEvent) -> Unit {
+  self.run_queue.push(ev)
+}
+
+fn TuiDriver::pop_run(self : TuiDriver) -> Option[station_hooks_tui::TuiRunEvent] {
+  if self.run_queue_head >= self.run_queue.length() {
+    return None
+  }
+  let ev = self.run_queue[self.run_queue_head]
+  self.run_queue_head = self.run_queue_head + 1
+  if self.run_queue_head == self.run_queue.length() {
+    self.run_queue.clear()
+    self.run_queue_head = 0
+  }
+  Some(ev)
+}
+
+fn TuiDriver::start_hook_accept(self : TuiDriver) -> Unit {
+  if self.hook_closed || self.hook_listen_id < 0 {
+    return
+  }
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(self.hook_listen_id, TUI_TOK_HOOK_ACCEPT, 0L),
+    "tcp.accept",
+    "{\"id\":" + self.hook_listen_id.to_string() + "}",
+    None,
+  )
+}
+
+fn TuiDriver::start_hook_read(self : TuiDriver, conn_id : Int) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(conn_id, TUI_TOK_HOOK_READ, 0L),
+    "tcp.read",
+    "{\"id\":" + conn_id.to_string() + "}",
+    None,
+  )
+}
+
+fn TuiDriver::send_hook_tcp_close(self : TuiDriver, conn_id : Int) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(conn_id, TUI_TOK_HOOK_CLOSE, 0L),
+    "tcp.close",
+    "{\"id\":" + conn_id.to_string() + "}",
+    None,
+  )
+}
+
+fn TuiDriver::handle_shell_done(
+  self : TuiDriver,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+  is_mcp_mode : Bool,
+) -> Unit {
+  match tok {
+    builders_core::MuxToken::Tagged(owner_id, kind, tag_seq) => {
+      if kind == station_http::CLIENT_TOK_FETCH && is_mcp_mode {
+        let key_opt = self.mcp_id_to_key.get(owner_id)
+        let _ = self.mcp_id_to_key.remove(owner_id)
+        match key_opt {
+          None => ()
+          Some(req_key) => {
+            let _ = self.mcp_key_to_call.remove(req_key)
+            let was_aborted = match self.mcp_aborted.get(req_key) {
+              Some(b) => b
+              None => false
+            }
+            let _ = self.mcp_aborted.remove(req_key)
+            if was_aborted {
+              self.push_mcp(
+                station_hooks_tui::McpEvent::HttpDone(req_key, station_hooks_tui::McpHttpResult::Aborted),
+              )
+            } else {
+              match station_http::decode_fetch_done(done) {
+                Ok(resp) => self.push_mcp(
+                  station_hooks_tui::McpEvent::HttpDone(
+                    req_key,
+                    station_hooks_tui::McpHttpResult::Response(resp.status, resp.body_text()),
+                  ),
+                )
+                Err(e) => self.push_mcp(
+                  station_hooks_tui::McpEvent::HttpDone(
+                    req_key,
+                    station_hooks_tui::McpHttpResult::Failed(e.message),
+                  ),
+                )
+              }
+            }
+          }
+        }
+      } else if kind == TUI_TOK_NOTIFY_OPEN {
+        if tag_seq.to_int() != self.notify.active_seq {
+          // Stale open: close if it succeeded.
+          match builders_core::decode_shell_done(done) {
+            Ok((Some(j), _)) => match tui_json_int_field(j, "id") {
+              Some(cid) => {
+                let _ = self.mux.call_async_raw(
+                  builders_core::MuxToken::Tagged(cid, TUI_TOK_NOTIFY_CLOSE, tag_seq),
+                  "tcp.close",
+                  "{\"id\":" + cid.to_string() + "}",
+                  None,
+                )
+              }
+              None => ()
+            }
+            _ => ()
+          }
+          return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            self.notify.failed = Some(e.message)
+            self.notify.done = true
+          }
+          Ok((Some(j), _)) => match tui_json_int_field(j, "id") {
+            Some(cid) => {
+              self.notify.conn_id = cid
+            }
+            None => {
+              self.notify.failed = Some("tcp.open returned no handle id")
+              self.notify.done = true
+            }
+          }
+          Ok((None, _)) => {
+            self.notify.failed = Some("tcp.open returned empty reply")
+            self.notify.done = true
+          }
+        }
+      } else if kind == TUI_TOK_NOTIFY_WRITE {
+        if tag_seq.to_int() != self.notify.active_seq {
+          return
+        }
+        if done.error.length() > 0 {
+          self.notify.failed = Some(done.error)
+          self.notify.done = true
+          if self.notify.conn_id >= 0 {
+            let cid = self.notify.conn_id
+            self.notify.conn_id = -1
+            let _ = self.mux.call_async_raw(
+              builders_core::MuxToken::Tagged(cid, TUI_TOK_NOTIFY_CLOSE, tag_seq),
+              "tcp.close",
+              "{\"id\":" + cid.to_string() + "}",
+              None,
+            )
+          }
+        } else if self.notify.conn_id >= 0 {
+          let _ = self.mux.call_async_raw(
+            builders_core::MuxToken::Tagged(self.notify.conn_id, TUI_TOK_NOTIFY_READ, tag_seq),
+            "tcp.read",
+            "{\"id\":" + self.notify.conn_id.to_string() + "}",
+            None,
+          )
+        }
+      } else if kind == TUI_TOK_NOTIFY_READ {
+        if tag_seq.to_int() != self.notify.active_seq {
+          return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            self.notify.failed = Some(e.message)
+            self.notify.done = true
+            if self.notify.conn_id >= 0 {
+              let cid = self.notify.conn_id
+              self.notify.conn_id = -1
+              let _ = self.mux.call_async_raw(
+                builders_core::MuxToken::Tagged(cid, TUI_TOK_NOTIFY_CLOSE, tag_seq),
+                "tcp.close",
+                "{\"id\":" + cid.to_string() + "}",
+                None,
+              )
+            }
+          }
+          Ok((_, bytes_opt)) => {
+            let is_end = match bytes_opt {
+              Some(b) => {
+                if b.length() > 0 {
+                  hooks_append_bytes(self.notify.answer, b)
+                  false
+                } else {
+                  true
+                }
+              }
+              None => true
+            }
+            if is_end {
+              self.notify.done = true
+              if self.notify.conn_id >= 0 {
+                let cid = self.notify.conn_id
+                self.notify.conn_id = -1
+                let _ = self.mux.call_async_raw(
+                  builders_core::MuxToken::Tagged(cid, TUI_TOK_NOTIFY_CLOSE, tag_seq),
+                  "tcp.close",
+                  "{\"id\":" + cid.to_string() + "}",
+                  None,
+                )
+              }
+            } else if self.notify.conn_id >= 0 {
+              let _ = self.mux.call_async_raw(
+                builders_core::MuxToken::Tagged(self.notify.conn_id, TUI_TOK_NOTIFY_READ, tag_seq),
+                "tcp.read",
+                "{\"id\":" + self.notify.conn_id.to_string() + "}",
+                None,
+              )
+            }
+          }
+        }
+      } else if kind == TUI_TOK_HOOK_LISTEN {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            self.hook_listen_err = Some(e.message)
+            self.hook_listen_done = true
+          }
+          Ok((Some(j), _)) => match (tui_json_int_field(j, "id"), tui_json_int_field(j, "port")) {
+            (Some(lid), Some(port)) => {
+              self.hook_listen_id = lid
+              self.hook_listen_port = port
+              self.hook_listen_done = true
+              self.start_hook_accept()
+            }
+            _ => {
+              self.hook_listen_err = Some("tcp.listen returned no id/port")
+              self.hook_listen_done = true
+            }
+          }
+          Ok((None, _)) => {
+            self.hook_listen_err = Some("tcp.listen returned empty reply")
+            self.hook_listen_done = true
+          }
+        }
+      } else if kind == TUI_TOK_HOOK_ACCEPT {
+        if self.hook_closed {
+          match builders_core::decode_shell_done(done) {
+            Ok((Some(j), _)) => match tui_json_int_field(j, "id") {
+              Some(cid) => self.send_hook_tcp_close(cid)
+              None => ()
+            }
+            _ => ()
+          }
+          return
+        }
+        match builders_core::decode_shell_done(done) {
+          Ok((Some(j), _)) => {
+            match tui_json_int_field(j, "id") {
+              Some(cid) => {
+                self.hook_conns.set(cid, HookConnBuf::{ buf: [] })
+                self.start_hook_read(cid)
+              }
+              None => ()
+            }
+            self.start_hook_accept()
+          }
+          _ => {
+            // Re-arm accept on transient errors (e.g. ECONNABORTED/EMFILE) unless listener is closed.
+            if !self.hook_closed &&
+            self.hook_listen_id >= 0 &&
+            !done.error.contains("closed") &&
+            !done.error.contains("no handle") {
+              self.start_hook_accept()
+            }
+          }
+        }
+      } else if kind == TUI_TOK_HOOK_READ {
+        let conn = match self.hook_conns.get(owner_id) {
+          Some(c) => c
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(_) => {
+            let _ = self.hook_conns.remove(owner_id)
+            self.send_hook_tcp_close(owner_id)
+          }
+          Ok((_, bytes_opt)) => {
+            let is_end = match bytes_opt {
+              Some(b) => {
+                if b.length() > 0 {
+                  hooks_append_bytes(conn.buf, b)
+                  false
+                } else {
+                  true
+                }
+              }
+              None => true
+            }
+            if conn.buf.length() > station_hooks_tui::TUI_HOOK_LINE_MAX {
+              let _ = self.hook_conns.remove(owner_id)
+              self.send_hook_tcp_close(owner_id)
+            } else if tui_find_newline(conn.buf) >= 0 {
+              let line = hooks_byte_array_to_string(conn.buf)
+              self.push_run(station_hooks_tui::TuiRunEvent::HookLine(owner_id, line))
+            } else if is_end {
+              let _ = self.hook_conns.remove(owner_id)
+              self.send_hook_tcp_close(owner_id)
+            } else {
+              self.start_hook_read(owner_id)
+            }
+          }
+        }
+      } else if kind == TUI_TOK_HOOK_WRITE {
+        if self.hook_pending_writes > 0 {
+          self.hook_pending_writes = self.hook_pending_writes - 1
+        }
+        self.send_hook_tcp_close(owner_id)
+      } else {
+        ()
+      }
+    }
+    _ => ()
+  }
+}
+
+fn TuiDriver::handle_host_event(
+  self : TuiDriver,
+  ev : host_shim::HostEvent,
+  is_mcp_mode : Bool,
+) -> Unit {
+  match ev {
+    host_shim::HostEvent::StdinData(chunk) => {
+      if self.collect_raw_stdin {
+        hooks_append_bytes(self.stdin_raw, chunk)
+      } else {
+        let items = self.line_reader.push(chunk)
+        for i in 0..<items.length() {
+          match items[i] {
+            host_shim::LineItem::Line(line) => {
+              if is_mcp_mode {
+                self.push_mcp(station_hooks_tui::McpEvent::StdinLine(line))
+              } else {
+                self.push_run(station_hooks_tui::TuiRunEvent::StdinLine(line))
+              }
+            }
+            host_shim::LineItem::TooLong(limit) => {
+              self.stdin_fatal_err = true
+              let _ = host_shim::write_stderr(
+                ("claude-tui: stdin line exceeded max length (" + limit.to_string() + " bytes)\n").to_bytes(),
+              )
+              if is_mcp_mode {
+                self.push_mcp(station_hooks_tui::McpEvent::StdinEof)
+              } else {
+                self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+              }
+            }
+          }
+        }
+      }
+    }
+    host_shim::HostEvent::StdinEof => {
+      self.stdin_eof_seen = true
+      if !self.collect_raw_stdin {
+        match self.line_reader.flush() {
+          Some(host_shim::LineItem::Line(line)) => {
+            if is_mcp_mode {
+              self.push_mcp(station_hooks_tui::McpEvent::StdinLine(line))
+            } else {
+              self.push_run(station_hooks_tui::TuiRunEvent::StdinLine(line))
+            }
+          }
+          Some(host_shim::LineItem::TooLong(limit)) => {
+            self.stdin_fatal_err = true
+            let _ = host_shim::write_stderr(
+              ("claude-tui: stdin line exceeded max length (" + limit.to_string() + " bytes)\n").to_bytes(),
+            )
+          }
+          None => ()
+        }
+        if is_mcp_mode {
+          self.push_mcp(station_hooks_tui::McpEvent::StdinEof)
+        } else {
+          self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+        }
+      }
+    }
+    host_shim::HostEvent::ShellDone(done) => {
+      // Deliver through `mux.pending` by calling `mux.step(0)`? No, we handle `ShellDone`
+      // directly in `step_once` where `mux` routes it; this branch is only for direct wait.
+      let _ = done
+    }
+    host_shim::HostEvent::Sys(id, payload) => {
+      if id == TUI_PTY_EVENT_ID {
+        match station_sys::decode_sys_event(payload) {
+          Some(station_sys::SysEvent::ProcStderr(b)) => {
+            let _ = host_shim::write_stderr(b)
+          }
+          Some(station_sys::SysEvent::ProcExit(st)) => {
+            self.pty_exited = true
+            let (code_opt, sig_opt) = if st.signal != 0 {
+              let sname = if st.signal_name.length() > 0 {
+                st.signal_name
+              } else {
+                "SIG" + st.signal.to_string()
+              }
+              (None, Some(sname))
+            } else {
+              (Some(st.code), None)
+            }
+            self.push_run(station_hooks_tui::TuiRunEvent::PtyExit(code_opt, sig_opt))
+          }
+          _ => ()
+        }
+      } else if id == TUI_SIG_EVENT_ID {
+        match station_sys::decode_sys_event(payload) {
+          Some(station_sys::SysEvent::Signal(sig, _)) => {
+            if sig == station_sys::SIG_HUP ||
+            sig == station_sys::SIG_INT ||
+            sig == station_sys::SIG_TERM {
+              if self.term_signal == 0 {
+                self.term_signal = sig
+                // timer: bounded graceful shutdown grace period after termination signal (2s)
+                self.term_grace_deadline_ms = host_shim::now_ms() + TUI_TERM_GRACE_MS
+                self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+}
+
+/// Step the combined `host_shim` + `ShellMux` loop once, routing `StdinData`/`StdinEof`/`Sys`
+/// and `ShellDone` without losing any event.
+fn TuiDriver::step_once(self : TuiDriver, wait_ms : Int64, is_mcp_mode : Bool) -> Unit {
+  let _ = self.mux.step(
+    wait_ms,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+      self.handle_shell_done(tok, done, is_mcp_mode)
+    },
+  )
+}
+
+fn TuiDriver::notify_local_hook_blocking(
+  self : TuiDriver,
+  port : Int,
+  payload_line : String,
+  is_mcp_mode : Bool,
+) -> station_hooks_tui::HookNotifyResult {
+  if port <= 0 || port > 65535 {
+    return station_hooks_tui::HookNotifyResult::Err("invalid STILLFAIL_TUI_PORT")
+  }
+  self.notify.seq = self.notify.seq + 1
+  let seq = self.notify.seq
+  self.notify.active_seq = seq
+  self.notify.done = false
+  self.notify.failed = None
+  self.notify.conn_id = -1
+  self.notify.answer = []
+
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(port, TUI_TOK_NOTIFY_OPEN, seq.to_int64()),
+    "tcp.open",
+    "{\"port\":" + port.to_string() + "}",
+    None,
+  )
+  let mut wrote = false
+  // timer: bounded local loopback hook TCP roundtrip deadline (10s)
+  let deadline = host_shim::now_ms() + 10000L
+  while !self.notify.done && host_shim::now_ms() < deadline {
+    let rem = deadline - host_shim::now_ms()
+    let wait_ms = if rem < 25L { if rem > 0L { rem } else { 1L } } else { 25L }
+    self.step_once(wait_ms, is_mcp_mode)
+    if !wrote && self.notify.conn_id >= 0 && !self.notify.done {
+      wrote = true
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(self.notify.conn_id, TUI_TOK_NOTIFY_WRITE, seq.to_int64()),
+        "tcp.write",
+        "{\"id\":" + self.notify.conn_id.to_string() + "}",
+        Some(payload_line.to_bytes()),
+      )
+    }
+  }
+  if !self.notify.done {
+    if self.notify.conn_id >= 0 {
+      let cid = self.notify.conn_id
+      self.notify.conn_id = -1
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(cid, TUI_TOK_NOTIFY_CLOSE, seq.to_int64()),
+        "tcp.close",
+        "{\"id\":" + cid.to_string() + "}",
+        None,
+      )
+    }
+    return station_hooks_tui::HookNotifyResult::Err("local hook notify timed out")
+  }
+  match self.notify.failed {
+    Some(e) => station_hooks_tui::HookNotifyResult::Err(e)
+    None => station_hooks_tui::HookNotifyResult::Ok(hooks_byte_array_to_string(self.notify.answer))
+  }
+}
+
+fn run_claude_tui_os(argv : Array[String]) -> Int {
+  let os_name = station_sys::os_name()
+  let sep = if os_name == "win32" { "\\" } else { "/" }
+  let cur_cwd = match station_sys::getcwd() {
+    Some(c) => c
+    None => "."
+  }
+  let argv0 = if argv.length() > 0 { argv[0] } else { "" }
+  let self_exe = resolve_self_executable_with(
+    argv0,
+    cur_cwd,
+    station_sys::env_get("PATH"),
+    sep,
+    os_name,
+    station_sys::realpath,
+    station_sys::is_executable,
+  )
+  let effective_argv = match rewrite_native_claude_tui_argv(argv, self_exe) {
+    Ok(a) => a
+    Err(e) => {
+      let _ = host_shim::write_stderr((e + "\n").to_bytes())
+      return 1
+    }
+  }
+  let callback_script = resolve_claude_tui_callback_script(
+    argv,
+    cur_cwd,
+    sep,
+    station_sys::realpath,
+  )
+  let mode_opt = station_hooks_tui::claude_tui_mode(effective_argv)
+  let (is_hook_mode, is_mcp_mode, is_run_mode) = match mode_opt {
+    Some(station_hooks_tui::ClaudeTuiMode::Hook) => (true, false, false)
+    Some(station_hooks_tui::ClaudeTuiMode::Mcp(_)) => (false, true, false)
+    Some(station_hooks_tui::ClaudeTuiMode::Run(_, _, _, _, _)) => (false, false, true)
+    None => (false, false, false)
+  }
+  if !is_hook_mode && !is_mcp_mode && !is_run_mode {
+    let _ = host_shim::write_stderr("claude-tui: <node> <runner> <claude> [args...]\n".to_bytes())
+    return 1
+  }
+
+  let shell_dir = station_sys::tmpdir() +
+  "/stillfail-claude-tui-" +
+  host_shim::pid().to_string() +
+  "-" +
+  host_shim::wall_ms().to_string()
+  if !host_shim::start(shell_dir, true) {
+    let _ = host_shim::write_stderr("claude-tui: failed to start host shell\n".to_bytes())
+    return 1
+  }
+
+  // Build a `ShellMux` whose `wait` intercepts `StdinData`/`StdinEof`/`Sys` events
+  // before `ShellMux::step` sees them (so `Sys` is never dropped and `LineReader` flushes
+  // trailing unterminated lines on EOF, matching Node `readline`).
+  let driver_box : Array[Option[TuiDriver]] = [None]
+  let host_tx = builders_core::MuxTransport::host()
+  let custom_tx = builders_core::MuxTransport::{
+    call_async: host_tx.call_async,
+    call_sync: host_tx.call_sync,
+    write_stdout_line: host_tx.write_stdout_line,
+    write_stdout_frame: host_tx.write_stdout_frame,
+    now_ms: host_tx.now_ms,
+    wall_ms: host_tx.wall_ms,
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      match host_shim::wait(ms) {
+        None => None
+        Some(host_shim::HostEvent::ShellDone(d)) => Some(host_shim::HostEvent::ShellDone(d))
+        Some(other) => {
+          match driver_box[0] {
+            Some(drv) => drv.handle_host_event(other, is_mcp_mode)
+            None => ()
+          }
+          None
+        }
+      }
+    },
+  }
+  let mux = builders_core::ShellMux::new(custom_tx, start_stdin=false)
+  let drv = TuiDriver::{
+    mux: mux,
+    http_client: station_http::HttpClient::new(mux),
+    line_reader: host_shim::LineReader::new(TUI_MAX_STDIN_LINE_BYTES),
+    stdin_eof_seen: false,
+    stdin_fatal_err: false,
+    stdin_raw: [],
+    collect_raw_stdin: is_hook_mode,
+    next_mcp_req_id: 1,
+    mcp_id_to_key: Map::new(),
+    mcp_key_to_call: Map::new(),
+    mcp_aborted: Map::new(),
+    mcp_queue: [],
+    mcp_queue_head: 0,
+    notify: TuiNotifyState::{
+      seq: 0,
+      active_seq: 0,
+      done: true,
+      failed: None,
+      conn_id: -1,
+      answer: [],
+    },
+    hook_listen_id: -1,
+    hook_listen_port: 0,
+    hook_listen_done: false,
+    hook_listen_err: None,
+    hook_closed: false,
+    hook_conns: Map::new(),
+    hook_pending_writes: 0,
+    pty_child: None,
+    pty_exited: false,
+    sig_watching: false,
+    term_signal: 0,
+    term_grace_deadline_ms: 0L,
+    deadline_active: false,
+    deadline_gen: 0,
+    deadline_at_ms: 0L,
+    run_queue: [],
+    run_queue_head: 0,
+  }
+  driver_box[0] = Some(drv)
+
+  if is_run_mode {
+    drv.sig_watching = station_sys::signal_watch(TUI_SIG_EVENT_ID)
+  }
+
+  let io = station_hooks_tui::ClaudeTuiIo::{
+    env_get: station_sys::env_get,
+    random_uuid: hooks_os_uuid_v4,
+    read_stdin_all: fn() -> String {
+      while !drv.stdin_eof_seen {
+        drv.step_once(100L, is_mcp_mode)
+      }
+      hooks_byte_array_to_string(drv.stdin_raw)
+    },
+    write_stdout: fn(s : String) -> Unit {
+      let _ = host_shim::write_stdout(s.to_bytes())
+    },
+    write_stderr: fn(s : String) -> Unit {
+      let _ = host_shim::write_stderr(s.to_bytes())
+    },
+    notify_local_hook: fn(port : Int, payload_line : String) -> station_hooks_tui::HookNotifyResult {
+      drv.notify_local_hook_blocking(port, payload_line, is_mcp_mode)
+    },
+    mcp_http_start: fn(req_key : String, url : String, token : String, body : String) -> Unit {
+      let rid = drv.next_mcp_req_id
+      drv.next_mcp_req_id = drv.next_mcp_req_id + 1
+      let opts = station_http::FetchOptions::{
+        method: "POST",
+        url: url,
+        headers: [
+          ("content-type", "application/json"),
+          ("authorization", "Bearer " + token),
+        ],
+        body: Some(body.to_bytes()),
+        timeout_ms: None,
+        stall_ms: None,
+        redirect: "error",
+        proxy: None,
+        ca_pem: None,
+        entry: None,
+      }
+      let call_id = drv.http_client.fetch_async(rid, opts)
+      drv.mcp_id_to_key.set(rid, req_key)
+      drv.mcp_key_to_call.set(req_key, call_id)
+    },
+    mcp_http_abort: fn(req_key : String) -> Unit {
+      drv.mcp_aborted.set(req_key, true)
+      match drv.mcp_key_to_call.get(req_key) {
+        Some(call_id) => {
+          let _ = drv.mux.cancel(call_id)
+        }
+        None => ()
+      }
+    },
+    next_mcp_event: fn() -> Option[station_hooks_tui::McpEvent] {
+      while true {
+        match drv.pop_mcp() {
+          Some(ev) => return Some(ev)
+          None => ()
+        }
+        drv.step_once(50L, true)
+      }
+      None
+    },
+    listen_local_hook: fn() -> Result[Int, String] {
+      drv.hook_listen_done = false
+      drv.hook_listen_err = None
+      let _ = drv.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(0, TUI_TOK_HOOK_LISTEN, 0L),
+        "tcp.listen",
+        "{\"port\":0}",
+        None,
+      )
+      // timer: bounded local loopback hook listener bind deadline (5s)
+      let deadline = host_shim::now_ms() + 5000L
+      while !drv.hook_listen_done && host_shim::now_ms() < deadline {
+        drv.step_once(20L, false)
+      }
+      if !drv.hook_listen_done {
+        return Err("claude-tui: timed out binding local hook listener")
+      }
+      match drv.hook_listen_err {
+        Some(e) => Err(e)
+        None => Ok(drv.hook_listen_port)
+      }
+    },
+    close_local_hook: fn() -> Unit {
+      drv.hook_closed = true
+      if drv.hook_listen_id >= 0 {
+        let lid = drv.hook_listen_id
+        drv.hook_listen_id = -1
+        let _ = drv.mux.call_async_raw(
+          builders_core::MuxToken::Tagged(lid, TUI_TOK_HOOK_LISTEN_CLOSE, 0L),
+          "listen.close",
+          "{\"id\":" + lid.to_string() + "}",
+          None,
+        )
+      }
+      // Briefly flush any pending `"ok\n"` replies before tearing down the shell.
+      // timer: bounded drain of pending hook replies on shutdown (150ms)
+      let flush_end = host_shim::now_ms() + 150L
+      while drv.hook_pending_writes > 0 && host_shim::now_ms() < flush_end {
+        drv.step_once(10L, false)
+      }
+    },
+    reply_hook_conn: fn(conn_id : Int, accepted : Bool) -> Unit {
+      let _ = drv.hook_conns.remove(conn_id)
+      if accepted {
+        drv.hook_pending_writes = drv.hook_pending_writes + 1
+        let _ = drv.mux.call_async_raw(
+          builders_core::MuxToken::Tagged(conn_id, TUI_TOK_HOOK_WRITE, 0L),
+          "tcp.write",
+          "{\"id\":" + conn_id.to_string() + "}",
+          Some("ok\n".to_bytes()),
+        )
+      } else {
+        drv.send_hook_tcp_close(conn_id)
+      }
+    },
+    spawn_pty_relay: fn(
+      runner : String,
+      relay_args : Array[String],
+      extra_env : Array[(String, String)],
+    ) -> Result[Unit, String] {
+      let cwd = match station_sys::getcwd() {
+        Some(c) => c
+        None => "."
+      }
+      let merged_env = merge_env_overrides(station_sys::env_all(), extra_env)
+      let opts = station_sys::SpawnOptions::{
+        program: runner,
+        args: relay_args,
+        env: Some(merged_env),
+        cwd: cwd,
+        new_pgid: true,
+        strip_malloc_space_efficient: true,
+        pipe_stdin: true,
+        pipe_stdout: true,
+        pipe_stderr: true,
+      }
+      match station_sys::proc_spawn(TUI_PTY_EVENT_ID, opts) {
+        Ok(child) => {
+          drv.pty_child = Some(child)
+          Ok(())
+        }
+        Err(e) => Err(e)
+      }
+    },
+    pty_write: fn(data : Bytes) -> Unit {
+      match drv.pty_child {
+        Some(child) => {
+          let _ = child.write_stdin(data)
+        }
+        None => ()
+      }
+    },
+    pty_close_stdin: fn() -> Unit {
+      match drv.pty_child {
+        Some(child) => {
+          let _ = child.close_stdin()
+        }
+        None => ()
+      }
+    },
+    arm_deadline: fn(gen : Int, ms : Int) -> Unit {
+      drv.deadline_active = true
+      drv.deadline_gen = gen
+      // timer: TUI startup / submission acknowledgment deadline armed by TuiBridgeMachine
+      drv.deadline_at_ms = host_shim::now_ms() + ms.to_int64()
+    },
+    clear_deadline: fn() -> Unit {
+      drv.deadline_active = false
+    },
+    next_run_event: fn() -> Option[station_hooks_tui::TuiRunEvent] {
+      while true {
+        match drv.pop_run() {
+          Some(ev) => return Some(ev)
+          None => ()
+        }
+        let now = host_shim::now_ms()
+        if drv.term_signal != 0 && now >= drv.term_grace_deadline_ms {
+          return None
+        }
+        if drv.deadline_active && now >= drv.deadline_at_ms {
+          drv.deadline_active = false
+          return Some(station_hooks_tui::TuiRunEvent::DeadlineFired(drv.deadline_gen))
+        }
+        let mut wait_ms = 50L
+        if drv.deadline_active {
+          let rem = drv.deadline_at_ms - now
+          if rem < wait_ms {
+            wait_ms = if rem <= 1L { 1L } else { rem }
+          }
+        }
+        if drv.term_signal != 0 {
+          let rem = drv.term_grace_deadline_ms - now
+          if rem < wait_ms {
+            wait_ms = if rem <= 1L { 1L } else { rem }
+          }
+        }
+        drv.step_once(wait_ms, false)
+      }
+      None
+    },
+  }
+
+  let base_rc = station_hooks_tui::run_claude_tui_with_script(io, effective_argv, callback_script)
+
+  // Clean up child process handle, signal watcher, shell runtime, and temporary shell dir.
+  match drv.pty_child {
+    Some(child) => {
+      if !drv.pty_exited {
+        let _ = child.close_stdin()
+        let sig_to_send = if drv.term_signal != 0 { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
+        let _ = child.kill(sig_to_send, true)
+      }
+      let _ = child.close()
+      drv.pty_child = None
+    }
+    None => ()
+  }
+  if drv.sig_watching {
+    let _ = station_sys::signal_unwatch()
+    drv.sig_watching = false
+  }
+  driver_box[0] = None
+  host_shim::stop()
+  let _ = station_sys::rmdir(shell_dir)
+  if drv.term_signal != 0 {
+    return 128 + drv.term_signal
+  }
+  if drv.stdin_fatal_err && base_rc == 0 {
+    return 1
+  }
+  base_rc
+}
+
+/// Dispatch one of the 3 native `.mjs` helper commands (`repo-rules-hook`, `subagent-hook`, `claude-tui`).
+pub fn run_hooks_tui_command(cmd : HooksTuiCommand, argv : Array[String]) -> Int {
+  match cmd {
+    HooksTuiCommand::RepoRulesHook => run_repo_rules_hook_os()
+    HooksTuiCommand::SubagentHook => run_subagent_hook_os(argv)
+    HooksTuiCommand::ClaudeTui => run_claude_tui_os(argv)
+  }
+}

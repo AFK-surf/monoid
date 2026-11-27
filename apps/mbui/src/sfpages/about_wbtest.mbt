@@ -483,3 +483,72 @@ test "自动更新 in 关于, on unless turned off: off, a newer build is said b
   assert_eq(t.update_asked().length(), 3)
   @sfbase.update_reset()
 }
+
+///|
+test "about_node, local_station_node, and station_node clear all timeline entries when parked (subtree_timeline_count == 0)" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sffixture.fixture_reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let src = @sffixture.fixture("settings")
+  let core = @sfbase.settings_core(src, rig_workspace)
+  let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+  let page = @signals.signal(0)
+  let about_root : Ref[@view.View?] = Ref(None)
+  let local_root : Ref[@view.View?] = Ref(None)
+  let station_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.look_lent(root, @sf.look_for(1280.0))
+      root.pick_kept(at_once=true, fn() { page.get() }, fn(slot, which) {
+        if which == 0 {
+          about_root.val = Some(slot)
+          about_node(slot, core, on_back=fn() {  }, frame=fn() { @sf.no_frame })
+        } else if which == 1 {
+          local_root.val = Some(slot)
+          local_station_node(slot, core, on_back=fn() {  }, frame=fn() { @sf.no_frame })
+        } else if which == 2 {
+          station_root.val = Some(slot)
+          station_node(slot, core, src, here, "ws1/st1", on_back=fn() {  }, frame=fn() { @sf.no_frame })
+        }
+      })
+    },
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    keeps_sources=true,
+    before=fn() {
+      @hostapi.app_said("local_station") |> ignore
+    },
+  )
+  t.set_app_said("local_station", "{\"data\":\"~/.stillfail\",\"runner\":\"service\",\"workspace\":{\"id\":\"ws1\",\"station\":\"st1\",\"stationName\":\"Willow\"}}")
+  t.draw()
+  // 0: about_node active -> has poller timer; park -> 0 timeline entries
+  let a_view = about_root.val.unwrap()
+  assert_true(t.subtree_timeline_count(a_view) > 0, msg="active about_node should have local_station poller")
+  page.set(1)
+  t.draw()
+  assert_eq(t.subtree_timeline_count(a_view), 0, msg="parked about_node must have 0 timeline entries (including later=true)")
+  // 1: local_station_node active -> has poller timer; park -> 0 timeline entries
+  let l_view = local_root.val.unwrap()
+  assert_true(t.subtree_timeline_count(l_view) > 0, msg="active local_station_node should have local_station poller")
+  page.set(2)
+  t.draw()
+  assert_eq(t.subtree_timeline_count(l_view), 0, msg="parked local_station_node must have 0 timeline entries (including later=true)")
+  // 2: station_node (this_machine) active -> has poller timer; park -> 0 timeline entries
+  let s_view = station_root.val.unwrap()
+  assert_true(t.subtree_timeline_count(s_view) > 0, msg="active station_node for this_machine should have poller")
+  page.set(3)
+  t.draw()
+  assert_eq(t.subtree_timeline_count(s_view), 0, msg="parked station_node must have 0 timeline entries (including later=true)")
+  assert_eq(t.subtree_timeline_count(a_view), 0)
+  assert_eq(t.subtree_timeline_count(l_view), 0)
+  // Wake about_node back -> poller resumes
+  page.set(0)
+  t.draw()
+  assert_true(t.subtree_timeline_count(a_view) > 0, msg="woken about_node should resume poller")
+  @ui.run_let_go()
+}

@@ -173,3 +173,34 @@ test "row_val, row_int, json_blob_byte, and int64_to_json helpers" {
     _ => panic("parse 18446744073709551615")
   }
 }
+
+test "stringify_json_with single-pass safe-integer fast path and string escaping" {
+  let mut fmt_calls = 0
+  let fmt = fn(d : Double) -> String {
+    fmt_calls = fmt_calls + 1
+    d.to_string()
+  }
+  let doc = base_codec::json_obj([
+    ("zero", base_codec::json_num(0.0)),
+    ("negZero", base_codec::json_num(-0.0)),
+    ("int", base_codec::json_num(42.0)),
+    ("negInt", base_codec::json_num(-123456789.0)),
+    ("maxSafe", base_codec::json_num(9007199254740991.0)),
+    ("minSafe", base_codec::json_num(-9007199254740991.0)),
+    ("reprBig", base_codec::Json::Num(9007199254740993.0, "9007199254740993")),
+    ("reprNegZero", base_codec::Json::Num(-0.0, "-0.0")),
+    ("nan", base_codec::json_num(0.0 / 0.0)),
+    ("inf", base_codec::json_num(1.0 / 0.0)),
+    ("ninf", base_codec::json_num(-1.0 / 0.0)),
+    ("esc", base_codec::json_str("a\"b\\c\nd\re\tf\u{0008}\u{000C}\u{0000}\u{001F}中文🚀")),
+    ("arr", base_codec::json_arr([base_codec::json_null(), base_codec::json_bool(true), base_codec::json_bool(false)])),
+  ])
+  let got = stringify_json_with(doc, fmt)
+  expect(fmt_calls == 0, "safe integers, reprs, and non-finite must never invoke fmt_num")
+  let want = "{\"zero\":0,\"negZero\":0,\"int\":42,\"negInt\":-123456789,\"maxSafe\":9007199254740991,\"minSafe\":-9007199254740991,\"reprBig\":9007199254740993,\"reprNegZero\":-0.0,\"nan\":null,\"inf\":null,\"ninf\":null,\"esc\":\"a\\\"b\\\\c\\nd\\re\\tf\\b\\f\\u0000\\u001f中文🚀\",\"arr\":[null,true,false]}"
+  expect(got == want, "got=" + got + " want=" + want)
+  // Non-integer and beyond-safe doubles invoke fmt_num.
+  let _ = stringify_json_with(base_codec::json_num(1.5), fmt)
+  let _ = stringify_json_with(base_codec::json_num(9007199254740992.0), fmt)
+  expect(fmt_calls == 2, "expected 2 fmt_num calls for float + >SAFE_MOST")
+}

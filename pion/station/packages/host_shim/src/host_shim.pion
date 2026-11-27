@@ -19,6 +19,7 @@ extern "C" fn sth_shell_call(
   has_bytes : Int,
 ) -> Unit
 extern "C" fn sth_shell_sync(op : Ptr, json : Ptr, json_len : Int64, out_len : Ptr) -> Ptr
+extern "C" fn sth_read_file_slice(path : Ptr, from : Int64, length : Int64, out_len : Ptr) -> Ptr
 extern "C" fn sth_args(out_len : Ptr) -> Ptr
 extern "C" fn sth_pid() -> Int
 extern "C" fn sth_exit(code : Int) -> Unit
@@ -312,6 +313,43 @@ pub fn shell_sync(op : String, json : String) -> String {
   let raw = bytes_from_ptr(p, n.to_int())
   sth_free(p)
   bytes_to_str(raw)
+}
+
+pub enum FileSlice {
+  Ok(Bytes)
+  Missing
+  Fallback
+}
+
+pub fn read_file_slice(path : String, from : Int64, length : Option[Int64]) -> FileSlice {
+  let req_len = match length {
+    Some(n) => {
+      if n < 0.to_int64() {
+        return FileSlice::Fallback
+      }
+      n
+    }
+    None => (-1).to_int64()
+  }
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), (-2).to_int64())
+  let p = sth_read_file_slice(path.as_cstr(), from, req_len, out_len)
+  let _ = path.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sth_free(out_len)
+  if ptr_is_null(p) {
+    if n == (-1).to_int64() {
+      return FileSlice::Missing
+    }
+    return FileSlice::Fallback
+  }
+  let out = if n <= 0.to_int64() {
+    Bytes::new(0)
+  } else {
+    bytes_from_ptr(p, n.to_int())
+  }
+  sth_free(p)
+  FileSlice::Ok(out)
 }
 
 pub fn args() -> Array[String] {

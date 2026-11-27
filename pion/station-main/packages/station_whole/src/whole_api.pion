@@ -1,0 +1,1544 @@
+// Real peer-authenticated AdminApi gateway + Drive (`os_drive_fs`, 1:1 raw binary wire protocol)
+// + Thumb (`os_thumb_port`) + ScreenHub + `station_rules_bridge` cryptographic verification for `station_whole`.
+//
+// Security invariants:
+// - `PeerIdentity::Unknown` is ALWAYS rejected with HTTP 403 (never bypassed).
+// - `authenticate_peer` ALWAYS computes `viewer.home = (viewer.workspace == home_workspace)` on
+//   the server side (never trusts caller-supplied `home: true`).
+// - Read-only members (`role == "viewer"`) and pre-handover read-only mode strictly enforce
+//   `station_api::read_only_may`, and all routes including `/status` and `/drive/*` enforce
+//   `OLDEST_CORE` version gating (`check_core_version`).
+// - Every SQLite query (`status`, `chats`, `projects`, `search`, `jobs`, `overview`) is strictly
+//   isolated to `viewer.workspace`.
+// - Drive protects station private paths (`<data>`, config) and enforces workspace-scoped roots.
+
+import "base_codec"
+import "form"
+import "http1"
+import "sql_db"
+import "station_api"
+import "station_http"
+import "station_ops"
+import "station_rules_bridge"
+import "station_screens"
+import "station_sessions"
+import "station_store"
+import "station_sys"
+
+/// Authenticated caller identity established by the transport/mesh layer.
+pub enum PeerIdentity {
+  Unknown
+  /// `(viewer, key_id)` where `key_id` is `ed25519:<64hex>` or `p256:<b64url>`.
+  AuthenticatedMember(station_api::Viewer, String)
+  /// `(station_id, workspace, is_home)`.
+  AuthenticatedStation(String, String, Bool)
+}
+
+/// Authorization & cryptographic verification policy for `WholeApi`.
+pub struct PeerAuthPolicy {
+  pub station_id : String
+  pub station_build : String
+  pub home_workspace : String
+  pub allowed_workspaces : Array[String]
+  /// Optional `station_rules_bridge::shell_verifier` callback (`libcrux`); `None` uses pure-Pion crypto.
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+}
+
+fn ws_allowed(allowed : Array[String], ws : String) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  for i in 0..<allowed.length() {
+    if allowed[i] == ws {
+      return true
+    }
+  }
+  false
+}
+
+/// Strip optional `/api` prefix so `/api/status`, `/api/chats`, `/api/projects`, `/api/search`,
+/// `/api/drive/upload`, `/api/drive/read` route identically to their unprefixed forms.
+pub fn normalize_api_path(raw_path : String) -> String {
+  if raw_path == "/api" {
+    return "/"
+  }
+  if raw_path.starts_with("/api/") {
+    return raw_path.slice(4, raw_path.length())
+  }
+  if raw_path.starts_with("/api?") {
+    return "/" + raw_path.slice(4, raw_path.length())
+  }
+  raw_path
+}
+
+fn json_field_str(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_field_bool(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn parse_opt_bool_param(v : Option[String]) -> Option[Bool] {
+  match v {
+    Some(s) => {
+      if s == "1" || s == "true" {
+        Some(true)
+      } else if s == "0" || s == "false" {
+        Some(false)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+fn drive_code_str(c : station_screens::DriveCode) -> String {
+  match c {
+    station_screens::DriveCode::InvalidRequest => "invalid_request"
+    station_screens::DriveCode::NotARoot => "not_a_root"
+    station_screens::DriveCode::NotFound => "not_found"
+    station_screens::DriveCode::PathEscape => "path_escape"
+    station_screens::DriveCode::Protected => "protected"
+    station_screens::DriveCode::Permission => "permission"
+    station_screens::DriveCode::IsADirectory => "is_a_directory"
+    station_screens::DriveCode::NotADirectory => "not_a_directory"
+    station_screens::DriveCode::Exists => "exists"
+    station_screens::DriveCode::UploadLost => "upload_lost"
+    station_screens::DriveCode::NoTrash => "no_trash"
+    station_screens::DriveCode::TooLarge => "too_large"
+    station_screens::DriveCode::Io => "io"
+  }
+}
+
+fn drive_entry_to_json(e : station_screens::DriveEntry) -> base_codec::Json {
+  base_codec::json_obj([
+    ("name", base_codec::json_str(e.name)),
+    ("dir", base_codec::json_bool(e.dir)),
+    ("size", base_codec::json_int64(e.size)),
+    ("mtime", base_codec::json_int64(e.mtime)),
+    ("mime", base_codec::json_str(e.mime)),
+  ])
+}
+
+fn drive_error_response(e : station_screens::DriveError) -> station_http::HttpResponse {
+  let status = station_screens::drive_code_status(e.code)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("error", base_codec::json_str(e.message)),
+    ("code", base_codec::json_str(drive_code_str(e.code))),
+  ]
+  match e.have {
+    Some(h) => fields.push(("have", base_codec::json_int64(h)))
+    None => ()
+  }
+  station_api::json_status(status, base_codec::json_obj(fields))
+}
+
+/// Build a real `station_api::SeenStore` backed directly by `WholeStore`'s SQLite database.
+pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore {
+  station_api::SeenStore::{
+    session_exists: fn(key : String) -> Bool {
+      match whole_store.require_open() {
+        Ok(st) => match st.get_session(key) {
+          Ok(Some(_)) => true
+          _ => false
+        }
+        Err(_) => false
+      }
+    },
+    session_ws: fn(key : String) -> Option[Option[String]] {
+      match whole_store.require_open() {
+        Ok(st) => match st.get_session(key) {
+          Ok(Some(row)) => Some(row.ws)
+          _ => None
+        }
+        Err(_) => None
+      }
+    },
+    thread_exists: fn(id : Int) -> Bool {
+      match whole_store.require_open() {
+        Ok(st) => match st.get_thread(id.to_int64()) {
+          Ok(Some(_)) => true
+          _ => false
+        }
+        Err(_) => false
+      }
+    },
+    thread_sessions: fn(id : Int) -> Array[String] {
+      match whole_store.require_open() {
+        Ok(st) => match st.db.all(
+          "SELECT session FROM thread_sessions WHERE thread = ?1 AND left_at IS NULL",
+          [sql_db::int64_to_json(id.to_int64())],
+        ) {
+          Ok(rows) => {
+            let out : Array[String] = []
+            for i in 0..<rows.length() {
+              match rows[i].get("session") {
+                Some(base_codec::Json::Str(s)) => out.push(s)
+                _ => ()
+              }
+            }
+            out
+          }
+          Err(_) => []
+        }
+        Err(_) => []
+      }
+    },
+    job_session: fn(id : String) -> Option[String] {
+      match whole_store.require_open() {
+        Ok(st) => match st.db.first(
+          "SELECT session_key FROM jobs WHERE id = ?1 LIMIT 1",
+          [base_codec::json_str(id)],
+        ) {
+          Ok(Some(r)) => match r.get("session_key") {
+            Some(base_codec::Json::Str(s)) => Some(s)
+            _ => None
+          }
+          _ => None
+        }
+        Err(_) => None
+      }
+    },
+    handed_to: fn(key : String) -> Option[station_api::HandedRecord] {
+      match whole_store.require_open() {
+        Ok(st) => match station_store::get_handed_over(st.db, key) {
+          Ok(Some(h)) => Some(station_api::HandedRecord::{
+            ws: h.ws,
+            station: h.station,
+            thread: match h.thread {
+              Some(t) => Some(t.to_int())
+              None => None
+            },
+            there: match h.there {
+              Some(t) => Some(t.to_int())
+              None => None
+            },
+          })
+          _ => None
+        }
+        Err(_) => None
+      }
+    },
+  }
+}
+
+/// Real full-station API gateway aggregating `AdminApi`, `Drive`, `ThumbPort`, `ScreenHub`,
+/// `EventsHub`, and `station_rules_bridge` cryptographic verification.
+pub struct WholeApi {
+  pub auth_policy : PeerAuthPolicy
+  pub admin : station_api::AdminApi
+  pub drive : station_screens::Drive
+  pub drive_roots : Array[String]
+  pub workspace_drive_roots : Map[String, Array[String]]
+  pub mut thumb_port : Option[station_screens::ThumbPort]
+  pub screens : station_screens::ScreenHub
+  pub events : station_api::EventsHub
+  pub host_cache : station_api::HostCache
+  pub cpu_window : station_api::CpuWindow
+  pub mut read_only_handover : Bool
+  request_now_cell : Array[Int64]
+}
+
+/// Pure dependency-injected `WholeApi` constructor (no OS or SQLite FFI references).
+pub fn WholeApi::new_with_ports(
+  auth_policy : PeerAuthPolicy,
+  drive : station_screens::Drive,
+  drive_roots : Array[String],
+  thumb_port : Option[station_screens::ThumbPort],
+  screens : station_screens::ScreenHub,
+  events : station_api::EventsHub,
+  seen_store : station_api::SeenStore,
+  api_host : station_api::ApiHost,
+) -> WholeApi {
+  let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
+  let ws_roots : Map[String, Array[String]] = Map::new()
+  ws_roots.set(auth_policy.home_workspace, drive_roots)
+  WholeApi::{
+    auth_policy: auth_policy,
+    admin: admin,
+    drive: drive,
+    drive_roots: drive_roots,
+    workspace_drive_roots: ws_roots,
+    thumb_port: thumb_port,
+    screens: screens,
+    events: events,
+    host_cache: station_api::HostCache::new(),
+    cpu_window: station_api::CpuWindow::new(),
+    read_only_handover: true,
+    request_now_cell: [0L],
+  }
+}
+
+pub fn WholeApi::new(
+  whole_store : WholeStore,
+  agents : WholeAgents,
+  auth_policy : PeerAuthPolicy,
+  drive_roots : Array[String],
+  drive_protected : Array[String] = [],
+  drive_fs : Option[station_screens::DriveFs] = None,
+  thumb_port : Option[station_screens::ThumbPort] = None,
+) -> WholeApi {
+  let effective_fs = match drive_fs {
+    Some(f) => f
+    None => os_drive_fs()
+  }
+  // Always protect `<data_dir>` (SQLite DB, secrets, grants) plus caller-supplied protected paths.
+  let protected : Array[String] = [whole_store.data_dir]
+  for i in 0..<drive_protected.length() {
+    let p = drive_protected[i]
+    if p.length() > 0 && p != whole_store.data_dir {
+      protected.push(p)
+    }
+  }
+  let trash_root = if drive_roots.length() > 0 { drive_roots[0] } else { whole_store.data_dir }
+  let drive = station_screens::Drive::new(
+    effective_fs,
+    drive_roots,
+    protected,
+    station_sys::os_name() == "win32",
+    trash_root,
+    station_screens::TrashKind::Freedesktop,
+  )
+  let screens = station_screens::ScreenHub::new()
+  let seen_store = build_real_seen_store(whole_store)
+  let events = station_api::EventsHub::new(auth_policy.station_id, station_api::EventKeeps::default())
+  let home_ws_str = auth_policy.home_workspace
+  let station_id_str = auth_policy.station_id
+  let request_now_cell : Array[Int64] = [0L]
+
+  let read_op = fn(
+    op : String,
+    req : station_api::ApiRequest,
+    args : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return Err(station_api::ApiError::new(503, e))
+    }
+    if op == "chats" {
+      let limit = match req.param("limit") {
+        Some(s) => match base_codec::parse_int64_str(s) {
+          Some(n) => n.to_int()
+          None => 50
+        }
+        None => 50
+      }
+      let offset = match req.param("offset") {
+        Some(s) => match base_codec::parse_int64_str(s) {
+          Some(n) => n.to_int()
+          None => 0
+        }
+        None => 0
+      }
+      let q = match req.param("q") {
+        Some(s) => s
+        None => ""
+      }
+      let filter = station_store::ChatListFilter::{
+        model: req.param("model"),
+        created_by: req.param("created_by"),
+        archived: parse_opt_bool_param(req.param("archived")),
+        project: req.param("project"),
+        offset: offset,
+      }
+      match st.search_chat_threads(Some(req.viewer.workspace), Some(home_ws_str), q, filter, limit) {
+        Ok((threads, total)) => {
+          let items : Array[base_codec::Json] = []
+          for i in 0..<threads.length() {
+            items.push(thread_row_to_json(threads[i]))
+          }
+          return Ok(
+            base_codec::json_obj([
+              ("total", base_codec::json_int(total)),
+              ("chats", base_codec::json_arr(items)),
+            ]),
+          )
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, "chats query failed: " + e.message))
+      }
+    }
+    if op == "sessions" {
+      match st.db.all(
+        "SELECT key, title, runtime, profile, model, running, created_at, last_active_at, archived_at, ws" +
+        " FROM sessions WHERE COALESCE(ws, ?1) = ?2 ORDER BY last_active_at DESC LIMIT 200",
+        [base_codec::json_str(home_ws_str), base_codec::json_str(req.viewer.workspace)],
+      ) {
+        Ok(rows) => {
+          let items : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let k_j = match r.get("key") { Some(v) => v, None => base_codec::json_str("") }
+            let t_j = match r.get("title") { Some(v) => v, None => base_codec::json_null() }
+            let rt_j = match r.get("runtime") { Some(v) => v, None => base_codec::json_str("") }
+            let run_j = match r.get("running") { Some(v) => v, None => base_codec::json_int(0) }
+            items.push(
+              base_codec::json_obj([
+                ("key", k_j),
+                ("title", t_j),
+                ("runtime", rt_j),
+                ("running", run_j),
+              ]),
+            )
+          }
+          return Ok(base_codec::json_obj([("sessions", base_codec::json_arr(items))]))
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, "sessions query failed: " + e.message))
+      }
+    }
+    if op == "session" {
+      let key = match json_field_str(args, "key") {
+        Some(k) => k
+        None => return Err(station_api::ApiError::new(400, "missing key"))
+      }
+      match st.get_session(key) {
+        Ok(Some(row)) => return Ok(
+          base_codec::json_obj([
+            ("key", base_codec::json_str(row.key)),
+            ("runtime", base_codec::json_str(row.runtime)),
+            ("profile", base_codec::json_str(row.profile)),
+            ("running", base_codec::json_bool(row.running)),
+            ("createdAt", base_codec::json_int64(row.created_at)),
+            (
+              "title",
+              match row.title {
+                Some(t) => base_codec::json_str(t)
+                None => base_codec::json_null()
+              },
+            ),
+          ]),
+        )
+        Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + key))
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "threads" {
+      match st.search_chat_threads(
+        Some(req.viewer.workspace),
+        Some(home_ws_str),
+        "",
+        station_store::ChatListFilter::empty(),
+        100,
+      ) {
+        Ok((threads, total)) => {
+          let items : Array[base_codec::Json] = []
+          for i in 0..<threads.length() {
+            items.push(thread_row_to_json(threads[i]))
+          }
+          return Ok(
+            base_codec::json_obj([
+              ("total", base_codec::json_int(total)),
+              ("threads", base_codec::json_arr(items)),
+            ]),
+          )
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "thread" {
+      let id_s = match json_field_str(args, "id") {
+        Some(s) => s
+        None => return Err(station_api::ApiError::new(400, "missing thread id"))
+      }
+      let tid = match base_codec::parse_int64_str(id_s) {
+        Some(n) => n
+        None => return Err(station_api::ApiError::new(404, "unknown thread " + id_s))
+      }
+      match st.get_thread(tid) {
+        Ok(Some(t)) => return Ok(thread_row_to_json(t))
+        Ok(None) => return Err(station_api::ApiError::new(404, "unknown thread " + id_s))
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "thread.entries" {
+      let id_s = match json_field_str(args, "id") {
+        Some(s) => s
+        None => return Err(station_api::ApiError::new(400, "missing thread id"))
+      }
+      let tid = match base_codec::parse_int64_str(id_s) {
+        Some(n) => n
+        None => return Err(station_api::ApiError::new(404, "unknown thread " + id_s))
+      }
+      match st.db.all(
+        "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' ORDER BY n ASC LIMIT 200",
+        [sql_db::int64_to_json(tid)],
+      ) {
+        Ok(rows) => {
+          let entries : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            let ak_j = match r.get("author_kind") { Some(v) => v, None => base_codec::json_str("") }
+            let au_j = match r.get("author") { Some(v) => v, None => base_codec::json_str("") }
+            let tx_j = match r.get("text") { Some(v) => v, None => base_codec::json_str("") }
+            let at_j = match r.get("at") { Some(v) => v, None => base_codec::json_int(0) }
+            entries.push(
+              base_codec::json_obj([
+                ("n", n_j),
+                ("authorKind", ak_j),
+                ("author", au_j),
+                ("text", tx_j),
+                ("at", at_j),
+              ]),
+            )
+          }
+          return Ok(base_codec::json_obj([("entries", base_codec::json_arr(entries))]))
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "openJobs" {
+      let list = agents.jobs.list()
+      let items : Array[base_codec::Json] = []
+      for i in 0..<list.length() {
+        let j = list[i]
+        // Strictly filter jobs by workspace visibility via `session_seen`.
+        if station_api::session_seen(seen_store, req.viewer, j.session) {
+          items.push(j.to_json())
+        }
+      }
+      return Ok(base_codec::json_obj([("jobs", base_codec::json_arr(items))]))
+    }
+    if op == "job" {
+      let id = match json_field_str(args, "id") {
+        Some(s) => s
+        None => return Err(station_api::ApiError::new(400, "missing job id"))
+      }
+      match agents.jobs.get(id) {
+        Some(rec) => {
+          if !station_api::session_seen(seen_store, req.viewer, rec.session) {
+            return Err(station_api::ApiError::new(404, "no job " + id))
+          }
+          return Ok(rec.to_json())
+        }
+        None => return Err(station_api::ApiError::new(404, "no job " + id))
+      }
+    }
+    Err(station_api::ApiError::new(404, "unsupported read op: " + op))
+  }
+
+  let call_op = fn(
+    op : String,
+    req : station_api::ApiRequest,
+    params : Array[String],
+    body : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let now_ms = request_now_cell[0]
+    if op == "projects.info.get" {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let info_entries = match read_projects_info_map(agents.jobs.fs, agents.config.data_dir) {
+        Ok(m) => m
+        Err(e) => return Err(station_api::ApiError::new(500, e))
+      }
+      match st.db.all(
+        "SELECT t.project, COUNT(*) AS cnt FROM threads t" +
+        " LEFT JOIN sessions h ON h.key = t.home" +
+        " WHERE t.project IS NOT NULL AND t.project != '' AND CASE" +
+        "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+        "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+        "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+        " GROUP BY t.project ORDER BY t.project",
+        [base_codec::json_str(home_ws_str), base_codec::json_str(req.viewer.workspace)],
+      ) {
+        Ok(rows) => {
+          let seen_names : Map[String, Bool] = Map::new()
+          let projs : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
+            seen_names.set(name, true)
+            let entry_key = req.viewer.workspace + ":" + name
+            let mut note_str = ""
+            let mut refs_arr : Array[String] = []
+            for j in 0..<info_entries.length() {
+              if info_entries[j].0 == entry_key {
+                match json_field_str(info_entries[j].1, "note") {
+                  Some(ns) => note_str = ns
+                  None => ()
+                }
+                refs_arr = parse_str_array_field(info_entries[j].1, "refs")
+                break
+              }
+            }
+            projs.push(
+              base_codec::json_obj([
+                ("name", base_codec::json_str(name)),
+                ("count", cnt),
+                ("note", base_codec::json_str(note_str)),
+                ("refs", json_str_array(refs_arr)),
+              ]),
+            )
+          }
+          let ws_prefix = req.viewer.workspace + ":"
+          for j in 0..<info_entries.length() {
+            let (ek, ev) = info_entries[j]
+            if ek.starts_with(ws_prefix) {
+              let pname = ek.slice(ws_prefix.length(), ek.length())
+              if pname.length() > 0 && seen_names.get(pname).is_none() {
+                let note_str = match json_field_str(ev, "note") { Some(ns) => ns, None => "" }
+                let refs_arr = parse_str_array_field(ev, "refs")
+                projs.push(
+                  base_codec::json_obj([
+                    ("name", base_codec::json_str(pname)),
+                    ("count", base_codec::json_int(0)),
+                    ("note", base_codec::json_str(note_str)),
+                    ("refs", json_str_array(refs_arr)),
+                  ]),
+                )
+              }
+            }
+          }
+          return Ok(base_codec::json_obj([("projects", base_codec::json_arr(projs))]))
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "hub.thread.messages" && params.length() >= 1 {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let tid = match base_codec::parse_int64_str(params[0]) {
+        Some(n) => n
+        None => return Err(station_api::ApiError::new(404, "unknown thread " + params[0]))
+      }
+      let text = match json_field_str(body, "text") {
+        Some(t) => t
+        None => return Err(station_api::ApiError::new(400, "text is required"))
+      }
+      // Query real active member sessions of this thread as delivery recipients.
+      let recipients : Array[String] = []
+      match st.db.all(
+        "SELECT session FROM thread_sessions WHERE thread = ?1 AND left_at IS NULL",
+        [sql_db::int64_to_json(tid)],
+      ) {
+        Ok(mrows) => {
+          for i in 0..<mrows.length() {
+            match mrows[i].get("session") {
+              Some(base_codec::Json::Str(sk)) => if sk.length() > 0 { recipients.push(sk) }
+              _ => ()
+            }
+          }
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, "lookup recipients failed: " + e.message))
+      }
+      let msg = station_store::NewMessage::{
+        thread: tid,
+        ts: None,
+        author_kind: "person",
+        author: req.viewer.email,
+        agent_identity: None,
+        text: Some(text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: None,
+        options: None,
+        proposal: None,
+        at: now_ms,
+      }
+      match st.insert_message(msg, deliver_to=recipients) {
+        Ok((n, fresh)) => {
+          // Wake / route to recipient SessionHub actors via `accept_in_turn`.
+          let mut woken = 0
+          for i in 0..<recipients.length() {
+            let sk = recipients[i]
+            match st.get_session(sk) {
+              Ok(Some(row)) => {
+                let ab = match row.archived_by { Some(b) => b, None => "" }
+                let action = station_sessions::accept_in_turn(row.archived_at, ab, true)
+                match action {
+                  station_sessions::ThreadAcceptAction::RecordOnlyNoFiles => ()
+                  _ => {
+                    let actor = agents.hub.ensure_actor(sk, row.runtime)
+                    let _ = actor.submit_input(text)
+                    woken = woken + 1
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          // Publish live `"thread"` SSE event aligned with `station/src/api/events.ts:1064-1077`
+          // and `client/core-ts/src/station/sync.ts:2058-2064`.
+          let ev_payload = base_codec::json_obj([
+            ("id", base_codec::json_int64(tid)),
+            (
+              "entries",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("n", base_codec::json_int64(n)),
+                  ("kind", base_codec::json_str("message")),
+                  ("authorKind", base_codec::json_str("person")),
+                  ("author", base_codec::json_str(req.viewer.email)),
+                  ("text", base_codec::json_str(text)),
+                  ("at", base_codec::json_int64(now_ms)),
+                ]),
+              ]),
+            ),
+          ])
+          let ev_target = station_api::EventTarget::{
+            lang: None,
+            viewer: None,
+            email: None,
+            workspace: Some(req.viewer.workspace),
+            subs: None,
+            read_only: None,
+            managers: None,
+            vault: None,
+            sees_ws: Some(Some(req.viewer.workspace)),
+            sees_session: None,
+          }
+          // Never coalesce incremental `"thread"` message frames by thread ID (aligned with
+          // `station/src/api/events.ts:1152`) so consecutive messages replay individually.
+          let _ = events.emit("thread", ev_payload, ev_target, now_ms, None)
+          return Ok(
+            base_codec::json_obj([
+              ("thread", base_codec::json_int64(tid)),
+              ("n", base_codec::json_int64(n)),
+              ("fresh", base_codec::json_bool(fresh)),
+              ("at", base_codec::json_int64(now_ms)),
+              ("deliveredTo", base_codec::json_int(recipients.length())),
+              ("woken", base_codec::json_int(woken)),
+            ]),
+          )
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "projects.thread.classification" && params.length() >= 1 {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let tid = match base_codec::parse_int64_str(params[0]) {
+        Some(n) => n
+        None => return Err(station_api::ApiError::new(404, "unknown thread " + params[0]))
+      }
+      let proj_opt = match json_field_str(body, "project") {
+        Some(raw_p) => match station_api::normalize_project_name(raw_p) {
+          Ok(clean) => Some(clean)
+          Err(e) => return Err(station_api::ApiError::new(400, e))
+        }
+        None => None
+      }
+      let locked = json_field_bool(body, "locked")
+      match st.update_thread_metadata(tid, None, proj_opt, locked, None) {
+        Ok(updated) => return Ok(
+          base_codec::json_obj([
+            ("updated", base_codec::json_bool(updated)),
+            ("thread", base_codec::json_int64(tid)),
+          ]),
+        )
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "screens.list" {
+      let lang = match req.lang {
+        station_api::Lang::En => station_ops::Lang::En
+        station_api::Lang::Zh => station_ops::Lang::Zh
+      }
+      return Ok(screens.listed_json(lang, Some(req.viewer.workspace)))
+    }
+    if op == "vault.uses.get" {
+      return Ok(
+        base_codec::json_obj([
+          ("activeGrants", base_codec::json_int(whole_store.vault_grants.len())),
+        ]),
+      )
+    }
+    Err(station_api::ApiError::new(404, "unsupported api op: " + op))
+  }
+
+  let ws_roots : Map[String, Array[String]] = Map::new()
+  ws_roots.set(auth_policy.home_workspace, drive_roots)
+
+  let overview_fn = fn(viewer : station_api::Viewer, lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    let mut total_sess = 0
+    let mut running_sess = 0
+    let mut warm_sess = 0
+    match whole_store.require_open() {
+      Ok(st) => {
+        match st.db.all(
+          "SELECT key, running FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
+          [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
+        ) {
+          Ok(rows) => {
+            total_sess = rows.length()
+            for i in 0..<rows.length() {
+              let k = match rows[i].get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let is_run = match rows[i].get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
+              if is_run {
+                running_sess = running_sess + 1
+              } else if agents.hub.actors.get(k).is_some() {
+                warm_sess = warm_sess + 1
+              }
+            }
+          }
+          Err(e) => return Err(station_api::ApiError::new(500, "overview query failed: " + e.message))
+        }
+      }
+      Err(_) => ()
+    }
+    let viewer_drive_roots = match ws_roots.get(viewer.workspace) {
+      Some(r) => r
+      None => []
+    }
+    let base_in = station_api::OverviewInput::minimal()
+    let input = station_api::OverviewInput::{
+      cloud: Some(station_api::StatusCloudState::{
+        origin: None,
+        workspace: Some(viewer.workspace),
+        workspace_name: Some(viewer.workspace),
+        station: Some(station_id_str),
+        removed_at: None,
+      }),
+      reached: true,
+      built_at: base_in.built_at,
+      connects: base_in.connects,
+      profiles: base_in.profiles,
+      mcp_servers: base_in.mcp_servers,
+      backup_s3: base_in.backup_s3,
+      agent_env: base_in.agent_env,
+      total_sessions: total_sess,
+      running_sessions: running_sess,
+      warm_sessions: warm_sess,
+      auto_archive_days: base_in.auto_archive_days,
+      slack_archive_days: base_in.slack_archive_days,
+      auto_archive_reviewed: base_in.auto_archive_reviewed,
+      accept_auto_chats: base_in.accept_auto_chats,
+      disabled_runtimes: base_in.disabled_runtimes,
+      disk_free_bytes: base_in.disk_free_bytes,
+      disk_total_bytes: base_in.disk_total_bytes,
+      afresh_when_cold: base_in.afresh_when_cold,
+      afresh_above: base_in.afresh_above,
+      diagnostics_logs: base_in.diagnostics_logs,
+      search_personal: base_in.search_personal,
+      has_spotlight: base_in.has_spotlight,
+      drive_roots: viewer_drive_roots,
+      drive_home: base_in.drive_home,
+    }
+    Ok(station_api::build_overview(input, viewer, lang))
+  }
+
+  let host_sample_fn = fn(_lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    Ok(
+      base_codec::json_obj([
+        ("hostname", base_codec::json_str(station_sys::hostname())),
+        ("os", base_codec::json_str(station_sys::os_name())),
+        ("arch", base_codec::json_str(station_sys::arch_name())),
+      ]),
+    )
+  }
+
+  // Strictly workspace-filtered SQL search with keyword `LIKE ... ESCAPE '\'`, `archived` filter,
+  // and bounded `LIMIT` pushed directly into SQLite (never loads whole workspace into memory).
+  let search_fn = fn(
+    query : String,
+    asker : station_api::SearchAsker,
+    kinds : Array[String],
+    limit : Int,
+    offset : Int,
+    archived : Bool,
+  ) -> Result[station_api::SearchResult, station_api::ApiError] {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return Err(station_api::ApiError::new(503, e))
+    }
+    let words = station_api::search_terms(query)
+    if words.length() == 0 {
+      return Ok(station_api::SearchResult::{ groups: [], building: false })
+    }
+    let eff_lim = if limit <= 0 { 20 } else if limit > 200 { 200 } else { limit }
+    let eff_off = if offset < 0 { 0 } else { offset }
+    // Strict bounded search window (`max_window = 1000`): never clamp `offset` backward and
+    // never leak hits past index 1000 (`offset=999&limit=1` -> 1 hit, `more=false`;
+    // `offset=998&limit=5` -> 2 hits, `more=false`; `offset=1000&limit=1` -> empty, `more=false`).
+    let max_window = 1000
+    if eff_off >= max_window {
+      return Ok(station_api::SearchResult::{ groups: [], building: false })
+    }
+    let window_lim = if eff_lim < max_window - eff_off { eff_lim } else { max_window - eff_off }
+    let sql_limit = if eff_off + window_lim + 1 > max_window + 1 {
+      max_window + 1
+    } else {
+      eff_off + window_lim + 1
+    }
+    let want_chat = if kinds.length() == 0 {
+      true
+    } else {
+      let mut ok = false
+      for ki in 0..<kinds.length() {
+        if kinds[ki] == "chat" { ok = true }
+      }
+      ok
+    }
+    let want_msg = if kinds.length() == 0 {
+      true
+    } else {
+      let mut ok = false
+      for ki in 0..<kinds.length() {
+        if kinds[ki] == "message" { ok = true }
+      }
+      ok
+    }
+    let arch_clause = if archived { "" } else { " AND t.archived_at IS NULL" }
+    let docs : Array[station_api::SearchDoc] = []
+    if want_chat {
+      let seen_tids : Map[String, Bool] = Map::new()
+      let mut chat_collected = 0
+      let run_chat_q = fn(
+        t_like_sql : String,
+        t_like_params : Array[base_codec::Json],
+      ) -> Result[Unit, station_api::ApiError] {
+        if chat_collected >= sql_limit {
+          return Ok(())
+        }
+        let t_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<t_like_params.length() {
+          t_params.push(t_like_params[pi])
+        }
+        let t_lim_idx = 3 + t_like_params.length()
+        t_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT t.id, t.title, t.project, t.created_at," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          t_like_sql +
+          " ORDER BY t.created_at DESC, t.id DESC LIMIT ?" + t_lim_idx.to_string(),
+          t_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              if chat_collected >= sql_limit {
+                break
+              }
+              let r = rows[i]
+              let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let dkey = "thread:" + tid.to_string()
+              if seen_tids.get(dkey).is_some() {
+                continue
+              }
+              seen_tids.set(dkey, true)
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "chat",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: title + " " + proj,
+                at: at,
+                ref_fields: [("thread", base_codec::json_int64(tid))],
+              })
+              chat_collected = chat_collected + 1
+            }
+            Ok(())
+          }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+      // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+project query.
+      let (t1_sql, t1_params) = build_first_title_like_clauses(
+        "COALESCE(t.title, '')",
+        "COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')",
+        words,
+        3,
+      )
+      match run_chat_q(t1_sql, t1_params) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let (t2_sql, t2_params) = build_like_clauses(
+        "COALESCE(t.title, '') || ' ' || COALESCE(t.project, '')",
+        words,
+        3,
+      )
+      match run_chat_q(t2_sql, t2_params) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if want_msg {
+      let seen_msgs : Map[String, Bool] = Map::new()
+      let mut msg_collected = 0
+      let run_msg_q = fn(
+        e_like_sql : String,
+        e_like_params : Array[base_codec::Json],
+      ) -> Result[Unit, station_api::ApiError] {
+        if msg_collected >= sql_limit {
+          return Ok(())
+        }
+        let e_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<e_like_params.length() {
+          e_params.push(e_like_params[pi])
+        }
+        let e_lim_idx = 3 + e_like_params.length()
+        e_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT e.thread, e.n, e.text, e.at, t.title," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE e.kind = 'message' AND CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          e_like_sql +
+          " ORDER BY e.at DESC, e.rowid DESC LIMIT ?" + e_lim_idx.to_string(),
+          e_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              if msg_collected >= sql_limit {
+                break
+              }
+              let r = rows[i]
+              let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
+              let dkey = "msg:" + tid.to_string() + ":" + n.to_string()
+              if seen_msgs.get(dkey).is_some() {
+                continue
+              }
+              seen_msgs.set(dkey, true)
+              let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("at") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "message",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: txt,
+                at: at,
+                ref_fields: [
+                  ("thread", base_codec::json_int64(tid)),
+                  ("n", base_codec::json_int64(n)),
+                ],
+              })
+              msg_collected = msg_collected + 1
+            }
+            Ok(())
+          }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+      // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+body query.
+      let (e1_sql, e1_params) = build_first_title_like_clauses(
+        "COALESCE(t.title, '')",
+        "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
+        words,
+        3,
+      )
+      match run_msg_q(e1_sql, e1_params) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let (e2_sql, e2_params) = build_like_clauses(
+        "COALESCE(t.title, '') || ' ' || COALESCE(e.text, '')",
+        words,
+        3,
+      )
+      match run_msg_q(e2_sql, e2_params) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    match station_api::search_pick(docs, query, asker, Some(kinds), window_lim, eff_off) {
+      Ok(res) => {
+        let bounded_groups : Array[station_api::SearchGroup] = []
+        for gi in 0..<res.groups.length() {
+          let g = res.groups[gi]
+          let capped_more = if eff_off + g.hits.length() >= max_window { false } else { g.more }
+          bounded_groups.push(station_api::SearchGroup::{
+            kind: g.kind,
+            hits: g.hits,
+            more: capped_more,
+            left: g.left,
+          })
+        }
+        Ok(station_api::SearchResult::{ groups: bounded_groups, building: res.building })
+      }
+      Err(e) => Err(e)
+    }
+  }
+
+  let api_host = station_api::ApiHost::{
+    read_op: read_op,
+    call: call_op,
+    overview: overview_fn,
+    host_sample: host_sample_fn,
+    search: search_fn,
+    events: Some(events),
+    usage_reading_all: fn() -> Bool { false },
+    session_exists: seen_store.session_exists,
+    held_sessions: fn() -> Array[String] { [] },
+    dev_enabled: false,
+  }
+  let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
+  WholeApi::{
+    auth_policy: auth_policy,
+    admin: admin,
+    drive: drive,
+    drive_roots: drive_roots,
+    workspace_drive_roots: ws_roots,
+    thumb_port: thumb_port,
+    screens: screens,
+    events: events,
+    host_cache: station_api::HostCache::new(),
+    cpu_window: station_api::CpuWindow::new(),
+    read_only_handover: true,
+    request_now_cell: request_now_cell,
+  }
+}
+
+/// Grant specific Drive roots to a workspace (home workspace gets `drive_roots` by default).
+pub fn WholeApi::set_workspace_drive_roots(
+  self : WholeApi,
+  workspace : String,
+  roots : Array[String],
+) -> Unit {
+  self.workspace_drive_roots.set(workspace, roots)
+}
+
+fn WholeApi::resolve_drive_root_for_viewer(
+  self : WholeApi,
+  viewer : station_api::Viewer,
+  requested : Option[String],
+) -> Result[String, station_http::HttpResponse] {
+  let allowed = match self.workspace_drive_roots.get(viewer.workspace) {
+    Some(r) => r
+    None => []
+  }
+  if allowed.length() == 0 {
+    return Err(station_api::json_error(403, "no drive roots authorized for workspace " + viewer.workspace))
+  }
+  match requested {
+    Some(r) => {
+      if r.length() == 0 {
+        return Ok(allowed[0])
+      }
+      for i in 0..<allowed.length() {
+        if allowed[i] == r {
+          return Ok(r)
+        }
+      }
+      Err(station_api::json_error(403, "drive root not authorized for workspace " + viewer.workspace))
+    }
+    None => Ok(allowed[0])
+  }
+}
+
+/// Real `station_rules_bridge` tagged signature verification (Ed25519 / P-256).
+pub fn WholeApi::verify_tagged_signature(
+  self : WholeApi,
+  key_id : String,
+  sig_hex : String,
+  tag : String,
+  digest_hex : String,
+) -> Bool {
+  station_rules_bridge::tagged_sig_valid_with(
+    key_id,
+    sig_hex,
+    tag,
+    digest_hex,
+    self.auth_policy.verify_fn,
+  )
+}
+
+/// Real `station_rules_bridge` signed record verification.
+pub fn WholeApi::verify_record_signature(
+  self : WholeApi,
+  sig_json : form::Json,
+  tag : String,
+  text : String,
+) -> Bool {
+  station_rules_bridge::record_sig_valid_with(sig_json, tag, text, self.auth_policy.verify_fn)
+}
+
+/// Real `station_rules_bridge` lock entry signature verification (Ed25519 / ES256 / WebAuthn DER P-256).
+pub fn WholeApi::verify_lock_signature(
+  self : WholeApi,
+  sig_json : form::Json,
+  hash_hex : String,
+  origins : Array[String],
+  rp_id : String,
+  passkey : Bool,
+) -> Bool {
+  station_rules_bridge::sig_valid_with(
+    sig_json,
+    hash_hex,
+    origins,
+    rp_id,
+    passkey,
+    self.auth_policy.verify_fn,
+  )
+}
+
+/// Generate a thumbnail using the wired `os_thumb_port` (`image.thumb`).
+pub fn WholeApi::generate_thumbnail(
+  self : WholeApi,
+  image_path : String,
+  thumbs_dir : String,
+  boxed : Bool,
+) -> Result[Option[station_screens::Thumbnail], String] {
+  match self.thumb_port {
+    Some(tp) => Ok((tp.thumbnail)(image_path, thumbs_dir, boxed))
+    None => Err("thumb_port not wired")
+  }
+}
+
+/// Compute a ThumbHash using the wired `os_thumb_port` (`image.thumb` `mode: "hash"`).
+pub fn WholeApi::compute_thumbhash(
+  self : WholeApi,
+  image_path : String,
+) -> Result[Option[station_screens::ThumbHashInfo], String] {
+  match self.thumb_port {
+    Some(tp) => Ok((tp.thumbhash)(image_path, None))
+    None => Err("thumb_port not wired")
+  }
+}
+
+/// Authenticate peer identity and ALWAYS compute `viewer.home = (viewer.workspace == home_workspace)`
+/// on the server side (never trusts caller-supplied `home: true`).
+fn WholeApi::authenticate_peer(
+  self : WholeApi,
+  peer : PeerIdentity,
+) -> Result[station_api::Viewer, station_http::HttpResponse] {
+  match peer {
+    PeerIdentity::Unknown => Err(station_api::json_error(403, "unauthenticated peer rejected"))
+    PeerIdentity::AuthenticatedMember(viewer, key_id) => {
+      if viewer.email.length() == 0 || viewer.workspace.length() == 0 {
+        return Err(station_api::json_error(403, "incomplete member identity"))
+      }
+      if !station_rules_bridge::valid_key_id(key_id) {
+        return Err(station_api::json_error(403, "invalid peer cryptographic key id"))
+      }
+      if !ws_allowed(self.auth_policy.allowed_workspaces, viewer.workspace) {
+        return Err(station_api::json_error(403, "peer workspace not authorized"))
+      }
+      let is_home = viewer.workspace == self.auth_policy.home_workspace
+      Ok(station_api::Viewer::{
+        email: viewer.email,
+        sub: viewer.sub,
+        name: viewer.name,
+        workspace: viewer.workspace,
+        home: is_home,
+        role: viewer.role,
+        device: viewer.device,
+      })
+    }
+    PeerIdentity::AuthenticatedStation(station_id, ws, _claimed_home) => {
+      if station_id.length() == 0 || !ws_allowed(self.auth_policy.allowed_workspaces, ws) {
+        return Err(station_api::json_error(403, "station peer not authorized"))
+      }
+      let is_home = ws == self.auth_policy.home_workspace
+      Ok(station_api::Viewer::{
+        email: "station:" + station_id,
+        sub: station_id,
+        name: station_id,
+        workspace: ws,
+        home: is_home,
+        role: "viewer",
+        device: None,
+      })
+    }
+  }
+}
+
+/// Pure dependency-injected peer-authenticated HTTP API handler (no SQLite FFI references).
+pub fn WholeApi::handle_authenticated_api_with_status(
+  self : WholeApi,
+  peer : PeerIdentity,
+  method : String,
+  path : String,
+  headers : Array[http1::Header],
+  body : Bytes,
+  now_ms : Int64,
+  status_snapshot : (station_api::Viewer) -> (Array[station_api::RunningSessionInfo], Array[(String, String)]),
+) -> station_http::HandlerAction {
+  self.request_now_cell[0] = now_ms
+  let viewer = match self.authenticate_peer(peer) {
+    Ok(v) => v
+    Err(resp) => return station_http::HandlerAction::Respond(resp)
+  }
+  let norm_raw = normalize_api_path(path)
+  let (norm_path, norm_query_raw, norm_query) = station_http::parse_request_target(norm_raw)
+  let http_req = station_http::HttpRequest::{
+    conn_id: 0,
+    method: method,
+    raw_target: norm_raw,
+    path: norm_path,
+    query_raw: norm_query_raw,
+    query: norm_query,
+    version: http1::Version::Http11,
+    headers: headers,
+    body: body,
+    peer: "",
+    raw_head: Bytes::new(0),
+  }
+
+  // 1. OLDEST_CORE floor gate applies to ALL routes including `/status` and `/drive/*`.
+  let lang = station_api::lang_of_core(http_req)
+  match station_api::check_core_version(http_req, self.admin.oldest_core, self.auth_policy.station_build, lang) {
+    Some(resp) => return station_http::HandlerAction::Respond(resp)
+    None => ()
+  }
+
+  // 2. Read-only member gate & pre-handover read-only gate.
+  if viewer.is_read_only() && !station_api::read_only_may(method, norm_path) {
+    return station_http::HandlerAction::Respond(
+      station_api::json_error(403, "read-only members cannot change this station"),
+    )
+  }
+  if self.read_only_handover && !station_api::read_only_may(method, norm_path) {
+    return station_http::HandlerAction::Respond(
+      station_api::json_error(403, "station is in read-only handover mode"),
+    )
+  }
+
+  // 3. `GET /status` (or `/api/status`): workspace-scoped `LocalStatus` gated by `OLDEST_CORE`.
+  if method == "GET" && norm_path == "/status" {
+    let (running, processes) = status_snapshot(viewer)
+    let st_out = station_api::status_of(station_api::StatusInput::{
+      version: self.auth_policy.station_build,
+      cloud: Some(station_api::StatusCloudState::{
+        origin: None,
+        workspace: Some(viewer.workspace),
+        workspace_name: Some(viewer.workspace),
+        station: Some(self.auth_policy.station_id),
+        removed_at: None,
+      }),
+      reached: true,
+      running: running,
+      processes: processes,
+      waiting: [],
+      health: None,
+    })
+    return station_http::HandlerAction::Respond(
+      station_api::json_ok(st_out.to_json())
+      .with_header(station_api::BUILD_HEADER, self.auth_policy.station_build),
+    )
+  }
+
+  // 4. `PUT /drive/upload` (raw binary body + query params, default `overwrite = false`,
+  //    1:1 with `client/core-ts/src/station/requests.ts:737-752`).
+  if method == "PUT" && norm_path == "/drive/upload" {
+    let root = match self.resolve_drive_root_for_viewer(viewer, http_req.query_get("root")) {
+      Ok(r) => r
+      Err(resp) => return station_http::HandlerAction::Respond(resp)
+    }
+    let rel = match http_req.query_get("path") {
+      Some(p) => if p.length() > 0 { p } else {
+        return station_http::HandlerAction::Respond(station_api::json_error(400, "path is required"))
+      }
+      None => return station_http::HandlerAction::Respond(station_api::json_error(400, "path is required"))
+    }
+    let up_id = match http_req.query_get("id") {
+      Some(u) => if u.length() > 0 { u } else {
+        return station_http::HandlerAction::Respond(station_api::json_error(400, "id is required"))
+      }
+      None => return station_http::HandlerAction::Respond(station_api::json_error(400, "id is required"))
+    }
+    let offset = match http_req.query_get("offset") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n
+        None => return station_http::HandlerAction::Respond(station_api::json_error(400, "invalid offset"))
+      }
+      None => 0L
+    }
+    let total = match http_req.query_get("total") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n
+        None => return station_http::HandlerAction::Respond(station_api::json_error(400, "invalid total"))
+      }
+      None => return station_http::HandlerAction::Respond(station_api::json_error(400, "total is required"))
+    }
+    // Default overwrite = false; ONLY exact `replace=1` allows overwriting an existing file
+    // (1:1 with `station/src/api/routes/drive.ts:152`).
+    let replace = match http_req.query_get("replace") {
+      Some(v) => v == "1"
+      None => false
+    }
+    match self.drive.upload(root, rel, up_id, offset, total, body, replace, false, now_ms) {
+      Ok(res) => {
+        let entry_j = match res.entry {
+          Some(e) => drive_entry_to_json(e)
+          None => base_codec::json_null()
+        }
+        return station_http::HandlerAction::Respond(
+          station_api::json_ok(
+            base_codec::json_obj([
+              ("have", base_codec::json_int64(res.have)),
+              ("entry", entry_j),
+            ]),
+          )
+          .with_header(station_api::BUILD_HEADER, self.auth_policy.station_build),
+        )
+      }
+      Err(e) => return station_http::HandlerAction::Respond(drive_error_response(e))
+    }
+  }
+
+  // 5. `GET /drive/read` (query params `root`, `path`, `offset`, `length` -> raw binary body
+  //    + `stillfail-total` & `stillfail-mtime` headers, 1:1 with `requests.ts:710-731`).
+  if method == "GET" && norm_path == "/drive/read" {
+    let root = match self.resolve_drive_root_for_viewer(viewer, http_req.query_get("root")) {
+      Ok(r) => r
+      Err(resp) => return station_http::HandlerAction::Respond(resp)
+    }
+    let rel = match http_req.query_get("path") {
+      Some(p) => if p.length() > 0 { p } else {
+        return station_http::HandlerAction::Respond(station_api::json_error(400, "path is required"))
+      }
+      None => return station_http::HandlerAction::Respond(station_api::json_error(400, "path is required"))
+    }
+    let offset = match http_req.query_get("offset") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n
+        None => return station_http::HandlerAction::Respond(station_api::json_error(400, "invalid offset"))
+      }
+      None => 0L
+    }
+    let length = match http_req.query_get("length") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n.to_int()
+        None => return station_http::HandlerAction::Respond(station_api::json_error(400, "invalid length"))
+      }
+      None => match http_req.query_get("len") {
+        Some(s) => match base_codec::parse_int64_str(s) {
+          Some(n) => n.to_int()
+          None => return station_http::HandlerAction::Respond(station_api::json_error(400, "invalid length"))
+        }
+        None => 65536
+      }
+    }
+    match self.drive.read(root, rel, offset, length, false) {
+      Ok((bytes, total, mtime, mime)) => {
+        let ct = if mime.length() > 0 { mime } else { "application/octet-stream" }
+        let resp = station_http::HttpResponse::{
+          status: 200,
+          reason: station_http::status_reason(200),
+          headers: [
+            http1::Header::{ name: "content-type", value: ct },
+            http1::Header::{ name: "stillfail-total", value: total.to_string() },
+            http1::Header::{ name: "stillfail-mtime", value: mtime.to_string() },
+            http1::Header::{ name: station_api::BUILD_HEADER, value: self.auth_policy.station_build },
+          ],
+          body: bytes,
+          chunked: false,
+          close_after: false,
+        }
+        return station_http::HandlerAction::Respond(resp)
+      }
+      Err(e) => return station_http::HandlerAction::Respond(drive_error_response(e))
+    }
+  }
+
+  // 6. `GET /projects` (or `/api/projects`): alias to workspace-scoped `/projects/info`.
+  let effective_target = if method == "GET" && norm_path == "/projects" {
+    if norm_query_raw.length() > 0 { "/projects/info?" + norm_query_raw } else { "/projects/info" }
+  } else {
+    norm_raw
+  }
+  let (eff_path, eff_query_raw, eff_query) = station_http::parse_request_target(effective_target)
+  let admin_req = station_http::HttpRequest::{
+    conn_id: 0,
+    method: method,
+    raw_target: effective_target,
+    path: eff_path,
+    query_raw: eff_query_raw,
+    query: eff_query,
+    version: http1::Version::Http11,
+    headers: headers,
+    body: body,
+    peer: "",
+    raw_head: Bytes::new(0),
+  }
+  self.admin.handle_http(admin_req, viewer, now_ms)
+}
+
+/// Handle a peer-authenticated HTTP API request against live SQLite + SessionHub + Drive.
+pub fn WholeApi::handle_authenticated_api(
+  self : WholeApi,
+  whole_store : WholeStore,
+  agents : WholeAgents,
+  peer : PeerIdentity,
+  method : String,
+  path : String,
+  headers : Array[http1::Header],
+  body : Bytes,
+  now_ms : Int64,
+) -> station_http::HandlerAction {
+  let home_ws_str = self.auth_policy.home_workspace
+  self.handle_authenticated_api_with_status(
+    peer,
+    method,
+    path,
+    headers,
+    body,
+    now_ms,
+    fn(viewer : station_api::Viewer) -> (Array[station_api::RunningSessionInfo], Array[(String, String)]) {
+      let running : Array[station_api::RunningSessionInfo] = []
+      let processes : Array[(String, String)] = []
+      match whole_store.require_open() {
+        Ok(st) => {
+          // Strictly workspace-scoped status counts (never leaks other workspaces' sessions).
+          match st.db.all(
+            "SELECT key, title, running, last_active_at FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
+            [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
+          ) {
+            Ok(rows) => {
+              for i in 0..<rows.length() {
+                let r = rows[i]
+                let k = match r.get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                let ttl = match r.get("title") { Some(base_codec::Json::Str(s)) => Some(s), _ => None }
+                let is_run = match r.get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
+                let at = match r.get("last_active_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
+                if is_run {
+                  running.push(station_api::RunningSessionInfo::{ key: k, title: ttl, since: at })
+                  processes.push((k, "running"))
+                } else if agents.hub.actors.get(k).is_some() {
+                  processes.push((k, "warm"))
+                }
+              }
+            }
+            Err(_) => ()
+          }
+        }
+        Err(_) => ()
+      }
+      (running, processes)
+    },
+  )
+}

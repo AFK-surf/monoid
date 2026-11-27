@@ -197,22 +197,7 @@ pub fn picked_words_at(x : Double, y : Double) -> String {
   match picked.layer {
     TreeScope(_, within) => {
       guard view_app.val is Some(tree) else { return "" }
-      guard tree.view_of(within) is Some(v) && !v.shown_nowhere() && tree.allows(within) else { return "" }
-      match tree.drop_at(x, y) {
-        Some(OnNode(hit_id)) =>
-          match tree.view_of(hit_id).bind(fn(hv) { hv.lent(words_picks) }) {
-            Some(hit_scope) => return if hit_scope == within { selected_words() } else { "" }
-            None => ()
-          }
-        _ => ()
-      }
-      let (rx, ry, rw, rh) = v.rect()
-      let (bx0, by0, bx1, by1) = tree.seen_bounds(within)
-      let x0 = dmax(rx, bx0)
-      let y0 = dmax(ry, by0)
-      let x1 = dmin(rx + rw, bx1)
-      let y1 = dmin(ry + rh, by1)
-      if x >= x0 && x < x1 && y >= y0 && y < y1 {
+      if tree_in_scope(tree, within, x, y) {
         selected_words()
       } else {
         ""

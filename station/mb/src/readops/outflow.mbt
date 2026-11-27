@@ -389,6 +389,12 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
       }
       m["card"] = enriched
     }
+    if field(e, "kind") != Json::string("edit") {
+      match outflow_files(field(e, "attachments")) {
+        Some(files) => m["files"] = files
+        None => ()
+      }
+    }
     messages.push(Json::object(m))
   }
   let last = match one(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", [thread]) {
@@ -405,6 +411,37 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
     out["messagesOnly"] = true
   }
   Json::object(out)
+}
+
+///|
+fn outflow_files(attachments_json : Json) -> Json? {
+  let items = match json_list(attachments_json, attachment) {
+    Array(list) if list.length() > 0 => list
+    _ => return None
+  }
+  let files : Array[Json] = []
+  for item in items {
+    match item {
+      Object(obj) =>
+        match (obj.get("name"), obj.get("size")) {
+          (Some(String(name)), Some(size)) => {
+            let f : Map[String, Json] = { "name": Json::string(name), "size": size }
+            match obj.get("width") {
+              Some(w) => f["width"] = w
+              None => ()
+            }
+            match obj.get("height") {
+              Some(h) => f["height"] = h
+              None => ()
+            }
+            files.push(Json::object(f))
+          }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  if files.length() > 0 { Some(Json::array(files)) } else { None }
 }
 
 ///|

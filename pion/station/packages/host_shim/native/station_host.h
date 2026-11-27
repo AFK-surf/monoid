@@ -68,6 +68,19 @@ void *sth_shell_sync(
     int64_t json_len,
     int64_t *out_len);
 
+// Direct binary slice read of a regular file (bypasses Rust shell hex-over-JSON IPC).
+// Reads up to `length` bytes starting at byte offset `from` (or to EOF when `length < 0`).
+// On success: returns malloc'd buffer (non-NULL even when 0 bytes read) and sets `*out_len >= 0`.
+// On open failure (missing file / permission denied): sets `*out_len = -1` and returns NULL.
+// On non-regular file, invalid args (`from < 0`), size > 256 MiB, or I/O error: sets `*out_len = -2`
+// and returns NULL so the caller can fall back to `fs.bytes` for identical error reporting.
+// Caller frees non-NULL return with `sth_free`.
+void *sth_read_file_slice(
+    const char *path,
+    int64_t from,
+    int64_t length,
+    int64_t *out_len);
+
 // Process & runtime utilities.
 void *sth_args(int64_t *out_len);
 int32_t sth_pid(void);

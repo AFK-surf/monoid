@@ -550,7 +550,9 @@ const end = Date.now() + 10000;
 const tick = () => {
   if (fs.existsSync(req)) {
     fs.rmSync(req, { force: true });
-    fs.writeFileSync(ans, JSON.stringify({ path: snap, bytes: 2097152, ms: 42 }));
+    const tmp = ans + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ path: snap, bytes: 2097152, ms: 42 }));
+    fs.renameSync(tmp, ans);
     process.exit(0);
   }
   if (Date.now() > end) process.exit(1);

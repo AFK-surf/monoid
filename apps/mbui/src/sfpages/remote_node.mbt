@@ -1004,8 +1004,23 @@ pub fn remote_workbench_node(
   let lines = @signals.computed(fn(_) { remote_lines(src, ws(), asks_t) }, same=fn(a, b) { a == b })
   let front = @signals.computed(fn(_) { remote_front_in(src, ws(), lines.get()) }, same=fn(a, b) { a == b })
   let front_key = fn() { front.get().map_or("", fn(p) { p.0 }) }
-  // (a screen shown covered as another is brought to the front while its tab stays open, let go once it is closed)
+  // (a screen tab closed from the workbench is let go via screen_left; visibility/pausing across tabs, parking and
+  // handoffs is governed by `screen_pane_node`'s multi-holder visibility lease)
   let prev_front : Ref[(String, @sfbase.RemoteTab)?] = Ref(None)
+  let captured_screen_keys : Map[(String, String), String] = Map([])
+  v.reacts(fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) }, fn(now) {
+    match now.0 {
+      Some((_, Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+      _ => ()
+    }
+    for k in now.1 {
+      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+        if !captured_screen_keys.contains((at.station, at.screen)) {
+          captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+        }
+      }
+    }
+  })
   v.reacts(
     fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0, shown()) },
     fn(cur) {
@@ -1022,17 +1037,17 @@ pub fn remote_workbench_node(
                 k == old_k ||
                 (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
               })
-            if kept {
-              screen_covered(src, old_at.station, old_at.screen, true)
-            } else {
-              screen_left(src, old_at.station, old_at.screen)
+            if !kept {
+              let key = captured_screen_keys.get((old_at.station, old_at.screen)).unwrap_or_else(fn() { screen_key(old_at.station, old_at.screen) })
+              // Defer until after_drawn_frame so `v.pick` has already disposed the old tab node and released its
+              // holder: closes cleanly when no other visible holder exists, and stays open if another holder remains.
+              @ui.after_drawn_frame(fn() {
+                screen_left_key(src, key, old_at.station, old_at.screen, leaving_holder_released=true)
+              })
             }
           }
         }
         _ => ()
-      }
-      if is_shown && now is Some((_, Screen(now_at))) {
-        screen_covered(src, now_at.station, now_at.screen, false)
       }
       prev_front.val = if is_shown { now } else { prev_front.val }
     },
@@ -1055,10 +1070,9 @@ pub fn remote_workbench_node(
     }
     for pair in seen {
       let (st, sc) = pair
-      if keep_screen(st, sc) {
-        screen_covered(src, st, sc, false)
-      } else {
-        screen_left(src, st, sc)
+      if !keep_screen(st, sc) {
+        let key = captured_screen_keys.get(pair).unwrap_or_else(fn() { screen_key(st, sc) })
+        screen_left_key(src, key, st, sc)
       }
     }
   })
@@ -1136,6 +1150,7 @@ pub fn remote_workbench_node(
           tab_pads=pads,
           pane_width?=width,
           on_window=to_window,
+          shown~,
         )
       Terminal(at) =>
         terminal_pane_node(

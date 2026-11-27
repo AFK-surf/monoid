@@ -429,6 +429,9 @@ jobs:
           left=$(( JOB_END - $(date +%s) ))
           if [ -s "$c" ] && [ "$left" -gt 14 ]; then
             find libs/ui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
+            find libs/ui/out/linux -type f -name '*.exe' -delete
+            rm -rf libs/ui/out/linux/app/_build/native/release/build/mbui libs/ui/out/linux/app/_build/native/release/build/sf-ui \
+                   libs/ui/out/linux/app/_build/native/release/build/liquid-glass libs/ui/out/linux/app/_build/native/release/build/fvclient
             echo "key=mbui-linux-moon-${{ matrix.arch }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
             echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
