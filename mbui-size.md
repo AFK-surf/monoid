@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.64 | 68.76 | 103.47 | 133.05 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
 | [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 2.71 | 3.68 | 15.26 | 38.39 | 59.13 | 33.63 | 68.73 | 103.7 | 128.94 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.15 | 154.34 |
-| [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.19 | 136.76 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.56 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.62 |
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.43 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
 | [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
-| [3037efae5](https://github.com/AFK-surf/monoid/commit/3037efae5bad875e4ace8e620d6ae4c1e7b36049) fix(vault): decouple per-vault KeyAsk from BoxCert | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.89 |
