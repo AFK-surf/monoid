@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [f2cbbc500](https://github.com/AFK-surf/monoid/commit/f2cbbc500973e13b912a42e92a8783687714f097) fix(station): wake sessions queued by the account  | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 | [a44f36931](https://github.com/AFK-surf/monoid/commit/a44f369315e0e88bc35a18117ba797d988008398) chore(pion-station): bump TOOLCHAIN to a030aa49 an | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.49 | 68.52 | 103.09 | 125.09 |
 | [04a80feec](https://github.com/AFK-surf/monoid/commit/04a80feec38312ba0245b925de4f307305cfc6fb) fix(ui,mbui): dissolve outgoing sticky section hea | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 103.17 | 108.29 |
 | [982bd89ab](https://github.com/AFK-surf/monoid/commit/982bd89ab2ef6d8a578ff89ece6ea26f9cd52ef3) fix(ui): keep player controls as they were when a  | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 103.17 | 108.29 |
-| [d2732be96](https://github.com/AFK-surf/monoid/commit/d2732be96b991b95b1c99bddba34e3904efa3457) fix(mbui): bud the tab bar's ＋ smoothly without co | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 103.27 | 129.85 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.66 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.71 |
 | [f2cbbc500](https://github.com/AFK-surf/monoid/commit/f2cbbc500973e13b912a42e92a8783687714f097) fix(station): wake sessions queued by the account  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.64 |
 | [a44f36931](https://github.com/AFK-surf/monoid/commit/a44f369315e0e88bc35a18117ba797d988008398) chore(pion-station): bump TOOLCHAIN to a030aa49 an | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.8 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f5d32c4f](https://github.com/AFK-surf/monoid/commit/1f5d32c4f387626e7452ce61be621992bfa4a4dd) fix(ui): stop menu text jitter during expand, coll | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.23 | 6.28 | 57.9 |
 | [04a80feec](https://github.com/AFK-surf/monoid/commit/04a80feec38312ba0245b925de4f307305cfc6fb) fix(ui,mbui): dissolve outgoing sticky section hea | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.23 | 6.28 | 57.97 |
 | [982bd89ab](https://github.com/AFK-surf/monoid/commit/982bd89ab2ef6d8a578ff89ece6ea26f9cd52ef3) fix(ui): keep player controls as they were when a  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
-| [d2732be96](https://github.com/AFK-surf/monoid/commit/d2732be96b991b95b1c99bddba34e3904efa3457) fix(mbui): bud the tab bar's ＋ smoothly without co | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.59 |
