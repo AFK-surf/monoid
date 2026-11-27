@@ -161,7 +161,7 @@ fn picked_row_has_any(tree_id : Int, list : @view.NodeId, row_num : Int) -> Bool
   picked.spans.each(fn(k, s) {
     if !found.val && s.a < s.b {
       match k {
-        Words(t, r, place) if t == tree_id && r == list && place.length() > 0 && place[0] == row_num =>
+        SelKey::Words(t, r, Some(first_row), _) if t == tree_id && r == list && first_row == row_num =>
           found.val = true
         _ => ()
       }
@@ -218,7 +218,7 @@ fn picked_told() -> Unit {
   picked.spans.each(fn(k, s) {
     if s.a < s.b {
       match k {
-        Words(t, r, place) if place.length() > 0 => active_rows.insert((t, r, place[0]))
+        SelKey::Words(t, r, Some(first_row), _) => active_rows.insert((t, r, first_row))
         _ => ()
       }
     }
@@ -259,7 +259,7 @@ fn picked_told() -> Unit {
 /// Which paragraph node `v`'s words are, as its words picked are known (tree_key).
 fn tree_key(v : @view.View) -> SelKey {
   let (row, place) = v.row_place()
-  Words(view_tree_made.val, row, place)
+  sel_words_key(view_tree_made.val, row, place)
 }
 
 ///|
@@ -274,7 +274,7 @@ fn words_picked_span(v : @view.View) -> @view.Live[(Int, Int)] {
           return (0, 0)
         }
         let (row, place) = v.row_place_with(list, row_num)
-        SelKey::Words(view_tree_made.val, row, place)
+        sel_words_key(view_tree_made.val, row, place)
       }
       None => tree_key(v)
     }

@@ -232,31 +232,24 @@ priv struct Desk {
 /// window's tree's (its words in pieces: which tree it is of, by its number (view_tree_made), the row of a list made by
 /// its key it is in and where it is in that row (View::row_place): the same paragraph while its row's key is there,
 /// scrolled away and back, whatever node shows it then; another once another row is where it was); none.
-#derive(Eq)
+#derive(Eq, Hash)
 priv enum SelKey {
   NoSel
   Para(Int)
-  Words(Int, @view.NodeId, Array[Int])
+  Words(Int, @view.NodeId, Int?, String)
 }
 
 ///|
-impl Hash for SelKey with hash_combine(self, hasher) {
-  match self {
-    SelKey::NoSel => hasher.combine_int(0)
-    SelKey::Para(id) => {
-      hasher.combine_int(1)
-      hasher.combine_int(id)
+fn sel_words_key(tree_no : Int, list_id : @view.NodeId, place : Array[Int]) -> SelKey {
+  let sb : StringBuilder = StringBuilder()
+  for i = 0; i < place.length(); i = i + 1 {
+    if i > 0 {
+      sb.write_char(',')
     }
-    SelKey::Words(tree_no, list_id, path) => {
-      hasher.combine_int(2)
-      hasher.combine_int(tree_no)
-      Hash::hash_combine(list_id, hasher)
-      hasher.combine_int(path.length())
-      for i = 0; i < path.length(); i = i + 1 {
-        hasher.combine_int(path[i])
-      }
-    }
+    sb.write_string(place[i].to_string())
   }
+  let head = if place.length() > 0 { Some(place[0]) } else { None }
+  SelKey::Words(tree_no, list_id, head, sb.to_string())
 }
 
 ///|
@@ -971,8 +964,8 @@ pub fn picked_words() -> String {
 fn refresh_at(base : SelKey, at : Array[Int], row_depth : Int) -> Array[Int] {
   guard row_depth >= 0 && row_depth < at.length() else { return at }
   match (base, view_app.val) {
-    (SelKey::Words(tree_no, list_id, path), Some(tree)) if tree_no == view_tree_made.val && path.length() > 0 =>
-      match tree.row_order_of(list_id, path[0]) {
+    (SelKey::Words(tree_no, list_id, Some(first_row), _), Some(tree)) if tree_no == view_tree_made.val =>
+      match tree.row_order_of(list_id, first_row) {
         Some(cur) if at[row_depth] != cur => {
           let next = at.copy()
           next[row_depth] = cur
