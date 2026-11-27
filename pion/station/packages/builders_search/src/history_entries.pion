@@ -35,15 +35,7 @@ fn make_entry(
 
 /// First `n` Unicode code points of `text`.
 fn first_chars(text : String, n : Int) -> String {
-  let cs = js_json::points(text)
-  if cs.length() <= n {
-    return text
-  }
-  let sb = StringBuilder::new()
-  for i in 0..<n {
-    sb.write_string(cs[i])
-  }
-  sb.to_string()
+  slice_first_points(text, n)
 }
 
 let SAYING : Array[String] = [

@@ -1318,6 +1318,8 @@ let en : Map[String, String] = {
   "web-pages.appearance.motion.system": "System",
   "web-pages.appearance.motion.title": "Motion",
   "web-pages.appearance.theme.description": "Light, dark, or match the system. These settings apply to this device only",
+  "web-pages.appearance.tint.description": "The page and sidebar take a little of the accent color; off, they are plain white and neutral grey",
+  "web-pages.appearance.tint.title": "Tinted background",
   "web-pages.archive.search": "Search archive",
   "web-pages.archivePolicy.add": "Add",
   "web-pages.archivePolicy.archive": "Suggest archiving",

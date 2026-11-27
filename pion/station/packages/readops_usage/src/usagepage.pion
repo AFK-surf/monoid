@@ -1147,11 +1147,18 @@ fn usage_answer_parts(
   let people : Array[(String, base_codec::Json)] = []
   if a.metadata {
     let wanted : Array[base_codec::Json] = []
+    let seen_threads : Map[String, Bool] = Map::new()
     for i in 0..<visible.length() {
       let th = visible[i].thread
       match th {
-        base_codec::Json::Num(_, _) => {
-          if !wanted_contains(wanted, th) {
+        base_codec::Json::Num(d, _) => {
+          if js_json::is_safe_integer(d) {
+            let k = d.to_int64().to_string()
+            if !seen_threads.contains(k) {
+              seen_threads.set(k, true)
+              wanted.push(th)
+            }
+          } else if !wanted_contains(wanted, th) {
             wanted.push(th)
           }
         }
@@ -1240,10 +1247,12 @@ fn usage_answer_parts(
       )
     }
     let refs : Array[String] = []
+    let seen_refs : Map[String, Bool] = Map::new()
     for i in 0..<visible.length() {
       match visible[i].person {
         base_codec::Json::Str(p) => {
-          if !str_arr_contains(refs, p) {
+          if !seen_refs.contains(p) {
+            seen_refs.set(p, true)
             refs.push(p)
           }
         }

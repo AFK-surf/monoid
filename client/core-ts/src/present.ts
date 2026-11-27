@@ -1741,6 +1741,43 @@ export function installView(runtime: string, updates: J[], manages: boolean): J 
   return { runtime, state: "missing", title, ...(why !== null ? { note: why } : {}) };
 }
 
+/// The shortcut at the end of a harness failure notice (Codex missing its code-mode host, or a failed/outdated Codex
+/// update), given the station's `updates` and whether the viewer `manages` the workspace: repair with npm or update in
+/// place when the station supports it, show disabled progress while that runs, retry on failure (surfacing its error
+/// detail), or fall back to opening the station's software settings.
+export function softwareNoticeView(runtime: string, preferRepair: boolean, updates: J[], manages: boolean): { software: J; detail?: string } {
+  const v = updates.find((u) => get(u, "id") === runtime);
+  const repairable = v !== undefined && v.repairable === true;
+  const updatable = v !== undefined && v.updatable === true;
+  const installed = v !== undefined && v.installed === true;
+  const newer = v !== undefined && v.newer === true;
+  if (v !== undefined && v.state === "updating") {
+    const percent = u64(v.percent);
+    const repairing = preferRepair || repairable;
+    const action = percent !== undefined
+      ? t(repairing ? "core-views.notice.repairingPercent" : "core-views.notice.updatingPercent", { percent })
+      : t(repairing ? "core-views.notice.repairing" : "core-views.notice.updating");
+    return { software: { runtime, kind: "updating", action } };
+  }
+  if (v !== undefined && v.state === "failed") {
+    const detail = str(v.message) ?? undefined;
+    if (manages && repairable) {
+      return { software: { runtime, kind: "repair", action: t("core-views.install.retry") }, ...(detail ? { detail } : {}) };
+    }
+    if (manages && updatable) {
+      return { software: { runtime, kind: "update", action: t("core-views.install.retry") }, ...(detail ? { detail } : {}) };
+    }
+    return { software: { runtime, kind: "settings", action: t("core-views.notice.softwareSettings") }, ...(detail ? { detail } : {}) };
+  }
+  if (manages && repairable) {
+    return { software: { runtime, kind: "repair", action: t("core-views.notice.repairNpm") } };
+  }
+  if (manages && updatable && (!installed || newer)) {
+    return { software: { runtime, kind: "update", action: t(installed ? "core-views.notice.update" : "core-views.install.action") } };
+  }
+  return { software: { runtime, kind: "settings", action: t("core-views.notice.softwareSettings") } };
+}
+
 /// A piece of software as it is said: its version as shown, what is said of it on
 /// hover (up to date, or that the last check failed), and while it updates or once that failed, in words.
 export function software(u: J): J {

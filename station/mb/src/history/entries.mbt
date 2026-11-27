@@ -16,11 +16,24 @@ fn with_brief(e : Entry, input : @jsjson.JValue?) -> Entry {
 ///|
 /// Of `text`, its first `n` code points.
 fn first_chars(text : String, n : Int) -> String {
-  let cs = chars(text)
-  if cs.length() <= n {
+  let len = text.length()
+  let mut i = 0
+  let mut pts = 0
+  while i < len && pts < n {
+    let c = text.unsafe_charcode_at(i)
+    let w = if c >= 0xd800 && c <= 0xdbff && i + 1 < len && text.unsafe_charcode_at(i + 1) >= 0xdc00 &&
+      text.unsafe_charcode_at(i + 1) <= 0xdfff {
+      2
+    } else {
+      1
+    }
+    i += w
+    pts += 1
+  }
+  if i >= len {
     text
   } else {
-    cs.view(end=n).iter().collect().join("")
+    text.unsafe_substring(start=0, end=i)
   }
 }
 

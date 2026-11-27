@@ -258,3 +258,47 @@ test "signed out, the prefs saying English, the device Chinese: its button's Eng
   let (_t, _) = gate_cold(lang="en", locale="zh-CN")
   assert_eq(gate_words_at("Sign in or sign up"), (195.0, false))
 }
+
+///|
+/// Where the sign-in page's picture is drawn (x, y, w, h).
+fn gate_picture() -> (Double, Double, Double, Double) raise {
+  guard @ui.view_tree().unwrap().drawn().iter().find_first(fn(d) { d.picture is Some(_) }) is Some(d) else {
+    fail("no picture drawn")
+  }
+  (d.x, d.y, d.w, d.h)
+}
+
+///|
+test "signed out on a desktop, at each width: the picture and the button together in the middle of the window's height, as much over what the picture draws as under the button; what is said under the button moves neither" {
+  for w in [390.0, 720.0, 1280.0] {
+    let at = "\{w}"
+    let signed = Ref(0)
+    let step : @signals.Signal[@sfbase.SignInStep] = @signals.signal(Idle, same=fn(a, b) { a == b })
+    let t = gate_tester("signin", w, 0, false, [], signed, step~)
+    let (_, py, _, ph) = gate_picture()
+    let (_, by, _, bh) = t.all(Button, label="登录或注册")[0].rect
+    assert_true(py + ph <= by, msg="\{at}: picture \{py}+\{ph}, button \{by}")
+    // (under the button as much as over the picture and what the picture leaves blank over what it draws)
+    let under = 844.0 - by - bh
+    assert_true(under > py && under - py < ph * 0.3, msg="\{at}: \{py} over the picture \{ph} tall, \{under} under the button")
+    // out in the browser: said under the button, the picture and the button where they were
+    step.set(InBrowser)
+    t.run_for(@ui.move_most_ms)
+    let (_, sy) = t.find("在浏览器中完成登录").unwrap()
+    let (_, by2, _, bh2) = t.all(Button, label="重新打开登录页")[0].rect
+    assert_eq((gate_picture().1, by2, bh2), (py, by, bh), msg=at)
+    assert_true(sy >= by + bh, msg="\{at}: said at \{sy}, the button's foot \{by + bh}")
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="\{at}: \{Repr(faults)}")
+  }
+}
+
+///|
+test "signed out on a phone: the picture's foot a little over the page's middle still, its words and button under it" {
+  let signed = Ref(0)
+  let t = gate_tester("signin", 390.0, 2, false, [], signed)
+  let (_, py, _, ph) = gate_picture()
+  let (_, by, _, bh) = t.all(Button, label="登录或注册")[0].rect
+  assert_true(py + ph < 844.0 / 2.0, msg="picture's foot \{py + ph}")
+  assert_true(t.find("让 agent 持续工作").unwrap().1 >= py + ph && by > py + ph, msg="button \{by}+\{bh}")
+}

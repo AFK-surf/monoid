@@ -493,6 +493,9 @@ fn HistoriesStepper::collect_session_entries_with(
                 if line == "" {
                   continue
                 }
+                if can_skip_record_str(runtime, line) {
+                  continue
+                }
                 let record = match js_json::parse(line) {
                   Ok(v) => v
                   Err(_) => continue

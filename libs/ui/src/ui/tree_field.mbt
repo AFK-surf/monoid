@@ -315,9 +315,10 @@ pub fn field(
         field.text() |> ignore
         st.looked = None
         let (shown, spans) = st.look_shown()
-        ({ ..laid, words: if secret { st.shown() } else { shown } }, spans)
+        // (and how its stretches are set, Field::sets: bold words are wider, so measured again as that changes)
+        ({ ..laid, words: if secret { st.shown() } else { shown } }, spans, st.sets_shown())
       }),
-      fn(k, w) { k.0.size(w) },
+      fn(k, w) { k.0.size_set(w, k.2) },
     )
     .focusable(Is(true), keys=0)
     // (the pointer an I-beam over it, as over an old view's editor: Ctx's pointer shape, desktop.mbt)

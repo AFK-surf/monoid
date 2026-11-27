@@ -297,6 +297,9 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
     field,
     shown,
     fn(go) {
+      if !s.is_active_principal() {
+        return
+      }
       let p : Map[String, Json] = {
         "station": Json::string(s.station),
         "screen": Json::string(s.screen),
@@ -551,6 +554,9 @@ fn send_url_to_open_chat(src : Source, url : String) -> Unit {
 ///|
 /// A new tab (＋, ⌘T): there at once on its blank page, its address bar taking the keys, while the station makes it.
 fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let listed = browser_tabs_of(s).1.map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   let nu = screen_ui(screen_key(s.station, next))
@@ -562,6 +568,9 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
 /// Tab `id` closed (its ×, ⌘W): where it is the one shown, the one after it is shown in its place (else the one
 /// before; none left, the viewer closes), as a browser does.
 fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], close : () -> Unit) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let p : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(id) }
   (s.src.call)("screen.close", Json::object(p), failed_said(@sf.t("web-pages.screen.closeTabWhat")))
   if id != s.screen {
@@ -580,6 +589,9 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
 ///|
 /// ← → ⟳: asked of the station for the tab shown, what failed said.
 fn browser_act(s : ScreenSess, call : String, what : String) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let p : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   (s.src.call)(call, Json::object(p), failed_said(what))
 }

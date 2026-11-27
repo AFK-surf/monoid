@@ -71,7 +71,14 @@ pub fn tab_full_close() -> Unit {
   match tab_full.untracked() {
     Some(f) => {
       let lone = full_lone.val
-      tab_full_beside()
+      // Only preserve playback when handing back to a live side-panel chat currently in the foreground (not popped
+      // off the stack and not covered by another page).
+      let chat_in_front = app.nav.top() == Chat(f.chat)
+      if !lone && chat_in_front {
+        tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
+      }
+      full_lone.val = false
+      tab_full.set(None)
       if lone {
         (tab_full_drop.val)(f)
       }

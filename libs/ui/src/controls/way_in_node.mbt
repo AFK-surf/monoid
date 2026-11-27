@@ -9,12 +9,15 @@
 /// all of it down the middle of the page, 30 in from its sides; the picture as wide as a button at most and never past
 /// the page's sides, its foot 0.42 of the way down the page and 12 more (as the old one's room above it puts it) or,
 /// where that leaves no room above it, 52 down. What `body` is given: a column 12 apart, its things in its middle, no
-/// wider than a tablet's button. The page's node.
+/// wider than a tablet's button. `middle`: the picture and what `body` holds together in the middle of the page's
+/// height instead, as much room over the picture as under what `body` holds (a page of a picture and one button, a
+/// desktop's sign-in: its picture's foot at 0.42 leaves them well over the middle). The page's node.
 #callsite(autofill(loc))
 pub fn way_in_page_node(
   parent : @view.View,
   art : () -> String,
   body : (@view.View) -> Unit,
+  middle? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(page) {
@@ -27,11 +30,12 @@ pub fn way_in_page_node(
     |> ignore
     // (where the old one's room above its picture was: nothing tall, the page's gap after it, the picture's foot where
     // the page's share and that gap put it, or as low as its top and its own height do where that is lower)
-    page.box(fn(g) { g.height(Is(Some(0.0))) |> ignore }) |> ignore
+    // (`middle`: the room left shared alike over the picture and under the column, in place of the picture's share)
+    page.box(fn(g) { (if middle { g.grow(Is(1.0)) } else { g.height(Is(Some(0.0))) }) |> ignore }) |> ignore
     page.box(fn(head) {
       head
       .width_share(Is(1.0))
-      .min_height_share(Is(Some(way_in_picture_foot)))
+      .min_height_share(Is(if middle { None } else { Some(way_in_picture_foot) }))
       .padding(Is((0.0, way_in_page_top, 0.0, 0.0)))
       .lines_up(Is(Some(Middle)))
       |> ignore
@@ -57,12 +61,51 @@ pub fn way_in_page_node(
       .max_width(Is(Some(sign_in_touch_w)))
       .gap(Is(@ui.Space::px(S3)))
       .lines_up(Is(Some(Middle)))
-      .padding(Is((0.0, 0.0, 0.0, way_in_page_top)))
+      // (`middle`: what `body` holds leaves the room under it itself, as much as is over the picture)
+      .padding(Is((0.0, 0.0, 0.0, if middle { 0.0 } else { way_in_page_top })))
       |> ignore
       body(col)
     })
     |> ignore
+    if middle {
+      // (as much under the column as over the picture, and as much again as the picture leaves blank over what it
+      // draws, so what is seen has the same room over it as under it: that blank as tall as the picture's is, as
+      // wide as the picture is laid out)
+      page.box(fn(g) {
+        g.width_share(Is(1.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
+        g.box(fn(blank) {
+          blank
+          .width_share(Is(1.0))
+          .max_width(Is(Some(sign_in_picture_w)))
+          .aspect(By(fn() { 1.0 / way_in_art_blank(art()) }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    }
   })
+}
+
+///|
+/// How tall the blank over what drawable `name` draws is for how wide the drawable is (its paths' highest point, their
+/// lines' width aside; next to nothing where it draws from its top or there is none so named).
+fn way_in_art_blank(name : String) -> Double {
+  guard drawables.val.get(name) is Some(d) && d.w > 0.0 else { return 1.0e-6 }
+  let mut top = d.h
+  for l in d.layers {
+    for sub in l.outlines(1.0, 1.0) {
+      let pts = sub.0
+      let mut j = 1
+      while j < pts.length() {
+        if pts[j] < top {
+          top = pts[j]
+        }
+        j += 2
+      }
+    }
+  }
+  if top > 0.0 { top / d.w } else { 1.0e-6 }
 }
 
 ///|
@@ -221,7 +264,8 @@ pub fn way_in_button_node(
 /// The way into an app, signed out, in `parent` (way_in's): its picture (`art`), what it is (`title`, `note`), its button
 /// (`label`; `busy` while it is under way), what to know of it (`foot`), and what there is to say of signing in under
 /// the button (`said`: what it waits on, or why it failed, in the red), coming and going with its room (its words kept as
-/// it closes). Keyboard and mouse's the picture, the button and what is said of it alone; a touch screen's all of it.
+/// it closes). Keyboard and mouse's the picture, the button and what is said of it alone, the picture and the button in
+/// the middle of the page's height (way_in_page_node's `middle`); a touch screen's all of it.
 /// `press` done as its button is pressed. The page's node.
 #callsite(autofill(loc))
 pub fn way_in_node(
@@ -237,13 +281,27 @@ pub fn way_in_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let bare = native_input() is Mouse
-  way_in_page_node(loc~, parent, art, fn(col) {
+  way_in_page_node(loc~, parent, art, middle=bare, fn(col) {
     if !bare {
       way_in_title_node(col, title) |> ignore
       way_in_note_node(col, note) |> ignore
     }
     col.box(fn(g) { g.height(Is(Some(@ui.Space::px(S1_5)))) |> ignore }) |> ignore
     way_in_button_node(col, label, press, busy~) |> ignore
+    // (the page's middle held, a keyboard and mouse's: what is said under the button opens in the room the page leaves
+    // under it, as tall with the column's gap as the room over the picture, so the picture and the button stay where
+    // they are as a line of it opens and closes; taller than that room, it takes what it needs)
+    let col = if bare {
+      col.box(fn(under) {
+        under
+        .width_share(Is(1.0))
+        .min_height(Is(Some(way_in_page_top - @ui.Space::px(S3))))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+      })
+    } else {
+      col
+    }
     // (what was last said, kept as its room closes under it)
     let kept = @signals.signal(@signals.untracked(said), same=fn(a, b) { a == b })
     col.reacts(said, fn(s) {

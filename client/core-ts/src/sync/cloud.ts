@@ -1163,6 +1163,7 @@ export class CloudSync {
       const entry: Record<string, unknown> = {
         account,
         workspaces: me.workspaces === undefined ? [] : me.workspaces,
+        ownedWorkspaces: core.workspaces.owned().filter(([, o]) => o === account.sub).map(([id]) => id),
         invitations: me.invitations === undefined ? [] : me.invitations,
         relay_url: me.relay_url === undefined ? null : me.relay_url,
         loaded: this.mes.has(account.sub) && this.mes.get(account.sub) === null,
@@ -1581,7 +1582,12 @@ export class CloudSync {
         owners.set(w.id, account.sub);
       }
     }
+    const prevOwned = new Map(core.workspaces.owned());
     core.workspaces.setOwners(owners);
+    const ownersChanged =
+      prevOwned.size !== owners.size ||
+      [...owners].some(([id, o]) => prevOwned.get(id) !== o);
+    if (ownersChanged) core.store.invalidate({ topic: "workspaces" });
     if (!hasUnverified) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
       this.#syncAccountSessions();

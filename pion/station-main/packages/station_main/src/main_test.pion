@@ -529,3 +529,214 @@ test "vault.capabilities is honest and vault.run fails closed on unsupported del
     Err(e) => panic("vault.capabilities failed: " + e)
   }
 }
+
+test "hooks_tui_main classifies direct subcommands and .mjs paths without interfering with CLI/run" {
+  match classify_hooks_tui_command("repo-rules-hook") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/repo-rules-hook.mjs") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for POSIX path")
+  }
+  match classify_hooks_tui_command("C:\\app\\repo-rules-hook.mjs") {
+    Some(HooksTuiCommand::RepoRulesHook) => ()
+    _ => panic("expected RepoRulesHook for Windows path")
+  }
+  match classify_hooks_tui_command("subagent-hook") {
+    Some(HooksTuiCommand::SubagentHook) => ()
+    _ => panic("expected SubagentHook for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/subagent-hook.mjs") {
+    Some(HooksTuiCommand::SubagentHook) => ()
+    _ => panic("expected SubagentHook for POSIX path")
+  }
+  match classify_hooks_tui_command("claude-tui") {
+    Some(HooksTuiCommand::ClaudeTui) => ()
+    _ => panic("expected ClaudeTui for direct subcommand")
+  }
+  match classify_hooks_tui_command("/opt/stillfail/assets/agents/claude-tui.mjs") {
+    Some(HooksTuiCommand::ClaudeTui) => ()
+    _ => panic("expected ClaudeTui for POSIX path")
+  }
+  assert_true(classify_hooks_tui_command("run") is None, "run must not match hooks_tui")
+  assert_true(classify_hooks_tui_command("status") is None, "status must not match hooks_tui")
+  assert_true(classify_hooks_tui_command("--version") is None, "--version must not match hooks_tui")
+}
+
+test "hooks_tui_main parses stat_raw, formats RFC 4122 UUID v4, and merges env overrides" {
+  match parse_stat_mtime_is_dir("dir|4096|1|1732678123456|1|2|493") {
+    Some((mt, is_dir)) => assert_true(mt == 1732678123456.0 && is_dir, "dir stat parsed")
+    None => panic("expected valid dir stat")
+  }
+  match parse_stat_mtime_is_dir("file|128|0|1700000000000|1|3|420") {
+    Some((mt, is_dir)) => assert_true(mt == 1700000000000.0 && !is_dir, "file stat parsed")
+    None => panic("expected valid file stat")
+  }
+  assert_true(parse_stat_mtime_is_dir("bad") is None, "malformed stat rejected")
+
+  let raw = Bytes::new(16)
+  for i in 0..<16 {
+    raw[i] = i as Byte
+  }
+  match hooks_uuid_v4_from_bytes(raw) {
+    Some(u) => assert_str_eq(u, "00010203-0405-4607-8809-0a0b0c0d0e0f")
+    None => panic("expected UUID v4")
+  }
+  assert_true(hooks_uuid_v4_from_bytes(Bytes::new(8)) is None, "short bytes rejected")
+
+  let merged = merge_env_overrides(
+    ["PATH=/usr/bin", "STILLFAIL_TUI_PORT=1", "KEEP=yes"],
+    [("STILLFAIL_TUI_PORT", "4321"), ("MCP_DISCOVERY_CACHE", "0")],
+  )
+  assert_true(merged.length() == 4, "merged env length == 4")
+  assert_str_eq(merged[0], "PATH=/usr/bin")
+  assert_str_eq(merged[1], "KEEP=yes")
+  assert_str_eq(merged[2], "STILLFAIL_TUI_PORT=4321")
+  assert_str_eq(merged[3], "MCP_DISCOVERY_CACHE=0")
+}
+
+test "hooks_tui_main resolves self executable path and rewrites native claude-tui node arg" {
+  // Linux prefers /proc/self/exe
+  match resolve_self_executable_with(
+    "stillfail-station-pion",
+    "/empty",
+    Some("/usr/local/bin"),
+    "/",
+    "linux",
+    fn(p : String) -> Option[String] {
+      if p == "/proc/self/exe" { Some("/opt/stillfail/stillfail-station-pion") } else { None }
+    },
+    fn(_p : String) -> Bool { false },
+  ) {
+    Some(p) => assert_str_eq(p, "/opt/stillfail/stillfail-station-pion")
+    None => panic("expected /proc/self/exe resolution on linux")
+  }
+
+  // Relative argv0 resolves against cwd on darwin
+  match resolve_self_executable_with(
+    "./bin/stillfail-station-pion",
+    "/work",
+    None,
+    "/",
+    "darwin",
+    fn(p : String) -> Option[String] {
+      if p == "/work/bin/stillfail-station-pion" { Some("/real/bin/stillfail-station-pion") } else { None }
+    },
+    fn(_p : String) -> Bool { false },
+  ) {
+    Some(p) => assert_str_eq(p, "/real/bin/stillfail-station-pion")
+    None => panic("expected relative argv0 resolution")
+  }
+
+  // Native `claude-tui <real-node> <runner> <claude>` rewrites argv[2] to self_exe
+  match rewrite_native_claude_tui_argv(
+    ["stillfail-station-pion", "claude-tui", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+    Some("/opt/stillfail/stillfail-station-pion"),
+  ) {
+    Ok(a) => {
+      assert_str_eq(a[1], "claude-tui")
+      assert_str_eq(a[2], "/opt/stillfail/stillfail-station-pion")
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Missing self_exe fails closed in native mode
+  assert_true(
+    rewrite_native_claude_tui_argv(
+      ["stillfail-station-pion", "claude-tui", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+      None,
+    ) is Err(_),
+    "missing self_exe must fail closed",
+  )
+
+  // Absolute .mjs path mode keeps caller's node binary and argv[1] intact
+  match rewrite_native_claude_tui_argv(
+    ["stillfail-station-pion", "/opt/assets/claude-tui.mjs", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+    Some("/opt/stillfail/stillfail-station-pion"),
+  ) {
+    Ok(a) => {
+      assert_str_eq(a[1], "/opt/assets/claude-tui.mjs")
+      assert_str_eq(a[2], "/usr/local/bin/node")
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Symlinked relative ./claude-tui.mjs -> claude-tui-v3.mjs keeps original argv[1] for mode dispatch
+  // while resolving callback script to the realpath target.
+  let sym_argv = [
+    "stillfail-station-pion",
+    "./claude-tui.mjs",
+    "/usr/local/bin/node",
+    "/bin/runner",
+    "/bin/claude",
+  ]
+  match rewrite_native_claude_tui_argv(sym_argv, Some("/opt/stillfail/stillfail-station-pion")) {
+    Ok(a) => {
+      assert_str_eq(a[1], "./claude-tui.mjs")
+      assert_str_eq(a[2], "/usr/local/bin/node")
+      assert_true(
+        station_hooks_tui::claude_tui_mode(a) is Some(station_hooks_tui::ClaudeTuiMode::Run(_, _, _, _, _)),
+        "symlinked ./claude-tui.mjs must still dispatch as Run mode",
+      )
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+  match resolve_claude_tui_callback_script(
+    sym_argv,
+    "/opt/station/assets/agents",
+    "/",
+    fn(p : String) -> Option[String] {
+      if p == "/opt/station/assets/agents/claude-tui.mjs" {
+        Some("/real/station/assets/agents/claude-tui-v3.mjs")
+      } else {
+        None
+      }
+    },
+  ) {
+    Some(s) => assert_str_eq(s, "/real/station/assets/agents/claude-tui-v3.mjs")
+    None => panic("expected resolved symlink callback script")
+  }
+  assert_true(
+    resolve_claude_tui_callback_script(
+      ["stillfail-station-pion", "claude-tui", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+      "/empty",
+      "/",
+      fn(_p : String) -> Option[String] { None },
+    ) is None,
+    "native claude-tui mode does not override callback script",
+  )
+
+  // parse_stat_mode only preserves regular file mode; symlinks (0777) and dirs return None
+  match parse_stat_mode("file|128|0|1700000000000|1|3|384") {
+    Some(m) => assert_true(m == 384, "0600 regular file mode parsed")
+    None => panic("expected mode 384")
+  }
+  assert_true(
+    parse_stat_mode("link|12|0|1700000000000|1|3|511") is None,
+    "symlink lstat must return None instead of 0777",
+  )
+  assert_true(
+    parse_stat_mode("dir|4096|1|1700000000000|1|2|493") is None,
+    "dir lstat must return None",
+  )
+
+  // parse_fs_lstat_reply preserves signed fractional mtimeMs (including pre-1970 negative timestamps)
+  match parse_fs_lstat_reply("{\"value\":{\"kind\":\"file\",\"size\":12,\"mode\":420,\"ino\":1,\"mtimeMs\":1732678123456.789,\"ctimeMs\":1732678123456.789}}") {
+    Some((mt, is_dir)) => assert_true(mt == 1732678123456.789 && !is_dir, "positive fractional mtimeMs preserved")
+    None => panic("expected positive fractional mtimeMs from fs.lstat")
+  }
+  match parse_fs_lstat_reply("{\"value\":{\"kind\":\"file\",\"size\":12,\"mode\":420,\"ino\":1,\"mtimeMs\":-500.0,\"ctimeMs\":0}}") {
+    Some((mt, is_dir)) => assert_true(mt == -500.0 && !is_dir, "negative -500ms mtimeMs preserved")
+    None => panic("expected -500.0 mtimeMs")
+  }
+  match parse_fs_lstat_reply("{\"value\":{\"kind\":\"file\",\"size\":12,\"mode\":420,\"ino\":1,\"mtimeMs\":-0.000001,\"ctimeMs\":0}}") {
+    Some((mt, is_dir)) => assert_true(mt == -0.000001 && !is_dir, "negative -1ns mtimeMs preserved")
+    None => panic("expected -0.000001 mtimeMs")
+  }
+  match parse_fs_lstat_reply("{\"value\":{\"kind\":\"dir\",\"size\":4096,\"mode\":493,\"ino\":2,\"mtimeMs\":-1001.0,\"ctimeMs\":0}}") {
+    Some((mt, is_dir)) => assert_true(mt == -1001.0 && is_dir, "negative dir mtimeMs preserved")
+    None => panic("expected dir -1001.0 mtimeMs")
+  }
+  assert_true(parse_fs_lstat_reply("{\"value\":null}") is None, "null fs.lstat returns None")
+}

@@ -81,6 +81,47 @@ fn row_num(r : Map[String, base_codec::Json], k : String) -> Double {
   }
 }
 
+fn col_at(r : Array[base_codec::Json], idx : Int) -> base_codec::Json {
+  if idx < r.length() { r[idx] } else { base_codec::json_null() }
+}
+
+fn col_num(r : Array[base_codec::Json], idx : Int) -> Double {
+  match col_at(r, idx) {
+    base_codec::Json::Num(n, _) => n
+    _ => 0.0
+  }
+}
+
+/// Positional equivalent of `group_of` for `usage_15m_query` rows (columns 0..13),
+/// avoiding per-row `Map` allocations and string hashing.
+fn group_of_row(r : Array[base_codec::Json]) -> Group {
+  let day = match col_at(r, 0) {
+    base_codec::Json::Str(d) => d
+    _ => ""
+  }
+  let fast = match col_at(r, 7) {
+    base_codec::Json::Null => false
+    base_codec::Json::Num(v, _) => v != 0.0
+    _ => true
+  }
+  Group::{
+    day: day,
+    session: col_at(r, 1),
+    thread: col_at(r, 2),
+    person: col_at(r, 3),
+    profile: col_at(r, 4),
+    runtime: col_at(r, 5),
+    model: col_at(r, 6),
+    fast: fast,
+    calls: col_num(r, 8),
+    input: col_num(r, 9),
+    cache_read: col_num(r, 10),
+    cache_write: col_num(r, 11),
+    cache_write_long: col_num(r, 12),
+    output: col_num(r, 13),
+  }
+}
+
 /// store/usage.ts `usageGroupOf`, of a row as a statement gives it.
 pub fn group_of(r : Map[String, base_codec::Json]) -> Group {
   let day = match readops_core::field(r, "day") {
@@ -295,13 +336,13 @@ pub fn usage_groups(
   match usage_15m_query(from, to, offset, viewer) {
     None => Ok([])
     Some((sql, args)) => {
-      let rows = match db.all(sql, args) {
+      let rows = match db.all_rows(sql, args) {
         Ok(rs) => rs
         Err(e) => return Err(readops_core::ReadError::Sql(e))
       }
       let out : Array[Group] = []
       for i in 0..<rows.length() {
-        out.push(group_of(rows[i]))
+        out.push(group_of_row(rows[i]))
       }
       Ok(out)
     }

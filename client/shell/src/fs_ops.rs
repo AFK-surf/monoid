@@ -754,8 +754,8 @@ impl Inner {
             };
             #[cfg(not(unix))]
             let (mode, ino, mtime, ctime) = {
-                let ms = |t: std::io::Result<std::time::SystemTime>| t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64() * 1e3);
-                (if m.permissions().readonly() { 0o444 } else { 0o666 }, 0u64, ms(m.modified()), ms(m.modified()))
+                let ms = m.modified().ok().map_or(0.0, system_time_to_ms);
+                (if m.permissions().readonly() { 0o444 } else { 0o666 }, 0u64, ms, ms)
             };
             return Ok(Some(json!({ "kind": kind, "size": m.len(), "mode": mode, "ino": ino, "mtimeMs": mtime, "ctimeMs": ctime })));
         }
@@ -995,4 +995,42 @@ pub(crate) fn write_temp_exclusive(tmp: &std::path::Path, bytes: &[u8], mode: Op
         return Err(e);
     }
     Ok(())
+}
+
+/// Convert a `SystemTime` to signed fractional Unix milliseconds matching Unix/libuv/Node's
+/// `sec * 1e3 + nsec / 1e6` formula, including pre-1970 negative timestamps (floor-borrowed seconds).
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn system_time_to_ms(t: std::time::SystemTime) -> f64 {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as f64) * 1000.0 + (d.subsec_nanos() as f64) / 1e6,
+        Err(e) => {
+            let d = e.duration();
+            let (secs, nanos) = if d.subsec_nanos() == 0 {
+                (-(d.as_secs() as i64), 0u32)
+            } else {
+                (-(d.as_secs() as i64) - 1, 1_000_000_000u32 - d.subsec_nanos())
+            };
+            (secs as f64) * 1000.0 + (nanos as f64) / 1e6
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_time_to_ms;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn system_time_to_ms_matches_node_signed_and_fractional_precision() {
+        assert_eq!(system_time_to_ms(UNIX_EPOCH), 0.0);
+        assert_eq!(system_time_to_ms(UNIX_EPOCH - Duration::from_millis(500)), -500.0);
+        // 100 ns = 1 Windows FILETIME tick; matches Node v24.22.1 (-1 * 1000 + 999_999_900 / 1e6)
+        assert_eq!(
+            system_time_to_ms(UNIX_EPOCH - Duration::from_nanos(100)).to_bits(),
+            ((-1.0_f64) * 1000.0 + 999_999_900.0_f64 / 1e6).to_bits()
+        );
+        assert_eq!(system_time_to_ms(UNIX_EPOCH - Duration::from_millis(1001)), -1001.0);
+        let pos = UNIX_EPOCH + Duration::new(1_700_000_000, 600);
+        assert_eq!(system_time_to_ms(pos), 1_700_000_000_000.0005);
+    }
 }

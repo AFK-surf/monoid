@@ -258,6 +258,8 @@
   "web-pages.appearance.accent.custom": "自定义",
   "web-pages.appearance.accent.hue": "色相",
   "web-pages.appearance.accent.pink": "粉色",
+  "web-pages.appearance.tint.title": "背景着色",
+  "web-pages.appearance.tint.description": "页面和侧栏的底色带一点主题色；关闭后是纯白和中性灰，不带色相",
   "web-pages.appearance.title": "外观",
   "web-pages.appearance.glass.title": "界面材质",
   "web-pages.appearance.glass.description": "磨砂玻璃更易看清，实色完全不透明",

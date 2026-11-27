@@ -25,6 +25,8 @@ pub(all) struct Fixture {
   mut glass_frost : String
   /// haptics chosen (the prefs' `haptics`: off; "" on)
   mut haptics : String
+  /// the grounds tinted in the colour theme's hue (the prefs' `groundTint`: off; "" on)
+  mut ground_tint : String
   /// automatic updates chosen (the prefs' `appUpdate`: off; "" on)
   mut app_update : String
   /// how the composer sends (prefs `sendKey`): `mod`, or "" Enter
@@ -2304,6 +2306,15 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           "account": account,
           "workspaces": if f.mode == "webdemo" {
             [{ "id": "ws1", "name": "Acme", "stations": 1, "members": 3 }]
+          } else if f.mode == "chat-screen-tab" ||
+            f.mode == "chat-browser-tab" ||
+            f.mode == "chat-browser-agent-driving" ||
+            f.mode.has_prefix("screen-") {
+            [
+              { "id": "ws1", "name": "星火工作室", "stations": 2, "members": 3 },
+              { "id": "ws-1", "name": "星火工作室", "stations": 1, "members": 3 },
+              { "id": "ws2", "name": "个人", "stations": 1, "members": 1 },
+            ]
           } else {
             [
               { "id": "ws1", "name": "星火工作室", "stations": 2, "members": 3 },
@@ -2341,6 +2352,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "glass": if f.glass == "" { Json::null() } else { Json::string(f.glass) },
         "glassFrost": if f.glass_frost == "" { Json::null() } else { Json::string(f.glass_frost) },
         "haptics": Json::string(f.haptics),
+        "groundTint": if f.ground_tint == "" { Json::null() } else { Json::string(f.ground_tint) },
         "appUpdate": Json::string(f.app_update),
         "shareLook": if f.share_look == "" { Json::null() } else { Json::string(f.share_look) },
         "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
@@ -3107,6 +3119,7 @@ fn made_fixture(mode : String) -> Fixture {
     glass_frost: "",
     window_zoom: "",
     haptics: "",
+    ground_tint: "",
     app_update: "",
     send_key: "",
     test_channel: !fixture_stable_mode(mode),
@@ -3150,7 +3163,6 @@ pub fn fixture(mode : String) -> Source {
   // the board shown and its drafts, as the prefs keep them (but board-list: the same chats as Home's list)
   board_prefs_seed(mode)
   paged_rows.clear()
-  fixture_preview(mode)
   if mode == "newchat-preset-many" {
     new_fix.presets.clear()
     new_fix.presets.push_iter(fix_preset_many().iter())
@@ -3160,6 +3172,8 @@ pub fn fixture(mode : String) -> Source {
     new_fix.station_many = true
   }
   let f = made_fixture(mode)
+  @sfbase.workspace_owners_sync_json(fixture_topic_inner(f, "workspaces", {}))
+  fixture_preview(mode)
   if f.mode == "drive-motion" {
     // the folder changing on its own: a note made at 2 s, 发布清单.md taken out at 3.6 s (rows_view's rows coming and
     // going where they are)
@@ -3620,6 +3634,11 @@ pub fn fixture(mode : String) -> Source {
           match field(Some(params), "haptics") {
             Some(String(h)) => f.haptics = h
             Some(Null) => f.haptics = ""
+            _ => ()
+          }
+          match field(Some(params), "groundTint") {
+            Some(String(g)) => f.ground_tint = g
+            Some(Null) => f.ground_tint = ""
             _ => ()
           }
           match field(Some(params), "appUpdate") {

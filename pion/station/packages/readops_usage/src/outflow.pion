@@ -986,6 +986,10 @@ pub fn outflow_messages(
         }
         None => ()
       }
+      match outflow_files(readops_core::field(e, "attachments")) {
+        Some(files) => m.push(("files", files))
+        None => ()
+      }
     }
     messages.push(base_codec::json_obj(m))
   }
@@ -1010,4 +1014,37 @@ pub fn outflow_messages(
     out.push(("messagesOnly", base_codec::json_bool(true)))
   }
   Ok(base_codec::json_obj(out))
+}
+
+fn outflow_files(attachments_json : base_codec::Json) -> Option[base_codec::Json] {
+  let items = match readops_core::json_list(attachments_json, readops_core::parse_attachment) {
+    base_codec::Json::Arr(list) => list
+    _ => return None
+  }
+  if items.length() == 0 {
+    return None
+  }
+  let files : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    let item = items[i]
+    match (readops_core::json_val(item, "name"), readops_core::json_val(item, "size")) {
+      (Some(base_codec::Json::Str(name)), Some(size)) => {
+        let f : Array[(String, base_codec::Json)] = [
+          ("name", base_codec::json_str(name)),
+          ("size", size),
+        ]
+        match readops_core::json_val(item, "width") {
+          Some(w) => f.push(("width", w))
+          None => ()
+        }
+        match readops_core::json_val(item, "height") {
+          Some(h) => f.push(("height", h))
+          None => ()
+        }
+        files.push(base_codec::json_obj(f))
+      }
+      _ => ()
+    }
+  }
+  if files.length() > 0 { Some(base_codec::json_arr(files)) } else { None }
 }

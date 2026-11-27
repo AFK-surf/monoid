@@ -133,15 +133,11 @@ jobs:
             !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          # (pkgs' build apart from the app build's: one key for both, main's pkgs part gone through and its app build
-          # cut, kept a _build without sfapp, and every app build after compiled it again, ~145 s, 134051515574). Its
-          # key is mbui-moon-pkgs-<part>-, not under mbui-moon-build-<part>-: as mbui-moon-build-app-pkgs-<sha> the app
-          # build's restore-keys took it when newer, a _build without sfapp, and every branch's app build compiled cold
-          # past its five minutes (2026-11-17, 134154408897)
-          key: mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}
+          # All five mbui-check build jobs share app-build's single trimmed _build cache (only app-build saves it,
+          # keeping all shared ui/sfbase/sfdesk/sfpages/sfapp .mi/.core/.c without storing five 600-730 MB duplicates
+          # that pushed main past GitHub's 10 GB repo cache quota and evicted Android emulator/image caches).
+          key: mbui-moon-build-app-${{ github.sha }}
           restore-keys: |
-            mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-
-            mbui-moon-build-${{ env.PART }}-
             mbui-moon-build-app-
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
@@ -428,19 +424,21 @@ jobs:
           [ '${{ steps.app-start.outcome }}' != success ] || [ "$went" != skipped ] || went=failure
           [ "$OWN" != a- ] || [ "$went" != failure ] || went=success
           [ ! -d "$S" ] || find "$S" -name '*.lock' -delete
-          # (main's keeps what its runs used for the last three hours, not only this run's: a branch off main of an hour
-          # or two before found few of its units in main's newest store, main having changed them since, and compiled
-          # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
-          # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
-          # (three hours of them: twelve kept 23,351 units, 926 MB, 36-45 s to restore, 2026-11-17)
+          # (main's keeps what its runs used for the last two hours on app-build, and one hour on the four secondary
+          # stores, not only this run's: a branch off main of an hour or two before found few of its units in main's
+          # newest store, main having changed them since, and compiled them all again, 644 of sfapp's 899 in 141 s,
+          # app build 275-276 s of its 5 minutes, core-connect-rows 42934469629 and mbui-app-part-balance, 2026-11-10
+          # and 11, where main's own was 41-227; keeping three hours across all five stores reached 1.44 GB of main's
+          # 10 GB repo cache quota and helped trigger LRU eviction of Android emulator/image caches, 2026-11-27)
           # (a branch's: only a run that built all its programs keeps its units, those it did not use gone (test.sh's
           # MBUI_BUILT_MARK; its tests may have failed: a push that mends a test compiles nothing again); a run cut
           # before then keeps nothing, so no build is finished over several pushes)
           if [ "$OWN" = m- ]; then
-            old="-mmin +180"
+            old="-mmin +60"
+            [ "$PART" = app ] && [ "$GROUP" = build ] && old="-mmin +120"
             [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
-            # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
-            [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
+            # (a cut run's too, those no run used for three hours: kept whole, a cut one saved the 987 MB above)
+            [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +180 -exec rm -rf {} +
           elif [ -d "$S" ] && [ -f "$RUNNER_TEMP/start" ] && [ -f "$RUNNER_TEMP/built" ]; then
             find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -exec rm -rf {} +
           fi
@@ -461,24 +459,19 @@ jobs:
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.BUILD_KEY }}
-      # (moon's own alone: the units' store and each test program's units' directories taken out of it first. Its
-      # paths' exclusions did not hold them: the store by its absolute path, MBC_STORE, 2.0 GB of it restored with
-      # moon's, and five units' directories, 632 MB, past '**/*.mbc/**': most of the cache's 640 MB, where moon's own
-      # was 166 MB (#5429, 2026-11-11). The store was saved above; nothing after this reads either. Only after a run
-      # that went through, or an app or replay build cut at its limit (or red) once moonc had written its test
-      # program's C, with 15 s left to save it: moon's own of that program is then whole, and main's next run compiled
-      # it all again without (44336167298). Any other cut or red run's _build is half made: none kept)
-      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
+      # (moon's own alone, saved once by app-build and shared across all five mbui-check build jobs and app-check:
+      # the units' store, *.mbc, __moonbit_link_core__ (.o archives), *.exe test binaries, and retired/other-part dirs
+      # are removed first. actions/cache path exclusions did not hold the store or *.mbc (#5429, 2026-11-11), and
+      # moon 0.1.20261126 added ~200 MB of __moonbit_link_core__/.exe per job so five separate _build caches took
+      # 3.33 GB on main alone and pushed the repo past GitHub's 10 GB cache quota (2026-11-27). Keeping .mi/.core/.c
+      # and .moon_db lets moon skip moonc on unchanged packages while mbc re-splits and relinks from MBC_STORE. Only
+      # after a run that went through, or an app-build cut at its limit (or red) once moonc had written sfapp's C,
+      # with 15 s left to save it: any other cut or red run's _build is half made and not kept.)
+      - if: always() && env.OWN == 'm-' && env.PART == 'app' && env.GROUP == 'build' && steps.moon.outputs.cache-hit != 'true'
         run: |
           if [ '${{ steps.tests.outcome }}' != success ]; then
-            case "$PART" in
-              app) c=apps/mbui/_build/native/release/test/stillfail/sfapp/sfapp.whitebox_test.c ;;
-              realsize) c=apps/mbui/_build/native/release/test/stillfail/sfapp_realsize/sfapp_realsize.blackbox_test.c ;;
-              pages_test) c=apps/mbui/_build/native/release/test/stillfail/sfapp_pages_test/sfapp_pages_test.blackbox_test.c ;;
-              replay) c=apps/mbui/_build/native/release/test/stillfail/sfreplay/flows/flows.blackbox_test.c ;;
-              *) c= ;;
-            esac
-            if [ "$GROUP" != build ] || [ -z "$c" ] || [ ! -s "$c" ]; then
+            c=apps/mbui/_build/native/release/test/stillfail/sfapp/sfapp.whitebox_test.c
+            if [ ! -s "$c" ]; then
               echo "moon's _build not kept: the tests did not go through and the test program's C was not written"
               exit 0
             fi
@@ -489,9 +482,22 @@ jobs:
             echo "moon's _build kept of a run cut or red after its C was written ($c)"
           fi
           rm -rf "$MBC_STORE"
-          find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
-          echo "MOON_KEY=mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}" >> "$GITHUB_ENV"
-      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true' && env.MOON_KEY != ''
+          find apps/mbui/_build -type d \( -name '*.mbc' -o -name '__moonbit_link_core__' \) -prune -exec rm -rf {} +
+          find apps/mbui/_build -type f -name '*.exe' -delete
+          # Retired module dirs from pre-#8236/#8218/#8534 caches and other parts' test dirs
+          for sub in build test; do
+            rm -rf \
+              "apps/mbui/_build/native/release/$sub/mbui" \
+              "apps/mbui/_build/native/release/$sub/sf-ui" \
+              "apps/mbui/_build/native/release/$sub/liquid-glass" \
+              "apps/mbui/_build/native/release/$sub/fvclient"
+          done
+          rm -rf \
+            apps/mbui/_build/native/release/test/stillfail/sfapp_pages_test \
+            apps/mbui/_build/native/release/test/stillfail/sfapp_realsize \
+            apps/mbui/_build/native/release/test/stillfail/sfreplay
+          echo "MOON_KEY=mbui-moon-build-app-${{ github.sha }}" >> "$GITHUB_ENV"
+      - if: always() && env.OWN == 'm-' && env.PART == 'app' && env.GROUP == 'build' && steps.moon.outputs.cache-hit != 'true' && env.MOON_KEY != ''
         uses: actions/cache/save@v4
         timeout-minutes: 2
         continue-on-error: true
@@ -624,9 +630,8 @@ jobs:
             !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          key: mbui-moon-build-replay-${{ github.sha }}
+          key: mbui-moon-build-app-${{ github.sha }}
           restore-keys: |
-            mbui-moon-build-replay-
             mbui-moon-build-app-
       - run: bash apps/mbui/scripts/moon-mtimes.sh
       - name: The mbui app's check (detlint, then native type-checked)

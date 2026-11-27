@@ -615,6 +615,7 @@ fn settings_children_of(
       let a : Array[(String, String, @settings.Route, String)] = [
         ("theme", @sf.t("web-pages.appearance.theme.title"), Appearance, "深色 浅色 跟随系统 暗黑 亮色 夜间 theme dark light system"),
         ("accent", @sf.t("web-pages.appearance.accent.title"), Appearance, "强调色 主题色 颜色 配色 橙 蓝 绿 紫 粉 五彩 随机 accent color hue rainbow multicolor"),
+        ("tint", @sf.t("web-pages.appearance.tint.title"), Appearance, "背景色 底色 纯白 白色 灰色 中性 无色相 不着色 background tint neutral white grey gray plain"),
         ("fonts", @sf.t("web-pages.appearance.fonts.title"), Fonts, "正文字体 代码字体 等宽 字号 字体大小 font typeface monospace size"),
         ("glass", @sf.t("web-pages.appearance.glass.title"), Appearance, "界面材质 液态玻璃 磨砂玻璃 实色 玻璃 磨砂 毛玻璃 透明 清晰度 surfaces material liquid glass frosted solid"),
         ("motion", @sf.t("web-pages.appearance.motion.title"), Appearance, "动效 动画 减弱动态效果 过渡 animation motion reduce"),

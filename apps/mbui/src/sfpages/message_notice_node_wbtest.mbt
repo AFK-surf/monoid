@@ -17,6 +17,7 @@ fn nt_msg(
   link? : Int = -1,
   profile_action? : String = "",
   profile? : String = "p1",
+  software? : Json? = None,
   install? : Bool = false,
   reportable? : Bool = false,
   retry? : Bool = false,
@@ -43,6 +44,9 @@ fn nt_msg(
   }
   if profile_action != "" {
     n["profileAction"] = Json::string(profile_action)
+  }
+  if software is Some(sw) {
+    n["software"] = sw
   }
   if retry {
     n["retrySession"] = "s-c1"
@@ -238,6 +242,37 @@ fn nt_cases() -> Array[(String, Message, Json?, Bool)] {
     ("profile action open", nt_msg(words="「Gemini-Pro」认证失败", failed=true, detail="401 UNAUTHENTICATED", profile_action="重新登录"), None, true),
     ("profile action reportable", nt_msg(words="「Gemini-Pro」认证失败", failed=true, reportable=true, profile_action="重新登录"), None, false),
     ("profile proxy", nt_msg(words="模型服务不支持此 station 所在地区", failed=true, profile_action="设置代理"), None, false),
+    (
+      "software repair",
+      nt_msg(
+        words="无法启动 agent：Codex 缺少执行组件，无法使用工具",
+        failed=true,
+        reportable=true,
+        software=Some({ "runtime": "codex", "kind": "repair", "action": "用 npm 修复" }),
+      ),
+      None,
+      false,
+    ),
+    (
+      "software updating",
+      nt_msg(
+        words="无法启动 agent：Codex 缺少执行组件，无法使用工具",
+        failed=true,
+        software=Some({ "runtime": "codex", "kind": "updating", "action": "正在修复…" }),
+      ),
+      None,
+      false,
+    ),
+    (
+      "software settings",
+      nt_msg(
+        words="无法启动 agent：Codex 缺少执行组件，无法使用工具",
+        failed=true,
+        software=Some({ "runtime": "codex", "kind": "settings", "action": "软件设置" }),
+      ),
+      None,
+      false,
+    ),
     ("chat opened", nt_opened(), None, false),
     // (eleven failures said alike, folded: ×11 after its words, before what it ends in; its words cut short, never ×11
     // nor 重试 or 上报)
@@ -281,7 +316,7 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
   let kinds : Array[(String, (String) -> Bool, Int)] = [
     ("time", fn(f) { room(f, ["1 分钟前"], "message_head_node.mbt") }, time),
     ("copy", fn(f) { room(f, ["复制"], "message_notice_node.mbt") }, copy),
-    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号", "重新登录", "设置代理"], "message_notice_node.mbt") }, act),
+    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号", "重新登录", "设置代理", "用 npm 修复", "更新", "软件设置"], "message_notice_node.mbt") }, act),
     (
       "dot",
       // (the dot is the library's notice_end_action_node's, asked for by the notice's page)
@@ -310,14 +345,25 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
 fn nt_known(c : (String, Message, Json?, Bool), scale : Double) -> (Int, Int, Int, Int) {
   let (_, m, doing, open) = c
   let small = scale == 1.0
-  let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.notice_profile_action != "" || m.reportable) &&
+  let sw_active = match m.notice_software {
+    Some(sw) => sw.action != "" && sw.kind != "updating"
+    None => false
+  }
+  let sw_shown = match m.notice_software {
+    Some(sw) => sw.action != ""
+    None => false
+  }
+  let ends = (m.install is Some(_) || sw_shown || notice_after(m) is Some(_) || m.notice_profile_action != "" || m.reportable) &&
+    m.notice_short == "" &&
+    m.notice_lines.is_empty()
+  let interactive = (m.install is Some(_) || sw_active || notice_after(m) is Some(_) || m.notice_profile_action != "" || m.reportable) &&
     m.notice_short == "" &&
     m.notice_lines.is_empty()
   (
     0,
     0,
     // (open, the pill is as tall as what it holds: its end has its room)
-    if small && ends && doing is None && !open { 1 } else { 0 },
+    if small && interactive && doing is None && !open { 1 } else { 0 },
     if ends { 1 } else { 0 },
   )
 }
@@ -747,4 +793,66 @@ test "重试 and · 上报 on a folded notice act on the last failure it folds (
   })
   t.run_for(@ui.move_most_ms)
   assert_true(t.get(Button, label="上报").disabled, msg="under way by its last's seq")
+}
+
+///|
+test "a harness failure notice's software shortcut repairs, updates, disables while running, or opens station settings" {
+  // repair: sends software.update with repair=true, wins over 上报, and does not open the pill.
+  let calls : Array[(String, Json)] = []
+  let opened : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  let words = "无法启动 agent：Codex 缺少执行组件，无法使用工具"
+  let t = nt_new(760.0, nt_src(None, calls), fn() {
+    nt_msg(words~, failed=true, reportable=true, software=Some({ "runtime": "codex", "kind": "repair", "action": "用 npm 修复" }))
+  }, opened~)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="上报") is None)
+  t.click(Button, label="用 npm 修复")
+  t.frame()
+  let sent = calls.filter(fn(c) { c.0 == "software.update" })
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].1), "station"), "ws1/st1")
+  assert_eq(text(Some(sent[0].1), "id"), "codex")
+  assert_true(flag(Some(sent[0].1), "repair"))
+  assert_eq(opened.get("ts9"), None)
+
+  // update: sends software.update without repair.
+  let up_calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, up_calls), fn() {
+    nt_msg(words="Codex 更新后仍不支持此模型", failed=true, software=Some({ "runtime": "codex", "kind": "update", "action": "更新" }))
+  })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更新")
+  t.frame()
+  let up_sent = up_calls.filter(fn(c) { c.0 == "software.update" })
+  assert_eq(up_sent.length(), 1)
+  assert_eq(text(Some(up_sent[0].1), "id"), "codex")
+  assert_false(flag(Some(up_sent[0].1), "repair"))
+
+  // updating: disabled and sends nothing.
+  let prog_calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, prog_calls), fn() {
+    nt_msg(words~, failed=true, software=Some({ "runtime": "codex", "kind": "updating", "action": "正在修复…" }))
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.get(Button, label="正在修复…").disabled)
+  assert_eq(prog_calls.length(), 0)
+
+  // settings: opens the station's page without calling software.update.
+  let set_calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, set_calls), fn() {
+    nt_msg(words~, failed=true, software=Some({ "runtime": "codex", "kind": "settings", "action": "软件设置" }))
+  })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="软件设置")
+  t.frame()
+  assert_true(app.nav.top() == Setting(@settings.Route::Station("ws1/st1")))
+  assert_eq(set_calls.length(), 0)
+
+  // offline disables repair/update, while settings stays openable.
+  let off_calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, off_calls), fn() {
+    nt_msg(words~, failed=true, software=Some({ "runtime": "codex", "kind": "repair", "action": "用 npm 修复" }))
+  }, view=nt_view(offline=true))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.get(Button, label="用 npm 修复").disabled)
 }

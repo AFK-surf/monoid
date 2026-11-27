@@ -24,6 +24,7 @@ pub struct Known {
   pub now : Double
   mut cached_places : Option[Map[String, Place]]
   books : Map[String, js_json::JValue]
+  book_indexes : Map[String, Map[String, js_json::JValue]]
   mut cached_config : Option[(Array[(String, String)], Bool)]
   mut has_runtime_sessions_ordered : Option[Bool]
   pub original_runtimes : Map[String, base_codec::Json]
@@ -87,6 +88,7 @@ pub fn Known::of(
     now: now,
     cached_places: None,
     books: Map::new(),
+    book_indexes: Map::new(),
     cached_config: None,
     has_runtime_sessions_ordered: None,
     original_runtimes: Map::new(),
@@ -270,6 +272,43 @@ pub fn Known::book(self : Known, platform : String) -> Result[js_json::JValue, R
   Ok(b)
 }
 
+fn Known::book_entry(self : Known, platform : String, key : String) -> Result[Option[js_json::JValue], ReadError] {
+  let file = if platform == "feishu" {
+    "feishu-names.json"
+  } else if platform == "comma" {
+    "comma-names.json"
+  } else if platform == "group" {
+    "group-names.json"
+  } else {
+    "slack-names.json"
+  }
+  match self.book_indexes.get(file) {
+    Some(idx) => return Ok(idx.get(key))
+    None => ()
+  }
+  let bk = match self.book(platform) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let idx : Map[String, js_json::JValue] = Map::new()
+  match bk {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        if !has_lone_surrogate_units(k) {
+          let sk = js_json::sanitize_str(k)
+          if !idx.contains(sk) {
+            idx.set(sk, v)
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  self.book_indexes.set(file, idx)
+  Ok(idx.get(key))
+}
+
 pub fn Known::config(self : Known) -> Result[(Array[(String, String)], Bool), ReadError] {
   match self.cached_config {
     Some(c) => return Ok(c)
@@ -363,11 +402,11 @@ pub fn Known::person(
     Some(p) => p.id
     None => "?"
   }
-  let bk = match self.book(book_name) {
-    Ok(b) => b
+  let entry = match self.book_entry(book_name, "u:" + place_id + ":" + user) {
+    Ok(e) => e
     Err(e) => return Err(e)
   }
-  let person = jget(jget(Some(bk), "u:" + place_id + ":" + user), "person")
+  let person = jget(entry, "person")
   let name = match str_of(jget(person, "name")) {
     Some(n) => n
     None => return Ok(None)
@@ -404,11 +443,11 @@ pub fn Known::channel(
     Some(p) => p.id
     None => "?"
   }
-  let bk = match self.book(book_name) {
-    Ok(b) => b
+  let entry = match self.book_entry(book_name, "c:" + place_id + ":" + js_text(channel)) {
+    Ok(e) => e
     Err(e) => return Err(e)
   }
-  match str_of(jget(jget(Some(bk), "c:" + place_id + ":" + js_text(channel)), "channel")) {
+  match str_of(jget(entry, "channel")) {
     Some(name) => Ok(base_codec::json_str(name))
     None => Ok(base_codec::json_null())
   }

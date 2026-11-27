@@ -123,16 +123,12 @@ fn station_view_node(
     same=fn(a, b) { a == b },
   )
   if bones is None && address == this_machine() {
-    fn again(at : Double) -> Unit {
-      p.at_moment(at + @settings.local_read_ms, later=true, fn() {
-        let said = @hostapi.app_said("local_station")
-        host.set(said)
-        @settings.local_station_heard(said)
-        again(at + @settings.local_read_ms)
-      })
-      |> ignore
-    }
-    again(p.logic_at())
+    p.while_active_every(@settings.local_read_ms, fn() {
+      let said = @hostapi.app_said("local_station")
+      host.set(said)
+      @settings.local_station_heard(said)
+    })
+    |> ignore
   }
   // (the part shown, by station: the settings' own, which a login's card also moves to 设置)
   let part = fn() {

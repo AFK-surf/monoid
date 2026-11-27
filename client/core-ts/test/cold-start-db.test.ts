@@ -5844,3 +5844,44 @@ test("R24 regression: in-place re-login with persistent IOERR or unloaded device
     await core.close();
   }
 });
+
+test("workspaces topic exposes authoritative ownedWorkspaces and invalidates on recomputeOwners change", async () => {
+  const { host } = setupTwoAccountHost();
+  // Stay offline so seeded DB rows stay intact and recovery is purely driven by local DB open + recomputeOwners.
+  host.fetch = () => Effect.fail(new HostError("offline"));
+  const seed = await Core.create(host, { clock: host.time.clock });
+  await run(seed.inner.data.openAccounts(["s1", "s2"]));
+  seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+  seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-unowned", name: "Unowned" }] });
+  await run(seed.inner.data.written);
+  await seed.close();
+  // Persist only ws2 -> s2 (so s2 is primary and s1 starts deferred, while ws-unowned has no trusted persisted owner yet).
+  host.store("device/choice", { workspace: "ws2", workspaceOwners: { ws2: "s2" } });
+
+  const core = await Core.create(host, { clock: host.time.clock });
+  assert.equal(core.inner.data.isDeferred("s1"), true, "s1 starts deferred on cold start");
+  const ui = core.connect();
+  const held = new Map<number, unknown>();
+  core.receive(ui, { kind: "subscribe", id: 77, subscribe: { topic: "workspaces" } });
+  await host.settle();
+  apply(host, held);
+  const initial = held.get(77) as Array<{ account: { sub: string }; ownedWorkspaces?: string[] }> | undefined;
+  assert.ok(Array.isArray(initial), "initial workspaces snapshot must be pushed");
+  const initS1 = initial.find((r) => r.account.sub === "s1");
+  const initS2 = initial.find((r) => r.account.sub === "s2");
+  assert.deepEqual(initS1?.ownedWorkspaces, [], "deferred s1 must expose empty ownedWorkspaces");
+  assert.deepEqual(initS2?.ownedWorkspaces, ["ws2"], "s2 must expose persisted ws2 but NOT unverified ws-unowned");
+
+  // Open s1 DB -> recomputeOwners updates owners and automatically invalidates { topic: "workspaces" }.
+  await run(core.inner.data.openAccounts(["s1", "s2"]));
+  await host.settle();
+  apply(host, held);
+  const updated = held.get(77) as Array<{ account: { sub: string }; ownedWorkspaces?: string[] }> | undefined;
+  assert.ok(Array.isArray(updated), "recomputeOwners owner change must invalidate and re-push workspaces topic");
+  const s1Row = updated.find((r) => r.account.sub === "s1");
+  const s2Row = updated.find((r) => r.account.sub === "s2");
+  assert.ok(s1Row?.ownedWorkspaces?.includes("ws1"), "s1 must own ws1 after DB recovery");
+  assert.ok(s2Row?.ownedWorkspaces?.includes("ws2"), "s2 must own ws2 after s1 DB recovery");
+  assert.ok(s2Row?.ownedWorkspaces?.includes("ws-unowned"), "s2 must own ws-unowned after s1 DB recovery");
+  await core.close();
+});

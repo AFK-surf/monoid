@@ -851,6 +851,18 @@ test("prefs_are_kept_on_the_device_and_moved_in_once_without_writing_over", asyn
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).accent, undefined);
+  // The grounds: untinted (`off`), or (none) in the colour theme's hue.
+  set(39, { groundTint: "off" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).groundTint, "off");
+  set(40, { groundTint: "on" });
+  await host.settle();
+  assert.equal(host.takeEmitted().filter(([, m]) => "error" in m && m.id === 40).length, 1);
+  set(41, { groundTint: null });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).groundTint, undefined);
   set(7,{ invite: "ABCD-EFGH" });
   await host.settle();
   apply(host, values);

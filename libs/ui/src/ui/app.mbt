@@ -1320,7 +1320,7 @@ fn pointer_event_now(
   view_point_said(kind, x, y)
   // (what the tree made once routes elsewhere than to the old view (a press on a node of its own, one outside the old
   // view's island) is no input of the old view's: taped alone, view_host.mbt)
-  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button, brings=!batched) {
+  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button, mods~, brings=!batched) {
     pointed()
     input_taped("pointer", h_event_time(), args)
     // (a press the window's tree took is outside every layer of the old frame's: what it dismisses so, at its moment,
@@ -1461,7 +1461,7 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
           select_none()
         }
       } else {
-        c.select_press(x, y, c.clicks)
+        c.select_press(x, y, c.clicks, mods~)
         match c.editors.get(c.focus_allowed()) {
           Some(st) if picked.from.base != NoSel => st.anchor = st.caret
           _ => ()

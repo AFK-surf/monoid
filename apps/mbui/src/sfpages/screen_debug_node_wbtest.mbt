@@ -585,3 +585,72 @@ let logs_wide_logs_said : Array[(String, String, Double, Double, Double, Double)
   ("Radio", "设备", 977.0, 91.0, 50.0, 30.0),
   ("Button", "复制日志", 870.0, 128.0, 384.0, 24.0),
 ]
+
+///|
+test "debug_lines_node clears timeline when parked and preserves chained after-answer + d.asking dedup on wake" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let log_calls : Array[(Result[Json, Json]) -> Unit] = []
+  let base = @sffixture.fixture("settings")
+  @sfbase.workspace_owner_set("ws-1", "u1")
+  let src : Source = {
+    ..base,
+    call: fn(name, _params, done) {
+      if name == "screen.logs" {
+        log_calls.push(done)
+      } else {
+        done(Ok(Json::null()))
+      }
+    },
+  }
+  let s = screen_sess(src, "ws-1/st-1", "sim:1")
+  let u = screen_ui(screen_key("ws-1/st-1", "sim:1"))
+  let d = u.logs
+  let active = @signals.signal(true)
+  let logs_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { active.get() }, fn(slot, on) {
+        if on {
+          logs_root.val = Some(slot)
+          debug_lines_node(slot, s, d)
+        }
+      })
+    },
+    w=800.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  let lv = logs_root.val.unwrap()
+  // First ask fired immediately on mount, waiting for answer -> 0 timers yet while in-flight.
+  assert_eq(log_calls.length(), 1)
+  assert_true(d.asking)
+  // Answer arrives -> schedules next poll via at_moment_active.
+  (log_calls[0])(Ok({ "lines": Json::array([]) }))
+  t.draw()
+  assert_false(d.asking)
+  assert_true(t.subtree_timeline_count(lv) > 0, msg="active debug_lines_node should schedule next poll after answer")
+  // Park -> timeline entries cleared to 0, advancing time does NOT fire extra asks.
+  active.set(false)
+  t.draw()
+  assert_eq(t.subtree_timeline_count(lv), 0, msg="parked debug_lines_node must have 0 timeline entries")
+  t.run_for(debug_logs_ms * 3.0)
+  assert_eq(log_calls.length(), 1, msg="parked debug_lines_node must not poll while parked")
+  // Wake while d.asking is true (another pane already asking) -> dedups without firing duplicate call.
+  d.asking = true
+  active.set(true)
+  t.draw()
+  t.run_for(debug_logs_ms)
+  assert_eq(log_calls.length(), 1, msg="d.asking dedup must prevent duplicate screen.logs call")
+  // Once d.asking clears, next scheduled tick fires chained ask.
+  d.asking = false
+  t.run_for(debug_logs_ms)
+  assert_eq(log_calls.length(), 2, msg="debug_lines_node should resume chained polling once d.asking clears")
+  @ui.run_let_go()
+}

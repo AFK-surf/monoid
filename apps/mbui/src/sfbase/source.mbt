@@ -297,6 +297,10 @@ fn topic_signal(src : Source, name : String, params : Map[String, Json], said : 
     if !held_building.val && src.topic_scope is None {
       return None
     }
+    // A Raw read on a parked view source must never bypass the parked guard via a watched Graph holder.
+    if src.topic_scope is Some(_) && !held_building.val && source_parked_raw_blocked(src, name) {
+      return Some({ value: None, error: None, version: 0, waiting: false })
+    }
     // An event in a build can read a topic the graph already holds. Use that value without adding a manual hold. So
     // can an event of a view's (a press on what its page shows, outside any build) through that view's source: as it
     // is then, held no longer than the graph holds it, not for as long as the view lives (Source::owned_by's raw read).
@@ -445,9 +449,501 @@ fn last_put(src : Source, key : String, value : Json) -> Unit {
 let last_accounts : Ref[Json?] = Ref(None)
 
 ///|
+/// Per-workspace owning account (`ws_id -> sub/email`), updated outside computed getters from `workspaces` topic.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_owners : Map[String, String] = Map([])
+
+///|
+/// Whether at least one complete `workspaces` snapshot has been synced in this run.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_owners_seen_snapshot : Ref[Bool] = Ref(false)
+
+///|
+/// Monotonic reactive version bumped whenever workspace ownership or active account list changes,
+/// allowing `lone_tree` and standalone windows to re-evaluate ownership reactively.
+// kept across runs: put back as a run begins (last_reset)
+pub let workspace_owners_version : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Whether at least one complete `workspaces` snapshot has been synced in this run.
+pub fn workspace_owners_synced() -> Bool {
+  workspace_owners_seen_snapshot.val
+}
+
+///|
+/// Explicit owning account of workspace `ws` without falling back to `account_principal_sig`.
+/// Returns `None` if `ws` is revoked or has no explicit owner entry yet.
+pub fn workspace_explicit_owner_of(ws : String) -> String? {
+  if ws == "" || workspace_is_revoked(ws) {
+    return None
+  }
+  match workspace_owners.get(ws) {
+    Some(owner) if owner != "" => Some(owner)
+    _ => None
+  }
+}
+
+///|
+/// Workspaces that disappeared from a complete `workspaces` snapshot (no signed-in account still has access).
+/// Distinguished from "snapshot not yet received" so `workspace_owner_of` never falls back to `account_principal_sig`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_revoked : Map[String, Bool] = Map([])
+
+///|
+/// Workspaces currently pending resolution under at least one still-loading (`loaded=false`) account.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_pending_ws : Map[String, Bool] = Map([])
+
+///|
+/// Workspaces that entered `workspace_pending_ws` specifically because a previous confirmed owner explicitly
+/// lost access (or was blocked) while a candidate fallback account was still `loaded=false`. Distinguished
+/// from cold-start Core unallocated pending so offline DB recovery can immediately promote `Owned(B)` while
+/// explicit-loss pending stays idempotently `Pending` until B confirms with `loaded=true`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_pending_explicit_loss : Map[String, Bool] = Map([])
+
+///|
+/// Accounts whose latest `workspaces` snapshot entry has `loaded=false`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_pending_owners : Map[String, Bool] = Map([])
+
+///|
+/// Accounts whose latest `workspaces` snapshot entry has `loaded=true`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_loaded_owners : Map[String, Bool] = Map([])
+
+///|
+/// Per-workspace membership map recorded across all `loaded=true` accounts (even when the workspace is also
+/// in `workspace_pending_ws`), distinguishing "loaded and still a member" from "loaded and lost access".
+// kept across runs: put back as a run begins (last_reset)
+let workspace_loaded_members : Map[String, Map[String, Bool]] = Map([])
+
+///|
+/// Whether workspace `ws` is currently pending under an unloaded account (no definitive owner confirmed yet).
+pub fn workspace_is_pending(ws : String) -> Bool {
+  ws != "" && workspace_pending_ws.contains(ws)
+}
+
+///|
+/// Whether workspace `ws` is currently pending under an unloaded account and `expected` has not been proven
+/// to have lost access (either `expected` is itself still loading, or `expected` is loaded and still lists `ws`).
+/// Signed-out accounts (absent from both `workspace_pending_owners` and `workspace_loaded_members`) return `false`.
+pub fn workspace_owner_pending_for(ws : String, expected : String) -> Bool {
+  guard ws != "" && expected != "" && workspace_pending_ws.contains(ws) else { return false }
+  if workspace_pending_owners.contains(expected) {
+    return true
+  }
+  match workspace_loaded_members.get(ws) {
+    Some(m) => m.contains(expected)
+    None => false
+  }
+}
+
+///|
+/// Whether workspace `ws` has been revoked (disappeared from the latest complete `workspaces` snapshot).
+pub fn workspace_is_revoked(ws : String) -> Bool {
+  ws != "" && workspace_revoked.get(ws) == Some(true)
+}
+
+///|
+/// Currently signed-in account subs (updated outside computed getters by `sfcore`'s `accounts_told`).
+// kept across runs: put back as a run begins (last_reset)
+let active_account_subs : Ref[Array[String]] = Ref([])
+
+///|
+/// Fallback single-account principal when a workspace owner has not been populated yet.
+// kept across runs: put back as a run begins (last_reset)
+pub let account_principal_sig : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+
+///|
+/// Synchronous hooks notified when a specific account `removed_account` is signed out or replaced.
+// kept across runs: registered once at package init
+let account_revoke_listeners : Array[(String) -> Unit] = []
+
+///|
+/// Synchronous hooks notified when workspace `ws` changes owner from `old_owner` to `new_owner`.
+// kept across runs: registered once at package init
+let workspace_owner_change_listeners : Array[(String, String, String) -> Unit] = []
+
+///|
+/// Owning account of workspace `ws`: explicit owner when confirmed, `"\u{3}revoked"` when revoked or missing
+/// from a complete snapshot, `"\u{3}pending"` while awaiting an unloaded higher-priority/candidate account, and
+/// falling back to `account_principal_sig` only before any `workspaces` snapshot has been synced.
+pub fn workspace_owner_of(ws : String) -> String {
+  if ws != "" {
+    if workspace_revoked.get(ws) == Some(true) {
+      return "\u{3}revoked"
+    }
+    match workspace_owners.get(ws) {
+      Some(owner) if owner != "" => return owner
+      _ => ()
+    }
+    if workspace_pending_ws.contains(ws) {
+      return "\u{3}pending"
+    }
+    if workspace_owners_seen_snapshot.val {
+      return "\u{3}revoked"
+    }
+  }
+  account_principal_sig.untracked()
+}
+
+///|
+/// Set the owning account for workspace `ws` (outside computed getters). If `ws` previously belonged to a different
+/// owner, synchronously revokes only `(ws, old_owner)` resources.
+pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
+  guard ws != "" else { return }
+  if owner != "" {
+    workspace_revoked.remove(ws)
+    workspace_pending_ws.remove(ws)
+    workspace_pending_explicit_loss.remove(ws)
+  }
+  match workspace_owners.get(ws) {
+    Some(prev) =>
+      if prev != owner {
+        workspace_owners[ws] = owner
+        workspace_owners_version.set(workspace_owners_version.untracked() + 1)
+        for f in workspace_owner_change_listeners {
+          f(ws, prev, owner)
+        }
+      }
+    None => {
+      workspace_owners[ws] = owner
+      workspace_owners_version.set(workspace_owners_version.untracked() + 1)
+      let fallback = account_principal_sig.untracked()
+      if fallback != "" && fallback != owner {
+        for f in workspace_owner_change_listeners {
+          f(ws, fallback, owner)
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Sync per-workspace account ownership from a complete `workspaces` topic payload (called from reactive effects,
+/// never inside a computed getter). Workspaces that disappeared from all signed-in accounts are marked revoked and
+/// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
+pub fn workspace_owners_sync_json(v : Json?) -> Unit {
+  guard v is Some(Array(accounts)) else { return }
+  let seen : Map[String, String] = Map([])
+  let present_owners : Map[String, Bool] = Map([])
+  let pending_owners : Map[String, Bool] = Map([])
+  let pending_ws : Map[String, Bool] = Map([])
+  let loaded_owners : Map[String, Bool] = Map([])
+  let loaded_members : Map[String, Map[String, Bool]] = Map([])
+  let next_explicit_loss : Map[String, Bool] = Map([])
+  let core_owned : Map[String, (String, Bool)] = Map([])
+  let listed_ws : Map[String, Bool] = Map([])
+  let mut has_core_owned = false
+  for a in accounts {
+    if field(Some(a), "ownedWorkspaces") is Some(Array(_)) {
+      has_core_owned = true
+      break
+    }
+  }
+  // Pass 1: collect all present/loaded/pending accounts and Core-declared ownership without making ownership decisions,
+  // eliminating any sensitivity to account ordering ([A, B] vs [B, A]).
+  for a in accounts {
+    let s = Some(a)
+    let acc = field(s, "account")
+    let sub = text(acc, "sub")
+    let owner = if sub != "" { sub } else { text(acc, "email") }
+    if owner == "" {
+      continue
+    }
+    present_owners[owner] = true
+    let is_blocked = match field(s, "blocked") {
+      Some(String(b)) => b != ""
+      Some(True) => true
+      _ => false
+    }
+    if is_blocked {
+      loaded_owners[owner] = true
+      continue
+    }
+    let acc_loaded = match field(s, "loaded") {
+      Some(False) => false
+      _ => true
+    }
+    let ws_list = items(s, "workspaces")
+    if !acc_loaded {
+      pending_owners[owner] = true
+    } else {
+      loaded_owners[owner] = true
+      for w in ws_list {
+        let id = text(Some(w), "id")
+        if id != "" {
+          match loaded_members.get(id) {
+            Some(m) => m[owner] = true
+            None => {
+              let m : Map[String, Bool] = Map([])
+              m[owner] = true
+              loaded_members[id] = m
+            }
+          }
+        }
+      }
+    }
+    if has_core_owned {
+      for ow in items(s, "ownedWorkspaces") {
+        guard ow is String(id) && id != "" else { continue }
+        if !core_owned.contains(id) {
+          core_owned[id] = (owner, acc_loaded)
+        }
+      }
+      for w in ws_list {
+        let id = text(Some(w), "id")
+        if id != "" {
+          listed_ws[id] = true
+        }
+      }
+    }
+  }
+  // Pass 2: decide Owned / Pending / Revoked with complete present_owners, loaded_owners & loaded_members sets.
+  let is_loaded_member = fn(id : String, owner : String) -> Bool {
+    match loaded_members.get(id) {
+      Some(m) => m.contains(owner)
+      None => false
+    }
+  }
+  let prev_owner_lost = fn(id : String, candidate : String) -> Bool {
+    match workspace_owners.get(id) {
+      Some(p) if p != candidate =>
+        !present_owners.contains(p) || (loaded_owners.contains(p) && !is_loaded_member(id, p))
+      _ => false
+    }
+  }
+  if has_core_owned {
+    for id, pair in core_owned {
+      let (owner, acc_loaded) = pair
+      if !acc_loaded && (workspace_pending_explicit_loss.contains(id) || prev_owner_lost(id, owner)) {
+        pending_ws[id] = true
+        next_explicit_loss[id] = true
+      } else {
+        seen[id] = owner
+      }
+    }
+    for id, _ in listed_ws {
+      if !seen.contains(id) && !pending_ws.contains(id) {
+        pending_ws[id] = true
+        if workspace_pending_explicit_loss.contains(id) || prev_owner_lost(id, "") {
+          next_explicit_loss[id] = true
+        }
+      }
+    }
+  } else {
+    let mut earlier_unloaded_empty = false
+    for a in accounts {
+      let s = Some(a)
+      let acc = field(s, "account")
+      let sub = text(acc, "sub")
+      let owner = if sub != "" { sub } else { text(acc, "email") }
+      if owner == "" {
+        continue
+      }
+      let is_blocked = match field(s, "blocked") {
+        Some(String(b)) => b != ""
+        Some(True) => true
+        _ => false
+      }
+      if is_blocked {
+        continue
+      }
+      let acc_loaded = match field(s, "loaded") {
+        Some(False) => false
+        _ => true
+      }
+      let ws_list = items(s, "workspaces")
+      if !acc_loaded {
+        if ws_list.is_empty() {
+          earlier_unloaded_empty = true
+        }
+        for w in ws_list {
+          let id = text(Some(w), "id")
+          if id != "" && !seen.contains(id) {
+            if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+              pending_ws[id] = true
+            } else if workspace_pending_ws.contains(id) || prev_owner_lost(id, owner) {
+              pending_ws[id] = true
+              if workspace_pending_explicit_loss.contains(id) || prev_owner_lost(id, owner) {
+                next_explicit_loss[id] = true
+              }
+            } else {
+              seen[id] = owner
+            }
+          }
+        }
+        continue
+      }
+      for w in ws_list {
+        let id = text(Some(w), "id")
+        if id != "" && !seen.contains(id) && !pending_ws.contains(id) {
+          if earlier_unloaded_empty && workspace_owners.get(id) != Some(owner) {
+            pending_ws[id] = true
+          } else {
+            seen[id] = owner
+          }
+        }
+      }
+    }
+  }
+  workspace_owners_seen_snapshot.val = true
+  let prev_pending_ws = workspace_pending_ws.keys().collect()
+  workspace_pending_ws.clear()
+  for id, _ in pending_ws {
+    if !seen.contains(id) {
+      workspace_pending_ws[id] = true
+      workspace_revoked.remove(id)
+    }
+  }
+  workspace_pending_explicit_loss.clear()
+  for id, _ in next_explicit_loss {
+    if workspace_pending_ws.contains(id) {
+      workspace_pending_explicit_loss[id] = true
+    }
+  }
+  workspace_pending_owners.clear()
+  for owner, _ in pending_owners {
+    workspace_pending_owners[owner] = true
+  }
+  workspace_loaded_owners.clear()
+  for owner, _ in loaded_owners {
+    workspace_loaded_owners[owner] = true
+  }
+  workspace_loaded_members.clear()
+  for id, m in loaded_members {
+    workspace_loaded_members[id] = m
+  }
+  for ws in workspace_owners.keys().collect() {
+    if !seen.contains(ws) {
+      let old_owner = workspace_owners.get(ws).unwrap_or("")
+      workspace_owners.remove(ws)
+      if !pending_ws.contains(ws) {
+        workspace_revoked[ws] = true
+      }
+      for f in workspace_owner_change_listeners {
+        f(ws, old_owner, "")
+      }
+    }
+  }
+  for ws in prev_pending_ws {
+    if !seen.contains(ws) && !pending_ws.contains(ws) {
+      workspace_revoked[ws] = true
+    }
+  }
+  for ws, owner in seen {
+    let was_revoked = workspace_revoked.get(ws) == Some(true)
+    workspace_revoked.remove(ws)
+    if was_revoked {
+      workspace_owners[ws] = owner
+      for f in workspace_owner_change_listeners {
+        f(ws, "\u{3}revoked", owner)
+      }
+    } else {
+      workspace_owner_set(ws, owner)
+    }
+  }
+  workspace_owners_version.set(workspace_owners_version.untracked() + 1)
+}
+
+///|
+/// Sync currently signed-in account subs (called from `sfcore`'s `accounts_told`, outside computed getters).
+/// Only accounts that disappeared from `subs` are synchronously revoked; unrelated accounts are untouched.
+/// When transitioning from no signed-in accounts to the first signed-in account, revokes any orphan `""` sessions.
+pub fn accounts_subs_sync(subs : Array[String]) -> Unit {
+  let prev = active_account_subs.val
+  let prev_fallback = account_principal_sig.untracked()
+  let removed : Array[String] = []
+  for old in prev {
+    if old != "" && !subs.contains(old) {
+      removed.push(old)
+    }
+  }
+  let orphan_empty = prev.is_empty() && prev_fallback == "" && !subs.is_empty()
+  active_account_subs.val = subs.copy()
+  let next_fallback = subs.get(0).unwrap_or("")
+  if prev_fallback != next_fallback {
+    account_principal_sig.set(next_fallback)
+  }
+  workspace_owners_version.set(workspace_owners_version.untracked() + 1)
+  if orphan_empty {
+    for f in account_revoke_listeners {
+      f("")
+    }
+  }
+  for old in removed {
+    for ws in workspace_owners.keys().collect() {
+      if workspace_owners.get(ws) == Some(old) {
+        workspace_owners.remove(ws)
+        workspace_pending_ws[ws] = true
+        workspace_pending_explicit_loss[ws] = true
+      }
+    }
+    for f in account_revoke_listeners {
+      f(old)
+    }
+  }
+}
+
+///|
+/// Current fallback account principal string without tracking.
+pub fn account_principal_now() -> String {
+  account_principal_sig.untracked()
+}
+
+///|
+/// Update the active single-account principal (used in tests and single-account switches) and synchronously revoke
+/// the previous account when switching from a non-empty principal to a different one.
+pub fn account_principal_set(who : String) -> Unit {
+  let prev = account_principal_sig.untracked()
+  if prev == who {
+    return
+  }
+  account_principal_sig.set(who)
+  active_account_subs.val = if who == "" { [] } else { [who] }
+  if prev != "" {
+    for ws in workspace_owners.keys().collect() {
+      if workspace_owners.get(ws) == Some(prev) {
+        workspace_owners.remove(ws)
+        workspace_pending_ws[ws] = true
+        workspace_pending_explicit_loss[ws] = true
+      }
+    }
+    for f in account_revoke_listeners {
+      f(prev)
+    }
+  }
+}
+
+///|
+/// Register a synchronous listener called when a specific account is revoked/signed out.
+pub fn on_account_revoked(f : (String) -> Unit) -> Unit {
+  account_revoke_listeners.push(f)
+}
+
+///|
+/// Register a synchronous listener called when workspace `ws` changes owner `(ws, old_owner, new_owner)`.
+pub fn on_workspace_owner_change(f : (String, String, String) -> Unit) -> Unit {
+  workspace_owner_change_listeners.push(f)
+}
+
+///|
 fn last_reset() -> Unit {
   last_said.val = []
   last_accounts.val = None
+  workspace_owners.clear()
+  workspace_owners_seen_snapshot.val = false
+  workspace_owners_version.set(0)
+  workspace_revoked.clear()
+  workspace_pending_ws.clear()
+  workspace_pending_explicit_loss.clear()
+  workspace_pending_owners.clear()
+  workspace_loaded_owners.clear()
+  workspace_loaded_members.clear()
+  active_account_subs.val = []
+  account_principal_sig.set("")
+  parked_owners.val = []
 }
 
 ///|

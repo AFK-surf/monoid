@@ -17,6 +17,7 @@ nodepath = { workspace = true }
 sse = { workspace = true }
 station_cli = { workspace = true }
 station_cloud = { workspace = true }
+station_hooks_tui = { workspace = true }
 station_http = { workspace = true }
 station_jobs = { workspace = true }
 station_mesh = { workspace = true }

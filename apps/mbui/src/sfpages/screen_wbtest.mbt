@@ -232,7 +232,7 @@ fn screen_rig(
         fn(row, k) {
           let (station, screen) = k.untracked()
           row.owns(fn() {
-            if keep_screen { screen_covered(src, station, screen, true) } else { screen_left(src, station, screen) }
+            if !keep_screen { screen_left(src, station, screen) }
           })
           |> ignore
         },
@@ -2290,7 +2290,8 @@ test "a screen left covered by a background tab opens at once when mounted in an
   let s = r.sess()
   assert_eq(r.told("screen.view").length(), 1)
   // Simulate a backgrounded remote workbench tab leaving covered=true on the shared ScreenUi.
-  screen_covered(s.src, "ws-1/st-1", "browser:tab-1", true)
+  let key = screen_key("ws-1/st-1", "browser:tab-1")
+  screen_lease_apply_hidden(s.src, key)
   r.t.draw()
   assert_eq(r.cancelled.length(), 1)
   assert_true(r.ui().covered.get())
@@ -2687,4 +2688,2288 @@ test "remote-screen floating notice cards keep full text, first-line alignment, 
     assert_eq(r.t.squeeze_faults(), [])
     screen_done(r.t)
   }
+}
+
+///|
+test "screen_view 1s stats tick clears timeline when parked and resets fps/bps baseline on wake (no spike)" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.workspace_owner_set("ws-1", "u1")
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let next_call = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-stats", title: "Stats", until_gone: false }
+  let active = @signals.signal(true)
+  let screen_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { active.get() }, fn(slot, on) {
+        if on {
+          screen_root.val = Some(slot)
+          slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_node(slot, src, at, fn() { @sf.no_frame })
+        }
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(view_cbs.length(), 1)
+  (view_cbs[0])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  t.draw()
+  let s = screens_open.get(screen_key(at.station, at.screen)).unwrap()
+  let u = screen_uis.get(screen_key(at.station, at.screen)).unwrap()
+  let sv = screen_root.val.unwrap()
+  assert_true(t.subtree_timeline_count(sv) > 0, msg="live screen_view should have 1s stats tick active")
+  // Feed 10 frames / 1000 bytes and advance 1s.
+  s.frames += 10
+  s.bytes += 1000
+  t.run_for(second_ms)
+  assert_eq(u.fps, Some(10.0))
+  assert_eq(u.bps, Some(8000.0))
+  let seen_before_park = u.seen.untracked()
+  // Park -> 0 timeline entries.
+  active.set(false)
+  t.draw()
+  assert_eq(
+    t.subtree_timeline_count(sv),
+    0,
+    msg="parked screen_view must have 0 timeline entries, got: \{Repr(t.subtree_timeline_bys(sv))}",
+  )
+  // Simulate 500 frames / 50000 bytes accumulating while parked over 5s.
+  s.frames += 500
+  s.bytes += 50000
+  t.run_for(second_ms * 5.0)
+  assert_eq(u.seen.untracked(), seen_before_park, msg="stats tick must not fire while parked")
+  // Wake -> baseline resets to current frames/bytes and stale fps/bps cleared to None; only post-wake frames count.
+  active.set(true)
+  t.draw()
+  assert_eq(u.rate_frames, s.frames, msg="wake must reset rate_frames baseline")
+  assert_eq(u.rate_bytes, s.bytes, msg="wake must reset rate_bytes baseline")
+  assert_true(u.fps is None, msg="wake must clear stale fps before first post-wake interval")
+  assert_true(u.bps is None, msg="wake must clear stale bps before first post-wake interval")
+  s.frames += 5
+  s.bytes += 500
+  t.run_for(second_ms)
+  assert_eq(u.fps, Some(5.0), msg="fps after wake must reflect only post-wake frames, not accumulated spike")
+  assert_eq(u.bps, Some(4000.0), msg="bps after wake must reflect only post-wake bytes, not accumulated spike")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey request completes while briefly covered, cancels on owner destroy or account revocation, and has 0 timers when idle" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.account_principal_set("acct-passkey-a")
+  let ready = Ref(false)
+  let inputs : Array[Json] = []
+  let base = @sffixture.fixture("settings")
+  @sfbase.workspace_owner_set("ws-1", "acct-passkey-a")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" { 1 } else { 0 }
+    },
+    cancel: fn(_) {  },
+  }
+  let s = screen_sess(src, "ws-1/st-1", "browser:pk-1")
+  s.call = 1
+  s.heard = true
+  s.state = Some({
+    "phase": "live",
+    "control": true,
+    "may": true,
+    "others": [],
+    "passkey": {
+      "id": "pk-1",
+      "host": "github.com",
+      "rpId": "github.com",
+      "clientData": "{\"type\":\"webauthn.get\"}",
+      "allow": ["0909"],
+      "userVerification": "required",
+    },
+  })
+  let mounted = @signals.signal(true)
+  let pk_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { mounted.get() }, fn(slot, on) {
+        if on {
+          pk_root.val = Some(slot)
+          passkey_sign_node(slot, s)
+        }
+      })
+    },
+    w=800.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  @ui.fake_passkey_asks.clear()
+  @ui.fake_passkey.val = Some(fn(_rp, _client, _uv, _ids) {
+    if ready.val {
+      "0\u{1f}0909\u{1f}abcdef\u{1f}070707\u{1f}05\u{1f}\u{1f}"
+    } else {
+      ""
+    }
+  })
+  let pv = pk_root.val.unwrap()
+  // Idle passkey_sign_node has 0 timeline entries.
+  assert_eq(t.subtree_timeline_count(pv), 0, msg="idle passkey_sign_node must have 0 timeline entries")
+  // Start request, then briefly cover/park the container -> request MUST NOT pause and completes when host finishes.
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  mounted.set(false)
+  t.draw()
+  ready.val = true
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="in-flight passkey request must complete while briefly covered")
+  assert_true(s.passkey_run is None)
+  // Start a new request, then revoke via account switch -> cancels native handle and rejects late completion (0 extra inputs).
+  mounted.set(true)
+  t.draw()
+  ready.val = false
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  let old_gen = s.passkey_gen
+  let old_principal = s.passkey_owner_principal
+  @sfbase.account_principal_set("acct-passkey-b")
+  assert_true(s.revoked, msg="account switch must revoke old screen session")
+  assert_true(s.passkey_run is None, msg="account switch must cancel native passkey handle")
+  ready.val = true
+  s.passkey_took(old_gen, old_principal)
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="revoked passkey request must deliver 0 inputs")
+  @ui.fake_passkey.val = None
+  @ui.run_let_go()
+}
+
+///|
+test "multi-holder screen lease preserves stream across handoff, pauses on last leave, and isolates two accounts on same workspace+screen" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.account_principal_set("acct-a")
+  let opens : Array[Json] = []
+  let cancelled : Array[Int] = []
+  let inputs : Array[Json] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let next_call = Ref(0)
+  let base = @sffixture.fixture("settings")
+  @sfbase.workspace_owner_set("ws-1", "acct-a")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        opens.push(params)
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:shared-1", title: "Shared", until_gone: false }
+  let show_side = @signals.signal(true)
+  let show_full = @signals.signal(false)
+  let show_remote = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      // Holder 1: side panel
+      root.show(at_once=true, fn() { show_side.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      // Holder 2: fullscreen
+      root.show(at_once=true, fn() { show_full.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+      // Holder 3: Place("remote") parked via pick_kept
+      root.pick_kept(at_once=true, fn() { show_remote.get() }, fn(p, on) {
+        if on {
+          p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+        }
+      })
+    },
+    w=1000.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 1, msg="initial side-panel holder opens 1 stream")
+  assert_eq(cancelled.length(), 0)
+  // Handoff 1: side panel -> fullscreen in the same batch: stream stays live (0 cancels, still 1 open).
+  show_side.set(false)
+  show_full.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="side-panel -> fullscreen handoff must not pause stream")
+  assert_eq(opens.length(), 1)
+  // Handoff 2: fullscreen -> Place("remote") in the same batch: stream stays live (0 cancels, still 1 open).
+  show_full.set(false)
+  show_remote.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="fullscreen -> Place(remote) handoff must not pause stream")
+  assert_eq(opens.length(), 1)
+  // Last visible holder (Place("remote")) parks -> stream pauses!
+  show_remote.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 1, msg="parking last visible holder must pause stream")
+  // Wake Place("remote") -> stream resumes!
+  show_remote.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 2, msg="waking Place(remote) must reopen paused stream")
+  // Make Account A live, deliver a frame & send input.
+  (view_cbs[1])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  let s_a = screens_open.get(screen_key(at.station, at.screen)).unwrap()
+  s_a.frames = 3
+  s_a.shown_any = true
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("a") }))
+  assert_eq(inputs.length(), 1, msg="acct-a driving input should succeed before switch")
+  // Switch to Account B in the SAME workspace ("ws-1") and SAME screen ("browser:shared-1")!
+  let old_key = screen_key(at.station, at.screen)
+  @sfbase.account_principal_set("acct-b")
+  assert_true(s_a.revoked, msg="acct-a session must be synchronously revoked on account switch")
+  assert_eq(cancelled.length(), 2, msg="acct-a stream must be synchronously cancelled on account switch")
+  assert_false(screens_open.contains(old_key), msg="old account session must be cleared from screens_open")
+  assert_false(screen_uis.contains(old_key), msg="old account UI must be cleared from screen_uis")
+  assert_false(screen_leases.contains(old_key), msg="old account lease must be cleared from screen_leases")
+  // Late frame & late input on revoked acct-a session: old frames == 0 and old input == 0!
+  (view_cbs[1])({ "frame": { "ts": 100.0 } }, Some(Bytes::make(16, b'\x01')))
+  assert_eq(s_a.frames, 0, msg="late frame after account switch must result in 0 old frames")
+  assert_false(s_a.shown_any, msg="shown_any must remain false after account switch")
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("b") }))
+  assert_eq(inputs.length(), 1, msg="late input after account switch must deliver 0 old inputs")
+  // Account B opens the exact same (ws-1/st-1, browser:shared-1) -> fresh isolated session, 0 stale frames.
+  @sfbase.workspace_owner_set("ws-1", "acct-b")
+  let s_b = screen_sess(src, at.station, at.screen)
+  assert_false(physical_equal(s_a, s_b), msg="acct-b must get a distinct ScreenSess from acct-a")
+  assert_eq(s_b.account, "acct-b")
+  assert_eq(s_b.frames, 0)
+  assert_false(s_b.shown_any)
+  @ui.run_let_go()
+}
+
+///|
+test "multi-account workspace owner switch revokes only affected workspace, clears clipboard, guards RPCs, and re-mounts live node" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b", "acct-c"])
+  @sfbase.workspace_owner_set("ws-1", "acct-a")
+  @sfbase.workspace_owner_set("ws-2", "acct-c")
+  let opens : Array[String] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let cancelled : Array[Int] = []
+  let rpcs : Array[String] = []
+  let next_call = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, _params, done) {
+      rpcs.push(name)
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        opens.push(text(Some(params), "station"))
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at1 : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-1", title: "WS1", until_gone: false }
+  let at2 : ScreenAt = { station: "ws-2/st-2", screen: "browser:tab-2", title: "WS2", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      screen_node(root, src, at1, fn() { @sf.no_frame }, in_tab=true)
+      screen_node(root, src, at2, fn() { @sf.no_frame }, in_tab=true)
+    },
+    w=1000.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 2)
+  let s_a = screens_open.get(screen_key(at1.station, at1.screen)).unwrap()
+  let s_c = screens_open.get(screen_key(at2.station, at2.screen)).unwrap()
+  (view_cbs[0])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  (view_cbs[1])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  s_a.frames = 5
+  s_a.copied.push(CopiedText("secret-from-a", None))
+  // Workspace ws-1 ownership moves from acct-a to acct-b while acct-a, acct-b, acct-c all remain signed in.
+  @sfbase.workspace_owner_set("ws-1", "acct-b")
+  assert_true(s_a.revoked, msg="ws-1 acct-a session must be revoked on workspace owner change")
+  assert_true(s_a.copied.is_empty(), msg="revoked session clipboard queue must be cleared")
+  assert_false(s_c.revoked, msg="unrelated ws-2 acct-c session must remain untouched")
+  assert_true(screens_open.contains(screen_key(at2.station, at2.screen)), msg="ws-2 session must remain open")
+  // Late outbound RPCs on revoked s_a must all be dropped.
+  let rpcs_before = rpcs.length()
+  reload_asked(s_a)
+  browser_act(s_a, "screen.back", "back")
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("x") }))
+  assert_eq(rpcs.length(), rpcs_before, msg="revoked session must emit 0 outbound RPCs")
+  // Live mounted screen_node on ws-1/st-1 re-mounts cleanly for acct-b on next draw.
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 3, msg="mounted ws-1 screen_node must reopen cleanly under acct-b")
+  let s_b = screens_open.get(screen_key(at1.station, at1.screen)).unwrap()
+  assert_eq(s_b.account, "acct-b")
+  assert_false(physical_equal(s_a, s_b))
+  assert_eq(s_b.frames, 0)
+  // Core reconnect (generation bump 0 -> 1) must NOT drift screen_key or revoke active principal.
+  let gen = Ref(0)
+  let src_gen : Source = { ..src, generation: fn(_name, _params) { (gen.val, true) } }
+  let key_before = screen_key(at1.station, at1.screen)
+  gen.val = 1
+  assert_eq(screen_key(at1.station, at1.screen), key_before, msg="core reconnect must not change screen_key")
+  assert_true(s_b.is_active_principal(), msg="core reconnect must not revoke active principal")
+  assert_true(physical_equal(screen_sess(src_gen, at1.station, at1.screen), s_b), msg="core reconnect must reuse same ScreenSess")
+  @ui.run_let_go()
+}
+
+///|
+test "real workspaces JSON snapshot revokes on A->B owner change and on workspace disappearance while A stays online" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_a : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let s_a = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_a.open(src)
+  assert_eq(opens.val, 1)
+  s_a.copied.push(CopiedText("a-secret", None))
+  // (a) Real JSON snapshot moves ws-1 from acct-a to acct-b: s_a revoked, clipboard cleared, 0 clipboard writes.
+  let snap_b : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b))
+  assert_true(s_a.revoked, msg="JSON snapshot A->B must revoke acct-a session")
+  assert_true(s_a.copied.is_empty(), msg="JSON snapshot A->B must clear clipboard queue")
+  let s_b = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_b.open(src)
+  assert_eq(opens.val, 2)
+  assert_eq(s_b.account, "acct-b")
+  // (b) ws-1 disappears from ALL signed-in accounts' snapshot while acct-a and acct-b remain online!
+  let snap_gone : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_gone))
+  assert_true(s_b.revoked, msg="disappearing workspace must synchronously revoke old session")
+  assert_false(s_b.is_active_principal(), msg="revoked workspace session must not remain active")
+  assert_true(@sfbase.workspace_is_revoked("ws-1"), msg="disappearing workspace must be marked revoked")
+  assert_not_eq(@sfbase.workspace_owner_of("ws-1"), "acct-a", msg="revoked workspace must never fall back to first signed-in account")
+  // Attempting to reopen a screen in the revoked workspace must be refused (0 new opens).
+  let s_refused = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_refused.open(src)
+  assert_eq(opens.val, 2, msg="revoked workspace must refuse to reopen screen.view")
+  // (c) Live mounted screen_node on ws-1 recovers automatically when ws-1 reappears in workspaces snapshot!
+  let at_live : ScreenAt = { station: "ws-1/st-1", screen: "browser:snap-1", title: "Snap", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      screen_node(root, src, at_live, fn() { @sf.no_frame }, in_tab=true)
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 2, msg="mounted screen_node in revoked workspace must stay refused")
+  @sfbase.workspace_owners_sync_json(Some(snap_b))
+  t.draw()
+  t.draw()
+  assert_false(@sfbase.workspace_is_revoked("ws-1"), msg="restored workspace must clear revoked flag")
+  assert_eq(opens.val, 3, msg="mounted screen_node must automatically reopen when workspace reappears in snapshot")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey survives pair flip and side-panel <-> fullscreen handoff, cancels on last host close and workspace switch with 0 leaks" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-pk"])
+  @sfbase.workspace_owner_set("ws-1", "acct-pk")
+  let ready = Ref(false)
+  let opens = Ref(0)
+  let cancelled : Array[Int] = []
+  let inputs : Array[Json] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, _params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        view_cbs.push(on_val)
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:pk-full", title: "PK", until_gone: false }
+  let show_side = @signals.signal(true)
+  let show_full = @signals.signal(false)
+  let pair_flip = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { show_side.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      root.show(at_once=true, fn() { show_full.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+      // Simulates `pair` layout flip rebuilding passkey_sign_node while ScreenSess stays alive.
+      root.pick(at_once=true, fn() { pair_flip.get() }, fn(slot, _flipped) {
+        match screens_open.get(screen_key(at.station, at.screen)) {
+          Some(s) => passkey_sign_node(slot, s)
+          None => ()
+        }
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  @ui.fake_passkey_asks.clear()
+  @ui.fake_passkey.val = Some(fn(_rp, _client, _uv, _ids) {
+    if ready.val { "0\u{1f}0909\u{1f}abcdef\u{1f}070707\u{1f}05\u{1f}\u{1f}" } else { "" }
+  })
+  (view_cbs[0])(
+    {
+      "state": {
+        "phase": "live",
+        "control": true,
+        "may": true,
+        "others": [],
+        "passkey": {
+          "id": "pk-2",
+          "host": "github.com",
+          "rpId": "github.com",
+          "clientData": "{\"type\":\"webauthn.get\"}",
+          "allow": ["0909"],
+          "userVerification": "required",
+        },
+      },
+    },
+    None,
+  )
+  t.draw()
+  let s = screens_open.get(screen_key(at.station, at.screen)).unwrap()
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  // (a) `pair` layout flip rebuild does NOT cancel in-flight passkey.
+  pair_flip.set(true)
+  t.draw()
+  assert_true(s.passkey_run is Some(_), msg="pair layout flip must not cancel in-flight passkey")
+  // (b) side-panel -> fullscreen handoff does NOT cancel in-flight passkey or pause stream.
+  show_side.set(false)
+  show_full.set(true)
+  t.draw()
+  t.draw()
+  assert_true(s.passkey_run is Some(_), msg="side-panel -> fullscreen handoff must not cancel passkey")
+  assert_eq(cancelled.length(), 0, msg="handoff must keep stream alive")
+  // Complete passkey and confirm signed input delivered.
+  ready.val = true
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="passkey must deliver signed input after pair flip and handoff")
+  assert_true(s.passkey_run is None)
+  // (c) Start another passkey, then workspace switch away from ws-1 -> cancels passkey immediately.
+  ready.val = false
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  (@sfbase.on_workspace_switched.val)("ws-1", "ws-2")
+  assert_true(s.passkey_run is None, msg="workspace switch must cancel in-flight passkey on left workspace")
+  assert_eq(s.passkey_keepalive_key, "", msg="workspace switch must release passkey keepalive")
+  // (d) Start another passkey, then permanently destroy the last real UI host -> cancels passkey & pauses stream (0 leak!).
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  show_full.set(false)
+  t.draw()
+  t.draw()
+  assert_true(s.passkey_run is None, msg="permanent close of last UI host must cancel in-flight passkey")
+  assert_eq(s.passkey_keepalive_key, "", msg="permanent close of last UI host must release passkey keepalive")
+  assert_eq(cancelled.length(), 1, msg="permanent close of last UI host must pause/close stream with 0 leak")
+  assert_true(screen_leases.is_empty(), msg="screen_leases must be empty after last host permanent close")
+  @ui.fake_passkey.val = None
+  @ui.run_let_go()
+}
+
+///|
+test "screen lease table preserves equivalence without remote_shelf_pause_node across Nav shelf, narrow cover, tape hide, and layout switch" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-eq"])
+  @sfbase.workspace_owner_set("ws-1", "acct-eq")
+  let opens = Ref(0)
+  let cancelled : Array[Int] = []
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:eq-1", title: "EQ", until_gone: false }
+  let shelf_on = @signals.signal(true)
+  let narrow_top = @signals.signal(true)
+  let tape_visible = @signals.signal(false)
+  let wide_mode = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      // 1. Place("remote") shelf parked via pick_kept (Nav shelf equivalent)
+      root.pick_kept(at_once=true, fn() { shelf_on.get() }, fn(p, on) {
+        if on {
+          p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+        }
+      })
+      // 2. Narrow stack page covered via shown=narrow_top (on_top equivalent)
+      root.show(at_once=true, fn() { !wide_mode.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, shown=fn() { narrow_top.get() })
+      })
+      // 3. Tape / wide side-panel hidden via shown=tape_visible
+      root.show(at_once=true, fn() { wide_mode.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true, shown=fn() { tape_visible.get() })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1)
+  assert_eq(cancelled.length(), 0)
+  // Park Place("remote") shelf while narrow stack is still on top -> stream stays live (0 cancels).
+  shelf_on.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="parking Place(remote) while narrow stack is visible must not pause")
+  // Cover narrow stack (on_top = false) -> last visible holder gone -> pauses!
+  narrow_top.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 1, msg="covering last visible holder must pause stream")
+  // Switch narrow -> wide layout with tape side-panel visible -> resumes!
+  wide_mode.set(true)
+  tape_visible.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 2, msg="switching to wide with visible tape side-panel must resume stream")
+  // Hide tape side-panel -> pauses!
+  tape_visible.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 2, msg="hiding tape side-panel must pause stream")
+  // Wake Place("remote") shelf -> resumes!
+  shelf_on.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 3, msg="waking Place(remote) shelf must resume stream")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey_muted revokes native Stream::route audio and suppresses 3840-byte PCM packets through hidden passkey release" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-mute"])
+  @sfbase.workspace_owner_set("ws-1", "acct-mute")
+  let s = screen_sess(base, "ws-1/st-1", "browser:mute-1")
+  let t = @ui.Tester::tree(fn(_) {  }, w=400.0, h=300.0)
+  t.draw()
+  let h = @hostapi.host()
+  let orig_audio_here = h.st_audio_here
+  let orig_audio = h.st_audio
+  let orig_direct = h.st_direct
+  let audio_packets = Ref(0)
+  let audio_flushes = Ref(0)
+  let routed_audio_true = Ref(0)
+  let routed_audio_false = Ref(0)
+  h.st_audio_here = fn() { 1 }
+  h.st_audio = fn(id, data) {
+    if data.length() > 0 {
+      audio_packets.val += 1
+    } else {
+      audio_flushes.val += 1
+    }
+    orig_audio(id, data)
+  }
+  h.st_direct = fn(id, route, after, what) {
+    if (what & 2) != 0 {
+      routed_audio_true.val += 1
+    } else {
+      routed_audio_false.val += 1
+    }
+    orig_direct(id, route, after, what)
+  }
+  s.own_stream()
+  s.call = 7
+  s.heard = true
+  let pcm_3840 = Bytes::make(3840, b'\x01')
+  // Deliver audioConfig + valid 3840-byte sequenced PCM packet while unmuted -> 1 audio packet + 1 audio=true route.
+  s.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+  s.take({ "audio": { "n": 10.0 } }, Some(pcm_3840))
+  assert_true(s.audio_ready.untracked())
+  assert_eq(audio_packets.val, 1, msg="unmuted 3840-byte PCM must deliver to host")
+  assert_true(routed_audio_true.val >= 1, msg="unmuted sequenced audio must route audio=true")
+  // Enable passkey keepalive mute -> flushes audio and immediately revokes native audio route (audio=false).
+  audio_packets.val = 0
+  routed_audio_true.val = 0
+  routed_audio_false.val = 0
+  s.set_passkey_muted(true)
+  assert_true(s.passkey_muted)
+  assert_true(audio_flushes.val >= 1, msg="muting must flush native audio buffer")
+  assert_true(routed_audio_false.val >= 1, msg="muting must immediately refresh native route with audio=false")
+  // Subsequent 3840-byte sequenced PCM while passkey_muted == true -> 0 native audio deliveries and 0 audio=true routes!
+  s.take({ "audio": { "n": 11.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 0, msg="passkey_muted must drop all 3840-byte PCM packets")
+  assert_eq(routed_audio_true.val, 0, msg="passkey_muted must never route audio=true")
+  // Releasing passkey keepalive while still hidden (with real ScreenLease) MUST keep passkey_muted == true,
+  // and running real screen_leases_settle() pauses the stream BEFORE clearing passkey_muted so 0 audio=true routes fire!
+  let lease_key = screen_key(s.station, s.screen)
+  let _ = screen_ui(lease_key)
+  screen_lease_set(base, lease_key, 1, false)
+  screen_lease_set_passkey(base, lease_key, true)
+  s.passkey_keepalive_key = lease_key
+  s.passkey_release_keepalive()
+  assert_true(s.passkey_muted, msg="passkey_release_keepalive must keep session muted until settle")
+  s.take({ "audio": { "n": 12.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 0, msg="hidden session after passkey_release_keepalive must still deliver 0 audio")
+  assert_eq(routed_audio_true.val, 0, msg="hidden session after passkey_release_keepalive must still route 0 audio=true")
+  // Now run real end-of-frame settle: pauses stream first, then clears passkey_muted with 0 audio=true routes!
+  screen_leases_settle()
+  assert_eq(s.call, 0, msg="hidden settle after passkey release must pause stream")
+  assert_false(s.passkey_muted, msg="passkey_muted resets only after stream is paused")
+  assert_eq(audio_packets.val, 0, msg="hidden settle must deliver 0 audio packets")
+  assert_eq(routed_audio_true.val, 0, msg="hidden settle must emit 0 audio=true routes")
+  h.st_audio_here = orig_audio_here
+  h.st_audio = orig_audio
+  h.st_direct = orig_direct
+  @ui.run_let_go()
+}
+
+///|
+test "child-process standalone screen waits for workspaces snapshot with 0 screen.view RPCs and auto-wakes on matching snapshot" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:child-1", title: "Child", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(
+        at_once=true,
+        fn() {
+          screen_revokes_now() |> ignore
+          @sfbase.workspace_owners_version.get() |> ignore
+          @sfbase.window_here_owner_state(0, at.station)
+        },
+        fn(slot, st) {
+          if st == Matched {
+            slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            screen_node(slot, src, at, fn() { @sf.no_frame })
+          }
+        },
+      )
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  // Before workspaces snapshot arrives: Waiting, 0 screen.view RPCs!
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="Waiting child-process screen must emit 0 screen.view RPCs")
+  // Offline cached snapshot (loaded=false, non-blocked) carrying ws-1 -> acct-a:
+  // aligned with Core recomputeOwners() so offline mesh works immediately (Matched, opens screen.view)!
+  let snap_offline : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_offline))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched, msg="offline cached snapshot must Match for mesh continuity")
+  assert_eq(opens.val, 1, msg="child-process screen must auto-wake and open once offline cached snapshot confirms ws-1 -> acct-a")
+  // Subsequent online snapshot (loaded=true) with same ws-1 -> acct-a: stays Matched, 0 redundant opens!
+  let snap_a : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="online confirmation of same owner must not reopen screen.view")
+  @ui.run_let_go()
+}
+
+///|
+test "post-sync A loses ws while B is loaded=false: A window immediately Denied & session/lease revoked with 0 RPC, B Waits then Matches" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let inputs = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:e2e-1", title: "E2E", until_gone: false }
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(
+        at_once=true,
+        fn() {
+          screen_revokes_now() |> ignore
+          @sfbase.workspace_owners_version.get() |> ignore
+          match @sfbase.window_here_owner_state(0, at.station, screen=at.screen) {
+            Matched => 0
+            Waiting => 1
+            Denied => 2
+          }
+        },
+        fn(q, st) {
+          if st == 0 {
+            q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            screen_node(q, src, at, fn() { @sf.no_frame })
+          }
+        },
+      )
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1, msg="A must open screen.view initially")
+  assert_true(screens_open.contains(key_a), msg="A session must be open")
+  assert_true(screen_leases.contains(key_a), msg="A lease must be active")
+  let sess_a = screens_open.get(key_a).unwrap()
+  // Push snapshot: A (loaded=true, lost ws-1), B (loaded=false, cached ws-1)
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  t.draw()
+  t.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Denied, msg="A window must immediately turn Denied")
+  assert_false(screens_open.contains(key_a), msg="A session must be revoked immediately")
+  assert_false(screen_leases.contains(key_a), msg="A lease must be revoked immediately")
+  // Subsequent input on A's old session must emit 0 RPCs
+  sess_a.input(src, Json::object({ "t": Json::string("click") }))
+  assert_eq(inputs.val, 0, msg="revoked A session must emit 0 screen.input RPCs")
+  // Switch standalone window identity to B while B is still loaded=false -> Waiting, 0 new opens, 0 inputs!
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  @sfbase.workspace_owners_version.set(@sfbase.workspace_owners_version.untracked() + 1)
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting, msg="B window must Wait while loaded=false")
+  assert_eq(opens.val, 1, msg="Waiting B window must emit 0 additional screen.view RPCs")
+  assert_eq(inputs.val, 0)
+  // Push snapshot: A (loaded=true, no ws-1), B (loaded=true, has ws-1) -> B Matches and remounts!
+  let snap_b_loaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_loaded))
+  t.draw()
+  t.draw()
+  let key_b = screen_key_for_owner("acct-b", at.station, at.screen)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched, msg="B window must transition to Matched")
+  assert_eq(opens.val, 2, msg="B window must open fresh screen.view on Matched")
+  assert_true(screens_open.contains(key_b), msg="B session must be active")
+  assert_true(screen_leases.contains(key_b), msg="B lease must be active")
+  // Verify A remains Denied
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Denied, msg="A must stay Denied after B takes ownership")
+  @ui.run_let_go()
+}
+
+///|
+test "normal screen_node (no lone_tree) gates pending/revoked: 0 RPC on remount during B pending, auto-remounts when B loads" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let inputs = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:plain-1", title: "Plain", until_gone: false }
+  let mounted = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { mounted.get() }, fn(q) {
+        q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(q, src, at, fn() { @sf.no_frame })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1, msg="normal screen_node must open screen.view for A")
+  assert_true(screens_open.contains(key_a))
+  let sess_a = screens_open.get(key_a).unwrap()
+  // Push A (loaded=true, no ws-1) + B (loaded=false, cached ws-1): ws-1 enters pending!
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  t.draw()
+  t.draw()
+  assert_false(screens_open.contains(key_a), msg="A session must be revoked on pending transition")
+  // Unmount and remount normal screen_node while B is still pending -> 0 additional screen.view RPCs & 0 input RPCs!
+  mounted.set(false)
+  t.draw()
+  mounted.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1, msg="remounting normal screen_node during pending must emit 0 additional screen.view RPCs")
+  sess_a.input(src, Json::object({ "t": Json::string("click") }))
+  assert_eq(inputs.val, 0, msg="input on revoked A session must emit 0 RPCs")
+  // Push B (loaded=true, ws-1): normal screen_node auto-remounts and opens screen.view for B!
+  let snap_b_loaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_loaded))
+  t.draw()
+  t.draw()
+  let key_b = screen_key_for_owner("acct-b", at.station, at.screen)
+  assert_eq(opens.val, 2, msg="normal screen_node must auto-remount and open screen.view for B")
+  assert_true(screens_open.contains(key_b), msg="B session must be active")
+  @ui.run_let_go()
+}
+
+///|
+test "child-process window for B Waits with 0 RPC when earlier A is loaded=false with empty cache, then Matches when A loads" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  assert_false(@sfbase.workspace_owners_synced(), msg="cold-start test must start before any workspaces snapshot")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:early-1", title: "Early", until_gone: false }
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(
+        at_once=true,
+        fn() {
+          screen_revokes_now() |> ignore
+          @sfbase.workspace_owners_version.get() |> ignore
+          match @sfbase.window_here_owner_state(0, at.station, screen=at.screen) {
+            Matched => 0
+            Waiting => 1
+            Denied => 2
+          }
+        },
+        fn(q, st) {
+          if st == 0 {
+            q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            screen_node(q, src, at, fn() { @sf.no_frame })
+          }
+        },
+      )
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  let snap_earlier_empty : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_earlier_empty))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="B child-process window must emit 0 screen.view RPCs while earlier A is unloaded")
+  let snap_b_confirmed : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_confirmed))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="B child-process window must open screen.view once earlier A finishes loading")
+  @ui.run_let_go()
+}
+
+///|
+test "deferred screen_left_key after_drawn_frame closes when sole holder unmounts and stays open when another visible holder remains" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-rem"])
+  @sfbase.workspace_owner_set("ws-1", "acct-rem")
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:rem-1", title: "Rem", until_gone: false }
+  let show_remote = @signals.signal(true)
+  let show_other = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { show_remote.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      root.show(at_once=true, fn() { show_other.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key = screen_key(at.station, at.screen)
+  assert_true(screens_open.contains(key))
+  // (a) Remove remote tab while another visible holder (`show_other`) remains -> stays open!
+  show_remote.set(false)
+  @ui.after_drawn_frame(fn() {
+    screen_left_key(src, key, at.station, at.screen, leaving_holder_released=true)
+  })
+  t.draw()
+  t.draw()
+  assert_true(screens_open.contains(key), msg="screen must stay open when another visible holder remains")
+  // (b) Remove the last visible holder -> deferred screen_left_key closes cleanly!
+  show_other.set(false)
+  @ui.after_drawn_frame(fn() {
+    screen_left_key(src, key, at.station, at.screen, leaving_holder_released=true)
+  })
+  t.draw()
+  t.draw()
+  assert_false(screens_open.contains(key), msg="screen must close cleanly when sole holder is removed")
+  @ui.run_let_go()
+}
+
+///|
+test "cloud offline cold start (all loaded=false with cached ws-1): main screen_node opens normally for mesh" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  let snap_offline : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_offline))
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-a"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:offline-1", title: "Offline", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1, msg="offline cached ws-1 must open screen.view immediately for mesh")
+  assert_true(screens_open.contains(key_a))
+  @ui.run_let_go()
+}
+
+///|
+test "blocked (NOT_BETA) account with loaded=false immediately revokes session/lease/stream and renders denied on remount" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  let snap_ok : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_ok))
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:blocked-1", title: "Blocked", until_gone: false }
+  let mounted = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { mounted.get() }, fn(q) {
+        q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(q, src, at, fn() { @sf.no_frame })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1)
+  assert_true(screens_open.contains(key_a))
+  let sess_a = screens_open.get(key_a).unwrap()
+  // Production NOT_BETA shape: loaded=false, workspaces=[], blocked="not beta"
+  let snap_blocked : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+      "blocked": Json::string("not beta"),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_blocked))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.workspace_is_revoked("ws-1"), msg="blocked account must immediately revoke ws-1")
+  assert_false(sess_a.is_active_principal(), msg="revoked session must fail is_active_principal")
+  assert_false(screens_open.contains(key_a), msg="blocked account session must be closed")
+  assert_false(screen_leases.contains(key_a), msg="blocked account lease must be removed")
+  assert_true(cancelled.val >= 1, msg="blocked account stream must be cancelled")
+  // Remounting normal screen_node emits 0 new RPCs and shows denied message (no blank dead-end)
+  mounted.set(false)
+  t.draw()
+  mounted.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1, msg="remounting revoked screen_node must emit 0 additional screen.view RPCs")
+  assert_true(t.find(@sf.t("android-misc.screen.denied")) is Some(_), msg="revoked screen_node must render denied message")
+  @ui.run_let_go()
+}
+
+///|
+test "active native route transitioning Owned(A) -> Pending synchronously cancels stream, flushes audio(0), clears frame, and blocks subsequent host deliveries" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let inputs = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:native-pending-1", title: "NativePending", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  let h = @hostapi.host()
+  let orig_audio_here = h.st_audio_here
+  let orig_audio = h.st_audio
+  let orig_direct = h.st_direct
+  let audio_packets = Ref(0)
+  let audio_flushes = Ref(0)
+  let routed_audio_true = Ref(0)
+  h.st_audio_here = fn() { 1 }
+  h.st_audio = fn(id, data) {
+    if data.length() > 0 {
+      audio_packets.val += 1
+    } else {
+      audio_flushes.val += 1
+    }
+    orig_audio(id, data)
+  }
+  h.st_direct = fn(id, route, after, what) {
+    if (what & 2) != 0 {
+      routed_audio_true.val += 1
+    }
+    orig_direct(id, route, after, what)
+  }
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  let sess_a = screens_open.get(key_a).unwrap()
+  sess_a.own_stream()
+  sess_a.heard = true
+  sess_a.frames = 5
+  sess_a.shown_any = true
+  let pcm_3840 = Bytes::make(3840, b'\x01')
+  sess_a.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+  sess_a.take({ "audio": { "n": 1.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 1)
+  assert_true(routed_audio_true.val >= 1)
+  // Reset counters before Owned(A) -> Pending transition
+  audio_packets.val = 0
+  audio_flushes.val = 0
+  routed_audio_true.val = 0
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  assert_true(cancelled.val >= 1, msg="Owned(A) -> Pending must synchronously cancel screen.view")
+  assert_false(screens_open.contains(key_a), msg="screens_open must be cleared on Owned(A) -> Pending")
+  assert_false(screen_leases.contains(key_a), msg="screen_leases must be cleared on Owned(A) -> Pending")
+  assert_true(audio_flushes.val >= 1, msg="Owned(A) -> Pending must flush st.audio(0)")
+  assert_eq(sess_a.frames, 0, msg="Owned(A) -> Pending must clear frames")
+  assert_false(sess_a.shown_any, msg="Owned(A) -> Pending must clear shown_any")
+  // Subsequent host audio/video deliveries & input RPCs on revoked sess_a must all be 0!
+  sess_a.take({ "audio": { "n": 2.0 } }, Some(pcm_3840))
+  sess_a.take({ "frame": { "ts": 200.0 } }, Some(Bytes::make(16, b'\x02')))
+  sess_a.input(src, Json::object({ "t": Json::string("click") }))
+  assert_eq(audio_packets.val, 0, msg="subsequent audio delivery after Pending revoke must be 0")
+  assert_eq(routed_audio_true.val, 0, msg="subsequent audio route after Pending revoke must be 0")
+  assert_eq(sess_a.frames, 0, msg="subsequent video frame after Pending revoke must be 0")
+  assert_eq(inputs.val, 0, msg="subsequent screen.input after Pending revoke must be 0")
+  h.st_audio_here = orig_audio_here
+  h.st_audio = orig_audio
+  h.st_direct = orig_direct
+  @ui.run_let_go()
+}
+
+///|
+test "Pending stays idempotent across repeated snapshots while B is loaded=false (0 new RPCs) and both-unloaded cold start keeps B Waiting" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:idemp-1", title: "Idemp", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1)
+  // A loses ws-1 while B is loaded=false -> Pending!
+  let snap_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let snap_pending_inv : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "invitations": Json::array([Json::object({ "id": Json::string("inv-2") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_pending))
+  t.draw()
+  // Repeat identical + invitations-changed snapshots while B is still loaded=false: 0 new screen.view RPCs!
+  @sfbase.workspace_owners_sync_json(Some(snap_pending))
+  t.draw()
+  @sfbase.workspace_owners_sync_json(Some(snap_pending_inv))
+  t.draw()
+  t.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 1, msg="repeated pending snapshots must emit 0 additional screen.view RPCs")
+  // B confirms loaded=true -> opens screen.view for B!
+  let snap_b_ok : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_ok))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 2, msg="B confirmation must open screen.view")
+  @ui.run_let_go()
+  // Both-unloaded cold start: [A(loaded=false, []), B(loaded=false, [ws-1])] -> 0 screen.view RPCs until loaded!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  opens.val = 0
+  let snap_both_unloaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both_unloaded))
+  let t2 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t2.draw()
+  t2.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="both-unloaded cold start must emit 0 screen.view RPCs")
+  @sfbase.workspace_owners_sync_json(Some(snap_b_ok))
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="screen_node must open screen.view once A and B finish loading")
+  @ui.run_let_go()
+}
+
+///|
+test "Core ownedWorkspaces dual-branch offline acceptance: ownedWorkspaces=[] stays Pending/0 RPC even for first account; ownedWorkspaces=[ws-1] opens mesh offline" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:core-owned-1", title: "CoreOwned", until_gone: false }
+  let core_multi_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let core_multi_owned_b : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  // Branch 1: Core ownedWorkspaces=[] -> Pending/Waiting, 0 screen.view RPCs
+  @sfbase.workspace_owners_sync_json(Some(core_multi_unowned))
+  let t1 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t1.draw()
+  t1.draw()
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="Core ownedWorkspaces=[] must emit 0 screen.view RPCs")
+  // Branch 2: Same offline accounts, Core confirms B.ownedWorkspaces=["ws-1"] (loaded=false!) -> immediately opens mesh!
+  @sfbase.workspace_owners_sync_json(Some(core_multi_owned_b))
+  t1.draw()
+  t1.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="Core B.ownedWorkspaces=[ws-1] must immediately open mesh offline without waiting for /v1/me")
+  @ui.run_let_go()
+  // Single-account [B(loaded=false, [ws-1])]: ownedWorkspaces=[] -> 0 RPC even as first account; ownedWorkspaces=[ws-1] -> 1 RPC offline!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-b"])
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  opens.val = 0
+  let core_single_unowned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let core_single_owned : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(core_single_unowned))
+  let t2 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 0, msg="single-account Core ownedWorkspaces=[] must emit 0 screen.view RPCs")
+  @sfbase.workspace_owners_sync_json(Some(core_single_owned))
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 1, msg="single-account Core ownedWorkspaces=[ws-1] must immediately open mesh offline")
+  @ui.run_let_go()
+}
+
+///|
+test "r14 two-pass order independence ([B, A]) and two-step explicit_loss preservation: A revoked with audio(0), B Waits (0 new RPC) until loaded=true" {
+  // Case 1: [B(loaded=false, ownedWorkspaces=["ws-1"]), A(loaded=true, workspaces=[], ownedWorkspaces=[])] (B precedes A)
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  @sfbase.accounts_subs_sync(["acct-b", "acct-a"])
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:r14-1", title: "R14", until_gone: false }
+  let t1 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  let h = @hostapi.host()
+  let orig_audio_here = h.st_audio_here
+  let orig_audio = h.st_audio
+  let audio_flushes = Ref(0)
+  h.st_audio_here = fn() { 1 }
+  h.st_audio = fn(id, data) {
+    if data.length() == 0 {
+      audio_flushes.val += 1
+    }
+    orig_audio(id, data)
+  }
+  t1.draw()
+  t1.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  let sess_a = screens_open.get(key_a).unwrap()
+  sess_a.own_stream()
+  sess_a.heard = true
+  sess_a.frames = 4
+  sess_a.shown_any = true
+  sess_a.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+  sess_a.take({ "audio": { "n": 1.0 } }, Some(Bytes::make(3840, b'\x01')))
+  assert_eq(opens.val, 1)
+  audio_flushes.val = 0
+  // Push [B(loaded=false, ownedWorkspaces=["ws-1"]), A(loaded=true, [], [])]
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  t1.draw()
+  t1.draw()
+  assert_true(cancelled.val >= 1, msg="A stream must be cancelled immediately when B precedes A")
+  assert_true(audio_flushes.val >= 1, msg="A must flush st.audio(0) immediately")
+  assert_eq(sess_a.frames, 0)
+  assert_false(sess_a.shown_any)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+  assert_eq(opens.val, 1, msg="B must emit 0 additional screen.view RPCs while loaded=false")
+  // B finishes /v1/me (loaded=true, ownedWorkspaces=["ws-1"]) -> opens 2nd screen.view!
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  t1.draw()
+  t1.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+  assert_eq(opens.val, 2, msg="B confirmation must open 2nd screen.view")
+  h.st_audio_here = orig_audio_here
+  h.st_audio = orig_audio
+  @ui.run_let_go()
+  // Case 2: Two-step A(Owned) -> Snap 1 (A lost, both ownedWorkspaces=[]) -> Snap 2 (B loaded=false, ownedWorkspaces=["ws-1"]) -> Snap 3 (B loaded=true)
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  opens.val = 0
+  cancelled.val = 0
+  let t2 = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t2.draw()
+  t2.draw()
+  assert_eq(opens.val, 1)
+  // Snap 1: A lost, Core hasn't allocated B yet (both ownedWorkspaces=[])
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  t2.draw()
+  assert_true(cancelled.val >= 1)
+  assert_true(@sfbase.workspace_is_pending("ws-1"))
+  assert_eq(opens.val, 1, msg="Snap 1 must emit 0 additional screen.view RPCs")
+  // Snap 2: Core offline-assigns ws-1 to B (still loaded=false) -> explicit_loss keeps Pending, 0 new RPCs!
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  t2.draw()
+  t2.draw()
+  assert_true(@sfbase.workspace_is_pending("ws-1"), msg="Snap 2 must keep ws-1 Pending while B is loaded=false")
+  assert_eq(opens.val, 1, msg="Snap 2 must emit 0 additional screen.view RPCs")
+  // Snap 3: B loaded=true -> opens 2nd screen.view!
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  t2.draw()
+  t2.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_eq(opens.val, 2, msg="Snap 3 must open 2nd screen.view once B is loaded=true")
+  @ui.run_let_go()
+}
+
+///|
+test "r15 sign-out order independence (both accounts-first and workspaces-first keep offline B Waiting) and legitimate re-election while A remains member immediately opens offline B" {
+  let base = @sffixture.fixture("settings")
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:r15-1", title: "R15", until_gone: false }
+  let snap_ab_a_owns : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  let snap_b_offline_only : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let snap_b_loaded_only : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  // Run both sign-out notification orders: accounts_first=true and accounts_first=false
+  for accounts_first in [true, false] {
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+    @sfbase.workspace_owners_sync_json(Some(snap_ab_a_owns))
+    let opens = Ref(0)
+    let cancelled = Ref(0)
+    let src : Source = {
+      ..base,
+      stream: fn(name, _params, _bytes, _on_val, _done) {
+        if name == "screen.view" {
+          opens.val += 1
+          opens.val
+        } else {
+          0
+        }
+      },
+      cancel: fn(_) { cancelled.val += 1 },
+    }
+    let t = @ui.Tester::tree(
+      fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(root, src, at, fn() { @sf.no_frame })
+      },
+      w=900.0,
+      h=600.0,
+      platform=0,
+      keeps_sources=true,
+    )
+    let h = @hostapi.host()
+    let orig_audio_here = h.st_audio_here
+    let orig_audio = h.st_audio
+    let audio_flushes = Ref(0)
+    h.st_audio_here = fn() { 1 }
+    h.st_audio = fn(id, data) {
+      if data.length() == 0 {
+        audio_flushes.val += 1
+      }
+      orig_audio(id, data)
+    }
+    t.draw()
+    t.draw()
+    let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+    let sess_a = screens_open.get(key_a).unwrap()
+    sess_a.own_stream()
+    sess_a.heard = true
+    sess_a.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+    sess_a.take({ "audio": { "n": 1.0 } }, Some(Bytes::make(3840, b'\x01')))
+    assert_eq(opens.val, 1)
+    audio_flushes.val = 0
+    if accounts_first {
+      @sfbase.accounts_subs_sync(["acct-b"])
+      @sfbase.workspace_owners_sync_json(Some(snap_b_offline_only))
+    } else {
+      @sfbase.workspace_owners_sync_json(Some(snap_b_offline_only))
+      @sfbase.accounts_subs_sync(["acct-b"])
+    }
+    t.draw()
+    t.draw()
+    assert_true(cancelled.val >= 1, msg="A stream must be cancelled on sign-out")
+    assert_true(audio_flushes.val >= 1, msg="A audio must be flushed on sign-out")
+    assert_true(@sfbase.workspace_is_pending("ws-1"), msg="ws-1 must stay Pending while B is loaded=false after A signs out")
+    @sfbase.set_startup_window_owner(Some("acct-b"))
+    assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+    assert_eq(opens.val, 1, msg="offline B must emit 0 additional screen.view RPCs after A signs out")
+    @sfbase.workspace_owners_sync_json(Some(snap_b_loaded_only))
+    t.draw()
+    t.draw()
+    assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+    assert_eq(opens.val, 2, msg="B confirmation must open 2nd screen.view")
+    h.st_audio_here = orig_audio_here
+    h.st_audio = orig_audio
+    @ui.run_let_go()
+  }
+  // Legitimate re-election while A is still a loaded member of ws-1: offline B opens immediately!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-b", "acct-a"])
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1)
+  assert_true(screens_open.contains(key_a))
+  // Core re-elects offline B while A is STILL a loaded member of ws-1 -> immediate Owned(B), A closed, B opens offline!
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  t.draw()
+  t.draw()
+  let key_b = screen_key_for_owner("acct-b", at.station, at.screen)
+  assert_false(@sfbase.workspace_is_pending("ws-1"), msg="legitimate re-election must not set Pending")
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_false(screens_open.contains(key_a), msg="old A session must be closed on owner switch")
+  assert_true(cancelled.val >= 1)
+  assert_true(screens_open.contains(key_b), msg="offline B must immediately open screen session")
+  assert_eq(opens.val, 2, msg="offline B must immediately open 2nd screen.view without waiting for /v1/me")
+  @ui.run_let_go()
 }

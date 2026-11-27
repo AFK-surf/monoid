@@ -272,6 +272,33 @@ test "what was sent from here draws the composer's marks as the references its m
 }
 
 ///|
+test "a person's words are set as the core read their marks: bold, slanted, struck through, code, a block of code" {
+  let accent = @sf.theme().p.accent
+  let page = "https://app.still.fail/w/ws1/s/st1/chats/s-c2"
+  // (refLinks.ts personWords of `**粗 [首页](page)** *斜* ~~删~~ `a_b`` and a fenced block after it, as the core gives them)
+  let parts : Array[Json] = [
+    { "text": "粗 ", "b": true },
+    { "text": "首页", "link": Json::string(page), "ref": true, "b": true },
+    { "text": " " },
+    { "text": "斜", "i": true },
+    { "text": " " },
+    { "text": "删", "s": true },
+    { "text": " " },
+    { "text": "a_b", "code": true },
+    { "text": "\n" },
+    { "text": "let a = 1", "pre": true },
+  ]
+  let runs = words_runs(parts, accent)
+  assert_eq(runs.map(fn(r) { r.text }), ["粗 ", "@", "首页", " ", "斜", " ", "删", " ", "a_b", "\n", "let a = 1"])
+  assert_eq(runs.map(fn(r) { r.weight }), [700, 700, 700, 0, 0, 0, 0, 0, 0, 0, 0])
+  assert_eq(runs.map(fn(r) { r.italic }).search(true), Some(4))
+  assert_eq(runs.map(fn(r) { r.strike }).search(true), Some(6))
+  assert_eq(runs.map(fn(r) { r.code }).search(true), Some(8))
+  assert_eq(runs.map(fn(r) { r.mono }).search(true), Some(10))
+  assert_eq(runs[2].link, page)
+}
+
+///|
 test "images are sized before they load" {
   let a : Attachment = {
     name: "a.png",

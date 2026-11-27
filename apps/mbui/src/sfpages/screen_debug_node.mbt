@@ -36,16 +36,16 @@ fn debug_lines_node(t : @view.View, s : ScreenSess, d : DebugLogs, copy? : Bool 
   fn ask() -> Unit {
     // (asked already, by the pane beside the device: looked at again then)
     if d.asking {
-      t.at_moment(t.logic_at() + debug_logs_ms, ask, later=true) |> ignore
+      t.at_moment_active(t.logic_at() + debug_logs_ms, ask, later=true, while_covered=true) |> ignore
       return
     }
-    debug_logs_ask(s, d, fn() { t.at_moment(t.logic_at() + debug_logs_ms, ask, later=true) |> ignore })
+    debug_logs_ask(s, d, fn() { t.at_moment_active(t.logic_at() + debug_logs_ms, ask, later=true, while_covered=true) |> ignore })
   }
 
   if d.asks == 0 {
     ask()
   } else {
-    t.at_moment(t.logic_at() + debug_logs_ms, ask, later=true) |> ignore
+    t.at_moment_active(t.logic_at() + debug_logs_ms, ask, later=true, while_covered=true) |> ignore
   }
   if copy {
     t.show(fn() { !d.lines.get().is_empty() }, fn(k) { debug_logs_copy_node(k, d) })

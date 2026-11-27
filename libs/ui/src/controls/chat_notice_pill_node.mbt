@@ -225,7 +225,7 @@ pub fn notice_end_action_node(
     action_box_node(loc~, e, action, fn(_) { press() }, disabled=busy, fn(b) {
       b.box(made_for=loc, fn(w) {
         w
-        .words_runs(By(fn() { [@ui.span(action(), underline=true)] }))
+        .words_runs(By(fn() { [@ui.span(action(), underline=!busy())] }))
         .words_look(By(fn() { @ui.style_words(notice_pill_act_of(failed(), busy())) }))
         .ink(By(fn() { @ui.style_ink(notice_pill_act_of(failed(), busy())) }))
         |> ignore

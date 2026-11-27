@@ -85,6 +85,13 @@ fn meta(host : @host.Host, path : String) -> (Int64, Double)? {
 ///|
 /// Bytes of a file (`length` of them from `from`, or what its zstd frames there hold); None when it does not open.
 fn bytes_of(host : @host.Host, path : String, from? : Int64 = 0L, length? : Int64, zstd? : Bool = false, exact? : Bool = false) -> Bytes? raise {
+  if !zstd && !exact && from >= 0L {
+    match host.read_file_slice(path, from~, length?) {
+      Slice(b) => return Some(b)
+      Missing => return None
+      Fallback => ()
+    }
+  }
   let args : Map[String, Json] = { "path": Json::string(path), "from": Json::number(from.to_double()) }
   if length is Some(n) {
     args["length"] = Json::number(n.to_double())
@@ -145,6 +152,297 @@ fn record_of(line : String) -> @jsjson.JValue? {
   Some(@jsjson.parse(text)) catch {
     _ => None
   }
+}
+
+///|
+fn bytes_eq_ascii(b : BytesView, start : Int, end : Int, ascii : String) -> Bool {
+  let n = ascii.length()
+  if end - start != n {
+    return false
+  }
+  for i in 0..<n {
+    if b[start + i].to_int() != ascii.unsafe_charcode_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Zero-allocation raw-byte JSON value skipper for top-level pre-filtering.
+/// Returns the index immediately after the value, or -1 if malformed.
+fn skip_json_value_bytes(b : BytesView, pos : Int, end : Int) -> Int {
+  let mut i = pos
+  if i >= end {
+    return -1
+  }
+  let c = b[i].to_int()
+  if c == 0x22 {
+    // String: scan bytes until unescaped '"'
+    i += 1
+    while i < end {
+      let ch = b[i].to_int()
+      if ch == 0x22 {
+        return i + 1
+      }
+      if ch == 0x5c {
+        i += 2
+        if i > end {
+          return -1
+        }
+      } else if ch < 0x20 {
+        return -1
+      } else {
+        i += 1
+      }
+    }
+    return -1
+  }
+  if c == 0x7b || c == 0x5b {
+    let mut depth = 1
+    i += 1
+    while i < end && depth > 0 {
+      let ch = b[i].to_int()
+      if ch == 0x22 {
+        i += 1
+        while i < end {
+          let sc = b[i].to_int()
+          if sc == 0x22 {
+            i += 1
+            break
+          }
+          if sc == 0x5c {
+            i += 2
+            if i > end {
+              return -1
+            }
+          } else if sc < 0x20 {
+            return -1
+          } else {
+            i += 1
+          }
+        }
+      } else if ch == 0x7b || ch == 0x5b {
+        depth += 1
+        i += 1
+      } else if ch == 0x7d || ch == 0x5d {
+        depth -= 1
+        i += 1
+      } else {
+        i += 1
+      }
+    }
+    return if depth == 0 { i } else { -1 }
+  }
+  // Primitive (number / true / false / null)
+  let start = i
+  while i < end {
+    let ch = b[i].to_int()
+    if ch == 0x2c || ch == 0x7d || ch == 0x5d || ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+      break
+    }
+    i += 1
+  }
+  if i == start { -1 } else { i }
+}
+
+///|
+/// Zero-allocation raw-byte pre-filter for JSONL records whose `type` (or Claude `isMeta: true`)
+/// guarantees `record_of` + `timeline_of` produces zero entries and zero `ReadState` mutations.
+/// Bails out (returns `false`) whenever any top-level key or `"type"` value contains a `\` escape.
+fn can_skip_record_bytes(runtime : String, raw : BytesView) -> Bool {
+  // dsh and cursor/devin/hermes/agy/copilot validate `time` before checking `type`, so never skip them.
+  let rt_kind = match runtime {
+    "claude" => 1
+    "pi" => 2
+    "grok" => 3
+    "dsh" | "cursor" | "devin" | "hermes" | "agy" | "copilot" => return false
+    _ => 4 // codex
+  }
+  let mut end = raw.length()
+  if end > 0 && raw[end - 1].to_int() == 0x0d {
+    end -= 1
+  }
+  let mut i = 0
+  while i < end {
+    let ch = raw[i].to_int()
+    if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+      i += 1
+    } else {
+      break
+    }
+  }
+  if i >= end {
+    return true
+  }
+  if raw[i].to_int() != 0x7b {
+    // Non-object (or invalid JSON): conservatively fall back to full parser.
+    return false
+  }
+  i += 1
+  // type_state: 0 = ignored/unseen, 1 = wanted, 2 = claude user/assistant (skippable if isMeta=true)
+  let mut type_state = 0
+  let mut is_meta = false
+  let mut first = true
+  while true {
+    while i < end {
+      let ch = raw[i].to_int()
+      if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+        i += 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if raw[i].to_int() == 0x7d {
+      i += 1
+      while i < end {
+        let ch = raw[i].to_int()
+        if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+          i += 1
+        } else {
+          break
+        }
+      }
+      if i != end {
+        return false // trailing garbage -> conservatively fall back to full parser
+      }
+      if type_state == 0 {
+        return true
+      }
+      if rt_kind == 1 && type_state == 2 && is_meta {
+        return true
+      }
+      return false
+    }
+    if !first {
+      if raw[i].to_int() != 0x2c {
+        return false
+      }
+      i += 1
+      while i < end {
+        let ch = raw[i].to_int()
+        if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+          i += 1
+        } else {
+          break
+        }
+      }
+      if i >= end {
+        return false
+      }
+    }
+    first = false
+    if raw[i].to_int() != 0x22 {
+      return false
+    }
+    i += 1
+    let key_start = i
+    while i < end {
+      let ch = raw[i].to_int()
+      if ch == 0x22 {
+        break
+      }
+      if ch == 0x5c || ch < 0x20 {
+        // Escaped top-level key or control char: fall back to full parser.
+        return false
+      }
+      i += 1
+    }
+    if i >= end {
+      return false
+    }
+    let key_end = i
+    i += 1
+    while i < end {
+      let ch = raw[i].to_int()
+      if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+        i += 1
+      } else {
+        break
+      }
+    }
+    if i >= end || raw[i].to_int() != 0x3a {
+      return false
+    }
+    i += 1
+    while i < end {
+      let ch = raw[i].to_int()
+      if ch == 0x20 || ch == 0x09 || ch == 0x0a || ch == 0x0d {
+        i += 1
+      } else {
+        break
+      }
+    }
+    if i >= end {
+      return false
+    }
+    if bytes_eq_ascii(raw, key_start, key_end, "type") {
+      if raw[i].to_int() == 0x22 {
+        i += 1
+        let val_start = i
+        while i < end {
+          let ch = raw[i].to_int()
+          if ch == 0x22 {
+            break
+          }
+          if ch == 0x5c || ch < 0x20 {
+            return false
+          }
+          i += 1
+        }
+        if i >= end {
+          return false
+        }
+        let val_end = i
+        i += 1
+        type_state = match rt_kind {
+          1 =>
+            if bytes_eq_ascii(raw, val_start, val_end, "user") || bytes_eq_ascii(raw, val_start, val_end, "assistant") {
+              2
+            } else if bytes_eq_ascii(raw, val_start, val_end, "attachment") {
+              1
+            } else {
+              0
+            }
+          2 => if bytes_eq_ascii(raw, val_start, val_end, "message") { 1 } else { 0 }
+          3 =>
+            if bytes_eq_ascii(raw, val_start, val_end, "user") ||
+              bytes_eq_ascii(raw, val_start, val_end, "reasoning") ||
+              bytes_eq_ascii(raw, val_start, val_end, "assistant") ||
+              bytes_eq_ascii(raw, val_start, val_end, "tool_result") {
+              1
+            } else {
+              0
+            }
+          _ => if bytes_eq_ascii(raw, val_start, val_end, "response_item") { 1 } else { 0 }
+        }
+      } else {
+        let next = skip_json_value_bytes(raw, i, end)
+        if next < 0 {
+          return false
+        }
+        i = next
+        type_state = 0
+      }
+    } else if rt_kind == 1 && bytes_eq_ascii(raw, key_start, key_end, "isMeta") {
+      let next = skip_json_value_bytes(raw, i, end)
+      if next < 0 {
+        return false
+      }
+      is_meta = bytes_eq_ascii(raw, i, next, "true")
+      i = next
+    } else {
+      let next = skip_json_value_bytes(raw, i, end)
+      if next < 0 {
+        return false
+      }
+      i = next
+    }
+  }
+  false
 }
 
 ///|
@@ -391,17 +689,14 @@ fn Run::take(self : Run, piece : BytesView) -> Unit raise {
   let base = tail.offset - bytes.length().to_int64()
   let mut from = 0
   for end in lines_of(bytes[:], cut) {
-    let records = []
-    for line in @utf8.decode_lossy(bytes[from:end]).split("\n") {
-      if record_of(line.to_owned()) is Some(r) {
-        records.push(r)
+    let line_end = if end > from && bytes[end - 1] == b'\n' { end - 1 } else { end }
+    let entries = []
+    if !can_skip_record_bytes(tail.runtime, bytes[from:line_end]) {
+      if record_of(@utf8.decode_lossy(bytes[from:line_end])) is Some(r) {
+        timeline_of(tail.runtime, r, tail.state, entries)
       }
     }
     from = end
-    let entries = []
-    for r in records {
-      timeline_of(tail.runtime, r, tail.state, entries)
-    }
     if tail.collect is Some(out) {
       out.append(entries)
     }
@@ -724,6 +1019,9 @@ fn read_between(host : @host.Host, runtime : String, m : Marked, from : Double, 
   let mut index = mark.index
   // A line read: whether more are wanted.
   let line = fn(bytes : BytesView) -> Bool raise {
+    if can_skip_record_bytes(runtime, bytes) {
+      return true
+    }
     guard record_of(@utf8.decode_lossy(bytes)) is Some(record) else { return true }
     let entries = []
     timeline_of(runtime, record, state, entries)

@@ -107,3 +107,43 @@ test "runs changed in place after they were laid out are not taken for the ones 
   assert_true(!physical_equal(b, a))
   assert_true(b.len > a.len)
 }
+
+///|
+test "a mark that leads its line (a list's item): the rest of that line, wrapped, starts where the mark ends; the next line starts at the edge again: a paragraph of runs, a field's words" {
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  ignore(t)
+  // (Latin 5 px wide at size 10: 60 wide holds twelve letters)
+  let runs = [span("- ", ground=Some(leads)), plain("aaaa bbbb cccc dddd\n"), plain("eeee ffff gggg")]
+  let lay = layout_rich(kept_rich(runs), 60.0)
+  // its first line, the lines wrapped of it hung in by its mark, the next line at the edge and its own wrapped there too
+  let first = fn(l : Int) { lay.xs[lay.line_start[l]] }
+  assert_true(lay.line_start.length() >= 4)
+  let hang = lay.xs[2]
+  assert_true(hang > 0.0)
+  let own = lay.line_of[lay.text.find("eeee").unwrap()]
+  for l in 0..<lay.line_start.length() {
+    let want = if l == 0 || l >= own { 0.0 } else { hang }
+    assert_eq(first(l), want, msg="line \{l}")
+  }
+  // no run leads: every line at the edge, as before
+  let plain_lay = layout_rich(kept_rich([plain("- aaaa bbbb cccc dddd")]), 60.0)
+  for l in 0..<plain_lay.line_start.length() {
+    assert_eq(plain_lay.xs[plain_lay.line_start[l]], 0.0)
+  }
+  // a field's words, the same: the stretch that leads is its mark's
+  let words = "- aaaa bbbb cccc dddd\neeee ffff gggg"
+  let set : Array[WordsSet] = [{ from: 0, to: 2, weight: 0, style: 0, color: 0L, ground: 0L, strike: false, leads: true }]
+  let tl = layout_text(words, 10.0, 400, 60.0, true, set~)
+  let own = tl.line_of[words.find("eeee").unwrap()]
+  assert_true(own >= 2)
+  for l in 0..<tl.line_start.length() {
+    let want = if l == 0 || l >= own { 0.0 } else { tl.xs[2] }
+    assert_eq(tl.xs[tl.line_start[l]], want, msg="field line \{l}")
+  }
+  assert_true(tl.xs[2] > 0.0)
+  // (the same words with no stretch said are laid out as ever, not as the hung ones kept)
+  let flat = layout_text(words, 10.0, 400, 60.0, true)
+  for l in 0..<flat.line_start.length() {
+    assert_eq(flat.xs[flat.line_start[l]], 0.0)
+  }
+}

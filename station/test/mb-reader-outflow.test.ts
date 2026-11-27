@@ -53,7 +53,9 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
           ? { card: { vault: { request: "secret-vault-id" }, assignee: "ann@x" } }
           : i === 16
             ? { card: { type: "text", placeholder: "  sk_test_...  " } }
-            : {};
+            : i === 20
+              ? { attachments: [{ name: "shot.png", path: "/tmp/uploads/shot.png", size: 1234, width: 800, height: 600 }] }
+              : {};
     const at = say(thread, i % 4 === 0 ? "agent" : "person", i % 4 === 0 ? "mine" : authors[i % authors.length]!, `message ${i}`,
       { ...(i % 13 === 0 ? { letter: { way: "out", title: "To Y", link: null } } : {}), ...cardExtra });
     if (i === 4) {
@@ -90,8 +92,9 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
     const prepared = await all(program);
     assert.deepEqual(prepared, await all(worker));
     assert.ok(JSON.stringify(prepared).includes("message 125"));
-    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "> darksky 的 VPS 钱\\n> 两行引用\\n\\n已经收了", "> 第一段\\n\\n批注\\n\\n补充说明", "\"text\":\"做 C（复古神秘学家）\"", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"action\":\"close\"", "\"closed\":true", "\"choice\":\"Skip\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\""])
+    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "> darksky 的 VPS 钱\\n> 两行引用\\n\\n已经收了", "> 第一段\\n\\n批注\\n\\n补充说明", "\"text\":\"做 C（复古神秘学家）\"", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"action\":\"close\"", "\"closed\":true", "\"choice\":\"Skip\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\"", "\"files\":[{\"name\":\"shot.png\",\"size\":1234,\"width\":800,\"height\":600}]"])
       assert.ok(said.includes(sign), sign);
+    assert.equal(said.includes("/tmp/uploads/shot.png"), false);
     assert.equal(said.includes("SHOULD_NOT_PREPEND_AUTO_CARD_QUOTE"), false);
     assert.equal(said.includes("secret-login-id"), false);
     assert.equal(said.includes("secret-vault-id"), false);

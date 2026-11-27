@@ -28,14 +28,14 @@
 //        the release, one a line
 //   node scripts/native.ts ensure [--windows] [--publish | --publish-store] [--outbox DIR] [part[:target]…]
 //        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release and the
-//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --publish-store puts what the
+//        store lack (gh, main only), then prunes those parts and targets to the newest 10 (sweeping all groups past 800); --publish-store puts what the
 //        store lacks in the store instead (release-put.sh, CLOUDFLARE_API_TOKEN), never asking GitHub (the Shanghai
 //        Macs' main jobs: their `gh release upload` timed out at the job's 5 minutes again and again, 2026-11-25);
 //        --outbox copies the artifacts the release lacks there (a branch's run artifact)
 //        The default leaves out what only Windows builds (MSVC's: the mbui app's shell and engine); --windows is those.
 //        Never what only Linux builds (the mbui app's Linux shell and engine: the prebuild workflow's alone), nor
 //        what is built only by hand (`prebuilt`: ghostty-vt, prebuild --release on a Mac).
-//   node scripts/native.ts prune [N]                   the release keeps the newest N (20) of each part and target
+//   node scripts/native.ts prune [N]                   the release keeps the newest N (10) of each part and target
 //   node scripts/native.ts prebuild [--release] [part:target…]   each (default: the Windows parts) in neither the store
 //        (STORE: the releases bucket's natives/) nor the release, got or built here (Windows builds the Windows ones, a
 //        Mac cross-builds them), then put in the store (scripts/release-put.sh: CLOUDFLARE_API_TOKEN, the releases
@@ -47,7 +47,7 @@
 //        the store lacks, copied there (release-put.sh, CLOUDFLARE_API_TOKEN); never built. (Every part, not only the
 //        Windows ones: the release's download answered GitHub's runners 504 again and again on 2026-11-08, iroh-wasm's,
 //        failing every branch's bundle, static and check-linux; the store is asked first. And the readers: the release
-//        keeps 20 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
+//        keeps 10 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
 //        built all four in its station job, past its 10 minutes. scripts/release-prune.ts deletes a reader there after
 //        14 days. Not reader-harness, the tests' alone.)
 //
@@ -1498,8 +1498,25 @@ async function releaseThroughApiOnce(name: string): Promise<{ bytes: Buffer; url
       await found.body?.cancel().catch(() => {});
       return passing(found.status) ? "again" : null;
     }
-    const release = await found.json() as { assets?: { name?: unknown; id?: unknown; digest?: unknown }[] };
-    const asset = Array.isArray(release.assets) ? release.assets.find((a) => a.name === name) : undefined;
+    const release = await found.json() as { id?: unknown; assets?: { name?: unknown; id?: unknown; digest?: unknown }[] };
+    let asset = Array.isArray(release.assets) ? release.assets.find((a) => a.name === name) : undefined;
+    // GET /releases/tags/<tag> truncates its inline assets array well below GitHub's 1000-asset limit (829/1000 on
+    // 2026-11-27); fall back to the paginated release assets endpoint when not found inline.
+    if (!asset && typeof release.id === "number" && Number.isSafeInteger(release.id) && release.id > 0) {
+      const apiOrigin = new URL(root).origin;
+      let nextUrl: string | null = `${root}/${release.id}/assets?per_page=100`;
+      while (nextUrl && !asset) {
+        const page = await api(nextUrl, "application/vnd.github+json", AbortSignal.timeout(30_000));
+        if (!page.ok) {
+          log(`release assets API answered ${page.status}`);
+          await page.body?.cancel().catch(() => {});
+          return passing(page.status) ? "again" : null;
+        }
+        const items = await page.json() as { name?: unknown; id?: unknown; digest?: unknown }[];
+        if (Array.isArray(items)) asset = items.find((a) => a.name === name);
+        nextUrl = nextPageUrl(page.headers.get("link"), apiOrigin);
+      }
+    }
     if (!asset || typeof asset.id !== "number" || !Number.isSafeInteger(asset.id) || asset.id <= 0) return null;
     const url = `${root}/assets/${asset.id}`;
     const initial = await api(url, "application/octet-stream", AbortSignal.timeout(STALLED_MS));
@@ -1825,53 +1842,178 @@ function upload(file: string): void {
   }
 }
 // The release keeps the newest KEEP of each part and target (`only`: of those groups, `part-target`). GitHub takes at
-// most 1000 assets on a release; every publisher prunes what it published, so none grows past KEEP: mbui-figure's film
-// and figure, published on every change to mbui, reached 150 each while only pipeline's natives job pruned, and the
-// release's 1000 failed main's mbui-media-runtime (42734298404, 2026-11-10).
-const KEEP = 20;
-function prune(keep: number, only?: Set<string>): void {
-  // (a list GitHub's answer did not get through for prunes nothing, left for the next prune as one DELETE dropped is
-  // below: an EOF on it failed main's mbui-media-runtime film with both its programs already published, 89ddb06c
-  // 42961511598, 2026-11-11)
-  const listed = gh(["api", "--paginate", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", "[.assets[] | {id, name, created_at}]"], { allowFail: true, timeout: 30_000 });
-  if (!listed) {
-    console.log(`the release's assets not listed: the next prune prunes them`);
-    return;
-  }
-  const assets = JSON.parse(listed) as { id: number; name: string; created_at: string }[];
-  const groups = new Map<string, typeof assets>();
-  for (const a of assets) {
-    const g = a.name.replace(/-[0-9a-f]{24}\.tar\.gz$/, "");
-    if (!only || only.has(g)) groups.set(g, [...(groups.get(g) ?? []), a]);
-  }
-  for (const [, list] of groups) {
-    list.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-    // (one GitHub dropped is left for the next prune: an EOF on one DELETE failed main's natives job, 6484574c, 2026-11-04)
-    for (const a of list.slice(keep)) {
-      const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
-      const why = (done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : done.stderr).trim();
-      console.log(!done.error && done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${why}): the next prune deletes it`);
+// most 1000 assets on a release:
+// - GET /releases/tags/<tag> truncates its inline assets array (829 of 1000 on 2026-11-27), and `gh api --paginate`
+//   does not paginate a single-object release endpoint, so both prune() and published() paginate /releases/<id>/assets.
+// - With 60+ (part, target) slots (and store-only publishers like mbui-figure no longer calling prune), KEEP=20 hit
+//   the 1000-asset cap and broke main's natives-build with HTTP 422 (45945559207, 2026-11-27). R2 store keeps 14 days
+//   and is queried first, so KEEP=10 with a global RELEASE_ASSET_CAP=800 sweep across all groups keeps headroom.
+const KEEP = 10;
+const RELEASE_ASSET_CAP = 800;
+const MIN_KEEP_UNDER_CAP = 2;
+export interface ReleaseAsset { id: number; name: string; created_at: string }
+
+function nextPageUrl(link: string | null, expectedOrigin: string): string | null {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = part.match(/<([^>]+)>;\s*rel="next"/);
+    if (m?.[1]) {
+      try {
+        const u = new URL(m[1]);
+        if (u.origin === expectedOrigin) return u.toString();
+      } catch {
+        return null;
+      }
     }
   }
+  return null;
 }
-async function published(): Promise<Set<string> | null> {
-  // (one request, by fetch with the job's token where there is one: the release's own answer lists every asset, 180 of
-  // them as they are kept. Through gh it was 21-35 s of Windows mbui runs with nothing missing, its first call in the job
-  // (a later one 1 s), curl or fetch 0-1 s, on GitHub's Windows runner, 2026-10-24/25)
+
+export function selectPruneTargets(
+  rawAssets: ReleaseAsset[],
+  keep: number,
+  only?: Set<string>,
+  cap = RELEASE_ASSET_CAP,
+): ReleaseAsset[] {
+  const perGroup = Number.isFinite(keep) ? Math.max(0, Math.floor(keep)) : KEEP;
+  const byId = new Map<number, ReleaseAsset>();
+  for (const a of rawAssets) byId.set(a.id, a);
+  const assets = [...byId.values()];
+  const sweepAll = !only || assets.length > cap;
+  const groups = new Map<string, ReleaseAsset[]>();
+  for (const a of assets) {
+    const g = a.name.replace(/-[0-9a-f]{24}\.tar\.gz$/, "");
+    const list = groups.get(g);
+    if (list) list.push(a);
+    else groups.set(g, [a]);
+  }
+  const del = new Map<number, ReleaseAsset>();
+  const kept: { group: string; rank: number; asset: ReleaseAsset }[] = [];
+  for (const [g, list] of groups) {
+    list.sort((a, b) => (a.created_at !== b.created_at ? (a.created_at < b.created_at ? 1 : -1) : b.id - a.id));
+    if (sweepAll || only!.has(g)) {
+      for (const a of list.slice(perGroup)) del.set(a.id, a);
+      for (let i = 0; i < Math.min(perGroup, list.length); i++) kept.push({ group: g, rank: i, asset: list[i]! });
+    } else {
+      for (let i = 0; i < list.length; i++) kept.push({ group: g, rank: i, asset: list[i]! });
+    }
+  }
+  let remaining = assets.length - del.size;
+  if (remaining > cap) {
+    // Still over the global cap: trim oldest excess assets across all groups, preserving at least MIN_KEEP_UNDER_CAP per group.
+    const trimmable = kept
+      .filter((k) => k.rank >= MIN_KEEP_UNDER_CAP)
+      .sort((a, b) => (a.asset.created_at !== b.asset.created_at ? (a.asset.created_at < b.asset.created_at ? -1 : 1) : a.asset.id - b.asset.id));
+    for (const k of trimmable) {
+      if (remaining <= cap) break;
+      del.set(k.asset.id, k.asset);
+      remaining--;
+    }
+  }
+  return [...del.values()];
+}
+
+async function listReleaseAssets(): Promise<ReleaseAsset[] | null> {
   const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  const apiOrigin = new URL(GITHUB_API).origin;
   if (token) {
     try {
-      const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/tags/${RELEASE}`, {
-        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+      const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" };
+      const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(RELEASE)}`, {
+        headers,
         signal: AbortSignal.timeout(30_000),
       });
-      if (r.ok) return new Set(((await r.json()) as { assets: { name: string }[] }).assets.map((a) => a.name));
+      if (r.ok) {
+        const rel = await r.json() as { id?: number; assets?: ReleaseAsset[] };
+        if (typeof rel.id === "number" && Number.isSafeInteger(rel.id) && rel.id > 0) {
+          const all: ReleaseAsset[] = [];
+          const seen = new Set<number>();
+          let nextUrl: string | null = `${GITHUB_API}/repos/${REPO}/releases/${rel.id}/assets?per_page=100`;
+          let ok = true;
+          while (nextUrl) {
+            const p = await fetch(nextUrl, { headers, signal: AbortSignal.timeout(30_000) });
+            if (!p.ok) { await p.body?.cancel().catch(() => {}); ok = false; break; }
+            const items = await p.json() as ReleaseAsset[];
+            for (const a of items) {
+              if (!seen.has(a.id)) { seen.add(a.id); all.push(a); }
+            }
+            nextUrl = nextPageUrl(p.headers.get("link"), apiOrigin);
+          }
+          if (ok) return all;
+        } else if (Array.isArray(rel.assets)) {
+          return rel.assets;
+        }
+      } else {
+        await r.body?.cancel().catch(() => {});
+      }
     } catch {
       // (gh, as without a token)
     }
   }
-  const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true, timeout: 30_000 });
-  return out ? new Set(out.split("\n").filter(Boolean)) : null;
+  const relId = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".id"], { allowFail: true, timeout: 30_000 }).trim();
+  if (!/^\d+$/.test(relId)) return null;
+  // Emit one JSON object per line (NDJSON): `gh api --paginate` does not allow `--slurp` together with `--jq`.
+  const done = spawnSync(
+    "gh",
+    ["api", "--paginate", `repos/${REPO}/releases/${relId}/assets?per_page=100`, "--jq", ".[] | {id, name, created_at}"],
+    { encoding: "utf8", maxBuffer: 64 << 20, timeout: 30_000, killSignal: "SIGKILL" },
+  );
+  if (done.error || done.status !== 0) return null;
+  try {
+    const all: ReleaseAsset[] = [];
+    const seen = new Set<number>();
+    for (const line of done.stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const a = JSON.parse(trimmed) as ReleaseAsset;
+      if (!seen.has(a.id)) { seen.add(a.id); all.push(a); }
+    }
+    return all;
+  } catch {
+    return null;
+  }
+}
+
+async function prune(keep: number, only?: Set<string>): Promise<void> {
+  // (a list GitHub's answer did not get through for prunes nothing, left for the next prune as one DELETE dropped is
+  // below: an EOF on it failed main's mbui-media-runtime film with both its programs already published, 89ddb06c
+  // 42961511598, 2026-11-11)
+  const assets = await listReleaseAssets();
+  if (!assets) {
+    console.log(`the release's assets not listed: the next prune prunes them`);
+    return;
+  }
+  const targets = selectPruneTargets(assets, keep, only);
+  if (targets.length === 0) return;
+  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  // (one GitHub dropped is left for the next prune: an EOF on one DELETE failed main's natives job, 6484574c, 2026-11-04)
+  if (token) {
+    const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" };
+    await inTurn(targets, 4, async (a) => {
+      try {
+        const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/assets/${a.id}`, {
+          method: "DELETE",
+          headers,
+          signal: AbortSignal.timeout(30_000),
+        });
+        await r.body?.cancel().catch(() => {});
+        console.log(r.ok || r.status === 404 ? `deleted ${a.name}` : `${a.name} not deleted (HTTP ${r.status}): the next prune deletes it`);
+      } catch (e) {
+        console.log(`${a.name} not deleted (${(e as Error).message}): the next prune deletes it`);
+      }
+    });
+    return;
+  }
+  for (const a of targets) {
+    const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+    const why = (done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : done.stderr).trim();
+    console.log(!done.error && done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${why}): the next prune deletes it`);
+  }
+}
+async function published(): Promise<Set<string> | null> {
+  // Paginated /releases/<id>/assets via fetch (with gh fallback), since /releases/tags/<tag> truncates inline assets.
+  const assets = await listReleaseAssets();
+  return assets ? new Set(assets.map((a) => a.name)) : null;
 }
 /// A fetch asked again, ATTEMPTS times in all and RETRY_MS × the tries so far between, when it threw (a connection or
 /// its body broken off: one `fetch failed` ended main's store-sync after seven parts downloaded, none put, 44669202703,
@@ -2131,7 +2273,7 @@ async function main(argv: string[]) {
           console.log(`${p} ${t} ${k}: ${how} (${took} s)${there ? ", published already" : note}`);
         }
       } finally { rmSync(work, { recursive: true, force: true }); }
-      if (publishedNow.size) prune(KEEP, publishedNow);
+      if (publishedNow.size) await prune(KEEP, publishedNow);
       return;
     }
     case "prebuild": {
@@ -2156,7 +2298,7 @@ async function main(argv: string[]) {
       try {
         if (any && toRelease) {
           for (const f of readdirSync(join(work, "natives"))) upload(join(work, "natives", f));
-          prune(KEEP, new Set(wanted.map(([p, t]) => `${p}-${t}`)));
+          await prune(KEEP, new Set(wanted.map(([p, t]) => `${p}-${t}`)));
         }
         else if (any) run("sh", [join(ROOT, "scripts/release-put.sh"), "--files", work], { stdio: "inherit" });
       } finally { rmSync(work, { recursive: true, force: true }); }
@@ -2195,7 +2337,9 @@ async function main(argv: string[]) {
       return;
     }
     case "prune": {
-      prune(Number(args[0] ?? KEEP));
+      const keep = args[0] === undefined ? KEEP : Number(args[0]);
+      if (!Number.isInteger(keep) || keep < 1) throw new Error(`prune: keep must be a positive integer, got ${args[0]}`);
+      await prune(keep);
       return;
     }
     default:

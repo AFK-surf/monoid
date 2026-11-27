@@ -450,7 +450,7 @@ pub fn fake_core(
         }
         "session.warm" | "client.focus" | "chat.place" => done(Ok(Json::object({})))
         "link.parse" => done(Ok(@sffixture.fixture_link_parse(@sfbase.text(Some(params), "url"))))
-        "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.pasted" | "paste.info" => (base.call)(name, params, done)
+        "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.styles" | "ref.enter" | "ref.pasted" | "paste.info" => (base.call)(name, params, done)
         _ if name.has_prefix("composer.") => (base.call)(name, params, done)
         _ => ()
       }

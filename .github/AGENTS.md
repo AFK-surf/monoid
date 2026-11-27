@@ -17,7 +17,8 @@
   540 seconds and can exceed 10 minutes with setup and packaging. Other jobs that need longer are made faster,
   never finished over several pushes or reruns: a branch's
   mbui-check run cut before its programs were all built keeps none of the units it compiled (test.sh's
-  `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
+  `MBUI_BUILT_MARK`), and main's store keeps what its runs used for two hours on app-build, one hour on secondary
+  stores, and three hours on cut runs. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 35), JOB_END written by the
@@ -72,7 +73,7 @@
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
   staged; only `station-put` puts it, packages then `station.json` seconds apart, so a run cut before leaves the channel
   as it was. Its native parts come from `station-natives-*`, which build only what neither the release
-  `native-artifacts` (20 of a part, hours of main's) nor the store (`natives/`: main's `natives-store`, after its natives
+  `native-artifacts` (10 of a part, hours of main's) nor the store (`natives/`: main's `natives-store`, after its natives
   jobs; readers kept 14 days, `scripts/release-prune.ts`) has.
 - `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts, not the Mac's reader, which
   `natives-mac-reader` builds beside it) and `desktop` for `desktop-build` alone, never for `natives`' slower Linux build

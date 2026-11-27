@@ -162,21 +162,209 @@ fn hist_trim_start(s : String) -> String {
   jscase::trim_start_white(s)
 }
 
+fn is_utf8_cont_byte(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// Scan UTF-8 bytes of `text` counting Unicode code points without allocating.
+/// Returns `(total_points, byte_cut_at_limit, prefix_has_invalid_utf8)`.
+fn scan_utf8_points(text : String, limit : Int) -> (Int, Int, Bool) {
+  let end = text.length()
+  let mut i = 0
+  let mut pts = 0
+  let mut cut = end
+  let mut invalid_before_cut = false
+  while i < end {
+    if pts == limit {
+      cut = i
+    }
+    let b0 = text.code_unit_at(i)
+    if b0 < 0x80 {
+      i = i + 1
+      pts = pts + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end && is_utf8_cont_byte(text.code_unit_at(i + 1)) {
+        i = i + 2
+      } else {
+        if pts < limit {
+          invalid_before_cut = true
+        }
+        i = i + 1
+      }
+      pts = pts + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = text.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont_byte(text.code_unit_at(i + 2)) {
+            i = i + 3
+            pts = pts + 1
+            continue
+          }
+          if pts < limit {
+            invalid_before_cut = true
+          }
+          i = i + 2
+          pts = pts + 1
+          continue
+        }
+      }
+      if pts < limit {
+        invalid_before_cut = true
+      }
+      i = i + 1
+      pts = pts + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = text.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont_byte(text.code_unit_at(i + 2)) {
+            if i + 3 < end && is_utf8_cont_byte(text.code_unit_at(i + 3)) {
+              i = i + 4
+              pts = pts + 1
+              continue
+            }
+            if pts < limit {
+              invalid_before_cut = true
+            }
+            i = i + 3
+            pts = pts + 1
+            continue
+          }
+          if pts < limit {
+            invalid_before_cut = true
+          }
+          i = i + 2
+          pts = pts + 1
+          continue
+        }
+      }
+      if pts < limit {
+        invalid_before_cut = true
+      }
+      i = i + 1
+      pts = pts + 1
+    } else {
+      if pts < limit {
+        invalid_before_cut = true
+      }
+      i = i + 1
+      pts = pts + 1
+    }
+  }
+  (pts, cut, invalid_before_cut)
+}
+
+/// First `n` Unicode code points of `text` without allocating per-character strings.
+fn slice_first_points(text : String, n : Int) -> String {
+  let end = text.length()
+  let mut i = 0
+  let mut pts = 0
+  let mut invalid = false
+  while i < end && pts < n {
+    let b0 = text.code_unit_at(i)
+    if b0 < 0x80 {
+      i = i + 1
+      pts = pts + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end && is_utf8_cont_byte(text.code_unit_at(i + 1)) {
+        i = i + 2
+      } else {
+        invalid = true
+        i = i + 1
+      }
+      pts = pts + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = text.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont_byte(text.code_unit_at(i + 2)) {
+            i = i + 3
+            pts = pts + 1
+            continue
+          }
+          invalid = true
+          i = i + 2
+          pts = pts + 1
+          continue
+        }
+      }
+      invalid = true
+      i = i + 1
+      pts = pts + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = text.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont_byte(text.code_unit_at(i + 2)) {
+            if i + 3 < end && is_utf8_cont_byte(text.code_unit_at(i + 3)) {
+              i = i + 4
+              pts = pts + 1
+              continue
+            }
+            invalid = true
+            i = i + 3
+            pts = pts + 1
+            continue
+          }
+          invalid = true
+          i = i + 2
+          pts = pts + 1
+          continue
+        }
+      }
+      invalid = true
+      i = i + 1
+      pts = pts + 1
+    } else {
+      invalid = true
+      i = i + 1
+      pts = pts + 1
+    }
+  }
+  if i >= end {
+    return text
+  }
+  if !invalid {
+    let sb = StringBuilder::new()
+    sb.write_substring(text, 0, i)
+    return sb.to_string()
+  }
+  let cs = js_json::points(text)
+  let sb = StringBuilder::new()
+  for k in 0..<n {
+    sb.write_string(cs[k])
+  }
+  sb.to_string()
+}
+
 /// transcript.ts `clip`: by Unicode code points (MAX_TEXT = 4000).
 fn clip(text : String) -> String {
-  let cs = js_json::points(text)
-  if cs.length() > MAX_TEXT {
-    let sb = StringBuilder::new()
+  let (pts, cut, invalid) = scan_utf8_points(text, MAX_TEXT)
+  if pts <= MAX_TEXT {
+    return text
+  }
+  let sb = StringBuilder::new()
+  if !invalid {
+    sb.write_substring(text, 0, cut)
+  } else {
+    let cs = js_json::points(text)
     for i in 0..<MAX_TEXT {
       sb.write_string(cs[i])
     }
-    sb.write_string("\n… (")
-    sb.write_string((cs.length() - MAX_TEXT).to_string())
-    sb.write_string(" more characters)")
-    sb.to_string()
-  } else {
-    text
   }
+  sb.write_string("\n… (")
+  sb.write_string((pts - MAX_TEXT).to_string())
+  sb.write_string(" more characters)")
+  sb.to_string()
 }
 
 fn pretty_jv(v : Option[js_json::JValue]) -> String {
@@ -384,13 +572,22 @@ fn injected(text : String) -> Bool {
     if !str_has_prefix(t, prefix) {
       continue
     }
-    let rest = str_slice_bytes(t, prefix.to_bytes().length(), t.to_bytes().length())
-    let pts = js_json::points(rest)
-    if pts.length() == 0 {
+    let plen = prefix.length()
+    if plen >= t.length() {
       return true
     }
-    let c = pts[0]
-    if !is_alphanumeric(script_code_of(c)) && c != "_" {
+    let b0 = t.code_unit_at(plen)
+    let cp = if b0 < 0x80 {
+      b0
+    } else {
+      let rest_head = str_slice_bytes(t, plen, if plen + 4 < t.length() { plen + 4 } else { t.length() })
+      let pts = js_json::points(rest_head)
+      if pts.length() == 0 {
+        return true
+      }
+      script_code_of(pts[0])
+    }
+    if !is_alphanumeric(cp) && cp != 0x5F {
       return true
     }
   }

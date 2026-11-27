@@ -11,9 +11,9 @@ import { merge } from "../src/entries.ts";
 import { topicKey, type Topic } from "../src/protocol.ts";
 import { EVICT_AFTER_MS } from "../src/store.ts";
 import { attention, choices, models, quotaFor, runnableOn } from "../src/views/models.ts";
-import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, foldNotices, noticeOf, shownMessage, stationOn } from "../src/views/views.ts";
+import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, foldNotices, noticeOf, shownMessage, softwareNoticeTarget, stationOn } from "../src/views/views.ts";
 import { localDay } from "../src/views/usage.ts";
-import { decorate, installView, profile as presentProfile } from "../src/present.ts";
+import { decorate, installView, profile as presentProfile, softwareNoticeView } from "../src/present.ts";
 import { conformTy } from "../src/conform.ts";
 import { markdown } from "../src/markdown.ts";
 import { work, workSince } from "../src/work.ts";
@@ -4491,6 +4491,112 @@ test("a profile's notice the station says what to do of says what went wrong, it
   assert.deepEqual(noticeOf("⚠️ 账号认证失败：在 Profile 中重新登录", false), { failed: true, words: "账号认证失败：在 Profile 中重新登录" });
   const m = shownMessage({ authorKind: "stillfail", author: "stillfail", text: "⚠️ 账号认证失败：重新登录", profile: "p1", seq: 3 }, [], {}, [], [], [], null, "Gemini-Pro");
   assert.deepEqual(m.notice, { failed: true, words: "「Gemini-Pro」认证失败", profileAction: "重新登录" });
+});
+
+test("a harness failure notice strips trailing settings prose and resolves its software shortcut by station state", () => {
+  // Missing Codex code-mode host (full-width and ASCII colons, zh and en, legacy and concise forms).
+  for (const text of [
+    "⚠️ 无法启动 agent：Codex 缺少执行组件，无法使用工具。请在这台 station 的软件设置中检查并修复 Codex 安装。",
+    "⚠️ 无法启动 agent: Codex 缺少执行组件，无法使用工具。请在这台 station 的软件设置中检查并修复 Codex 安装",
+    "⚠️ 无法启动 agent：Codex 缺少执行组件，无法使用工具",
+  ]) {
+    const n = noticeOf(text, false);
+    assert.deepEqual(n, { failed: true, words: "无法启动 agent：Codex 缺少执行组件，无法使用工具" }, text);
+    assert.deepEqual(softwareNoticeTarget(n.words), { runtime: "codex", preferRepair: true, words: n.words });
+  }
+  assert.deepEqual(
+    noticeOf("⚠️ Couldn't start the agent: Codex is missing a component its tools need. Check and repair its installation in this station's software settings.", false),
+    { failed: true, words: "Couldn't start the agent: Codex is missing a component its tools need" },
+  );
+  // Codex update/version notices (including codexUpdateFailed wrapping codexVersionUnknown/codexNoNewVersion).
+  assert.deepEqual(
+    noticeOf("⚠️ Codex 更新后仍不支持此模型，请在 station 的软件设置中检查 Codex\n\n```\nmodel requires newer\n```", false),
+    { failed: true, words: "Codex 更新后仍不支持此模型", detail: "model requires newer" },
+  );
+  assert.deepEqual(
+    noticeOf("⚠️ Codex 更新失败：无法确认更新后的 Codex 版本，请在 station 的软件设置中检查", false),
+    { failed: true, words: "Codex 更新失败：无法确认更新后的 Codex 版本" },
+  );
+  assert.deepEqual(
+    noticeOf("⚠️ Couldn't update Codex: No newer Codex version is available. Check this station's software settings", false),
+    { failed: true, words: "Couldn't update Codex: No newer Codex version is available" },
+  );
+  assert.deepEqual(softwareNoticeTarget("Codex 更新失败：下载超时"), { runtime: "codex", preferRepair: false, words: "Codex 更新失败：下载超时" });
+  // Non-matching notices stay untouched.
+  assert.equal(softwareNoticeTarget("此 Profile 使用的 Codex 与软件设置中的安装不同，无法在此更新"), null);
+
+  // softwareNoticeView resolves repair, update, updating, failed retry, and software-settings fallback.
+  const codex = (over: J): J => ({ id: "codex", name: "Codex", installed: true, updatable: false, repairable: false, newer: false, state: "idle", ...over });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({ repairable: true })], true), {
+    software: { runtime: "codex", kind: "repair", action: "用 npm 修复" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({ repairable: true })], false), {
+    software: { runtime: "codex", kind: "settings", action: "软件设置" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({ repairable: true, state: "updating" })], true), {
+    software: { runtime: "codex", kind: "updating", action: "正在修复…" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({ repairable: true, state: "updating", percent: 60 })], true), {
+    software: { runtime: "codex", kind: "updating", action: "正在修复 60%" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", false, [codex({ updatable: true, state: "updating", percent: 45 })], true), {
+    software: { runtime: "codex", kind: "updating", action: "正在更新 45%" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({ repairable: true, state: "failed", message: "ETIMEDOUT" })], true), {
+    software: { runtime: "codex", kind: "repair", action: "重试" },
+    detail: "ETIMEDOUT",
+  });
+  assert.deepEqual(softwareNoticeView("codex", false, [codex({ updatable: true, newer: true })], true), {
+    software: { runtime: "codex", kind: "update", action: "更新" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [codex({})], true), {
+    software: { runtime: "codex", kind: "settings", action: "软件设置" },
+  });
+  assert.deepEqual(softwareNoticeView("codex", true, [], true), {
+    software: { runtime: "codex", kind: "settings", action: "软件设置" },
+  });
+});
+
+test("a chat view attaches software shortcuts to Codex harness notices and updates live with station overview", async () => {
+  const t = setup();
+  const ch = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set({ topic: "workspaces" }, [{ workspaces: [{ id: "ws" }] }]);
+  t.set(workspace(), { id: "ws", role: "owner", stations: [{ id: "a", address: "ws/a", name: "mini", online: true }] });
+  t.set(prefs(), {});
+  t.set(link("ws/a"), { state: "online" });
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", runtime: "codex" })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { runtime: "codex" }), threads: [thread(7, ["k"], now)], turns: [] });
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  const broken = (n: number): J => ({
+    ...entry(n, "⚠️ 无法启动 agent：Codex 缺少执行组件，无法使用工具。请在这台 station 的软件设置中检查并修复 Codex 安装。"),
+    authorKind: "ember",
+    author: "ember",
+    at: n * 1000,
+  });
+  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries: [broken(1), broken(2)], thread: null });
+  t.set(rows("ws/a"), [{ ...row("k", now), thread: 7 }]);
+  t.set(overview("ws/a"), { ...overviewOf([], []), updates: [{ id: "codex", name: "Codex", installed: true, repairable: true, updatable: false, newer: false, state: "idle" }] });
+  await t.read(ch, 1);
+  // Consecutive identical Codex missing-host notices fold cleanly and carry the repair shortcut.
+  assert.equal(ch.value.messages.length, 1);
+  assert.equal(ch.value.messages[0].notice.count, 2);
+  assert.equal(ch.value.messages[0].notice.words, "无法启动 agent：Codex 缺少执行组件，无法使用工具");
+  assert.deepEqual(ch.value.messages[0].notice.software, { runtime: "codex", kind: "repair", action: "用 npm 修复" });
+  // While repairing, the pill updates reactively to disabled progress words.
+  t.set(overview("ws/a"), { ...overviewOf([], []), updates: [{ id: "codex", name: "Codex", installed: true, repairable: true, updatable: false, newer: false, state: "updating" }] });
+  await t.read(ch, 1);
+  assert.deepEqual(ch.value.messages[0].notice.software, { runtime: "codex", kind: "updating", action: "正在修复…" });
+  // If repair fails, it offers Retry and surfaces the failure reason in detail.
+  t.set(overview("ws/a"), { ...overviewOf([], []), updates: [{ id: "codex", name: "Codex", installed: true, repairable: true, updatable: false, newer: false, state: "failed", message: "npm ETIMEDOUT" }] });
+  await t.read(ch, 1);
+  assert.deepEqual(ch.value.messages[0].notice.software, { runtime: "codex", kind: "repair", action: "重试" });
+  assert.equal(ch.value.messages[0].notice.detail, "npm ETIMEDOUT");
+  // Once repaired (repairable becomes false), it gracefully falls back to 软件设置.
+  t.set(overview("ws/a"), { ...overviewOf([], []), updates: [{ id: "codex", name: "Codex", installed: true, repairable: false, updatable: true, newer: false, state: "idle" }] });
+  await t.read(ch, 1);
+  assert.deepEqual(ch.value.messages[0].notice.software, { runtime: "codex", kind: "settings", action: "软件设置" });
 });
 
 test("a_slack_threads_row_has_its_link_there_as_its_page_does_for_its_menu", async () => {
