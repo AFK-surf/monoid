@@ -360,7 +360,13 @@ fn Browse::held(self : Browse, src : Source, folder : String) -> Array[DvEntry] 
 
 ///|
 fn Browse::entry_of(self : Browse, src : Source, folder : String, name : String) -> DvEntry? {
-  self.held(src, folder).iter().find_first(fn(e) { e.name == name })
+  let held = self.held(src, folder)
+  for i = 0; i < held.length(); i = i + 1 {
+    if held[i].name == name {
+      return Some(held[i])
+    }
+  }
+  None
 }
 
 ///|
@@ -408,7 +414,10 @@ fn browse_after(src : Source, b : Browse, done : Json) -> Unit {
     Some(Array(list)) => {
       let all : Array[(DriveAt, DvEntry)] = []
       for s in list {
-        all.push_iter(entry(Some(s)).iter())
+        let es = entry(Some(s))
+        for i = 0; i < es.length(); i = i + 1 {
+          all.push(es[i])
+        }
       }
       (b.does.remove)(all)
     }

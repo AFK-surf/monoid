@@ -134,8 +134,8 @@ fn inst_by(k : Int) -> InstBy {
 /// Whether what `by` names is `own`'s or in it: an old view's node in one of its, a node of the tree's held by one of its.
 fn Ctx::by_in(self : Ctx, by : InstBy, own : InstBy) -> Bool {
   match (by, own) {
-    (Old(i), Old(o)) => i < self.count && o < self.count && self.node_in(i, o)
-    (Node(i), Node(o)) =>
+    (InstBy::Old(i), InstBy::Old(o)) => i < self.count && o < self.count && self.node_in(i, o)
+    (InstBy::Node(i), InstBy::Node(o)) =>
       match view_app.val {
         Some(t) => t.holds(o, i)
         None => i == o
@@ -866,7 +866,7 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   }
   let tree_off_holds = fn(id : @view.NodeId) {
     match view_app.val {
-      Some(tree) => tree_off.iter().any(fn(o) { tree.holds(o, id) })
+      Some(tree) => arr_any(tree_off, fn(o) { tree.holds(o, id) })
       None => false
     }
   }
@@ -878,7 +878,7 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   }
   let tree_in_picture = fn(id : @view.NodeId) {
     match view_app.val {
-      Some(tree) => tree_pictured.iter().any(fn(o) { o == id || tree.holds(o, id) })
+      Some(tree) => arr_any(tree_pictured, fn(o) { o == id || tree.holds(o, id) })
       None => false
     }
   }

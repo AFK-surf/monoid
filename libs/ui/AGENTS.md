@@ -130,3 +130,8 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
   floating surface or side panel registers itself via `floating_host_lend`, and side-mounted secondary overlays
   (`Left`/`Right`) align against the host's outer edge via `View::beside(..., host?)`—never hardcode `panel_pad +
   panel_pad` or let floating surfaces touch (`< 8 pt`).
+- Dialog and bottom-sheet headers follow the owner-approved iOS 27 spec (`dialog_r = 38`, `dialog_corner_ladder = [38,
+  22, 14, 6]` isolated from page `corner_ladder = [42, 26, 24, 18, 10]`): corner navigation/dismiss keys (`<`/`×` via
+  `corner_pill_key_node`, 44 pt at `(16, 16)` on small sheets and 36 pt at `(20, 20)` on centered dialogs) are the sole
+  approved exception to the no-glass-on-glass rule (`bar_pill_group_node.mbt`), matching iOS 27
+  `NavigationBarPlatterContainer_v2`, and degrade to `panel_ground` + hairline under `MBUI_GLASS=solid`.

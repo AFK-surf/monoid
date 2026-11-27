@@ -140,9 +140,9 @@ fn rig_mode_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
 /// it sends them to its person's check (`rig.vouch`) and closes it.
 fn open_rig_vouch(core : Core, workspace : String, id : String, from~ : @sf.Anchor) -> Unit {
   let field = @ui.Field::new()
-  let code = fn() { field.text().trim(chars=" \t\n").to_owned() }
+  let code = fn() { field.composed_said().trim(chars=" \t\n").to_owned() }
   let vouch = fn(close : () -> Unit) {
-    let c = @signals.untracked(code)
+    let c = field.commit_composing().trim(chars=" \t\n").to_owned()
     if c == "" {
       return
     }

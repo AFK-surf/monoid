@@ -87,7 +87,7 @@ fn chat_entry_policy(e : Entry) -> ChatEntryPolicy {
         live_role: LiveNever,
         leaves_room: false,
       }
-    Empty =>
+    @sfbase.Entry::Empty =>
       {
         stage: {
           lane: Structural,

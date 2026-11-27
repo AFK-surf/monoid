@@ -42,9 +42,10 @@ export const LoginsLive = Layer.effectDiscard(
     );
     accounts.logins.attach(pages);
     const loginLink = (session: string | null, id: string) => {
-      const s = pageBase();
+      const at = session ? store.sessionWs(session) : null;
+      const s = pageBase(at);
       if (!s) return null;
-      const ws = (session ? store.sessionWs(session) : null) ?? s.workspace;
+      const ws = at ?? s.workspace;
       return `${s.origin}/w/${ws}/s/${s.station}/login/${encodeURIComponent(id)}`;
     };
     /// The logins whose agent was told they ask something (once a time they do).

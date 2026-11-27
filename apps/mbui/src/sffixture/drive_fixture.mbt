@@ -287,7 +287,15 @@ pub fn fixture_drive_call(f : Fixture, name : String, params : Json) -> Result[J
     "drive.upload.part" => {
       let path = text(p, "path")
       let list = fix_folder(root, dv_parent(path))
-      if list.iter().any(fn(e) { text(Some(e), "name") == dv_name(path) }) && !flag(p, "replace") {
+      let target_name = dv_name(path)
+      let mut exists = false
+      for e in list {
+        if text(Some(e), "name") == target_name {
+          exists = true
+          break
+        }
+      }
+      if exists && !flag(p, "replace") {
         return Some(Err({ "code": "exists", "message": "已存在同名项", "status": 409 }))
       }
       let total = number(p, "total").to_int()

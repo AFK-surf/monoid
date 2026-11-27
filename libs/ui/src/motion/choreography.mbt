@@ -164,7 +164,14 @@ pub fn Choreography::active(self : Choreography, n : @view.View) -> Bool {
   for w in self.ways {
     w.said()
   }
-  n.goes_now(fn(at) { self.ways.iter().any(fn(w) { w.goes_at(at) }) })
+  n.goes_now(fn(at) {
+    for i = 0; i < self.ways.length(); i = i + 1 {
+      if self.ways[i].goes_at(at) {
+        return true
+      }
+    }
+    false
+  })
 }
 
 ///|

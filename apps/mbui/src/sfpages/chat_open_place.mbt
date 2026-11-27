@@ -53,8 +53,14 @@ fn chat_open_place(
     return None
   }
   // (the first message's row that is one `want` takes, by its key)
-  let said = fn(want : (Message) -> Bool) {
-    rows.keys.iter().find_first(fn(k) { rows.get(k) is Some(row) && row.entry is Said(m) && want(m) })
+  let said = fn(want : (Message) -> Bool) -> String? {
+    for i = 0; i < rows.keys.length(); i = i + 1 {
+      let k = rows.keys[i]
+      if rows.get(k) is Some(row) && row.entry is Said(m) && want(m) {
+        return Some(k)
+      }
+    }
+    None
   }
   if kept is Some(p) && said(fn(m) { m.seq == p.top }) is Some(k) {
     return Some(

@@ -683,18 +683,31 @@ pub fn WholeCore::open_after_predecessor_gone(
         Ok(_) => ()
         Err(e) => return Err(e)
       }
+    }
+    None => ()
+  }
+  // Unconditionally adopt all active (non-archived, non-revoked) tokens and session runtimes
+  // from SQLite so crash restarts and Node->Pion takeovers (without a Pion handover snapshot)
+  // still recover active sessions and claim their live runners.
+  match self.agents.adopt_all_active_tokens_from_store(self.store) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match handover {
+    Some(snap) => {
       match self.agents.adopt_sessions(self.store, snap.session_snapshots, runners, eff_now) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
     }
-    None => ()
-  }
-  // Unconditionally adopt all active (non-archived, non-revoked) tokens from SQLite
-  // so crash restarts without a handover snapshot still recover active sessions.
-  match self.agents.adopt_all_active_tokens_from_store(self.store) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
+    None => {
+      if runners.length() > 0 {
+        match self.agents.adopt_sessions(self.store, [], runners, eff_now) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
   }
   // Adopt persisted running jobs from SQLite.
   match self.store.adopt_active_jobs(self.agents.jobs, eff_now) {
@@ -849,7 +862,7 @@ pub fn WholeCore::handle_peer_rpc(
         Some(m) => m
         None => return Err("task.clean requires mirror")
       }
-      match self.remote.clean_mirror_scoped(workspace, peer_station, session, mirror, eff_now) {
+      match self.remote.clean_mirror_scoped(workspace, peer_station, session, mirror) {
         Ok(removed) => return Ok(form::Json::Obj([("removed", form::Json::Bool(removed))]))
         Err(e) => return Err(e)
       }
@@ -1041,6 +1054,7 @@ pub fn WholeCore::shutdown(self : WholeCore) -> Unit {
   self.api.read_only_handover = true
   self.rig.close()
   self.agents.clear_runtime_state_on_shutdown()
+  self.agents.close_adopted_db()
   self.store.close()
 }
 

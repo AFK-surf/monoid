@@ -476,6 +476,7 @@
   "core-logic.mesh.lock_station.pending": "This station hasn't joined this workspace's security mode yet and will retry shortly. If this persists, update it to the latest version",
   "core-logic.mesh.lock_station.unpinned": "This workspace turned on security mode after the station joined, so the station doesn't accept its members yet. On a trusted device, the owner can press Protect beside it in Settings › Security",
   "core-logic.mesh.lock_station.home": "This station's workspace is in security mode, so it only accepts workspaces in security mode too. Turn on security mode here, then remove the station and add it again",
+  "core-logic.mesh.lock_station.waiting": "This station is waiting for security mode state to sync. If it isn't protected yet, ask an owner to protect it in Settings › Security on a trusted device",
   "core-logic.mesh.read_failed": "Couldn't read station response",
   "core-logic.refs.untitled": "Chat",
   "core-logic.status.at": "{place}: {what}",

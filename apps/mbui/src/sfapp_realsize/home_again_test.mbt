@@ -186,8 +186,9 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         let i = if place == "profiles" { 1 } else { 2 }
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-        // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card, bringing profiles down to made=546, laid=419)
-        assert_eq(home_again_peak.val, if place == "profiles" { (546, 0, 419) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
+        // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card -> made=546, laid=419;
+        // PR-B4 fill_chip_node + quota_chips_node flattening lowers profiles further -> made=522, laid=395)
+        assert_eq(home_again_peak.val, if place == "profiles" { (522, 0, 395) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -360,9 +361,10 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-      // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card, bringing tall profiles down to made=686, laid=527)
+      // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card -> made=686, laid=527;
+      // PR-B4 fill_chip_node + quota_chips_node flattening lowers tall profiles further -> made=654, laid=495)
       let first = if place == "profiles" {
-        (686, 0, 527)
+        (654, 0, 495)
       } else if place == "connects" {
         // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it)
         (440, 0, 308)

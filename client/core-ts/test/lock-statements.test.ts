@@ -276,8 +276,15 @@ test("a station taken in (C, which the workspace lists) and A taken out: C given
 // moved-pin.ts `pinBrought`). 2026-11-14, the locks' end to end, round 17 run moved: 「保护」 left the station unprotected.
 test("a station taken in after the move (C): the chain as it moved brought to it with the logs and bodies that name it", async () => {
   const w = await setUp();
+  const woken: string[] = [];
+  const origCameOnline = w.inner.stations.cameOnline.bind(w.inner.stations);
+  w.inner.stations.cameOnline = (addr: string) => {
+    woken.push(addr);
+    origCameOnline(addr);
+  };
   const inC = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.joinStation", { workspace: "ws", station: C }), catch: (e) => e as CoreError }));
   assert.equal(inC.error, undefined, inC.error?.message);
+  assert.ok(woken.includes(`ws/${C}`), `stationMoved wakes link immediately: ${JSON.stringify(woken)}`);
   const posted = w.st.asked.filter((a) => a.at === "ws/C" && a.method === "POST" && a.path === "/lock").map((a) => JSON.parse(a.body) as { entries?: Entry[]; logs?: Entry[][]; bodies?: unknown[] });
   assert.equal(posted.length, 1, `brought once: ${JSON.stringify(w.st.asked.filter((a) => a.at === "ws/C").map((a) => `${a.method} ${a.path}`))}`);
   assert.equal(posted[0]!.entries?.at(-1)?.kind, "moved", "the chain as it moved");

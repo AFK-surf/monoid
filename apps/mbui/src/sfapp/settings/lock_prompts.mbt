@@ -29,7 +29,13 @@ pub fn lock_prompts(core : Core, free : Bool) -> Unit {
   if prompts is Some(_) {
     prompts_closed.retain(fn(d) { pairing.iter().any(fn(r) { ask_of(r) == d }) })
   }
-  let waiting = pairing.iter().find_first(fn(r) { !prompts_closed.contains(ask_of(r)) })
+  let mut waiting : Json? = None
+  for r in pairing {
+    if !prompts_closed.contains(ask_of(r)) {
+      waiting = Some(r)
+      break
+    }
+  }
   match waiting {
     Some(r) if free && !@sf.presenting() => pair_sheet(core, r)
     _ => ()
@@ -99,15 +105,17 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
         m.show(fn() { person_text() != "" }, fn(line) {
           @sf.style_node(line, fn() { pair_meta_kv })
           line.wraps(Is(Some(2.0))) |> ignore
-          @sf.words_node(line, fn() { tr("web-pages.security.pairRequester") }, fn() { pair_meta_key }) |> ignore
-          @sf.words_node(line, person_text, fn() { pair_meta_val }) |> ignore
+          @sf.words_node(line, fn() { tr("web-pages.security.pairRequester") }, fn() { pair_meta_key }).shrink(Is(0.0)) |> ignore
+          @sf.words_node(line, person_text, fn() { pair_meta_val }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         })
         m.show(fn() { text(shown(), "deviceCode") != "" }, fn(line) {
           @sf.style_node(line, fn() { pair_meta_kv })
           line.wraps(Is(Some(2.0))) |> ignore
-          @sf.words_node(line, fn() { tr("web-pages.security.pairDeviceCode") }, fn() { pair_meta_key }) |> ignore
+          @sf.words_node(line, fn() { tr("web-pages.security.pairDeviceCode") }, fn() { pair_meta_key }).shrink(Is(0.0)) |> ignore
           line.box(fn(code_box) {
             code_box
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
             .words_runs(
               By(fn() { [@ui.span(text(shown(), "deviceCode"), mono=true, bold=true, color=@sf.theme().p.text)] }),
               look=@ui.style_words(pair_code_val),

@@ -1006,6 +1006,90 @@ test("edge isolate cache avoids re-transmitting changelog body over DO RPC on ho
   }
 });
 
+test("a cold isolate serves the changelog this place keeps once ServiceStatus says its ETag is out, and never one /v1/releases/out made old", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const beta = { "x-stillfail-channel": "beta" };
+    const cold = () => h.fetch("/__test/cold-changelog", { method: "POST" });
+    const stats = async () => (await (await h.fetch("/__test/changelog-stats")).json()) as { calls: number; notModified: number; full: number };
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1390, commit: "j", at: 10, text: ["pop v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1390 }));
+
+    await stats();
+    const warm = await h.fetch("/v1/changelog", { headers: beta });
+    assert.equal(warm.status, 200);
+    const etag1 = warm.headers.get("etag")!;
+    const warmText = await warm.text();
+    assert.deepEqual(await stats(), { calls: 1, notModified: 0, full: 1 });
+
+    // A cold isolate: the body this place keeps, ServiceStatus only checking its ETag (no body over its RPC), no R2 read.
+    await cold();
+    await h.failBucket({ get: 12 });
+    const popped = await h.fetch("/v1/changelog", { headers: beta });
+    assert.equal(popped.status, 200);
+    assert.equal(popped.headers.get("etag"), etag1);
+    assert.equal(popped.headers.get("content-type"), "application/json");
+    assert.equal(popped.headers.get("x-stillfail-changelog-etag"), null);
+    assert.equal(await popped.text(), warmText);
+    assert.deepEqual(await h.failBucket(), []);
+    assert.deepEqual(await stats(), { calls: 1, notModified: 1, full: 0 });
+
+    // A cold isolate asked with the client's own ETag: a 304, its kept body not read.
+    await cold();
+    const unchanged = await h.fetch("/v1/changelog", { headers: { ...beta, "if-none-match": etag1 } });
+    assert.equal(unchanged.status, 304);
+    assert.equal(unchanged.headers.get("etag"), etag1);
+    assert.equal(await unchanged.text(), "");
+    assert.deepEqual(await stats(), { calls: 1, notModified: 1, full: 0 });
+
+    // Released: a cold isolate sends the new body at once, never the one this place kept, and keeps the new one.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1391, commit: "k", at: 11, text: ["pop v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1391 }));
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    assert.equal((await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } })).status, 200);
+    await cold();
+    const fresh = await h.fetch("/v1/changelog", { headers: { ...beta, "if-none-match": etag1 } });
+    assert.equal(fresh.status, 200);
+    const etag2 = fresh.headers.get("etag")!;
+    assert.notEqual(etag2, etag1);
+    assert.equal(((await fresh.json()) as any).entries[0].text[0], "pop v2");
+    assert.deepEqual(await stats(), { calls: 1, notModified: 0, full: 1 });
+
+    await cold();
+    const again = await h.fetch("/v1/changelog", { headers: beta });
+    assert.equal(again.status, 200);
+    assert.equal(again.headers.get("etag"), etag2);
+    assert.equal(((await again.json()) as any).entries[0].text[0], "pop v2");
+    assert.deepEqual(await stats(), { calls: 1, notModified: 1, full: 0 });
+
+    // The stable channel is kept apart: a cold isolate never serves it the beta's.
+    await cold();
+    const stable = await h.fetch("/v1/changelog");
+    assert.equal(stable.status, 200);
+    assert.notEqual(stable.headers.get("etag"), etag2);
+    assert.deepEqual(await stats(), { calls: 1, notModified: 0, full: 1 });
+  } finally {
+    await h.close();
+  }
+});
+
 test("concurrent cold GET /v1/changelog with and without matching If-None-Match coalesces to 1 R2 round and serves 304 + 200", async () => {
   const h = await harness({ changelogCacheSeconds: 30 });
   try {

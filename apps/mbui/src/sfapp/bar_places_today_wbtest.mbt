@@ -273,8 +273,8 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // (+1 each place for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 for narrow_bar_scrim_node);
   // 用量's controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's pick)
   // (连接 -3 made, 用量 -2, 额度 -3: their pages' and its list's room under the last block their list's end_room, no block of it)
-  // (额度 +8: three-tier list adds 概览/批量管理 collection card, removing top-bar 多选/+ buttons; bottom bar keeps ＋)
-  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (244, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // (额度 +8: three-tier list adds 概览/批量管理 collection card, removing top-bar 多选/+ buttons; bottom bar keeps ＋; PR-B4 fill_chip_node + quota_chips_node flattening lowers further)
+  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (240, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

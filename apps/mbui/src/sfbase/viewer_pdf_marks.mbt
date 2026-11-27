@@ -313,8 +313,19 @@ pub fn pdf_what_of(mark : String, from? : Int = 0) -> PdfPicked? {
   let share = fn(v : Int) { v.to_double() / pdf_mark_units }
   if kind == 119 && n.length() == 4 {
     Some(Words(n[0], n[1], n[2], n[3]))
-  } else if kind == 97 && n.length() == 5 && n[1:].iter().all(fn(v) { v.to_double() <= pdf_mark_units }) {
-    Some(Area(n[0], share(n[1]), share(n[2]), share(n[3]), share(n[4])))
+  } else if kind == 97 && n.length() == 5 {
+    let mut in_bounds = true
+    for i = 1; i < n.length(); i = i + 1 {
+      if n[i].to_double() > pdf_mark_units {
+        in_bounds = false
+        break
+      }
+    }
+    if in_bounds {
+      Some(Area(n[0], share(n[1]), share(n[2]), share(n[3]), share(n[4])))
+    } else {
+      None
+    }
   } else {
     None
   }
@@ -594,10 +605,12 @@ fn pdf_page_marks_node(
       b,
       fn() {
         let id = m.writing.get()
-        match vw.pdf_notes().iter().find_first(fn(x) { x.id == id }) {
-          Some(x) => pdf_rects_of(m.doc, x.what, i)
-          None => []
+        for x in vw.pdf_notes() {
+          if x.id == id {
+            return pdf_rects_of(m.doc, x.what, i)
+          }
         }
+        []
       },
       fn() { @sf.alpha(0xF5A30FFFL, 0.36) },
       page_w,

@@ -371,6 +371,7 @@
   "core-logic.mesh.lock_station.pending": "此 station 尚未接入此 workspace 的安全模式，稍后会自动重试；如果一直如此，请将它更新到最新版本",
   "core-logic.mesh.lock_station.unpinned": "此 workspace 在此 station 加入后才开启安全模式，它暂不接受此 workspace 的成员：请 owner 在受信任设备上打开「设置 › 安全」，点它旁边的「保护」",
   "core-logic.mesh.lock_station.home": "此 station 所在的 workspace 已开启安全模式，只接受同样开启安全模式的 workspace：请在此 workspace 开启安全模式，再将它移除后重新添加",
+  "core-logic.mesh.lock_station.waiting": "此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它",
   "core-logic.mesh.read_failed": "读取 station 的回复失败",
   "core-logic.refs.untitled": "对话",
   "core-logic.status.at": "{place} {what}",

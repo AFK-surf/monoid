@@ -4330,12 +4330,23 @@ export class Views implements Owner {
       // stations' are not lost with it.
       const unreadable = (read !== undefined && shown === null) || (isObject(hostRaw) && host === null);
       const overview = read !== undefined && shown === null ? undefined : read;
+      const unprotected = guard !== null && !guard.protects(String(s.id));
+      const can = unprotected && guard!.can();
       let summary: string;
-      const cause = get(this.link(s.address), "cause");
+      const link = this.link(s.address);
+      const cause = get(link, "cause");
+      // 7-day compat shim for stations before the waiting-lock fix (e.g. 0.1.11853) that return `credential_refused`
+      // with "unknown credential key" while waiting on a moved lock; drop once older stations roll off (OLDEST_STATION).
+      // Explicit current causes (`network` / `updating`) always win, and matching against the current link message
+      // avoids carrying over stale `diag.lastEnd` from an earlier failure.
+      const linkMsg = get(link, "message");
+      const diag = unprotected && !s.online && cause !== "lock" && cause !== "network" && cause !== "updating" ? (this.#core.linkDiag?.(s.address) ?? null) : null;
+      const legacyLockWait = diag?.lastErrorCode === "credential_refused" && typeof linkMsg === "string" && linkMsg.includes("unknown credential key");
+      const lockBlocked = !s.online && (cause === "lock" || legacyLockWait);
       if (!s.online && cause === "updating") summary = t("core-views.station.updating_short");
       else if (!s.online && cause === "network") summary = t("core-views.station.network");
+      else if (lockBlocked) summary = t("core-views.station.lock_short");
       else if (!s.online && cause === "unreached") summary = t("core-views.station.unreachable_short");
-      else if (!s.online && cause === "lock") summary = t("core-views.station.lock_short");
       else if (!s.online) {
         summary = typeof s.lastSeen === "number" ? t("core-views.station.offline_since", { ago: format.relativeTime(s.lastSeen * 1000, c.now, c.offsetMin) }) : t("core-views.station.offline_short");
       } else if (unreadable) summary = t("core-views.station.incompatible_short");
@@ -4356,10 +4367,10 @@ export class Views implements Owner {
         silent = c.now - since >= SILENT_MS;
         if (!silent) silentNext = Math.min(silentNext, since + SILENT_MS - c.now);
       } else this.#hostless.delete(s.address);
-      const blocked = !s.online && cause === "lock" && typeof get(this.link(s.address), "message") === "string" ? (get(this.link(s.address), "message") as string) : null;
+      const blocked = !s.online && cause === "lock" && typeof get(this.link(s.address), "message") === "string"
+        ? (get(this.link(s.address), "message") as string)
+        : legacyLockWait ? t("core-logic.mesh.lock_station.waiting") : null;
       const running = u64(get(get(overview, "counts"), "running")) ?? 0;
-      const unprotected = guard !== null && !guard.protects(String(s.id));
-      const can = unprotected && guard!.can();
       const item: J = {
         station: s.address,
         id: s.id,
@@ -4369,14 +4380,15 @@ export class Views implements Owner {
         ...(s.osIcon ? { osIcon: true } : {}),
         summary,
         face: looks.face(s.online, overview),
-        line: !s.online && cause === "lock" ? t("core-views.station.lock_short") : s.online && unreadable ? t("core-views.station.incompatible_short") : looks.stationLine(s.online, host),
+        line: lockBlocked ? t("core-views.station.lock_short") : s.online && unreadable ? t("core-views.station.incompatible_short") : looks.stationLine(s.online, host),
         online: s.online,
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
         problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable, typeof cause === "string" ? cause : null),
+        ...(unprotected ? { unprotected: true } : {}),
         // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
         // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
-        ...(unprotected && can && s.online ? { protect: true } : {}),
+        ...(unprotected && can ? { protect: true } : {}),
         // Down for a security mode: why, in place of the page's 离线 words.
         ...(blocked !== null ? { blocked } : {}),
         lastSeen: s.lastSeen,

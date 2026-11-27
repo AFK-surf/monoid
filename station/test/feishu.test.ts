@@ -434,6 +434,70 @@ test("surface: a turn for a message that called nobody shows no card until the a
   }
 });
 
+test("surface: a post with replyTo goes under that message, in its thread; one without stays where the conversation is", async () => {
+  const r = await surfaceRig();
+  try {
+    r.fake.message({ id: "om_a", text: "看看", at: true });
+    r.fake.message({ id: "om_b", text: "补充" });
+    await r.fake.until("heard", () => r.events.length === 2);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_a", replyTo: "om_b" }, "在话题里", []);
+    const under = r.fake.calls("POST", "/open-apis/im/v1/messages/om_b/reply");
+    assert.equal(under.length, 1);
+    assert.equal(under[0]!.body.reply_in_thread, true);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_a" }, "在群里", []);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").length, 1);
+    assert.equal(r.fake.calls("POST", /\/reply$/).length, 1);
+  } finally {
+    await r.close();
+  }
+});
+
+test("surface: turns woken by no one's message here (a letter, a notice), after one an @ called, show no card and recall none (FB-61)", async () => {
+  const r = await surfaceRig();
+  try {
+    const cards = () => r.fake.calls("POST", "/open-apis/im/v1/messages").length;
+    const recalls = () => r.fake.calls("DELETE", /^\/open-apis\/im\/v1\/messages\//).length;
+    const here = { channel: "oc_g", threadTs: "om_a" };
+    r.fake.message({ id: "om_a", text: "带五个子会话干活", at: true });
+    await r.fake.until("heard", () => r.events.length === 1);
+    // Called by an @: its card at once, and it answered.
+    r.surface.working(here, "om_a", "正在思考…", null);
+    await r.fake.until("card at once", () => cards() === 1);
+    await r.surface.post(here, "开工", []);
+    await r.t.adjust(1000);
+    r.surface.working(here, "om_a", "", null);
+    await r.fake.until("done", () => r.fake.calls("PUT", /^\/open-apis\/cardkit\/v1\/cards\//).length === 1);
+    assert.equal(cards(), 2, "the card, and what it said");
+    // Woken again and again by what no one said here (a sub-chat's letter, a station notice, none at all), each doing
+    // more than think and read, each ending with chat_state alone: no card goes up, none is taken back.
+    for (const woke of ["letter-1", null, "om_notice", "letter-2", null]) {
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在思考…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在编辑文件…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "正在给另一个对话写信…", null);
+      await settle();
+      await r.t.adjust(1000);
+      r.surface.working(here, woke, "", null);
+      await settle();
+    }
+    assert.equal(cards(), 2, "no card for a turn no one here called");
+    assert.equal(recalls(), 0, "nothing recalled: no 「消息已撤回」 left in the topic");
+    // Someone @s it again: its card at once as ever.
+    r.fake.answer("POST /open-apis/im/v1/messages", { code: 0, data: { message_id: "om_card2" } });
+    r.fake.message({ id: "om_c", text: "进度？", at: true });
+    await r.fake.until("heard again", () => r.events.length === 2);
+    await r.t.adjust(1000);
+    r.surface.working(here, "om_c", "正在思考…", null);
+    await r.fake.until("card at once again", () => cards() === 3);
+  } finally {
+    await r.close();
+  }
+});
+
 test("surface: the people in a group, by their name in it, kept a minute", async () => {
   const r = await surfaceRig();
   try {
@@ -628,6 +692,16 @@ test("hub: a Feishu connect's chat is one session, its threads on the connect's 
     assert.ok(answer.startsWith("Posted to oc_g/om_a"), answer);
     const card = r.fake.calls("POST", "/open-apis/im/v1/messages").map((c) => JSON.parse(c.body.content)).find((c) => JSON.stringify(c).includes("button"));
     assert.deepEqual(card.body.elements.filter((e: Json) => e.tag === "button").map((b: Json) => b.text.content), ["A", "B"]);
+    // Where it answers is the agent's: under a message of the conversation it names, in that message's thread; a ts
+    // the conversation does not have is refused, nothing posted.
+    const posts = () => r.fake.calls("POST", /^\/open-apis\/im\/v1\/messages(\/[^/]+\/reply)?$/).length;
+    const before = posts();
+    assert.ok((await rig.call(key, "chat_post", { to: "oc_g/om_a", text: "在话题里答", reply_to: "om_b" })).startsWith("Posted to oc_g/om_a"));
+    const under = r.fake.calls("POST", "/open-apis/im/v1/messages/om_b/reply");
+    assert.equal(under.length, 1);
+    assert.equal(under[0]!.body.reply_in_thread, true);
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_g/om_a", text: "答", reply_to: "om_nowhere" }), "reply_to must be the ts of a message in oc_g/om_a, got om_nowhere");
+    assert.equal(posts(), before + 1);
     const loginPost = await rig.call(key, "chat_post", { to: "oc_g/om_a", text: "登录 https://app.still.fail/w/ws/s/st/login/abc", card: { type: "login", login: "abc" } });
     assert.ok(loginPost.startsWith("Posted to oc_g/om_a"), loginPost);
     assert.deepEqual(rig.store.cardAt(thread.id, rig.store.messagesBefore(thread.id, null, 1)[0]!.ts), { type: "login", login: "abc" });

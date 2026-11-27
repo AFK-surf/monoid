@@ -253,22 +253,56 @@ test "a message picked on its way and then delivered keeps its selection and quo
 }
 
 ///|
-test "多选 on the bar lets go and opens the chat's picture with that message alone ticked (chat.publishPreview of the whole chat)" {
+test "⋯ on the bar opens the labeled whole-message menu (复制消息 / 复制消息链接 / 多选); 多选 opens the chat's picture" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
   hold_on(t, "做完了：列表、跳到最新的按钮") |> ignore
-  match t.query(Button, label="多选") {
-    Some(_) => t.click(Button, label="多选")
-    None => bar_choose(t, "多选")
-  }
+  // Selection bar shows labeled selection actions + single ⋯ overflow, never unlabeled 多选/复制链接 marks.
+  assert_true(bar_offers(t, "引用"))
+  assert_true(bar_offers(t, "复制"))
+  assert_true(bar_offers(t, "分享图"))
+  assert_true(bar_offers(t, "全选"))
+  assert_true(t.query(Button, label="多选") is None, msg="多选 must live inside ⋯ menu, not as unlabeled mark")
+  assert_true(t.query(Button, label="复制链接") is None, msg="复制链接 must live inside ⋯ menu, not as unlabeled mark")
+  t.click(Button, label="更多操作")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.picking() is None, msg="still picked after ⋯: \{Repr(t.picking())}")
+  assert_true(@sfbase.message_more.get() != "", msg="target message row must stay highlighted while ⋯ menu is open")
+  assert_true(t.find("复制消息") is Some(_), msg="expected 复制消息 in ⋯ menu")
+  assert_true(t.find("复制消息链接") is Some(_), msg="expected 复制消息链接 in ⋯ menu")
+  assert_true(t.find("多选") is Some(_), msg="expected 多选 in ⋯ menu")
+  t.tap_text("多选")
   t.frame()
-  assert_true(t.picking() is None, msg="still picked: \{Repr(t.picking())}")
+  assert_eq(@sfbase.message_more.get(), "", msg="message highlight must clear after choosing 多选 from ⋯ menu")
   let asked = named(calls, "chat.publishPreview")
   assert_eq(asked.length(), 1)
   assert_eq(text(Some(asked[0].params), "station"), "ws1/st1")
   assert_eq(number(Some(asked[0].params), "thread"), 7.0)
   // (the whole chat asked: the message ticked alone once it is read)
   assert_true(field(Some(asked[0].params), "turn") is None)
+}
+
+///|
+test "小屏触屏划词浮条：带文字的「分享图」可直接打开分享图预览，中英文 1.0x/1.3x 零审计缺陷" {
+  let phone = ("phone", 390.0, 844.0, 1, "compact")
+  for lang in ["zh", "en"] {
+    for scale in [1.0, 1.3] {
+      let t = screen_in("chat", phone, lang, font_scale=scale)
+      t.run_for(@ui.move_most_ms)
+      let words = "做完了：列表、跳到最新的按钮"
+      hold_on(t, words) |> ignore
+      let pill_label = if lang == "zh" { "分享图" } else { "Share" }
+      assert_true(bar_offers(t, pill_label), msg="missing \{pill_label} on touch bar (\{lang} \{scale})")
+      let faults = t.audit()
+      assert_eq(faults, [], msg="touch pick_bar audit failed (\{lang} \{scale}): \{Repr(faults)}")
+      bar_choose(t, pill_label)
+      t.run_for(@ui.move_most_ms)
+      let save_label = if lang == "zh" { "保存到相册" } else { "Save to Photos" }
+      assert_true(t.find(save_label) is Some(_), msg="share stage did not open from touch bar (\{lang} \{scale})")
+      let stage_faults = t.audit()
+      assert_eq(stage_faults, [], msg="share stage audit failed (\{lang} \{scale}): \{Repr(stage_faults)}")
+    }
+  }
 }
 
 ///|

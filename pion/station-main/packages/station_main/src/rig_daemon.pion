@@ -194,6 +194,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     role_name: "rig",
     hears_outside: false,
     has_mesh_directory: false,
+    accept_peer_http: false,
+    accept_admin_alpn: false,
     validate_mode: fn(
       data : String,
       ops_fs : station_ops::OpsFs,
@@ -1056,6 +1058,17 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
+    on_peer_http_open: fn(_ctx : DaemonCtx, _sid : Int64, _remote_id : String, _alpn : String, _is_front : Bool) -> Result[Unit, String] {
+      Err("peer_http not supported on rig")
+    },
+    on_peer_http_data: fn(_ctx : DaemonCtx, _sid : Int64, _chunk : Bytes) -> Result[Unit, String] {
+      Err("peer_http not supported on rig")
+    },
+    on_peer_http_end: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_peer_http_close: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_peer_http_writable: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_admin_conn_open: fn(_ctx : DaemonCtx, _conn_id : Int64, _remote_id : String, _is_front : Bool) -> Unit {},
+    on_admin_conn_close: fn(_ctx : DaemonCtx, _conn_id : Int64) -> Unit {},
     on_outbound_reply: fn(_ctx : DaemonCtx, method : String, ref_id : String, until_opt : Option[Int64]) -> Unit {
       if method == "vault.used" && ref_id.length() > 0 {
         match (state_opt, until_opt) {
@@ -1300,7 +1313,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
-    on_handover_start: fn(_ctx : DaemonCtx) -> Unit {},
+    on_carried: fn(_ctx : DaemonCtx, _v : base_codec::Json) -> Unit { () },
+    on_handover_start: fn(_ctx : DaemonCtx) -> Result[Unit, String] { Ok(()) },
     on_shutdown: fn(_ctx : DaemonCtx) -> Unit {
       match state_opt {
         Some(st) => {

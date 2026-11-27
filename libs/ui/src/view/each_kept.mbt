@@ -15,7 +15,7 @@
 /// inner entry enters `holding` while an outer `deep` scope is already active.
 priv struct NestedPool {
   slot : View
-  holding : Array[View]
+  mut holding : Array[View]
   outer_buckets : Array[Array[() -> Unit]]
 }
 
@@ -62,7 +62,7 @@ fn NestedPool::remove_holding(self : NestedPool, v : View) -> Unit {
     Some(i) => {
       self.holding.remove(i) |> ignore
       if self.holding.is_empty() {
-        self.holding.shrink_to_fit()
+        self.holding = []
       }
     }
     None => ()
@@ -71,8 +71,7 @@ fn NestedPool::remove_holding(self : NestedPool, v : View) -> Unit {
 
 ///|
 fn NestedPool::clear(self : NestedPool) -> Unit {
-  self.holding.clear()
-  self.holding.shrink_to_fit()
+  self.holding = []
 }
 
 ///|

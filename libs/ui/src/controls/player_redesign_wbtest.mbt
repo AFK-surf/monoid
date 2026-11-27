@@ -162,7 +162,7 @@ test "wave27 V3: chrome_locked keeps controls a click alone would hide, and they
     t.query(Slider, label="web-pages.drive.player.position") is Some(_),
     msg="unlocked: still shown after a long rest",
   )
-  // 2. screen_reader_on, Buffering, Failed, Ended, near_top, near_foot, rates, listing, audio all lock chrome
+  // 2. screen_reader_on, Buffering, Failed, near_top, near_foot, rates, listing, audio all lock chrome (Ended not)
   let ta = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
   ta.host_says_finger(Some(false))
   ta.set_screen_reader(true)
@@ -172,7 +172,6 @@ test "wave27 V3: chrome_locked keeps controls a click alone would hide, and they
   for pin_case in [
     { ..pinned(2000.0), buffering: true },
     { ..pinned(2000.0), state: -1, playing: false },
-    pinned(10000.0, ended=true),
   ] {
     let tp = player_tester(false, "a.mp4", [], [], [], pin=pin_case)
     tp.host_says_finger(Some(false))
@@ -224,6 +223,35 @@ test "wave27 V3: chrome_locked keeps controls a click alone would hide, and they
   tau.draw()
   hide_by_tap(tau, 640.0, 400.0)
   assert_true(tau.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="audio locks chrome")
+}
+
+///|
+test "controls hidden as it plays stay hidden as it reaches its end, a tap alone bringing them back" {
+  for narrow in [true, false] {
+    let t = player_tester(narrow, "a.mp4", [], [], [])
+    if !narrow {
+      t.host_says_finger(Some(false))
+    }
+    t.draw()
+    t.set_player(1, position=2000.0, duration=10000.0, playing=true)
+    t.draw()
+    let (x, y) = if narrow { (195.0, 300.0) } else { (640.0, 400.0) }
+    hide_by_tap(t, x, y)
+    assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="narrow=\{narrow}: hidden")
+    t.set_player(1, position=10000.0, duration=10000.0, playing=false, ended=true)
+    t.draw()
+    t.run_for(long_rest_ms)
+    assert_true(
+      t.query(Slider, label="web-pages.drive.player.position") is None,
+      msg="narrow=\{narrow}: still hidden at its end",
+    )
+    t.tap(x, y)
+    t.run_for(@ui.double_tap_ms + @player.media_wake_ms + 10.0)
+    assert_true(
+      t.query(Slider, label="web-pages.drive.player.position") is Some(_),
+      msg="narrow=\{narrow}: a tap brings them back at its end",
+    )
+  }
 }
 
 ///|

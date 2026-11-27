@@ -87,7 +87,7 @@ pub fn press_feel(
   let scaled = fn() {
     if f.scale_node && !f.scaled {
       f.scaled = true
-      v.scale(By(fn() { f.scale_on(v) }), loc=f.loc) |> ignore
+      v.scale(By(fn() { f.scale_on(v) }), moves_besides=false, loc=f.loc) |> ignore
     }
   }
   // (whether the press now down is a hand's in the window: one every control is told at once (Tree::lit_all, a

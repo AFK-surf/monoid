@@ -33,7 +33,7 @@ priv struct RailAt {
 ///|
 /// The rail where the block's move has `f`, closed to the bar or not (`bar`).
 fn rail_at_fold(bar : Bool, f : FoldLook) -> RailAt {
-  { bar, w: f.rail_w, pl: f.rail_pl, pt: f.rail_pt, pb: f.rail_pb, top: f.rail_top, under: dock_ground(bar), mark: f.mark }
+  { bar, w: f.rail_w, pl: f.rail_pl, pt: f.rail_pt, pb: f.rail_pb, top: f.rail_top, under: f.ground, mark: f.mark }
 }
 
 ///|
@@ -334,16 +334,6 @@ fn rail_key_node(
 }
 
 ///|
-/// How round the rail's grounds are drawn now (rail_round_of), linked or not: what a box filling one draws within it.
-fn rail_drawn_corner(bar : Bool) -> Double {
-  let r = rail_round_of(bar)
-  match r.links() {
-    Some(l) => l[0].radius(@ui.tree_corner_roots_now())
-    None => @ui.tree_theme().corner(r)
-  }
-}
-
-///|
 /// A mark hung on the top right corner of a ground of the rail (`sq`, its 30 square), as rail_hung's: on the corner,
 /// its middle on the ground's curve where it turns 45°, on a disc of what the rail stands on 2 round it; `shown` of the
 /// way in (a list's as the sidebar folds: from 40%, clear up to half its size). What it is by `mark`.
@@ -524,9 +514,9 @@ fn rail_place_node(
       }
     } else {
       rail_go_told(src, w, place, fn(_, g) { g() })
-      // (pressed into a place whose sidebar is folded for the page's room: shown a while from the start, as the web's
-      // pressed into a folded one)
-      wide.peek_next.set(wide.crowded && !place_bare_now(place) && place != "attention" && place != "board")
+      // (pressed into a place whose sidebar is folded: shown a while from the start, as an explicit press on the rail
+      // should not wait for hover dwell)
+      wide.peek_next.set(!place_bare_now(place) && place != "attention" && place != "board")
     }
   }
   // what wants the person in a list, as its rows' marks: while the sidebar is folded (open, the rows show it;
@@ -818,8 +808,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// The workspaces at the rail's foot (workspaceItem) in `r`, under the ＋, where `at` says the rail is drawn: each on a
-/// 30 square of its own, 6 apart (a letter in a hairline ring, a mark on nothing, the places' ground under the
-/// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
+/// 30 square of its own, 6 apart (a letter or a mark on nothing, the places' ground under the pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
 /// its menu (sfpages' workspace_add_pressed, beside it). Pressed, that workspace.
@@ -915,24 +904,8 @@ fn rail_workspaces_node(
               square=true,
               lit=false,
               fn(k) {
-                // a letter's square: bare at rest as the switcher's rows have it, ringed only pointed at (an outlined
-                // control's hairline in Border), never the pointer's ground; a mark stands on nothing. The ring a box of
-                // its own under what is hung on its corner (an edge is drawn over what its node holds), as round as
-                // the square it fills: linked again, it would follow the window's corner as if it stood apart.
-                k.sq.box(fn(ring) {
-                  ring.over(Is(true)) |> ignore
-                  @sf.style_node(ring, fn() { rail_sq })
-                  ring.radius(By(fn() { rail_drawn_corner(at().bar) })) |> ignore
-                  ring.edge(By(fn() {
-                    if marked() || !@sf.lit_node(k.sq) {
-                      (0.0, 0L)
-                    } else {
-                      @sf.control_edge(hot=true)
-                    }
-                  }))
-                  |> ignore
-                })
-                |> ignore
+                // a letter's square or a mark: bare at rest as the switcher's rows have it, pointed at only the rail's
+                // hover ground, no hairline ring round it (as every other key of the rail)
                 // its mark, else its letter (sfpages' workspace_mark)
                 k.sq.pick(fn() { if marked() { 1 } else { 0 } }, fn(m, which) {
                   if which == 1 {

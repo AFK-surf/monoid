@@ -15,7 +15,7 @@ import { routes as requestRoutes } from "../src/api/routes/vault-requests.ts";
 import { PlainStore } from "../src/vault/plain.ts";
 import type { Request } from "../src/api/request.ts";
 import {
-  type BoxCert, type Grant, type Item, type Sig, type Vault, TAG, boxPublic, decrypt, encryptWith, grantContext, itemContext, itemOk,
+  type BoxCert, type Grant, type Item, type KeyAsk, type Sig, type Vault, TAG, askOk, boxPublic, decrypt, encryptWith, grantContext, itemContext, itemOk,
   certOk, itemSupersedes, keyContext, newBoxPair, openSeal, recoveryPair, seal, sealWith, signedBytes, signedOk, signerOf, vaultOk, vaultSupersedes,
 } from "../src/vault/crypto.ts";
 import { VaultStore } from "../src/vault/store.ts";
@@ -625,5 +625,117 @@ test("on a lock moved to its people's logs the vault goes by them: their app dev
   mw.alice.add("device.remove", { key: phone.key.id });
   bring(c, mw.alice, false, WS);
   assert.match(both(c.locked()!.state!)!, /not an app device in the lock/);
+});
+
+test("routes: standalone signed KeyAsk (/vault/asks) isolates per-vault asks from BoxCert, enforces shape/auth/privacy, and prunes on keying or deletion", async () => {
+  const w = lock();
+  const vaultsStore = new VaultStore(new DatabaseSync(":memory:"));
+  const told: { event: string; data: any; to: string[]; rawTo: To }[] = [];
+  const viewers = ["alice", "bob", "carol"].map((sub) => viewer(sub));
+  const whose = {
+    inVault: (vw: { sub: string; workspace: string }, id: string) => {
+      const v = vaultsStore.vault(vw.workspace, id);
+      return v !== null && !v.deleted && v.members.includes(vw.sub);
+    },
+  };
+  const events = { tell: (event: string, data: unknown, _of: string, to: To) => told.push({ event, data, to: viewers.filter((vw) => isFor(to, { viewer: vw, lang: "en" }, whose)).map((v) => v.sub), rawTo: to }) };
+  const all = routes({ vaults: vaultsStore, lock: (ws) => (ws === WS ? w.state : null), events: events as any });
+  const askRoute = async (method: string, path: string, sub: string, body?: unknown, device?: string) => {
+    const [p, q] = path.split("?");
+    const r: Request = { method, path: p!, query: q ? (q.split("&").map((kv) => kv.split("=")) as [string, string][]) : [], headers: {}, body: Buffer.from(body === undefined ? "" : JSON.stringify(body)), viewer: viewer(sub, device), lang: "en" };
+    for (const route of all) {
+      const m = method === route.method ? route.pattern.exec(r.path) : null;
+      if (m) {
+        const a = await route.handle(r, m.slice(1));
+        return { status: a.status, body: JSON.parse((a.body as Buffer).toString()) };
+      }
+    }
+    throw new Error(`no route ${method} ${path}`);
+  };
+  const bobs = w.bob.base.hex;
+  const bobBox = newBoxPair().pub;
+  const aliceBox = boxOf(w.alice);
+  const vAB = vaultOf(w, { members: [w.alice, w.bob], certs: [aliceBox] });
+  const VAULT2 = `v_${ulid(2)}`;
+  const vAC = vaultOf(w, { id: VAULT2, members: [w.alice, w.carol], certs: [aliceBox] });
+  assert.equal((await askRoute("PUT", "/vault/vaults", "alice", vAB)).status, 200);
+  assert.equal((await askRoute("PUT", "/vault/vaults", "alice", vAC)).status, 200);
+  told.length = 0;
+
+  const makeAsk = (vault: string, at: number, overrides: Record<string, unknown> = {}, signer = w.bob.signer, tag: string = TAG.ask): KeyAsk =>
+    signed({ v: 1 as const, ws: WS, vault, device: bobs, box: bobBox, at, ...overrides }, tag, signer) as unknown as KeyAsk;
+
+  // 1. Valid standalone KeyAsk accepted on PUT /vault/asks, broadcast ONLY to that vault's members, and visible only to them.
+  const good = makeAsk(VAULT, 1500);
+  assert.equal(askOk(w.state, good), null);
+  const put1 = await askRoute("PUT", "/vault/asks", "bob", good, bobs);
+  assert.equal(put1.status, 200);
+  assert.deepEqual(put1.body.ask, good);
+  const firstTold = told.pop()!;
+  assert.deepEqual({ event: firstTold.event, data: firstTold.data, to: firstTold.to }, { event: "vault-ask", data: good, to: ["alice", "bob"] }, "only vault members hear vault-ask");
+  assert.equal(firstTold.rawTo.vault, VAULT, "SSE target carries live vault check for replay");
+  assert.deepEqual((await askRoute("GET", "/vault/asks", "alice")).body.asks, [good]);
+  assert.deepEqual((await askRoute("GET", "/vault/asks", "carol")).body.asks, [], "non-member Carol never sees Bob's ask for VAULT");
+
+  // 2. Monotonic idempotency: older or equal `at` returns existing ask with no rebroadcast.
+  const older = makeAsk(VAULT, 1499);
+  const putOld = await askRoute("PUT", "/vault/asks", "bob", older, bobs);
+  assert.equal(putOld.status, 200);
+  assert.deepEqual(putOld.body.ask, good);
+  assert.equal(told.length, 0);
+
+  // 3. Wrong device caller (Alice trying to publish Bob's signed ask) rejected 403; non-member vault rejected 404.
+  assert.equal((await askRoute("PUT", "/vault/asks", "alice", makeAsk(VAULT, 1600), w.alice.base.hex)).status, 403);
+  assert.equal((await askRoute("PUT", "/vault/asks", "bob", makeAsk(VAULT2, 1600), bobs)).status, 404);
+
+  // 4. Domain separation, canonical signature encoding & strict fixed schema: BoxCert tag, uppercase Ed25519 sig, extra fields, non-ULID vault, float `at` all rejected.
+  const invalidCases: unknown[] = [
+    makeAsk(VAULT, 1700, {}, w.bob.signer, TAG.box),
+    { ...good, sig: { ...good.sig, sig: good.sig.sig.toUpperCase() } },
+    makeAsk(VAULT, 1700, { extra: "junk" }),
+    { ...good, sig: { ...good.sig, extra: "junk" } },
+    makeAsk("not_a_vault", 1700),
+    { ...good, at: 1500.5 },
+    makeAsk(VAULT, -1),
+    { ...good, box: "not-x25519" },
+  ];
+  for (const bad of invalidCases) {
+    assert.notEqual(askOk(w.state, bad), null);
+    assert.equal((await askRoute("PUT", "/vault/asks", "bob", bad, bobs)).body.code, "vault_invalid");
+  }
+
+  // 4b. Invalidated stored ask (e.g. rotated signing key with higher `at`) is replaced even by a lower-`at` compliant ask.
+  const oldSigner = ed();
+  const staleHigh = makeAsk(VAULT, 9999, {}, oldSigner);
+  vaultsStore.putAsk(staleHigh);
+  assert.equal((await askRoute("GET", "/vault/asks", "alice")).body.asks.length, 0, "stale rotated-key ask filtered out by GET");
+  const cleanLower = makeAsk(VAULT, 1550);
+  const putReplace = await askRoute("PUT", "/vault/asks", "bob", cleanLower, bobs);
+  assert.equal(putReplace.status, 200);
+  assert.deepEqual(putReplace.body.ask, cleanLower, "compliant ask replaces invalidated higher-at ask");
+  assert.deepEqual((await askRoute("GET", "/vault/asks", "alice")).body.asks, [cleanLower]);
+
+  // 5. Keying Bob's device via PUT /vault/vaults prunes the stored ask; re-sending ask for already-keyed box is a no-op with 0 broadcast.
+  const bobCert = signed({ v: 1 as const, ws: WS, device: bobs, box: bobBox, at: 1500 }, TAG.box, w.bob.signer) as unknown as BoxCert;
+  const vABKeyed = vaultOf(w, { seq: 1, members: [w.alice, w.bob], certs: [aliceBox, bobCert] });
+  assert.equal((await askRoute("PUT", "/vault/vaults", "alice", vABKeyed)).status, 200);
+  assert.deepEqual((await askRoute("GET", "/vault/asks", "alice")).body.asks, [], "keyed ask pruned on PUT /vault/vaults");
+  assert.equal(vaultsStore.askSnapshot(WS, VAULT, bobs), null);
+  told.length = 0;
+  const askAlreadyKeyed = makeAsk(VAULT, 1800);
+  assert.equal((await askRoute("PUT", "/vault/asks", "bob", askAlreadyKeyed, bobs)).status, 200);
+  assert.equal(vaultsStore.askSnapshot(WS, VAULT, bobs), null, "already-keyed ask not stored");
+  assert.equal(told.length, 0, "already-keyed ask not broadcast");
+
+  // 6. Deleting a vault removes its asks via trigger, stops SSE replay via inVault, and rejects further asks with 404.
+  const bobBox2 = newBoxPair().pub;
+  const askNewBox = makeAsk(VAULT, 1900, { box: bobBox2 });
+  assert.equal((await askRoute("PUT", "/vault/asks", "bob", askNewBox, bobs)).status, 200);
+  assert.notEqual(vaultsStore.askSnapshot(WS, VAULT, bobs), null);
+  const vABDeleted = vaultOf(w, { seq: 2, epoch: 1, members: [w.alice, w.bob], certs: [], deleted: true });
+  assert.equal((await askRoute("PUT", "/vault/vaults", "alice", vABDeleted)).status, 200);
+  assert.equal(vaultsStore.askSnapshot(WS, VAULT, bobs), null, "deleted vault wipes vault_asks");
+  assert.equal(isFor(firstTold.rawTo, { viewer: viewer("bob"), lang: "en" }, whose), false, "deleted vault blocks SSE replay");
+  assert.equal((await askRoute("PUT", "/vault/asks", "bob", makeAsk(VAULT, 2000, { box: bobBox2 }), bobs)).status, 404);
 });
 

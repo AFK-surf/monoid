@@ -445,6 +445,7 @@ fn dock_side_at(
     list_band: f.band,
     bar,
     tape: false,
+    glass: !wide.tape.get() && f.glass > 0.01,
   }
 }
 
@@ -481,16 +482,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit, gro
       .width(By(fn() { Some(at().block.2) }))
       .height(By(fn() { Some(at().block.3) }))
       .margin(By(fn() { (at().block.0, at().block.1, 0.0, 0.0) }))
-      .ground(By(fn() {
-        match ground {
-          Some(gr) => gr()
-          None => at().ground
-        }
-      }))
-      .shadow(By(fn() { at().shadow }))
       .clips(Is(true))
       .row(Is(true))
       |> ignore
+      match ground {
+        Some(gr) => g.ground(By(gr)).shadow(By(fn() { at().shadow })) |> ignore
+        None => {
+          // (a signal of its own, so a window made shorter or wider, which moves `at`, wakes none of the glass's,
+          // edge's or shadow's bindings: only the block peeking or not does)
+          let glass_on = @signals.computed(fn(_) { at().glass }, same=fn(a, b) { a == b })
+          g.owns(fn() { glass_on.dispose() }) |> ignore
+          let peek_glass = fn() { if @signals.active_sub() is None { at().glass } else { glass_on.get() } }
+          g.ground(By(fn() { if peek_glass() { 0L } else { at().ground } })) |> ignore
+          @sf.drawer_surface_decorate(g, active=peek_glass, solid=closed_ground, clips=false) |> ignore
+        }
+      }
       dock_round_node(g, at)
       // its top row the window's title bar across all of it, under the rail's and the sidebar's own (between them too:
       // the sidebar reaching into the rail, side_into_rail); not in the closed bar (what is pressed there its places')
@@ -580,6 +586,7 @@ priv struct SideAt {
   list_band : Double
   bar : Bool
   tape : Bool
+  glass : Bool
 }
 
 ///|
@@ -1250,13 +1257,15 @@ fn whole_of(s : String) -> Int? {
 }
 
 ///|
-/// Folded, the sidebar shown a while over the page as the pointer comes onto the rail's closed bar (Rail.tsx
-/// peekSidebar), until the pointer has been off it a moment (PEEK_LEAVE, 400 ms) and nothing from it is open (a row's
+/// Folded, the sidebar shown a while over the page once the pointer rests on the rail's closed bar (peek_enter_ms,
+/// 300 ms), until the pointer has been off it a moment (PEEK_LEAVE, 400 ms) and nothing from it is open (a row's
 /// menu, the filter's, a row renamed in place, the workspaces' ＋); to a finger, from its press on the bar until a tap
 /// off them.
 fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b : Double) -> Unit {
   if !side_folded() {
     wide.peeking.set(false)
+    c.held("side/peek-enter", false, peek_enter_ms) |> ignore
+    c.held("side/peek-away", false, peek_leave_ms) |> ignore
     return
   }
   let (px, py, _) = c.pointer()
@@ -1265,6 +1274,8 @@ fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b 
   // a finger, which rests on nothing: shown as it presses the bar (folded for the room: as its place is pressed,
   // rail.mbt), until a tap off the bar and the sidebar shown with nothing from it open
   if !@sf.pointer_rests() {
+    c.held("side/peek-enter", false, peek_enter_ms) |> ignore
+    c.held("side/peek-away", false, peek_leave_ms) |> ignore
     let on_bar = fn(x : Double, y : Double) { x >= bar_x && x < bar_r && y >= bar_y && y < bar_b }
     if !wide.crowded && on_bar(px, py) && px < bar_x + rail_closed_w {
       wide.peeking.set(true)
@@ -1282,7 +1293,8 @@ fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b 
   let over = on_block ||
     (px >= bar_x && px < bar_r && py >= bar_y && py < bar_b) ||
     (wide.peeking.get() && px >= bar_r - 2.0 && px < bar_r + 10.0)
-  if over && !wide.peeking.get() && (on_rail || (px >= 0.0 && px < bar_x + rail_closed_w)) {
+  let enter = over && !wide.peeking.get() && (on_rail || (px >= 0.0 && px < bar_x + rail_closed_w))
+  if c.held("side/peek-enter", enter, peek_enter_ms) {
     wide.peeking.set(true)
   }
   if c.held("side/peek-away", wide.peeking.get() && !over && !held, peek_leave_ms) {
@@ -1310,12 +1322,17 @@ fn block_pointed() -> (Bool, Bool) {
 }
 
 ///|
-/// Folded for the page's room (page_beside_least): shown a while from the start where a place was pressed into, and
-/// folded again as a row of it is chosen (the page another); else nothing kept of it.
+/// Folded for the page's room (page_beside_least) or explicitly switched to from the rail: shown a while from the
+/// start where a place was pressed into, and when crowded folded again as a row of it is chosen (the page another).
 fn side_crowded() -> Unit {
   let top = app.nav.top()
   if !wide.crowded {
-    wide.peek_next.set(false)
+    if wide.peek_next.get() {
+      wide.peek_next.set(false)
+      if side_folded() {
+        wide.peeking.set(true)
+      }
+    }
     wide.peek_top.set(None)
     return
   }
@@ -1328,6 +1345,10 @@ fn side_crowded() -> Unit {
   }
   wide.peek_top.set(Some(top))
 }
+
+///|
+/// How long the pointer must rest on the folded rail before the sidebar shows over the page.
+pub let peek_enter_ms : Double = 300.0
 
 ///|
 /// How long the pointer is off the sidebar shown a while before it folds again.

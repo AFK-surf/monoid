@@ -311,13 +311,13 @@ fn parity_scene(dark : Bool) -> (@view.View) -> Unit {
         }) |> ignore
       }) |> ignore
 
-      // Floating 4-tab Bottom Tab Bar overlay (y = 758..818, height = 60pt, lens_lift_h = 1.16)
+      // Floating 4-tab Bottom Tab Bar overlay (y = 758..818, height = 60pt, lens_lift_h = 1.24)
       page.box(fn(fg) {
         fg.over(Is(true)).padding(Is((16.0, 758.0, 16.0, 0.0))) |> ignore
         let bar_w = 358.0
         let bar_h = 60.0
         let tab_w = bar_w / 4.0
-        let lens_h = bar_h * 1.16
+        let lens_h = bar_h * 1.24
         let lens_w = tab_w * 1.12
         let tabs : Array[(String, String)] = [
           ("Controls", "sliders"),
@@ -356,7 +356,7 @@ fn parity_scene(dark : Bool) -> (@view.View) -> Unit {
             }
           }) |> ignore
 
-          // Active tab 0 pressed 1.16x lifted clear glass lens (p = 1.0)
+          // Active tab 0 pressed 1.24x lifted clear glass lens (p = 1.0)
           bar.box(fn(lens) {
             let r = lens_h / 2.0
             lens

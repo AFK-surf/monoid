@@ -59,7 +59,7 @@ pub fn gamepads_follow(
       }
     }
     for i in told.keys().to_array() {
-      if !pads.iter().any(fn(p) { p.index == i }) {
+      if !arr_any(pads, fn(p) { p.index == i }) {
         told.remove(i)
         then(i, None)
       }

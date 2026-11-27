@@ -158,7 +158,14 @@ pub fn fix_presets_say() -> Unit {
 /// The made-up station's clone `id` done (`url`'s repository among its folders) or failed (`error`), as a station tells
 /// it on its `presets` topic.
 pub fn fix_clone_ends(id : String, error? : String = "") -> Unit {
-  guard new_fix.clones.iter().find_first(fn(x) { text(Some(x), "id") == id }) is Some(c) else { return }
+  let mut found_clone : Json? = None
+  for x in new_fix.clones {
+    if text(Some(x), "id") == id {
+      found_clone = Some(x)
+      break
+    }
+  }
+  guard found_clone is Some(c) else { return }
   match c {
     Object(m) if error != "" => {
       let failed = m.copy()
@@ -381,8 +388,20 @@ pub fn fix_others_say() -> Unit {
 /// The `preset` topic: preset `id` whole, the person's own (fix_preset's, made on the first station) or someone else's
 /// (fix_others); None where the made-up workspace has none of that id.
 pub fn fix_preset_one(id : String) -> Json? {
-  let own = new_fix.presets.iter().find_first(fn(p) { text(Some(p), "id") == id })
-  let other = new_fix.others.iter().find_first(fn(p) { text(Some(p), "id") == id })
+  let mut own : Json? = None
+  for p in new_fix.presets {
+    if text(Some(p), "id") == id {
+      own = Some(p)
+      break
+    }
+  }
+  let mut other : Json? = None
+  for p in new_fix.others {
+    if text(Some(p), "id") == id {
+      other = Some(p)
+      break
+    }
+  }
   let (p, mine) = match (own, other) {
     (Some(p), _) => (p, true)
     (None, Some(p)) => (p, false)
@@ -525,7 +544,14 @@ pub fn fix_candidates() -> Json {
 /// made-up stations' `net`: Willow's, none of Maple's).
 pub fn fix_station(id : String) -> Json {
   if new_fix.station_many {
-    match fix_station_many().iter().find_first(fn(s) { text(Some(s), "id") == id }) {
+    let mut found_st : Json? = None
+    for s in fix_station_many() {
+      if text(Some(s), "id") == id {
+        found_st = Some(s)
+        break
+      }
+    }
+    match found_st {
       Some(s) => return s
       None => ()
     }
@@ -1536,7 +1562,14 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
     // (someone else's copied into one's own: a preset of one's own of its name and folders, made on the page's station)
     "preset.copy" => {
       let from = text(p, "id")
-      guard n.others.iter().find_first(fn(x) { text(Some(x), "id") == from }) is Some(o) else {
+      let mut found_other : Json? = None
+      for x in n.others {
+        if text(Some(x), "id") == from {
+          found_other = Some(x)
+          break
+        }
+      }
+      guard found_other is Some(o) else {
         return Some(Err({ "code": "http_404", "message": "这个预设已经不在了" }))
       }
       let id = "p-\{n.presets.length()}"

@@ -19,7 +19,7 @@ pub fn card(tone? : CardTone = Plain) -> @ui.Style {
   let base = @ui.style(w=Full, p=S5, radius=Xl3, bg=Card, clip=true)
   match tone {
     Plain => base
-    Lifted => base.then(@ui.style(bg=Raised, shadow=Md))
+    Lifted => base.then(@ui.style(bg=Raised, shadow=@ui.Shadow::Md))
   }
 }
 
@@ -131,13 +131,13 @@ pub fn button_style(size? : ButtonSize = Md, tone? : Variant = Solid) -> @ui.Sty
       )
     Danger =>
       @ui.style(
-        bg=Danger,
-        hovered=@ui.patch(bg=Over(Danger, A(Bg, O10))),
-        pressed=@ui.patch(bg=Over(Danger, A(Bg, O20))),
+        bg=@ui.Color::Danger,
+        hovered=@ui.patch(bg=Over(@ui.Color::Danger, A(Bg, O10))),
+        pressed=@ui.patch(bg=Over(@ui.Color::Danger, A(Bg, O20))),
       )
   }
   let compound = match (size, tone) {
-    (Sm, Ghost) => @ui.style(px=S0)
+    (ButtonSize::Sm, Variant::Ghost) => @ui.style(px=S0)
     _ => @ui.style()
   }
   base.then(sized).then(toned).then(compound)
@@ -149,7 +149,7 @@ pub fn button_text(size? : ButtonSize = Md, tone? : Variant = Solid) -> @ui.Text
   @ui.text_style(
     size=match size {
       Sm => Xs
-      Md | Lg => Sm
+      Md | Lg => @ui.TextSize::Sm
     },
     weight=Medium,
     wrap=false,
@@ -229,7 +229,7 @@ pub fn badge_text(tone? : BadgeTone = Neutral) -> @ui.TextStyle {
       Neutral => Muted
       Accent => AccentText
       Positive => Positive
-      Danger => Danger
+      Danger => @ui.Color::Danger
     },
   )
 }
@@ -265,7 +265,7 @@ pub fn row_title(tone? : RowTone = Normal) -> @ui.TextStyle {
     weight=Medium,
     color=match tone {
       Normal => Fg
-      Bad => Danger
+      Bad => @ui.Color::Danger
     },
   )
 }
@@ -274,10 +274,10 @@ pub fn row_title(tone? : RowTone = Normal) -> @ui.TextStyle {
 /// What is said under a row's title.
 pub fn row_sub(tone? : RowTone = Normal) -> @ui.TextStyle {
   @ui.text_style(
-    size=Sm,
+    size=@ui.TextSize::Sm,
     color=match tone {
       Normal => Muted
-      Bad => Danger
+      Bad => @ui.Color::Danger
     },
   )
 }
@@ -286,11 +286,11 @@ pub fn row_sub(tone? : RowTone = Normal) -> @ui.TextStyle {
 /// A row's value, at its end.
 pub fn row_value(tone? : RowTone = Normal) -> @ui.TextStyle {
   @ui.text_style(
-    size=Sm,
+    size=@ui.TextSize::Sm,
     wrap=false,
     color=match tone {
       Normal => Subtle
-      Bad => Danger
+      Bad => @ui.Color::Danger
     },
   )
 }

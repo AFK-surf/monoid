@@ -286,3 +286,62 @@ test "a light screenshot slow to come stands apart from the page: what stands in
   // (the ground in it: not under it as well)
   assert_false(t.drawn_rects().iter().any(fn(r) { (r.4 & 0xFFFFFF00L) == (ground & 0xFFFFFF00L) }), msg="\{Repr(t.drawn_rects())}")
 }
+
+///|
+test "a chat's picture coming pill: 24pt scrim capsule (no glass), concentric ring at left semicircle across 1x..2x, unknown-size spinner zero faults" {
+  let shade = match @sf.video_shade {
+    Data(v) => v
+    _ => @halt.saying("video_shade is a colour")
+  }
+  for scale in [1.0, 1.3, 2.0] {
+    let images = @sfbase.ChatImages::new()
+    let heard : Ref[(Json) -> Unit] = Ref(fn(_) {  })
+    let t = image_tester_asking(images, fn(h, _) { heard.val = h })
+    t.set_font_scale(scale)
+    t.draw()
+    (heard.val)({ "loaded": 370.0, "total": 1000.0 })
+    t.run_for(@sfpages.coming_after_ms + @sfpages.coming_in_ms)
+    assert_true(t.find("37%") is Some(_), msg="scale=\{scale}: expected 37%")
+    assert_eq(
+      t.drawn_instances().filter(fn(a) { a.length() > 5 && a[5] == 6.0 }).length(),
+      0,
+      msg="scale=\{scale}: no glass on coming pill",
+    )
+    let pills = t.drawn_rect_corners().filter(fn(r) { r.4 == shade })
+    assert_eq(pills.length(), 1, msg="scale=\{scale}: expected 1 video_shade coming pill")
+    let (px, py, _pw, ph, _, _) = pills[0]
+    let ring = t.get(ProgressBar)
+    let rx = ring.rect.0 + ring.rect.2 / 2.0
+    let ry = ring.rect.1 + ring.rect.3 / 2.0
+    assert_true(
+      (rx - (px + ph / 2.0)).abs() <= 0.5 && (ry - (py + ph / 2.0)).abs() <= 0.5,
+      msg="scale=\{scale}: ring center (\{rx}, \{ry}) must be concentric with left arc (\{px + ph / 2.0}, \{py + ph / 2.0})",
+    )
+    assert_eq(t.corner_faults(), [], msg="scale=\{scale}: corner_faults")
+    assert_eq(t.gap_faults(), [], msg="scale=\{scale}: gap_faults")
+    assert_eq(t.fixed_outgrown(), [], msg="scale=\{scale}: fixed_outgrown")
+    // Aligned to the bottom-left corner, matching video_capsule_node
+    let img_rect = t.get(Button, label="查看 line.png").rect
+    let expected_in = @ui.capsule_in(@sf.message_file_corner, ph)
+    assert_true(
+      (px - (img_rect.0 + expected_in)).abs() <= 1.0,
+      msg="scale=\{scale}: pill left px=\{px} vs bottom-left \{img_rect.0 + expected_in}",
+    )
+    t.set_font_scale(1.0)
+  }
+  for scale in [1.0, 1.3] {
+    let images = @sfbase.ChatImages::new()
+    let heard : Ref[(Json) -> Unit] = Ref(fn(_) {  })
+    let t = image_tester_asking(images, fn(h, _) { heard.val = h })
+    t.set_font_scale(scale)
+    t.draw()
+    (heard.val)({ "loaded": 300000.0 })
+    t.run_for(@sfpages.coming_after_ms + @sfpages.coming_in_ms)
+    assert_true(t.find(@sf.file_size(300000.0)) is Some(_), msg="unknown scale=\{scale}: bytes shown")
+    assert_eq(t.drawn_rect_corners().filter(fn(r) { r.4 == shade }).length(), 1, msg="unknown scale=\{scale}: 1 pill")
+    assert_eq(t.corner_faults(), [], msg="unknown scale=\{scale}: corner_faults")
+    assert_eq(t.gap_faults(), [], msg="unknown scale=\{scale}: gap_faults")
+    assert_eq(t.fixed_outgrown(), [], msg="unknown scale=\{scale}: fixed_outgrown")
+    t.set_font_scale(1.0)
+  }
+}

@@ -37,10 +37,13 @@ pub fn station_choice_node(
 ) -> Unit {
   let now = fn() -> StationChoice {
     let all = stations()
-    match all.iter().find_first(fn(s) { s.station == chosen() }) {
-      Some(s) => s
-      None => all.get(0).unwrap_or({ station: chosen(), name: chosen(), emoji: "", icon: "" })
+    let target = chosen()
+    for s in all {
+      if s.station == target {
+        return s
+      }
     }
+    all.get(0).unwrap_or({ station: target, name: target, emoji: "", icon: "" })
   }
   let several = fn() { stations().length() > 1 }
   let opener = @sf.Opener::new()

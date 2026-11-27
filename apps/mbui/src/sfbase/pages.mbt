@@ -398,7 +398,7 @@ pub fn chat_page_made(
               .lays_anew(By(fn() { memo_by(col).laid }))
               |> ignore
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
               let bound = Ref(false)
               col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
@@ -416,7 +416,7 @@ pub fn chat_page_made(
             // later one let go of)
             None =>
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
           }
           // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
@@ -1679,6 +1679,8 @@ pub fn reset() -> Unit {
   sent_reset()
   // what the core said of the composers' fields, their marks and `@` words (refs.mbt)
   refs_reset()
+  // what the core said of the composers' `/` skill menus and cached skill lists (skills.mbt)
+  skills_reset()
   // a send asking about what it refers to (outside.mbt)
   outside_reset()
   // what was asked of the core from a button, under way or failed (act.mbt)

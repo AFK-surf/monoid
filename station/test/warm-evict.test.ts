@@ -200,6 +200,32 @@ test("an idle process that is not archived keeps what it runs in the background 
   await r.close();
 });
 
+test("an idle process holding background work survives maxWarmClaude and warmMs, and is evicted once its background work finishes", async () => {
+  const { time, r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const session = r.claude.last();
+  session.tasks = [task];
+  await r.call(key, "chat_state", { kind: "waiting", for: "subagent", seconds: 3600 });
+  session.complete();
+  await settle();
+  assert.ok(!session.disposed, "maxWarmClaude: 0 does not evict a process holding background work");
+
+  // Past warmMs: deadline fires while still holding, so the process stays alive.
+  await time.adjust(35 * MIN);
+  await settle();
+  assert.ok(!session.disposed, "warmMs does not evict while background work is still running");
+
+  // Background work ends while idle: live `tasks: []` prompts the hub to re-evaluate eviction immediately.
+  session.tasks = [];
+  session.events({ type: "live", event: { kind: "tasks", tasks: [] } });
+  await r.quiet();
+  assert.ok(session.disposed, "evicted once its background work ended");
+  await r.close();
+});
+
 test("under the machine's pressure every idle process is let go, whatever the warm limit, and a running turn is not", async () => {
   const { r } = rig({ maxWarmClaude: 4, warmMinutes: 30 });
   await idleSession(r);

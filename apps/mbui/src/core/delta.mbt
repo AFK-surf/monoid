@@ -167,7 +167,7 @@ pub fn apply_delta(value : Json, ops : Array[Json]) -> Json {
           Some(Array(path)) => {
             let drops = drop_run(ops, i, o)
             if drops > 1 {
-              let (next, _) = cow_drop_run(root, path, 0, ops[i:i + drops], o)
+              let (next, _) = cow_drop_run(root, path, 0, ops[i:i + drops].to_owned(), o)
               root = next
               i += drops
               continue
@@ -180,7 +180,7 @@ pub fn apply_delta(value : Json, ops : Array[Json]) -> Json {
         }
       _ => ()
     }
-    i += 1
+    i = i + 1
   }
   cow_freeze(root)
 }
@@ -248,7 +248,7 @@ fn cow_drop_run(
   node : Cow,
   path : Array[Json],
   depth : Int,
-  run : ArrayView[Json],
+  run : Array[Json],
   first : Map[String, Json],
 ) -> (Cow, Bool) {
   if depth == path.length() {
@@ -900,7 +900,7 @@ fn json_key_text(j : Json) -> String {
         }
       }
       if idx_keys.length() > 1 {
-        idx_keys.sort_by(fn(a, b) { a.0.compare(b.0) })
+        idx_keys.sort_by(fn(a, b) { if a.0 < b.0 { -1 } else if a.0 > b.0 { 1 } else { 0 } })
       }
       let buf = StringBuilder()
       buf.write_char('{')

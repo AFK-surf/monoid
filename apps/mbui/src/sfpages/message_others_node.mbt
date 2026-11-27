@@ -275,7 +275,7 @@ fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, key
         fn() { s().text },
         size=fn() { body_size },
         typography=fn() {
-          {
+          @sf.MdTypography::{
             ..@sf.md_typography_default,
             prose_scale: @sfbase.prose_text_scale(),
             code_scale: @sfbase.code_text_scale(),

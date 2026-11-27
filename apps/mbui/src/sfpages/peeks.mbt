@@ -185,8 +185,8 @@ fn chat_named(src : Source, here : String, href : String) -> Named {
       _ => None
     }
     chats_named[key] = match t {
-      Some(t) if t.opens == "chat" && t.chat != "" => Chat(t.workspace + "/" + t.station, t.chat, t.history != "", t.message)
-      Some(t) if t.opens == "item" && t.session != "" => Chat(t.workspace + "/" + t.station, t.session, t.history != "", t.message)
+      Some(t) if t.opens == "chat" && t.chat != "" => Named::Chat(t.workspace + "/" + t.station, t.chat, t.history != "", t.message)
+      Some(t) if t.opens == "item" && t.session != "" => Named::Chat(t.workspace + "/" + t.station, t.session, t.history != "", t.message)
       // (`…/chats/<id>` alone: the chat's own station's)
       _ =>
         match href.find("/chats/") {
@@ -204,7 +204,7 @@ fn chat_named(src : Source, here : String, href : String) -> Named {
             if id == "" {
               NoChat
             } else {
-              Chat(here, id, href.contains("?history="), None)
+              Named::Chat(here, id, href.contains("?history="), None)
             }
           }
           None => NoChat

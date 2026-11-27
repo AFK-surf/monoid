@@ -166,11 +166,11 @@ pub fn code_field_node(
         boxes.box(fn(group) {
           group.row(Is(true)).gap(By(fn() { gap * scale() })) |> ignore
           for i in r.0..<r.1 {
-            group.box(fn(b) {
-              b
-              .width(By(fn() { Some(box_w * scale()) }))
-              .height(By(fn() { Some(box_h * scale()) }))
-              .radius(By(fn() { radius * scale() }))
+            group.box(fn(b : @view.View) {
+              let b = b
+                .width(By(fn() { Some(box_w * scale()) }))
+                .height(By(fn() { Some(box_h * scale()) }))
+              @view.View::radius(b, By(fn() { radius * scale() }))
               .edge(
                 By(fn() {
                   let k = inks()

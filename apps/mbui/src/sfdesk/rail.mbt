@@ -401,14 +401,10 @@ pub fn apart_ground() -> Int64 {
 }
 
 ///|
-/// The closed bar's ground (a floating panel's: the canvas, raised in the dark).
+/// The closed bar's resting ground (matches the page's theme background so the folded rail blends in)
+/// and the solid fallback when the peeking glass drawer runs under `MBUI_GLASS=solid`.
 pub fn closed_ground() -> Int64 {
-  let t = @sf.theme()
-  if t.dark {
-    t.p.raised
-  } else {
-    t.p.canvas
-  }
+  @sf.theme().p.bg
 }
 
 ///|

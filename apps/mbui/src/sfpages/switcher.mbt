@@ -59,12 +59,12 @@ priv enum FindLine {
 /// Two lines the same: what they show, a command by what it is offered as (its id; what it runs is the frame's now).
 impl Eq for FindLine with equal(a, b) {
   match (a, b) {
-    (Head(x), Head(y)) | (More(x), More(y)) | (Note(x), Note(y)) | (Said(x), Said(y)) => x == y
+    (FindLine::Head(x), FindLine::Head(y)) | (More(x), More(y)) | (FindLine::Note(x), FindLine::Note(y)) | (Said(x), Said(y)) => x == y
     (Back, Back) => true
     (Command(l, o), Command(m, p)) => l == m && o.id == p.id && o.icon == p.icon && o.keys == p.keys
-    (Chat(x), Chat(y)) => x == y
+    (FindLine::Chat(x), FindLine::Chat(y)) => x == y
     (Message(x), Message(y)) => x == y
-    (Item(x), Item(y)) => x == y
+    (FindLine::Item(x), FindLine::Item(y)) => x == y
     (Wait(x, e), Wait(y, f)) => x == y && e == f
     _ => false
   }
@@ -396,7 +396,7 @@ fn finder_go(line : FindLine, close : () -> Unit) -> Unit {
     }
     Chat(ch) => {
       close()
-      open_page(Chat(@sfbase.chat_ref_of(ch.item)))
+      open_page(@sfbase.Page::Chat(@sfbase.chat_ref_of(ch.item)))
     }
     Message(m) => {
       close()
@@ -868,17 +868,17 @@ pub fn finder_list_node(
 /// own (found_line_node's and quiet_line_node's by what the line is; a station's line by whether it has a mark).
 fn finder_line_shape(held : (FindLine, Int)?) -> Int {
   match held {
-    Some((Head(_), _)) => 0
-    Some((Note(_), _)) => 1
+    Some((FindLine::Head(_), _)) => 0
+    Some((FindLine::Note(_), _)) => 1
     Some((Wait(_, false), _)) => 2
     Some((Wait(_, true), _)) => 3
     Some((Said(_), _)) => 4
     Some((Back, _)) => 5
     Some((More(_), _)) => 6
     Some((Command(_, _), _)) => 7
-    Some((Chat(_), _)) => 8
+    Some((FindLine::Chat(_), _)) => 8
     Some((Message(_), _)) => 9
-    Some((Item(it), _)) =>
+    Some((FindLine::Item(it), _)) =>
       if it.kind != "station" {
         10
       } else if @sf.has_station_mark(it.station_emoji, it.station_icon) {
@@ -931,7 +931,7 @@ fn quiet_line_node(b : @view.View, first : FindLine, line : () -> (FindLine, Int
   let f = fn() { @sf.theme().chat_list.found }
   let words = fn() {
     match line() {
-      Some((Head(w) | Note(w) | Wait(w, _) | Said(w), _)) => w
+      Some((FindLine::Head(w) | FindLine::Note(w) | Wait(w, _) | Said(w), _)) => w
       _ => ""
     }
   }

@@ -132,7 +132,7 @@ fn option_row_node(
             k.box(fn(w) {
               w
               .words(By(fn() { "\{i() + 1}" }))
-              .words_look(By(fn() { { ..@view.words_plain, size: theme().t.caption, weight: 600, wrap: false } }))
+              .words_look(By(fn() { @view.WordsLook::{ ..@view.words_plain, size: theme().t.caption, weight: 600, wrap: false } }))
               .ink(By(color))
               |> ignore
             })
@@ -159,7 +159,7 @@ fn option_row_node(
         .words(By(fn() { o().0 }))
         .words_look(By(fn() {
           let ot = option_type()
-          { ..@view.words_plain, size: ot.label, weight: 500, line: ot.label_line }
+          @view.WordsLook::{ ..@view.words_plain, size: ot.label, weight: 500, line: ot.label_line }
         }))
         .ink(By(fn() { theme().p.text }))
         |> ignore
@@ -170,7 +170,7 @@ fn option_row_node(
         .words(By(fn() { o().1 }))
         .words_look(By(fn() {
           let ot = option_type()
-          { ..@view.words_plain, size: ot.detail, line: ot.detail_line }
+          @view.WordsLook::{ ..@view.words_plain, size: ot.detail, line: ot.detail_line }
         }))
         .ink(By(fn() { theme().p.muted }))
         |> ignore

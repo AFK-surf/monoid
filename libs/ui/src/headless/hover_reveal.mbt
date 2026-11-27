@@ -44,12 +44,19 @@ pub fn hover_reveal(
 ) -> HoverReveal {
   let targets = [action, ..also]
   let shown = fn() {
-    always() ||
-    host.pointed() ||
-    host.pointed_in() ||
-    action.pointed() ||
-    action.pointed_in() ||
-    targets.iter().any(fn(t) { t.focus_shown() })
+    if always() ||
+      host.pointed() ||
+      host.pointed_in() ||
+      action.pointed() ||
+      action.pointed_in() {
+      return true
+    }
+    for i = 0; i < targets.length(); i = i + 1 {
+      if targets[i].focus_shown() {
+        return true
+      }
+    }
+    false
   }
   for t in targets {
     t.takes(fn(w, h, _at) { if shown() { [(0.0, 0.0, w, h)] } else { [] } }) |> ignore

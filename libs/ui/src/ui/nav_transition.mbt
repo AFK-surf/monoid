@@ -256,7 +256,7 @@ fn[P] Nav::rise_scale_of(self : Nav[P], serial : Int, now : () -> Double, rise_u
 pub fn[P : Eq] Nav::is_root_place(self : Nav[P], page : P) -> Bool {
   (self.pages.length() > 0 && self.pages[0].page == page) ||
   (self.swap_out is Some(e) && e.page == page) ||
-  self.shelf.iter().any(fn(e) { e.page == page })
+  arr_any(self.shelf, fn(e) { e.page == page })
 }
 
 ///|

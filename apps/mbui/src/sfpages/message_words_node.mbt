@@ -68,9 +68,9 @@ fn person_words_node(
         let look = if ps == 1.0 && ls == 1.0 {
           base
         } else {
-          { ..base, size: base.size * ps, line: base.line * ps * ls }
+          @view.WordsLook::{ ..base, size: base.size * ps, line: base.line * ps * ls }
         }
-        (look, { ..@view.runs_plain, link: t.p.blue, words: true }, @ui.style_ink(t.t.words))
+        (look, @view.RunsLook::{ ..@view.runs_plain, link: t.p.blue, words: true }, @ui.style_ink(t.t.words))
       },
       fn(s) { w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore },
     )
@@ -685,9 +685,10 @@ fn sent_lead(words : Bool, parts : Array[String], quotes : Array[Bool]) -> Strin
   if words {
     return sent_words_part
   }
-  match parts.search_by(fn(p) { !@sfbase.is_quote_picture_key(p) }) {
-    Some(i) => return parts[i]
-    None => ()
+  for i = 0; i < parts.length(); i = i + 1 {
+    if !@sfbase.is_quote_picture_key(parts[i]) {
+      return parts[i]
+    }
   }
   match quotes.search_by(fn(q) { q }) {
     Some(i) => return sent_quote_part(i)

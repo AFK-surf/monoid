@@ -501,6 +501,71 @@ test "vault no-key card displays thisDeviceCode and passes audit across widths a
     let faults = t.audit()
     assert_true(faults.is_empty(), msg="\{at}: " + faults.join(" | "))
   }
+  // Clicking 申请授权 passes the specific vault id to vault.ask and reports personal vs workspace done wording.
+  let calls : Array[(String, Json)] = []
+  let t = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-no-key-code", over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push((name, params))
+        (base.call)(name, params, done)
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="申请授权")
+  t.run_for(@ui.move_most_ms)
+  let asked = calls.filter(fn(c) { c.0 == "vault.ask" })
+  assert_eq(asked.length(), 1)
+  assert_eq(asked[0].1, { "workspace": "ws1", "vault": "v1" })
+  assert_eq(@sfbase.toast_words(), "已提交授权申请；也可在已有钥匙的设备「密钥库 › 设备」中手动授权")
+  // Workspace no-key vault passes its vault id and notifies vault admins.
+  let ws_calls : Array[(String, Json)] = []
+  let ws_vaults : Json = obj([
+    ("available", Json::boolean(true)),
+    ("locked", Json::boolean(false)),
+    ("canSign", Json::boolean(true)),
+    ("setUp", Json::boolean(true)),
+    ("thisDeviceCode", str("M5J-TK5")),
+    ("vaults", Json::array([
+      obj([
+        ("id", str("v-ws")),
+        ("name", str("Workspace 密钥库")),
+        ("scope", str("workspace")),
+        ("mine", Json::boolean(false)),
+        ("manages", Json::boolean(false)),
+        ("keyed", Json::boolean(false)),
+        ("recoverable", Json::boolean(false)),
+        ("items", Json::number(0.0)),
+        ("devices", Json::number(1.0)),
+      ]),
+    ])),
+    ("requests", Json::array([])),
+    ("refused", Json::array([])),
+  ])
+  let t_ws = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-no-key-code", over=fn(base) {
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "vaults" {
+          { value: Some(ws_vaults), error: None, version: 1 }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+      call: fn(name, params, done) {
+        ws_calls.push((name, params))
+        (base.call)(name, params, done)
+      },
+    }
+  })
+  t_ws.run_for(@ui.move_most_ms)
+  t_ws.click(Button, label="申请授权")
+  t_ws.run_for(@ui.move_most_ms)
+  let ws_asked = ws_calls.filter(fn(c) { c.0 == "vault.ask" })
+  assert_eq(ws_asked.length(), 1)
+  assert_eq(ws_asked[0].1, { "workspace": "ws1", "vault": "v-ws" })
+  assert_eq(@sfbase.toast_words(), "已提交授权申请；管理员也可在「密钥库 › 设备」中手动授权")
 }
 
 ///|

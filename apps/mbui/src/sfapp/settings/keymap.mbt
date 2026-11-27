@@ -23,7 +23,12 @@ pub fn key_actions(prefs : Json?) -> Array[Json] {
 ///|
 /// An action as the keymap has it.
 fn key_action(prefs : Json?, action : String) -> Json? {
-  key_actions(prefs).iter().find_first(fn(a) { text(Some(a), "action") == action })
+  for a in key_actions(prefs) {
+    if text(Some(a), "action") == action {
+      return Some(a)
+    }
+  }
+  None
 }
 
 ///|
@@ -115,8 +120,15 @@ fn binding_key(binding : String) -> (Int, Int)? {
       _ => return None
     }
   }
-  let code = match key_names.iter().find_first(fn(n) { n.0 == key }) {
-    Some((_, code)) => code
+  let mut found_code : Int? = None
+  for n in key_names {
+    if n.0 == key {
+      found_code = Some(n.1)
+      break
+    }
+  }
+  let code = match found_code {
+    Some(code) => code
     None =>
       match key.to_array() {
         [ch] => @ui.key_of_char(lower_char(ch))

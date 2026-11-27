@@ -241,7 +241,7 @@ fn new_send_go(
           @sfbase.writing_carry(src, draft, d.key)
           @sfbase.writing_starting(src, d, false)
           let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
-          let here = ours() && app.nav.top() is Chat(top) && top == r
+          let here = ours() && app.nav.top() is @sfbase.Page::Chat(top) && top == r
           if ours() {
             fresh.made.set("")
             fresh.starting.set(false)
@@ -269,7 +269,7 @@ fn new_send_go(
   @view.transition(fn() {
     new_chat_reset()
     sent(r)
-    app.nav.become(Chat(r))
+    app.nav.become(@sfbase.Page::Chat(r))
   })
 }
 

@@ -368,7 +368,12 @@ pub fn join(parts : Array[String], sep : String) -> String {
 ///|
 /// Whether one of `calls` about what `on` names is under way (the core's `doing` topic: its params as words).
 pub fn is_doing(core : Core, calls : Array[String], on : Array[(String, String)]) -> Bool {
-  doing_items(core).iter().any(fn(d) { text(Some(d), "stage") != "failed" && doing_matches(d, calls, on) })
+  for d in doing_items(core) {
+    if text(Some(d), "stage") != "failed" && doing_matches(d, calls, on) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -395,8 +400,14 @@ fn doing_items(core : Core) -> Array[Json] {
 
 ///|
 fn doing_matches(d : Json, calls : Array[String], on : Array[(String, String)]) -> Bool {
-  calls.contains(text(Some(d), "call")) &&
-  on.iter().all(fn(kv) { text(field(Some(d), "params"), kv.0) == kv.1 })
+  guard calls.contains(text(Some(d), "call")) else { return false }
+  let params = field(Some(d), "params")
+  for kv in on {
+    if text(params, kv.0) != kv.1 {
+      return false
+    }
+  }
+  true
 }
 
 ///|

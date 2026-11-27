@@ -94,7 +94,7 @@ pub fn chat_row_node(
       Some(seq) if on_line && !i.unread && i.thread is Some(_) => @sfbase.go_to(r, seq)
       _ => ()
     }
-    open_page(Chat(r))
+    open_page(@sfbase.Page::Chat(r))
     match reader { Some(reader) => @sfbase.handoff_chat_open(r, reader); None => () }
   }
   parent.box(fn(slot) {

@@ -18,5 +18,7 @@ fn init {
     ("src/sfapp_realsize/real_size_test.mbt", 1975151),
     // Wide/medium rail switch budget gates on the real-size workspace (same chat avatar decode ceiling as bar_places_kept_test).
     ("src/sfapp_realsize/wide_switch_budget_test.mbt", 38548),
+    // Wide/medium full Place cold-open 5-dim budget gates on the real-size workspace (covers settings subpages too).
+    ("src/sfapp_realsize/wide_cold_open_budget_test.mbt", 46949),
   ])
 }

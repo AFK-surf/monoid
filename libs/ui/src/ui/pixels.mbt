@@ -166,7 +166,7 @@ fn pixels_for(src : String, px : Int, used : Int, at : Double) -> ImagePixels {
     }
     _ =>
       match image_cache.get(src) {
-        Some(list) if list.iter().any(fn(e) { e.state == -1 && e.px >= want }) => PixelsFailed
+        Some(list) if arr_any(list, fn(e) { e.state == -1 && e.px >= want }) => PixelsFailed
         _ => PixelsComing
       }
   }

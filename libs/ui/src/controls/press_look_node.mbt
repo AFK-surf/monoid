@@ -84,10 +84,13 @@ fn press_look(
   // (sunk while down, back as it is let go, from where it is then; how far, by how big it is as it goes down)
   let sink = @motion.Way::new(0.0)
   let sink_most = Ref(0.0)
-  v.scale(By(fn() {
-    let s = sink.shown_on(v)
-    1.0 - sink_most.val * s
-  }))
+  v.scale(
+    By(fn() {
+      let s = sink.shown_on(v)
+      1.0 - sink_most.val * s
+    }),
+    moves_besides=false,
+  )
   |> ignore
   // (a pointer's press, @motion.ripple's: no disc, the ink over the whole of it, evenly, while `veil` has it; when the
   // button went down while it is, and its way out due)

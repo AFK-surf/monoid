@@ -71,7 +71,13 @@ fn feedback_doing(id : String) -> String {
 ///|
 /// The report `id` of chat `r` as the core has it now (None once it is not).
 fn feedback_report(src : Source, r : ChatRef, id : String) -> Json? {
-  feedback_reports(src, r).iter().find_first(fn(f) { text(Some(f), "id") == id })
+  let reps = feedback_reports(src, r)
+  for i = 0; i < reps.length(); i = i + 1 {
+    if text(Some(reps[i]), "id") == id {
+      return Some(reps[i])
+    }
+  }
+  None
 }
 
 ///|

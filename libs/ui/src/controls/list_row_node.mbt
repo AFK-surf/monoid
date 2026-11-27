@@ -93,7 +93,7 @@ pub fn list_row_node(
     }
     match (corner, at) {
       // (the room what stands in the corner keeps at the end of the lines under the first)
-      (Some(_), Side | Tape) =>
+      (Some(_), Side | ListAt::Tape) =>
         text.box(fn(line) {
           line.row(Is(true)) |> ignore
           line.box(fn(u) {
@@ -111,7 +111,7 @@ pub fn list_row_node(
   // (in its foot's end corner, aside_end in from its end; in a chat's row, its middle the second line's, as anything
   // else beside that line, whatever is in it and however high: the user, 2026-11-26, 图标和项目名没有居中)
   match (corner, at) {
-    (Some(k), Side | Tape) =>
+    (Some(k), Side | ListAt::Tape) =>
       row.show(corner_shown, fn(o) {
         o
         .over(Is(true))

@@ -222,7 +222,7 @@ fn steps_centred_node(
                   let pos = if t == @double.infinity { wy.1 } else { way_at(wy, t) }
                   if pos > 0.0 || wy.1 > 0.0 || (shows() && under_shown()) { panel_ground() } else { 0L }
                 }))
-                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                .shown_by(d, fn(dh) { @view.GroundShape::{ ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
                 |> ignore
               })
               |> ignore
@@ -240,7 +240,7 @@ fn steps_centred_node(
                   let cover = dclamp(-pos / 0.28, 0.0, 1.0)
                   if cover <= 0.0 { 0L } else { alpha(0x000000FFL, 0.08 * cover) }
                 }))
-                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                .shown_by(d, fn(dh) { @view.GroundShape::{ ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
                 |> ignore
               })
               |> ignore
@@ -258,7 +258,7 @@ fn steps_centred_node(
                   let cover = dclamp(pos / 0.28, 0.0, 1.0)
                   if cover <= 0.0 { 0L } else { alpha(0x000000FFL, 0.08 * cover) }
                 }))
-                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                .shown_by(d, fn(dh) { @view.GroundShape::{ ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
                 |> ignore
               })
               |> ignore

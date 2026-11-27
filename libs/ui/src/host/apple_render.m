@@ -74,6 +74,7 @@ typedef struct {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  int through;
   float tint_a;
   int has_changed;
   uintptr_t last_bd;
@@ -332,7 +333,7 @@ static NSString *shader_src = @
 "static float3 backdrop(texture2d<float> bd, constant G& g, float2 p) { return backdrop4(bd, g, p).rgb; }\n"
 "static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
 "static float mb_ink_luma(float3 c) { return dot(c * c, float3(0.2126, 0.7152, 0.0722)); }\n"
-"static float mb_backdrop_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
+"static float mb_backdrop_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h, float hole_y) {\n"
 "  float sum = 0.0;\n"
 "  float mx1 = -1.0, mx2 = -1.0;\n"
 "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -340,7 +341,9 @@ static NSString *shader_src = @
 "    float py = c.y + float(iy) * (h.y * 0.60);\n"
 "    for (int ix = -2; ix <= 2; ix++) {\n"
 "      float px = c.x + float(ix) * (h.x * 0.38);\n"
-"      float y = mb_ink_luma(backdrop(bd, g, float2(px, py)));\n"
+"      float4 smp = backdrop4(bd, g, float2(px, py));\n"
+"      float a = (g.misc.y > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;\n"
+"      float y = mb_ink_luma(clamp(smp.rgb + float3((1.0 - a) * hole_y), 0.0, 1.0));\n"
 "      sum += y;\n"
 "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
 "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
@@ -407,7 +410,7 @@ static NSString *shader_src = @
 "  }\n"
 "  capCenter = ac;\n"
 "  capHalf = float2(0.0);\n"
-"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
+"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)), prefer_dark ? 0.0 : 1.0);\n"
 "  return float3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);\n"
 "}\n"
 "static float mb_srgb_to_lin(float c) {\n"
@@ -709,11 +712,13 @@ MB_CORNER_SL
 "    s_cap = 1.16 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;\n"
 "    H_opt = 10.6 * hs * refScale;\n"
 "  } else {\n"
-"    float r_lip = 4.2 * hs;\n"
-"    float L_lip = 1.05 * hs;\n"
-"    s_lip = 5.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;\n"
-"    s_cap = 0.0;\n"
-"    H_opt = 6.2 * hs * refScale;\n"
+"    float r_lip = 4.4 * hs;\n"
+"    float L_lip = 1.75 * hs;\n"
+"    s_lip = 1.45 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;\n"
+"    float u = max(d - 2.6 * hs, 0.0) / (2.4 * hs);\n"
+"    float capCut = 1.0 - smoothstep(8.5 * hs, 12.0 * hs, d);\n"
+"    s_cap = 0.55 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;\n"
+"    H_opt = 3.2 * hs * min(refScale, 1.5);\n"
 "  }\n"
 "  return float2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);\n"
 "}\n"
@@ -765,7 +770,7 @@ MB_CORNER_SL
 "      return mb_unpack16(px.rg);\n"
 "    }\n"
 "  }\n"
-"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
+"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)), is_dark_glass ? 0.0 : 1.0);\n"
 "  if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);\n"
 "  float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
 "  float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);\n"
@@ -822,7 +827,7 @@ MB_CORNER_SL
 "    // neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)\n"
 "    float2 off = abs(I.rect.zw * u.scale - I.c2.zw);\n"
 "    float2 r0 = I.rect.xy * u.scale, r0i = floor(r0 + 0.5);\n"
-"    bool exact = I.rot.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
+"    bool exact = I.rot.x == 0.0 && max(off.x, off.y) <= 0.05 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
 "    float2 tex = exact ? floor(p * u.scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
 "    float2 uv = clamp(at + tex, at + 0.5, at + I.c2.zw - 0.5);\n"
 "    float4 t = colour ? catlas.sample(s, uv) : float4(atlas.sample(s, uv).r);\n"
@@ -1207,7 +1212,7 @@ MB_CORNER_SL
 "        }\n"
 "      }\n"
 "    }\n"
-"    float tintDarkEnv = 1.0 - smoothstep(0.18, 0.55, luma(refractColor));\n"
+"    float tintDarkEnv = (1.0 - smoothstep(0.18, 0.55, luma(refractColor))) * bgA;\n"
 "    float regDarkContour = tintDarkEnv * max(is_dark ? 1.0 : darkMixSaved, smoothstep(0.08, 0.16, colChroma));\n"
 "    float regExtContour = mix(0.34, 0.85, regDarkContour) * solidFade;\n"
 "    contourStr = mix(contourStr, regExtContour, regMix);\n"
@@ -1446,50 +1451,53 @@ MB_CORNER_SL
 "      float3 dropRes = clamp(refractColor + float3(liftGain * pressAmt * (1.0 - backdropLuma)), 0.0, 1.0);\n"
 "      float domeScale = clamp(I.rect.w / 38.4, 0.80, 1.35);\n"
 "      float sizeGate = smoothstep(28.0, 36.0, I.rect.w);\n"
-"      float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.55 : 1.0);\n"
+"      float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.35 : 1.0);\n"
 "      float upperFace = smoothstep(-0.15, 0.85, -surfaceNormal.y);\n"
 "      float qTop = (inward - 8.5 * domeScale) / (6.2 * domeScale);\n"
 "      float topEnv = exp(-qTop * qTop) * upperFace * smoothstep(0.55, 1.80, inward);\n"
 "      dropRes *= (1.0 - mix(0.20, 0.082, brightBg) * roleVol * sizeGate * pressAmt * topEnv);\n"
 "      float sideArc = pow(max(abs(surfaceNormal.x), 0.0), 1.6);\n"
 "      float sideEnv = exp(-max(inward - 1.5, 0.0) / 4.2) * smoothstep(0.25, 1.20, inward);\n"
-"      dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.45 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);\n"
+"      dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.25 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);\n"
 "      float lowerFace = smoothstep(0.10, 0.85, surfaceNormal.y);\n"
 "      float lowEnv = exp(-max(inward - 2.0, 0.0) / 5.5) * smoothstep(0.50, 1.60, inward);\n"
-"      dropRes = clamp(dropRes + float3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.35 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);\n"
+"      dropRes = clamp(dropRes + float3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.30 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);\n"
 "      // Stage A: Razor-sharp inner 3D specular rim\n"
 "      if (pressAmt > 0.001 && inward < 12.0) {\n"
 "        float litTop = max(-surfaceNormal.y, 0.0);\n"
 "        float litBot = max(surfaceNormal.y, 0.0);\n"
-"        float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + 0.05;\n"
+"        float lobeFloor = isRoleTab ? 0.10 : 0.05;\n"
+"        float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + lobeFloor;\n"
 "        float rimStart = isRoleSw ? 0.60 : 0.45;\n"
 "        float rimPeak  = isRoleSw ? 0.95 : 0.75;\n"
 "        float rimRise = smoothstep(rimStart, rimPeak, inward);\n"
 "        float rimInset = max(inward - rimPeak, 0.0);\n"
 "        float rimEnv = rimRise * (0.90 * exp(-rimInset / 0.38) + 0.14 * exp(-rimInset / 1.50));\n"
-"        float rimStr = mix(0.24, 0.14, brightBg) * dirLobe * rimEnv * pressAmt;\n"
+"        float rimStr = (isRoleTab ? mix(0.28, 0.16, brightBg) : mix(0.24, 0.14, brightBg)) * dirLobe * rimEnv * pressAmt;\n"
 "        dropRes = mix(dropRes, float3(1.0), clamp(rimStr, 0.0, 1.0));\n"
 "      }\n"
 "      // Stage B: Slim Apple-exact closed-form analytic 3D bevel wall\n"
 "      float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.35);\n"
 "      float invS = 1.0 / max(u.scale, 1.0);\n"
 "      float hsWall = clamp(halfMinor / 19.2, 0.72, 1.25);\n"
-"      float w0_top = (isRoleSw ? 0.30 : 0.24) * hsWall;\n"
-"      float w0_side = max(0.52 * hsWall, 1.55 * invS);\n"
+"      float w0_top = (isRoleSw ? 0.30 : (isRoleTab ? 0.18 : 0.24)) * hsWall;\n"
+"      float w0_side = isRoleTab ? max(0.30 * hsWall, 1.10 * invS) : max(0.52 * hsWall, 1.55 * invS);\n"
 "      float w0_eff = mix(w0_top, w0_side, across);\n"
-"      float L_eff  = mix(0.12, 0.42, across) * hsWall;\n"
+"      float L_eff  = (isRoleTab ? mix(0.08, 0.16, across) : mix(0.12, 0.42, across)) * hsWall;\n"
 "      float wallCov = mb_bevel_cov(sd_px, u.scale, w0_eff, L_eff);\n"
-"      float wallBlend = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0) * 0.94 * pressAmt;\n"
+"      float wallRaw = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0);\n"
+"      float wallBlend = wallRaw * (isRoleTab ? 0.82 : 0.94) * pressAmt;\n"
 "      if (wallBlend > 0.001) {\n"
 "        float3 envBg = backdrop(bd, g, p + surfaceNormal * 1.2);\n"
 "        float envY = luma(envBg);\n"
 "        float envChroma = max(envBg.r, max(envBg.g, envBg.b)) - min(envBg.r, min(envBg.g, envBg.b));\n"
 "        float brightEnv = smoothstep(0.35, 0.75, envY);\n"
 "        float satEnv = smoothstep(0.10, 0.35, envChroma);\n"
-"        float neutralMul = mix(0.26, mix(0.80, 0.72, across), brightEnv);\n"
+"        float wallMix = isRoleTab ? (wallRaw * mix(0.62, 0.82, brightEnv) * pressAmt) : wallBlend;\n"
+"        float neutralMul = isRoleTab ? mix(0.50, mix(0.82, 0.75, across), brightEnv) : mix(0.26, mix(0.80, 0.72, across), brightEnv);\n"
 "        float3 neutralTint = envBg * neutralMul;\n"
 "        float3 satTint = pow(max(envBg, float3(0.0001)), float3(1.25)) * 0.72;\n"
-"        dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallBlend);\n"
+"        dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallMix);\n"
 "      }\n"
 "      // Stage C: Segmented prismatic edge dispersion AFTER Stage B\n"
 "      if (pressAmt > 0.001 && inward < 12.0 && abs(I.pad.z) > 0.005) {\n"
@@ -1924,6 +1932,11 @@ MB_CORNER_SL
 "fragment float4 fad(float4 pos [[position]], texture2d<float> bd [[texture(0)]],\n"
 "    texture2d<float> prev_ad [[texture(1)]], constant AdU& u [[buffer(0)]]) {\n"
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
+"  float is_dark = u.param.x;\n"
+"  bool is_through = u.param.y > 1.5;\n"
+"  float is_new = u.param.y - (is_through ? 2.0 : 0.0);\n"
+"  float dt = u.param.z;\n"
+"  float hole_y = (is_dark > 0.5) ? 0.0 : 1.0;\n"
 "  float2 c = u.box.xy, h = u.box.zw;\n"
 "  float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;\n"
 "  for (int iy = -1; iy <= 1; iy++) {\n"
@@ -1931,7 +1944,9 @@ MB_CORNER_SL
 "    for (int ix = -2; ix <= 2; ix++) {\n"
 "      float px = c.x + float(ix) * (h.x * 0.38);\n"
 "      float2 uv = clamp(float2(px, py) * u.map.xy + u.map.zw, u.uvc.xy, u.uvc.zw);\n"
-"      float y = mb_ink_luma(bd.sample(s, uv).rgb);\n"
+"      float4 smp = bd.sample(s, uv);\n"
+"      float a = is_through ? clamp(smp.a, 0.0, 1.0) : 1.0;\n"
+"      float y = mb_ink_luma(clamp(smp.rgb + float3((1.0 - a) * hole_y), 0.0, 1.0));\n"
 "      sum += y;\n"
 "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
 "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
@@ -1941,7 +1956,6 @@ MB_CORNER_SL
 "  uint sid = uint(u.param.w + 0.5);\n"
 "  float4 prev = prev_ad.read(uint2(sid, 0));\n"
 "  float prevT = mb_unpack16(prev.rg);\n"
-"  float is_dark = u.param.x, is_new = u.param.y, dt = u.param.z;\n"
 "  float latch, target;\n"
 "  if (is_dark > 1.5) {\n"
 "    target = 0.0;\n"
@@ -2807,6 +2821,7 @@ typedef struct {
   int sid;
   int is_new;
   int is_dark;
+  int through;
   int track_rb;
   float cx, cy, hx, hy;
   float tint_a;
@@ -2854,6 +2869,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       ni++;
     }
   }
+  int cur_through = (m && m->g.misc[1] > 0.5f) ? 1 : 0;
   int n_upd = 0;
   for (int k = 0; k < ni; k++) {
     int sid = -1;
@@ -2865,9 +2881,11 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
-        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f) {
+        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f ||
+            s->through != cur_through) {
           s->is_dark = items[k].is_dark;
           s->tint_a = items[k].tint_a;
+          s->through = cur_through;
           mode_changed = 1;
         }
         break;
@@ -2899,9 +2917,13 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
         w->ad_slots[sid] = (MBAdSlot){0};
         w->ad_slots[sid].active = 1;
         w->ad_slots[sid].is_dark = items[k].is_dark;
+        w->ad_slots[sid].through = cur_through;
         w->ad_slots[sid].tint_a = items[k].tint_a;
-      } else if (w->ad_slots[sid].is_dark != items[k].is_dark || fabsf(w->ad_slots[sid].tint_a - items[k].tint_a) > 0.002f) {
+      } else if (w->ad_slots[sid].is_dark != items[k].is_dark ||
+                 fabsf(w->ad_slots[sid].tint_a - items[k].tint_a) > 0.002f ||
+                 w->ad_slots[sid].through != cur_through) {
         w->ad_slots[sid].is_dark = items[k].is_dark;
+        w->ad_slots[sid].through = cur_through;
         w->ad_slots[sid].tint_a = items[k].tint_a;
         mode_changed = 1;
       }
@@ -2938,7 +2960,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = (AdPending){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy, s->tint_a};
+      out[n_upd++] = (AdPending){sid, is_new, s->is_dark, s->through, track_rb, s->cx, s->cy, s->hx, s->hy, s->tint_a};
     }
   }
   return n_upd;
@@ -3039,7 +3061,7 @@ static void ad_run_updates_batch(id<MTLCommandBuffer> cb, MBRenderWin *w, const 
     memcpy(u.uvc, items[i].uvc, sizeof u.uvc);
     u.box[0] = items[i].p.cx; u.box[1] = items[i].p.cy; u.box[2] = items[i].p.hx; u.box[3] = items[i].p.hy;
     u.param[0] = (items[i].p.is_dark > 0) ? (float)items[i].p.is_dark : -items[i].p.tint_a;
-    u.param[1] = (float)items[i].p.is_new;
+    u.param[1] = (float)items[i].p.is_new + (items[i].p.through ? 2.0f : 0.0f);
     u.param[2] = (float)dt;
     u.param[3] = (float)items[i].p.sid;
     [e setFragmentBytes:&u length:sizeof u atIndex:0];

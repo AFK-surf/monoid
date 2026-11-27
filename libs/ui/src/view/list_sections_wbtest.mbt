@@ -1623,3 +1623,150 @@ test "bring_section glide converges with zero overshoot across unmeasured variab
   let yr0 = section_drawn_y(tree, rows, "r/g3_0").unwrap()
   assert_true((yr0 - 90.0).abs() <= 0.5, msg="first row below h/G3 shifted: expected 90.0, got \{yr0}")
 }
+
+///|
+test "top_push / bot_push track outgoing straddling headers continuously (including collapsed sections) and stay quantized with section_clip_of at fractional top_edge" {
+  // Fractional top_edge (51.0 at rows_grid=1.5 -> 51.0 * 1.5 = 76.5 -> snaps to 77/1.5 = 51.3333pt)
+  let ks : Array[String] = [
+    "h/A", "r/a0", "r/a1",
+    "h/B", "r/b0",
+    "h/C", // collapsed (0 rows before h/D)
+    "h/D", "r/d0", "r/d1",
+    "h/E", "r/e0", "r/e1",
+    "h/F", "r/f0", "r/f1", "r/f2", "r/f3", "r/f4",
+  ]
+  let chrome_ref : Ref[SectionChrome[String]?] = Ref(None)
+  let scroll = Scroll::list()
+  let place : ListPlace[String] = ListPlace::new()
+  let rows : Map[String, View] = Map([])
+  place.set_sections(
+    fn(k) { k.has_prefix("h/") },
+    top_edge=fn() { 51.0 },
+    bottom_edge=fn() { 0.0 },
+    rows=fn() { (2, 2) },
+    chrome=fn(host, read) {
+      host.reacts(read, fn(c) { chrome_ref.val = Some(c) })
+    },
+  )
+  let tree = Tree::new(fn(root) {
+    root.width(Is(Some(300.0))).height(Is(Some(320.0))) |> ignore
+    root.scrolls_window(
+      scroll,
+      fn() { ks },
+      est=36.0,
+      place~,
+      fn(b, k) {
+        b.box(fn(l) {
+          let h = if k.has_prefix("h/") { 36.0 } else { 40.0 }
+          if k.has_prefix("h/") {
+            l.sticky_section() |> ignore
+          }
+          l.width(Is(Some(300.0))).height(Is(Some(h))).says(Is(Some(said(Group, label=k)))) |> ignore
+          rows[k] = l
+        })
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  tree.set_rows_grid(1.5)
+  tree.set_pixel_grid(1.5)
+  tree.frame(300.0, 320.0, now=0.0) |> ignore
+
+  // 1. Resting with h/A at slot 0 and h/B at slot 1 (not pushed past top_edge): top_push must be None across ALL
+  //    scroll positions including IEEE-754 half-tie values where ((x + 51.0) - x) * 1.5 differs from 51.0 * 1.5 = 76.5!
+  let rest_xs : Array[Double] = [49.0 / 1.5, 55.0 / 1.5, 32.6666667, 50.0, 50.1, 50.3]
+  let mut ri = 0
+  let mut t_ms = 16.0
+  while ri < rest_xs.length() {
+    scroll.put(rest_xs[ri])
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    assert_eq(
+      chrome_ref.val.unwrap().top_push,
+      None,
+      msg="resting slot-0 header at fractional top_edge (x=\{rest_xs[ri]}) must not report spurious top_push",
+    )
+    ri = ri + 1
+    t_ms = t_ms + 16.0
+  }
+  scroll.put(50.0)
+  tree.frame(300.0, 320.0, now=t_ms) |> ignore
+  t_ms = t_ms + 16.0
+  // section_clip_of top edge must match quantized drawn y of h/A to the exact pixel (77 / 1.5 = 51.3333pt)
+  let ya = section_drawn_y(tree, rows, "h/A").unwrap()
+  let clip = tree.section_clip_of(rows["h/A"].id()).unwrap()
+  assert_true((clip.1 - ya).abs() <= 1.0e-6, msg="section_clip_of top (\{clip.1}) must match quantized drawn y (\{ya})")
+
+  // 2. Scroll into push-out zone where h/C pushes h/B up and h/B pushes h/A above top_edge
+  let mut saw_top_push = false
+  let mut prev_by = 0.0
+  let mut sx = 50.0
+  while sx <= 140.0 {
+    scroll.put(sx)
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    match chrome_ref.val.unwrap().top_push {
+      Some((k, by)) if k == "h/A" => {
+        assert_true(by > 0.0 && by < 36.0, msg="top_push distance out of range: \{by}")
+        if saw_top_push {
+          assert_true(by >= prev_by - 1.0e-6, msg="top_push must increase monotonically while scrolling down: \{prev_by} -> \{by}")
+        }
+        saw_top_push = true
+        prev_by = by
+      }
+      _ => ()
+    }
+    sx = sx + 4.0
+    t_ms = t_ms + 16.0
+  }
+  assert_true(saw_top_push, msg="expected top_push to report h/A during push-out transition")
+
+  // 3. Scroll further so collapsed 0-row section h/C gets pushed past top_edge when h/E pushes h/D -> h/C
+  let mut saw_collapsed_push = false
+  sx = 200.0
+  while sx <= 280.0 {
+    scroll.put(sx)
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    match chrome_ref.val.unwrap().top_push {
+      Some((k, by)) if k == "h/C" && by > 0.0 => {
+        saw_collapsed_push = true
+        break
+      }
+      _ => ()
+    }
+    sx = sx + 4.0
+    t_ms = t_ms + 16.0
+  }
+  assert_true(saw_collapsed_push, msg="expected top_push to report collapsed 0-row section h/C as it pushes past top_edge")
+
+  // 4. Verify resting bottom slot reports bot_push == None across fractional scroll positions, and bottom push-out
+  //    reports bot_push continuously when bottom slot 1 (h/F) is pushed off bottom_edge by h/D -> h/E
+  let bot_rest_xs : Array[Double] = [40.0, 49.0 / 1.5, 55.0 / 1.5, 50.3]
+  let mut bri = 0
+  while bri < bot_rest_xs.length() {
+    scroll.put(bot_rest_xs[bri])
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    assert_eq(
+      chrome_ref.val.unwrap().bot_push,
+      None,
+      msg="resting bottom-stacked header at x=\{bot_rest_xs[bri]} must not report spurious bot_push",
+    )
+    bri = bri + 1
+    t_ms = t_ms + 16.0
+  }
+  let mut saw_bot_push = false
+  sx = 48.0
+  while sx >= 0.0 {
+    scroll.put(sx)
+    tree.frame(300.0, 320.0, now=t_ms) |> ignore
+    match chrome_ref.val.unwrap().bot_push {
+      Some((k, by)) if k == "h/F" && by > 0.0 && by < 36.0 => {
+        saw_bot_push = true
+        break
+      }
+      _ => ()
+    }
+    sx = sx - 4.0
+    t_ms = t_ms + 16.0
+  }
+  assert_true(saw_bot_push, msg="expected bot_push to report outgoing bottom-stacked heading h/F")
+}

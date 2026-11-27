@@ -32,7 +32,14 @@ fn hero_marked(whole : String, marks : Array[(String, @ui.Run)], scale? : Double
           None => break
           Some(j) => {
             let name = after.exact_view(end=j).to_owned()
-            match marks.iter().find_first(fn(m) { m.0 == name }) {
+            let mut matched_mark : (String, @ui.Run)? = None
+            for mi = 0; mi < marks.length(); mi = mi + 1 {
+              if marks[mi].0 == name {
+                matched_mark = Some(marks[mi])
+                break
+              }
+            }
+            match matched_mark {
               Some(m) => {
                 if i > 0 {
                   runs.push(@ui.span(rest.exact_view(end=i).to_owned(), scale~))

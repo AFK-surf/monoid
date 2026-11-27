@@ -26,6 +26,7 @@ pub struct ContextMenu {
   mut share_link : String
   mut share_words : String
   mut share_key : String
+  mut share_excerpt : (Array[String], (() -> Unit, () -> Unit)?)?
 }
 
 ///|
@@ -43,6 +44,7 @@ pub let context : ContextMenu = {
   share_link: "",
   share_words: "",
   share_key: "",
+  share_excerpt: None,
 }
 
 ///|
@@ -124,6 +126,7 @@ fn context_asked(x : Double, y : Double, words : String, link? : String = "", im
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = if words.trim(chars=" \n\t") != "" { @sfpages.excerpt_share_for_picked() } else { None }
   // (a message's turn offered by another right click, elsewhere, is not this one's)
   match @signals.untracked(fn() { @sfbase.share_offered.get() }) {
     Some((ox, oy, _, _, _, _)) if ox != x || oy != y => @sfbase.share_offered.set(None)
@@ -144,6 +147,7 @@ fn context_field_at(id : Int, x : Double, y : Double, can : Int) -> Unit {
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = None
   // (a message's turn offered elsewhere is not this one's)
   match @signals.untracked(fn() { @sfbase.share_offered.get() }) {
     Some((ox, oy, _, _, _, _)) if ox != x || oy != y => @sfbase.share_offered.set(None)
@@ -167,6 +171,9 @@ fn context_share_at(x : Double, y : Double, go : () -> Unit, link : String, word
     context.field = 0
     context.field_can = 0
     context.words = @ui.picked_words_at(x, y)
+    context.share_excerpt = if context.words.trim(chars=" \n\t") != "" { @sfpages.excerpt_share_for_picked() } else { None }
+  } else if context.share_excerpt is None && context.words.trim(chars=" \n\t") != "" {
+    context.share_excerpt = @sfpages.excerpt_share_for_picked()
   }
   context.share = Some(go)
   context.share_link = link
@@ -193,6 +200,7 @@ fn context_reset() -> Unit {
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = None
   context_menus.set([])
   context_menus_gone.clear()
   context_count.val = 0
@@ -336,6 +344,19 @@ fn context_menu_slots(v : @view.View, wid : Int) -> Unit {
 }
 
 ///|
+/// Whether the open context menu targets selected text on the right-clicked row (as opposed to right-clicking a
+/// different message while another message or group of messages has a text selection).
+fn context_is_selection() -> Bool {
+  if context.field != 0 || context.words.trim(chars=" \n\t") == "" {
+    return false
+  }
+  match (context.share, context.share_excerpt) {
+    (Some(_), Some((picked_keys, _))) => picked_keys.contains(context.share_key)
+    _ => true
+  }
+}
+
+///|
 /// What the menu holds as context says it now: a link's items, an image's, a field's editing (each as it can be done
 /// then) or the words picked's, a message's; a line between them. Each item, chosen, does its own as the menu has
 /// closed.
@@ -364,6 +385,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
     let image = context.image
     item("desktop.contextMenu.copyImage", "copy", fn() { context_copying.set(image) }, false)
   }
+  let has_selection = context_is_selection()
   if context.field != 0 {
     let (field, can) = (context.field, context.field_can)
     group()
@@ -376,32 +398,51 @@ fn context_items() -> Array[@sf.MenuItem?] {
       let what = x.0
       item(x.1, x.2, fn() { @ui.field_edit_now(field, what) }, (can & what) == 0)
     }
-  } else if context.words.trim(chars=" \n\t") != "" {
+  } else if has_selection {
+    // When message text is selected on the right-clicked row, show only the focused selection actions
+    // (引用 / 复制 / 分享为图片) without mixing whole-message actions (复制消息 / 复制消息链接 / 多选) underneath.
     group()
     let words = context.words
-    item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
-  }
-  match context.share {
-    Some(go) => {
-      group()
-      let (words, link) = (context.share_words, context.share_link)
-      if words.trim(chars=" \n\t") != "" {
-        item("web-main.chat.copyMessage", "copy", fn() { @sfbase.copy_out(words, said=@sf.t("common.copied")) }, false)
+    match context.share_excerpt {
+      Some((_, Some((go_quote, go_excerpt)))) => {
+        item("web-main.chat.quote", "quote", go_quote, false)
+        item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
+        item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
       }
-      if link != "" {
-        item("web-main.chat.copyMessageLink", "link", fn() { @sfbase.copy_out(link, said=@sf.t("common.link.copied")) }, false)
-      }
-      item("web-main.chat.selectMessages", "check-circle", go, false)
+      _ => item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
     }
-    None => ()
+  }
+  if !has_selection {
+    match context.share {
+      Some(go) => {
+        group()
+        let (words, link) = (context.share_words, context.share_link)
+        if words.trim(chars=" \n\t") != "" {
+          item("web-main.chat.copyMessage", "copy", fn() { @sfbase.copy_out(words, said=@sf.t("common.copied")) }, false)
+        }
+        if link != "" {
+          item("web-main.chat.copyMessageLink", "link", fn() { @sfbase.copy_out(link, said=@sf.t("common.link.copied")) }, false)
+        }
+        item("web-main.chat.selectMessages", "check-circle", go, false)
+      }
+      None => ()
+    }
   }
   items
 }
 
 ///|
-/// The message the menu is open for told (sfbase's message_menu): its row lit while it is, none once it is gone.
+/// The message the menu is open for told (sfbase's message_menu): its row lit while a whole-message menu is open
+/// (not while a focused text-selection menu is open), none once it is gone.
 fn context_lit() -> Unit {
-  @sfbase.message_menu.set(if context.open && context.share is Some(_) { context.share_key } else { "" })
+  @sfpages.context_menu_window.set(if context.open { Some(context.window) } else { None })
+  @sfbase.message_menu.set(
+    if context.open && context.share is Some(_) && !context_is_selection() {
+      context.share_key
+    } else {
+      ""
+    },
+  )
 }
 
 ///|

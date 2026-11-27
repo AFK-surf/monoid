@@ -137,8 +137,7 @@ pub fn[P] nav_flat_view(
       // (its kept left this node's: let go with it, what it put by let go by the each below, each left for good)
       s.owns(fn() {
         nav.keeps_left = None
-        nav.kept_left.clear()
-        nav.kept_left.shrink_to_fit()
+        nav.kept_left = []
       })
       |> ignore
     }
@@ -147,8 +146,7 @@ pub fn[P] nav_flat_view(
       // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
       s.owns(fn() {
         nav.shelves = None
-        nav.shelf.clear()
-        nav.shelf.shrink_to_fit()
+        nav.shelf = []
       })
       |> ignore
     }
@@ -165,7 +163,7 @@ pub fn[P] nav_flat_view(
       }
     }))
     s.owns(fn() {
-      match nav_views.search_by(fn(e) { e.0 == k }) {
+      match arr_search_by(nav_views, fn(e) { e.0 == k }) {
         Some(i) => nav_views.remove(i) |> ignore
         None => ()
       }
@@ -253,7 +251,7 @@ pub fn[P] nav_flat_view(
         held.contains(e.serial) && !(nav.flat_kept_entry() is Some(kept) && kept.serial == e.serial)
       })
       for e in keep {
-        match nav.gone.search_by(fn(g) { g.serial == e.serial }) {
+        match arr_search_by(nav.gone, fn(g) { g.serial == e.serial }) {
           Some(i) => {
             nav.gone.remove(i) |> ignore
             if !nav.try_park_left(e) {
@@ -269,7 +267,7 @@ pub fn[P] nav_flat_view(
         !held.contains(e.serial) && !(nav.flat_kept_entry() is Some(kept) && kept.serial == e.serial)
       })
       for e in free {
-        match nav.gone.search_by(fn(g) { g.serial == e.serial }) {
+        match arr_search_by(nav.gone, fn(g) { g.serial == e.serial }) {
           Some(i) => nav.gone.remove(i) |> ignore
           None => ()
         }
@@ -378,7 +376,7 @@ pub fn[P] nav_flat_view(
             (nav.leaving is Some(e) && e.serial == k) ||
             (nav.flat_kept_entry() is Some(e) && e.serial == k)
           if !here {
-            match nav.gone.search_by(fn(e) { e.serial == k }) {
+            match arr_search_by(nav.gone, fn(e) { e.serial == k }) {
               Some(i) => nav.gone.remove(i) |> ignore
               None => ()
             }

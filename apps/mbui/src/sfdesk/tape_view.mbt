@@ -1049,8 +1049,9 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
         r.under,
       )
     }))
-    // moved as a whole, as far as the tape has got: nothing in it laid out again as it moves
-    .offset(By(fn() {
+    // moved as a whole, as far as the tape has got: nothing in it laid out again as it moves; snapped to whole device
+    // pixels so dragging or sliding the 3-pane tape keeps retained rows on the fast path without glyph re-phasing
+    .offset_snapped(By(fn() {
       let r = tape_room_now()
       let x = tape_x_at(r, tape_drawn_at(row))
       native_floating_schedule()

@@ -206,7 +206,7 @@ fn ptr_hourglass(cx : Double, cy : Double, k : Double) -> Array[Array[Double]] {
 ///|
 /// A dark shape with the white round it, and dark lines over it (dp).
 fn ptr_dark(subs : Array[Array[Double]], lines? : Array[Array[Double]] = []) -> Array[(PointerCover, Int64)] {
-  let out = [(Around(subs, pointer_halo), pointer_white), (Fill(subs), pointer_edge)]
+  let out = [(Around(subs, pointer_halo), pointer_white), (PointerCover::Fill(subs), pointer_edge)]
   if !lines.is_empty() {
     out.push((Lines(lines, false, 0.55), pointer_edge))
   }

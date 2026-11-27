@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import { Deferred, Effect } from "effect";
 import { apply as applyOps, type Op } from "../src/delta.ts";
 import { STORAGE_KEY } from "../src/accounts.ts";
-import { AuthGenTracker } from "../src/auth-gen.ts";
+import { AuthCapability, AuthGenTracker } from "../src/auth-gen.ts";
 import { Core, syncWorkspaceAuth } from "../src/core.ts";
 import { DEVICE_TABLES } from "../src/data.ts";
 import { HostError } from "../src/host.ts";
@@ -1302,5 +1302,266 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     assert.equal(recoveredAfterUpgrade?.ok?.locked, undefined);
 
     await core.close();
+  });
+
+  it("Direction 2A: AuthCapability / WorkspaceCapability / VaultCapability / CompositeCapability enforce generation, vault isolation, owner binding, and guarded egress/commits", async () => {
+    const tracker = new AuthGenTracker();
+    let owner = "acct-a";
+
+    // 1. WorkspaceCapability without trackVaultGlobal (ADB semantics): unaffected by vault.lock, invalidated by workspace bump or owner switch
+    const adbCap = tracker.workspaceCapability("wsA", { sub: "acct-a", resolveOwner: () => owner });
+    assert.equal(adbCap.isValid(), true);
+    let committed = 0;
+    assert.equal(adbCap.commit(() => ++committed), 1);
+
+    // vault.lock does NOT invalidate ADB WorkspaceCapability, but DOES invalidate vaultWorkspaceCapability
+    const vaultWsCap = tracker.vaultWorkspaceCapability("wsA");
+    const v1Cap = tracker.vaultCapability("wsA", "v1");
+    const v2Cap = tracker.vaultCapability("wsA", "v2");
+    tracker.bumpVault("wsA", "v1");
+    assert.equal(adbCap.isValid(), true, "single-vault bump must not invalidate ADB WorkspaceCapability");
+    assert.equal(vaultWsCap.isValid(), true, "single-vault bump must not invalidate vaultGlobal-only WorkspaceCapability");
+    assert.equal(v1Cap.isValid(), false, "single-vault bump must invalidate v1 VaultCapability");
+    assert.equal(v2Cap.isValid(), true, "single-vault bump must NOT invalidate v2 VaultCapability");
+
+    // Guarded egress sink refuses stale v1Cap without invoking the inner effect
+    let egressCalls = 0;
+    const v1Res = await Effect.runPromise(
+      Effect.result(v1Cap.ask(() => Effect.sync(() => ++egressCalls))),
+    );
+    assert.equal(v1Res._tag, "Failure");
+    assert.equal(v1Res.failure.code, "auth_stale");
+    assert.equal(egressCalls, 0, "stale capability must block egress before running effect");
+    assert.equal(v1Cap.commit(() => ++committed), undefined, "stale capability must block commit");
+
+    // v2Cap still succeeds
+    const v2Res = await Effect.runPromise(v2Cap.guard(Effect.sync(() => ++egressCalls)));
+    assert.equal(v2Res, 1);
+
+    // 2. AuthCapability snapshot anchoring: narrowVault / workspace derived AFTER an intermediate bump stay anchored to entry snapshot
+    const entryCap = tracker.capture();
+    const compositeCap = AuthCapability.all(
+      entryCap.workspace("wsB", { trackVaultGlobal: true }),
+      entryCap.vault("wsA", "v2"),
+    );
+    assert.equal(compositeCap.isValid(), true);
+    tracker.bumpVault("wsA", "v2");
+    assert.equal(compositeCap.isValid(), false, "CompositeCapability must invalidate when source vault bumps");
+    assert.equal(
+      entryCap.vault("wsA", "v2").isValid(),
+      false,
+      "VaultCapability derived from entry AuthCapability must stay anchored to entry snapshot",
+    );
+
+    // 3. vault.lock invalidates vaultWorkspaceCapability but NOT ADB WorkspaceCapability
+    tracker.bumpAllVaults();
+    assert.equal(vaultWsCap.isValid(), false, "bumpAllVaults must invalidate vaultWorkspaceCapability");
+    assert.equal(adbCap.isValid(), true, "bumpAllVaults must NOT invalidate ADB WorkspaceCapability");
+
+    // 4. Owner switch invalidates owner-bound WorkspaceCapability immediately even without wsAuthGen bump
+    owner = "acct-b";
+    assert.equal(adbCap.isValid(), false, "owner switch must invalidate owner-bound WorkspaceCapability");
+    const ownerFail = await Effect.runPromise(Effect.result(adbCap.assertValid()));
+    assert.equal(ownerFail._tag, "Failure");
+    assert.equal(ownerFail.failure.code, "auth_stale");
+
+    // 5. Opus P2: workspaceCapability().narrowVault() stays anchored to entry snapshot even if vault bumps after capture
+    const wsCapEntry = tracker.vaultWorkspaceCapability("ws-anchor");
+    tracker.bumpVault("ws-anchor", "v-late");
+    const narrowedLate = wsCapEntry.narrowVault("v-late");
+    assert.equal(
+      narrowedLate.isValid(),
+      false,
+      "narrowVault() derived from workspaceCapability() must anchor to entry snapshot, not post-bump current gen",
+    );
+    // And AuthCapability does NOT expose guard/commit directly (must narrow to workspace/vault/all)
+    assert.equal("guard" in entryCap, false, "AuthCapability must not expose guard() directly");
+    assert.equal("commit" in entryCap, false, "AuthCapability must not expose commit() directly");
+  });
+
+  it("Direction 2A P1-2/P1-3/P1-4: HostWire transport guard blocks stale send before fetch, and stale ACK commit is suppressed", async () => {
+    const tracker = new AuthGenTracker();
+    const { HostWire } = await import("../src/station/wire.ts");
+    const { StationAddr } = await import("../src/station/addr.ts");
+
+    let fetchCalls = 0;
+    const host = new FakeHost();
+    host.fetch = () =>
+      Effect.sync(() => {
+        fetchCalls++;
+        return { status: 200, headers: [], body: new TextEncoder().encode("{}") };
+      });
+    const wire = new HostWire(host);
+    const addr = new StationAddr("ws-wire", "st-1");
+    const head = { method: "PUT", path: "/vault/items", headers: [] as [string, string][] };
+
+    // 1. P1-3: guard returns false before send -> HostWire aborts with auth_stale and 0 fetch calls
+    const cap = tracker.vaultCapability("ws-wire", "v1");
+    tracker.bumpVault("ws-wire", "v1");
+    const staleRes = await Effect.runPromise(
+      Effect.scoped(Effect.result(wire.request(addr, head, new Uint8Array(), undefined, () => cap.isValid()))),
+    );
+    assert.equal(staleRes._tag, "Failure");
+    assert.equal(staleRes.failure.code, "auth_stale");
+    assert.equal(fetchCalls, 0, "transport-level guard must abort with auth_stale before calling host.fetch");
+
+    // 2. P1-4: ACK arrives after auth boundary -> cap.commit suppresses local write-back cleanly
+    const cap2 = tracker.vaultCapability("ws-wire", "v2");
+    let localWrites = 0;
+    const okRes = await Effect.runPromise(
+      Effect.scoped(wire.request(addr, head, new Uint8Array(), undefined, () => cap2.isValid())),
+    );
+    assert.equal(okRes.status, 200);
+    assert.equal(fetchCalls, 1);
+    // Boundary fires while awaiting ACK
+    tracker.bumpVault("ws-wire", "v2");
+    const committed = cap2.commit(() => {
+      localWrites++;
+      return true;
+    });
+    assert.equal(committed, undefined, "post-ACK commit must be suppressed once capability is stale");
+    assert.equal(localWrites, 0, "stale ACK must never mutate local cache");
+
+    // 3. P1-3: Requests.call forwards guard to StationWire.request so invalidation while waiting for a link aborts with auth_stale and 0 sends
+    const { CoreError } = await import("../src/error.ts");
+    const cap3 = tracker.vaultCapability("ws-wire", "v3");
+    let wireSent = 0;
+    const enteredWait = Deferred.makeUnsafe<void>();
+    const waitGate = Deferred.makeUnsafe<void>();
+    const fakeWire = {
+      request: (_station: InstanceType<typeof StationAddr>, _head: { method: string; path: string; headers: [string, string][] }, _body: Uint8Array, _onProgress?: unknown, guard?: () => boolean) =>
+        Effect.gen(function* () {
+          if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
+          yield* Deferred.succeed(enteredWait, undefined);
+          yield* Deferred.await(waitGate);
+          if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "stale"));
+          wireSent++;
+          return { status: 200, headers: [] as [string, string][], body: { take: Effect.succeed(null) }, via: null };
+        }),
+    };
+    const hostWire = new FakeHost();
+    const coreWire = await Core.create(hostWire, { clock: hostWire.time.clock, wire: () => fakeWire, iroh: null });
+    try {
+      const pending = Effect.runPromise(Effect.result(coreWire.inner.stations.requests.call(addr, "PUT", "/vault/items", {}, { guard: () => cap3.isValid() })));
+      await Effect.runPromise(Deferred.await(enteredWait));
+      tracker.bumpVault("ws-wire", "v3");
+      Effect.runSync(Deferred.succeed(waitGate, undefined));
+      const waitRes = await pending;
+      assert.equal(waitRes._tag, "Failure");
+      assert.equal(waitRes.failure.code, "auth_stale");
+      assert.equal(wireSent, 0, "invalidation while waiting for link must abort before sending");
+    } finally {
+      await coreWire.close();
+    }
+
+    // 4. R3 P1-1: Real Link.#open re-checks guard AFTER conn.openBi() resolves and resets stream with 0 writes
+    const { Link } = await import("../src/mesh.ts");
+    const makePendingLinkCase = async (kind: "request" | "ask") => {
+      const capOpen = tracker.vaultCapability("ws-wire", `v-open-${kind}`);
+      const enteredOpenBi = Deferred.makeUnsafe<void>();
+      const releaseOpenBi = Deferred.makeUnsafe<void>();
+      let writeCalls = 0;
+      let resetCalls = 0;
+      const fakeStream = {
+        write: () => Effect.sync(() => { writeCalls++; }),
+        finish: () => Effect.void,
+        read: () => Effect.succeed(null),
+        reset: () => { resetCalls++; },
+      };
+      const fakeConn = {
+        openBi: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(enteredOpenBi, undefined);
+            yield* Deferred.await(releaseOpenBi);
+            return fakeStream;
+          }),
+        acceptBi: () => Effect.succeed(null),
+        paths: () => [],
+        stats: () => ({ rxBytes: 0, txBytes: 0 }),
+        closeReason: () => null,
+        close: () => {},
+      };
+      const fakeControl = {} as never;
+      const fakeCreds = { credential: () => Effect.succeed("cred") } as never;
+      const link = new Link(fakeConn as never, fakeControl, "cred", fakeCreds, null);
+      const pendingCall = Effect.runPromise(
+        Effect.result(
+          kind === "request"
+            ? link.request(head, new Uint8Array([1, 2, 3]), undefined, () => capOpen.isValid())
+            : link.ask(head, { adb: { op: "revoke" } }, () => capOpen.isValid()),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(enteredOpenBi));
+      tracker.bumpVault("ws-wire", `v-open-${kind}`);
+      Effect.runSync(Deferred.succeed(releaseOpenBi, undefined));
+      const res = await pendingCall;
+      assert.equal(res._tag, "Failure", `Link.${kind} must fail when invalidated during openBi()`);
+      assert.equal(res.failure.code, "auth_stale", `Link.${kind} must fail with auth_stale`);
+      assert.equal(writeCalls, 0, `Link.${kind} must write 0 bytes after openBi() when guard is stale`);
+      assert.equal(resetCalls, 1, `Link.${kind} must reset the opened stream immediately when guard is stale`);
+    };
+    await makePendingLinkCase("request");
+    await makePendingLinkCase("ask");
+
+    // 5. R4 P1-1: Link.#open re-checks guard between head write and body write (0 body bytes written)
+    //    AND between BODY_STEP chunks (2nd chunk never written)
+    const { BODY_STEP } = await import("../src/mesh.ts");
+    const runWriteSuspendCase = async (mode: "head-to-body" | "chunked") => {
+      const capW = tracker.vaultCapability("ws-wire", `v-write-${mode}`);
+      const enteredWrite = Deferred.makeUnsafe<void>();
+      const releaseWrite = Deferred.makeUnsafe<void>();
+      const writes: Uint8Array[] = [];
+      let resetCalls = 0;
+      const suspendOnCall = mode === "head-to-body" ? 1 : 2; // 1=head, 2=first body chunk
+      const fakeStream = {
+        write: (bytes: Uint8Array) =>
+          Effect.gen(function* () {
+            writes.push(bytes.slice());
+            if (writes.length === suspendOnCall) {
+              yield* Deferred.succeed(enteredWrite, undefined);
+              yield* Deferred.await(releaseWrite);
+            }
+          }),
+        finish: () => Effect.void,
+        read: () => Effect.succeed(null),
+        reset: () => { resetCalls++; },
+      };
+      const fakeConn = {
+        openBi: () => Effect.succeed(fakeStream),
+        acceptBi: () => Effect.succeed(null),
+        paths: () => [],
+        stats: () => ({ rxBytes: 0, txBytes: 0 }),
+        closeReason: () => null,
+        close: () => {},
+      };
+      const link = new Link(fakeConn as never, {} as never, "cred", { credential: () => Effect.succeed("cred") } as never, null);
+      const payload = mode === "head-to-body" ? new Uint8Array([9, 8, 7, 6]) : new Uint8Array(BODY_STEP + 16).fill(42);
+      const wroteProgress: number[] = [];
+      const pendingCall = Effect.runPromise(
+        Effect.result(
+          link.request(
+            head,
+            payload,
+            mode === "chunked" ? (n) => wroteProgress.push(n) : undefined,
+            () => capW.isValid(),
+          ),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(enteredWrite));
+      tracker.bumpVault("ws-wire", `v-write-${mode}`);
+      Effect.runSync(Deferred.succeed(releaseWrite, undefined));
+      const res = await pendingCall;
+      assert.equal(res._tag, "Failure", `${mode}: must fail when capability revoked mid-write`);
+      assert.equal(res.failure.code, "auth_stale", `${mode}: must fail with auth_stale`);
+      assert.equal(resetCalls, 1, `${mode}: must reset stream immediately`);
+      if (mode === "head-to-body") {
+        assert.equal(writes.length, 1, "head-to-body: stream.write must be called only once (0 body bytes written)");
+      } else {
+        assert.equal(writes.length, 2, "chunked: 2nd body chunk must never be written after revocation");
+        assert.deepEqual(wroteProgress, [BODY_STEP], "chunked: only 1st chunk progress recorded");
+      }
+    };
+    await runWriteSuspendCase("head-to-body");
+    await runWriteSuspendCase("chunked");
   });
 });

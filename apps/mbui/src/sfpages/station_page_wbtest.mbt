@@ -1728,3 +1728,236 @@ test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, dele
     assert_eq(t_ro.audit(), [], msg="ro audit: \{w}")
   }
 }
+
+///|
+test "unprotected blocked station shows full-screen security-mode guidance, adapts by role/signing, switches reactively, and keeps online unprotected unchanged" {
+  // 1. Signing owner on blocked unprotected station: full-screen guidance across sizes, scales, and zh/en
+  for (w, platform) in [(1280.0, 0), (390.0, 2)] {
+    let calls : Array[(String, Json)] = []
+    let t = setting_tester(
+      Station("ws1/st1"),
+      w,
+      platform~,
+      mode="settings-station-unprotected-blocked",
+      h=900.0,
+      over=fn(s) {
+        {
+          ..s,
+          call: fn(name, params, done) {
+            calls.push((name, params))
+            (s.call)(name, params, done)
+          },
+        }
+      },
+    )
+    t.run_for(@ui.move_most_ms)
+    for lang in ["zh", "en"] {
+      @sf.set_language(Some(lang))
+      for scale in [1.0, 1.3] {
+        t.set_font_scale(scale)
+        t.run_for(@ui.move_most_ms)
+        let at = "\{w} p=\{platform} \{lang} scale=\{scale}"
+        assert_true(t.find(@sf.t("web-pages.stations.unprotected.title")) is Some(_), msg="title: \{at}")
+        assert_true(t.find(@sf.t("web-pages.security.joinShort")) is Some(_), msg="join button: \{at}")
+        assert_true(t.find(@sf.t("web-pages.stations.unprotected.toSecurity")) is Some(_), msg="toSecurity button: \{at}")
+        assert_true(t.find("无法连接") is None, msg="no generic offline warning: \{at}")
+        assert_true(t.find("连接诊断") is None, msg="no diag card: \{at}")
+        assert_true(t.find("概览") is None && t.find("进程") is None, msg="no station tabs: \{at}")
+        assert_true(t.query(Button, label=@sf.t("common.more")) is Some(_), msg="manager keeps ⋯ menu: \{at}")
+        assert_eq(t.audit(), [], msg="audit: \{at} " + t.audit().join("; "))
+      }
+    }
+    @sf.set_language(None)
+    t.set_font_scale(1.0)
+    t.draw()
+
+    // Clicking 加入安全模式 opens confirmation dialog and triggers lock.joinStation
+    t.click(Button, label=@sf.t("web-pages.security.joinShort"))
+    presented_in(t)
+    let confirm_btns = t.all(Button, label=@sf.t("web-pages.security.join"))
+    assert_true(confirm_btns.length() > 0, msg="join confirmation dialog opened: \{w}")
+    let (cx, cy, cw, ch) = confirm_btns[confirm_btns.length() - 1].rect
+    t.tap(cx + cw / 2.0, cy + ch / 2.0)
+    presented_in(t)
+    assert_true(calls.iter().any(fn(c) { c.0 == "lock.joinStation" && text(Some(c.1), "station") == "st1" }), msg="lock.joinStation called: \{w}")
+
+    // Clicking 前往设置 › 安全 navigates to Security
+    t.click(Button, label=@sf.t("web-pages.stations.unprotected.toSecurity"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(Security), msg="navigated to Security: \{w}")
+  }
+
+  // 2. Non-signing owner sees leadOwnerDevice + 前往设置 › 安全 (no 加入安全模式), keeps ⋯
+  for (w, platform) in [(1280.0, 0), (390.0, 2)] {
+    let t = setting_tester(
+      Station("ws1/st1"),
+      w,
+      platform~,
+      mode="settings-station-unprotected-blocked",
+      h=900.0,
+      over=fn(s) {
+        {
+          ..s,
+          topic_read: fn(name, params) {
+            let r = (s.topic_read)(name, params)
+            if name == "station" {
+              match r.value {
+                Some(Object(m)) => {
+                  let copy = m.copy()
+                  copy["protect"] = Json::boolean(false)
+                  { ..r, value: Some(Json::object(copy)) }
+                }
+                _ => r
+              }
+            } else {
+              r
+            }
+          },
+        }
+      },
+    )
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("受信任客户端设备") is Some(_), msg="leadOwnerDevice shown: \{w}")
+    assert_true(t.query(Button, label=@sf.t("web-pages.security.joinShort")) is None, msg="no join button: \{w}")
+    assert_true(t.find(@sf.t("web-pages.stations.unprotected.toSecurity")) is Some(_), msg="toSecurity shown: \{w}")
+    assert_true(t.query(Button, label=@sf.t("common.more")) is Some(_), msg="owner keeps ⋯: \{w}")
+    assert_eq(t.audit(), [], msg="non-signing owner audit: \{w} " + t.audit().join("; "))
+    t.click(Button, label=@sf.t("web-pages.stations.unprotected.toSecurity"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(Security), msg="non-signing owner toSecurity navigates to Security: \{w}")
+  }
+
+  // 3. Plain member sees leadMember + 前往设置 › 安全 (no 加入安全模式, no ⋯)
+  for (w, platform) in [(1280.0, 0), (390.0, 2)] {
+    let t = setting_tester(
+      Station("ws1/st1"),
+      w,
+      platform~,
+      mode="settings-station-unprotected-blocked",
+      h=900.0,
+      over=fn(s) {
+        {
+          ..s,
+          topic_read: fn(name, params) {
+            let r = (s.topic_read)(name, params)
+            if name == "station" {
+              match r.value {
+                Some(Object(m)) => {
+                  let copy = m.copy()
+                  copy["protect"] = Json::boolean(false)
+                  { ..r, value: Some(Json::object(copy)) }
+                }
+                _ => r
+              }
+            } else if name == "workspace" {
+              match r.value {
+                Some(Object(m)) => {
+                  let copy = m.copy()
+                  copy["role"] = Json::string("member")
+                  { ..r, value: Some(Json::object(copy)) }
+                }
+                _ => r
+              }
+            } else {
+              r
+            }
+          },
+        }
+      },
+    )
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("请联系 workspace 的 owner") is Some(_), msg="leadMember shown: \{w}")
+    assert_true(t.query(Button, label=@sf.t("web-pages.security.joinShort")) is None, msg="member sees no join button: \{w}")
+    assert_true(t.find(@sf.t("web-pages.stations.unprotected.toSecurity")) is Some(_), msg="member sees toSecurity: \{w}")
+    assert_true(t.query(Button, label=@sf.t("common.more")) is None, msg="member sees no ⋯: \{w}")
+    assert_eq(t.audit(), [], msg="member audit: \{w} " + t.audit().join("; "))
+    t.click(Button, label=@sf.t("web-pages.stations.unprotected.toSecurity"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(Security), msg="member toSecurity navigates to Security: \{w}")
+  }
+
+  // 4. Reactive transition: unprotected + offline -> protected + online seamlessly restores normal station page
+  let restored : @signals.Signal[Bool] = @signals.signal(false)
+  let t_react = setting_tester(
+    Station("ws1/st1"),
+    1280.0,
+    platform=0,
+    mode="settings-station-unprotected-blocked",
+    h=900.0,
+    over=fn(s) {
+      {
+        ..s,
+        topic_read: fn(name, params) {
+          let r = (s.topic_read)(name, params)
+          if name == "station" {
+            if !restored.get() {
+              return r
+            }
+            match r.value {
+              Some(Object(m)) => {
+                let copy = m.copy()
+                copy["online"] = Json::boolean(true)
+                copy["unprotected"] = Json::boolean(false)
+                copy["protect"] = Json::boolean(false)
+                copy["problems"] = Json::array([])
+                { ..r, value: Some(Json::object(copy)), version: r.version + 1 }
+              }
+              _ => r
+            }
+          } else {
+            r
+          }
+        },
+      }
+    },
+  )
+  t_react.run_for(@ui.move_most_ms)
+  assert_true(t_react.find(@sf.t("web-pages.stations.unprotected.title")) is Some(_), msg="starts on guidance page")
+  assert_true(t_react.find("概览") is None, msg="tabs hidden while blocked")
+  restored.set(true)
+  t_react.run_for(@ui.move_most_ms)
+  assert_true(t_react.find(@sf.t("web-pages.stations.unprotected.title")) is None, msg="guidance page gone once protected+online")
+  assert_true(t_react.find("概览") is Some(_), msg="normal station tabs restored")
+  assert_eq(t_react.audit(), [], msg="reactive restored audit: " + t_react.audit().join("; "))
+
+  // 5. Online unprotected station (settings-station-unprotected) keeps normal page + header 加入安全模式 button
+  let t_online = setting_tester(Station("ws1/st1"), 1280.0, platform=0, mode="settings-station-unprotected", h=900.0)
+  t_online.run_for(@ui.move_most_ms)
+  assert_true(t_online.find(@sf.t("web-pages.stations.unprotected.title")) is None, msg="online unprotected does not show full-screen guidance")
+  assert_true(t_online.find("概览") is Some(_), msg="online unprotected keeps normal station page")
+  assert_true(t_online.find(@sf.t("web-pages.security.joinShort")) is Some(_), msg="online unprotected keeps 加入安全模式 button")
+
+  // 6. Plain offline unprotected station (online=false, unprotected=true, protect=true, blocked="") keeps normal page (with 概览 and header 加入安全模式)
+  let t_plain_off = setting_tester(
+    Station("ws1/st1"),
+    1280.0,
+    platform=0,
+    mode="settings-station-unprotected-blocked",
+    h=900.0,
+    over=fn(s) {
+      {
+        ..s,
+        topic_read: fn(name, params) {
+          let r = (s.topic_read)(name, params)
+          if name == "station" {
+            match r.value {
+              Some(Object(m)) => {
+                let copy = m.copy()
+                copy["blocked"] = Json::string("")
+                { ..r, value: Some(Json::object(copy)) }
+              }
+              _ => r
+            }
+          } else {
+            r
+          }
+        },
+      }
+    },
+  )
+  t_plain_off.run_for(@ui.move_most_ms)
+  assert_true(t_plain_off.find(@sf.t("web-pages.stations.unprotected.title")) is None, msg="plain offline unprotected stays on normal page")
+  assert_true(t_plain_off.find("概览") is Some(_), msg="plain offline unprotected keeps tabs")
+  assert_true(t_plain_off.query(Button, label=@sf.t("web-pages.security.joinShort")) is Some(_), msg="plain offline unprotected keeps header 加入安全模式 button")
+  assert_eq(t_plain_off.audit(), [], msg="plain offline unprotected audit: " + t_plain_off.audit().join("; "))
+}

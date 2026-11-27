@@ -214,14 +214,20 @@ export function parseLook(payload: Buffer, own: { maxWidth: number; maxHeight: n
 
 /// Frames from a stream, after what came with its head line.
 export class FrameIn {
-  #carry: Buffer;
   readonly #stream: Stream;
   readonly #limit: (kind: number) => number;
+  readonly #header = Buffer.alloc(5);
+  #headerBytes = 0;
+  #bodyLen = 0;
+  #bodyLeft = 0;
+  readonly #bodyParts: Buffer[] = [];
+  #tail: Buffer;
+  #tailAt = 0;
   /// `limit`: the largest frame taken, or by its kind (the station takes a client's input frames and its clipboard;
   /// a client reads video frames).
   constructor(stream: Stream, carry: Buffer = Buffer.alloc(0), limit: number | ((kind: number) => number) = limitIn) {
     this.#stream = stream;
-    this.#carry = carry;
+    this.#tail = carry;
     this.#limit = typeof limit === "number" ? () => limit : limit;
   }
 
@@ -229,22 +235,62 @@ export class FrameIn {
   /// larger than its limit.
   async next(): Promise<{ kind: number; payload: Buffer } | null> {
     for (;;) {
-      if (this.#carry.length >= 5) {
-        const length = this.#carry.readUInt32BE(1);
-        if (length > this.#limit(this.#carry[0]!)) throw new Error("screen frame too large");
-        if (this.#carry.length >= 5 + length) {
-          const kind = this.#carry[0]!;
-          const payload = this.#carry.subarray(5, 5 + length);
-          this.#carry = this.#carry.subarray(5 + length);
-          return { kind, payload };
+      if (this.#tailAt < this.#tail.length) {
+        if (this.#headerBytes < this.#header.length) {
+          const got = this.#tail.copy(this.#header, this.#headerBytes, this.#tailAt);
+          this.#headerBytes += got;
+          this.#tailAt += got;
+          if (this.#headerBytes < this.#header.length) {
+            this.#tail = Buffer.alloc(0);
+            this.#tailAt = 0;
+            continue;
+          }
+          this.#bodyLen = this.#header.readUInt32BE(1);
+          if (this.#bodyLen > this.#limit(this.#header[0]!)) throw new Error("screen frame too large");
+          this.#bodyLeft = this.#bodyLen;
         }
+        let payload: Buffer | null = null;
+        if (this.#bodyLeft === 0) {
+          payload = this.#bodyParts.length > 0 ? Buffer.concat(this.#bodyParts, this.#bodyLen) : Buffer.alloc(0);
+        } else {
+          // Join multi-chunk frames once when the final piece arrives.
+          const part = this.#tail.subarray(this.#tailAt, this.#tailAt + this.#bodyLeft);
+          this.#tailAt += part.length;
+          this.#bodyLeft -= part.length;
+          if (this.#bodyLeft === 0) {
+            if (this.#bodyParts.length > 0) {
+              this.#bodyParts.push(part);
+              payload = Buffer.concat(this.#bodyParts, this.#bodyLen);
+            } else {
+              payload = part;
+            }
+          } else if (part.length > 0) {
+            this.#bodyParts.push(part);
+          }
+        }
+        if (this.#tailAt >= this.#tail.length) {
+          this.#tail = Buffer.alloc(0);
+          this.#tailAt = 0;
+        }
+        if (payload !== null) {
+          this.#bodyParts.length = 0;
+          this.#headerBytes = 0;
+          return { kind: this.#header[0]!, payload };
+        }
+      }
+      if (this.#headerBytes === this.#header.length && this.#bodyLeft === 0) {
+        this.#bodyParts.length = 0;
+        this.#headerBytes = 0;
+        return { kind: this.#header[0]!, payload: Buffer.alloc(0) };
       }
       const more = await this.#stream.read();
       if (more === null) {
-        if (this.#carry.length === 0) return null;
+        if (this.#headerBytes === 0) return null;
         throw new Error("stream ended inside a screen frame");
       }
-      this.#carry = this.#carry.length === 0 ? more : Buffer.concat([this.#carry, more]);
+      if (more.length === 0) continue;
+      this.#tail = more;
+      this.#tailAt = 0;
     }
   }
 }

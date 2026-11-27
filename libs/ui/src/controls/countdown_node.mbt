@@ -12,7 +12,7 @@ pub fn countdown_now_node(
   ends : () -> Double,
   period? : Double = 60000.0,
 ) -> () -> Double {
-  let said = @signals.signal(now())
+  let said : @signals.Signal[Double] = @signals.signal(now())
   fn next() -> Unit {
     let end = @signals.untracked(ends)
     guard end > 0.0 && period > 0.0 else { return }

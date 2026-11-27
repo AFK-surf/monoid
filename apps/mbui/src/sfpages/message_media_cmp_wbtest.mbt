@@ -206,7 +206,7 @@ test "a message's pictures and videos as nodes, state by state" {
       let p = at / @sf.breath_ms
       let f = p - p.floor()
       let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-      let breath = 1.0 - 0.5 * @ui.Ease::InOut.at(way)
+      let breath = 1.0 - (1.0 - image_breath_low) * @ui.Ease::InOut.at(way)
       assert_true(
         new_alpha.length() == 1 && (new_alpha[0] - breath).abs() < 0.01 && breath < 0.99,
         msg="the node's likeness breathing: \{Repr(new_alpha)}, wanted \{breath}",

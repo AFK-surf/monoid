@@ -743,7 +743,7 @@ fn pane_made_host(p : @view.View, src : Source, k : Int) -> Unit {
   .grow(Is(1.0))
   .width(By(lock_target_w))
   .min_height(Is(Some(0.0)))
-  .offset(By(fn() { (pane_aside_at(src, p), 0.0) }))
+  .offset_snapped(By(fn() { (pane_aside_at(src, p), 0.0) }))
   |> ignore
   context_node(p)
   fold_goes.made[k] = p

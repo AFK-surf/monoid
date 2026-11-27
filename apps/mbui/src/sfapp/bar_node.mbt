@@ -492,17 +492,34 @@ fn bar_action_icons(d : @view.View) -> Unit {
 }
 
 ///|
-/// The action's circle: emerging smoothly from the capsule's right end with subtle elastic recoil on split/fuse;
-/// there still while a finger has the capsule (taking nothing then), as Comma's circle is.
+/// The action's circle: budding smoothly out from inside the capsule's right semicircle with subtle elastic recoil on
+/// split/fuse; there still while a finger has the capsule (taking nothing then), as Comma's circle is.
+/// Starts strictly inside the capsule (`scale = 0.55`, centered on the capsule's right end) when `k` crosses
+/// `bar_disc_k_start` and reaches full size at its resting position by `bar_disc_k_full`, eliminating any single-frame
+/// corner pop while preserving full capillary adhesion across separation.
 fn bar_disc_look_at(t : Double) -> (Double, Double) {
   let k = bar.k_at(t)
-  if k <= 0.001 {
-    (0.0, 1.0)
+  if k <= bar_disc_k_start {
+    (0.0, 0.55)
   } else {
-    let alpha = dclamp(k / 0.15, 0.0, 1.0)
-    let base_scale = 0.92 + 0.08 * dclamp(k, 0.0, 1.0)
-    let recoil = dclamp(bar.bond_recoil.value_at(t) * 0.25, -0.06, 0.06)
-    (alpha, dclamp(base_scale + recoil, 0.85, 1.08))
+    let u = bar_smoothstep(bar_disc_k_start, bar_disc_k_full, k)
+    let alpha = dclamp((k - bar_disc_k_start) / 0.15, 0.0, 1.0)
+    let base_scale = 0.55 + 0.45 * u
+    let recoil = dclamp(bar.bond_recoil.value_at(t) * 0.25, -0.06, 0.06) * u
+    (alpha, dclamp(base_scale + recoil, 0.55, 1.08))
+  }
+}
+
+///|
+/// Horizontal draw offset of the `＋` circle at moment `t` (ms): tucked concentric with the capsule's right semicircle
+/// as it begins to bud out and gliding smoothly to `0.0` (its resting layout slot) by `bar_disc_k_full`.
+fn bar_disc_dx_at(t : Double) -> Double {
+  let k = bar.k_at(t)
+  if k >= bar_disc_k_full || k <= 0.0 {
+    0.0
+  } else {
+    let u = bar_smoothstep(bar_disc_k_start, bar_disc_k_full, k)
+    -(act_size + act_gap) * k * (1.0 - u)
   }
 }
 
@@ -510,6 +527,7 @@ fn bar_disc_look_at(t : Double) -> (Double, Double) {
 fn bar_disc_look(d : @view.View) -> Unit {
   let look = fn() { bar_disc_look_at(bar_moment(d, Notch, bar_k_until())) }
   d.alpha(By(fn() { look().0 })).scale(By(fn() { look().1 })) |> ignore
+  bar_moved(d, Notch, bar_k_until, fn(t) { (bar_disc_dx_at(t), 0.0) })
 }
 
 ///|
@@ -608,9 +626,7 @@ fn bar_glass_capsule(
         bar_k_until(),
       )
       let t = bar_moment(g, Ball, until)
-      let a = bar_ball_at(t)
-      let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
-      (spot, bar_merge_at(t))
+      (None, bar_merge_at(t))
     })
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
     // room as far as the notch is open then)
@@ -951,7 +967,7 @@ fn bar_places_node(
   row_top : () -> Double,
 ) -> Unit {
   let items = fn() { bar_laid_now().items }
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   holder.box(fn(row) {
     row
     .over(Is(true))
@@ -1030,7 +1046,7 @@ fn bar_places_node(
 /// as faint and as low as the panel has them as each frame is drawn; none while it is closed, nor while a bar chosen
 /// lands (bar_swap_node draws them going).
 fn bar_rows_node(holder : @view.View, w : () -> Double) -> Unit {
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   holder.box(fn(rows) {
     rows.over(Is(true)) |> ignore
     rows.show(at_once=true,
@@ -1079,7 +1095,7 @@ fn bar_swap_node(
   row_top : () -> Double,
   panel : () -> Double,
 ) -> Unit {
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   let bar_mid = fn() { row_top() + bar_track / 2.0 }
   holder.box(fn(b) {
     b.over(Is(true)) |> ignore

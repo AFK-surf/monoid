@@ -466,7 +466,11 @@ for t in $targets; do
           # second's 437, the fourth's 2093 on its twelve)
           # (the third's 86 s at 60 with no page, its one program near empty: reckoned 600, it takes 131 s of the table's
           # pages, the fourth's 2129 s down to 2035 on its twelve, reckoned 160)
-          60) specs="4,4,320,1 4,4,300,1 1,4,600,1 12,12,160,1" ;;
+          # (on 46005547244, 46008169491, 46010154092 and 46011402589, 2/4 took 112-146 s with zero other runs and 3/4
+          # took 82-107 s on one worker beside answers_still's 155 s, while 1/4 hit 217-226 s and 4/4 part 2/3 hit 304 s
+          # timeout: refresh page-seconds.txt, give 3/4 four workers at 60 fps, drop 2/4's stale 300 s overhead, and
+          # reckon 1/4 480, 3/4 180 and 4/4 240 so every 60 fps runner sits at ~148-154 core-s)
+          60) specs="4,4,480,1 4,4,0,1 4,4,180,1 12,12,240,1" ;;
           # (the first's packages' programs at 120 275 s beside its pages' 263, the job 295 s of its 5 minutes, main
           # 436755fc 43074044573, 2026-11-11: reckoned 160 s of its cores, they take some 500 now)
           # (the second's and the fourth's on three runners each at 120, twelve programs (mbui-check.yml's app-rates
@@ -614,9 +618,10 @@ for t in $targets; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
         # The second group's pages use $n workers at every rate, so they fill all cores once its sweeps finish.
-        # The third's use $n at the default rate and one at a rate, beside kept_rows' five runs.
+        # The third's use $n at the default rate and 60 fps (only answers_still's short 22-41 s runs remain beside them),
+        # and one at 120 / 24 / 7 fps.
         p2=$n p3=$n
-        [ -z "${MBUI_TEST_FPS:-}" ] || p3=1
+        [ -z "${MBUI_TEST_FPS:-}" ] || [ "${MBUI_TEST_FPS:-}" = 60 ] || p3=1
         runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else
         runs+=("@pages 0 $n $(page_deal 1,1,0,1 "${pages[@]}" | cut -d' ' -f2 | tr '\n' ' ')")
@@ -902,7 +907,7 @@ for t in $targets; do
           # chat_page_nodes' tests (160 s of one core), the three parts some 785 core-s each by the table)
           if [ "${APP_GROUP:-}" = 4/4 ] && [ "${APP_PART#*/}" = 3 ]; then
             case "${MBUI_TEST_FPS:-}" in
-              60) specs="4,4,0,1 4,4,160,1 4,4,160,1" ;;
+              60) specs="4,4,0,1 4,4,110,1 4,4,80,1" ;;
               120) specs="4,4,150,1 4,4,170,1 4,4,0,1" ;;
             esac
           fi

@@ -116,7 +116,7 @@ test "set_vector_pictures_parsed caches parsed trees up to 4 entries, skips >512
   assert_false(vector_parsed_cache.contains("mem:s3"))
   redraw_vector_pictures()
   assert_eq(vector_parsed_cache.length(), 0)
-  assert_eq(vector_parsed_order.length(), 0)
+  assert_eq(vector_parsed_order.val.length(), 0)
 
   t.draw()
   set_vector_pictures(fn(_, _) { None })

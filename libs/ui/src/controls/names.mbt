@@ -28,7 +28,14 @@ pub fn playlist_of(names : Array[String], playable : (String) -> Bool) -> Array[
 pub fn next_in(current : String, list : Array[String]) -> String? {
   match list.search(current) {
     Some(at) => list.get(at + 1)
-    None => list.iter().find_first(fn(n) { compare_natural(n, current) > 0 })
+    None => {
+      for i = 0; i < list.length(); i = i + 1 {
+        if compare_natural(list[i], current) > 0 {
+          return Some(list[i])
+        }
+      }
+      None
+    }
   }
 }
 

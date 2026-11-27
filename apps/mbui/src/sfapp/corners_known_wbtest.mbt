@@ -109,7 +109,7 @@ let corners_tape_rail : Array[String] = [
   "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only", "screen-reconnecting", "screen-trackpad",
   "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental", "settings-me", "settings-me-reading",
   "settings-workspace", "settings-security", "settings-vault", "settings-vault-items", "settings-vault-item",
-  "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-offline", "settings-station-env",
+  "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-unprotected-blocked", "settings-station-offline", "settings-station-env",
   "settings-station-processes", "settings-station-mark", "settings-station-lower", "settings-station-versions",
   "settings-station-updated",
   "settings-station-network", "settings-station-copies", "settings-station-copies-alone", "settings-station-restore", "settings-station-restore-offer",

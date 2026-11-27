@@ -268,7 +268,7 @@ pub fn update_check(src : Source, now : Bool, done? : (String) -> Unit = fn(_) {
     _ => {
       if now {
         let why = @sf.t("desktop.update.dev")
-        update.said.set(CouldNot(why))
+        update.said.set(UpdateSaid::CouldNot(why))
         done(@sf.t("android-misc.updates.checkFailed", args=[("error", why)]))
       }
       return
@@ -313,7 +313,7 @@ pub fn update_check(src : Source, now : Bool, done? : (String) -> Unit = fn(_) {
       }
       Err(e) => {
         if now {
-          update.said.set(CouldNot(e))
+          update.said.set(UpdateSaid::CouldNot(e))
         }
         done(if now { @sf.t("android-misc.updates.checkFailed", args=[("error", e)]) } else { "" })
       }
@@ -529,7 +529,8 @@ priv struct UpdateHow {
 // kept across runs: worked out of a signal the Tester puts back
 let update_how : @signals.Computed[UpdateHow] = @signals.computed(
   fn(_) {
-    let v = try Some(@json.parse(@ui.update_state())) catch { _ => None }
+    let raw = @ui.update_state()
+    let v = try Some(@json.parse(raw)) catch { _ => None }
     match v {
       Some(_) =>
         {
@@ -842,8 +843,8 @@ fn update_holds() -> UpdateHolds {
 fn update_dialog_body(v : @view.View) -> Unit {
   // (none newer, or why it could not ask: nothing, its title and the line under it straight over its foot as the old
   // body's, the panel's body none of its room; asking, or a newer build, one in the other's place)
-  v.show(fn() { update_holds() != Said }, fn(s) {
-    s.pick(fn() { update_holds() == Newer }, fn(b, newer) {
+  v.show(fn() { update_holds() != UpdateHolds::Said }, fn(s) {
+    s.pick(fn() { update_holds() == UpdateHolds::Newer }, fn(b, newer) {
       if newer {
         update_newer_node(b)
       } else {

@@ -244,7 +244,7 @@ priv struct SummaryExtra {
 /// Extra summary telemetry kept alongside recent `HangSummary` instances (matched by `physical_equal` in
 /// `HangSummary::json`) so `pub(all) struct HangSummary` stays ABI-stable.
 // kept across runs: put back as a run begins (journal_reset)
-let summary_extras : Array[(HangSummary, SummaryExtra)] = []
+let summary_extras : Ref[Array[(HangSummary, SummaryExtra)]] = Ref([])
 
 ///|
 fn journal_sample_mem() -> Unit {
@@ -523,8 +523,7 @@ fn journal_reset() -> Unit {
   shown_counts.fill(0)
   journal_late_bands.fill(0)
   journal_extra_ms.fill(0.0)
-  summary_extras.clear()
-  summary_extras.shrink_to_fit()
+  summary_extras.val = []
   gpu_frames_reset()
   paint_glyph_reset()
   journal_listens()
@@ -1101,10 +1100,10 @@ fn journal_said_shown(at : Double) -> Unit {
     by_page: shown_by_page(),
     gpu: gpu_frames_take(),
   }
-  if summary_extras.length() >= hangs_kept_most {
-    summary_extras.remove(0) |> ignore
+  if summary_extras.val.length() >= hangs_kept_most {
+    summary_extras.val.remove(0) |> ignore
   }
-  summary_extras.push((summary, extra))
+  summary_extras.val.push((summary, extra))
   journal_counts.fill(0.0)
   journal_counts[5] = -1.0
   journal_bands.fill(0)
@@ -1180,7 +1179,7 @@ fn Done::name(self : Done) -> String {
 ///|
 /// A piece of work in a few words: its kind and ms, a frame's parts and why.
 fn Worked::said(self : Worked) -> String {
-  let head = "\{self.what.name()} \{journal_ms(self.ms())}ms"
+  let head = "\{Done::name(self.what)} \{journal_ms(self.ms())}ms"
   match self.what {
     Frame(f) =>
       head +
@@ -1219,7 +1218,7 @@ fn Worked::notes_said(self : Worked) -> String {
 pub fn Hang::said(self : Hang) -> String {
   let active = self.end - self.start
   let busy = if active > 0.0 { (dmin(self.work_ms / active, 1.0) * 100.0).round() } else { 100.0 }
-  "trigger=\{self.trigger.name()} sealed=\{self.sealed_by.name()} phase=\{if self.startup { "startup" } else { "steady" }} " +
+  "trigger=\{HangTrigger::name(self.trigger)} sealed=\{Seal::name(self.sealed_by)} phase=\{if self.startup { "startup" } else { "steady" }} " +
   (if self.page != "" { "page=\{self.page} " } else { "" }) +
   (if self.arranged != "" { "arranged=\{self.arranged} " } else { "" }) +
   (if self.window_w > 0.0 { "window=\{self.window_w.round()}x\{self.window_h.round()} " } else { "" }) +
@@ -1238,7 +1237,7 @@ pub fn Hang::json(self : Hang) -> Json {
   let mut has_gpu_slow = false
   let contributors = self.contributors.map(fn(w) {
     let o : Map[String, Json] = {
-      "kind": Json::string(w.what.name()),
+      "kind": Json::string(Done::name(w.what)),
       "start_ms": Json::number(journal_ms(w.start - self.start)),
       "ms": Json::number(journal_ms(w.ms())),
     }
@@ -1291,8 +1290,8 @@ pub fn Hang::json(self : Hang) -> Json {
     Json::object(o)
   })
   let o : Map[String, Json] = {
-    "trigger": Json::string(self.trigger.name()),
-    "sealed_by": Json::string(self.sealed_by.name()),
+    "trigger": Json::string(HangTrigger::name(self.trigger)),
+    "sealed_by": Json::string(Seal::name(self.sealed_by)),
     "phase": Json::string(if self.startup { "startup" } else { "steady" }),
     "active_ms": Json::number(journal_ms(active)),
     "stall_ms": Json::number(journal_ms(self.stall_ms)),
@@ -1329,9 +1328,9 @@ pub fn Hang::json(self : Hang) -> Json {
 
 ///|
 fn summary_extra_of(s : HangSummary) -> SummaryExtra? {
-  for i = summary_extras.length() - 1; i >= 0; i = i - 1 {
-    if physical_equal(s, summary_extras[i].0) {
-      return Some(summary_extras[i].1)
+  for i = summary_extras.val.length() - 1; i >= 0; i = i - 1 {
+    if physical_equal(s, summary_extras.val[i].0) {
+      return Some(summary_extras.val[i].1)
     }
   }
   None

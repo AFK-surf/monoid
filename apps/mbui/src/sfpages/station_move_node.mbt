@@ -78,16 +78,22 @@ pub fn station_move_node(
     }
   }
   let module_of = fn(id : String) -> Json? {
-    match modules().iter().find_first(fn(m) { text(Some(m), "id") == id }) {
-      Some(m) => Some(m)
-      None => None
+    let ms = modules()
+    for i = 0; i < ms.length(); i = i + 1 {
+      if text(Some(ms[i]), "id") == id {
+        return Some(ms[i])
+      }
     }
+    None
   }
   let item_of = fn(m : String, id : String) -> Json? {
-    match shown_items(m).iter().find_first(fn(x) { text(Some(x), "id") == id }) {
-      Some(x) => Some(x)
-      None => None
+    let xs = shown_items(m)
+    for i = 0; i < xs.length(); i = i + 1 {
+      if text(Some(xs[i]), "id") == id {
+        return Some(xs[i])
+      }
     }
+    None
   }
   let toggle = fn(id : String) {
     let now = @signals.untracked(open)
@@ -238,10 +244,13 @@ pub fn station_move_node(
 ///|
 /// The module `id` of what was read (`v`: a stationMove value), as the open module's items come in it.
 fn move_module_of(v : Json?, id : String) -> Json? {
-  match items(v, "modules").iter().find_first(fn(m) { text(Some(m), "id") == id }) {
-    Some(m) => Some(m)
-    None => None
+  let ms = items(v, "modules")
+  for i = 0; i < ms.length(); i = i + 1 {
+    if text(Some(ms[i]), "id") == id {
+      return Some(ms[i])
+    }
   }
+  None
 }
 
 ///|
@@ -267,10 +276,14 @@ fn station_move_to_node(
 ) -> Unit {
   let name = fn() {
     let t = to()
-    match targets().iter().find_first(fn(x) { text(Some(x), "station") == t && move_target_can(x) }) {
-      Some(x) => text(Some(x), "name")
-      None => @sf.t("web-pages.stations.move.choose")
+    let ts = targets()
+    for i = 0; i < ts.length(); i = i + 1 {
+      let x = ts[i]
+      if text(Some(x), "station") == t && move_target_can(x) {
+        return text(Some(x), "name")
+      }
     }
+    @sf.t("web-pages.stations.move.choose")
   }
   // (what the action at its end is now: none, 全部迁移, 移出 workspace)
   let main = fn() {

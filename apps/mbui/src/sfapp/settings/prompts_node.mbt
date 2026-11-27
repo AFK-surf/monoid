@@ -8,7 +8,16 @@ fn prompt_now(core : Core, list : String, is_it : (Json) -> Bool) -> Json?? {
   let prompts = (core.topic)("lockPrompts", Map([])).get().value
   match prompts {
     None => None
-    Some(_) => Some(items(prompts, list).iter().find_first(is_it))
+    Some(_) => {
+      let mut found : Json? = None
+      for it in items(prompts, list) {
+        if is_it(it) {
+          found = Some(it)
+          break
+        }
+      }
+      Some(found)
+    }
   }
 }
 

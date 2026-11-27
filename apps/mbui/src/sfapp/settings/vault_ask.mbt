@@ -307,7 +307,13 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
   if !flag(view, "available") && !flag(view, "plain") {
     return Some((Elsewhere, false, None))
   }
-  let row = items(view, "requests").iter().find_first(fn(r) { text(Some(r), "id") == request })
+  let mut row : Json? = None
+  for r in items(view, "requests") {
+    if text(Some(r), "id") == request {
+      row = Some(r)
+      break
+    }
+  }
   if !mine || (row is None && !vault_pending.contains(request)) {
     return Some(
       (

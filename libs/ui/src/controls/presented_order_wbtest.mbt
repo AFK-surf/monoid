@@ -9,7 +9,7 @@ test "presented as it is told: what reads it as it is told finds it there, each 
   let seen : Array[(Array[Int], Bool)] = []
   let stop = @signals.effect(fn() {
     presented_said.val.get() |> ignore
-    let serials = @signals.untracked(fn() { presented_now.map(fn(p) { p.serial }) })
+    let serials = @signals.untracked(fn() { presented_now.val.map(fn(p) { p.serial }) })
     let last = @signals.untracked(fn() { last_presented() })
     seen.push((serials, presented_drawn_of(last)))
   })

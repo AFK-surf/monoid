@@ -97,7 +97,16 @@ fn rig_foot_node(v : @view.View, core : Core, station : String, card : () -> Rig
   let time = fn() {
     let all = times()
     match vault_picked.get(key()) {
-      Some(s) => all.iter().find_first(fn(t) { label(t) == s }).unwrap_or(all[0])
+      Some(s) => {
+        let mut chosen = all[0]
+        for t in all {
+          if label(t) == s {
+            chosen = t
+            break
+          }
+        }
+        chosen
+      }
       None => all[0]
     }
   }

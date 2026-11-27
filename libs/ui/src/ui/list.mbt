@@ -583,7 +583,7 @@ pub fn Ctx::list(
       let comes = match (st.causes, seen) {
         (Some(c), Some(was)) if !physical_equal(was, c.keys) => {
           let was = Set::from_array(was)
-          c.keys.iter().any(fn(k) { !was.contains(k) && c.by.get(k) is Some((Comes(_), _)) })
+          arr_any(c.keys, fn(k) { !was.contains(k) && c.by.get(k) is Some((Comes(_), _)) })
         }
         _ => false
       }

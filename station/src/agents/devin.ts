@@ -23,7 +23,7 @@ import { rulesFolder as folderOf } from "./rules-folder.ts";
 import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from "./acp.ts";
 import type { Events, Replayed } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
-import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
+import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type TurnOutcome } from "./runtime.ts";
 import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
@@ -335,9 +335,9 @@ export class DevinSession extends AcpSession {
     this.usage = { run, calls, lastCall: JSON.stringify(last.usage), context: n(last.context), window: n(last.window) };
   }
 
-  protected override cutShort(said: string) {
+  protected override cutShort(said: string, outcome: TurnOutcome) {
     this.usage = null;
-    super.cutShort(said);
+    super.cutShort(said, outcome);
   }
 
   /// Into the running turn, read at its next step: a prompt given while it runs, answered with the turn.

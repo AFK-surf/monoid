@@ -203,7 +203,9 @@ fn PlayerNode::plays(self : PlayerNode) -> Bool {
 
 ///|
 /// Unified lock predicate: while any of these holds, player chrome stays visible, a tap or click hiding it not.
-/// Deliberately excludes `self.p.scrubbing() is Some(_)` so stage `AlongTime` scrubbing never raises the bottom bar.
+/// Deliberately excludes `self.p.scrubbing() is Some(_)` so stage `AlongTime` scrubbing never raises the bottom bar,
+/// and `Ended` so reaching the end leaves the controls as the last tap left them (raised by themselves they would
+/// cover the last frame).
 fn PlayerNode::chrome_locked(self : PlayerNode) -> Bool {
   if self.embedded {
     return true
@@ -215,8 +217,7 @@ fn PlayerNode::chrome_locked(self : PlayerNode) -> Bool {
   let ph = self.phase(s)
   if ph == Opening ||
     (ph == Buffering && self.waited.get() && self.drag.get() != AlongTime && self.p.scrubbing() is None) ||
-    ph == Failed ||
-    ph == Ended {
+    ph == Failed {
     return true
   }
   self.near_top.get() ||
@@ -2813,7 +2814,7 @@ fn phone_player_node(
               .min_width(Is(Some(0.0)))
               .max_width(Is(Some(1.0e9)), within=true)
               .ink(By(fn() { ink().text }))
-              .says(By(fn() { Some(@view.said(Text, label=file.name)) }))
+              .says(By(fn() { Some(@view.said(@view.Role::Text, label=file.name)) }))
               |> ignore
             })
             |> ignore

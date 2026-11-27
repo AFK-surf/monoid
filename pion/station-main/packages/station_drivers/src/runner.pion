@@ -29,7 +29,7 @@ pub struct RunnerInfo {
 }
 
 pub enum RunnerFrame {
-  Attached(Int64, Option[Int64])
+  Attached(Int64, Int64, Option[Int64])
   Out(String, Int64, Bytes)
   Exit(Option[Int], Option[String])
 }
@@ -212,6 +212,10 @@ pub fn decode_runner_frame(line : String) -> Option[RunnerFrame] {
       Some(n) => n.to_int64()
       None => return None
     }
+    let err_off = match json_get_num(v, "err") {
+      Some(n) => n.to_int64()
+      None => 0L
+    }
     let keep = match json_get_num(v, "keep") {
       Some(k) => {
         let ki = k.to_int64()
@@ -219,7 +223,7 @@ pub fn decode_runner_frame(line : String) -> Option[RunnerFrame] {
       }
       None => None
     }
-    return Some(RunnerFrame::Attached(out_off, keep))
+    return Some(RunnerFrame::Attached(out_off, err_off, keep))
   }
   if op == "out" {
     let stream = match json_get_str(v, "stream") {

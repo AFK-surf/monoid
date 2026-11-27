@@ -39,8 +39,15 @@ pub fn new_profile_node(
   let station = fn() {
     match online() {
       None => ""
-      Some(list) =>
-        if list.iter().any(fn(s) { text(Some(s), "station") == address }) {
+      Some(list) => {
+        let mut has = false
+        for i = 0; i < list.length(); i = i + 1 {
+          if text(Some(list[i]), "station") == address {
+            has = true
+            break
+          }
+        }
+        if has {
           address
         } else {
           match list.get(0) {
@@ -48,6 +55,7 @@ pub fn new_profile_node(
             None => "~"
           }
         }
+      }
     }
   }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

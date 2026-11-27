@@ -9,7 +9,7 @@
 // is answered with the one held, unchanged), so that agents on any station may ask for its secrets.
 import { type LockState, type Member, admit } from "../../../../shared/lock.ts";
 import type { Viewer } from "../../mesh/credential.ts";
-import { type BoxCert, type Item, type Vault, TAG, certOk, itemOk, itemSupersedes, signedOk, signerOf, vaultOk, vaultSupersedes } from "../../vault/crypto.ts";
+import { type BoxCert, type Item, type KeyAsk, type Vault, TAG, askOk, certOk, itemOk, itemSupersedes, signedOk, signerOf, vaultOk, vaultSupersedes } from "../../vault/crypto.ts";
 import { isDeletedVaultWrite, type VaultStore } from "../../vault/store.ts";
 import type { Route } from "../admin.ts";
 import type { Events, To } from "../events.ts";
@@ -159,6 +159,8 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           }
           tell("vault", next, `vault\0${next.id}`, members(next));
           const gone = (prev?.members ?? []).filter((m) => !next.members.includes(m));
+          const goneDevices = gone.length === 0 ? [] : [...l.devices.values()].filter((d) => gone.includes(d.sub)).map((d) => d.id);
+          if (!next.deleted) vaults.pruneAsks(next.ws, next.id, next.keys, goneDevices);
           if (gone.length > 0) tell("vault-gone", { id: next.id, vault: next }, `vault-gone\0${next.id}`, { workspace: next.ws, subs: gone });
           return json(200, JSON.stringify({ vault: next }));
         }
@@ -270,6 +272,60 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           return json(200, JSON.stringify({ box: cert }));
         }
         return refuse(503, "vault_busy", "the box certificate changed while it was being written");
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/vault\/asks$/,
+      handle: async (r) => {
+        const l = locked(r);
+        if (isAnswer(l)) return l;
+        const of = param(r, "vault");
+        const candidates = of === undefined ? vaults.memberVaults(l.ws, r.viewer.sub) : [vaults.vault(l.ws, of)].filter((v): v is Vault => v !== null);
+        const seen = candidates.filter((v) => sees(v, r.viewer) && !v.deleted && (of === undefined || v.id === of));
+        if (of !== undefined && seen.length === 0) return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+        const byId = new Map(seen.map((v) => [v.id, v]));
+        const activeDevices = [...l.devices.keys()];
+        const kept = vaults.asksForVaults(l.ws, [...byId.keys()], 256, {
+          devices: activeDevices,
+          perVault: 64,
+          accept: (a) => {
+            if (askOk(l, a) !== null) return false;
+            const v = byId.get(a.vault);
+            const owner = l.devices.get(a.device)?.sub;
+            if (v === undefined || owner === undefined || !v.members.includes(owner)) return false;
+            return !v.keys.some((k) => k.cert.device === a.device && k.cert.box === a.box);
+          },
+        });
+        return json(200, JSON.stringify({ asks: kept }));
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/vault\/asks$/,
+      handle: async (r) => {
+        const waiting = beforeWrite?.();
+        if (waiting === false || (waiting !== undefined && (!await waiting || beforeWrite?.() === false))) return refuse(503, "vault_handover", "the previous station has not finished handing over");
+        const l = locked(r);
+        if (isAnswer(l)) return l;
+        const next = body(r) as KeyAsk;
+        const why = askOk(l, next);
+        if (why !== null) return refuse(400, "vault_invalid", why);
+        if (deviceOf(l, r) !== next.device) return refuse(403, "vault_not_device", "a device publishes its own key ask");
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const heldVault = vaults.vaultSnapshot(l.ws, next.vault), vault = heldVault?.value ?? null;
+          if (vault === null || !sees(vault, r.viewer) || vault.deleted) return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+          if (vault.keys.some((k) => k.cert.device === next.device && k.cert.box === next.box)) {
+            return json(200, JSON.stringify({ ask: next }));
+          }
+          const held = vaults.askSnapshot(l.ws, next.vault, next.device), had = held?.value ?? null;
+          // An older-or-equal valid ask changes nothing; an invalidated ask (e.g. rotated signing key) is always replaced.
+          if (had !== null && had.at >= next.at && askOk(l, had) === null) return json(200, JSON.stringify({ ask: had }));
+          if (!vaults.putAskIf(next, heldVault!.body, held?.body ?? null)) continue;
+          tell("vault-ask", next, `vault-ask\0${next.vault}\0${next.device}`, { workspace: vault.ws, subs: vault.members, vault: vault.id });
+          return json(200, JSON.stringify({ ask: next }));
+        }
+        return refuse(503, "vault_busy", "the key ask changed while it was being written");
       },
     },
   ];

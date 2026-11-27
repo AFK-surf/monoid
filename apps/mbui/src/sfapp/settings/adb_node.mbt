@@ -53,15 +53,23 @@ pub fn personal_lock_step(view : Json?, sub : String) -> Json? {
     text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced"
   }
   if sub != "" {
-    match locks.iter().find_first(fn(l) { text(Some(l), "sub") == sub }) {
-      Some(own) => return if needs(own) { Some(own) } else { None }
-      None => ()
+    for l in locks {
+      if text(Some(l), "sub") == sub {
+        return if needs(l) { Some(l) } else { None }
+      }
     }
   }
-  if locks.iter().any(fn(l) { text(Some(l), "standing") == "member" }) {
-    return None
+  for l in locks {
+    if text(Some(l), "standing") == "member" {
+      return None
+    }
   }
-  locks.iter().find_first(needs)
+  for l in locks {
+    if needs(l) {
+      return Some(l)
+    }
+  }
+  None
 }
 
 ///|

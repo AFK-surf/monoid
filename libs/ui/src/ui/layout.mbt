@@ -607,7 +607,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   if capped {
     let (k, v) = if has_max_w { (@flex.LEN_WITHIN, max_w) } else { (@flex.LEN_PCT, 100.0) }
     if s.max_width_kind() != k || s.max_width_value() != v {
-      s.set_max_width(if has_max_w { Within(max_w) } else { Pct(100.0) })
+      s.set_max_width(if has_max_w { Within(max_w) } else { @flex.Dim::Pct(100.0) })
       ch = true
     }
   } else if opt_differs(s.max_width_kind(), s.max_width_value(), has_max_w, max_w) {
@@ -738,16 +738,16 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   if over {
     // (only when it has just become a layer: its position changes too)
     if !(s.width_kind() == @flex.LEN_PCT && s.width_value() == 100.0) {
-      s.set_width(Pct(100.0))
+      s.set_width(@flex.Dim::Pct(100.0))
     }
   } else if fill_w {
     if !(s.width_kind() == @flex.LEN_PCT && s.width_value() == 100.0) {
-      s.set_width(Pct(100.0))
+      s.set_width(@flex.Dim::Pct(100.0))
       ch = true
     }
   } else if !wpct.is_nan() {
     if !(s.width_kind() == @flex.LEN_PCT && s.width_value() == wpct) {
-      s.set_width(Pct(wpct))
+      s.set_width(@flex.Dim::Pct(wpct))
       ch = true
     }
   } else {
@@ -759,12 +759,12 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   }
   if (!has_h && over) || fill_h {
     if !(s.height_kind() == @flex.LEN_PCT && s.height_value() == 100.0) {
-      s.set_height(Pct(100.0))
+      s.set_height(@flex.Dim::Pct(100.0))
       ch = true
     }
   } else if !hpct.is_nan() {
     if !(s.height_kind() == @flex.LEN_PCT && s.height_value() == hpct) {
-      s.set_height(Pct(hpct))
+      s.set_height(@flex.Dim::Pct(hpct))
       ch = true
     }
   } else {

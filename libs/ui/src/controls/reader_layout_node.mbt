@@ -62,7 +62,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
           head.box(fn(w) {
             w
             .words(By(fn() { t("web-pages.drive.reader.layout") }))
-            .words_look(By(fn() { { ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
+            .words_look(By(fn() { @view.WordsLook::{ ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
             .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
             |> ignore
           })
@@ -74,6 +74,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       foot: None,
       hugs: false,
       hugs_centred: false,
+      hugs_wide: false,
       steps: false,
       sheet_heads: true,
       heads: false,

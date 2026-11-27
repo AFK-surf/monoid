@@ -514,3 +514,23 @@ test "a text card at 320 wide and at 390 with the words at 1.3, and at 760: its 
   }
 }
 
+///|
+test "a text card commits an Android underlined composing word when 回复 is tapped" {
+  @sf.presenters_reset()
+  rows_reset()
+  let doing : @signals.Signal[Json?] = @signals.signal(None)
+  let calls : Array[(String, Json)] = []
+  let m = @signals.signal(dec_msg("text"))
+  let t = dec_new_row(390.0, dec_src(doing, calls), fn() { m.get() }, platform=2)
+  t.run_for(@ui.move_most_ms)
+  let replies = fn() { calls.filter(fn(c) { c.0 == "decision.reply" }) }
+  t.tap_text("比如：对话页更顺滑了")
+  t.ime_state("stillfail", 9, 9, ca=0, cb=9)
+  assert_false(t.get(Button, label="回复").disabled)
+  t.click(Button, label="回复")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(replies().length(), 1)
+  assert_eq(text(Some(replies()[0].1), "text"), "stillfail")
+  assert_eq(t.ime_let_go(), 1)
+}
+

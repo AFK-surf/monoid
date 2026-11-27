@@ -88,6 +88,8 @@ jobs:
       release_smoke: ${{ steps.plan.outputs.release_smoke }}
       check_mac: ${{ steps.plan.outputs.check_mac }}
       check_rust: ${{ steps.plan.outputs.check_rust }}
+      cold_start_smoke: ${{ steps.plan.outputs.cold_start_smoke }}
+      side_core: ${{ steps.plan.outputs.side_core }}
     steps:
       - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
@@ -158,7 +160,7 @@ jobs:
             fi
             if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64"; fi
             missing=$(pick $missing_want)
-            if grep -qE '^(station_tests|core_tests)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
+            if grep -qE '^(station_tests|core_tests|side_core)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
             else missing_harness=""; fi
             if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
             else missing_mac=""; fi
@@ -1490,11 +1492,59 @@ jobs:
           STATION_BUNDLE="$RUNNER_TEMP/station/stillfail/station" node --disable-warning=ExperimentalWarning --import ./station/test/setup-env.mjs --test --test-timeout=30000 station/test/station-bundle-builders.test.ts
           du -sh "$RUNNER_TEMP/station/stillfail"
 
+  # Branch PR gate: real Node Core (empty data directory) + real apps/mbui cold-start smoke (Starting -> Sign in).
+  check-cold-start:
+    needs: plan
+    if: ${{ !cancelled() && !failure() && github.ref != 'refs/heads/main' && needs.plan.outputs.cold_start_smoke == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mbui-moonbit
+        with: { tools: '' }
+      - name: Install core-ts packages
+        run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+      - name: Cold-start smoke (real Core + apps/mbui)
+        run: node apps/mbui/scripts/cold-start-smoke.mjs
+
+  # Branch PR non-blocking signal: run side rigs + locks-moved suites when core-ts auth/host/protocol/lock/vault paths,
+  # station lock paths, or e2e harnesses change. Kept out of `gate.needs` on purpose: `rigs` exercises real multi-process
+  # sockets/timing and cannot block merge under `gate-rerun-check.mjs` (consistent with root AGENTS.md and side.yml).
+  # (rigs ~90s, locks-moved ~160-185s on ubuntu-24.04, well within the 5-minute PR budget; full `locks` takes 303-361s
+  # and stays on side.yml's 10-minute schedule.)
+  check-side-core:
+    needs: [plan, natives, natives-harness]
+    if: ${{ !cancelled() && !failure() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && needs.plan.outputs.side_core == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [rigs, locks-moved]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mbui-moonbit
+      - uses: ./.github/actions/natives
+        with: { harness: 'true' }
+      - name: side (${{ matrix.part }})
+        run: sh scripts/side.sh ${{ matrix.part }}
+      - if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with: { name: "side-core-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/side-${{ matrix.part }}/kept", retention-days: 3, if-no-files-found: ignore }
+
   # A branch: the one check main's protection requires (2026-10-20, asked: "main 开保护"; an admin may merge past it,
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, check-cold-start, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -3101,7 +3151,7 @@ jobs:
   # How long this run took against its budget (scripts/ci-time.ts): in the run's summary, and a warning when over. A
   # station's watch reads the same of every run and has an agent find why one went over.
   timing:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, check, check-mac, check-linux, check-station, check-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, release-prune, changelog, done]
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, check, check-mac, check-linux, check-station, check-core, check-cold-start, check-side-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, release-prune, changelog, done]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

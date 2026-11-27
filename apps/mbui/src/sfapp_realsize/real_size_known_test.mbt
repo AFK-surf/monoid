@@ -362,6 +362,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-stations-unprotected": (718, 495, 77),
   "phone settings-station": (572, 399, 68),
   "phone settings-station-unprotected": (572, 399, 68),
+  "phone settings-station-unprotected-blocked": (613, 428, 70),
   "phone settings-station-offline": (572, 399, 68),
   // (raised once, 2026-11-17, through settings-station-restored: the shell's two layers over its pages for the chat shared
   // as a picture and a visualization over the whole screen made as nodes, the station's page made in the frame they
@@ -554,7 +555,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide home": (1353, 890, 89),
   "wide home-bars": (1353, 890, 89),
   "wide home-jobs": (1353, 890, 89),
-  "wide home-shared-bell": (3096, 2408, 358),
+  // Lowered, 2026-11-27 (PR-B4): attention_rows_node virtualized via panel_list_node and attention_item_node flattened.
+  "wide home-shared-bell": (1595, 1060, 117),
   "wide home-sheet": (1353, 890, 89),
   "wide home-news": (1353, 890, 89),
   "wide home-station-updates": (1353, 890, 89),
@@ -676,7 +678,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // (raised once, 2026-11-17: the stations' and profiles' sidebars made as nodes, sfdesk places_side_node.mbt: what
   // their old views built as they opened, rows, figures, allowances' chips and marks, made and laid out by the tree)
   "wide place-stations": (1026, 816, 149),
-  "wide place-profiles": (1069, 846, 257),
+  "wide place-profiles": (992, 768, 241),
   "wide place-remote": (531, 454, 37),
   "wide place-remote-tabs": (485, 399, 33),
   "wide chat-remote": (1962, 1415, 154),
@@ -787,6 +789,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-stations-unprotected": (822, 593, 103),
   "wide settings-station": (791, 608, 107),
   "wide settings-station-unprotected": (791, 608, 107),
+  "wide settings-station-unprotected-blocked": (826, 636, 114),
   "wide settings-station-offline": (791, 608, 107),
   "wide settings-station-env": (782, 565, 103),
   "wide settings-station-processes": (924, 724, 158),

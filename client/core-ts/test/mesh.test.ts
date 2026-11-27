@@ -590,6 +590,9 @@ sim("a_refusal_the_mesh_is_given_a_name_for_is_said_so_and_asks_no_new_credentia
   const leftOut = await refusal({ error: "the lock it joined with is not here yet", code: "lock_station", why: "pending" });
   assert.equal(leftOut?.code, "lock_station");
   assert.equal(leftOut?.message, t("core-logic.mesh.lock_station.pending"));
+  const waiting = await refusal({ error: "this station has not been given this workspace's lock state yet", code: "lock_station", why: "waiting" });
+  assert.equal(waiting?.code, "lock_station");
+  assert.equal(waiting?.message, t("core-logic.mesh.lock_station.waiting"));
   const other = await refusal({ error: "grant signature invalid", code: "something_else" });
   assert.equal(other?.code, "credential_refused", JSON.stringify(other));
   assert.equal(other?.message, t("core-logic.mesh.credential_refused_why", { reason: "grant signature invalid" }));
@@ -598,8 +601,8 @@ sim("a_refusal_the_mesh_is_given_a_name_for_is_said_so_and_asks_no_new_credentia
   assert.equal(old?.message, "update the app");
   station.refuses = null;
   await s.run(mesh.link(station.id(), credentials));
-  // (the first, then: after the lock's two, none new; after the credential refused and after the client too old, one)
-  assert.deepEqual(fresh, [false, false, false, true, true]);
+  // (the first, then: after the lock's three, none new; after the credential refused and after the client too old, one)
+  assert.deepEqual(fresh, [false, false, false, false, true, true]);
   await close(s, station, mesh);
 });
 

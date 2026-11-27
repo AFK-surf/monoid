@@ -836,7 +836,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       let nw = if words { nw } else { ground_w }
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)
       let placed = match n.island {
-        Some(id) => old_placed.iter().any(fn(p) { p.0 == id })
+        Some(id) => arr_any(old_placed, fn(p) { p.0 == id })
         None => true
       }
       let in_particle = has_particles &&
