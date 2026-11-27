@@ -534,9 +534,9 @@ fn fold_put(to : FoldLook, at : Double) -> Unit {
 
 ///|
 /// The drawer's glass set off at `at` for where the block goes (`to`): coming as it is shown a while, along with its
-/// move (`move_ms` long: none, at once); giving way as it comes back to the folded rail, on the ease in and out over
-/// the move and a control's answer past it (`@sf.dur_ms`), so it still shows as the drawer reaches the rail and goes
-/// from there over time; gone at once for an open sidebar (its own ground).
+/// move (`move_ms` long: none, at once); giving way on the ease in and out over the move, and coming back to the folded
+/// rail a control's answer past it (`@sf.dur_ms`), so it still shows as the drawer reaches the rail and goes from there
+/// over time.
 fn fold_glass_goes(to : FoldLook, at : Double, move_ms? : Double = 0.0) -> Unit {
   let g = fold_goes.glass
   if to.glass == g.target() {
@@ -548,8 +548,8 @@ fn fold_glass_goes(to : FoldLook, at : Double, move_ms? : Double = 0.0) -> Unit 
     } else {
       g.put(to.glass)
     }
-  } else if to.band >= 1.0 && move_ms > 0.0 {
-    g.go(0.0, @motion.tween(move_ms + @sf.dur_ms, ease=InOut), at~)
+  } else if move_ms > 0.0 {
+    g.go(0.0, @motion.tween(if to.band >= 1.0 { move_ms + @sf.dur_ms } else { move_ms }, ease=InOut), at~)
   } else {
     g.put(0.0)
   }
@@ -795,7 +795,12 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       }
       let (list_brand, _, list_band) = fold_held_at(t, f)
       // (what the sidebar holds shows as its glass does while that comes or goes, folded: never on no ground)
-      let seen = if r.bar && (glass > 0.0 || fold_goes.glass.goes_at(t)) { glass } else { 1.0 }
+      // (only as the drawer comes from or goes back to the folded rail: between open and shown a while it shows whole)
+      let at_rail = match (fold_goes.from, fold_goes.to) {
+        (Some(a), Some(b)) => a.showing <= 0.0 || b.showing <= 0.0
+        _ => false
+      }
+      let seen = if r.bar && at_rail && (glass > 0.0 || fold_goes.glass.goes_at(t)) { glass } else { 1.0 }
       {
         ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))),
         laid_w,
