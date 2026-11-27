@@ -2966,12 +2966,11 @@ setInterval(() => {}, 60000);
     } finally {
       launcher.kill("SIGTERM");
       await until("W17C-1 S3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null, 15_000).catch(() => {});
-      if (liveRunnerPgid > 1) {
-        try { process.kill(-liveRunnerPgid, "SIGKILL"); } catch {}
-      }
-      if (liveRunnerPid > 1) {
-        try { process.kill(liveRunnerPid, "SIGKILL"); } catch {}
-      }
+    }
+    // P1-3: Assert SIGTERM cleanly terminated the adopted live runner with ZERO orphan processes!
+    if (liveRunnerPid > 0) {
+      await until("W17C-1 S3 zero orphan runner after SIGTERM", () => (!isAlive(liveRunnerPid) ? true : null), 10_000);
+      assert.equal(isAlive(liveRunnerPid), false, `live runner PID ${liveRunnerPid} leaked as orphan after SIGTERM!`);
     }
   }
 });
@@ -3034,6 +3033,28 @@ test("W17C-1 R2 (P0-6): Native --internal-replica-restore safety matrix (6c-6j: 
       encoding: "utf8",
       timeout: 20_000,
     });
+  }
+
+  // (6c-no-db & 6c-empty-db) Cold start with staged restore/ready.json (no DB & pre-created empty v13 DB)
+  for (const mode of ["no-db", "empty-db"] as const) {
+    const dir = freshDir(`r2-6c-${mode}`);
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    if (mode === "empty-db") {
+      const db = new DatabaseSync(dbPath);
+      db.exec("PRAGMA user_version = 13;");
+      db.close();
+    } else {
+      assert.equal(existsSync(dbPath), false);
+    }
+    const res = runInternalRestore(dataDir, dbPath);
+    assert.equal(res.status, 0, `6c-${mode} must succeed: ${res.stdout}\n${res.stderr}`);
+    assert.equal(existsSync(join(dataDir, "restore")), false, `6c-${mode} must clean restore/`);
+    const chk = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = chk.prepare("SELECT text FROM entries WHERE text = 'before-r2-restore'").all();
+    chk.close();
+    assert.ok(rows.length >= 1, `6c-${mode} must restore snapshot entry`);
   }
 
   // (6c-locked-existing-db) Locked DB -> exits non-zero, preserves DB bytes + journal_mode + restore/
@@ -3121,6 +3142,31 @@ test("W17C-1 R2 (P0-6): Native --internal-replica-restore safety matrix (6c-6j: 
     const row = chk.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
     chk.close();
     assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73" });
+  }
+
+  // (6f-b-concurrent-writer-long-lock) Writer holds lock >2000ms -> exits non-zero, preserves restore/ + inode + thread 73!
+  {
+    const dir = freshDir("r2-6fb-lock");
+    const dataDir = join(dir, "data");
+    stageRestore(dataDir);
+    const dbPath = join(dataDir, "stillfail.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA user_version = 13;");
+    db.close();
+    const inoBefore = statSync(dbPath).ino;
+    const writer = new DatabaseSync(dbPath);
+    writer.exec("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER NOT NULL, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, project TEXT, project_locked INTEGER NOT NULL DEFAULT 0); INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (73, 'chat', 'CHAT', '73.0', 'LocalThread73Long', 1700000000000);");
+    const proc = spawn(pionBin, ["--internal-replica-restore", "--db", dbPath, "--data", dataDir], { stdio: "pipe" });
+    const code = await new Promise<number | null>((resolve) => proc.on("close", resolve));
+    writer.exec("COMMIT;");
+    writer.close();
+    assert.notEqual(code, 0, "6f-b must exit non-zero on >2000ms writer lock");
+    assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "6f-b preserves restore/ready.json");
+    assert.equal(statSync(dbPath).ino, inoBefore, "6f-b preserves inode");
+    const chk = new DatabaseSync(dbPath, { readOnly: true });
+    const row = chk.prepare("SELECT id, title FROM threads WHERE id = 73").get() as { id: number; title: string } | undefined;
+    chk.close();
+    assert.deepEqual(row ? { ...row } : null, { id: 73, title: "LocalThread73Long" });
   }
 
   // (6g-partial-4-core-tables-restores-turns)

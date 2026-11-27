@@ -874,20 +874,102 @@ fn handle_connect_inbound_event(
         if !connects.workspace.should_deliver_thread(connect_id, m.channel, m.thread_ts, m.addressed) {
           return true
         }
-        let tid = match existing_tid {
-          Some(id) => id
-          None => match st_db.ensure_thread(
-            meta.config_surface,
-            m.channel,
-            m.thread_ts,
-            None,
-            Some(m.user),
-            now_ms,
-            home=Some(meta.ws),
-          ) {
-            Ok(id) => id
+        let sess_scope = if meta.single { m.channel } else { m.channel + "/" + m.thread_ts }
+        let default_skey = connect_id + ":" + sess_scope
+        // Security (P0-1): `threads.home` is a SESSION KEY (not a workspace ID!).
+        // Ensure/create the owning session FIRST when creating a new thread so `threads.home = default_skey`
+        // atomically resolves `COALESCE(h.ws, home_ws) == meta.ws` in `thread_visible_in_ws`!
+        let ensure_default_session = fn() -> Bool {
+          let exists_sess = match st_db.get_session(default_skey) {
+            Ok(Some(existing_row)) => {
+              if !session_belongs_to_ws(existing_row.ws, meta.ws, core.config.home_workspace) {
+                return false
+              }
+              true
+            }
+            Ok(None) => false
             Err(_) => return false
           }
+          if !exists_sess {
+            let tok = match station_sys::random_hex(32) {
+              Ok(h) => h
+              Err(_) => return false
+            }
+            let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+            let safe_ws = sanitize_path_segment(meta.ws)
+            let safe_cid = sanitize_path_segment(connect_id)
+            let raw_dir_name = if !meta.single {
+              m.channel + "-" + m.thread_ts.replace(".", "-")
+            } else {
+              sess_scope
+            }
+            let dir_name = sanitize_path_segment(raw_dir_name)
+            let sess_ws_dir = match meta.cwd {
+              Some(c) => {
+                if path_has_parent_traversal(c) {
+                  return false
+                }
+                c
+              }
+              None => nodepath::join(sep, [core.config.data_dir, "sessions", safe_ws, safe_cid, dir_name, "workspace"])
+            }
+            let _ = station_sys::mkdir_p(sess_ws_dir)
+            let new_sess = station_store::NewSession::{
+              key: default_skey,
+              connect: connect_id,
+              sess_scope: sess_scope,
+              title: None,
+              created_by: Some(m.user),
+              created_by_sub: None,
+              runtime: meta.runtime,
+              profile: meta.profile,
+              model: None,
+              effort: None,
+              workspace: sess_ws_dir,
+              cwd: meta.cwd,
+              token: tok,
+              created_at: now_ms,
+              last_active_at: now_ms,
+              ws: Some(meta.ws),
+              told_notes: 0L,
+            }
+            match st_db.insert_session(new_sess) {
+              Ok(_) => {
+                core.agents.register_adopted_token(default_skey, tok)
+                let _ = core.agents.adopt_all_active_tokens_from_store(core.store)
+              }
+              Err(_) => return false
+            }
+          }
+          true
+        }
+        let tid = match existing_tid {
+          Some(id) => id
+          None => {
+            if !ensure_default_session() {
+              return false
+            }
+            match st_db.ensure_thread(
+              meta.config_surface,
+              m.channel,
+              m.thread_ts,
+              None,
+              Some(m.user),
+              now_ms,
+              home=Some(default_skey),
+            ) {
+              Ok(id) => id
+              Err(_) => return false
+            }
+          }
+        }
+        // Verify returned thread row genuinely belongs to `meta.ws` (protects against concurrent race).
+        let tid_vis = match station_whole::thread_visible_in_ws(st_db, tid, meta.ws, core.config.home_workspace) {
+          Ok(b) => b
+          Err(_) => false
+        }
+        if !tid_vis {
+          return false
         }
         let active_sessions : Array[String] = []
         let mut had_left_session = false
@@ -925,73 +1007,11 @@ fn handle_connect_inbound_event(
           Err(_) => return false
         }
         if active_sessions.length() == 0 && (!had_left_session || m.addressed) {
-          let sess_scope = if meta.single { m.channel } else { m.channel + "/" + m.thread_ts }
-          let skey = connect_id + ":" + sess_scope
-          let exists_sess = match st_db.get_session(skey) {
-            Ok(Some(existing_row)) => {
-              // Security (P0-1): Refuse reusing an existing session belonging to a different workspace!
-              if !session_belongs_to_ws(existing_row.ws, meta.ws, core.config.home_workspace) {
-                return false
-              }
-              true
-            }
-            Ok(None) => false
-            Err(_) => return false
+          if !ensure_default_session() {
+            return false
           }
-          if !exists_sess {
-            let tok = match station_sys::random_hex(32) {
-              Ok(h) => h
-              Err(_) => return false
-            }
-            let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
-            // 1:1 with TS `station/src/sessions/hub.ts:2236-2237`:
-            // `<dataDir>/sessions/<connect.id>/<dir>/workspace` with strict path sanitization.
-            let safe_cid = sanitize_path_segment(connect_id)
-            let raw_dir_name = if !meta.single {
-              m.channel + "-" + m.thread_ts.replace(".", "-")
-            } else {
-              sess_scope
-            }
-            let dir_name = sanitize_path_segment(raw_dir_name)
-            let sess_ws_dir = match meta.cwd {
-              Some(c) => {
-                if path_has_parent_traversal(c) {
-                  return false
-                }
-                c
-              }
-              None => nodepath::join(sep, [core.config.data_dir, "sessions", safe_cid, dir_name, "workspace"])
-            }
-            let _ = station_sys::mkdir_p(sess_ws_dir)
-            let new_sess = station_store::NewSession::{
-              key: skey,
-              connect: connect_id,
-              sess_scope: sess_scope,
-              title: None,
-              created_by: Some(m.user),
-              created_by_sub: None,
-              runtime: meta.runtime,
-              profile: meta.profile,
-              model: None,
-              effort: None,
-              workspace: sess_ws_dir,
-              cwd: meta.cwd,
-              token: tok,
-              created_at: now_ms,
-              last_active_at: now_ms,
-              ws: Some(meta.ws),
-              told_notes: 0L,
-            }
-            match st_db.insert_session(new_sess) {
-              Ok(_) => {
-                core.agents.register_adopted_token(skey, tok)
-                let _ = core.agents.adopt_all_active_tokens_from_store(core.store)
-              }
-              Err(_) => return false
-            }
-          }
-          match st_db.join_thread(tid, skey, connect_id, now_ms) {
-            Ok(_) => active_sessions.push(skey)
+          match st_db.join_thread(tid, default_skey, connect_id, now_ms) {
+            Ok(_) => active_sessions.push(default_skey)
             Err(_) => return false
           }
         }
@@ -3988,6 +4008,65 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         }
         None => ()
       }
+    }
+
+    // P1-4: Direct authenticated `POST /sessions/<key>/stop` interception (avoids whole_api.pion 501).
+    match extract_session_stop_key(head.method, norm_path) {
+      Some(stop_skey) => {
+        match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+          Some(old_resp) => {
+            send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+          None => ()
+        }
+        match peer_id {
+          station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+            let can_write = v.role == "owner" || v.role == "admin" || v.role == "member"
+            if !can_write {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "read-only member cannot stop session"))
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            let st_db = match st.core.store.require_open() {
+              Ok(s) => s
+              Err(_) => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(503, "store not ready"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            match st_db.get_session(stop_skey) {
+              Ok(Some(srow)) => {
+                if !session_belongs_to_ws(srow.ws, v.workspace, st.core.config.home_workspace) {
+                  send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "no such session"))
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                let stopped = st.live_runners.stop_session(ctx, stop_skey, host_shim::now_ms())
+                let body_s = base_codec::json_stringify(
+                  base_codec::json_obj([("ok", base_codec::json_bool(true)), ("stopped", base_codec::json_bool(stopped))]),
+                )
+                send_admin_resp_and_finish(ctx, astream.sid, station_http::HttpResponse::json(200, body_s))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+              _ => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "no such session"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+          }
+          _ => {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "unauthenticated peer rejected"))
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+        }
+      }
+      None => ()
     }
 
     let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
@@ -7054,8 +7133,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 return
               }
               ConnectEventValidation::LearnAndDeliver(remote_cid, desc) => {
-                // Security (P0-1): Validate event payload AND existing workspace ownership BEFORE
-                // mutating `remote_connects`, `connect_meta`, or saving `remote-connects.json`!
+                // Security (P0-1): Validate event payload, workspace ownership, AND prevent another peer
+                // from silently hijacking an existing `RemoteConnectRecord.station` before downstream passes!
                 match st.connect_meta.get(remote_cid) {
                   Some(existing_meta) => {
                     if existing_meta.ws != ws {
@@ -7065,24 +7144,33 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                   None => ()
                 }
+                match st.remote_connects.get(remote_cid) {
+                  Some(existing_rec) => {
+                    if existing_rec.station != auth.remote_id {
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("connect origin station mismatch", v2_bytes), None, v2_bytes, is_front)
+                      return
+                    }
+                  }
+                  None => ()
+                }
                 match parse_wire_chat_event(ev_json) {
                   Some(chat_ev) => {
-                    let rec = RemoteConnectRecord::{ station: auth.remote_id, described: desc }
-                    st.remote_connects.set(remote_cid, rec)
-                    st.connect_meta.set(remote_cid, connect_meta_from_described(remote_cid, desc, ws))
-                    save_remote_connects_file(
-                      ctx.ops_fs,
-                      st.remote_connects_path,
-                      st.remote_connects,
-                      ctx.self_pid,
-                      ctx.sep,
-                    )
                     let (ev_ch, ev_tts) = match chat_ev {
                       station_connects::ChatEvent::Message(m) => (m.channel, m.thread_ts)
                       station_connects::ChatEvent::OwnNotice(m) => (m.channel, m.thread_ts)
                       station_connects::ChatEvent::Changed(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
                       station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
+                    }
+                    // P1-4: Record explicit `movedTo` thread route in `ConnectWorkspace::route_thread`.
+                    match base_codec::json_get(req, "movedTo") {
+                      Some(base_codec::Json::Str(mt)) => {
+                        let mt_trim = mt.trim()
+                        if mt_trim.length() > 0 && mt_trim != ctx.station_key.id {
+                          st.connects.workspace.route_thread(remote_cid, ev_ch, ev_tts, Some(mt_trim))
+                        }
+                      }
+                      _ => ()
                     }
                     // `movedTo` forwarding (P1: use `ask_peer_rpc` so caller is answered only after target confirms).
                     match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
@@ -7116,6 +7204,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       }
                       None => ()
                     }
+                    let prev_meta_opt = st.connect_meta.get(remote_cid)
+                    st.connect_meta.set(remote_cid, connect_meta_from_described(remote_cid, desc, ws))
                     let ok = handle_connect_inbound_event(
                       st.core,
                       st.connects,
@@ -7131,9 +7221,22 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       },
                     )
                     if ok {
+                      let rec = RemoteConnectRecord::{ station: auth.remote_id, described: desc }
+                      st.remote_connects.set(remote_cid, rec)
+                      save_remote_connects_file(
+                        ctx.ops_fs,
+                        st.remote_connects_path,
+                        st.remote_connects,
+                        ctx.self_pid,
+                        ctx.sep,
+                      )
                       let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
                       ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
                     } else {
+                      match prev_meta_opt {
+                        Some(pm) => st.connect_meta.set(remote_cid, pm)
+                        None => st.connect_meta.remove(remote_cid)
+                      }
                       ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("connect.event delivery refused", v2_bytes), None, v2_bytes, is_front)
                     }
                   }

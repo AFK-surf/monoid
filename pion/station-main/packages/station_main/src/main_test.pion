@@ -1304,9 +1304,9 @@ test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wi
     }
   }
 
-  // P0-1: Profile authorization (allowedIn / borrowed / withheld / enabled / runtime mismatch / unknown)
+  // P0-1 & P0-2: Profile authorization (`share.borrowed` / `share.workspaces` / `withheld` / `enabled` / `machine` / `access` / `disabledRuntimes`)
   let cfg = parse(
-    "{\"profiles\":[{\"id\":\"p-home\",\"runtime\":\"claude\",\"withheld\":[\"ws-other\"]},{\"id\":\"p-borrowed\",\"runtime\":\"claude\",\"borrowed\":true,\"share\":{\"workspaces\":[\"ws-shared\"]}},{\"id\":\"p-off\",\"runtime\":\"claude\",\"enabled\":false}]}",
+    "{\"disabledRuntimes\":[\"grok\"],\"profiles\":[{\"id\":\"p-home\",\"runtime\":\"claude\",\"withheld\":[\"ws-other\"]},{\"id\":\"p-borrowed\",\"runtime\":\"claude\",\"share\":{\"borrowed\":true,\"workspaces\":[\"ws-shared\"]}},{\"id\":\"p-off\",\"runtime\":\"claude\",\"enabled\":false},{\"id\":\"p-machine\",\"runtime\":\"claude\",\"machine\":true},{\"id\":\"p-api\",\"runtime\":\"claude\",\"access\":{\"kind\":\"api-provider\",\"key\":\"sk-test\",\"provider\":\"openrouter\",\"endpoint\":\"https://api.example/v1\",\"protocol\":\"anthropic\"},\"models\":[\"claude-sonnet-4\"],\"maxConcurrentSessions\":4},{\"id\":\"p-grok\",\"runtime\":\"grok\"}]}",
   )
   assert_true(
     resolve_authorized_profile(cfg, "p-home", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_ok(),
@@ -1318,11 +1318,11 @@ test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wi
   )
   assert_true(
     resolve_authorized_profile(cfg, "p-borrowed", station_drivers::RuntimeKind::Claude, "ws-shared", "ws-home", "/data", "/").is_ok(),
-    "borrowed profile allowed in share.workspaces",
+    "share.borrowed profile allowed in share.workspaces",
   )
   assert_true(
     resolve_authorized_profile(cfg, "p-borrowed", station_drivers::RuntimeKind::Claude, "ws-other", "ws-home", "/data", "/").is_err(),
-    "borrowed profile refused outside share.workspaces",
+    "share.borrowed profile refused outside share.workspaces",
   )
   assert_true(
     resolve_authorized_profile(cfg, "p-off", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_err(),
@@ -1332,6 +1332,35 @@ test "W17C-1 R2: workspace profile/CWD isolation, message envelope, Codex/ACP wi
     resolve_authorized_profile(cfg, "p-home", station_drivers::RuntimeKind::Codex, "ws-home", "ws-home", "/data", "/").is_err(),
     "runtime mismatch refused",
   )
+  assert_true(
+    resolve_authorized_profile(cfg, "p-grok", station_drivers::RuntimeKind::Grok, "ws-home", "ws-home", "/data", "/").is_err(),
+    "disabledRuntimes blocks grok",
+  )
+  match resolve_authorized_profile(cfg, "p-machine", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/") {
+    Ok(pm) => {
+      assert_true(pm.machine, "machine flag parsed")
+      assert_str_eq(pm.home, "")
+    }
+    Err(e) => panic("expected machine profile ok: " + e)
+  }
+  match resolve_authorized_profile(cfg, "p-api", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/") {
+    Ok(pa) => {
+      assert_true(station_drivers::access_kind_eq(pa.access_kind, station_drivers::AccessKind::ApiProvider), "api-provider access_kind parsed")
+      assert_str_eq(pa.access_key, "sk-test")
+      assert_true(pa.models.length() == 1 && pa.models[0] == "claude-sonnet-4", "models parsed")
+      assert_true(pa.max_concurrent_sessions == Some(4), "maxConcurrentSessions parsed")
+    }
+    Err(e) => panic("expected api-provider profile ok: " + e)
+  }
+  // P1-4: Codex steer uses `turn/steer` + `turnId`, cancel uses `turn/interrupt` + `turnId`.
+  let cs = encode_runtime_steer(station_drivers::RuntimeKind::Codex, "nudge", "th-42", 5, turn_id=Some("trn-9"))
+  assert_true(cs.contains("\"method\":\"turn/steer\"") && cs.contains("\"turnId\":\"trn-9\""), "codex turn/steer with turnId")
+  let ccx = encode_runtime_cancel(station_drivers::RuntimeKind::Codex, "th-42", 6, turn_id=Some("trn-9"))
+  assert_true(ccx.contains("\"method\":\"turn/interrupt\"") && ccx.contains("\"turnId\":\"trn-9\""), "codex turn/interrupt with turnId")
+  match parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"turn\":{\"id\":\"trn-9\"}}}") {
+    ParsedAgentEvent::CodexTurnStarted(tid) => assert_str_eq(tid, "trn-9")
+    _ => panic("expected CodexTurnStarted")
+  }
   assert_true(
     resolve_authorized_profile(cfg, "../evil", station_drivers::RuntimeKind::Claude, "ws-home", "ws-home", "/data", "/").is_err(),
     "unknown/traversal profile refused when profiles configured",
