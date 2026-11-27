@@ -43,7 +43,10 @@ fn stage_node(
       d
       // (as wide as what it holds is laid out where the stage has the room, else the stage)
       .width(By(fn() { Some(dmax(0.0, dmin(room().0, x.w))) }))
-      .max_height(By(fn() { Some(dmax(0.0, room().1)) }))
+      .max_height(By(fn() {
+        let h = room().1
+        Some(dmax(0.0, if x.stage_scroll is Some(_) { dmin(h, stage_scroll_h) } else { h }))
+      }))
       .gap(Is(stage_gap))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
@@ -54,20 +57,9 @@ fn stage_node(
       .presses(Is(true))
       .on_press(fn() {  })
       |> ignore
-      // Scrollable stages hold a fixed column height (capped to `stage_scroll_h`) so switching filter tabs or content
-      // heights never shifts the tabs/buttons under the person's finger or pointer; shorter cards center inside the slot.
-      if x.stage_scroll is Some(_) {
-        d.height(By(fn() { Some(dmax(0.0, dmin(room().1, stage_scroll_h))) })) |> ignore
-      }
       // what it holds: scrolled vertically at readable width when `stage_scroll` is given, else scaled to fit whole
       match x.stage_scroll {
-        Some(sc) =>
-          d.box(fn(slot) {
-            style_node(slot, fn() { stage_scroll_slot })
-            slot.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-            stage_scroll_node(slot, x.w, sc, x.stage_bg, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
-          })
-          |> ignore
+        Some(sc) => stage_scroll_node(d, x.w, sc, x.stage_bg, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
         None => stage_fit_node(d, x.w, fn() { look().words }, fn(b) { (nodes.body)(b, close) })
       }
       // under it: what is chosen of it over 关闭 and its foot's buttons, on the night
@@ -94,11 +86,6 @@ fn stage_node(
 }
 
 ///|
-/// Maximum column height for a scrollable stage (`stage_scroll_node`): fills small/medium screens while capping tall
-/// large monitors so bottom controls stay comfortable and stationary across filter switches.
-let stage_scroll_h : Double = 700.0
-
-///|
 /// Preview slot for a scrollable stage: vertically centers short previews that hug their own height.
 // kept across runs: a value (no field of it changes)
 let stage_scroll_slot : @ui.Style = @ui.css("justify=JCenter w=Full")
@@ -106,6 +93,7 @@ let stage_scroll_slot : @ui.Style = @ui.css("justify=JCenter w=Full")
 ///|
 /// Shared poster layout box inside a stage's `by_room`: laid out `most` wide out of flow, horizontally centered in
 /// `room.width()`, scaled by `scale_fn` about its top center, with a companion spacer reserving `room.tall * across`.
+/// Returns the measured poster node so callers can read `room.tall(whole)` directly.
 #callsite(autofill(loc))
 fn stage_poster_box(
   holder : @view.View,
@@ -114,7 +102,7 @@ fn stage_poster_box(
   scale_fn : (@view.View) -> () -> Double,
   body : (@view.View) -> Unit,
   loc~ : SourceLoc,
-) -> Unit {
+) -> @view.View {
   let made : Ref[@view.View?] = Ref(None)
   holder.box(made_for=loc, fn(b) {
     made.val = Some(b)
@@ -127,6 +115,7 @@ fn stage_poster_box(
   whole.offset(By(fn() { ((room.width() - most) / 2.0, 0.0) })).scale(By(scale_fn(whole)), about=@view.Pivot::At(0.5, 0.0))
   |> ignore
   holder.box(fn(r) { r.height(By(fn() { Some(room.tall(whole) * across()) })) |> ignore }) |> ignore
+  whole
 }
 
 ///|
@@ -153,6 +142,7 @@ fn stage_fit_node(parent : @view.View, most : Double, seen : () -> Double, body 
       },
       body,
     )
+    |> ignore
   })
   .shrink(Is(1.0))
   .min_height(Is(Some(0.0)))
@@ -164,7 +154,9 @@ fn stage_fit_node(parent : @view.View, most : Double, seen : () -> Double, body 
 /// What a scrollable stage holds in `parent` (a column that gives it what it leaves under the rest): laid out `most`
 /// wide, scaled horizontally only when the stage is narrower than `most`, and scrolled vertically inside a
 /// `pane_corner` clipped viewport whenever taller than the room the column leaves it — keeping long lists readable
-/// instead of shrinking them into a narrow strip. Short pictures hug their own height with zero scroll.
+/// instead of shrinking them into a narrow strip. Short pictures hug their own height with zero scroll, while the slot
+/// holds the highest height seen while open (monotonic non-shrinking) so switching provider filters to a shorter group
+/// never shifts the controls below under the person's finger or pointer.
 fn stage_scroll_node(
   parent : @view.View,
   most : Double,
@@ -173,26 +165,49 @@ fn stage_scroll_node(
   seen : () -> Double,
   body : (@view.View) -> Unit,
 ) -> Unit {
+  let peak_h : Ref[Double] = Ref(0.0)
   parent.by_room(fn(held, room) {
     let across = fn() { dmin(1.0, room.width() / most) }
-    // Outer rounded viewport clips both top and bottom smoothly while scrolling; keeping `.scrolls` on an inner child
-    // places the vertical scroll container strictly between scrolled cards and this rounded frame (corners.mbt).
-    held.shrink(Is(1.0)).min_height(Is(Some(0.0))).radius(By(fn() { pane_corner * across() })).clips(Is(true)) |> ignore
-    match bg {
-      Some(g) => held.ground(By(g)) |> ignore
-      None => ()
-    }
-    held.box(fn(sc) {
-      sc
-      .shrink(Is(1.0))
-      .min_height(Is(Some(0.0)))
-      .scrolls(
-        scroll,
-        slop=@ui.touch_slop(),
-        bar=@ui.tree_scroll_bar(),
-        bar_clear=fn() { (pane_corner * across() / 2.0, pane_corner * across() / 2.0) },
-        fn(content) { stage_poster_box(content, room, most, fn(_) { across }, body) },
-      )
+    held.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    let whole_ref : Ref[@view.View?] = Ref(None)
+    held.box(fn(slot) {
+      style_node(slot, fn() { stage_scroll_slot })
+      slot.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      // Outer rounded viewport clips both top and bottom smoothly while scrolling; keeping `.scrolls` on an inner child
+      // places the vertical scroll container strictly between scrolled cards and this rounded frame (corners.mbt).
+      slot.box(fn(frame) {
+        frame.shrink(Is(1.0)).min_height(Is(Some(0.0))).radius(By(fn() { pane_corner * across() })).clips(Is(true))
+        |> ignore
+        match bg {
+          Some(g) => frame.ground(By(g)) |> ignore
+          None => ()
+        }
+        frame.box(fn(sc) {
+          sc
+          .shrink(Is(1.0))
+          .min_height(Is(Some(0.0)))
+          .scrolls(
+            scroll,
+            slop=@ui.touch_slop(),
+            bar=@ui.tree_scroll_bar(),
+            bar_clear=fn() { (pane_corner * across() / 2.0, pane_corner * across() / 2.0) },
+            fn(content) { whole_ref.val = Some(stage_poster_box(content, room, most, fn(_) { across }, body)) },
+          )
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      let whole = whole_ref.val.unwrap()
+      // Monotonic slot height: hugs short previews on open (zero extra gap under short cards like share-pool),
+      // and never shrinks when a filter switches to fewer rows so bottom tabs & buttons stay stationary.
+      slot.height(By(fn() {
+        let h = room.tall(whole) * across()
+        if h > peak_h.val {
+          peak_h.val = h
+        }
+        Some(peak_h.val)
+      }))
       |> ignore
     })
     |> ignore
