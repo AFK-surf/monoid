@@ -3993,7 +3993,7 @@ test("a_phone_s_ports_are_taken_before_its_app_says_it_is_a_phone_and_lent_once_
   const { host, core } = await started();
   takeAll(core.inner.adb);
   const exp = Math.floor(host.nowMs() / 1000) + 3600;
-  core.inner.adb.heard("ws1/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
+  core.inner.adb.heard("ws/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
   const ui = core.connect();
   const ported = await ask(host, core, ui, 1, "adb.ports", { connect: 41234, device: "Pixel" });
   assert.equal(ported, null);
@@ -4003,7 +4003,7 @@ test("a_phone_s_ports_are_taken_before_its_app_says_it_is_a_phone_and_lent_once_
   await host.settle();
   const values = new Map();
   apply(host, values);
-  assert.deepEqual(v(values, 2).lends.map((l: J) => l.station), ["ws1/st1"]);
+  assert.deepEqual(v(values, 2).lends.map((l: J) => l.station), ["ws/st1"]);
   // The internal offer deadline is not the end of a chat's grant (it can end sooner or be renewed).
   assert.equal(v(values, 2).until, undefined);
   core.close();
@@ -4018,16 +4018,16 @@ test("a_phone_lends_for_its_chats_grants_only_while_its_switch_is_on_and_the_swi
   await ask(host, core, ui, 1, "client.device", { app: "android", build: "1" });
   await ask(host, core, ui, 2, "adb.ports", { connect: 41234, device: "Pixel" });
   subscribe(core, ui, 3, { topic: "adbShare" });
-  core.inner.adb.heard("ws1/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
+  core.inner.adb.heard("ws/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
   await host.settle();
   const values = new Map();
   apply(host, values);
   // off at first: granted, and lent to none
-  assert.deepEqual([v(values, 3).on, v(values, 3).wanted, v(values, 3).lends], [false, ["ws1/st1"], []]);
+  assert.deepEqual([v(values, 3).on, v(values, 3).wanted, v(values, 3).lends], [false, ["ws/st1"], []]);
   await ask(host, core, ui, 4, "adb.on", { on: true });
   await host.settle();
   apply(host, values);
-  assert.deepEqual([v(values, 3).on, v(values, 3).lends.map((l: J) => l.station)], [true, ["ws1/st1"]]);
+  assert.deepEqual([v(values, 3).on, v(values, 3).lends.map((l: J) => l.station)], [true, ["ws/st1"]]);
   await host.settle();
   host.takeEmitted();
   core.close();
@@ -4053,7 +4053,7 @@ test("a_phone_s_grants_kept_on_the_device_lend_it_from_a_core_started_anew", asy
   const { host, core } = await started();
   takeAll(core.inner.adb);
   const exp = Math.floor(host.nowMs() / 1000) + 3600;
-  core.inner.adb.heard("ws1/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
+  core.inner.adb.heard("ws/st1", { id: "g1", session: "ember:c1", chat: "c1", reason: "调试", status: "granted", scope: "chat", exp, at: 1 });
   await host.settle();
   host.takeEmitted();
   core.close();
@@ -4066,7 +4066,7 @@ test("a_phone_s_grants_kept_on_the_device_lend_it_from_a_core_started_anew", asy
   const emitted = host.takeEmitted();
   const values = new Map(emitted.map(([, m]) => m as J).filter((m) => "value" in m).map((m) => [m.id, m.value]));
   assert.ok(values.has(1), JSON.stringify(emitted).slice(0, 2000));
-  assert.deepEqual([v(values, 1).known, v(values, 1).wanted, v(values, 1).grants.map((g: J) => g.id)], [true, ["ws1/st1"], ["g1"]]);
+  assert.deepEqual([v(values, 1).known, v(values, 1).wanted, v(values, 1).grants.map((g: J) => g.id)], [true, ["ws/st1"], ["g1"]]);
   again.close();
 });
 
@@ -4078,10 +4078,10 @@ test("a_phone_shows_each_chat_once_ordered_by_the_last_actual_use", async () => 
     id, session: `session-${id}`, chat, reason: `reason-${id}`, chatTitle: `title-${chat}`,
     status: "granted", scope: "chat", exp, at: 1, ...(lastUsedAt === undefined ? {} : { lastUsedAt }),
   });
-  core.inner.adb.heard("ws1/st1", grant("old", "chat-a", at - 120_000));
-  core.inner.adb.heard("ws1/st1", grant("other", "chat-b", at - 90_000));
-  core.inner.adb.heard("ws1/st1", grant("new", "chat-a", at - 60_000));
-  core.inner.adb.heard("ws1/st1", grant("unknown", "chat-c"));
+  core.inner.adb.heard("ws/st1", grant("old", "chat-a", at - 120_000));
+  core.inner.adb.heard("ws/st1", grant("other", "chat-b", at - 90_000));
+  core.inner.adb.heard("ws/st1", grant("new", "chat-a", at - 60_000));
+  core.inner.adb.heard("ws/st1", grant("unknown", "chat-c"));
   assert.deepEqual(core.inner.adb.grants().map((g: J) => [g.id, g.chat, g.lastUsedAt]), [
     ["new", "chat-a", at - 60_000], ["other", "chat-b", at - 90_000], ["unknown", "chat-c", undefined],
   ]);

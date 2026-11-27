@@ -650,7 +650,7 @@ export class Core {
         read: (address) => inner.adb.readGrants(address),
         event: (address, name, data, readGen) =>
           name === "adb-grant"
-            ? inner.adb.heard(address, data, readGen, inner.workspaces.owner(ofAddress(address)) ?? undefined)
+            ? inner.adb.heard(address, data, readGen)
             : name === "adb-revoke"
               ? inner.adb.heardRevoke(address, data)
               : undefined,

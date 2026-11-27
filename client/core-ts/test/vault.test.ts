@@ -4651,3 +4651,61 @@ test("vault calls r15: #putItem offline-fallback gate, accepted-PUT preservation
   assert.equal(r2.st.vaults.size, vaultsBefore, "stale #keepSaved after #boxKey must NOT auto-create a personal vault");
   r2.core.close();
 });
+
+test("vault calls r16: #key->#give stops on single-vault lock and browser renewal #putItem blocks offline fallback on single-vault lock", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "browser", name: "Site", fields: { cookies: "old=1" }, domains: ["example.com"], notes: "" },
+    listing: { name: "Site", kind: "browser", modes: ["browser"], hosts: ["example.com"] },
+  })) as { id: string };
+
+  // Browser cookie renewal: seal newer cookies to this device's box pub; on PUT /vault/items station returns 503
+  // (localFallback) AND single-vault lock fires -> renewal #putItem fails auth_stale (0 local item overwrite) and
+  // approve returns auth_stale with 0 /vault/grants!
+  const boxPub = v.keys[0]!.cert.box;
+  const eph = fill(44);
+  const renewalId = "ren_r16";
+  const sealedCookies = sealWith(boxPub, new TextEncoder().encode(JSON.stringify({ cookies: "new=2" })), saveContext("ws", renewalId), eph);
+  const keeper = fill(45);
+  const reqRenew: Request = {
+    id: "r_renew_r16",
+    ws: "ws",
+    vault: v.id,
+    item: id,
+    session: "k1",
+    chat: "7",
+    mode: "browser",
+    reason: "browse",
+    box: boxPublic(keeper),
+    at: 30,
+    status: "pending",
+    renewal: { id: renewalId, sealed: [{ device: v.keys[0]!.cert.device, box: boxPub, secret: sealedCookies }] },
+  };
+  r.st.requests.push(reqRenew);
+  r.push("vault-request", reqRenew);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedOnRenewPut = false;
+  let vaultPutCount = 0;
+  stationReplies(r.host, (httpReq) => {
+    if (httpReq.method === "PUT" && httpReq.url.includes("/vault/vaults")) vaultPutCount++;
+    if (!bumpedOnRenewPut && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedOnRenewPut = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  const versionBefore = r.st.items.get(id)!.version;
+  await fails(r.ask("vault.approve", { request: "r_renew_r16", scope: "once" }), "auth_stale");
+  await r.host.time.pass(100);
+  assert.equal(bumpedOnRenewPut, true, "browser renewal PUT must have been attempted and hit single-vault lock");
+  assert.equal(r.st.items.get(id)!.version, versionBefore, "stale browser renewal #putItem must not commit new item version");
+  assert.equal(r.st.grants.length, 0, "stale browser renewal approve must issue 0 grants");
+  assert.equal(vaultPutCount, 0, "background #give forked from #key must not PUT /vault/vaults after single-vault lock");
+  r.core.close();
+});

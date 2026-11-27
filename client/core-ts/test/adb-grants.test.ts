@@ -225,3 +225,94 @@ test("r15: ADB grants are owner-bound and isolated across workspace owner switch
     runner.shutdown();
   }
 });
+
+test("r16: ADB rejects legacy unowned GRANTS_KEY array, never falls back to subs()[0], prunes same-owner boundary, and gates #revoke after signRevokes", async () => {
+  const host = new FakeHost();
+  const exp = Math.floor(host.nowMs() / 1000) + 3600;
+  // 1. Pre-populate legacy unowned array in GRANTS_KEY -> must NOT be claimed by current account on startup
+  host.store("adb.grants", {
+    "ws/st": [{ id: "legacy-unowned", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 1 }],
+  });
+  host.appKeys = true;
+  const runner = new Runner(host.time.clock);
+  const store = new Store(host, runner);
+  let owner: string | null = "acct-a";
+  let askCount = 0;
+  let bumpInSignRevokes = false;
+  const link = {
+    ask: (_head: unknown, { adb: ask }: { adb: { op: string; request?: string } }) =>
+      Effect.sync(() => {
+        askCount++;
+        let sent = false;
+        const body =
+          ask.op === "grants"
+            ? { signs: true, grants: [{ id: "g-fresh", chat: "c2", session: "s2", reason: "debug", status: "granted", exp, at: 2 }] }
+            : { request: { id: ask.request, status: "ended" } };
+        const bytes = new TextEncoder().encode(JSON.stringify(body));
+        return { status: 200, body: { take: Effect.sync(() => { if (sent) return null; sent = true; return bytes; }) } };
+      }),
+  };
+  const mesh = { deviceId: () => "phone", link: () => Effect.succeed(link) } as unknown as Mesh;
+  const stub = personalStub();
+  const personal = {
+    ...stub.personal,
+    signRevokes: () =>
+      Effect.sync(() => {
+        if (bumpInSignRevokes) {
+          bumpInSignRevokes = false;
+          store.authGen.bumpWorkspace("ws");
+        }
+        return [{ body: { station: "ws/st", request: "g-rev", exp }, sig: { key: "k", alg: "Ed25519", sig: "s" } }];
+      }),
+  } as unknown as typeof stub.personal;
+  const adb = new Adb({
+    ...stub,
+    personal,
+    subOf: () => owner,
+    subs: () => [{ sub: "acct-a", email: "a@x" }],
+    stationsOf: () => ["ws/st", "ws/relay"],
+    host,
+    runner,
+    store,
+    mesh: () => Effect.succeed(mesh),
+    credentials: () => (() => Effect.succeed({} as never)),
+    relays: () => [],
+    lends: () => false,
+  });
+  takeAll(adb);
+  try {
+    await host.time.pass(50);
+    assert.deepEqual(adb.grants(), [], "legacy unowned GRANTS_KEY array must be ignored on startup");
+
+    // 2. Same-owner boundary prunes cached grant immediately until fresh readGrants
+    const gen1 = store.authGen.workspaceAuthGen("ws");
+    adb.heard("ws/st", { id: "g-same-owner", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 1 }, gen1, "acct-a");
+    assert.deepEqual(adb.grants().map((g) => g.id), ["g-same-owner"]);
+    store.authGen.bumpWorkspace("ws");
+    assert.deepEqual(adb.grants(), [], "same-owner workspaceAuthGen bump must immediately prune old-gen cached grants");
+    await runner.run(adb.readGrants("ws/st"));
+    assert.deepEqual(adb.grants().map((g) => g.id), ["g-fresh"], "fresh readGrants under new gen repopulates grants()");
+
+    // 3. subOf("ws") becomes null while subs() still has acct-a -> never falls back to subs()[0]
+    owner = null;
+    store.authGen.bumpWorkspace("ws");
+    assert.deepEqual(adb.grants(), [], "null workspace owner must never fall back to subs()[0]");
+
+    // 4. #revoke: bumpWorkspace during signRevokes -> auth_stale, 0 #revoked mutations, 0 primary/relay askAt
+    owner = "acct-a";
+    store.authGen.bumpWorkspace("ws");
+    const genRev = store.authGen.workspaceAuthGen("ws");
+    adb.heard("ws/st", { id: "g-rev", chat: "c3", session: "s3", reason: "debug", status: "granted", exp, at: 3 }, genRev, "acct-a");
+    askCount = 0;
+    host.storage.delete("adb.revoked");
+    bumpInSignRevokes = true;
+    await assert.rejects(
+      () => runner.run(adb.run({ kind: "revoke", station: "ws/st", request: "g-rev" })),
+      (e: { code?: string }) => e?.code === "auth_stale",
+    );
+    assert.equal(askCount, 0, "stale #revoke must issue 0 primary/relay askAt calls");
+    assert.equal(host.storage.has("adb.revoked"), false, "stale #revoke must not persist adb.revoked");
+  } finally {
+    runner.shutdown();
+  }
+});
