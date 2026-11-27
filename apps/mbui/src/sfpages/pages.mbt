@@ -62,6 +62,7 @@ pub fn reset() -> Unit {
   sent_unseen_reset()
   changelog_reset()
   share_looks_reset()
+  excerpt_share_reset()
   font_setting_reset()
   notify_page_reset()
   usage_reset()

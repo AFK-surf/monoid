@@ -177,6 +177,13 @@ fn chat_quote_node(
   rows : ChatBodyList,
 ) -> Unit {
   let draft = r.station + ":" + r.session
+  // Register this chat's single-message text selection for right-click "分享为图片" in sfdesk/context_menu.
+  excerpt_share_register(v, fn() {
+    match @signals.untracked(fn() { chat_picked_message(v, rows) }) {
+      Some((p, m)) if p.text.trim(chars=" \n\t\r") != "" => Some(fn() { chat_excerpt_share_of(src, here, p, m) })
+      _ => None
+    }
+  })
   // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
   @ui.words_cmd_pick(
     v,
@@ -260,6 +267,12 @@ fn chat_quote_node(
           },
         })
       }
+      items.push({
+        label: @sf.t("web-main.chat.shareExcerpt"),
+        icon: "share",
+        mark: true,
+        press: fn() { chat_excerpt_share_of(src, here, p, m, whole~) },
+      })
       // (one not the chat's yet has no turn to share, no link)
       match (if m.ts == "" { None } else { @signals.untracked(fn() { message_share_of(src, here, fn() { m }) }) }) {
         Some(s) => {

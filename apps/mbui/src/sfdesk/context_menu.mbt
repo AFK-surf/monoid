@@ -26,6 +26,7 @@ pub struct ContextMenu {
   mut share_link : String
   mut share_words : String
   mut share_key : String
+  mut share_excerpt : (() -> Unit)?
 }
 
 ///|
@@ -43,6 +44,7 @@ pub let context : ContextMenu = {
   share_link: "",
   share_words: "",
   share_key: "",
+  share_excerpt: None,
 }
 
 ///|
@@ -124,6 +126,7 @@ fn context_asked(x : Double, y : Double, words : String, link? : String = "", im
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = if words.trim(chars=" \n\t") != "" { @sfpages.excerpt_share_for_picked() } else { None }
   // (a message's turn offered by another right click, elsewhere, is not this one's)
   match @signals.untracked(fn() { @sfbase.share_offered.get() }) {
     Some((ox, oy, _, _, _, _)) if ox != x || oy != y => @sfbase.share_offered.set(None)
@@ -144,6 +147,7 @@ fn context_field_at(id : Int, x : Double, y : Double, can : Int) -> Unit {
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = None
   // (a message's turn offered elsewhere is not this one's)
   match @signals.untracked(fn() { @sfbase.share_offered.get() }) {
     Some((ox, oy, _, _, _, _)) if ox != x || oy != y => @sfbase.share_offered.set(None)
@@ -167,6 +171,9 @@ fn context_share_at(x : Double, y : Double, go : () -> Unit, link : String, word
     context.field = 0
     context.field_can = 0
     context.words = @ui.picked_words_at(x, y)
+    context.share_excerpt = if context.words.trim(chars=" \n\t") != "" { @sfpages.excerpt_share_for_picked() } else { None }
+  } else if context.share_excerpt is None && context.words.trim(chars=" \n\t") != "" {
+    context.share_excerpt = @sfpages.excerpt_share_for_picked()
   }
   context.share = Some(go)
   context.share_link = link
@@ -193,6 +200,7 @@ fn context_reset() -> Unit {
   context.share_link = ""
   context.share_words = ""
   context.share_key = ""
+  context.share_excerpt = None
   context_menus.set([])
   context_menus_gone.clear()
   context_count.val = 0
@@ -380,6 +388,13 @@ fn context_items() -> Array[@sf.MenuItem?] {
     group()
     let words = context.words
     item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
+    match context.share_excerpt {
+      Some(go_excerpt) => {
+        group()
+        item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
+      }
+      None => ()
+    }
   }
   match context.share {
     Some(go) => {
