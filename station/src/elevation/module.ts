@@ -50,6 +50,6 @@ export const ElevationLive = Layer.effectDiscard(
       () => Effect.promise(() => elevation.stop()),
     );
     parts.routes(elevationRoutes(elevation));
-    parts.overview("elevation", (viewer) => elevation.view(managesStation(viewer)));
+    parts.overview("elevation", (viewer) => elevation.view(managesStation(viewer)), (viewer) => (managesStation(viewer) ? "1" : "0"));
   }),
 );

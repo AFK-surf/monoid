@@ -50,6 +50,6 @@ export const ScreenServiceLive = Layer.effectDiscard(
       () => Effect.promise(() => service.stop()),
     );
     parts.routes(screenServiceRoutes(service));
-    parts.overview("screenService", (viewer) => service.view(managesStation(viewer)));
+    parts.overview("screenService", (viewer) => service.view(managesStation(viewer)), (viewer) => (managesStation(viewer) ? "1" : "0"));
   }),
 );

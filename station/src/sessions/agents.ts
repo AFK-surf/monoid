@@ -74,7 +74,7 @@ import { Sharing } from "../share/index.ts";
 import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
 import { ChatShareIndexBuilder } from "../xshare/index-builder.ts";
-import { overview } from "../api/overview.ts";
+import { overview, type OverviewRound } from "../api/overview.ts";
 import { builtAt } from "../ops/version.ts";
 import type { ConnectKind } from "../connects/connections.ts";
 import { agentsRoutes } from "../api/admin.ts";
@@ -199,7 +199,7 @@ export type AgentsParts = {
   /// Its relay as the mesh sees it, for what other stations are told of its load (jobs/load.ts).
   net: Net;
   /// GET /overview as `viewer` sees it.
-  overview(viewer: Viewer, lang: Lang): Promise<unknown>;
+  overview(viewer: Viewer, lang: Lang, round?: OverviewRound): Promise<unknown>;
   /// The folders macOS protects, through still.fail Helper (helper/files.ts), shared by the drive and the directories
   /// people and agents name (ops/places.ts); null where there is no helper for them.
   helperFiles?: HelperFiles | null;
@@ -809,9 +809,9 @@ export const AgentsLive = (control: Control) =>
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
-      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, mcpServers: () => managedMcp.view(), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
+      const platformView = (viewer: Viewer, lang: Lang, round?: OverviewRound) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, mcpServers: () => managedMcp.view(), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang, round);
       // And the fields the station's parts add (parts.ts).
-      const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
+      const view = async (viewer: Viewer, lang: Lang, round?: OverviewRound) => ({ ...((await platformView(viewer, lang, round)) as object), ...(await parts.overviewOf(viewer, lang, round)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
       hub.onInterruptedChanged(() => events.overviewSoon("interrupted"));
