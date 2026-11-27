@@ -248,11 +248,13 @@ test "topic_kept and topic_shown_kept_params follow topic_policy_enabled while s
 }
 
 ///|
-test "TopicState::is_retained and is_confirmed distinguish retained (<0), empty (0/None), and confirmed (>=0/Some)" {
-  let retained_show : TopicState = { value: Some({ "terminals": [] }), error: None, version: -2, waiting: false }
-  let retained_last : TopicState = { value: Some({ "terminals": [] }), error: None, version: -3, waiting: false }
+test "TopicState::is_retained, is_confirmed, and is_confirmed_known distinguish retained, empty, unknown, outdated, and confirmed" {
+  let retained_show : TopicState = { value: Some({ "terminals": [], "known": true }), error: None, version: -2, waiting: false }
+  let retained_last : TopicState = { value: Some({ "terminals": [], "known": true }), error: None, version: -3, waiting: false }
   let empty_unconfirmed : TopicState = { value: None, error: None, version: 0, waiting: false }
-  let fresh : TopicState = { value: Some({ "terminals": [] }), error: None, version: 0, waiting: false }
+  let unknown_open : TopicState = { value: Some({ "terminals": [], "known": false, "open": true }), error: None, version: 0, waiting: false }
+  let outdated_known : TopicState = { value: Some({ "terminals": [], "known": true, "outdated": true, "open": true }), error: None, version: 1, waiting: false }
+  let fresh : TopicState = { value: Some({ "terminals": [], "known": true, "outdated": false }), error: None, version: 0, waiting: false }
   assert_true(opens_answered(retained_show) && retained_show.is_retained())
   assert_true(opens_answered(retained_last) && retained_last.is_retained())
   assert_false(opens_answered(retained_show) && !retained_show.is_retained())
@@ -260,7 +262,11 @@ test "TopicState::is_retained and is_confirmed distinguish retained (<0), empty 
   assert_false(retained_last.is_confirmed())
   assert_false(empty_unconfirmed.is_retained())
   assert_false(empty_unconfirmed.is_confirmed())
-  assert_true(opens_answered(fresh) && !fresh.is_retained() && fresh.is_confirmed())
+  assert_true(unknown_open.is_confirmed())
+  assert_false(unknown_open.is_confirmed_known())
+  assert_true(outdated_known.is_confirmed())
+  assert_false(outdated_known.is_confirmed_known())
+  assert_true(opens_answered(fresh) && !fresh.is_retained() && fresh.is_confirmed() && fresh.is_confirmed_known())
 }
 
 ///|
@@ -353,9 +359,9 @@ test "chat_remote_open timeout menu keeps live terminals guard and recovers when
   t.run_for(@sf.open_hold_ms + 50.0)
   assert_true(@sf.last_presented() > before)
 
-  // Fresh arrival (version = 1) with open: true makes live sub confirmed and capable while menu is still open.
+  // Fresh arrival (version = 1) with open: true makes live sub confirmed+known and capable while menu is still open.
   tree.event(t.time() + 10.0, fn() { terms_ver.set(1) })
   t.draw()
   let live_st = src.topic("terminals", { "station": Json::string("w1/s1") }).get()
-  assert_true(live_st.is_confirmed() && flag(live_st.value, "open"))
+  assert_true(live_st.is_confirmed_known() && flag(live_st.value, "open"))
 }

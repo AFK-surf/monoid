@@ -835,3 +835,47 @@ test("readOthers_routine_refresh_while_queued_preserves_at_and_never_drops_stati
   await d.settle();
   assert.deepEqual(others().presets.map((p) => p.id).sort(), [onA.id, onB.id].sort(), "both station a and station b presets must be present");
 });
+
+test("otherPresets_prunes_removed_station_and_drops_late_response", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  let releaseB!: () => void;
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const origB = b.answer;
+  let holdB = true;
+  b.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holdB) {
+      holdB = false;
+      return Effect.flatMap(Effect.promise(() => gateB), () => origB(viewer)(method, path, body));
+    }
+    return origB(viewer)(method, path, body);
+  };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id]);
+
+  // Remove station b from workspace membership while b's read is still in flight, then trigger readOthers.
+  const origShared = d.inner.data.shared.bind(d.inner.data);
+  d.inner.data.shared = ((topic: { workspace?: string }) => {
+    if (topic.workspace === WS) return { name: "W", stations: [{ id: a.id, name: "A" }], members: [ME, YOU].map((m) => ({ ...m, role: "member" })) };
+    return origShared(topic as never);
+  }) as typeof d.inner.data.shared;
+  d.views.readOthers(WS);
+
+  // Release b's late response: must be dropped because b is no longer in ws.
+  releaseB();
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "removed station's late response must be dropped");
+  assert.ok(!others().presets.some((p) => p.id === onB.id));
+});

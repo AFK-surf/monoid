@@ -771,10 +771,13 @@ export class StationsSync {
   /// and said (`outdated`).
   /// `noHedge`: read in the background (requests.ts NO_HEDGE), as `#terminals`' and `#machineLogins`'.
   #screens(address: string, ctx: SpanContext | null = null, noHedge = false): Effect.Effect<void, CoreError> {
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/screens", null, { quiet: true, ctx, noHedge }));
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) });
       else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true });
       else return yield* Effect.fail(answer.failure);
@@ -810,10 +813,13 @@ export class StationsSync {
   /// The station's terminals as it has them now (GET /terminals), in its link's memory as its screens are. A station
   /// from before terminals has none (404): held so, and said (`outdated`).
   #terminals(address: string, ctx: SpanContext | null = null, noHedge = false): Effect.Effect<void, CoreError> {
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/terminals", null, { quiet: true, ctx, noHedge }));
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false });
       else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true });
       else return yield* Effect.fail(answer.failure);
@@ -878,7 +884,8 @@ export class StationsSync {
   /// directories offered for a new one, which change as its chats work), and as one is made, changed or removed; what
   /// was read last shows meanwhile.
   presetsShown(address: string): void {
-    this.#enqueue(address, "presets", Priority.shown, this.#presets(address));
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+    this.#enqueue(address, `presets/${startGen}`, Priority.shown, this.#presets(address));
   }
 
   /// What moving the station's things to another stands at (GET /move, the `stationMove` topic: move.ts), read as its
@@ -1072,7 +1079,7 @@ export class StationsSync {
     const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     this.#enqueue(
       address,
-      `log/${job}/${lines}`,
+      `log/${startGen}/${job}/${lines}`,
       Priority.shown,
       Effect.gen({ self: this }, function* () {
         const link = this.#links.get(address);
@@ -3266,15 +3273,15 @@ export class StationsSync {
 
   /// Clears cached `presets` and `jobLog` entries from `link.memory` for stations matching `ws` (or all stations when `ws === null`).
   clearProtectedMemory(ws: string | null): void {
-    // Wipe persisted PRESETS and jobLog entries across all stations of `ws` (including offline/unlinked stations)
-    // so unloaded keeper records cannot lazily resurrect after an auth boundary.
-    this.#core.data.clearStationMemory(ws, [PRESETS, LOG_KEY]);
+    // Wipe & block persisted PRESETS, jobLog, screens, and terminals entries across all stations of `ws`
+    // (including offline/unlinked stations and read-only/lazily-opened DBs) so pre-boundary data cannot resurrect.
+    const protectedPrefixes = [PRESETS, LOG_KEY, "screens", "terminals"] as const;
+    this.#core.data.clearStationMemory(ws, protectedPrefixes);
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ws !== null && ofAddress(address) !== ws) continue;
       const presetsKey = topicKey({ topic: "presets", station: address });
-      link.memory.delete(PRESETS);
-      link.memory.deletePrefix(LOG_KEY);
+      for (const p of protectedPrefixes) link.memory.blockPersisted(p);
       link.errors.delete(presetsKey);
       for (const k of [...link.errors.keys()]) {
         const parsed = parseJson(k);
@@ -3337,14 +3344,26 @@ export class StationsSync {
               this.#enqueue(address, `job/${t.id}`, Priority.shown, this.#read(address, t, `/jobs/${encode(t.id)}`));
             }
             break;
-          case "presets":
-            this.#enqueue(address, "presets", Priority.shown, this.#presets(address));
+          case "presets": {
+            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
+            this.#enqueue(address, `presets/${gen}`, Priority.shown, this.#presets(address));
             break;
+          }
           case "jobLog":
             if (typeof t.job === "string" && typeof t.lines === "number") {
               this.readLog(address, t.job, t.lines);
             }
             break;
+          case "screens": {
+            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
+            this.#enqueue(address, `screens/${gen}`, Priority.shown, this.#screens(address));
+            break;
+          }
+          case "terminals": {
+            const gen = this.#core.store.authGen.workspaceAuthGen(ws);
+            this.#enqueue(address, `terminals/${gen}`, Priority.shown, this.#terminals(address));
+            break;
+          }
         }
       }
     }

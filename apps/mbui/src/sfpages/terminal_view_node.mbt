@@ -403,7 +403,7 @@ pub fn terminal_pane_node(
   let may = fn() { flag(listed.get().value, "open") }
   let may_act = fn() {
     let st = listed.get()
-    st.is_confirmed() && flag(st.value, "open")
+    st.is_confirmed_known() && flag(st.value, "open")
   }
   let typing_here : @signals.Computed[Bool] = @signals.computed(fn(was) {
     match text(s(), "phase") {
@@ -701,7 +701,7 @@ pub fn terminal_pane_node(
   }
   let open_url_in_station_browser = fn(url : String) {
     let sr = @signals.untracked(fn() { screens_topic.get() })
-    if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+    if !sr.is_confirmed_known() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
       return
     }
     let scs = items(sr.value, "screens")
@@ -907,7 +907,7 @@ pub fn terminal_pane_node(
         let scs = fn() { items(screens_topic.get().value, "screens") }
         let can_browser = fn() {
           let sr = screens_topic.get()
-          sr.is_confirmed() && flag(sr.value, "browser") && flag(sr.value, "control")
+          sr.is_confirmed_known() && flag(sr.value, "browser") && flag(sr.value, "control")
         }
         let other_scs = fn() { scs().filter(fn(sc) { text(Some(sc), "kind") != "browser" }) }
         let user_browser_ids = fn() {
@@ -925,7 +925,7 @@ pub fn terminal_pane_node(
                 fn() { text(sv(), "title") },
                 fn() {
                   let sr = screens_topic.untracked()
-                  if !sr.is_confirmed() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
+                  if !sr.is_confirmed_known() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
                     return
                   }
                   done()
@@ -940,7 +940,7 @@ pub fn terminal_pane_node(
                 fn() { @sf.t("web-pages.remote.openBrowser") },
                 fn() {
                   let sr = screens_topic.untracked()
-                  if !sr.is_confirmed() {
+                  if !sr.is_confirmed_known() {
                     return
                   }
                   let ids = items(sr.value, "screens")
@@ -970,7 +970,7 @@ pub fn terminal_pane_node(
                 fn() { terminal_title(tv()) },
                 fn() {
                   let tr = listed.untracked()
-                  if !tr.is_confirmed() || !items(tr.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+                  if !tr.is_confirmed_known() || !items(tr.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
                     return
                   }
                   done()
@@ -984,7 +984,7 @@ pub fn terminal_pane_node(
             })
             let open_new_browser = fn() {
               let sr = screens_topic.untracked()
-              if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+              if !sr.is_confirmed_known() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
                 return
               }
               let ids = items(sr.value, "screens")
@@ -1144,6 +1144,10 @@ pub fn terminal_pane_node(
                   return
                 }
                 let id = @signals.untracked(cur_terminal_id)
+                let tr = listed.untracked()
+                if !items(tr.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "ended") }) {
+                  return
+                }
                 (src.call)("terminal.end", obj([("station", str(at.station)), ("terminal", str(id))]), @sfbase.answer_unread)
                 done()
               },

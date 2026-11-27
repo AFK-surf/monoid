@@ -1411,9 +1411,15 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let ss = @signals.untracked(fn() { sub_s.get() })
       let tval = ts.value
       let sval = ss.value
-      let t_confirmed = ts.is_confirmed()
-      let s_confirmed = ss.is_confirmed()
-      let release_scope = fn() { @sfbase.let_go(s.src, scope) }
+      let t_confirmed = ts.is_confirmed_known()
+      let s_confirmed = ss.is_confirmed_known()
+      let released = Ref(false)
+      let release_once = fn() {
+        if !released.val {
+          released.val = true
+          @sfbase.let_go(s.src, scope)
+        }
+      }
       let go_page = fn(next : @sfbase.Page) {
         if pg.lone {
           @sfbase.lone_page_replace(next)
@@ -1434,12 +1440,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         let title = text(Some(sc), "title")
         let here = sid == s.screen
         let icon = if here { "check" } else if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
-        menu_items.push(Some(@sf.menu_item_of(title, icon~, disabled=!s_confirmed, fn() {
-          if here {
-            return
-          }
+        menu_items.push(Some(@sf.menu_item_of(title, icon~, fn() {
           let cur_s = sub_s.untracked()
-          if !cur_s.is_confirmed() || !items(cur_s.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
+          release_once()
+          if here || !cur_s.is_confirmed_known() || !items(cur_s.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
             return
           }
           go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
@@ -1447,12 +1451,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       }
       if !user_ids.is_empty() || can_browse {
         let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
-        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, disabled=!s_confirmed, fn() {
-          if !s.is_active_principal() || in_browser {
-            return
-          }
+        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
           let cur_s = sub_s.untracked()
-          if !cur_s.is_confirmed() {
+          release_once()
+          if !s.is_active_principal() || in_browser || !cur_s.is_confirmed_known() {
             return
           }
           let cur_user_ids = items(cur_s.value, "screens")
@@ -1479,9 +1481,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tv = Some(t)
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
-          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", disabled=!t_confirmed, fn() {
+          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
             let cur_t = sub_t.untracked()
-            if !cur_t.is_confirmed() || !items(cur_t.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+            release_once()
+            if !cur_t.is_confirmed_known() || !items(cur_t.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
               return
             }
             go_page(Terminal({ station: s.station, terminal: tid, watch: !flag(cur_t.value, "open"), cwd }))
@@ -1494,17 +1497,16 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
         let open_new_terminal = fn() {
           let cur_t = sub_t.untracked()
-          if !cur_t.is_confirmed() || !flag(cur_t.value, "open") {
+          release_once()
+          if !cur_t.is_confirmed_known() || !flag(cur_t.value, "open") {
             return
           }
           go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
         }
         let open_new_browser = fn() {
-          if !s.is_active_principal() {
-            return
-          }
           let cur_s = sub_s.untracked()
-          if !cur_s.is_confirmed() || !(flag(cur_s.value, "browser") && flag(cur_s.value, "control")) {
+          release_once()
+          if !s.is_active_principal() || !cur_s.is_confirmed_known() || !(flag(cur_s.value, "browser") && flag(cur_s.value, "control")) {
             return
           }
           let cur_user_ids = items(cur_s.value, "screens")
@@ -1530,6 +1532,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
               from=@sf.Beside::Node(from),
               title=@sf.t("web-pages.remote.newSession"),
               along=End,
+              gone=release_once,
             )
           })))
         } else if can_term {
@@ -1539,9 +1542,9 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         }
       }
       if !menu_items.is_empty() {
-        @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End, gone=release_scope)
+        @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End, gone=release_once)
       } else {
-        release_scope()
+        release_once()
       }
     },
     let_go=fn() { @sfbase.let_go(s.src, scope) },

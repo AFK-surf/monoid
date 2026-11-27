@@ -764,6 +764,7 @@ fn preset_others_content(
   small : Bool,
   draw_head : Bool,
 ) -> Unit {
+  ignore(said)
   let cur_others = fn() -> Array[Json] {
     match cur_said() {
       Some(st) if st.is_confirmed() => items(st.value, "presets")
@@ -780,10 +781,7 @@ fn preset_others_content(
       _ => false
     }
   }
-  let has_search = match said {
-    Some({ value, .. }) => items(value, "presets").length() >= 5
-    _ => false
-  }
+  let has_search = fn() { cur_others().length() >= 5 }
   let query_field = @ui.Field::new()
   let search_at : @signals.Signal[Int] = @signals.signal(0)
   let searching = fn() { query_field.text().trim().to_owned() != "" }
@@ -822,8 +820,8 @@ fn preset_others_content(
     }
   }
   if draw_head && small {
-    if has_search {
-      @sf.panel_head_node(b, fn() { @sf.t("web-main.preset.others") }, end=fn(e) {
+    b.show(has_search, fn(hb) {
+      @sf.panel_head_node(hb, fn() { @sf.t("web-main.preset.others") }, end=fn(e) {
         @sf.panel_search_input_node(
           e,
           query_field,
@@ -838,11 +836,12 @@ fn preset_others_content(
         |> ignore
       })
       |> ignore
-    } else {
-      @sf.panel_head_node(b, fn() { @sf.t("web-main.preset.others") }) |> ignore
-    }
-  } else if has_search {
-    b.box(fn(sb) {
+    })
+    b.show(fn() { !has_search() }, fn(hb) {
+      @sf.panel_head_node(hb, fn() { @sf.t("web-main.preset.others") }) |> ignore
+    })
+  } else {
+    b.show(has_search, fn(sb) {
       @sf.style_node(sb, fn() { preset_panel_search_wrap })
       @sf.panel_search_input_node(
         sb,
@@ -857,7 +856,6 @@ fn preset_others_content(
       )
       |> ignore
     })
-    |> ignore
   }
   b.show(fn() {
     match cur_said() {
@@ -915,43 +913,46 @@ fn preset_others_content(
         }
       })
       list.each(matched_rows, other_key, fn(row_box, item) {
-        let p = item.untracked()
-        let po = Some(p)
-        let id = text(po, "id")
-        let at = text(po, "station")
-        let my_key = at + "\n" + id
-        let name = text(po, "name")
-        let sub = preset_join_meta(text(po, "whose"), text(po, "summary"))
-        let dir_name = text(po, "dirName")
-        let dir_repo = text(po, "dirRepo")
-        let maker_id = text(field(po, "maker"), "id")
-        let rt = text(po, "runtime")
+        let po = fn() { Some(item.get()) }
+        let id = fn() { text(po(), "id") }
+        let at = fn() { text(po(), "station") }
+        let my_key = fn() { at() + "\n" + id() }
+        let name = fn() { text(po(), "name") }
+        let sub = fn() { preset_join_meta(text(po(), "whose"), text(po(), "summary")) }
+        let dir_name = fn() { text(po(), "dirName") }
+        let dir_repo = fn() { text(po(), "dirRepo") }
+        let maker_id = fn() { text(field(po(), "maker"), "id") }
+        let rt = fn() { text(po(), "runtime") }
         preset_picker_row_node(
           row_box,
-          fn() { name },
-          fn() { sub },
-          fn() { dir_name },
-          fn() { dir_repo },
-          fn() { maker_id },
-          fn() { rt },
-          fn() { id == picked },
-          fn() { lit(my_key) },
+          name,
+          sub,
+          dir_name,
+          dir_repo,
+          maker_id,
+          rt,
+          fn() { id() == picked },
+          fn() { lit(my_key()) },
           fn() {
-            if !cur_has(id, at) {
+            let cur_id = @signals.untracked(id)
+            let cur_at = @signals.untracked(at)
+            if !cur_has(cur_id, cur_at) {
               return
             }
             let_go()
-            preset_pick(src, w, id, at)()
+            preset_pick(src, w, cur_id, cur_at)()
             close()
           },
           action=(
             "copy",
-            fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
+            fn() { @sf.t("web-main.preset.copyItem", args=[("name", name())]) },
             fn(_) {
-              if !cur_has(id, at) {
+              let cur_id = @signals.untracked(id)
+              let cur_at = @signals.untracked(at)
+              if !cur_has(cur_id, cur_at) {
                 return
               }
-              preset_copy_run(src, w, address, id, stations, close)
+              preset_copy_run(src, w, address, cur_id, stations, close)
             },
           ),
         )

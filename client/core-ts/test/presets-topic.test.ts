@@ -9,6 +9,7 @@ import type { HttpRequest } from "../src/host.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import { logKey, PRESETS } from "../src/station/link.ts";
+import { Memory, type Keeper } from "../src/station/memory.ts";
 import { jsonResponse, type FakeHost } from "../src/testing.ts";
 import { work } from "../src/work.ts";
 
@@ -497,5 +498,46 @@ test("unloaded_persisted_jobLog_is_wiped_from_disk_on_same_owner_downgrade_and_s
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).lines[0].runs[0].text, "sse-live-line", "SSE job-log must clear old error and project new log");
+  core.close();
+});
+
+test("readonly_and_lazily_opened_db_cannot_resurrect_blocked_persisted_jobLog_or_presets", async () => {
+  // 1. Read-only keeper (write/bound are no-ops, simulating read-only account DB):
+  // blockPersisted must prevent lazy Memory.get() reload until fresh set().
+  const disk = new Map<string, unknown>([
+    [PRESETS, { presets: [preset("ro-old", "RO Old")], candidates: [] }],
+    [logKey("j-ro", 200), { lines: [{ n: 0, runs: [{ text: "ro-secret" }] }], outputAt: 1 }],
+  ]);
+  const readOnlyKeeper: Keeper = {
+    read: (k) => disk.get(k),
+    write: () => { /* read-only DB ignores writes */ },
+    bound: () => { /* read-only DB ignores bounds */ },
+    now: () => 1000,
+    later: () => {},
+  };
+  const mem = new Memory(readOnlyKeeper);
+  mem.blockPersisted(PRESETS);
+  mem.blockPersisted("jobLog\n");
+  assert.equal(mem.get(PRESETS), undefined, "read-only keeper must not resurrect blocked presets");
+  assert.equal(mem.get(logKey("j-ro", 200)), undefined, "read-only keeper must not resurrect blocked jobLog");
+
+  // Once a fresh current-gen value is written via set(), get() returns the new value.
+  mem.set(PRESETS, { presets: [preset("ro-new", "RO New")], candidates: [] });
+  assert.deepEqual((mem.get(PRESETS) as { presets: { id: string }[] }).presets.map((p) => p.id), ["ro-new"]);
+
+  // 2. Data.clearStationMemory blocks stationMemory() even when underlying DB retains old doc (e.g. lazily opened after boundary).
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /presets": { presets: [preset("app", "App")], candidates: [candidate] },
+  };
+  const { core } = await started(said as never);
+  const lazyKey = logKey("j-lazy", 200);
+  // Simulate boundary before a station doc becomes visible on a lazily-opened DB.
+  core.inner.data.clearStationMemory("ws", [PRESETS, "jobLog\n"]);
+  // Put directly into underlying DB bypassing keepStationMemory (simulates pre-existing disk row in a lazily-opened DB).
+  core.inner.data.of(S)?.putStationDoc(S, `memory\n${lazyKey}`, { lines: [{ n: 0, runs: [{ text: "lazy-old" }] }] }, 1, null, false);
+  assert.equal(core.inner.data.stationMemory(S, lazyKey), undefined, "Data.stationMemory must stay blocked for pre-boundary rows in lazily-opened DB");
+  assert.ok(core.inner.data.blockedMemoryPrefixes("ws").includes("jobLog\n"), "new links in ws inherit blocked prefixes");
   core.close();
 });

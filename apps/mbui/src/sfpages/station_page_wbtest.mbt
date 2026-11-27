@@ -2161,9 +2161,28 @@ test "preset_others_content reactively updates as otherPresets topic changes" {
   assert_true(t.find("Alpha Preset") is Some(_))
   assert_true(t.find("Beta Preset") is Some(_))
 
-  // Auth invalidation / removal clears list reactively.
-  state.set(Some({ value: Some({ "reading": false, "presets": [] }), error: None, version: 3, waiting: false }))
+  // Same-ID rename & summary clear updates row reactively in place.
+  state.set(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [
+          { "id": "p1", "station": "ws1/st1", "name": "Alpha Renamed", "whose": "Bob", "summary": "" },
+          { "id": "p2", "station": "ws1/st2", "name": "Beta Preset", "whose": "Eve", "summary": "lib" },
+        ],
+      }),
+      error: None,
+      version: 3,
+      waiting: false,
+    }),
+  )
   t.draw()
+  assert_true(t.find("Alpha Renamed") is Some(_))
   assert_true(t.find("Alpha Preset") is None)
+
+  // Auth invalidation / removal clears list reactively.
+  state.set(Some({ value: Some({ "reading": false, "presets": [] }), error: None, version: 4, waiting: false }))
+  t.draw()
+  assert_true(t.find("Alpha Renamed") is None)
   assert_true(t.find("Beta Preset") is None)
 }

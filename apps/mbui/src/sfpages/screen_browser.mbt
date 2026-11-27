@@ -74,7 +74,7 @@ priv enum TabAct {
 ///|
 /// Whether `screens` for this viewer's station is currently fresh and confirmed (`version >= 0 && value is Some(_)`).
 fn browser_screens_confirmed(s : ScreenSess) -> Bool {
-  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_confirmed() })
+  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_confirmed_known() })
 }
 
 ///|
@@ -108,7 +108,7 @@ fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
     let sr = s.src.topic("screens", { "station": Json::string(s.station) }).get()
     let sc = sr.value
     guard sc is Some(_) else { return ([], false) }
-    let confirmed = sr.is_confirmed()
+    let confirmed = sr.is_confirmed_known()
     let listed = items(sc, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
     let can_add = confirmed && flag(sc, "browser") && flag(sc, "control")
     let tabs = listed.map(fn(item) {
@@ -570,7 +570,7 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
     return
   }
   let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
-  if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+  if !sr.is_confirmed_known() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
     return
   }
   let listed = items(sr.value, "screens")
@@ -590,7 +590,7 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
     return
   }
   let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
-  if !sr.is_confirmed() {
+  if !sr.is_confirmed_known() {
     return
   }
   let fresh_tabs = items(sr.value, "screens").filter(fn(item) { is_browser_screen(Some(item)) })

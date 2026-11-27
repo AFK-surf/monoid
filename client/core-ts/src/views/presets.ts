@@ -406,7 +406,7 @@ function listing(inner: Inner, ws: string, held: Held, id: string): string[] {
 /// What others' presets were read of each station of a workspace, while the `otherPresets` topic is shown or since.
 /// `reading`: the stations still waited for, each by the read it is waited for in (a later read's is not let go by an
 /// earlier one's deadline).
-type OthersRead = { at: Map<string, PresetRecord[]>; reading: Map<string, number> };
+type OthersRead = { at: Map<string, PresetRecord[]>; reading: Map<string, number>; dirty: Set<string> };
 
 /// How long others' presets wait for a station as a press reads them (`otherPresets`'s `reading`): one linked but slow
 /// or hung no longer holds the press past it; what it says later still comes into the list while it is held.
@@ -474,30 +474,48 @@ export class PresetViews implements Owner {
     // Keep existing `at` across routine refreshes within the same auth generation (only onBoundary clears `#others`).
     let read = this.#others.get(ws);
     if (!read) {
-      read = { at: new Map(), reading: new Map() };
+      read = { at: new Map(), reading: new Map(), dirty: new Set() };
       this.#others.set(ws, read);
     }
     const slot = read;
-    const n = ++this.#reads;
-    const done = (address: string) =>
-      Effect.sync(() => {
+    const stations = stationsOf(inner, ws);
+    const valid = new Set(stations.map((s) => s.address));
+    // Prune stations that have left `ws` so stale entries never linger in `at`.
+    for (const addr of [...slot.at.keys()]) if (!valid.has(addr)) slot.at.delete(addr);
+    for (const addr of [...slot.reading.keys()]) if (!valid.has(addr)) slot.reading.delete(addr);
+    for (const addr of [...slot.dirty]) if (!valid.has(addr)) slot.dirty.delete(addr);
+
+    const scheduleOne = (address: string) => {
+      const n = ++this.#reads;
+      const done = Effect.sync(() => {
         if (this.#others.get(ws) !== slot) return;
         if (slot.reading.get(address) !== n) return;
         slot.reading.delete(address);
         this.#marks.touch(ws);
+        // Consume dirty flag if a routine refresh arrived while this station was in flight.
+        if (slot.dirty.delete(address)) {
+          if (stationsOf(inner, ws).some((x) => x.address === address) && reached(inner, address)) {
+            scheduleOne(address);
+          }
+        }
       });
-    for (const s of stationsOf(inner, ws)) {
-      if (!reached(inner, s.address)) continue;
-      // If a read for this station is already queued/running in the same generation slot, let it finish without dropping its `done`.
-      if (slot.reading.has(s.address)) continue;
-      slot.reading.set(s.address, n);
+      slot.reading.set(address, n);
       inner.scheduler.enqueue(
-        s.address,
-        `otherPresets/${startGen}/${s.address}`,
+        address,
+        `otherPresets/${startGen}/${address}`,
         Priority.shown,
-        Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, s.address, startGen, startOwner, slot)), done(s.address)),
+        Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, address, startGen, startOwner, slot)), done),
       );
-      inner.runner.fork(Effect.andThen(Effect.sleep(OTHERS_WAIT_MS), done(s.address))); // timer: a deadline on a station's answer
+      inner.runner.fork(Effect.andThen(Effect.sleep(OTHERS_WAIT_MS), done)); // timer: a deadline on a station's answer
+    };
+
+    for (const s of stations) {
+      if (!reached(inner, s.address)) continue;
+      if (slot.reading.has(s.address)) {
+        slot.dirty.add(s.address);
+        continue;
+      }
+      scheduleOne(s.address);
     }
     this.#marks.touch(ws);
   }
@@ -549,13 +567,14 @@ export class PresetViews implements Owner {
         self.#marks.touch(ws);
         return;
       }
+      if (!stationsOf(inner, ws).some((s) => s.address === address)) return;
       self.heard(ws, address, found);
     });
   }
 
   /// Others' presets as station `address` of `ws` said them now.
   heard(ws: string, address: string, found: PresetRecord[]): void {
-    const read = this.#others.get(ws) ?? { at: new Map(), reading: new Map() };
+    const read = this.#others.get(ws) ?? { at: new Map(), reading: new Map(), dirty: new Set() };
     this.#others.set(ws, read);
     read.at.set(address, found);
     this.#refreshPicked(ws, found);

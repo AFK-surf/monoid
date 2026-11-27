@@ -33,6 +33,13 @@ pub fn Read::is_confirmed(self : Read) -> Bool {
 }
 
 ///|
+/// Whether a station capability read (`screens` or `terminals`) is freshly confirmed by the station itself
+/// (`version >= 0`, `value is Some(_)`, `known == true`, and `!outdated`).
+pub fn Read::is_confirmed_known(self : Read) -> Bool {
+  self.is_confirmed() && flag(self.value, "known") && !flag(self.value, "outdated")
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)

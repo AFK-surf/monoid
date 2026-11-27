@@ -59,6 +59,13 @@ pub fn TopicState::is_confirmed(self : TopicState) -> Bool {
 }
 
 ///|
+/// Whether a station capability topic (`screens` or `terminals`) is freshly confirmed by the station itself
+/// (`version >= 0`, `value is Some(_)`, `known == true`, and `!outdated`).
+pub fn TopicState::is_confirmed_known(self : TopicState) -> Bool {
+  self.is_confirmed() && flag(self.value, "known") && !flag(self.value, "outdated")
+}
+
+///|
 /// A legacy topic read leaves by name; an owned read releases only the supplied, independently owned reader.
 pub(all) enum TopicLeave {
   Legacy

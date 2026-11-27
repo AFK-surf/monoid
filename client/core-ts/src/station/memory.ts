@@ -38,6 +38,8 @@ export class Memory {
   /// When each key was last written; those to be written once their wait is over.
   readonly #written = new Map<string, number>();
   readonly #due = new Set<string>();
+  /// Prefixes whose keeper-persisted entries are blocked from lazy reload after an auth boundary (handles read-only/unopened DBs).
+  readonly #blockedPrefixes = new Set<string>();
 
   constructor(keeper: Keeper | null = null, bounded: readonly [string, number][] = []) {
     this.#keeper = keeper;
@@ -47,6 +49,9 @@ export class Memory {
   get(key: string): unknown {
     if (!this.#values.has(key) && this.#keeper !== null && !this.#looked.has(key)) {
       this.#looked.add(key);
+      for (const prefix of this.#blockedPrefixes) {
+        if (key.startsWith(prefix)) return undefined;
+      }
       const kept = this.#keeper.read(key);
       if (kept !== undefined) {
         this.#values.set(key, kept);
@@ -129,6 +134,13 @@ export class Memory {
       if (k.startsWith(prefix)) this.#written.delete(k);
     }
     this.#keeper?.bound(prefix, 0);
+  }
+
+  /// Blocks lazy reload from keeper for all keys matching `prefix` (including on read-only or lazily-opened DBs)
+  /// until a fresh current-generation value is written via `set(key, value)`, and clears any existing entries.
+  blockPersisted(prefix: string): void {
+    this.#blockedPrefixes.add(prefix);
+    this.deletePrefix(prefix);
   }
 
   #boundedRule(key: string): readonly [string, number] | undefined {
