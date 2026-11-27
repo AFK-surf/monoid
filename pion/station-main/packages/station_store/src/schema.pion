@@ -1300,16 +1300,13 @@ pub fn ensure_restore_target_schema(
       Ok(None) => false
       Err(e) => return Err(e)
     }
+    if has_any_table && cur_ver == 12 {
+      // Node's Store.open upgrades v12->v13 (restoring archive/threads/<id>.jsonl.zst);
+      // leave the v12 DB untouched (0 writes) and hand off directly to Node.
+      return Ok(())
+    }
     if has_any_table && cur_ver != SCHEMA_VERSION {
       return Err(sql_db::sql_error(1, "unsupported_existing_schema_version:" + cur_ver.to_string()))
-    }
-    let existing_restore_tables = match t.first(restore_tables_sql, []) {
-      Ok(Some(r)) => row_i64(r, "n", 0.to_int64())
-      Ok(None) => 0.to_int64()
-      Err(e) => return Err(e)
-    }
-    if cur_ver == SCHEMA_VERSION && existing_restore_tables == 17.to_int64() {
-      return Ok(())
     }
     match run_v13_migrations(t, now_ms) {
       Ok(_) => ()

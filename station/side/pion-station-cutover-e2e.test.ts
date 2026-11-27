@@ -45,6 +45,7 @@ import { DeviceRegistry } from "../src/devices/registry.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
 import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
 import { SCHEMA_VERSION } from "../src/store/schema.ts";
+import { threadFile, writeCompressed } from "../src/store/archive.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
@@ -2396,9 +2397,15 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     srcStore.db
       .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_R8', 'before-r8-restore', ?)")
       .run(nowMs);
+    const r13OpId = "op-r13-uuid-1234";
     srcStore.db
       .prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, thread) VALUES (?, ?, 'turn', ?, ?, 'completed', 1)")
       .run("r11-saved-turn", "s:r8-rem", nowMs - 1000, nowMs);
+    srcStore.db
+      .prepare(
+        "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id) VALUES (1, 1, 'accepted', 'ProjR13', 'alice@example.com', ?, 'note-r13', '[]', 0, ?)",
+      )
+      .run(nowMs, r13OpId);
 
     const originId = "b".repeat(64);
     const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
@@ -2417,14 +2424,14 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     exp.close();
     srcStore.close();
 
-    const stageR8Restore = (dataDir: string): void => {
+    const stageR8Restore = (dataDir: string, merge = false): void => {
       const copyDir = join(dataDir, "restore", "copy");
       mkdirSync(copyDir, { recursive: true });
       cpSync(genPath, join(copyDir, head.gen), { recursive: true });
       cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
       writeFileSync(
         join(dataDir, "restore", "ready.json"),
-        JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r8", from: peerId }),
+        JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-r8", from: peerId, ...(merge ? { merge: true } : {}) }),
       );
     };
 
@@ -3305,6 +3312,189 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
           assert.equal(existsSync(dbPath), false, "6h-missing-db must remain absent");
         }
       }
+    }
+
+    // (6i-historical-v13-adds-missing-columns) Astra R12 #1: Historical v13 target DB that already has
+    // all 17 restorable tables EXCEPT newer columns (specifically `proposal_outcomes.info_op_id`) +
+    // snapshot carrying an unsynced accepted proposal with `info_op_id` -> Pion runs idempotent
+    // `run_v13_migrations` inside `BEGIN IMMEDIATE` before `exec_replace` -> Node restores full row
+    // and `Store.getUnsyncedAcceptOutcome(1, 1)` returns the exact `opId`!
+    {
+      const dir = freshDir("ext-gate-r13-hist-v13");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r13-hist-v13",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      // Build a real v13 DB with all 17 tables, then recreate `proposal_outcomes` WITHOUT `info_op_id`.
+      const dbPath = join(dataDir, "stillfail.db");
+      Store.open(dbPath, join(dataDir, "archive")).close();
+      const hist = new DatabaseSync(dbPath);
+      hist.exec(
+        "DROP TABLE proposal_outcomes; CREATE TABLE proposal_outcomes (thread INTEGER NOT NULL, n INTEGER NOT NULL, status TEXT NOT NULL, project TEXT, resolved_by TEXT NOT NULL, resolved_at INTEGER NOT NULL, info_note TEXT, info_refs TEXT, info_synced INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (thread, n));",
+      );
+      hist.close();
+
+      const udpPort = await pickFreeUdpPort();
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: "ignore",
+      });
+      children.push(launcher);
+      await until(
+        "6i Node replica restore completed",
+        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
+        25_000,
+      );
+      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+      assert.equal(restoredOut.error, null, `6i restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
+      assert.equal(existsSync(join(dataDir, "restore")), false, "6i restore/ must be cleaned");
+
+      launcher.kill("SIGTERM");
+      await until("6i launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const verifyStore = Store.open(dbPath, join(dataDir, "archive"));
+      const outcome = verifyStore.getUnsyncedAcceptOutcome(1, 1);
+      verifyStore.close();
+      assert.ok(outcome !== null, "6i MUST preserve proposal_outcomes.info_op_id so getUnsyncedAcceptOutcome(1, 1) is non-null");
+      assert.equal(outcome.opId, r13OpId, "6i opId must match snapshot UUID");
+      assert.equal(outcome.project, "ProjR13");
+    }
+
+    // (6j-v12-archive-cold-restore-upgrades-to-v13) Astra R12 #2 & Opus R12 nit: Real v12 data dir
+    // with archived thread 73 (`<data>/archive/threads/73.jsonl.zst`) + staged merge snapshot ->
+    // default `engine=pion` cold start leaves v12 DB untouched (0 writes) and hands off to Node ->
+    // Node upgrades v12->v13 AND merges snapshot so both archived local message and remote snapshot
+    // message are readable; also confirms v14 still refuses with exit 1!
+    {
+      const dir = freshDir("ext-gate-r13-v12-upgrade");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir, true);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r13-v12-upgrade",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      const dbPath = join(dataDir, "stillfail.db");
+      const archiveDir = join(dataDir, "archive");
+      Store.open(dbPath, archiveDir).close();
+      const v12 = new DatabaseSync(dbPath);
+      v12.exec(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at, archived_at) VALUES (73, 'web', 'CHAT', '73.v12', 'ArchivedV12Thread', ${nowMs}, ${nowMs});`);
+      v12.exec("PRAGMA user_version = 12;");
+      v12.close();
+      writeCompressed(
+        threadFile(archiveDir, 73),
+        JSON.stringify({
+          thread: 73,
+          n: 1,
+          kind: "message",
+          target: null,
+          ts: "73.001",
+          authorKind: "person",
+          author: "alice@example.com",
+          text: "v12-archived-local-73",
+          attachments: [],
+          quotes: [],
+          declared: null,
+          at: nowMs,
+        }) + "\n",
+      );
+
+      const udpPort = await pickFreeUdpPort();
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: "ignore",
+      });
+      children.push(launcher);
+      await until(
+        "6j Node v12 upgrade & replica merge completed",
+        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
+        25_000,
+      );
+      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+      assert.equal(restoredOut.error, null, `6j restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
+      assert.equal(existsSync(join(dataDir, "restore")), false, "6j restore/ must be cleaned");
+
+      launcher.kill("SIGTERM");
+      await until("6j launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const checkV13 = new DatabaseSync(dbPath, { readOnly: true });
+      const finalVer = (checkV13.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+      const localRows = checkV13.prepare("SELECT text FROM entries WHERE text LIKE '%v12-archived-local-73%'").all() as { text: string }[];
+      const remoteRows = checkV13.prepare("SELECT text FROM entries WHERE text LIKE '%before-r8-restore%'").all() as { text: string }[];
+      checkV13.close();
+      assert.equal(finalVer, 13, "6j v12 DB MUST be upgraded to user_version === 13 by Node");
+      assert.ok(localRows.length >= 1, "6j MUST restore archived local v12 thread 73 entries");
+      assert.ok(remoteRows.length >= 1, "6j MUST merge remote snapshot entries");
+
+      // Also verify v14 (SCHEMA_VERSION + 1) still refuses with exit 1 and preserves restore/.
+      const dir14 = freshDir("ext-gate-r13-v14-refuse");
+      const appDir14 = join(dir14, "app");
+      const dataDir14 = join(dir14, "data");
+      installReleaseDir(appDir14, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir14, "mesh"), { recursive: true });
+      stageR8Restore(dataDir14);
+      writeFileSync(join(dataDir14, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      const db14Path = join(dataDir14, "stillfail.db");
+      const db14 = new DatabaseSync(db14Path);
+      db14.exec("PRAGMA user_version = 14;");
+      db14.close();
+      const res14 = spawnSync(pionBin, ["run", "--app", appDir14, "--data", dataDir14, "--port", "0"], {
+        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(res14.status, 1, `v14 must refuse with exit 1, got ${res14.status}`);
+      assert.ok(`${res14.stdout}\n${res14.stderr}`.includes("unsupported_user_version:14"));
+      assert.equal(existsSync(join(dataDir14, "restore", "ready.json")), true);
     }
 
     // Schema version parity guard (Opus R11 nit): `station_store/src/schema.pion` SCHEMA_VERSION === TS SCHEMA_VERSION.
