@@ -929,7 +929,15 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       }
       q == o
     }
-    let outer = all.filter(fn(k) { !all.iter().any(fn(o) { o != k && within(k, o) }) })
+    let outer = all.filter(fn(k) {
+      for j in 0..<all.length() {
+        let o = all[j]
+        if o != k && within(k, o) {
+          return false
+        }
+      }
+      true
+    })
     // (a band across all of it, edge to edge, a bar, is not in its column; nor one as wide as what it holds, far
     // narrower than the column's widest (a bubble, a card hugging its words): only what the column lays out across)
     let g = self.nodes[on]

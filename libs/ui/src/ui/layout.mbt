@@ -588,13 +588,13 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   let has_min_h = n.min_h > 0.0
   let min_h = self.on_px(n.min_h, whole)
   if opt_differs(s.min_height_kind(), s.min_height_value(), has_min_h, min_h) {
-    s.set_min_height(if has_min_h { Pt(min_h) } else { Auto })
+    s.set_min_height(if has_min_h { Pt(min_h) } else { @flex.Dim::Auto })
     ch = true
   }
   let has_max_h = n.max_h < 1.0e9
   let max_h = self.on_px(n.max_h, whole)
   if opt_differs(s.max_height_kind(), s.max_height_value(), has_max_h, max_h) {
-    s.set_max_height(if has_max_h { Pt(max_h) } else { Auto })
+    s.set_max_height(if has_max_h { Pt(max_h) } else { @flex.Dim::Auto })
     ch = true
   }
   let has_max_w = n.max_w < 1.0e9
@@ -607,11 +607,11 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   if capped {
     let (k, v) = if has_max_w { (@flex.LEN_WITHIN, max_w) } else { (@flex.LEN_PCT, 100.0) }
     if s.max_width_kind() != k || s.max_width_value() != v {
-      s.set_max_width(if has_max_w { Within(max_w) } else { @flex.Dim::Pct(100.0) })
+      s.set_max_width(if has_max_w { @flex.Dim::Within(max_w) } else { @flex.Dim::Pct(100.0) })
       ch = true
     }
   } else if opt_differs(s.max_width_kind(), s.max_width_value(), has_max_w, max_w) {
-    s.set_max_width(if has_max_w { Pt(max_w) } else { Auto })
+    s.set_max_width(if has_max_w { Pt(max_w) } else { @flex.Dim::Auto })
     ch = true
   }
   let in_row = pdir == 1
@@ -719,7 +719,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
     ch = true
   }
   if (s.basis_kind() == @flex.LEN_AUTO) == basis0 {
-    s.set_basis(if basis0 { Pt(0.0) } else { Auto })
+    s.set_basis(if basis0 { Pt(0.0) } else { @flex.Dim::Auto })
     ch = true
   }
   // (cut short, never grown: in a column that stretches what it holds, at its start as wide as what it holds; in one
@@ -753,7 +753,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   } else {
     let w = self.on_px(wpx, whole)
     if opt_differs(s.width_kind(), s.width_value(), has_w, w) {
-      s.set_width(if has_w { Pt(w) } else { Auto })
+      s.set_width(if has_w { Pt(w) } else { @flex.Dim::Auto })
       ch = true
     }
   }
@@ -770,7 +770,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   } else {
     let h = self.on_px(hpx, whole)
     if opt_differs(s.height_kind(), s.height_value(), has_h, h) {
-      s.set_height(if has_h { Pt(h) } else { Auto })
+      s.set_height(if has_h { Pt(h) } else { @flex.Dim::Auto })
       ch = true
     }
   }
@@ -782,22 +782,22 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   // a layer from its parent's top left; one put where it is said, from the edges said (len: on whole pixels too)
   let in_l = self.inset_of(n.at_l, 0.0, over, at, whole)
   if opt_differs(s.inset_left_kind(), s.inset_left_value(), !in_l.is_nan(), in_l) {
-    s.set_inset_left(if in_l.is_nan() { Auto } else { Pt(in_l) })
+    s.set_inset_left(if in_l.is_nan() { @flex.Dim::Auto } else { Pt(in_l) })
     ch = true
   }
   let in_t = self.inset_of(n.at_t, 0.0, over, at, whole)
   if opt_differs(s.inset_top_kind(), s.inset_top_value(), !in_t.is_nan(), in_t) {
-    s.set_inset_top(if in_t.is_nan() { Auto } else { Pt(in_t) })
+    s.set_inset_top(if in_t.is_nan() { @flex.Dim::Auto } else { Pt(in_t) })
     ch = true
   }
   let in_r = self.inset_of(n.at_r, 0.0 / 0.0, over, at, whole)
   if opt_differs(s.inset_right_kind(), s.inset_right_value(), !in_r.is_nan(), in_r) {
-    s.set_inset_right(if in_r.is_nan() { Auto } else { Pt(in_r) })
+    s.set_inset_right(if in_r.is_nan() { @flex.Dim::Auto } else { Pt(in_r) })
     ch = true
   }
   let in_b = self.inset_of(n.at_b, 0.0 / 0.0, over, at, whole)
   if opt_differs(s.inset_bottom_kind(), s.inset_bottom_value(), !in_b.is_nan(), in_b) {
-    s.set_inset_bottom(if in_b.is_nan() { Auto } else { Pt(in_b) })
+    s.set_inset_bottom(if in_b.is_nan() { @flex.Dim::Auto } else { Pt(in_b) })
     ch = true
   }
   let mut up = 0
@@ -1113,11 +1113,11 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
   // (said to give way to the parent's room: that much where the parent has it, all of the parent's where it has less)
   if within {
     if s.min_width_kind() != @flex.LEN_WITHIN || s.min_width_value() != min_w {
-      s.set_min_width(Within(min_w))
+      s.set_min_width(@flex.Dim::Within(min_w))
       ch = true
     }
   } else if opt_differs(s.min_width_kind(), s.min_width_value(), has_min_w, min_w) {
-    s.set_min_width(if has_min_w { Pt(min_w) } else { Auto })
+    s.set_min_width(if has_min_w { Pt(min_w) } else { @flex.Dim::Auto })
     ch = true
   }
   if ch {

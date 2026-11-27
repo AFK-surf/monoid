@@ -238,23 +238,23 @@ priv struct NavKeptLeftLimits {
 
 ///|
 // kept across runs: per-Nav side table (only populated for Navs with custom limits; 0-2 entries)
-let nav_kept_left_limits : Array[(@signals.Signal[Int], NavKeptLeftLimits)] = []
+let nav_kept_left_limits : Ref[Array[(@signals.Signal[Int], NavKeptLeftLimits)]] = Ref([])
 
 ///|
 // kept across runs: per-Nav side table filtering which `made` kinds may enter the root shelf
-let nav_shelf_kind_filters : Array[(@signals.Signal[Int], (String) -> Bool)] = []
+let nav_shelf_kind_filters : Ref[Array[(@signals.Signal[Int], (String) -> Bool)]] = Ref([])
 
 ///|
 // kept across runs: per-Nav side table guarding root-shelf entry serials on park, swap_out settle, and take-back
-let nav_shelf_serial_guards : Array[(@signals.Signal[Int], (Int) -> Bool)] = []
+let nav_shelf_serial_guards : Ref[Array[(@signals.Signal[Int], (Int) -> Bool)]] = Ref([])
 
 ///|
 // kept across runs: per-Nav side table guarding `(serial, key, kind)` before parking into `kept_left`
-let nav_kept_left_guards : Array[(@signals.Signal[Int], (Int, String, String) -> Bool)] = []
+let nav_kept_left_guards : Ref[Array[(@signals.Signal[Int], (Int, String, String) -> Bool)]] = Ref([])
 
 ///|
 fn nav_shelf_kind_allows(said : @signals.Signal[Int], kind : String) -> Bool {
-  for entry in nav_shelf_kind_filters {
+  for entry in nav_shelf_kind_filters.val {
     if physical_equal(entry.0, said) {
       return (entry.1)(kind)
     }
@@ -264,7 +264,7 @@ fn nav_shelf_kind_allows(said : @signals.Signal[Int], kind : String) -> Bool {
 
 ///|
 fn nav_shelf_serial_allows(said : @signals.Signal[Int], serial : Int) -> Bool {
-  for entry in nav_shelf_serial_guards {
+  for entry in nav_shelf_serial_guards.val {
     if physical_equal(entry.0, said) {
       return (entry.1)(serial)
     }
@@ -274,7 +274,7 @@ fn nav_shelf_serial_allows(said : @signals.Signal[Int], serial : Int) -> Bool {
 
 ///|
 fn nav_kept_left_guard_allows(said : @signals.Signal[Int], serial : Int, key : String, kind : String) -> Bool {
-  for entry in nav_kept_left_guards {
+  for entry in nav_kept_left_guards.val {
     if physical_equal(entry.0, said) {
       return (entry.1)(serial, key, kind)
     }
@@ -284,7 +284,7 @@ fn nav_kept_left_guard_allows(said : @signals.Signal[Int], serial : Int, key : S
 
 ///|
 fn nav_limits_get(said : @signals.Signal[Int]) -> NavKeptLeftLimits? {
-  for entry in nav_kept_left_limits {
+  for entry in nav_kept_left_limits.val {
     if physical_equal(entry.0, said) {
       return Some(entry.1)
     }
@@ -295,25 +295,25 @@ fn nav_limits_get(said : @signals.Signal[Int]) -> NavKeptLeftLimits? {
 ///|
 fn nav_limits_set(said : @signals.Signal[Int], most_of : ((String) -> Int)?, total : Int) -> Unit {
   if most_of is None && total == nav_kept_left_most {
-    match nav_kept_left_limits.search_by(fn(e) { physical_equal(e.0, said) }) {
+    match nav_kept_left_limits.val.search_by(fn(e) { physical_equal(e.0, said) }) {
       Some(i) => {
-        nav_kept_left_limits.remove(i) |> ignore
-        if nav_kept_left_limits.is_empty() {
-          nav_kept_left_limits.shrink_to_fit()
+        nav_kept_left_limits.val.remove(i) |> ignore
+        if nav_kept_left_limits.val.is_empty() {
+          nav_kept_left_limits.val = []
         }
       }
       None => ()
     }
     return
   }
-  for entry in nav_kept_left_limits {
+  for entry in nav_kept_left_limits.val {
     if physical_equal(entry.0, said) {
       entry.1.most_of = most_of
       entry.1.total = total
       return
     }
   }
-  nav_kept_left_limits.push((said, { most_of, total }))
+  nav_kept_left_limits.val.push((said, { most_of, total }))
 }
 
 ///|
@@ -427,17 +427,17 @@ pub fn[P] Nav::set_kept_left_limits(
 ///|
 /// Restrict which `made` page kinds may enter `self`'s root `shelf` (`None` clears the filter).
 pub fn[P] Nav::set_shelf_kind_filter(self : Nav[P], allow : ((String) -> Bool)?) -> Unit {
-  match nav_shelf_kind_filters.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+  match nav_shelf_kind_filters.val.search_by(fn(e) { physical_equal(e.0, self.said) }) {
     Some(i) => {
-      nav_shelf_kind_filters.remove(i) |> ignore
-      if nav_shelf_kind_filters.is_empty() {
-        nav_shelf_kind_filters.shrink_to_fit()
+      nav_shelf_kind_filters.val.remove(i) |> ignore
+      if nav_shelf_kind_filters.val.is_empty() {
+        nav_shelf_kind_filters.val = []
       }
     }
     None => ()
   }
   match allow {
-    Some(f) => nav_shelf_kind_filters.push((self.said, f))
+    Some(f) => nav_shelf_kind_filters.val.push((self.said, f))
     None => ()
   }
 }
@@ -445,17 +445,17 @@ pub fn[P] Nav::set_shelf_kind_filter(self : Nav[P], allow : ((String) -> Bool)?)
 ///|
 /// Guard `(serial, key, kind)` before parking an entry into `kept_left` (`None` clears the guard).
 pub fn[P] Nav::set_kept_left_guard(self : Nav[P], allow : ((Int, String, String) -> Bool)?) -> Unit {
-  match nav_kept_left_guards.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+  match nav_kept_left_guards.val.search_by(fn(e) { physical_equal(e.0, self.said) }) {
     Some(i) => {
-      nav_kept_left_guards.remove(i) |> ignore
-      if nav_kept_left_guards.is_empty() {
-        nav_kept_left_guards.shrink_to_fit()
+      nav_kept_left_guards.val.remove(i) |> ignore
+      if nav_kept_left_guards.val.is_empty() {
+        nav_kept_left_guards.val = []
       }
     }
     None => ()
   }
   match allow {
-    Some(f) => nav_kept_left_guards.push((self.said, f))
+    Some(f) => nav_kept_left_guards.val.push((self.said, f))
     None => ()
   }
 }
@@ -476,7 +476,7 @@ pub fn[P] Nav::evict_kept_left(self : Nav[P], drop : (String, String) -> Bool) -
     }
   }
   if self.kept_left.is_empty() {
-    self.kept_left.shrink_to_fit()
+    self.kept_left = []
   }
   if removed {
     self.told()
@@ -487,20 +487,20 @@ pub fn[P] Nav::evict_kept_left(self : Nav[P], drop : (String, String) -> Bool) -
 ///|
 /// Register or clear a per-Nav root-shelf entry serial guard checked on shelving, `swap_out` settle, and take-back.
 pub fn[P] Nav::set_shelf_serial_guard(self : Nav[P], guard_fn : ((Int) -> Bool)?) -> Unit {
-  match nav_shelf_serial_guards.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+  match nav_shelf_serial_guards.val.search_by(fn(e) { physical_equal(e.0, self.said) }) {
     Some(i) =>
       match guard_fn {
-        Some(f) => nav_shelf_serial_guards[i] = (self.said, f)
+        Some(f) => nav_shelf_serial_guards.val[i] = (self.said, f)
         None => {
-          nav_shelf_serial_guards.remove(i) |> ignore
-          if nav_shelf_serial_guards.is_empty() {
-            nav_shelf_serial_guards.shrink_to_fit()
+          nav_shelf_serial_guards.val.remove(i) |> ignore
+          if nav_shelf_serial_guards.val.is_empty() {
+            nav_shelf_serial_guards.val = []
           }
         }
       }
     None =>
       match guard_fn {
-        Some(f) => nav_shelf_serial_guards.push((self.said, f))
+        Some(f) => nav_shelf_serial_guards.val.push((self.said, f))
         None => ()
       }
   }
@@ -521,11 +521,7 @@ pub fn[P] Nav::evict_shelf(self : Nav[P], should_evict : (Int) -> Bool) -> Unit 
       kept.push(e)
     }
   }
-  self.shelf.clear()
-  self.shelf.append(kept)
-  if self.shelf.is_empty() {
-    self.shelf.shrink_to_fit()
-  }
+  self.shelf = kept
   let mut swap_removed = false
   match self.swap_out {
     Some(was) if should_evict(was.serial) => {

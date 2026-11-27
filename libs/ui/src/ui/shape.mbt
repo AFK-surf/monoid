@@ -328,7 +328,7 @@ fn shape_band_of(
   if total_segs > 32 {
     return shape_band_made(outlines, fill, hw, even_odd)
   }
-  let key = (outlines, fill, hw, even_odd)
+  let key : ShapeBandsKey = { outlines, fill, hw, even_odd }
   match shape_bands_known.get(key) {
     Some(b) => return b
     None => ()
@@ -339,7 +339,7 @@ fn shape_band_of(
     shape_bands_known.clear()
   }
   // (by a copy of its outlines: one of theirs changed after is not the outlines these were made of)
-  shape_bands_known.set((outlines.map(fn(o) { (o.0.copy(), o.1) }), fill, hw, even_odd), out)
+  shape_bands_known.set({ outlines: outlines.map(fn(o) { (o.0.copy(), o.1) }), fill, hw, even_odd }, out)
   out
 }
 
@@ -347,7 +347,17 @@ fn shape_band_of(
 /// The bands outlines come to (shape_band_of), by their outlines alone: the same numbers for the same outlines,
 /// whichever node or view draws them, read only once made.
 // kept across runs: what the same outlines come to, the same in any run
-let shape_bands_known : Map[(Array[(Array[Double], Bool)], Bool, Double, Bool), Array[ShapeBand]] = Map([])
+let shape_bands_known : Map[ShapeBandsKey, Array[ShapeBand]] = Map([])
+
+///|
+/// What shape_bands_known keeps bands by: the outlines, and how they are filled or stroked (shape_band_of).
+#derive(Eq, Hash)
+priv struct ShapeBandsKey {
+  outlines : Array[(Array[Double], Bool)]
+  fill : Bool
+  hw : Double
+  even_odd : Bool
+}
 
 ///|
 fn shape_band_made(
