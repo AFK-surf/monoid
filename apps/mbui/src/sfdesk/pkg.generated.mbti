@@ -67,8 +67,6 @@ pub fn context_page(@ui.Ctx, Int32) -> Unit
 
 pub fn copy_path(@ui.Ctx, String) -> Unit
 
-pub let dock_glass_fade_w : Double
-
 pub fn drag_ask(Asking) -> Unit
 
 pub fn dragged() -> @sfbase.Dragged?

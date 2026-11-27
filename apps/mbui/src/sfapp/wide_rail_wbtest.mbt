@@ -1376,7 +1376,7 @@ test "wide: folded rail blends into theme background at rest and switches to tra
 }
 
 ///|
-test "wide: dismissing the peeking glass drawer keeps its glass under the sidebar till it nears the rail, then gives way smoothly" {
+test "wide: dismissing the peeking glass drawer fades its glass over time, still there as it reaches the rail" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, window_inset=true)
   t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
@@ -1393,9 +1393,8 @@ test "wide: dismissing the peeking glass drawer keeps its glass under the sideba
   t.run_for(@sfdesk.peek_leave_ms)
   t.frame()
   assert_false(@sfdesk.wide.peeking.get())
-  // (the block's width and its glass's strength, frame by frame, as it goes back to the rail)
-  let seen : Array[(Double, Double)] = []
-  let _ = t.sample_frames(@ui.move_most_ms, fn(_tt, _ms) {
+  // (the block's width and its glass's strength, every 16 ms, as it goes back to the rail and past)
+  let seen = t.sample_frames(@ui.move_most_ms + @sf.dur_ms * 2.0, fn(_tt, _ms) {
     let mut w = 0.0
     let mut k = 0.0
     for d in @ui.view_tree().unwrap().drawn() {
@@ -1407,29 +1406,31 @@ test "wide: dismissing the peeking glass drawer keeps its glass under the sideba
         }
       }
     }
-    seen.push((w, k))
+    (w, k)
   })
   let mut rest_w = 1.0e9
   for p in seen {
-    rest_w = if p.0 < rest_w { p.0 } else { rest_w }
+    rest_w = if p.1.0 < rest_w { p.1.0 } else { rest_w }
   }
+  // (as the drawer first comes to the rail's width its glass still shows, and goes from there over frames)
+  let mut at_rail : Double? = None
   let mut fading = 0
+  let mut was = 2.0
   for p in seen {
-    let (w, k) = p
-    let past = w - rest_w
-    // (whole glass while the sidebar shows well past the rail: what it holds never shows on no ground)
-    if past > @sfdesk.dock_glass_fade_w + 1.0 {
-      assert_true(k >= 0.999, msg="glass gave way \{k} with \{past} of the sidebar still past the rail")
+    let (w, k) = p.1
+    if at_rail is None && w <= rest_w + 0.5 {
+      at_rail = Some(k)
     }
-    // (no full strip left at the rail to go off in one frame)
-    if past < @sfdesk.dock_glass_fade_w * 0.5 {
-      assert_true(k < 0.95, msg="full glass \{k} only \{past} past the rail")
-    }
-    if k > 0.01 && k < 0.95 {
+    assert_true(k <= was + 1.0e-9, msg="glass came back \{was} -> \{k}")
+    assert_true(was > 1.0 || was - k <= 0.2, msg="glass cut \{was} -> \{k} in 16 ms")
+    if k > 0.02 && k < 0.98 {
       fading = fading + 1
     }
+    was = k
   }
-  assert_true(fading >= 2, msg="expected >=2 frames of glass giving way, got \{fading}")
+  assert_true(at_rail.unwrap_or(0.0) > 0.05, msg="glass gone \{at_rail.unwrap_or(0.0)} as the drawer reached the rail")
+  assert_true(was <= 0.0, msg="glass left \{was} at rest")
+  assert_true(fading >= 8, msg="glass faded over only \{fading} frames")
   assert_eq(t.corner_faults(), [])
   assert_eq(t.contrast_faults(), [])
 }

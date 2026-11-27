@@ -350,6 +350,10 @@ fn fold_look_tape(s : Double, col : Double, top : Double, foot : Double, x? : Do
 /// block closes from there). The frame's node while it shows, its page's id among the old views'.
 priv struct FoldGoes {
   way : @motion.Way
+  /// how much of the drawer's glass (and of what the sidebar holds over it) shows while the block is shown a while: a
+  /// fade of its own, set off with the block's move (fold_glass_goes), outlasting it as the drawer comes back to the
+  /// rail, so its glass gives way over time and is never cut off as the move ends
+  glass : @motion.Way
   mut from : FoldLook?
   mut to : FoldLook?
   mut was : FoldIs?
@@ -377,6 +381,7 @@ priv struct FoldGoes {
 // kept across runs: put back as a run begins (fold_goes_reset)
 let fold_goes : FoldGoes = {
   way: @motion.Way::new(1.0),
+  glass: @motion.Way::new(0.0),
   from: None,
   to: None,
   was: None,
@@ -397,6 +402,7 @@ let fold_goes : FoldGoes = {
 fn fold_goes_reset() -> Unit {
   pane_page_wait.reset()
   fold_goes.way.put(1.0)
+  fold_goes.glass.put(0.0)
   fold_goes.from = None
   fold_goes.to = None
   fold_goes.was = None
@@ -496,6 +502,7 @@ fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
   fold_goes.to = Some(to)
   fold_goes.way.put(0.0)
   fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), velocity=v_norm, at~)
+  fold_glass_goes(to, at, move_ms=@ui.move_ms(fold_far(from, to)))
   fold_said()
   match app.nav.top() {
     Chat(r) => @sfbase.column_sets_off(r.station + "\u{1}" + r.session, resize=false)
@@ -521,7 +528,31 @@ fn fold_put(to : FoldLook, at : Double) -> Unit {
     fold_goes.from = Some(to)
     fold_goes.to = Some(to)
   }
+  fold_glass_goes(to, at)
   fold_said()
+}
+
+///|
+/// The drawer's glass set off at `at` for where the block goes (`to`): coming as it is shown a while, along with its
+/// move (`move_ms` long: none, at once); giving way as it comes back to the folded rail, on the ease in and out over
+/// the move and a control's answer past it (`@sf.dur_ms`), so it still shows as the drawer reaches the rail and goes
+/// from there over time; gone at once for an open sidebar (its own ground).
+fn fold_glass_goes(to : FoldLook, at : Double, move_ms? : Double = 0.0) -> Unit {
+  let g = fold_goes.glass
+  if to.glass == g.target() {
+    return
+  }
+  if to.glass > 0.0 {
+    if move_ms > 0.0 {
+      g.go(to.glass, @motion.tween(move_ms, ease=Out), at~)
+    } else {
+      g.put(to.glass)
+    }
+  } else if to.band >= 1.0 && move_ms > 0.0 {
+    g.go(0.0, @motion.tween(move_ms + @sf.dur_ms, ease=InOut), at~)
+  } else {
+    g.put(0.0)
+  }
 }
 
 ///|
@@ -529,7 +560,8 @@ fn fold_put(to : FoldLook, at : Double) -> Unit {
 fn fold_drawn_at(n : @view.View) -> Double {
   fold_goes.said.get() |> ignore
   fold_goes.way.said()
-  n.drawn_while(fn(t) { fold_goes.way.goes_at(t) })
+  fold_goes.glass.said()
+  n.drawn_while(fn(t) { fold_goes.way.goes_at(t) || fold_goes.glass.goes_at(t) })
 }
 
 ///|
@@ -551,6 +583,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   fold_goes.shift = 0.0
   fold_goes.press_laid_w = None
   fold_goes.way.put(1.0)
+  fold_goes.glass.put(0.0)
   let side_at_c = @signals.computed(fn(_) { pane_side_at(src, v) })
   let rail_at_c = @signals.computed(fn(_) { pane_rail_at(src, v) })
   let side_at = fn() { if @signals.active_sub() is None { pane_side_at(src, v) } else { side_at_c.get() } }
@@ -742,7 +775,9 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       let (ww, wh) = n.window()
       let (r, now) = fold_target(src, w, ww)
       let t = fold_drawn_at(n)
-      let f = fold_along(t, now)
+      // (the drawer's glass where its own fade has got, not where the move has: fold_glass_goes)
+      let glass = fold_goes.glass.value_at(t)
+      let f = { ..fold_along(t, now), glass: glass }
       let top = if side_full_height(r.bar) { 0.0 } else { r.top }
       // (what it holds laid out at its target width while a fold or same-band expanded width switch animates, drawn cut
       // and placed where the move has got: not laid out and its words measured again at each frame of it, nothing of it
@@ -759,7 +794,15 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
           }
       }
       let (list_brand, _, list_band) = fold_held_at(t, f)
-      { ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))), laid_w, list_brand, list_band }
+      // (what the sidebar holds shows as its glass does while that comes or goes, folded: never on no ground)
+      let seen = if r.bar && (glass > 0.0 || fold_goes.glass.goes_at(t)) { glass } else { 1.0 }
+      {
+        ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))),
+        laid_w,
+        list_brand,
+        list_band,
+        seen,
+      }
     }
     None =>
       {
