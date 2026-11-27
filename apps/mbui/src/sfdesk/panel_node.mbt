@@ -386,15 +386,18 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       })
       let prev_front : Ref[(String, Int)?] = Ref(None)
       let tab_ways : Map[(String, Int), (@motion.NodeWay, Ref[Double])] = Map([])
-      // Per-tab open generation: incremented whenever a tab leaves `side_now` (closed, even while parked in background)
-      // or moves into a standalone window (`window_has_tab`), so reopening it never reuses a stale parked branch.
+      // Per-tab open generation (passive tabs only): when a passive tab leaves `side_now` (closed, even while parked
+      // in background) or moves into a standalone window (`window_has_tab`), mark it dirty without bumping its key
+      // mid-slide-out; increment `tab_gens` + `tab_gens_rev` only when it later re-enters `side_now` or returns from
+      // the standalone window, so reopening never reuses a stale parked branch and closing never rebuilds mid-slide-out.
       let tab_gens : Map[String, Int] = Map([])
+      let tab_dirty : Map[String, Bool] = Map([])
       let tab_gens_rev : @signals.Signal[Int] = @signals.signal(0)
       let tab_was_open : Ref[Array[String]] = Ref([])
       let tab_was_win : Map[String, Bool] = Map([])
       p.reacts(
         fn() {
-          let open = side_now(src, r).0
+          let open = side_now(src, r).0.filter(fn(t) { side_tab_passive(t) })
           let in_win = open.map(fn(t) { (t, @sfbase.window_has_tab(r.station, r.session, t)) })
           (open, in_win)
         },
@@ -403,8 +406,14 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           let mut bumped = false
           for prev_t in tab_was_open.val {
             if !open.contains(prev_t) {
-              tab_gens[prev_t] = tab_gens.get(prev_t).unwrap_or(0) + 1
+              tab_dirty[prev_t] = true
               tab_was_win.remove(prev_t)
+            }
+          }
+          for t in open {
+            if !tab_was_open.val.contains(t) && tab_dirty.get(t).unwrap_or(false) {
+              tab_gens[t] = tab_gens.get(t).unwrap_or(0) + 1
+              tab_dirty.remove(t)
               bumped = true
             }
           }
@@ -412,7 +421,10 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
             let (t, w) = pair
             let was_w = tab_was_win.get(t).unwrap_or(false)
             if w && !was_w {
+              tab_dirty[t] = true
+            } else if !w && was_w && tab_dirty.get(t).unwrap_or(false) {
               tab_gens[t] = tab_gens.get(t).unwrap_or(0) + 1
+              tab_dirty.remove(t)
               bumped = true
             }
             tab_was_win[t] = w
@@ -439,7 +451,11 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         fn() {
           tab_gens_rev.get() |> ignore
           let agent = history_in_front(src, r)
-          let gen = if agent == "" || agent == tab_full_mark { 0 } else { tab_gens.get(agent).unwrap_or(0) }
+          let gen = if agent == "" || agent == tab_full_mark || !side_tab_passive(agent) {
+            0
+          } else {
+            tab_gens.get(agent).unwrap_or(0)
+          }
           (agent, gen)
         },
         fn(q, tab_key) {
@@ -505,6 +521,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
               @sfbase.tab_full_is(r.station, r.session, agent) ||
               @sfbase.window_has_tab(r.station, r.session, agent) ||
               !side_now(src, r).0.contains(agent) ||
+              tab_dirty.get(agent).unwrap_or(false) ||
               tab_gens.get(agent).unwrap_or(0) != gen
             }) {
             return false
