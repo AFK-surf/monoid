@@ -25,6 +25,8 @@ pub(all) struct Fixture {
   mut glass_frost : String
   /// haptics chosen (the prefs' `haptics`: off; "" on)
   mut haptics : String
+  /// the grounds tinted in the colour theme's hue (the prefs' `groundTint`: off; "" on)
+  mut ground_tint : String
   /// automatic updates chosen (the prefs' `appUpdate`: off; "" on)
   mut app_update : String
   /// how the composer sends (prefs `sendKey`): `mod`, or "" Enter
@@ -2341,6 +2343,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "glass": if f.glass == "" { Json::null() } else { Json::string(f.glass) },
         "glassFrost": if f.glass_frost == "" { Json::null() } else { Json::string(f.glass_frost) },
         "haptics": Json::string(f.haptics),
+        "groundTint": if f.ground_tint == "" { Json::null() } else { Json::string(f.ground_tint) },
         "appUpdate": Json::string(f.app_update),
         "shareLook": if f.share_look == "" { Json::null() } else { Json::string(f.share_look) },
         "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
@@ -3107,6 +3110,7 @@ fn made_fixture(mode : String) -> Fixture {
     glass_frost: "",
     window_zoom: "",
     haptics: "",
+    ground_tint: "",
     app_update: "",
     send_key: "",
     test_channel: !fixture_stable_mode(mode),
@@ -3620,6 +3624,11 @@ pub fn fixture(mode : String) -> Source {
           match field(Some(params), "haptics") {
             Some(String(h)) => f.haptics = h
             Some(Null) => f.haptics = ""
+            _ => ()
+          }
+          match field(Some(params), "groundTint") {
+            Some(String(g)) => f.ground_tint = g
+            Some(Null) => f.ground_tint = ""
             _ => ()
           }
           match field(Some(params), "appUpdate") {

@@ -632,7 +632,14 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     fn() {
       let p = src.topic("prefs", {}).get().value
       let sys = @ui.system_dark()
-      (p, sys, @settings.dark(p, sys), @settings.pref_from(p, "accent"), @settings.pref_from(p, "glass"), @settings.pref_from(p, "glassFrost"))
+      (
+        p,
+        sys,
+        @settings.dark(p, sys),
+        @settings.pref_from(p, "accent") + "/" + @settings.pref_from(p, "groundTint"),
+        @settings.pref_from(p, "glass"),
+        @settings.pref_from(p, "glassFrost"),
+      )
     },
     fn(a) {
       @sfbase.appearance_from_prefs(a.0, a.1) |> ignore

@@ -1459,16 +1459,75 @@ pub fn accent_key() -> String {
 }
 
 ///|
+/// The grounds left untinted (外观 › 背景着色 turned off: the prefs' `groundTint` `off`): in no hue at all, whatever the
+/// colour theme, the accent and its ink as they are.
+// kept across runs: put back as a Tester starts (icons.mbt)
+let grounds_plain : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// The grounds in the colour theme's hue from now on (`tinted`), or in none: white and greys by day, greys by night.
+pub fn set_ground_tint(tinted : Bool) -> Unit {
+  grounds_plain.set(!tinted)
+}
+
+///|
+/// Whether the grounds are in the colour theme's hue (set_ground_tint).
+pub fn ground_tint() -> Bool {
+  !grounds_plain.get()
+}
+
+///|
+/// The grey as light as `c` (its OKLab lightness, no chroma), its alpha kept: what is read on a ground stands on its
+/// grey as it did on it.
+pub fn grey_of(c : Int64) -> Int64 {
+  let lin = fn(shift : Int) {
+    let v = ((c >> shift) & 0xFFL).to_double() / 255.0
+    if v <= 0.04045 {
+      v / 12.92
+    } else {
+      @dmath.pow((v + 0.055) / 1.055, 2.4)
+    }
+  }
+  let (r, g, b) = (lin(24), lin(16), lin(8))
+  let cbrt = fn(x : Double) { if x <= 0.0 { 0.0 } else { @dmath.pow(x, 1.0 / 3.0) } }
+  let l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+  let m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+  let s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+  (oklch(0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, 0.0, 0.0) & 0xFFFFFF00L) | (c & 0xFFL)
+}
+
+///|
+/// `p` with its grounds (Grounds' names) in no hue: the orange's own, each turned to its grey (grey_of).
+fn plain_grounds(p : Palette) -> Palette {
+  {
+    ..p,
+    bg: grey_of(p.bg),
+    canvas: grey_of(p.canvas),
+    raised: grey_of(p.raised),
+    sidebar: grey_of(p.sidebar),
+    list: grey_of(p.list),
+    selected: grey_of(p.selected),
+    paper: grey_of(p.paper),
+    card: grey_of(p.card),
+    card2: grey_of(p.card2),
+    chip: grey_of(p.chip),
+  }
+}
+
+///|
 /// `p` in the colour theme `key` (light or dark as `dark`), its accent and its grounds: the orange's palette as it is.
-fn accented(p : Palette, dark : Bool, key : String) -> Palette {
+/// With `plain`, the grounds the orange's own in no hue (plain_grounds) whatever the theme: the accent alone is its.
+fn accented(p : Palette, dark : Bool, key : String, plain~ : Bool = false) -> Palette {
+  let base = if plain { plain_grounds(p) } else { p }
   match tone_of(key) {
-    None => p
-    Some(a) if a.key == "" => p
+    None => base
+    Some(a) if a.key == "" => base
     Some(a) => {
       let (accent, ink) = if dark { (a.dark, a.dark_text) } else { (a.light, a.light_text) }
-      let p = { ..p, accent, accent_text: ink, accent_bg: alpha(ink, if dark { tone_dark } else { tone_light }) }
+      let p = { ..base, accent, accent_text: ink, accent_bg: alpha(ink, if dark { tone_dark } else { tone_light }) }
       match (if dark { a.dark_grounds } else { a.light_grounds }) {
         None => p
+        Some(_) if plain => p
         Some(g) =>
           {
             ..p,
@@ -1494,15 +1553,16 @@ fn accented(p : Palette, dark : Bool, key : String) -> Palette {
 fn theme_of(dark : Bool, more : Bool) -> Theme {
   let touch = native_input() is Finger
   let accent = resolved_accent_key(accent_set.untracked())
+  let plain = grounds_plain.untracked()
   // (one of each: the same whenever it is asked, what is made of it kept as long as it is)
-  match themes_made.get((dark, touch, accent, more)) {
+  match themes_made.get((dark, touch, accent, more, plain)) {
     Some(t) => return t
     None => ()
   }
   let t : Theme = {
     dark,
     touch,
-    p: contrasted(accented(if dark { dark_palette } else { light_palette }, dark, accent), more),
+    p: contrasted(accented(if dark { dark_palette } else { light_palette }, dark, accent, plain~), more),
     t: if touch { narrow_type } else { wide_type },
     rows: if touch { narrow_rows } else { wide_rows },
     control_h: if touch { narrow_control_h } else { wide_control_h },
@@ -1511,14 +1571,15 @@ fn theme_of(dark : Bool, more : Bool) -> Theme {
     items: if touch { narrow_items } else { wide_items },
     chat_list: if touch { touch_chat_list } else { mouse_chat_list },
   }
-  themes_made[(dark, touch, accent, more)] = t
+  themes_made[(dark, touch, accent, more, plain)] = t
   t
 }
 
 ///|
-/// The themes made (theme_of), by light or dark, the native input, the accent and whether more contrast is asked.
+/// The themes made (theme_of), by light or dark, the native input, the accent, whether more contrast is asked and
+/// whether the grounds are left untinted.
 // kept across runs: each a value of what it is made of
-let themes_made : Map[(Bool, Bool, String, Bool), Theme] = Map([])
+let themes_made : Map[(Bool, Bool, String, Bool, Bool), Theme] = Map([])
 
 ///|
 /// A link's ink: the accent's ink (its darker one on paper, its lighter one in the dark), which reads in words; the
@@ -1554,6 +1615,8 @@ pub fn theme() -> Theme {
   if accent_set.get() == rainbow_accent_key {
     rainbow_hue.get() |> ignore
   }
+  // (and the grounds tinted or not: followed as it is set)
+  grounds_plain.get() |> ignore
   // (and the system asking for more contrast: @ui.more_contrast, followed as it changes)
   let more = @ui.more_contrast()
   theme_of(dark, more)
@@ -1568,7 +1631,7 @@ pub fn palette_of(dark : Bool) -> Palette {
   } else {
     a
   }
-  accented(if dark { dark_palette } else { light_palette }, dark, key)
+  accented(if dark { dark_palette } else { light_palette }, dark, key, plain=grounds_plain.get())
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,6 +1870,7 @@ fn ui_theme_of(t : Theme) -> @ui.Theme {
     // the lines the palette's too (more contrast seen twice as much: contrasted), what a style's Line says
     line: t.p.line,
     faint: match (if t.dark { accent_now().dark_grounds } else { accent_now().light_grounds }) {
+      _ if grounds_plain.untracked() => grey_of(base.faint)
       Some(g) => g.faint
       None => base.faint
     },

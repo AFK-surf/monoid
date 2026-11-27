@@ -181,3 +181,50 @@ test "主题色 五彩色: chosen saves rainbow and applies its picked hue in li
   assert_true(h_a != h_b, msg="different opens pick different hues: \{h_a} vs \{h_b}")
   assert_true(accent_a != accent_b)
 }
+
+///|
+test "背景着色 in 外观 turned off: the prefs' groundTint off, the grounds in no hue at once under the accent chosen; on again, the theme's" {
+  for case in [(390.0, 2), (1280.0, 0)] {
+    let (w, platform) = case
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, w~, h=844.0, platform~)
+    app.nav.push(Settings)
+    app.nav.push(Setting(@settings.Route::Appearance))
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let blue = @sf.accents[1]
+    t.click(Radio, label="蓝色")
+    t.frame()
+    t.frame()
+    assert_eq(@sf.theme().p.sidebar, blue.light_grounds.unwrap().sidebar)
+    assert_true(t.get(Switch, label="背景着色").check is Some(On), msg="\{w}")
+    t.click(Switch, label="背景着色")
+    t.frame()
+    t.frame()
+    let set = named(calls, "prefs.set")
+    assert_eq(text(Some(set[set.length() - 1].params), "groundTint"), "off")
+    assert_false(@sf.ground_tint())
+    assert_eq(@sf.theme().p.bg, @sf.grey_of(@sf.theme().p.bg))
+    assert_eq(@sf.theme().p.canvas, 0xFFFFFFFFL)
+    let side = @sf.theme().p.sidebar
+    assert_true(((side >> 24) & 0xFFL) == ((side >> 16) & 0xFFL) && ((side >> 16) & 0xFFL) == ((side >> 8) & 0xFFL), msg="\{w}")
+    assert_true(side != 0xFFFFFFFFL, msg="\{w}: the sidebar a grey")
+    assert_eq(@sf.ui_theme().sidebar, @sf.theme().p.sidebar)
+    assert_eq(@sf.theme().p.accent, blue.light)
+    @sf.set_dark(Some(true))
+    let night = @sf.theme().p.bg
+    assert_true(((night >> 24) & 0xFFL) == ((night >> 16) & 0xFFL) && ((night >> 16) & 0xFFL) == ((night >> 8) & 0xFFL), msg="\{w}")
+    assert_eq(@sf.theme().p.accent, blue.dark)
+    @sf.set_dark(Some(false))
+    t.click(Switch, label="背景着色")
+    t.frame()
+    t.frame()
+    let set = named(calls, "prefs.set")
+    assert_true(field(Some(set[set.length() - 1].params), "groundTint") is Some(Null))
+    assert_true(@sf.ground_tint())
+    assert_eq(@sf.theme().p.sidebar, blue.light_grounds.unwrap().sidebar)
+    t.click(Radio, label="橙色")
+    t.frame()
+    t.frame()
+  }
+}

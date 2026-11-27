@@ -267,6 +267,8 @@
   "web-pages.appearance.accent.custom": "Custom",
   "web-pages.appearance.accent.hue": "Hue",
   "web-pages.appearance.accent.pink": "Pink",
+  "web-pages.appearance.tint.title": "Tinted background",
+  "web-pages.appearance.tint.description": "The page and sidebar take a little of the accent color; off, they are plain white and neutral grey",
   "web-pages.appearance.title": "Appearance",
   "web-pages.appearance.glass.title": "Surfaces",
   "web-pages.appearance.glass.description": "Frosted glass reads more easily; Solid is fully opaque",

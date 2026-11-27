@@ -1964,6 +1964,11 @@ export interface PrefsView {
 	 * orange.
 	 */
 	accent?: string;
+	/**
+	 * The app's grounds on this device: `off` (white and greys in no hue, the accent alone coloured), or none for
+	 * grounds in the colour theme's hue.
+	 */
+	groundTint?: string;
 	/** The window's content size on this device, as a percentage; none means 100%. */
 	windowZoom?: string;
 	/** The remote terminal's font zoom on this device, as a percentage; none means 100%. */

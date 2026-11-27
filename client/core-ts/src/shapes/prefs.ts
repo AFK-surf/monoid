@@ -49,6 +49,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["groupCollapsed", map("String"), { default: true, doc: "Collapsed project group state on this device, by workspace (JSON `{\"d\":bool,\"x\":[groupKey,...]}`: default collapsed flag + exception keys)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically\neach time the app opens), `custom:<hue>` (0 to 359: a theme the app makes of that hue), or none for still.fail's\norange." }],
+    ["groundTint", opt("String"), { doc: "The app's grounds on this device: `off` (white and greys in no hue, the accent alone coloured), or none for\ngrounds in the colour theme's hue." }],
     ["windowZoom", opt("String"), { default: true, doc: "The window's content size on this device, as a percentage; none means 100%." }],
     ["terminalZoom", opt("String"), { default: true, doc: "The remote terminal's font zoom on this device, as a percentage; none means 100%." }],
     ["motion", opt("String"), { doc: "Motion on this device's pages: `reduce` (what moves only fades or is there at once), `full`, or none to\nfollow the system's setting." }],

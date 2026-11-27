@@ -48,3 +48,44 @@ test "rainbow accent: deterministic seed mixing into 0..359 and reactive theme r
   assert_eq(palette_of(true).accent, custom_tone(h1).dark)
   set_accent("")
 }
+
+///|
+test "the grounds untinted: in no hue whatever the theme, as light as the orange's, the accent as chosen" {
+  let grounds = fn(p : Palette) { [p.bg, p.canvas, p.raised, p.sidebar, p.list, p.selected, p.paper, p.card, p.card2, p.chip] }
+  let grey = fn(c : Int64) { ((c >> 24) & 0xFFL) == ((c >> 16) & 0xFFL) && ((c >> 16) & 0xFFL) == ((c >> 8) & 0xFFL) }
+  set_ground_tint(false)
+  assert_false(ground_tint())
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    set_accent("")
+    let plain = grounds(theme().p)
+    let own = grounds(if dark { dark_palette } else { light_palette })
+    for i, c in plain {
+      assert_true(grey(c), msg="\{dark} \{i}: a grey")
+      // (as light as the orange's own: what is read on it reads as it did)
+      let k = @ui.contrast_ratio(c, own[i])
+      assert_true(k < 1.02, msg="\{dark} \{i}: \{k}")
+    }
+    assert_true(grey(ui_theme().faint), msg="\{dark}: faint")
+    assert_eq(theme().p.accent, if dark { accents[0].dark } else { accents[0].light })
+    for key in ["blue", "pink", "custom:140", "rainbow"] {
+      set_accent(key)
+      let a = tone_of(key).unwrap()
+      assert_eq(grounds(theme().p), plain, msg=key)
+      assert_eq(grounds(palette_of(dark)), plain, msg=key)
+      assert_true(grey(ui_theme().faint), msg=key)
+      assert_eq(theme().p.accent, if dark { a.dark } else { a.light }, msg=key)
+      assert_eq(theme().p.accent_text, if dark { a.dark_text } else { a.light_text }, msg=key)
+    }
+  }
+  // by day what is on the page is white, the page a light grey under it
+  set_dark(Some(false))
+  assert_eq(theme().p.canvas, 0xFFFFFFFFL)
+  assert_eq(theme().p.card, 0xFFFFFFFFL)
+  // tinted again: the theme's own grounds
+  set_ground_tint(true)
+  set_accent("blue")
+  assert_eq(theme().p.bg, accents[1].light_grounds.unwrap().bg)
+  set_accent("")
+  set_dark(None)
+}
