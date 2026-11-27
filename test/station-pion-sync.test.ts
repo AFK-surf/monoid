@@ -102,6 +102,51 @@ test("nodeOnlyReasonsInMessage enforces strict case-sensitive trailer block pars
     ),
     [],
   );
+  // GitHub single-commit squash with `---------` + `Co-authored-by:` footer
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      "fix(station): shutdown cleanup (#9142)\n\nBody.\n\nNode-Station-Only: Node Effect fiber teardown has no Pion counterpart\n\n---------\n\nCo-authored-by: Bot <bot@example.com>\n",
+    ),
+    ["Node Effect fiber teardown has no Pion counterpart"],
+  );
+  // GitHub multi-commit squash (`* <subject>` sections + `---------` + `Co-authored-by:`)
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      [
+        "fix(station): shutdown cleanup (#9142)",
+        "",
+        "* fix(station): first commit",
+        "",
+        "Details.",
+        "",
+        "Node-Station-Only: Node Effect acquireUseRelease cleanup for MbBackfill",
+        "",
+        "* docs: update comment only",
+        "",
+        "No trailer on the second commit.",
+        "",
+        "---------",
+        "",
+        "Co-authored-by: Bot <bot@example.com>",
+        "",
+      ].join("\n"),
+    ),
+    ["Node Effect acquireUseRelease cleanup for MbBackfill"],
+  );
+  // Non-squash commit with `* ` bullets and mid-body fake trailer must still be rejected
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      "fix(station): x\n\n* bullet 1\n\nNode-Station-Only: mid-body fake trailer\n\n* bullet 2\n\nProse ending.\n",
+    ),
+    [],
+  );
+  // Squash commit with mid-body fake trailer followed by prose inside a `* ` section must still be rejected
+  assert.deepEqual(
+    nodeOnlyReasonsInMessage(
+      "fix(station): x (#9142)\n\n* fix(station): c1\n\nNode-Station-Only: mid-body fake trailer\n\nTrailing prose in c1.\n\n---------\n\nCo-authored-by: Bot <bot@example.com>\n",
+    ),
+    [],
+  );
 });
 
 test("judge allows synced changes, exempt paths, and explicit trailers; refuses drift and vague reasons", () => {

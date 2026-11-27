@@ -33,6 +33,8 @@ const SCISSORS_LINE = /^# -+ >8 -+$/;
 const TRAILER_LINE = /^[A-Za-z0-9-]+:[ \t]*.*$/;
 const CHERRY_PICK_LINE = /^\(cherry picked from commit [0-9a-f]+\)$/;
 const NODE_ONLY_TRAILER = /^Node-Station-Only:[ \t]+(.*)$/;
+const SQUASH_SUBJECT = /\s\(#\d+\)$/;
+const GITHUB_COAUTHOR_SEP = /^-{9}$/;
 
 export function requiresPionSync(path: string): boolean {
   if (!STATION_SRC_TS.test(path)) return false;
@@ -43,11 +45,7 @@ export function isPionStationSource(path: string): boolean {
   return PION_STATION_SOURCE.test(path);
 }
 
-/** Extract `Node-Station-Only:` trailer values strictly from a commit message's final trailer paragraph. */
-export function nodeOnlyReasonsInMessage(message: string): string[] {
-  const rawLines = message.split(/\r?\n/);
-  const cut = rawLines.findIndex((l) => SCISSORS_LINE.test(l));
-  const lines = (cut >= 0 ? rawLines.slice(0, cut) : rawLines).filter((l) => !l.startsWith("#"));
+function nodeOnlyInFinalParagraph(lines: readonly string[]): string[] {
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end--;
   if (end === 0) return [];
@@ -73,6 +71,54 @@ export function nodeOnlyReasonsInMessage(message: string): string[] {
   for (const line of paragraph) {
     const m = NODE_ONLY_TRAILER.exec(line);
     if (m) out.push(m[1]!.trim());
+  }
+  return out;
+}
+
+/** Extract `Node-Station-Only:` trailer values strictly from a commit message's final trailer paragraph,
+ *  or from squashed sub-commit trailer paragraphs in a GitHub squash-merge commit (`<subject> (#<pr>)`). */
+export function nodeOnlyReasonsInMessage(message: string): string[] {
+  const rawLines = message.split(/\r?\n/);
+  const cut = rawLines.findIndex((l) => SCISSORS_LINE.test(l));
+  const lines = (cut >= 0 ? rawLines.slice(0, cut) : rawLines).filter((l) => !l.startsWith("#"));
+  const direct = nodeOnlyInFinalParagraph(lines);
+  if (direct.length > 0) return direct;
+
+  // GitHub squash-merge commits end their subject with ` (#<pr>)`, separate each squashed commit with `* <subject>`,
+  // and optionally append `\n\n---------\n\nCo-authored-by: ...` after the trailers.
+  const firstNonEmpty = lines.find((l) => l.trim() !== "") ?? "";
+  if (!SQUASH_SUBJECT.test(firstNonEmpty.trim())) return [];
+
+  let bodyEnd = lines.length;
+  while (bodyEnd > 0 && lines[bodyEnd - 1]!.trim() === "") bodyEnd--;
+  let footerStart = bodyEnd;
+  while (footerStart > 0 && lines[footerStart - 1]!.trim() !== "") footerStart--;
+  const footer = lines.slice(footerStart, bodyEnd);
+  if (footer.length > 0 && footer.every((l) => /^Co-authored-by:[ \t]+\S/i.test(l))) {
+    let sep = footerStart;
+    while (sep > 0 && lines[sep - 1]!.trim() === "") sep--;
+    if (sep > 0 && GITHUB_COAUTHOR_SEP.test(lines[sep - 1]!.trim())) {
+      bodyEnd = sep - 1;
+    }
+  }
+
+  const body = lines.slice(0, bodyEnd);
+  const sections: string[][] = [];
+  let current: string[] | null = null;
+  for (let i = 1; i < body.length; i++) {
+    const line = body[i]!;
+    if (line.startsWith("* ") && body[i - 1]!.trim() === "") {
+      if (current !== null) sections.push(current);
+      current = [line];
+    } else if (current !== null) {
+      current.push(line);
+    }
+  }
+  if (current !== null) sections.push(current);
+  if (sections.length === 0) return nodeOnlyInFinalParagraph(body);
+  const out: string[] = [];
+  for (const sec of sections) {
+    out.push(...nodeOnlyInFinalParagraph(sec));
   }
   return out;
 }
