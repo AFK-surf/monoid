@@ -2865,8 +2865,17 @@ export class Store {
   /// (handed there, store/handover.ts `deliveries`): none of it is handed to their agent here again should they come
   /// back.
   deliveredThere(keys: readonly string[]): void {
-    this.#tx(() => {
-      for (const key of keys) this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
+    this.#with((changes) => {
+      const changed: string[] = [];
+      this.#tx(() => {
+        const now = this.now();
+        for (const key of keys) {
+          if (this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, now) > 0) {
+            changed.push(key);
+          }
+        }
+      });
+      for (const key of changed) changes.push({ type: "session", key });
     });
   }
 

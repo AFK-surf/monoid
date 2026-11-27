@@ -314,9 +314,11 @@ test("WaitingTracker matches waitingForPeople via O(1) per-key updates without r
       assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
       assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s2", "s1"]);
       assert.equal(fullScans, 3, "same-tick drop + older-than-floor return re-seeds to promote unseen #3");
-      // Put s3 back for the untruncated check below.
-      store.markDelivered("s3", [{ thread: thread.id, n: msgN2, apart: false }]);
+      // deliveredThere also emits a session change so s3 returns to waiting in exact parity with waitingForPeople.
+      store.deliveredThere(["s3"]);
+      assert.deepEqual(tracker.read(since(), 2), origAll(since(), 2));
       assert.deepEqual(tracker.read(since(), 2).map((r) => r.key), ["s3", "s2"]);
+      assert.equal(fullScans, 3, "deliveredThere refreshes s3 via O(1) PK seek without rescanning");
 
       // With limit=10 (not truncated), archiving/deleting/completing never needs a full re-seed.
       assert.deepEqual(tracker.read(since(), 10), origAll(since(), 10));
