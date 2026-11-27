@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.66 | 131.94 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.11 | 130.82 |
 | [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
-| [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 2.7 | 3.66 | 15.19 | 38.24 | 58.92 | 33.5 | 68.53 | 103.14 | 129.35 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 58 |
 | [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.77 |
-| [ab4324b51](https://github.com/AFK-surf/monoid/commit/ab4324b51e045544fe4267a908524c9e9e06d9fe) fix(ui): fix dark-mode Role 4 tab droplet meniscus | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.59 |
