@@ -967,6 +967,29 @@ fn resolve_node_and_main_js(argv : Array[String], sep : String, os_name : String
   }
 }
 
+/// Read-only check verifying `stillfail.db` exists and already contains both core tables
+/// (`threads` and `sessions`). Returns `false` if missing, 0-byte, missing tables, or unreadable.
+fn db_has_core_tables(db_path : String) -> Bool {
+  if station_sys::lstat_raw(db_path) is None {
+    return false
+  }
+  let db = match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY, 2000) {
+    Ok(d) => d
+    Err(_) => return false
+  }
+  let ok = match db.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('threads', 'sessions')") {
+    Ok(stmt) => {
+      let rc = stmt.step()
+      let count = if rc == 100 { stmt.column_int64(0) } else { 0L }
+      let _ = stmt.finalize()
+      rc == 100 && count == 2L
+    }
+    Err(_) => false
+  }
+  let _ = db.close()
+  ok
+}
+
 /// Entry gate executed BEFORE `host_shim::start`, BEFORE `ready`, BEFORE touching inherited launcher
 /// FDs (3/4/5), and BEFORE opening `stillfail.db` for writes: if this whole station has any enabled
 /// local external connects or cross-station remote-connect dependencies, either fail closed
@@ -1014,11 +1037,17 @@ fn maybe_handoff_external_connects_to_node(argv : Array[String]) -> Option[Int] 
       }
       if has_pending_restore {
         let db_path = nodepath::join(sep, [data, "stillfail.db"])
-        if station_sys::lstat_raw(db_path) is None {
+        if !db_has_core_tables(db_path) {
           let _ = station_sys::register_sqlite_js_lower()
           match station_store::Store::open(db_path) {
             Ok(st_init) => st_init.close()
-            Err(_) => ()
+            Err(se) => {
+              let _ = host_shim::write_stderr_line(
+                "stillfail-station-pion: failed to initialize target db before restore handoff (preserving restore/ready.json): "
+                + se.message,
+              )
+              return Some(1)
+            }
           }
         }
       }

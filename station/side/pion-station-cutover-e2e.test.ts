@@ -2770,6 +2770,138 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
       verifyStore.close();
       assert.ok(editedRows.length >= 1, `${mode} expected edited text persisted in stillfail.db`);
     }
+
+    // (6c-init-fail-retry) Astra R9: 0-byte read-only (0444) table-less `stillfail.db` -> Pion fails BEFORE
+    // `exec_replace` preserving `<data>/restore/` -> `chmod 0644` (without deleting DB or re-staging!) ->
+    // real Launcher retries in same dir -> Pion initializes missing tables & `exec_replace`s into Node -> restore + edit succeed!
+    {
+      const dir = freshDir("ext-gate-r10-init-retry");
+      const appDir = join(dir, "app");
+      const dataDir = join(dir, "data");
+      installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+      mkdirSync(join(dataDir, "mesh"), { recursive: true });
+      const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+      assert.equal(idRes.status, 0, idRes.stderr);
+      const stationId = idRes.stdout.trim();
+
+      stageR8Restore(dataDir);
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+      writeFileSync(
+        join(dataDir, "mesh", "cloud.json"),
+        JSON.stringify({
+          origin: `http://127.0.0.1:${cloudPort}`,
+          workspace: ws,
+          workspace_name: "R8RestWS",
+          station: stationId,
+          name: "r10-init-retry",
+          peers: [{ id: peerId, name: "peer-r8", relay: null }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+
+      // Plant a 0-byte read-only table-less `stillfail.db` simulating a transient SQLite write failure.
+      const dbPath = join(dataDir, "stillfail.db");
+      writeFileSync(dbPath, "");
+      chmodSync(dbPath, 0o444);
+
+      // 1. Direct Pion run (`!strict`, with real Node `--app`): MUST exit non-zero, log init failure,
+      //    and preserve BOTH `<data>/restore/ready.json` and `<data>/restore/copy/`!
+      const failRun = spawnSync(pionBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.notEqual(failRun.status, 0, `read-only 0-byte db init failure must exit non-zero, got ${failRun.status}`);
+      assert.ok(
+        `${failRun.stdout}\n${failRun.stderr}`.includes("failed to initialize target db before restore handoff"),
+        `expected init failure stderr, got: ${failRun.stdout}\n${failRun.stderr}`,
+      );
+      assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "restore/ready.json MUST be preserved on init failure");
+      assert.equal(existsSync(join(dataDir, "restore", "copy")), true, "restore/copy MUST be preserved on init failure");
+
+      // 2. Clear fault (`chmod 0644` — keep the same 0-byte `stillfail.db` and DO NOT re-stage restore!)
+      //    and boot via real Launcher -> Pion detects missing core tables, initializes schema, `exec_replace`s into Node!
+      chmodSync(dbPath, 0o644);
+      const udpPort = await pickFreeUdpPort();
+      const logs: string[] = [];
+      const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+        env: {
+          ...process.env,
+          STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_NO_DHT: "1",
+          STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+          STILLFAIL_READER_ENGINE: "mb",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(launcher);
+      launcher.stdout.on("data", (d) => logs.push(String(d)));
+      launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+      await until(
+        "6c-init-fail-retry exec_replace into Node after chmod 0644",
+        () => logs.join("").includes("external connects active (restore:pending-ready-json); exec-replacing into Node station"),
+        20_000,
+      );
+      const nodePid = await until(
+        "6c-init-fail-retry Node pid serving /healthz 200",
+        async () => {
+          const p = readHubPid(dataDir);
+          const port = readPorts(dataDir).admin ?? 0;
+          if (p > 0 && isAlive(p) && port > 0) {
+            try {
+              const r = await httpCall(port, "GET", "/healthz");
+              if (r.status === 200) return p;
+            } catch {}
+          }
+          return null;
+        },
+        25_000,
+      );
+      assert.equal(isAlive(nodePid), true);
+      await until(
+        "6c-init-fail-retry Node replica restore completed",
+        () => (existsSync(join(dataDir, "replica", "restored.json")) ? true : null),
+        15_000,
+      );
+      const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+      assert.equal(restoredOut.error, null, `6c-init-fail-retry restored.json must have error === null, got: ${JSON.stringify(restoredOut)}`);
+
+      const editedText = "edited-after-6c-init-fail-retry";
+      const evResp = await until("6c-init-fail-retry connect.event edit on Node", async () => {
+        try {
+          return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
+            method: "connect.event",
+            workspace: ws,
+            connect: { id: "slack-r8", origin: peerId },
+            described: describedR8,
+            event: {
+              type: "changed",
+              channel: "C_R8",
+              threadTs: "200.001",
+              ts: "200.001",
+              text: editedText,
+            },
+          });
+        } catch {
+          return null;
+        }
+      }, 15_000);
+      assert.deepEqual(evResp.result, { ok: true });
+
+      launcher.kill("SIGTERM");
+      await until("6c-init-fail-retry launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+      const verifyStore = Store.open(dbPath, join(dataDir, "archives"));
+      const sessRow = verifyStore.getSession("s:r8-rem");
+      assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, "6c-init-fail-retry expected restored cross-station session s:r8-rem");
+      const editedRows = verifyStore.db
+        .prepare("SELECT text FROM entries WHERE text LIKE ?")
+        .all(`%${editedText}%`) as { text: string }[];
+      verifyStore.close();
+      assert.ok(editedRows.length >= 1, "6c-init-fail-retry expected edited text persisted in stillfail.db");
+    }
   }
 
   // --- Scenario 7 (Astra R6 P1 #2): 3-state `DbDepCheck` under 850ms & >2000ms exclusive SQLite lock + clean control DB ---
