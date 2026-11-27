@@ -613,3 +613,22 @@ test "narrow: model picker opened from chat agent sheet opens 全部模型 and m
   assert_eq(new_fix.model, "claude-sonnet-5")
   assert_true(t.query(@ui.Role::Dialog) is None, msg="sheet closed after picking model")
 }
+
+///|
+test "narrow: the model's sheet holds how hard it thinks wholly in view under the models, none of it cut or faded at the foot of what scrolls, crowded, short or with larger words" {
+  both_pages(fn() raise {
+    // (the user, 2026-11-27: 「思考深度为啥模糊了」: the way to all of them one row's room in the sheet's sizing, the
+    // sheet's body taller than the sheet by its line and gaps, scrolling, how hard it thinks cut and faded at its foot)
+    for c in [
+      ("newchat-providers-model-far", 390.0, 700.0, 1.0), ("newchat-providers-model-far", 390.0, 844.0, 1.0),
+      ("newchat-providers-model", 360.0, crowded_short, 1.0), ("newchat-crowded-model", 360.0, 780.0, 1.0),
+      ("newchat-crowded-model", 390.0, 844.0, 1.3), ("newchat-providers-model-liked", 390.0, 700.0, 1.3),
+    ] {
+      let t = crowded(c.0, w=c.1, h=c.2)
+      t.set_font_scale(c.3)
+      t.run_for(@ui.move_most_ms)
+      let r = t.get(Slider, label="思考深度").rect
+      assert_true(wholly_in_view(t, r), msg="\{c.0} \{c.1}×\{c.2} at \{c.3}: 思考深度 \{Repr(r)} cut")
+    }
+  })
+}

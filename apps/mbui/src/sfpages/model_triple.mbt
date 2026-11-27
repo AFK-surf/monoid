@@ -1388,7 +1388,13 @@ fn triple_body_node(
       .height(By(fn() { if level_h() { Some(triple_list_h) } else { None } }))
       .lies_along(By(fn() { if level_h() || (!sheet && !flat()) { Between } else { Start } }))
       |> ignore
-      scroll(room, fn() { if flat() { list_most() } else { list_most() - row_h() } }, fn(scrolled) {
+      // (the way to all of them under them in a sheet as tall as it is laid out: its row and the line over it, as far
+      // over that as under it; one row's room alone left the sheet's body taller than the sheet holds, scrolling it
+      // that much, how hard it thinks cut and faded at its foot: 2026-11-27 用户「思考深度为啥模糊了」)
+      let to_all_h = fn() {
+        if sheet { row_h() + 2.0 * @ui.Space::px(S1_5) + triple_rule_thick } else { row_h() }
+      }
+      scroll(room, fn() { if flat() { list_most() } else { list_most() - to_all_h() } }, fn(scrolled) {
         // (the room between them each row's own: triple_first_gap)
         // (the room past the row at the panel's far end from what opened it taken back: none there, whichever row is
         // there as rows come and go, nothing of any row's said again at once)
