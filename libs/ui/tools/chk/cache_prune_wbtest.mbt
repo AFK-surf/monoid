@@ -316,6 +316,15 @@ test "an image's version and an apt spec in a key" {
     family_of("mbui-mac-cc-61e77a2d557f8677-00b78fb4840fdc3e"),
     Some(("mbui-mac-cc-61e77a2d557f8677", false)),
   )
+  // cut-build Windows fallback cache belongs to mbui-win-build-mono's family as a variant
+  assert_eq(
+    family_of("mbui-win-build-mono-moon-2f7ebb7dcb895c4a"),
+    Some(("mbui-win-build-mono", true)),
+  )
+  assert_eq(
+    family_of("mbui-win-build-mono-2f7ebb7dcb895c4a"),
+    Some(("mbui-win-build-mono", false)),
+  )
   assert_eq(family_of("warp-1.0.21"), None)
   assert_eq(family_of("android-image-34-default-x86_64-2"), None)
   assert_eq(family_of("android-emulator-16428233"), None)
@@ -361,12 +370,19 @@ test "a family's variants go once it moved on, its newest and the fixed ones nev
   let cc_old = { ..c, id: "co", key: "mbui-linux-store-app-pkgs-m-cc0987654321fe-d19cbafad89f7953", accessed: now - 12.0 * h }
   assert_eq(ids([cc_old, cc_new]), ["co"])
   assert_eq(ids([{ ..cc_old, accessed: now }, { ..cc_new, accessed: now - 50.0 * h }]), ["cn"])
-  // an apt spec retired and v1's apt cache: gone at 12 hours, the spec read last kept
+  // an apt spec retired and v1's apt cache: 3rd+ variants go after 1 hour idle while the 2 newest stay for 12 hours
   let v1 = { ..c, id: "v1", key: "apt-mbui-host-linux-20ba3079a0cbad0f", accessed: now - 17.0 * h }
-  let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 16.0 * h }
-  let s_mid = { ..c, id: "s2", key: "apt-mbui-host-linux-875dc52b7221-bf9c7f2fe9dcddc1", accessed: now - 3.0 * h }
+  let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 2.0 * h }
+  let s_mid = { ..c, id: "s2", key: "apt-mbui-host-linux-875dc52b7221-bf9c7f2fe9dcddc1", accessed: now - 0.5 * h }
   let s_new = { ..c, id: "s3", key: "apt-mbui-host-linux-131ce6adc482-bf9c7f2fe9dcddc1", accessed: now - 60.0 }
   assert_eq(ids([v1, s_old, s_mid, s_new]), ["v1", "s1"])
+  // 3rd variant read within the last hour stays until 1 hour idle
+  assert_eq(ids([{ ..s_old, accessed: now - 0.9 * h }, s_mid, s_new]), [])
+  // Windows cut-build fallback goes 4 hours after full mbui-win-build-mono was read since
+  let win_full = { ..c, id: "wf", key: "mbui-win-build-mono-2f7ebb7dcb895c4a", accessed: now - 60.0 }
+  let win_cut = { ..c, id: "wc", key: "mbui-win-build-mono-moon-2f7ebb7dcb895c4a", accessed: now - 4.0 * h }
+  assert_eq(ids([win_full, win_cut]), ["wc"])
+  assert_eq(ids([win_full, { ..win_cut, accessed: now - 4.0 * h + 1.0 }]), [])
   // the ones kept by their own name and the toolchains': never
   let fixed = [
     { ..c, id: "w", key: "warp-1.0.21", accessed: now - 90.0 * h },
