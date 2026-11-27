@@ -220,14 +220,93 @@ pub fn WholeHandoverSnapshot::to_json(self : WholeHandoverSnapshot) -> base_code
   ])
 }
 
+/// Escape `%`, `_`, and `\` for SQL `LIKE ? ESCAPE '\'`, and lowercase ASCII letters.
+pub fn escape_sql_like(term : String) -> String {
+  let bytes = term.to_bytes()
+  let out : Array[Byte] = []
+  for i in 0..<bytes.length() {
+    let mut bi = bytes[i].to_int()
+    if bi >= 65 && bi <= 90 {
+      bi = bi + 32
+    }
+    if bi == 92 || bi == 37 || bi == 95 {
+      // '\', '%', '_'
+      out.push(92 as Byte)
+    }
+    out.push(bi as Byte)
+  }
+  let res = Bytes::new(out.length())
+  for i in 0..<out.length() {
+    res[i] = out[i]
+  }
+  res.to_string()
+}
+
+/// Build SQL `AND lower(col_expr) LIKE ?k ESCAPE '\'` clauses and bound `%term%` parameters
+/// for bounded keyword pushdown (at most 16 terms to keep SQL plans bounded).
+pub fn build_like_clauses(
+  col_expr : String,
+  terms : Array[String],
+  start_param : Int,
+) -> (String, Array[base_codec::Json]) {
+  let mut sql = ""
+  let params : Array[base_codec::Json] = []
+  let max_terms = if terms.length() > 16 { 16 } else { terms.length() }
+  let mut idx = start_param
+  for i in 0..<max_terms {
+    let t = terms[i]
+    if t.length() == 0 {
+      continue
+    }
+    let pat = "%" + escape_sql_like(t) + "%"
+    sql = sql + " AND lower(" + col_expr + ") LIKE ?" + idx.to_string() + " ESCAPE '\\'"
+    params.push(base_codec::json_str(pat))
+    idx = idx + 1
+  }
+  (sql, params)
+}
+
+fn json_strict_int(v : base_codec::Json, key : String) -> Result[Int, String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(n, raw)) => {
+      if raw.contains(".") || raw.contains("e") || raw.contains("E") {
+        return Err("non-integer " + key + ": " + raw)
+      }
+      Ok(n.to_int())
+    }
+    Some(_) => Err("invalid type for " + key)
+    None => Err("missing handover snapshot " + key)
+  }
+}
+
+fn parse_str_array_field_strict(
+  v : base_codec::Json,
+  key : String,
+) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  match base_codec::json_get(v, key) {
+    None => Ok(out)
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => return Err("malformed non-string item in handover snapshot " + key)
+        }
+      }
+      Ok(out)
+    }
+    Some(_) => Err("invalid non-array handover snapshot field " + key)
+  }
+}
+
 pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSnapshot, String] {
   let j = match base_codec::json_parse(raw) {
     base_codec::JsonParseResult::Ok(v) => v
     base_codec::JsonParseResult::Err(e) => return Err("invalid handover snapshot JSON: " + e)
   }
-  let version = match json_opt_int(j, "version") {
-    Some(v) => v
-    None => return Err("missing handover snapshot version")
+  let version = match json_strict_int(j, "version") {
+    Ok(v) => v
+    Err(e) => return Err(e)
   }
   if version != HANDOVER_SNAPSHOT_VERSION {
     return Err("unsupported handover snapshot version: " + version.to_string())
@@ -238,36 +317,50 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
   }
   let kept_sends : Array[station_api::KeptSend] = []
   match base_codec::json_get(j, "keptSends") {
+    None => ()
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match kept_send_from_json(items[i]) {
           Some(ks) => kept_sends.push(ks)
-          None => ()
+          None => return Err("malformed keptSends item at index " + i.to_string())
         }
       }
     }
-    _ => ()
+    Some(_) => return Err("invalid non-array keptSends in handover snapshot")
   }
   let session_snapshots : Array[station_sessions::HandoverSnapshot] = []
   match base_codec::json_get(j, "sessions") {
+    None => ()
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match session_snap_from_json(items[i]) {
           Some(ss) => session_snapshots.push(ss)
-          None => ()
+          None => return Err("malformed sessions item at index " + i.to_string())
         }
       }
     }
-    _ => ()
+    Some(_) => return Err("invalid non-array sessions in handover snapshot")
+  }
+  let active_job_ids = match parse_str_array_field_strict(j, "activeJobIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  let active_vault_grant_ids = match parse_str_array_field_strict(j, "activeVaultGrantIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  let handed_station_ids = match parse_str_array_field_strict(j, "handedStationIds") {
+    Ok(a) => a
+    Err(e) => return Err(e)
   }
   Ok(WholeHandoverSnapshot::{
     version: version,
     exported_at: exported_at,
     kept_sends: kept_sends,
     session_snapshots: session_snapshots,
-    active_job_ids: parse_str_array_field(j, "activeJobIds"),
-    active_vault_grant_ids: parse_str_array_field(j, "activeVaultGrantIds"),
-    handed_station_ids: parse_str_array_field(j, "handedStationIds"),
+    active_job_ids: active_job_ids,
+    active_vault_grant_ids: active_vault_grant_ids,
+    handed_station_ids: handed_station_ids,
   })
 }
 

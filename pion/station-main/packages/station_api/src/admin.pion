@@ -476,6 +476,38 @@ pub fn AdminApi::kept_sends(self : AdminApi, thread_map : Array[(Int, Int)]) -> 
   out
 }
 
+/// Export all successful `POST /threads/:id/messages` idempotency slots with identity thread IDs
+/// (no caller-supplied `thread_map` row limit).
+pub fn AdminApi::kept_sends_identity(self : AdminApi) -> Array[KeptSend] {
+  let out : Array[KeptSend] = []
+  let mut i = 0
+  while i < self.slots.length() {
+    let s = self.slots[i]
+    if s.method == "POST" && s.status >= 200 && s.status < 300 {
+      let segs = split_segments(s.path)
+      if segs.length() >= 3 && segs[0] == "threads" && segs[2] == "messages" {
+        match parse_uint_str(segment_decode(segs[1])) {
+          Some(local_tid) => {
+            out.push(KeptSend::{
+              viewer: s.viewer_email,
+              workspace: s.workspace,
+              thread: local_tid,
+              key: s.idem_key,
+              at_ms: s.at_ms,
+              status: s.status,
+              headers: s.headers,
+              body_b64: base_codec::base64_encode(s.body),
+            })
+          }
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Import handed-over `KeptSend` records into this station's idempotency cache (`keepSends`).
 /// Overwrites any prior non-2xx refusal slot in place; never overwrites an existing 2xx slot.
 pub fn AdminApi::keep_sends(self : AdminApi, sends : Array[KeptSend], ws_override : Option[String]) -> Unit {

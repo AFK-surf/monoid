@@ -538,5 +538,142 @@ test "whole_core_mixed_rig_real_task_list_live_clock_expiry_and_zero_shutdown_co
   wc_assert(core.active_object_count() >= 2, "active_object_count reflects live actor + token")
   core.shutdown_pre_handover()
   wc_assert(core.shut_down, "shut_down must be true")
+  wc_assert(!core.ready, "ready must be false after shutdown")
   wc_assert(core.active_object_count() == 0, "active_object_count MUST be 0 after shutdown, got " + core.active_object_count().to_string())
+}
+
+test "whole_core_r3_bounded_sql_like_strict_snapshot_idempotent_adopt_drive_mcp_gate" {
+  // 1. Bounded SQL LIKE escaping & clause pushdown.
+  wc_assert(
+    escape_sql_like("100%_test\\A") == "100\\%\\_test\\\\a",
+    "escape_sql_like must escape %, _, \\ and lowercase ASCII",
+  )
+  let (like_sql, like_params) = build_like_clauses("COALESCE(t.title, '')", ["Alpha", "Beta_100%"], 3)
+  wc_assert(like_sql.contains("LIKE ?3 ESCAPE '\\'"), "first LIKE clause bound at ?3")
+  wc_assert(like_sql.contains("LIKE ?4 ESCAPE '\\'"), "second LIKE clause bound at ?4")
+  wc_assert(like_params.length() == 2, "expected 2 bound LIKE parameters")
+
+  // 2. Strict `WholeHandoverSnapshot::from_json` rejects non-integer version (1.5) & malformed arrays.
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1.5,\"exportedAt\":1000}").is_err(),
+    "version 1.5 MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"keptSends\":[{\"bad\":true}]}").is_err(),
+    "malformed keptSends item MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"sessions\":[123]}").is_err(),
+    "malformed sessions item MUST be rejected",
+  )
+  wc_assert(
+    WholeHandoverSnapshot::from_json("{\"version\":1,\"exportedAt\":1000,\"activeJobIds\":[42]}").is_err(),
+    "non-string activeJobIds item MUST be rejected",
+  )
+
+  // 3. Idempotent token re-adoption NEVER revokes the existing active token.
+  let rng = DetRng::new()
+  let clock = TestClock::{ now_ms: 1700000000000L }
+  let core = make_test_core("/mem/w15-r3/data", "/mem/w15-r3/drive", rng, clock)
+  let tok = match core.agents.issue_session_token("sess-idemp-1") {
+    Ok(t) => t
+    Err(e) => panic(e)
+  }
+  core.agents.register_adopted_token("sess-idemp-1", tok)
+  core.agents.register_adopted_token("sess-idemp-1", tok)
+  match core.agents.resolve_token_ct(tok) {
+    Some(s) => wc_assert(s == "sess-idemp-1", "re-adopting identical token must keep it active")
+    None => panic("re-adopting identical token MUST NOT revoke it")
+  }
+
+  // 4. `AdminApi::kept_sends_identity` exports thread 10001+ without any 10000-row cap.
+  core.api.admin.keep_sends(
+    [
+      station_api::KeptSend::{
+        viewer: "alice@example.com",
+        workspace: "ws-home",
+        thread: 10001,
+        key: "idem-10001",
+        at_ms: 1700000000000L,
+        status: 200,
+        headers: [],
+        body_b64: base_codec::base64_encode("{\"ok\":true}".to_bytes()),
+      },
+    ],
+    None,
+  )
+  let exported = core.api.admin.kept_sends_identity()
+  wc_assert(
+    exported.length() == 1 && exported[0].thread == 10001 && exported[0].key == "idem-10001",
+    "kept_sends_identity must export thread 10001",
+  )
+
+  // 5. Drive `PUT /drive/upload` strict `total` required (400) & `replace=true` does NOT overwrite (409).
+  core.api.read_only_handover = false
+  let pub_hex = crypto::bytes_to_hex(crypto::sha256("r3-peer-key".to_bytes()))
+  let home_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::owner("alice@example.com", "ws-home"),
+    "ed25519:" + pub_hex,
+  )
+  // Missing `total` -> 400.
+  let miss_total = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u1&offset=0",
+    [],
+    "hello".to_bytes(),
+    1700000000000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(miss_total) == 400, "missing total MUST return 400")
+  // Initial upload with total=5 -> 200.
+  let ok_up = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u2&offset=0&total=5",
+    [],
+    "hello".to_bytes(),
+    1700000001000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(ok_up) == 200, "initial upload expected 200")
+  // `replace=true` MUST NOT overwrite -> 409!
+  let bad_replace = core.api.handle_authenticated_api_with_status(
+    home_peer,
+    "PUT",
+    "/api/drive/upload?root=/mem/w15-r3/drive&path=r3.bin&id=u3&offset=0&total=5&replace=true",
+    [],
+    "world".to_bytes(),
+    1700000002000L,
+    wc_empty_status,
+  )
+  wc_assert(wc_response_status(bad_replace) == 409, "replace=true MUST return 409")
+
+  // 6. `WholeCore::handle_mcp_http_with_handlers` returns 503 before `ready == true`, and `session.size` matches `remote.ts` wire shape.
+  wc_assert(!core.ready, "WholeCore must start with ready == false")
+  let pre_mcp = core.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:4312"),
+    None,
+    None,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+    station_tools::default_domain_handlers(),
+  )
+  wc_assert(pre_mcp.status == 503, "handle_mcp_http before ready MUST return 503")
+  let sz = match core.handle_peer_rpc(
+    "peer-st-1",
+    "ws-rig",
+    "session.size",
+    form::Json::Obj([("session", form::Json::Str("sess-r3"))]),
+    0L,
+  ) {
+    Ok(v) => match station_rules_bridge::canonical(v) { Ok(s) => s, Err(e) => panic(e) }
+    Err(e) => panic("session.size failed: " + e)
+  }
+  wc_assert(
+    sz.contains("\"present\":false") && sz.contains("\"complete\":true"),
+    "session.size wire format must include present & complete",
+  )
+  core.shutdown_pre_handover()
 }
