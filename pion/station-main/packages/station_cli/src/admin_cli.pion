@@ -467,6 +467,7 @@ pub fn run_admin_cli(
       timeout_ms: Some(30000L),
       proxy: resolve_proxy_for_url(full_url, env),
       ca_pem: ca_pem,
+      redirect: "manual",
     }
     let resp = match (ports.http)(req) {
       Ok(r) => r

@@ -1638,6 +1638,56 @@ int main(void) {
         rmdir(root_dir);
     }
 
+    // 10. Atomic sts_mkdir_mode, sts_symlink, sts_getcwd, sts_read_file_strict, sts_write_file_atomic
+    {
+        int64_t cwd_len = 0;
+        char *cwd = (char *)sts_getcwd(&cwd_len);
+        assert(cwd != NULL && cwd_len > 0 && cwd[0] == '/');
+        sts_free(cwd);
+
+        char tmp_dir[256];
+        snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/sts_cli_prims_%ld", (long)getpid());
+        rmdir(tmp_dir);
+        assert(sts_mkdir_mode(tmp_dir, 0700) == 1);
+        assert(sts_mkdir_mode(tmp_dir, 0700) == -2); // EEXIST
+        struct stat dst;
+        assert(stat(tmp_dir, &dst) == 0 && (dst.st_mode & 0777) == 0700);
+
+        char sec_file[320];
+        snprintf(sec_file, sizeof(sec_file), "%s/secret.bin", tmp_dir);
+        const uint8_t bin_payload[4] = { 0x00, 0xFF, 0x7F, 0x80 };
+        assert(sts_write_file_atomic(sec_file, bin_payload, 4, 0600) == 1);
+        assert(stat(sec_file, &dst) == 0 && (dst.st_mode & 0777) == 0600 && dst.st_size == 4);
+
+        int64_t flen = 0;
+        int32_t ferr = 0;
+        uint8_t *got = (uint8_t *)sts_read_file_strict(sec_file, &flen, &ferr);
+        assert(got != NULL && flen == 4 && ferr == 0 && memcmp(got, bin_payload, 4) == 0);
+        sts_free(got);
+
+        char missing_file[320];
+        snprintf(missing_file, sizeof(missing_file), "%s/missing.bin", tmp_dir);
+        assert(sts_read_file_strict(missing_file, &flen, &ferr) == NULL && ferr == 1); // ENOENT
+
+        if (geteuid() != 0) {
+            assert(chmod(sec_file, 0000) == 0);
+            assert(sts_read_file_strict(sec_file, &flen, &ferr) == NULL && ferr == 2); // EACCES
+            assert(chmod(sec_file, 0600) == 0);
+        }
+
+        char sym_p[320];
+        snprintf(sym_p, sizeof(sym_p), "%s/link.bin", tmp_dir);
+        assert(sts_symlink("./secret.bin", sym_p, 0) == 1);
+        int64_t rl_len = 0;
+        char *rl = (char *)sts_readlink(sym_p, &rl_len);
+        assert(rl != NULL && rl_len == 12 && strcmp(rl, "./secret.bin") == 0);
+        sts_free(rl);
+
+        unlink(sym_p);
+        unlink(sec_file);
+        rmdir(tmp_dir);
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 

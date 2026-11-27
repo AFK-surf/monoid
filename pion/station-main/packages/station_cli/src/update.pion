@@ -303,6 +303,7 @@ fn fetch_feed_json(channel : String, base : String, ports : CliPorts) -> Result[
       timeout_ms: Some(FEED_TIMEOUT_MS),
       proxy: None,
       ca_pem: None,
+      redirect: "follow",
     }
     let res = (ports.http)(req)
     let retry_err : Option[String] = match res {
@@ -509,6 +510,7 @@ fn download_verified(
       timeout_ms: Some(timeout_ms),
       proxy: None,
       ca_pem: None,
+      redirect: "follow",
     }
     let retry_err : Option[String] = match (ports.http)(req) {
       Ok(resp) => {

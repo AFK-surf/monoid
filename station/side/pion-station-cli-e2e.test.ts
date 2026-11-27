@@ -53,8 +53,6 @@ function resolvePionBinary(): string {
   if (envBin && existsSync(envBin)) return envBin;
   const target = process.platform === "darwin" ? "darwin-arm64"
     : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
-  const tmpBin = "/tmp/stillfail-station-pion-cli";
-  if (existsSync(tmpBin)) return tmpBin;
   const out = join(root, "pion/station-main/_build", `stillfail-station-pion-${target}`);
   if (!existsSync(out)) {
     execFileSync("bash", [join(root, "pion/station-main/scripts/build.sh"), target, out], {
@@ -831,4 +829,223 @@ exit 0
   });
   assert.equal(existsSync(nodeMarker), true, "non-strict mode must fall back to Node");
   assert.equal(rFallback.status, 42, "fake Node should exit 42 on fallback");
+});
+
+test("10. Live Pion rig daemon via real Rust launcher answers heap and channel beta via SIGHUP in <5s", async () => {
+  const bin = resolvePionBinary();
+  const launcher = resolveLauncherBinary();
+  const dir = freshDir("live-rig-cli");
+  const app = join(dir, "app");
+  const data = join(dir, "data");
+  mkdirSync(join(app, "station"), { recursive: true });
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(app, "station", "main.js"), "// unused under engine=pion\n");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "pion", language: "en", updateChannel: "stable" }) + "\n");
+
+  const ownerKey = edKey();
+  const stKey = edKey();
+  writeFileSync(
+    join(data, "mesh", "cloud.json"),
+    JSON.stringify({
+      origin: "https://app.still.fail",
+      workspace: "ws_live_cli_1",
+      workspace_name: "Live CLI WS",
+      station: stKey.hex,
+      name: "live-rig",
+      rig: { owner: "u_live_1", person: ownerKey.hex },
+    }),
+  );
+
+  const daemon = spawn(launcher, ["run", "--app", app, "--data", data, "--port", "0"], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      STILLFAIL_STATION_ENGINE: "pion",
+      STILLFAIL_STATION_ENGINE_STRICT: "1",
+      STILLFAIL_STATION_PION: bin,
+    },
+  });
+  children.push(daemon);
+  let daemonStderr = "";
+  daemon.stderr?.on("data", (c: Buffer) => { daemonStderr += c.toString("utf8"); });
+
+  try {
+    // Wait until launcher writes run/station.json (with channel: 1) and daemon writes run/hub.json.
+    const stJsonPath = join(data, "run", "station.json");
+    const hubJsonPath = join(data, "run", "hub.json");
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (existsSync(stJsonPath) && existsSync(hubJsonPath)) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(existsSync(stJsonPath), `station.json not written: ${daemonStderr}`);
+    assert.ok(existsSync(hubJsonPath), `hub.json not written: ${daemonStderr}`);
+
+    // (a) Real `heap` against live Pion rig daemon must succeed quickly and produce pion-diag-v1 JSON.
+    const tHeap = Date.now();
+    const heapRes = await runAsync(launcher, ["heap", "--app", app, "--data", data, "--json"], {
+      STILLFAIL_STATION_ENGINE: "pion",
+      STILLFAIL_STATION_ENGINE_STRICT: "1",
+      STILLFAIL_STATION_PION: bin,
+    });
+    assert.equal(heapRes.status, 0, `live rig heap failed: ${heapRes.stderr}\ndaemon: ${daemonStderr}`);
+    assert.ok(Date.now() - tHeap < 5000, "live rig heap should complete in <5s");
+    const heapAns = JSON.parse(heapRes.stdout) as { path: string; bytes: number; ms: number };
+    assert.ok(existsSync(heapAns.path), `heap snapshot file missing: ${heapAns.path}`);
+    const snap = JSON.parse(readFileSync(heapAns.path, "utf8")) as {
+      format: string;
+      runtime: string;
+      rssBytes: number;
+      openFds: number;
+      uptimeMs: number;
+    };
+    assert.equal(snap.format, "pion-diag-v1");
+    assert.equal(snap.runtime, "pion");
+    assert.ok(snap.rssBytes > 0, `expected rssBytes > 0, got ${snap.rssBytes}`);
+    assert.ok(snap.openFds > 0, `expected openFds > 0, got ${snap.openFds}`);
+    assert.ok(snap.uptimeMs >= 0, `expected uptimeMs >= 0, got ${snap.uptimeMs}`);
+
+    // (b) Real `channel beta` via launcher SIGHUP -> channel-ask -> config.json update.
+    const tCh = Date.now();
+    const chRes = await runAsync(launcher, ["channel", "beta", "--app", app, "--data", data], {
+      STILLFAIL_STATION_ENGINE: "pion",
+      STILLFAIL_STATION_ENGINE_STRICT: "1",
+      STILLFAIL_STATION_PION: bin,
+    });
+    assert.equal(chRes.status, 0, `live rig channel beta failed: ${chRes.stderr}\ndaemon: ${daemonStderr}`);
+    assert.ok(Date.now() - tCh < 5000, "live rig channel beta should complete in <5s");
+    assert.equal(chRes.stdout.trim(), "beta");
+    const cfgAfter = JSON.parse(readFileSync(join(data, "config.json"), "utf8")) as { updateChannel?: string };
+    assert.equal(cfgAfter.updateChannel, "beta", "config.json must persist updateChannel=beta");
+  } finally {
+    daemon.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(() => { try { daemon.kill("SIGKILL"); } catch {} resolve(); }, 5000);
+      daemon.once("close", () => { clearTimeout(t); resolve(); });
+    });
+  }
+});
+
+test("11. update --replace-prepare resolves relative .tar.gz and .zip paths from caller cwd and rejects FIFO special files", () => {
+  const bin = resolvePionBinary();
+  const work = freshDir("rel-archive");
+  const data = join(work, "data");
+  const app = join(work, "app");
+  mkdirSync(join(app, "bin"), { recursive: true });
+  mkdirSync(join(app, "station"), { recursive: true });
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(app, "VERSION"), "0.1.100\n");
+  writeFileSync(join(app, "bin", "stillfail"), "#!/bin/sh\necho ok\n");
+  writeFileSync(join(app, "station", "main.js"), "// old\n");
+
+  const srcBundle = join(work, "src");
+  mkdirSync(join(srcBundle, "stillfail", "bin"), { recursive: true });
+  mkdirSync(join(srcBundle, "stillfail", "station"), { recursive: true });
+  writeFileSync(join(srcBundle, "stillfail", "bin", "stillfail"), "#!/bin/sh\necho new\n");
+  chmodSync(join(srcBundle, "stillfail", "bin", "stillfail"), 0o755);
+  writeFileSync(join(srcBundle, "stillfail", "station", "main.js"), "// new\n");
+
+  // Create relative bundle.tar.gz and bundle.zip in `work`
+  execFileSync("tar", ["-czf", join(work, "bundle.tar.gz"), "-C", srcBundle, "stillfail"]);
+  const hasZip = spawnSync("zip", ["-v"], { stdio: "ignore" }).status === 0;
+  if (hasZip) {
+    execFileSync("zip", ["-qr", join(work, "bundle.zip"), "stillfail"], { cwd: srcBundle });
+  } else {
+    execFileSync("python3", [
+      "-c",
+      `import zipfile, os
+with zipfile.ZipFile(${JSON.stringify(join(work, "bundle.zip"))}, "w") as z:
+  for dp, _, fns in os.walk(${JSON.stringify(srcBundle)}):
+    for f in fns:
+      full = os.path.join(dp, f)
+      z.write(full, os.path.relpath(full, ${JSON.stringify(srcBundle)}))`,
+    ]);
+  }
+
+  for (const relName of ["bundle.tar.gz", "bundle.zip"]) {
+    const pStage = join(work, `stage-pion-${relName}`);
+    const nStage = join(work, `stage-node-${relName}`);
+    const pRes = spawnSync(
+      bin,
+      ["update", "--replace-prepare", "--app", app, "--data", data, "--stage", pStage, "--source", relName],
+      { cwd: work, encoding: "utf8", timeout: 20_000 },
+    );
+    const nRes = spawnSync(
+      process.execPath,
+      [nodeMain, "update", "--replace-prepare", "--app", app, "--data", data, "--stage", nStage, "--source", relName],
+      { cwd: work, encoding: "utf8", timeout: 20_000 },
+    );
+    assert.equal(pRes.status, 0, `pion relative ${relName} failed: ${pRes.stderr}`);
+    assert.equal(nRes.status, 0, `node relative ${relName} failed: ${nRes.stderr}`);
+    assert.ok(existsSync(join(pStage, "station", "main.js")), `staged main.js missing for ${relName}`);
+  }
+
+  // Special file (FIFO) inside source dir must fail immediately without hanging.
+  if (process.platform !== "win32") {
+    const fifoSrc = join(work, "fifo-src");
+    mkdirSync(join(fifoSrc, "bin"), { recursive: true });
+    mkdirSync(join(fifoSrc, "station"), { recursive: true });
+    writeFileSync(join(fifoSrc, "bin", "stillfail"), "#!/bin/sh\necho ok\n");
+    writeFileSync(join(fifoSrc, "station", "main.js"), "// ok\n");
+    execFileSync("mkfifo", [join(fifoSrc, "station", "pipe.fifo")]);
+    const fifoStage = join(work, "fifo-stage");
+    const t0 = Date.now();
+    const fifoRes = runBin(bin, [
+      "update",
+      "--replace-prepare",
+      "--app",
+      app,
+      "--data",
+      data,
+      "--stage",
+      fifoStage,
+      "--source",
+      fifoSrc,
+    ]);
+    assert.notEqual(fifoRes.status, 0, "copy_dir with FIFO must exit non-zero");
+    assert.ok(Date.now() - t0 < 5000, "copy_dir with FIFO must fail immediately without hanging");
+    assert.match(fifoRes.stderr, /special file|FIFO/i, `unexpected FIFO error: ${fifoRes.stderr}`);
+  }
+});
+
+test("12. id refuses unreadable secret.key (chmod 0000) without overwriting existing station identity", { skip: process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0) }, () => {
+  const bin = resolvePionBinary();
+  const data = freshDir("unreadable-key");
+  const r1 = runBin(bin, ["id", "--data", data]);
+  assert.equal(r1.status, 0, r1.stderr);
+  const keyFile = join(data, "mesh", "secret.key");
+  const origBytes = readFileSync(keyFile);
+
+  chmodSync(keyFile, 0o000);
+  try {
+    const r2 = runBin(bin, ["id", "--data", data]);
+    assert.notEqual(r2.status, 0, "unreadable secret.key must exit non-zero");
+    assert.match(r2.stderr, /EACCES|permission/i, `expected permission error, got: ${r2.stderr}`);
+  } finally {
+    chmodSync(keyFile, 0o600);
+  }
+  assert.deepEqual(readFileSync(keyFile), origBytes, "unreadable secret.key must NEVER be overwritten");
+});
+
+test("13. admin does not follow 302 redirects (matches Node bin/admin-cli.ts)", async () => {
+  const bin = resolvePionBinary();
+  const srv = createHttpServer((req, res) => {
+    if (req.url === "/v1/admin/me") {
+      res.writeHead(302, { Location: "/v1/admin/redirected" });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ email: "should-not-follow@example.test" }));
+  });
+  servers.push(srv);
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  const origin = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+
+  const pRes = await runAsync(bin, ["admin", "whoami", "--origin", origin, "--key", "sfa_test_secret_key"]);
+  const nRes = await runNodeAdminAsync(["whoami", "--origin", origin, "--key", "sfa_test_secret_key"]);
+  assert.equal(pRes.status, 1, `pion admin must reject 302 with exit 1, got stdout=${pRes.stdout}`);
+  assert.equal(nRes.status, 1, `node admin must reject 302 with exit 1, got stdout=${nRes.stdout}`);
+  assert.match(pRes.stderr, /302/, `pion admin stderr must report 302: ${pRes.stderr}`);
 });

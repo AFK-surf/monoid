@@ -199,28 +199,32 @@ fn cli_run_child(
   Ok((exit_code, cli_byte_array_to_string(stdout_buf), cli_byte_array_to_string(stderr_buf)))
 }
 
-/// Binary-safe production `OpsFs`: uses `station_ops::shell_ops_fs()` for metadata/read/dir ops,
-/// and `station_sys::write_file_mode` + `chmod` for `write_bytes` so arbitrary binary payloads
-/// (Ed25519 keys, `.tar.gz`/`.zip`, `SFDELTA1`, executables) are written without UTF-8 loss.
-fn build_cli_ops_fs(os : station_ops::PlatformOs, sep : String) -> station_ops::OpsFs {
+/// Binary-safe production `OpsFs`: uses `station_sys::read_file_strict` to distinguish ENOENT from
+/// EACCES/IO errors (never folding permission errors into NotFound) and `station_sys::write_file_atomic`
+/// (`O_CREAT|O_EXCL` tmp + `fchmod` + `fsync` + `rename`) for atomic private/binary writes.
+fn build_cli_ops_fs(_os : station_ops::PlatformOs, sep : String) -> station_ops::OpsFs {
   let base = station_ops::shell_ops_fs()
-  let is_win = match os {
-    station_ops::PlatformOs::Windows => true
-    _ => false
-  }
   station_ops::OpsFs::{
-    read_bytes: base.read_bytes,
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      match station_sys::read_file_strict(path) {
+        Ok(b) => Ok(b)
+        Err(station_sys::StrictReadErr::NotFound) => Err(station_ops::FsErr::NotFound)
+        Err(station_sys::StrictReadErr::PermissionDenied) => {
+          Err(station_ops::FsErr::PermissionDenied("EACCES: " + path))
+        }
+        Err(station_sys::StrictReadErr::Other) => {
+          Err(station_ops::FsErr::Other("read failed: " + path))
+        }
+      }
+    },
     write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
       let dir = nodepath::dirname(sep, path)
       if dir != "" && dir != "." && dir != path {
         let _ = (base.mkdir_p)(dir)
       }
       let effective_mode = if mode > 0 { mode } else { 420 }
-      if !station_sys::write_file_mode(path, data, effective_mode, false) {
-        return Err(station_ops::FsErr::Other("write_file_mode failed: " + path))
-      }
-      if !is_win && mode > 0 {
-        let _ = station_sys::chmod(path, effective_mode)
+      if !station_sys::write_file_atomic(path, data, effective_mode) {
+        return Err(station_ops::FsErr::Other("atomic write failed: " + path))
       }
       Ok(())
     },
@@ -264,6 +268,10 @@ fn cli_copy_dir_verbatim(
       Ok(t) => t
       Err(e) => return Err("readlink failed for " + src + ": " + station_ops::fs_err_msg(e))
     }
+    let target_is_dir = match (ops_fs.stat)(src) {
+      Ok(tm) => tm.is_dir
+      Err(_) => false
+    }
     let parent = nodepath::dirname(sep, dst)
     if parent != "" && parent != "." && parent != dst {
       match (ops_fs.mkdir_p)(parent) {
@@ -272,16 +280,10 @@ fn cli_copy_dir_verbatim(
       }
     }
     let _ = (ops_fs.remove)(dst)
-    let req = base_codec::json_stringify(base_codec::json_obj([
-      ("target", base_codec::json_str(target)),
-      ("path", base_codec::json_str(dst)),
-    ]))
-    // sync: CLI verbatim symlink creation during copy_dir
-    let raw = host_shim::shell_sync("fs.symlink", req)
-    match cli_parse_shell_sync_err(raw) {
-      Some(err) => return Err("fs.symlink failed for " + dst + ": " + err)
-      None => return Ok(())
+    if !station_sys::symlink(target, dst, target_is_dir) {
+      return Err("symlink failed for " + dst)
     }
+    return Ok(())
   }
   if meta.is_dir {
     match (ops_fs.mkdir_p)(dst) {
@@ -304,6 +306,9 @@ fn cli_copy_dir_verbatim(
       i = i + 1
     }
     return Ok(())
+  }
+  if !meta.is_file {
+    return Err("Cannot copy special file (FIFO/socket/device): " + src)
   }
   // Regular file: preserve permission bits (including executable bits).
   let data = match (ops_fs.read_bytes)(src) {
@@ -366,12 +371,12 @@ fn build_production_cli_ports(
       body: req.body,
       timeout_ms: req.timeout_ms,
       stall_ms: req.timeout_ms,
-      redirect: "follow",
+      redirect: if req.redirect.length() > 0 { req.redirect } else { "follow" },
       proxy: req.proxy,
       ca_pem: req.ca_pem,
       entry: None,
     }
-    let _ = hc.fetch_async(rid, opts)
+    let call_id = hc.fetch_async(rid, opts)
     let base_timeout = match req.timeout_ms {
       Some(ms) => if ms > 0L { ms } else { 30000L }
       None => 30000L
@@ -382,6 +387,7 @@ fn build_production_cli_ports(
     while done_res is None {
       let rem = deadline - mux.now_ms()
       if rem <= 0L {
+        let _ = mux.cancel(call_id)
         return Err("HTTP request timed out: " + req.url)
       }
       let step = if rem < 100L { rem } else { 100L }
@@ -569,20 +575,30 @@ fn build_production_cli_ports(
   })
 
   let extract_archive_fn = Some(fn(src : String, dst : String) -> Result[Unit, String] {
-    let low = station_cli::cli_ascii_lower(src)
+    // Resolve relative archive path against caller cwd BEFORE spawning child in `cwd: dst`
+    // (also guarantees absolute path cannot start with `-` for option injection).
+    let abs_src = if nodepath::is_absolute(sep, src) {
+      src
+    } else {
+      match station_sys::getcwd() {
+        Some(cwd) => nodepath::join(sep, [cwd, src])
+        None => return Err("failed to resolve working directory for archive: " + src)
+      }
+    }
+    let low = station_cli::cli_ascii_lower(abs_src)
     let eid = next_ev_id
     next_ev_id = next_ev_id + 1L
     let res = if low.ends_with(".tar.gz") || low.ends_with(".tgz") {
-      cli_run_child(eid, "tar", ["-xzf", src, "-C", dst], dst, 120000L)
+      cli_run_child(eid, "tar", ["-xzf", abs_src, "-C", dst], dst, 120000L)
     } else if low.ends_with(".zip") {
       if is_win {
-        let ps = "Expand-Archive -Path '" + cli_escape_ps_single(src) + "' -DestinationPath '" + cli_escape_ps_single(dst) + "' -Force"
+        let ps = "Expand-Archive -Path '" + cli_escape_ps_single(abs_src) + "' -DestinationPath '" + cli_escape_ps_single(dst) + "' -Force"
         cli_run_child(eid, "powershell", ["-NoProfile", "-Command", ps], dst, 120000L)
       } else {
-        cli_run_child(eid, "unzip", ["-q", src, "-d", dst], dst, 120000L)
+        cli_run_child(eid, "unzip", ["-q", abs_src, "-d", dst], dst, 120000L)
       }
     } else {
-      return Err("unsupported archive format: " + src)
+      return Err("unsupported archive format: " + abs_src)
     }
     match res {
       Ok((code, _out, err_out)) => {
@@ -616,20 +632,12 @@ fn build_production_cli_ports(
   })
 
   let mkdir_exclusive_fn = Some(fn(dir : String, mode : Int) -> Result[Unit, String] {
-    let req = base_codec::json_stringify(base_codec::json_obj([
-      ("path", base_codec::json_str(dir)),
-      ("recursive", base_codec::json_bool(false)),
-    ]))
-    // sync: CLI exclusive mkdir via fs.mkdir(recursive: false)
-    let raw = host_shim::shell_sync("fs.mkdir", req)
-    match cli_parse_shell_sync_err(raw) {
-      Some(err) => Err(err)
-      None => {
-        if !is_win && mode > 0 {
-          let _ = station_sys::chmod(dir, mode)
-        }
-        Ok(())
-      }
+    match station_sys::mkdir_mode(dir, mode) {
+      station_sys::MkdirModeResult::Ok => Ok(())
+      station_sys::MkdirModeResult::AlreadyExists => Err("EEXIST: " + dir)
+      station_sys::MkdirModeResult::PermissionDenied => Err("EACCES: " + dir)
+      station_sys::MkdirModeResult::NotFound => Err("ENOENT: " + dir)
+      station_sys::MkdirModeResult::Error => Err("mkdir failed: " + dir)
     }
   })
 
@@ -639,15 +647,10 @@ fn build_production_cli_ports(
       let _ = (ops_fs.mkdir_p)(parent)
     }
     let _ = (ops_fs.remove)(link_path)
-    let req = base_codec::json_stringify(base_codec::json_obj([
-      ("target", base_codec::json_str(target)),
-      ("path", base_codec::json_str(link_path)),
-    ]))
-    // sync: CLI symlink_dir via fs.symlink
-    let raw = host_shim::shell_sync("fs.symlink", req)
-    match cli_parse_shell_sync_err(raw) {
-      Some(err) => Err(err)
-      None => Ok(())
+    if station_sys::symlink(target, link_path, true) {
+      Ok(())
+    } else {
+      Err("symlink_dir failed for " + link_path)
     }
   })
 

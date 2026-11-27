@@ -34,6 +34,7 @@ pub struct CliHttpRequest {
   pub timeout_ms : Option[Int64]
   pub proxy : Option[String]
   pub ca_pem : Option[String]
+  pub redirect : String
 }
 
 pub struct CliHttpResponse {
