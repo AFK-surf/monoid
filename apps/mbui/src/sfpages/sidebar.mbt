@@ -292,7 +292,12 @@ let cvp_in : Double = 2.0
 let cvp_chip_max_w : Double = 124.0
 
 ///|
-let active_filter_bar_row_h : Double = 52.0
+/// Single row height for the fixed active filter bar: matches `theme().items.least` (36pt on keyboard/mouse,
+/// 44pt on touch) so the 28pt filter capsules sit compactly while preserving full vertical press reach inside
+/// the horizontal scroll container on every input.
+fn active_filter_bar_row_h() -> Double {
+  @sf.theme().items.least
+}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1134,14 +1139,14 @@ fn open_tag_filter_panel(
 /// Single height source for the fixed active filter bar (0 when hidden, in archive mode, or `projects` off).
 pub fn active_filter_bar_h(src : Source, ws : String, in_archive? : Bool = false) -> Double {
   if !in_archive && @sfbase.has_active_list_filters(ws) && @sfbase.workspace_projects_on(src, ws) {
-    active_filter_bar_row_h
+    active_filter_bar_row_h()
   } else {
     0.0
   }
 }
 
 ///|
-/// Fixed active filter bar reusing standard 44pt `@sf.filter_pill_node` capsules with 32pt concentric `×` targets.
+/// Fixed active filter bar reusing compact 28pt `@sf.filter_pill_node` capsules with 20pt concentric `×` targets.
 /// Clicking a pill opens its standalone picker anchored to the pill; clicking `×` clears that filter alone.
 pub fn active_filter_bar_node(
   parent : @view.View,
@@ -1151,15 +1156,15 @@ pub fn active_filter_bar_node(
   along? : @ui.Along = Start,
 ) -> Unit {
   parent.by_room(fn(host, given) {
-    host.width_share(Is(1.0)).min_height(Is(Some(active_filter_bar_row_h))) |> ignore
+    host.width_share(Is(1.0)).min_height(By(fn() { Some(active_filter_bar_row_h()) })) |> ignore
     host.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), fn(bar) {
       bar
       .row(Is(true))
       .min_width(By(fn() { Some(given.width()) }))
-      .min_height(Is(Some(active_filter_bar_row_h)))
+      .min_height(By(fn() { Some(active_filter_bar_row_h()) }))
       .lines_up(Is(Some(Middle)))
       .gap(Is(6.0))
-      .padding(Is((px, 2.0, px, 6.0)))
+      .padding(Is((px, 4.0, px, 4.0)))
       |> ignore
       let pill_max_w = fn() -> Double? {
         let avail = dmax(140.0, given.width() - 2.0 * px)
@@ -1178,13 +1183,11 @@ pub fn active_filter_bar_node(
         @sf.filter_pill_node(
           slot,
           label,
-          fn(btn) { open_project_filter_panel(src, @signals.untracked(ws), Node(btn), along~) },
+          fn(pill) { open_project_filter_panel(src, @signals.untracked(ws), Node(pill), along~) },
           picked=fn() { true },
           chevron=false,
           lead=fn(b) {
-            @sf.icon_node(b, "folder", 14.0, By(fn() { @sf.theme().p.muted }))
-            .margin(Is((2.0, 0.0, 0.0, 0.0)))
-            |> ignore
+            @sf.icon_node(b, "folder", 13.0, By(fn() { @sf.theme().p.muted })) |> ignore
           },
           clear=fn() { @sfbase.set_project_filter(@signals.untracked(ws), All) },
           clear_label=fn() { @sf.t("web-main.projects.clear_project_filter") },
@@ -1202,7 +1205,7 @@ pub fn active_filter_bar_node(
         @sf.filter_pill_node(
           slot,
           label,
-          fn(btn) { open_tag_filter_panel(src, @signals.untracked(ws), Node(btn), along~) },
+          fn(pill) { open_tag_filter_panel(src, @signals.untracked(ws), Node(pill), along~) },
           picked=fn() { true },
           chevron=false,
           clear=fn() { @sfbase.set_tag_filter(@signals.untracked(ws), None) },

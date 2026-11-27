@@ -299,7 +299,7 @@ test "chats_view_panel in archive mode hides grouping/filter sections and switch
 }
 
 ///|
-test "active_filter_bar_node 44pt pills, 80-char project name at 240px and 1.3x font scale, zero audit faults" {
+test "active_filter_bar_node 28pt pills, 80-char project name at 240px and 1.3x font scale, zero audit faults" {
   @sf.set_words(@sfbase.fill)
   @sfbase.projects_reset()
   let subs : Map[String, Bool] = Map([])
@@ -307,7 +307,7 @@ test "active_filter_bar_node 44pt pills, 80-char project name at 240px and 1.3x 
   let src = fp_source_with_leases([{ "name": Json::string(long_name), "chatCount": 3.0 }], [{ "name": "ui-review", "chatCount": 2.0 }], subs)
   @sfbase.set_project_filter("ws1", Named(long_name))
   @sfbase.set_tag_filter("ws1", Some("ui-review"))
-  assert_eq(active_filter_bar_h(src, "ws1"), 52.0)
+  assert_eq(active_filter_bar_h(src, "ws1"), @sf.theme().items.least)
   assert_eq(active_filter_bar_h(src, "ws1", in_archive=true), 0.0)
   let t = @ui.Tester::new(
     fn(_) {  },

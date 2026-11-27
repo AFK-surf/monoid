@@ -107,7 +107,7 @@ test "a select: a hairline of field_edge at rest and hot under the pointer; ligh
 }
 
 ///|
-test "a filter pill: a hairline of the line, picked or not; light and dark" {
+test "a filter pill: a hairline of the line at rest and the border pointed at, picked or not; light and dark" {
   for dark in [false, true] {
     for picked in [false, true] {
       let what = "picked \{picked} dark \{dark}"
@@ -118,8 +118,12 @@ test "a filter pill: a hairline of the line, picked or not; light and dark" {
         })
         |> ignore
       })
-      assert_eq(edged(t).map(edge_of), [(0.5, theme().p.line)], msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
+      let rest = edged(t)
+      assert_eq(rest.map(edge_of), [(0.5, theme().p.line)], msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
       edge_clean(t, what)
+      point_at(t, rest[0])
+      assert_eq(edged(t).map(edge_of), [(0.5, theme().p.line_strong)], msg="\{what} pointed at")
+      edge_clean(t, "\{what} pointed at")
     }
   }
 }
