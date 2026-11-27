@@ -191,6 +191,14 @@ export function refAt(text: string, caret: number): { start: number; query: stri
   return m ? { start: caret - m[1]!.length - 1, query: m[1]! } : null;
 }
 
+/// The `/words` the caret is at the end of (`/` at start of line or after whitespace asks for a skill of the attached
+/// agent to invoke), and where its `/` is; null when it is in none (paths like `a/b` or URLs like `https://...` do not
+/// match).
+export function skillAt(text: string, caret: number): { start: number; query: string } | null {
+  const m = /(?:^|\s)\/([^\s/\\]{0,64})$/.exec(text.slice(0, caret));
+  return m ? { start: caret - m[1]!.length - 1, query: m[1]! } : null;
+}
+
 /// Where the mark just before `caret` starts (a backspace there takes it whole), or null.
 export function markBefore(text: string, caret: number): number | null {
   const m = /@\[[^\]\n]{1,120}\]$/.exec(text.slice(0, caret));

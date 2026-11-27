@@ -972,3 +972,204 @@ test "watch: a kept cooldown long over, or from the future, is not kept; one out
   long.fiber.interrupt()
   long.rt.advance(1)
 }
+
+// ── concurrent RTT ranking (`relay_rank_ms`) ──
+
+///|
+let slow_home : String = "https://120.24.233.158"
+
+///|
+let fast_local : String = "https://34.146.162.106"
+
+///|
+let faster_new : String = "https://34.146.162.107"
+
+///|
+fn rank_state(relays : Array[String]) -> Json {
+  {
+    "origin": "https://app.still.fail",
+    "station": Json::string(me_id),
+    "workspace": "w1",
+    "workspace_name": "W1",
+    "name": "here",
+    "relay_url": Json::string(relays[0]),
+    "relay_urls": Json::array(relays.map(Json::string)),
+    "stillfail_relays": Json::array(relays.map(Json::string)),
+    "grant_keys": {},
+    "peers": [],
+    "revocations": [],
+  }
+}
+
+///|
+test "keep_relays: concurrent RTT ranking picks fastest relay over slow home, reuses it on steady ticks, and probes it first" {
+  let rt = @effect.Runtime::new()
+  let c = StateCloud::new(Some(rank_state([slow_home, fast_local])))
+  let ways = Ways::new(c.view(), Kept::memory().0, () => 10L)
+  let latencies : Map[String, Int] = Map::from_array([(slow_home, 200), (fast_local, 15)])
+  let pinged_urls : Array[String] = []
+  let reported : Array[(String, Int64)] = []
+  let probed : Array[String] = []
+  let status : Json = [
+    { "url": slow_home, "connected": false, "access": "" },
+    { "url": fast_local, "connected": false, "access": "" },
+  ]
+  let endpoint = {
+    insert_relay: fn(_ : String) {  },
+    remove_relay: fn(_ : String) {  },
+    keep: _ => (),
+    home: () => Some("\{slow_home}/"),
+    public_relays: fn(_ : Bool) {  },
+    relay_status: () => status,
+    probe_relay: Some(fn(url : String) -> Json {
+      probed.push(strip_slashes(url))
+      { "ok": true }
+    }),
+  }
+  let pinger = {
+    ping: async fn(u : String) -> Bool {
+      pinged_urls.push(u)
+      @effect.sleep(latencies.get(u).unwrap_or(10))
+      true
+    },
+    pinged: Some((u, ms) => reported.push((u, ms))),
+  }
+  let fiber = rt.fork(async fn() {
+    keep_relays(endpoint, ways, pinger, on_unhealthy=() => ())
+  })
+  // Initial check: slow takes 2*200 = 400 ms, fast takes 2*15 = 30 ms.
+  rt.advance(1000)
+  assert_eq(reported, [(fast_local, 15L)])
+  assert_eq(probed, [fast_local])
+  // Steady-state 30 s tick: only pings fast_local, never pings slow_home.
+  let before = pinged_urls.length()
+  rt.advance(relay_check_ms)
+  let steady = pinged_urls[before:].to_owned()
+  assert_true(steady.length() > 0 && steady.iter().all(u => u == fast_local))
+  assert_eq(reported.last(), Some((fast_local, 15L)))
+  assert_eq(probed, [fast_local, fast_local])
+  fiber.interrupt()
+  rt.advance(1)
+}
+
+///|
+test "keep_relays: preferred failure clears preferred, recovery re-ranks after relay_rank_ms, and new relay triggers re-rank" {
+  let rt = @effect.Runtime::new()
+  let c = StateCloud::new(Some(rank_state([slow_home, fast_local])))
+  let ways = Ways::new(c.view(), Kept::memory().0, () => 10L)
+  let latencies : Map[String, Int] = Map::from_array([
+    (slow_home, 200),
+    (fast_local, 15),
+    (faster_new, 5),
+  ])
+  let down : Map[String, Bool] = Map([])
+  let pinged_urls : Array[String] = []
+  let reported : Array[(String, Int64)] = []
+  let endpoint = {
+    insert_relay: fn(_ : String) {  },
+    remove_relay: fn(_ : String) {  },
+    keep: _ => (),
+    home: () => Some("\{slow_home}/"),
+    public_relays: fn(_ : Bool) {  },
+    relay_status: () => Json::array([]),
+    probe_relay: None,
+  }
+  let pinger = {
+    ping: async fn(u : String) -> Bool {
+      pinged_urls.push(u)
+      if down.get(u).unwrap_or(false) {
+        return false
+      }
+      @effect.sleep(latencies.get(u).unwrap_or(10))
+      true
+    },
+    pinged: Some((u, ms) => reported.push((u, ms))),
+  }
+  let fiber = rt.fork(async fn() {
+    keep_relays(endpoint, ways, pinger)
+  })
+  rt.advance(1000)
+  assert_eq(reported.last(), Some((fast_local, 15L)))
+  // Fast relay goes down: steady tick falls back to slow_home and clears preferred.
+  down[fast_local] = true
+  rt.advance(relay_check_ms + 1000)
+  assert_eq(reported.last(), Some((slow_home, 200L)))
+  // Next tick re-ranks while fast_local is still down -> slow_home becomes preferred.
+  rt.advance(relay_check_ms + 1000)
+  assert_eq(reported.last(), Some((slow_home, 200L)))
+  // Fast relay recovers, but before relay_rank_ms steady tick stays on slow_home.
+  down[fast_local] = false
+  let before = pinged_urls.length()
+  rt.advance(relay_check_ms + 1000)
+  assert_true(pinged_urls[before:].iter().all(u => u == slow_home))
+  assert_eq(reported.last(), Some((slow_home, 200L)))
+  // Advance past relay_rank_ms (20 ticks): re-ranks and switches back to fast_local.
+  for _ in 0..<20 {
+    rt.advance(relay_check_ms + 500)
+  }
+  assert_eq(reported.last(), Some((fast_local, 15L)))
+  // Adding a new faster relay triggers re-rank on the next tick.
+  ignore(add_relay(ways, "w1", faster_new, None)) catch {
+    _ => ()
+  }
+  rt.advance(10)
+  rt.advance(relay_check_ms + 1000)
+  assert_eq(reported.last(), Some((faster_new, 5L)))
+  fiber.interrupt()
+  rt.advance(1)
+}
+
+///|
+test "keep_relays: concurrent 5s rank timeout falls back to sequential check and preserves public relay semantics" {
+  let rt = @effect.Runtime::new()
+  let c = StateCloud::new(Some(rank_state([slow_home, fast_local])))
+  let ways = Ways::new(c.view(), Kept::memory().0, () => 10L)
+  let public_calls : Array[Bool] = []
+  let reported : Array[(String, Int64)] = []
+  let all_down = Ref(false)
+  let slow_mode = Ref(true)
+  let endpoint = {
+    insert_relay: fn(_ : String) {  },
+    remove_relay: fn(_ : String) {  },
+    keep: _ => (),
+    home: () => Some("\{slow_home}/"),
+    public_relays: fn(on : Bool) { public_calls.push(on) },
+    relay_status: () => Json::array([]),
+    probe_relay: None,
+  }
+  let pinger = {
+    ping: async fn(u : String) -> Bool {
+      if all_down.val {
+        return false
+      }
+      if slow_mode.val {
+        // Slower than 5 s rank timeout, but succeeds in fallback sequential check.
+        @effect.sleep(6_000)
+        true
+      } else {
+        @effect.sleep(if u == fast_local { 15 } else { 200 })
+        true
+      }
+    },
+    pinged: Some((u, ms) => reported.push((u, ms))),
+  }
+  let fiber = rt.fork(async fn() {
+    keep_relays(endpoint, ways, pinger)
+  })
+  // 5s rank timeout + 6s sequential 1st ping + 6s sequential 2nd ping = 17s.
+  rt.advance(20_000)
+  assert_eq(public_calls, [false])
+  assert_eq(reported.last(), Some((slow_home, 6_000L)))
+  // All relays down: public relays turned on.
+  all_down.val = true
+  rt.advance(relay_check_ms)
+  assert_eq(public_calls, [false, true])
+  // Relays recover fast: concurrent rank picks fast_local and turns public relays off.
+  all_down.val = false
+  slow_mode.val = false
+  rt.advance(relay_check_ms + 1_000)
+  assert_eq(public_calls, [false, true, false])
+  assert_eq(reported.last(), Some((fast_local, 15L)))
+  fiber.interrupt()
+  rt.advance(1)
+}

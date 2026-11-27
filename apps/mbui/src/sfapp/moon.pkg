@@ -12,6 +12,7 @@ import {
   "ui/controls" @sf,
   "ui/hostapi",
   "stillfail/sfapp/settings",
+  "stillfail/core",
   "stillfail/sfbase",
   "stillfail/sfcore",
   "stillfail/sfdesk",
@@ -19,4 +20,4 @@ import {
   "stillfail/sffixture",
 }
 
-import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "ui/dmath", "ui/headless", "ui/kit", "moonbitlang/core/cmp", "ui/player", "ui/pdftext" } for "wbtest"
+import { "stillfail/sfkept", "stillfail/sfscreens", "ui/dmath", "ui/headless", "ui/kit", "moonbitlang/core/cmp", "ui/player", "ui/pdftext" } for "wbtest"

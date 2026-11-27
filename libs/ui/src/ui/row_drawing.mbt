@@ -394,10 +394,11 @@ fn Ctx::row_replay(self : Ctx, d : RowDrawing, i : Int, dx : Double, dy : Double
       let (x0, y0, x1, y1) = (a[b + 16] + dx, a[b + 17] + dy, a[b + 18] + dx, a[b + 19] + dy)
       if how == 3 {
         let (cx0, cy0, cx1, cy1) = (dmax(x0, bx0), dmax(y0, by0), dmin(x1, bx1), dmin(y1, by1))
-        let cut_l = cx0 != x0
-        let cut_t = cy0 != y0
-        let cut_r = cx1 != x1
-        let cut_b = cy1 != y1
+        // (by more than a hair: clip_hair)
+        let cut_l = !clip_edge_near(cx0, x0)
+        let cut_t = !clip_edge_near(cy0, y0)
+        let cut_r = !clip_edge_near(cx1, x1)
+        let cut_b = !clip_edge_near(cy1, y1)
         for c in 0..<4 {
           let cut = if c == 0 {
             cut_l || cut_t

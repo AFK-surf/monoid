@@ -1704,6 +1704,34 @@ pub fn size_of(String) -> Int32?
 
 pub fn size_of_kept(String) -> Viewport?
 
+pub fn skills_at(String) -> (Int32, String)?
+
+pub fn skills_close(String) -> Unit
+
+pub fn skills_closed(String, Int32) -> Bool
+
+pub fn skills_edited(Source, String, @ui.Field, @ui.FieldEdit) -> Unit
+
+pub fn skills_fetch(Source, String, String, String, String, refresh? : Bool) -> Unit
+
+pub fn skills_filter(Array[SkillOffer], String, limit? : Int32) -> Array[SkillOffer]
+
+pub fn skills_follow(String, @ui.Field) -> Unit
+
+pub fn skills_may_be_at(String, Int32) -> Bool
+
+pub fn skills_pick_now(String, @ui.Field, Int32, String) -> Unit
+
+pub fn skills_reset() -> Unit
+
+pub fn skills_runtime_label(String) -> String
+
+pub fn skills_badge_cut(String) -> String
+
+pub fn skills_source_label(String, String, place? : String) -> String
+
+pub fn skills_state(String, String, String, String) -> (String, Array[SkillOffer], Bool, Bool)
+
 pub let slide_gap : Double
 
 pub fn smoothed(Int32, (Int32) -> (Double, Double)) -> Array[(Double, Double)]
@@ -3473,6 +3501,14 @@ pub(all) struct Sink {
   chunk : (Bytes) -> Unit
   end : (String) -> Unit
   gone : (() -> Unit) -> Unit
+}
+
+#derive(Eq)
+pub(all) struct SkillOffer {
+  name : String
+  description : String
+  source : String
+  place : String
 }
 
 pub(all) struct Source {

@@ -30,7 +30,11 @@ const runDir = (data: string) => join(data, "run");
 
 /// Takes a snapshot each time one is asked for, as long as the station runs; how to stop. Every look at the directory
 /// is off the main thread and one at a time: what the watcher says while one runs makes one more look after it.
-export function answerHeapRequests(data: string): () => void {
+/// `openWatch` is the watcher (tests give one that fails); not persistent, it does not keep the process alive.
+export function answerHeapRequests(
+  data: string,
+  openWatch: (dir: string, listener: () => void) => FSWatcher = (d, listener) => watch(d, { persistent: false }, listener),
+): () => void {
   const dir = runDir(data);
   let stopped = false;
   let watcher: FSWatcher | null = null;
@@ -71,19 +75,32 @@ export function answerHeapRequests(data: string): () => void {
     await writePrivateSoon(join(dir, ANSWER), JSON.stringify(answer)).catch((error) => log.warn("heap", "heap snapshot's answer not written", { error: (error as Error).message }));
     return true;
   };
-  void mkdir(dir, { recursive: true }).then(
-    () => {
+  const notWatching = (error: unknown) => log.warn("heap", "not watching for heap snapshot requests", { error: String(error) });
+  // Whatever goes wrong here is told, never thrown: an unhandled rejection would end the station (`fs.watch` throws
+  // EMFILE at once when Linux's inotify instances run out).
+  void mkdir(dir, { recursive: true })
+    .then(() => {
       if (stopped) return;
-      watcher = watch(dir, look);
-      watcher.on("error", (error) => log.warn("heap", "not watching for heap snapshot requests", { error: String(error) }));
+      try {
+        const w = openWatch(dir, look);
+        watcher = w;
+        w.on("error", (error) => {
+          notWatching(error);
+          if (watcher === w) watcher = null;
+          w.close();
+        });
+      } catch (error) {
+        // Not watched: a request is still taken when the station starts, and the command's touches are not seen.
+        notWatching(error);
+      }
       // One asked for while no station ran.
       look();
-    },
-    (error) => log.warn("heap", "not watching for heap snapshot requests", { error: String(error) }),
-  );
+    })
+    .catch(notWatching);
   return () => {
     stopped = true;
     watcher?.close();
+    watcher = null;
   };
 }
 

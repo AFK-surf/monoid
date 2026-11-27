@@ -811,8 +811,12 @@ pub let faint_ground : @ui.Color
 #callsite(autofill(loc))
 pub fn field_bar_node(@view.View, () -> Bool, () -> FieldBarLabels, on_copied? : () -> Unit, loc~ : SourceLoc) -> Unit
 
+pub fn field_edge(hot? : Bool, solid? : Bool) -> (Double, Int64)
+
 #callsite(autofill(loc))
 pub fn field_node(@view.View, () -> String, (@view.View) -> Unit, aside? : (@view.View) -> Unit, hint? : () -> String, error? : () -> String, loc~ : SourceLoc) -> Unit
+
+pub fn field_placeholder_ink(solid? : Bool) -> Int64
 
 pub fn field_round() -> Double
 
@@ -862,6 +866,9 @@ pub let fill_chip_small_h : Double
 
 #callsite(autofill(loc))
 pub fn filter_pill_node(@view.View, () -> String, (@view.View) -> Unit, picked? : () -> Bool, lead? : (@view.View) -> Unit, chevron? : Bool, clear? : () -> Unit, clear_label? : () -> String, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn filter_toggle_chip_node(@view.View, () -> String, () -> Bool, () -> Unit, max_w? : Double, loc~ : SourceLoc) -> @view.View
 
 pub fn find_marker_bg(Bool) -> Int64
 
@@ -1019,9 +1026,9 @@ pub fn glyph_mark_node(@view.View, String, Double, () -> Int64, loc~ : SourceLoc
 
 pub fn gradient_key(Double, Double, Double, Int64, Int64) -> String
 
-#callsite(autofill(loc))
 pub fn grey_of(Int64) -> Int64
 
+#callsite(autofill(loc))
 pub fn grid_table_node(@view.View, (@view.View, GridTable) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn ground_node(@view.View) -> @view.View
@@ -1916,9 +1923,12 @@ pub let panel_icon_size : Double
 pub let panel_in : @ui.Radius
 
 #callsite(autofill(loc))
+pub fn panel_link_button_node(@view.View, () -> String, () -> Unit, tone? : PanelTone, icon? : String, to_corner? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
 pub fn[K : Hash + Eq] panel_list_node(@view.View, () -> Array[K], (@view.View, K) -> Unit, est~ : Double, fills? : Bool, most? : () -> Double, place? : @view.ListPlace[K], stick_end? : Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn panel_nodes(String, (@view.View, () -> Unit) -> Unit, from~ : Anchor, w? : Double, fits? : Bool, heads_itself? : Bool, fade_out_together? : Bool, description? : String, foot? : (@view.View, () -> Unit) -> Unit, wide? : Bool, live? : () -> (String, String, String), gone? : () -> Unit, tall? : Double, focus? : Bool, ruled? : Bool, form? : Bool, grows? : Bool, popover? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, hugs? : Bool, hugs_centred? : Bool, match_panel? : Int32, steps? : Bool, back? : () -> Unit, top_share? : Double, most? : () -> Double, stage? : Bool, above? : (@view.View) -> Unit, head_end? : (@view.View) -> Unit, scrolls_under? : Bool) -> Unit
+pub fn panel_nodes(String, (@view.View, () -> Unit) -> Unit, from~ : Anchor, w? : Double, fits? : Bool, heads_itself? : Bool, fade_out_together? : Bool, description? : String, foot? : (@view.View, () -> Unit) -> Unit, wide? : Bool, live? : () -> (String, String, String), gone? : () -> Unit, tall? : Double, focus? : Bool, ruled? : Bool, form? : Bool, grows? : Bool, popover? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, hugs? : Bool, hugs_centred? : Bool, hugs_wide? : Bool, match_panel? : Int32, steps? : Bool, back? : () -> Unit, top_share? : Double, most? : () -> Double, stage? : Bool, above? : (@view.View) -> Unit, head_end? : (@view.View) -> Unit, scrolls_under? : Bool) -> Unit
 
 #callsite(autofill(loc))
 pub fn panel_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
@@ -3348,6 +3358,8 @@ pub fn words_links_node(@view.View, @view.View, () -> Array[@text.Run], (String)
 
 pub fn words_may_link(String) -> Bool
 
+pub fn words_may_mark(String) -> Bool
+
 #callsite(autofill(loc))
 pub fn words_node(@view.View, () -> String, () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
 
@@ -4203,6 +4215,7 @@ pub(all) struct ReaderStyle {
   face : String
   indent : Bool
   paper : String
+  width : String
 }
 pub fn ReaderStyle::changed(Self, ReaderStyleChange) -> Self
 
@@ -4213,6 +4226,7 @@ pub(all) enum ReaderStyleChange {
   Face(String)
   Indent(Bool)
   Paper(String)
+  Width(String)
 }
 
 pub(all) struct Reading {

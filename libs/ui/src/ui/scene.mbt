@@ -188,6 +188,21 @@ fn clip_edge_is(a : Double, b : Double) -> Bool {
 }
 
 ///|
+/// How far a clip may cut into a rounded box's edge and leave that edge, and its corners, the box's own: half a point,
+/// half a pixel where a point is one, all a page's list's row stands past its foot once set on the device's pixels
+/// (Tree::rows_grid), the list cutting it there by what nobody sees and its corners there squared by it (a
+/// sheet's last row's ripple, square at its foot on a phone). The renderers' groups cut so too
+/// (src/host/groups.h MB_CLIP_HAIR).
+let clip_hair : Double = 0.5
+
+///|
+/// Whether a box's edge at `b` is still its own where the clip it is in has it at `a` (clip_hair).
+fn clip_edge_near(a : Double, b : Double) -> Bool {
+  // (half a pixel at 1 a point is one: a list's top on x.5 rounds its rows that far)
+  (a - b).abs() <= clip_hair + 1.0e-6
+}
+
+///|
 /// Whether (`x`, `y`) is the clip `k`'s corner `corner` (clip_corner_r's).
 fn clip_corner_is(k : Int, corner : Int, x : Double, y : Double) -> Bool {
   let s = clip_stack
@@ -637,12 +652,13 @@ fn push_box_clip(
   let r1 = box_corner_r(r1, room)
   let r2 = box_corner_r(r2, room)
   let r3 = box_corner_r(r3, room)
-  // (a corner its own where the clip it is in leaves it there: within a millionth, as clip_corner_is, since an edge of
-  // both worked out two ways differs by that, and the corner was square for that frame)
-  let own0 = r0 > 0.0 && clip_edge_is(x0, x) && clip_edge_is(y0, y)
-  let own1 = r1 > 0.0 && clip_edge_is(x1, x + w) && clip_edge_is(y0, y)
-  let own2 = r2 > 0.0 && clip_edge_is(x1, x + w) && clip_edge_is(y1, y + h)
-  let own3 = r3 > 0.0 && clip_edge_is(x0, x) && clip_edge_is(y1, y + h)
+  // (a corner its own where the clip it is in leaves it there, or cuts it by a hair (clip_hair): an edge of both worked
+  // out two ways differs by a millionth, a list's row set on the pixels stands past its foot by up to half a pixel,
+  // and the corner was square for that frame)
+  let own0 = r0 > 0.0 && clip_edge_near(x0, x) && clip_edge_near(y0, y)
+  let own1 = r1 > 0.0 && clip_edge_near(x1, x + w) && clip_edge_near(y0, y)
+  let own2 = r2 > 0.0 && clip_edge_near(x1, x + w) && clip_edge_near(y1, y + h)
+  let own3 = r3 > 0.0 && clip_edge_near(x0, x) && clip_edge_near(y1, y + h)
   let p0 = clip_corner_radius(k, 0, x0, y0)
   let p1 = clip_corner_radius(k, 1, x1, y0)
   let p2 = clip_corner_radius(k, 2, x1, y1)
@@ -714,14 +730,19 @@ fn clamp_inst_clip(
     cr : Double,
     cs : Double,
   ) {
-    // (an edge moved by less than a millionth is where it was, as push_box_clip has it (clip_edge_is): the same edge
+    // (an edge moved by less than a hair is where it was, as push_box_clip has it (clip_edge_near): the same edge
     // worked out two ways, its own moved by a slide and the clip it is cut to, parts by that, and its corner squared
     // there was round where the frame was built whole: a ripple's disc in a card on a page sliding off, its corner 26
     // built whole and 0 painted alone, sfreplay's station-rename at 120 a second, 2026-11-16)
-    if !clip_edge_is(a[b + xi], mx) || !clip_edge_is(a[b + yi], my) {
-      let theirs = clip_edge_is(a[b + xi], cx) && clip_edge_is(a[b + yi], cy)
+    let theirs = clip_edge_is(a[b + xi], cx) && clip_edge_is(a[b + yi], cy)
+    if !clip_edge_near(a[b + xi], mx) || !clip_edge_near(a[b + yi], my) {
       a[b + 24 + j] = if theirs { cr } else { 0.0 }
       a[b + 28 + j] = if theirs { cs } else { 0.0 }
+    } else if (!clip_edge_is(a[b + xi], mx) || !clip_edge_is(a[b + yi], my)) && theirs && cr > a[b + 24 + j] {
+      // (moved by a hair onto a rounder corner of the clip it is cut to: that corner, as push_box_clip takes the
+      // rounder of the two, so nothing of it shows past that corner)
+      a[b + 24 + j] = cr
+      a[b + 28 + j] = cs
     }
   }
   corner(0, 16, 17, m0, m1, c0, c1, r.0, sm.0)

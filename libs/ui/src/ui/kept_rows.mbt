@@ -69,7 +69,8 @@ fn clip_into(k : Int, c : FixedArray[Double]) -> Unit {
     let top = j < 2
     let px = if left { x0 } else { x1 }
     let py = if top { y0 } else { y1 }
-    let own = px == (if left { ox0 } else { ox1 }) && py == (if top { oy0 } else { oy1 })
+    // (its own where the cut leaves it, or moves it by a hair: push_box_clip's rule, clip_hair)
+    let own = clip_edge_near(px, if left { ox0 } else { ox1 }) && clip_edge_near(py, if top { oy0 } else { oy1 })
     let (lr, ls) = clip_corner_r(k, j, px, py)
     if !(own && c[4 + j] > 0.0 && c[4 + j] >= lr) {
       c[4 + j] = lr

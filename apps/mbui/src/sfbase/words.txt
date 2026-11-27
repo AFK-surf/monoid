@@ -939,6 +939,15 @@ web-main.chatRef.previewHistory
 web-main.chatRef.previewMessageGone
 web-main.chatRef.title
 web-main.chatRef.update
+web-main.skillMenu.noMatch
+web-main.skillMenu.none
+web-main.skillMenu.source.agent
+web-main.skillMenu.source.builtin
+web-main.skillMenu.source.project
+web-main.skillMenu.source.session
+web-main.skillMenu.source.workspace
+web-main.skillMenu.title
+web-main.skillMenu.unavailable
 web-main.combos.label
 web-main.composer.attach
 web-main.composer.ccLabel

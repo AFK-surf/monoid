@@ -111,6 +111,11 @@ MB_GROUPS_C void mb_host_group_set(int32_t id, double *inst, double *moves, int3
   mb_group_put(g);
 }
 
+// How far a group's cut may move a rounded clip's edge and leave its corners there round: half a point, all a list's
+// row set on the device's pixels stands past its foot (src/ui/scene.mbt clip_hair, the same).
+#define MB_CLIP_HAIR 0.5
+static inline int mb_clip_moved(double a, double b) { return a - b > MB_CLIP_HAIR + 1e-6 || b - a > MB_CLIP_HAIR + 1e-6; }
+
 // Instance `e` of a group moved by (dx, dy) as its `moves` bits `m` say, its shapes' pieces `seg_by` on, cut to
 // (h0, h1, h2, h3) where `cut`.
 static void mb_group_inst_moved(double *e, int32_t m, double dx, double dy, double seg_by, int cut, double h0,
@@ -143,10 +148,13 @@ static void mb_group_inst_moved(double *e, int32_t m, double dx, double dy, doub
     if (e[17] < h1) e[17] = h1;
     if (e[18] > h2) e[18] = h2;
     if (e[19] > h3) e[19] = h3;
-    if (e[16] != m0 || e[17] != m1) e[24] = e[28] = 0.0;
-    if (e[18] != m2 || e[17] != m1) e[25] = e[29] = 0.0;
-    if (e[18] != m2 || e[19] != m3) e[26] = e[30] = 0.0;
-    if (e[16] != m0 || e[19] != m3) e[27] = e[31] = 0.0;
+    // (by more than a hair: MB_CLIP_HAIR)
+    int l = mb_clip_moved(e[16], m0), t = mb_clip_moved(e[17], m1);
+    int r = mb_clip_moved(e[18], m2), f = mb_clip_moved(e[19], m3);
+    if (l || t) e[24] = e[28] = 0.0;
+    if (r || t) e[25] = e[29] = 0.0;
+    if (r || f) e[26] = e[30] = 0.0;
+    if (l || f) e[27] = e[31] = 0.0;
   } else {
     if (e[40] < h0) e[40] = h0;
     if (e[41] < h1) e[41] = h1;

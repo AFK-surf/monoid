@@ -234,6 +234,13 @@ export function hooksOf(...sets: Record<string, unknown[]>[]): Record<string, un
 ///   never has (the desktop app's browser and computer use, connectors, a terminal, permission prompts, a scheduler of
 ///   its own, settings in a profile's home it leaves when it changes account); "name-only" for those seldom needed.
 const DISALLOWED = ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "RemoteTrigger"];
+const CLAUDE_OFF_SKILLS = ["loop", "schedule", "keybindings-help", "fewer-permission-prompts", "plugin-authoring", "update-config"];
+const CLAUDE_OFF_ANTHROPIC_SKILLS = ["computer-use", "chrome-browser", "built-in-browser", "docs", "google-workspace", "morning", "import-memory"];
+/// Skills turned off by `SETTINGS.skillOverrides`: excluded from Claude Code's composer skill picker too.
+export const CLAUDE_DISABLED_SKILLS: ReadonlySet<string> = new Set([
+  ...CLAUDE_OFF_SKILLS,
+  ...CLAUDE_OFF_ANTHROPIC_SKILLS.map((name) => `anthropic-skills:${name}`),
+]);
 const SETTINGS = {
   disableClaudeAiConnectors: true,
   // A repository's rules told as its tools first touch it (./repo-rules.ts), and again after a compaction.
@@ -242,9 +249,9 @@ const SETTINGS = {
     SessionStart: [{ matcher: "compact", hooks: [{ type: "command", command: REPO_RULES_COMMAND }] }],
   },
   skillOverrides: {
-    ...Object.fromEntries(["loop", "schedule", "keybindings-help", "fewer-permission-prompts", "plugin-authoring", "update-config"].map((name) => [name, "off"])),
+    ...Object.fromEntries(CLAUDE_OFF_SKILLS.map((name) => [name, "off"])),
     ...Object.fromEntries(["dataviz", "claude-api", "code-review", "run"].map((name) => [name, "name-only"])),
-    ...Object.fromEntries(["computer-use", "chrome-browser", "built-in-browser", "docs", "google-workspace", "morning", "import-memory"].map((name) => [`anthropic-skills:${name}`, "off"])),
+    ...Object.fromEntries(CLAUDE_OFF_ANTHROPIC_SKILLS.map((name) => [`anthropic-skills:${name}`, "off"])),
     ...Object.fromEntries(["docx", "pptx", "xlsx", "pdf", "deep-research", "skill-creator"].map((name) => [`anthropic-skills:${name}`, "name-only"])),
   },
 };

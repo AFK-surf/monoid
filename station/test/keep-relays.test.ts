@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { Clock, Effect, Fiber, Stream } from "effect";
-import { fileRecoverStore, keepRelays, type RecoverState, type RecoverStore } from "../src/mesh/relays.ts";
-import { removeRelay, setWay, waysOf } from "../src/mesh/ways.ts";
+import { Net } from "../src/jobs/load.ts";
+import { RELAY_RANK_MS, fileRecoverStore, keepRelays, type RecoverState, type RecoverStore } from "../src/mesh/relays.ts";
+import { addRelay, removeRelay, setWay, waysOf } from "../src/mesh/ways.ts";
+import { wall } from "../src/ops/fibers.ts";
 import { ControlPlane } from "../src/services.ts";
 import type { Endpoint } from "../src/mesh/native.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -560,4 +562,175 @@ test("the cooldown's file: written whole, read back, removed; one unreadable is 
   assert.equal(await store.load(), null, "broken: none");
   writeFileSync(path, JSON.stringify({ lastRecoverAt: "soon", cooldown: 1 }));
   assert.equal(await store.load(), null, "not numbers: none");
+});
+
+// ── concurrent RTT ranking (`RELAY_RANK_MS`): pick the nearest live relay for ping & probe ──
+
+const SLOW_HOME = "https://120.24.233.158/";
+const FAST_LOCAL = "https://34.146.162.106/";
+const FASTER_NEW = "https://34.146.162.107/";
+
+function ranking(
+  t: TestContext,
+  opts: {
+    relays?: string[];
+    latency: Record<string, number>;
+    orderDelay?: Record<string, number>;
+    down?: Set<string>;
+    failFirstN?: { count: number };
+    status?: Status;
+  },
+) {
+  const bare = (u: string) => u.replace(/\/+$/, "");
+  const relays = opts.relays ?? [SLOW_HOME, FAST_LOCAL];
+  const down = opts.down ?? new Set<string>();
+  const pingedUrls: string[] = [];
+  const probedUrls: string[] = [];
+  const publicCalls: boolean[] = [];
+  let wallNow = 10_000;
+  const savedWallNow = wall.now;
+  wall.now = () => wallNow;
+  t.after(() => void (wall.now = savedWallNow));
+
+  const endpoint = {
+    home: () => relays[0]!,
+    insertRelay: async () => {},
+    removeRelay: async () => {},
+    publicRelays: async (on: boolean) => void publicCalls.push(on),
+    keep: () => {},
+    relayStatus: () => opts.status ?? relays.map((u) => ({ url: u, connected: false, access: u })),
+    probeRelay: async (url: string) => {
+      probedUrls.push(bare(url));
+      return { ok: true };
+    },
+  } as unknown as Endpoint;
+
+  const cloud = {
+    data: mkdtempSync(join(tmpdir(), "keep-relays-rank-")),
+    state: null,
+    relays: () => relays,
+    memberships: () => [{ workspace: "w" }],
+    waysSaid: () => ({ relays: [], off: [] }),
+  };
+
+  const fetched = globalThis.fetch;
+  globalThis.fetch = (async (url: string) => {
+    const key = bare(String(url).replace(/\/ping$/, ""));
+    pingedUrls.push(key);
+    if (opts.failFirstN !== undefined && opts.failFirstN.count > 0) {
+      opts.failFirstN.count--;
+      throw new Error("timeout");
+    }
+    if (down.has(key)) throw new Error("unreachable");
+    const turns = opts.orderDelay?.[key] ?? 0;
+    for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
+    wallNow += opts.latency[key] ?? 10;
+    return new Response("pong");
+  }) as typeof fetch;
+  t.after(() => void (globalThis.fetch = fetched));
+
+  const net = new Net();
+  net.attach(() => endpoint.home());
+  const clock = testClock();
+  const plane = { state: cloud, changes: Stream.never } as never;
+  const watch = { onUnhealthy: () => {} };
+  const fiber = Effect.runFork(
+    keepRelays(endpoint, net, undefined, watch).pipe(Effect.provideService(ControlPlane, plane), Effect.provideService(Clock.Clock, clock.clock)),
+  );
+  t.after(() => Effect.runPromise(Fiber.interrupt(fiber)));
+
+  const tick = async (n = 1) => {
+    for (let i = 0; i < n; i++) {
+      await clock.adjust(30_000);
+      await settle(15);
+    }
+  };
+  return { net, cloud, pingedUrls, probedUrls, publicCalls, down, tick, latency: opts.latency, orderDelay: opts.orderDelay ?? {} };
+}
+
+test("concurrent RTT ranking picks the fastest relay over slow lexicographical home, reuses it on steady ticks, and probes it first", async (t) => {
+  const slow = SLOW_HOME.replace(/\/+$/, "");
+  const fast = FAST_LOCAL.replace(/\/+$/, "");
+  const r = ranking(t, {
+    latency: { [slow]: 250, [fast]: 15 },
+    orderDelay: { [fast]: 0, [slow]: 2 },
+  });
+  await settle(15);
+  assert.equal(r.net.seen()?.ping?.relay, fast, "selects fast local relay despite endpoint.home() being slow");
+  assert.equal(r.net.seen()?.ping?.ms, 15);
+  assert.deepEqual(r.probedUrls, [fast], "probeRelay probes fastest relay first");
+
+  // Steady-state 30 s tick: only pings preferred fastLocal, never pings slowHome.
+  const before = r.pingedUrls.length;
+  await r.tick(1);
+  const steadyPings = r.pingedUrls.slice(before);
+  assert.ok(steadyPings.length > 0 && steadyPings.every((u) => u === fast), `expected only fast pings, got ${steadyPings.join(",")}`);
+  assert.equal(r.net.seen()?.ping?.relay, fast);
+  assert.deepEqual(r.probedUrls, [fast, fast]);
+});
+
+test("preferred relay failure falls back and clears preferred; recovery after RELAY_RANK_MS or new relay triggers re-rank", async (t) => {
+  const slow = SLOW_HOME.replace(/\/+$/, "");
+  const fast = FAST_LOCAL.replace(/\/+$/, "");
+  const faster = FASTER_NEW.replace(/\/+$/, "");
+  const r = ranking(t, {
+    latency: { [slow]: 250, [fast]: 15, [faster]: 5 },
+    orderDelay: { [faster]: 0, [fast]: 1, [slow]: 3 },
+  });
+  await settle(15);
+  assert.equal(r.net.seen()?.ping?.relay, fast);
+
+  // Fast relay goes down: steady tick falls back to slow and clears preferred.
+  r.down.add(fast);
+  await r.tick(1);
+  assert.equal(r.net.seen()?.ping?.relay, slow, "falls back to slow relay when fast is down");
+
+  // Next tick re-ranks while fast is still down -> slow becomes preferred.
+  await r.tick(1);
+  assert.equal(r.net.seen()?.ping?.relay, slow);
+
+  // Fast relay recovers, but before RELAY_RANK_MS steady ticks stay on slow.
+  r.down.delete(fast);
+  const beforeSteady = r.pingedUrls.length;
+  await r.tick(1);
+  assert.ok(r.pingedUrls.slice(beforeSteady).every((u) => u === slow), "stays on preferred until RELAY_RANK_MS");
+  assert.equal(r.net.seen()?.ping?.relay, slow);
+
+  // After RELAY_RANK_MS (20 * 30s = 600s): re-ranks and switches back to fast.
+  await r.tick(RELAY_RANK_MS / 30_000 - 1);
+  assert.equal(r.net.seen()?.ping?.relay, fast, "re-ranks after RELAY_RANK_MS and switches back to faster relay");
+
+  // Adding a new even faster relay triggers immediate re-rank on the next tick.
+  const ways = waysOf(r.cloud as never);
+  addRelay(ways, "w", FASTER_NEW, null);
+  await settle(15);
+  await r.tick(1);
+  assert.equal(r.net.seen()?.ping?.relay, faster, "new relay in list triggers re-rank");
+});
+
+test("concurrent 5s rank failure falls back to sequential 10s check and preserves public relay semantics", async (t) => {
+  const slow = SLOW_HOME.replace(/\/+$/, "");
+  const fast = FAST_LOCAL.replace(/\/+$/, "");
+  // First 2 fetches (the concurrent rank pass, 1 per relay) fail/timeout; sequential fallback succeeds on slow (home).
+  const r = ranking(t, {
+    latency: { [slow]: 120, [fast]: 20 },
+    orderDelay: { [fast]: 0, [slow]: 1 },
+    failFirstN: { count: 2 },
+  });
+  await settle(15);
+  assert.deepEqual(r.publicCalls, [false], "fallback sequential check finds relay up, public relays stay off");
+  assert.equal(r.net.seen()?.ping?.relay, slow, "fallback sequential check measures home relay");
+
+  // All relays completely down: both concurrent rank and sequential fallback fail -> public relays turned on.
+  r.down.add(slow);
+  r.down.add(fast);
+  await r.tick(1);
+  assert.deepEqual(r.publicCalls, [false, true], "all relays unreachable turns on public relays");
+
+  // Relays recover -> concurrent rank picks fast and turns public relays off again.
+  r.down.delete(slow);
+  r.down.delete(fast);
+  await r.tick(1);
+  assert.deepEqual(r.publicCalls, [false, true, false]);
+  assert.equal(r.net.seen()?.ping?.relay, fast);
 });

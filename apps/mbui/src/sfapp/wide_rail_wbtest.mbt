@@ -19,7 +19,7 @@ fn sidebar_kept(calls : Array[Made], key : String) -> Json? {
 }
 
 ///|
-test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; the pointer on it shows the list a while over the page, folded again 400 ms after it left; kept (prefs.set sidebars)" {
+test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; resting on it for 500 ms shows the list a while over the page (passing over does not), folded again 400 ms after it left; kept (prefs.set sidebars)" {
   let calls : Array[Made] = []
   let t = wide_tester(calls)
   assert_true(t.find("新建对话") is Some(_))
@@ -30,7 +30,21 @@ test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; the pointer on
   // the bar's rail, 6 from the window's edge: its places 2 in
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   assert_eq(rx, @sfdesk.closed_bar_in + 2.0)
+  // sweeping across the folded rail briefly does not expand it, and leaving resets the 500 ms dwell
+  let step = @sfdesk.peek_enter_ms / 5.0
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms - step)
+  assert_false(@sfdesk.wide.peeking.get(), msg="brief hover does not peek")
+  assert_true(t.find("新建对话") is None, msg="still folded before 500 ms")
+  t.move_to(1000.0, 400.0)
+  t.run_for(step)
+  // re-entering starts a fresh 500 ms dwell
+  t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms - step)
+  assert_false(@sfdesk.wide.peeking.get(), msg="timer reset after leaving")
+  t.run_for(step)
+  t.frame()
+  assert_true(@sfdesk.wide.peeking.get(), msg="peeks after 500 ms dwell")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("新建对话") is Some(_), msg="shown a while")
   // off it: still there for a moment, then folded again
@@ -76,6 +90,7 @@ test "wide on a Mac: the closed bar, shown a while, one corner all round, the wi
     let gear = t.query(Button, label=@sf.t("web-pages.settings.title")).unwrap().rect
     if peek {
       t.move_to(gear.0 + gear.2 / 2.0, gear.1 + gear.3 / 2.0)
+      t.run_for(@sfdesk.peek_enter_ms)
       t.run_for(@ui.move_most_ms)
       assert_true(t.find("新建对话") is Some(_), msg="shown a while")
     }
@@ -638,6 +653,7 @@ test "wide: folding moves the block as the web's: the list where it was as the b
   // the pointer on the bar: shown a while, its edge at the sidebar's
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms)
   t.run_for(@ui.move_most_ms)
   let (px, _, _, _) = t.query(Button, label="展开侧边栏").unwrap().rect
   // (its line in the middle of its strip)
@@ -659,6 +675,7 @@ test "wide: shown a while, the page moves aside as far as what it shows is from 
   // right or the sidebar's width
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms)
   t.run_for(@ui.move_most_ms)
   let reach = @sfdesk.closed_bar_in + @sfdesk.rail_closed_w + @sfdesk.wide.side_w.get() + @sfdesk.peek_gap
   let room = 1280.0 - 2.0 * @sfdesk.peek_gap - right
@@ -745,6 +762,7 @@ test "wide, the window's buttons in the app's top row: the sidebar shown a while
   // the pointer on the rail: shown a while, the title where it was halfway and after
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms)
   t.run_for(@ui.move_most_ms / 2.0)
   assert_true((bar_title_at(t).0 - folded_x).abs() < 0.01, msg="halfway at \{bar_title_at(t).0}, folded \{folded_x}")
   t.run_for(@ui.move_most_ms)
@@ -964,6 +982,7 @@ test "wide: a newer build of the desktop app ready: 重启更新 the update key 
   // shown a while: 更新 back in the sidebar's first row, the bar starting past the sidebar with its own 12
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.peeking.get())
   // (its title clear of the sidebar peeking over the page, its own 12 past it)

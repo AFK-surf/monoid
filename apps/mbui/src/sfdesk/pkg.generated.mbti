@@ -237,6 +237,8 @@ pub fn pane_view(@view.View, @sfbase.Source, ready~ : (@sfbase.Page) -> Bool, mo
 
 pub let pane_w : Double
 
+pub let peek_enter_ms : Double
+
 pub let peek_gap : Double
 
 pub let peek_leave_ms : Double

@@ -15,6 +15,8 @@ import { withLock, workspaceFile } from "../../sessions/archive.ts";
 import { roomOfSoon } from "../../sessions/footprint.ts";
 import { clean, samePath, within } from "../../ops/paths.ts";
 import { readAt } from "../../drive/fs.ts";
+import { runtimeKind } from "../../agents/runtime.ts";
+import { skillsForRuntime, skillsForSession } from "../../sessions/skills.ts";
 
 /// admin/mod.rs `segment_decode`.
 /// What the Rust answers a path it has no route for.
@@ -259,10 +261,32 @@ async function openFile(read: Tools["read"], r: Request, key: string): Promise<A
 const sessionsOf = (r: Request) => ({ connect: param(r, "connect") ?? null, archived: param(r, "archived") === "1", lang: r.lang, viewer: r.viewer });
 const threadsOf = (r: Request) => ({ viewer: r.viewer, session: param(r, "session") ?? null, lang: r.lang });
 
+/// GET /sessions/:key/skills: slash-invocable skills available for session `key`'s attached runtime and workspace.
+async function sessionSkillsRoute(tools: Tools, _r: Request, key: string): Promise<Answer> {
+  const row = tools.store?.getSession(key) ?? null;
+  if (row === null) return error(404, `unknown session ${key}`);
+  if (tools.agents === undefined) return jsonAnswer({ runtime: runtimeKind(row.runtime) ?? null, skills: [] });
+  const { runtime, skills } = await skillsForSession(tools.agents.hub, key);
+  return jsonAnswer({ runtime, skills });
+}
+
+/// GET /skills?runtime=&preset=&profile=: slash-invocable skills for a new chat before a session exists.
+async function runtimeSkillsRoute(tools: Tools, r: Request): Promise<Answer> {
+  const runtime = param(r, "runtime") ?? null;
+  if (tools.agents === undefined) return jsonAnswer({ runtime: runtime ? (runtimeKind(runtime) ?? null) : null, skills: [] });
+  const listed = await skillsForRuntime(tools.agents.hub, r.viewer.workspace ?? null, {
+    runtime,
+    preset: param(r, "preset") ?? null,
+    profile: param(r, "profile") ?? null,
+  });
+  return jsonAnswer(listed);
+}
+
 export const routes = (tools: Tools): Route[] => {
   // The agents' side as it is when asked (made after the admin API: services.ts AgentsSide).
   const { read } = tools;
   return [
+    { method: "GET", pattern: /^\/skills$/, handle: (r) => runtimeSkillsRoute(tools, r) },
     { method: "GET", pattern: /^\/sessions$/, handle: (r) => read(r, "sessions", sessionsOf(r)) },
     { method: "POST", pattern: /^\/changed\/sessions$/, handle: (r) => changed(read, r, "sessions", sessionsOf(r), "key") },
     { method: "POST", pattern: /^\/changed\/threads$/, handle: (r) => changed(read, r, "threads", threadsOf(r), "id") },
@@ -285,6 +309,7 @@ export const routes = (tools: Tools): Route[] => {
         if (action === "widget-state") return read(r, "widgetState", { key, path: param(r, "path"), lang: r.lang });
         if (action === "peek") return peek(tools.read, r, key, tools.agents?.hub.config().dataDir);
         if (action === "open") return openFile(read, r, key);
+        if (action === "skills") return sessionSkillsRoute(tools, r, key);
         return noRoute(r);
       },
     },

@@ -60,3 +60,16 @@ let ref_chip_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap
 /// When (refTime): the meta size, muted.
 // kept across runs: a value (no field of it changes)
 let ref_time : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+/// Skill row cell (skill name followed by truncated description).
+// kept across runs: a value (no field of it changes)
+let skill_cell : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let skill_name : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, weight=Medium, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let skill_desc : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut)

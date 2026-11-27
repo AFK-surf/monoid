@@ -174,6 +174,8 @@ pub(all) struct ComposerNodeFor {
   over_it : ((@view.View) -> Unit)?
   over_tall : Double
   away : () -> Bool
+  runtime : () -> String
+  preset : () -> String
 }
 
 ///|
@@ -1632,6 +1634,26 @@ fn composer_box_node(
     if spec.chat {
       ref_menu_node(box, src, r, w)
     }
+    // (`/` and a few letters: lazily mount the skill popover on the first `/` edit so cold chat open adds zero nodes
+    // and zero bindings; `around=foot` so its Escape handler never overwrites ref_menu_node's on `box`)
+    let skills_mounted = Ref(false)
+    let mount_skills = fn() {
+      guard spec.chat && !skills_mounted.val && foot.alive() else { return }
+      skills_mounted.val = true
+      let skill_runtime = fn() {
+        match own {
+          Some(m) => (m.runtime)()
+          None => head().bind(fn(h) { h.agents.get(0) }).map(fn(a) { a.runtime }).unwrap_or("")
+        }
+      }
+      let skill_preset = fn() {
+        match own {
+          Some(m) => (m.preset)()
+          None => ""
+        }
+      }
+      skill_menu_node(foot, box, src, r, w, skill_runtime, skill_preset)
+    }
     // (its words, then what is said before send and send: one line as a capsule, ＋ laid over its start; opened, the
     // words the whole of the first line, the rest on a second, at its end)
     box.box(fn(line) {
@@ -1781,7 +1803,7 @@ fn composer_box_node(
               @view.transition(opened)
             }
           }
-        }, regrow, placeholder?=chat_placeholder, status_hint~, locked~, no_files~, on_focus_wait_done=fn() {
+        }, regrow, placeholder?=chat_placeholder, status_hint~, locked~, no_files~, on_skill_edit=mount_skills, on_focus_wait_done=fn() {
           if !w.field.focused() && !@signals.untracked(multiline) {
             morph.put(0.0)
           }
@@ -2108,6 +2130,7 @@ fn composer_field_node(
   status_hint? : () -> Bool = fn() { false },
   locked? : () -> Bool = fn() { false },
   no_files? : () -> Bool = fn() { false },
+  on_skill_edit? : () -> Unit = fn() {  },
   on_focus_wait_done? : () -> Unit = fn() {  },
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
@@ -2188,7 +2211,13 @@ fn composer_field_node(
       // (its caret away while what was sent from it leaves it: composer_box_node's `away`)
       (p.text, @sf.alpha(p.subtle, hint_in()), if away() { @sf.alpha(p.accent, 0.0) } else { p.accent })
     },
-    edit=fn(e) { @sfbase.refs_edited(src, w.key, w.field, r.station, false, e) },
+    edit=fn(e) {
+      @sfbase.refs_edited(src, w.key, w.field, r.station, false, e)
+      if e.selection.0 == e.selection.1 && @sfbase.skills_may_be_at(e.now, e.selection.1) {
+        on_skill_edit()
+      }
+      @sfbase.skills_edited(src, w.key, w.field, e)
+    },
     edited=fn(now) {
       // (a line more or fewer than it showed before the edit, composed words counted: its height its way; the same
       // lines, nothing said, so nothing coming in its column in the same change is set off with it)
@@ -3846,6 +3875,197 @@ fn ref_menu_node(box : @view.View, src : Source, r : ChatRef, w : Writing) -> Un
               |> ignore
             3 => @sf.words_node(p, fn() { @sf.t("web-main.chatRef.noMatch") }, fn() { ref_empty_words }) |> ignore
             4 => @sf.words_node(p, fn() { @sf.t("web-main.chatRef.none") }, fn() { ref_empty_words }) |> ignore
+            _ => ()
+          }
+        },
+      )
+    },
+  )
+}
+
+///|
+/// The `/` skill menu over composer `box` (anchored to `box`, keyboard handlers on parent `around` so they never
+/// overwrite `ref_menu_node`'s `on_key` on `box`). Lists skills belonging to the attached agent's runtime (e.g.
+/// Antigravity, Claude Code, Codex) along with session, preset, workspace, and built-in skills; ↑ / ↓ choose, Enter or
+/// Tab or a press inserts `/<name> `, Escape dismisses for this `/`.
+fn skill_menu_node(
+  around : @view.View,
+  box : @view.View,
+  src : Source,
+  r : ChatRef,
+  w : Writing,
+  runtime : () -> String,
+  preset : () -> String,
+) -> Unit {
+  let at = fn() {
+    guard r.station != "" && w.field.focused() && @sfbase.skills_at(w.key) is Some((start, query)) else { return None }
+    if @sfbase.skills_closed(w.key, start) {
+      None
+    } else {
+      Some((start, query))
+    }
+  }
+  let was_open = Ref(false)
+  let last_scope = Ref("")
+  around.reacts(
+    fn() {
+      guard at() is Some(_) else { return None }
+      Some((r.station, r.session, runtime(), preset()))
+    },
+    fn(st) {
+      match st {
+        Some((station, session, rt, pr)) if station != "" => {
+          let scope = station + "\u{1}" + session + "\u{1}" + rt + "\u{1}" + pr
+          let refresh = !was_open.val || last_scope.val != scope
+          @sfbase.skills_fetch(src, station, session, rt, pr, refresh~)
+          last_scope.val = scope
+          was_open.val = true
+        }
+        _ => was_open.val = false
+      }
+    },
+  )
+  let found = fn() -> (Int, String, String, Array[@sfbase.SkillOffer], Bool, Bool)? {
+    guard at() is Some((start, query)) else { return None }
+    let (rt, all, loaded, failed) = @sfbase.skills_state(r.station, r.session, runtime(), preset())
+    Some((start, query, rt, @sfbase.skills_filter(all, query), loaded, failed))
+  }
+  // Keep the last shown query/rows while closing so the popover leaves smoothly without flashing empty text.
+  let kept_found : Ref[(String, String, Array[@sfbase.SkillOffer], Bool, Bool)?] = Ref(None)
+  let shown_found = fn() {
+    match found() {
+      Some((_, q, rt, list, loaded, failed)) => {
+        let now = Some((q, rt, list, loaded, failed))
+        kept_found.val = now
+        now
+      }
+      None => kept_found.val
+    }
+  }
+  let offers = fn() { shown_found().map(fn(f) { f.2 }).unwrap_or([]) }
+  let shown_runtime = fn() { shown_found().map(fn(f) { f.1 }).unwrap_or("") }
+  let by_name : @signals.Computed[Map[String, @sfbase.SkillOffer]] = @signals.computed(fn(_) {
+    Map::from_array(offers().map(fn(s) { (s.name, s) }))
+  })
+  let current = @signals.signal(0, same=fn(a, b) { a == b })
+  let waiting = fn() {
+    match found() {
+      Some((_, _, _, _, loaded, failed)) => !loaded && !failed
+      None => false
+    }
+  }
+  let wait_since = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let last_query : Ref[String?] = Ref(None)
+  around.reacts(fn() { at().map(fn(a) { a.1 }) }, fn(q) {
+    if q is Some(_) && last_query.val != q {
+      current.set(0)
+      wait_since.set(around.cause_at())
+    }
+    last_query.val = q
+  })
+  let wait_long = @sf.waited_past_node(around, fn() { wait_since.get() }, @sf.later_ms, going=waiting)
+  @sf.offers_node(
+    around,
+    box,
+    fn() {
+      match found() {
+        Some((_, _, _, _, loaded, failed)) => loaded || failed || wait_long()
+        None => false
+      }
+    },
+    fn() { offers().map(fn(s) { s.name }) },
+    current,
+    fn(row, k, on) {
+      let item = fn() { by_name.get().get(k) }
+      row.box(fn(logo) {
+        @sf.style_node(logo, fn() { ref_logo })
+        logo.pick(
+          fn() {
+            let src_kind = item().map(fn(s) { s.source }).unwrap_or("")
+            let rt = shown_runtime()
+            if src_kind == "agent" && rt != "" {
+              (true, rt)
+            } else {
+              let icon = match src_kind {
+                "session" => "folder"
+                "workspace" => "boxes"
+                "project" => "memory"
+                "builtin" => "sparks"
+                _ => "agent"
+              }
+              (false, icon)
+            }
+          },
+          at_once=true,
+          fn(m, kind) {
+            if kind.0 {
+              @sf.maker_mark_node(m, "", kind.1, ref_logo_size) |> ignore
+            } else {
+              @sf.icon_node(m, kind.1, ref_logo_size, By(fn() { @sf.theme().p.subtle })) |> ignore
+            }
+          },
+        )
+      })
+      |> ignore
+      row.box(fn(cell) {
+        @sf.style_node(cell, fn() { skill_cell })
+        cell.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        @sf.words_node(cell, fn() { "/" + k }, fn() { skill_name }) |> ignore
+        cell.show(fn() { item().map(fn(s) { s.description != "" }).unwrap_or(false) }, fn(desc_wrap) {
+          desc_wrap.row(Is(true)).grow(Is(1.0)).shrink(Is(100.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(desc_wrap, fn() { item().map(fn(s) { s.description }).unwrap_or("") }, fn() { skill_desc })
+          |> ignore
+        })
+      })
+      |> ignore
+      @sf.words_node(
+        row,
+        fn() {
+          let src_kind = item().map(fn(s) { s.source }).unwrap_or("")
+          let place = item().map(fn(s) { s.place }).unwrap_or("")
+          @sfbase.skills_source_label(src_kind, shown_runtime(), place~)
+        },
+        fn() { ref_time },
+      ).shrink(Is(0.0))
+      |> ignore
+      ignore(on)
+    },
+    fn(k) { "/" + k },
+    fn(i) {
+      guard found() is Some((start, _, _, list, _, _)) && list.get(i) is Some(s) else { return }
+      @sfbase.skills_pick_now(w.key, w.field, start, s.name)
+    },
+    fn() { @sfbase.skills_close(w.key) },
+    @sf.t("web-main.skillMenu.title"),
+    head=fn() {
+      let rt_label = @sfbase.skills_runtime_label(shown_runtime())
+      let title = if rt_label != "" {
+        @sf.t("web-main.skillMenu.title") + " · " + rt_label
+      } else {
+        @sf.t("web-main.skillMenu.title")
+      }
+      (title, shown_found().map(fn(f) { f.0 }).unwrap_or(""))
+    },
+    side=Top,
+    offset=ref_menu_off,
+    none=fn(n) {
+      @sf.style_node(n, fn() { ref_empty })
+      n.pick(
+        fn() {
+          match shown_found() {
+            Some((_, _, _, false, false)) => 1
+            Some((_, _, _, false, true)) => 2
+            Some((q, _, list, true, _)) if list.is_empty() => if q != "" { 3 } else { 4 }
+            _ => 0
+          }
+        },
+        at_once=true,
+        fn(p, said) {
+          match said {
+            1 => @sf.wait_line_node(p, fn() { @sf.t("common.reading") }) |> ignore
+            2 => @sf.words_node(p, fn() { @sf.t("web-main.skillMenu.unavailable") }, fn() { ref_empty_words }) |> ignore
+            3 => @sf.words_node(p, fn() { @sf.t("web-main.skillMenu.noMatch") }, fn() { ref_empty_words }) |> ignore
+            4 => @sf.words_node(p, fn() { @sf.t("web-main.skillMenu.none") }, fn() { ref_empty_words }) |> ignore
             _ => ()
           }
         },
