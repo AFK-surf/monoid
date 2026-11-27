@@ -808,7 +808,7 @@ fn rs_end_node(e : @view.View, core : Core, p : () -> Json?, g : () -> Json?, ro
       let gv = g()
       @sf.confirm(
         @sf.t("web-main.resources.endTitle"),
-        @sf.t("web-main.resources.endBody", args=[("chat", text(gv, "title"))]),
+        @sf.t("web-main.resources.endBody"),
         @sf.t("web-main.resources.end"),
         danger=true,
         facts=[

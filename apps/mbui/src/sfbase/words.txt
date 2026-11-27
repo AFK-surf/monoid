@@ -2541,6 +2541,7 @@ web-pages.connects.removeConfirm
 web-pages.connects.statusSessions
 web-pages.connects.whichStation
 web-pages.devices.detailTitle
+web-pages.devices.label.name
 web-pages.devices.revokeTitle
 web-pages.drive.add
 web-pages.drive.addRoot
@@ -3601,7 +3602,6 @@ web-pages.vault.devicesDialog.legacyPendingNote
 web-pages.vault.devicesDialog.pendingNote
 web-pages.vault.devicesDialog.pendingTitle
 web-pages.vault.devicesDialog.title
-web-pages.vault.devicesDialog.titleFallback
 web-pages.vault.discover.alreadyMember
 web-pages.vault.discover.cancel
 web-pages.vault.discover.cancelStale

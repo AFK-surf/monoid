@@ -81,7 +81,7 @@
   "common.confirmFact.process": "进程",
   "common.confirmFact.pid": "PID",
   "common.confirmFact.backupTarget": "备份目标",
-  "common.confirmFact.backupSource": "来源备份",
+  "common.confirmFact.backupSource": "备份来源",
   "common.confirmFact.mcp": "MCP 服务",
   "common.confirmFact.vault": "密钥库",
   "common.confirmFact.secret": "密钥",

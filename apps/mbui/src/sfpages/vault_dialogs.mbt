@@ -923,9 +923,10 @@ pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit
               let who = @signals.untracked(title)
               confirm(
                 @sf.t("web-pages.vault.members.removeTitle"),
-                @sf.t("web-pages.vault.members.removeBody", args=[("name", who)]),
+                @sf.t("web-pages.vault.members.removeBody"),
                 @sf.t("web-pages.vault.members.remove"),
                 danger=true,
+                facts=[(@sf.t("common.confirmFact.member"), who)],
                 fn() {
                   vault_act(
                     core,

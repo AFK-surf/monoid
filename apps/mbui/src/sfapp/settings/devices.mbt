@@ -1684,7 +1684,7 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
     // what it is, a row each, named at its start and said at its end: its name, kind, address (pressed, copied), the
     // station it is on (pressed, that station's page), whose it is, and which chats may use it
     @sf.panel_group_node(v, fn() { "" }, fn(g) {
-      @sf.panel_row_node(g, fn() { @sf.t("common.confirmFact.name") }, fn() {  }, note=fn() { text(d(), "name") })
+      @sf.panel_row_node(g, fn() { @sf.t("web-pages.devices.label.name") }, fn() {  }, note=fn() { text(d(), "name") })
       @sf.panel_row_node(g, fn() { @sf.t("web-pages.devices.label.kind") }, fn() {  }, note=fn() {
         let model = text(d(), "model")
         let k = text(d(), "kind")

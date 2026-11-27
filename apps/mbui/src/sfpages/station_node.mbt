@@ -2545,7 +2545,7 @@ fn software_row_node(
               @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
                 confirm(
                   @sf.t("web-main.versions.runtimeDisableAsk"),
-                  @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeDisableNote"),
                   @sf.t("web-main.versions.runtimeDisable"),
                   fn() { set_enabled_with(scoped_call, false) },
                   facts=[(@sf.t("common.confirmFact.runtime"), name)],
@@ -2558,7 +2558,7 @@ fn software_row_node(
               @sf.menu_item_of(@sf.t("web-main.versions.runtimeUninstall"), danger=true, fn() {
                 confirm(
                   @sf.t("web-main.versions.runtimeUninstallAsk"),
-                  @sf.t("web-main.versions.runtimeUninstallNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeUninstallNote"),
                   @sf.t("web-main.versions.runtimeUninstall"),
                   fn() { scoped_call("software.uninstall", [("id", str(id))]) },
                   danger=true,

@@ -576,10 +576,10 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
     let (title, words) = if machine {
       (
         @sf.t("web-pages.profiles.disableConfirm"),
-        @sf.t("web-pages.profiles.disableBody", args=[("name", @sf.product()), ("runtime", @settings.runtime_label(text(p, "runtime")))]),
+        @sf.t("web-pages.profiles.disableBody", args=[("runtime", @settings.runtime_label(text(p, "runtime")))]),
       )
     } else {
-      (@sf.t("web-pages.profiles.deleteConfirm"), @sf.t("web-pages.profiles.deleteBody", args=[("name", @sf.product())]))
+      (@sf.t("web-pages.profiles.deleteConfirm"), @sf.t("web-pages.profiles.deleteBody"))
     }
     confirm(title, words, item, danger=true, facts=[(@sf.t("common.confirmFact.account"), text(p, "name"))], fn() {
       // closed where its page was pushed on the stack; in the profiles' place it stays on the place, which moves on to

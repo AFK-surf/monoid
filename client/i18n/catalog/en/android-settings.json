@@ -69,8 +69,8 @@
   "android-settings.connect.delete": "Delete connect",
   "android-settings.connect.deleteText": "Disconnects from Slack. You need to delete the app in Slack yourself.",
   "android-settings.connect.deleteTextSessions": {
-    "one": "Disconnects from Slack. Its chat is kept but gets no new messages. Delete the app in Slack yourself.",
-    "other": "Disconnects from Slack. Its {n} chats are kept but get no new messages. Delete the app in Slack yourself."
+    "one": "Disconnects from Slack; 1 chat keeps history without new messages. Delete the Slack app yourself.",
+    "other": "Disconnects from Slack; {n} chats keep history without new messages. Delete the Slack app yourself."
   },
   "android-settings.connect.deleteTitle": "Delete “{name}”?",
   "android-settings.connect.deleteWhat": "delete the connect",
@@ -287,7 +287,7 @@
   "android-settings.members.invitation": "{role} · Invite expires {until}",
   "android-settings.members.moveOut": "Remove",
   "android-settings.members.moveOutRow": "Remove from workspace",
-  "android-settings.members.moveOutText": "They lose access to this workspace's stations. You can invite them again later.",
+  "android-settings.members.moveOutText": "Loses access to this workspace's stations; can be invited again later.",
   "android-settings.members.moveOutTitle": "Remove member",
   "android-settings.members.moveOutWhat": "remove the member",
   "android-settings.members.movedOut": "Member removed",
@@ -618,8 +618,8 @@
   "android-settings.workspace.aboutRename": "Role: {role} · {people} · {stations} · Tap name to rename",
   "android-settings.workspace.delete": "Delete workspace",
   "android-settings.workspace.deleteText": {
-    "one": "All members lose access, and 1 station disconnects from {app} cloud (data on the station stays).",
-    "other": "All members lose access, and {n} stations disconnect from {app} cloud (data on them stays)."
+    "one": "All members lose access and 1 station disconnects; local data stays.",
+    "other": "All members lose access and {n} stations disconnect; local data stays."
   },
   "android-settings.workspace.deleteTitle": "Delete workspace",
   "android-settings.workspace.deleteWhat": "delete the workspace",

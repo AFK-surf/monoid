@@ -97,7 +97,7 @@ pub fn me_node(
     let h = @signals.untracked(here)
     @sf.confirm(
       @sf.t("web-pages.settings.account.delete"),
-      @sf.t("web-pages.settings.account.deleteConfirmBody", args=[("email", h.email)]),
+      @sf.t("web-pages.settings.account.deleteConfirmBody"),
       @sf.t("web-pages.settings.account.deleteAction"),
       danger=true,
       facts=[(@sf.t("common.confirmFact.account"), h.email)],

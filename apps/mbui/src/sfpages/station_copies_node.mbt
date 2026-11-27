@@ -474,7 +474,7 @@ pub fn backup_node(
                             let sname = @signals.untracked(fn() { text(sv(), "name") })
                             @sf.confirm(
                               @sf.t("web-pages.stations.copies.s3DeleteTitle"),
-                              @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
+                              @sf.t("web-pages.stations.copies.s3DeleteBody"),
                               @sf.t("web-pages.stations.copies.s3Delete"),
                               fn() {
                                 let kept = draft_s3.untracked().filter(fn(item) { text(Some(item), "id") != sid })
@@ -1312,7 +1312,7 @@ pub fn station_backup_node(
                         let sname = @signals.untracked(fn() { text(sv(), "name") })
                         @sf.confirm(
                           @sf.t("web-pages.stations.copies.s3DeleteTitle"),
-                          @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
+                          @sf.t("web-pages.stations.copies.s3DeleteBody"),
                           @sf.t("web-pages.stations.copies.s3Delete"),
                           facts=[(@sf.t("common.confirmFact.backupTarget"), sname)],
                           fn() {
@@ -1725,7 +1725,7 @@ fn copies_generated_key_dialog(core : Core, keys : Array[(String, String)]) -> U
 pub fn copies_restore_confirm(core : Core, address : String, copy : Json?, on_restored? : () -> Unit) -> Unit {
   @sf.confirm(
     @sf.t("web-pages.stations.copies.restoreTitle"),
-    @sf.t("web-pages.stations.copies.restoreBody", args=[("name", text(copy, "name"))]),
+    @sf.t("web-pages.stations.copies.restoreBody"),
     @sf.t("web-pages.stations.copies.restore"),
     facts=[(@sf.t("common.confirmFact.backupSource"), text(copy, "name"))],
     fn() {

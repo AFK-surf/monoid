@@ -831,7 +831,6 @@ pub fn delete_profiles_many(
     @sf.t("web-pages.profiles.manage.delete"),
     facts=[
       (@sf.t("common.confirmFact.count"), deletable.length().to_string()),
-      (@sf.t("common.confirmFact.account"), list_text),
     ],
     fn() {
       if !@signals.untracked(still_here) {

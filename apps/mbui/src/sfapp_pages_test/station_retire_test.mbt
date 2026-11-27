@@ -113,7 +113,7 @@ test "迁移 once the chats are moved: 移出 workspace, asked as the ⋯'s 移�
   assert_true(!retire_said(t, "2 个账号没移过去"))
   assert_true(retire_said(t, "移连接") && !retire_said(t, "完成"), msg=t.words().map(fn(x) { x.0 }).join("|"))
   retire_press(t, "移出 workspace")
-  assert_true(retire_said(t, "移出工作区") && retire_said(t, "Willow"), msg=t.words().map(fn(x) { x.0 }).join("|"))
+  assert_true(retire_said(t, "移除 Station") && retire_said(t, "Willow"), msg=t.words().map(fn(x) { x.0 }).join("|"))
   retire_press(t, "移除 station")
   let asked = retire_calls(calls, "workspace.removeStation")
   assert_eq(asked.length(), 1)

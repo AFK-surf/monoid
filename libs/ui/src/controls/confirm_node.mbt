@@ -399,6 +399,9 @@ fn confirm_facts_card_node(
       }
     })
     card.radius(Is(radius)).alpha(By(alpha)) |> ignore
+    if !compact {
+      card.min_height(Is(Some(dialog_card_corner * 2.0))) |> ignore
+    }
     dialog_facts_rows_node(loc~, card, shown)
   })
   |> ignore
@@ -431,6 +434,9 @@ pub fn dialog_facts_card_node(
       }
     })
     card.radius(Is(if small { row_corner } else { dialog_card_corner })) |> ignore
+    if !small {
+      card.min_height(Is(Some(dialog_card_corner * 2.0))) |> ignore
+    }
     dialog_facts_rows_node(loc~, card, shown)
   })
   |> ignore
@@ -438,7 +444,7 @@ pub fn dialog_facts_card_node(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let dialog_facts_card : @ui.Style = @ui.css("w=Full px=S4 py=S3 gap=S1_5 bg=A(Fg,O5) clip")
+let dialog_facts_card : @ui.Style = @ui.css("w=Full px=S4 py=S3 gap=S1_5 bg=A(Fg,O5) clip justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -454,7 +460,7 @@ let dialog_facts_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let dialog_facts_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+let dialog_facts_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))))
 
 ///|
 // kept across runs: a value (no field of it changes)

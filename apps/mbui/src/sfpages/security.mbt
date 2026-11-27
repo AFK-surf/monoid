@@ -933,8 +933,10 @@ fn sec_member_panel(
     v.reacts(fn() { lock() is Some(_) && now() is None }, fn(gone) { if gone { close() } })
     @sf.dialog_facts_card_node(v, [
       (@sf.t("common.confirmFact.member"), name),
-      ("", about),
     ])
+    if about != "" {
+      @sf.panel_note_node(v, fn() { about })
+    }
     @sf.group_node(v, fn(g) {
       // (each by its id: what a row reads once as it is made, which machine it is, stays its own)
       g.each(fn() { sec_devices_of(Some(shown())) }, fn(d) { text(Some(d), "id") }, fn(row, d) {

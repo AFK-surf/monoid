@@ -414,7 +414,7 @@ test "全部迁移 at the first card's end, asked once naming the station and ho
   move_audit(t, "done")
   assert_true(!move_said(t, "全部迁移") && move_said(t, "移出 workspace"), msg=move_all_words(t))
   move_press(t, "移出 workspace")
-  assert_true(move_said(t, "移出工作区") && move_said(t, "Willow"), msg=move_all_words(t))
+  assert_true(move_said(t, "移除 Station") && move_said(t, "Willow"), msg=move_all_words(t))
 }
 
 ///|
