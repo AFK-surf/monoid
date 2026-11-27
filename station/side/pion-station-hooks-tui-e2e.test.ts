@@ -15,7 +15,21 @@
 //    byte-for-byte stdout lifecycle frame parity, clean exit, and zero orphan processes.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -338,6 +352,17 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
     assert.equal(pu2.stdout, nu2.stdout);
     assert.equal(statSync(stUmaskNode).mode & 0o777, 0o600, "Node update under umask 022 preserves 0600");
     assert.equal(statSync(stUmaskPion).mode & 0o777, 0o600, "Pion update under umask 022 must preserve 0600");
+
+    // Pre-existing symlink at state file path must NOT inherit symlink's 0777 mode
+    const sidSymPion = `e2e-rr-sym-p-${stamp}`;
+    const stSymPion = trackRuleState(`${sidSymPion}-main`);
+    const dummyTarget = join(base, "dummy-state-target.json");
+    writeFileSync(dummyTarget, "{}");
+    symlinkSync(dummyTarget, stSymPion);
+    const psym = runSyncWithInput("sh", ["-c", 'umask 077 && exec "$@"', "_", bin, "repo-rules-hook"], payload(sidSymPion, targetFile), {}, repo);
+    assert.equal(psym.status, 0, psym.stderr);
+    assert.ok(lstatSync(stSymPion).isFile(), "atomic write must replace pre-existing symlink with a regular file");
+    assert.equal(statSync(stSymPion).mode & 0o777, 0o600, "pre-existing symlink state file must honor umask 077 (0600), never 0777");
   }
 
   // (k) Node <-> Pion alternating pagination on a long (>20 KB) AGENTS.md using the SAME session_id:
@@ -377,6 +402,42 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
   assert.ok(ctx2.includes("[more of this file follows after your next tool call]"), "page 2 (Pion) has more");
   assert.ok(ctx3.includes("the last of it"), "page 3 (Node) finishes the last page");
   assert.equal(alt4.stdout, "", "page 4 (Pion) sees complete file with identical fractional mtimeMs");
+
+  // (l) Pre-1970 negative mtime (-0.5s = -500ms): Node vs Pion must emit identical rules and persist state
+  const negRepo = join(base, "neg-mtime-repo");
+  mkdirSync(join(negRepo, ".git"), { recursive: true });
+  const negRule = join(negRepo, "AGENTS.md");
+  writeFileSync(negRule, "# Pre-1970 Rules\nNegative mtime must still inject.\n");
+  utimesSync(negRule, -0.5, -0.5);
+  const negTarget = join(negRepo, "index.ts");
+  writeFileSync(negTarget, "export const neg = true;\n");
+
+  const sidNegNode = `e2e-rr-neg-n-${stamp}`;
+  const sidNegPion = `e2e-rr-neg-p-${stamp}`;
+  const stNegNode = trackRuleState(`${sidNegNode}-main`);
+  const stNegPion = trackRuleState(`${sidNegPion}-main`);
+  const negPayload = (sid: string) =>
+    JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: sid,
+      cwd: negRepo,
+      tool_input: { file_path: negTarget },
+    });
+
+  const nn1 = runSyncWithInput(process.execPath, [repoRulesMjs], negPayload(sidNegNode), {}, negRepo);
+  const pn1 = runSyncWithInput(bin, ["repo-rules-hook"], negPayload(sidNegPion), {}, negRepo);
+  assert.equal(nn1.status, 0, nn1.stderr);
+  assert.equal(pn1.status, 0, pn1.stderr);
+  assert.equal(pn1.stdout, nn1.stdout, "negative pre-1970 mtime stdout must match Node byte-for-byte");
+  assert.ok(pn1.stdout.includes("Pre-1970 Rules"), "negative pre-1970 mtime rule file must be injected");
+  assert.ok(existsSync(stNegNode), "Node negative-mtime state file should exist");
+  assert.ok(existsSync(stNegPion), "Pion negative-mtime state file should exist");
+
+  const nn2 = runSyncWithInput(process.execPath, [repoRulesMjs], negPayload(sidNegNode), {}, negRepo);
+  const pn2 = runSyncWithInput(bin, ["repo-rules-hook"], negPayload(sidNegPion), {}, negRepo);
+  assert.equal(pn2.status, 0, pn2.stderr);
+  assert.equal(pn2.stdout, nn2.stdout);
+  assert.equal(pn2.stdout, "", "second trigger with negative mtime must be deduplicated");
 });
 
 test("2. subagent-hook: byte-for-byte Node parity across speaking tools, slack_api writes/reads, main agent, and invalid JSON", () => {
@@ -930,8 +991,32 @@ process.stdin.on("end", () => process.exit(0));
   assert.equal(prel.mcpConfig.mcpServers.stillfail.args[0], claudeTuiMjs, "relative ./claude-tui.mjs must resolve to absolute script path");
   assert.deepEqual(prel.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop"]);
 
+  // (d) Symlinked `./claude-tui.mjs -> claude-tui-v3.mjs` entry: mode dispatch keeps original argv[1]
+  // while callbacks resolve to realpath (`.../claude-tui-v3.mjs`) and execute cleanly from `emptyCwd`
+  const symDir = freshDir("tui-symlink-entry");
+  const targetV3 = join(symDir, "claude-tui-v3.mjs");
+  const linkEntry = join(symDir, "claude-tui.mjs");
+  copyFileSync(claudeTuiMjs, targetV3);
+  symlinkSync(targetV3, linkEntry);
+  const pionSymReport = join(dir, "pion-sym-report.json");
+  const pSymRes = await runBridgeTurn(
+    bin,
+    ["./claude-tui.mjs", process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: pionSymReport, FAKE_CALLBACK_CWD: emptyCwd },
+    symDir,
+  );
+  assert.equal(pSymRes.status, 0, `Pion symlink ./claude-tui.mjs -> claude-tui-v3.mjs stderr: ${pSymRes.stderr}`);
+  assert.equal(pSymRes.stdout, nRes.stdout, "symlinked ./claude-tui.mjs stdout must match Node byte-for-byte");
+  const psym = JSON.parse(readFileSync(pionSymReport, "utf8")) as RunnerReport;
+  assert.equal(
+    psym.mcpConfig.mcpServers.stillfail.args[0],
+    realpathSync(targetV3),
+    "symlinked ./claude-tui.mjs must rewrite callbacks to resolved realpath target",
+  );
+  assert.deepEqual(psym.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop"]);
+
   // Verify zero orphan processes across all Pion runs.
-  for (const pid of [pr.pid, pm.pid, pfr.pid, prel.pid]) {
+  for (const pid of [pr.pid, pm.pid, pfr.pid, prel.pid, psym.pid]) {
     let alive = true;
     try {
       process.kill(pid, 0);

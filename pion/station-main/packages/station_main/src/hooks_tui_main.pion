@@ -80,9 +80,11 @@ pub fn parse_stat_mtime_is_dir(raw : String) -> Option[(Double, Bool)] {
 }
 
 /// Parse permission bits (`mode & 0o777`) from `station_sys::lstat_raw` (`kind|size|exec|mtime_ms|dev|ino|mode`).
+/// Only regular files (`"file"`) preserve their existing mode; symlinks (`"link"`, mode 0777) and other non-files
+/// return `None` so `write_file_atomic` receives `-1` and honors process `umask`.
 pub fn parse_stat_mode(raw : String) -> Option[Int] {
   let parts = raw.split("|")
-  if parts.length() < 7 {
+  if parts.length() < 7 || parts[0] != "file" {
     return None
   }
   let mode_str = parts[6]
@@ -100,22 +102,19 @@ pub fn parse_stat_mode(raw : String) -> Option[Int] {
   Some(acc & 511)
 }
 
-/// Parse `client/shell` `fs.meta` JSON reply (`{"value":{"mtime":...,"mtimeMs":...,"dir":...}}`)
-/// preserving sub-millisecond `mtime` parity with Node's `statSync(path).mtimeMs`.
-pub fn parse_fs_meta_reply(raw : String) -> Option[(Double, Bool)] {
+/// Parse `client/shell` `fs.lstat` JSON reply (`{"value":{"kind":"file"|"dir"|...,"mtimeMs":...}}`)
+/// preserving signed fractional `mtimeMs` (including pre-1970 negative timestamps) matching Node's `statSync(path).mtimeMs`.
+pub fn parse_fs_lstat_reply(raw : String) -> Option[(Double, Bool)] {
   match base_codec::json_parse(raw) {
     base_codec::JsonParseResult::Ok(top) => match base_codec::json_get(top, "value") {
       Some(base_codec::Json::Obj(fs)) => {
-        let is_dir = match base_codec::json_obj_get(fs, "dir") {
-          Some(base_codec::Json::Bool(b)) => b
+        let is_dir = match base_codec::json_obj_get(fs, "kind") {
+          Some(base_codec::Json::Str(k)) => k == "dir"
           _ => false
         }
-        let mtime = match base_codec::json_obj_get(fs, "mtime") {
+        let mtime = match base_codec::json_obj_get(fs, "mtimeMs") {
           Some(base_codec::Json::Num(n, _)) => n
-          _ => match base_codec::json_obj_get(fs, "mtimeMs") {
-            Some(base_codec::Json::Num(n, _)) => n
-            _ => return None
-          }
+          _ => return None
         }
         Some((mtime, is_dir))
       }
@@ -252,52 +251,55 @@ pub fn resolve_self_executable_with(
 /// - In native `claude-tui <node> <runner> <claude> ...` mode (`argv[1] == "claude-tui"`),
 ///   replace `argv[2]` with the resolved absolute path of `stillfail-station-pion` so callbacks
 ///   (`<abs-bin> claude-tui hook|mcp`) succeed from any cwd even when the caller passed Node.
-/// - In `.mjs` path mode (`argv[1]` is a relative path like `./claude-tui.mjs`), resolve `argv[1]`
-///   against `cwd` + `realpath` so rewritten callbacks (`<node> <abs-claude-tui.mjs> hook|mcp`)
-///   succeed from any cwd, matching Node's `fileURLToPath(import.meta.url)`.
+/// - In `.mjs` path mode, preserve `argv[1]` verbatim so `claude_tui_mode` always dispatches on
+///   the caller's original entry path even when it is a symlink (e.g. `./claude-tui.mjs -> claude-tui-v3.mjs`).
 pub fn rewrite_native_claude_tui_argv(
   argv : Array[String],
   self_exe : Option[String],
-  cwd : String = "",
-  sep : String = "/",
-  realpath_fn : (String) -> Option[String] = fn(_p : String) -> Option[String] { None },
 ) -> Result[Array[String], String] {
-  if argv.length() >= 5 && argv[2] != "hook" && argv[2] != "mcp" {
-    if argv[1] == "claude-tui" {
-      let exe = match self_exe {
-        Some(p) => if p.length() > 0 { p } else {
-          return Err("claude-tui: failed to resolve absolute path of current executable")
-        }
-        None => return Err("claude-tui: failed to resolve absolute path of current executable")
+  if argv.length() >= 5 && argv[1] == "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
+    let exe = match self_exe {
+      Some(p) => if p.length() > 0 { p } else {
+        return Err("claude-tui: failed to resolve absolute path of current executable")
       }
-      let out : Array[String] = []
-      for i in 0..<argv.length() {
-        if i == 2 {
-          out.push(exe)
-        } else {
-          out.push(argv[i])
-        }
-      }
-      return Ok(out)
+      None => return Err("claude-tui: failed to resolve absolute path of current executable")
     }
-    if !nodepath::is_absolute(sep, argv[1]) && cwd.length() > 0 {
-      let cand = nodepath::join(sep, [cwd, argv[1]])
-      let abs_script = match realpath_fn(cand) {
-        Some(r) => r
-        None => cand
+    let out : Array[String] = []
+    for i in 0..<argv.length() {
+      if i == 2 {
+        out.push(exe)
+      } else {
+        out.push(argv[i])
       }
-      let out : Array[String] = []
-      for i in 0..<argv.length() {
-        if i == 1 {
-          out.push(abs_script)
-        } else {
-          out.push(argv[i])
-        }
-      }
-      return Ok(out)
     }
+    return Ok(out)
   }
   Ok(argv)
+}
+
+/// Resolve the absolute callback script path for `.mjs` `run`-mode invocations (`argv[1] != "claude-tui"`),
+/// combining `cwd` (for relative paths) and `realpath` (for symlinks like `./claude-tui.mjs -> claude-tui-v3.mjs`)
+/// to match Node's `fileURLToPath(import.meta.url)` without altering mode dispatch on `argv[1]`.
+pub fn resolve_claude_tui_callback_script(
+  argv : Array[String],
+  cwd : String,
+  sep : String,
+  realpath_fn : (String) -> Option[String],
+) -> Option[String] {
+  if argv.length() >= 5 && argv[1] != "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
+    let cand = if nodepath::is_absolute(sep, argv[1]) {
+      argv[1]
+    } else if cwd.length() > 0 {
+      nodepath::join(sep, [cwd, argv[1]])
+    } else {
+      argv[1]
+    }
+    return match realpath_fn(cand) {
+      Some(r) => Some(r)
+      None => Some(cand)
+    }
+  }
+  None
 }
 
 fn hooks_bytes_to_string(b : Bytes) -> String {
@@ -355,8 +357,8 @@ fn hooks_read_stdin_all_standalone() -> String {
   hooks_read_stdin_all_started()
 }
 
-/// Run `repo-rules-hook` with 100% real `station_sys`, `client/shell` `fs.meta` (sub-millisecond
-/// `mtime` matching Node `statSync().mtimeMs`), and `host_shim` OS I/O.
+/// Run `repo-rules-hook` with 100% real `station_sys`, `client/shell` `fs.lstat` (`follow: true`,
+/// signed fractional `mtimeMs` matching Node `statSync().mtimeMs`), and `host_shim` OS I/O.
 fn run_repo_rules_hook_os() -> Int {
   let is_win = station_sys::os_name() == "win32"
   let sep = if is_win { "\\" } else { "/" }
@@ -388,10 +390,15 @@ fn run_repo_rules_hook_os() -> Int {
     },
     stat: fn(path : String) -> Option[(Double, Bool)] {
       if shell_started {
-        let req = base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(path))]))
-        // sync: short-lived CLI hook stat via client/shell fs.meta for fractional mtimeMs parity with Node statSync
-        let raw = host_shim::shell_sync("fs.meta", req)
-        return parse_fs_meta_reply(raw)
+        let req = base_codec::json_stringify(
+          base_codec::json_obj([
+            ("path", base_codec::json_str(path)),
+            ("follow", base_codec::json_bool(true)),
+          ]),
+        )
+        // sync: short-lived CLI hook stat via client/shell fs.lstat (follow: true) for signed fractional mtimeMs parity with Node statSync
+        let raw = host_shim::shell_sync("fs.lstat", req)
+        return parse_fs_lstat_reply(raw)
       }
       match station_sys::stat_raw(path) {
         Some(raw) => parse_stat_mtime_is_dir(raw)
@@ -1064,19 +1071,19 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
     station_sys::realpath,
     station_sys::is_executable,
   )
-  let effective_argv = match rewrite_native_claude_tui_argv(
-    argv,
-    self_exe,
-    cwd=cur_cwd,
-    sep=sep,
-    realpath_fn=station_sys::realpath,
-  ) {
+  let effective_argv = match rewrite_native_claude_tui_argv(argv, self_exe) {
     Ok(a) => a
     Err(e) => {
       let _ = host_shim::write_stderr((e + "\n").to_bytes())
       return 1
     }
   }
+  let callback_script = resolve_claude_tui_callback_script(
+    argv,
+    cur_cwd,
+    sep,
+    station_sys::realpath,
+  )
   let mode_opt = station_hooks_tui::claude_tui_mode(effective_argv)
   let (is_hook_mode, is_mcp_mode, is_run_mode) = match mode_opt {
     Some(station_hooks_tui::ClaudeTuiMode::Hook) => (true, false, false)
@@ -1373,7 +1380,7 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
     },
   }
 
-  let base_rc = station_hooks_tui::run_claude_tui(io, effective_argv)
+  let base_rc = station_hooks_tui::run_claude_tui_with_script(io, effective_argv, callback_script)
 
   // Clean up child process handle, signal watcher, shell runtime, and temporary shell dir.
   match drv.pty_child {

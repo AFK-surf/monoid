@@ -1157,11 +1157,27 @@ fn run_bridge_mode(
 
 /// Unified CLI entrypoint for `claude-tui.mjs` (`hook` / `mcp` / `run`).
 pub fn run_claude_tui(io : ClaudeTuiIo, argv : Array[String]) -> Int {
+  run_claude_tui_with_script(io, argv, None)
+}
+
+/// Like `run_claude_tui`, but overrides the script path written into rewritten hook/MCP callback
+/// args (e.g., `realpath` of a symlinked `./claude-tui.mjs -> claude-tui-v3.mjs`) while preserving
+/// mode dispatch on the caller's original `argv[1]`.
+pub fn run_claude_tui_with_script(
+  io : ClaudeTuiIo,
+  argv : Array[String],
+  callback_script : Option[String],
+) -> Int {
   match claude_tui_mode(argv) {
     Some(ClaudeTuiMode::Hook) => run_hook_mode(io)
     Some(ClaudeTuiMode::Mcp(url)) => run_mcp_mode(io, url)
-    Some(ClaudeTuiMode::Run(script, node, runner, claude, args)) =>
-    run_bridge_mode(io, script, node, runner, claude, args)
+    Some(ClaudeTuiMode::Run(script, node, runner, claude, args)) => {
+      let cb_script = match callback_script {
+        Some(s) => if s.length() > 0 { s } else { script }
+        None => script
+      }
+      run_bridge_mode(io, cb_script, node, runner, claude, args)
+    }
     None => {
       (io.write_stderr)("claude-tui: <node> <runner> <claude> [args...]\n")
       1
