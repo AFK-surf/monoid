@@ -21,6 +21,10 @@ import type { Ways } from "./ways.ts";
 
 /// Asking our relays whether they answer is asking an outside system: the one timer here.
 const RELAY_CHECK = "30 seconds";
+/// How often `keepRelays` concurrently re-ranks all relays by measured RTT to pick the nearest live one.
+export const RELAY_RANK_MS = 600_000;
+/// Timeout for each request in the concurrent relay ranking pass (falls back to sequential 10 s check if all miss).
+const RELAY_RANK_TIMEOUT_MS = 5_000;
 
 /// The relays the station is kept on: each of its workspaces' (`workspaceRelays`: still.fail's, then its own, but those
 /// its ways turn off), the home one's first; still.fail's where it is in none. What its endpoint is bound with (mesh.ts,
@@ -346,55 +350,128 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
         watch.onUnhealthy();
       });
 
-    const ping = Effect.promise(async () => {
-      let up = false;
-      let reachable: string | null = null;
-      let rest: string[] = [];
-      const home = endpoint.home();
-      const order = home === null ? ours : [...ours.filter((u) => bare(u) === bare(home)), ...ours.filter((u) => bare(u) !== bare(home))];
-      // Two tries each: one lost request is not the relay down.
-      relays: for (const [idx, relay] of order.entries()) {
-        for (let i = 0; i < 2; i++) {
-          try {
-            const r = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(10_000) });
-            if (r.ok) {
-              up = true;
-              reachable = relay;
-              // (the relays after it, not asked this check: probed through where it fails, `PROBE`)
-              rest = order.slice(idx + 1);
-              if (net !== undefined) {
-                // Once more on the connection made (its body read, so it is free again): the time is the way there and
-                // back, not the handshakes.
-                try {
-                  await r.arrayBuffer();
-                  const start = wall.now();
-                  const again = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(10_000) });
-                  await again.arrayBuffer();
-                  if (again.ok) net.pinged(bare(relay), wall.now() - start);
-                } catch {}
-              }
-              break relays;
-            }
-          } catch {}
+    let preferred: { relay: string; at: number } | null = null;
+    let ranked: string[] = [];
+    let rankedOurs: string[] = [];
+
+    const ping = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      return yield* Effect.promise(async () => {
+        const list = ours;
+        let up = false;
+        let reachable: string | null = null;
+        let rest: string[] = [];
+        const useRank = net !== undefined && list.length > 1;
+        if (!useRank) {
+          preferred = null;
+          ranked = [];
+          rankedOurs = [];
         }
-      }
-      if (!up && oursOff(cloud.state, ways)) {
-        // (none answers, but iroh's public relays are off too: the workspaces turned still.fail's off)
-        if (added !== false) {
-          log.warn("mesh", "none of the workspaces' relays answers; iroh's public relays stay off, still.fail's being turned off", { relays: ours });
+        const needRank =
+          useRank &&
+          (preferred === null ||
+            !among(list, preferred.relay) ||
+            now - preferred.at >= RELAY_RANK_MS ||
+            list.some((u) => !among(rankedOurs, u)));
+        if (needRank) {
+          const results = await Promise.all(
+            list.map(async (relay, idx): Promise<{ relay: string; ms: number; idx: number } | null> => {
+              try {
+                const r = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(RELAY_RANK_TIMEOUT_MS) });
+                await r.arrayBuffer();
+                if (!r.ok) return null;
+                const start = wall.now();
+                const again = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(RELAY_RANK_TIMEOUT_MS) });
+                await again.arrayBuffer();
+                if (!again.ok) return null;
+                return { relay, ms: wall.now() - start, idx };
+              } catch {
+                return null;
+              }
+            }),
+          );
+          const okSorted = results
+            .filter((x): x is { relay: string; ms: number; idx: number } => x !== null)
+            .sort((a, b) => a.ms - b.ms || a.idx - b.idx);
+          if (okSorted.length > 0) {
+            const fastest = okSorted[0]!;
+            const okIdx = new Set(okSorted.map((x) => x.idx));
+            const failedRelays = list.filter((_, idx) => !okIdx.has(idx));
+            up = true;
+            reachable = fastest.relay;
+            preferred = { relay: fastest.relay, at: now };
+            ranked = [...okSorted.map((x) => x.relay), ...failedRelays];
+            rankedOurs = [...list];
+            rest = ranked.slice(1);
+            net.pinged(bare(fastest.relay), fastest.ms);
+          } else {
+            preferred = null;
+            ranked = [];
+            rankedOurs = [];
+          }
+        }
+        if (!up) {
+          let order: string[];
+          if (useRank && preferred !== null) {
+            order = [];
+            const pushUnique = (u: string) => {
+              if (!among(order, u)) order.push(u);
+            };
+            for (const u of list) if (sameUrl(u) === sameUrl(preferred.relay)) pushUnique(u);
+            for (const u of ranked) if (among(list, u)) pushUnique(u);
+            for (const u of list) pushUnique(u);
+          } else {
+            const home = endpoint.home();
+            order = home === null ? list : [...list.filter((u) => bare(u) === bare(home)), ...list.filter((u) => bare(u) !== bare(home))];
+          }
+          // Two tries each: one lost request is not the relay down.
+          relays: for (const [idx, relay] of order.entries()) {
+            for (let i = 0; i < 2; i++) {
+              try {
+                const r = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(10_000) });
+                if (r.ok) {
+                  up = true;
+                  reachable = relay;
+                  // (the relays after it, not asked this check: probed through where it fails, `PROBE`)
+                  rest = order.slice(idx + 1);
+                  if (net !== undefined) {
+                    // Once more on the connection made (its body read, so it is free again): the time is the way there and
+                    // back, not the handshakes.
+                    try {
+                      await r.arrayBuffer();
+                      const start = wall.now();
+                      const again = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(10_000) });
+                      await again.arrayBuffer();
+                      if (again.ok) net.pinged(bare(relay), wall.now() - start);
+                    } catch {}
+                  }
+                  break relays;
+                }
+              } catch {}
+            }
+          }
+          if (useRank && preferred !== null && (!up || reachable === null || bare(reachable) !== bare(preferred.relay))) {
+            preferred = null;
+          }
+        }
+        if (!up && oursOff(cloud.state, ways)) {
+          // (none answers, but iroh's public relays are off too: the workspaces turned still.fail's off)
+          if (added !== false) {
+            log.warn("mesh", "none of the workspaces' relays answers; iroh's public relays stay off, still.fail's being turned off", { relays: list });
+            await endpoint.publicRelays(false);
+            added = false;
+          }
+        } else if (!up && added !== true) {
+          log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: list });
+          await endpoint.publicRelays(true);
+          added = true;
+        } else if (up && added !== false) {
+          if (added === true) log.info("mesh", "still.fail's relays answer again; back home to them", { relays: list });
           await endpoint.publicRelays(false);
           added = false;
         }
-      } else if (!up && added !== true) {
-        log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: ours });
-        await endpoint.publicRelays(true);
-        added = true;
-      } else if (up && added !== false) {
-        if (added === true) log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
-        await endpoint.publicRelays(false);
-        added = false;
-      }
-      return { up, reachable, rest };
+        return { up, reachable, rest };
+      });
     });
     const check = Effect.gen(function* () {
       const { up, reachable, rest } = yield* ping;

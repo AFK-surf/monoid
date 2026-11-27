@@ -35,6 +35,8 @@ pub(all) struct SectionChrome[K] {
   bot_stack_h : Double
   top_edge_key : K?
   bot_edge_key : K?
+  top_push : (K, Double)?
+  bot_push : (K, Double)?
   active_bottom : Double
   next_top : Double
 }
@@ -97,6 +99,10 @@ priv struct SectionSolved {
   bot_stack_h : Double
   top_edge_idx : Int
   bot_edge_idx : Int
+  top_push_idx : Int
+  top_push_by : Double
+  bot_push_idx : Int
+  bot_push_by : Double
   active_bottom : Double
   next_top : Double
 }
@@ -130,6 +136,10 @@ fn SectionSolved::empty(top_edge : Double, bottom_edge : Double) -> SectionSolve
     bot_stack_h: 0.0,
     top_edge_idx: -1,
     bot_edge_idx: -1,
+    top_push_idx: -1,
+    top_push_by: 0.0,
+    bot_push_idx: -1,
+    bot_push_by: 0.0,
     active_bottom: 0.0,
     next_top: @double.infinity,
   }
@@ -462,6 +472,13 @@ fn solve_sections(
   let mut bot_stack_start = b_edge
   let mut top_edge_idx = -1
   let mut bot_edge_idx = -1
+  let mut top_push_idx = -1
+  let mut top_push_by = 0.0
+  let mut bot_push_idx = -1
+  let mut bot_push_by = 0.0
+  // Quantized top clip edge using the exact same `((l_edge - x) * grid).round()` expression as contact-run snapping
+  // (so IEEE-754 half-ties like `((x + 51.0) - x) * 1.5` match resting slot-0 `drawn[j]` bit-for-bit across all `x`).
+  let l_edge_q = if grid > 0.0 { x + ((l_edge - x) * grid).round() / grid } else { l_edge }
   for j in 0..<g {
     let dy = dys[j]
     if is_above_ovf[j] {
@@ -495,6 +512,18 @@ fn solve_sections(
       }
     } else {
       states[j] = Flow
+    }
+    if top_cap >= 1 && !is_above_ovf[j] && drawn[j] < l_edge_q - 1.0e-6 && drawn[j] + rs[j] > l_edge_q + 1.0e-6 {
+      top_push_idx = j
+      top_push_by = l_edge_q - drawn[j]
+    }
+    if bot_cap >= 1 && !is_below_ovf[j] {
+      // Exact quantized resting bottom slot for heading `j`, matching bottom contact-run snapping bit-for-bit
+      let bot_rest_q = if grid > 0.0 { x + ((b_edge - rs[j] - x) * grid).round() / grid } else { b_edge - rs[j] }
+      if drawn[j] > bot_rest_q + 1.0e-6 && drawn[j] < b_edge - 1.0e-6 {
+        bot_push_idx = j
+        bot_push_by = drawn[j] - bot_rest_q
+      }
     }
   }
   let top_stack_h = dmax(0.0, top_stack_end - l_edge)
@@ -532,6 +561,10 @@ fn solve_sections(
     bot_stack_h,
     top_edge_idx,
     bot_edge_idx,
+    top_push_idx,
+    top_push_by,
+    bot_push_idx,
+    bot_push_by,
     active_bottom,
     next_top,
   }
@@ -577,6 +610,8 @@ pub fn[K] ListPlace::set_sections(
           bot_stack_h: c.bot_stack_h,
           top_edge_key: c.top_edge_key.map(key_of),
           bot_edge_key: c.bot_edge_key.map(key_of),
+          top_push: c.top_push.map(fn(p) { (key_of(p.0), p.1) }),
+          bot_push: c.bot_push.map(fn(p) { (key_of(p.0), p.1) }),
           active_bottom: c.active_bottom,
           next_top: c.next_top,
         }
@@ -946,7 +981,11 @@ fn SectionWindowHost::ensure_hooks(
         let ln = tree.nodes[list_at]
         let te = dmax(0.0, @signals.untracked(sec.top_edge))
         let be = dmax(0.0, @signals.untracked(sec.bottom_edge))
-        Some((lx, ly + te * ls, lx + ln.lw * ls, ly + dmax(te, ln.lh - be) * ls))
+        let g = if tree.rows_grid > 0.0 { tree.rows_grid } else { tree.pixel_grid }
+        let te_q = if g > 0.0 { (te * g).round() / g } else { te }
+        let bot_y = dmax(te, ln.lh - be)
+        let bot_q = if g > 0.0 { dmax(te_q, (bot_y * g).round() / g) } else { bot_y }
+        Some((lx, ly + te_q * ls, lx + ln.lw * ls, ly + bot_q * ls))
       },
     }
     held.owns(fn() { tree.section_lists.remove(held_at) }) |> ignore
@@ -1111,6 +1150,8 @@ fn SectionWindowHost::sync_chrome(
             bot_stack_h: solved.bot_stack_h,
             top_edge_key: if solved.top_edge_idx >= 0 { Some(solved.keys[solved.top_edge_idx]) } else { None },
             bot_edge_key: if solved.bot_edge_idx >= 0 { Some(solved.keys[solved.bot_edge_idx]) } else { None },
+            top_push: if solved.top_push_idx >= 0 { Some((solved.keys[solved.top_push_idx], solved.top_push_by)) } else { None },
+            bot_push: if solved.bot_push_idx >= 0 { Some((solved.keys[solved.bot_push_idx], solved.bot_push_by)) } else { None },
             active_bottom: solved.active_bottom,
             next_top: solved.next_top,
           }

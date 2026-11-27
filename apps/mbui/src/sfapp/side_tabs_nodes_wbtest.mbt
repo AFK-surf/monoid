@@ -249,3 +249,360 @@ fn side_star_lit(t : @ui.Tester, label : String) -> Bool {
   let lit = @sf.alpha(@sf.theme().p.accent, 0.08)
   t.drawn_rects().iter().any(fn(r) { (r.0 - x).abs() < 1.0 && (r.1 - y).abs() < 1.0 && (r.2 - w).abs() < 1.0 && (r.3 - h).abs() < 1.0 && r.4 == lit })
 }
+
+///|
+/// Overlay local `chat.tabs.*` state onto `base` so side-panel tab tests can open/switch/close arbitrary tabs
+/// without needing `sfkept` entries for every combination.
+fn with_local_side_tabs(
+  base : Source,
+  initial : (Array[String], String),
+  live_ready? : @signals.Signal[Bool],
+) -> Source {
+  let tabs_sig : @signals.Signal[(Array[String], String)] = @signals.signal(initial)
+  let tabs_ver : @signals.Signal[Int] = @signals.signal(0)
+  {
+    ..base,
+    topic_read: fn(name, params) {
+      match live_ready {
+        Some(ready) if (name == "history" || name == "drive") && !ready.get() =>
+          return { value: None, error: None, version: 0 }
+        _ => ()
+      }
+      let st = (base.topic_read)(name, params)
+      if name == "chat" {
+        let (open, shown) = tabs_sig.get()
+        let ver = tabs_ver.get()
+        match st.value {
+          Some(Object(m)) => {
+            let copy : Map[String, Json] = Map([])
+            for k, v in m {
+              copy[k] = v
+            }
+            copy["tabs"] = Json::object({
+              "open": Json::array(open.map(Json::string)),
+              "shown": if shown == "" { Json::null() } else { Json::string(shown) },
+              "canReopen": Json::boolean(false),
+            })
+            { ..st, value: Some(Json::object(copy)), version: st.version + ver }
+          }
+          _ => st
+        }
+      } else {
+        st
+      }
+    },
+    call: fn(name, params, on_done) {
+      if name.has_prefix("chat.tabs.") {
+        let act = name.exact_view(start="chat.tabs.".length()).to_owned()
+        let tab = match params {
+          Object(m) =>
+            match m.get("tab") {
+              Some(String(t)) => t
+              _ => ""
+            }
+          _ => ""
+        }
+        let (cur_open, cur_shown) = tabs_sig.untracked()
+        let next : (Array[String], String) = match act {
+          "open" if tab != "" =>
+            if cur_open.contains(tab) {
+              (cur_open, tab)
+            } else {
+              ([..cur_open, tab], tab)
+            }
+          "front" if tab != "" => (cur_open, tab)
+          "close" if tab != "" => {
+            let rest = cur_open.filter(fn(x) { x != tab })
+            let next_shown = if cur_shown == tab { rest.get(0).unwrap_or("") } else { cur_shown }
+            (rest, next_shown)
+          }
+          "clear" => ([], "")
+          _ => (cur_open, cur_shown)
+        }
+        tabs_sig.set(next)
+        tabs_ver.set(tabs_ver.untracked() + 1)
+        on_done(Ok(Json::null()))
+      } else {
+        (base.call)(name, params, on_done)
+      }
+    },
+  }
+}
+
+///|
+/// Open a wide 1280x800 Tester on `mode` with `side_tab_chat` active, returning `(tester, source)`.
+fn side_kept_tester(
+  mode? : String = "chat-tabs-side",
+  a11y? : Bool = false,
+  live_ready? : @signals.Signal[Bool],
+) -> (@ui.Tester, Source) {
+  new_run()
+  let src = with_local_side_tabs(fixture(mode), (["s-c1", "jobs"], "jobs"), live_ready?)
+  open_chat(side_tab_chat)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, env=[("MBUI_LOCALE", "zh")])
+  if a11y {
+    t.set_a11y(true)
+  }
+  nav_rested(t)
+  t.run_for(@ui.move_most_ms)
+  (t, src)
+}
+
+///|
+/// Run `act` inside a tree event, advance `ms` ms, and return `(sum_made, sum_let_go)`.
+fn side_kept_step(t : @ui.Tester, act : () -> Unit, ms? : Double = @ui.move_most_ms) -> (Int, Int) {
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), act)
+  t.run_for(ms)
+  t.tree_frames().fold(init=(0, 0), fn(a, f) { (a.0 + f.made, a.1 + f.let_go) })
+}
+
+///|
+test "大屏: side_panel_node parks passive tabs (history/jobs/files/letters/things) via pick_kept with 0 body rebuilds, 0 parked timers, a11y isolation, and full cleanup" {
+  let (t, src) = side_kept_tester(mode="chat-letters-side", a11y=true)
+  let tree = @ui.view_tree().unwrap()
+  // Open remaining passive tabs: s-c1 (cold), files, letters, things (files sub-tab to stay under 4 KB image bar), then jobs.
+  @sfpages.things_choose(side_tab_chat, "files")
+  let (cold_hist_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  let (cold_files_made, _) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) })
+  let (cold_letters_made, _) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("letters")) })
+  let (cold_things_made, _) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("things")) })
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  assert_true(cold_hist_made > 20 && cold_files_made > 20 && cold_letters_made > 20 && cold_things_made > 20, msg="cold opens build tab bodies")
+  assert_true(t.find("后台任务") is Some(_), msg="jobs active after cold opens")
+  assert_true(t.at_rest(), msg="at rest after cold opens")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 parked timers after cold opens")
+  // Hot-switch across all 5 passive tabs via side_front_pressed: body builds 0 nodes (at most tab_strip × toggle <= 6 nodes).
+  let checks : Array[(String, String, String)] = [
+    ("s-c1", "读了 src/ui/list.mbt 等 2 个文件，跑了测试", "后台任务"),
+    ("files", "整个文件夹", "读了 src/ui/list.mbt 等 2 个文件，跑了测试"),
+    ("letters", "接手监督 mbui", "整个文件夹"),
+    ("things", "build.log", "接手监督 mbui"),
+    ("jobs", "后台任务", "build.log"),
+  ]
+  for entry in checks {
+    let (tab, visible_word, parked_word) = entry
+    let (made, let_go) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, tab) })
+    println("side_panel_kept hot \{tab}: made=\{made} let_go=\{let_go}")
+    // Only tab_strip_node's active × button mounts/unmounts (<= 6 nodes); the tab body itself builds 0 nodes.
+    assert_true(made <= 6 && let_go <= 6, msg="hot return to passive tab \{tab} must not rebuild body (made=\{made}, let_go=\{let_go})")
+    assert_true(t.find(visible_word) is Some(_), msg="active tab \{tab} shows \{visible_word}")
+    assert_true(t.find(parked_word) is None, msg="parked tab content \{parked_word} must not be drawn")
+    // A11y isolation: parked tab's unique label must not appear in visible semantics.
+    let leaked_a11y = t.semantics().iter().any(fn(s) { !s.hidden && s.label.contains(parked_word) })
+    assert_false(leaked_a11y, msg="parked tab \{parked_word} must not leak into visible semantics")
+    assert_false(
+      @sfbase.shown_handed(@sfdesk.side_tab_shown_at(side_tab_chat, tab)),
+      msg="ahead-read for \{tab} must be released on hot return",
+    )
+    assert_true(t.at_rest(), msg="at_rest after hot return to \{tab}")
+    assert_eq(
+      tree.due_count(),
+      t.subtree_timeline_count(tree.root()),
+      msg="0 parked timers after hot return to \{tab}",
+    )
+  }
+  // Closing a single passive tab drops its branch rather than parking it.
+  let (_, close_let_go) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "close", Some("jobs")) })
+  assert_true(close_let_go > 10, msg="closing active passive tab jobs must drop its body (let_go=\{close_let_go})")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 parked timers after closing jobs")
+  // Closing the entire panel disposes all remaining parked passive tabs.
+  t.set_a11y(false)
+  let (_, clear_let_go) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "clear", None) })
+  assert_true(clear_let_go > 50, msg="clearing panel must dispose all parked passive tabs (let_go=\{clear_let_go})")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 parked timers after clearing panel")
+}
+
+///|
+test "大屏: side_panel_node on_take preserves 140ms directional slide+fade animation without jump or residual timers" {
+  let side_tab_enter_ms = 140.0
+  let quarter_enter_ms = side_tab_enter_ms / 4.0
+  let (t, src) = side_kept_tester(mode="chat-tabs-side")
+  let tree = @ui.view_tree().unwrap()
+  // Cold-open s-c1 (index 0) and jobs (index 1) so both are in the pick_kept pool.
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") }) |> ignore
+  let hist_rest_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  let jobs_rest_x = t.find("后台任务").unwrap().0
+  assert_true(t.at_rest(), msg="settled on jobs before hot-return animation check")
+  // 1. Hot-return right-to-left: jobs (idx 1) -> s-c1 (idx 0), dir = -1.0 (starts shifted left by -8px at t=0).
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  t.draw()
+  assert_false(t.at_rest(), msg="on_take 140ms transition must be running at t=0")
+  let hist_t0_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
+  assert_true(
+    (hist_t0_x - (hist_rest_x - 8.0)).abs() < 1.0,
+    msg="leftward hot return must start at -8px on t=0 frame (t0=\{hist_t0_x}, rest=\{hist_rest_x})",
+  )
+  t.run_for(quarter_enter_ms)
+  let hist_mid_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
+  assert_true(
+    hist_mid_x < hist_rest_x - 0.5 && hist_mid_x > hist_t0_x,
+    msg="leftward hot return must advance smoothly from -8px toward rest (t0=\{hist_t0_x}, mid=\{hist_mid_x}, rest=\{hist_rest_x})",
+  )
+  t.run_for(@ui.move_most_ms)
+  let hist_end_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
+  assert_true((hist_end_x - hist_rest_x).abs() < 0.5, msg="landed at rest x (end=\{hist_end_x}, rest=\{hist_rest_x})")
+  let made_left = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
+  assert_true(made_left <= 6, msg="leftward hot return must not rebuild body (made=\{made_left})")
+  assert_true(t.at_rest(), msg="at rest after leftward 140ms transition")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after leftward transition")
+  // 2. Hot-return left-to-right: s-c1 (idx 0) -> jobs (idx 1), dir = +1.0 (starts shifted right by +8px at t=0).
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  t.draw()
+  assert_false(t.at_rest(), msg="on_take 140ms transition must be running at t=0 (rightward)")
+  let jobs_t0_x = t.find("后台任务").unwrap().0
+  assert_true(
+    (jobs_t0_x - (jobs_rest_x + 8.0)).abs() < 1.0,
+    msg="rightward hot return must start at +8px on t=0 frame (t0=\{jobs_t0_x}, rest=\{jobs_rest_x})",
+  )
+  t.run_for(quarter_enter_ms)
+  let jobs_mid_x = t.find("后台任务").unwrap().0
+  assert_true(
+    jobs_mid_x > jobs_rest_x + 0.5 && jobs_mid_x < jobs_t0_x,
+    msg="rightward hot return must advance smoothly from +8px toward rest (t0=\{jobs_t0_x}, mid=\{jobs_mid_x}, rest=\{jobs_rest_x})",
+  )
+  t.run_for(@ui.move_most_ms)
+  let jobs_end_x = t.find("后台任务").unwrap().0
+  assert_true((jobs_end_x - jobs_rest_x).abs() < 0.5, msg="landed at rest x (end=\{jobs_end_x}, rest=\{jobs_rest_x})")
+  let made_right = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
+  assert_true(made_right <= 6, msg="rightward hot return must not rebuild body (made=\{made_right})")
+  assert_true(t.at_rest(), msg="at rest after rightward 140ms transition")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after rightward transition")
+  // 3. Mid-transition interruption: switch away at t=35ms while 140ms way is still running -> on_rest cancels it immediately (0 parked timers).
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  t.draw()
+  t.run_for(quarter_enter_ms)
+  assert_false(t.at_rest(), msg="s-c1 transition still in flight at t=35ms before interruption")
+  let due_mid = tree.due_count()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  t.draw()
+  assert_false(t.at_rest(), msg="jobs transition still in flight right after interrupting s-c1")
+  let jobs_interrupt_t0_x = t.find("后台任务").unwrap().0
+  assert_true(
+    (jobs_interrupt_t0_x - (jobs_rest_x + 8.0)).abs() < 1.0,
+    msg="interrupted switch to jobs must start cleanly at +8px (t0=\{jobs_interrupt_t0_x}, rest=\{jobs_rest_x})",
+  )
+  // Tree::hand_at_end keeps one unowned hover-recheck entry for s-c1's original deadline until t0+140ms,
+  // so cancelling s-c1's NodeWay on park yields due_mid + 1 (not due_mid + 2).
+  assert_eq(
+    tree.due_count(),
+    due_mid + 1,
+    msg="interrupting s-c1 mid-transition must cancel its NodeWay on park (due=\{tree.due_count()}, due_mid=\{due_mid})",
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.at_rest(), msg="at rest after mid-transition interruption")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after interruption")
+}
+
+///|
+test "大屏: side_panel_node drops external-resource tabs (view_tab_file/service/screen/terminal) on leave and hands off tab_full cleanly" {
+  let (t, src) = side_kept_tester(mode="chat-tabs-side")
+  // 1. view_tab_file: open 说明.md beside, switch away -> dropped (not parked), revisit -> rebuilt, fullscreen handoff succeeds.
+  let md = @sffixture.preview_files().iter().find_first(fn(f) { f.0.name == "说明.md" }).unwrap().0
+  side_kept_step(t, fn() { @sfbase.open_preview("ws1/st1", "s-c1", md, beside=true) }) |> ignore
+  let view_tab = @sfdesk.side_now(src, side_tab_chat).1
+  assert_true(@sfbase.view_tab_file(view_tab) is Some(_), msg="view_tab_file active")
+  let (_, view_leave_lg) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  assert_true(view_leave_lg > 10, msg="leaving view_tab_file must drop it rather than parking (let_go=\{view_leave_lg})")
+  let (view_back_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, view_tab) })
+  assert_true(view_back_made > 10, msg="revisiting unparked view_tab_file must rebuild (made=\{view_back_made})")
+  // Fullscreen handoff via tab_full: held_beside must clear immediately without deadlock.
+  side_kept_step(t, fn() { @sfbase.tab_full_open(side_tab_chat, view_tab) }) |> ignore
+  assert_true(@sfbase.tab_full_is("ws1/st1", "s-c1", view_tab), msg="view_tab_file opened fullscreen")
+  assert_true(t.query(Button, label=@sf.t("web-main.preview.moveBeside")) is Some(_), msg="fullscreen bar mounted (no held_beside deadlock)")
+  side_kept_step(t, fn() { @sfbase.tab_full_beside() }) |> ignore
+  assert_true(@sfbase.tab_full.untracked() is None, msg="moved back beside cleanly")
+  // 2. service tab: switch away -> dropped, revisit -> rebuilt, fullscreen handoff succeeds.
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("service:j-web")) }) |> ignore
+  let (_, svc_leave_lg) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  assert_true(svc_leave_lg > 10, msg="leaving service tab must drop it (let_go=\{svc_leave_lg})")
+  let (svc_back_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "service:j-web") })
+  assert_true(svc_back_made > 10, msg="revisiting unparked service tab must rebuild (made=\{svc_back_made})")
+  side_kept_step(t, fn() { @sfbase.tab_full_open(side_tab_chat, "service:j-web") }) |> ignore
+  assert_true(t.query(Button, label=@sf.t("web-main.preview.moveBeside")) is Some(_), msg="service fullscreen mounted (no deadlock)")
+  side_kept_step(t, fn() { @sfbase.tab_full_beside() }) |> ignore
+  // 3. screen tab: switch away -> dropped, revisit -> rebuilt.
+  side_kept_step(t, fn() {
+    @sfdesk.station_page_beside(src, side_tab_chat, Screen({ station: "ws1/st1", screen: "display", title: "Display", until_gone: false })) |> ignore
+  }) |> ignore
+  let screen_tab = @sfdesk.side_now(src, side_tab_chat).1
+  let (_, scr_leave_lg) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  assert_true(scr_leave_lg > 10, msg="leaving screen tab must drop it (let_go=\{scr_leave_lg})")
+  let (scr_back_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, screen_tab) })
+  assert_true(scr_back_made > 10, msg="revisiting unparked screen tab must rebuild (made=\{scr_back_made})")
+  // 4. terminal tab: switch away -> dropped, revisit -> rebuilt.
+  side_kept_step(t, fn() {
+    @sfdesk.station_page_beside(src, side_tab_chat, Terminal({ station: "ws1/st1", terminal: "term-1", watch: false, cwd: "" })) |> ignore
+  }) |> ignore
+  let term_tab = @sfdesk.side_now(src, side_tab_chat).1
+  let (_, term_leave_lg) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  assert_true(term_leave_lg > 10, msg="leaving terminal tab must drop it (let_go=\{term_leave_lg})")
+  let (term_back_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, term_tab) })
+  assert_true(term_back_made > 10, msg="revisiting unparked terminal tab must rebuild (made=\{term_back_made})")
+  // 5. Closing a background parked passive tab (`files`) and reopening it must rebuild fresh (never reuse old parked branch).
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "close", Some("files")) }) |> ignore
+  let (files_reopen_made, _) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) })
+  assert_true(
+    files_reopen_made > 20,
+    msg="reopening a previously closed background-parked tab must rebuild fresh (made=\{files_reopen_made})",
+  )
+  // 6. Moving a parked passive `history` tab (`s-c1`) into a standalone window (`window_has_tab`) and returning it
+  // to the side panel must rebuild fresh rather than reusing the old parked branch.
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  let opened_win = @sfbase.open_window(SideTab({ chat: side_tab_chat, tab: "s-c1" }))
+  assert_true(opened_win, msg="s-c1 opened in standalone window")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.window_has_tab("ws1/st1", "s-c1", "s-c1"), msg="window_has_tab true for s-c1")
+  let (wid, _) = t.windows_beside()[0]
+  @sfbase.window_gives_back(wid)
+  t.close_window_beside(wid)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.window_has_tab("ws1/st1", "s-c1", "s-c1"), msg="window_has_tab cleared after return")
+  let (hist_reopen_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  assert_true(
+    hist_reopen_made > 20,
+    msg="returning parked s-c1 from standalone window must rebuild fresh (made=\{hist_reopen_made})",
+  )
+}
+
+///|
+test "大屏: parked passive live tabs preserve #7344 history continuity and never draw stale drive entries while awaiting Core" {
+  let live_ready : @signals.Signal[Bool] = @signals.signal(true)
+  let (t, src) = side_kept_tester(mode="chat-tabs-side", live_ready~)
+  // Populate both live tabs (history + files) while live_ready == true.
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") }) |> ignore
+  assert_true(t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is Some(_), msg="history initial value rendered")
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) }) |> ignore
+  assert_true(t.find("下载") is Some(_), msg="files initial value rendered")
+  // Park both history and files by switching to jobs.
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  assert_true(t.find("后台任务") is Some(_), msg="jobs active while history & files parked")
+  // Simulate live topics having released subscriptions on park and Core not yet answering on wake.
+  live_ready.set(false)
+  // Wake history: per #7344, history keeps its last steps without flashing skeleton while awaiting Core's first answer.
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("s-c1")) }) |> ignore
+  assert_true(
+    t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is Some(_),
+    msg="woken history tab preserves last steps without flashing skeleton (#7344)",
+  )
+  // Wake files (`drive` live topic): must NOT render stale folder entry text while live value is None.
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("files")) }) |> ignore
+  assert_true(
+    t.find("下载") is None,
+    msg="woken live files tab must not render stale text before Core answers",
+  )
+  // Once Core answers with fresh values, both render cleanly.
+  live_ready.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("下载") is Some(_), msg="files renders once Core answers")
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("s-c1")) }) |> ignore
+  assert_true(t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is Some(_), msg="history renders once Core answers")
+}

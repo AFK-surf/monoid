@@ -60,7 +60,9 @@ export type WireSocket = { reply: WireReply; send: SocketOut; tap?: (call: numbe
 /// reply's body, a socket) closes with the scope it was asked in.
 export interface StationWire {
   /// `wrote`: how much of the body has gone out, now and then as it goes (a wire that sends it whole says nothing).
-  request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<WireReply, CoreError, Scope.Scope>;
+  /// `guard`: optional capability predicate re-checked right before each transport send (and retry); returning
+  /// `false` aborts the send immediately with `auth_stale`.
+  request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void, guard?: () => boolean): Effect.Effect<WireReply, CoreError, Scope.Scope>;
   /// The way to the station requests go on now is taken for gone: it closes, and requests go on another way open to
   /// it that answers, where there is one (else all that is open to it closes).
   reset?(station: StationAddr): void;
@@ -138,25 +140,28 @@ export class HostWire implements StationWire {
   constructor(host: Host) {
     this.#host = host;
   }
-  request(_station: StationAddr, head: RequestHead, body: Uint8Array): Effect.Effect<WireReply, CoreError, Scope.Scope> {
-    const stream = head.path.startsWith("/admin/api/preview/") || head.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("text/event-stream"));
-    const request = {
-      url: `${this.#host.cloudOrigin()}${head.path}`,
-      body: body.length === 0 && head.method.toUpperCase() === "GET" ? null : body,
-      method: head.method,
-      headers: head.headers,
-    };
-    if (stream) return Effect.map(Effect.mapError(this.#host.fetchStream(request), asCoreError), (r) => ({ status: r.status, headers: r.headers, body: r.body, via: null }));
-    return Effect.map(Effect.mapError(this.#host.fetch(request), asCoreError), (r) => {
-      let done = false;
-      const body: Pull<Uint8Array> = {
-        take: Effect.sync(() => {
-          if (done) return null;
-          done = true;
-          return r.body;
-        }),
+  request(_station: StationAddr, head: RequestHead, body: Uint8Array, _wrote?: (sent: number) => void, guard?: () => boolean): Effect.Effect<WireReply, CoreError, Scope.Scope> {
+    return Effect.suspend(() => {
+      if (guard && !guard()) return Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
+      const stream = head.path.startsWith("/admin/api/preview/") || head.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("text/event-stream"));
+      const request = {
+        url: `${this.#host.cloudOrigin()}${head.path}`,
+        body: body.length === 0 && head.method.toUpperCase() === "GET" ? null : body,
+        method: head.method,
+        headers: head.headers,
       };
-      return { status: r.status, headers: r.headers, body, via: null };
+      if (stream) return Effect.map(Effect.mapError(this.#host.fetchStream(request), asCoreError), (r) => ({ status: r.status, headers: r.headers, body: r.body, via: null }));
+      return Effect.map(Effect.mapError(this.#host.fetch(request), asCoreError), (r) => {
+        let done = false;
+        const body: Pull<Uint8Array> = {
+          take: Effect.sync(() => {
+            if (done) return null;
+            done = true;
+            return r.body;
+          }),
+        };
+        return { status: r.status, headers: r.headers, body, via: null };
+      });
     });
   }
 }

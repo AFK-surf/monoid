@@ -747,3 +747,58 @@ test "beside while seen (`while_seen`): placed, then its anchor laid out nowhere
   t.frame(400.0, 300.0) |> ignore
   assert_eq(at(), None, msg="no piece of its anchor now: drawn nowhere, not where it last went")
 }
+
+///|
+test "beside skips scales marked moves_besides=false on anchor and ancestors while following structural scales" {
+  let press_s = @signals.signal(1.0)
+  let struct_s = @signals.signal(1.0)
+  let ids : Map[String, @view.NodeId] = Map([])
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(outer) {
+        outer
+        .over(Is(true))
+        .offset(Is((100.0, 100.0)))
+        .width(Is(Some(80.0)))
+        .height(Is(Some(40.0)))
+        .scale(By(fn() { struct_s.get() }), about=At(0.0, 0.0))
+        |> ignore
+        outer.box(fn(pill) {
+          pill
+          .width(Is(Some(80.0)))
+          .height(Is(Some(40.0)))
+          .scale(By(fn() { press_s.get() }), about=At(0.5, 0.5), moves_besides=false)
+          |> ignore
+          pill.box(fn(btn) {
+            ids["a"] = btn.id()
+            btn
+            .width(Is(Some(40.0)))
+            .height(Is(Some(40.0)))
+            .scale(By(fn() { 2.0 - press_s.get() }), about=At(0.5, 0.5), moves_besides=false)
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(b) {
+        ids["b"] = b.id()
+        b.width(Is(Some(60.0))).height(Is(Some(30.0))).beside(ids["a"], side=Bottom, along=Start, offset=6.0) |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(400.0, 300.0) |> ignore
+  let at = fn() { t.drawn_of(ids["b"]).map(fn(d) { (d.x, d.y) }) }
+  assert_eq(at(), Some((100.0, 146.0)), msg="resting placement beside anchor")
+  // Transient press scale on both pill ancestor (1.05x) and anchor button (0.95x) must not move popover.
+  t.event(10.0, fn() { press_s.set(1.05) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), Some((100.0, 146.0)), msg="moves_besides=false scales leave popover fixed")
+  // Structural scale on outer container (0.5x about top-left) is still followed.
+  t.event(20.0, fn() { struct_s.set(0.5) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), Some((100.0, 126.0)), msg="default moves_besides=true scale is still followed")
+}

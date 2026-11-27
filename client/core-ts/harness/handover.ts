@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { FakeCloud } from "./cloud.ts";
-import { start as startTs } from "../src/hosts/node.ts";
+import { ClientAuthTracker, start as startTs } from "../src/hosts/node.ts";
 import { apply } from "../src/delta.ts";
 
 type CoreApi = { connect(): number; receive(client: number, json: string): void; disconnect(client: number): void };
@@ -23,9 +23,14 @@ const ORIGIN = `http://127.0.0.1:${PORT}`;
 function ui(start: Start, dir: string) {
   const states = new Map<number, unknown>();
   const answers = new Map<number, unknown>();
+  const auth = new ClientAuthTracker();
   let last = Date.now();
   const core = start(dir, ORIGIN, (_c, json) => {
     const m = JSON.parse(json) as Record<string, unknown>;
+    if (auth.takeMessage(m)) {
+      last = Date.now();
+      return;
+    }
     const id = m.id as number;
     if ("value" in m) states.set(id, m.value);
     else if ("delta" in m) states.set(id, apply(states.get(id), m.delta as never));
@@ -34,7 +39,17 @@ function ui(start: Start, dir: string) {
   });
   const client = core.connect();
   return {
-    send: (m: unknown) => core.receive(client, JSON.stringify(m)),
+    send: (m: unknown) => {
+      let out = m;
+      if (typeof m === "object" && m !== null && typeof (m as Record<string, unknown>).call === "string") {
+        const rec = m as Record<string, unknown>;
+        if (rec.auth === undefined) {
+          const callAuth = auth.callAuth(rec.call as string, rec.params);
+          if (callAuth !== undefined) out = { ...rec, auth: callAuth };
+        }
+      }
+      core.receive(client, JSON.stringify(out));
+    },
     states,
     answers,
     async quiet() {

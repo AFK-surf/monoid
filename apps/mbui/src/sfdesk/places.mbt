@@ -17,10 +17,15 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
     // workspace listing it so before the rigs' topic first answers)
     Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None && !workspace_lists_rig(src, w, a) =>
       place_route_first(src, w, place)
-    Some(Profiles("")) =>
+    Some(ProfilesOverview | Profiles("")) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
         Some(_) as v if items(v, "items").length() == 0 => None
-        _ => Some(Route::Profiles(""))
+        _ => Some(Route::ProfilesOverview)
+      }
+    Some(ProfilesManage(_)) =>
+      match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
+        Some(_) as v if !flag(v, "manages") || items(v, "items").length() == 0 => place_route_first(src, w, place)
+        _ => Some(Route::ProfilesManage(""))
       }
     Some(Profile(_, _) as r) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
@@ -57,14 +62,16 @@ fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.R
         src,
         w.id,
         fn(was) {
-          let list = items(src.topic("profiles", { "scope": Json::string(w.id) }).get().value, "items")
+          let v = src.topic("profiles", { "scope": Json::string(w.id) }).get().value
+          let list = items(v, "items")
           if list.length() == 0 {
             return None
           }
           match was {
-            Some(Some(Profiles(""))) => Some(Route::Profiles(""))
+            Some(Some(ProfilesOverview | Profiles(""))) => Some(Route::ProfilesOverview)
+            Some(Some(ProfilesManage(_))) if flag(v, "manages") => Some(Route::ProfilesManage(""))
             Some(Some(r)) if list.iter().any(fn(e) { profile_route(Some(e)) == r }) => Some(r)
-            _ => Some(Route::Profiles(""))
+            _ => Some(Route::ProfilesOverview)
           }
         },
         same=fn(a, b) { a == b },
@@ -108,7 +115,8 @@ fn place_reads(src : Source, ws : String, place : String) -> @sfbase.OpenReads {
           return None
         }
         match place_pick.get(place_key(ws, place)) {
-          Some(Profiles("")) | None => Some(overview)
+          Some(ProfilesOverview) | Some(Profiles("")) | None => Some(overview)
+          Some(ProfilesManage(_)) if flag(read(list), "manages") => Some({ asks: [@sfbase.station_rows_ask(ws)], then: None })
           Some(r) if routes.contains(r) => Some(@sfbase.route_reads(src, ws, r))
           _ => Some(overview)
         }
@@ -216,8 +224,19 @@ fn stations_place_node(
 }
 
 ///|
-/// The profiles' place in node `v` (pane_made's, tape_made's): the profile picked in its list (place_route's), made once
-/// as its page is (another, another page), at the stack's root; none to pick yet, the first to add.
+/// What the profiles' place shows in the pane (`profiles_place_node`): Overview, Batch management, an account's page,
+/// or First (empty state to add the first profile).
+#derive(Eq)
+priv enum ProfilesShown {
+  Overview
+  Manage(Int)
+  Account(String, String)
+  First
+}
+
+///|
+/// The profiles' place in node `v` (pane_made's, tape_made's): the page picked in its sidebar (place_route's), made
+/// once as its page is, at the stack's root; none to pick yet, the first to add.
 fn profiles_place_node(
   v : @view.View,
   src : Source,
@@ -229,15 +248,43 @@ fn profiles_place_node(
   said? : (@sf.PageSaid) -> Unit,
   tips? : @sf.TipLayer,
 ) -> Unit {
-  let picked = fn() {
+  // Epoch bumped on role demotion so re-granting admin never wakes a pre-demotion parked Manage pane.
+  let manage_gen : @signals.Signal[Int] = @signals.signal(0)
+  // Role demotion in wide mode: clear place_pick and bump manage_gen so re-granting never resurrects old picks.
+  let manages_now = fn() {
+    match @sfbase.workspace_in_view(src).0 {
+      Some(w) =>
+        match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
+          Some(_) as pv => flag(pv, "manages")
+          None => true
+        }
+      None => false
+    }
+  }
+  v.reacts(manages_now, fn(ok) {
+    if !ok {
+      manage_gen.set(manage_gen.untracked() + 1)
+      match @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) {
+        Some(w) => {
+          let k = place_key(w.id, "profiles")
+          if place_pick.get(k) is Some(ProfilesManage(_)) {
+            place_pick.remove(k)
+          }
+        }
+        None => ()
+      }
+    }
+  })
+  let picked = fn() -> ProfilesShown {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) =>
         match place_route(src, w, "profiles") {
-          Some(Profiles("")) => Some(("", ""))
-          Some(Profile(a, id)) => Some((a, id))
-          _ => None
+          Some(ProfilesOverview) | Some(Profiles("")) => Overview
+          Some(ProfilesManage(_)) => Manage(manage_gen.get())
+          Some(Profile(a, id)) => Account(a, id)
+          _ => First
         }
-      None => None
+      None => First
     }
   }
   v.pick_kept(
@@ -245,7 +292,7 @@ fn profiles_place_node(
     fn(p, at) {
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       match at {
-        Some(("", "")) => {
+        Overview => {
           @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
           @sfpages.profiles_overview_node(
             p,
@@ -267,25 +314,46 @@ fn profiles_place_node(
             tips?,
           )
         }
-        Some((a, id)) => {
+        Manage(_) =>
+          @sfpages.profiles_manage_node(
+            p,
+            src,
+            core,
+            here,
+            "",
+            on_back=core.pop,
+            frame~,
+            said?,
+            width~,
+            tips?,
+            in_place=true,
+            active=fn() { picked() is Manage(_) },
+          )
+        Account(a, id) => {
           // Release any ahead-read handed over by show_answered after the frame draws
           // (idempotent with profile_node's own shown_read).
           @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
           @sfpages.profile_node(p, core, here, a, id, on_back=core.pop, frame~, said?, width~, tips?, stint~)
         }
-        None => @sfpages.profiles_first_node(p, core, here, on_back=core.pop, frame~, said?, width~, tips?)
+        First => @sfpages.profiles_first_node(p, core, here, on_back=core.pop, frame~, said?, width~, tips?)
       }
     },
     at_once=true,
     keeps_max=4,
-    keep_if=fn(k) { k is Some(_) },
-    pin=fn(k) { k == Some(("", "")) },
+    keep_if=fn(k) {
+      match k {
+        Overview | Account(_, _) => true
+        Manage(g) => @signals.untracked(manages_now) && g == manage_gen.untracked()
+        First => false
+      }
+    },
+    pin=fn(k) { k == Overview },
     on_take=fn(_, k) {
       match k {
         // Overview shares `profile_shown_at("", "")` with `places_side_node.mbt` so any overview ahead-read is released too.
-        Some(("", "")) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
-        Some((a, id)) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
-        None => ()
+        Overview => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
+        Account(a, id) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
+        Manage(_) | First => ()
       }
     },
   )

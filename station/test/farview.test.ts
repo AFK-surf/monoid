@@ -4,6 +4,7 @@
 // chat's tabs (one profile, a page's new tab opened beside it, taken up by the next station process, gone with the
 // chat) over a made-up host program that listens and says what it was started with. Farview's own host is not run.
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -561,4 +562,44 @@ test("a frame port's openTab says a page's new tab and what links it to its open
   assert.deepEqual(openTabOf({ openTab: "https://a.test/", window: "", opener: 3 }), { url: "https://a.test/", meta: {} });
   assert.equal(openTabOf({ openTab: "" }), null);
   assert.equal(openTabOf({ page: {} }), null);
+});
+
+test("FrameLink joins split lines and binary pictures once without quadratic Buffer.concat copies", async (t) => {
+  const sock = Object.assign(new EventEmitter(), { write() {}, destroy() {} });
+  const link = new FrameLink(0, sock as unknown as Socket);
+  t.after(() => link.close());
+  const heard: any[] = [];
+  link.heard = (m) => heard.push(m);
+
+  const picture = Buffer.alloc(40_000);
+  for (let i = 0; i < picture.length; i += 4) picture.writeUInt32BE(i, i);
+  const headLine = Buffer.from(`${JSON.stringify({ frame: { seq: 7, width: 100, height: 100, format: "jpeg", bytes: picture.length } })}\n`);
+  const emptyLine = Buffer.from(`${JSON.stringify({ frame: { seq: 8, width: 1, height: 1, format: "jpeg", bytes: 0 } })}\n`);
+  const tailEvent = Buffer.from(`${JSON.stringify({ changed: 9 })}\n`);
+  const totalBytes = headLine.length + picture.length + emptyLine.length + tailEvent.length;
+
+  const p1 = link.picture();
+  const p2 = link.picture();
+  const halfLine = Math.floor(headLine.length / 2);
+  const finalTail = Buffer.concat([picture.subarray(32_768), emptyLine, tailEvent]);
+
+  const joins = t.mock.method(Buffer, "concat");
+  try {
+    sock.emit("data", headLine.subarray(0, halfLine));
+    sock.emit("data", headLine.subarray(halfLine));
+    for (let at = 0; at < 32_768; at += 8192) sock.emit("data", picture.subarray(at, at + 8192));
+    sock.emit("data", finalTail);
+  } finally {
+    joins.mock.restore();
+  }
+  const joined = joins.mock.calls.reduce((sum, call) => sum + (call.result?.length ?? 0), 0);
+  assert.ok(joined <= totalBytes, `joined ${joined} bytes for ${totalBytes} bytes of frame data`);
+
+  const got1 = (await p1)!;
+  assert.equal(got1.header.seq, 7);
+  assert.deepEqual(got1.data, picture);
+  const got2 = (await p2)!;
+  assert.equal(got2.header.seq, 8);
+  assert.equal(got2.data.length, 0);
+  assert.deepEqual(heard, [{ changed: 9 }]);
 });

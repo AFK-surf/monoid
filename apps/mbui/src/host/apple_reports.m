@@ -403,11 +403,17 @@ __attribute__((unused)) static NSDictionary *sf_hottest_js(NSData *traceData) {
   };
 }
 
+static NSDictionary *sf_native_mem_props(NSDictionary *before, NSDictionary *after, NSString **headline);
+
 /// Builds a PostHog `$exception` event for a macOS `MemoryRunaway` detection, aligned with Android's `MemoryWatch`.
-__attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
+/// `nativeBefore` / `nativeAfter` are `sf_native_mem_snapshot`'s at the window's two ends: with `nativeAfter`, the
+/// event carries `native_mem` (where the footprint is, in MB) and its title names the native part that grew most;
+/// without it the event is as it was before they were taken.
+__attribute__((unused)) static NSDictionary *sf_memory_runaway_event_native(
     uint64_t footprintBeforeBytes, uint64_t footprintAfterBytes, int64_t windowMs,
     NSDictionary *statsBefore, NSDictionary *statsAfter, NSDictionary *jsHot,
-    NSString *account, NSDictionary *here, double atMs, NSString *uuid) {
+    NSString *account, NSDictionary *here, double atMs, NSString *uuid,
+    NSDictionary *nativeBefore, NSDictionary *nativeAfter) {
   if (!account.length || !uuid.length) return nil;
   int64_t ms = windowMs > 0 ? windowMs : 1;
   int64_t footprintMb = (int64_t)(footprintAfterBytes / (1024ULL * 1024ULL));
@@ -474,6 +480,11 @@ __attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
   if (statsAfter[@"handles"] && statsAfter[@"handles"] != NSNull.null) p[@"shell_handles"] = statsAfter[@"handles"];
   if (statsAfter[@"sqls"] && statsAfter[@"sqls"] != NSNull.null) p[@"shell_sqls"] = statsAfter[@"sqls"];
   if (jsHot) p[@"js"] = jsHot;
+  if (nativeAfter) {
+    NSString *headline = nil;
+    p[@"native_mem"] = sf_native_mem_props(nativeBefore, nativeAfter, &headline);
+    if (headline) value = [value stringByAppendingFormat:@"; native: %@", headline];
+  }
   p[@"$exception_level"] = @"error";
   p[@"$exception_list"] = @[ @{
     @"type" : @"MemoryRunaway",
@@ -488,6 +499,254 @@ __attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
     @"properties" : p,
   };
 }
+
+__attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
+    uint64_t footprintBeforeBytes, uint64_t footprintAfterBytes, int64_t windowMs,
+    NSDictionary *statsBefore, NSDictionary *statsAfter, NSDictionary *jsHot,
+    NSString *account, NSDictionary *here, double atMs, NSString *uuid) {
+  return sf_memory_runaway_event_native(footprintBeforeBytes, footprintAfterBytes, windowMs, statsBefore, statsAfter,
+                                        jsHot, account, here, atMs, uuid, nil, nil);
+}
+
+static const int64_t SF_MIB = 1024LL * 1024LL;
+
+/// A snapshot's count of bytes (or blocks) under `key`, and whether it has one.
+static BOOL sf_snap_u64(NSDictionary *snap, NSString *key, uint64_t *out) {
+  id v = snap[key];
+  if (![v isKindOfClass:NSNumber.class]) return NO;
+  *out = [v unsignedLongLongValue];
+  return YES;
+}
+
+/// The names in `mb` with the most MB first (ties by name), at most `most`, each of at least 1 MB.
+static NSDictionary<NSString *, NSNumber *> *sf_top_mb(NSDictionary<NSString *, NSNumber *> *mb, NSUInteger most) {
+  NSArray<NSString *> *keys = [mb.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [mb[b] compare:mb[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableDictionary<NSString *, NSNumber *> *top = [NSMutableDictionary dictionary];
+  for (NSString *k in keys) {
+    if (top.count >= most || [mb[k] longLongValue] < 1) break;
+    top[k] = mb[k];
+  }
+  return top;
+}
+
+/// The name of the most of `mb` (ties by name), nil if it is empty.
+static NSString *sf_top_name(NSDictionary<NSString *, NSNumber *> *mb) {
+  NSString *best = nil;
+  for (NSString *k in mb) {
+    if (!best) {
+      best = k;
+      continue;
+    }
+    NSComparisonResult c = [mb[k] compare:mb[best]];
+    if (c == NSOrderedDescending || (c == NSOrderedSame && [k compare:best] == NSOrderedAscending)) best = k;
+  }
+  return best;
+}
+
+/// `native_mem` of a `MemoryRunaway` event: the window's end's native memory in MB (what the footprint is made of,
+/// malloc's heap, Metal's, the dirty memory of each kind of VM region by its tag) and, with its start's, what grew.
+/// `headline` is told the region kind that grew most (else the largest), as the event's title ends with it.
+static NSDictionary *sf_native_mem_props(NSDictionary *before, NSDictionary *after, NSString **headline) {
+  NSMutableDictionary *n = [NSMutableDictionary dictionary];
+  uint64_t a = 0, b = 0;
+  if (sf_snap_u64(before, @"phys_footprint", &b)) n[@"footprint_before_mb"] = @((int64_t)(b / SF_MIB));
+  if (sf_snap_u64(after, @"phys_footprint", &a)) n[@"footprint_after_mb"] = @((int64_t)(a / SF_MIB));
+  NSArray<NSArray<NSString *> *> *plain = @[
+    @[ @"internal", @"internal_mb" ], @[ @"compressed", @"compressed_mb" ], @[ @"external", @"external_mb" ],
+    @[ @"reusable", @"reusable_mb" ], @[ @"resident", @"resident_mb" ], @[ @"malloc_allocated", @"malloc_allocated_mb" ],
+  ];
+  for (NSArray<NSString *> *kv in plain)
+    if (sf_snap_u64(after, kv[0], &a)) n[kv[1]] = @((int64_t)(a / SF_MIB));
+  if (sf_snap_u64(after, @"malloc_blocks", &a)) n[@"malloc_blocks"] = @((int64_t)a);
+  if (sf_snap_u64(after, @"malloc_in_use", &a)) {
+    n[@"malloc_in_use_mb"] = @((int64_t)(a / SF_MIB));
+    if (sf_snap_u64(before, @"malloc_in_use", &b)) n[@"malloc_delta_mb"] = @(((int64_t)a - (int64_t)b) / SF_MIB);
+  }
+  if (sf_snap_u64(after, @"metal_allocated", &a)) {
+    n[@"metal_mb"] = @((int64_t)(a / SF_MIB));
+    if (sf_snap_u64(before, @"metal_allocated", &b)) n[@"metal_delta_mb"] = @(((int64_t)a - (int64_t)b) / SF_MIB);
+  }
+  NSDictionary *tagsAfter = sf_dict(after[@"vm_tags_bytes"]);
+  NSDictionary *tagsBefore = sf_dict(before[@"vm_tags_bytes"]);
+  NSMutableDictionary<NSString *, NSNumber *> *afterMb = [NSMutableDictionary dictionary];
+  NSMutableDictionary<NSString *, NSNumber *> *deltaMb = [NSMutableDictionary dictionary];
+  for (id k in tagsAfter) {
+    if (!sf_string(k) || !sf_snap_u64(tagsAfter, k, &a)) continue;
+    afterMb[k] = @((int64_t)(a / SF_MIB));
+    if (!tagsBefore) continue;
+    b = 0;
+    sf_snap_u64(tagsBefore, k, &b);
+    if (a > b) deltaMb[k] = @((int64_t)((a - b) / SF_MIB));
+  }
+  NSDictionary<NSString *, NSNumber *> *topMb = sf_top_mb(afterMb, 12);
+  n[@"vm_tags_mb"] = topMb;
+  NSDictionary<NSString *, NSNumber *> *topDelta = nil;
+  if (tagsBefore) n[@"vm_tags_delta_mb"] = topDelta = sf_top_mb(deltaMb, 8);
+  NSString *grew = sf_top_name(topDelta);
+  NSString *largest = sf_top_name(topMb);
+  if (grew)
+    *headline = [NSString stringWithFormat:@"%@ %@MB (+%@MB)", grew, afterMb[grew], topDelta[grew]];
+  else if (largest)
+    *headline = [NSString stringWithFormat:@"%@ %@MB", largest, topMb[largest]];
+  return n;
+}
+
+#if !TARGET_OS_IPHONE
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_statistics.h>
+#include <malloc/malloc.h>
+
+/// What Metal has allocated on the app's drawing device, set by the app's host (sf_mem_watch_start) where it has one:
+/// the test has none.
+static BOOL (*sf_metal_allocated)(uint64_t *out);
+
+/// A Mach VM region's tag (`user_tag`: who mapped it) by its name; tags with none named `tag_<N>`. Tag 0 is what
+/// nobody tagged: plain `mmap` (Hermes' heap, Rust's large allocations) and mapped files.
+static NSString *sf_vm_tag_name(uint32_t tag) {
+  switch (tag) {
+    case 0: return @"anon_0";
+    case VM_MEMORY_MALLOC: return @"malloc";
+    case VM_MEMORY_MALLOC_SMALL: return @"malloc_small";
+    case VM_MEMORY_MALLOC_LARGE: return @"malloc_large";
+    case VM_MEMORY_MALLOC_HUGE: return @"malloc_huge";
+    case VM_MEMORY_REALLOC: return @"realloc";
+    case VM_MEMORY_MALLOC_TINY: return @"malloc_tiny";
+    case VM_MEMORY_MALLOC_LARGE_REUSABLE: return @"malloc_large_reusable";
+    case VM_MEMORY_MALLOC_LARGE_REUSED: return @"malloc_large_reused";
+#ifdef VM_MEMORY_MALLOC_NANO
+    case VM_MEMORY_MALLOC_NANO: return @"malloc_nano";
+#endif
+#ifdef VM_MEMORY_MALLOC_MEDIUM
+    case VM_MEMORY_MALLOC_MEDIUM: return @"malloc_medium";
+#endif
+#ifdef VM_MEMORY_MALLOC_PROB_GUARD
+    case VM_MEMORY_MALLOC_PROB_GUARD: return @"malloc_prob_guard";
+#endif
+    case VM_MEMORY_MACH_MSG: return @"mach_msg";
+    case VM_MEMORY_IOKIT: return @"iokit";
+    case VM_MEMORY_STACK: return @"stack";
+    case VM_MEMORY_GUARD: return @"guard";
+    case VM_MEMORY_DYLIB: return @"dylib";
+    case VM_MEMORY_APPKIT: return @"appkit";
+    case VM_MEMORY_FOUNDATION: return @"foundation";
+    case VM_MEMORY_COREGRAPHICS: return @"coregraphics";
+    case VM_MEMORY_LAYERKIT: return @"layerkit";
+    case VM_MEMORY_CGIMAGE: return @"cgimage";
+#ifdef VM_MEMORY_COREGRAPHICS_DATA
+    case VM_MEMORY_COREGRAPHICS_DATA: return @"coregraphics_data";
+#endif
+#ifdef VM_MEMORY_COREGRAPHICS_SHARED
+    case VM_MEMORY_COREGRAPHICS_SHARED: return @"coregraphics_shared";
+#endif
+#ifdef VM_MEMORY_COREGRAPHICS_FRAMEBUFFERS
+    case VM_MEMORY_COREGRAPHICS_FRAMEBUFFERS: return @"coregraphics_framebuffers";
+#endif
+#ifdef VM_MEMORY_COREGRAPHICS_BACKINGSTORES
+    case VM_MEMORY_COREGRAPHICS_BACKINGSTORES: return @"coregraphics_backingstores";
+#endif
+#ifdef VM_MEMORY_COREGRAPHICS_XALLOC
+    case VM_MEMORY_COREGRAPHICS_XALLOC: return @"coregraphics_xalloc";
+#endif
+    case VM_MEMORY_DYLD: return @"dyld";
+    case VM_MEMORY_DYLD_MALLOC: return @"dyld_malloc";
+    case VM_MEMORY_SQLITE: return @"sqlite";
+    case VM_MEMORY_JAVASCRIPT_CORE: return @"jsc";
+    case VM_MEMORY_JAVASCRIPT_JIT_EXECUTABLE_ALLOCATOR: return @"jsc_jit";
+    case VM_MEMORY_COREIMAGE: return @"coreimage";
+    case VM_MEMORY_IMAGEIO: return @"imageio";
+#ifdef VM_MEMORY_OS_ALLOC_ONCE
+    case VM_MEMORY_OS_ALLOC_ONCE: return @"os_alloc_once";
+#endif
+#ifdef VM_MEMORY_LIBDISPATCH
+    case VM_MEMORY_LIBDISPATCH: return @"libdispatch";
+#endif
+#ifdef VM_MEMORY_ACCELERATE
+    case VM_MEMORY_ACCELERATE: return @"accelerate";
+#endif
+#ifdef VM_MEMORY_COREUI
+    case VM_MEMORY_COREUI: return @"coreui";
+#endif
+#ifdef VM_MEMORY_IOSURFACE
+    case VM_MEMORY_IOSURFACE: return @"iosurface";
+#endif
+#ifdef VM_MEMORY_LIBNETWORK
+    case VM_MEMORY_LIBNETWORK: return @"libnetwork";
+#endif
+#ifdef VM_MEMORY_AUDIO
+    case VM_MEMORY_AUDIO: return @"audio";
+#endif
+#ifdef VM_MEMORY_IOACCELERATOR
+    case VM_MEMORY_IOACCELERATOR: return @"ioaccelerator";
+#endif
+#ifdef VM_MEMORY_COREUI_CACHED_IMAGE_DATA
+    case VM_MEMORY_COREUI_CACHED_IMAGE_DATA: return @"coreui_image_data";
+#endif
+#ifdef VM_MEMORY_COLORSYNC
+    case VM_MEMORY_COLORSYNC: return @"colorsync";
+#endif
+    default: return [NSString stringWithFormat:@"tag_%u", tag];
+  }
+}
+
+/// Upper bound on the VM regions one snapshot walks, against a map that changes under it without end.
+static const int SF_VM_REGIONS_MOST = 100000;
+
+/// This process's native memory now, in bytes: the task's VM counts (`phys_footprint` is what macOS kills by),
+/// malloc's zones, Metal's device (where the host has one), and each VM region tag's dirty and swapped-out
+/// (compressed) pages, which is what makes up the footprint. Walks every region: taken only past SF_MEM_LIMIT.
+__attribute__((unused)) static NSDictionary *sf_native_mem_snapshot(void) {
+  NSMutableDictionary *snap = [NSMutableDictionary dictionary];
+  task_vm_info_data_t vm;
+  mach_msg_type_number_t vmCount = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &vmCount) == KERN_SUCCESS) {
+    snap[@"phys_footprint"] = @((uint64_t)vm.phys_footprint);
+    snap[@"internal"] = @((uint64_t)vm.internal);
+    snap[@"compressed"] = @((uint64_t)vm.compressed);
+    snap[@"external"] = @((uint64_t)vm.external);
+    snap[@"reusable"] = @((uint64_t)vm.reusable);
+    snap[@"resident"] = @((uint64_t)vm.resident_size);
+  }
+  malloc_statistics_t st = {0};
+  malloc_zone_statistics(NULL, &st);
+  snap[@"malloc_in_use"] = @((uint64_t)st.size_in_use);
+  snap[@"malloc_allocated"] = @((uint64_t)st.size_allocated);
+  snap[@"malloc_blocks"] = @((uint64_t)st.blocks_in_use);
+  uint64_t metal = 0;
+  if (sf_metal_allocated && sf_metal_allocated(&metal)) snap[@"metal_allocated"] = @(metal);
+
+  uint64_t tagDirty[256] = {0};
+  mach_vm_address_t addr = 0;
+  natural_t depth = 0;
+  for (int i = 0; i < SF_VM_REGIONS_MOST; i++) {
+    mach_vm_size_t size = 0;
+    vm_region_submap_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    if (mach_vm_region_recurse(mach_task_self(), &addr, &size, &depth, (vm_region_recurse_info_t)&info, &count) !=
+        KERN_SUCCESS)
+      break;
+    if (info.is_submap) {
+      depth++;
+      continue;
+    }
+    tagDirty[info.user_tag & 0xff] +=
+        ((uint64_t)info.pages_dirtied + (uint64_t)info.pages_swapped_out) * (uint64_t)vm_page_size;
+    if (size == 0 || addr > UINT64_MAX - size) break;
+    addr += size;
+  }
+  NSMutableDictionary<NSString *, NSNumber *> *tags = [NSMutableDictionary dictionary];
+  for (uint32_t t = 0; t < 256; t++) {
+    if (!tagDirty[t]) continue;
+    NSString *name = sf_vm_tag_name(t);
+    tags[name] = @([tags[name] unsignedLongLongValue] + tagDirty[t]);
+  }
+  snap[@"vm_tags_bytes"] = tags;
+  return snap;
+}
+#endif
 
 /// The theme and last active workspace kept where mbui's iOS host reads them on launch (libs/ui's ios_app.m):
 /// "light", "dark" or "system" for `mbui.theme_pref`, workspace id (or empty on sign-out) for `mbui.last_workspace`.
@@ -893,9 +1152,20 @@ static NSDictionary *sf_shell_stats_dict(void) {
   return sf_dict([NSJSONSerialization JSONObjectWithData:d options:0 error:nil]);
 }
 
+/// What Metal has allocated on the drawing device (libs/ui's apple_render.m, through apple.h as core_engine.m includes
+/// it); none on a Mac without one.
+static BOOL sf_render_metal_allocated(uint64_t *out) {
+  id<MTLDevice> dev = mb_render_device();
+  if (!dev) return NO;
+  *out = (uint64_t)dev.currentAllocatedSize;
+  return YES;
+}
+
 /// Checks `phys_footprint` every 30 s on a background serial queue; once >= 1.5 GiB, cancels itself and (if reporting
-/// is enabled) samples shell stats and Hermes JS for 15 s before sending a `MemoryRunaway` `$exception` to PostHog.
+/// is enabled) samples shell stats, Hermes JS and native memory (sf_native_mem_snapshot, at both ends) for 15 s before
+/// sending a `MemoryRunaway` `$exception` to PostHog.
 static void sf_mem_watch_start(void) {
+  sf_metal_allocated = sf_render_metal_allocated;
   dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_BACKGROUND, 0);
   mem_watch_queue = dispatch_queue_create("stillfail-memory", attr);
   mem_watch_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mem_watch_queue);
@@ -912,6 +1182,7 @@ static void sf_mem_watch_start(void) {
     state_change(^(NSMutableDictionary *state) {
       state[@"memory_runaway_pending"] = @YES;
     });
+    NSDictionary *nativeBefore = sf_native_mem_snapshot();
     NSDictionary *statsBefore = sf_shell_stats_dict();
     int64_t t0 = sf_monotonic_ms();
     NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -922,6 +1193,7 @@ static void sf_mem_watch_start(void) {
     int64_t ms = sf_monotonic_ms() - t0;
     if (ms < 1) ms = 1;
     uint64_t fpAfter = sf_phys_footprint();
+    NSDictionary *nativeAfter = sf_native_mem_snapshot();
     NSDictionary *statsAfter = sf_shell_stats_dict();
     NSDictionary *jsHot = nil;
     if (sampled) {
@@ -932,8 +1204,10 @@ static void sf_mem_watch_start(void) {
     double at = floor(NSDate.date.timeIntervalSince1970 * 1000);
     dispatch_async(reports_queue, ^{
       NSString *account = signed_in ?: sf_string(state_read()[@"account"]) ?: sf_anonymous;
-      NSDictionary *event = sf_memory_runaway_event(fpBefore, fpAfter, ms, statsBefore, statsAfter, jsHot,
-                                                    account, sf_here(), at, NSUUID.UUID.UUIDString.lowercaseString);
+      NSDictionary *event = sf_memory_runaway_event_native(fpBefore, fpAfter, ms, statsBefore, statsAfter, jsHot,
+                                                           account, sf_here(), at,
+                                                           NSUUID.UUID.UUIDString.lowercaseString, nativeBefore,
+                                                           nativeAfter);
       if (event) sf_send(@[ event ]);
     });
   });

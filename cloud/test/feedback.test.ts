@@ -882,3 +882,275 @@ test("concurrent POST /v1/feedback/fixed coalesces changelog.json read via singl
     await h.close();
   }
 });
+
+test("GET /v1/changelog returns ETag, honors If-None-Match (exact, weak, list, *), and rotates after /v1/releases/out", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1360, commit: "e", at: 5, text: ["etag v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1360 }));
+
+    const first = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(first.status, 200);
+    const etag1 = first.headers.get("etag");
+    assert.ok(etag1 && /^"[0-9a-f]{16}"$/.test(etag1), `expected strong 16-hex ETag, got ${etag1}`);
+    assert.equal(((await first.json()) as any).entries[0].text[0], "etag v1");
+
+    // Matching If-None-Match variants return 304 with empty body.
+    for (const headerValue of [etag1, `W/${etag1}`, `"0000000000000000", W/${etag1}`, "*"]) {
+      const res = await h.fetch("/v1/changelog", {
+        headers: { "x-stillfail-channel": "beta", "if-none-match": headerValue },
+      });
+      assert.equal(res.status, 304, `expected 304 for If-None-Match: ${headerValue}`);
+      assert.equal(res.headers.get("etag"), etag1);
+      assert.equal(res.headers.get("cache-control"), "public, max-age=300");
+      assert.equal(res.headers.get("referrer-policy"), "no-referrer");
+      assert.equal(await res.text(), "");
+    }
+
+    // Non-matching If-None-Match returns 200 with full body.
+    const mismatch = await h.fetch("/v1/changelog", {
+      headers: { "x-stillfail-channel": "beta", "if-none-match": '"0000000000000000"' },
+    });
+    assert.equal(mismatch.status, 200);
+    assert.equal(mismatch.headers.get("etag"), etag1);
+    assert.equal(((await mismatch.json()) as any).entries[0].text[0], "etag v1");
+
+    // Update R2 and invalidate via /v1/releases/out; old ETag must return 200 with new ETag and new body.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1361, commit: "f", at: 6, text: ["etag v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1361 }));
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    assert.equal((await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } })).status, 200);
+
+    const after = await h.fetch("/v1/changelog", {
+      headers: { "x-stillfail-channel": "beta", "if-none-match": etag1 },
+    });
+    assert.equal(after.status, 200);
+    const etag2 = after.headers.get("etag");
+    assert.ok(etag2 && /^"[0-9a-f]{16}"$/.test(etag2) && etag2 !== etag1, `expected new ETag, got ${etag2}`);
+    assert.equal(((await after.json()) as any).entries[0].text[0], "etag v2");
+  } finally {
+    await h.close();
+  }
+});
+
+test("edge isolate cache avoids re-transmitting changelog body over DO RPC on hot hits and updates after /v1/releases/out", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1370, commit: "g", at: 7, text: ["edge v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1370 }));
+
+    // Reset stats and warm both DO and edge isolate cache.
+    await h.fetch("/__test/changelog-stats");
+    const warm = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(warm.status, 200);
+    const warmBody = (await warm.json()) as any;
+    assert.equal(warmBody.entries[0].text[0], "edge v1");
+    assert.deepEqual(await (await h.fetch("/__test/changelog-stats")).json(), { calls: 1, notModified: 0, full: 1 });
+
+    // Hot hit without client If-None-Match: edge sends its cached ETag, DO replies notModified: true, client still receives 200 full body with 0 R2 gets.
+    await h.failBucket({ get: 12 });
+    const hot = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(hot.status, 200);
+    assert.equal(hot.headers.get("etag"), warm.headers.get("etag"));
+    assert.deepEqual(await hot.json(), warmBody);
+    assert.deepEqual(await h.failBucket(), []);
+    assert.deepEqual(await (await h.fetch("/__test/changelog-stats")).json(), { calls: 1, notModified: 1, full: 0 });
+
+    // After /v1/releases/out invalidation, DO returns full new body and edge isolate immediately serves new content.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1371, commit: "h", at: 8, text: ["edge v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1371 }));
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    assert.equal((await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } })).status, 200);
+
+    const refreshed = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(refreshed.status, 200);
+    assert.notEqual(refreshed.headers.get("etag"), warm.headers.get("etag"));
+    assert.equal(((await refreshed.json()) as any).entries[0].text[0], "edge v2");
+    assert.deepEqual(await (await h.fetch("/__test/changelog-stats")).json(), { calls: 1, notModified: 0, full: 1 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("concurrent cold GET /v1/changelog with and without matching If-None-Match coalesces to 1 R2 round and serves 304 + 200", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const entries = [{ version: 1380, commit: "i", at: 9, text: ["并发 ETag"], fixes: [], parts: ["web"] }];
+    const expectedBody = JSON.stringify({
+      entries,
+      released: { station: null, android: null, macos: null, windows: null, desktop: null, web: 1380 },
+    });
+    const expectedEtag = `"${createHash("sha256").update(expectedBody).digest("hex").slice(0, 16)}"`;
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify(entries));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1380 }));
+
+    await h.failBucket({});
+    const [condResp, fullResp] = await Promise.all([
+      h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta", "if-none-match": expectedEtag } }),
+      h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } }),
+    ]);
+
+    assert.equal(condResp.status, 304);
+    assert.equal(condResp.headers.get("etag"), expectedEtag);
+    assert.equal(await condResp.text(), "");
+
+    assert.equal(fullResp.status, 200);
+    assert.equal(fullResp.headers.get("etag"), expectedEtag);
+    assert.equal(await fullResp.text(), expectedBody);
+
+    const calls = await h.failBucket();
+    assert.equal(calls.length, 6, `expected 1 round of 6 R2 gets, got ${calls.length}: ${calls.join(", ")}`);
+  } finally {
+    await h.close();
+  }
+});
+
+test("GET /v1/changelog refreshes proactively in background after 75% TTL while preserving hard expiry", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1390, commit: "j", at: 10, text: ["swr v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1390 }));
+
+    // t=0: warm cache (expiresAt=30s, refreshAt=22.5s).
+    const at0 = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(at0.status, 200);
+    assert.equal(((await at0.json()) as any).entries[0].text[0], "swr v1");
+
+    // Update R2 to v2 and advance to t=23 (> 75% of 30s, < 30s hard expiry).
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1391, commit: "k", at: 11, text: ["swr v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1391 }));
+    assert.equal((await later(h, 23)).status, 200);
+
+    // Request at t=23 immediately returns cached v1 and kicks off background refresh.
+    const at23 = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(at23.status, 200);
+    assert.equal(((await at23.json()) as any).entries[0].text[0], "swr v1");
+
+    // Wait deterministically for background refresh to complete.
+    assert.equal((await h.fetch("/__test/status-settled")).status, 200);
+
+    // Next request (still at t=23) reads refreshed v2 from cache with 0 R2 gets.
+    await h.failBucket({ get: 12 });
+    const afterBg = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(afterBg.status, 200);
+    assert.notEqual(afterBg.headers.get("etag"), at0.headers.get("etag"));
+    assert.equal(((await afterBg.json()) as any).entries[0].text[0], "swr v2");
+    assert.deepEqual(await h.failBucket(), []);
+
+    // Past 100% hard expiry (advance 31s -> t=54 > 53s), synchronously refreshes to v3.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1392, commit: "l", at: 12, text: ["swr v3"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1392 }));
+    assert.equal((await later(h, 31)).status, 200);
+    const at54 = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(at54.status, 200);
+    assert.equal(((await at54.json()) as any).entries[0].text[0], "swr v3");
+  } finally {
+    await h.close();
+  }
+});
+
+test("background refresh R2 failure keeps unexpired cache, backs off retries, and refreshes synchronously after hard expiry", async () => {
+  const h = await harness({ changelogCacheSeconds: 30 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1395, commit: "m", at: 13, text: ["backoff v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1395 }));
+
+    // t=0: warm cache (expiresAt=30s, refreshAt=22.5s).
+    const warm = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(warm.status, 200);
+    assert.equal(warm.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(((await warm.json()) as any).entries[0].text[0], "backoff v1");
+
+    // Advance to t=23 (> 75% TTL, < 30s hard expiry) and fail all R2 reads.
+    assert.equal((await later(h, 23)).status, 200);
+    await h.failBucket({ get: 20 });
+
+    // First request at t=23 serves cached v1 immediately and triggers failing background refresh.
+    const first = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(first.status, 200);
+    assert.equal(((await first.json()) as any).entries[0].text[0], "backoff v1");
+    assert.equal((await h.fetch("/__test/status-settled")).status, 200);
+    const failedCalls = await h.failBucket({ get: 20 });
+    assert.ok(failedCalls.length > 0, "expected background refresh to attempt R2 reads");
+
+    // Subsequent request before backoff window (still at t=23 < 26.5s) serves v1 with 0 R2 calls.
+    const second = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(second.status, 200);
+    assert.equal(((await second.json()) as any).entries[0].text[0], "backoff v1");
+    assert.equal((await h.fetch("/__test/status-settled")).status, 200);
+    assert.deepEqual(await h.failBucket(), []);
+
+    // Update R2 to v2 and advance past hard expiry (t=31 > 30s): synchronously refreshes to v2.
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1396, commit: "n", at: 14, text: ["backoff v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1396 }));
+    assert.equal((await later(h, 8)).status, 200);
+    const afterExpiry = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(afterExpiry.status, 200);
+    assert.equal(((await afterExpiry.json()) as any).entries[0].text[0], "backoff v2");
+  } finally {
+    await h.close();
+  }
+});
+
+test("GET /v1/changelog with ttl=0 direct R2 path returns strong ETag, Vary, and 304 on matching If-None-Match", async () => {
+  const h = await harness({ changelogCacheSeconds: 0 });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1398, commit: "o", at: 15, text: ["direct r2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1398 }));
+
+    const first = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(first.status, 200);
+    const etag = first.headers.get("etag");
+    assert.ok(etag && /^"[0-9a-f]{16}"$/.test(etag), `expected strong 16-hex ETag, got ${etag}`);
+    assert.equal(first.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(((await first.json()) as any).entries[0].text[0], "direct r2");
+
+    const notMod = await h.fetch("/v1/changelog", {
+      headers: { "x-stillfail-channel": "beta", "if-none-match": etag },
+    });
+    assert.equal(notMod.status, 304);
+    assert.equal(notMod.headers.get("etag"), etag);
+    assert.equal(notMod.headers.get("vary"), "x-stillfail-channel");
+    assert.equal(await notMod.text(), "");
+  } finally {
+    await h.close();
+  }
+});

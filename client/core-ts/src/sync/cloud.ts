@@ -145,6 +145,8 @@ export class CloudSync {
   /// Last observed persistent session ID per account sub so in-place re-login (same sub, new session) is detected
   /// even when `AccountView` fields are identical.
   readonly #shownSessions = new Map<string, string>();
+  /// Workspace id currently applying a full authoritative `GET /v1/workspaces/<id>` response in `#took`.
+  #takingFullRead: string | null = null;
 
   constructor(core: Inner) {
     this.#core = core;
@@ -1395,6 +1397,16 @@ export class CloudSync {
     });
   }
 
+  /// Proactively re-reads `/v1/workspaces/<id>` after a cloud-side downgrade so `{ topic: "workspace" }`
+  /// confirms under the new `authGen` without waiting for a later cloud event.
+  refreshWorkspace(id: string): void {
+    if (this.#takingFullRead === id) return;
+    const core = this.#core;
+    const sub = core.workspaces.owner(id);
+    if (sub === null || this.hasEarlierDeferred(sub)) return;
+    core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.shown, this.#workspace(id));
+  }
+
   /// A workspace's view as the cloud gave it (its read, or a write of this device's answered with it), held.
   #took(id: string, view: unknown, readGen: number, fullRead = false): void {
     const core = this.#core;
@@ -1407,11 +1419,24 @@ export class CloudSync {
     const was = core.data.shared(topic);
     const offline = new Set((isObject(was) && Array.isArray(was.stations) ? was.stations : []).flatMap((s) => (isObject(s) && typeof s.id === "string" && s.online === false ? [s.id] : [])));
     // (its stations' names and marks as the stations keep them laid over the cloud's list: station-marks-kept.ts)
-    core.data.set(topic, overlaid(view, keptMarks(core.data, id)));
-    core.confirmWorkspaceAuth?.(id, topic, readGen);
+    if (fullRead) this.#takingFullRead = id;
+    try {
+      core.data.set(topic, overlaid(view, keptMarks(core.data, id)));
+      // Run `syncWorkspaceAuth` synchronously while `#takingFullRead` is active so any role downgrade
+      // in this authoritative `fullRead` bumps `authGen` immediately (no 1-tick window before `data.onChange`)
+      // and avoids scheduling a redundant second `GET /v1/workspaces/<id>`.
+      core.syncWorkspaceAuth?.(id);
+    } finally {
+      if (fullRead && this.#takingFullRead === id) this.#takingFullRead = null;
+    }
+    // A full `GET /v1/workspaces/<id>` that itself triggered a role downgrade inside `core.data.set` IS the
+    // authoritative post-downgrade workspace view; confirm `{ topic: "workspace" }` under its new gen while
+    // keeping all station held topics gated until independently confirmed.
+    const confirmGen = fullRead ? core.store.authGen.workspaceAuthGen(id) : readGen;
+    core.confirmWorkspaceAuth?.(id, topic, confirmGen);
     if (fullRead) {
       const owner = core.workspaces.owner(id);
-      if (owner !== null) this.#confirmedBase.set(id, { owner, gen: readGen });
+      if (owner !== null) this.#confirmedBase.set(id, { owner, gen: confirmGen });
     }
     for (const s of isObject(view) && Array.isArray(view.stations) ? view.stations : []) {
       if (isObject(s) && typeof s.id === "string" && s.online === true && offline.has(s.id)) core.stations?.cameOnline(`${id}/${s.id}`);

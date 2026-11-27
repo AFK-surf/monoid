@@ -117,7 +117,12 @@ priv struct Units {
 ///|
 fn Units::make(s : String) -> Units {
   let n = s.length()
-  let u = { start: [], cls: [], flags: [], ri_run: [] }
+  let u = {
+    start: Array(capacity=n),
+    cls: Array(capacity=n),
+    flags: Array(capacity=n),
+    ri_run: Array(capacity=n),
+  }
   let mut i = 0
   while i < n {
     let c = code_point_at(s, i)

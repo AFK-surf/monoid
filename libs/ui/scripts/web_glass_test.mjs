@@ -424,7 +424,7 @@ function runGlassVectorsInPage() {
     buf[3 * INST + 12] = 1; buf[3 * INST + 13] = 9; buf[3 * INST + 15] = 1; buf[3 * INST + 21] = 9;
     H.present(buf, 4, 28 / 255, 28 / 255, 30 / 255);
     const shotIcon = H.renderPixels();
-    rect(buf, INST, 129.5, 35.0, 2.0, 10.0, 0, 1, 0.55, 0, 1, 0);
+    rect(buf, INST, 132.4, 35.0, 1.0, 10.0, 0, 1, 0.55, 0, 1, 0);
     rect(buf, 2 * INST, 25, 17.5, 110, 45, 6, 1, 1, 1, 0, -566);
     buf[2 * INST + 4] = 22.5; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = -64;
     buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
@@ -432,27 +432,60 @@ function runGlassVectorsInPage() {
     const shotLip = H.renderPixels();
     const aMid = pxAt(shotEmpty, 400, 120);
     const bMid = pxAt(shotIcon, 400, 120);
-    const cMid = pxAt(shotLip, 400, 120);
+    const aLip = pxAt(shotEmpty, 403, 120);
+    const cLip = pxAt(shotLip, 403, 120);
     const ghostDelta = Math.abs(bMid[0] - aMid[0]) + Math.abs(bMid[1] - aMid[1]);
-    const lipDelta = Math.abs(cMid[0] - aMid[0]) + Math.abs(cMid[1] - aMid[1]);
+    const lipDelta = Math.abs(cLip[0] - aLip[0]) + Math.abs(cLip[1] - aLip[1]);
     const aOut = pxAt(shotEmpty, Math.round(123.2 * 3), Math.round(58.9 * 3));
     const bOut = pxAt(shotIcon, Math.round(123.2 * 3), Math.round(58.9 * 3));
     const outDiff = Math.max(Math.abs(bOut[0] - aOut[0]), Math.abs(bOut[1] - aOut[1]), Math.abs(bOut[2] - aOut[2]));
     roi.v9_tab_icon_delta = { ghostDelta, outDiff, lipDelta };
   }
-  // V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt
+  // V9g: Role 4 Tab strictly monotonic (empty vs bar A/B diff across d=0..4.0pt, px_x=96..108)
   {
     const buf = new Float32Array(3 * INST);
     rect(buf, 0, 0, 0, VW, VH, 0, 246 / 255, 244 / 255, 240 / 255, 1, 0);
-    rect(buf, INST, 41.5, 8.0, 2.0, 64.0, 0, 90 / 255, 90 / 255, 90 / 255, 1, 0);
+    rect(buf, INST, 32.5, 8.25, 95.0, 63.5, 6, 1, 1, 1, 0, -5650);
+    buf[INST + 4] = 31.75; buf[INST + 6] = 1; buf[INST + 7] = -64;
+    buf[INST + 12] = 1; buf[INST + 13] = 9; buf[INST + 15] = 1; buf[INST + 21] = 9;
+    H.present(buf, 2, 246 / 255, 244 / 255, 240 / 255);
+    const shotEmptyG = H.renderPixels();
+    rect(buf, INST, 37.5, 8.0, 1.5, 64.0, 0, 90 / 255, 90 / 255, 90 / 255, 1, 0);
     rect(buf, 2 * INST, 32.5, 8.25, 95.0, 63.5, 6, 1, 1, 1, 0, -565);
     buf[2 * INST + 4] = 31.75; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = -64;
     buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
     H.present(buf, 3, 246 / 255, 244 / 255, 240 / 255);
     const shotG = H.renderPixels();
-    const barL = lumaOf(pxAt(shotG, 127, 120));
-    const cleanL = lumaOf(pxAt(shotG, 114, 120));
-    roi.v9_tab_no_ghost = { barL, cleanL };
+    const barL = lumaOf(pxAt(shotG, 117, 120));
+    let ghostDiff = 0.0;
+    let cleanL = 255.0;
+    for (let pxX = 96; pxX <= 108; pxX++) {
+      const le = lumaOf(pxAt(shotEmptyG, pxX, 120));
+      const lb = lumaOf(pxAt(shotG, pxX, 120));
+      const gd = Math.abs(lb - le);
+      if (gd > ghostDiff) ghostDiff = gd;
+      if (pxX >= 99 && lb < cleanL) cleanL = lb;
+    }
+    roi.v9_tab_no_ghost = { barL, ghostDiff, cleanL };
+  }
+  // V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 62pt Role 4 droplet (6pt overhang clarity & no dead-black side border)
+  {
+    const buf = new Float32Array(3 * INST);
+    rect(buf, 0, 0, 0, VW, VH, 0, 25 / 255, 27 / 255, 30 / 255, 1, 0);
+    rect(buf, INST, 10, 15, 140, 50, 6, 32 / 255, 32 / 255, 32 / 255, 0x67 / 255, -567);
+    buf[INST + 4] = 25; buf[INST + 6] = 1; buf[INST + 7] = 0;
+    buf[INST + 12] = 0.6; buf[INST + 13] = 14; buf[INST + 15] = 1; buf[INST + 21] = 20;
+    rect(buf, 2 * INST, 35, 9, 90, 62, 6, 1, 1, 1, 0, -568);
+    buf[2 * INST + 4] = 31; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = -64;
+    buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
+    H.present(buf, 3, 25 / 255, 27 / 255, 30 / 255);
+    const shotD = H.renderPixels();
+    roi.v9_tab_dark_clarity = {
+      topL: lumaOf(pxAt(shotD, 240, 36)),
+      botL: lumaOf(pxAt(shotD, 240, 204)),
+      leftL: lumaOf(pxAt(shotD, 106, 120)),
+      rightL: lumaOf(pxAt(shotD, 373, 120)),
+    };
   }
   // V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted)
   {
@@ -1382,6 +1415,58 @@ function runGlassVectorsInPage() {
         full95: { ink: lumOf(s95, 72, 150), glass: lumOf(s95, 310, 150) },
       };
     }
+    // v10_through_hole_adaptive_ink: adaptive Light liquid glass over a real kind==9 native-view hole
+    // keeps light glass + dark ink/bar, while an identical capsule on the opaque black stage flips dark + white ink,
+    // and a capsule over a 70% dark scrim (rgba(0,0,0,0.70)) atop the kind==9 hole flips its ink bright white.
+    {
+      const th = new Float32Array(11 * INST);
+      rect(th, 0 * INST, 0, 0, 400, 240, 0, 0, 0, 0, 1, 0);
+      rect(th, 1 * INST, 0, 0, 200, 240, 9, 0, 0, 0, 1, 0);
+      rect(th, 2 * INST, 20, 36, 160, 48, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      th[2 * INST + 4] = 24; th[2 * INST + 6] = 1; th[2 * INST + 7] = 2;
+      th[2 * INST + 12] = 0; th[2 * INST + 13] = 14; th[2 * INST + 14] = -1; th[2 * INST + 15] = 1;
+      rect(th, 3 * INST, 44, 50, 24, 20, 10, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[3 * INST + 4] = 6;
+      th[3 * INST + 12] = 0.1; th[3 * INST + 13] = 0.5; th[3 * INST + 14] = 0.9; th[3 * INST + 15] = 0.5;
+      th[3 * INST + 21] = 100; th[3 * INST + 22] = 60; th[3 * INST + 23] = 48;
+      rect(th, 4 * INST, 104, 52, 60, 16, 0, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[4 * INST + 4] = 8;
+      th[4 * INST + 21] = 100; th[4 * INST + 22] = 60; th[4 * INST + 23] = -48;
+      rect(th, 5 * INST, 220, 36, 160, 48, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      th[5 * INST + 4] = 24; th[5 * INST + 6] = 1; th[5 * INST + 7] = 2;
+      th[5 * INST + 12] = 0; th[5 * INST + 13] = 14; th[5 * INST + 14] = -1; th[5 * INST + 15] = 1;
+      rect(th, 6 * INST, 244, 50, 24, 20, 10, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[6 * INST + 4] = 6;
+      th[6 * INST + 12] = 0.1; th[6 * INST + 13] = 0.5; th[6 * INST + 14] = 0.9; th[6 * INST + 15] = 0.5;
+      th[6 * INST + 21] = 300; th[6 * INST + 22] = 60; th[6 * INST + 23] = 48;
+      rect(th, 7 * INST, 304, 52, 60, 16, 0, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[7 * INST + 4] = 8;
+      th[7 * INST + 21] = 300; th[7 * INST + 22] = 60; th[7 * INST + 23] = -48;
+      rect(th, 8 * INST, 10, 150, 180, 70, 0, 0, 0, 0, 0.70, 0);
+      rect(th, 9 * INST, 20, 160, 160, 50, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      th[9 * INST + 4] = 24; th[9 * INST + 6] = 1; th[9 * INST + 7] = 2;
+      th[9 * INST + 12] = 0; th[9 * INST + 13] = 14; th[9 * INST + 14] = -1; th[9 * INST + 15] = 1;
+      rect(th, 10 * INST, 88, 175, 24, 20, 10, 26 / 255, 26 / 255, 26 / 255, 1, 0);
+      th[10 * INST + 4] = 6;
+      th[10 * INST + 12] = 0.1; th[10 * INST + 13] = 0.5; th[10 * INST + 14] = 0.9; th[10 * INST + 15] = 0.5;
+      th[10 * INST + 21] = 100; th[10 * INST + 22] = 185; th[10 * INST + 23] = 50;
+      H.renderInit(400, 240, 2);
+      H.present(th, 11, 0, 0, 0);
+      const shot = H.renderPixels();
+      const rgbaAt = (x, y) => {
+        const i = (y * 2 * shot.w + x * 2) * 4;
+        return [shot.px[i], shot.px[i + 1], shot.px[i + 2], shot.px[i + 3]];
+      };
+      const lumN = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+      const aGl = rgbaAt(84, 60), aTx = rgbaAt(56, 60), aBr = rgbaAt(134, 60);
+      const bGl = rgbaAt(284, 60), bTx = rgbaAt(256, 60), bBr = rgbaAt(334, 60);
+      const cTx = rgbaAt(100, 185);
+      roi.v10_through_hole_adaptive_ink = {
+        aGlR: aGl[0], aGlA: aGl[3], aTxL: lumN(aTx), aBrL: lumN(aBr),
+        bGlA: bGl[3], bGlL: lumN(bGl), bTxL: lumN(bTx), bBrL: lumN(bBr),
+        cTxL: lumN(cTx),
+      };
+    }
   }
   return { gl: H.renderInfo(), out, roi };
 }
@@ -1618,8 +1703,9 @@ check(roi.v9_sw_off_moat[0] > roi.v9_sw_off_moat[1] && roi.v9_sw_off_moat[1] >= 
   `v9_sw_off_moat=${JSON.stringify(roi.v9_sw_off_moat)}`);
 check(roi.v9_sw_5press_delta_area[0] < roi.v9_sw_5press_delta_area[1] && roi.v9_sw_5press_delta_area[1] < roi.v9_sw_5press_delta_area[2] && roi.v9_sw_5press_delta_area[2] < roi.v9_sw_5press_delta_area[3] && roi.v9_sw_5press_delta_area[3] < roi.v9_sw_5press_delta_area[4],
   `v9_sw_5press_delta_area=${JSON.stringify(roi.v9_sw_5press_delta_area)}`);
-check(roi.v9_tab_icon_delta.ghostDelta === 0 && roi.v9_tab_icon_delta.outDiff === 0 && roi.v9_tab_icon_delta.lipDelta >= 40, `v9_tab_icon_delta=${JSON.stringify(roi.v9_tab_icon_delta)}`);
-check(roi.v9_tab_no_ghost.barL < 130.0 && roi.v9_tab_no_ghost.cleanL > 220.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
+check(roi.v9_tab_icon_delta.ghostDelta === 0 && roi.v9_tab_icon_delta.outDiff === 0 && roi.v9_tab_icon_delta.lipDelta >= 80, `v9_tab_icon_delta=${JSON.stringify(roi.v9_tab_icon_delta)}`);
+check(roi.v9_tab_no_ghost.barL < 130.0 && roi.v9_tab_no_ghost.ghostDiff <= 2.0 && roi.v9_tab_no_ghost.cleanL > 220.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
+check(roi.v9_tab_dark_clarity.topL < 55.0 && roi.v9_tab_dark_clarity.botL < 55.0 && roi.v9_tab_dark_clarity.leftL >= 42.0 && roi.v9_tab_dark_clarity.rightL >= 42.0, `v9_tab_dark_clarity=${JSON.stringify(roi.v9_tab_dark_clarity)}`);
 check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
 check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
@@ -1759,6 +1845,15 @@ for (const t of roi.v11_top) {
     for (const r of lf.frostRes) check(r.ink < 0.25 && r.glass > 0.56, `light_adaptive_frost_half=${JSON.stringify(r)}`);
     check(lf.full65.ink < 0.25 && lf.full65.glass > 0.72, `light_adaptive_frost_65=${JSON.stringify(lf.full65)}`);
     check(lf.full95.ink < 0.25 && lf.full95.glass > 0.85, `light_adaptive_frost_95=${JSON.stringify(lf.full95)}`);
+  }
+  {
+    const th = roi.v10_through_hole_adaptive_ink;
+    console.log(`web_glass_test: v10_through_hole_adaptive_ink hole=(gl=${th.aGlR}/${th.aGlA} tx=${th.aTxL.toFixed(3)} br=${th.aBrL.toFixed(3)}) stage=(gl=${th.bGlL.toFixed(3)} tx=${th.bTxL.toFixed(3)} br=${th.bBrL.toFixed(3)}) scrim70=(tx=${th.cTxL.toFixed(3)})`);
+    check(th.aGlA >= 100 && th.aGlA <= 170 && th.aGlR >= th.aGlA - 12, `v10_through_hole_adaptive_ink_a_gl=${JSON.stringify(th)}`);
+    check(th.aTxL < 0.25 && th.aBrL < 0.25, `v10_through_hole_adaptive_ink_a_ink=${JSON.stringify(th)}`);
+    check(th.bGlA === 255 && th.bGlL < 0.35, `v10_through_hole_adaptive_ink_b_gl=${JSON.stringify(th)}`);
+    check(th.bTxL > 0.75 && th.bBrL > 0.75, `v10_through_hole_adaptive_ink_b_ink=${JSON.stringify(th)}`);
+    check(th.cTxL > 0.75, `v10_through_hole_adaptive_ink_c_scrim70=${JSON.stringify(th)}`);
   }
 }
 if (failed) process.exit(1);

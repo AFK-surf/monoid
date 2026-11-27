@@ -47,6 +47,7 @@ export interface OperationParams {
   "chat.relayPlaces": { thread: number };
   "chat.relay": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined; note?: string | null | undefined; join?: boolean | null | undefined };
   "chat.relayPeople": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined };
+  "chat.skills": { session?: string | null | undefined; runtime?: string | null | undefined; preset?: string | null | undefined };
   "decision.dismiss": { thread: number; seq: number };
   "decision.close": { thread: number; seq: number; option: string };
   "chat.report": { thread: number; seq: number };
@@ -216,7 +217,7 @@ export interface OperationParams {
   "admin.revokeKey": { id: string };
 }
 
-export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.history", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
+export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chat.skills", "chats.archived", "copies.history", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
 
 type Call = (name: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -269,6 +270,7 @@ export function bindStationOperations(call: Call) {
     chatRelayPlaces: <T = unknown>(params: OperationParams["chat.relayPlaces"]) => call("chat.relayPlaces", params) as Promise<T>,
     chatRelay: <T = unknown>(params: OperationParams["chat.relay"]) => call("chat.relay", params) as Promise<T>,
     chatRelayPeople: <T = unknown>(params: OperationParams["chat.relayPeople"]) => call("chat.relayPeople", params) as Promise<T>,
+    chatSkills: <T = unknown>(params: OperationParams["chat.skills"] = {}) => call("chat.skills", params) as Promise<T>,
     decisionDismiss: <T = unknown>(params: OperationParams["decision.dismiss"]) => call("decision.dismiss", params) as Promise<T>,
     decisionClose: <T = unknown>(params: OperationParams["decision.close"]) => call("decision.close", params) as Promise<T>,
     chatReport: <T = unknown>(params: OperationParams["chat.report"]) => call("chat.report", params) as Promise<T>,

@@ -5,15 +5,17 @@
 // what that one had handled of its output, which the program reads again (`replayOwn`). What every such driver does is
 // here: the sessions it has, starting a process and taking one up, its lines held while the station hands over, its
 // requests waiting for their answers, what the program tells of it (the runtime's events, given its actor in the
-// program where it is there, and the lines it answers itself), the process going away (a turn running fails as exited,
-// then the session closes), letting it go. What a runtime is told and says is each driver's, and how its lines are
-// read the program's.
-import { wall } from "../ops/fibers.ts";
+// program where it is there, and the lines it answers itself), a turn asked to stop (its process ended where it does not
+// stop in time, or is asked again), the process going away (a turn running fails as exited, or ends aborted where it
+// was asked to stop; then the session closes), letting it go. What a runtime is told and says is each driver's, and how
+// its lines are read the program's.
+import type { Clock } from "effect";
+import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { ackedOffset, debug, findRunner, outFile, runnerId } from "./process.ts";
 import type { RunnerInfo } from "./runner.ts";
 import { AgentsHost, HostedProcess, type Heard, type HostedKind, type HostedOptions, type Router } from "./mb-agents.ts";
-import type { AgentDriver, AgentSession, OpenOptions, RuntimeEvent, RuntimeKind } from "./runtime.ts";
+import type { AgentDriver, AgentSession, OpenOptions, RuntimeEvent, RuntimeKind, TurnOutcome } from "./runtime.ts";
 
 type Json = any;
 export type Events = (event: RuntimeEvent) => void;
@@ -31,6 +33,13 @@ export type Replayed = { session?: string | null; turn: Json; live: Json; opened
 
 /// How long a runtime has to answer a request of ours: opening a long session it loads included.
 export const ANSWER_MS = 120_000;
+
+/// How long a turn asked to stop has to end before its process is ended: a process stuck in a request upstream (agy on
+/// `streamGenerateContent` for 46 minutes, FB-80) never reads the cancel, and its turn held the session's queue for good.
+export const STOP_GRACE_MS = 30_000;
+
+/// How long a process ended by the station has after SIGTERM before SIGKILL.
+const KILL_GRACE_MS = 5_000;
 
 /// A line of a runtime's output as the JSON it is (one that is not: nothing, said when debugging).
 export function parseLine(kind: RuntimeKind, line: string): Json | undefined {
@@ -100,11 +109,14 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
   protected readonly agents: AgentsHost;
   /// The runners of processes it is starting or taking up, not yet a session's of `live`.
   private readonly claimed = new Set<string>();
+  /// Its sessions' deadlines (a turn asked to stop, an ACP turn heard nothing of), on the clock it was given (a test's).
+  readonly fibers: Fibers;
 
-  constructor(data: string, agents?: AgentsHost) {
+  constructor(data: string, agents?: AgentsHost, clock?: Clock.Clock) {
     this.data = data;
     this.agents = agents ?? AgentsHost.where(data);
     this.agents.use(this);
+    this.fibers = new Fibers("agents", clock);
   }
 
   abstract runtime(): RuntimeKind;
@@ -219,7 +231,10 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
     this.live.clear();
     await Promise.all(live.map((s) => s.dispose()));
     // (used again: its program ends once it has nothing to read, mb-agents.ts `forget`)
-    if (!again) await this.agents.close(this);
+    if (!again) {
+      await this.fibers.close();
+      await this.agents.close(this);
+    }
   }
 
   detach() {
@@ -242,6 +257,11 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   protected readonly waiting = new Waiting();
   /// The address of the station's tools it was given (one taken up from another station: as it was given then).
   toolsUrl: string | null = null;
+  /// Its running turn was asked to stop (`abort`), until that turn ends: kept here, as what the program says of the turn
+  /// may have been read before it was told.
+  #stopAsked = false;
+  /// Calls off the deadline of a turn asked to stop.
+  #stopDeadline: (() => void) | null = null;
 
   constructor(driver: OwnProcessDriver<any>, sessionId: string, turn: T, events: Events, liveState: Json = null) {
     this.driver = driver;
@@ -255,8 +275,63 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   protected abstract heard(line: string): void;
   abstract prompt(text: string): Promise<void>;
   abstract steer(text: string): Promise<boolean>;
-  abstract abort(): Promise<void>;
+  /// Asks the runtime to stop its running turn, its own way (the program is told first, `abort`).
+  protected abstract cancel(): void;
   abstract snapshot(): unknown;
+
+  /// Stops the running turn: the runtime is asked, and its process ended where the turn has not ended within
+  /// `STOP_GRACE_MS`, or once it is asked again (a person pressing 停止 again); either way the turn ends aborted
+  /// (`exitOutcome`).
+  async abort() {
+    if (this.turn.closed || !this.busy()) return;
+    if (this.stopAsked()) {
+      this.endProcess("asked to stop again");
+      return;
+    }
+    this.#stopAsked = true;
+    this.turn.aborting = true;
+    this.proc.tell("aborting");
+    this.cancel();
+    this.#armStop();
+  }
+
+  /// Whether its running turn was asked to stop.
+  protected stopAsked(): boolean {
+    return this.#stopAsked || this.turn.aborting;
+  }
+
+  #armStop() {
+    this.#stopDeadline?.();
+    // timer: a timeout or deadline (a turn asked to stop has STOP_GRACE_MS to end before its process is ended)
+    this.#stopDeadline = this.driver.fibers.after(STOP_GRACE_MS, () => {
+      this.#stopDeadline = null;
+      if (this.stopAsked() && this.busy()) this.endProcess(`its turn did not stop within ${STOP_GRACE_MS / 1000} s`);
+    });
+  }
+
+  /// No turn asked to stop any more (it ended, or its process went).
+  #stopOver() {
+    this.#stopAsked = false;
+    this.#stopDeadline?.();
+    this.#stopDeadline = null;
+  }
+
+  /// Ends its process, which will not end its turn by itself (`why`): its exit ends the turn (`exitOutcome`) and closes
+  /// the session, which the next message opens again.
+  protected endProcess(why: string) {
+    this.#stopDeadline?.();
+    this.#stopDeadline = null;
+    const proc = this.proc as HostedProcess | undefined;
+    if (proc === undefined || this.turn.closed || proc.hasExited() || proc.handed()) return;
+    log.warn(`agents::${this.kind}`, `ending a ${this.kind} process: ${why}`, { session: this.sessionId, pgid: proc.pgid });
+    void proc.kill(KILL_GRACE_MS).catch((e) => log.warn(`agents::${this.kind}`, "its process was not ended", { session: this.sessionId, error: (e as Error).message }));
+  }
+
+  /// How a turn its process went away during ends: aborted where it was asked to stop, else failed as exited.
+  protected exitOutcome(said: string, why: string): TurnOutcome {
+    if (this.stopAsked()) return { kind: "aborted" };
+    return { kind: "failed", reason: "exited", message: `${this.kind} exited (${said}) during the turn${why}` };
+  }
 
   /// An event the program said for the session's owner itself, not one of the runtime's (true: taken here).
   protected took(_event: Json): boolean {
@@ -269,8 +344,9 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
     return null;
   }
 
-  /// Its process went away during a turn: what is open of the turn ends with it (the program ends its steps).
-  protected cutShort(_said: string): void {}
+  /// Its process went away during a turn, which ends as `outcome` says: what is open of the turn ends with it (the
+  /// program ends its steps).
+  protected cutShort(_said: string, _outcome: TurnOutcome): void {}
 
   /// No turn runs any more.
   protected idle() {
@@ -285,8 +361,13 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
     this.proc = proc;
   }
 
-  /// Taken up (attached): once what it keeps is written.
+  /// Taken up (attached): once what it keeps is written. A turn the station before asked to stop has its deadline here
+  /// again (asked again, its process is ended at once).
   async adopted() {
+    if (this.turn.aborting && this.busy() && !this.turn.closed) {
+      this.#stopAsked = true;
+      this.#armStop();
+    }
     await this.settled();
   }
 
@@ -355,6 +436,8 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   }
 
   private event(heard: Heard, e: Json) {
+    // (the turn asked to stop ended by itself: no process to end)
+    if (e?.type === "turnEnded") this.#stopOver();
     if (this.took(e)) return;
     const { turn, ...event } = e;
     if (turn !== undefined) this.take(turn);
@@ -380,10 +463,14 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
     this.turn.closed = true;
     this.waiting.failAll(new Error(`${this.kind} exited (${said})${why}`));
     const busy = this.busy();
+    // (a turn asked to stop ends aborted, its process ended by the station or gone by itself: actor_run.mbt says it
+    // stopped, not failed)
+    const outcome = busy ? this.exitOutcome(said, why) : null;
+    this.#stopOver();
     this.idle();
-    if (busy) this.cutShort(said);
+    if (outcome !== null) this.cutShort(said, outcome);
     const told = () => {
-      if (busy) this.events({ type: "turnEnded", outcome: { kind: "failed", reason: "exited", message: `${this.kind} exited (${said}) during the turn${why}` } });
+      if (outcome !== null) this.events({ type: "turnEnded", outcome });
       this.events({ type: "closed", why: `${this.kind} exited (${said})${why}` });
       this.driver.forget(this);
     };
@@ -403,6 +490,7 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   protected handOver(): { turn: Json; live: Json } | null {
     this.proc.freeze();
     this.turn.closed = true;
+    this.#stopOver();
     return this.proc.frozenState();
   }
 
@@ -423,6 +511,7 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   async dispose() {
     this.driver.forget(this);
     this.turn.closed = true;
+    this.#stopOver();
     this.waiting.failAll(new Error(`${this.kind} session is closed`));
     await this.proc.kill(5000);
     await this.settled();
@@ -430,6 +519,7 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
 
   detach() {
     this.turn.closed = true;
+    this.#stopOver();
     this.driver.forget(this);
     this.proc.detach();
   }

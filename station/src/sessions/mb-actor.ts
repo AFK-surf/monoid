@@ -946,7 +946,12 @@ export class MbActor {
       // (the live view takes each at once; the program only what moves its status line and its words)
       this.#deps.live?.event(this.key, event.event);
       const e = event.event;
-      if (e.kind === "tasks" || e.kind === "plan" || (e.kind === "delta" && e.field !== "text")) return;
+      if (e.kind === "tasks") {
+        // Background work ended while idle: let the hub re-evaluate warm limits and warmMs deadlines.
+        if (e.tasks.length === 0 && this.idleMs(this.#program.now()) !== null) this.#deps.idle?.(this.key);
+        return;
+      }
+      if (e.kind === "plan" || (e.kind === "delta" && e.field !== "text")) return;
       if (e.kind === "start" && e.step === "thinking") return;
       if (e.kind === "phase" && e.phase === "requesting") {
         this.#mirror = { ...this.#mirror, unread: [] };

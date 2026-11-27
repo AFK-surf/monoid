@@ -849,3 +849,48 @@ test("adbShare personal approvers lists deduplicated normalized trusted devices 
     pNone.runner.shutdown();
   }
 });
+
+test("seedForWith batches personal-signer and extraKeys into a single prompt when beginning a personal lock", async () => {
+  const c = cloud();
+  const host = new FakeHost();
+  host.appKeys = true;
+  host.randomBytes = (b: Uint8Array) => void b.fill(0x42);
+  const sealed = new Map<string, Uint8Array>();
+  const boxSecret = new Uint8Array(32).fill(0x77);
+  sealed.set("vault-box", boxSecret);
+  const prompts: string[] = [];
+  host.secureSet = (key: string, value: Uint8Array) => Effect.sync(() => void sealed.set(key, value));
+  host.secureGet = (key: string, opts: { user: boolean; reason?: string }) => {
+    if (opts.user) prompts.push(`get:${key}`);
+    return Effect.succeed(sealed.get(key) ?? null);
+  };
+  host.secureGetMany = (keys: readonly string[], opts: { user: boolean; reason?: string }) => {
+    if (opts.user) prompts.push(`getMany:${keys.join(",")}`);
+    return Effect.succeed(keys.map((k) => sealed.get(k) ?? null));
+  };
+  host.secureAsk = (reason: string) => Effect.sync(() => void prompts.push(`ask:${reason}`));
+  const runner = new Runner(host.time.clock);
+  const lock = new PersonalLock({
+    host,
+    runner,
+    cloud: c.call,
+    device: () => Effect.succeed("55".repeat(32)),
+    label: () => "i",
+    changed: () => {},
+    begins: () => true,
+  });
+  try {
+    // Device already made its personal-signer key (e.g. during an earlier pairing), so mayBeginQuietly() is false.
+    await runner.run(lock.makeKey());
+    assert.equal(lock.standing(SUB), "none");
+    assert.deepEqual(prompts, []);
+
+    const got = await runner.run(lock.seedForWith(SUB, "approve", ["vault-box"]));
+    assert.equal(lock.standing(SUB), "member");
+    assert.equal(got.seed.length, 32);
+    assert.deepEqual(got.extra, [boxSecret]);
+    assert.deepEqual(prompts, ["getMany:personal-signer,vault-box"], "must unseal personal-signer and vault-box in one single prompt");
+  } finally {
+    runner.shutdown();
+  }
+});

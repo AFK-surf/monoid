@@ -38,3 +38,37 @@ test "an Android composing region tells when its state is applied and when it is
   assert_eq(seen, [(false, "a", "a"), (true, "a", "a你"), (false, "a你", "a你")])
   stop()
 }
+
+///|
+test "Field::commit_composing commits an Android underlined composition and tells the host to let it go" {
+  let field = Field::new()
+  let t = Tester::new(fn(c) { c.editor("field", field~) |> ignore }, w=300.0, h=100.0, platform=2)
+  t.tap(20.0, 20.0)
+  // committed prefix plus underlined English word
+  t.ime_state("say world", 9, 9, ca=4, cb=9)
+  assert_eq(field.text(), "say ")
+  assert_eq(field.composed_said(), "say world")
+  assert_true(field.composing())
+  assert_eq(t.ime_let_go(), 0)
+  assert_eq(field.commit_composing(), "say world")
+  assert_false(field.composing())
+  assert_eq(field.text(), "say world")
+  t.draw()
+  assert_eq(t.ime_let_go(), 1)
+  assert_eq(t.ime(), (true, "say world", 9, 9))
+  // calling again with nothing composing does not tell the host again
+  assert_eq(field.commit_composing(), "say world")
+  t.draw()
+  assert_eq(t.ime_let_go(), 1)
+  // empty field with only an underlined word, committed then cleared (as composer send does)
+  field.set("")
+  t.draw()
+  t.ime_state("world", 5, 5, ca=0, cb=5)
+  assert_eq(field.text(), "")
+  assert_eq(field.composed_said(), "world")
+  assert_eq(field.commit_composing(), "world")
+  field.set("")
+  t.draw()
+  assert_eq(t.ime_let_go(), 2)
+  assert_eq(t.ime(), (true, "", 0, 0))
+}

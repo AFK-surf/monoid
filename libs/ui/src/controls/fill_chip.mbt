@@ -54,9 +54,9 @@ let chip_fill_share : Double = 0.28
 pub let chip_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
 
 ///|
-/// The chip: on the neutral ground, round by the ladder's small corner (fill_chip_corner), its words in its middle.
+/// The chip: on the neutral ground, round by the ladder's small corner (fill_chip_corner), its words at its start.
 // kept across runs: a value (no field of it changes)
-let chip_box : @ui.Style = @ui.style(h=Fixed(fill_chip_h), radius=rounded(fill_chip_corner), bg=Neutral, justify=JCenter)
+let chip_box : @ui.Style = @ui.style(h=Fixed(fill_chip_h), radius=rounded(fill_chip_corner), bg=Neutral, justify=JStart)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -65,10 +65,6 @@ let chip_box_dark_overlay : @ui.Style = @ui.css("bg=A(Bg,O70)")
 ///|
 // kept across runs: a value (no field of it changes)
 let chip_box_small : @ui.Style = chip_box.then(@ui.style(h=Fixed(fill_chip_small_h)))
-
-///|
-// kept across runs: a value (no field of it changes)
-let chip_fill_part : @ui.Style = @ui.css("h=Full")
 
 ///|
 /// Its mark and figure 5 apart, 8 in (a small one's 5).

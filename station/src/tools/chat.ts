@@ -32,11 +32,15 @@ export const CHAT_POST = {
       },
       "send": {
         "type": "string",
-        "description": "The id of a post held back (its chat_post answered it): sends it as written. Give only to, send and the state the turn now ends with."
+        "description": "A held post's id (its chat_post answered it): sends it as written. Give only to, send and the turn's state."
+      },
+      "reply_to": {
+        "type": "string",
+        "description": "Feishu: a message ts to answer in its thread."
       },
       "withdraw": {
         "type": "string",
-        "description": "The message ts of your own answer card to withdraw, its question resolved or obsolete. With to alone: nothing is sent and no turn ends."
+        "description": "The message ts of your own answer card to withdraw, once resolved or obsolete. With to alone: nothing sent, no turn ended."
       },
       "text": {
         "type": "string",
@@ -81,7 +85,7 @@ export const CHAT_POST = {
       },
       "title": {
         "type": "string",
-        "description": "The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave."
+        "description": "The conversation's name in still.fail lists (not Slack's): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave."
       },
       "card": {
         "type": "object",
@@ -376,7 +380,7 @@ export const SESSION_SEND = {
 export const CHAT_CREATE = {
   name: "chat_create",
   description:
-    "Open a still.fail chat with its own agent, here or on another workspace station. for: me means you lead it (it asks you and reports each turn; end waiting to await it); person means your person owns it (no reports to you). text starts it; session_send writes to its link. Retry uncertain calls with the same key. See skills stillfail-chats and stillfail-leading.",
+    "Open a still.fail chat here or on another workspace station. For a specific model, pass runtime and model. for: me means you lead it (await with waiting); person gives it to your person. text starts it; session_send writes to it. Retry with the same key. See skills stillfail-chats and stillfail-leading.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -404,11 +408,11 @@ export const CHAT_CREATE = {
       "runtime": {
         "type": "string",
         "enum": RUNTIME_KINDS,
-        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model."
+        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). With a model and no runtime: the opener's runtime."
       },
       "model": {
         "type": "string",
-        "description": "Its agent's model. Default: the one the person it goes to uses most on that station, when one clearly leads; else it is not opened and you are told which to ask them about."
+        "description": "Full model ID (e.g. gpt-6.2-astra). If omitted, the station picks the person's clearly most-used model, limited to runtime if given."
       },
       "effort": {
         "type": "string",

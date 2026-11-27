@@ -35,7 +35,7 @@ pub struct Listbox[K] {
   priv multiple : Bool
   priv off : () -> Bool
   priv options : RovingFocus
-  priv entries : Array[ListboxEntry[K]]
+  priv mut entries : Array[ListboxEntry[K]]
   priv typeahead : Typeahead
   priv selection : SelectionModel[@view.NodeId]
 }
@@ -112,9 +112,12 @@ let listbox_key_select_all : Int = 12
 fn[K] Listbox::keys_of(self : Listbox[K], ids : Array[@view.NodeId]) -> Array[K] {
   let out : Array[K] = []
   for id in ids {
-    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-      Some(e) => out.push(e.key)
-      None => ()
+    for i = 0; i < self.entries.length(); i = i + 1 {
+      let e = self.entries[i]
+      if e.node.id() == id {
+        out.push(e.key)
+        break
+      }
     }
   }
   out
@@ -137,10 +140,13 @@ fn[K] Listbox::selection_inputs(
     }
   }
   let is_off = fn(id : @view.NodeId) -> Bool {
-    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-      Some(e) => !e.node.takes_input() || @signals.untracked(e.off)
-      None => true
+    for i = 0; i < self.entries.length(); i = i + 1 {
+      let e = self.entries[i]
+      if e.node.id() == id {
+        return !e.node.takes_input() || @signals.untracked(e.off)
+      }
     }
+    true
   }
   (all_ids, cur_ids, is_off)
 }
@@ -222,10 +228,13 @@ pub fn[K] listbox(
       let live = lb.options.live()
       lb.typeahead.handle_key(k, live, fn(i) {
         let id = live[i].id()
-        match lb.entries.iter().find_first(fn(x) { x.node.id() == id }) {
-          Some(x) => (x.text)()
-          None => ""
+        for j = 0; j < lb.entries.length(); j = j + 1 {
+          let x = lb.entries[j]
+          if x.node.id() == id {
+            return (x.text)()
+          }
         }
+        ""
       })
     })
     |> ignore
@@ -257,7 +266,7 @@ pub fn[K] Listbox::option(
     v.owns(fn() {
       self.entries.retain(fn(e) { e.node.id() != v.id() })
       if self.entries.is_empty() {
-        self.entries.shrink_to_fit()
+        self.entries = []
       }
     })
     |> ignore

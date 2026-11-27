@@ -2749,8 +2749,16 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
     // and the key it carries told the same (Tree::carried); one led, as long as its lead and on its curve)
     let flight = self.flight_of_node(f.node.at)
     let led = match flight {
-      Some(fl) =>
-        leads.search_by(fn(l) { physical_equal(l.0, fl) && l.1 == f.start }).map(fn(x) { leads[x] })
+      Some(fl) => {
+        let mut res = None
+        for x = 0; x < leads.length(); x = x + 1 {
+          if physical_equal(leads[x].0, fl) && leads[x].1 == f.start {
+            res = Some(leads[x])
+            break
+          }
+        }
+        res
+      }
       None => None
     }
     match flight {
@@ -3092,7 +3100,13 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
 ///|
 /// The flight node `at` is the new one of, if it is.
 fn Tree::flying_of(self : Tree, at : Int) -> Flying? {
-  self.flights.iter().find_first(fn(f) { f.node.at == at && self.alive_id(f.node) })
+  for i = 0; i < self.flights.length(); i = i + 1 {
+    let f = self.flights[i]
+    if f.node.at == at && self.alive_id(f.node) {
+      return Some(f)
+    }
+  }
+  None
 }
 
 ///|

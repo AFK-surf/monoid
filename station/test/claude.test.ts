@@ -462,12 +462,30 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     await session.prompt("hold:2");
     await until((e) => said(e).includes("d1 "));
     await session.abort();
-    await session.abort(); // once
     await until(ended(1));
     assert.deepEqual(outcome(events), { kind: "aborted" });
     assert.equal(stdin(o.dump).filter((m) => m.type === "control_request").length, 1);
     assert.equal(said(events), "d0 d1 ");
+    assert.equal(events.some((e) => e.type === "closed"), false, "stopped by itself: its process goes on");
     await session.dispose();
+  });
+
+  test("abort asked again (停止 pressed twice) ends a stuck process at once: the turn ends aborted, then the session closes (FB-80)", async () => {
+    const d = driver();
+    const o = options();
+    gates(o.dump, "stop2");
+    const { events, push, until } = listen();
+    const session = await d.open(o, push);
+    await session.prompt("gate:2:1:stop2");
+    await until((e) => said(e).includes("d0 "));
+    await session.abort();
+    await eventually(() => existsSync(`${o.dump}.stdin`) && stdin(o.dump).some((m) => m.type === "control_request"));
+    assert.equal(ends(events).length, 0, "still stuck after one interrupt");
+    await session.abort();
+    await until((e) => e.some((x) => x.type === "closed"));
+    assert.deepEqual(events.filter((e) => e.type === "turnEnded"), [{ type: "turnEnded", outcome: { kind: "aborted" } }]);
+    assert.equal(stdin(o.dump).filter((m) => m.type === "control_request").length, 1, "interrupted once");
+    await assert.rejects(session.prompt("again"), /closed/);
   });
 
   test("steer adds input to the running turn; with nothing running it is refused", async () => {

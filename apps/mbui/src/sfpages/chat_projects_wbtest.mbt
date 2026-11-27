@@ -421,6 +421,21 @@ test "wide 1280x800 shows inline fits attrs; tight 768x900 hides fits attrs befo
     t_wide.drawn_instances().filter(fn(a) { a[5] == 0.0 && a[3] >= 30.0 && a[4] * 2.0 >= a[3] - 1.0 }).length()
   }
   let at_rest = capsules()
+  // `#tag` words sit bare on the bar at rest: nothing grounded behind them
+  let tag = cp_find_word(t_wide, "#ios").unwrap()
+  let tag_cx = tag.1 + tag.3 / 2.0
+  let tag_cy = tag.2 + tag.4 / 2.0
+  let tag_grounds = fn() {
+    @ui.view_tree().unwrap().drawn().filter(fn(d) {
+      d.x <= tag_cx && d.x + d.w >= tag_cx && d.y <= tag_cy && d.y + d.h >= tag_cy && d.h >= 20.0 && d.h <= 44.0 && d.ground != 0L
+    })
+  }
+  assert_eq(tag_grounds().length(), 0, msg="tag chip paints a ground at rest")
+  t_wide.move_to(tag_cx, tag_cy)
+  t_wide.run_for(@ui.move_most_ms)
+  assert_eq(capsules(), at_rest + 1, msg="tag chip lost its hover capsule")
+  t_wide.move_to(0.0, 0.0)
+  t_wide.run_for(@ui.move_most_ms)
   let proj = cp_find_word(t_wide, "monoid").unwrap()
   t_wide.move_to(proj.1 + proj.3 / 2.0, proj.2 + proj.4 / 2.0)
   t_wide.run_for(@ui.move_most_ms)

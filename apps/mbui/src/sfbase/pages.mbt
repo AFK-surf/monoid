@@ -398,7 +398,7 @@ pub fn chat_page_made(
               .lays_anew(By(fn() { memo_by(col).laid }))
               |> ignore
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
               let bound = Ref(false)
               col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
@@ -416,7 +416,7 @@ pub fn chat_page_made(
             // later one let go of)
             None =>
               if aside is Some(_) {
-                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                col.offset_snapped(By(fn() { (aside_of(col), 0.0) })) |> ignore
               }
           }
           // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
@@ -1187,6 +1187,8 @@ fn setting_kind(r : @settings.Route) -> String {
     Stations => "Stations"
     Station(_) => "Station"
     Profiles(_) => "Profiles"
+    ProfilesOverview => "ProfilesOverview"
+    ProfilesManage(_) => "ProfilesManage"
     Profile(_, _) => "Profile"
     Connects(_) => "Connects"
     Connect(_, _) => "Connect"
@@ -1475,6 +1477,8 @@ fn setting_way(r : @settings.Route) -> Array[@settings.Route] {
     MemoryDoc(a, _, _) => [Memories, Memory(a)]
     AutoCompletion => [AutoDecisions]
     AutoPolicy(_) => [AutoDecisions, AutoCompletion]
+    ProfilesOverview | ProfilesManage("") => [Profiles("")]
+    ProfilesManage(a) => [Stations, Station(a), Profiles(a)]
     _ => []
   }
 }
@@ -1675,6 +1679,8 @@ pub fn reset() -> Unit {
   sent_reset()
   // what the core said of the composers' fields, their marks and `@` words (refs.mbt)
   refs_reset()
+  // what the core said of the composers' `/` skill menus and cached skill lists (skills.mbt)
+  skills_reset()
   // a send asking about what it refers to (outside.mbt)
   outside_reset()
   // what was asked of the core from a button, under way or failed (act.mbt)
@@ -1774,6 +1780,8 @@ pub fn back_label(p : Page) -> String {
     // stations, a station's own page)
     Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
     Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
+    Setting(@settings.Route::ProfilesOverview) => @sf.t("web-pages.profiles.overview.title")
+    Setting(@settings.Route::ProfilesManage(_)) => @sf.t("web-pages.profiles.sharing.title")
     Place("remote") => @sf.t("web-main.rail.remote")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")

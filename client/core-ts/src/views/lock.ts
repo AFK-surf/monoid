@@ -4181,7 +4181,10 @@ function stationMoved(inner: Inner, sub: string, ws: string, station: string): E
     // of it; one that refuses it stays as the security page shows it, not protected.
     // (not reached now, or refusing it as the statement had not reached the state it checked: brought again as this
     // device next reads that station and finds it keeps none, `bringMoved`)
-    return Effect.tap(sayMoved(inner, sub, ws, [{ kind: "station", key: station }], { act: "protectStation", name }, actText({ act: "protectStation", name })), () => Effect.sync(() => bringMoved(inner, ws, [{ id: station, head: null }])));
+    return Effect.tap(sayMoved(inner, sub, ws, [{ kind: "station", key: station }], { act: "protectStation", name }, actText({ act: "protectStation", name })), () => Effect.sync(() => {
+      bringMoved(inner, ws, [{ id: station, head: null }]);
+      inner.stations?.cameOnline(`${ws}/${station}`);
+    }));
   });
 }
 

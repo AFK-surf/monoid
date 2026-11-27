@@ -139,6 +139,16 @@ priv struct SettingsFixture {
   mut key_giving : Bool
   /// whether the workspace in key_ask is in safe mode (false tests the non-safe-mode prompt wording)
   mut key_ask_safe_mode : Bool
+  /// whether the device in key_ask is a teammate's (Ana's MacBook Air) asking for the workspace vault's key
+  mut key_ask_theirs : Bool
+  /// override ownerName/ownerEmail in key_ask_theirs (0 = normal Ana, 1 = email only, 2 = both empty)
+  mut key_ask_theirs_owner : Int
+  /// ask timestamp (unix seconds, Double) for key_ask fixture
+  mut key_ask_at : Double
+  /// vault passed to the last `vault.hidePrompt` call in the fixture
+  mut key_ask_hidden_vault : String
+  /// timestamp passed to the last `vault.hidePrompt` call in the fixture
+  mut key_ask_hidden_at : Double
   /// this device's verification code shown on vault no-key card (settings-vault-no-key-code)
   mut this_device_code : String
   /// whether pending device d-new on v-ws has been authorized in the current fixture run
@@ -260,6 +270,11 @@ let fx : SettingsFixture = {
   key_ask_ended: "",
   key_giving: false,
   key_ask_safe_mode: true,
+  key_ask_theirs: false,
+  key_ask_theirs_owner: 0,
+  key_ask_at: 0.0,
+  key_ask_hidden_vault: "",
+  key_ask_hidden_at: 0.0,
   this_device_code: "",
   vault_ws_pending_done: false,
   mba_online: false,
@@ -548,6 +563,10 @@ let fx_station_override : Ref[Bool] = Ref(false)
 let fx_unprotected : Ref[Bool] = Ref(false)
 
 ///|
+/// An unprotected station blocked from connecting until protected in safe mode (issue #9047).
+let fx_unprotected_blocked : Ref[Bool] = Ref(false)
+
+///|
 let fx_connect_stations : Map[String, Array[String]] = Map([])
 
 ///|
@@ -570,6 +589,7 @@ fn fixture_reset() -> Unit {
   fx_station_back.val = ""
   fx_station_override.val = false
   fx_unprotected.val = false
+  fx_unprotected_blocked.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
   fx.drive_kept = fx_drive_kept
@@ -637,6 +657,11 @@ fn fixture_reset() -> Unit {
   fx.key_ask_ended = ""
   fx.key_giving = false
   fx.key_ask_safe_mode = true
+  fx.key_ask_theirs = false
+  fx.key_ask_theirs_owner = 0
+  fx.key_ask_at = 0.0
+  fx.key_ask_hidden_vault = ""
+  fx.key_ask_hidden_at = 0.0
   fx.this_device_code = ""
   fx.vault_ws_pending_done = false
   fx.mba_online = false
@@ -651,7 +676,6 @@ fn fixture_reset() -> Unit {
   fx.several = false
   fx.offer_quota = false
   fx.summary = false
-  profiles_narrow_overview.set(false)
   fx.profile_hosts = false
   fx.profile_unshareable = false
   fx.profile_one_owner = false
@@ -785,6 +809,18 @@ pub fn fixture_key_ask_ended() -> String {
 }
 
 ///|
+/// The vault id passed to the last `vault.hidePrompt` call.
+pub fn fixture_key_ask_hidden_vault() -> String {
+  fx.key_ask_hidden_vault
+}
+
+///|
+/// The timestamp (`at`) passed to the last `vault.hidePrompt` call.
+pub fn fixture_key_ask_hidden_at() -> Double {
+  fx.key_ask_hidden_at
+}
+
+///|
 /// What the made-up core's `lockPrompts` holds now, as another device changed it (lock_prompts.mbt, vault_prompts.mbt):
 /// the new device asking (`pairing`; into one more workspace meanwhile, `more`), the device waiting for the vault's key
 /// (`key_ask`; the key being given it, `giving`), told to what follows its topics.
@@ -794,12 +830,18 @@ pub fn fixture_prompts_now(
   key_ask~ : Bool,
   giving? : Bool = false,
   safe_mode? : Bool = true,
+  theirs? : Bool = false,
+  theirs_owner? : Int = 0,
+  at? : Double = 0.0,
 ) -> Unit {
   fx.pairing = pairing
   fx.pairing_more = more
   fx.key_ask = key_ask
   fx.key_giving = giving
   fx.key_ask_safe_mode = safe_mode
+  fx.key_ask_theirs = theirs
+  fx.key_ask_theirs_owner = theirs_owner
+  fx.key_ask_at = at
   fx_changed()
 }
 
@@ -1111,6 +1153,12 @@ pub fn fixture_page(mode : String) -> String {
     "settings-stations-add" => up("add", "", 0)
     // a station its workspace's safe mode does not name, which the viewer could protect: 保护 on its page and its card
     "settings-station-unprotected" | "settings-stations-unprotected" => fx_unprotected.val = true
+    // a newly added station not yet protected and blocked by safe mode: full-screen security-mode guidance
+    "settings-station-unprotected-blocked" => {
+      fx_unprotected.val = true
+      fx_unprotected_blocked.val = true
+      fx.willow_away = true
+    }
     // Profile's ＋ with more than one station online: which to add it on (pressed by the film's step)
     "settings-profiles-pick" => fx.mba_online = true
     // an account's page with the station it is on and its move to another, Maple up to take it: ChatGPT 团队, a
@@ -1128,9 +1176,10 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profiles-offer" => fx.offer_quota = true
     // (an account on several stations' own page: its members those of a profile's hosts)
     "settings-profile-account" => fx.profile_hosts = true
-    "settings-profiles-sum-a" => {
+    "settings-profiles-sum-a" | "settings-profiles-overview" => fx.summary = true
+    "settings-profiles-manage" => {
       fx.summary = true
-      profiles_narrow_overview.set(true)
+      fx.mba_online = true
     }
     "settings-stations-existing" => up("add-existing", "", 0)
     "settings-stations-command" => up("add-command", "", 0)
@@ -1278,6 +1327,12 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-replaced" => fx.lock_case = "replaced"
     "settings-vault-replaced-was" => fx.lock_case = "replaced-was"
     "settings-vault-prompt" => fx.key_ask = true
+    // (a teammate's device asking for the workspace vault's key, outside safe mode)
+    "settings-vault-prompt-theirs" => {
+      fx.key_ask = true
+      fx.key_ask_safe_mode = false
+      fx.key_ask_theirs = true
+    }
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
     "settings-vault-editor" => fixture_open.desk = "vault-editor"
@@ -1408,11 +1463,11 @@ pub fn fixture_page(mode : String) -> String {
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
-    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-pair-prompt" | "settings-vault-prompt" =>
+    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-pair-prompt" | "settings-vault-prompt" | "settings-vault-prompt-theirs" =>
       "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
-    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" => "station:ws1/st1"
+    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" | "settings-station-unprotected-blocked" => "station:ws1/st1"
     "settings-stations-unprotected" => "stations"
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
@@ -1434,7 +1489,9 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-long-name" => "profiles"
+    "settings-profiles-sum-a" | "settings-profiles-overview" => "profiles-overview"
+    "settings-profiles-manage" => "profiles-manage"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -2613,18 +2670,27 @@ fn fx_station(address : String) -> Json {
       ("profileStates", fx_station_profile_states(profiles)),
       ("link", obj([
         ("state", str(if fx.willow_away { "offline" } else { "online" })),
-        ..if fx.willow_away {
+        ..if fx_unprotected_blocked.val {
+          [("cause", str("lock")), ("message", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))]
+        } else if fx.willow_away {
           [("cause", str("unreached")), ("message", str("连接超时，未收到 station 响应"))]
         } else {
           []
         },
       ])),
-      ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ("stateText", str(if fx_unprotected_blocked.val { "安全模式拦截" } else if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ..if fx_unprotected_blocked.val {
+        [("blocked", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))]
+      } else {
+        []
+      },
       ("acceptAutoChats", Json::boolean(fx.accept_auto_chats)),
       (
         "problems",
         if fx.willow_incompatible {
           [obj([("key", str("incompatible")), ("level", str("amber")), ("text", str("版本不兼容：这台 station 和这个 still.fail 的版本不匹配，部分信息无法显示。请更新 still.fail 和这台 station。"))])]
+        } else if fx_unprotected_blocked.val {
+          [obj([("key", str("blocked")), ("level", str("amber")), ("text", str("此 station 正在等待同步安全模式状态；如果它尚未受保护，请 owner 在受信任设备上前往「设置 › 安全」保护它"))])]
         } else if fx.willow_away {
           [obj([("key", str("away")), ("level", str("red")), ("text", str("无法连接：可能已离线，或受中继、防火墙影响"))])]
         } else {
@@ -2658,7 +2724,8 @@ fn fx_station(address : String) -> Json {
           Json::null()
         },
       ),
-      ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
+      ("unprotected", Json::boolean(fx_unprotected.val)),
+      ("protect", Json::boolean(fx_unprotected.val && (!fx.willow_away || fx_unprotected_blocked.val))),
       // the runtimes it runs, each with its models (its page's: the connect page asks whether one runs on its runtime)
       ("runtimes", [obj([("runtime", str("claude")), ("models", [str("claude-opus-5-5"), str("claude-sonnet-5")])])]),
       // what its profiles have turned on (Claude 主账号's: Opus 5.5 and Sonnet 5, on claude)
@@ -3687,23 +3754,45 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             "asks",
             if fx.key_ask {
               [
-                obj([
-                  ("workspace", str("ws1")),
-                  ("workspaceName", str("星火工作室")),
-                  ("vault", str("v1")),
-                  ("vaultName", str("林的库")),
-                  ("device", str("d-new")),
-                  ("deviceText", str("Pixel 9")),
-                  ("deviceCode", str("K7M-4PX")),
-                  ("ownerName", str("林")),
-                  ("ownerEmail", str("lin@example.com")),
-                  ("isOwnDevice", Json::boolean(true)),
-                  ("vaultScope", str("personal")),
-                  ("vaultItems", Json::number(3.0)),
-                  ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
-                  ("at", Json::number(0.0)),
-                  ("atText", str("3 分钟前")),
-                ]),
+                if fx.key_ask_theirs {
+                  let owner_name = if fx.key_ask_theirs_owner == 0 { "Ana" } else { "" }
+                  let owner_email = if fx.key_ask_theirs_owner <= 1 { "ana@example.com" } else { "" }
+                  obj([
+                    ("workspace", str("ws1")),
+                    ("workspaceName", str("星火工作室")),
+                    ("vault", str("v-ws")),
+                    ("vaultName", str("Workspace 密钥库")),
+                    ("device", str("d-ana")),
+                    ("deviceText", str("Ana 的 MacBook Air · still.fail")),
+                    ("deviceCode", str("M5J-TK5")),
+                    ("ownerName", str(owner_name)),
+                    ("ownerEmail", str(owner_email)),
+                    ("isOwnDevice", Json::boolean(false)),
+                    ("vaultScope", str("workspace")),
+                    ("vaultItems", Json::number(0.0)),
+                    ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
+                    ("at", Json::number(fx.key_ask_at)),
+                    ("atText", str("刚刚")),
+                  ])
+                } else {
+                  obj([
+                    ("workspace", str("ws1")),
+                    ("workspaceName", str("星火工作室")),
+                    ("vault", str("v1")),
+                    ("vaultName", str("林的库")),
+                    ("device", str("d-new")),
+                    ("deviceText", str("Pixel 9")),
+                    ("deviceCode", str("K7M-4PX")),
+                    ("ownerName", str("林")),
+                    ("ownerEmail", str("lin@example.com")),
+                    ("isOwnDevice", Json::boolean(true)),
+                    ("vaultScope", str("personal")),
+                    ("vaultItems", Json::number(3.0)),
+                    ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
+                    ("at", Json::number(fx.key_ask_at)),
+                    ("atText", str("3 分钟前")),
+                  ])
+                },
               ]
             } else {
               []
@@ -4598,6 +4687,13 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     "vault.addDevice" | "vault.hidePrompt" => {
       if name == "vault.addDevice" && text(p, "vault") == "v-ws" && text(p, "device") == "d-new" {
         fx.vault_ws_pending_done = true
+      }
+      if name == "vault.hidePrompt" {
+        fx.key_ask_hidden_vault = text(p, "vault")
+        fx.key_ask_hidden_at = match field(p, "at") {
+          Some(Number(n, ..)) => n
+          _ => 0.0
+        }
       }
       fx.key_ask = false
       fx.key_ask_ended = if name == "vault.addDevice" { "give" } else { "hide" }

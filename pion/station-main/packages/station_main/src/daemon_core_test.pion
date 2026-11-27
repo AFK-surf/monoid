@@ -272,3 +272,42 @@ test "daemon_core: parse_daemon_run_args and parse_tell_reply" {
   }
   assert_true(tell_backoff_ms(0) == 1000L && tell_backoff_ms(10) == TELL_BACKOFF_CAP_MS, "backoff capped")
 }
+
+test "daemon_core: authorize_peer_http_conn enforces role toggle and fail-closed CloudRoster" {
+  let roster = station_mesh::CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "self-st",
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      station_mesh::WorkspaceMembership::{
+        workspace: "ws-1",
+        name: "WS",
+        home: true,
+        is_rig_here: false,
+        waiting: false,
+        peers: [station_mesh::PeerInfo::{ id: "known-peer", name: "Peer" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+  match authorize_peer_http_conn(roster, "known-peer", false, role_name="rig") {
+    Err((code, _)) => assert_true(code == 1, "disabled accept_peer_http closes with code 1")
+    Ok(_) => panic("rig must reject PEER_HTTP_ALPN")
+  }
+  match authorize_peer_http_conn(roster, "", true, role_name="whole") {
+    Err((code, _)) => assert_true(code == 3, "empty remote_id rejected with code 3")
+    Ok(_) => panic("empty remote_id must be rejected")
+  }
+  match authorize_peer_http_conn(roster, "unknown-peer", true, role_name="whole") {
+    Err((code, _)) => assert_true(code == 3, "unknown peer rejected with code 3")
+    Ok(_) => panic("unknown peer must be rejected")
+  }
+  match authorize_peer_http_conn(roster, "known-peer", true, role_name="whole") {
+    Ok(ws) => assert_str_eq(ws, "ws-1")
+    Err((_, msg)) => panic("known workspace peer must be admitted: " + msg)
+  }
+}

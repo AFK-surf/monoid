@@ -33,9 +33,12 @@ const PARTS_GIVE = 15;
 // and trimming vault tool boilerplate while adding chat_configure and chat_list filters.
 // CORE_TOTAL raised to 14,100 (2026-11-23: 14,019 bytes) because the core tools' enum parameters (`station_task.action`,
 // `station_file.direction`) now carry `"type": "string"` (Vertex AI refuses a declaration without it).
+// CORE_TOTAL raised to 14,200 (2026-11-27: 14,124 bytes) for chat_post's reply_to, which lets an agent answer a Feishu
+// group in a message's thread rather than the whole group (no tool did it before); chat_post's other descriptions were
+// cut to keep its schema under SCHEMA.
 // TOOLS_WEIGHT_TABLE=1 prints every tool's.
 const TOTAL = 62_000;
-const CORE_TOTAL = 14_100;
+const CORE_TOTAL = 14_200;
 const HEAVIEST = 5_000;
 // One tool's input schema, as compact JSON. Not a rounding: Codex 0.169.0 strips every description from an MCP tool's
 // input schema once it is over 5,000 bytes (measured 2026-11-14 with the station's list against a fake model endpoint:

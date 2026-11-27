@@ -32,13 +32,13 @@ pub fn ask_node(
   covered? : () -> Bool = fn() { false },
 ) -> Unit {
   // (the line as it is now, trimmed: followed as it changes)
-  let words = fn() { line.text().trim(chars=" \t\n").to_owned() }
+  let words = fn() { line.composed_said().trim(chars=" \t\n").to_owned() }
   let can = fn() { ask_can(words(), value, empty) }
   let said = Ref(false)
   let go = fn() {
     if !said.val && @signals.untracked(can) {
       said.val = true
-      say(@signals.untracked(words))
+      say(line.commit_composing().trim(chars=" \t\n").to_owned())
     }
   }
   dialog_layer_node(parent, open, cancel, outside=true, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {

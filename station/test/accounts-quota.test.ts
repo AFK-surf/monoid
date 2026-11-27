@@ -11,6 +11,7 @@ import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
 import { at, checkQuota, claudeUsage, claudeWithRefresh, codexQuota, codexUsage, codexWindows, machineUsage, windowLabel } from "../src/accounts/quota.ts";
 import { AGY_FILE_TOKENS, SESSIONS, agyAccountFile, agyConversations, agyHome, agyKeychain, agyToken, geminiDir } from "../src/agents/agy.ts";
+import { tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { machine, provider, script, temp, until } from "./accounts-fakes.ts";
@@ -491,10 +492,12 @@ describe("allowances and renewing", { concurrency: true }, () => {
       return { status: 404, body: {} };
     });
     try {
-      // Not turned on (the default), the CLI's refusal is said as it is and nothing is asked of Google's API.
+      // Not turned on (the default), nothing is asked of Google's API, and the CLI's refusal (of the free tier alone, paid
+      // accounts get it too) is said as what it means and where to look, not as a region problem (#9040).
       const refused = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(refused.state, "unavailable");
-      assert.ok(refused.detail?.includes("not currently available in your location"));
+      assert.equal(refused.detail, tr("zh", "station.quota.agyLocation"));
+      assert.ok(refused.detail?.includes("https://one.google.com") && !refused.detail.includes("not currently available"));
       assert.equal(agyApi.asked.length, 0);
 
       const fallbackQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
@@ -537,12 +540,22 @@ describe("allowances and renewing", { concurrency: true }, () => {
       ]);
       dailyHasGeminiFiveHour = false;
 
-      // Account with no active tier at all in this location: falls through to report the location error, never a
-      // verification hold.
+      // Account with neither a paid nor a current tier: Google sees no plan on it, said as that and held, never the
+      // location words nor a verification hold (#9040).
       paidTier = false;
       const trulyBlockedQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
-      assert.equal(trulyBlockedQ.state, "unavailable");
-      assert.ok(trulyBlockedQ.detail?.includes("not currently available in your location"));
+      assert.equal(trulyBlockedQ.state, "blocked");
+      assert.equal(trulyBlockedQ.detail, tr("zh", "station.quota.agyNoPlan"));
+      // Another eligibility refusal (not the location's): Google's words as they are, never "no plan".
+      const otherErr = "Eligibility check failed: Your current account is not eligible for Antigravity. Your administrator has turned it off.";
+      const otherQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: otherErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(otherQ.state, "unavailable");
+      assert.ok(otherQ.detail?.includes("Your administrator has turned it off"));
+      const otherOffQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: otherErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.ok(otherOffQ.detail?.includes("Your administrator has turned it off"));
+      // Google's API not answering: no plan can be told, the CLI's refusal said as what it means.
+      const unreadQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: "http://127.0.0.1:9" }, "zh");
+      assert.equal(unreadQ.detail, tr("zh", "station.quota.agyLocation"));
     } finally {
       await agyApi.close();
     }

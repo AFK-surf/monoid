@@ -2322,7 +2322,7 @@ fn chat_body_row(
         // stepping where the column is laid out anew: as much further right as the column is drawn wider, less what the
         // column is moved across by, twice (its own offset's, and the room in from the right as much again) (sfbase's
         // column_laid))
-        p.offset(By(fn() {
+        p.offset_snapped(By(fn() {
           let c = @sfbase.column_laid(chat, p)
           (c.by - 2.0 * c.across, 0.0)
         }))
@@ -2346,7 +2346,7 @@ fn chat_body_row(
         // goes with the right edge (by - 2·across past where it is laid out) and the words at the left with the left
         // (no more than the column's own across), its pill goes half of the one, its middle with the drawn middle,
         // never stepping where the column is laid out anew (sfbase's column_laid))
-        p.offset(By(fn() {
+        p.offset_snapped(By(fn() {
           let c = @sfbase.column_laid(chat, p)
           (c.by / 2.0 - c.across, 0.0)
         }))

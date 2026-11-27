@@ -62,6 +62,7 @@ pub fn float_button_node(
               (sx + sy) / 2.0
             }),
             about=At(0.5, 0.5),
+            moves_besides=false,
           )
           |> ignore
         }

@@ -280,6 +280,64 @@ test "vault key prompt shows device code, owner, scope with item count, and accu
 }
 
 ///|
+test "a teammate's device asking for the workspace vault's key: said to be theirs, never this person's trusted device" {
+  for screen in [(2, false), (0, false), (0, true)] {
+    let about = "platform \{screen.0}, wide \{screen.1}"
+    let t = prompt_asked(
+      fn() { @settings.fixture_prompts_now(pairing=false, key_ask=true, safe_mode=false, theirs=true) },
+      platform=screen.0,
+      wide=screen.1,
+    )
+    assert_true(t.find("Ana 的 MacBook Air · still.fail 申请密钥库的钥匙") is Some(_), msg=about)
+    assert_true(
+      t.find("这是 Ana 的设备，刚刚申请「Workspace 密钥库」的钥匙。请先和 Ana 核对设备核对码，无误后再授权。") is Some(_),
+      msg=about,
+    )
+    assert_true(t.find("你的受信任设备") is None, msg=about)
+    assert_true(t.find("（本人）") is None, msg=about)
+    assert_true(t.find("M5J-TK5") is Some(_), msg=about)
+    assert_true(t.find("团队共享密钥库 · 共 0 条密钥") is Some(_), msg=about)
+    assert_eq(t.audit(), [], msg=about)
+    let (x, y) = t.find_last("授权").unwrap()
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenting(), msg=about)
+    assert_eq(@settings.fixture_key_ask_ended(), "give", msg=about)
+  }
+  // 稍后 passes the specific vault id and full-precision timestamp (> Int32 max) to vault.hidePrompt.
+  let t_hide = prompt_asked(
+    fn() { @settings.fixture_prompts_now(pairing=false, key_ask=true, safe_mode=false, theirs=true, at=5000000000.0) },
+    platform=0,
+    wide=true,
+  )
+  let (lx, ly) = t_hide.find_last("稍后").unwrap()
+  t_hide.tap(lx, ly)
+  t_hide.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting())
+  assert_eq(@settings.fixture_key_ask_ended(), "hide")
+  assert_eq(@settings.fixture_key_ask_hidden_vault(), "v-ws")
+  assert_eq(@settings.fixture_key_ask_hidden_at(), 5000000000.0)
+  // Empty ownerName falls back to ownerEmail, never to "你的受信任设备".
+  let t_email = prompt_asked(
+    fn() { @settings.fixture_prompts_now(pairing=false, key_ask=true, safe_mode=false, theirs=true, theirs_owner=1) },
+    platform=0,
+    wide=true,
+  )
+  assert_true(t_email.find("这是 ana@example.com 的设备，刚刚申请「Workspace 密钥库」的钥匙。请先和 ana@example.com 核对设备核对码，无误后再授权。") is Some(_))
+  assert_true(t_email.find("你的受信任设备") is None)
+  assert_eq(t_email.audit(), [])
+  // Both ownerName and ownerEmail empty: generic non-self fallback, never "你的受信任设备".
+  let t_unknown = prompt_asked(
+    fn() { @settings.fixture_prompts_now(pairing=false, key_ask=true, safe_mode=false, theirs=true, theirs_owner=2) },
+    platform=0,
+    wide=true,
+  )
+  assert_true(t_unknown.find("这是一台其他成员的设备，刚刚申请「Workspace 密钥库」的钥匙。请先与对方核对设备核对码，无误后再授权。") is Some(_))
+  assert_true(t_unknown.find("你的受信任设备") is None)
+  assert_eq(t_unknown.audit(), [])
+}
+
+///|
 test "pairing prompt with clarity metadata shows device code, build, willSign, and handover vaults; 0 added faults across screens and 1.3x" {
   for screen in [(0, 1100.0, 760.0), (2, 390.0, 844.0)] {
     let (platform, w, h) = screen

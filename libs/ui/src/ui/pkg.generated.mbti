@@ -2034,6 +2034,7 @@ pub fn FakeHost::due(Self, Double, String, () -> Unit) -> Unit
 
 type Field
 pub fn Field::colors(Self, placeholder~ : Int64, caret~ : Int64) -> Unit
+pub fn Field::commit_composing(Self) -> String
 pub fn Field::composed_said(Self) -> String
 pub fn Field::composing(Self) -> Bool
 pub fn Field::focus(Self) -> Unit

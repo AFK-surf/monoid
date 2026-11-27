@@ -15,6 +15,54 @@ export type Sig = { key: string; alg: "Ed25519" | "ES256"; sig: string };
 /// A device's box key, signed by that device's lock `sign_key`; `recovery`: its person's recovery key (what any of
 /// their devices seals a new vault's key to).
 export type BoxCert = { v: 1; ws: string; device: string; box: string; recovery?: string; at: number; sig: Sig };
+/// A device's explicit per-vault key authorization request (`vault.ask`), signed separately under `TAG.ask` so
+/// automatic box-certificate publishing never triggers prompts and asks never bloat `Vault.keys`.
+export type KeyAsk = { v: 1; ws: string; vault: string; device: string; box: string; at: number; sig: Sig };
+const VAULT_ID_RE = /^v_[0-9A-HJKMNP-TV-Z]{26}$/;
+const HEX32_RE = /^[0-9a-f]{64}$/;
+const ASK_KEYS = new Set(["v", "ws", "vault", "device", "box", "at", "sig"]);
+const SIG_KEYS = new Set(["key", "alg", "sig"]);
+
+export type AskLockView = {
+  ws: string;
+  members: ReadonlyMap<string, unknown>;
+  devices: ReadonlyMap<string, { sub: string; kind: string; own: boolean; sign_key?: string }>;
+  signKeys: ReadonlyMap<string, readonly string[]>;
+};
+
+/// Why a standalone per-vault key ask record is invalid for `lock`, or null when valid: exact fixed shape
+/// `{v: 1, ws, vault, device, box, at, sig}` with no extra fields, signed under `TAG.ask` by the device's own
+/// lock signing key (`ever`: also accepting historical signing keys of that device).
+export function askOk(lock: AskLockView, raw: unknown, ever = false): string | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return "a key ask is an object";
+  const keys = Object.keys(raw);
+  if (keys.length !== ASK_KEYS.size || !keys.every((k) => ASK_KEYS.has(k))) {
+    return "a key ask is {v: 1, ws, vault, device, box, at, sig}";
+  }
+  const a = raw as Partial<KeyAsk>;
+  if (a.v !== 1 || a.ws !== lock.ws) return "a key ask is {v: 1, ws, vault, device, box, at, sig} of this workspace";
+  if (typeof a.vault !== "string" || !VAULT_ID_RE.test(a.vault)) return "a key ask's vault is v_<ULID>";
+  if (typeof a.device !== "string" || !HEX32_RE.test(a.device)) return "a key ask's device is a 32-byte hex id";
+  if (typeof a.box !== "string" || !BOX.test(a.box)) return "a key ask's box is an x25519 key";
+  if (typeof a.at !== "number" || !Number.isSafeInteger(a.at) || a.at < 0) return "a key ask's at is a whole number";
+  if (a.sig === null || typeof a.sig !== "object" || Array.isArray(a.sig)) return "a key ask's sig is invalid";
+  const sigKeys = Object.keys(a.sig);
+  if (sigKeys.length !== SIG_KEYS.size || !sigKeys.every((k) => SIG_KEYS.has(k))) return "a key ask's sig is invalid";
+  if (typeof a.sig.key !== "string" || a.sig.key.length > 200 || (a.sig.alg !== "Ed25519" && a.sig.alg !== "ES256") || typeof a.sig.sig !== "string" || a.sig.sig.length > 256) {
+    return "a key ask's sig is invalid";
+  }
+  const d = lock.devices.get(a.device);
+  if (d === undefined || d.kind !== "app" || !lock.members.has(d.sub)) {
+    return "the key ask's device is not an app device in the lock";
+  }
+  if (!ever && !d.own) return "the key ask's device was put in the lock by someone else, not its person";
+  const had = ever ? (lock.signKeys.get(a.device) ?? []) : [];
+  if (d.sign_key !== a.sig.key && !(ever && had.includes(a.sig.key))) {
+    return "a key ask is signed by its own device's key";
+  }
+  if (!signedOk(a as KeyAsk, TAG.ask)) return "the key ask's signature is invalid";
+  return null;
+}
 export type Vault = {
   v: 1; ws: string; id: string; seq: number; owner: string; name: string; members: string[]; epoch: number;
   keys: { cert: BoxCert; wrapped: string }[]; recovery?: string; at: number; sig: Sig;
@@ -97,6 +145,7 @@ export type Deny = { v: 1; ws: string; request: string; at: number; sig: Sig };
 
 export const TAG = {
   box: "stillfail-vault-box/1",
+  ask: "stillfail-vault-ask/1",
   vault: "stillfail-vault/1",
   item: "stillfail-vault-item/1",
   grant: "stillfail-vault-grant/1",

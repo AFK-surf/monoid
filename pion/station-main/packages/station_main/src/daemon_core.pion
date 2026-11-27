@@ -51,6 +51,9 @@ let MESH_TOK_FINISH : Int = 4008
 let MESH_TOK_CONN_CLOSE : Int = 4009
 let MESH_TOK_EP_CLOSE : Int = 4010
 let MESH_TOK_ZSTD_UNPACK : Int = 4011
+let MESH_TOK_HTTP_WRITE : Int = 4012
+let MESH_TOK_HTTP_FINISH : Int = 4013
+let MESH_TOK_HTTP_RESET : Int = 4014
 let MESH_TOK_OUT_CONNECT : Int = 4020
 let MESH_TOK_OUT_OPEN_BI : Int = 4021
 let MESH_TOK_OUT_WRITE : Int = 4022
@@ -66,11 +69,19 @@ let FRONT_TOK_STREAM_READ : Int = 4035
 let FRONT_TOK_STREAM_WRITE : Int = 4036
 let FRONT_TOK_STREAM_END : Int = 4037
 let FRONT_TOK_OUT_WRITE : Int = 4038
+let FRONT_TOK_HTTP_WRITE : Int = 4039
+let FRONT_TOK_HTTP_FINISH : Int = 4040
 
 // Hardening caps for inbound mesh connections, streams, and outbound tell retries.
 pub let MAX_ACTIVE_CONNS : Int = 64
 pub let MAX_ACTIVE_STREAMS : Int = 128
+pub let MAX_ACTIVE_PEER_HTTP_STREAMS : Int = 128
 pub let STREAM_READ_TIMEOUT_MS : Int64 = 15000L
+pub let PEER_HTTP_IDLE_TIMEOUT_MS : Int64 = 60000L
+pub let MAX_EARLY_PEER_HTTP_BYTES : Int = 1048576
+pub let PEER_HTTP_WRITE_HIGH_WATER : Int = 1048576
+pub let PEER_HTTP_WRITE_LOW_WATER : Int = 262144
+pub let PEER_HTTP_WRITE_HARD_CAP : Int = 2097152
 pub let MAX_OUTBOUND_TELLS : Int = 128
 pub let TELL_RETRY_MAX_MS : Int64 = 3600000L
 pub let TELL_BACKOFF_CAP_MS : Int64 = 60000L
@@ -247,6 +258,31 @@ pub struct ActivePeerStream {
   pub mut max_binary_buf : Int
   pub mut rx_buf : Bytes
   pub mut streaming_active : Bool
+}
+
+pub struct ActivePeerHttpStream {
+  pub stream_id : Int64
+  pub conn_id : Int64
+  pub remote_id : String
+  pub alpn : String
+  pub is_front : Bool
+  pub opened_at : Int64
+  pub mut last_activity_ms : Int64
+  pub mut opened_delivered : Bool
+  pub mut early_chunks : Array[Bytes]
+  pub mut early_bytes : Int
+  pub mut early_ended : Bool
+  pub mut peer_ended : Bool
+  pub mut local_finished : Bool
+  pub mut local_finish_sent : Bool
+  pub mut closed : Bool
+  pub mut write_queue : Array[Bytes]
+  pub mut write_queue_bytes : Int
+  pub mut write_in_flight : Bool
+  pub mut finish_pending : Bool
+  pub mut idle_exempt : Bool
+  pub mut read_paused : Bool
+  pub mut read_in_flight : Bool
 }
 
 pub struct OutboundTell {
@@ -718,6 +754,25 @@ pub fn parse_and_authenticate_peer_line(
   }
 }
 
+/// Authenticate an incoming `PEER_HTTP_ALPN` connection against the live `CloudRoster` (fail-closed).
+pub fn authorize_peer_http_conn(
+  roster : station_mesh::CloudRoster,
+  remote_id : String,
+  accept_peer_http : Bool,
+  role_name : String = "station",
+) -> Result[String, (Int, String)] {
+  if !accept_peer_http {
+    return Err((1, "unsupported alpn on " + role_name))
+  }
+  if remote_id.length() == 0 {
+    return Err((3, "peer identity missing"))
+  }
+  match station_mesh::check_peer_http_conn_open(roster, remote_id) {
+    Ok(ws) => Ok(ws)
+    Err(msg) => Err((3, msg))
+  }
+}
+
 /// Handle passed to every role callback so roles interact with `daemon_core` without duplicating
 /// transport, launcher IPC, or handover state.
 /// Note: internal `mux_mesh` is intentionally private to `daemon_core` so role code cannot
@@ -740,14 +795,25 @@ pub struct DaemonCtx {
   log_fn : (String) -> Unit
   has_predecessor_fn : () -> Bool
   is_stopping_fn : () -> Bool
+  is_handover_shutdown_fn : () -> Bool
   is_role_ready_fn : () -> Bool
   mark_role_ready_fn : () -> Unit
   request_stop_fn : () -> Unit
   fail_and_stop_fn : (String) -> Unit
+  loopback_port_fn : () -> Int
+  shown_loopback_port_fn : () -> Int
   announce_mcp_port_fn : (Int) -> Unit
   enqueue_tell_fn : (String, String, base_codec::Json) -> Unit
   reply_peer_rpc_fn : (Int64, Bytes, Option[DaemonFileStreamPlan], Bool, Bool) -> Unit
   unpack_zstd_fn : (Int64, Bytes, Int, (Result[Bytes, String]) -> Unit) -> Unit
+  write_peer_http_chunk_fn : (Int64, Bytes) -> Unit
+  finish_peer_http_fn : (Int64) -> Unit
+  close_peer_http_fn : (Int64) -> Unit
+  stream_conn_id_fn : (Int64) -> Int64
+  peer_http_write_queued_bytes_fn : (Int64) -> Int
+  set_stream_idle_exempt_fn : (Int64, Bool) -> Unit
+  set_peer_http_read_paused_fn : (Int64, Bool) -> Unit
+  close_mesh_conn_fn : (Int64, Bool, Int, String) -> Unit
 }
 
 pub fn DaemonCtx::log(self : DaemonCtx, msg : String) -> Unit {
@@ -762,6 +828,48 @@ pub fn DaemonCtx::has_predecessor(self : DaemonCtx) -> Bool {
 /// True once shutdown or handover stop has been requested.
 pub fn DaemonCtx::is_stopping(self : DaemonCtx) -> Bool {
   (self.is_stopping_fn)()
+}
+
+/// True when shutdown was initiated by a graceful `SIGUSR2` / launcher `handover` (never full stop).
+pub fn DaemonCtx::is_handover_shutdown(self : DaemonCtx) -> Bool {
+  (self.is_handover_shutdown_fn)()
+}
+
+/// Return the bound loopback HTTP port (or 0 if not yet listening).
+pub fn DaemonCtx::loopback_port(self : DaemonCtx) -> Int {
+  (self.loopback_port_fn)()
+}
+
+/// Return the launcher-announced loopback HTTP port (or 0 if not yet listening).
+pub fn DaemonCtx::shown_loopback_port(self : DaemonCtx) -> Int {
+  (self.shown_loopback_port_fn)()
+}
+
+/// Exempt (or un-exempt) an active full-duplex stream from the generic 60s idle timeout
+/// (used for `stillfail/admin/1` authenticated control streams whose lifecycle is governed by `ServeEndpoint`).
+pub fn DaemonCtx::set_stream_idle_exempt(self : DaemonCtx, sid : Int64, exempt : Bool) -> Unit {
+  (self.set_stream_idle_exempt_fn)(sid, exempt)
+}
+
+/// Return the parent mesh connection ID for an active full-duplex stream (or -1 if unknown).
+pub fn DaemonCtx::stream_conn_id(self : DaemonCtx, sid : Int64) -> Int64 {
+  (self.stream_conn_id_fn)(sid)
+}
+
+/// Return the number of bytes currently queued for writing on a full-duplex stream.
+pub fn DaemonCtx::peer_http_write_queued_bytes(self : DaemonCtx, sid : Int64) -> Int {
+  (self.peer_http_write_queued_bytes_fn)(sid)
+}
+
+/// Close a mesh connection (direct iroh or `front.sock`) with an error code and reason.
+pub fn DaemonCtx::close_mesh_conn(
+  self : DaemonCtx,
+  conn_id : Int64,
+  is_front : Bool,
+  code : Int,
+  reason : String,
+) -> Unit {
+  (self.close_mesh_conn_fn)(conn_id, is_front, code, reason)
 }
 
 pub fn DaemonCtx::is_role_ready(self : DaemonCtx) -> Bool {
@@ -821,6 +929,34 @@ pub fn DaemonCtx::unpack_zstd_async(
   (self.unpack_zstd_fn)(sid, zbytes, max_raw, on_done)
 }
 
+/// Incrementally write a full-duplex chunk back on an active `PEER_HTTP_ALPN` stream
+/// (works transparently over both direct iroh streams and `front.sock` framed sockets).
+pub fn DaemonCtx::write_peer_http_chunk(self : DaemonCtx, sid : Int64, data : Bytes) -> Unit {
+  (self.write_peer_http_chunk_fn)(sid, data)
+}
+
+/// Half-close the local write direction of an active `PEER_HTTP_ALPN` stream (FIN / END frame)
+/// after all queued chunks flush, without forcibly aborting the peer's read direction.
+pub fn DaemonCtx::finish_peer_http(self : DaemonCtx, sid : Int64) -> Unit {
+  (self.finish_peer_http_fn)(sid)
+}
+
+/// Returns `true` when the outbound mesh write queue for `sid` has reached `PEER_HTTP_WRITE_HIGH_WATER`.
+pub fn DaemonCtx::is_peer_http_write_paused(self : DaemonCtx, sid : Int64) -> Bool {
+  (self.peer_http_write_queued_bytes_fn)(sid) >= PEER_HTTP_WRITE_HIGH_WATER
+}
+
+/// Pause or resume reading inbound chunks from a `PEER_HTTP_ALPN` / `ALPN` stream (both direct iroh
+/// and `front.sock`), applying natural QUIC/TCP backpressure when the local upstream is slow.
+pub fn DaemonCtx::set_peer_http_read_paused(self : DaemonCtx, sid : Int64, paused : Bool) -> Unit {
+  (self.set_peer_http_read_paused_fn)(sid, paused)
+}
+
+/// Immediately abort and clean up an active `PEER_HTTP_ALPN` stream (both directions).
+pub fn DaemonCtx::close_peer_http(self : DaemonCtx, sid : Int64) -> Unit {
+  (self.close_peer_http_fn)(sid)
+}
+
 /// Role plugin contract consumed by `run_daemon`.
 pub struct DaemonRoleHooks {
   pub role_name : String
@@ -828,6 +964,10 @@ pub struct DaemonRoleHooks {
   pub hears_outside : Bool
   /// Whether this role serves `meshScopes.*` / `meshRelays.*` directory routes.
   pub has_mesh_directory : Bool
+  /// Whether this role accepts full-duplex `PEER_HTTP_ALPN` streams (`rig_daemon` sets false).
+  pub accept_peer_http : Bool
+  /// Whether this role accepts member `stillfail/admin/1` (`ALPN`) connections (`rig_daemon` sets false).
+  pub accept_admin_alpn : Bool
   /// Validate whether `<data>` matches this daemon role (runs before key load / loopback bind).
   pub validate_mode : (String, station_ops::OpsFs, station_cloud::CloudStore, Double, String) -> Result[Unit, String]
   /// Initialize role state BEFORE the handover barrier (runs immediately after `ConfigFile`,
@@ -851,6 +991,21 @@ pub struct DaemonRoleHooks {
   pub on_stream_end : (DaemonCtx, Int64, String, Bool, Bool) -> Unit
   /// Clean up role state if an active streaming upload aborts or times out before EOF.
   pub on_stream_abort : (DaemonCtx, Int64) -> Unit
+  /// Full-duplex `PEER_HTTP_ALPN` stream opened (`sid`, `remote_id`, `alpn`, `is_front`),
+  /// invoked only after `CloudRoster` admission passes and handover barrier (`role_ready`) lifts.
+  pub on_peer_http_open : (DaemonCtx, Int64, String, String, Bool) -> Result[Unit, String]
+  /// Full-duplex `PEER_HTTP_ALPN` incremental data chunk (delivered immediately, never waiting for EOF).
+  pub on_peer_http_data : (DaemonCtx, Int64, Bytes) -> Result[Unit, String]
+  /// Full-duplex `PEER_HTTP_ALPN` peer write-half close (FIN); does not close local write side.
+  pub on_peer_http_end : (DaemonCtx, Int64) -> Unit
+  /// Full-duplex `PEER_HTTP_ALPN` / `ALPN` abnormal or normal close cleanup.
+  pub on_peer_http_close : (DaemonCtx, Int64) -> Unit
+  /// Full-duplex `PEER_HTTP_ALPN` / `ALPN` write-drain callback for backpressured streaming.
+  pub on_peer_http_writable : (DaemonCtx, Int64) -> Unit
+  /// Member `stillfail/admin/1` connection opened (`conn_id`, `remote_id`, `is_front`).
+  pub on_admin_conn_open : (DaemonCtx, Int64, String, Bool) -> Unit
+  /// Member `stillfail/admin/1` connection closed (`conn_id`).
+  pub on_admin_conn_close : (DaemonCtx, Int64) -> Unit
   /// Notify role of a completed outbound tell reply (`method`, `ref_id`, `until_opt`).
   pub on_outbound_reply : (DaemonCtx, String, String, Option[Int64]) -> Unit
   /// Handle role-owned `station_sys` events and `MUX_TAG_DOOR` / `MUX_TAG_ROLE` shell completions.
@@ -861,8 +1016,11 @@ pub struct DaemonRoleHooks {
   pub on_tick : (DaemonCtx, Int64, Int64) -> Unit
   /// Notify role when `cloud.json` / presence roster changes (`wall_sec`, `wall_ms`, `connected`).
   pub on_cloud_changed : (DaemonCtx, Int64, Int64, Bool) -> Unit
+  /// Called when the launcher delivers a `carried` payload from the predecessor (`control.on_carried`).
+  pub on_carried : (DaemonCtx, base_codec::Json) -> Unit
   /// Called when the launcher requests a graceful handover (`control.on("handover")`).
-  pub on_handover_start : (DaemonCtx) -> Unit
+  /// Returning `Err(msg)` carries `handoverFailed` to the successor, reports failure, and marks handover failed.
+  pub on_handover_start : (DaemonCtx) -> Result[Unit, String]
   /// Called during graceful shutdown before closing launcher control, `hub.json`, and `host_shim`.
   pub on_shutdown : (DaemonCtx) -> Unit
   /// Report role-owned live object count for `heap` diagnostics (core adds active conns/streams).
@@ -880,6 +1038,50 @@ fn parse_v2_header_has_bytes(line : String) -> Bool {
 }
 
 /// Run a station daemon role using the shared transport and lifecycle core.
+fn make_daemon_cloud_fs(sep : String) -> station_cloud::CloudFs {
+  station_cloud::CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match station_sys::read_file_strict(p) {
+        Ok(b) => Ok(Some(b.to_string()))
+        Err(station_sys::StrictReadErr::NotFound) => Ok(None)
+        Err(_) => Err("read_file_strict failed: " + p)
+      }
+    },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      let dir = nodepath::dirname(sep, p)
+      if dir.length() > 0 && dir != "." && dir != p {
+        let _ = station_sys::mkdir_p(dir)
+      }
+      if station_sys::write_file_atomic(p, text.to_bytes(), 384) {
+        Ok(())
+      } else {
+        Err("write_file_atomic failed: " + p)
+      }
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      let _ = station_sys::unlink(p)
+      Ok(())
+    },
+    rename_file: fn(from : String, to : String) -> Result[Unit, String] {
+      if station_sys::rename(from, to) {
+        Ok(())
+      } else {
+        Err("rename failed: " + from)
+      }
+    },
+    mkdir_p: fn(p : String) -> Result[Unit, String] {
+      if station_sys::mkdir_p(p) {
+        Ok(())
+      } else {
+        Err("mkdir_p failed: " + p)
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      station_sys::stat_raw(p) is Some(_)
+    },
+  }
+}
+
 pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
   let home = station_sys::homedir()
@@ -977,7 +1179,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
 
   // Open `cloud.json` and let the role validate mode compatibility.
   let shell_client = builders_core::ShellClient::new()
-  let cloud = station_cloud::CloudStore::open_with_shell(data, shell_client, sep=sep)
+  // Build `CloudFs` on direct `station_sys` C11 primitives (NEVER `ShellClient::write_atomic` /
+  // `shell_call_wait`, which would drain & drop in-flight `ShellMux` events on `daemon_core`'s loop!).
+  let cloud = station_cloud::CloudStore::open(
+    data,
+    make_daemon_cloud_fs(sep),
+    sep=sep,
+    verify_fn=Some(station_cloud::shell_verifier_of_client(shell_client)),
+  )
   let now_secs = (host_shim::wall_ms() / 1000L).to_double()
   match (hooks.validate_mode)(data, ops_fs, cloud, now_secs, sep) {
     Ok(_) => ()
@@ -1033,9 +1242,12 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
 
   // Control flags & lifecycle state.
   let mut stopping = false
+  let mut handover_stopping = false
   let mut ready_sent = false
   let mut role_ready = false
   let mut loopback_announced = false
+  let mut loopback_bound_port = 0
+  let mut loopback_shown_port = 0
   let mut hub_written = false
   let mut handover_warned = false
   let mut mesh_bound = false
@@ -1054,6 +1266,8 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let mut mesh_ep_id : Option[Int64] = None
   let active_conns : Map[Int64, ActivePeerConn] = Map::new()
   let active_streams : Map[Int64, ActivePeerStream] = Map::new()
+  let active_peer_http_streams : Map[Int64, ActivePeerHttpStream] = Map::new()
+  let pending_peer_http_open_ids : Array[Int64] = []
   let stream_ids_list : Array[Int64] = []
   let pending_zstd_tasks : Map[Int64, PendingZstdTask] = Map::new()
   let pending_file_streams : Map[Int64, PendingFileStream] = Map::new()
@@ -1197,6 +1411,351 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
 
   let mut ctx_opt : Option[DaemonCtx] = None
 
+  let complete_peer_http_stream_if_both_ended = fn(sid : Int64) -> Unit {
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        if !st.closed && st.peer_ended && st.local_finished && st.local_finish_sent && !st.write_in_flight && !st.finish_pending {
+          st.closed = true
+          active_peer_http_streams.remove(sid)
+          if st.is_front {
+            front_streams.remove(sid)
+            let _ = mux_mesh.call_async_raw(
+              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+              "tcp.close",
+              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+              None,
+            )
+          }
+          if st.opened_delivered {
+            match ctx_opt {
+              Some(c) => (hooks.on_peer_http_close)(c, sid)
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+
+  let close_peer_http_internal = fn(sid : Int64, notify : Bool) -> Unit {
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        active_peer_http_streams.remove(sid)
+        if st.closed {
+          return
+        }
+        st.closed = true
+        st.write_queue.clear()
+        st.write_queue_bytes = 0
+        st.early_chunks.clear()
+        if st.is_front {
+          front_streams.remove(sid)
+          let _ = mux_mesh.call_async_raw(
+            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+            "tcp.close",
+            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+            None,
+          )
+        } else {
+          call_envelope(mux_mesh, 0, MESH_TOK_HTTP_RESET, sid, mesh_door::direct_istream_reset(sid, 0))
+        }
+        if notify && st.opened_delivered {
+          match ctx_opt {
+            Some(c) => (hooks.on_peer_http_close)(c, sid)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+
+  let write_peer_http_chunk_impl = fn(sid : Int64, data : Bytes) -> Unit {
+    if data.length() == 0 {
+      return
+    }
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        if st.closed || st.local_finished {
+          return
+        }
+        st.last_activity_ms = host_shim::now_ms()
+        if st.write_in_flight {
+          if st.write_queue_bytes + data.length() > PEER_HTTP_WRITE_HARD_CAP {
+            close_peer_http_internal(sid, true)
+            return
+          }
+          st.write_queue.push(data)
+          st.write_queue_bytes = st.write_queue_bytes + data.length()
+        } else {
+          st.write_in_flight = true
+          if st.is_front {
+            let framed = front_encode_frames(data)
+            let _ = mux_mesh.call_async_raw(
+              builders_core::MuxToken::Tagged(0, FRONT_TOK_HTTP_WRITE, sid),
+              "tcp.write",
+              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+              Some(framed),
+            )
+          } else {
+            call_envelope(mux_mesh, 0, MESH_TOK_HTTP_WRITE, sid, mesh_door::direct_istream_write(sid, data))
+          }
+        }
+      }
+      None => ()
+    }
+  }
+
+  let finish_peer_http_impl = fn(sid : Int64) -> Unit {
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        if st.closed || st.local_finished {
+          return
+        }
+        st.local_finished = true
+        st.last_activity_ms = host_shim::now_ms()
+        if st.write_in_flight {
+          st.finish_pending = true
+        } else if st.is_front {
+          let _ = mux_mesh.call_async_raw(
+            builders_core::MuxToken::Tagged(0, FRONT_TOK_HTTP_FINISH, sid),
+            "tcp.write",
+            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+            Some(front_encode_end_frame()),
+          )
+        } else {
+          call_envelope(mux_mesh, 0, MESH_TOK_HTTP_FINISH, sid, mesh_door::direct_istream_finish(sid))
+        }
+      }
+      None => ()
+    }
+  }
+
+  let open_peer_http_stream = fn(
+    sid : Int64,
+    conn_id : Int64,
+    remote_id : String,
+    alpn : String,
+    is_front : Bool,
+  ) -> Bool {
+    if active_peer_http_streams.contains(sid) {
+      return true
+    }
+    if active_peer_http_streams.length() >= MAX_ACTIVE_PEER_HTTP_STREAMS {
+      if is_front {
+        front_streams.remove(sid)
+        let _ = mux_mesh.call_async_raw(
+          builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+          "tcp.close",
+          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+          None,
+        )
+      } else {
+        call_envelope(mux_mesh, 0, MESH_TOK_HTTP_RESET, sid, mesh_door::direct_istream_reset(sid, 2))
+      }
+      return false
+    }
+    if alpn == station_mesh::ALPN {
+      if !hooks.accept_admin_alpn {
+        if is_front {
+          front_streams.remove(sid)
+          let _ = mux_mesh.call_async_raw(
+            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+            "tcp.close",
+            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+            None,
+          )
+        } else {
+          call_envelope(mux_mesh, 0, MESH_TOK_HTTP_RESET, sid, mesh_door::direct_istream_reset(sid, 1))
+        }
+        return false
+      }
+    } else {
+      let now_s = (host_shim::wall_ms() / 1000L).to_double()
+      let roster = build_cloud_roster(cloud, now_s, cloud.peers_current)
+      match authorize_peer_http_conn(roster, remote_id, hooks.accept_peer_http, role_name=hooks.role_name) {
+        Err(_) => {
+          if is_front {
+            front_streams.remove(sid)
+            let _ = mux_mesh.call_async_raw(
+              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+              "tcp.close",
+              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+              None,
+            )
+          } else {
+            call_envelope(mux_mesh, 0, MESH_TOK_HTTP_RESET, sid, mesh_door::direct_istream_reset(sid, 3))
+          }
+          return false
+        }
+        Ok(_) => ()
+      }
+    }
+    let now_m = host_shim::now_ms()
+    let st = ActivePeerHttpStream::{
+      stream_id: sid,
+      conn_id: conn_id,
+      remote_id: remote_id,
+      alpn: alpn,
+      is_front: is_front,
+      opened_at: now_m,
+      last_activity_ms: now_m,
+      opened_delivered: false,
+      early_chunks: [],
+      early_bytes: 0,
+      early_ended: false,
+      peer_ended: false,
+      local_finished: false,
+      local_finish_sent: false,
+      closed: false,
+      write_queue: [],
+      write_queue_bytes: 0,
+      write_in_flight: false,
+      finish_pending: false,
+      idle_exempt: false,
+      read_paused: false,
+      read_in_flight: true,
+    }
+    active_peer_http_streams.set(sid, st)
+    if role_ready {
+      match ctx_opt {
+        Some(c) => {
+          st.opened_delivered = true
+          match (hooks.on_peer_http_open)(c, sid, remote_id, alpn, is_front) {
+            Ok(_) => true
+            Err(_) => {
+              close_peer_http_internal(sid, false)
+              false
+            }
+          }
+        }
+        None => false
+      }
+    } else {
+      pending_peer_http_open_ids.push(sid)
+      true
+    }
+  }
+
+  let deliver_peer_http_data = fn(sid : Int64, chunk : Bytes) -> Bool {
+    if chunk.length() == 0 {
+      return true
+    }
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        if st.closed {
+          return false
+        }
+        st.last_activity_ms = host_shim::now_ms()
+        if !st.opened_delivered {
+          if st.early_bytes + chunk.length() > MAX_EARLY_PEER_HTTP_BYTES {
+            close_peer_http_internal(sid, false)
+            return false
+          }
+          st.early_chunks.push(chunk)
+          st.early_bytes = st.early_bytes + chunk.length()
+          return true
+        }
+        match ctx_opt {
+          Some(c) => {
+            match (hooks.on_peer_http_data)(c, sid, chunk) {
+              Ok(_) => !st.closed
+              Err(_) => {
+                close_peer_http_internal(sid, true)
+                false
+              }
+            }
+          }
+          None => false
+        }
+      }
+      None => false
+    }
+  }
+
+  let deliver_peer_http_end = fn(sid : Int64) -> Unit {
+    match active_peer_http_streams.get(sid) {
+      Some(st) => {
+        if st.closed || st.peer_ended {
+          return
+        }
+        st.peer_ended = true
+        st.last_activity_ms = host_shim::now_ms()
+        if !st.opened_delivered {
+          st.early_ended = true
+          return
+        }
+        match ctx_opt {
+          Some(c) => (hooks.on_peer_http_end)(c, sid)
+          None => ()
+        }
+        complete_peer_http_stream_if_both_ended(sid)
+      }
+      None => ()
+    }
+  }
+
+  let flush_pending_peer_http_streams = fn() -> Unit {
+    if pending_peer_http_open_ids.length() == 0 {
+      return
+    }
+    let ids : Array[Int64] = []
+    for i in 0..<pending_peer_http_open_ids.length() {
+      ids.push(pending_peer_http_open_ids[i])
+    }
+    pending_peer_http_open_ids.clear()
+    for i in 0..<ids.length() {
+      let sid = ids[i]
+      match active_peer_http_streams.get(sid) {
+        Some(st) => {
+          if st.closed || st.opened_delivered {
+            continue
+          }
+          match ctx_opt {
+            Some(c) => {
+              st.opened_delivered = true
+              match (hooks.on_peer_http_open)(c, sid, st.remote_id, st.alpn, st.is_front) {
+                Err(_) => {
+                  close_peer_http_internal(sid, false)
+                  continue
+                }
+                Ok(_) => ()
+              }
+              let chunks : Array[Bytes] = []
+              for ci in 0..<st.early_chunks.length() {
+                chunks.push(st.early_chunks[ci])
+              }
+              st.early_chunks.clear()
+              st.early_bytes = 0
+              let mut ok = true
+              for ci in 0..<chunks.length() {
+                if st.closed {
+                  ok = false
+                  break
+                }
+                match (hooks.on_peer_http_data)(c, sid, chunks[ci]) {
+                  Ok(_) => ()
+                  Err(_) => {
+                    close_peer_http_internal(sid, true)
+                    ok = false
+                    break
+                  }
+                }
+              }
+              if ok && !st.closed && st.early_ended {
+                (hooks.on_peer_http_end)(c, sid)
+                complete_peer_http_stream_if_both_ended(sid)
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+  }
+
   // Centralized fail-closed peer admission before invoking `hooks.on_peer_rpc`.
   let authenticate_and_dispatch_peer_rpc = fn(
     sid : Int64,
@@ -1298,6 +1857,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     log_fn: log,
     has_predecessor_fn: fn() -> Bool { has_predecessor },
     is_stopping_fn: fn() -> Bool { stopping },
+    is_handover_shutdown_fn: fn() -> Bool { handover_stopping },
     is_role_ready_fn: fn() -> Bool { role_ready },
     mark_role_ready_fn: fn() -> Unit {
       if !handover_done {
@@ -1307,6 +1867,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       if can_mark_role_ready(handover_done, role_ready) {
         role_ready = true
         flush_pending_handover_rpcs()
+        flush_pending_peer_http_streams()
       }
     },
     request_stop_fn: fn() -> Unit { stopping = true },
@@ -1316,6 +1877,8 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       handover_failed = true
       stopping = true
     },
+    loopback_port_fn: fn() -> Int { loopback_bound_port },
+    shown_loopback_port_fn: fn() -> Int { loopback_shown_port },
     announce_mcp_port_fn: fn(dport : Int) -> Unit {
       let _ = ops_fs.write_text(station_ops::mcp_port_file(data, sep=sep), format_mcp_json(dport), 420)
       let _ = control.serving("mcp", dport)
@@ -1323,6 +1886,80 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     enqueue_tell_fn: enqueue_tell,
     reply_peer_rpc_fn: write_peer_reply_to_stream,
     unpack_zstd_fn: unpack_zstd_async,
+    write_peer_http_chunk_fn: write_peer_http_chunk_impl,
+    finish_peer_http_fn: finish_peer_http_impl,
+    close_peer_http_fn: fn(sid : Int64) -> Unit { close_peer_http_internal(sid, false) },
+    stream_conn_id_fn: fn(sid : Int64) -> Int64 {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => st.conn_id
+        None => -1L
+      }
+    },
+    peer_http_write_queued_bytes_fn: fn(sid : Int64) -> Int {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => st.write_queue_bytes
+        None => 0
+      }
+    },
+    set_stream_idle_exempt_fn: fn(sid : Int64, exempt : Bool) -> Unit {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => st.idle_exempt = exempt
+        None => ()
+      }
+    },
+    set_peer_http_read_paused_fn: fn(sid : Int64, paused : Bool) -> Unit {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => {
+          st.read_paused = paused
+          if !paused && !st.read_in_flight && !st.closed && !st.peer_ended {
+            st.read_in_flight = true
+            if st.is_front {
+              let _ = mux_mesh.call_async_raw(
+                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sid),
+                "tcp.read",
+                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+                None,
+              )
+            } else {
+              call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    close_mesh_conn_fn: fn(conn_id : Int64, is_front : Bool, code : Int, reason : String) -> Unit {
+      if is_front {
+        front_conns.remove(conn_id)
+        match front_ctrl_id {
+          Some(cid) => {
+            match front_ctrl.build_ask(
+              "conn.close",
+              [
+                ("conn", base_codec::json_int64(conn_id)),
+                ("code", base_codec::json_int(code)),
+                ("reason", base_codec::json_str(reason)),
+              ],
+            ) {
+              Ok((req_id, line_bytes)) => {
+                front_ask_kind.set(req_id, "out_close")
+                let _ = mux_mesh.call_async_raw(
+                  builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_WRITE, req_id),
+                  "tcp.write",
+                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(cid))])),
+                  Some(line_bytes),
+                )
+              }
+              Err(_) => ()
+            }
+          }
+          None => ()
+        }
+      } else {
+        active_conns.remove(conn_id)
+        call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, conn_id, mesh_door::direct_conn_close(conn_id, code, reason))
+      }
+    },
   }
   ctx_opt = Some(ctx)
 
@@ -1386,6 +2023,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
         let core_objs = (
           active_conns.length() +
           active_streams.length() +
+          active_peer_http_streams.length() +
           front_conns.length() +
           front_streams.length()
         ).to_int64()
@@ -1411,8 +2049,20 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     let _ = control.drained("idle")
   })
   control.on("stop", fn() -> Unit { stopping = true })
+  control.on_carried(fn(v : base_codec::Json) -> Unit {
+    (hooks.on_carried)(ctx, v)
+  })
   control.on("handover", fn() -> Unit {
-    (hooks.on_handover_start)(ctx)
+    handover_stopping = true
+    match (hooks.on_handover_start)(ctx) {
+      Ok(_) => ()
+      Err(msg) => {
+        log("handover start failed: " + msg)
+        handover_failed = true
+        let _ = control.carry(base_codec::json_obj([("handoverFailed", base_codec::json_str(msg))]))
+        let _ = control.failed("handover start failed: " + msg)
+      }
+    }
     stopping = true
   })
   control.on("hup", fn() -> Unit {
@@ -1535,7 +2185,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       None => {
         let bind_env = mesh_door::direct_iroh_bind(
           station_key.seed,
-          [station_mesh::PEER_HTTP_ALPN, station_mesh::PEER_BYTES_ALPN, station_mesh::PEER_ALPN],
+          [station_mesh::ALPN, station_mesh::PEER_HTTP_ALPN, station_mesh::PEER_BYTES_ALPN, station_mesh::PEER_ALPN],
           relay_urls,
           discovery,
           dht,
@@ -1682,6 +2332,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
     let fc_ks = front_conns.keys()
     for i in 0..<fc_ks.length() {
+      match front_conns.get(fc_ks[i]) {
+        Some(fc) => {
+          if fc.alpn == station_mesh::ALPN {
+            (hooks.on_admin_conn_close)(ctx, fc_ks[i])
+          }
+        }
+        None => ()
+      }
       front_conns.remove(fc_ks[i])
     }
     let pf_ks = pending_front_by_conn.keys()
@@ -1717,6 +2375,13 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     let fsk = front_out_by_sock.keys()
     for i in 0..<fsk.length() {
       front_out_by_sock.remove(fsk[i])
+    }
+    let ph_ks = active_peer_http_streams.keys()
+    for i in 0..<ph_ks.length() {
+      match active_peer_http_streams.get(ph_ks[i]) {
+        Some(st) => if st.is_front { close_peer_http_internal(ph_ks[i], true) }
+        None => ()
+      }
     }
     drop_front_handover_rpcs(pending_handover_rpcs)
     match front_stream_srv_id {
@@ -1804,10 +2469,12 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     if !loopback_announced && loopback_srv.is_listening() {
       loopback_announced = true
       let port = loopback_srv.port()
+      loopback_bound_port = port
       let shown = match parsed.launcher.ports {
         Some(lp) => lp.admin
         None => port
       }
+      loopback_shown_port = shown
       let _ = ops_fs.write_text(nodepath::join(sep, [run_dir, "ports.json"]), format_ports_json(shown), 420)
       let _ = control.serving("admin", port)
       if !ready_sent {
@@ -2001,6 +2668,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       let f_keys = front_streams.keys()
       for fi in 0..<f_keys.length() {
         let fsid = f_keys[fi]
+        if active_peer_http_streams.contains(fsid) {
+          continue
+        }
         match front_streams.get(fsid) {
           Some(fs) => {
             if fs.kind != 1 && !fs.rpc_dispatched && now - fs.last_activity_ms >= STREAM_READ_TIMEOUT_MS {
@@ -2051,6 +2721,28 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       stream_ids_list.clear()
       for si in 0..<kept_streams.length() {
         stream_ids_list.push(kept_streams[si])
+      }
+
+      // Enforce idle timeout on non-exempt full-duplex streams (authenticated `stillfail/admin/1`
+      // control streams are exempt and governed by `ServeEndpoint::poll_member_deadlines`).
+      let eff_idle_ms : Int64 = match station_sys::env_get("STILLFAIL_PEER_HTTP_IDLE_MS") {
+        Some(s) => match base_codec::parse_int64_str(s.trim()) {
+          Some(n) => if n >= 500L { n } else { PEER_HTTP_IDLE_TIMEOUT_MS }
+          None => PEER_HTTP_IDLE_TIMEOUT_MS
+        }
+        None => PEER_HTTP_IDLE_TIMEOUT_MS
+      }
+      let ph_keys = active_peer_http_streams.keys()
+      for phi in 0..<ph_keys.length() {
+        let ph_sid = ph_keys[phi]
+        match active_peer_http_streams.get(ph_sid) {
+          Some(st) => {
+            if !st.idle_exempt && now - st.last_activity_ms >= eff_idle_ms {
+              close_peer_http_internal(ph_sid, true)
+            }
+          }
+          None => ()
+        }
       }
 
       match ws_handle {
@@ -2222,13 +2914,35 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             Ok(base_codec::Json::Str(s)) => s
                             _ => ""
                           }
-                          let alpn_ok = alpn == station_mesh::PEER_ALPN
-                          || alpn == station_mesh::PEER_BYTES_ALPN
-                          if alpn_ok {
-                            active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
-                            call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                          if alpn == station_mesh::ALPN {
+                            if hooks.accept_admin_alpn {
+                              active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
+                              (hooks.on_admin_conn_open)(ctx, cid, remote_id, false)
+                              call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                            } else {
+                              call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, cid, mesh_door::direct_conn_close(cid, 1, "unsupported alpn on " + hooks.role_name))
+                            }
+                          } else if alpn == station_mesh::PEER_HTTP_ALPN {
+                            let now_s = (host_shim::wall_ms() / 1000L).to_double()
+                            let roster = build_cloud_roster(cloud, now_s, cloud.peers_current)
+                            match authorize_peer_http_conn(roster, remote_id, hooks.accept_peer_http, role_name=hooks.role_name) {
+                              Ok(_) => {
+                                active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
+                                call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                              }
+                              Err((code, why)) => {
+                                call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, cid, mesh_door::direct_conn_close(cid, code, why))
+                              }
+                            }
                           } else {
-                            call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, cid, mesh_door::direct_conn_close(cid, 1, "unsupported alpn on " + hooks.role_name))
+                            let alpn_ok = alpn == station_mesh::PEER_ALPN
+                            || alpn == station_mesh::PEER_BYTES_ALPN
+                            if alpn_ok {
+                              active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
+                              call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                            } else {
+                              call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, cid, mesh_door::direct_conn_close(cid, 1, "unsupported alpn on " + hooks.role_name))
+                            }
                           }
                         }
                       }
@@ -2251,6 +2965,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                               _ => false
                             }
                             if is_end {
+                              if conn.alpn == station_mesh::ALPN {
+                                (hooks.on_admin_conn_close)(ctx, cid)
+                              }
                               active_conns.remove(cid)
                               return
                             }
@@ -2265,6 +2982,12 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                               }
                             }
                             if sid >= 0L {
+                              if conn.alpn == station_mesh::PEER_HTTP_ALPN || conn.alpn == station_mesh::ALPN {
+                                if open_peer_http_stream(sid, cid, conn.remote_id, conn.alpn, false) {
+                                  call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                                }
+                                return
+                              }
                               if active_streams.length() >= MAX_ACTIVE_STREAMS {
                                 let err_b = station_mesh::encode_peer_answer_err("too many streams", conn.alpn == station_mesh::PEER_BYTES_ALPN)
                                 call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, err_b))
@@ -2290,6 +3013,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             }
                           }
                           Err(_) => {
+                            if conn.alpn == station_mesh::ALPN {
+                              (hooks.on_admin_conn_close)(ctx, cid)
+                            }
                             active_conns.remove(cid)
                           }
                           _ => ()
@@ -2299,6 +3025,36 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                     }
                   } else if kind == MESH_TOK_READ {
                     let sid = tag
+                    if active_peer_http_streams.contains(sid) {
+                      match builders_core::decode_shell_done(d) {
+                        Ok((_, Some(chunk))) => {
+                          if chunk.length() > 0 {
+                            if deliver_peer_http_data(sid, chunk) {
+                              match active_peer_http_streams.get(sid) {
+                                Some(pst) => {
+                                  if pst.read_paused {
+                                    pst.read_in_flight = false
+                                  } else {
+                                    pst.read_in_flight = true
+                                    call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                                  }
+                                }
+                                None => ()
+                              }
+                            }
+                          } else {
+                            deliver_peer_http_end(sid)
+                          }
+                        }
+                        Ok((_, None)) => {
+                          deliver_peer_http_end(sid)
+                        }
+                        Err(_) => {
+                          close_peer_http_internal(sid, true)
+                        }
+                      }
+                      return
+                    }
                     match active_streams.get(sid) {
                       Some(st) => {
                         match builders_core::decode_shell_done(d) {
@@ -2455,6 +3211,55 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           }
                         }
                       }
+                    }
+                  } else if kind == MESH_TOK_HTTP_WRITE {
+                    let sid = tag
+                    match builders_core::decode_shell_done(d) {
+                      Err(_) => close_peer_http_internal(sid, true)
+                      Ok(_) => {
+                        match active_peer_http_streams.get(sid) {
+                          Some(st) => {
+                            if st.closed {
+                              return
+                            }
+                            if st.write_queue.length() > 0 {
+                              let next_chunk = st.write_queue[0]
+                              let rem : Array[Bytes] = []
+                              for qi in 1..<st.write_queue.length() {
+                                rem.push(st.write_queue[qi])
+                              }
+                              st.write_queue = rem
+                              st.write_queue_bytes = st.write_queue_bytes - next_chunk.length()
+                              if st.write_queue_bytes < 0 {
+                                st.write_queue_bytes = 0
+                              }
+                              call_envelope(mux_mesh, 0, MESH_TOK_HTTP_WRITE, sid, mesh_door::direct_istream_write(sid, next_chunk))
+                              if st.write_queue_bytes <= PEER_HTTP_WRITE_LOW_WATER && !st.local_finished && !st.closed {
+                                (hooks.on_peer_http_writable)(ctx, sid)
+                              }
+                            } else {
+                              st.write_in_flight = false
+                              st.write_queue_bytes = 0
+                              if st.finish_pending {
+                                st.finish_pending = false
+                                call_envelope(mux_mesh, 0, MESH_TOK_HTTP_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                              } else if !st.local_finished && !st.closed {
+                                (hooks.on_peer_http_writable)(ctx, sid)
+                              }
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                    }
+                  } else if kind == MESH_TOK_HTTP_FINISH {
+                    let sid = tag
+                    match active_peer_http_streams.get(sid) {
+                      Some(st) => {
+                        st.local_finish_sent = true
+                        complete_peer_http_stream_if_both_ended(sid)
+                      }
+                      None => ()
                     }
                   } else if kind == MESH_TOK_OUT_CONNECT {
                     let oid = tag
@@ -2681,6 +3486,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             None,
                           )
                           let alpns_j = base_codec::json_arr([
+                            base_codec::json_str(base_codec::hex_encode(station_mesh::ALPN.to_bytes())),
                             base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_HTTP_ALPN.to_bytes())),
                             base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_BYTES_ALPN.to_bytes())),
                             base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_ALPN.to_bytes())),
@@ -2802,132 +3608,192 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                       None => alpn_hex
                                     }
                                     if fconn >= 0L {
-                                      let alpn_ok = alpn == station_mesh::PEER_ALPN
-                                      || alpn == station_mesh::PEER_BYTES_ALPN
-                                      if front_conns.length() >= MAX_ACTIVE_CONNS || !alpn_ok {
-                                        let close_code = if !alpn_ok { 1 } else { 2 }
-                                        let close_why = if !alpn_ok { "unsupported alpn on " + hooks.role_name } else { "too many connections" }
-                                        front_send_ask(
-                                          "conn.close",
-                                          [
-                                            ("conn", base_codec::json_int64(fconn)),
-                                            ("code", base_codec::json_int(close_code)),
-                                            ("reason", base_codec::json_str(close_why)),
-                                          ],
-                                          "out_close",
-                                          0L,
-                                        )
-                                        match pending_front_by_conn.get(fconn) {
-                                          Some(sids) => {
-                                            pending_front_by_conn.remove(fconn)
-                                            for si in 0..<sids.length() {
-                                              front_streams.remove(sids[si])
-                                              let _ = mux_mesh.call_async_raw(
-                                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sids[si]),
-                                                "tcp.close",
-                                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sids[si]))])),
-                                                None,
-                                              )
-                                            }
-                                          }
-                                          None => ()
+                                      let mut close_reason_opt : Option[(Int, String)] = None
+                                      if front_conns.length() >= MAX_ACTIVE_CONNS {
+                                        close_reason_opt = Some((2, "too many connections"))
+                                      } else if alpn == station_mesh::ALPN {
+                                        if !hooks.accept_admin_alpn {
+                                          close_reason_opt = Some((1, "unsupported alpn on " + hooks.role_name))
                                         }
-                                      } else {
-                                        front_conns.set(fconn, ActivePeerConn::{ id: fconn, remote_id: remote_id, alpn: alpn })
-                                        front_send_ask("conn.closed", [("conn", base_codec::json_int64(fconn))], "conn_closed", fconn)
-                                        // Flush any streams that arrived on `streams.sock` BEFORE this `accept` reply.
-                                        match pending_front_by_conn.get(fconn) {
-                                          Some(sids) => {
-                                            pending_front_by_conn.remove(fconn)
-                                            let v2_bytes = alpn == station_mesh::PEER_BYTES_ALPN
-                                            for si in 0..<sids.length() {
-                                              let psock = sids[si]
-                                              match front_streams.get(psock) {
-                                                Some(pfs) => {
-                                                  pfs.awaiting_accept = false
-                                                  pfs.last_activity_ms = host_shim::now_ms()
-                                                  if pfs.pending_eof {
-                                                    pfs.rpc_dispatched = true
-                                                    front_streams.remove(psock)
-                                                    let (line, bin_opt) = if v2_bytes {
-                                                      let nl = find_newline_byte(pfs.payload_buf)
-                                                      if nl >= 0 {
-                                                        let ln = bytes_to_str_local(pfs.payload_buf, nl)
-                                                        let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
-                                                        if parse_v2_header_has_bytes(ln) { (ln, Some(tl)) } else { (ln, None) }
-                                                      } else {
-                                                        (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
+                                      } else if alpn == station_mesh::PEER_HTTP_ALPN {
+                                        let now_s = (host_shim::wall_ms() / 1000L).to_double()
+                                        let roster = build_cloud_roster(cloud, now_s, cloud.peers_current)
+                                        match authorize_peer_http_conn(roster, remote_id, hooks.accept_peer_http, role_name=hooks.role_name) {
+                                          Ok(_) => ()
+                                          Err(cr) => close_reason_opt = Some(cr)
+                                        }
+                                      } else if alpn != station_mesh::PEER_ALPN && alpn != station_mesh::PEER_BYTES_ALPN {
+                                        close_reason_opt = Some((1, "unsupported alpn on " + hooks.role_name))
+                                      }
+                                      match close_reason_opt {
+                                        Some((close_code, close_why)) => {
+                                          front_send_ask(
+                                            "conn.close",
+                                            [
+                                              ("conn", base_codec::json_int64(fconn)),
+                                              ("code", base_codec::json_int(close_code)),
+                                              ("reason", base_codec::json_str(close_why)),
+                                            ],
+                                            "out_close",
+                                            0L,
+                                          )
+                                          match pending_front_by_conn.get(fconn) {
+                                            Some(sids) => {
+                                              pending_front_by_conn.remove(fconn)
+                                              for si in 0..<sids.length() {
+                                                front_streams.remove(sids[si])
+                                                let _ = mux_mesh.call_async_raw(
+                                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sids[si]),
+                                                  "tcp.close",
+                                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sids[si]))])),
+                                                  None,
+                                                )
+                                              }
+                                            }
+                                            None => ()
+                                          }
+                                        }
+                                        None => {
+                                          front_conns.set(fconn, ActivePeerConn::{ id: fconn, remote_id: remote_id, alpn: alpn })
+                                          if alpn == station_mesh::ALPN {
+                                            (hooks.on_admin_conn_open)(ctx, fconn, remote_id, true)
+                                          }
+                                          front_send_ask("conn.closed", [("conn", base_codec::json_int64(fconn))], "conn_closed", fconn)
+                                          // Flush any streams that arrived on `streams.sock` BEFORE this `accept` reply.
+                                          match pending_front_by_conn.get(fconn) {
+                                            Some(sids) => {
+                                              pending_front_by_conn.remove(fconn)
+                                              if alpn == station_mesh::PEER_HTTP_ALPN || alpn == station_mesh::ALPN {
+                                                for si in 0..<sids.length() {
+                                                  let psock = sids[si]
+                                                  match front_streams.get(psock) {
+                                                    Some(pfs) => {
+                                                      pfs.awaiting_accept = false
+                                                      pfs.last_activity_ms = host_shim::now_ms()
+                                                      if open_peer_http_stream(psock, fconn, remote_id, alpn, true) {
+                                                        let mut still_ok = true
+                                                        if pfs.payload_buf.length() > 0 {
+                                                          let initial = pfs.payload_buf
+                                                          pfs.payload_buf = Bytes::new(0)
+                                                          still_ok = deliver_peer_http_data(psock, initial)
+                                                        }
+                                                        if still_ok {
+                                                          if pfs.pending_eof {
+                                                            deliver_peer_http_end(psock)
+                                                          } else {
+                                                            let _ = mux_mesh.call_async_raw(
+                                                              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, psock),
+                                                              "tcp.read",
+                                                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(psock))])),
+                                                              None,
+                                                            )
+                                                          }
+                                                        }
                                                       }
-                                                    } else {
-                                                      (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
                                                     }
-                                                    dispatch_peer_rpc_stream(psock, line, bin_opt, remote_id, alpn, v2_bytes, true)
-                                                  } else {
-                                                    let mut dispatched_now = false
-                                                    if v2_bytes && pfs.rpc_header_line is None {
-                                                      let nl = find_newline_byte(pfs.payload_buf)
-                                                      if nl >= 0 {
-                                                        let ln = bytes_to_str_local(pfs.payload_buf, nl)
-                                                        let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
-                                                        if parse_v2_header_has_bytes(ln) {
-                                                          pfs.rpc_header_line = Some(ln)
-                                                          pfs.rpc_expect_binary = true
-                                                          match authenticate_and_start_stream(psock, ln, remote_id, alpn, v2_bytes) {
-                                                            StreamStartAction::Streaming => {
-                                                              pfs.streaming_active = true
-                                                              pfs.payload_buf = Bytes::new(0)
-                                                              match (hooks.on_stream_chunk)(ctx, psock, tl) {
-                                                                Ok(_) => ()
-                                                                Err(e) => {
-                                                                  (hooks.on_stream_abort)(ctx, psock)
+                                                    None => ()
+                                                  }
+                                                }
+                                              } else {
+                                                let v2_bytes = alpn == station_mesh::PEER_BYTES_ALPN
+                                                for si in 0..<sids.length() {
+                                                  let psock = sids[si]
+                                                  match front_streams.get(psock) {
+                                                    Some(pfs) => {
+                                                      pfs.awaiting_accept = false
+                                                      pfs.last_activity_ms = host_shim::now_ms()
+                                                      if pfs.pending_eof {
+                                                        pfs.rpc_dispatched = true
+                                                        front_streams.remove(psock)
+                                                        let (line, bin_opt) = if v2_bytes {
+                                                          let nl = find_newline_byte(pfs.payload_buf)
+                                                          if nl >= 0 {
+                                                            let ln = bytes_to_str_local(pfs.payload_buf, nl)
+                                                            let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
+                                                            if parse_v2_header_has_bytes(ln) { (ln, Some(tl)) } else { (ln, None) }
+                                                          } else {
+                                                            (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
+                                                          }
+                                                        } else {
+                                                          (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
+                                                        }
+                                                        dispatch_peer_rpc_stream(psock, line, bin_opt, remote_id, alpn, v2_bytes, true)
+                                                      } else {
+                                                        let mut dispatched_now = false
+                                                        if v2_bytes && pfs.rpc_header_line is None {
+                                                          let nl = find_newline_byte(pfs.payload_buf)
+                                                          if nl >= 0 {
+                                                            let ln = bytes_to_str_local(pfs.payload_buf, nl)
+                                                            let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
+                                                            if parse_v2_header_has_bytes(ln) {
+                                                              pfs.rpc_header_line = Some(ln)
+                                                              pfs.rpc_expect_binary = true
+                                                              match authenticate_and_start_stream(psock, ln, remote_id, alpn, v2_bytes) {
+                                                                StreamStartAction::Streaming => {
+                                                                  pfs.streaming_active = true
+                                                                  pfs.payload_buf = Bytes::new(0)
+                                                                  match (hooks.on_stream_chunk)(ctx, psock, tl) {
+                                                                    Ok(_) => ()
+                                                                    Err(e) => {
+                                                                      (hooks.on_stream_abort)(ctx, psock)
+                                                                      pfs.rpc_dispatched = true
+                                                                      dispatched_now = true
+                                                                      front_streams.remove(psock)
+                                                                      let err_b = station_mesh::encode_peer_answer_err(e, v2_bytes)
+                                                                      write_peer_reply_to_stream(psock, err_b, None, v2_bytes, true)
+                                                                    }
+                                                                  }
+                                                                }
+                                                                StreamStartAction::Reject(e) => {
                                                                   pfs.rpc_dispatched = true
                                                                   dispatched_now = true
                                                                   front_streams.remove(psock)
                                                                   let err_b = station_mesh::encode_peer_answer_err(e, v2_bytes)
                                                                   write_peer_reply_to_stream(psock, err_b, None, v2_bytes, true)
                                                                 }
+                                                                StreamStartAction::BufferBinary(max_b) => {
+                                                                  pfs.max_binary_buf = max_b
+                                                                  pfs.payload_buf = tl
+                                                                }
                                                               }
-                                                            }
-                                                            StreamStartAction::Reject(e) => {
+                                                            } else {
                                                               pfs.rpc_dispatched = true
                                                               dispatched_now = true
                                                               front_streams.remove(psock)
-                                                              let err_b = station_mesh::encode_peer_answer_err(e, v2_bytes)
-                                                              write_peer_reply_to_stream(psock, err_b, None, v2_bytes, true)
-                                                            }
-                                                            StreamStartAction::BufferBinary(max_b) => {
-                                                              pfs.max_binary_buf = max_b
-                                                              pfs.payload_buf = tl
+                                                              dispatch_peer_rpc_stream(psock, ln, None, remote_id, alpn, v2_bytes, true)
                                                             }
                                                           }
-                                                        } else {
-                                                          pfs.rpc_dispatched = true
-                                                          dispatched_now = true
-                                                          front_streams.remove(psock)
-                                                          dispatch_peer_rpc_stream(psock, ln, None, remote_id, alpn, v2_bytes, true)
+                                                        }
+                                                        if !dispatched_now {
+                                                          let _ = mux_mesh.call_async_raw(
+                                                            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, psock),
+                                                            "tcp.read",
+                                                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(psock))])),
+                                                            None,
+                                                          )
                                                         }
                                                       }
                                                     }
-                                                    if !dispatched_now {
-                                                      let _ = mux_mesh.call_async_raw(
-                                                        builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, psock),
-                                                        "tcp.read",
-                                                        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(psock))])),
-                                                        None,
-                                                      )
-                                                    }
+                                                    None => ()
                                                   }
                                                 }
-                                                None => ()
                                               }
                                             }
+                                            None => ()
                                           }
-                                          None => ()
                                         }
                                       }
                                     }
                                   }
                                 } else if k == "conn_closed" && oid > 0L {
+                                  match front_conns.get(oid) {
+                                    Some(fc) => {
+                                      if fc.alpn == station_mesh::ALPN {
+                                        (hooks.on_admin_conn_close)(ctx, oid)
+                                      }
+                                    }
+                                    None => ()
+                                  }
                                   front_conns.remove(oid)
                                   match pending_front_by_conn.get(oid) {
                                     Some(sids) => {
@@ -3024,6 +3890,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                   mesh_binding = false
                                   log("front bind error: " + msg)
                                 } else if k == "conn_closed" && oid > 0L {
+                                  match front_conns.get(oid) {
+                                    Some(fc) => {
+                                      if fc.alpn == station_mesh::ALPN {
+                                        (hooks.on_admin_conn_close)(ctx, oid)
+                                      }
+                                    }
+                                    None => ()
+                                  }
                                   front_conns.remove(oid)
                                 } else if (k == "out_connect" || k == "out_open") && oid > 0L {
                                   match active_outbounds.get(oid) {
@@ -3120,6 +3994,10 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                         match builders_core::decode_shell_done(d) {
                           Ok((_, Some(chunk))) => {
                             if chunk.length() == 0 {
+                              if active_peer_http_streams.contains(sock_id) {
+                                close_peer_http_internal(sock_id, true)
+                                return
+                              }
                               if fs.streaming_active {
                                 (hooks.on_stream_abort)(ctx, sock_id)
                               }
@@ -3196,6 +4074,20 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 }
                               }
                             }
+                            // If this inbound front stream belongs to an accepted `PEER_HTTP_ALPN` or `ALPN` connection,
+                            // activate full-duplex streaming immediately before decoding frames.
+                            if fs.kind != 1 && !active_peer_http_streams.contains(sock_id) {
+                              match front_conns.get(fs.conn_id) {
+                                Some(c) => {
+                                  if c.alpn == station_mesh::PEER_HTTP_ALPN || c.alpn == station_mesh::ALPN {
+                                    if !open_peer_http_stream(sock_id, fs.conn_id, c.remote_id, c.alpn, true) {
+                                      return
+                                    }
+                                  }
+                                }
+                                None => ()
+                              }
+                            }
                             let mut stream_eof = false
                             let mut stream_failed = false
                             while data.length() > 0 && !stream_eof && !stream_failed {
@@ -3204,7 +4096,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 let piece = slice_bytes_local(data, 0, take)
                                 fs.frame_left = fs.frame_left - take
                                 data = slice_bytes_local(data, take, data.length())
-                                if fs.streaming_active {
+                                if active_peer_http_streams.contains(sock_id) {
+                                  if !deliver_peer_http_data(sock_id, piece) {
+                                    return
+                                  }
+                                } else if fs.streaming_active {
                                   match (hooks.on_stream_chunk)(ctx, sock_id, piece) {
                                     Ok(_) => ()
                                     Err(e) => {
@@ -3283,6 +4179,8 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                   }
                                   let max_fbuf = if fs.rpc_expect_binary {
                                     fs.max_binary_buf
+                                  } else if fs.kind != 1 && !front_conns.contains(fs.conn_id) {
+                                    MAX_EARLY_PEER_HTTP_BYTES
                                   } else {
                                     mesh_wire::MAX_PEER_MESSAGE
                                   }
@@ -3381,6 +4279,31 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 )
                               }
                             } else {
+                              if active_peer_http_streams.contains(sock_id) {
+                                if stream_failed {
+                                  close_peer_http_internal(sock_id, true)
+                                } else if stream_eof {
+                                  deliver_peer_http_end(sock_id)
+                                } else {
+                                  match active_peer_http_streams.get(sock_id) {
+                                    Some(pst) => {
+                                      if pst.read_paused {
+                                        pst.read_in_flight = false
+                                      } else {
+                                        pst.read_in_flight = true
+                                        let _ = mux_mesh.call_async_raw(
+                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                          "tcp.read",
+                                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                          None,
+                                        )
+                                      }
+                                    }
+                                    None => ()
+                                  }
+                                }
+                                return
+                              }
                               if stream_failed {
                                 // Transport error from front: discard incomplete inbound request without dispatching.
                                 if fs.streaming_active {
@@ -3494,6 +4417,10 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             }
                           }
                           _ => {
+                            if active_peer_http_streams.contains(sock_id) {
+                              close_peer_http_internal(sock_id, true)
+                              return
+                            }
                             if fs.streaming_active {
                               (hooks.on_stream_abort)(ctx, sock_id)
                             }
@@ -3553,6 +4480,82 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                         }
                       }
                       Ok(_) => ()
+                    }
+                  } else if kind == FRONT_TOK_HTTP_WRITE {
+                    let sock_id = tag
+                    match builders_core::decode_shell_done(d) {
+                      Err(_) => close_peer_http_internal(sock_id, true)
+                      Ok(_) => {
+                        match active_peer_http_streams.get(sock_id) {
+                          Some(st) => {
+                            if st.closed {
+                              return
+                            }
+                            if st.write_queue.length() > 0 {
+                              let next_chunk = st.write_queue[0]
+                              let rem : Array[Bytes] = []
+                              for qi in 1..<st.write_queue.length() {
+                                rem.push(st.write_queue[qi])
+                              }
+                              st.write_queue = rem
+                              st.write_queue_bytes = st.write_queue_bytes - next_chunk.length()
+                              if st.write_queue_bytes < 0 {
+                                st.write_queue_bytes = 0
+                              }
+                              let framed = front_encode_frames(next_chunk)
+                              let _ = mux_mesh.call_async_raw(
+                                builders_core::MuxToken::Tagged(0, FRONT_TOK_HTTP_WRITE, sock_id),
+                                "tcp.write",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                Some(framed),
+                              )
+                              if st.write_queue_bytes <= PEER_HTTP_WRITE_LOW_WATER && !st.local_finished && !st.closed {
+                                (hooks.on_peer_http_writable)(ctx, sock_id)
+                              }
+                            } else {
+                              st.write_in_flight = false
+                              st.write_queue_bytes = 0
+                              if st.finish_pending {
+                                st.finish_pending = false
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_HTTP_FINISH, sock_id),
+                                  "tcp.write",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  Some(front_encode_end_frame()),
+                                )
+                              } else if !st.local_finished && !st.closed {
+                                (hooks.on_peer_http_writable)(ctx, sock_id)
+                              }
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                    }
+                  } else if kind == FRONT_TOK_HTTP_FINISH {
+                    let sock_id = tag
+                    match active_peer_http_streams.get(sock_id) {
+                      Some(st) => {
+                        st.local_finish_sent = true
+                        if st.peer_ended {
+                          complete_peer_http_stream_if_both_ended(sock_id)
+                        } else {
+                          let _ = mux_mesh.call_async_raw(
+                            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                            "tcp.end",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                            None,
+                          )
+                        }
+                      }
+                      None => {
+                        let _ = mux_mesh.call_async_raw(
+                          builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                          "tcp.close",
+                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                          None,
+                        )
+                      }
                     }
                   } else if kind == FRONT_TOK_STREAM_WRITE {
                     let sock_id = tag
@@ -3614,7 +4617,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           None => {
                             let _ = mux_mesh.call_async_raw(
                               builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
-                              "tcp.end",
+                              "tcp.close",
                               base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
                               None,
                             )
@@ -3693,7 +4696,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
   }
 
-  // Graceful shutdown: role teardown first, then close listeners, mesh, control, `hub.json`, and `host_shim`.
+  // Graceful shutdown: close active peer_http streams, role teardown, then close listeners, mesh, control, `hub.json`, and `host_shim`.
+  let shutdown_ph_ks = active_peer_http_streams.keys()
+  for i in 0..<shutdown_ph_ks.length() {
+    close_peer_http_internal(shutdown_ph_ks[i], true)
+  }
   (hooks.on_shutdown)(ctx)
   loopback_srv.close_with_callbacks(loopback_cb)
   match mesh_ep_id {
@@ -3763,12 +4770,13 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     None => ()
   }
 
-  // Drain remaining `station_sys` worker events briefly before stopping `host_shim`.
-  let mut drain_ticks = 0
-  while station_sys::active_workers() > 0 && drain_ticks < 20 {
+  // Drain remaining `station_sys` worker events up to a bounded 5s deadline before stopping `host_shim`.
+  // timer: bounded shutdown worker drain deadline (5s)
+  let drain_deadline = host_shim::now_ms() + 5000L
+  while station_sys::active_workers() > 0 && host_shim::now_ms() < drain_deadline {
     let _ = host_shim::wait(10L)
-    drain_ticks = drain_ticks + 1
   }
+  while host_shim::wait(0L) is Some(_) {}
   host_shim::stop()
   if handover_failed { 1 } else { 0 }
 }

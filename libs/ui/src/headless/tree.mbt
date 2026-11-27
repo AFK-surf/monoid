@@ -33,7 +33,12 @@ pub(all) struct TreeCheckNode[K] {
 ///|
 /// Find a `TreeCheckNode` by `key` in `nodes`.
 fn[K : Eq] find_check_node(nodes : Array[TreeCheckNode[K]], key : K) -> TreeCheckNode[K]? {
-  nodes.iter().find_first(fn(n) { n.key == key })
+  for i = 0; i < nodes.length(); i = i + 1 {
+    if nodes[i].key == key {
+      return Some(nodes[i])
+    }
+  }
+  None
 }
 
 ///|
@@ -177,7 +182,13 @@ pub fn[K : Eq] toggle_tree_check(
           if leaves.is_empty() {
             return checked.copy()
           }
-          let all_checked = leaves.iter().all(fn(k) { checked.contains(k) })
+          let mut all_checked = true
+          for i = 0; i < leaves.length(); i = i + 1 {
+            if !checked.contains(leaves[i]) {
+              all_checked = false
+              break
+            }
+          }
           let subtree : Array[K] = []
           let visited_s : Array[K] = []
           collect_enabled_subtree(nodes, n.key, visited_s, subtree)
@@ -226,7 +237,7 @@ pub struct Tree[K] {
   priv off : () -> Bool
   priv rove : RovingFocus
   priv recovery : FocusRecovery
-  priv entries : Array[TreeEntry[K]]
+  priv mut entries : Array[TreeEntry[K]]
   priv typeahead : Typeahead
   priv selection : SelectionModel[@view.NodeId]
 }
@@ -252,10 +263,13 @@ pub fn[K] Tree::focus_stop(self : Tree[K], visible? : Bool = true) -> Bool {
 ///|
 /// Ask keyboard focus onto the visible enabled item matching `key`, shown where `visible`.
 pub fn[K : Eq] Tree::focus_key(self : Tree[K], key : K, visible? : Bool = true) -> Bool {
-  match self.entries.iter().find_first(fn(e) { e.key == key && e.node.takes_input() && !(e.off)() }) {
-    Some(e) => e.node.ask_focus(visible~)
-    None => false
+  for i = 0; i < self.entries.length(); i = i + 1 {
+    let e = self.entries[i]
+    if e.key == key && e.node.takes_input() && !(e.off)() {
+      return e.node.ask_focus(visible~)
+    }
   }
+  false
 }
 
 ///|
@@ -335,9 +349,12 @@ pub fn TreeItem::pressed(self : TreeItem) -> Bool {
 fn[K] Tree::keys_of(self : Tree[K], ids : Array[@view.NodeId]) -> Array[K] {
   let out : Array[K] = []
   for id in ids {
-    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-      Some(e) => out.push(e.key)
-      None => ()
+    for i = 0; i < self.entries.length(); i = i + 1 {
+      let e = self.entries[i]
+      if e.node.id() == id {
+        out.push(e.key)
+        break
+      }
     }
   }
   out
@@ -360,10 +377,13 @@ fn[K] Tree::selection_inputs(
     }
   }
   let is_off = fn(id : @view.NodeId) -> Bool {
-    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-      Some(e) => !e.node.takes_input() || @signals.untracked(e.off)
-      None => true
+    for i = 0; i < self.entries.length(); i = i + 1 {
+      let e = self.entries[i]
+      if e.node.id() == id {
+        return !e.node.takes_input() || @signals.untracked(e.off)
+      }
     }
+    true
   }
   (all_ids, cur_ids, is_off)
 }
@@ -378,7 +398,15 @@ fn[K : Eq] Tree::living_ancestor(self : Tree[K], start_parent : K?, exclude_id :
       break
     }
     visited.push(pk)
-    match self.entries.iter().find_first(fn(e) { e.key == pk }) {
+    let mut found : TreeEntry[K]? = None
+    for i = 0; i < self.entries.length(); i = i + 1 {
+      let e = self.entries[i]
+      if e.key == pk {
+        found = Some(e)
+        break
+      }
+    }
+    match found {
       Some(e) =>
         if e.node.id() != exclude_id &&
           e.node.alive() &&
@@ -478,25 +506,28 @@ pub fn[K : Eq] tree(
       if k.mods == 0 {
         if k.code == expand_key {
           if v.tree.focused_now().0 is Some(fid) {
-            match tr.entries.iter().find_first(fn(e) { e.node.id() == fid }) {
+            let mut focused_entry : TreeEntry[K]? = None
+            for i = 0; i < tr.entries.length(); i = i + 1 {
+              if tr.entries[i].node.id() == fid {
+                focused_entry = Some(tr.entries[i])
+                break
+              }
+            }
+            match focused_entry {
               Some(e) =>
                 if (e.has_children)() {
                   if !(tr.is_expanded)(e.key) {
                     (tr.set_expanded)(e.key, true)
                     return true
                   } else {
-                    match
-                      tr.entries
-                      .iter()
-                      .find_first(fn(c) {
-                        c.parent_key == Some(e.key) && c.node.takes_input() && !(c.off)()
-                      }) {
-                      Some(child) => {
-                        child.node.ask_focus(visible=true) |> ignore
+                    for i = 0; i < tr.entries.length(); i = i + 1 {
+                      let c = tr.entries[i]
+                      if c.parent_key == Some(e.key) && c.node.takes_input() && !(c.off)() {
+                        c.node.ask_focus(visible=true) |> ignore
                         return true
                       }
-                      None => return true
                     }
+                    return true
                   }
                 }
               None => ()
@@ -506,7 +537,14 @@ pub fn[K : Eq] tree(
         }
         if k.code == collapse_key {
           if v.tree.focused_now().0 is Some(fid) {
-            match tr.entries.iter().find_first(fn(e) { e.node.id() == fid }) {
+            let mut focused_entry : TreeEntry[K]? = None
+            for i = 0; i < tr.entries.length(); i = i + 1 {
+              if tr.entries[i].node.id() == fid {
+                focused_entry = Some(tr.entries[i])
+                break
+              }
+            }
+            match focused_entry {
               Some(e) =>
                 if (e.has_children)() && (tr.is_expanded)(e.key) {
                   (tr.set_expanded)(e.key, false)
@@ -532,10 +570,13 @@ pub fn[K : Eq] tree(
       let live = tr.rove.live()
       tr.typeahead.handle_key(k, live, fn(i) {
         let id = live[i].id()
-        match tr.entries.iter().find_first(fn(x) { x.node.id() == id }) {
-          Some(x) => (x.text)()
-          None => ""
+        for j = 0; j < tr.entries.length(); j = j + 1 {
+          let x = tr.entries[j]
+          if x.node.id() == id {
+            return (x.text)()
+          }
         }
+        ""
       })
     })
     |> ignore
@@ -588,7 +629,14 @@ pub fn[K : Eq] Tree::item(
       if n == 0 {
         return None
       }
-      let (start_fwd, start_bwd) = match self.entries.search_by(fn(e) { e.node.id() == v.id() }) {
+      let mut found_idx : Int? = None
+      for i = 0; i < n; i = i + 1 {
+        if self.entries[i].node.id() == v.id() {
+          found_idx = Some(i)
+          break
+        }
+      }
+      let (start_fwd, start_bwd) = match found_idx {
         Some(idx) => (idx + 1, idx - 1)
         None => {
           let p = removed_pos.val.unwrap_or(0)
@@ -645,10 +693,17 @@ pub fn[K : Eq] Tree::item(
     // rather than jumping to the next sibling.
     self.recovery.track_with(v, ancestor_fallback, false)
     v.owns(fn() {
-      removed_pos.val = self.entries.search_by(fn(e) { e.node.id() == v.id() })
+      let mut pos : Int? = None
+      for i = 0; i < self.entries.length(); i = i + 1 {
+        if self.entries[i].node.id() == v.id() {
+          pos = Some(i)
+          break
+        }
+      }
+      removed_pos.val = pos
       self.entries.retain(fn(e) { e.node.id() != v.id() })
       if self.entries.is_empty() {
-        self.entries.shrink_to_fit()
+        self.entries = []
       }
     })
     |> ignore

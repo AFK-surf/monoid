@@ -235,7 +235,7 @@ test "park + take_in across parents after ancestor dedup and retire_parked keep 
 
 ///|
 test "multi-Tree InputsAux isolation and Tree::dispose releases removed entries" {
-  let base_len = tree_inputs_auxs.length()
+  let base_len = tree_inputs_auxs.val.length()
   let s1 = @signals.signal(false, same=fn(a, b) { a == b })
   let s2 = @signals.signal(false, same=fn(a, b) { a == b })
   let leaf2 : Ref[View?] = Ref(None)
@@ -265,16 +265,16 @@ test "multi-Tree InputsAux isolation and Tree::dispose releases removed entries"
   )
   t1.frame(390.0, 844.0) |> ignore
   t2.frame(390.0, 844.0) |> ignore
-  assert_eq(tree_inputs_auxs.length(), base_len + 2)
+  assert_eq(tree_inputs_auxs.val.length(), base_len + 2)
 
   // Disposing t1 removes its entry cleanly while t2 stays fully functional.
   t1.dispose()
-  assert_eq(tree_inputs_auxs.length(), base_len + 1)
+  assert_eq(tree_inputs_auxs.val.length(), base_len + 1)
   s2.set(true)
   t2.frame(390.0, 844.0) |> ignore
   assert_false(@signals.untracked(fn() { leaf2.val.unwrap().takes_input() }))
   assert_eq(t2.kept_inputs_said(), None)
 
   t2.dispose()
-  assert_eq(tree_inputs_auxs.length(), base_len)
+  assert_eq(tree_inputs_auxs.val.length(), base_len)
 }

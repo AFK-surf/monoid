@@ -28,6 +28,7 @@ import { service } from "../trace.ts";
 import { t } from "../i18n.ts";
 import { collate } from "./collate.ts";
 export { CoreFiles } from "./file-port.ts";
+export { ClientAuthTracker } from "../client-auth.ts";
 
 /// What the core says to one UI, as JSON; `bytes` beside it for a message that carries some (a screen view's frame,
 /// protocol.ts), left out of the JSON.

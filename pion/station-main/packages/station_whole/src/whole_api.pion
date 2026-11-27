@@ -238,6 +238,11 @@ pub struct WholeApi {
   pub drive : station_screens::Drive
   pub drive_roots : Array[String]
   pub workspace_drive_roots : Map[String, Array[String]]
+  workspace_drives : Map[String, station_screens::Drive]
+  drive_fs_opt : Option[station_screens::DriveFs]
+  drive_protected_paths : Array[String]
+  drive_trash_root : String
+  drive_is_win : Bool
   pub mut thumb_port : Option[station_screens::ThumbPort]
   pub screens : station_screens::ScreenHub
   pub events : station_api::EventsHub
@@ -261,12 +266,19 @@ pub fn WholeApi::new_with_ports(
   let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
   let ws_roots : Map[String, Array[String]] = Map::new()
   ws_roots.set(auth_policy.home_workspace, drive_roots)
+  let ws_drives : Map[String, station_screens::Drive] = Map::new()
+  ws_drives.set(auth_policy.home_workspace, drive)
   WholeApi::{
     auth_policy: auth_policy,
     admin: admin,
     drive: drive,
     drive_roots: drive_roots,
     workspace_drive_roots: ws_roots,
+    workspace_drives: ws_drives,
+    drive_fs_opt: None,
+    drive_protected_paths: [],
+    drive_trash_root: "",
+    drive_is_win: false,
     thumb_port: thumb_port,
     screens: screens,
     events: events,
@@ -298,13 +310,15 @@ pub fn WholeApi::new(
       protected.push(p)
     }
   }
-  let trash_root = if drive_roots.length() > 0 { drive_roots[0] } else { whole_store.data_dir }
+  let is_win = station_sys::os_name() == "win32"
+  let sep = if is_win { "\\" } else { "/" }
+  let trash_root = whole_store.data_dir + sep + "drive-trash"
   let drive = station_screens::Drive::new(
     effective_fs,
     drive_roots,
     protected,
-    station_sys::os_name() == "win32",
-    trash_root,
+    is_win,
+    trash_root + sep + auth_policy.home_workspace,
     station_screens::TrashKind::Freedesktop,
   )
   let screens = station_screens::ScreenHub::new()
@@ -399,22 +413,30 @@ pub fn WholeApi::new(
         None => return Err(station_api::ApiError::new(400, "missing key"))
       }
       match st.get_session(key) {
-        Ok(Some(row)) => return Ok(
-          base_codec::json_obj([
-            ("key", base_codec::json_str(row.key)),
-            ("runtime", base_codec::json_str(row.runtime)),
-            ("profile", base_codec::json_str(row.profile)),
-            ("running", base_codec::json_bool(row.running)),
-            ("createdAt", base_codec::json_int64(row.created_at)),
-            (
-              "title",
-              match row.title {
-                Some(t) => base_codec::json_str(t)
-                None => base_codec::json_null()
-              },
-            ),
-          ]),
-        )
+        Ok(Some(row)) => {
+          let out_items : Array[base_codec::Json] = []
+          let lines = agents.read_adopted_runner_output(key)
+          for li in 0..<lines.length() {
+            out_items.push(base_codec::json_str(lines[li]))
+          }
+          return Ok(
+            base_codec::json_obj([
+              ("key", base_codec::json_str(row.key)),
+              ("runtime", base_codec::json_str(row.runtime)),
+              ("profile", base_codec::json_str(row.profile)),
+              ("running", base_codec::json_bool(row.running)),
+              ("createdAt", base_codec::json_int64(row.created_at)),
+              (
+                "title",
+                match row.title {
+                  Some(t) => base_codec::json_str(t)
+                  None => base_codec::json_null()
+                },
+              ),
+              ("adoptedOutput", base_codec::json_arr(out_items)),
+            ]),
+          )
+        }
         Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + key))
         Err(e) => return Err(station_api::ApiError::new(500, e.message))
       }
@@ -700,6 +722,8 @@ pub fn WholeApi::new(
             vault: None,
             sees_ws: Some(Some(req.viewer.workspace)),
             sees_session: None,
+            sees_thread: None,
+            sees_job: None,
           }
           // Never coalesce incremental `"thread"` message frames by thread ID (aligned with
           // `station/src/api/events.ts:1152`) so consecutive messages replay individually.
@@ -743,6 +767,63 @@ pub fn WholeApi::new(
           ]),
         )
         Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+    }
+    if op == "hub.session.create" {
+      let key = match json_field_str(body, "key") {
+        Some(k) => if k.length() > 0 { k } else { "c-" + now_ms.to_string() }
+        None => "c-" + now_ms.to_string()
+      }
+      let connect = match json_field_str(body, "connect") {
+        Some(c) => if c.length() > 0 { c } else { "chat" }
+        None => "chat"
+      }
+      let title = json_field_str(body, "title")
+      let runtime = match json_field_str(body, "runtime") {
+        Some(r) => if r.length() > 0 { r } else { "claude" }
+        None => "claude"
+      }
+      let profile = match json_field_str(body, "profile") {
+        Some(p) => if p.length() > 0 { p } else { "default" }
+        None => "default"
+      }
+      let model = json_field_str(body, "model")
+      let workspace_dir = match json_field_str(body, "workspace") {
+        Some(w) => if w.length() > 0 { w } else { agents.config.data_dir }
+        None => agents.config.data_dir
+      }
+      match agents.create_session(
+        whole_store,
+        key,
+        connect,
+        title,
+        Some(req.viewer.email),
+        runtime,
+        profile,
+        model,
+        workspace_dir,
+        Some(req.viewer.workspace),
+        now_ms,
+      ) {
+        Ok((_, tid)) => return Ok(
+          base_codec::json_obj([
+            ("key", base_codec::json_str(key)),
+            ("thread", base_codec::json_int64(tid)),
+          ]),
+        )
+        Err(e) => return Err(station_api::ApiError::new(500, e))
+      }
+    }
+    if op == "hub.session.archive.POST" && params.length() >= 1 {
+      let key = params[0]
+      match agents.archive_session(whole_store, key, req.viewer.email, now_ms) {
+        Ok(_) => return Ok(
+          base_codec::json_obj([
+            ("archived", base_codec::json_bool(true)),
+            ("key", base_codec::json_str(key)),
+          ]),
+        )
+        Err(e) => return Err(station_api::ApiError::new(500, e))
       }
     }
     if op == "screens.list" {
@@ -1106,12 +1187,19 @@ pub fn WholeApi::new(
     dev_enabled: false,
   }
   let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
+  let ws_drives : Map[String, station_screens::Drive] = Map::new()
+  ws_drives.set(auth_policy.home_workspace, drive)
   WholeApi::{
     auth_policy: auth_policy,
     admin: admin,
     drive: drive,
     drive_roots: drive_roots,
     workspace_drive_roots: ws_roots,
+    workspace_drives: ws_drives,
+    drive_fs_opt: Some(effective_fs),
+    drive_protected_paths: protected,
+    drive_trash_root: trash_root,
+    drive_is_win: station_sys::os_name() == "win32",
     thumb_port: thumb_port,
     screens: screens,
     events: events,
@@ -1129,6 +1217,56 @@ pub fn WholeApi::set_workspace_drive_roots(
   roots : Array[String],
 ) -> Unit {
   self.workspace_drive_roots.set(workspace, roots)
+  match self.drive_fs_opt {
+    Some(fs) => {
+      let sep = if self.drive_is_win { "\\" } else { "/" }
+      let tr = self.drive_trash_root + sep + station_drivers::key_part(workspace)
+      let d = station_screens::Drive::new(
+        fs,
+        roots,
+        self.drive_protected_paths,
+        self.drive_is_win,
+        tr,
+        station_screens::TrashKind::Freedesktop,
+      )
+      self.workspace_drives.set(workspace, d)
+    }
+    None => ()
+  }
+}
+
+/// Return the workspace-scoped `Drive` instance bound strictly to `workspace`'s configured roots
+/// (never sharing home roots with joined workspaces and never falling back to `$HOME`).
+pub fn WholeApi::drive_for_workspace(
+  self : WholeApi,
+  workspace : String,
+) -> station_screens::Drive {
+  match self.workspace_drives.get(workspace) {
+    Some(d) => d
+    None => {
+      let roots = match self.workspace_drive_roots.get(workspace) {
+        Some(r) => r
+        None => []
+      }
+      match self.drive_fs_opt {
+        Some(fs) => {
+          let sep = if self.drive_is_win { "\\" } else { "/" }
+          let tr = self.drive_trash_root + sep + station_drivers::key_part(workspace)
+          let d = station_screens::Drive::new(
+            fs,
+            roots,
+            self.drive_protected_paths,
+            self.drive_is_win,
+            tr,
+            station_screens::TrashKind::Freedesktop,
+          )
+          self.workspace_drives.set(workspace, d)
+          d
+        }
+        None => self.drive
+      }
+    }
+  }
 }
 
 fn WholeApi::resolve_drive_root_for_viewer(
@@ -1390,7 +1528,8 @@ pub fn WholeApi::handle_authenticated_api_with_status(
       Some(v) => v == "1"
       None => false
     }
-    match self.drive.upload(root, rel, up_id, offset, total, body, replace, false, now_ms) {
+    let ws_drive = self.drive_for_workspace(viewer.workspace)
+    match ws_drive.upload(root, rel, up_id, offset, total, body, replace, false, now_ms) {
       Ok(res) => {
         let entry_j = match res.entry {
           Some(e) => drive_entry_to_json(e)
@@ -1443,7 +1582,8 @@ pub fn WholeApi::handle_authenticated_api_with_status(
         None => 65536
       }
     }
-    match self.drive.read(root, rel, offset, length, false) {
+    let ws_drive = self.drive_for_workspace(viewer.workspace)
+    match ws_drive.read(root, rel, offset, length, false) {
       Ok((bytes, total, mtime, mime)) => {
         let ct = if mime.length() > 0 { mime } else { "application/octet-stream" }
         let resp = station_http::HttpResponse::{

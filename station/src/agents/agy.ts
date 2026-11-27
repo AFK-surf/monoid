@@ -8,9 +8,10 @@
 // - a message for the running turn steers it (`promptTakeover`); its model is session/set_model;
 // - the station keeps the transcript (acp.ts KeptTranscript), with each turn's usage: the prompt's answer says it.
 import { execFile } from "node:child_process";
-import type { Stats } from "node:fs";
-import { access, copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { watch, type FSWatcher, type Stats } from "node:fs";
+import { access, copyFile, cp, link as hardLink, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Duration, Effect, type Clock } from "effect";
 import { liveClock, wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
@@ -19,16 +20,18 @@ import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, errorText, type AcpStart } from "./acp.ts";
-import type { Events } from "./own-process.ts";
+import type { Events, Replayed } from "./own-process.ts";
+import { runnerId } from "./process.ts";
 import { accessKind, expandRoute, profileEnv, profileModel, profileVia, vertexKeyFile } from "./profiles.ts";
-import { AGY_REPO_RULES_COMMAND } from "./repo-rules.ts";
-import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
+import { AGY_REPO_RULES_COMMAND, agyHookCommand } from "./repo-rules.ts";
+import type { RunnerInfo } from "./runner.ts";
+import { cleanEnv, failureOf, uuid, type BackgroundTask, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
 import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
-/// Inherited variables that would let a session use another account or project than its profile's, or silence its hooks.
-const SCRUBBED = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "AGY_ADC_AUTH", "AGY_ACCOUNT", "STILLFAIL_REPO_RULES"];
+/// Inherited variables that would let a session use another account or project than its profile's, or silence/redirect its hooks.
+const SCRUBBED = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "AGY_ADC_AUTH", "AGY_ACCOUNT", "STILLFAIL_REPO_RULES", "STILLFAIL_AGY_STATE_DIR"];
 /// The CLI's home in a profile's: what `agy` signs in to with this as its HOME, its .gemini/ the ACP server's
 /// `--gemini-dir`.
 export const agyHome = (home: string) => join(home, "agy");
@@ -467,14 +470,16 @@ export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home)
 
 /// Environment of an Antigravity CLI process: the station's scrubbed environment, the profile's own variables (which
 /// win), its `--gemini-dir` (`ANTIGRAVITY_GEMINI_DIR`, for sandbox sync too), its sign-in in that file alone
-/// (`AGY_FILE_TOKENS`), updates off, and the peer HTTP endpoint.
-export function agyEnv(options: OpenOptions): Record<string, string> {
+/// (`AGY_FILE_TOKENS`), updates off, the peer HTTP endpoint, and (for non-probe sessions) the per-process directory
+/// where its `Stop` hook records whether background work is still running.
+export function agyEnv(options: OpenOptions, stateDir?: string): Record<string, string> {
   const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "agy"), options.route) });
   env.ANTIGRAVITY_GEMINI_DIR = geminiDir(options.profile.home);
   Object.assign(env, AGY_FILE_TOKENS);
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
   if (options.instructions === "" || options.textOnly) env.STILLFAIL_REPO_RULES = "0";
+  if (stateDir !== undefined && stateDir !== "") env.STILLFAIL_AGY_STATE_DIR = stateDir;
   return env;
 }
 
@@ -485,14 +490,41 @@ export const agyOpening = (instructions: string): Json => (instructions === "" ?
 /// Where `agy acp` reads global hooks under `--gemini-dir`, outside the session's workspace.
 export const agyHooksFile = (home: string) => join(geminiDir(home), "config", "hooks.json");
 
+/// The hook that records whether an Antigravity CLI conversation still has background work running (`fullyIdle: false`)
+/// when its execution loop stops (`assets/agents/agy-stop-hook.mjs`), so the station does not evict an idle `agy acp`
+/// process while its subagents, background commands or schedules are still active.
+export const AGY_STOP_HOOK = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/agy-stop-hook.mjs", import.meta.url) : new URL("./agy-stop-hook.mjs", import.meta.url));
+export const AGY_STOP_COMMAND = agyHookCommand(AGY_STOP_HOOK);
+
+/// Per-process directory under `<data>/run/agy-state/<runnerId>/<runId>` where `agy-stop-hook.mjs` writes
+/// `<conversationId>.json` for this `agy acp` process.
+export const agyStateDir = (data: string, key: string, runId: string = uuid()) => join(data, "run", "agy-state", runnerId("agy", key), runId);
+
+/// Finds the newest per-process state directory for `runner` that holds `<sessionId>.json` (used after a station crash
+/// when there is no handover snapshot).
+async function findAgyStateDir(data: string, runner: string, sessionId: string): Promise<string | null> {
+  if (!SESSION_ID.test(sessionId)) return null;
+  const parent = join(data, "run", "agy-state", runner);
+  const entries = await readdir(parent).catch(() => [] as string[]);
+  let best: { dir: string; mtimeMs: number } | null = null;
+  for (const name of entries) {
+    const dir = join(parent, name);
+    const st = await stat(join(dir, `${sessionId}.json`)).catch(() => null);
+    if (st !== null && st.isFile() && (best === null || st.mtimeMs > best.mtimeMs)) best = { dir, mtimeMs: st.mtimeMs };
+  }
+  return best?.dir ?? null;
+}
+
 /// The tools of Antigravity CLI that touch files or directories in a repository (`repo-rules-hook.mjs`).
 export const AGY_REPO_RULES_TOOLS = "run_command|read_file|write_file|edit_file|view_file|grep_search|find_by_name|list_dir";
 const AGY_HOOK_SECONDS = 10;
 
 /// Keeps the profile's global `hooks.json` telling repository rules (`AGENTS.md`, `CLAUDE.md`) as `agy`'s tools touch
-/// directories below the session's workspace (`PostToolUse` queues, `PostInvocation` injects). Always kept enabled in
-/// the shared `--gemini-dir/config/hooks.json` (`agy` re-reads it on each prompt across concurrent sessions on one
-/// profile); a session without the station's instructions silences the hook via `STILLFAIL_REPO_RULES=0` in `agyEnv`.
+/// directories below the session's workspace (`PostToolUse` queues, `PostInvocation` injects) and noting background work
+/// on loop stop (`Stop` writes `<STILLFAIL_AGY_STATE_DIR>/<conversationId>.json`). Always kept enabled in the shared
+/// `--gemini-dir/config/hooks.json` (`agy` re-reads it on each prompt across concurrent sessions on one profile); a
+/// session without the station's instructions silences the repo-rules hook via `STILLFAIL_REPO_RULES=0` in `agyEnv`,
+/// while probes and text-only sessions omit `STILLFAIL_AGY_STATE_DIR` so the stop hook is a no-op for them.
 export async function agyHooks(home: string): Promise<void> {
   const file = agyHooksFile(home);
   let current: Record<string, unknown> = {};
@@ -507,6 +539,7 @@ export async function agyHooks(home: string): Promise<void> {
     stillfail: {
       PostToolUse: [{ matcher: AGY_REPO_RULES_TOOLS, hooks: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }] }],
       PostInvocation: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }],
+      Stop: [{ type: "command", command: AGY_STOP_COMMAND, timeout: AGY_HOOK_SECONDS }],
     },
   };
   const text = `${JSON.stringify(next, null, 2)}\n`;
@@ -729,7 +762,8 @@ export type AgyDriverOptions = {
   /// Another station's subscription, borrowed (share/index.ts): its sign-in file written with the access token the
   /// station signed in on it lent (`write`, when it runs out).
   lent?: { borrowed(profile: Profile): boolean; write(profile: Profile): Promise<number> };
-  /// What it waits on between openings of a process that could not load its models (`AGY_CATALOG_RETRY_MS`).
+  /// What it waits on between openings of a process that could not load its models (`AGY_CATALOG_RETRY_MS`), and its
+  /// sessions' deadlines (`STOP_GRACE_MS`, `ACP_STALL_MS`).
   clock?: Clock.Clock;
 };
 
@@ -772,7 +806,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
   readonly #clock: Clock.Clock;
 
   constructor(options: AgyDriverOptions) {
-    super(options.data);
+    super(options.data, undefined, options.clock);
     this.command = options.command ?? "agy";
     this.lent = options.lent;
     this.#clock = options.clock ?? liveClock;
@@ -827,8 +861,17 @@ export class AgyDriver extends AcpDriver<AgySession> {
     return (await this.catalog(profile)).models;
   }
 
-  protected session(options: OpenOptions, events: Events) {
-    return new AgySession(this, events, options);
+  protected session(options: OpenOptions, events: Events, start?: AcpStart) {
+    return new AgySession(this, events, options, start?.env.STILLFAIL_AGY_STATE_DIR ?? null);
+  }
+
+  protected override async crashed(options: OpenOptions, replayed: Replayed, info: RunnerInfo, events: Events): Promise<AgySession> {
+    const session = await super.crashed(options, replayed, info, events);
+    if (session.id() !== "") {
+      const dir = await findAgyStateDir(this.data, info.id, session.id());
+      if (dir !== null) session.setStateDir(dir);
+    }
+    return session;
   }
 
   /// One opening, opened again after `AGY_CATALOG_RETRY_MS` while its process offers no models (`AgyNoCatalog`); any
@@ -922,14 +965,15 @@ export class AgyDriver extends AcpDriver<AgySession> {
     return session;
   }
 
-  protected async starting(options: OpenOptions): Promise<AcpStart> {
+  protected async starting(options: OpenOptions, probe: boolean): Promise<AcpStart> {
     if (options.resume !== undefined && !SESSION_ID.test(options.resume)) throw new Error("invalid Antigravity conversation id");
     const sessions = join(agyHome(options.profile.home), SESSIONS);
     await mkdir(sessions, { recursive: true });
     await mkdir(geminiDir(options.profile.home), { recursive: true });
     // Not one the station kept.
     if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) throw new Error(`no Antigravity conversation ${options.resume}`);
-    return { command: this.command, args: agyArgs(options.profile.home), env: agyEnv(options), opening: agyOpening(options.instructions) };
+    const stateDir = probe || options.textOnly ? undefined : agyStateDir(this.data, options.key);
+    return { command: this.command, args: agyArgs(options.profile.home), env: agyEnv(options, stateDir), opening: agyOpening(options.instructions) };
   }
 
   protected override async initialized(session: AgySession, answer: Json, options: OpenOptions): Promise<void> {
@@ -970,10 +1014,178 @@ export class AgySession extends AcpSession {
   /// When the process opened on its borrowed sign-in (ms); null on a sign-in of this station's own or unknown.
   signInOpenedAt: number | null = null;
   private readonly agyDriver: AgyDriver;
+  /// Per-process directory where `agy-stop-hook.mjs` writes `<conversationId>.json` (`fullyIdle`).
+  #stateDir: string | null;
+  /// Whether `agy`'s Stop hook last reported `fullyIdle: false` for this conversation (subagents, background commands,
+  /// or schedules still active inside the process).
+  #holding = false;
+  /// Wall timestamp when `#holding` became true (preserved across consecutive `fullyIdle: false` stops).
+  #holdingSince: number | null = null;
+  /// Serialized in-flight async reads of `#stateDir/<sessionId>.json`.
+  #stateSync: Promise<void> | null = null;
+  /// Non-recursive directory watcher on `#stateDir`, open only while `#holding` is true so idle background work
+  /// finishing clears `#holding` immediately without polling.
+  #watcher: FSWatcher | null = null;
+  /// True once disposed, exited, detached, or frozen for handover so late async callbacks never open a watcher or emit.
+  #closed = false;
 
-  constructor(driver: AgyDriver, events: Events, options: OpenOptions) {
+  constructor(driver: AgyDriver, events: Events, options: OpenOptions, stateDir: string | null = null) {
     super(driver, events, new KeptTranscript("agy", join(agyHome(options.profile.home), SESSIONS)));
     this.agyDriver = driver;
+    this.#stateDir = stateDir;
+  }
+
+  /// Restores the per-process state directory discovered during crash recovery before `adopted()` reads it.
+  setStateDir(dir: string) {
+    this.#stateDir = dir;
+  }
+
+  background(): BackgroundTask[] {
+    if (!this.#holding) return [];
+    return [
+      {
+        id: "agy-background",
+        kind: "command",
+        description: "Antigravity background work",
+        ...(this.#holdingSince === null ? {} : { startedAt: this.#holdingSince }),
+      },
+    ];
+  }
+
+  #stateFile(): string | null {
+    if (this.#stateDir === null || this.sessionId === "" || !SESSION_ID.test(this.sessionId)) return null;
+    return join(this.#stateDir, `${this.sessionId}.json`);
+  }
+
+  #watchState() {
+    if (this.#watcher !== null || this.#closed || this.#stateDir === null) return;
+    try {
+      const watcher = watch(this.#stateDir, (_event, filename) => {
+        if (this.#closed) return;
+        const name = typeof filename === "string" ? filename : "";
+        const own = `${this.sessionId}.json`;
+        if (name !== "" && name !== own && !name.startsWith(`${own}.`)) return;
+        void this.#syncHolding(true);
+      });
+      watcher.on("error", () => {
+        if (this.#watcher === watcher) this.#unwatchState();
+      });
+      watcher.unref();
+      this.#watcher = watcher;
+    } catch {}
+  }
+
+  #unwatchState() {
+    const watcher = this.#watcher;
+    this.#watcher = null;
+    try {
+      watcher?.close();
+    } catch {}
+  }
+
+  async #removeStateDir() {
+    const dir = this.#stateDir;
+    this.#stateDir = null;
+    if (dir === null) return;
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rmdir(dirname(dir)).catch(() => {});
+  }
+
+  /// Reads `<stateDir>/<sessionId>.json` off the main thread and updates `#holding`. Awaited by `settled()` before
+  /// `turnEnded` reaches the actor, and re-run on watcher events when background work finishes while idle.
+  #syncHolding(emit: boolean): Promise<void> {
+    const run = async () => {
+      if (this.#closed) return;
+      const file = this.#stateFile();
+      if (file === null) return;
+      const readState = async (): Promise<{ fullyIdle: boolean; at?: number } | null> => {
+        let raw: string;
+        try {
+          raw = await readFile(file, "utf8");
+        } catch {
+          return null;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed?.fullyIdle !== "boolean") return null;
+          return { fullyIdle: parsed.fullyIdle, at: typeof parsed.at === "number" && Number.isFinite(parsed.at) ? parsed.at : undefined };
+        } catch {
+          return null;
+        }
+      };
+      const first = await readState();
+      if (this.#closed || first === null) return;
+      const prev = this.#holding;
+      let next = !first.fullyIdle;
+      if (next) {
+        const openedWatcher = this.#watcher === null;
+        this.#watchState();
+        // Re-read once after attaching the watcher so a `fullyIdle: true` written between the first read and
+        // `fs.watch` starting is never missed.
+        if (openedWatcher && this.#watcher !== null) {
+          const after = await readState();
+          if (this.#closed) return;
+          if (after !== null) next = !after.fullyIdle;
+        }
+      }
+      this.#holding = next;
+      if (next) {
+        if (this.#holdingSince === null) this.#holdingSince = first.at ?? wall.now();
+      } else {
+        this.#holdingSince = null;
+        this.#unwatchState();
+      }
+      if (next !== prev && emit && !this.#closed) {
+        this.events({ type: "live", event: { kind: "tasks", tasks: this.background() } });
+      }
+    };
+    const next = (this.#stateSync ?? Promise.resolve()).then(run);
+    this.#stateSync = next;
+    void next.then(() => {
+      if (this.#stateSync === next) this.#stateSync = null;
+    });
+    return next;
+  }
+
+  override async adopted() {
+    await this.#syncHolding(false);
+    await super.adopted();
+  }
+
+  protected override settled(): Promise<void> | null {
+    const parent = super.settled();
+    const state = this.#stateSync;
+    if (parent === null) return state;
+    if (state === null) return parent;
+    return Promise.all([parent, state]).then(() => undefined);
+  }
+
+  protected override handOver() {
+    this.#closed = true;
+    this.#unwatchState();
+    return super.handOver();
+  }
+
+  override detach() {
+    this.#closed = true;
+    this.#unwatchState();
+    super.detach();
+  }
+
+  protected override exited(said: string, stderr: string) {
+    // Keep `#holding` intact so the actor's `closed` handler sees what background work died with the process and
+    // wakes a waiting session immediately (`BACKGROUND_STOPPED_WAITING`).
+    this.#closed = true;
+    this.#unwatchState();
+    void this.#removeStateDir();
+    return super.exited(said, stderr);
+  }
+
+  override async dispose() {
+    this.#closed = true;
+    this.#unwatchState();
+    await super.dispose();
+    await this.#removeStateDir();
   }
 
   named(id: string) {
@@ -1001,6 +1213,8 @@ export class AgySession extends AcpSession {
       context: this.context,
       signInUntil: this.signInUntil,
       signInOpenedAt: this.signInOpenedAt,
+      ...(this.#stateDir === null ? {} : { stateDir: this.#stateDir }),
+      ...(this.#holding ? { holding: true, ...(this.#holdingSince === null ? {} : { holdingSince: this.#holdingSince }) } : {}),
     };
   }
 
@@ -1012,6 +1226,9 @@ export class AgySession extends AcpSession {
     if (c && typeof c === "object") this.context = { used: typeof c.used === "number" ? c.used : 0, size: typeof c.size === "number" ? c.size : 0 };
     this.signInUntil = typeof snapshot.signInUntil === "number" ? snapshot.signInUntil : null;
     this.signInOpenedAt = typeof snapshot.signInOpenedAt === "number" ? snapshot.signInOpenedAt : null;
+    this.#stateDir = typeof snapshot.stateDir === "string" && snapshot.stateDir !== "" ? snapshot.stateDir : null;
+    this.#holding = snapshot.holding === true;
+    this.#holdingSince = this.#holding && typeof snapshot.holdingSince === "number" && Number.isFinite(snapshot.holdingSince) ? snapshot.holdingSince : null;
   }
 
   /// Its process's borrowed sign-in has less than AGY_LENT_RENEW_MS left: it takes no turn on it, but is ended and
@@ -1046,11 +1263,13 @@ export class AgySession extends AcpSession {
     if (n(update.size) > 0) this.context.size = n(update.size);
   }
 
-  /// The turn's usage, into the transcript before its end.
+  /// The turn's usage, into the transcript before its end, and the Stop hook's latest `fullyIdle` state read before
+  /// `turnEnded` reaches the actor (`settled()` awaits it).
   protected ending(id: string, answer: Json) {
     if (answer?.error !== undefined && /\btrajectory not found\b/i.test(errorText(answer.error))) this.agyDriver.noteLost(this.sessionId);
     const usage = turnUsage(answer);
     if (usage !== null) this.transcript?.keep(this.sessionId, { type: "usage", run: id.slice(id.indexOf(":") + 1), model: this.model, usage, calls: 1, context: this.context.used, window: this.context.size });
+    void this.#syncHolding(true);
   }
 
   protected ignored(id: string, answer: Json) {

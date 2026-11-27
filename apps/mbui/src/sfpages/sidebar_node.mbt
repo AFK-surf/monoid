@@ -947,10 +947,33 @@ fn chats_pane_node(
       _ => false
     }
   })
-  // Boundary heading keys for desktop/medium docked stacks (updated only when the boundary heading changes so
-  // crisp 0.5pt hairlines ride glued to the sticky heading itself with zero relayout and zero sizes_steady drift).
+  // Boundary heading keys & outgoing push-out state for desktop/medium docked stacks (updated only when the boundary
+  // or single outgoing straddling heading changes so crisp 0.5pt hairlines and pre-clip fades ride with zero relayout
+  // and O(1) signal fan-out).
   let top_edge_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
   let bot_edge_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let top_push_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let top_push_by : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let bot_push_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let bot_push_by : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let top_fade_span = @ui.Space::S3_5.px() - @ui.Space::S1.px()
+  let bot_fade_span = @ui.Space::S1_5.px()
+  let push_alpha_of = fn(key_fn : () -> String) -> () -> Double {
+    fn() {
+      let cur = key_fn()
+      if top_push_key.get() == Some(cur) {
+        // Heading has pt = S3_5 (14pt); dissolve foreground completely S1 (4pt) before glyphs hit top_edge
+        let a = 1.0 - top_push_by.get() / top_fade_span
+        if a <= 0.0 { 0.0 } else if a >= 1.0 { 1.0 } else { a }
+      } else if bot_push_key.get() == Some(cur) {
+        // Heading has >=7pt below glyphs (pb = S1 + descender room); dissolve over S1_5 (6pt) before hitting bottom_edge
+        let a = 1.0 - bot_push_by.get() / bot_fade_span
+        if a <= 0.0 { 0.0 } else if a >= 1.0 { 1.0 } else { a }
+      } else {
+        1.0
+      }
+    }
+  }
   // Register virtualized bidirectional section stacking ONLY in project-grouped mode so flat mode keeps
   // zero extra nodes, zero extra bindings, and zero NodeId shift.
   if pane_grouped {
@@ -962,7 +985,20 @@ fn chats_pane_node(
       rows=frame.section_rows,
       air=fn(_) { 0.0 },
       chrome=fn(host, read_chrome) {
-        section_chrome_node(host, read_chrome, frame, days, fn() { is_grouped.get() }, list_place, top_edge_key, bot_edge_key)
+        section_chrome_node(
+          host,
+          read_chrome,
+          frame,
+          days,
+          fn() { is_grouped.get() },
+          list_place,
+          top_edge_key,
+          bot_edge_key,
+          top_push_key,
+          top_push_by,
+          bot_push_key,
+          bot_push_by,
+        )
       },
     )
   }
@@ -1141,7 +1177,18 @@ fn chats_pane_node(
               line.sticky_section().ground(By(frame.ground)) |> ignore
               sticky_heading_rules_node(line, fn() { k }, top_edge_key, bot_edge_key)
             }
-            list_day_or_group_heading_node(line, src, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_press_group_heading)
+            list_day_or_group_heading_node(
+              line,
+              src,
+              id,
+              fn() { k.exact_view(start=2).to_owned() },
+              days,
+              fn() { is_grouped.get() },
+              frame.at,
+              tips,
+              on_press_group_heading,
+              push_alpha?=if frame.at != Whole { Some(push_alpha_of(fn() { k })) } else { None },
+            )
           }
         _ if k.has_prefix("sub/") => {
           let rest = k.exact_view(start=4)
@@ -1185,7 +1232,18 @@ fn chats_pane_node(
               line.sticky_section().ground(By(frame.ground)) |> ignore
               sticky_heading_rules_node(line, key, top_edge_key, bot_edge_key)
             }
-            list_day_or_group_heading_node(line, src, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_press_group_heading)
+            list_day_or_group_heading_node(
+              line,
+              src,
+              id,
+              fn() { key().exact_view(start=2).to_owned() },
+              days,
+              fn() { is_grouped.get() },
+              frame.at,
+              tips,
+              on_press_group_heading,
+              push_alpha?=if frame.at != Whole { Some(push_alpha_of(key)) } else { None },
+            )
           }
         } else {
           row_line(line, key)
@@ -1518,37 +1576,83 @@ fn section_chrome_node(
   list_place : @view.ListPlace[String],
   top_edge_key : @signals.Signal[String?],
   bot_edge_key : @signals.Signal[String?],
+  top_push_key : @signals.Signal[String?],
+  top_push_by : @signals.Signal[Double],
+  bot_push_key : @signals.Signal[String?],
+  bot_push_by : @signals.Signal[Double],
 ) -> Unit {
   match frame.at {
     Side | Tape => {
       host.reacts(
         fn() {
           if !is_grouped() {
-            (None, None)
+            (None, None, None, None)
           } else {
             let c = read_chrome()
-            (c.top_edge_key, c.bot_edge_key)
+            (c.top_edge_key, c.bot_edge_key, c.top_push, c.bot_push)
           }
         },
-        fn(pair) {
-          top_edge_key.set(pair.0)
-          bot_edge_key.set(pair.1)
+        fn(state) {
+          let (te_k, be_k, tp, bp) = state
+          top_edge_key.set(te_k)
+          bot_edge_key.set(be_k)
+          // Write `by` before `key` on `Some` (and clear `key` before resetting `by` on `None`) so a newly pushed
+          // heading never briefly evaluates with the previous heading's `by`.
+          match tp {
+            Some((k, by)) => {
+              top_push_by.set(by)
+              top_push_key.set(Some(k))
+            }
+            None => {
+              top_push_key.set(None)
+              top_push_by.set(0.0)
+            }
+          }
+          match bp {
+            Some((k, by)) => {
+              bot_push_by.set(by)
+              bot_push_key.set(Some(k))
+            }
+            None => {
+              bot_push_key.set(None)
+              bot_push_by.set(0.0)
+            }
+          }
         },
       )
-      // Mask the soft-fade region [0, top_edge] behind the top band once any section is top-docked so scrolled body
-      // rows never reappear above the pinned top section header under the translucent band fade.
+      // Mask the soft-fade region [0, top_edge] behind the top band once any section reaches or docks at top_edge
+      // (+1pt into the heading's 14pt solid top padding so fractional DPI/zoom/Tape insets never open a 1px crack).
       host.box(fn(cap) {
         cap
         .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), None))
         .height(By(fn() {
           let c = read_chrome()
-          Some(if is_grouped() && c.top_stack_h > 0.0 { c.top_edge } else { 0.0 })
+          Some(
+            if is_grouped() && c.top_edge > 0.0 && (c.top_stack_h > 0.0 || c.active is Some(_)) {
+              c.top_edge + 1.0
+            } else {
+              0.0
+            },
+          )
         }))
         .ground(By(frame.ground))
         .points(Is(false))
         |> ignore
       })
       |> ignore
+      // Matching bottom-band mask for the bottom-stacked state when a foot band is present (zero extra nodes when
+      // bottom_edge == 0; covers stacked headers only since bottom has no `active` sentinel and lists_foot_node is opaque).
+      host.show(at_once=true, fn() { is_grouped() && read_chrome().bottom_edge > 0.0 }, fn(fcap) {
+        fcap
+        .over(Is(true), edges=(Some(0.0), None, Some(0.0), Some(0.0)))
+        .height(By(fn() {
+          let c = read_chrome()
+          Some(if c.bot_stack_h > 0.0 && c.bottom_edge > 0.0 { c.bottom_edge + 1.0 } else { 0.0 })
+        }))
+        .ground(By(frame.ground))
+        .points(Is(false))
+        |> ignore
+      })
     }
     Whole => {
       // Geometry constants for the persistent bottom-left Liquid Glass floating group switcher pill:
@@ -1711,6 +1815,7 @@ fn list_day_or_group_heading_node(
   at : @sf.ListAt,
   tips : @sf.TipLayer,
   on_toggle_collapse : (String) -> Unit,
+  push_alpha? : () -> Double,
 ) -> Unit {
   let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey() }) }
   line.switch_by(grouped, fn(p, is_grp) {
@@ -1725,6 +1830,7 @@ fn list_day_or_group_heading_node(
         fn() { label() + " " + count_text() },
         fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
         expanded=fn() { !collapsed() },
+        disabled?=push_alpha.map(fn(a) { fn() { a() < 0.999 } }),
         fn(row) {
           // (its chevron centred in the rows' end column, where their last marks stand)
           @sf.style_node(row, fn() {
@@ -1788,6 +1894,10 @@ fn list_day_or_group_heading_node(
         },
       )
       btn.read_from() |> ignore
+      match push_alpha {
+        Some(a) => btn.alpha(By(a)) |> ignore
+        None => ()
+      }
       btn.on_menu(fn(m) {
         match @signals.untracked(day_of) {
           Some(d) if d.group_kind == "project" =>

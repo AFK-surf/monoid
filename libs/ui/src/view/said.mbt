@@ -700,7 +700,13 @@ pub fn Tree::said_pass(
       if n.said is Some(_) || n.hosted {
         return true
       }
-      self.kids_in_order(k).iter().any(fn(c) { says_any(c) })
+      let kids = self.kids_in_order(k)
+      for i = 0; i < kids.length(); i = i + 1 {
+        if says_any(kids[i]) {
+          return true
+        }
+      }
+      false
     }
 
     for k in self.root_layers() {

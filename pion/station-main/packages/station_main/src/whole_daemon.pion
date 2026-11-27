@@ -1,0 +1,4623 @@
+// Production pure-Pion full-station daemon (`whole_daemon.pion`), assembling `station_whole::WholeCore`
+// onto `daemon_core.pion` with:
+// - Pre-handover preparation (`on_init`): binds inherited `mcp_fd` (or `127.0.0.1:0`), serves `503` on
+//   `/mcp` before readiness, NEVER opens SQLite primary writer before predecessor exit;
+// - Atomic post-predecessor takeover (`on_predecessor_gone`): `WholeCore::open_after_predecessor_gone`
+//   (`before_store` + `register_sqlite_js_lower` + SQLite open/migrate + handover snapshot restore +
+//   live runner adoption reading native `"runner"` PID field + crash-recovery token adoption + active
+//   job adoption) -> deletes snapshot ONLY after restore succeeds (never deletes on parse/restore error) ->
+//   `ctx.mark_role_ready()`;
+// - Production `stillfail/http/1` (`PEER_HTTP_ALPN`) station-to-station local port forward (HTTP/1.1
+//   half-open streaming + `socket: true` WebSocket `101` proxy + `tcp: true`/`probe: true` + `ownPorts`
+//   refusal incl. launcher `shown` port + write-completion-driven backpressure + serialized upstream writes +
+//   late `tcp.open` cleanup);
+// - Production `stillfail/admin/1` (`ALPN`) member AdminApi over `station_mesh::ServeEndpoint` with
+//   Ed25519 JWT + revocation + workspace lock + personal lock (`onPersonalLock`) cryptographic verification
+//   on stream 1 (exempt from generic 60s idle sweep), live revocation/lock kick on every cloud state update,
+//   strict per-workspace Drive root isolation (`drive.workspaces[ws]`, never falling back to `$HOME`),
+//   backpressured 64 KiB Drive download, Content-Length-verified Drive upload before atomic rename commit,
+//   single-subscription SSE with `since`/`running`, and `OLDEST_CORE` floor on all routes;
+// - Read-only `PeerIdentity::AuthenticatedStation` (`role: "viewer"`) on `PEER_ALPN`/`PEER_BYTES_ALPN`
+//   (zero self-asserted identity headers);
+// - Graceful `SIGUSR2` handover preserving running jobs & runners (`detach_all_for_handover`) with
+//   error propagation on snapshot export/write failure vs full `SIGTERM`/`SIGINT` shutdown stopping jobs.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "form"
+import "host_shim"
+import "http1"
+import "lock"
+import "mesh_accept"
+import "mesh_door"
+import "mesh_wire"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_drivers"
+import "station_http"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_rules_bridge"
+import "station_screens"
+import "station_store"
+import "station_sys"
+import "station_whole"
+import "websocket"
+
+let WHOLE_HANDOVER_FILE : String = "whole-handover.json"
+let WHOLE_MAX_ADMIN_HEAD : Int = 65536
+let WHOLE_MAX_PROXY_HEAD : Int = 262144
+let WHOLE_MAX_HTTP_BODY : Int64 = 4194304L
+let WHOLE_MAX_PRE_CONNECT_BODY : Int = 1048576
+let WHOLE_MAX_UPSTREAM_WRITE_Q : Int = 18874368 // 18 MiB hard cap (16 MiB legal WS frame + headroom)
+let WHOLE_UPSTREAM_READ_PAUSE_HIGH : Int = 524288 // 512 KiB pause inbound mesh read
+let WHOLE_UPSTREAM_READ_PAUSE_LOW : Int = 131072 // 128 KiB resume inbound mesh read
+let WHOLE_WS_DOWNSTREAM_CHUNK : Int = 65536 // 64 KiB chunking for large WS frames
+let WHOLE_RUNNER_MAX_LINE_BYTES : Int = 8388608 // 8 MiB max NDJSON line from runner
+let WHOLE_DRIVE_READ_CHUNK : Int = 65536
+let WHOLE_UPKEEP_EVERY_MS : Int64 = 600000L
+
+// Preview/Peer-HTTP WebSocket binary frame kinds (1:1 with `station/src/jobs/preview.ts:107-110`).
+let WS_FRAME_TEXT : Int = 1
+let WS_FRAME_BINARY : Int = 2
+let WS_FRAME_CLOSE : Int = 8
+let WS_MAX_FRAME : Int = 16777216
+
+// `mux_role` tokens owned by `whole_daemon` for `stillfail/http/1` local port forwarding.
+let PROXY_TOK_TCP_OPEN : Int = 5001
+let PROXY_TOK_TCP_READ : Int = 5002
+let PROXY_TOK_TCP_WRITE : Int = 5003
+let PROXY_TOK_TCP_END : Int = 5004
+let PROXY_TOK_TCP_CLOSE : Int = 5005
+
+// `mux_role` tokens owned by `whole_daemon` for adopted `stillfail-runner` Unix socket connections.
+let RUNNER_TOK_UNIX_OPEN : Int = 5101
+let RUNNER_TOK_UNIX_READ : Int = 5102
+let RUNNER_TOK_UNIX_WRITE : Int = 5103
+let RUNNER_TOK_UNIX_CLOSE : Int = 5104
+
+struct AdoptedRunnerConn {
+  runner_id : String
+  instance_id : String
+  runner_pid : Int
+  started_at : Int64
+  session_key : String
+  socket_path : String
+  keep_from : Int64
+  mut sock_id : Int64
+  mut rx_chunks : Array[Bytes]
+  mut rx_total_bytes : Int
+  mut attached_seen : Bool
+  mut db_initialized : Bool
+  mut acked_out : Int64
+  mut acked_err : Int64
+  mut lines_received : Int
+  mut exited : Bool
+}
+
+struct DriveUploadStreamState {
+  workspace : String
+  root : String
+  rel : String
+  upload_id : String
+  total : Int64
+  replace : Bool
+  expected_cl : Option[Int64]
+  mut received_bytes : Int64
+  mut cur_offset : Int64
+  mut pending_commit_chunk : Option[Bytes]
+  mut last_entry : Option[station_screens::DriveEntry]
+  mut failed : Option[station_screens::DriveError]
+}
+
+struct DriveDownloadStreamState {
+  workspace : String
+  root : String
+  rel : String
+  mut cur_offset : Int64
+  mut remaining : Int64
+}
+
+struct AdminBodySendingState {
+  body : Bytes
+  mut offset : Int
+}
+
+struct AdminReqHead {
+  method : String
+  path : String
+  headers : Array[http1::Header]
+  expected_cl : Option[Int64]
+}
+
+enum AdminStreamMode {
+  ControlStream
+  ReadingHeadLine
+  ReadingBody(AdminReqHead, Bytes)
+  StreamingDriveUpload(DriveUploadStreamState)
+  DriveDownloading(DriveDownloadStreamState)
+  SendingBody(AdminBodySendingState)
+  SseStreaming(Int)
+  Done
+}
+
+struct AdminConnState {
+  conn_id : Int64
+  remote_id : String
+  is_front : Bool
+  mut control_sid : Option[Int64]
+  mut iat : Int64
+  mut sid_claim : String
+  mut cred_role : String
+  mut effective_role : String
+  mut lock_base : Option[String]
+  mut lock_proof : Option[String]
+}
+
+struct AdminStreamState {
+  sid : Int64
+  conn_id : Int64
+  remote_id : String
+  is_front : Bool
+  mut mode : AdminStreamMode
+  mut rx_buf : Bytes
+  mut last_sse_ping_ms : Int64
+}
+
+enum ProxyStreamMode {
+  ReadingHeadLine
+  OpeningTcp(Int, Bytes, Bool)
+  Tunneling(Int64)
+  OpeningHttp(Int, String, String, Array[(String, String)], Bool, Bytes, Bool)
+  ProxyHttpReadingHead(Int64, Bytes, Bool)
+  ProxyHttpRawBody(Int64, Option[Int64], Int64, Bool)
+  ProxyHttpChunkedBody(Int64, http1::ChunkedDecoder, Bool)
+  OpeningWsTcp(Int, String, Array[(String, String)], Bytes)
+  WsHandshaking(Int64, String, Bytes, Bytes)
+  WsForwarding(Int64, websocket::Decoder, Bytes)
+  Done
+}
+
+struct ProxyStreamState {
+  sid : Int64
+  remote_id : String
+  is_front : Bool
+  mut mode : ProxyStreamMode
+  mut rx_buf : Bytes
+  mut local_sock : Int64
+  mut req_chunked : Bool
+  mut peer_ended : Bool
+  mut tcp_write_queue : Array[Bytes]
+  mut tcp_write_queue_bytes : Int
+  mut tcp_write_in_flight : Bool
+  mut tcp_end_pending : Bool
+  mut tcp_read_paused : Bool
+  mut downstream_pending : Array[Bytes]
+  mut downstream_pending_idx : Int
+  mut downstream_finish_after : Bool
+  mut mesh_read_paused : Bool
+}
+
+struct WholeDriveRpcPutState {
+  workspace : String
+  root : String
+  rel : String
+  upload_id : String
+  total : Int64
+  replace : Bool
+  mut cur_offset : Int64
+  mut last_entry : Option[station_screens::DriveEntry]
+}
+
+struct WholeRuntimeState {
+  core : station_whole::WholeCore
+  mcp_srv : station_http::HttpServer
+  mcp_cb : station_http::ServerCallbacks
+  serve : station_mesh::ServeEndpoint
+  admin_conns : Map[Int64, AdminConnState]
+  admin_streams : Map[Int64, AdminStreamState]
+  proxy_streams : Map[Int64, ProxyStreamState]
+  proxy_by_sock : Map[Int64, Int64]
+  drive_rpc_puts : Map[Int64, WholeDriveRpcPutState]
+  rig_put_streams : Map[Int64, StreamPutCtx]
+  adopted_runners : Map[Int, AdoptedRunnerConn]
+  adopted_runner_by_sock : Map[Int64, Int]
+  mut next_runner_conn_id : Int
+  mut carried_handover_failed : Option[String]
+  mut mcp_announced : Bool
+  mut handover_exported : Bool
+  mut becoming_rig : Bool
+  mut next_upkeep_ms : Int64
+}
+
+fn str_in_arr(arr : Array[String], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn req_header_ci(headers : Array[http1::Header], name : String) -> Option[String] {
+  for i in 0..<headers.length() {
+    if station_http::ascii_eq_ci(headers[i].name, name) {
+      return Some(headers[i].value)
+    }
+  }
+  None
+}
+
+fn parse_str_arr_json(j_opt : Option[base_codec::Json]) -> Array[String] {
+  let out : Array[String] = []
+  match j_opt {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => {
+            let t = s.trim()
+            if t.length() > 0 {
+              out.push(t)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn is_abs_drive_root(p : String, is_win : Bool) -> Bool {
+  if p.length() == 0 {
+    return false
+  }
+  if !is_win {
+    return p.starts_with("/")
+  }
+  let c0 = p.code_unit_at(0)
+  if p.length() >= 2 && c0 == 92 && p.code_unit_at(1) == 92 {
+    return true
+  }
+  if p.length() >= 3 {
+    let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+    let c1 = p.code_unit_at(1)
+    let c2 = p.code_unit_at(2)
+    if is_alpha && c1 == 58 && (c2 == 47 || c2 == 92) {
+      return true
+    }
+  }
+  false
+}
+
+fn clean_abs_drive_roots(raw : Array[String]) -> Array[String] {
+  let is_win = station_sys::os_name() == "win32"
+  let sep = if is_win { "\\" } else { "/" }
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    let t = raw[i].trim()
+    if is_abs_drive_root(t, is_win) {
+      let norm = nodepath::join(sep, [t])
+      if is_abs_drive_root(norm, is_win) && !str_in_arr(out, norm) {
+        out.push(norm)
+      }
+    }
+  }
+  out
+}
+
+/// Strictly resolve Drive roots for a single workspace (1:1 with `station/src/drive/drive.ts:104-107`):
+/// - Home workspace (`is_home == true`): `drive.roots` (or `driveRoots` / `STILLFAIL_DRIVE_ROOTS`).
+/// - Joined workspace (`is_home == false`): `drive.workspaces[ws]` ONLY.
+/// - Rejects relative paths, normalizes absolute paths, NEVER shares home roots with joined workspaces,
+///   and NEVER falls back to `$HOME`!
+fn parse_drive_roots_for_workspace(
+  cfg_raw : base_codec::Json,
+  ws : String,
+  is_home : Bool,
+) -> Array[String] {
+  if !is_home {
+    match base_codec::json_get(cfg_raw, "drive") {
+      Some(drv) => match base_codec::json_get(drv, "workspaces") {
+        Some(wss) => return clean_abs_drive_roots(parse_str_arr_json(base_codec::json_get(wss, ws)))
+        None => return []
+      }
+      None => return []
+    }
+  }
+  let out : Array[String] = []
+  match station_sys::env_get("STILLFAIL_DRIVE_ROOTS") {
+    Some(env_roots) => {
+      if env_roots.length() > 0 {
+        let parts = env_roots.split(",")
+        for i in 0..<parts.length() {
+          let p = parts[i].trim()
+          if p.length() > 0 {
+            out.push(p)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  if out.length() > 0 {
+    return clean_abs_drive_roots(out)
+  }
+  let from_drive_roots = match base_codec::json_get(cfg_raw, "drive") {
+    Some(drv) => parse_str_arr_json(base_codec::json_get(drv, "roots"))
+    None => []
+  }
+  if from_drive_roots.length() > 0 {
+    return clean_abs_drive_roots(from_drive_roots)
+  }
+  clean_abs_drive_roots(parse_str_arr_json(base_codec::json_get(cfg_raw, "driveRoots")))
+}
+
+fn build_whole_core_config(ctx : DaemonCtx, now_secs : Double) -> station_whole::WholeCoreConfig {
+  let home_ws = match ctx.cloud.state {
+    Some(s) => if s.workspace.length() > 0 { s.workspace } else { "local" }
+    None => "local"
+  }
+  let allowed : Array[String] = []
+  let full_ms = ctx.cloud.full_memberships(now_secs)
+  for i in 0..<full_ms.length() {
+    let w = full_ms[i].workspace
+    if w.length() > 0 {
+      allowed.push(w)
+    }
+  }
+  let mut has_home = false
+  for i in 0..<allowed.length() {
+    if allowed[i] == home_ws {
+      has_home = true
+    }
+  }
+  if !has_home && home_ws.length() > 0 && ctx.cloud.rig_in(home_ws) is None {
+    allowed.push(home_ws)
+  }
+
+  let rig_ws : Array[String] = []
+  let mut rig_owner_email = ""
+  let mut rig_owner_name = ""
+  let mut rig_person = ""
+  let rig_ms = ctx.cloud.rig_memberships(now_secs)
+  for i in 0..<rig_ms.length() {
+    rig_ws.push(rig_ms[i].workspace)
+    match rig_ms[i].rig {
+      Some(r) => {
+        if rig_person.length() == 0 {
+          rig_owner_email = r.owner_email
+          rig_owner_name = r.owner_name
+          rig_person = r.person
+        }
+      }
+      None => ()
+    }
+  }
+
+  let home_drive_roots = parse_drive_roots_for_workspace(ctx.cfg_raw, home_ws, true)
+  let runner_bin = match ctx.args.app {
+    Some(a) => nodepath::join(ctx.sep, [a, "station", "stillfail-runner"])
+    None => ""
+  }
+  station_whole::WholeCoreConfig::{
+    station_id: ctx.station_key.id,
+    station_build: "0.1.0",
+    data_dir: ctx.data,
+    drive_roots: home_drive_roots,
+    drive_protected: [ctx.data],
+    assets_dir: nodepath::join(ctx.sep, [ctx.data, "assets"]),
+    runner_bin: runner_bin,
+    mcp_port: 0,
+    home_workspace: home_ws,
+    allowed_workspaces: allowed,
+    rig_workspaces: rig_ws,
+    rig_owner_email: rig_owner_email,
+    rig_owner_name: rig_owner_name,
+    rig_person_lock_id: rig_person,
+  }
+}
+
+fn drive_entry_json_local(e : station_screens::DriveEntry) -> base_codec::Json {
+  base_codec::json_obj([
+    ("name", base_codec::json_str(e.name)),
+    ("dir", base_codec::json_bool(e.dir)),
+    ("size", base_codec::json_int64(e.size)),
+    ("mtime", base_codec::json_int64(e.mtime)),
+    ("mime", base_codec::json_str(e.mime)),
+  ])
+}
+
+fn drive_code_name_local(c : station_screens::DriveCode) -> String {
+  match c {
+    station_screens::DriveCode::InvalidRequest => "invalid_request"
+    station_screens::DriveCode::NotARoot => "not_a_root"
+    station_screens::DriveCode::NotFound => "not_found"
+    station_screens::DriveCode::PathEscape => "path_escape"
+    station_screens::DriveCode::Protected => "protected"
+    station_screens::DriveCode::Permission => "permission"
+    station_screens::DriveCode::IsADirectory => "is_a_directory"
+    station_screens::DriveCode::NotADirectory => "not_a_directory"
+    station_screens::DriveCode::Exists => "exists"
+    station_screens::DriveCode::UploadLost => "upload_lost"
+    station_screens::DriveCode::NoTrash => "no_trash"
+    station_screens::DriveCode::TooLarge => "too_large"
+    station_screens::DriveCode::Io => "io"
+  }
+}
+
+fn drive_err_http_resp(e : station_screens::DriveError) -> station_http::HttpResponse {
+  let status = station_screens::drive_code_status(e.code)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("error", base_codec::json_str(e.message)),
+    ("code", base_codec::json_str(drive_code_name_local(e.code))),
+  ]
+  match e.have {
+    Some(h) => fields.push(("have", base_codec::json_int64(h)))
+    None => ()
+  }
+  station_api::json_status(status, base_codec::json_obj(fields))
+}
+
+fn resolve_drive_root_for_ws(
+  core : station_whole::WholeCore,
+  ws : String,
+  requested : Option[String],
+) -> Result[String, String] {
+  let allowed = match core.api.workspace_drive_roots.get(ws) {
+    Some(r) => r
+    None => []
+  }
+  if allowed.length() == 0 {
+    return Err("no drive roots authorized for workspace " + ws)
+  }
+  match requested {
+    Some(r) => {
+      if r.length() == 0 {
+        return Ok(allowed[0])
+      }
+      for i in 0..<allowed.length() {
+        if allowed[i] == r {
+          return Ok(r)
+        }
+      }
+      Err("drive root not authorized for workspace " + ws)
+    }
+    None => Ok(allowed[0])
+  }
+}
+
+/// Look up the kept personal lock chain for `pin` in `CloudStore::person_chains`.
+fn find_kept_person_chain(cloud : station_cloud::CloudStore, pin : String) -> Option[Array[form::Json]] {
+  for i in 0..<cloud.person_chains.length() {
+    let (genesis, entries) = cloud.person_chains[i]
+    if genesis == pin && entries.length() > 0 {
+      return Some(entries)
+    }
+  }
+  None
+}
+
+/// Transactionally upsert `(pin, entries)` into `CloudStore::person_chains` and persist to disk.
+/// Rolls back in-memory state and returns `Err` if `save_person_chains()` fails.
+fn upsert_and_save_person_chain(
+  cloud : station_cloud::CloudStore,
+  pin : String,
+  entries : Array[form::Json],
+) -> Result[Unit, String] {
+  let prev = cloud.person_chains
+  let updated : Array[(String, Array[form::Json])] = []
+  let mut found = false
+  for i in 0..<prev.length() {
+    let (g, es) = prev[i]
+    if g == pin {
+      updated.push((pin, entries))
+      found = true
+    } else {
+      updated.push((g, es))
+    }
+  }
+  if !found {
+    updated.push((pin, entries))
+  }
+  cloud.set_person_chains(updated)
+  match cloud.save_person_chains() {
+    Ok(_) => Ok(())
+    Err(e) => {
+      cloud.set_person_chains(prev)
+      Err("failed to persist personal lock chain: " + e)
+    }
+  }
+}
+
+/// Evaluate personal lock (`station/src/mesh/serve.ts:705-732` `onPersonalLock`):
+/// merges kept + brought chains via `lock::person_chain` fork choice (where `device.remove` beats
+/// pre-removal forks regardless of length), validates via `lock::admit_person`, and persists the
+/// winning chain back to `CloudStore::person_chains` so subsequent live checks agree.
+fn verify_on_personal_lock(
+  cloud : station_cloud::CloudStore,
+  ls : lock::LockState,
+  sub : String,
+  endpoint : String,
+  lock_base : Option[String],
+  lock_proof : Option[String],
+  hello_opt : Option[base_codec::Json],
+  crypto_adapter : lock::Crypto,
+) -> Result[String, String] {
+  let pin = match ls.persons.get(sub) {
+    Some(p) => p
+    None => return Err("person has no bound personal lock")
+  }
+  let kept_opt = find_kept_person_chain(cloud, pin)
+  let mut brought_opt : Option[Array[form::Json]] = None
+  match hello_opt {
+    Some(hello) => {
+      match base_codec::json_get(hello, "lock") {
+        Some(lobj) => {
+          match base_codec::json_get(lobj, "person") {
+            Some(base_codec::Json::Arr(items)) => {
+              if items.length() > 0 && items.length() <= 64 {
+                let arr : Array[form::Json] = []
+                for i in 0..<items.length() {
+                  arr.push(station_rules_bridge::base_to_form(items[i]))
+                }
+                brought_opt = Some(arr)
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let combined : Array[form::Json] = []
+  match kept_opt {
+    Some(k) => {
+      for i in 0..<k.length() {
+        combined.push(k[i])
+      }
+    }
+    None => ()
+  }
+  match brought_opt {
+    Some(b) => {
+      for i in 0..<b.length() {
+        combined.push(b[i])
+      }
+    }
+    None => ()
+  }
+  if combined.length() == 0 {
+    return Err("this device goes by its person's own lock in this workspace, and it brought none")
+  }
+  let chosen = match lock::person_chain(combined, pin, crypto_adapter) {
+    Ok(ch) => ch.entries
+    Err(_) => return Err("person's own lock chain invalid")
+  }
+  if chosen.length() == 0 {
+    return Err("person's own lock chain empty")
+  }
+  match lock::admit_person(ls, sub, endpoint, lock_base, lock_proof, chosen, crypto_adapter) {
+    Ok((_, lock_role, _)) => {
+      // Transactionally persist the winning fork-choice chain before admitting `hello`!
+      if brought_opt is Some(_) {
+        match upsert_and_save_person_chain(cloud, pin, chosen) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      Ok(lock_role)
+    }
+    Err(_) => Err("device not admitted by person's own lock")
+  }
+}
+
+/// Evaluate workspace lock + personal lock for a member (`station/src/mesh/serve.ts:641-672` `inLock`/`stillIn`).
+fn verify_member_lock(
+  cloud : station_cloud::CloudStore,
+  ws : String,
+  sub : String,
+  endpoint : String,
+  lock_base : Option[String],
+  lock_proof : Option[String],
+  hello_opt : Option[base_codec::Json],
+  now_secs : Double,
+) -> Result[Option[String], String] {
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    None => Ok(None)
+    Some(eff) => {
+      if eff.waiting {
+        return Err("workspace lock state is still syncing")
+      }
+      match eff.state {
+        None => Err("this station's workspace lock is broken")
+        Some(ls) => {
+          let crypto_adapter = station_rules_bridge::lock_crypto()
+          match lock::admit(ls, sub, endpoint, lock_base, lock_proof, now_secs, crypto_adapter) {
+            Ok((dev, lock_role)) => {
+              // Align with `station/src/mesh/serve.ts:653-657`:
+              // An app device whose person is bound in `state.persons` and not `by == "chain"`
+              // MUST ALSO pass `onPersonalLock` (if removed from personal lock, reject!).
+              let is_by_chain = match dev.by {
+                Some(b) => b == "chain"
+                None => false
+              }
+              if dev.kind == "app" && ls.persons.contains(sub) && !is_by_chain {
+                match verify_on_personal_lock(cloud, ls, sub, endpoint, lock_base, lock_proof, hello_opt, crypto_adapter) {
+                  Ok(person_role) => Ok(Some(person_role))
+                  Err(e) => Err(e)
+                }
+              } else {
+                Ok(Some(lock_role))
+              }
+            }
+            Err(_) => {
+              // Fallback to personal lock when device is only listed on the person's own lock.
+              if ls.persons.contains(sub) {
+                match verify_on_personal_lock(cloud, ls, sub, endpoint, lock_base, lock_proof, hello_opt, crypto_adapter) {
+                  Ok(person_role) => Ok(Some(person_role))
+                  Err(e) => Err(e)
+                }
+              } else {
+                Err("device not admitted by workspace lock")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn member_role_rank(r : String) -> Int {
+  if r == "owner" { 3 } else if r == "admin" { 2 } else if r == "member" { 1 } else { 0 }
+}
+
+struct VerifiedMember {
+  session : station_mesh::MemberSession
+  name : String
+  iat : Int64
+  sid_claim : String
+  cred_role : String
+  lock_base : Option[String]
+  lock_proof : Option[String]
+}
+
+/// Cryptographically verify a cloud-signed EdDSA (Ed25519) member JWT against `CloudStore`
+/// (`grant_keys`, full memberships, `device == remote_id`, expiry, revocations, workspace lock, and personal lock).
+fn verify_member_credential(
+  cloud : station_cloud::CloudStore,
+  hello : base_codec::Json,
+  remote_id : String,
+  now_secs : Double,
+) -> Result[VerifiedMember, mesh_door::Refusal] {
+  let refuse = fn(msg : String, code : Int, reason : String) -> Result[VerifiedMember, mesh_door::Refusal] {
+    Err(mesh_door::Refusal::{
+      line: base_codec::json_obj([("error", base_codec::json_str(msg))]),
+      code: code,
+      reason: reason,
+      error: msg,
+    })
+  }
+  if remote_id.length() == 0 {
+    return refuse("missing peer device id", 3, "unauthorized")
+  }
+  let cred = match base_codec::json_get(hello, "credential") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return refuse("missing credential", 3, "unauthorized")
+  }
+  let parts = cred.split(".")
+  if parts.length() != 3 {
+    return refuse("malformed credential", 3, "unauthorized")
+  }
+  let head_b64 = parts[0]
+  let body_b64 = parts[1]
+  let sig_b64 = parts[2]
+
+  let head_bytes = match station_rules_bridge::decode_base64url_flex(head_b64) {
+    Ok(b) => b
+    Err(_) => return refuse("malformed credential header", 3, "unauthorized")
+  }
+  let head_j = match base_codec::json_parse(bytes_to_str_local(head_bytes, head_bytes.length())) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return refuse("invalid credential header json", 3, "unauthorized")
+  }
+  let alg = match base_codec::json_get(head_j, "alg") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let typ = match base_codec::json_get(head_j, "typ") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let spec = station_cloud::spec_of(cloud.provider())
+  if alg != "EdDSA" || !str_in_arr(spec.credential.types, typ) {
+    return refuse("not a member's credential", 3, "unauthorized")
+  }
+  let kid_opt : Option[String] = match base_codec::json_get(head_j, "kid") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+
+  let body_bytes = match station_rules_bridge::decode_base64url_flex(body_b64) {
+    Ok(b) => b
+    Err(_) => return refuse("malformed credential payload", 3, "unauthorized")
+  }
+  let claims = match base_codec::json_parse(bytes_to_str_local(body_bytes, body_bytes.length())) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return refuse("invalid credential payload json", 3, "unauthorized")
+  }
+  let claim_str = fn(k : String) -> String {
+    match base_codec::json_get(claims, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let claim_i64 = fn(k : String) -> Int64 {
+    match base_codec::json_get(claims, k) {
+      Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
+        Some(v) => v
+        None => n.to_int64()
+      }
+      _ => 0L
+    }
+  }
+
+  let iss = claim_str("iss")
+  if !str_in_arr(spec.credential.issuers, iss) {
+    return refuse("credential not issued by control plane", 3, "unauthorized")
+  }
+  let ws = claim_str("ws")
+  if ws.length() == 0 {
+    return refuse("credential missing workspace", 3, "unauthorized")
+  }
+  let full_ms = cloud.full_memberships(now_secs)
+  let mut matched_m : Option[station_cloud::Membership] = None
+  for i in 0..<full_ms.length() {
+    if full_ms[i].workspace == ws {
+      matched_m = Some(full_ms[i])
+      break
+    }
+  }
+  let membership = match matched_m {
+    Some(m) => m
+    None => return refuse("credential is for another workspace", 3, "unauthorized")
+  }
+
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  let gkeys = cloud.grant_keys(now_secs, ws=joined_ws)
+  let jwk_arr : Array[base_codec::Json] = match base_codec::json_get(gkeys, "keys") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+  let mut matched_x : Option[String] = None
+  for ki in 0..<jwk_arr.length() {
+    let jwk = jwk_arr[ki]
+    let jkid = match base_codec::json_get(jwk, "kid") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let kid_ok = match kid_opt {
+      None => true
+      Some(want) => jkid == want
+    }
+    if kid_ok {
+      match base_codec::json_get(jwk, "x") {
+        Some(base_codec::Json::Str(xs)) => {
+          matched_x = Some(xs)
+          break
+        }
+        _ => ()
+      }
+    }
+  }
+  let x_b64 = match matched_x {
+    Some(xs) => xs
+    None => return refuse("unknown credential key", 3, "unauthorized")
+  }
+  let pub_bytes = match station_rules_bridge::decode_base64url_flex(x_b64) {
+    Ok(b) => if b.length() == 32 { b } else { return refuse("invalid credential public key", 3, "unauthorized") }
+    Err(_) => return refuse("invalid credential public key", 3, "unauthorized")
+  }
+  let sig_bytes = match station_rules_bridge::decode_base64url_flex(sig_b64) {
+    Ok(b) => if b.length() == 64 { b } else { return refuse("invalid credential signature length", 3, "unauthorized") }
+    Err(_) => return refuse("malformed credential signature", 3, "unauthorized")
+  }
+  let key_id = "ed25519:" + base_codec::hex_encode(pub_bytes)
+  let signing_input = (head_b64 + "." + body_b64).to_bytes()
+  if !station_rules_bridge::signature_ok(key_id, sig_bytes, signing_input) {
+    return refuse("credential signature invalid", 3, "unauthorized")
+  }
+
+  let device = claim_str("device")
+  if device != remote_id {
+    return refuse("credential is for another device", 3, "unauthorized")
+  }
+  let exp = claim_i64("exp")
+  if exp <= now_secs.to_int64() {
+    return refuse("credential expired", 3, "credential_expired")
+  }
+  let sub = claim_str("sub")
+  let email = claim_str("email")
+  let name = claim_str("name")
+  let mut role = claim_str("role")
+  if role != "owner" && role != "admin" && role != "member" && role != "viewer" {
+    return refuse("invalid member role in credential", 3, "unauthorized")
+  }
+  let iat = claim_i64("iat")
+  let sid_claim = claim_str("sid")
+
+  // Enforce workspace revocations (`sub` or `sid` issued up to `rev.at`).
+  for ri in 0..<membership.revocations.length() {
+    let r = membership.revocations[ri]
+    if iat <= r.at && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sid_claim)) {
+      return refuse("credential revoked", 3, "credential_revoked")
+    }
+  }
+
+  let mut lock_base : Option[String] = None
+  let mut lock_proof_str : Option[String] = None
+  match base_codec::json_get(hello, "lock") {
+    Some(lobj) => {
+      match (base_codec::json_get(lobj, "device"), base_codec::json_get(lobj, "proof")) {
+        (Some(base_codec::Json::Str(db)), Some(base_codec::Json::Str(dp))) => {
+          if db.length() == 64 && dp.length() == 128 {
+            lock_base = Some(db)
+            lock_proof_str = Some(dp)
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+
+  let cred_role = role
+  // Enforce pinned workspace lock + personal lock (`onPersonalLock`).
+  match verify_member_lock(cloud, ws, sub, remote_id, lock_base, lock_proof_str, Some(hello), now_secs) {
+    Err(why) => return refuse(why, 3, "lock_unconfirmed")
+    Ok(Some(lock_role)) => {
+      if member_role_rank(lock_role) < member_role_rank(role) {
+        role = lock_role
+      }
+    }
+    Ok(None) => ()
+  }
+
+  let eff_email = if email.length() > 0 { email } else { sub }
+  let eff_name = if name.length() > 0 { name } else { eff_email }
+  Ok(VerifiedMember::{
+    session: station_mesh::MemberSession::{
+      workspace: ws,
+      user_sub: sub,
+      email: eff_email,
+      role: role,
+      device_id: remote_id,
+      expires_unix: exp,
+    },
+    name: eff_name,
+    iat: iat,
+    sid_claim: sid_claim,
+    cred_role: cred_role,
+    lock_base: lock_base,
+    lock_proof: lock_proof_str,
+  })
+}
+
+fn parse_admin_headers(j_opt : Option[base_codec::Json]) -> Array[http1::Header] {
+  let out : Array[http1::Header] = []
+  match j_opt {
+    Some(base_codec::Json::Obj(fields)) => {
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        match v {
+          base_codec::Json::Str(s) => out.push(http1::Header::new(k, s))
+          _ => ()
+        }
+      }
+    }
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => out.push(http1::Header::new(k, v))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn encode_admin_head_line(status : Int, headers : Array[http1::Header], body_len : Option[Int64]) -> Bytes {
+  let hfields : Array[(String, base_codec::Json)] = []
+  let mut has_cl = false
+  let mut has_ce = false
+  for i in 0..<headers.length() {
+    let k = mesh_wire::ascii_lower(headers[i].name)
+    if k == "content-length" {
+      has_cl = true
+    } else if k == "content-encoding" {
+      has_ce = true
+    }
+    hfields.push((k, base_codec::json_str(headers[i].value)))
+  }
+  match body_len {
+    Some(n) => {
+      if !has_cl && !has_ce {
+        hfields.push(("content-length", base_codec::json_str(n.to_string())))
+      }
+    }
+    None => ()
+  }
+  let head_j = base_codec::json_obj([
+    ("status", base_codec::json_int(status)),
+    ("headers", base_codec::json_obj(hfields)),
+  ])
+  (base_codec::json_stringify(head_j) + "\n").to_bytes()
+}
+
+fn encode_proxy_head_line(status : Int, headers : Array[(String, String)]) -> Bytes {
+  let h_arr : Array[base_codec::Json] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    h_arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+  }
+  let head_j = base_codec::json_obj([
+    ("status", base_codec::json_int(status)),
+    ("headers", base_codec::json_arr(h_arr)),
+  ])
+  (base_codec::json_stringify(head_j) + "\n").to_bytes()
+}
+
+/// Encode a `preview.ts` WebSocket frame: `[kind: u8][length: u32be][payload]`.
+fn encode_ws_proxy_frame(kind : Int, payload : Bytes) -> Bytes {
+  let out = Bytes::new(5 + payload.length())
+  out[0] = (kind & 0xFF) as Byte
+  write_u32_be(out, 1, payload.length().to_int64())
+  for i in 0..<payload.length() {
+    out[5 + i] = payload[i]
+  }
+  out
+}
+
+/// Scan `<data>/run/runners/*.json` for live runner metadata to pass into
+/// `WholeCore::open_after_predecessor_gone` (`whole_agents.pion:807`).
+/// Prioritizes native `stillfail-runner` field `"runner"` (`station/native/runner/src/main.rs:376`),
+/// falling back to `"runnerPid"` / `"runner_pid"` for compatibility.
+fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : String) -> Array[station_drivers::RunnerInfo] {
+  let out : Array[station_drivers::RunnerInfo] = []
+  let rdir = station_drivers::runners_dir(data, sep)
+  let entries = match (ops_fs.readdir)(rdir) {
+    Ok(list) => list
+    Err(_) => return out
+  }
+  for i in 0..<entries.length() {
+    let name = entries[i]
+    if !name.ends_with(".json") {
+      continue
+    }
+    let fpath = nodepath::join(sep, [rdir, name])
+    let raw = match ops_fs.read_text(fpath) {
+      Ok(s) => s
+      Err(_) => continue
+    }
+    let j = match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(v) => v
+      base_codec::JsonParseResult::Err(_) => continue
+    }
+    let id = match base_codec::json_get(j, "id") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => continue
+    }
+    let rpid = match base_codec::json_get(j, "runner") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => match base_codec::json_get(j, "runnerPid") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => match base_codec::json_get(j, "runner_pid") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => 0
+        }
+      }
+    }
+    let pid = match base_codec::json_get(j, "pid") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => rpid
+    }
+    let pgid = match base_codec::json_get(j, "pgid") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => pid
+    }
+    let started_at = match base_codec::json_get(j, "startedAt") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int64()
+      _ => match base_codec::json_get(j, "started_at") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => 0L
+      }
+    }
+    let program = match base_codec::json_get(j, "program") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let args : Array[String] = []
+    match base_codec::json_get(j, "args") {
+      Some(base_codec::Json::Arr(arr)) => {
+        for ai in 0..<arr.length() {
+          match arr[ai] {
+            base_codec::Json::Str(s) => args.push(s)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let socket = match base_codec::json_get(j, "socket") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let keeps = match base_codec::json_get(j, "keeps") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let pty = match base_codec::json_get(j, "pty") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let info = station_drivers::RunnerInfo::{
+      id: id,
+      runner_pid: rpid,
+      pid: pid,
+      pgid: pgid,
+      started_at: started_at,
+      program: program,
+      args: args,
+      socket: socket,
+      keeps: keeps,
+      pty: pty,
+    }
+    let alive = rpid > 1 && station_ops::is_pid_alive(rpid)
+    let os_start = if alive { station_sys::proc_start_time_ms(rpid) } else { None }
+    if station_drivers::is_runner_live(info, alive, os_start) {
+      out.push(info)
+    }
+  }
+  out
+}
+
+fn find_crlf_crlf(b : Bytes) -> Int {
+  let n = b.length()
+  if n < 4 {
+    return -1
+  }
+  for i in 0..<(n - 3) {
+    if (b[i].to_int() & 0xFF) == 13
+    && (b[i + 1].to_int() & 0xFF) == 10
+    && (b[i + 2].to_int() & 0xFF) == 13
+    && (b[i + 3].to_int() & 0xFF) == 10
+    {
+      return i
+    }
+  }
+  -1
+}
+
+/// Parse an upstream HTTP/1.1 response head (`status`, `headers`, `is_chunked`, `content_length`).
+fn parse_upstream_http_head(raw_head : String) -> Result[(Int, Array[(String, String)], Bool, Option[Int64]), String] {
+  let lines = raw_head.split("\r\n")
+  if lines.length() == 0 {
+    return Err("empty upstream http response")
+  }
+  let status_parts = lines[0].split(" ")
+  if status_parts.length() < 2 {
+    return Err("malformed upstream status line")
+  }
+  let status = match base_codec::parse_int64_str(status_parts[1]) {
+    Some(n) => n.to_int()
+    None => return Err("invalid upstream status code")
+  }
+  let raw_headers : Array[(String, String)] = []
+  let mut is_chunked = false
+  let mut content_len : Option[Int64] = None
+  for i in 1..<lines.length() {
+    let line = lines[i]
+    if line.length() == 0 {
+      continue
+    }
+    let colon = line.index_of(":")
+    if colon <= 0 {
+      continue
+    }
+    let k = mesh_wire::ascii_lower(line.slice(0, colon).trim())
+    let v = line.slice(colon + 1, line.length()).trim()
+    if k == "transfer-encoding" && mesh_wire::ascii_lower(v).contains("chunked") {
+      is_chunked = true
+    } else if k == "content-length" {
+      match base_codec::parse_int64_str(v) {
+        Some(n) => if n >= 0L { content_len = Some(n) }
+        None => ()
+      }
+    }
+    raw_headers.push((k, v))
+  }
+  let extra_hop = [
+    "expect",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "sec-websocket-accept",
+  ]
+  let filtered = mesh_wire::filter_hop_headers(raw_headers, extra_hop)
+  Ok((status, filtered, is_chunked, content_len))
+}
+
+fn parse_upstream_ws_head(raw_head : String) -> Result[(Int, Array[(String, String)]), String] {
+  let lines = raw_head.split("\r\n")
+  if lines.length() == 0 {
+    return Err("empty upstream websocket response")
+  }
+  let status_parts = lines[0].split(" ")
+  if status_parts.length() < 2 {
+    return Err("malformed upstream websocket status line")
+  }
+  let status = match base_codec::parse_int64_str(status_parts[1]) {
+    Some(n) => n.to_int()
+    None => return Err("invalid upstream websocket status code")
+  }
+  let raw_headers : Array[(String, String)] = []
+  for i in 1..<lines.length() {
+    let line = lines[i]
+    if line.length() == 0 {
+      continue
+    }
+    let colon = line.index_of(":")
+    if colon <= 0 {
+      continue
+    }
+    let k = mesh_wire::ascii_lower(line.slice(0, colon).trim())
+    let v = line.slice(colon + 1, line.length()).trim()
+    raw_headers.push((k, v))
+  }
+  Ok((status, raw_headers))
+}
+
+fn build_upstream_http_request(
+  port : Int,
+  method : String,
+  path : String,
+  headers : Array[(String, String)],
+  has_body : Bool,
+) -> (Bytes, Bool) {
+  let sb = StringBuilder::new()
+  sb.write_string(method)
+  sb.write_string(" ")
+  sb.write_string(path)
+  sb.write_string(" HTTP/1.1\r\nHost: 127.0.0.1:")
+  sb.write_string(port.to_string())
+  sb.write_string("\r\nConnection: close\r\n")
+  let mut has_cl = false
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    let kl = mesh_wire::ascii_lower(k)
+    if kl == "host" || kl == "connection" || kl == "transfer-encoding" || kl == "keep-alive" || kl == "proxy-connection" || kl == "upgrade" || kl == "te" || kl == "trailer" {
+      continue
+    }
+    if kl == "content-length" {
+      has_cl = true
+    }
+    sb.write_string(k)
+    sb.write_string(": ")
+    sb.write_string(v)
+    sb.write_string("\r\n")
+  }
+  let use_chunked = has_body && !has_cl
+  if use_chunked {
+    sb.write_string("Transfer-Encoding: chunked\r\n")
+  }
+  sb.write_string("\r\n")
+  (sb.to_string().to_bytes(), use_chunked)
+}
+
+/// Entrypoint for `stillfail-station-pion run --whole-daemon ...` (or `STILLFAIL_PION_WHOLE_DAEMON=1`).
+pub fn run_whole_daemon(argv : Array[String]) -> Int {
+  let mut state_opt : Option[WholeRuntimeState] = None
+
+  let pump_admin_body_chunk = fn(
+    ctx : DaemonCtx,
+    astream : AdminStreamState,
+    bs : AdminBodySendingState,
+  ) -> Unit {
+    while bs.offset < bs.body.length() {
+      if ctx.is_peer_http_write_paused(astream.sid)
+      || ctx.peer_http_write_queued_bytes(astream.sid) > PEER_HTTP_WRITE_LOW_WATER
+      {
+        return
+      }
+      let rem = bs.body.length() - bs.offset
+      let take = if rem > WHOLE_DRIVE_READ_CHUNK { WHOLE_DRIVE_READ_CHUNK } else { rem }
+      let chunk = slice_bytes_local(bs.body, bs.offset, bs.offset + take)
+      bs.offset = bs.offset + take
+      ctx.write_peer_http_chunk(astream.sid, chunk)
+    }
+    ctx.finish_peer_http(astream.sid)
+    astream.mode = AdminStreamMode::Done
+  }
+
+  let send_admin_resp_and_finish = fn(ctx : DaemonCtx, sid : Int64, resp : station_http::HttpResponse) -> Unit {
+    let head_b = encode_admin_head_line(resp.status, resp.headers, Some(resp.body.length().to_int64()))
+    ctx.write_peer_http_chunk(sid, head_b)
+    if resp.body.length() <= WHOLE_DRIVE_READ_CHUNK {
+      if resp.body.length() > 0 {
+        ctx.write_peer_http_chunk(sid, resp.body)
+      }
+      ctx.finish_peer_http(sid)
+      return
+    }
+    match state_opt {
+      Some(st) => {
+        match st.admin_streams.get(sid) {
+          Some(astream) => {
+            let bs = AdminBodySendingState::{ body: resp.body, offset: 0 }
+            astream.mode = AdminStreamMode::SendingBody(bs)
+            pump_admin_body_chunk(ctx, astream, bs)
+            return
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    // Fallback if stream entry is absent: still chunk by 64 KiB.
+    let mut off = 0
+    while off < resp.body.length() {
+      let rem = resp.body.length() - off
+      let take = if rem > WHOLE_DRIVE_READ_CHUNK { WHOLE_DRIVE_READ_CHUNK } else { rem }
+      ctx.write_peer_http_chunk(sid, slice_bytes_local(resp.body, off, off + take))
+      off = off + take
+    }
+    ctx.finish_peer_http(sid)
+  }
+
+  let send_proxy_refusal_and_finish = fn(ctx : DaemonCtx, sid : Int64, status : Int, text : String) -> Unit {
+    let head_b = encode_proxy_head_line(status, [("content-type", "text/plain; charset=utf-8")])
+    ctx.write_peer_http_chunk(sid, head_b)
+    if text.length() > 0 {
+      ctx.write_peer_http_chunk(sid, text.to_bytes())
+    }
+    ctx.finish_peer_http(sid)
+  }
+
+  let build_member_check_hooks = fn(
+    ctx : DaemonCtx,
+    aconn : AdminConnState,
+    now_s : Double,
+  ) -> station_mesh::MemberCheckHooks {
+    station_mesh::MemberCheckHooks::{
+      is_station_removed: fn(_ws : String) -> Bool { ctx.cloud.removed() },
+      is_credential_revoked: fn(sess : station_mesh::MemberSession) -> Bool {
+        let full_ms = ctx.cloud.full_memberships(now_s)
+        for i in 0..<full_ms.length() {
+          if full_ms[i].workspace == sess.workspace {
+            let revs = full_ms[i].revocations
+            for ri in 0..<revs.length() {
+              let r = revs[ri]
+              if aconn.iat <= r.at
+              && ((r.kind == "sub" && r.id == sess.user_sub) || (r.kind == "sid" && r.id == aconn.sid_claim))
+              {
+                return true
+              }
+            }
+            return false
+          }
+        }
+        false
+      },
+      is_lock_confirmed: fn(sess : station_mesh::MemberSession, remote : String) -> Bool {
+        match verify_member_lock(
+          ctx.cloud,
+          sess.workspace,
+          sess.user_sub,
+          remote,
+          aconn.lock_base,
+          aconn.lock_proof,
+          None,
+          now_s,
+        ) {
+          Ok(Some(lock_role)) => {
+            let base_role = if aconn.cred_role.length() > 0 { aconn.cred_role } else { sess.role }
+            aconn.effective_role = if member_role_rank(lock_role) < member_role_rank(base_role) {
+              lock_role
+            } else {
+              base_role
+            }
+            true
+          }
+          Ok(None) => {
+            if aconn.cred_role.length() > 0 {
+              aconn.effective_role = aconn.cred_role
+            }
+            true
+          }
+          Err(_) => false
+        }
+      },
+    }
+  }
+
+  let apply_door_actions = fn(
+    ctx : DaemonCtx,
+    conn : AdminConnState,
+    acts : Array[mesh_door::DoorAction],
+  ) -> Unit {
+    for i in 0..<acts.length() {
+      match acts[i] {
+        mesh_door::DoorAction::WriteControl(b) => {
+          match conn.control_sid {
+            Some(csid) => ctx.write_peer_http_chunk(csid, b)
+            None => ()
+          }
+        }
+        mesh_door::DoorAction::FinishControl => {
+          match conn.control_sid {
+            Some(csid) => ctx.finish_peer_http(csid)
+            None => ()
+          }
+        }
+        mesh_door::DoorAction::ResetControl(_) => {
+          match conn.control_sid {
+            Some(csid) => ctx.close_peer_http(csid)
+            None => ()
+          }
+        }
+        mesh_door::DoorAction::ResetStream(rsid, _) => ctx.close_peer_http(rsid)
+        mesh_door::DoorAction::FinishStream(fsid) => ctx.finish_peer_http(fsid)
+        mesh_door::DoorAction::CloseConn(code, reason) => {
+          ctx.close_mesh_conn(conn.conn_id, conn.is_front, code, reason)
+        }
+        _ => ()
+      }
+    }
+  }
+
+  let member_identity_for_conn = fn(
+    st : WholeRuntimeState,
+    conn_id : Int64,
+    remote_id : String,
+  ) -> station_whole::PeerIdentity {
+    match st.serve.member_of(conn_id) {
+      Some(sess) => {
+        let eff_role = match st.admin_conns.get(conn_id) {
+          Some(ac) => if ac.effective_role.length() > 0 { ac.effective_role } else { sess.role }
+          None => sess.role
+        }
+        let is_home = sess.workspace == st.core.config.home_workspace
+        let viewer = station_api::Viewer::{
+          email: sess.email,
+          sub: sess.user_sub,
+          name: sess.email,
+          workspace: sess.workspace,
+          home: is_home,
+          role: eff_role,
+          device: Some(sess.device_id),
+        }
+        station_whole::PeerIdentity::AuthenticatedMember(viewer, "ed25519:" + remote_id)
+      }
+      None => station_whole::PeerIdentity::Unknown
+    }
+  }
+
+  let check_oldest_core_fast = fn(
+    st : WholeRuntimeState,
+    method : String,
+    raw_path : String,
+    headers : Array[http1::Header],
+  ) -> Option[station_http::HttpResponse] {
+    let norm_raw = station_whole::normalize_api_path(raw_path)
+    let (norm_path, norm_qraw, norm_q) = station_http::parse_request_target(norm_raw)
+    let probe_req = station_http::HttpRequest::{
+      conn_id: 0,
+      method: method,
+      raw_target: norm_raw,
+      path: norm_path,
+      query_raw: norm_qraw,
+      query: norm_q,
+      version: http1::Version::Http11,
+      headers: headers,
+      body: Bytes::new(0),
+      peer: "",
+      raw_head: Bytes::new(0),
+    }
+    let lang = station_api::lang_of_core(probe_req)
+    station_api::check_core_version(
+      probe_req,
+      st.core.api.admin.oldest_core,
+      st.core.config.station_build,
+      lang,
+    )
+  }
+
+  // Pump AT MOST 1 x 64 KiB chunk per call (write-completion-driven backpressure).
+  let pump_drive_download_chunk = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    dl : DriveDownloadStreamState,
+  ) -> Unit {
+    if dl.remaining <= 0L {
+      ctx.finish_peer_http(astream.sid)
+      astream.mode = AdminStreamMode::Done
+      return
+    }
+    if ctx.peer_http_write_queued_bytes(astream.sid) > PEER_HTTP_WRITE_LOW_WATER {
+      return
+    }
+    let take = if dl.remaining > WHOLE_DRIVE_READ_CHUNK.to_int64() {
+      WHOLE_DRIVE_READ_CHUNK
+    } else {
+      dl.remaining.to_int()
+    }
+    let ws_drive = st.core.api.drive_for_workspace(dl.workspace)
+    match ws_drive.read(dl.root, dl.rel, dl.cur_offset, take, false) {
+      Ok((cb, _, _, _)) => {
+        if cb.length() == 0 {
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+        dl.cur_offset = dl.cur_offset + cb.length().to_int64()
+        dl.remaining = dl.remaining - cb.length().to_int64()
+        ctx.write_peer_http_chunk(astream.sid, cb)
+        if dl.remaining <= 0L {
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+        }
+      }
+      Err(_) => {
+        ctx.close_peer_http(astream.sid)
+        astream.mode = AdminStreamMode::Done
+      }
+    }
+  }
+
+  let dispatch_admin_request = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    head : AdminReqHead,
+    body : Bytes,
+  ) -> Unit {
+    let now_w = host_shim::wall_ms()
+    let peer_id = member_identity_for_conn(st, astream.conn_id, astream.remote_id)
+    let norm_raw = station_whole::normalize_api_path(head.path)
+    let (norm_path, _, norm_query) = station_http::parse_request_target(norm_raw)
+
+    // Backpressured streaming `GET /drive/read` (gated by `OLDEST_CORE`).
+    if head.method == "GET" && norm_path == "/drive/read" {
+      match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+        Some(old_resp) => {
+          send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+        None => ()
+      }
+      match peer_id {
+        station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+          let req_len = match norm_query.get("length") {
+            Some(s) => match base_codec::parse_int64_str(s) {
+              Some(n) => n
+              None => 65536L
+            }
+            None => match norm_query.get("len") {
+              Some(s) => match base_codec::parse_int64_str(s) {
+                Some(n) => n
+                None => 65536L
+              }
+              None => 65536L
+            }
+          }
+          if req_len > WHOLE_DRIVE_READ_CHUNK.to_int64() {
+            let root = match resolve_drive_root_for_ws(st.core, v.workspace, norm_query.get("root")) {
+              Ok(r) => r
+              Err(msg) => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, msg))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            let rel = match norm_query.get("path") {
+              Some(p) => if p.length() > 0 { p } else {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "path is required"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+              None => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "path is required"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            let start_off = match norm_query.get("offset") {
+              Some(s) => match base_codec::parse_int64_str(s) {
+                Some(n) => n
+                None => 0L
+              }
+              None => 0L
+            }
+            let ws_drive = st.core.api.drive_for_workspace(v.workspace)
+            match ws_drive.read(root, rel, start_off, WHOLE_DRIVE_READ_CHUNK, false) {
+              Err(de) => {
+                send_admin_resp_and_finish(ctx, astream.sid, drive_err_http_resp(de))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+              Ok((first_bytes, total_sz, mtime, mime)) => {
+                let avail_total = if total_sz - start_off < req_len {
+                  if total_sz > start_off { total_sz - start_off } else { 0L }
+                } else {
+                  req_len
+                }
+                let ct = if mime.length() > 0 { mime } else { "application/octet-stream" }
+                let hdrs : Array[http1::Header] = [
+                  http1::Header::new("content-type", ct),
+                  http1::Header::new("content-length", avail_total.to_string()),
+                  http1::Header::new("stillfail-total", total_sz.to_string()),
+                  http1::Header::new("stillfail-mtime", mtime.to_string()),
+                  http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build),
+                ]
+                ctx.write_peer_http_chunk(astream.sid, encode_admin_head_line(200, hdrs, Some(avail_total)))
+                let first_len = if first_bytes.length().to_int64() > avail_total {
+                  avail_total.to_int()
+                } else {
+                  first_bytes.length()
+                }
+                if first_len > 0 {
+                  let piece = if first_len == first_bytes.length() {
+                    first_bytes
+                  } else {
+                    slice_bytes_local(first_bytes, 0, first_len)
+                  }
+                  ctx.write_peer_http_chunk(astream.sid, piece)
+                }
+                let rem = avail_total - first_len.to_int64()
+                if rem <= 0L {
+                  ctx.finish_peer_http(astream.sid)
+                  astream.mode = AdminStreamMode::Done
+                } else {
+                  astream.mode = AdminStreamMode::DriveDownloading(DriveDownloadStreamState::{
+                    workspace: v.workspace,
+                    root: root,
+                    rel: rel,
+                    cur_offset: start_off + first_len.to_int64(),
+                    remaining: rem,
+                  })
+                }
+                return
+              }
+            }
+          }
+        }
+        _ => {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "unauthenticated peer rejected"))
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+      }
+    }
+
+    let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
+    match action {
+      station_http::HandlerAction::Respond(resp) => {
+        astream.mode = AdminStreamMode::Done
+        send_admin_resp_and_finish(ctx, astream.sid, resp)
+      }
+      station_http::HandlerAction::UpgradeSse(extra_headers) => {
+        match st.core.api.events.take_last_opened() {
+          Some(opened) => {
+            let hdrs : Array[http1::Header] = []
+            for hi in 0..<opened.headers.length() {
+              hdrs.push(opened.headers[hi])
+            }
+            let mut has_build = false
+            for hi in 0..<extra_headers.length() {
+              if station_http::ascii_eq_ci(extra_headers[hi].name, station_api::BUILD_HEADER) {
+                has_build = true
+              }
+            }
+            if !has_build {
+              hdrs.push(http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build))
+            }
+            ctx.write_peer_http_chunk(astream.sid, encode_admin_head_line(200, hdrs, None))
+            for fi in 0..<opened.initial_frames.length() {
+              ctx.write_peer_http_chunk(astream.sid, opened.initial_frames[fi].to_bytes())
+            }
+            astream.last_sse_ping_ms = host_shim::now_ms()
+            astream.mode = AdminStreamMode::SseStreaming(opened.client_id)
+          }
+          None => {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(500, "events subscription missing"))
+            astream.mode = AdminStreamMode::Done
+          }
+        }
+      }
+      _ => {
+        send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(501, "unsupported handler action"))
+        astream.mode = AdminStreamMode::Done
+      }
+    }
+  }
+
+  let begin_admin_drive_upload = fn(
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    head : AdminReqHead,
+  ) -> Result[DriveUploadStreamState, station_http::HttpResponse] {
+    match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+      Some(old_resp) => return Err(old_resp)
+      None => ()
+    }
+    let peer_id = member_identity_for_conn(st, astream.conn_id, astream.remote_id)
+    let viewer = match peer_id {
+      station_whole::PeerIdentity::AuthenticatedMember(v, _) => v
+      _ => return Err(station_api::json_error(403, "unauthenticated peer rejected"))
+    }
+    if viewer.is_read_only() {
+      return Err(station_api::json_error(403, "read-only members cannot change this station"))
+    }
+    if st.core.api.read_only_handover {
+      return Err(station_api::json_error(403, "station is in read-only handover mode"))
+    }
+    let norm_raw = station_whole::normalize_api_path(head.path)
+    let (_, _, q) = station_http::parse_request_target(norm_raw)
+    let root = match resolve_drive_root_for_ws(st.core, viewer.workspace, q.get("root")) {
+      Ok(r) => r
+      Err(msg) => return Err(station_api::json_error(403, msg))
+    }
+    let rel = match q.get("path") {
+      Some(p) => if p.length() > 0 { p } else { return Err(station_api::json_error(400, "path is required")) }
+      None => return Err(station_api::json_error(400, "path is required"))
+    }
+    let up_id = match q.get("id") {
+      Some(u) => if u.length() > 0 { u } else { return Err(station_api::json_error(400, "id is required")) }
+      None => return Err(station_api::json_error(400, "id is required"))
+    }
+    let offset = match q.get("offset") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => if n >= 0L { n } else { return Err(station_api::json_error(400, "invalid offset")) }
+        None => return Err(station_api::json_error(400, "invalid offset"))
+      }
+      None => 0L
+    }
+    let total = match q.get("total") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => if n >= 0L { n } else { return Err(station_api::json_error(400, "invalid total")) }
+        None => return Err(station_api::json_error(400, "invalid total"))
+      }
+      None => return Err(station_api::json_error(400, "total is required"))
+    }
+    match head.expected_cl {
+      Some(exp) => {
+        if offset + exp > total {
+          return Err(station_api::json_error(400, "content-length exceeds upload total"))
+        }
+      }
+      None => ()
+    }
+    let replace = match q.get("replace") {
+      Some(v) => v == "1"
+      None => false
+    }
+    Ok(DriveUploadStreamState::{
+      workspace: viewer.workspace,
+      root: root,
+      rel: rel,
+      upload_id: up_id,
+      total: total,
+      replace: replace,
+      expected_cl: head.expected_cl,
+      received_bytes: 0L,
+      cur_offset: offset,
+      pending_commit_chunk: None,
+      last_entry: None,
+      failed: None,
+    })
+  }
+
+  // Feed a streaming Drive upload chunk while NEVER triggering atomic rename commit until
+  // `on_peer_http_end` confirms no trailing overflow bytes and exact `Content-Length` parity
+  // (applies uniformly to BOTH fixed Content-Length and chunked/streamed uploads!).
+  let feed_drive_upload_chunk = fn(
+    st : WholeRuntimeState,
+    up : DriveUploadStreamState,
+    chunk : Bytes,
+  ) -> Unit {
+    if up.failed is Some(_) || chunk.length() == 0 {
+      return
+    }
+    let next_received = up.received_bytes + chunk.length().to_int64()
+    match up.expected_cl {
+      Some(exp) => {
+        if next_received > exp {
+          up.received_bytes = next_received
+          up.pending_commit_chunk = None
+          up.failed = Some(station_screens::DriveError::new(
+            station_screens::DriveCode::InvalidRequest,
+            "request body exceeds content-length",
+          ))
+          return
+        }
+      }
+      None => ()
+    }
+    let pending_len = match up.pending_commit_chunk {
+      Some(p) => p.length().to_int64()
+      None => 0L
+    }
+    if up.cur_offset + pending_len + chunk.length().to_int64() > up.total {
+      up.received_bytes = next_received
+      up.pending_commit_chunk = None
+      up.failed = Some(station_screens::DriveError::new(
+        station_screens::DriveCode::InvalidRequest,
+        "upload body exceeds declared total",
+      ))
+      return
+    }
+    up.received_bytes = next_received
+    let ws_drive = st.core.api.drive_for_workspace(up.workspace)
+
+    // Whenever this chunk reaches `up.total` (for BOTH fixed Content-Length and streamed uploads),
+    // hold ONLY the final committing byte(s) in `pending_commit_chunk` until stream EOF confirms
+    // zero overflow bytes and exact `Content-Length`!
+    let reaches_total = up.cur_offset + pending_len + chunk.length().to_int64() == up.total
+    if reaches_total {
+      let combined = match up.pending_commit_chunk {
+        Some(p) => concat_bytes_local(p, chunk)
+        None => chunk
+      }
+      if combined.length() > 1 {
+        let prefix = slice_bytes_local(combined, 0, combined.length() - 1)
+        let last_b = slice_bytes_local(combined, combined.length() - 1, combined.length())
+        match ws_drive.upload(
+          up.root,
+          up.rel,
+          up.upload_id,
+          up.cur_offset,
+          up.total,
+          prefix,
+          up.replace,
+          false,
+          host_shim::wall_ms(),
+        ) {
+          Ok(res) => {
+            up.cur_offset = res.have
+            up.last_entry = res.entry
+            up.pending_commit_chunk = Some(last_b)
+          }
+          Err(de) => {
+            up.pending_commit_chunk = None
+            up.failed = Some(de)
+          }
+        }
+      } else {
+        up.pending_commit_chunk = Some(combined)
+      }
+      return
+    }
+
+    match ws_drive.upload(
+      up.root,
+      up.rel,
+      up.upload_id,
+      up.cur_offset,
+      up.total,
+      chunk,
+      up.replace,
+      false,
+      host_shim::wall_ms(),
+    ) {
+      Ok(res) => {
+        up.cur_offset = res.have
+        up.last_entry = res.entry
+      }
+      Err(de) => up.failed = Some(de)
+    }
+  }
+
+  let finish_admin_drive_upload = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    up : DriveUploadStreamState,
+  ) -> Unit {
+    match up.failed {
+      Some(de) => {
+        up.pending_commit_chunk = None
+        send_admin_resp_and_finish(ctx, astream.sid, drive_err_http_resp(de))
+        astream.mode = AdminStreamMode::Done
+        return
+      }
+      None => ()
+    }
+    match up.expected_cl {
+      Some(exp) => {
+        if up.received_bytes != exp {
+          up.pending_commit_chunk = None
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "content-length mismatch"))
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+      }
+      None => ()
+    }
+    let ws_drive = st.core.api.drive_for_workspace(up.workspace)
+    // Now that EOF confirmed zero overflow & exact `Content-Length`, flush any held final committing chunk!
+    match up.pending_commit_chunk {
+      Some(last_chunk) => {
+        up.pending_commit_chunk = None
+        match ws_drive.upload(
+          up.root,
+          up.rel,
+          up.upload_id,
+          up.cur_offset,
+          up.total,
+          last_chunk,
+          up.replace,
+          false,
+          host_shim::wall_ms(),
+        ) {
+          Ok(res) => {
+            up.cur_offset = res.have
+            up.last_entry = res.entry
+          }
+          Err(de) => up.failed = Some(de)
+        }
+      }
+      None => ()
+    }
+    if up.received_bytes == 0L && up.total == 0L && up.failed is None {
+      match ws_drive.upload(
+        up.root,
+        up.rel,
+        up.upload_id,
+        up.cur_offset,
+        up.total,
+        Bytes::new(0),
+        up.replace,
+        false,
+        host_shim::wall_ms(),
+      ) {
+        Ok(res) => {
+          up.cur_offset = res.have
+          up.last_entry = res.entry
+        }
+        Err(de) => up.failed = Some(de)
+      }
+    }
+    match up.failed {
+      Some(de) => send_admin_resp_and_finish(ctx, astream.sid, drive_err_http_resp(de))
+      None => {
+        let entry_j = match up.last_entry {
+          Some(e) => drive_entry_json_local(e)
+          None => base_codec::json_null()
+        }
+        let resp = station_api::json_ok(
+          base_codec::json_obj([
+            ("have", base_codec::json_int64(up.cur_offset)),
+            ("entry", entry_j),
+          ]),
+        )
+        .with_header(station_api::BUILD_HEADER, st.core.config.station_build)
+        send_admin_resp_and_finish(ctx, astream.sid, resp)
+      }
+    }
+    astream.mode = AdminStreamMode::Done
+  }
+
+  let process_admin_stream_rx = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+  ) -> Result[Unit, String] {
+    match astream.mode {
+      AdminStreamMode::Done
+      | AdminStreamMode::SseStreaming(_)
+      | AdminStreamMode::DriveDownloading(_)
+      | AdminStreamMode::SendingBody(_) => {
+        astream.rx_buf = Bytes::new(0)
+        return Ok(())
+      }
+      AdminStreamMode::ControlStream => {
+        let chunk = astream.rx_buf
+        astream.rx_buf = Bytes::new(0)
+        if chunk.length() == 0 {
+          return Ok(())
+        }
+        match st.admin_conns.get(astream.conn_id) {
+          Some(aconn) => {
+            let now_w = host_shim::wall_ms()
+            let now_s = (now_w / 1000L).to_double()
+            let acts = st.serve.feed_member_control(
+              aconn.conn_id,
+              aconn.remote_id,
+              chunk,
+              now_w,
+              fn(hello : base_codec::Json, rid : String) -> Result[(station_mesh::MemberSession, base_codec::Json), mesh_door::Refusal] {
+                match verify_member_credential(ctx.cloud, hello, rid, now_s) {
+                  Ok(vm) => {
+                    aconn.iat = vm.iat
+                    aconn.sid_claim = vm.sid_claim
+                    aconn.cred_role = vm.cred_role
+                    aconn.effective_role = vm.session.role
+                    aconn.lock_base = vm.lock_base
+                    aconn.lock_proof = vm.lock_proof
+                    let reply = base_codec::json_obj([
+                      ("ok", base_codec::json_bool(true)),
+                      ("station", base_codec::json_str(st.core.config.station_id)),
+                      ("workspace", base_codec::json_str(vm.session.workspace)),
+                      ("role", base_codec::json_str(vm.session.role)),
+                    ])
+                    Ok((vm.session, reply))
+                  }
+                  Err(refusal) => Err(refusal)
+                }
+              },
+              fn(_cur : station_mesh::MemberSession, line : base_codec::Json) -> station_mesh::MemberRenewResult {
+                match verify_member_credential(ctx.cloud, line, aconn.remote_id, now_s) {
+                  Ok(vm) => {
+                    aconn.iat = vm.iat
+                    aconn.sid_claim = vm.sid_claim
+                    aconn.cred_role = vm.cred_role
+                    aconn.effective_role = vm.session.role
+                    aconn.lock_base = vm.lock_base
+                    aconn.lock_proof = vm.lock_proof
+                    let reply = base_codec::json_obj([
+                      ("ok", base_codec::json_bool(true)),
+                      ("station", base_codec::json_str(st.core.config.station_id)),
+                      ("workspace", base_codec::json_str(vm.session.workspace)),
+                      ("role", base_codec::json_str(vm.session.role)),
+                    ])
+                    station_mesh::MemberRenewResult::Updated(vm.session, reply)
+                  }
+                  Err(refusal) => station_mesh::MemberRenewResult::SoftError(refusal.error)
+                }
+              },
+            )
+            // Exempt control stream 1 from generic 60s idle sweep ONLY AFTER authentication succeeds!
+            match st.serve.member_of(aconn.conn_id) {
+              Some(_) => ctx.set_stream_idle_exempt(astream.sid, true)
+              None => ()
+            }
+            apply_door_actions(ctx, aconn, acts)
+          }
+          None => ()
+        }
+        return Ok(())
+      }
+      AdminStreamMode::ReadingHeadLine => {
+        let nl = find_newline_byte(astream.rx_buf)
+        if nl < 0 {
+          if astream.rx_buf.length() > WHOLE_MAX_ADMIN_HEAD {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(431, "request header too large"))
+            astream.mode = AdminStreamMode::Done
+            astream.rx_buf = Bytes::new(0)
+          }
+          return Ok(())
+        }
+        if nl > WHOLE_MAX_ADMIN_HEAD {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(431, "request header too large"))
+          astream.mode = AdminStreamMode::Done
+          astream.rx_buf = Bytes::new(0)
+          return Ok(())
+        }
+        let line = bytes_to_str_local(astream.rx_buf, nl)
+        let tail = slice_bytes_local(astream.rx_buf, nl + 1, astream.rx_buf.length())
+        astream.rx_buf = Bytes::new(0)
+        let head_j = match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(e) => {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "invalid request head json: " + e))
+            astream.mode = AdminStreamMode::Done
+            return Ok(())
+          }
+        }
+        let method = match base_codec::json_get(head_j, "method") {
+          Some(base_codec::Json::Str(m)) => if m.length() > 0 { m } else { "GET" }
+          _ => "GET"
+        }
+        let path = match base_codec::json_get(head_j, "path") {
+          Some(base_codec::Json::Str(p)) => p
+          _ => {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "path is required"))
+            astream.mode = AdminStreamMode::Done
+            return Ok(())
+          }
+        }
+        if !path.starts_with("/") {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "path must start with /"))
+          astream.mode = AdminStreamMode::Done
+          return Ok(())
+        }
+        let headers = parse_admin_headers(base_codec::json_get(head_j, "headers"))
+        let expected_cl : Option[Int64] = match req_header_ci(headers, "content-length") {
+          Some(cls) => match base_codec::parse_int64_str(cls.trim()) {
+            Some(n) => if n >= 0L { Some(n) } else {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "invalid content-length"))
+              astream.mode = AdminStreamMode::Done
+              return Ok(())
+            }
+            None => {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "invalid content-length"))
+              astream.mode = AdminStreamMode::Done
+              return Ok(())
+            }
+          }
+          None => None
+        }
+        let req_head = AdminReqHead::{ method: method, path: path, headers: headers, expected_cl: expected_cl }
+        let norm_raw = station_whole::normalize_api_path(path)
+        let (norm_path, _, _) = station_http::parse_request_target(norm_raw)
+
+        if method == "GET" || method == "HEAD" {
+          dispatch_admin_request(ctx, st, astream, req_head, Bytes::new(0))
+          return Ok(())
+        }
+
+        if method == "PUT" && norm_path == "/drive/upload" {
+          match begin_admin_drive_upload(st, astream, req_head) {
+            Err(resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, resp)
+              astream.mode = AdminStreamMode::Done
+              return Ok(())
+            }
+            Ok(up) => {
+              if tail.length() > 0 {
+                feed_drive_upload_chunk(st, up, tail)
+              }
+              astream.mode = AdminStreamMode::StreamingDriveUpload(up)
+              match up.failed {
+                Some(_) => finish_admin_drive_upload(ctx, st, astream, up)
+                None => ()
+              }
+              return Ok(())
+            }
+          }
+        }
+
+        match expected_cl {
+          Some(cl) => {
+            if cl > WHOLE_MAX_HTTP_BODY {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(413, "payload too large"))
+              astream.mode = AdminStreamMode::Done
+              return Ok(())
+            }
+          }
+          None => ()
+        }
+        if tail.length().to_int64() > WHOLE_MAX_HTTP_BODY {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(413, "payload too large"))
+          astream.mode = AdminStreamMode::Done
+          return Ok(())
+        }
+        astream.mode = AdminStreamMode::ReadingBody(req_head, tail)
+        return Ok(())
+      }
+      AdminStreamMode::ReadingBody(req_head, acc) => {
+        if astream.rx_buf.length() == 0 {
+          return Ok(())
+        }
+        let next_len = acc.length().to_int64() + astream.rx_buf.length().to_int64()
+        if next_len > WHOLE_MAX_HTTP_BODY {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(413, "payload too large"))
+          astream.mode = AdminStreamMode::Done
+          astream.rx_buf = Bytes::new(0)
+          return Ok(())
+        }
+        let next_acc = concat_bytes_local(acc, astream.rx_buf)
+        astream.rx_buf = Bytes::new(0)
+        astream.mode = AdminStreamMode::ReadingBody(req_head, next_acc)
+        return Ok(())
+      }
+      AdminStreamMode::StreamingDriveUpload(up) => {
+        if astream.rx_buf.length() == 0 {
+          return Ok(())
+        }
+        let chunk = astream.rx_buf
+        astream.rx_buf = Bytes::new(0)
+        feed_drive_upload_chunk(st, up, chunk)
+        match up.failed {
+          Some(_) => finish_admin_drive_upload(ctx, st, astream, up)
+          None => ()
+        }
+        return Ok(())
+      }
+    }
+  }
+
+  let close_proxy_local_resources = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState) -> Unit {
+    pstream.tcp_write_queue.clear()
+    pstream.tcp_write_queue_bytes = 0
+    pstream.tcp_write_in_flight = false
+    pstream.tcp_end_pending = false
+    pstream.tcp_read_paused = false
+    pstream.downstream_pending = []
+    pstream.downstream_pending_idx = 0
+    pstream.downstream_finish_after = false
+    if pstream.mesh_read_paused {
+      pstream.mesh_read_paused = false
+      ctx.set_peer_http_read_paused(pstream.sid, false)
+    }
+    if pstream.local_sock >= 0L {
+      let lsid = pstream.local_sock
+      pstream.local_sock = -1L
+      st.proxy_by_sock.remove(lsid)
+      let _ = ctx.mux_role.call_async_raw(
+        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_CLOSE, pstream.sid),
+        "tcp.close",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(lsid))])),
+        None,
+      )
+    }
+  }
+
+  // Serialized upstream TCP writer (max 1 in-flight `tcp.write` per local socket + true inbound mesh read-pause backpressure).
+  let enqueue_proxy_tcp_write = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState, data : Bytes) -> Unit {
+    if data.length() == 0 || pstream.local_sock < 0L {
+      return
+    }
+    if pstream.tcp_write_in_flight {
+      if pstream.tcp_write_queue_bytes + data.length() > WHOLE_MAX_UPSTREAM_WRITE_Q {
+        close_proxy_local_resources(ctx, st, pstream)
+        ctx.close_peer_http(pstream.sid)
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      pstream.tcp_write_queue.push(data)
+      pstream.tcp_write_queue_bytes = pstream.tcp_write_queue_bytes + data.length()
+      if !pstream.mesh_read_paused && pstream.tcp_write_queue_bytes >= WHOLE_UPSTREAM_READ_PAUSE_HIGH {
+        pstream.mesh_read_paused = true
+        ctx.set_peer_http_read_paused(pstream.sid, true)
+      }
+    } else {
+      pstream.tcp_write_in_flight = true
+      let _ = ctx.mux_role.call_async_raw(
+        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_WRITE, pstream.sid),
+        "tcp.write",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
+        Some(data),
+      )
+    }
+  }
+
+  let enqueue_proxy_tcp_end = fn(ctx : DaemonCtx, pstream : ProxyStreamState) -> Unit {
+    if pstream.local_sock < 0L {
+      return
+    }
+    if pstream.tcp_write_in_flight {
+      pstream.tcp_end_pending = true
+    } else {
+      let _ = ctx.mux_role.call_async_raw(
+        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_END, pstream.sid),
+        "tcp.end",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
+        None,
+      )
+    }
+  }
+
+  let issue_proxy_tcp_read_or_pause = fn(ctx : DaemonCtx, pstream : ProxyStreamState) -> Unit {
+    if pstream.local_sock < 0L {
+      return
+    }
+    if pstream.downstream_pending_idx < pstream.downstream_pending.length()
+    || ctx.is_peer_http_write_paused(pstream.sid)
+    {
+      pstream.tcp_read_paused = true
+      return
+    }
+    pstream.tcp_read_paused = false
+    let _ = ctx.mux_role.call_async_raw(
+      builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_READ, pstream.sid),
+      "tcp.read",
+      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
+      None,
+    )
+  }
+
+  let pump_proxy_downstream = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState) -> Unit {
+    while pstream.downstream_pending_idx < pstream.downstream_pending.length() {
+      if ctx.is_peer_http_write_paused(pstream.sid) {
+        pstream.tcp_read_paused = true
+        return
+      }
+      let piece = pstream.downstream_pending[pstream.downstream_pending_idx]
+      pstream.downstream_pending_idx = pstream.downstream_pending_idx + 1
+      ctx.write_peer_http_chunk(pstream.sid, piece)
+    }
+    if pstream.downstream_pending.length() > 0 {
+      pstream.downstream_pending = []
+      pstream.downstream_pending_idx = 0
+    }
+    if pstream.downstream_finish_after {
+      pstream.downstream_finish_after = false
+      ctx.finish_peer_http(pstream.sid)
+      close_proxy_local_resources(ctx, st, pstream)
+      pstream.mode = ProxyStreamMode::Done
+      return
+    }
+    if pstream.tcp_read_paused && pstream.local_sock >= 0L
+    && ctx.peer_http_write_queued_bytes(pstream.sid) <= PEER_HTTP_WRITE_LOW_WATER
+    {
+      issue_proxy_tcp_read_or_pause(ctx, pstream)
+    }
+  }
+
+  // Enqueue a potentially large downstream WS frame (up to 16 MiB) in 64 KiB slices so it NEVER
+  // trips `PEER_HTTP_WRITE_HARD_CAP` (2 MiB) and naturally pauses upstream `tcp.read` on backpressure.
+  let enqueue_proxy_downstream_chunked = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    pstream : ProxyStreamState,
+    data : Bytes,
+    finish_after : Bool,
+  ) -> Unit {
+    let n = data.length()
+    let mut off = 0
+    while off < n {
+      let end = if off + WHOLE_WS_DOWNSTREAM_CHUNK < n { off + WHOLE_WS_DOWNSTREAM_CHUNK } else { n }
+      let piece = if off == 0 && end == n { data } else { slice_bytes_local(data, off, end) }
+      pstream.downstream_pending.push(piece)
+      off = end
+    }
+    if finish_after {
+      pstream.downstream_finish_after = true
+    }
+    pump_proxy_downstream(ctx, st, pstream)
+  }
+
+  let ws_random_mask = fn() -> UInt {
+    match station_sys::random_bytes(4) {
+      Ok(b) => {
+        if b.length() == 4 {
+          let b0 = (b[0].to_int() & 0xFF).to_uint()
+          let b1 = (b[1].to_int() & 0xFF).to_uint()
+          let b2 = (b[2].to_int() & 0xFF).to_uint()
+          let b3 = (b[3].to_int() & 0xFF).to_uint()
+          (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+        } else {
+          0x5A3C9E17U
+        }
+      }
+      Err(_) => 0x5A3C9E17U
+    }
+  }
+
+  let build_ws_upgrade_request = fn(
+    port : Int,
+    path : String,
+    headers : Array[(String, String)],
+  ) -> (Bytes, String) {
+    let key_raw = match station_sys::random_bytes(16) {
+      Ok(b) => if b.length() == 16 { b } else { "0123456789abcdef".to_bytes() }
+      Err(_) => "0123456789abcdef".to_bytes()
+    }
+    let ws_key = base64::encode(key_raw)
+    let accept_hex = crypto::sha1_hex((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").to_bytes())
+    let expected_accept = match base_codec::hex_decode(accept_hex) {
+      Some(ab) => base64::encode(ab)
+      None => ""
+    }
+    let eff_path = if path.length() > 0 && path.starts_with("/") { path } else { "/" + path }
+    let sb = StringBuilder::new()
+    sb.write_string("GET ")
+    sb.write_string(eff_path)
+    sb.write_string(" HTTP/1.1\r\nHost: 127.0.0.1:")
+    sb.write_string(port.to_string())
+    sb.write_string("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ")
+    sb.write_string(ws_key)
+    sb.write_string("\r\nSec-WebSocket-Version: 13\r\nOrigin: http://localhost:")
+    sb.write_string(port.to_string())
+    sb.write_string("\r\n")
+    for hi in 0..<headers.length() {
+      let (hk, hv) = headers[hi]
+      let kl = mesh_wire::ascii_lower(hk)
+      if kl == "sec-websocket-protocol" || kl == "cookie" || kl == "user-agent" || kl == "authorization" {
+        sb.write_string(hk)
+        sb.write_string(": ")
+        sb.write_string(hv)
+        sb.write_string("\r\n")
+      }
+    }
+    sb.write_string("\r\n")
+    (sb.to_string().to_bytes(), expected_accept)
+  }
+
+  // Decode `[kind: u8][len: u32be][payload]` WebSocket proxy frames from mesh stream -> masked RFC 6455
+  // frames queued over the bounded, serialized upstream TCP writer (`enqueue_proxy_tcp_write`).
+  let drain_ws_proxy_rx = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    pstream : ProxyStreamState,
+    lsock : Int64,
+    dec : websocket::Decoder,
+    buf_in : Bytes,
+  ) -> Unit {
+    let mut buf = buf_in
+    while buf.length() >= 5 {
+      let kind = buf[0].to_int() & 0xFF
+      let flen64 = read_u32_be(buf, 1)
+      if flen64 < 0L || flen64 > WS_MAX_FRAME.to_int64() {
+        close_proxy_local_resources(ctx, st, pstream)
+        ctx.close_peer_http(pstream.sid)
+        pstream.mode = ProxyStreamMode::Done
+        return
+      }
+      let flen = flen64.to_int()
+      if buf.length() < 5 + flen {
+        break
+      }
+      let payload = slice_bytes_local(buf, 5, 5 + flen)
+      buf = slice_bytes_local(buf, 5 + flen, buf.length())
+      let mask = ws_random_mask()
+      if kind == WS_FRAME_TEXT {
+        let frame_b = websocket::encode_message(
+          websocket::Message::Text(bytes_to_str_local(payload, payload.length())),
+          Some(mask),
+        )
+        enqueue_proxy_tcp_write(ctx, st, pstream, frame_b)
+      } else if kind == WS_FRAME_BINARY {
+        let frame_b = websocket::encode_message(websocket::Message::Binary(payload), Some(mask))
+        enqueue_proxy_tcp_write(ctx, st, pstream, frame_b)
+      } else if kind == WS_FRAME_CLOSE {
+        let cf_opt : Option[websocket::CloseFrame] = if payload.length() >= 2 {
+          let code = ((payload[0].to_int() & 0xFF) * 256) + (payload[1].to_int() & 0xFF)
+          let reason = if payload.length() > 2 {
+            let rb = slice_bytes_local(payload, 2, payload.length())
+            bytes_to_str_local(rb, rb.length())
+          } else {
+            ""
+          }
+          Some(websocket::CloseFrame::new(code, reason))
+        } else {
+          None
+        }
+        let frame_b = websocket::encode_message(websocket::Message::Close(cf_opt), Some(mask))
+        enqueue_proxy_tcp_write(ctx, st, pstream, frame_b)
+        enqueue_proxy_tcp_end(ctx, pstream)
+        pstream.mode = ProxyStreamMode::WsForwarding(lsock, dec, Bytes::new(0))
+        return
+      }
+      if pstream.local_sock < 0L {
+        return
+      }
+    }
+    pstream.mode = ProxyStreamMode::WsForwarding(lsock, dec, buf)
+  }
+
+  // Feed upstream RFC 6455 bytes into `websocket::Decoder` -> emit `[kind: u8][len: u32be][payload]`
+  // frames onto mesh stream, replying Pong automatically and pausing upstream `tcp.read` on backpressure.
+  let feed_ws_upstream_bytes = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    pstream : ProxyStreamState,
+    lsock : Int64,
+    dec : websocket::Decoder,
+    chunk : Bytes,
+  ) -> Unit {
+    if chunk.length() > 0 {
+      dec.feed(chunk)
+    }
+    while true {
+      match dec.next_message() {
+        Ok(None) => break
+        Ok(Some(websocket::Message::Text(txt))) => {
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_TEXT, txt.to_bytes()), false)
+        }
+        Ok(Some(websocket::Message::Binary(bin))) => {
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_BINARY, bin), false)
+        }
+        Ok(Some(websocket::Message::Ping(payload))) => {
+          let pong_b = websocket::encode_message(websocket::Message::Pong(payload), Some(ws_random_mask()))
+          enqueue_proxy_tcp_write(ctx, st, pstream, pong_b)
+        }
+        Ok(Some(websocket::Message::Pong(_))) => ()
+        Ok(Some(websocket::Message::Close(cf_opt))) => {
+          let (code, reason) = match cf_opt {
+            Some(cf) => (cf.code, cf.reason)
+            None => (1000, "")
+          }
+          let rb = reason.to_bytes()
+          let payload = Bytes::new(2 + rb.length())
+          payload[0] = ((code / 256) & 0xFF) as Byte
+          payload[1] = (code & 0xFF) as Byte
+          for ri in 0..<rb.length() {
+            payload[2 + ri] = rb[ri]
+          }
+          enqueue_proxy_downstream_chunked(ctx, st, pstream, encode_ws_proxy_frame(WS_FRAME_CLOSE, payload), true)
+          return
+        }
+        Err(_) => {
+          ctx.finish_peer_http(pstream.sid)
+          close_proxy_local_resources(ctx, st, pstream)
+          pstream.mode = ProxyStreamMode::Done
+          return
+        }
+      }
+    }
+    if pstream.local_sock == lsock {
+      issue_proxy_tcp_read_or_pause(ctx, pstream)
+    }
+  }
+
+  let process_proxy_stream_rx = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    pstream : ProxyStreamState,
+  ) -> Result[Unit, String] {
+    match pstream.mode {
+      ProxyStreamMode::Done => {
+        pstream.rx_buf = Bytes::new(0)
+        return Ok(())
+      }
+      ProxyStreamMode::ReadingHeadLine => {
+        let nl = find_newline_byte(pstream.rx_buf)
+        if nl < 0 {
+          if pstream.rx_buf.length() > WHOLE_MAX_PROXY_HEAD {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 431, "request head too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+          }
+          return Ok(())
+        }
+        if nl > WHOLE_MAX_PROXY_HEAD {
+          send_proxy_refusal_and_finish(ctx, pstream.sid, 431, "request head too large")
+          pstream.mode = ProxyStreamMode::Done
+          pstream.rx_buf = Bytes::new(0)
+          return Ok(())
+        }
+        let line = bytes_to_str_local(pstream.rx_buf, nl)
+        let carry = slice_bytes_local(pstream.rx_buf, nl + 1, pstream.rx_buf.length())
+        pstream.rx_buf = Bytes::new(0)
+        let head_j = match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(e) => {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 400, "invalid head json: " + e)
+            pstream.mode = ProxyStreamMode::Done
+            return Ok(())
+          }
+        }
+        let now_s = (host_shim::wall_ms() / 1000L).to_double()
+        let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)
+        let own_ports : Map[Int, Bool] = Map::new()
+        let lb_port = ctx.loopback_port()
+        if lb_port > 0 {
+          own_ports.set(lb_port, true)
+        }
+        let shown_lb = ctx.shown_loopback_port()
+        if shown_lb > 0 {
+          own_ports.set(shown_lb, true)
+        }
+        let mcp_port = st.mcp_srv.port()
+        if mcp_port > 0 {
+          own_ports.set(mcp_port, true)
+        }
+        match ctx.args.launcher.ports {
+          Some(lp) => {
+            if lp.admin > 0 { own_ports.set(lp.admin, true) }
+            if lp.mcp > 0 { own_ports.set(lp.mcp, true) }
+          }
+          None => ()
+        }
+        let policy = station_mesh::HttpLocalPolicy::new(
+          own_ports,
+          fn(_p : Int) -> Bool { false },
+          fn(_peer : String, _ws : String) -> Option[String] { None },
+          false,
+        )
+        match station_mesh::authorize_peer_http(roster, pstream.remote_id, head_j, policy) {
+          Err(mesh_wire::WireError::HttpRefusal(status, msg, _)) => {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, status, msg)
+            pstream.mode = ProxyStreamMode::Done
+            return Ok(())
+          }
+          Err(_) => {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 403, "refused")
+            pstream.mode = ProxyStreamMode::Done
+            return Ok(())
+          }
+          Ok(station_mesh::PeerHttpAction::TcpProbe(_)) => {
+            ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+            ctx.finish_peer_http(pstream.sid)
+            pstream.mode = ProxyStreamMode::Done
+            return Ok(())
+          }
+          Ok(station_mesh::PeerHttpAction::TcpForward(port)) => {
+            if carry.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+              send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+              pstream.mode = ProxyStreamMode::Done
+              return Ok(())
+            }
+            pstream.mode = ProxyStreamMode::OpeningTcp(port, carry, pstream.peer_ended)
+            let _ = ctx.mux_role.call_async_raw(
+              builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_OPEN, pstream.sid),
+              "tcp.open",
+              base_codec::json_stringify(base_codec::json_obj([("port", base_codec::json_int(port))])),
+              None,
+            )
+            return Ok(())
+          }
+          Ok(station_mesh::PeerHttpAction::HttpProxy(port, method, path, headers, has_body)) => {
+            if carry.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+              send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+              pstream.mode = ProxyStreamMode::Done
+              return Ok(())
+            }
+            pstream.mode = ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, carry, pstream.peer_ended)
+            let _ = ctx.mux_role.call_async_raw(
+              builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_OPEN, pstream.sid),
+              "tcp.open",
+              base_codec::json_stringify(base_codec::json_obj([("port", base_codec::json_int(port))])),
+              None,
+            )
+            return Ok(())
+          }
+          Ok(station_mesh::PeerHttpAction::WebSocketProxy(port, path, headers)) => {
+            if carry.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+              send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+              pstream.mode = ProxyStreamMode::Done
+              return Ok(())
+            }
+            pstream.mode = ProxyStreamMode::OpeningWsTcp(port, path, headers, carry)
+            let _ = ctx.mux_role.call_async_raw(
+              builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_OPEN, pstream.sid),
+              "tcp.open",
+              base_codec::json_stringify(base_codec::json_obj([("port", base_codec::json_int(port))])),
+              None,
+            )
+            return Ok(())
+          }
+          Ok(station_mesh::PeerHttpAction::DeviceTunnel(_, _, _, _)) => {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 404, "that station has no devices")
+            pstream.mode = ProxyStreamMode::Done
+            return Ok(())
+          }
+        }
+      }
+      ProxyStreamMode::OpeningTcp(port, carry, ended) => {
+        if pstream.rx_buf.length() > 0 {
+          if carry.length() + pstream.rx_buf.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+            return Ok(())
+          }
+          let next_carry = concat_bytes_local(carry, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          pstream.mode = ProxyStreamMode::OpeningTcp(port, next_carry, ended)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, carry, ended) => {
+        if pstream.rx_buf.length() > 0 {
+          if carry.length() + pstream.rx_buf.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+            return Ok(())
+          }
+          let next_carry = concat_bytes_local(carry, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          pstream.mode = ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, next_carry, ended)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::OpeningWsTcp(port, path, headers, carry) => {
+        if pstream.rx_buf.length() > 0 {
+          if carry.length() + pstream.rx_buf.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+            return Ok(())
+          }
+          let next_carry = concat_bytes_local(carry, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          pstream.mode = ProxyStreamMode::OpeningWsTcp(port, path, headers, next_carry)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::WsHandshaking(lsock, expected_acc, http_buf, carry) => {
+        if pstream.rx_buf.length() > 0 {
+          if carry.length() + pstream.rx_buf.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+            close_proxy_local_resources(ctx, st, pstream)
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+            return Ok(())
+          }
+          let next_carry = concat_bytes_local(carry, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          pstream.mode = ProxyStreamMode::WsHandshaking(lsock, expected_acc, http_buf, next_carry)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::WsForwarding(lsock, dec, buf) => {
+        if pstream.rx_buf.length() > 0 {
+          let next_buf = concat_bytes_local(buf, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          drain_ws_proxy_rx(ctx, st, pstream, lsock, dec, next_buf)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::Tunneling(_) => {
+        if pstream.rx_buf.length() > 0 {
+          let data = pstream.rx_buf
+          pstream.rx_buf = Bytes::new(0)
+          enqueue_proxy_tcp_write(ctx, st, pstream, data)
+        }
+        return Ok(())
+      }
+      ProxyStreamMode::ProxyHttpReadingHead(_, _, _)
+      | ProxyStreamMode::ProxyHttpRawBody(_, _, _, _)
+      | ProxyStreamMode::ProxyHttpChunkedBody(_, _, _) => {
+        if pstream.rx_buf.length() > 0 {
+          let data = pstream.rx_buf
+          pstream.rx_buf = Bytes::new(0)
+          let wire = if pstream.req_chunked { http1::encode_chunk(data) } else { data }
+          enqueue_proxy_tcp_write(ctx, st, pstream, wire)
+        }
+        return Ok(())
+      }
+    }
+  }
+
+  let handle_proxy_role_done = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    tok : builders_core::MuxToken,
+    d : host_shim::ShellDone,
+  ) -> Unit {
+    match tok {
+      builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Adopted `stillfail-runner` Unix socket completions (`unix.open` / `unix.read` / `unix.write` / `unix.close`).
+        if kind == RUNNER_TOK_UNIX_OPEN {
+          match st.adopted_runners.get(owner_id) {
+            None => ()
+            Some(rconn) => {
+              match builders_core::decode_shell_done(d) {
+                Ok((Some(v), _)) => {
+                  let usid = match base_codec::json_get(v, "id") {
+                    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                    _ => -1L
+                  }
+                  if usid >= 0L {
+                    rconn.sock_id = usid
+                    st.adopted_runner_by_sock.set(usid, owner_id)
+                    let attach_b = "{\"op\":\"attach\"}\n".to_bytes()
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, usid),
+                      "tcp.write",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                      Some(attach_b),
+                    )
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_READ, usid),
+                      "tcp.read",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                      None,
+                    )
+                    ctx.log("adopted runner attached: " + rconn.runner_id)
+                  }
+                }
+                Err(e) => {
+                  ctx.log("adopted runner unix.open failed (" + rconn.runner_id + "): " + e.message)
+                  st.adopted_runners.remove(owner_id)
+                }
+                _ => st.adopted_runners.remove(owner_id)
+              }
+            }
+          }
+          return
+        }
+        if kind == RUNNER_TOK_UNIX_READ {
+          match st.adopted_runners.get(owner_id) {
+            None => ()
+            Some(rconn) => {
+              if rconn.exited {
+                return
+              }
+              match builders_core::decode_shell_done(d) {
+                Ok((_, Some(chunk))) => {
+                  if chunk.length() == 0 {
+                    rconn.exited = true
+                    if rconn.sock_id >= 0L {
+                      let usid = rconn.sock_id
+                      rconn.sock_id = -1L
+                      st.adopted_runner_by_sock.remove(usid)
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_CLOSE, usid),
+                        "tcp.close",
+                        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                        None,
+                      )
+                    }
+                    return
+                  }
+                  // O(n) raw-byte NDJSON line assembly (no UTF-8 split corruption, bounded to 8 MiB/line).
+                  // Batch contiguous `Out` frames from a single `tcp.read` into one ACID WAL tx
+                  // before sending ACK so bursty runners avoid per-line `synchronous=FULL` stalls.
+                  let mut scan_from = 0
+                  let mut cur_chunk = chunk
+                  let mut pending_batch : Array[(String, Int64, Int64, Bytes)] = []
+                  let mut batch_out = rconn.acked_out
+                  let mut batch_err = rconn.acked_err
+                  let mut need_reack = false
+                  let flush_batch = fn() -> Bool {
+                    if pending_batch.length() == 0 {
+                      if need_reack && rconn.sock_id >= 0L {
+                        need_reack = false
+                        let ack_line = station_drivers::encode_runner_ack(
+                          rconn.acked_out,
+                          rconn.acked_err,
+                          Some(rconn.keep_from),
+                        ) + "\n"
+                        let _ = ctx.mux_role.call_async_raw(
+                          builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                          "tcp.write",
+                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                          Some(ack_line.to_bytes()),
+                        )
+                      }
+                      return true
+                    }
+                    let now_w = host_shim::wall_ms()
+                    match st.core.agents.commit_adopted_runner_chunks(
+                      rconn.instance_id,
+                      rconn.session_key,
+                      rconn.runner_id,
+                      rconn.runner_pid,
+                      rconn.started_at,
+                      pending_batch,
+                      now_w,
+                    ) {
+                      Ok(_) => {
+                        let count = pending_batch.length()
+                        pending_batch = []
+                        need_reack = false
+                        rconn.acked_out = batch_out
+                        rconn.acked_err = batch_err
+                        rconn.lines_received = rconn.lines_received + count
+                        if rconn.sock_id >= 0L {
+                          let ack_line = station_drivers::encode_runner_ack(
+                            rconn.acked_out,
+                            rconn.acked_err,
+                            Some(rconn.keep_from),
+                          ) + "\n"
+                          let _ = ctx.mux_role.call_async_raw(
+                            builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                            "tcp.write",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                            Some(ack_line.to_bytes()),
+                          )
+                        }
+                        true
+                      }
+                      Err(pe) => {
+                        pending_batch = []
+                        ctx.log("failed to commit adopted runner chunk (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                        rconn.exited = true
+                        false
+                      }
+                    }
+                  }
+                  while scan_from < cur_chunk.length() {
+                    let mut nl = -1
+                    for bi in scan_from..<cur_chunk.length() {
+                      if (cur_chunk[bi].to_int() & 0xFF) == 10 {
+                        nl = bi
+                        break
+                      }
+                    }
+                    if nl < 0 {
+                      let rem = if scan_from == 0 {
+                        cur_chunk
+                      } else {
+                        slice_bytes_local(cur_chunk, scan_from, cur_chunk.length())
+                      }
+                      if rconn.rx_total_bytes + rem.length() > WHOLE_RUNNER_MAX_LINE_BYTES {
+                        ctx.log("adopted runner line exceeded 8 MiB cap (" + rconn.runner_id + "): closing")
+                        rconn.exited = true
+                        break
+                      }
+                      rconn.rx_chunks.push(rem)
+                      rconn.rx_total_bytes = rconn.rx_total_bytes + rem.length()
+                      break
+                    }
+                    let tail_part = slice_bytes_local(cur_chunk, scan_from, nl)
+                    scan_from = nl + 1
+                    let total_line_len = rconn.rx_total_bytes + tail_part.length()
+                    if total_line_len > WHOLE_RUNNER_MAX_LINE_BYTES {
+                      ctx.log("adopted runner line exceeded 8 MiB cap (" + rconn.runner_id + "): closing")
+                      rconn.rx_chunks = []
+                      rconn.rx_total_bytes = 0
+                      rconn.exited = true
+                      break
+                    }
+                    let line_bytes = if rconn.rx_chunks.length() == 0 {
+                      tail_part
+                    } else {
+                      let merged = Bytes::new(total_line_len)
+                      let mut pos = 0
+                      for ci in 0..<rconn.rx_chunks.length() {
+                        let c = rconn.rx_chunks[ci]
+                        for bi in 0..<c.length() {
+                          merged[pos + bi] = c[bi]
+                        }
+                        pos = pos + c.length()
+                      }
+                      for bi in 0..<tail_part.length() {
+                        merged[pos + bi] = tail_part[bi]
+                      }
+                      rconn.rx_chunks = []
+                      rconn.rx_total_bytes = 0
+                      merged
+                    }
+                    let line = bytes_to_str_local(line_bytes, line_bytes.length())
+                    if line.trim().length() == 0 {
+                      continue
+                    }
+                    match station_drivers::decode_runner_frame(line) {
+                      Some(station_drivers::RunnerFrame::Attached(att_out, att_err, _keep)) => {
+                        if !flush_batch() {
+                          break
+                        }
+                        rconn.attached_seen = true
+                        let now_w = host_shim::wall_ms()
+                        match st.core.agents.get_or_init_runner_instance(
+                          rconn.instance_id,
+                          rconn.session_key,
+                          rconn.runner_id,
+                          rconn.runner_pid,
+                          rconn.started_at,
+                          att_out,
+                          att_err,
+                          now_w,
+                        ) {
+                          Ok((eff_out, eff_err, _existed)) => {
+                            rconn.acked_out = eff_out
+                            rconn.acked_err = eff_err
+                            batch_out = eff_out
+                            batch_err = eff_err
+                            rconn.db_initialized = true
+                          }
+                          Err(pe) => {
+                            ctx.log("failed to init adopted runner instance (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                            rconn.exited = true
+                            break
+                          }
+                        }
+                      }
+                      Some(station_drivers::RunnerFrame::Out(stream, at, payload)) => {
+                        let now_w = host_shim::wall_ms()
+                        if !rconn.db_initialized {
+                          match st.core.agents.get_or_init_runner_instance(
+                            rconn.instance_id,
+                            rconn.session_key,
+                            rconn.runner_id,
+                            rconn.runner_pid,
+                            rconn.started_at,
+                            0L,
+                            0L,
+                            now_w,
+                          ) {
+                            Ok((db_out, db_err, _)) => {
+                              rconn.acked_out = db_out
+                              rconn.acked_err = db_err
+                              batch_out = db_out
+                              batch_err = db_err
+                              rconn.db_initialized = true
+                            }
+                            Err(pe) => {
+                              ctx.log("failed to init adopted runner instance (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                              rconn.exited = true
+                              break
+                            }
+                          }
+                        }
+                        let current_acked = if stream == "err" { batch_err } else { batch_out }
+                        let end_pos = at + payload.length().to_int64()
+                        if end_pos <= current_acked {
+                          // Already committed on disk (duplicate replay): skip duplicate insert and re-ACK.
+                          need_reack = true
+                        } else if at > current_acked {
+                          // Offset gap: commit any valid contiguous prefix before the gap, then fail-stop!
+                          let _ = flush_batch()
+                          ctx.log(
+                            "adopted runner offset gap (" + rconn.instance_id + "): at=" + at.to_string() +
+                            " > acked=" + current_acked.to_string() + "; closing runner socket fail-stop",
+                          )
+                          rconn.exited = true
+                          break
+                        } else {
+                          let (write_at, write_payload) = if at < current_acked {
+                            let skip = (current_acked - at).to_int()
+                            (current_acked, slice_bytes_local(payload, skip, payload.length()))
+                          } else {
+                            (at, payload)
+                          }
+                          pending_batch.push((stream, write_at, end_pos, write_payload))
+                          if stream == "err" {
+                            batch_err = end_pos
+                          } else {
+                            batch_out = end_pos
+                          }
+                        }
+                      }
+                      Some(station_drivers::RunnerFrame::Exit(code_opt, sig_opt)) => {
+                        let _ = flush_batch()
+                        st.core.agents.record_adopted_runner_exit(rconn.session_key, code_opt, sig_opt)
+                        rconn.exited = true
+                        if rconn.sock_id >= 0L {
+                          let usid = rconn.sock_id
+                          rconn.sock_id = -1L
+                          st.adopted_runner_by_sock.remove(usid)
+                          let _ = ctx.mux_role.call_async_raw(
+                            builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_CLOSE, usid),
+                            "tcp.close",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                            None,
+                          )
+                        }
+                        return
+                      }
+                      _ => ()
+                    }
+                  }
+                  if !rconn.exited {
+                    let _ = flush_batch()
+                  }
+                  if rconn.exited && rconn.sock_id >= 0L {
+                    let usid = rconn.sock_id
+                    rconn.sock_id = -1L
+                    st.adopted_runner_by_sock.remove(usid)
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_CLOSE, usid),
+                      "tcp.close",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                      None,
+                    )
+                    return
+                  }
+                  if !rconn.exited && rconn.sock_id >= 0L {
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_READ, rconn.sock_id),
+                      "tcp.read",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                      None,
+                    )
+                  }
+                }
+                _ => {
+                  rconn.exited = true
+                  if rconn.sock_id >= 0L {
+                    let usid = rconn.sock_id
+                    rconn.sock_id = -1L
+                    st.adopted_runner_by_sock.remove(usid)
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_CLOSE, usid),
+                      "tcp.close",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                      None,
+                    )
+                  }
+                }
+              }
+            }
+          }
+          return
+        }
+        if kind == RUNNER_TOK_UNIX_WRITE || kind == RUNNER_TOK_UNIX_CLOSE {
+          return
+        }
+
+        // TCP port-forward completions (`tcp.open` / `tcp.write` / `tcp.read`).
+        if kind == PROXY_TOK_TCP_OPEN {
+          match builders_core::decode_shell_done(d) {
+            Ok((Some(v), _)) => {
+              let lsid = match base_codec::json_get(v, "id") {
+                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                _ => -1L
+              }
+              match st.proxy_streams.get(sid) {
+                None => {
+                  // Stream closed before `tcp.open` returned: close the orphaned local socket immediately!
+                  if lsid >= 0L {
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_CLOSE, sid),
+                      "tcp.close",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(lsid))])),
+                      None,
+                    )
+                  }
+                  return
+                }
+                Some(pstream) => {
+                  if lsid < 0L {
+                    send_proxy_refusal_and_finish(ctx, sid, 502, "local port connect returned invalid handle")
+                    pstream.mode = ProxyStreamMode::Done
+                    return
+                  }
+                  match pstream.mode {
+                    ProxyStreamMode::OpeningTcp(_, carry, ended) => {
+                      pstream.local_sock = lsid
+                      st.proxy_by_sock.set(lsid, sid)
+                      pstream.mode = ProxyStreamMode::Tunneling(lsid)
+                      ctx.write_peer_http_chunk(sid, encode_proxy_head_line(200, []))
+                      if carry.length() > 0 {
+                        enqueue_proxy_tcp_write(ctx, st, pstream, carry)
+                      }
+                      if ended {
+                        enqueue_proxy_tcp_end(ctx, pstream)
+                      }
+                      issue_proxy_tcp_read_or_pause(ctx, pstream)
+                    }
+                    ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, carry, ended) => {
+                      pstream.local_sock = lsid
+                      st.proxy_by_sock.set(lsid, sid)
+                      let (req_head_b, use_chunked) = build_upstream_http_request(port, method, path, headers, has_body)
+                      pstream.req_chunked = use_chunked
+                      let mut first_out = req_head_b
+                      if has_body && carry.length() > 0 {
+                        let cwire = if use_chunked { http1::encode_chunk(carry) } else { carry }
+                        first_out = concat_bytes_local(first_out, cwire)
+                      }
+                      if has_body && ended && use_chunked {
+                        first_out = concat_bytes_local(first_out, "0\r\n\r\n".to_bytes())
+                      }
+                      pstream.mode = ProxyStreamMode::ProxyHttpReadingHead(lsid, Bytes::new(0), method == "HEAD")
+                      enqueue_proxy_tcp_write(ctx, st, pstream, first_out)
+                      issue_proxy_tcp_read_or_pause(ctx, pstream)
+                    }
+                    ProxyStreamMode::OpeningWsTcp(port, path, headers, carry) => {
+                      pstream.local_sock = lsid
+                      st.proxy_by_sock.set(lsid, sid)
+                      let (upgrade_b, expected_acc) = build_ws_upgrade_request(port, path, headers)
+                      pstream.mode = ProxyStreamMode::WsHandshaking(lsid, expected_acc, Bytes::new(0), carry)
+                      enqueue_proxy_tcp_write(ctx, st, pstream, upgrade_b)
+                      issue_proxy_tcp_read_or_pause(ctx, pstream)
+                    }
+                    _ => {
+                      // Stream transitioned to `Done` before `tcp.open` resolved: close immediately!
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_CLOSE, sid),
+                        "tcp.close",
+                        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(lsid))])),
+                        None,
+                      )
+                    }
+                  }
+                }
+              }
+            }
+            Err(e) => {
+              match st.proxy_streams.get(sid) {
+                Some(pstream) => {
+                  send_proxy_refusal_and_finish(ctx, sid, 502, "nothing takes connections on local port: " + e.message)
+                  pstream.mode = ProxyStreamMode::Done
+                }
+                None => ()
+              }
+            }
+            _ => {
+              match st.proxy_streams.get(sid) {
+                Some(pstream) => {
+                  send_proxy_refusal_and_finish(ctx, sid, 502, "local port connect failed")
+                  pstream.mode = ProxyStreamMode::Done
+                }
+                None => ()
+              }
+            }
+          }
+          return
+        }
+
+        if kind == PROXY_TOK_TCP_WRITE {
+          match st.proxy_streams.get(sid) {
+            None => ()
+            Some(pstream) => {
+              match builders_core::decode_shell_done(d) {
+                Err(_) => {
+                  close_proxy_local_resources(ctx, st, pstream)
+                  ctx.close_peer_http(sid)
+                  pstream.mode = ProxyStreamMode::Done
+                }
+                Ok(_) => {
+                  if pstream.local_sock < 0L {
+                    pstream.tcp_write_in_flight = false
+                    return
+                  }
+                  if pstream.tcp_write_queue.length() > 0 {
+                    let next_c = pstream.tcp_write_queue[0]
+                    let rem : Array[Bytes] = []
+                    for qi in 1..<pstream.tcp_write_queue.length() {
+                      rem.push(pstream.tcp_write_queue[qi])
+                    }
+                    pstream.tcp_write_queue = rem
+                    pstream.tcp_write_queue_bytes = pstream.tcp_write_queue_bytes - next_c.length()
+                    if pstream.tcp_write_queue_bytes < 0 {
+                      pstream.tcp_write_queue_bytes = 0
+                    }
+                    if pstream.mesh_read_paused && pstream.tcp_write_queue_bytes <= WHOLE_UPSTREAM_READ_PAUSE_LOW {
+                      pstream.mesh_read_paused = false
+                      ctx.set_peer_http_read_paused(sid, false)
+                    }
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_WRITE, sid),
+                      "tcp.write",
+                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
+                      Some(next_c),
+                    )
+                  } else {
+                    pstream.tcp_write_in_flight = false
+                    pstream.tcp_write_queue_bytes = 0
+                    if pstream.mesh_read_paused {
+                      pstream.mesh_read_paused = false
+                      ctx.set_peer_http_read_paused(sid, false)
+                    }
+                    if pstream.tcp_end_pending {
+                      pstream.tcp_end_pending = false
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_END, sid),
+                        "tcp.end",
+                        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(pstream.local_sock))])),
+                        None,
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+          return
+        }
+
+        if kind == PROXY_TOK_TCP_READ {
+          match st.proxy_streams.get(sid) {
+            None => ()
+            Some(pstream) => {
+              match builders_core::decode_shell_done(d) {
+                Ok((_, Some(chunk))) => {
+                  if chunk.length() == 0 {
+                    close_proxy_local_resources(ctx, st, pstream)
+                    ctx.finish_peer_http(sid)
+                    pstream.mode = ProxyStreamMode::Done
+                    return
+                  }
+                  match pstream.mode {
+                    ProxyStreamMode::Tunneling(_) => {
+                      ctx.write_peer_http_chunk(sid, chunk)
+                      issue_proxy_tcp_read_or_pause(ctx, pstream)
+                    }
+                    ProxyStreamMode::WsHandshaking(lsock, expected_acc, http_acc, carry) => {
+                      let buf = concat_bytes_local(http_acc, chunk)
+                      let sep_idx = find_crlf_crlf(buf)
+                      if sep_idx < 0 {
+                        if buf.length() > WHOLE_MAX_PROXY_HEAD {
+                          close_proxy_local_resources(ctx, st, pstream)
+                          send_proxy_refusal_and_finish(ctx, sid, 502, "upstream websocket header too large")
+                          pstream.mode = ProxyStreamMode::Done
+                          return
+                        }
+                        pstream.mode = ProxyStreamMode::WsHandshaking(lsock, expected_acc, buf, carry)
+                        issue_proxy_tcp_read_or_pause(ctx, pstream)
+                        return
+                      }
+                      let head_str = bytes_to_str_local(buf, sep_idx)
+                      let ws_tail = slice_bytes_local(buf, sep_idx + 4, buf.length())
+                      match parse_upstream_ws_head(head_str) {
+                        Err(e) => {
+                          close_proxy_local_resources(ctx, st, pstream)
+                          send_proxy_refusal_and_finish(ctx, sid, 502, e)
+                          pstream.mode = ProxyStreamMode::Done
+                          return
+                        }
+                        Ok((status, resp_hdrs)) => {
+                          if status != 101 {
+                            ctx.write_peer_http_chunk(sid, encode_proxy_head_line(status, resp_hdrs))
+                            if ws_tail.length() > 0 {
+                              ctx.write_peer_http_chunk(sid, ws_tail)
+                            }
+                            close_proxy_local_resources(ctx, st, pstream)
+                            ctx.finish_peer_http(sid)
+                            pstream.mode = ProxyStreamMode::Done
+                            return
+                          }
+                          let mut got_accept = ""
+                          let out_hdrs : Array[(String, String)] = []
+                          for hi in 0..<resp_hdrs.length() {
+                            let (hk, hv) = resp_hdrs[hi]
+                            let kl = mesh_wire::ascii_lower(hk)
+                            if kl == "sec-websocket-accept" {
+                              got_accept = hv.trim()
+                            } else if kl == "sec-websocket-protocol" {
+                              out_hdrs.push(("sec-websocket-protocol", hv.trim()))
+                            }
+                          }
+                          if expected_acc.length() > 0 && got_accept != expected_acc {
+                            close_proxy_local_resources(ctx, st, pstream)
+                            send_proxy_refusal_and_finish(ctx, sid, 502, "invalid sec-websocket-accept from upstream")
+                            pstream.mode = ProxyStreamMode::Done
+                            return
+                          }
+                          let dec = websocket::Decoder::new(websocket::Role::Client, WS_MAX_FRAME)
+                          ctx.write_peer_http_chunk(sid, encode_proxy_head_line(101, out_hdrs))
+                          pstream.mode = ProxyStreamMode::WsForwarding(lsock, dec, Bytes::new(0))
+                          if carry.length() > 0 {
+                            drain_ws_proxy_rx(ctx, st, pstream, lsock, dec, carry)
+                          }
+                          if pstream.local_sock == lsock {
+                            feed_ws_upstream_bytes(ctx, st, pstream, lsock, dec, ws_tail)
+                          }
+                        }
+                      }
+                    }
+                    ProxyStreamMode::WsForwarding(lsock, dec, _) => {
+                      feed_ws_upstream_bytes(ctx, st, pstream, lsock, dec, chunk)
+                    }
+                    ProxyStreamMode::ProxyHttpReadingHead(lsock, acc, is_head_req) => {
+                      let buf = concat_bytes_local(acc, chunk)
+                      let sep_idx = find_crlf_crlf(buf)
+                      if sep_idx < 0 {
+                        if buf.length() > WHOLE_MAX_PROXY_HEAD {
+                          close_proxy_local_resources(ctx, st, pstream)
+                          send_proxy_refusal_and_finish(ctx, sid, 502, "upstream response header too large")
+                          pstream.mode = ProxyStreamMode::Done
+                          return
+                        }
+                        pstream.mode = ProxyStreamMode::ProxyHttpReadingHead(lsock, buf, is_head_req)
+                        issue_proxy_tcp_read_or_pause(ctx, pstream)
+                        return
+                      }
+                      let head_str = bytes_to_str_local(buf, sep_idx)
+                      let body_tail = slice_bytes_local(buf, sep_idx + 4, buf.length())
+                      match parse_upstream_http_head(head_str) {
+                        Err(e) => {
+                          close_proxy_local_resources(ctx, st, pstream)
+                          send_proxy_refusal_and_finish(ctx, sid, 502, e)
+                          pstream.mode = ProxyStreamMode::Done
+                          return
+                        }
+                        Ok((status, resp_hdrs, is_chunked, cl_opt)) => {
+                          ctx.write_peer_http_chunk(sid, encode_proxy_head_line(status, resp_hdrs))
+                          let bodyless = is_head_req || status < 200 || status == 204 || status == 304
+                          if bodyless {
+                            close_proxy_local_resources(ctx, st, pstream)
+                            ctx.finish_peer_http(sid)
+                            pstream.mode = ProxyStreamMode::Done
+                            return
+                          }
+                          if is_chunked {
+                            let dec = http1::ChunkedDecoder::with_limits(http1::Limits::default())
+                            if body_tail.length() > 0 {
+                              dec.feed(body_tail)
+                            }
+                            let mut finished = false
+                            while true {
+                              match dec.next() {
+                                Ok(http1::ChunkStep::Data(c)) => {
+                                  if c.length() > 0 {
+                                    ctx.write_peer_http_chunk(sid, c)
+                                  }
+                                }
+                                Ok(http1::ChunkStep::NeedMore) => break
+                                Ok(http1::ChunkStep::Done(_)) => {
+                                  finished = true
+                                  break
+                                }
+                                Err(_) => {
+                                  finished = true
+                                  break
+                                }
+                              }
+                            }
+                            if finished {
+                              close_proxy_local_resources(ctx, st, pstream)
+                              ctx.finish_peer_http(sid)
+                              pstream.mode = ProxyStreamMode::Done
+                            } else {
+                              pstream.mode = ProxyStreamMode::ProxyHttpChunkedBody(lsock, dec, is_head_req)
+                              issue_proxy_tcp_read_or_pause(ctx, pstream)
+                            }
+                          } else {
+                            let mut sent = 0L
+                            if body_tail.length() > 0 {
+                              ctx.write_peer_http_chunk(sid, body_tail)
+                              sent = body_tail.length().to_int64()
+                            }
+                            let done_now = match cl_opt {
+                              Some(cl) => sent >= cl
+                              None => false
+                            }
+                            if done_now {
+                              close_proxy_local_resources(ctx, st, pstream)
+                              ctx.finish_peer_http(sid)
+                              pstream.mode = ProxyStreamMode::Done
+                            } else {
+                              pstream.mode = ProxyStreamMode::ProxyHttpRawBody(lsock, cl_opt, sent, is_head_req)
+                              issue_proxy_tcp_read_or_pause(ctx, pstream)
+                            }
+                          }
+                        }
+                      }
+                    }
+                    ProxyStreamMode::ProxyHttpRawBody(lsock, cl_opt, sent, is_head_req) => {
+                      ctx.write_peer_http_chunk(sid, chunk)
+                      let next_sent = sent + chunk.length().to_int64()
+                      let done_now = match cl_opt {
+                        Some(cl) => next_sent >= cl
+                        None => false
+                      }
+                      if done_now {
+                        close_proxy_local_resources(ctx, st, pstream)
+                        ctx.finish_peer_http(sid)
+                        pstream.mode = ProxyStreamMode::Done
+                      } else {
+                        pstream.mode = ProxyStreamMode::ProxyHttpRawBody(lsock, cl_opt, next_sent, is_head_req)
+                        issue_proxy_tcp_read_or_pause(ctx, pstream)
+                      }
+                    }
+                    ProxyStreamMode::ProxyHttpChunkedBody(lsock, dec, is_head_req) => {
+                      dec.feed(chunk)
+                      let mut finished = false
+                      while true {
+                        match dec.next() {
+                          Ok(http1::ChunkStep::Data(c)) => {
+                            if c.length() > 0 {
+                              ctx.write_peer_http_chunk(sid, c)
+                            }
+                          }
+                          Ok(http1::ChunkStep::NeedMore) => break
+                          Ok(http1::ChunkStep::Done(_)) => {
+                            finished = true
+                            break
+                          }
+                          Err(_) => {
+                            finished = true
+                            break
+                          }
+                        }
+                      }
+                      if finished {
+                        close_proxy_local_resources(ctx, st, pstream)
+                        ctx.finish_peer_http(sid)
+                        pstream.mode = ProxyStreamMode::Done
+                      } else {
+                        pstream.mode = ProxyStreamMode::ProxyHttpChunkedBody(lsock, dec, is_head_req)
+                        issue_proxy_tcp_read_or_pause(ctx, pstream)
+                      }
+                    }
+                    _ => close_proxy_local_resources(ctx, st, pstream)
+                  }
+                }
+                _ => {
+                  close_proxy_local_resources(ctx, st, pstream)
+                  ctx.finish_peer_http(sid)
+                  pstream.mode = ProxyStreamMode::Done
+                }
+              }
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+
+  let hooks = DaemonRoleHooks::{
+    role_name: "whole",
+    hears_outside: false,
+    has_mesh_directory: true,
+    accept_peer_http: true,
+    accept_admin_alpn: true,
+    validate_mode: fn(
+      data : String,
+      _ops_fs : station_ops::OpsFs,
+      cloud : station_cloud::CloudStore,
+      now_secs : Double,
+      _sep : String,
+    ) -> Result[Unit, String] {
+      if cloud.is_rig_only(now_secs) {
+        return Err("stillfail-station-pion --whole-daemon refuses rig-only station: " + data)
+      }
+      Ok(())
+    },
+    on_init: fn(ctx : DaemonCtx) -> Result[Unit, String] {
+      let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+      let cfg = build_whole_core_config(ctx, now_secs)
+      let verify_fn = Some(station_cloud::shell_verifier_of_client(ctx.shell_client))
+      let thumb_port = Some(station_whole::os_thumb_port(ctx.shell_client))
+
+      // Pre-handover init ONLY: SQLite MUST NOT be opened until `on_predecessor_gone`!
+      let core = station_whole::WholeCore::init_pre_handover(
+        cfg,
+        thumb_port=thumb_port,
+        verify_fn=verify_fn,
+      )
+      // Strict per-workspace Drive root isolation (`drive.roots` for home, `drive.workspaces[ws]` for joined; NEVER `$HOME`).
+      for wi in 0..<cfg.allowed_workspaces.length() {
+        let ws = cfg.allowed_workspaces[wi]
+        let ws_roots = parse_drive_roots_for_workspace(ctx.cfg_raw, ws, ws == cfg.home_workspace)
+        core.api.set_workspace_drive_roots(ws, ws_roots)
+      }
+
+      // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
+      // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
+      let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
+      let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+        if req.method == "GET" && req.path == "/healthz" {
+          return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
+        }
+        if req.path == "/mcp" || req.path.starts_with("/mcp/") {
+          let mresp = core.handle_mcp_http(
+            req.method,
+            req.path,
+            req.header("host"),
+            req.header("origin"),
+            req.header("authorization"),
+            req.body_text(),
+            host_shim::wall_ms(),
+          )
+          let resp = station_http::HttpResponse::{
+            status: mresp.status,
+            reason: station_http::status_reason(mresp.status),
+            headers: [http1::Header::new("Content-Type", mresp.content_type)],
+            body: mresp.body.to_bytes(),
+            chunked: false,
+            close_after: false,
+          }
+          return station_http::HandlerAction::Respond(resp)
+        }
+        if req.method == "POST" && (req.path == "/job-notify" || req.path == "/jobs/notify") {
+          if !core.ready {
+            return station_http::HandlerAction::Respond(
+              station_api::json_error(503, "station is not ready"),
+            )
+          }
+          let auth = match req.header("authorization") {
+            Some(a) => a
+            None => ""
+          }
+          let rep = core.agents.jobs.handle_notify(auth, req.body, host_shim::wall_ms())
+          return station_http::HandlerAction::Respond(
+            station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+          )
+        }
+        if req.method == "POST" && req.path == "/jobs/screen" {
+          if !core.ready {
+            return station_http::HandlerAction::Respond(
+              station_api::json_error(503, "station is not ready"),
+            )
+          }
+          let auth = match req.header("authorization") {
+            Some(a) => a
+            None => ""
+          }
+          let rep = core.agents.jobs.handle_screen(auth, req.body_text(), host_shim::wall_ms())
+          return station_http::HandlerAction::Respond(
+            station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+          )
+        }
+        station_http::HandlerAction::Respond(station_http::HttpResponse::text(404, "not found"))
+      })
+
+      let mut mcp_fd_used = false
+      match ctx.args.launcher.fds {
+        Some(fds) => {
+          if fds.mcp >= 0 {
+            mcp_srv.listen_fd(fds.mcp)
+            mcp_fd_used = true
+          }
+        }
+        None => ()
+      }
+      if !mcp_fd_used {
+        mcp_srv.listen_loopback(0)
+      }
+
+      let now0 = host_shim::now_ms()
+      state_opt = Some(WholeRuntimeState::{
+        core: core,
+        mcp_srv: mcp_srv,
+        mcp_cb: mcp_cb,
+        serve: station_mesh::ServeEndpoint::new(),
+        admin_conns: Map::new(),
+        admin_streams: Map::new(),
+        proxy_streams: Map::new(),
+        proxy_by_sock: Map::new(),
+        drive_rpc_puts: Map::new(),
+        rig_put_streams: Map::new(),
+        adopted_runners: Map::new(),
+        adopted_runner_by_sock: Map::new(),
+        next_runner_conn_id: 1,
+        carried_handover_failed: None,
+        mcp_announced: false,
+        handover_exported: false,
+        becoming_rig: false,
+        // timer: periodic jobs and remote upkeep (10m)
+        next_upkeep_ms: now0 + WHOLE_UPKEEP_EVERY_MS,
+      })
+      Ok(())
+    },
+    on_predecessor_gone: fn(ctx : DaemonCtx) -> Bool {
+      match state_opt {
+        Some(st) => {
+          // If the predecessor reported handover snapshot failure via launcher `carried`,
+          // abort takeover immediately so `Slot::Current` emits `{"failed": ...}` and the
+          // launcher writes `handoff-failed` (never falsely claiming `has taken over`!).
+          match st.carried_handover_failed {
+            Some(err_msg) => {
+              let msg = "handover snapshot failed on predecessor: " + err_msg
+              ctx.log(msg)
+              ctx.fail_and_stop(msg)
+              return false
+            }
+            None => ()
+          }
+          let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
+          let mut snap_valid_to_remove = false
+          let mut snap_opt : Option[station_whole::WholeHandoverSnapshot] = None
+          match ctx.ops_fs.read_text(ho_path) {
+            Ok(raw) => {
+              match station_whole::WholeHandoverSnapshot::from_json(raw) {
+                Ok(s) => {
+                  snap_opt = Some(s)
+                  snap_valid_to_remove = true
+                }
+                Err(e) => {
+                  // Snapshot exists on disk but is corrupt/unparseable: KEEP the file AND fail takeover!
+                  let msg = "handover snapshot parse failed (preserving " + ho_path + "): " + e
+                  ctx.log(msg)
+                  ctx.fail_and_stop(msg)
+                  return false
+                }
+              }
+            }
+            Err(station_ops::FsErr::NotFound) => ()
+            Err(fe) => {
+              // Snapshot exists on disk but could not be read: KEEP the file AND fail takeover!
+              let msg = "handover snapshot read failed (preserving " + ho_path + "): " + station_ops::fs_err_msg(fe)
+              ctx.log(msg)
+              ctx.fail_and_stop(msg)
+              return false
+            }
+          }
+          let live_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
+          let w_now = host_shim::wall_ms()
+          match st.core.open_after_predecessor_gone(
+            true,
+            fn(_dir : String) -> Result[Unit, String] { Ok(()) },
+            handover=snap_opt,
+            runners=live_runners,
+            wait_ms=5000,
+            now_ms=w_now,
+          ) {
+            Ok(_) => {
+              // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
+              if snap_valid_to_remove {
+                let _ = (ctx.ops_fs.remove)(ho_path)
+              }
+              // Actively reconnect ONLY to runners genuinely claimed by `WholeAgents::adopt_sessions`
+              // (`adopt_once == Ok`); bystander runners not owned by any session are NEVER attached!
+              for ri in 0..<live_runners.length() {
+                let rinfo = live_runners[ri]
+                if rinfo.socket.length() > 0 {
+                  match st.core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+                    Some(skey) => {
+                      let rcid = st.next_runner_conn_id
+                      st.next_runner_conn_id = st.next_runner_conn_id + 1
+                      let inst_id = station_whole::WholeAgents::runner_instance_id(
+                        rinfo.id,
+                        rinfo.runner_pid,
+                        rinfo.started_at,
+                      )
+                      st.adopted_runners.set(
+                        rcid,
+                        AdoptedRunnerConn::{
+                          runner_id: rinfo.id,
+                          instance_id: inst_id,
+                          runner_pid: rinfo.runner_pid,
+                          started_at: rinfo.started_at,
+                          session_key: skey,
+                          socket_path: rinfo.socket,
+                          keep_from: 0L,
+                          sock_id: -1L,
+                          rx_chunks: [],
+                          rx_total_bytes: 0,
+                          attached_seen: false,
+                          db_initialized: false,
+                          acked_out: 0L,
+                          acked_err: 0L,
+                          lines_received: 0,
+                          exited: false,
+                        },
+                      )
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_OPEN, 0L),
+                        "unix.open",
+                        base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                        None,
+                      )
+                    }
+                    None => ()
+                  }
+                }
+              }
+              ctx.mark_role_ready()
+              true
+            }
+            Err(e) => {
+              let msg = "whole_daemon failed to open primary store after predecessor exit: " + e
+              ctx.fail_and_stop(msg)
+              false
+            }
+          }
+        }
+        None => false
+      }
+    },
+    on_peer_rpc: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _line : String,
+      bin_opt : Option[Bytes],
+      auth : PeerAuthInfo,
+      v2_bytes : Bool,
+      is_front : Bool,
+    ) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match auth.route {
+            station_mesh::PeerRouteTarget::BusOutside(_) => {
+              let err_b = station_mesh::encode_peer_answer_err("peer is not another station in this workspace", v2_bytes)
+              ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              return
+            }
+            _ => ()
+          }
+          let now_w = host_shim::wall_ms()
+          let req = auth.env.request
+          let method = match base_codec::json_get(req, "method") {
+            Some(base_codec::Json::Str(m)) => m
+            _ => ""
+          }
+          let ws = auth.env.workspace
+
+          // Roster station HTTP-over-RPC: strictly read-only `AuthenticatedStation` (`role: "viewer"`).
+          // NEVER trusts self-asserted email/role headers; write routes (e.g. `POST /sessions`) MUST return `403`.
+          if method == "http" {
+            let http_method = match base_codec::json_get(req, "httpMethod") {
+              Some(base_codec::Json::Str(m)) => m
+              _ => "GET"
+            }
+            let path = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => p
+              _ => "/status"
+            }
+            let hdrs = parse_admin_headers(base_codec::json_get(req, "headers"))
+            let body_bytes = match bin_opt {
+              Some(b) => b
+              None => match base_codec::json_get(req, "body") {
+                Some(base_codec::Json::Str(s)) => s.to_bytes()
+                _ => Bytes::new(0)
+              }
+            }
+            let station_peer_id = station_whole::PeerIdentity::AuthenticatedStation(auth.remote_id, ws, false)
+            match st.core.handle_peer_http(station_peer_id, http_method, path, hdrs, body_bytes, now_w) {
+              station_http::HandlerAction::Respond(resp) => {
+                let rh_arr : Array[base_codec::Json] = []
+                for hi in 0..<resp.headers.length() {
+                  rh_arr.push(
+                    base_codec::json_arr([
+                      base_codec::json_str(resp.headers[hi].name),
+                      base_codec::json_str(resp.headers[hi].value),
+                    ]),
+                  )
+                }
+                let res_j = base_codec::json_obj([
+                  ("status", base_codec::json_int(resp.status)),
+                  ("headers", base_codec::json_arr(rh_arr)),
+                  ("body", base_codec::json_str(resp.body.to_string())),
+                ])
+                let reply_b = station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes)
+                ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+              }
+              _ => {
+                let err_b = station_mesh::encode_peer_answer_err("streaming route requires stillfail/admin/1", v2_bytes)
+                ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+
+          // Streaming Drive read over `PEER_BYTES_ALPN` (`method: "drive.read"`).
+          if method == "drive.read" {
+            let root = match resolve_drive_root_for_ws(
+              st.core,
+              ws,
+              match base_codec::json_get(req, "root") { Some(base_codec::Json::Str(s)) => Some(s), _ => None },
+            ) {
+              Ok(r) => r
+              Err(msg) => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(msg, v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            let rel = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => p
+              _ => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("path is required", v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            let offset = match base_codec::json_get(req, "offset") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let length = match base_codec::json_get(req, "length") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int()
+              _ => WHOLE_DRIVE_READ_CHUNK
+            }
+            let ws_drive = st.core.api.drive_for_workspace(ws)
+            match ws_drive.read(root, rel, offset, length, false) {
+              Ok((bytes, total, mtime, mime)) => {
+                let meta = base_codec::json_obj([
+                  ("total", base_codec::json_int64(total)),
+                  ("mtime", base_codec::json_int64(mtime)),
+                  ("mime", base_codec::json_str(mime)),
+                  ("size", base_codec::json_int(bytes.length())),
+                ])
+                if v2_bytes {
+                  let hdr = station_mesh::encode_peer_answer_ok(meta, true, true)
+                  ctx.reply_peer_rpc(sid, concat_bytes_local(hdr, bytes), None, true, is_front)
+                } else {
+                  ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(meta, false, false), None, false, is_front)
+                }
+              }
+              Err(de) => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(de.message, v2_bytes), None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+
+          // Standard `WholeCore::handle_peer_rpc` (full-station `describe` + isolated `MixedRig` RPCs).
+          let params_form = station_rules_bridge::base_to_form(req)
+          match st.core.handle_peer_rpc(auth.remote_id, ws, method, params_form, now_w) {
+            Ok(res_form) => {
+              let res_base = station_rules_bridge::form_to_base(res_form)
+              let reply_b = station_mesh::encode_peer_answer_ok(res_base, false, v2_bytes)
+              ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+            }
+            Err(msg) => {
+              let err_b = station_mesh::encode_peer_answer_err(msg, v2_bytes)
+              ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    on_stream_start: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _line : String,
+      auth : PeerAuthInfo,
+      _v2_bytes : Bool,
+    ) -> StreamStartAction {
+      match state_opt {
+        Some(st) => {
+          if !ctx.is_role_ready() {
+            return StreamStartAction::Reject("station handover in progress")
+          }
+          let req = auth.env.request
+          let method = match base_codec::json_get(req, "method") {
+            Some(base_codec::Json::Str(m)) => m
+            _ => ""
+          }
+          if method == "drive.upload" {
+            let root = match resolve_drive_root_for_ws(
+              st.core,
+              auth.env.workspace,
+              match base_codec::json_get(req, "root") { Some(base_codec::Json::Str(s)) => Some(s), _ => None },
+            ) {
+              Ok(r) => r
+              Err(msg) => return StreamStartAction::Reject(msg)
+            }
+            let rel = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => if p.length() > 0 { p } else { return StreamStartAction::Reject("path is required") }
+              _ => return StreamStartAction::Reject("path is required")
+            }
+            let up_id = match base_codec::json_get(req, "id") {
+              Some(base_codec::Json::Str(u)) => if u.length() > 0 { u } else { return StreamStartAction::Reject("id is required") }
+              _ => return StreamStartAction::Reject("id is required")
+            }
+            let offset = match base_codec::json_get(req, "offset") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let total = match base_codec::json_get(req, "total") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => return StreamStartAction::Reject("total is required")
+            }
+            let replace = match base_codec::json_get(req, "replace") {
+              Some(base_codec::Json::Bool(b)) => b
+              _ => false
+            }
+            st.drive_rpc_puts.set(
+              sid,
+              WholeDriveRpcPutState::{
+                workspace: auth.env.workspace,
+                root: root,
+                rel: rel,
+                upload_id: up_id,
+                total: total,
+                replace: replace,
+                cur_offset: offset,
+                last_entry: None,
+              },
+            )
+            return StreamStartAction::Streaming
+          }
+          if method == "file.put" {
+            let now_ms = host_shim::wall_ms()
+            let roster = build_cloud_roster(ctx.cloud, (now_ms / 1000L).to_double(), ctx.cloud.peers_current)
+            match begin_streaming_file_put(roster, auth.remote_id, auth.env, st.core.rig, st.core.remote, now_ms) {
+              Ok(put_ctx) => {
+                st.rig_put_streams.set(sid, put_ctx)
+                return StreamStartAction::Streaming
+              }
+              Err(e) => return StreamStartAction::Reject(e)
+            }
+          }
+          StreamStartAction::BufferBinary(station_jobs::REMOTE_CHUNK + 65536)
+        }
+        None => StreamStartAction::Reject("whole runtime not initialized")
+      }
+    },
+    on_stream_chunk: fn(_ctx : DaemonCtx, sid : Int64, chunk : Bytes) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          match st.drive_rpc_puts.get(sid) {
+            Some(up) => {
+              if chunk.length() == 0 {
+                return Ok(())
+              }
+              let ws_drive = st.core.api.drive_for_workspace(up.workspace)
+              match ws_drive.upload(
+                up.root,
+                up.rel,
+                up.upload_id,
+                up.cur_offset,
+                up.total,
+                chunk,
+                up.replace,
+                false,
+                host_shim::wall_ms(),
+              ) {
+                Ok(res) => {
+                  up.cur_offset = res.have
+                  up.last_entry = res.entry
+                  Ok(())
+                }
+                Err(de) => Err(de.message)
+              }
+            }
+            None => match st.rig_put_streams.get(sid) {
+              Some(put_ctx) => feed_streaming_put(put_ctx, chunk)
+              None => Err("streaming upload state missing")
+            }
+          }
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_stream_end: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _remote_id : String,
+      v2_bytes : Bool,
+      is_front : Bool,
+    ) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.drive_rpc_puts.get(sid) {
+            Some(up) => {
+              st.drive_rpc_puts.remove(sid)
+              let entry_j = match up.last_entry {
+                Some(e) => drive_entry_json_local(e)
+                None => base_codec::json_null()
+              }
+              let res_j = base_codec::json_obj([
+                ("have", base_codec::json_int64(up.cur_offset)),
+                ("entry", entry_j),
+              ])
+              ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+              return
+            }
+            None => ()
+          }
+          match st.rig_put_streams.get(sid) {
+            Some(put_ctx) => {
+              st.rig_put_streams.remove(sid)
+              finalize_streaming_put_to_stream(ctx, st.core.remote, sid, put_ctx, v2_bytes, is_front)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_stream_abort: fn(_ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          st.drive_rpc_puts.remove(sid)
+          st.rig_put_streams.remove(sid)
+        }
+        None => ()
+      }
+    },
+    on_admin_conn_open: fn(_ctx : DaemonCtx, conn_id : Int64, remote_id : String, is_front : Bool) -> Unit {
+      match state_opt {
+        Some(st) => {
+          let _ = st.serve.on_connection(mesh_accept::ConnMeta::{
+            conn_id: conn_id,
+            remote_id: remote_id,
+            alpn: station_mesh::ALPN,
+          })
+          st.admin_conns.set(
+            conn_id,
+            AdminConnState::{
+              conn_id: conn_id,
+              remote_id: remote_id,
+              is_front: is_front,
+              control_sid: None,
+              iat: 0L,
+              sid_claim: "",
+              lock_base: None,
+              lock_proof: None,
+            },
+          )
+        }
+        None => ()
+      }
+    },
+    on_admin_conn_close: fn(_ctx : DaemonCtx, conn_id : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.admin_conns.get(conn_id) {
+            Some(aconn) => {
+              let _ = st.serve.close_connection(conn_id, aconn.remote_id)
+              st.admin_conns.remove(conn_id)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_peer_http_open: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      remote_id : String,
+      alpn : String,
+      is_front : Bool,
+    ) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          if alpn == station_mesh::ALPN {
+            let conn_id = ctx.stream_conn_id(sid)
+            let aconn = match st.admin_conns.get(conn_id) {
+              Some(c) => c
+              None => {
+                let _ = st.serve.on_connection(mesh_accept::ConnMeta::{
+                  conn_id: conn_id,
+                  remote_id: remote_id,
+                  alpn: station_mesh::ALPN,
+                })
+                let fresh = AdminConnState::{
+                  conn_id: conn_id,
+                  remote_id: remote_id,
+                  is_front: is_front,
+                  control_sid: None,
+                  iat: 0L,
+                  sid_claim: "",
+                  cred_role: "",
+                  effective_role: "",
+                  lock_base: None,
+                  lock_proof: None,
+                }
+                st.admin_conns.set(conn_id, fresh)
+                fresh
+              }
+            }
+            match aconn.control_sid {
+              None => {
+                // Stream 1: member credential control stream.
+                // Remains subject to generic idle sweep until authentication succeeds (`DoorPhase::Open`)!
+                aconn.control_sid = Some(sid)
+                st.admin_streams.set(
+                  sid,
+                  AdminStreamState::{
+                    sid: sid,
+                    conn_id: conn_id,
+                    remote_id: remote_id,
+                    is_front: is_front,
+                    mode: AdminStreamMode::ControlStream,
+                    rx_buf: Bytes::new(0),
+                    last_sse_ping_ms: host_shim::now_ms(),
+                  },
+                )
+                return Ok(())
+              }
+              Some(_) => {
+                // Streams 2..N: member AdminApi request streams (guarded by real `MemberCheckHooks`).
+                let now_w = host_shim::wall_ms()
+                let now_s = (now_w / 1000L).to_double()
+                let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)
+                let check_hooks = build_member_check_hooks(ctx, aconn, now_s)
+                let acts = st.serve.accept_member_stream(conn_id, sid, roster, now_w, check_hooks)
+                let mut rejected = false
+                for ai in 0..<acts.length() {
+                  match acts[ai] {
+                    mesh_door::DoorAction::ResetStream(_, _) | mesh_door::DoorAction::CloseConn(_, _) => rejected = true
+                    _ => ()
+                  }
+                }
+                apply_door_actions(ctx, aconn, acts)
+                if rejected {
+                  return Err("member stream refused")
+                }
+                st.admin_streams.set(
+                  sid,
+                  AdminStreamState::{
+                    sid: sid,
+                    conn_id: conn_id,
+                    remote_id: remote_id,
+                    is_front: is_front,
+                    mode: AdminStreamMode::ReadingHeadLine,
+                    rx_buf: Bytes::new(0),
+                    last_sse_ping_ms: host_shim::now_ms(),
+                  },
+                )
+                return Ok(())
+              }
+            }
+          }
+          // `stillfail/http/1` (`PEER_HTTP_ALPN`): station-to-station local port forward.
+          st.proxy_streams.set(
+            sid,
+            ProxyStreamState::{
+              sid: sid,
+              remote_id: remote_id,
+              is_front: is_front,
+              mode: ProxyStreamMode::ReadingHeadLine,
+              rx_buf: Bytes::new(0),
+              local_sock: -1L,
+              req_chunked: false,
+              peer_ended: false,
+              tcp_write_queue: [],
+              tcp_write_queue_bytes: 0,
+              tcp_write_in_flight: false,
+              tcp_end_pending: false,
+              tcp_read_paused: false,
+              downstream_pending: [],
+              downstream_pending_idx: 0,
+              downstream_finish_after: false,
+              mesh_read_paused: false,
+            },
+          )
+          Ok(())
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_peer_http_data: fn(ctx : DaemonCtx, sid : Int64, chunk : Bytes) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          match st.admin_streams.get(sid) {
+            Some(astream) => {
+              match astream.mode {
+                AdminStreamMode::Done
+                | AdminStreamMode::SseStreaming(_)
+                | AdminStreamMode::DriveDownloading(_)
+                | AdminStreamMode::SendingBody(_) => {
+                  return Ok(())
+                }
+                _ => {
+                  astream.rx_buf = concat_bytes_local(astream.rx_buf, chunk)
+                  return process_admin_stream_rx(ctx, st, astream)
+                }
+              }
+            }
+            None => ()
+          }
+          match st.proxy_streams.get(sid) {
+            Some(pstream) => {
+              match pstream.mode {
+                ProxyStreamMode::Done => return Ok(())
+                _ => {
+                  pstream.rx_buf = concat_bytes_local(pstream.rx_buf, chunk)
+                  return process_proxy_stream_rx(ctx, st, pstream)
+                }
+              }
+            }
+            None => Err("unknown full-duplex stream")
+          }
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_peer_http_end: fn(ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.admin_streams.get(sid) {
+            Some(astream) => {
+              match astream.mode {
+                AdminStreamMode::ReadingHeadLine => {
+                  if astream.rx_buf.length() > 0 {
+                    send_admin_resp_and_finish(ctx, sid, station_api::json_error(400, "incomplete request head"))
+                  } else {
+                    ctx.finish_peer_http(sid)
+                  }
+                  astream.rx_buf = Bytes::new(0)
+                  astream.mode = AdminStreamMode::Done
+                }
+                AdminStreamMode::ReadingBody(req_head, acc) => {
+                  let body = concat_bytes_local(acc, astream.rx_buf)
+                  astream.rx_buf = Bytes::new(0)
+                  match req_head.expected_cl {
+                    Some(exp) => {
+                      if body.length().to_int64() != exp {
+                        send_admin_resp_and_finish(ctx, sid, station_api::json_error(400, "content-length mismatch"))
+                        astream.mode = AdminStreamMode::Done
+                        return
+                      }
+                    }
+                    None => ()
+                  }
+                  dispatch_admin_request(ctx, st, astream, req_head, body)
+                }
+                AdminStreamMode::StreamingDriveUpload(up) => {
+                  if astream.rx_buf.length() > 0 {
+                    let rem = astream.rx_buf
+                    astream.rx_buf = Bytes::new(0)
+                    feed_drive_upload_chunk(st, up, rem)
+                  }
+                  finish_admin_drive_upload(ctx, st, astream, up)
+                }
+                _ => ()
+              }
+              return
+            }
+            None => ()
+          }
+          match st.proxy_streams.get(sid) {
+            Some(pstream) => {
+              pstream.peer_ended = true
+              match pstream.mode {
+                ProxyStreamMode::ReadingHeadLine => {
+                  if pstream.rx_buf.length() > 0 {
+                    send_proxy_refusal_and_finish(ctx, sid, 400, "incomplete head line")
+                  } else {
+                    ctx.finish_peer_http(sid)
+                  }
+                  pstream.rx_buf = Bytes::new(0)
+                  pstream.mode = ProxyStreamMode::Done
+                }
+                ProxyStreamMode::OpeningTcp(port, carry, _) => {
+                  pstream.mode = ProxyStreamMode::OpeningTcp(port, carry, true)
+                }
+                ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, carry, _) => {
+                  pstream.mode = ProxyStreamMode::OpeningHttp(port, method, path, headers, has_body, carry, true)
+                }
+                ProxyStreamMode::Tunneling(_) => {
+                  enqueue_proxy_tcp_end(ctx, pstream)
+                }
+                ProxyStreamMode::ProxyHttpReadingHead(_, _, _)
+                | ProxyStreamMode::ProxyHttpRawBody(_, _, _, _)
+                | ProxyStreamMode::ProxyHttpChunkedBody(_, _, _) => {
+                  if pstream.req_chunked {
+                    enqueue_proxy_tcp_write(ctx, st, pstream, "0\r\n\r\n".to_bytes())
+                  }
+                }
+                ProxyStreamMode::WsForwarding(_, _, _) => {
+                  let close_b = websocket::encode_message(websocket::Message::Close(None), Some(ws_random_mask()))
+                  enqueue_proxy_tcp_write(ctx, st, pstream, close_b)
+                  enqueue_proxy_tcp_end(ctx, pstream)
+                }
+                ProxyStreamMode::OpeningWsTcp(_, _, _, _)
+                | ProxyStreamMode::WsHandshaking(_, _, _, _)
+                | ProxyStreamMode::Done => ()
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_peer_http_close: fn(ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.admin_streams.get(sid) {
+            Some(astream) => {
+              let is_ctrl = match astream.mode {
+                AdminStreamMode::ControlStream => true
+                AdminStreamMode::SseStreaming(cid) => {
+                  let _ = st.core.api.events.disconnect(cid)
+                  false
+                }
+                _ => false
+              }
+              if !is_ctrl {
+                match st.serve.door_of(astream.conn_id) {
+                  Some(door) => door.finish_request_stream(sid)
+                  None => ()
+                }
+              }
+              st.admin_streams.remove(sid)
+            }
+            None => ()
+          }
+          match st.proxy_streams.get(sid) {
+            Some(pstream) => {
+              close_proxy_local_resources(ctx, st, pstream)
+              st.proxy_streams.remove(sid)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_peer_http_writable: fn(ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.admin_streams.get(sid) {
+            Some(astream) => {
+              match astream.mode {
+                AdminStreamMode::DriveDownloading(dl) => {
+                  pump_drive_download_chunk(ctx, st, astream, dl)
+                }
+                AdminStreamMode::SendingBody(bs) => {
+                  pump_admin_body_chunk(ctx, astream, bs)
+                }
+                _ => ()
+              }
+            }
+            None => ()
+          }
+          match st.proxy_streams.get(sid) {
+            Some(pstream) => {
+              pump_proxy_downstream(ctx, st, pstream)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_outbound_reply: fn(_ctx : DaemonCtx, _method : String, _ref_id : String, _until_opt : Option[Int64]) -> Unit {},
+    on_extra_host_event: fn(ctx : DaemonCtx, ev : DaemonExtraEvent) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match ev {
+            DaemonExtraEvent::SysEvent(ev_id, sev) => {
+              let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+            }
+            DaemonExtraEvent::DoorDone(tok, d) => {
+              let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
+            }
+            DaemonExtraEvent::RoleDone(tok, d) => {
+              handle_proxy_role_done(ctx, st, tok, d)
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    on_loop_step: fn(ctx : DaemonCtx, _now : Int64, _wall : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          if !st.mcp_announced && st.mcp_srv.is_listening() {
+            st.mcp_announced = true
+            let mport = st.mcp_srv.port()
+            st.core.agents.config.mcp_port = mport
+            st.core.agents.jobs.notify_url = "http://127.0.0.1:" + mport.to_string() + "/job-notify"
+            ctx.announce_mcp_port(mport)
+            ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
+          }
+          let _ = st.mcp_srv.tick(st.mcp_cb)
+        }
+        None => ()
+      }
+    },
+    on_tick: fn(ctx : DaemonCtx, now : Int64, wall : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          st.core.on_tick(wall)
+          let _ = st.core.agents.jobs.poll_followed(wall)
+          let _ = st.core.remote.drain_queue(wall)
+
+          // Poll member connection deadlines (`REFUSED_CLOSE_MS`, expiry, revocation, lock check).
+          let now_s = (wall / 1000L).to_double()
+          let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)
+          let ac_keys = st.admin_conns.keys()
+          for aci in 0..<ac_keys.length() {
+            let cid = ac_keys[aci]
+            match st.admin_conns.get(cid) {
+              Some(aconn) => {
+                let check_hooks = build_member_check_hooks(ctx, aconn, now_s)
+                let acts = st.serve.poll_member_deadlines(cid, roster, wall, check_hooks)
+                if acts.length() > 0 {
+                  apply_door_actions(ctx, aconn, acts)
+                }
+              }
+              None => ()
+            }
+          }
+
+          // Push live `EventsHub` broadcasts and periodic SSE keepalives to open `stillfail/admin/1` SSE streams.
+          let as_keys = st.admin_streams.keys()
+          for asi in 0..<as_keys.length() {
+            let sid = as_keys[asi]
+            match st.admin_streams.get(sid) {
+              Some(astream) => {
+                match astream.mode {
+                  AdminStreamMode::SseStreaming(cid) => {
+                    match st.core.api.events.get_client(cid) {
+                      Some(client) => {
+                        let frames = client.drain_outbox()
+                        if frames.length() > 0 {
+                          for fi in 0..<frames.length() {
+                            ctx.write_peer_http_chunk(sid, frames[fi].to_bytes())
+                          }
+                          astream.last_sse_ping_ms = now
+                        } else if now - astream.last_sse_ping_ms >= 15000L {
+                          astream.last_sse_ping_ms = now
+                          ctx.write_peer_http_chunk(sid, ": ping\n\n".to_bytes())
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              None => ()
+            }
+          }
+
+          if now >= st.next_upkeep_ms {
+            let _ = st.core.agents.jobs.upkeep(wall)
+            let _ = st.core.remote.sweep(wall, low_disk=false, disk_total=None)
+            // timer: periodic jobs and remote upkeep (10m)
+            st.next_upkeep_ms = now + WHOLE_UPKEEP_EVERY_MS
+          }
+        }
+        None => ()
+      }
+    },
+    on_cloud_changed: fn(ctx : DaemonCtx, w_s : Int64, w_ms : Int64, connected : Bool) -> Unit {
+      match state_opt {
+        Some(st) => {
+          // Immediately re-check every live `stillfail/admin/1` connection on cloud state/revocation/lock update!
+          let now_s = w_s.to_double()
+          let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)
+          let ac_keys = st.admin_conns.keys()
+          for aci in 0..<ac_keys.length() {
+            let cid = ac_keys[aci]
+            match st.admin_conns.get(cid) {
+              Some(aconn) => {
+                match st.serve.member_of(cid) {
+                  Some(sess) => {
+                    let check_hooks = build_member_check_hooks(ctx, aconn, now_s)
+                    match station_mesh::check_member_gone(roster, sess, aconn.remote_id, w_ms, check_hooks) {
+                      mesh_door::StreamGuardVerdict::Allow => ()
+                      mesh_door::StreamGuardVerdict::Close(code, reason) => {
+                        ctx.log("kicking live admin connection " + cid.to_string() + ": " + reason)
+                        ctx.close_mesh_conn(cid, aconn.is_front, code, reason)
+                        let _ = st.serve.close_connection(cid, aconn.remote_id)
+                        st.admin_conns.remove(cid)
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          }
+          if !connected {
+            return
+          }
+          if ctx.cloud.is_rig_only(now_s) && !st.becoming_rig {
+            st.becoming_rig = true
+            ctx.log("station became rig-only: triggering handover to rig process")
+            match station_ops::find_restarter(ctx.ops_fs, ctx.data, station_ops::is_pid_alive, sep=ctx.sep) {
+              Some(target) => {
+                let _ = station_sys::proc_kill(target.pid, station_sys::SIG_USR2, false)
+              }
+              None => ctx.request_stop()
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    on_carried: fn(ctx : DaemonCtx, carried : base_codec::Json) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match base_codec::json_get(carried, "handoverFailed") {
+            Some(base_codec::Json::Str(msg)) => {
+              if msg.length() > 0 {
+                let full_msg = "handover snapshot failed on predecessor: " + msg
+                ctx.log(full_msg)
+                st.carried_handover_failed = Some(msg)
+                // Fail immediately on `Slot::Current` BEFORE predecessor exits & `taken` is set
+                // so Rust launcher `lifecycle.rs:684` triggers `take_failed` and writes `handoff-failed`!
+                ctx.fail_and_stop(full_msg)
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_handover_start: fn(ctx : DaemonCtx) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          if st.handover_exported || !st.core.store.is_primary_open() {
+            return Ok(())
+          }
+          match st.core.export_handover(host_shim::wall_ms()) {
+            Ok(snap) => {
+              let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
+              let body = base_codec::json_stringify(snap.to_json())
+              match station_ops::write_private(ctx.ops_fs, ho_path, body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep) {
+                Ok(_) => {
+                  st.handover_exported = true
+                  st.core.agents.close_adopted_db()
+                  Ok(())
+                }
+                Err(_) => {
+                  let msg = "failed to write whole handover snapshot to " + ho_path
+                  ctx.log(msg)
+                  Err(msg)
+                }
+              }
+            }
+            Err(e) => {
+              let msg = "failed to export whole handover snapshot: " + e
+              ctx.log(msg)
+              Err(msg)
+            }
+          }
+        }
+        None => Ok(())
+      }
+    },
+    on_shutdown: fn(ctx : DaemonCtx) -> Unit {
+      match state_opt {
+        Some(st) => {
+          let as_keys = st.admin_streams.keys()
+          for ai in 0..<as_keys.length() {
+            let sid = as_keys[ai]
+            match st.admin_streams.get(sid) {
+              Some(astream) => {
+                match astream.mode {
+                  AdminStreamMode::SseStreaming(cid) => {
+                    let _ = st.core.api.events.disconnect(cid)
+                  }
+                  _ => ()
+                }
+              }
+              None => ()
+            }
+            ctx.close_peer_http(sid)
+            st.admin_streams.remove(sid)
+          }
+          let ps_keys = st.proxy_streams.keys()
+          for pi in 0..<ps_keys.length() {
+            let sid = ps_keys[pi]
+            match st.proxy_streams.get(sid) {
+              Some(pstream) => close_proxy_local_resources(ctx, st, pstream)
+              None => ()
+            }
+            ctx.close_peer_http(sid)
+            st.proxy_streams.remove(sid)
+          }
+          let ar_keys = st.adopted_runners.keys()
+          for ari in 0..<ar_keys.length() {
+            let rcid = ar_keys[ari]
+            match st.adopted_runners.get(rcid) {
+              Some(rconn) => {
+                if rconn.sock_id >= 0L {
+                  let usid = rconn.sock_id
+                  rconn.sock_id = -1L
+                  st.adopted_runner_by_sock.remove(usid)
+                  let _ = ctx.mux_role.call_async_raw(
+                    builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_WRITE, usid),
+                    "tcp.write",
+                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                    Some("{\"op\":\"leave\"}\n".to_bytes()),
+                  )
+                  let _ = ctx.mux_role.call_async_raw(
+                    builders_core::MuxToken::Tagged(rcid, RUNNER_TOK_UNIX_CLOSE, usid),
+                    "tcp.close",
+                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(usid))])),
+                    None,
+                  )
+                }
+              }
+              None => ()
+            }
+          }
+          st.adopted_runners.clear()
+          st.adopted_runner_by_sock.clear()
+          st.admin_conns.clear()
+          st.drive_rpc_puts.clear()
+          st.rig_put_streams.clear()
+          st.mcp_srv.close_with_callbacks(st.mcp_cb)
+
+          // On `SIGUSR2` hot handover: detach job handles WITHOUT killing running jobs so the
+          // new daemon adopts them seamlessly. On full shutdown (`SIGTERM`/`SIGINT`): stop managed jobs.
+          if ctx.is_handover_shutdown() {
+            st.core.agents.jobs.detach_all_for_handover()
+          } else {
+            let jobs_list = st.core.agents.jobs.list()
+            let w_end = host_shim::wall_ms()
+            for ji in 0..<jobs_list.length() {
+              if station_jobs::job_state_is_up(jobs_list[ji].state) {
+                let _ = st.core.agents.jobs.stop(jobs_list[ji].id, w_end)
+              }
+            }
+            let _ = st.core.agents.jobs.poll_followed(w_end)
+            let _ = st.core.agents.jobs.tick_stops(w_end)
+          }
+          st.core.shutdown()
+        }
+        None => ()
+      }
+    },
+    heap_objects_count: fn() -> Int64 {
+      match state_opt {
+        Some(st) => (st.core.active_object_count() + st.admin_streams.length() + st.proxy_streams.length()).to_int64()
+        None => 0L
+      }
+    },
+  }
+
+  run_daemon(argv, hooks)
+}

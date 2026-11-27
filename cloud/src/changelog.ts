@@ -73,7 +73,54 @@ const CHANGELOG_HEADERS = {
   "content-type": "application/json",
   "cache-control": "public, max-age=300",
   "referrer-policy": "no-referrer",
+  vary: "x-stillfail-channel",
 };
+
+const ETAG_TOKEN = /^"[0-9a-f]{16}"$/;
+
+/** Computes a strong 16-hex-char SHA-256 ETag (`"<16hex>"`) for a changelog response body. */
+export async function etagOf(body: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+  const bytes = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < 8; i++) hex += bytes[i]!.toString(16).padStart(2, "0");
+  return `"${hex}"`;
+}
+
+/** RFC 9110 weak ETag comparison for GET If-None-Match headers. */
+export function etagMatches(ifNoneMatch: string | null, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const target = etag.startsWith("W/") ? etag.slice(2) : etag;
+  for (const raw of ifNoneMatch.split(",")) {
+    const token = raw.trim();
+    if (!token) continue;
+    if (token === "*") return true;
+    const bare = token.startsWith("W/") ? token.slice(2) : token;
+    if (bare === target) return true;
+  }
+  return false;
+}
+
+function singleEtagToken(ifNoneMatch: string | null): string | null {
+  if (!ifNoneMatch || ifNoneMatch.includes(",")) return null;
+  const trimmed = ifNoneMatch.trim();
+  if (!trimmed || trimmed === "*") return null;
+  const bare = trimmed.startsWith("W/") ? trimmed.slice(2) : trimmed;
+  return ETAG_TOKEN.test(bare) ? bare : null;
+}
+
+// Pure-string bounded edge isolate cache (no I/O handles or Promises).
+const EDGE_CACHE_MAX = 8;
+const edgeChangelogCache = new Map<string, { etag: string; body: string }>();
+
+function putEdgeChangelog(cacheKey: string, etag: string, body: string): void {
+  edgeChangelogCache.delete(cacheKey);
+  edgeChangelogCache.set(cacheKey, { etag, body });
+  if (edgeChangelogCache.size > EDGE_CACHE_MAX) {
+    const oldest = edgeChangelogCache.keys().next().value;
+    if (oldest !== undefined) edgeChangelogCache.delete(oldest);
+  }
+}
 
 export type ReadReleaseFileResult =
   | { ok: true; value: string | null; cacheable: boolean }
@@ -196,11 +243,44 @@ const channelOf = (request: Request, env: Env): Channel => (new URL(request.url)
 export async function serveChangelog(request: Request, env: Env): Promise<Response> {
   const ttl = changelogCacheSeconds(env);
   const channel = channelOf(request, env);
+  const clientIfNoneMatch = request.headers.get("if-none-match");
+  const notModifiedHeaders = (etag: string) => ({
+    "cache-control": CHANGELOG_HEADERS["cache-control"],
+    "referrer-policy": CHANGELOG_HEADERS["referrer-policy"],
+    vary: CHANGELOG_HEADERS.vary,
+    etag,
+  });
   if (ttl > 0 && env.SERVICE_STATUS) {
     try {
-      const result = await env.SERVICE_STATUS.getByName("primary").changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl);
+      const cacheKey = `${channel}\0${env.RELEASES_UPSTREAM ?? ""}`;
+      const edgeCached = edgeChangelogCache.get(cacheKey);
+      const knownEtag = edgeCached?.etag ?? singleEtagToken(clientIfNoneMatch);
+      const status = env.SERVICE_STATUS.getByName("primary");
+      const result = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, knownEtag);
       if (!result.ok) return unavailable(result.file, new Error(result.message));
-      return new Response(result.body, { status: 200, headers: CHANGELOG_HEADERS });
+      if ("notModified" in result && result.notModified) {
+        if (etagMatches(clientIfNoneMatch, result.etag)) {
+          return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
+        }
+        if (edgeCached && edgeCached.etag === result.etag) {
+          edgeChangelogCache.delete(cacheKey);
+          edgeChangelogCache.set(cacheKey, edgeCached);
+          return new Response(edgeCached.body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag: result.etag } });
+        }
+        // Defensive fallback: if DO returned notModified without a matching edge entry or client ETag match, fetch full body.
+        const full = await status.changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl, null);
+        if (!full.ok) return unavailable(full.file, new Error(full.message));
+        if ("body" in full) {
+          if (full.etag) putEdgeChangelog(cacheKey, full.etag, full.body);
+          return new Response(full.body, { status: 200, headers: full.etag ? { ...CHANGELOG_HEADERS, etag: full.etag } : CHANGELOG_HEADERS });
+        }
+      } else if ("body" in result) {
+        if (result.etag) putEdgeChangelog(cacheKey, result.etag, result.body);
+        if (result.etag && etagMatches(clientIfNoneMatch, result.etag)) {
+          return new Response(null, { status: 304, headers: notModifiedHeaders(result.etag) });
+        }
+        return new Response(result.body, { status: 200, headers: result.etag ? { ...CHANGELOG_HEADERS, etag: result.etag } : CHANGELOG_HEADERS });
+      }
     } catch (error) {
       console.error("changelog cache unavailable:", error);
     }
@@ -211,7 +291,12 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
   };
   const [list, have] = await Promise.all([changelog(env.RELEASES, channel, failed), released(env.RELEASES, channel, env.RELEASES_UPSTREAM, failed)]);
   if (failure) return unavailable(failure.file, failure.error);
-  return reply({ entries: list, released: have }, 200, { "cache-control": "public, max-age=300" });
+  const body = JSON.stringify({ entries: list, released: have });
+  const etag = await etagOf(body);
+  if (etagMatches(clientIfNoneMatch, etag)) {
+    return new Response(null, { status: 304, headers: notModifiedHeaders(etag) });
+  }
+  return new Response(body, { status: 200, headers: { ...CHANGELOG_HEADERS, etag } });
 }
 
 /** Marks the reports the changelog fixes, and gives what has been fixed of a station's reports and is out on their channel. */

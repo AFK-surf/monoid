@@ -137,12 +137,16 @@ static const char *VS =
     "uniform int u_ad_n;\n"
     "uniform int u_ad_cur;\n"
     "uniform highp sampler2D u_veil;\n"
+    "uniform float u_through;\n"
+    "vec4 vs_backdrop4(vec2 p) {\n"
+    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0);\n"
+    "}\n"
     "vec3 vs_backdrop(vec2 p) {\n"
-    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
+    "  return vs_backdrop4(p).rgb;\n"
     "}\n"
     "float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
     "float vs_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }\n"
-    "float vs_backdrop_luma_rect(vec2 c, vec2 h) {\n"
+    "float vs_backdrop_luma_rect(vec2 c, vec2 h, float hole_y) {\n"
     "  float sum = 0.0;\n"
     "  float mx1 = -1.0, mx2 = -1.0;\n"
     "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -150,7 +154,9 @@ static const char *VS =
     "    float py = c.y + float(iy) * (h.y * 0.60);\n"
     "    for (int ix = -2; ix <= 2; ix++) {\n"
     "      float px = c.x + float(ix) * (h.x * 0.38);\n"
-    "      float y = vs_ink_luma(vs_backdrop(vec2(px, py)));\n"
+    "      vec4 smp = vs_backdrop4(vec2(px, py));\n"
+    "      float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;\n"
+    "      float y = vs_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));\n"
     "      sum += y;\n"
     "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
     "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
@@ -215,7 +221,7 @@ static const char *VS =
     "  }\n"
     "  capCenter = ac;\n"
     "  capHalf = vec2(0.0);\n"
-    "  float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
+    "  float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), prefer_dark ? 0.0 : 1.0);\n"
     "  return vec3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);\n"
     "}\n"
     MB_BARE_INK_GLSL
@@ -514,11 +520,13 @@ static const char *FS =
     "    s_cap = 1.16 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;\n"
     "    H_opt = 10.6 * hs * refScale;\n"
     "  } else {\n"
-    "    float r_lip = 4.2 * hs;\n"
-    "    float L_lip = 1.05 * hs;\n"
-    "    s_lip = 5.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;\n"
-    "    s_cap = 0.0;\n"
-    "    H_opt = 6.2 * hs * refScale;\n"
+    "    float r_lip = 4.4 * hs;\n"
+    "    float L_lip = 1.75 * hs;\n"
+    "    s_lip = 1.45 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;\n"
+    "    float u = max(d - 2.6 * hs, 0.0) / (2.4 * hs);\n"
+    "    float capCut = 1.0 - smoothstep(8.5 * hs, 12.0 * hs, d);\n"
+    "    s_cap = 0.55 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;\n"
+    "    H_opt = 3.2 * hs * min(refScale, 1.5);\n"
     "  }\n"
     "  return vec2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);\n"
     "}\n"
@@ -534,7 +542,7 @@ static const char *FS =
     "float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }\n"
     "#endif\n"
     "#if MB_HAS_ADAPTIVE\n"
-    "float mb_backdrop_luma_rect(vec2 c, vec2 h) {\n"
+    "float mb_backdrop_luma_rect(vec2 c, vec2 h, float hole_y) {\n"
     "  float sum = 0.0;\n"
     "  float mx1 = -1.0, mx2 = -1.0;\n"
     "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -542,7 +550,9 @@ static const char *FS =
     "    float py = c.y + float(iy) * (h.y * 0.60);\n"
     "    for (int ix = -2; ix <= 2; ix++) {\n"
     "      float px = c.x + float(ix) * (h.x * 0.38);\n"
-    "      float y = mb_ink_luma(backdrop(vec2(px, py)));\n"
+    "      vec4 smp = backdrop4(vec2(px, py));\n"
+    "      float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;\n"
+    "      float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));\n"
     "      sum += y;\n"
     "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
     "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
@@ -596,7 +606,7 @@ static const char *FS =
     "      return mb_unpack16(px.rg);\n"
     "    }\n"
     "  }\n"
-    "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
+    "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), is_dark_glass ? 0.0 : 1.0);\n"
     "  if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);\n"
     "  float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
     "  float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);\n"
@@ -663,7 +673,7 @@ static const char *FS =
     "    // neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)\n"
     "    vec2 off = abs(v_rect.zw * u_scale - v_c2.zw);\n"
     "    vec2 r0 = v_rect.xy * u_scale, r0i = floor(r0 + 0.5);\n"
-    "    bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
+    "    bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.05 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
     "    vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;\n"
     "    vec2 uv = clamp(at + tex, at + 0.5, at + v_c2.zw - 0.5);\n"
     "    vec4 t = colour ? textureLod(u_catlas, uv / vec2(textureSize(u_catlas, 0)), 0.0)\n"
@@ -1080,7 +1090,7 @@ static const char *FS =
     "        }\n"
     "      }\n"
     "    }\n"
-    "    float tintDarkEnv = 1.0 - smoothstep(0.18, 0.55, luma(refractColor));\n"
+    "    float tintDarkEnv = (1.0 - smoothstep(0.18, 0.55, luma(refractColor))) * bgA;\n"
     "    float regDarkContour = tintDarkEnv * max(is_dark ? 1.0 : darkMixSaved, smoothstep(0.08, 0.16, colChroma));\n"
     "    float regExtContour = mix(0.34, 0.85, regDarkContour) * solidFade;\n"
     "    contourStr = mix(contourStr, regExtContour, regMix);\n"
@@ -1320,50 +1330,53 @@ static const char *FS =
     "      vec3 dropRes = clamp(refractColor + vec3(liftGain * pressAmt * (1.0 - backdropLuma)), 0.0, 1.0);\n"
     "      float domeScale = clamp(v_rect.w / 38.4, 0.80, 1.35);\n"
     "      float sizeGate = smoothstep(28.0, 36.0, v_rect.w);\n"
-    "      float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.55 : 1.0);\n"
+    "      float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.35 : 1.0);\n"
     "      float upperFace = smoothstep(-0.15, 0.85, -surfaceNormal.y);\n"
     "      float qTop = (inward - 8.5 * domeScale) / (6.2 * domeScale);\n"
     "      float topEnv = exp(-qTop * qTop) * upperFace * smoothstep(0.55, 1.80, inward);\n"
     "      dropRes *= (1.0 - mix(0.20, 0.082, brightBg) * roleVol * sizeGate * pressAmt * topEnv);\n"
     "      float sideArc = pow(max(abs(surfaceNormal.x), 0.0), 1.6);\n"
     "      float sideEnv = exp(-max(inward - 1.5, 0.0) / 4.2) * smoothstep(0.25, 1.20, inward);\n"
-    "      dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.45 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);\n"
+    "      dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.25 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);\n"
     "      float lowerFace = smoothstep(0.10, 0.85, surfaceNormal.y);\n"
     "      float lowEnv = exp(-max(inward - 2.0, 0.0) / 5.5) * smoothstep(0.50, 1.60, inward);\n"
-    "      dropRes = clamp(dropRes + vec3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.35 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);\n"
+    "      dropRes = clamp(dropRes + vec3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.30 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);\n"
     "      // Stage A: Razor-sharp inner 3D specular rim\n"
     "      if (pressAmt > 0.001 && inward < 12.0) {\n"
     "        float litTop = max(-surfaceNormal.y, 0.0);\n"
     "        float litBot = max(surfaceNormal.y, 0.0);\n"
-    "        float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + 0.05;\n"
+    "        float lobeFloor = isRoleTab ? 0.10 : 0.05;\n"
+    "        float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + lobeFloor;\n"
     "        float rimStart = isRoleSw ? 0.60 : 0.45;\n"
     "        float rimPeak  = isRoleSw ? 0.95 : 0.75;\n"
     "        float rimRise = smoothstep(rimStart, rimPeak, inward);\n"
     "        float rimInset = max(inward - rimPeak, 0.0);\n"
     "        float rimEnv = rimRise * (0.90 * exp(-rimInset / 0.38) + 0.14 * exp(-rimInset / 1.50));\n"
-    "        float rimStr = mix(0.24, 0.14, brightBg) * dirLobe * rimEnv * pressAmt;\n"
+    "        float rimStr = (isRoleTab ? mix(0.28, 0.16, brightBg) : mix(0.24, 0.14, brightBg)) * dirLobe * rimEnv * pressAmt;\n"
     "        dropRes = mix(dropRes, vec3(1.0), clamp(rimStr, 0.0, 1.0));\n"
     "      }\n"
     "      // Stage B: Slim Apple-exact closed-form analytic 3D bevel wall\n"
     "      float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.35);\n"
     "      float invS = 1.0 / max(u_scale, 1.0);\n"
     "      float hsWall = clamp(halfMinor / 19.2, 0.72, 1.25);\n"
-    "      float w0_top = (isRoleSw ? 0.30 : 0.24) * hsWall;\n"
-    "      float w0_side = max(0.52 * hsWall, 1.55 * invS);\n"
+    "      float w0_top = (isRoleSw ? 0.30 : (isRoleTab ? 0.18 : 0.24)) * hsWall;\n"
+    "      float w0_side = isRoleTab ? max(0.30 * hsWall, 1.10 * invS) : max(0.52 * hsWall, 1.55 * invS);\n"
     "      float w0_eff = mix(w0_top, w0_side, across);\n"
-    "      float L_eff  = mix(0.12, 0.42, across) * hsWall;\n"
+    "      float L_eff  = (isRoleTab ? mix(0.08, 0.16, across) : mix(0.12, 0.42, across)) * hsWall;\n"
     "      float wallCov = mb_bevel_cov(sd_px, u_scale, w0_eff, L_eff);\n"
-    "      float wallBlend = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0) * 0.94 * pressAmt;\n"
+    "      float wallRaw = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0);\n"
+    "      float wallBlend = wallRaw * (isRoleTab ? 0.82 : 0.94) * pressAmt;\n"
     "      if (wallBlend > 0.001) {\n"
     "        vec3 envBg = backdrop(p + surfaceNormal * 1.2);\n"
     "        float envY = luma(envBg);\n"
     "        float envChroma = max(envBg.r, max(envBg.g, envBg.b)) - min(envBg.r, min(envBg.g, envBg.b));\n"
     "        float brightEnv = smoothstep(0.35, 0.75, envY);\n"
     "        float satEnv = smoothstep(0.10, 0.35, envChroma);\n"
-    "        float neutralMul = mix(0.26, mix(0.80, 0.72, across), brightEnv);\n"
+    "        float wallMix = isRoleTab ? (wallRaw * mix(0.62, 0.82, brightEnv) * pressAmt) : wallBlend;\n"
+    "        float neutralMul = isRoleTab ? mix(0.50, mix(0.82, 0.75, across), brightEnv) : mix(0.26, mix(0.80, 0.72, across), brightEnv);\n"
     "        vec3 neutralTint = envBg * neutralMul;\n"
     "        vec3 satTint = pow(max(envBg, vec3(0.0001)), vec3(1.25)) * 0.72;\n"
-    "        dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallBlend);\n"
+    "        dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallMix);\n"
     "      }\n"
     "      // Stage C: Segmented prismatic edge dispersion AFTER Stage B\n"
     "      if (pressAmt > 0.001 && inward < 12.0 && abs(v_pad.z) > 0.005) {\n"
@@ -1867,6 +1880,11 @@ static const char *AD_FS =
     "  return vec2(hi / 255.0, lo / 255.0);\n"
     "}\n"
     "void main() {\n"
+    "  float is_dark = u_param.x;\n"
+    "  bool is_through = u_param.y > 1.5;\n"
+    "  float is_new = u_param.y - (is_through ? 2.0 : 0.0);\n"
+    "  float dt = u_param.z;\n"
+    "  float hole_y = (is_dark > 0.5) ? 0.0 : 1.0;\n"
     "  vec2 c = u_box.xy, h = u_box.zw;\n"
     "  float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;\n"
     "  for (int iy = -1; iy <= 1; iy++) {\n"
@@ -1874,7 +1892,9 @@ static const char *AD_FS =
     "    for (int ix = -2; ix <= 2; ix++) {\n"
     "      float px = c.x + float(ix) * (h.x * 0.38);\n"
     "      vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);\n"
-    "      float y = mb_ink_luma(texture(u_bd, uv).rgb);\n"
+    "      vec4 smp = texture(u_bd, uv);\n"
+    "      float a = is_through ? clamp(smp.a, 0.0, 1.0) : 1.0;\n"
+    "      float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));\n"
     "      sum += y;\n"
     "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
     "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
@@ -1884,7 +1904,6 @@ static const char *AD_FS =
     "  int sid = int(u_param.w + 0.5);\n"
     "  vec4 prev = texelFetch(u_prev, ivec2(sid, 0), 0);\n"
     "  float prevT = mb_unpack16(prev.rg);\n"
-    "  float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;\n"
     "  float latch, target;\n"
     "  if (is_dark > 1.5) {\n"
     "    target = 0.0;\n"
@@ -3392,6 +3411,7 @@ typedef struct {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  int through;
   float tint_a;
   GLuint last_bd;
   double settle_left;
@@ -3524,7 +3544,7 @@ static void ad_fill_uniforms(void) {
 }
 
 typedef struct {
-  int sid, is_new, is_dark, track_rb;
+  int sid, is_new, is_dark, through, track_rb;
   float cx, cy, hx, hy, tint_a;
 } gl_ad_pend;
 
@@ -3571,6 +3591,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       ni++;
     }
   }
+  int cur_through = (m && m->through) ? 1 : 0;
   int n_upd = 0;
   for (int k = 0; k < ni; k++) {
     int sid = -1, is_new = 0, mode_changed = 0;
@@ -3579,9 +3600,11 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
-        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f) {
+        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f ||
+            s->through != cur_through) {
           s->is_dark = items[k].is_dark;
           s->tint_a = items[k].tint_a;
+          s->through = cur_through;
           mode_changed = 1;
         }
         break;
@@ -3613,9 +3636,13 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
         memset(&ad_slots[sid], 0, sizeof ad_slots[sid]);
         ad_slots[sid].active = 1;
         ad_slots[sid].is_dark = items[k].is_dark;
+        ad_slots[sid].through = cur_through;
         ad_slots[sid].tint_a = items[k].tint_a;
-      } else if (ad_slots[sid].is_dark != items[k].is_dark || fabsf(ad_slots[sid].tint_a - items[k].tint_a) > 0.002f) {
+      } else if (ad_slots[sid].is_dark != items[k].is_dark ||
+                 fabsf(ad_slots[sid].tint_a - items[k].tint_a) > 0.002f ||
+                 ad_slots[sid].through != cur_through) {
         ad_slots[sid].is_dark = items[k].is_dark;
+        ad_slots[sid].through = cur_through;
         ad_slots[sid].tint_a = items[k].tint_a;
         mode_changed = 1;
       }
@@ -3651,7 +3678,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy, s->tint_a};
+      out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, s->through, track_rb, s->cx, s->cy, s->hx, s->hy, s->tint_a};
     }
   }
   return n_upd;
@@ -3761,7 +3788,7 @@ static void ad_run_updates_batch(const gl_ad_batch *items, int n_upd, double dt)
     glUniform4fv(adu_uvc, 1, items[i].uvc);
     glScissor(items[i].p.sid, 0, 1, 1);
     glUniform4f(adu_box, items[i].p.cx, items[i].p.cy, items[i].p.hx, items[i].p.hy);
-    glUniform4f(adu_param, (items[i].p.is_dark > 0) ? (float)items[i].p.is_dark : -items[i].p.tint_a, (float)items[i].p.is_new, (float)dt, (float)items[i].p.sid);
+    glUniform4f(adu_param, (items[i].p.is_dark > 0) ? (float)items[i].p.is_dark : -items[i].p.tint_a, (float)items[i].p.is_new + (items[i].p.through ? 2.0f : 0.0f), (float)dt, (float)items[i].p.sid);
     glDrawArrays(GL_TRIANGLES, 0, 3);
   }
   ad_cur = nxt;

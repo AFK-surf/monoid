@@ -275,7 +275,7 @@ pub fn login_paste_node(
   send : (String) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  let words = fn() { field.text().trim(chars=" \n").to_owned() }
+  let words = fn() { field.composed_said().trim(chars=" \n").to_owned() }
   login_said_node(x, lead)
   login_step_node(x, step)
   // sent, nothing is left to type: the keyboard goes (the code stays in the field as it is checked)
@@ -314,7 +314,7 @@ pub fn login_paste_node(
     })
     |> ignore
     b.show(fn() { words() != "" || busy() }, fn(d) {
-      @sf.action_box_node(d, fn() { @sf.t("web-main.logins.finish") }, fn(_) { sent(words()) }, disabled=fn() { busy() }, fn(go) {
+      @sf.action_box_node(d, fn() { @sf.t("web-main.logins.finish") }, fn(_) { sent(field.commit_composing().trim(chars=" \n").to_owned()) }, disabled=fn() { busy() }, fn(go) {
         @sf.style_node(go, fn() { (if @sf.lit_node(go) && !busy() { lc_done_lit } else { login_done }).then(login_done_round) }, in_row=true)
         // busy: a spinner over its word, as wide as before
         @sf.words_node(go, fn() { @sf.t("web-main.logins.finish") }, fn() { login_done_words }).alpha(By(fn() {

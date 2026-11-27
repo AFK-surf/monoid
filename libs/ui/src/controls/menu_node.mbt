@@ -567,7 +567,7 @@ fn menu_node_by(
                 active
                 .shrink(Is(0.0))
                 .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0 - cur_pad_v())) }))
-                .offset(
+                .drawn_off(
                   By(fn() {
                     let sp = slide_way.shown(active)
                     if sp >= 0.999 {
@@ -752,7 +752,7 @@ fn menu_node_by(
                     let w = slide_w.val
                     lv_box
                     .width(Is(Some(w)))
-                    .offset(
+                    .drawn_off(
                       By(fn() {
                         let sp = slide_way.shown(lv_box)
                         (-slide_dir.val * sp * w, 0.0)

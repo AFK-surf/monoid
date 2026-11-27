@@ -20,6 +20,12 @@ import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
 
+/// The workspace an `outflowChats` read is of (outflow.ts `Of`, its `ws`): null for the home one.
+const wsOfArgs = (args: Json): string | null => {
+  const of = args?.ws;
+  return of !== null && typeof of === "object" && typeof of.workspace === "string" && of.home !== true ? of.workspace : null;
+};
+
 export const CommaLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const { data } = yield* Paths;
@@ -45,7 +51,8 @@ export const CommaLive = Layer.effectDiscard(
     );
     // A chat's link in the app is made by the reader, of where this station's pages are (sessions/page.ts): the
     // station's own, never what the asker says.
-    const linked = (op: string, args: Json) => (op === "outflowChats" ? { ...args, pages: agents.pages() } : args);
+    // (on the origin of the workspace read, `ws`: outflow.ts `Of`)
+    const linked = (op: string, args: Json) => (op === "outflowChats" ? { ...args, pages: agents.pages(wsOfArgs(args)) } : args);
     // Another station of the workspace reading this one's statistics, for the Comma connect there.
     bus.on(READ, peerRead((op, args, lang) => readers.read(op, linked(op, args), lang), () => cloud.home(), stationLang,
       () => scopeVersion, (peer, workspace) => { member(cloud, peer, workspace); }));

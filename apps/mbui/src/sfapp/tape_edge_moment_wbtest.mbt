@@ -271,9 +271,13 @@ test "中屏 (a finger's: its bar always shown): the sidebar's edge as the tape 
     let (half_x, half_in) = in_edge()
     let half_page = covered(t, "收起侧边栏").unwrap().0
     t.frame_at(t0 + @ui.move_most_ms * 2.0)
-    // (half way: the tape still moving (the page not where it ends), the bar off the window's pixels)
+    // (half way: the tape still moving (the page not where it ends), snapped onto the host's device pixels)
     assert_true(half_page != covered(t, "收起侧边栏").unwrap().0, msg="scale \{scale}: still moving")
-    assert_true((half_x * scale).round() != half_x * scale, msg="scale \{scale}: \{half_x} off the pixels")
+    assert_true(
+      (half_page * scale - (half_page * scale).round()).abs() < 1.0e-6,
+      msg="scale \{scale}: \{half_page} on whole device pixels",
+    )
+    assert_true(half_x != in_edge().0, msg="scale \{scale}: bar moved to rest")
     assert_eq((half, edge_bar_drawn(t)), (rest, rest), msg="scale \{scale}")
     assert_eq((half_in, in_edge().1), (rest_in, rest_in), msg="scale \{scale}: in its edge")
   }

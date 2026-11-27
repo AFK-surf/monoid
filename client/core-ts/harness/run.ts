@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { FakeCloud, T0 } from "./cloud.ts";
-import { start as startTs } from "../src/hosts/node.ts";
+import { ClientAuthTracker, start as startTs } from "../src/hosts/node.ts";
 import { apply } from "../src/delta.ts";
 import { SCRIPT, type Ctx } from "./script.ts";
 
@@ -39,8 +39,14 @@ async function run(name: string, start: Start): Promise<Recorded> {
   const dir = mkdtempSync(join(tmpdir(), `core-${name}-`));
   let inbox: unknown[] = [];
   let last = Date.now();
+  const auth = new ClientAuthTracker();
   const core = start(dir, ORIGIN, (_client, json) => {
-    inbox.push(JSON.parse(json));
+    const parsed = JSON.parse(json);
+    if (auth.takeMessage(parsed)) {
+      last = Date.now();
+      return;
+    }
+    inbox.push(parsed);
     last = Date.now();
   });
   const client = core.connect();
@@ -53,7 +59,15 @@ async function run(name: string, start: Start): Promise<Recorded> {
     send: (message) => {
       // What the UI lets go of it no longer holds.
       if (typeof message === "object" && message !== null && "unsubscribe" in message) states.delete((message as unknown as { id: number }).id);
-      core.receive(client, typeof message === "string" ? message : JSON.stringify(message));
+      let out = message;
+      if (typeof message === "object" && message !== null && typeof (message as Record<string, unknown>).call === "string") {
+        const rec = message as Record<string, unknown>;
+        if (rec.auth === undefined) {
+          const callAuth = auth.callAuth(rec.call as string, rec.params);
+          if (callAuth !== undefined) out = { ...rec, auth: callAuth };
+        }
+      }
+      core.receive(client, typeof out === "string" ? out : JSON.stringify(out));
     },
     disconnect: () => core.disconnect(client),
   };

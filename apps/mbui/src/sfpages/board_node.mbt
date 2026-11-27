@@ -1428,7 +1428,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       !w.files.untracked().iter().any(fn(f) { text(Some(f), "error") != "" }) else {
       return
     }
-    let words = w.field.text()
+    let words = w.field.commit_composing()
     let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or("")
     let from = match card_at.val {
       Some(c) if c.alive() => Some(c.placed_window_now())
@@ -2132,7 +2132,7 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
     kept.val = true
     let st = station.untracked()
     let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or(d0.station_name)
-    @sfbase.board_draft_set(src, ws, id, field.text(), st, name)
+    @sfbase.board_draft_set(src, ws, id, field.commit_composing(), st, name)
     // (the next one written goes where this one was sent last)
     if st != d0.station { own.station.set(st) }
   }

@@ -984,7 +984,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
     tb[3 * MB_INST + 4] = 22.5; tb[3 * MB_INST + 6] = 1.0; tb[3 * MB_INST + 7] = -64.0;
     tb[3 * MB_INST + 12] = 1.0; tb[3 * MB_INST + 13] = 9.0; tb[3 * MB_INST + 15] = 1.0; tb[3 * MB_INST + 21] = 9.0;
     uint8_t *px_icon = render_rgba_pixels_of(tb, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
-    fill_p0_rect(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
+    fill_p0_rect(tb + MB_INST, 132.4, 35.0, 1.0, 10.0, 0, 1.0, 0.55, 0.0, 1.0, 0);
     fill_p0_rect(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, 0.0, -566.0);
     tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
     tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0; tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0;
@@ -1001,34 +1001,76 @@ static void test_v8_v9_droplet_roi_gates(void) {
         int df = abs((int)b_out[ch] - (int)a_out[ch]);
         if (df > out_diff) out_diff = df;
       }
-      uint8_t *c_mid = W_PX(px_lip, AW3, 400, 120);
-      int lip_delta = abs((int)c_mid[0] - (int)a_mid[0]) + abs((int)c_mid[1] - (int)a_mid[1]);
+      uint8_t *a_lip = W_PX(px_empty, AW3, 403, 120);
+      uint8_t *c_lip = W_PX(px_lip, AW3, 403, 120);
+      int lip_delta = abs((int)c_lip[0] - (int)a_lip[0]) + abs((int)c_lip[1] - (int)a_lip[1]);
       printf("win_gpu: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
-      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
+      CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 80);
     }
     free(px_empty);
     free(px_icon);
     free(px_lip);
   }
 
-  // V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt
+  // V9g: Role 4 Tab strictly monotonic (empty vs bar A/B diff across d=0..4.0pt, px_x=96..108)
   {
     double tg[3 * MB_INST];
     fill_p0_rect(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
-    fill_p0_rect(tg + MB_INST, 41.5, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 1.0, 0);
+    fill_p0_rect(tg + MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, 0.0, -5650.0);
+    tg[MB_INST + 4] = 31.75; tg[MB_INST + 6] = 1.0; tg[MB_INST + 7] = -64.0;
+    tg[MB_INST + 12] = 1.0; tg[MB_INST + 13] = 9.0; tg[MB_INST + 15] = 1.0; tg[MB_INST + 21] = 9.0;
+    uint8_t *pxg_empty = render_rgba_pixels_of(tg, 2, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    fill_p0_rect(tg + MB_INST, 37.5, 8.0, 1.5, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 1.0, 0);
     fill_p0_rect(tg + 2 * MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, 0.0, -565.0);
     tg[2 * MB_INST + 4] = 31.75; tg[2 * MB_INST + 6] = 1.0; tg[2 * MB_INST + 7] = -64.0;
     tg[2 * MB_INST + 12] = 1.0; tg[2 * MB_INST + 13] = 9.0; tg[2 * MB_INST + 15] = 1.0; tg[2 * MB_INST + 21] = 9.0;
-    uint8_t *pxg = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
-    CHECK(pxg != NULL);
-    if (pxg) {
-      uint8_t *co = W_PX(pxg, AW3, 127, 120);
+    uint8_t *pxg_bar = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(pxg_empty != NULL && pxg_bar != NULL);
+    if (pxg_empty && pxg_bar) {
+      uint8_t *co = W_PX(pxg_bar, AW3, 117, 120);
       double l_bar = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
-      uint8_t *cb = W_PX(pxg, AW3, 114, 120);
-      double l_clean = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
-      printf("win_gpu: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
-      CHECK(l_bar < 130.0 && l_clean > 220.0);
-      free(pxg);
+      double ghost_diff = 0.0;
+      double l_clean = 255.0;
+      for (int px_x = 96; px_x <= 108; px_x++) {
+        uint8_t *ce = W_PX(pxg_empty, AW3, px_x, 120);
+        uint8_t *cb = W_PX(pxg_bar, AW3, px_x, 120);
+        double le = 0.2126 * ce[0] + 0.7152 * ce[1] + 0.0722 * ce[2];
+        double lb = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+        double gd = fabs(lb - le);
+        if (gd > ghost_diff) ghost_diff = gd;
+        if (px_x >= 99 && lb < l_clean) l_clean = lb;
+      }
+      printf("win_gpu: v9_tab_no_ghost bar_L=%.1f ghost_diff=%.1f clean_L=%.1f\n", l_bar, ghost_diff, l_clean);
+      CHECK(l_bar < 130.0 && ghost_diff <= 2.0 && l_clean > 220.0);
+    }
+    free(pxg_empty);
+    free(pxg_bar);
+  }
+
+  // V9-Tab-Dark-Clarity: Dark Mode 50pt bar + 62pt Role 4 droplet (6pt overhang clarity & no dead-black side border)
+  {
+    double td[3 * MB_INST];
+    fill_p0_rect(td, 0, 0, VW, VH, 0, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 1.0, 0);
+    fill_p0_rect(td + MB_INST, 10, 15, 140, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0, -567.0);
+    td[MB_INST + 4] = 25.0; td[MB_INST + 6] = 1.0; td[MB_INST + 7] = 0.0;
+    td[MB_INST + 12] = 0.6; td[MB_INST + 13] = 14.0; td[MB_INST + 15] = 1.0; td[MB_INST + 21] = 20.0;
+    fill_p0_rect(td + 2 * MB_INST, 35, 9, 90, 62, 6, 1.0, 1.0, 1.0, 0.0, -568.0);
+    td[2 * MB_INST + 4] = 31.0; td[2 * MB_INST + 6] = 1.0; td[2 * MB_INST + 7] = -64.0;
+    td[2 * MB_INST + 12] = 1.0; td[2 * MB_INST + 13] = 9.0; td[2 * MB_INST + 15] = 1.0; td[2 * MB_INST + 21] = 9.0;
+    uint8_t *pxd = render_rgba_pixels_of(td, 3, 25.0 / 255.0, 27.0 / 255.0, 30.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(pxd != NULL);
+    if (pxd) {
+      uint8_t *ct = W_PX(pxd, AW3, 240, 36);
+      uint8_t *cb = W_PX(pxd, AW3, 240, 204);
+      uint8_t *cl = W_PX(pxd, AW3, 106, 120);
+      uint8_t *cr = W_PX(pxd, AW3, 373, 120);
+      double top_L = 0.2126 * ct[0] + 0.7152 * ct[1] + 0.0722 * ct[2];
+      double bot_L = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+      double left_L = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
+      double right_L = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
+      printf("win_gpu: v9_tab_dark_clarity top_L=%.1f bot_L=%.1f left_L=%.1f right_L=%.1f\n", top_L, bot_L, left_L, right_L);
+      CHECK(top_L < 55.0 && bot_L < 55.0 && left_L >= 42.0 && right_L >= 42.0);
+      free(pxd);
     }
   }
 
@@ -2248,6 +2290,79 @@ static void test_liquid_over_hole(void) {
     const uint8_t *c = px_o + ((size_t)280 * (size_t)PW + 400u) * 4u;
     CHECK(c[3] == 255);
     free(px_o);
+  }
+
+  // v10_through_hole_adaptive_ink: adaptive Light liquid glass over a real kind==9 native-view hole
+  // keeps light glass + dark icon (kind==10) + dark opaque adaptive_ink progress bar (kind==0, pad.w<0),
+  // while an identical capsule on the opaque pure black stage (a==1) flips to dark glass + bright white ink,
+  // and a capsule over a 70% dark scrim (rgba(0,0,0,0.70)) atop the kind==9 hole flips its ink bright white.
+  {
+    const int TW = 400, TH = 240, TPW = TW * 2, TPH = TH * 2;
+    double th[11 * MB_INST];
+    fill_p0_rect(th + 0 * MB_INST, 0, 0, TW, TH, 0, 0.0, 0.0, 0.0, 1.0, 0);
+    fill_p0_rect(th + 1 * MB_INST, 0, 0, 200, TH, 9, 0.0, 0.0, 0.0, 0.0, 8388608.0 + 7.0);
+    // Capsule A over raw kind==9 hole: (20, 36, 160, 48), center (100, 60)
+    fill_p0_rect(th + 2 * MB_INST, 20, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -393.0);
+    th[2 * MB_INST + 4] = 24.0; th[2 * MB_INST + 6] = 1.0; th[2 * MB_INST + 7] = 2.0;
+    th[2 * MB_INST + 12] = 0.0; th[2 * MB_INST + 13] = 14.0; th[2 * MB_INST + 14] = -1.0; th[2 * MB_INST + 15] = 1.0;
+    // Capsule A icon (kind==10, 0x18181BFF) at center (56, 60)
+    fill_p0_rect(th + 3 * MB_INST, 44, 50, 24, 20, 10, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 1.0, 0);
+    th[3 * MB_INST + 4] = 6.0;
+    th[3 * MB_INST + 12] = 0.1; th[3 * MB_INST + 13] = 0.5; th[3 * MB_INST + 14] = 0.9; th[3 * MB_INST + 15] = 0.5;
+    th[3 * MB_INST + 21] = 100.0; th[3 * MB_INST + 22] = 60.0; th[3 * MB_INST + 23] = 48.0;
+    // Capsule A opaque adaptive_ink progress bar (kind==0, pad.w=-48, 0x18181BFF) at center (134, 60)
+    fill_p0_rect(th + 4 * MB_INST, 104, 52, 60, 16, 0, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 1.0, 0);
+    th[4 * MB_INST + 4] = 8.0;
+    th[4 * MB_INST + 21] = 100.0; th[4 * MB_INST + 22] = 60.0; th[4 * MB_INST + 23] = -48.0;
+    // Capsule B over opaque pure black stage: (220, 36, 160, 48), center (300, 60)
+    fill_p0_rect(th + 5 * MB_INST, 220, 36, 160, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -394.0);
+    th[5 * MB_INST + 4] = 24.0; th[5 * MB_INST + 6] = 1.0; th[5 * MB_INST + 7] = 2.0;
+    th[5 * MB_INST + 12] = 0.0; th[5 * MB_INST + 13] = 14.0; th[5 * MB_INST + 14] = -1.0; th[5 * MB_INST + 15] = 1.0;
+    // Capsule B icon (kind==10, 0x18181BFF) at center (256, 60)
+    fill_p0_rect(th + 6 * MB_INST, 244, 50, 24, 20, 10, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 1.0, 0);
+    th[6 * MB_INST + 4] = 6.0;
+    th[6 * MB_INST + 12] = 0.1; th[6 * MB_INST + 13] = 0.5; th[6 * MB_INST + 14] = 0.9; th[6 * MB_INST + 15] = 0.5;
+    th[6 * MB_INST + 21] = 300.0; th[6 * MB_INST + 22] = 60.0; th[6 * MB_INST + 23] = 48.0;
+    // Capsule B opaque adaptive_ink progress bar (kind==0, pad.w=-48, 0x18181BFF) at center (334, 60)
+    fill_p0_rect(th + 7 * MB_INST, 304, 52, 60, 16, 0, 24.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 1.0, 0);
+    th[7 * MB_INST + 4] = 8.0;
+    th[7 * MB_INST + 21] = 300.0; th[7 * MB_INST + 22] = 60.0; th[7 * MB_INST + 23] = -48.0;
+    // 70% dark scrim (rgba(0,0,0,0.70)) over bottom-left kind==9 hole: (10, 150, 180, 70)
+    fill_p0_rect(th + 8 * MB_INST, 10, 150, 180, 70, 0, 0.0, 0.0, 0.0, 0.70, 0);
+    // Capsule C over 70% dark scrim on kind==9 hole: (20, 160, 160, 50), center (100, 185)
+    fill_p0_rect(th + 9 * MB_INST, 20, 160, 160, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -395.0);
+    th[9 * MB_INST + 4] = 24.0; th[9 * MB_INST + 6] = 1.0; th[9 * MB_INST + 7] = 2.0;
+    th[9 * MB_INST + 12] = 0.0; th[9 * MB_INST + 13] = 14.0; th[9 * MB_INST + 14] = -1.0; th[9 * MB_INST + 15] = 1.0;
+    // Capsule C dark adaptive ink (kind==10, #1A1A1A) at center (100, 185)
+    fill_p0_rect(th + 10 * MB_INST, 88, 175, 24, 20, 10, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 1.0, 0);
+    th[10 * MB_INST + 4] = 6.0;
+    th[10 * MB_INST + 12] = 0.1; th[10 * MB_INST + 13] = 0.5; th[10 * MB_INST + 14] = 0.9; th[10 * MB_INST + 15] = 0.5;
+    th[10 * MB_INST + 21] = 100.0; th[10 * MB_INST + 22] = 185.0; th[10 * MB_INST + 23] = 50.0;
+    uint8_t *px_th = render_rgba_pixels_of(th, 11, 0.0, 0.0, 0.0, 2.0, TPW, TPH);
+    CHECK(px_th != NULL);
+    if (px_th) {
+      const uint8_t *a_gl = px_th + ((size_t)(60 * 2) * (size_t)TPW + 84u * 2u) * 4u;
+      const uint8_t *a_tx = px_th + ((size_t)(60 * 2) * (size_t)TPW + 56u * 2u) * 4u;
+      const uint8_t *a_br = px_th + ((size_t)(60 * 2) * (size_t)TPW + 134u * 2u) * 4u;
+      const uint8_t *b_gl = px_th + ((size_t)(60 * 2) * (size_t)TPW + 284u * 2u) * 4u;
+      const uint8_t *b_tx = px_th + ((size_t)(60 * 2) * (size_t)TPW + 256u * 2u) * 4u;
+      const uint8_t *b_br = px_th + ((size_t)(60 * 2) * (size_t)TPW + 334u * 2u) * 4u;
+      const uint8_t *c_tx = px_th + ((size_t)(185 * 2) * (size_t)TPW + 100u * 2u) * 4u;
+      double a_tx_l = (0.2126 * a_tx[0] + 0.7152 * a_tx[1] + 0.0722 * a_tx[2]) / 255.0;
+      double a_br_l = (0.2126 * a_br[0] + 0.7152 * a_br[1] + 0.0722 * a_br[2]) / 255.0;
+      double b_gl_l = (0.2126 * b_gl[0] + 0.7152 * b_gl[1] + 0.0722 * b_gl[2]) / 255.0;
+      double b_tx_l = (0.2126 * b_tx[0] + 0.7152 * b_tx[1] + 0.0722 * b_tx[2]) / 255.0;
+      double b_br_l = (0.2126 * b_br[0] + 0.7152 * b_br[1] + 0.0722 * b_br[2]) / 255.0;
+      double c_tx_l = (0.2126 * c_tx[0] + 0.7152 * c_tx[1] + 0.0722 * c_tx[2]) / 255.0;
+      printf("win_gpu: v10_through_hole_adaptive_ink hole=(gl=%u/%u tx=%.3f br=%.3f) stage=(gl=%.3f tx=%.3f br=%.3f) scrim70=(tx=%.3f)\n",
+             a_gl[0], a_gl[3], a_tx_l, a_br_l, b_gl_l, b_tx_l, b_br_l, c_tx_l);
+      CHECK(a_gl[3] >= 100 && a_gl[3] <= 170 && a_gl[0] >= a_gl[3] - 12);
+      CHECK(a_tx_l < 0.25 && a_br_l < 0.25);
+      CHECK(b_gl[3] == 255 && b_gl_l < 0.35);
+      CHECK(b_tx_l > 0.75 && b_br_l > 0.75);
+      CHECK(c_tx_l > 0.75);
+      free(px_th);
+    }
   }
 }
 

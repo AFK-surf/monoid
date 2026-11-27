@@ -1545,6 +1545,7 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     // the places the station's bots are in, for a chat relayed (relay.mbt, sfdesk relay.mbt)
     "chat.relayPlaces" => Some(Ok(fix_relay_places()))
     "chat.relay" => Some(Ok({ "place": "#dev" }))
+    "chat.skills" => Some(Ok(fix_chat_skills(p)))
     "chat.selectionIntent" => {
       let picked = text(Some(params), "selection")
       Some(
@@ -4133,4 +4134,41 @@ fn media_days(media : Json, when : Map[Int, (String, String)]) -> Json {
       })
     }),
   )
+}
+
+///|
+/// The skills returned by `chat.skills` in fixture runs, following the attached agent's runtime (`agy`, `claude`,
+/// `codex`, etc.) plus workspace, project memory, and station built-in skills.
+fn fix_chat_skills(p : Json?) -> Json {
+  let session = text(p, "session")
+  let runtime = match text(p, "runtime") {
+    "" =>
+      if session == "s-agy" || session == "s-c3" {
+        "agy"
+      } else if session == "s-c2" {
+        "codex"
+      } else {
+        "claude"
+      }
+    rt => rt
+  }
+  let list : Array[Json] = []
+  match runtime {
+    "agy" => {
+      list.push({ "name": "swarm", "description": "协调多个并行 agent 在共享消息板上协作", "source": "agent" })
+      list.push({ "name": "run-workflow", "description": "运行 Python 工作流脚本编排多步 agent 任务", "source": "agent" })
+      list.push({ "name": "antigravity-guide", "description": "Antigravity CLI 与定制系统参考指南", "source": "agent" })
+    }
+    "codex" => {
+      list.push({ "name": "codex-plan", "description": "使用 Codex 规划多步代码修改", "source": "agent" })
+    }
+    _ => {
+      list.push({ "name": "code-review", "description": "审查当前分支的改动并指出风险", "source": "agent" })
+      list.push({ "name": "team:deploy", "description": "执行团队预发环境部署检查", "source": "session", "place": "发版值守" })
+    }
+  }
+  list.push({ "name": "release-check", "description": "发布前回归清单与构建校验", "source": "workspace" })
+  list.push({ "name": "monoid", "description": "项目记忆：monoid 仓库构建与测试约定", "source": "project" })
+  list.push({ "name": "stillfail-show", "description": "生成并展示界面改动截图或视频证据", "source": "builtin" })
+  Json::object({ "runtime": Json::string(runtime), "skills": Json::array(list) })
 }

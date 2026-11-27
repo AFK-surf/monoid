@@ -52,23 +52,23 @@ const H264_JPEG_QUALITY = 88;
 /// 8 MiB line cap accommodates JSON-escaped `CLIP_TEXT_MAX` (1 MiB -> up to ~6 MiB escaped) without false disconnects.
 export const MAX_FRAME_LINE_BYTES = 8 * 1024 * 1024;
 export const MAX_FRAME_BINARY_BYTES = 64 * 1024 * 1024;
-const MAX_FRAME_BUFFER_BYTES = MAX_FRAME_BINARY_BYTES + MAX_FRAME_LINE_BYTES;
 /// Human gesture window for accepting Farview `copied` clipboard events (aligned with Chrome `TabView`).
 const HUMAN_COPY_WINDOW_MS = 5_000;
 
 /// One connection to a host's frame port: its lines heard, a picture asked for and its bytes read.
 export class FrameLink {
   readonly #socket: Socket;
-  #buffer: Buffer = Buffer.alloc(0);
+  readonly #lineParts: Buffer[] = [];
+  #lineBytes = 0;
   /// The picture whose bytes come next, and who waits for it.
-  #pending: { header: any; bytes: number; resolve: (f: { header: any; data: Buffer } | null) => void } | null = null;
+  #pending: { header: any; bytes: number; left: number; parts: Buffer[]; resolve: (f: { header: any; data: Buffer } | null) => void } | null = null;
   readonly #asked: ((f: { header: any; data: Buffer } | null) => void)[] = [];
   #closed = false;
   heard: (message: any) => void = () => {};
   ended: () => void = () => {};
 
-  constructor(port: number) {
-    this.#socket = connect({ host: "127.0.0.1", port });
+  constructor(port: number, socket: Socket = connect({ host: "127.0.0.1", port })) {
+    this.#socket = socket;
     this.#socket.on("data", (chunk) => this.#data(chunk));
     this.#socket.once("close", () => this.#end());
     this.#socket.once("error", () => this.#end());
@@ -88,34 +88,58 @@ export class FrameLink {
   }
 
   #data(chunk: Buffer) {
-    if (this.#closed) return;
-    if (this.#buffer.length + chunk.length > MAX_FRAME_BUFFER_BYTES) {
-      this.close();
-      return;
-    }
-    this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
-    for (;;) {
+    let at = 0;
+    while (!this.#closed && at < chunk.length) {
       if (this.#pending !== null) {
-        const n = this.#pending.bytes;
-        if (this.#buffer.length < n) return;
-        const data = this.#buffer.subarray(0, n);
-        this.#buffer = this.#buffer.subarray(n);
-        const { header, resolve } = this.#pending;
+        // Join multi-chunk frame bodies once when the final piece arrives.
+        const pending = this.#pending;
+        const part = chunk.subarray(at, at + pending.left);
+        at += part.length;
+        pending.left -= part.length;
+        if (pending.left > 0) {
+          if (part.length > 0) pending.parts.push(part);
+          return;
+        }
+        let data: Buffer;
+        if (pending.parts.length > 0) {
+          if (part.length > 0) pending.parts.push(part);
+          data = Buffer.concat(pending.parts, pending.bytes);
+        } else {
+          data = part.length === chunk.length ? part : Buffer.from(part);
+        }
         this.#pending = null;
-        resolve({ header, data: Buffer.from(data) });
+        pending.resolve({ header: pending.header, data });
         continue;
       }
-      const nl = this.#buffer.indexOf(10);
+      const nl = chunk.indexOf(10, at);
       if (nl < 0) {
-        if (this.#buffer.length > MAX_FRAME_LINE_BYTES) this.close();
+        const rest = chunk.subarray(at);
+        if (this.#lineBytes + rest.length > MAX_FRAME_LINE_BYTES) {
+          this.close();
+          return;
+        }
+        if (rest.length > 0) {
+          this.#lineParts.push(rest);
+          this.#lineBytes += rest.length;
+        }
         return;
       }
-      if (nl > MAX_FRAME_LINE_BYTES) {
+      const part = chunk.subarray(at, nl);
+      const len = this.#lineBytes + part.length;
+      if (len > MAX_FRAME_LINE_BYTES) {
         this.close();
         return;
       }
-      const line = this.#buffer.subarray(0, nl).toString("utf8");
-      this.#buffer = this.#buffer.subarray(nl + 1);
+      at = nl + 1;
+      let line: string;
+      if (this.#lineParts.length === 0) {
+        line = part.toString("utf8");
+      } else {
+        if (part.length > 0) this.#lineParts.push(part);
+        line = Buffer.concat(this.#lineParts, len).toString("utf8");
+        this.#lineParts.length = 0;
+        this.#lineBytes = 0;
+      }
       let message: any;
       try {
         message = JSON.parse(line);
@@ -131,7 +155,12 @@ export class FrameLink {
           this.close();
           return;
         }
-        this.#pending = { header, bytes, resolve: resolve ?? (() => {}) };
+        const finish = resolve ?? (() => {});
+        if (bytes === 0) {
+          finish({ header, data: Buffer.alloc(0) });
+          continue;
+        }
+        this.#pending = { header, bytes, left: bytes, parts: [], resolve: finish };
         continue;
       }
       this.heard(message);
@@ -141,6 +170,8 @@ export class FrameLink {
   #end() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#lineParts.length = 0;
+    this.#lineBytes = 0;
     this.#pending?.resolve(null);
     this.#pending = null;
     for (const resolve of this.#asked.splice(0)) resolve(null);

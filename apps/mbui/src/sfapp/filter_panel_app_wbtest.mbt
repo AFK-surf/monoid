@@ -131,7 +131,7 @@ test "wide desktop funnel -> tag search -> filter & pick -> return -> project pi
   t.run_for(@ui.move_most_ms)
   assert_false(@sfpages.filter_menu_open())
   assert_eq(subs.length(), 0)
-  // Fixed filter bar shows both pills with 44pt clear buttons
+  // Fixed filter bar shows both compact 28pt pills with concentric clear buttons
   assert_true(t.query(Button, label=@sf.t("web-main.projects.clear_project_filter")) is Some(_))
   assert_true(t.query(Button, label=@sf.t("web-main.projects.clear_tag_filter")) is Some(_))
   // Reopen & close -> leases still return to 0

@@ -51,6 +51,72 @@ test "a filter pill: pressed it opens; picked, its × clears it and goes with it
 }
 
 ///|
+test "filter_pill_node: compact 28pt capsule with 20pt concentric ×; hover lights outer capsule without nested inner pill" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.row(Is(true)).lines_up(Is(Some(Start))).padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+      filter_pill_node(
+        root,
+        fn() { "Comma" },
+        fn(_) {  },
+        picked=fn() { true },
+        chevron=false,
+        lead=fn(b) { icon_node(b, "folder", 13.0, By(fn() { theme().p.muted })) |> ignore },
+        clear=fn() {  },
+        clear_label=fn() { "清除项目筛选" },
+      )
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let main_btn = t.get(Button, label="Comma")
+  let clear_btn = t.get(Button, label="清除项目筛选")
+  assert_eq(main_btn.rect.3, 28.0, msg="filter pill height should be 28pt: \{main_btn.rect.3}")
+  assert_eq(clear_btn.rect.2, 20.0, msg="clear button width should be 20pt: \{clear_btn.rect.2}")
+  assert_eq(clear_btn.rect.3, 20.0, msg="clear button height should be 20pt: \{clear_btn.rect.3}")
+  assert_eq(t.audit(), [], msg="rest audit")
+  assert_eq(t.corner_faults(), [], msg="rest corners")
+  let rest_pill = t.boxes_held().filter(fn(b) { b.border_w > 0.0 && b.h == 28.0 })
+  assert_eq(rest_pill.length(), 1, msg="expected 1 outer pill box at rest")
+  let pill_box = rest_pill[0]
+  let rest_bg = pill_box.bg
+  // Concentricity: × sits 4pt from top, bottom, and right edge of the 28pt outer capsule.
+  assert_true((clear_btn.rect.1 - pill_box.y - 4.0).abs() <= 0.5, msg="top inset")
+  assert_true(((pill_box.x + pill_box.w) - (clear_btn.rect.0 + clear_btn.rect.2) - 4.0).abs() <= 0.5, msg="right inset")
+  // Hover primary label: outer capsule lights up and sharpens border; zero nested inner pill ground drawn.
+  t.move_to(main_btn.rect.0 + main_btn.rect.2 / 2.0, main_btn.rect.1 + main_btn.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="hover label audit")
+  assert_eq(t.corner_faults(), [], msg="hover label corners")
+  let grounds_on_label = t.boxes_held().filter(fn(b) { (b.bg & 0xFFL) > 0L && b.w >= 16.0 && b.h >= 16.0 && b.x >= pill_box.x - 0.5 && b.x + b.w <= pill_box.x + pill_box.w + 0.5 })
+  assert_eq(grounds_on_label.length(), 1, msg="hovering label must paint only the single outer capsule, never a nested inner pill")
+  assert_true(grounds_on_label[0].bg != rest_bg, msg="outer capsule ground must shift on label hover")
+  assert_eq(grounds_on_label[0].border_c, theme().p.line_strong, msg="outer capsule edge must sharpen to Border on label hover")
+  // Hover ×: outer capsule returns to rest ground while concentric × circle lights up.
+  t.move_to(clear_btn.rect.0 + clear_btn.rect.2 / 2.0, clear_btn.rect.1 + clear_btn.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="hover clear audit")
+  assert_eq(t.corner_faults(), [], msg="hover clear corners")
+  let pill_on_clear = t.boxes_held().filter(fn(b) { b.border_w > 0.0 && b.h == 28.0 })
+  assert_eq(pill_on_clear.length(), 1)
+  assert_eq(pill_on_clear[0].bg, rest_bg, msg="outer capsule ground must stay at rest when hovering ×")
+  assert_eq(pill_on_clear[0].border_c, theme().p.line, msg="outer capsule edge must stay Line when hovering ×")
+  let clear_lit = t.boxes_held().filter(fn(b) { (b.bg & 0xFFL) > 0L && (b.w - 20.0).abs() <= 0.5 && (b.h - 20.0).abs() <= 0.5 })
+  assert_eq(clear_lit.length(), 1, msg="concentric × circle must light up when hovered")
+  // 2.0x font scale grows cleanly with zero fixed_outgrown or squeeze_faults.
+  t.move_to(0.0, 0.0)
+  t.set_font_scale(2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+  t.set_font_scale(1.0)
+}
+
+///|
 test "count chips to choose between: the one chosen read out selected, a press choosing another" {
   let now = @signals.signal("A")
   let t = pill_case(fn(root) {

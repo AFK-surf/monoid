@@ -1336,12 +1336,27 @@ fn View::scrolls_window_ids(
               if !showing.contains(k) &&
                 !heights.contains(k) &&
                 v.alive() &&
-                v.tree.nodes[v.at].parent == was_in.at &&
-                those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(_) {
-                was_in.park(v, rest=false) |> ignore
-                if those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(idx) {
-                  let cur = those[idx]
-                  those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
+                v.tree.nodes[v.at].parent == was_in.at {
+                let mut found_in = false
+                for ti = 0; ti < those.length(); ti = ti + 1 {
+                  if those[ti].0.same(v) && those[ti].3 is Some(w) && physical_equal(w, was_in) {
+                    found_in = true
+                    break
+                  }
+                }
+                if found_in {
+                  was_in.park(v, rest=false) |> ignore
+                  let mut idx = -1
+                  for ti = 0; ti < those.length(); ti = ti + 1 {
+                    if those[ti].0.same(v) && those[ti].3 is Some(w) && physical_equal(w, was_in) {
+                      idx = ti
+                      break
+                    }
+                  }
+                  if idx >= 0 {
+                    let cur = those[idx]
+                    those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
+                  }
                 }
               }
             }
@@ -1464,7 +1479,14 @@ fn View::scrolls_window_ids(
   // keyed by `(prev_survivor, next_survivor)` for mid-flight reversal, and forward hook to rebind surviving leaving slots)
   let curtain_for_key : Map[Int, (@flex.CurtainRun, Int)] = Map([])
   let curtain_tail_spans : Array[(Int, Int, @flex.CurtainRun)] = []
-  let active_curtains : Map[(Int?, Int?), (@flex.CurtainRun, Array[Int])] = Map([])
+  let opt_key = fn(o : Int?) -> String {
+    match o {
+      Some(x) => "S" + x.to_string()
+      None => "N"
+    }
+  }
+  let seg_key = fn(s : (Int?, Int?)) -> String { opt_key(s.0) + ":" + opt_key(s.1) }
+  let active_curtains : Map[String, (@flex.CurtainRun, Array[Int])] = Map([])
   let curtain_rebind : Ref[(Int, @flex.CurtainRun, Int) -> Unit] = Ref(fn(_, _, _) {  })
   // (bidirectional section stacking state: pinned out-of-band section headings, O(G) section index cache,
   // cached closed-form solve, pure-state short-list offset `sec_off`, and sticky-slot collapse anchor `section_pin`)
@@ -1922,7 +1944,7 @@ fn View::scrolls_window_ids(
               }
               if !vis_seg.is_empty() {
                 let mut replaced_run : @flex.CurtainRun? = None
-                let run = match active_curtains.get(seg_id) {
+                let run = match active_curtains.get(seg_key(seg_id)) {
                   Some((old_run, old_keys)) if old_run.ends > now => {
                     replaced_run = Some(old_run)
                     let wholes = vis_seg.map(fn(k) {
@@ -1954,7 +1976,7 @@ fn View::scrolls_window_ids(
                     curtain_tail_spans.append(kept)
                   }
                 }
-                active_curtains[seg_id] = (run, vis_seg)
+                active_curtains[seg_key(seg_id)] = (run, vis_seg)
                 for j, k in vis_seg {
                   came_by_data.val[k] = true
                   curtain_for_key[k] = (run, j)
@@ -1996,7 +2018,7 @@ fn View::scrolls_window_ids(
               }
               if !vis_seg.is_empty() {
                 let mut replaced_run : @flex.CurtainRun? = None
-                let run = match active_curtains.get(seg_id) {
+                let run = match active_curtains.get(seg_key(seg_id)) {
                   Some((old_run, old_keys)) if old_run.ends > now => {
                     replaced_run = Some(old_run)
                     let wholes = vis_seg.map(fn(k) {
@@ -2024,7 +2046,7 @@ fn View::scrolls_window_ids(
                     curtain_tail_spans.append(kept)
                   }
                 }
-                active_curtains[seg_id] = (run, vis_seg)
+                active_curtains[seg_key(seg_id)] = (run, vis_seg)
                 for idx, k in vis_seg {
                   if gone_curtain.get(k) is Some(gf) {
                     gone_from.val[k] = gf
@@ -2125,11 +2147,18 @@ fn View::scrolls_window_ids(
         match came_at_foot {
           _ if let_go => (floor_end.val)()
           Some((_, _, _, true)) => (floor_end.val)()
-          Some((_, _, l, false)) =>
-            match tail_tops.search_by(fn(t) { t.0 == l }) {
-              Some(i) => (floor_arm.val)(was[l], laid_whole.val - tail_tops[i].1)
-              None => ()
+          Some((_, _, l, false)) => {
+            let mut ti = -1
+            for k = 0; k < tail_tops.length(); k = k + 1 {
+              if tail_tops[k].0 == l {
+                ti = k
+                break
+              }
             }
+            if ti >= 0 {
+              (floor_arm.val)(was[l], laid_whole.val - tail_tops[ti].1)
+            }
+          }
           None => ()
         }
       }
@@ -3874,12 +3903,27 @@ fn View::scrolls_window_ids(
             if at is Some(j) &&
               (j < a || j > b) &&
               v.alive() &&
-              v.tree.nodes[v.at].parent == was_in.at &&
-              those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(_) {
-              was_in.park(v, rest=false) |> ignore
-              if those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(idx) {
-                let cur = those[idx]
-                those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
+              v.tree.nodes[v.at].parent == was_in.at {
+              let mut found_in = false
+              for ti = 0; ti < those.length(); ti = ti + 1 {
+                if those[ti].0.same(v) && those[ti].3 is Some(w) && physical_equal(w, was_in) {
+                  found_in = true
+                  break
+                }
+              }
+              if found_in {
+                was_in.park(v, rest=false) |> ignore
+                let mut idx = -1
+                for ti = 0; ti < those.length(); ti = ti + 1 {
+                  if those[ti].0.same(v) && those[ti].3 is Some(w) && physical_equal(w, was_in) {
+                    idx = ti
+                    break
+                  }
+                }
+                if idx >= 0 {
+                  let cur = those[idx]
+                  those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
+                }
               }
             }
           }
@@ -3888,7 +3932,7 @@ fn View::scrolls_window_ids(
       }
     }
     let ks = []
-    let mut i = a
+    let mut i : Int = a
     while i <= b {
       if has_tails {
         let ni = all.tail_skip_fwd(i)
@@ -3932,7 +3976,8 @@ fn View::scrolls_window_ids(
     }
     let has_tails = !all.tail_spans.is_empty()
     let mut j = i
-    for k in visible[1:] {
+    for vi = 1; vi < visible.length(); vi = vi + 1 {
+      let k = visible[vi]
       guard laid_at.get(k) is Some(next_j) else { break }
       if next_j != j + 1 {
         guard has_tails && all.tail_skip_fwd(j + 1) == next_j else { break }
@@ -4091,9 +4136,20 @@ fn View::scrolls_window_ids(
     guard !ways.is_empty() else { return now }
     let more = window(counted(all.col), top_end, vh, all.length(), -1, true).filter(fn(k) { !now.contains(k) })
     guard more.length() > 0 else { return now }
-    let both = now.copy()
-    both.append(more)
-    both.sort_by_key(fn(k) { laid_at.get(k).unwrap_or(-1) })
+    let keyed = []
+    for i = 0; i < now.length(); i = i + 1 {
+      let k = now[i]
+      keyed.push((laid_at.get(k).unwrap_or(-1), k))
+    }
+    for i = 0; i < more.length(); i = i + 1 {
+      let k = more[i]
+      keyed.push((laid_at.get(k).unwrap_or(-1), k))
+    }
+    keyed.sort_by(fn(a, b) { a.0.compare(b.0) })
+    let both = []
+    for i = 0; i < keyed.length(); i = i + 1 {
+      both.push(keyed[i].1)
+    }
     both
   }
   // Scrolled so that one more meets where it shows, or the first or the last made no more does, or the blocks counted
@@ -4117,7 +4173,7 @@ fn View::scrolls_window_ids(
     let top = @signals.untracked(fn() { window_top(places(all), x, vh) })
     if past_made_at(top, vh, bounds) { Some(top) } else { None }
   })
-  let row_ready = fn(k) { showing.contains(k) && heights.contains(k) }
+  let row_ready = fn(k : Int) { showing.contains(k) && heights.contains(k) }
   let coverage_due = Ref(false)
   // The fill normally measures its way out to both edges in one pass. Bound retries if it cannot make progress.
   let coverage_passes = Ref(0)
@@ -4135,10 +4191,17 @@ fn View::scrolls_window_ids(
         }
         let all = places(laid.untracked())
         let x = window_top(all, @signals.untracked(at), vh)
+        let mut any_not_ready = false
+        for si = 0; si < shown_now.length(); si = si + 1 {
+          if !row_ready(shown_now[si]) {
+            any_not_ready = true
+            break
+          }
+        }
         if coverage_passes.val < 4 &&
           (made_rev.val != laid_rev.val ||
           past_made_at(x, vh, made.untracked()) ||
-          shown_now.iter().any(fn(k) { !row_ready(k) })) {
+          any_not_ready) {
           coverage_passes.val += 1
           laid_again()
         } else {
@@ -4995,7 +5058,15 @@ fn View::scrolls_window_ids(
             Some(fv) => fv.alive() && self.tree.holds_hosted(fv.at)
             None => false
           })
-        if rows.iter().any(fn(r) { r.0 is Some(row) && row.alive() && r.1 is None }) {
+        let mut any_unmeasured = false
+        for ri = 0; ri < rows.length(); ri = ri + 1 {
+          let r = rows[ri]
+          if r.0 is Some(row) && row.alive() && r.1 is None {
+            any_unmeasured = true
+            break
+          }
+        }
+        if any_unmeasured {
           // (a row made, not measured yet: noted for the fill that measures it)
           ()
         } else if foot_waits {
@@ -5059,10 +5130,18 @@ fn View::scrolls_window_ids(
                 st.come_plan = st.come_goal
                 match st.come_group {
                   // (in the one way it was said in, set already: that way's plan made again from there, below)
-                  Some(g) if g.set && g.members.length() > 1 =>
-                    if !groups.iter().any(fn(o) { physical_equal(o, g) }) {
+                  Some(g) if g.set && g.members.length() > 1 => {
+                    let mut seen_g = false
+                    for gi = 0; gi < groups.length(); gi = gi + 1 {
+                      if physical_equal(groups[gi], g) {
+                        seen_g = true
+                        break
+                      }
+                    }
+                    if !seen_g {
                       groups.push(g)
                     }
+                  }
                   // (in one not set yet: it is set from there)
                   Some(g) if !g.set => ()
                   // (alone: its own way from there)
@@ -5098,10 +5177,26 @@ fn View::scrolls_window_ids(
                   let at = below.pop().unwrap()
                   for kid in tree.nodes[at].kids {
                     let n = tree.nodes[kid]
-                    if n.live && n.coming && n.flex.style.come_group is Some(o) &&
-                      groups.iter().any(fn(g) { physical_equal(g, o) }) &&
-                      !ways.iter().any(fn(w) { w.at == kid }) {
-                      ways.push(tree.handle(kid))
+                    if n.live && n.coming && n.flex.style.come_group is Some(o) {
+                      let mut in_groups = false
+                      for gi = 0; gi < groups.length(); gi = gi + 1 {
+                        if physical_equal(groups[gi], o) {
+                          in_groups = true
+                          break
+                        }
+                      }
+                      if in_groups {
+                        let mut in_ways = false
+                        for wi = 0; wi < ways.length(); wi = wi + 1 {
+                          if ways[wi].at == kid {
+                            in_ways = true
+                            break
+                          }
+                        }
+                        if !in_ways {
+                          ways.push(tree.handle(kid))
+                        }
+                      }
                     }
                     below.push(kid)
                   }
@@ -6140,8 +6235,15 @@ fn View::scrolls_window_ids(
                 false
               } else {
                 let ks_s = get_ks_set()
-                was.iter().any(fn(k) { !ks_s.contains(k) && before.contains(k) && @signals.untracked(fn() { goes(k) }) }) ||
-                flip_order_changed(was, ks, get_was_set(), ks_s)
+                let mut any_goes = false
+                for wi = 0; wi < was.length(); wi = wi + 1 {
+                  let k = was[wi]
+                  if !ks_s.contains(k) && before.contains(k) && @signals.untracked(fn() { goes(k) }) {
+                    any_goes = true
+                    break
+                  }
+                }
+                any_goes || flip_order_changed(was, ks, get_was_set(), ks_s)
               }
               came_once.val = Some(c)
               c
@@ -6841,17 +6943,16 @@ fn View::scrolls_window_ids(
   // (a key gone leaving its room: what it showed fading out where it is, as a pick's that leaves (pick_leave.mbt), its
   // slot as tall as it is till that and its way in are done, then let go; back, seen again whole)
   let fade_off = Ref(fn() {  })
-  let faded : Array[View] = []
+  let faded : Ref[Array[View]] = Ref([])
   fade_undo.val = fn(k) {
     (fade_off.val)()
     fade_off.val = fn() {  }
-    for v in faded {
+    for v in faded.val {
       if v.alive() {
         v.alpha(Is(1.0)) |> ignore
       }
     }
-    faded.clear()
-    faded.shrink_to_fit()
+    faded.val = []
     for b in blocks {
       if b.0.alive() && @signals.untracked(b.1) == k {
         b.0.alpha(Is(1.0)) |> ignore
@@ -6864,7 +6965,7 @@ fn View::scrolls_window_ids(
       if b.0.alive() && @signals.untracked(b.1) == k {
         let v = b.0
         let key = b.1
-        faded.push(v)
+        faded.val.push(v)
         // (by the key it holds: a block put by and taken for another key meanwhile seen whole)
         v.alpha(
           By(fn() {
@@ -6891,13 +6992,12 @@ fn View::scrolls_window_ids(
       guard fading.val is Some((f, _)) && f == k else { return }
       fading.val = None
       // (what was faded and is still there, whole again: let go now, or put by and taken for another key)
-      for v in faded {
+      for v in faded.val {
         if v.alive() {
           v.alpha(Is(1.0)) |> ignore
         }
       }
-      faded.clear()
-      faded.shrink_to_fit()
+      faded.val = []
       if flips {
         fade_settled[k] = true
       } else {
@@ -7499,10 +7599,14 @@ fn View::scrolls_window_ids(
                 let taken = match spare.get(kind) {
                   Some(all) if all.length() > 0 =>
                     {
-                      let t = match all.search_by(fn(b) { !b.4 && b.1.untracked() == k }) {
-                        Some(i) => Some(all.remove(i))
-                        None => all.pop()
+                      let mut found_i = -1
+                      for ai = 0; ai < all.length(); ai = ai + 1 {
+                        if !all[ai].4 && all[ai].1.untracked() == k {
+                          found_i = ai
+                          break
+                        }
                       }
+                      let t = if found_i >= 0 { Some(all.remove(found_i)) } else { all.pop() }
                       all.release_unused(placeholder=spare_gone)
                       t
                     }
@@ -7665,7 +7769,16 @@ fn View::scrolls_window_ids(
               None =>
                 match spare.get(kind) {
                   Some(all) =>
-                    match all.search_by(fn(b) { b.3 is Some(w) && physical_equal(w, slot) }) {
+                    match ({
+                      let mut found_i = -1
+                      for ai = 0; ai < all.length(); ai = ai + 1 {
+                        if all[ai].3 is Some(w) && physical_equal(w, slot) {
+                          found_i = ai
+                          break
+                        }
+                      }
+                      if found_i >= 0 { Some(found_i) } else { None }
+                    }) {
                       Some(i) => {
                         let (v, key, prev_wake, _, prev_stale, prev_needs_back) = all[i]
                         guard laid_at.contains(key.untracked()) else { return }
@@ -7681,7 +7794,14 @@ fn View::scrolls_window_ids(
                             }
                             None => prev_wake
                           }
-                          match all.search_by(fn(b) { b.0.same(v) }) {
+                          let mut found_idx = -1
+                          for ai = 0; ai < all.length(); ai = ai + 1 {
+                            if all[ai].0.same(v) {
+                              found_idx = ai
+                              break
+                            }
+                          }
+                          match (if found_idx >= 0 { Some(found_idx) } else { None }) {
                             Some(idx) => {
                               let cur = all[idx]
                               all[idx] = (v, key, combined_wake, None, cur.4 || prev_stale, needs_back || cur.5)
@@ -7706,7 +7826,16 @@ fn View::scrolls_window_ids(
             // (what was put by in it let go with it)
             match spare.get(kind) {
               Some(all) =>
-                match all.search_by(fn(b) { b.3 is Some(w) && physical_equal(w, slot) }) {
+                match ({
+                  let mut found_i = -1
+                  for ai = 0; ai < all.length(); ai = ai + 1 {
+                    if all[ai].3 is Some(w) && physical_equal(w, slot) {
+                      found_i = ai
+                      break
+                    }
+                  }
+                  if found_i >= 0 { Some(found_i) } else { None }
+                }) {
                   Some(i) => {
                     let b = all.remove(i)
                     parked_blocks.remove(b.0.at)

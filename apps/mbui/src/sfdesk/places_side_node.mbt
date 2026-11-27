@@ -8,7 +8,7 @@
 /// station in its band, then a row each of the workspace's stations, then those that only run tasks, then its
 /// devices under their heading.
 fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
-  place_side_node(s, src, tips, at, "stations", fn(q, core, w, here, list_at) {
+  place_side_node(s, src, tips, at, "stations", fn(q, core, w, here, list_at, _action) {
     // (a station's page in the pane once what it shows is answered, where what opens waits for what it shows: its
     // station, then what its part shown reads, the pane as it was meanwhile; sfbase's route_open_asks, route_open_then)
     let pick = fn(address : String) {
@@ -145,39 +145,11 @@ priv struct PlaceLine {
 }
 
 ///|
-/// The profiles' sidebar (ProfilesNav) in node `s` as wide as the sidebar, where `at` says the block has it: 添加
-/// Profile in its band, then the overview, a section each kind of account, a row an account (its allowance's chips
-/// across its foot, the same way for every account of a provider); then each station's own logins not made profiles
-/// yet.
+/// The profiles' sidebar (ProfilesNav) in node `s` as wide as the sidebar, where `at` says the block has it:
+/// three-tier layout — 1. Collection (概览 + 批量管理), 2. 新建动作 (＋ 添加 Profile), 3. Individual accounts grouped by
+/// kind and machine logins offered.
 fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
-  // (the accounts' 多选: begun at the band's end beside 添加, its bar at the sidebar's foot; over as the workspace in
-  // view changes)
-  let batch = @sfpages.ProfilesBatch::new()
-  let listed_of = fn(w : Workspace) { src.topic("profiles", { "scope": Json::string(w.id) }).get().value }
-  let rows_of = fn(w : Workspace) { items(listed_of(w), "items") }
-  let offered = fn(w : Workspace) { @sfpages.profiles_batch_offered(fn() { flag(listed_of(w), "manages") }, fn() { rows_of(w) }) }
-  let band_end = fn(b : @view.View, _ : @settings.Core, w : Workspace, _ : () -> @settings.Here) {
-    // (it stays while 多选 is on, lit, pressed again to end it: the band never changes as it begins)
-    b.show(fn() { offered(w) }, fn(k) {
-      @sf.icon_button_node(k, "check-circle", fn() { @sf.t("web-pages.profiles.batch.select") }, fn() { batch.toggle() }, tips~, on=fn() {
-        batch.on.get()
-      })
-      |> ignore
-    })
-  }
-  let band_end_shown = fn(_ : @settings.Core, w : Workspace, _ : () -> @settings.Here) { offered(w) }
-  let foot = fn(f : @view.View, core : @settings.Core, w : Workspace, here : () -> @settings.Here) {
-    let stations = fn() {
-      match @settings.stations_of(core, here()).value {
-        Some(Array(a)) => a
-        _ => []
-      }
-    }
-    @sfpages.profiles_batch_foot_node(f, core, batch, fn() { rows_of(w) }, stations, side=@sf.theme().chat_list.band_in)
-  }
-  // (a workspace come into view: no 多选 begun in another)
-  s.reacts(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) { batch.stop() }, at_start=false)
-  place_side_node(s, src, tips, at, "profiles", band_end=(band_end, band_end_shown), foot~, fn(q, core, w, here, list_at) {
+  place_side_node(s, src, tips, at, "profiles", band_add=false, fn(q, core, w, here, list_at, action) {
     let topic = fn() { src.topic("profiles", { "scope": Json::string(w.id) }).get().value }
     let list = fn() { items(topic(), "items") }
     // each station's own logins, not profiles yet (under the profiles: each station up that offers one)
@@ -241,13 +213,20 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     })
     let widest = fn(kind : String) { fn() { widths.get().get(kind).unwrap_or((0.0, [])) } }
     let quota_room_w = profiles_side_quota_room_w(fn() { at().laid_w }, list_at)
-    // (its lines in their order: the overview, the accounts under their kinds' headings, each station's logins under
-    // its own)
+    // Three-tier order: 1. Collection (ov, sh), 2. Add action (add), 3. Individual accounts + machine logins.
     let lines = fn() -> Array[PlaceLine] {
       let out = []
+      let t = topic()
       let all = list()
+      let manages = flag(t, "manages")
       if all.length() > 0 {
-        out.push({ key: "ov", data: None, more: false })
+        out.push({ key: "ov", data: None, more: manages })
+        if manages {
+          out.push({ key: "sh", data: None, more: false })
+        }
+      }
+      if action() is Some(_) {
+        out.push({ key: "add", data: Some(Json::boolean(all.length() > 0)), more: false })
       }
       let mut group = ""
       for i, e in all {
@@ -277,7 +256,8 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     // (worked out once as the list changes, told on only as it comes out otherwise)
     let chosen = @signals.computed(fn(_) {
       match picked() {
-        Some(Profiles("")) => Some("ov")
+        Some(ProfilesOverview) | Some(Profiles("")) => Some("ov")
+        Some(ProfilesManage(_)) => Some("sh")
         Some(Profile(a, id)) => Some(a + "/" + id)
         _ => None
       }
@@ -300,10 +280,10 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           fn() { lit("ov") },
           profiles_overview_label,
           fn(_) {
-            place_pick[place_key(w.id, "profiles")] = Route::Profiles("")
+            place_pick[place_key(w.id, "profiles")] = Route::ProfilesOverview
             @sfbase.show_chosen()
           },
-          fn(m) { @sf.icon_node(m, "quota", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
+          fn(m) { @sf.icon_node(m, "chart", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
           fn(t) { @sf.nav_title_node(t, profiles_overview_label) },
           lines=fn(ls) {
             ls.show(fn() { summary().0 != "" }, fn(k) {
@@ -312,6 +292,47 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
               })
             })
           },
+          more~,
+        )
+      } else if made_as == 5 {
+        let share_sum = @signals.computed(fn(_) { @sfpages.profiles_sharing_summary(list()) }, same=fn(a, b) { a == b })
+        @sf.nav_item_node(
+          line,
+          list_at,
+          fn() { lit("sh") },
+          fn() { @sf.t("web-pages.profiles.sharing.title") },
+          fn(_) {
+            place_pick[place_key(w.id, "profiles")] = Route::ProfilesManage("")
+            @sfbase.show_chosen()
+          },
+          fn(m) { @sf.icon_node(m, "select-all", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
+          fn(t) { @sf.nav_title_node(t, fn() { @sf.t("web-pages.profiles.sharing.title") }) },
+          lines=fn(ls) {
+            ls.show(fn() { share_sum.get() != "" }, fn(k) {
+              @sf.list_row_line_node(k, fn(r) { @sf.nav_meta_node(r, fn() { share_sum.get() }) })
+            })
+          },
+          more~,
+        )
+      } else if made_as == 6 {
+        let has_above = fn() { data() == Some(Json::boolean(true)) }
+        line.show(has_above, at_once=true, fn(sep_wrap) {
+          sep_wrap.padding(Is((0.0, 6.0, 0.0, 6.0))) |> ignore
+          sep_wrap.box(fn(sep) { @sf.style_node(sep, fn() { @sf.rule_line }) }) |> ignore
+        })
+        @sf.nav_item_node(
+          line,
+          list_at,
+          fn() { false },
+          fn() { @sf.t("web-pages.settings.profiles.add") },
+          fn(btn) {
+            match @signals.untracked(action) {
+              Some(go) => go(Node(btn))
+              None => ()
+            }
+          },
+          fn(m) { @sf.icon_node(m, "plus", @sf.nav_mark_side, By(fn() { @sf.theme().p.muted })) |> ignore },
+          fn(t) { @sf.nav_title_node(t, fn() { @sf.t("web-pages.settings.profiles.add") }) },
         )
       } else if made_as == 1 {
         // (its words alone: a change of the account under it tells it nothing)
@@ -325,14 +346,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           list_at,
         )
       } else if made_as == 3 {
-        // (while 多选 is on, its box to tick in its place: pressed, picked, never its page)
-        line.pick(fn() { batch.on.get() }, fn(x, picking) {
-          if picking {
-            @sfpages.profiles_batch_side_row_node(x, list_at, batch, data, more)
-          } else {
-            profile_side_row_node(x, src, w, tips, list_at, data, more, lit, widest, quota_room_w)
-          }
-        })
+        profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest, quota_room_w)
       } else {
         machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest, quota_room_w)
       }
@@ -363,6 +377,10 @@ fn stations_line_shape(key : String) -> Int {
 fn profiles_line_shape(key : String) -> Int {
   if key == "ov" {
     0
+  } else if key == "sh" {
+    5
+  } else if key == "add" {
+    6
   } else if key.has_prefix("h/") {
     1
   } else if key.has_prefix("mh/") {
@@ -377,11 +395,7 @@ fn profiles_line_shape(key : String) -> Int {
 ///|
 /// 概览's words.
 fn profiles_overview_label() -> String {
-  if @sf.language() == "en" {
-    "Overview"
-  } else {
-    "概览"
-  }
+  @sf.t("web-pages.profiles.overview.title")
 }
 
 ///|
@@ -598,7 +612,7 @@ fn profile_side_row_node(
     }
     let at = match route {
       Route::Profile(station, id) => @sfbase.profile_shown_at(station, id)
-      Route::Profiles("") => @sfbase.profile_shown_at("", "")
+      Route::ProfilesOverview | Route::Profiles("") => @sfbase.profile_shown_at("", "")
       _ => ""
     }
     @sfbase.show_answered(src, @sfbase.route_asks(w.id, route), at, fn() {
@@ -717,12 +731,8 @@ fn place_side_node(
   tips : @sf.TipLayer,
   at : () -> SideAt,
   place : String,
-  rows : (@view.View, @settings.Core, Workspace, () -> @settings.Here, @sf.ListAt) -> Unit,
-  band_end? : (
-    (@view.View, @settings.Core, Workspace, () -> @settings.Here) -> Unit,
-    (@settings.Core, Workspace, () -> @settings.Here) -> Bool,
-  ),
-  foot? : (@view.View, @settings.Core, Workspace, () -> @settings.Here) -> Unit,
+  rows : (@view.View, @settings.Core, Workspace, () -> @settings.Here, @sf.ListAt, () -> ((@sf.Beside) -> Unit)?) -> Unit,
+  band_add? : Bool = true,
 ) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   let list_at = side_list_at(@signals.untracked(at))
@@ -747,29 +757,24 @@ fn place_side_node(
       @sf.t(if place == "stations" { "web-pages.settings.stations.add" } else { "web-pages.settings.profiles.add" })
     }
     side_top_node(q, fn() { at().brand })
-    // the band (NavAction): 添加 where the viewer may add one, the update at its end where one is offered; none where
-    // neither is
-    let band_end_shown = fn() {
-      match band_end {
-        Some((_, shown)) => shown(core, w, here)
-        None => false
-      }
-    }
-    q.show(fn() { action() is Some(_) || update_shown() || band_end_shown() }, fn(band) {
+    let show_add = fn() { band_add && action() is Some(_) }
+    // the band (NavAction): 添加 where `band_add` is on and the viewer may add one, the update at its end where one is
+    // offered; on the floating tape (`list_at is Tape`), keep the band's top clearance so the first row stays clear of
+    // the 42pt top-right corner
+    q.show(fn() { show_add() || update_shown() || list_at is Tape }, fn(band) {
       // (on the tape, as the settings' band: in the panel's top corner, its row kept off that corner by the update's
       // room, which the update's round key, where one is offered, is concentric with)
       let tape = list_at is Tape
       @sf.style_node(band, fn() { if tape { band_new_tape(at=band_at()) } else { update_band(at=band_at()) } })
       band.box(fn(main) {
         @sf.style_node(main, fn() { side_full }, in_row=true)
-        // (what the band ends with beside 添加, at its end on the same line: the profiles' 多选)
-        if band_end is Some(_) {
-          main.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        }
         if tape {
+          // Keep the band's inner height equal to band_row_h() when no add row is shown (e.g. Profiles), so the
+          // concentric 32pt update key stays aligned with the 42pt tape corner on touch (38pt row) and mouse (32pt row).
+          main.min_height(By(fn() { if !show_add() { Some(band_row_h()) } else { None } })) |> ignore
           main.margin(By(fn() { (0.0, 0.0, if update_shown() { 0.0 } else { update_key_side }, 0.0) })) |> ignore
         }
-        main.show(fn() { action() is Some(_) }, fn(o) {
+        main.show(show_add, fn(o) {
           // (what it puts up beside the row pressed: the row's box)
           o.row(Is(true)).grow(Is(1.0)) |> ignore
           @sf.band_row_node(o, fn() { false }, label, fn() {
@@ -782,10 +787,6 @@ fn place_side_node(
             @sf.nav_words_node(b, label)
           })
         })
-        match band_end {
-          Some((make, _)) => make(main, core, w, here)
-          None => ()
-        }
       })
       |> ignore
       band.show(update_shown, fn(u) {
@@ -816,15 +817,11 @@ fn place_side_node(
       from.box(fn(l) {
         @sf.style_node(l, fn() { @sf.side_list().then(@ui.style(px=S0)) })
         l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        rows(l, core, w, here, list_at)
+        rows(l, core, w, here, list_at, action)
       })
       |> ignore
     })
     |> ignore
-    match foot {
-      Some(f) => f(q, core, w, here)
-      None => ()
-    }
   })
 }
 

@@ -443,3 +443,59 @@ test("HelperFiles clears launch-failure backoff once HelperGrants recovers", { s
   assert.equal(s.fake.asked.filter((a) => a.op === "files.access").length, 1);
   await s.end();
 });
+
+test("HelperGrants.fresh tracks TTL expiry, clock jumps, invalidation, failures, and grant events", { skip: WINDOWS }, async () => {
+  const s = station();
+  try {
+    assert.equal(s.grants.fresh(30_000), false, "not fresh before first look");
+    await s.grants.refresh(true);
+    assert.equal(s.grants.fresh(30_000), true);
+    s.clock.now += 29_999;
+    assert.equal(s.grants.fresh(30_000), true, "still within TTL");
+    s.clock.now += 1;
+    assert.equal(s.grants.fresh(30_000), false, "expired at exact TTL boundary");
+
+    await s.grants.refresh(true);
+    assert.equal(s.grants.fresh(30_000), true);
+    s.clock.now -= 1;
+    assert.equal(s.grants.fresh(30_000), false, "negative clock delta is treated as stale");
+    s.clock.now += 1;
+    assert.equal(s.grants.fresh(30_000), true);
+
+    // invalidate() marks cache stale while keeping last view() intact without relaunching.
+    s.grants.invalidate();
+    assert.equal(s.grants.fresh(30_000), false);
+    assert.ok(s.grants.view() !== null);
+
+    // Failed refresh clears freshness even when a prior status snapshot exists.
+    await s.grants.refresh(true);
+    assert.equal(s.grants.fresh(30_000), true);
+    await s.helper.quit();
+    s.fake.failing = true;
+    await s.grants.refresh(true);
+    assert.equal(s.grants.fresh(30_000), false);
+    assert.ok(s.grants.view() !== null);
+
+    // `{ event: "grants" }` invalidates freshness immediately until the triggered refresh completes.
+    s.fake.failing = false;
+    await s.grants.refresh(true);
+    assert.equal(s.grants.fresh(30_000), true);
+    let releaseRefresh!: () => void;
+    const origRequest = s.helper.request.bind(s.helper);
+    s.helper.request = async (op) => {
+      if (op.op === "status") {
+        await new Promise<void>((r) => (releaseRefresh = r));
+      }
+      return origRequest(op);
+    };
+    s.fake.tell();
+    await until(() => typeof releaseRefresh === "function");
+    assert.equal(s.grants.fresh(30_000), false, "grants event invalidates freshness while refresh is in flight");
+    releaseRefresh();
+    s.helper.request = origRequest;
+    await s.grants.refresh();
+    assert.equal(s.grants.fresh(30_000), true, "freshness restored once event-triggered refresh finishes");
+  } finally {
+    await s.end();
+  }
+});

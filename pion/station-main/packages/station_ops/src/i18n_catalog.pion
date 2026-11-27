@@ -41,8 +41,8 @@ pub fn branded_products() -> Array[ProductZones] {
   ]
 }
 
-pub let CATALOG_ZH_COUNT : Int = 909
-pub let CATALOG_EN_COUNT : Int = 909
+pub let CATALOG_ZH_COUNT : Int = 911
+pub let CATALOG_EN_COUNT : Int = 911
 
 pub fn catalog_zh(key : String) -> Option[CatalogEntry] {
   match key {
@@ -646,6 +646,8 @@ pub fn catalog_zh(key : String) -> Option[CatalogEntry] {
     "station.publish.hidden" => Some(CatalogEntry::Plain("[已隐藏]"))
     "station.quota.accountRestricted" => Some(CatalogEntry::Plain("账号已被服务商限制，请前往验证门户处理"))
     "station.quota.accountRestrictedSaying" => Some(CatalogEntry::Plain("账号受限：{said}"))
+    "station.quota.agyLocation" => Some(CatalogEntry::Plain("Antigravity CLI 查不了额度：Google 说这个账号的免费档在当前地区不可用。付费账号也会收到这句话，所以未必是地区的问题。请到 https://one.google.com 看这个账号的 Google AI 订阅是否还在，再到 https://policies.google.com/terms 看它的服务条款归属哪个国家或地区"))
+    "station.quota.agyNoPlan" => Some(CatalogEntry::Plain("Google 没看到这个账号有 Google AI 订阅，Antigravity 用不了它。请到 https://one.google.com 看订阅是否还在，续上后再重新查询额度"))
     "station.quota.agyNoWindows" => Some(CatalogEntry::Plain("Antigravity CLI 没有返回额度信息"))
     "station.quota.agyPayAsYouGo" => Some(CatalogEntry::Plain("这个企业账号按用量计费，没有固定额度"))
     "station.quota.agyUnsupported" => Some(CatalogEntry::Plain("Antigravity CLI 不向 station 提供套餐用量"))
@@ -1561,6 +1563,8 @@ pub fn catalog_en(key : String) -> Option[CatalogEntry] {
     "station.publish.hidden" => Some(CatalogEntry::Plain("[hidden]"))
     "station.quota.accountRestricted" => Some(CatalogEntry::Plain("This account is restricted by the provider; complete verification first"))
     "station.quota.accountRestrictedSaying" => Some(CatalogEntry::Plain("Account restricted: {said}"))
+    "station.quota.agyLocation" => Some(CatalogEntry::Plain("Antigravity CLI could not read the quota: Google says this account's free tier is not available where it is. Paid accounts get the same words, so the region may not be the cause. Check that the account still has its Google AI plan at https://one.google.com, and which country its terms of service belong to at https://policies.google.com/terms"))
+    "station.quota.agyNoPlan" => Some(CatalogEntry::Plain("Google sees no Google AI plan on this account, so Antigravity cannot use it. Check the plan at https://one.google.com, then check the quota again once it is back"))
     "station.quota.agyNoWindows" => Some(CatalogEntry::Plain("Antigravity CLI didn't return quota windows"))
     "station.quota.agyPayAsYouGo" => Some(CatalogEntry::Plain("This company account pays as it goes, with no fixed allowance"))
     "station.quota.agyUnsupported" => Some(CatalogEntry::Plain("Antigravity CLI doesn't report plan usage to the station"))

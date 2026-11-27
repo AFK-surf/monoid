@@ -65,6 +65,13 @@ fn chat_quote_take(v : @view.View, src : Source, draft : String, rows : ChatBody
 }
 
 ///|
+/// Opens the Swiss typographic share-card preview for what is picked within one message of `rows`.
+fn chat_excerpt_share_take(v : @view.View, src : Source, here : MessageNodeHere, rows : ChatBodyList) -> Unit {
+  guard @signals.untracked(fn() { chat_picked_message(v, rows) }) is Some((p, m)) else { return }
+  chat_excerpt_share_of(src, here, p, m)
+}
+
+///|
 fn chat_quote_text(src : Source, draft : String, raw : String, m : Message) -> Unit {
   let text = raw.trim(chars=" \n\t").to_owned()
   if text != "" {
@@ -177,6 +184,26 @@ fn chat_quote_node(
   rows : ChatBodyList,
 ) -> Unit {
   let draft = r.station + ":" + r.session
+  let wid = @ui.current_window_id()
+  // Register this chat's selection resolver `(canonical_share_keys, single_message_actions)` for sfdesk/context_menu.
+  // Maps every row key (including locally-sent `"o:..."` rows after delivery) to its canonical `"m:" + ts` share key.
+  excerpt_share_register(v, fn() {
+    @signals.untracked(fn() {
+      guard @ui.picked_now_in(v) is Some(p) && p.text.trim(chars=" \n\t\r") != "" else { return None }
+      let share_keys : Array[String] = []
+      for k in p.of {
+        match chat_message_of(rows, k) {
+          Some(m) if m.ts != "" => share_keys.push("m:" + m.ts)
+          _ => share_keys.push(k)
+        }
+      }
+      let single = match chat_picked_message(v, rows) {
+        Some((sp, sm)) => Some((fn() { chat_quote_of(src, draft, sp, sm) }, fn() { chat_excerpt_share_of(src, here, sp, sm) }))
+        None => None
+      }
+      Some((share_keys, single))
+    })
+  })
   // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
   @ui.words_cmd_pick(
     v,
@@ -249,6 +276,12 @@ fn chat_quote_node(
           @ui.picked_let_go()
         },
       })
+      items.push({
+        label: @sf.t("web-main.chat.shareExcerpt.pill"),
+        icon: "share",
+        mark: false,
+        press: fn() { chat_excerpt_share_of(src, here, p, m, whole~) },
+      })
       if !whole {
         items.push({
           label: @sf.t("android-chat.annotate.selectAll"),
@@ -260,38 +293,55 @@ fn chat_quote_node(
           },
         })
       }
-      // (one not the chat's yet has no turn to share, no link)
+      // Whole-message actions (复制消息 / 复制消息链接 / 多选) live behind a single labeled ⋯ menu rather than
+      // unlabeled bare icons beside text-selection actions.
+      let bar_box : Ref[@view.View?] = Ref(None)
       match (if m.ts == "" { None } else { @signals.untracked(fn() { message_share_of(src, here, fn() { m }) }) }) {
-        Some(s) => {
+        Some(s) =>
           items.push({
-            label: @sf.t("web-main.chat.selectMessages"),
-            icon: "check-circle",
+            label: @sf.t("web-main.menu.more"),
+            icon: "more",
             mark: true,
             press: fn() {
+              let anchor : @sf.Beside = match bar_box.val {
+                Some(bx) => {
+                  let rect = bx.placed_window_now()
+                  At(rect.0, rect.1, rect.2, rect.3)
+                }
+                None => Node(end)
+              }
+              let k = @signals.untracked(s.key)
+              let link = @signals.untracked(s.link)
+              let words = @signals.untracked(s.words)
+              let clear_more = fn() {
+                if @signals.untracked(fn() { @sfbase.message_more.get() }) == k {
+                  @sfbase.message_more.set("")
+                }
+              }
+              let menu_items = @sfbase.message_items(link, words, s.go).map(fn(it) {
+                it.map(fn(mi) {
+                  {
+                    ..mi,
+                    select: fn() {
+                      clear_more()
+                      (mi.select)()
+                    },
+                  }
+                })
+              })
+              @sfbase.message_more.set(k)
               @ui.picked_let_go()
-              (s.go)()
+              @sf.menu(menu_items, from=anchor, along=End, gone=clear_more)
             },
           })
-          let link = @signals.untracked(fn() { (s.link)() })
-          if link != "" {
-            items.push({
-              label: @sf.t("common.link.copy"),
-              icon: "link",
-              mark: true,
-              press: fn() {
-                @sfbase.copy_out(link, said=@sf.t("common.link.copied"))
-                @ui.picked_let_go()
-              },
-            })
-          }
-        }
         None => ()
       }
       holds.box(fn(b) {
+        bar_box.val = Some(b)
         @ui.keeps_picked(b)
         .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore
-        @sf.pick_bar_node(b, items) |> ignore
+        @sf.pick_bar_node(b, items, compact=@signals.untracked(here.width) < 420.0) |> ignore
       })
       |> ignore
     })
@@ -309,6 +359,10 @@ fn chat_quote_node(
   let quote_in = fn(host : @view.View) {
     host.pick(
       fn() {
+        // Hide this window's floating selection pill while a right-click context menu is open in the same window.
+        if context_menu_window.get() == Some(wid) {
+          return None
+        }
         chat_quotable(v, rows).map(fn(q) {
           (q.0.made, q.0.ends_in, @sfbase.selection_intent_feature.get() && (here.view)().thread is Some(_))
         })
@@ -327,6 +381,15 @@ fn chat_quote_node(
             fn(_) { chat_quote_take(v, src, draft, rows) },
           ),
         ]
+        if p.text.trim(chars=" \n\t\r") != "" {
+          actions.push(
+            @sf.pick_bar_action(
+              fn() { @sf.t("web-main.chat.shareExcerpt.pill") },
+              icon="share",
+              fn(_) { chat_excerpt_share_take(v, src, here, rows) },
+            ),
+          )
+        }
         if with_intent {
           actions.push(
             @sf.pick_bar_action(

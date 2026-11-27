@@ -13,7 +13,7 @@ import { type Entry, Signer, entryHash, next } from "../src/lock.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
 import { hex, utf8 } from "../src/util.ts";
 import {
-  type BoxCert, type Item, type Request, type Vault, TAG, boxPublic, sign, signedOk,
+  type BoxCert, type Item, type KeyAsk, type Request, type Vault, TAG, boxPublic, sign, signedOk,
 } from "../src/vault/crypto.ts";
 import { deviceVerifyCode, pairs, signerKnown } from "../src/views/lock.ts";
 import { serveTrusted, tryOne, trying } from "../src/views/pair.ts";
@@ -76,6 +76,7 @@ function sharedStation(opts: {
   const vaults = new Map<string, Vault>();
   const items = new Map<string, Item>();
   const boxes = new Map<string, BoxCert>();
+  const asks = new Map<string, KeyAsk>();
   const requests: Request[] = [];
 
   const replyFor = (viewerSub: string) => (req: HttpRequest): unknown => {
@@ -127,12 +128,18 @@ function sharedStation(opts: {
         if (!signedOk(body, TAG.box)) return status(400, { error: "signature", code: "vault_invalid" });
         boxes.set(body.device, body);
         return { box: body };
+      case "GET /vault/asks":
+        return { asks: [...asks.values()].filter((a) => vaults.get(a.vault)?.members.includes(viewerSub)) };
+      case "PUT /vault/asks":
+        if (!signedOk(body, TAG.ask)) return status(400, { error: "signature", code: "vault_invalid" });
+        asks.set(`${body.vault}/${body.device}`, body);
+        return { ask: body };
       default:
         return undefined;
     }
   };
 
-  return { ws, vaults, items, boxes, requests, replyFor };
+  return { ws, vaults, items, boxes, asks, requests, replyFor };
 }
 
 let seq = 0;
@@ -268,7 +275,7 @@ test("non-safe-mode vaultAsks & vaultsView: resolves own and teammate device lab
   });
 
   // Set up Alice's first device, create personal vault (via setup) + workspace vault + add 2 items to workspace vault
-  await alice1.ask("vault.setup");
+  const setup = await alice1.ask("vault.setup");
   const wsVault = await alice1.ask("vault.create", { name: "团队共享库", scope: "workspace", members: ["alice", "bob"] });
   await alice1.ask("vault.putItem", {
     vault: wsVault.id,
@@ -286,8 +293,12 @@ test("non-safe-mode vaultAsks & vaultsView: resolves own and teammate device lab
   const bobSigner = edKey(bobSeed);
   const aliceBox2 = boxPublic(fill(52));
   const bobBox = boxPublic(fill(53));
+  // (pure BoxCerts + standalone signed KeyAsks for the specific vaults requested via 申请授权)
   st.boxes.set(aliceDev2, sign({ v: 1 as const, ws: "ws", device: aliceDev2, box: aliceBox2, at: 2000 }, TAG.box, aliceSigner2 as unknown as Signer));
   st.boxes.set(bobDev, sign({ v: 1 as const, ws: "ws", device: bobDev, box: bobBox, at: 2100 }, TAG.box, bobSigner as unknown as Signer));
+  st.asks.set(`${setup.made}/${aliceDev2}`, sign({ v: 1 as const, ws: "ws", vault: setup.made, device: aliceDev2, box: aliceBox2, at: 2000 }, TAG.ask, aliceSigner2 as unknown as Signer));
+  st.asks.set(`${wsVault.id}/${aliceDev2}`, sign({ v: 1 as const, ws: "ws", vault: wsVault.id, device: aliceDev2, box: aliceBox2, at: 2000 }, TAG.ask, aliceSigner2 as unknown as Signer));
+  st.asks.set(`${wsVault.id}/${bobDev}`, sign({ v: 1 as const, ws: "ws", vault: wsVault.id, device: bobDev, box: bobBox, at: 2100 }, TAG.ask, bobSigner as unknown as Signer));
 
   // Lock Alice's RAM keys first so sync doesn't auto-give keys in the background
   await alice1.ask("vault.lock");
@@ -371,6 +382,50 @@ test("non-safe-mode vaultAsks & vaultsView: resolves own and teammate device lab
   // Alice's 2nd device remains in pendingDevices
   assert.equal(wsRow2.pendingDevices.length, 1);
   assert.equal(wsRow2.pendingDevices[0].device, aliceDev2);
+});
+
+// A teammate added to a workspace vault, their app setting itself up (`autoBox`: a certificate with no `asked`), puts
+// up no prompt on the managers' devices: only 申请授权 pressed on it does. Their device still waits among the vault's
+// pendingDevices, where a manager may give it the key unasked.
+test("non-safe-mode workspace vault: a teammate's device set up by itself prompts nobody; once its person presses 申请授权 it does", async () => {
+  const aliceSeed = fill(91), bobSeed = fill(92), alicePSeed = fill(93), bobPSeed = fill(94);
+  const aliceDev = "a9".repeat(32);
+  const bobDev = "b9".repeat(32);
+  const aliceKey = edKey(aliceSeed);
+  const bobKey = edKey(bobSeed);
+  const aliceChain = makePersonalChain("alice", { devId: aliceDev, personalSeed: alicePSeed, signKeyId: aliceKey.id, label: "Alice MacBook Pro" });
+  const bobChain = makePersonalChain("bob", { devId: bobDev, personalSeed: bobPSeed, signKeyId: bobKey.id, label: "Bob ThinkPad X1" });
+  const wsMembers = [
+    { sub: "alice", email: "alice@x.com", name: "Alice Chen", role: "owner" },
+    { sub: "bob", email: "bob@x.com", name: "Bob Lin", role: "member" },
+  ];
+  const st = sharedStation({ safeMode: false, roles: { alice: "owner", bob: "member" }, chains: { alice: aliceChain, bob: bobChain } });
+  const alice = await makeMemberDevice({
+    sub: "alice", email: "alice@x.com", devId: aliceDev, deviceName: "Alice MacBook Pro",
+    signerSeed: aliceSeed, personalSeed: alicePSeed, st, wsMembers, safeMode: false, personalChain: aliceChain,
+  });
+  await alice.ask("vault.setup");
+  const wsVault = await alice.ask("vault.create", { name: "Workspace 密钥库", scope: "workspace", members: ["alice", "bob"] });
+  await alice.ask("vault.lock");
+
+  // Bob's app sets itself up, nobody pressing anything there: pure BoxCert only, no KeyAsk.
+  const bobBox = boxPublic(fill(95));
+  st.boxes.set(bobDev, sign({ v: 1 as const, ws: "ws", device: bobDev, box: bobBox, at: 2100 }, TAG.box, bobKey as unknown as Signer));
+  await alice.sync();
+  assert.deepEqual(vaultAsks(alice.core.inner).filter((a) => a.device === bobDev), [], "set up by itself: no prompt");
+  const pending = vaultsView(alice.core.inner, "ws").vaults.find((v: any) => v.id === wsVault.id).pendingDevices;
+  assert.deepEqual(pending.map((d: any) => d.device), [bobDev], "still waiting among the vault's devices");
+
+  // Bob previously pressed 申请授权 for some other vault (e.g. his own personal vault): still no prompt for wsVault!
+  st.asks.set(`v_01JAOTHER00000000000000000/${bobDev}`, sign({ v: 1 as const, ws: "ws", vault: "v_01JAOTHER00000000000000000", device: bobDev, box: bobBox, at: 2150 }, TAG.ask, bobKey as unknown as Signer));
+  await alice.sync();
+  assert.deepEqual(vaultAsks(alice.core.inner).filter((a) => a.device === bobDev), [], "asking for another vault never prompts for workspace vault");
+
+  // Bob presses 申请授权 specifically for wsVault: standalone KeyAsk for wsVault -> prompts Alice for wsVault only.
+  st.asks.set(`${wsVault.id}/${bobDev}`, sign({ v: 1 as const, ws: "ws", vault: wsVault.id, device: bobDev, box: bobBox, at: 2200 }, TAG.ask, bobKey as unknown as Signer));
+  await alice.sync();
+  const asks = vaultAsks(alice.core.inner).filter((a) => a.device === bobDev);
+  assert.deepEqual(asks.map((a) => [a.vault, a.isOwnDevice, a.at]), [[wsVault.id, false, 2200]]);
 });
 
 test("pairing flow: LockPair.thisDeviceCode === LockPairing.deviceCode, build, willSign, and handoverVaults match actual handover", async () => {

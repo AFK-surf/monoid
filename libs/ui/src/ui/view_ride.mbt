@@ -458,19 +458,24 @@ fn inst_cut_to(s : FixedArray[Double], b : Int, h0 : Double, h1 : Double, h2 : D
     s[b + 17] = dmax(m1, h1)
     s[b + 18] = dmin(m2, h2)
     s[b + 19] = dmin(m3, h3)
-    if s[b + 16] != m0 || s[b + 17] != m1 {
+    // (a corner the cut moves by more than a hair square: clip_hair)
+    let l = !clip_edge_near(s[b + 16], m0)
+    let t = !clip_edge_near(s[b + 17], m1)
+    let r = !clip_edge_near(s[b + 18], m2)
+    let f = !clip_edge_near(s[b + 19], m3)
+    if l || t {
       s[b + 24] = 0.0
       s[b + 28] = 0.0
     }
-    if s[b + 18] != m2 || s[b + 17] != m1 {
+    if r || t {
       s[b + 25] = 0.0
       s[b + 29] = 0.0
     }
-    if s[b + 18] != m2 || s[b + 19] != m3 {
+    if r || f {
       s[b + 26] = 0.0
       s[b + 30] = 0.0
     }
-    if s[b + 16] != m0 || s[b + 19] != m3 {
+    if l || f {
       s[b + 27] = 0.0
       s[b + 31] = 0.0
     }

@@ -1089,3 +1089,439 @@ test "popover closing after its trigger pill unmounted still enters is_closing a
   assert_true(t.find("WS 2") is None, msg="popover unmounts cleanly after dead-trigger close")
   assert_eq(t.audit(), [], msg="dead-trigger close audit clean")
 }
+
+///|
+/// Visible text glyph instances (`kind == 1` or adaptive glass `kind == 7` with positive alpha and non-zero size).
+fn bridge_visible_glyphs(t : @ui.Tester) -> Array[Array[Double]] {
+  t.drawn_instances().filter(fn(a) {
+    a.length() > 15 && (a[5] == 1.0 || a[5] == 7.0) && a[11] > 0.01 && a[2] > 0.0 && a[3] > 0.0
+  })
+}
+
+///|
+/// Asserts that every glyph in `cur` keeps the exact same atlas slot `(u, v, aw, ah)` and rigid normalized
+/// inter-glyph offset relative to `cur[0]` as `rest` (proving zero mid-motion `view_rephase` and zero per-glyph
+/// pixel snapping).
+fn assert_glyphs_rigid(
+  cur : Array[Array[Double]],
+  rest : Array[Array[Double]],
+  phase : String,
+) -> Unit raise {
+  assert_eq(cur.length(), rest.length(), msg="\{phase}: glyph count \{cur.length()} vs rest \{rest.length()}")
+  if cur.is_empty() {
+    return
+  }
+  let g0 = cur[0]
+  let r0 = rest[0]
+  let s = g0[2] / r0[2]
+  assert_true(s > 0.05 && s <= 1.2, msg="\{phase}: unexpected glyph scale \{s}")
+  for i in 0..<cur.length() {
+    let g = cur[i]
+    let r = rest[i]
+    assert_eq(g[12], r[12], msg="\{phase} glyph \{i}: atlas u rephased \{g[12]} vs rest \{r[12]}")
+    assert_eq(g[13], r[13], msg="\{phase} glyph \{i}: atlas v rephased \{g[13]} vs rest \{r[13]}")
+    assert_eq(g[14], r[14], msg="\{phase} glyph \{i}: atlas w changed \{g[14]} vs rest \{r[14]}")
+    assert_eq(g[15], r[15], msg="\{phase} glyph \{i}: atlas h changed \{g[15]} vs rest \{r[15]}")
+    let dx = (g[0] - g0[0]) / s - (r[0] - r0[0])
+    let dy = (g[1] - g0[1]) / s - (r[1] - r0[1])
+    assert_true(
+      dx.abs() < 0.01 && dy.abs() < 0.01,
+      msg="\{phase} glyph \{i}: relative snap dx=\{dx} dy=\{dy} at scale=\{s}",
+    )
+  }
+}
+
+///|
+test "pill menu expand and collapse keep glyph phases and inter-glyph spacing rigid without shell drift" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0, scale=2.0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let more_ref : Ref[@view.View?] = Ref(None)
+  let panel_ref : Ref[@view.View?] = Ref(None)
+  let open = @signals.signal(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "info", fn() { "Info" }, fn() {  }) |> ignore
+          let more = icon_button_node(k, "more", fn() { "More" }, fn() { open.set(true) })
+          more_ref.val = Some(more)
+        })
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(l) {
+        l.over(Is(true)) |> ignore
+        menu_node_by(
+          l,
+          fn() { open.get() },
+          fn(_) { more_ref.val.unwrap() },
+          fn() {
+            [
+              Some(menu_item_of("Copy Link", fn() {  })),
+              Some(menu_item_of("Pin Message", fn() {  })),
+              Some(menu_item_of("Delete", fn() {  })),
+            ]
+          },
+          "",
+          End,
+          panel_offset,
+          false,
+          false,
+          fn(_) { open.set(false) },
+          fn() { open.set(false) },
+          false,
+          panel_ref~,
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Real press + hold (so press_way scales trigger pill up toward 1.05x) + release to open menu.
+  let (mx, my, mw, mh) = more_ref.val.unwrap().placed_window_now()
+  t.press_at(mx + mw * 0.5, my + mh * 0.5)
+  t.run_for_exact(60.0)
+  let pre_release_pill = t.drawn_glass()[0]
+  t.release(mx + mw * 0.5, my + mh * 0.5)
+  t.draw()
+  // Trigger pill press-scale must decay continuously on the release frame (no 1-frame snap to 1.0x).
+  let release_pill = t.drawn_glass()[0]
+  assert_true(
+    (release_pill.2 - pre_release_pill.2).abs() < 0.5 && (release_pill.3 - pre_release_pill.3).abs() < 0.5,
+    msg="trigger pill snapped on release frame: pre=(\{pre_release_pill.2}x\{pre_release_pill.3}) vs release=(\{release_pill.2}x\{release_pill.3})",
+  )
+
+  // Sample every ~20ms across open (0..420ms).
+  let open_frames : Array[(Double, Array[Array[Double]])] = []
+  let open_shell_pos : Array[(Double, Double, Double)] = []
+  let mut elapsed = 0.0
+  while elapsed < 420.0 {
+    t.run_for_exact(20.0)
+    elapsed += 20.0
+    let gs = bridge_visible_glyphs(t)
+    if !gs.is_empty() {
+      open_frames.push((elapsed, gs))
+    }
+    match panel_ref.val {
+      Some(pv) if pv.alive() => {
+        let (sx, sy, _, _) = pv.placed_window_now()
+        open_shell_pos.push((elapsed, sx, sy))
+      }
+      _ => ()
+    }
+  }
+  t.run_for(bridge_test_settle_ms)
+  let rest_glyphs = bridge_visible_glyphs(t)
+  assert_true(rest_glyphs.length() >= 18, msg="settled menu has visible glyphs: \{rest_glyphs.length()}")
+  assert_true(open_frames.length() >= 10, msg="captured open frames: \{open_frames.length()}")
+  let (rest_sx, rest_sy, _, _) = panel_ref.val.unwrap().placed_window_now()
+  assert_true(open_shell_pos.length() >= 10, msg="captured open shell boxes: \{open_shell_pos.length()}")
+  // Laid-out menu shell position must not drift while press_way decays during open.
+  for p in open_shell_pos {
+    assert_true(
+      (p.1 - rest_sx).abs() < 0.01 && (p.2 - rest_sy).abs() < 0.01,
+      msg="open t=\{p.0}ms: laid-out menu shell drifted (\{p.1}, \{p.2}) vs rest (\{rest_sx}, \{rest_sy})",
+    )
+  }
+  for frame in open_frames {
+    assert_glyphs_rigid(frame.1, rest_glyphs, "open t=\{frame.0}ms")
+  }
+
+  // Close and sample every ~20ms across close (0..260ms).
+  open.set(false)
+  t.draw()
+  let mut close_checked = 0
+  let mut c_elapsed = 0.0
+  while c_elapsed < 260.0 {
+    t.run_for_exact(20.0)
+    c_elapsed += 20.0
+    let gs = bridge_visible_glyphs(t)
+    if gs.length() == rest_glyphs.length() {
+      assert_glyphs_rigid(gs, rest_glyphs, "close t=\{c_elapsed}ms")
+      close_checked += 1
+    }
+  }
+  assert_true(close_checked >= 5, msg="checked close frames: \{close_checked}")
+  t.run_for(bridge_test_settle_ms)
+  assert_eq(bridge_visible_glyphs(t).length(), 0, msg="all menu glyphs unmounted after close")
+}
+
+///|
+test "glass_capsule_node trigger text keeps glyph phases and spacing rigid during close recoil" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0, scale=2.0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let cap_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).lies_along(Is(End)).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(row) {
+        row.row(Is(true)).gap(Is(8.0)) |> ignore
+        let cap = action_box_node(row, fn() { "Model" }, fn(b) {
+          menu(
+            [
+              Some(menu_item_of("Gemini 4", fn() {  })),
+              Some(menu_item_of("Claude 5", fn() {  })),
+            ],
+            from=Node(b),
+            side=Top,
+            along=Start,
+          )
+        }, fn(b) {
+          glass_capsule_node(b, min_height=Some(32.0), radius=Some(999.0), trigger=true)
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .padding(Is((14.0, 0.0, 14.0, 0.0)))
+          |> ignore
+          b.box(fn(w) { w.words(Is("Gemini 4")).ink(By(fn() { theme().p.text })) |> ignore }) |> ignore
+        })
+        cap_ref.val = Some(cap)
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let rest_cap_glyphs = bridge_visible_glyphs(t)
+  assert_true(rest_cap_glyphs.length() >= 7, msg="capsule trigger has visible glyphs: \{rest_cap_glyphs.length()}")
+  let rest_cap_glass = t.drawn_glass()[0]
+  let rest_cap_rel_y = rest_cap_glyphs[0][1] - rest_cap_glass.1
+
+  let (cx, cy, cw, ch) = cap_ref.val.unwrap().placed_window_now()
+  t.press_at(cx + cw * 0.5, cy + ch * 0.5)
+  t.release(cx + cw * 0.5, cy + ch * 0.5)
+  t.run_for(bridge_test_settle_ms)
+
+  // Close menu; once platter hands off (~300ms..580ms), capsule text is visible while trig.pill recoils & splashes.
+  t.key(@ui.key_escape)
+  t.draw()
+  let mut checked = 0
+  let mut elapsed = 0.0
+  while elapsed < 600.0 {
+    t.run_for_exact(20.0)
+    elapsed += 20.0
+    let gs = bridge_visible_glyphs(t)
+    let glass = t.drawn_glass()
+    if gs.length() == rest_cap_glyphs.length() && glass.length() == 1 {
+      assert_glyphs_rigid(gs, rest_cap_glyphs, "capsule recoil t=\{elapsed}ms")
+      let s = gs[0][2] / rest_cap_glyphs[0][2]
+      let rel_y = (gs[0][1] - glass[0].1) / s
+      assert_true(
+        (rel_y - rest_cap_rel_y).abs() < 0.01,
+        msg="capsule recoil t=\{elapsed}ms: glyph baseline snapped vs glass (rel_y=\{rel_y} vs rest=\{rest_cap_rel_y})",
+      )
+      checked += 1
+    }
+  }
+  assert_true(checked >= 8, msg="checked capsule recoil frames: \{checked}")
+}
+
+///|
+test "menu submenu horizontal slide keeps glyph phases and spacing rigid" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { if key == "common.back" { "Back" } else { key } })
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, dark=false, platform=2, scale=2.0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let more_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((16.0, 48.0, 16.0, 16.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          let more = icon_button_node(k, "more", fn() { "More" }, fn() {
+            let anchor = more_ref.val.unwrap()
+            menu(
+              [
+                Some(menu_item_of("Pin Chat", fn() {  })),
+                Some(menu_item_of("Share", fn() {
+                  menu(
+                    [
+                      Some(menu_item_of("Copy URL", fn() {  })),
+                      Some(menu_item_of("Save PNG", fn() {  })),
+                    ],
+                    from=Node(anchor),
+                    title="Share",
+                    along=End,
+                  )
+                }, further=true)),
+              ],
+              from=Node(anchor),
+              along=End,
+            )
+          })
+          more_ref.val = Some(more)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let (mx, my, mw, mh) = more_ref.val.unwrap().placed_window_now()
+  t.press_at(mx + mw * 0.5, my + mh * 0.5)
+  t.release(mx + mw * 0.5, my + mh * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  let rest_root = bridge_visible_glyphs(t)
+
+  // Push submenu and sample entering & leaving level glyphs across slide.
+  let (sx, sy) = t.find("Share").unwrap()
+  t.press_at(sx, sy)
+  t.release(sx, sy)
+  let mid_frames : Array[(Double, Array[Array[Double]])] = []
+  let mut elapsed = 0.0
+  while elapsed < 200.0 {
+    t.run_for_exact(20.0)
+    elapsed += 20.0
+    mid_frames.push((elapsed, bridge_visible_glyphs(t)))
+  }
+  t.run_for(bridge_test_slide_settle_ms)
+  let rest_sub = bridge_visible_glyphs(t)
+  let n_sub = rest_sub.length()
+  assert_true(n_sub >= 12, msg="settled submenu has visible glyphs: \{n_sub}")
+  let has_atlas = fn(ref_gs : Array[Array[Double]], g : Array[Double]) -> Bool {
+    for r in ref_gs {
+      if g[12] == r[12] && g[13] == r[13] && g[14] == r[14] && g[15] == r[15] {
+        return true
+      }
+    }
+    false
+  }
+  let mut checked = 0
+  for f in mid_frames {
+    if f.1.length() >= n_sub {
+      // Every visible glyph (both entering and leaving levels) must keep its settled atlas phase.
+      for i in 0..<f.1.length() {
+        let g = f.1[i]
+        assert_true(
+          has_atlas(rest_sub, g) || has_atlas(rest_root, g),
+          msg="submenu slide t=\{f.0}ms glyph \{i}: atlas (\{g[12]}, \{g[13]}) rephased outside settled root/submenu slots",
+        )
+      }
+      let active_gs = f.1[:n_sub].to_owned()
+      assert_glyphs_rigid(active_gs, rest_sub, "submenu slide t=\{f.0}ms")
+      checked += 1
+    }
+  }
+  assert_true(checked >= 5, msg="checked submenu slide frames: \{checked}")
+}
+
+///|
+test "plain button menu opened by click keeps shell laid-out origin and glyph phases steady during button press-bounce" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0, scale=2.0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let btn_ref : Ref[@view.View?] = Ref(None)
+  let panel_ref : Ref[@view.View?] = Ref(None)
+  let open = @signals.signal(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 48.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      let btn = button_node(page, fn() { "Actions" }, fn() { open.set(true) })
+      btn_ref.val = Some(btn)
+      root.box(fn(l) {
+        l.over(Is(true)) |> ignore
+        menu_node_by(
+          l,
+          fn() { open.get() },
+          fn(_) { btn_ref.val.unwrap() },
+          fn() {
+            [
+              Some(menu_item_of("Rename", fn() {  })),
+              Some(menu_item_of("Duplicate", fn() {  })),
+              Some(menu_item_of("Archive", fn() {  })),
+            ]
+          },
+          "",
+          Start,
+          panel_offset,
+          false,
+          false,
+          fn(_) { open.set(false) },
+          fn() { open.set(false) },
+          false,
+          panel_ref~,
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let (bx, by, bw, bh) = btn_ref.val.unwrap().placed_window_now()
+  let menu_glyphs_in = fn() -> Array[Array[Double]] {
+    bridge_visible_glyphs(t).filter(fn(a) { a[1] > by + bh })
+  }
+  t.press_at(bx + bw * 0.5, by + bh * 0.5)
+  t.run_for_exact(60.0)
+  t.release(bx + bw * 0.5, by + bh * 0.5)
+  t.draw()
+
+  let open_shell_pos : Array[(Double, Double, Double)] = []
+  let open_frames : Array[(Double, Array[Array[Double]])] = []
+  let mut elapsed = 0.0
+  while elapsed < @motion.pop_ms {
+    t.run_for_exact(20.0)
+    elapsed += 20.0
+    match panel_ref.val {
+      Some(pv) if pv.alive() => {
+        let (sx, sy, _, _) = pv.placed_window_now()
+        open_shell_pos.push((elapsed, sx, sy))
+      }
+      _ => ()
+    }
+    let gs = menu_glyphs_in()
+    if !gs.is_empty() {
+      open_frames.push((elapsed, gs))
+    }
+  }
+  t.run_for(@motion.pop_ms)
+  let (rest_sx, rest_sy, _, _) = panel_ref.val.unwrap().placed_window_now()
+  let rest_menu_gs = menu_glyphs_in()
+  assert_true(rest_menu_gs.length() >= 18, msg="plain menu settled glyphs: \{rest_menu_gs.length()}")
+  assert_true(open_shell_pos.length() >= 4, msg="plain menu open shell samples: \{open_shell_pos.length()}")
+  for p in open_shell_pos {
+    assert_true(
+      (p.1 - rest_sx).abs() < 0.01 && (p.2 - rest_sy).abs() < 0.01,
+      msg="plain menu open t=\{p.0}ms: shell drifted (\{p.1}, \{p.2}) vs rest (\{rest_sx}, \{rest_sy})",
+    )
+  }
+  for frame in open_frames {
+    assert_glyphs_rigid(frame.1, rest_menu_gs, "plain menu open t=\{frame.0}ms")
+  }
+}

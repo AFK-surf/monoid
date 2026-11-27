@@ -123,7 +123,14 @@ pub fn[K] Combobox::active(self : Combobox[K]) -> K? {
 fn[K : Eq] active_of(keys : Array[K], active : K?, off : (K) -> Bool) -> K? {
   match active {
     Some(a) if keys.contains(a) && !off(a) => Some(a)
-    _ => keys.iter().find_first(fn(k) { !off(k) })
+    _ => {
+      for i = 0; i < keys.length(); i = i + 1 {
+        if !off(keys[i]) {
+          return Some(keys[i])
+        }
+      }
+      None
+    }
   }
 }
 

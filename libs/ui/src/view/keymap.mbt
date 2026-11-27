@@ -38,8 +38,22 @@ pub fn KeyWhen::holds(self : KeyWhen, has : (String) -> Bool) -> Bool {
     Always => true
     In(name) => has(name)
     Not(w) => !w.holds(has)
-    All(ws) => ws.iter().all(fn(w) { w.holds(has) })
-    Any(ws) => ws.iter().any(fn(w) { w.holds(has) })
+    All(ws) => {
+      for i = 0; i < ws.length(); i = i + 1 {
+        if !ws[i].holds(has) {
+          return false
+        }
+      }
+      true
+    }
+    Any(ws) => {
+      for i = 0; i < ws.length(); i = i + 1 {
+        if ws[i].holds(has) {
+          return true
+        }
+      }
+      false
+    }
   }
 }
 
@@ -398,14 +412,17 @@ fn Tree::key_has(self : Tree, at : Int, facts : Array[String], name : String) ->
 /// What node `at` does for `action`, where it can now.
 fn Tree::action_at(self : Tree, at : Int, action : String) -> Array[(ActionAt) -> Bool] {
   match self.keyed.nodes.get(at) {
-    Some(k) =>
-      [..k.actions, ..k.said_actions].filter_map(fn(a) {
+    Some(k) => {
+      let all = k.actions.copy()
+      all.append(k.said_actions)
+      all.filter_map(fn(a) {
         if a.0 == action && @signals.untracked(a.2) {
           Some(a.1)
         } else {
           None
         }
       })
+    }
     None => []
   }
 }
@@ -487,16 +504,20 @@ fn Tree::stroke_now(self : Tree, s : Stroke, t : Double, from : NodeId?, facts :
     }
   }
   // (begun: a longer binding it goes on with, where some node does its action)
-  let goes_on = nodes.iter().any(fn(i) {
-    bindings
-    .iter()
-    .any(fn(bd) {
-      bd.keys.length() > keys.length() &&
+  let mut goes_on = false
+  for ni = 0; ni < nodes.length() && !goes_on; ni = ni + 1 {
+    let i = nodes[ni]
+    for bi = 0; bi < bindings.length(); bi = bi + 1 {
+      let bd = bindings[bi]
+      if bd.keys.length() > keys.length() &&
       strokes_begin(bd.keys, keys) &&
       bd.when.holds(fn(name) { self.key_has(i, facts, name) }) &&
-      self.action_at(i, bd.action).length() > 0
-    })
-  })
+      self.action_at(i, bd.action).length() > 0 {
+        goes_on = true
+        break
+      }
+    }
+  }
   if goes_on {
     if under.is_empty() {
       book.pending_from = from
@@ -568,7 +589,16 @@ pub fn Tree::keys_for(
   if self.nodes.length() == 0 || !self.nodes[0].live {
     return []
   }
-  let at = match self.action_nodes(from).iter().find_first(fn(i) { self.action_at(i, action).length() > 0 }) {
+  let action_nodes = self.action_nodes(from)
+  let mut found_at : Int? = None
+  for k = 0; k < action_nodes.length(); k = k + 1 {
+    let cand = action_nodes[k]
+    if self.action_at(cand, action).length() > 0 {
+      found_at = Some(cand)
+      break
+    }
+  }
+  let at = match found_at {
     Some(i) => i
     None =>
       match from {
@@ -599,12 +629,15 @@ pub fn Tree::actions_here(self : Tree, from? : NodeId? = None) -> Array[String] 
   }
   for i in self.action_nodes(from) {
     match self.keyed.nodes.get(i) {
-      Some(k) =>
-        for a in [..k.actions, ..k.said_actions] {
+      Some(k) => {
+        let all = k.actions.copy()
+        all.append(k.said_actions)
+        for a in all {
           if !out.contains(a.0) && @signals.untracked(a.2) {
             out.push(a.0)
           }
         }
+      }
       None => ()
     }
   }

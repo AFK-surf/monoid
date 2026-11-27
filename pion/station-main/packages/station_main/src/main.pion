@@ -4,8 +4,11 @@
 import "base_codec"
 import "builders_core"
 import "host_shim"
+import "jscase"
+import "sql_db"
 import "sse"
 import "station_http"
+import "station_store"
 import "station_sys"
 
 pub fn version_line() -> String {
@@ -509,6 +512,198 @@ fn run_smoke_http() -> Int {
   0
 }
 
+fn encode_utf8_cp(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp as Byte)
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  }
+}
+
+fn check_sql_js_lower(db : sql_db::Db, input : String, label : String) -> Result[Unit, String] {
+  let expected = jscase::lower(input)
+  match db.first("SELECT js_lower(?1) AS v", [base_codec::json_str(input)]) {
+    Ok(Some(row)) => match row.get("v") {
+      Some(base_codec::Json::Str(got)) => {
+        if got == expected {
+          Ok(())
+        } else {
+          Err("js_lower mismatch on " + label + ": got len=" + got.length().to_string() + " expected len=" + expected.length().to_string())
+        }
+      }
+      _ => Err("js_lower returned non-string on " + label)
+    }
+    Ok(None) => Err("js_lower returned no row on " + label)
+    Err(e) => Err("js_lower query error on " + label + ": " + e.message)
+  }
+}
+
+fn run_smoke_js_lower() -> Int {
+  match station_sys::register_sqlite_js_lower() {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("smoke-js-lower: " + e)
+      return 1
+    }
+  }
+  let store = match station_store::Store::open(":memory:") {
+    Ok(s) => s
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("smoke-js-lower: open :memory: failed: " + e.message)
+      return 1
+    }
+  }
+  let db = store.db
+
+  // 1. Exhaustive codepoint sweep 0x0001..=0x1E950 (skipping UTF-16 surrogates 0xD800..=0xDFFF).
+  //    Each codepoint is separated by ASCII space so isolated lowering is checked cleanly in batches.
+  let mut checked = 0
+  let mut cp = 1
+  while cp <= 0x1E950 {
+    let sb = StringBuilder::new()
+    let batch_start = cp
+    let mut in_batch = 0
+    while cp <= 0x1E950 && in_batch < 256 {
+      if cp >= 0xD800 && cp <= 0xDFFF {
+        cp = 0xE000
+        continue
+      }
+      if in_batch > 0 {
+        sb.write_byte(32 as Byte)
+      }
+      encode_utf8_cp(sb, cp)
+      cp = cp + 1
+      in_batch = in_batch + 1
+      checked = checked + 1
+    }
+    let batch_str = sb.to_string()
+    match check_sql_js_lower(db, batch_str, "batch@" + batch_start.to_string()) {
+      Ok(_) => ()
+      Err(e) => {
+        // Pinpoint exact failing codepoint for immediate diagnosis.
+        let mut p = batch_start
+        while p < cp {
+          if p >= 0xD800 && p <= 0xDFFF {
+            p = 0xE000
+            continue
+          }
+          let one = StringBuilder::new()
+          encode_utf8_cp(one, p)
+          match check_sql_js_lower(db, one.to_string(), "U+" + p.to_string()) {
+            Ok(_) => ()
+            Err(pe) => {
+              let _ = host_shim::write_stderr_line("smoke-js-lower: " + pe)
+              db.close()
+              return 1
+            }
+          }
+          p = p + 1
+        }
+        let _ = host_shim::write_stderr_line("smoke-js-lower: " + e)
+        db.close()
+        return 1
+      }
+    }
+  }
+
+  // 2. Six Final_Sigma (U+03A3) contexts + Greek/Turkish/Kelvin + `mİx`.
+  let special_cases : Array[(String, String)] = [
+    ("final_sigma_isolated", "\u{03A3}"),
+    ("final_sigma_word_end", "\u{0391}\u{039F}\u{03A3}"),
+    ("final_sigma_before_space", "\u{0391}\u{039F}\u{03A3} "),
+    ("final_sigma_medial", "\u{0391}\u{039F}\u{03A3}\u{0391}"),
+    ("final_sigma_initial", "\u{03A3}\u{0391}"),
+    ("final_sigma_combining_before", "\u{0391}\u{0301}\u{03A3}"),
+    ("final_sigma_combining_after", "\u{0391}\u{039F}\u{03A3}\u{0301}\u{0391}"),
+    ("greek_turkish_kelvin", "\u{0386}\u{03BD}\u{03BD}\u{03B1} \u{0130}ZM\u{0130}R 300\u{212A}"),
+    ("turkish_dotted_mix", "m\u{0130}x"),
+  ]
+  for i in 0..<special_cases.length() {
+    let (lbl, sample) = special_cases[i]
+    match check_sql_js_lower(db, sample, lbl) {
+      Ok(_) => ()
+      Err(e) => {
+        let _ = host_shim::write_stderr_line("smoke-js-lower: " + e)
+        db.close()
+        return 1
+      }
+    }
+  }
+  // Confirm `mİx` does NOT lower to plain `"mix"` (contains combining dot above U+0307).
+  if jscase::lower("m\u{0130}x") == "mix" {
+    let _ = host_shim::write_stderr_line("smoke-js-lower: mİx unexpectedly lowered to mix")
+    db.close()
+    return 1
+  }
+
+  // 3. NULL handling: `SELECT js_lower(NULL) IS NULL` must return 1.
+  let null_ok = match db.first("SELECT js_lower(NULL) IS NULL AS is_null", []) {
+    Ok(Some(row)) => match row.get("is_null") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int() == 1
+      _ => false
+    }
+    _ => false
+  }
+  if !null_ok {
+    let _ = host_shim::write_stderr_line("smoke-js-lower: NULL check failed")
+    db.close()
+    return 1
+  }
+
+  // 4. Long string > 4096 bytes exercising the heap allocation path in `station_sqlite_ext.c`.
+  let long_sb = StringBuilder::new()
+  let unit = "ABC-\u{0386}\u{03BD}\u{03BD}\u{03B1}-\u{0130}ZM\u{0130}R-300\u{212A}-\u{0391}\u{039F}\u{03A3}-"
+  for _i in 0..<180 {
+    long_sb.write_string(unit)
+  }
+  let long_str = long_sb.to_string()
+  if long_str.to_bytes().length() <= 4096 {
+    let _ = host_shim::write_stderr_line("smoke-js-lower: long_str unexpectedly <= 4096 bytes")
+    db.close()
+    return 1
+  }
+  match check_sql_js_lower(db, long_str, "long_heap_string") {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("smoke-js-lower: " + e)
+      db.close()
+      return 1
+    }
+  }
+
+  db.close()
+  let _ = host_shim::write_stdout_line(
+    "{\"ok\":true,\"codepoints\":" +
+    checked.to_string() +
+    ",\"final_sigma\":true,\"null\":true,\"long_bytes\":" +
+    long_str.to_bytes().length().to_string() +
+    "}",
+  )
+  0
+}
+
+fn should_run_whole_daemon(argv : Array[String]) -> Bool {
+  for i in 1..<argv.length() {
+    if argv[i] == "--whole-daemon" {
+      return true
+    }
+  }
+  match station_sys::env_get("STILLFAIL_PION_WHOLE_DAEMON") {
+    Some("1") => true
+    _ => false
+  }
+}
+
 fn main(_world : World) -> Unit {
   let argv = host_shim::args()
   if argv.length() == 2 && argv[1] == "--version" {
@@ -524,6 +719,13 @@ fn main(_world : World) -> Unit {
   }
   if argv.length() == 2 && argv[1] == "--smoke-http" {
     let rc = run_smoke_http()
+    if rc != 0 {
+      host_shim::exit_process(rc)
+    }
+    return
+  }
+  if argv.length() == 2 && argv[1] == "--smoke-js-lower" {
+    let rc = run_smoke_js_lower()
     if rc != 0 {
       host_shim::exit_process(rc)
     }
@@ -548,7 +750,11 @@ fn main(_world : World) -> Unit {
     }
     match find_main_subcommand(cli_args) {
       Some("run") => {
-        let rc = run_rig_daemon(argv)
+        let rc = if should_run_whole_daemon(argv) {
+          run_whole_daemon(argv)
+        } else {
+          run_rig_daemon(argv)
+        }
         if rc != 0 {
           host_shim::exit_process(rc)
         }

@@ -74,6 +74,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       foot: None,
       hugs: false,
       hugs_centred: false,
+      hugs_wide: false,
       steps: false,
       sheet_heads: true,
       heads: false,

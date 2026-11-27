@@ -148,7 +148,7 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["workspaceName", "String", { said: true }],
     ["vault", "String", { doc: "The vault whose key it lacks, one of the viewer's own that this device holds the key to." }],
     ["vaultName", "String", { said: true }],
-    ["device", "String", { doc: "The device set up without the key (its id in the lock): what `vault.addDevice {vault, device}` gives it to, and `vault.hidePrompt {device}` puts away." }],
+    ["device", "String", { doc: "The device set up without the key (its id in the lock): what `vault.addDevice {vault, device}` gives it to, and `vault.hidePrompt {vault, device}` puts away." }],
     ["deviceText", "String", { said: true, doc: "Its name as people know it (LockDevice `fullText`)." }],
     ["deviceCode", opt("String"), { doc: "Deterministic 6-char verification code (`XXX-XXX`) matching the requesting device." }],
     ["ownerName", opt("String"), { said: true, doc: "Name (or email) of the member who owns the requesting device." }],
@@ -157,7 +157,7 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["vaultScope", opt("String"), { doc: "`personal` or `workspace`." }],
     ["vaultItems", opt("u32"), { doc: "Current non-deleted item count in this vault." }],
     ["safeMode", opt("bool"), { doc: "Whether the workspace is currently in safe mode." }],
-    ["at", "i64", { client: "I54", doc: "When it was set up, or last asked (its certificate's date, unix seconds)." }],
+    ["at", "i64", { client: "I54", doc: "When the person explicitly pressed 申请授权 for this vault (standalone signed `KeyAsk.at`, unix seconds)." }],
     ["atText", "String", { said: true, doc: "That, in words (3 分钟前)." }],
   ], { doc: "A member's device set up that waits on this one for a vault's key (views/vault.ts `vaultAsks`, LockPromptsView `asks`)." }),
   VaultItemRow: struct([

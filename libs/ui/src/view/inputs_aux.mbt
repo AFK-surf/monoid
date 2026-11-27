@@ -10,7 +10,7 @@ priv struct InputsAux {
 
 ///|
 // kept across runs: per-Tree side table + 1-slot MRU cache, cleared on `Tree::dispose`
-let tree_inputs_auxs : Array[(Tree, InputsAux)] = []
+let tree_inputs_auxs : Ref[Array[(Tree, InputsAux)]] = Ref([])
 
 ///|
 // kept across runs: 1-slot MRU cache for `Tree::inputs_aux` / `inputs_aux_opt`, cleared on `Tree::dispose`
@@ -22,7 +22,7 @@ fn Tree::inputs_aux_opt(self : Tree) -> InputsAux? {
     Some((t, aux)) if physical_equal(t, self) => return Some(aux)
     _ => ()
   }
-  for entry in tree_inputs_auxs {
+  for entry in tree_inputs_auxs.val {
     if physical_equal(entry.0, self) {
       last_inputs_aux.val = Some(entry)
       return Some(entry.1)
@@ -38,7 +38,7 @@ fn Tree::inputs_aux(self : Tree) -> InputsAux {
     None => {
       let aux : InputsAux = { in_bits: [], at_bits: [] }
       let pair = (self, aux)
-      tree_inputs_auxs.push(pair)
+      tree_inputs_auxs.val.push(pair)
       last_inputs_aux.val = Some(pair)
       aux
     }
@@ -51,17 +51,20 @@ fn Tree::inputs_aux_clear(self : Tree) -> Unit {
     Some((t, _)) if physical_equal(t, self) => last_inputs_aux.val = None
     _ => ()
   }
-  match tree_inputs_auxs.search_by(fn(e) { physical_equal(e.0, self) }) {
-    Some(i) => {
-      let (_, aux) = tree_inputs_auxs.remove(i)
-      aux.in_bits.clear()
-      aux.at_bits.clear()
-      aux.in_bits.shrink_to_fit()
-      aux.at_bits.shrink_to_fit()
-      // Release the removed (Tree, InputsAux) slot past the array end even while other Trees remain live.
-      tree_inputs_auxs.shrink_to_fit()
+  let arr = tree_inputs_auxs.val
+  let mut found = -1
+  for i = 0; i < arr.length(); i = i + 1 {
+    if physical_equal(arr[i].0, self) {
+      found = i
+      break
     }
-    None => ()
+  }
+  if found >= 0 {
+    let (_, aux) = arr.remove(found)
+    aux.in_bits.clear()
+    aux.at_bits.clear()
+    // Release the removed (Tree, InputsAux) slot past the array end even while other Trees remain live.
+    tree_inputs_auxs.val = if arr.is_empty() { [] } else { arr.copy() }
   }
 }
 

@@ -72,6 +72,9 @@ export function windowWords(lang: Lang): Record<string, unknown> {
   };
 }
 
+/// Cached screen grants stay fresh for optimistic `open()` this long before re-checking the helper's `status`.
+export const OPEN_GRANTS_TTL_MS = 30_000;
+
 export class Desktop implements ScreenSource {
   readonly id = "desktop";
   readonly kind = "desktop" as const;
@@ -135,17 +138,49 @@ export class Desktop implements ScreenSource {
     // else a JPEG a picture (an agent's view, a client without either).
     const codec = codecFor(options, ["h265", "h264", "jpeg"]);
     if (codec === undefined) throw new ScreenRefused(415, "station.screen.codec", { codec: "H.264, JPEG" });
-    await this.refresh(true);
     const synthetic = this.#o.synthetic !== undefined;
-    if (!synthetic && this.#status === null) throw new ScreenRefused(503, "station.screen.failed", { said: "still.fail Helper did not answer" });
-    if (!synthetic && this.#status !== null && (!this.#status.capture || !this.#status.control)) await this.#ask(helper);
-    if (!synthetic && this.#status?.capture !== true) throw this.#refused();
+    const cached = this.#status;
+    const fresh = this.#grants?.fresh(OPEN_GRANTS_TTL_MS) === true;
+    const optimistic = fresh && (synthetic || (cached !== null && cached.capture && cached.control));
+    if (!optimistic) {
+      await this.refresh(true);
+      if (!synthetic && this.#status === null) throw new ScreenRefused(503, "station.screen.failed", { said: "still.fail Helper did not answer" });
+      if (!synthetic && this.#status !== null && (!this.#status.capture || !this.#status.control)) await this.#ask(helper);
+      if (!synthetic && this.#status?.capture !== true) throw this.#refused();
+    }
     // Granted since the helper started: it starts itself again to have it, and is asked once more.
     // The Mac's system output too, when the client asked for it (never a preview's): a helper from before it says no
     // `audio` in its info, and none is pulled.
     const audio = options.audio === true && !options.peek;
     for (let attempt = 0; ; attempt++) {
-      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.gamepadMouse ? { gamepadMouse: true } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio, true);
+      let view: HelperView;
+      try {
+        view = new HelperView(
+          codec,
+          await helper.connect({
+            op: "screen.view",
+            codec,
+            maxWidth: options.maxWidth,
+            maxHeight: options.maxHeight,
+            ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}),
+            ...(options.fps ? { fps: options.fps } : {}),
+            ...(options.gamut ? { gamut: options.gamut } : {}),
+            ...(options.chroma ? { chroma: options.chroma } : {}),
+            ...(options.gamepadMouse ? { gamepadMouse: true } : {}),
+            ...(this.#status?.display ? { display: this.#status.display.id } : {}),
+            ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}),
+            ...(synthetic ? { synthetic: this.#o.synthetic } : {}),
+          }),
+          () => (this.#views.delete(view), this.#putBack()),
+          new MacInput(),
+          "ScreenCaptureKit",
+          audio,
+          true,
+        );
+      } catch (error) {
+        this.#grants?.invalidate();
+        throw new ScreenRefused(503, "station.screen.failed", { said: (error as Error).message });
+      }
       this.#views.add(view);
       try {
         await view.ready;
@@ -154,11 +189,13 @@ export class Desktop implements ScreenSource {
         view.close();
         const code = (error as HelperError).code;
         if (code === "restart" && attempt === 0) {
+          this.#grants?.invalidate();
           await helper.back();
           continue;
         }
         if (code === "capture" || code === "restart") {
           await this.refresh(true);
+          if (!synthetic && this.#status !== null && (!this.#status.capture || !this.#status.control)) await this.#ask(helper);
           throw this.#refused();
         }
         throw new ScreenRefused(503, "station.screen.failed", { said: (error as Error).message });

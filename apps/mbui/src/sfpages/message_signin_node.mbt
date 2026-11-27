@@ -338,10 +338,10 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
               [
                 button(
                   fn() { @sf.t("android-misc.signin.codeSend") },
-                  fn() { send(field.text()) },
+                  fn() { send(field.commit_composing()) },
                   Primary,
                   sending,
-                  fn() { field.text().trim(chars=" ").to_owned() == "" || busy_end() },
+                  fn() { field.composed_said().trim(chars=" ").to_owned() == "" || busy_end() },
                 ),
                 button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Plain, never, denying),
               ]

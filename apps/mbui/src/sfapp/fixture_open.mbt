@@ -515,6 +515,35 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
       @sfpages.pool_share_open(settings_core(src, ws), fn() { "ws1" })
     }
   }
+  if mode == "chat-share-excerpt" || mode == "chat-share-excerpt-long" {
+    @sf.set_words(fill)
+    if mode == "chat-share-excerpt" {
+      @sfpages.open_excerpt_share_payload({
+        before_context: "提到，他的一些博士生很焦虑，担心 OpenAI 或 Anth",
+        before_join: Inline,
+        selected_text: "ropic 可能已经在内部做出了他们手里的题，却没有公开。可成果一公布，又往往会因为质量受到学界质疑。实验室和数学界应该怎么合作？\n\n陶哲轩：理想情况下，科技公司应该在让机器自动生成证明之前，就和数学界合作。一旦机器把那些证明吐出来，基本就没有什么好选项了。\n\n就像发电厂产生了有毒的核废料。你可以一直存着，可以向公众释放，也可以付钱请人处理。怎么选都难。最好的办法，是一开始就别产生这类废料。\n\n但现在的问题是，科技公司和数学界的根本激励",
+        after_context: "完全不同。公司是在解数学题，可它们主要想做的是训练自己的模型。",
+        after_join: Inline,
+        source_title: "整理陶哲轩访谈：AI 证明与数学界合作要点",
+        date_label: "2026.11.27",
+      })
+    } else {
+      let para = "陶哲轩指出，理想情况下科技公司应当在机器大规模产出自动证明之前就与数学界建立透明的协作规范。"
+      let parts : Array[String] = []
+      for _ in 0..<45 {
+        parts.push(para)
+      }
+      @sfpages.open_excerpt_share_payload({
+        before_context: "此前访谈提到实验室与学界的节奏差异。",
+        before_join: Paragraph,
+        selected_text: parts.join("\n\n"),
+        after_context: "随后进一步讨论了激励机制与公开审稿。",
+        after_join: Paragraph,
+        source_title: "整理陶哲轩访谈：AI 证明与数学界合作要点",
+        date_label: "2026.11.27",
+      })
+    }
+  }
   if mode == "chat-station-files" {
     fixture_station_files(src)
   }
@@ -815,14 +844,21 @@ pub fn open_mode(mode : String) -> Unit {
     app.nav.replace(Place("profiles"))
   } else if mode == "place-profiles-sum-a" {
     @settings.fixture_page("settings-profiles-sum-a") |> ignore
-    @settings.profiles_narrow_overview.set(false)
     app.nav.replace(Place("profiles"))
-  } else if mode == "place-profiles-sum-overview" {
-    // (the bottom bar's Profile switched to 概览, its own: profiles_place_overview)
+  } else if mode == "place-profiles-sum-overview" || mode == "profiles-overview" {
     @settings.fixture_page("settings-profiles-sum-a") |> ignore
-    @settings.profiles_narrow_overview.set(false)
-    @settings.profiles_place_overview.set(true)
     app.nav.replace(Place("profiles"))
+    app.nav.push(Setting(ProfilesOverview))
+  } else if mode == "place-profiles-manage" || mode == "place-profiles-sharing" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    app.nav.replace(Place("profiles"))
+    @sfbase.place_pick[@sfbase.place_key("ws1", "profiles")] = @settings.Route::ProfilesManage("")
+  } else if mode == "profiles-manage" || mode == "profiles-sharing" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    open_setting("profiles-manage")
+  } else if mode == "profiles-manage-station" {
+    @settings.fixture_page("settings-profiles-manage") |> ignore
+    open_setting("profiles-manage/ws1/st1")
   } else if mode == "terminal" || mode.has_prefix("terminal-") {
     // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
     // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)
@@ -1043,7 +1079,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-failed", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
-    "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
+    "files-tree", "place-stations", "place-profiles", "profiles-manage", "profiles-manage-station", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
     "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station", "newchat-station-many",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
@@ -1067,7 +1103,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",
     "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental",
     "settings-me", "settings-me-reading", "settings-workspace", "settings-security", "settings-vault",
-    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
+    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-unprotected-blocked", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
     "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone",
     "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long",
     "settings-station-restored",
