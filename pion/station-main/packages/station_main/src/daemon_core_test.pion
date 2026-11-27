@@ -40,6 +40,11 @@ test "daemon_core: MUX_TAG_ROLE=3 and 0/1/2 tags never collide and rewrite fetch
     let want_id = 42L * 4L + tag
     assert_str_eq(rewritten, "{\"id\":" + want_id.to_string() + "}")
   }
+  // Full 64-bit Int64 precision above 2^53-1 must be preserved without Double rounding.
+  assert_str_eq(
+    rewrite_tagged_sync_args("fetch.cancel", "{\"id\":9007199254740993}", MUX_TAG_ROLE),
+    "{\"id\":36028797018963975}",
+  )
   // Other sync ops pass through unchanged.
   assert_str_eq(rewrite_tagged_sync_args("iroh.sockets", "{\"id\":42}", MUX_TAG_MESH), "{\"id\":42}")
 
@@ -119,16 +124,31 @@ test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s replay filter, and
   drop_front_handover_rpcs(q)
   assert_true(q.length() == 1 && q[0].sid == 2L, "only non-front sid=2 survives front reset")
 
-  // Replay partition re-checks 40s deadline at replay time: sid=2 (5000L) is expired at now=46000L,
-  // while sid=5 (43000L) and sid=6 (44000L) replay in strict FIFO order.
+  // Live-clock per-item replay: clock starts at 46000L (sid=2 queued at 5000L is already expired);
+  // sid=5 (queued at 43000L) dispatches and its synchronous callback advances clock to 85000L,
+  // causing sid=6 (queued at 44000L) to exceed the 40s deadline and be timed out without executing.
   assert_true(enqueue_handover_rpc(q, mk(5L, "fifth", false, 43000L), max_items=3), "enqueue 5")
   assert_true(enqueue_handover_rpc(q, mk(6L, "sixth", false, 44000L), max_items=3), "enqueue 6")
-  let (valid, replay_expired) = partition_handover_rpcs_for_replay(q, 46000L, limit_ms=40000L)
-  assert_true(q.length() == 0, "queue cleared after replay partition")
-  assert_true(replay_expired.length() == 1 && replay_expired[0].sid == 2L, "expired sid=2 filtered out on replay")
+  let mut clock_ms = 46000L
+  let dispatched : Array[Int64] = []
+  let timed_out : Array[Int64] = []
+  replay_handover_rpcs(
+    q,
+    fn() -> Int64 { clock_ms },
+    fn(item : PendingHandoverRpc) -> Unit {
+      dispatched.push(item.sid)
+      if item.sid == 5L {
+        clock_ms = 85000L
+      }
+    },
+    fn(item : PendingHandoverRpc) -> Unit { timed_out.push(item.sid) },
+    limit_ms=40000L,
+  )
+  assert_true(q.length() == 0, "queue cleared after replay")
+  assert_true(dispatched.length() == 1 && dispatched[0] == 5L, "only sid=5 dispatched")
   assert_true(
-    valid.length() == 2 && valid[0].sid == 5L && valid[1].sid == 6L,
-    "non-expired items replay in FIFO order",
+    timed_out.length() == 2 && timed_out[0] == 2L && timed_out[1] == 6L,
+    "sid=2 (pre-expired) and sid=6 (expired mid-replay) timed out without executing",
   )
 }
 

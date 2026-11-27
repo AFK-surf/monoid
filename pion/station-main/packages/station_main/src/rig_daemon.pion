@@ -194,7 +194,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     role_name: "rig",
     hears_outside: false,
     has_mesh_directory: false,
-    accept_peer_http: false,
     validate_mode: fn(
       data : String,
       ops_fs : station_ops::OpsFs,
@@ -981,7 +980,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
-    on_peer_http: fn(_ctx : DaemonCtx, _sid : Int64, _payload : Bytes, _remote_id : String, _is_front : Bool) -> Unit {},
     on_stream_start: fn(
       ctx : DaemonCtx,
       sid : Int64,

@@ -21,21 +21,6 @@ pub struct RigRunArgs {
   pub launcher : station_ops::LauncherArgs
 }
 
-fn parse_non_neg_int(s : String) -> Option[Int] {
-  if s.length() == 0 {
-    return None
-  }
-  let mut acc = 0
-  for i in 0..<s.length() {
-    let c = s.code_unit_at(i) & 0xFF
-    if c < 48 || c > 57 {
-      return None
-    }
-    acc = acc * 10 + (c - 48)
-  }
-  Some(acc)
-}
-
 /// Parse `stillfail-station-pion run [--app DIR] [--port N] [--data DIR] [--control-fd N] [--launcher-*]`
 /// arguments into a normalized `RigRunArgs`.
 pub fn parse_rig_run_args(

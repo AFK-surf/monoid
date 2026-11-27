@@ -104,8 +104,12 @@ pub fn rewrite_tagged_sync_args(op : String, json_str : String, tag : Int64) -> 
         let (k, v) = fields[i]
         if k == "id" {
           match v {
-            base_codec::Json::Num(n, _) => {
-              out.push((k, base_codec::json_int64(encode_mux_id(n.to_int64(), tag))))
+            base_codec::Json::Num(n, raw) => {
+              let id64 = match base_codec::parse_int64_str(raw) {
+                Some(i64v) => i64v
+                None => n.to_int64()
+              }
+              out.push((k, base_codec::json_int64(encode_mux_id(id64, tag))))
             }
             _ => out.push((k, v))
           }
@@ -236,7 +240,6 @@ pub struct ActivePeerStream {
   pub remote_id : String
   pub alpn : String
   pub v2_bytes : Bool
-  pub is_peer_http : Bool
   pub opened_at : Int64
   pub mut last_activity_ms : Int64
   pub mut header_line : Option[String]
@@ -604,24 +607,28 @@ pub fn enqueue_handover_rpc(
   true
 }
 
-/// Drain `queue` into `(valid_fifo, expired)` re-checking `limit_ms` at replay time so
-/// already-expired requests are never executed when `mark_role_ready()` fires.
-pub fn partition_handover_rpcs_for_replay(
+/// Replay queued handover RPCs in FIFO order, re-reading `now_ms()` immediately before each item
+/// so an earlier synchronous dispatch cannot allow a subsequently expired item to execute.
+pub fn replay_handover_rpcs(
   queue : Array[PendingHandoverRpc],
-  now_ms : Int64,
+  now_ms : () -> Int64,
+  on_dispatch : (PendingHandoverRpc) -> Unit,
+  on_expired : (PendingHandoverRpc) -> Unit,
   limit_ms : Int64 = station_ops::PREVIOUS_LIMIT_MS,
-) -> (Array[PendingHandoverRpc], Array[PendingHandoverRpc]) {
-  let valid : Array[PendingHandoverRpc] = []
-  let expired : Array[PendingHandoverRpc] = []
+) -> Unit {
+  let items : Array[PendingHandoverRpc] = []
   for i in 0..<queue.length() {
-    if now_ms - queue[i].queued_at_ms >= limit_ms {
-      expired.push(queue[i])
-    } else {
-      valid.push(queue[i])
-    }
+    items.push(queue[i])
   }
   queue.clear()
-  (valid, expired)
+  for i in 0..<items.length() {
+    let item = items[i]
+    if now_ms() - item.queued_at_ms >= limit_ms {
+      on_expired(item)
+    } else {
+      on_dispatch(item)
+    }
+  }
 }
 
 pub fn expire_handover_rpcs(
@@ -747,7 +754,7 @@ pub fn DaemonCtx::log(self : DaemonCtx, msg : String) -> Unit {
   (self.log_fn)(msg)
 }
 
-/// True when a live previous `hub.json` process was detected at startup and handover barrier is active.
+/// True when a live previous `hub.json` process was detected at startup (mirrors TS `prior.pid !== null`).
 pub fn DaemonCtx::has_predecessor(self : DaemonCtx) -> Bool {
   (self.has_predecessor_fn)()
 }
@@ -803,16 +810,6 @@ pub fn DaemonCtx::reply_peer_rpc(
   (self.reply_peer_rpc_fn)(sid, reply_bytes, stream_plan, v2_bytes, is_front)
 }
 
-/// Write raw response bytes (e.g. for `PEER_HTTP_ALPN`) and close/finish the peer stream.
-pub fn DaemonCtx::reply_peer_stream_bytes(
-  self : DaemonCtx,
-  sid : Int64,
-  reply_bytes : Bytes,
-  is_front : Bool,
-) -> Unit {
-  (self.reply_peer_rpc_fn)(sid, reply_bytes, None, false, is_front)
-}
-
 /// Offload zstd decompression to Tokio via internal `mux_mesh` and invoke `on_done` on completion.
 pub fn DaemonCtx::unpack_zstd_async(
   self : DaemonCtx,
@@ -831,8 +828,6 @@ pub struct DaemonRoleHooks {
   pub hears_outside : Bool
   /// Whether this role serves `meshScopes.*` / `meshRelays.*` directory routes.
   pub has_mesh_directory : Bool
-  /// Whether this role accepts `PEER_HTTP_ALPN` connections (`false` on rig, `true` on whole).
-  pub accept_peer_http : Bool
   /// Validate whether `<data>` matches this daemon role (runs before key load / loopback bind).
   pub validate_mode : (String, station_ops::OpsFs, station_cloud::CloudStore, Double, String) -> Result[Unit, String]
   /// Initialize role state BEFORE the handover barrier (runs immediately after `ConfigFile`,
@@ -847,9 +842,6 @@ pub struct DaemonRoleHooks {
   /// Handle an authenticated inbound peer RPC (`sid`, `line`, `bin_opt`, `auth`, `v2_bytes`, `is_front`).
   /// Only invoked after `daemon_core` verifies `auth` via `authenticate_peer_rpc` (fail-closed).
   pub on_peer_rpc : (DaemonCtx, Int64, String, Option[Bytes], PeerAuthInfo, Bool, Bool) -> Unit
-  /// Handle an inbound `PEER_HTTP_ALPN` stream payload when `accept_peer_http == true`
-  /// (`sid`, `payload`, `remote_id`, `is_front`).
-  pub on_peer_http : (DaemonCtx, Int64, Bytes, String, Bool) -> Unit
   /// Inspect an authenticated `PEER_BYTES_ALPN` header line with `"bytes": true` to opt into
   /// streaming upload or set the buffered binary cap (`sid`, `line`, `auth`, `v2_bytes`).
   pub on_stream_start : (DaemonCtx, Int64, String, PeerAuthInfo, Bool) -> StreamStartAction
@@ -1267,24 +1259,25 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   let flush_pending_handover_rpcs = fn() -> Unit {
-    let (valid, expired) = partition_handover_rpcs_for_replay(pending_handover_rpcs, host_shim::now_ms())
-    for ei in 0..<expired.length() {
-      let item = expired[ei]
-      let err_b = station_mesh::encode_peer_answer_err(hooks.role_name + " handover timed out", item.v2_bytes)
-      write_peer_reply_to_stream(item.sid, err_b, None, item.v2_bytes, item.is_front)
-    }
-    for i in 0..<valid.length() {
-      let item = valid[i]
-      authenticate_and_dispatch_peer_rpc(
-        item.sid,
-        item.line,
-        item.bin_opt,
-        item.remote_id,
-        item.alpn,
-        item.v2_bytes,
-        item.is_front,
-      )
-    }
+    replay_handover_rpcs(
+      pending_handover_rpcs,
+      host_shim::now_ms,
+      fn(item : PendingHandoverRpc) -> Unit {
+        authenticate_and_dispatch_peer_rpc(
+          item.sid,
+          item.line,
+          item.bin_opt,
+          item.remote_id,
+          item.alpn,
+          item.v2_bytes,
+          item.is_front,
+        )
+      },
+      fn(item : PendingHandoverRpc) -> Unit {
+        let err_b = station_mesh::encode_peer_answer_err(hooks.role_name + " handover timed out", item.v2_bytes)
+        write_peer_reply_to_stream(item.sid, err_b, None, item.v2_bytes, item.is_front)
+      },
+    )
   }
 
   let ctx = DaemonCtx::{
@@ -2231,7 +2224,6 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           }
                           let alpn_ok = alpn == station_mesh::PEER_ALPN
                           || alpn == station_mesh::PEER_BYTES_ALPN
-                          || (hooks.accept_peer_http && alpn == station_mesh::PEER_HTTP_ALPN)
                           if alpn_ok {
                             active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
                             call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
@@ -2285,7 +2277,6 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 remote_id: conn.remote_id,
                                 alpn: conn.alpn,
                                 v2_bytes: conn.alpn == station_mesh::PEER_BYTES_ALPN,
-                                is_peer_http: conn.alpn == station_mesh::PEER_HTTP_ALPN,
                                 opened_at: now_s,
                                 last_activity_ms: now_s,
                                 header_line: None,
@@ -2338,7 +2329,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 return
                               }
                               st.rx_buf = concat_bytes_local(st.rx_buf, chunk)
-                              if !st.is_peer_http && st.v2_bytes && st.header_line is None {
+                              if st.v2_bytes && st.header_line is None {
                                 let nl = find_newline_byte(st.rx_buf)
                                 if nl >= 0 {
                                   let line = bytes_to_str_local(st.rx_buf, nl)
@@ -2383,9 +2374,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                               }
                             } else {
                               active_streams.remove(sid)
-                              if st.is_peer_http {
-                                (hooks.on_peer_http)(ctx, sid, st.rx_buf, st.remote_id, false)
-                              } else if st.streaming_active {
+                              if st.streaming_active {
                                 (hooks.on_stream_end)(ctx, sid, st.remote_id, st.v2_bytes, false)
                               } else {
                                 let (line, bin_opt) = match st.header_line {
@@ -2398,9 +2387,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           }
                           Ok((_, None)) => {
                             active_streams.remove(sid)
-                            if st.is_peer_http {
-                              (hooks.on_peer_http)(ctx, sid, st.rx_buf, st.remote_id, false)
-                            } else if st.streaming_active {
+                            if st.streaming_active {
                               (hooks.on_stream_end)(ctx, sid, st.remote_id, st.v2_bytes, false)
                             } else {
                               let (line, bin_opt) = match st.header_line {
@@ -2817,7 +2804,6 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                     if fconn >= 0L {
                                       let alpn_ok = alpn == station_mesh::PEER_ALPN
                                       || alpn == station_mesh::PEER_BYTES_ALPN
-                                      || (hooks.accept_peer_http && alpn == station_mesh::PEER_HTTP_ALPN)
                                       if front_conns.length() >= MAX_ACTIVE_CONNS || !alpn_ok {
                                         let close_code = if !alpn_ok { 1 } else { 2 }
                                         let close_why = if !alpn_ok { "unsupported alpn on " + hooks.role_name } else { "too many connections" }
@@ -2854,7 +2840,6 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                           Some(sids) => {
                                             pending_front_by_conn.remove(fconn)
                                             let v2_bytes = alpn == station_mesh::PEER_BYTES_ALPN
-                                            let is_peer_http = alpn == station_mesh::PEER_HTTP_ALPN
                                             for si in 0..<sids.length() {
                                               let psock = sids[si]
                                               match front_streams.get(psock) {
@@ -2864,26 +2849,22 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                                   if pfs.pending_eof {
                                                     pfs.rpc_dispatched = true
                                                     front_streams.remove(psock)
-                                                    if is_peer_http {
-                                                      (hooks.on_peer_http)(ctx, psock, pfs.payload_buf, remote_id, true)
-                                                    } else {
-                                                      let (line, bin_opt) = if v2_bytes {
-                                                        let nl = find_newline_byte(pfs.payload_buf)
-                                                        if nl >= 0 {
-                                                          let ln = bytes_to_str_local(pfs.payload_buf, nl)
-                                                          let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
-                                                          if parse_v2_header_has_bytes(ln) { (ln, Some(tl)) } else { (ln, None) }
-                                                        } else {
-                                                          (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
-                                                        }
+                                                    let (line, bin_opt) = if v2_bytes {
+                                                      let nl = find_newline_byte(pfs.payload_buf)
+                                                      if nl >= 0 {
+                                                        let ln = bytes_to_str_local(pfs.payload_buf, nl)
+                                                        let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
+                                                        if parse_v2_header_has_bytes(ln) { (ln, Some(tl)) } else { (ln, None) }
                                                       } else {
                                                         (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
                                                       }
-                                                      dispatch_peer_rpc_stream(psock, line, bin_opt, remote_id, alpn, v2_bytes, true)
+                                                    } else {
+                                                      (bytes_to_str_local(pfs.payload_buf, pfs.payload_buf.length()), None)
                                                     }
+                                                    dispatch_peer_rpc_stream(psock, line, bin_opt, remote_id, alpn, v2_bytes, true)
                                                   } else {
                                                     let mut dispatched_now = false
-                                                    if !is_peer_http && v2_bytes && pfs.rpc_header_line is None {
+                                                    if v2_bytes && pfs.rpc_header_line is None {
                                                       let nl = find_newline_byte(pfs.payload_buf)
                                                       if nl >= 0 {
                                                         let ln = bytes_to_str_local(pfs.payload_buf, nl)
@@ -3444,8 +3425,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                   let remote_id = c.remote_id
                                   let alpn = c.alpn
                                   let v2_bytes = alpn == station_mesh::PEER_BYTES_ALPN
-                                  let is_peer_http = alpn == station_mesh::PEER_HTTP_ALPN
-                                  if !is_peer_http && !fs.rpc_dispatched && v2_bytes && fs.rpc_header_line is None {
+                                  if !fs.rpc_dispatched && v2_bytes && fs.rpc_header_line is None {
                                     let nl = find_newline_byte(fs.payload_buf)
                                     if nl >= 0 {
                                       let line = bytes_to_str_local(fs.payload_buf, nl)
@@ -3492,9 +3472,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                   if stream_eof && !fs.rpc_dispatched {
                                     fs.rpc_dispatched = true
                                     front_streams.remove(sock_id)
-                                    if is_peer_http {
-                                      (hooks.on_peer_http)(ctx, sock_id, fs.payload_buf, remote_id, true)
-                                    } else if fs.streaming_active {
+                                    if fs.streaming_active {
                                       (hooks.on_stream_end)(ctx, sock_id, remote_id, v2_bytes, true)
                                     } else {
                                       let (line, bin_opt) = match fs.rpc_header_line {
