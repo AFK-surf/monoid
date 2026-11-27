@@ -242,11 +242,12 @@ pub fn open_window(p : Page) -> Bool {
         }
         let wid = @ui.window_open_here(what)
         if wid > 0 {
+          let owner = window_page_owner(p)
           windows_open[key] = Here(wid)
           windows_here_show[wid] = p
-          windows_here_owner[wid] = window_page_owner(p)
+          windows_here_owner[wid] = owner
           windows_here_told(p, wid)
-          (window_page_given.val)(p, wid)
+          (window_page_given.val)(p, wid, owner)
           return true
         }
       }
@@ -356,10 +357,11 @@ pub let window_tab_left : Ref[(TabFull) -> Unit] = Ref(fn(_) {  })
 /// it from then on opening it there.
 pub fn window_gives_back(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
+  let owner = windows_here_owner.get(wid).unwrap_or_else(fn() { window_page_owner(p) })
   windows_here_show.remove(wid)
   windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
-  match window_key(p) {
+  match window_key_for_owner(p, owner) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
@@ -371,26 +373,33 @@ pub fn window_gives_back(wid : Int) -> Unit {
 }
 
 ///|
-/// What is told as a window of this run beside its first has closed, of the page it showed (sfpages': a screen no
-/// window shows now let go of).
+/// What is told as a window of this run beside its first has closed, of the page it showed and its creation owner
+/// (sfpages': a screen no window shows now let go of without aliasing another subject).
 // kept across runs: a wire, set once in sfpages' fn init
-pub let window_page_left : Ref[(Page) -> Unit] = Ref(fn(_) {  })
+pub let window_page_left : Ref[(Page, String) -> Unit] = Ref(fn(_, _) {  })
 
 ///|
 /// What is told as page `p` is given to window `wid` of this run, as it opens (sfpages': a screen's pictures that
-/// window's to show from then on, before the frame it left draws again).
+/// window's to show from then on, before the frame it left draws again), with its creation owner.
 // kept across runs: a wire, set once in sfpages' fn init
-pub let window_page_given : Ref[(Page, Int) -> Unit] = Ref(fn(_, _) {  })
+pub let window_page_given : Ref[(Page, Int, String) -> Unit] = Ref(fn(_, _, _) {  })
+
+///|
+/// What `p` is for a specific `owner` account, whichever way it was opened (its title aside): None for a page that
+/// goes in no window. Scoped by `owner` so a new subject cannot reuse or front another subject's standalone window.
+fn window_key_for_owner(p : Page, owner : String) -> String? {
+  match p {
+    Screen(at) => Some(owner + "\u{2}screen\n" + at.station + "\n" + at.screen)
+    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
+    SideTab(f) if f.tab != "" => Some(owner + "\u{2}tab\n" + f.chat.station + "\n" + f.chat.session + "\n" + f.tab)
+    _ => None
+  }
+}
 
 ///|
 /// What `p` is, whichever way it was opened (its title aside): None for a page that goes in no window.
 fn window_key(p : Page) -> String? {
-  match p {
-    Screen(at) => Some("screen\n" + at.station + "\n" + at.screen)
-    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
-    SideTab(f) if f.tab != "" => Some("tab\n" + f.chat.station + "\n" + f.chat.session + "\n" + f.tab)
-    _ => None
-  }
+  window_key_for_owner(p, window_page_owner(p))
 }
 
 ///|
@@ -442,10 +451,11 @@ pub fn lone_page_replace(next : Page) -> Unit {
     Some(p) => windows_here_untold(p, wid)
     None => ()
   }
+  let prev_owner = windows_here_owner.get(wid).unwrap_or("")
   windows_here_show[wid] = next
   windows_here_owner[wid] = window_page_owner(next)
   windows_here_told(next, wid)
-  match was.bind(window_key) {
+  match was.bind(fn(w) { window_key_for_owner(w, prev_owner) }) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
@@ -459,17 +469,17 @@ pub fn lone_page_replace(next : Page) -> Unit {
 /// Window `wid` of this run closed (@ui.when_window_closed): forgotten, and what it showed told (window_page_left).
 fn window_here_gone(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
+  let owner = windows_here_owner.get(wid).unwrap_or_else(fn() { window_page_owner(p) })
   windows_here_show.remove(wid)
   windows_here_owner.remove(wid)
-  windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
-  match window_key(p) {
+  match window_key_for_owner(p, owner) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
   match p {
     SideTab(f) => (window_tab_left.val)(f)
-    _ => (window_page_left.val)(p)
+    _ => (window_page_left.val)(p, owner)
   }
 }
 

@@ -471,7 +471,6 @@ fn parse_svg_premul(data : Bytes) -> ((Int) -> (Int, Int, FixedArray[Byte])?)? {
 
 ///|
 fn main {
-  @sfcore.on_accounts_told.val = @sfbase.accounts_subs_sync
   // the name its native views are served under (stillfail-preview://svc/…, https://preview.stillfail.invalid/…): what
   // a station's service keeps in a view is kept by that name's origin, and the web's preview frame speaks by it
   // (cloud/src/preview.ts's stillfail-preview-*); sfbase's service_page.mbt reads its pages' addresses by it

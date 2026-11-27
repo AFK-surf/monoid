@@ -1435,6 +1435,9 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       if !user_ids.is_empty() || can_browse {
         let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
         menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
+          if !s.is_active_principal() {
+            return
+          }
           if !in_browser {
             let target = match @settings.browser_tab_to_open(s.station, user_ids) {
               Some(tid) => tid
@@ -1466,6 +1469,9 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
         }
         let open_new_browser = fn() {
+          if !s.is_active_principal() {
+            return
+          }
           let target = @settings.new_browser_tab(
             s.src.call,
             s.station,

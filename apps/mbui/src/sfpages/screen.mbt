@@ -216,8 +216,8 @@ priv struct ScreenSess {
   mut passkey_id : String
   mut passkey_gen : Int
   mut passkey_owner_principal : String
-  /// request-level keepalive holder in `screen_leases` while a passkey prompt is in-flight (0 when none)
-  mut passkey_keepalive_holder : Int
+  /// lease key held for in-flight passkey keepalive (`""` when idle)
+  mut passkey_keepalive_key : String
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
 }
@@ -263,11 +263,17 @@ fn screen_principal_for(station : String) -> String {
 }
 
 ///|
+/// Unified subject-isolated key for a specific `owner` account (used by standalone window lifecycle callbacks).
+fn screen_key_for_owner(owner : String, station : String, screen : String) -> String {
+  let (ws, st) = screen_workspace_and_station(station)
+  owner + "\u{2}" + screen_auth_gen.val.to_string() + "\u{2}" + ws + "\u{2}" + st + "\u{2}" + screen
+}
+
+///|
 /// Unified subject-isolated key for screen sessions, UI state, and visibility leases:
 /// `(ws_account_owner, screen_auth_gen, workspace, station, screen)`.
 fn screen_key(station : String, screen : String) -> String {
-  let (ws, st) = screen_workspace_and_station(station)
-  screen_principal_for(station) + "\u{2}" + ws + "\u{2}" + st + "\u{2}" + screen
+  screen_key_for_owner(screen_owner_of(station), station, screen)
 }
 
 ///|
@@ -277,9 +283,12 @@ pub fn screen_key_of(station : String, screen : String) -> String {
 }
 
 ///|
-/// Whether this session is still valid for the current subject principal (not revoked and owner/auth_gen unchanged).
+/// Whether this session is still valid for the current subject principal (not revoked, workspace not revoked, and
+/// owner/auth_gen unchanged).
 fn ScreenSess::is_active_principal(self : ScreenSess) -> Bool {
-  !self.revoked && self.principal == screen_principal_for(self.station)
+  !self.revoked &&
+  !@sfbase.workspace_is_revoked(self.workspace) &&
+  self.principal == screen_principal_for(self.station)
 }
 
 ///|
@@ -366,7 +375,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_id: "",
         passkey_gen: 0,
         passkey_owner_principal: "",
-        passkey_keepalive_holder: 0,
+        passkey_keepalive_key: "",
         child_screen: None,
       }
       screens_open[key] = s

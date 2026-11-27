@@ -454,6 +454,18 @@ let last_accounts : Ref[Json?] = Ref(None)
 let workspace_owners : Map[String, String] = Map([])
 
 ///|
+/// Workspaces that disappeared from a complete `workspaces` snapshot (no signed-in account still has access).
+/// Distinguished from "snapshot not yet received" so `workspace_owner_of` never falls back to `account_principal_sig`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_revoked : Map[String, Bool] = Map([])
+
+///|
+/// Whether workspace `ws` has been revoked (disappeared from the latest complete `workspaces` snapshot).
+pub fn workspace_is_revoked(ws : String) -> Bool {
+  ws != "" && workspace_revoked.get(ws) == Some(true)
+}
+
+///|
 /// Currently signed-in account subs (updated outside computed getters by `sfcore`'s `accounts_told`).
 // kept across runs: put back as a run begins (last_reset)
 let active_account_subs : Ref[Array[String]] = Ref([])
@@ -474,9 +486,13 @@ let account_revoke_listeners : Array[(String) -> Unit] = []
 let workspace_owner_change_listeners : Array[(String, String, String) -> Unit] = []
 
 ///|
-/// Owning account of workspace `ws` (`workspace_owners[ws]`, falling back to `account_principal_sig`).
+/// Owning account of workspace `ws` (`workspace_owners[ws]`, falling back to `account_principal_sig` only when
+/// `ws` has not been revoked).
 pub fn workspace_owner_of(ws : String) -> String {
   if ws != "" {
+    if workspace_revoked.get(ws) == Some(true) {
+      return "\u{3}revoked"
+    }
     match workspace_owners.get(ws) {
       Some(owner) if owner != "" => return owner
       _ => ()
@@ -490,6 +506,9 @@ pub fn workspace_owner_of(ws : String) -> String {
 /// owner, synchronously revokes only `(ws, old_owner)` resources.
 pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
   guard ws != "" else { return }
+  if owner != "" {
+    workspace_revoked.remove(ws)
+  }
   match workspace_owners.get(ws) {
     Some(prev) =>
       if prev != owner {
@@ -511,8 +530,9 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 }
 
 ///|
-/// Sync per-workspace account ownership from a `workspaces` topic payload (called from reactive effects, never inside
-/// a computed getter).
+/// Sync per-workspace account ownership from a complete `workspaces` topic payload (called from reactive effects,
+/// never inside a computed getter). Workspaces that disappeared from all signed-in accounts are marked revoked and
+/// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
   let seen : Map[String, String] = Map([])
@@ -531,7 +551,18 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
       }
     }
   }
+  for ws in workspace_owners.keys().collect() {
+    if !seen.contains(ws) {
+      let old_owner = workspace_owners.get(ws).unwrap_or("")
+      workspace_owners.remove(ws)
+      workspace_revoked[ws] = true
+      for f in workspace_owner_change_listeners {
+        f(ws, old_owner, "")
+      }
+    }
+  }
   for ws, owner in seen {
+    workspace_revoked.remove(ws)
     workspace_owner_set(ws, owner)
   }
 }
@@ -539,18 +570,26 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
 ///|
 /// Sync currently signed-in account subs (called from `sfcore`'s `accounts_told`, outside computed getters).
 /// Only accounts that disappeared from `subs` are synchronously revoked; unrelated accounts are untouched.
+/// When transitioning from no signed-in accounts to the first signed-in account, revokes any orphan `""` sessions.
 pub fn accounts_subs_sync(subs : Array[String]) -> Unit {
   let prev = active_account_subs.val
+  let prev_fallback = account_principal_sig.untracked()
   let removed : Array[String] = []
   for old in prev {
     if old != "" && !subs.contains(old) {
       removed.push(old)
     }
   }
+  let orphan_empty = prev.is_empty() && prev_fallback == "" && !subs.is_empty()
   active_account_subs.val = subs.copy()
   let next_fallback = subs.get(0).unwrap_or("")
-  if account_principal_sig.untracked() != next_fallback {
+  if prev_fallback != next_fallback {
     account_principal_sig.set(next_fallback)
+  }
+  if orphan_empty {
+    for f in account_revoke_listeners {
+      f("")
+    }
   }
   for old in removed {
     for ws in workspace_owners.keys().collect() {
@@ -609,6 +648,7 @@ fn last_reset() -> Unit {
   last_said.val = []
   last_accounts.val = None
   workspace_owners.clear()
+  workspace_revoked.clear()
   active_account_subs.val = []
   account_principal_sig.set("")
   parked_owners.val = []

@@ -148,16 +148,33 @@ test "tab_viewer revokes on workspace owner change and tab_full_close does not s
   let vid_a = tv_a.viewer.media.unwrap().native().unwrap().id()
   assert_true(t.view_said("{\"info\":{\"view\":\{vid_a},\"state\":3,\"at\":[2000,10000,1,0,0,0,640,360,300,0]}}"))
   t.draw()
-  // Closing fullscreen when chat is no longer on nav stack must NOT set goes_on.
+  // Closing fullscreen when chat is not on nav stack must NOT set goes_on.
   let chat_ref : ChatRef = { station: "ws1/st1", session: "s1", title: "C1", station_name: "st1" }
   tab_full.set(Some({ chat: chat_ref, tab }))
   full_lone.val = false
   tab_full_close()
   assert_false(tv_a.goes_on, msg="tab_full_close must not set goes_on when chat is not on nav stack")
-  // Workspace owner revocation synchronously pauses & releases old TabViewer.
+  // Chat IS on nav stack, but covered by another page (Settings) -> tab_full_close must still NOT set goes_on!
+  app.nav.push(Chat(chat_ref))
+  app.nav.push(Settings)
+  tab_full.set(Some({ chat: chat_ref, tab }))
+  full_lone.val = false
+  tab_full_close()
+  assert_false(tv_a.goes_on, msg="tab_full_close must not set goes_on when chat is covered by another page")
+  // When chat IS the foreground top page -> tab_full_close DOES preserve playback (sets goes_on).
+  app.nav.pop() |> ignore
+  tab_full.set(Some({ chat: chat_ref, tab }))
+  full_lone.val = false
+  tab_full_close()
+  assert_true(tv_a.goes_on, msg="tab_full_close must set goes_on when chat is the foreground page")
+  tv_a.goes_on = false
+  // Workspace owner revocation synchronously pauses & releases old TabViewer AND unmounts mounted viewer_tab_node.
+  assert_true(t.find("clip.mp4") is Some(_), msg="viewer_tab_node should be mounted before revocation")
   workspace_owner_set("ws1", "acct-b")
   assert_true(tab_viewers.is_empty(), msg="revoked owner TabViewer must be removed on workspace owner change")
   assert_true(t.views().contains("close \{vid_a}"), msg="revoked owner TabViewer native player must be closed")
+  t.draw()
+  assert_true(t.find("clip.mp4") is None, msg="mounted viewer_tab_node must unmount cleanly on owner revocation")
   tab_viewers_reset()
   @ui.run_let_go()
 }

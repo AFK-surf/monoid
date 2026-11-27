@@ -208,6 +208,11 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   if case_asked.contains(id) {
     return
   }
+  let (ws, _) = screen_workspace_and_station(station)
+  let expected_principal = screen_principal_for(station)
+  if @sfbase.workspace_is_revoked(ws) {
+    return
+  }
   case_asked[id] = true
   let params = {
     "station": Json::string(station),
@@ -216,6 +221,9 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
     "turn": Json::number(turn.to_double()),
   }
   (src.call)("screen.chrome", Json::object(params), fn(r) {
+    if @sfbase.workspace_is_revoked(ws) || screen_principal_for(station) != expected_principal {
+      return
+    }
     guard r is Ok(v) else { return }
     let got = Some(v)
     let take = fn(name : String, b64 : String) {

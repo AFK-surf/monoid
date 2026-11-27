@@ -554,6 +554,9 @@ fn send_url_to_open_chat(src : Source, url : String) -> Unit {
 ///|
 /// A new tab (＋, ⌘T): there at once on its blank page, its address bar taking the keys, while the station makes it.
 fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let listed = browser_tabs_of(s).1.map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   let nu = screen_ui(screen_key(s.station, next))

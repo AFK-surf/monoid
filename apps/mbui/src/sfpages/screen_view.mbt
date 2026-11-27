@@ -1051,8 +1051,12 @@ fn screen_native_acts(root : @view.View, pg : ScreenPage, alive : () -> Bool) ->
 
 ///|
 /// Multi-holder visibility lease entry for one subject-keyed screen (`(principal, workspace, station, screen)`).
+/// `holders` tracks ONLY real UI holders; `passkey_keepalive` is tracked separately so an in-flight passkey never
+/// masquerades as a real UI holder or prevents teardown when all UI hosts and standalone windows permanently close.
 priv struct ScreenLease {
   holders : Map[Int, Bool]
+  mut ever_had_holder : Bool
+  mut passkey_keepalive : Bool
   mut src : Source
   mut dirty : Bool
 }
@@ -1071,11 +1075,16 @@ let screen_lease_settle_queued : Ref[Bool] = Ref(false)
 
 ///|
 fn screen_lease_visible_count(key : String) -> Int {
+  screen_lease_visible_count_except(key, 0)
+}
+
+///|
+fn screen_lease_visible_count_except(key : String, exclude_holder : Int) -> Int {
   match screen_leases.get(key) {
     Some(lease) => {
       let mut n = 0
-      for _, vis in lease.holders {
-        if vis {
+      for id, vis in lease.holders {
+        if vis && id != exclude_holder {
           n += 1
         }
       }
@@ -1133,36 +1142,47 @@ fn screen_leases_settle() -> Unit {
       continue
     }
     lease.dirty = false
+    let held_by_window = match screens_open.get(key) {
+      Some(s) => @sfbase.window_has_screen_for_owner(s.account, s.station, s.screen)
+      None => false
+    }
+    // If ALL real UI holders have been permanently destroyed (not merely parked) and no standalone window remains,
+    // cancel any in-flight passkey keepalive at batch settle so handoffs (side-panel <-> fullscreen) survive while
+    // permanent teardown never leaks.
+    if lease.ever_had_holder && lease.holders.is_empty() && lease.passkey_keepalive && !held_by_window {
+      match screens_open.get(key) {
+        Some(s) => s.passkey_stop()
+        None => lease.passkey_keepalive = false
+      }
+      lease.dirty = false
+    }
     let visible = screen_lease_visible_count(key) > 0
-    if lease.holders.is_empty() {
+    let keep_alive = visible || lease.passkey_keepalive
+    if lease.holders.is_empty() && !lease.passkey_keepalive {
       empty_keys.push(key)
     }
-    if visible {
-      match screen_uis.get(key) {
-        Some(u) => u.covered.set(false)
-        None => ()
+    if keep_alive {
+      if visible {
+        match screen_uis.get(key) {
+          Some(u) => u.covered.set(false)
+          None => ()
+        }
       }
-    } else {
-      let held_by_window = match screens_open.get(key) {
-        Some(s) => @sfbase.window_has_screen_for_owner(s.account, s.station, s.screen)
-        None => false
-      }
-      if !held_by_window {
-        screen_lease_apply_hidden(lease.src, key)
-      }
+    } else if !held_by_window {
+      screen_lease_apply_hidden(lease.src, key)
     }
   }
   for key in empty_keys {
-    if screen_leases.get(key) is Some(l) && l.holders.is_empty() {
+    if screen_leases.get(key) is Some(l) && l.holders.is_empty() && !l.passkey_keepalive {
       screen_leases.remove(key)
     }
   }
 }
 
 ///|
-/// Register or update a visibility lease holder for `key`. Settled at end of navigation batch (`@ui.after_frame`),
-/// so side-panel <-> fullscreen <-> `Place("remote")` handoffs keep the stream alive and only pause when the last
-/// visible holder leaves.
+/// Register or update a real UI visibility lease holder for `key`. Settled at end of navigation batch
+/// (`@ui.after_drawn_frame`), so side-panel <-> fullscreen <-> `Place("remote")` handoffs keep the stream alive and
+/// only pause when the last visible holder leaves.
 fn screen_lease_set(src : Source, key : String, holder_id : Int, visible : Bool) -> Unit {
   let lease = match screen_leases.get(key) {
     Some(l) => {
@@ -1170,11 +1190,12 @@ fn screen_lease_set(src : Source, key : String, holder_id : Int, visible : Bool)
       l
     }
     None => {
-      let l : ScreenLease = { holders: Map([]), src, dirty: false }
+      let l : ScreenLease = { holders: Map([]), ever_had_holder: false, passkey_keepalive: false, src, dirty: false }
       screen_leases[key] = l
       l
     }
   }
+  lease.ever_had_holder = true
   if lease.holders.get(holder_id) == Some(visible) {
     return
   }
@@ -1190,7 +1211,35 @@ fn screen_lease_set(src : Source, key : String, holder_id : Int, visible : Bool)
 }
 
 ///|
-/// Remove a holder from the visibility lease table when its `screen_node` is disposed.
+/// Set or clear the request-level passkey keepalive flag on `key` (separate from real UI holders).
+fn screen_lease_set_passkey(src : Source, key : String, on : Bool) -> Unit {
+  let lease = match screen_leases.get(key) {
+    Some(l) => {
+      l.src = src
+      l
+    }
+    None =>
+      if !on {
+        return
+      } else {
+        let l : ScreenLease = { holders: Map([]), ever_had_holder: false, passkey_keepalive: false, src, dirty: false }
+        screen_leases[key] = l
+        l
+      }
+  }
+  if lease.passkey_keepalive == on {
+    return
+  }
+  lease.passkey_keepalive = on
+  lease.dirty = true
+  screen_leases_schedule_settle()
+}
+
+///|
+/// Remove a real UI holder from the visibility lease table when its `screen_node` is permanently disposed.
+/// Passkey keepalive cancellation (if no real UI holders and no standalone window remain) is settled at
+/// `@ui.after_drawn_frame` so same-batch handoffs (side-panel <-> fullscreen) keep the passkey alive while permanent
+/// teardown never leaks.
 fn screen_lease_release(src : Source, key : String, holder_id : Int) -> Unit {
   match screen_leases.get(key) {
     Some(lease) => {
@@ -1342,10 +1391,25 @@ fn screen_leases_reset() -> Unit {
 }
 
 ///|
-/// Unconditionally close and tear down screen `key` (used when replacing a `lone` window's screen with a child screen).
+/// Cancel in-flight passkeys belonging to the workspace we just switched away from.
+fn screen_workspace_switched(prev_ws : String, _next_ws : String) -> Unit {
+  for _, s in screens_open {
+    if s.workspace == prev_ws && (s.passkey_run is Some(_) || s.passkey_keepalive_key != "") {
+      s.passkey_stop()
+    }
+  }
+}
+
+///|
+/// Unconditionally close and tear down screen `key` (marks `revoked` and clears pending clipboard queue so late RPC
+/// callbacks such as `screen.screenshot` can never write to the device clipboard after permanent close).
 fn screen_left_force(src : Source, key : String) -> Unit {
   match screens_open.get(key) {
-    Some(s) => s.close(src)
+    Some(s) => {
+      s.revoked = true
+      s.copied.clear()
+      s.close(src)
+    }
     None => ()
   }
   match screen_uis.get(key) {
@@ -1374,14 +1438,25 @@ fn screen_left_force(src : Source, key : String) -> Unit {
 
 ///|
 /// The view's page gone for a captured `key`: the view, its decoder and its files let go of; upright (held upright only
-/// again) and asleep again. Kept alive if another visible holder or standalone window of the same owner still displays
-/// the same screen.
-pub fn screen_left_key(src : Source, key : String, station : String, screen : String) -> Unit {
+/// again) and asleep again. Kept alive if another real visible UI holder or standalone window of the same owner still
+/// displays the same screen.
+pub fn screen_left_key(
+  src : Source,
+  key : String,
+  station : String,
+  screen : String,
+  excluding_holder? : Int = 0,
+) -> Unit {
   let owner = match screens_open.get(key) {
     Some(s) => s.account
     None => screen_owner_of(station)
   }
-  if screen_lease_visible_count(key) > 1 || @sfbase.window_has_screen_for_owner(owner, station, screen) {
+  let other_visible = if excluding_holder > 0 {
+    screen_lease_visible_count_except(key, excluding_holder) > 0
+  } else {
+    screen_lease_visible_count(key) > 1
+  }
+  if other_visible || @sfbase.window_has_screen_for_owner(owner, station, screen) {
     match screen_uis.get(key) {
       Some(u) => {
         screen_panels_close(u)
@@ -1404,23 +1479,24 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
 }
 
 ///|
-/// A window of this run beside the first closed on page `p` (sfbase's window_page_left): a screen it showed that no
-/// other window shows now let go of, as its page leaving would (screen_left).
-fn screen_window_left(p : @sfbase.Page) -> Unit {
+/// A window of this run beside the first closed on page `p` (sfbase's window_page_left): look up by the window's
+/// creation `owner` so a subject switch cannot alias or close a new owner's session. If no real UI holder or other
+/// standalone window of `owner` remains, cancel any in-flight passkey and close the screen cleanly.
+fn screen_window_left(p : @sfbase.Page, owner : String) -> Unit {
   if p is Terminal(tat) {
     terminal_left(tat.station, tat.terminal)
     return
   }
   guard p is Screen(at) else { return }
-  let key = screen_key(at.station, at.screen)
-  if screen_lease_visible_count(key) > 0 {
+  let key = screen_key_for_owner(owner, at.station, at.screen)
+  if screen_lease_visible_count(key) > 0 || @sfbase.window_has_screen_for_owner(owner, at.station, at.screen) {
     return
   }
   match screens_open.get(key) {
-    Some(s) =>
-      if !@sfbase.window_has_screen_for_owner(s.account, at.station, at.screen) {
-        screen_left_key(s.src, key, at.station, at.screen)
-      }
+    Some(s) => {
+      s.passkey_stop()
+      screen_left_force(s.src, key)
+    }
     None => ()
   }
 }
@@ -1428,9 +1504,9 @@ fn screen_window_left(p : @sfbase.Page) -> Unit {
 ///|
 /// Page `p` given to window `wid` of this run as it opens (sfbase's window_page_given): a screen's pictures that
 /// window's from then on, so the page it leaves here, going, neither takes them back nor hides them there.
-fn screen_window_given(p : @sfbase.Page, wid : Int) -> Unit {
+fn screen_window_given(p : @sfbase.Page, wid : Int, owner : String) -> Unit {
   guard p is Screen(at) else { return }
-  match screens_open.get(screen_key(at.station, at.screen)) {
+  match screens_open.get(screen_key_for_owner(owner, at.station, at.screen)) {
     Some(s) =>
       for st in [s.stream, s.part] {
         match st {

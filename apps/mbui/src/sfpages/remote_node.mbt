@@ -1033,6 +1033,20 @@ pub fn remote_workbench_node(
       prev_front.val = if is_shown { now } else { prev_front.val }
     },
   )
+  let captured_screen_keys : Map[(String, String), String] = Map([])
+  v.reacts(fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) }, fn(now) {
+    match now.0 {
+      Some((_, Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+      _ => ()
+    }
+    for k in now.1 {
+      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+        if !captured_screen_keys.contains((at.station, at.screen)) {
+          captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+        }
+      }
+    }
+  })
   v.owns(fn() {
     let seen : Array[(String, String)] = []
     let take = fn(at : ScreenAt) {
@@ -1052,7 +1066,8 @@ pub fn remote_workbench_node(
     for pair in seen {
       let (st, sc) = pair
       if !keep_screen(st, sc) {
-        screen_left(src, st, sc)
+        let key = captured_screen_keys.get(pair).unwrap_or_else(fn() { screen_key(st, sc) })
+        screen_left_key(src, key, st, sc)
       }
     }
   })

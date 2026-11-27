@@ -62,12 +62,11 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
   match @hostapi.passkey_get(text(Some(p), "rpId"), text(Some(p), "clientData"), allow, text(Some(p), "userVerification")) {
     Some(r) => {
       self.passkey_run = Some(r)
-      // Request-level keepalive holder in screen_leases: prevents brief covering from pausing `s.call`
-      // while WebAuthn confirmation is in-flight; released immediately on completion, dismiss, close, or revocation.
-      screen_holder_next.val += 1
-      let kh = screen_holder_next.val
-      self.passkey_keepalive_holder = kh
-      screen_lease_set(self.src, screen_key(self.station, self.screen), kh, true)
+      // Request-level keepalive flag on ScreenLease (separate from real UI holders): prevents brief covering from
+      // pausing `s.call` while WebAuthn confirmation is in-flight, without ever counting as a real UI holder.
+      let key = screen_key(self.station, self.screen)
+      self.passkey_keepalive_key = key
+      screen_lease_set_passkey(self.src, key, true)
       self.passkey_step.set("asking")
     }
     None => {
@@ -78,12 +77,12 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// Release the request-level keepalive lease holder if active.
+/// Release the request-level keepalive flag if active.
 fn ScreenSess::passkey_release_keepalive(self : ScreenSess) -> Unit {
-  if self.passkey_keepalive_holder != 0 {
-    let kh = self.passkey_keepalive_holder
-    self.passkey_keepalive_holder = 0
-    screen_lease_release(self.src, screen_key(self.station, self.screen), kh)
+  if self.passkey_keepalive_key != "" {
+    let key = self.passkey_keepalive_key
+    self.passkey_keepalive_key = ""
+    screen_lease_set_passkey(self.src, key, false)
   }
 }
 

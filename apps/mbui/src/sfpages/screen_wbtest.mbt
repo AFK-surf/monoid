@@ -2856,14 +2856,13 @@ test "passkey request completes while briefly covered, cancels on owner destroy 
   t.run_for(passkey_look_ms * 2.0)
   assert_eq(inputs.length(), 1, msg="in-flight passkey request must complete while briefly covered")
   assert_true(s.passkey_run is None)
-  // Destroy owner while another request is in-flight -> cancels native handle immediately.
+  // Start a new request, then revoke via account switch -> cancels native handle and rejects late completion (0 extra inputs).
   mounted.set(true)
   t.draw()
   ready.val = false
   s.passkey_start()
   t.draw()
   assert_true(s.passkey_run is Some(_))
-  // Revoke via account switch -> cancels native handle and rejects late completion (0 extra inputs).
   let old_gen = s.passkey_gen
   let old_principal = s.passkey_owner_principal
   @sfbase.account_principal_set("acct-passkey-b")
@@ -3083,5 +3082,302 @@ test "multi-account workspace owner switch revokes only affected workspace, clea
   assert_eq(screen_key(at1.station, at1.screen), key_before, msg="core reconnect must not change screen_key")
   assert_true(s_b.is_active_principal(), msg="core reconnect must not revoke active principal")
   assert_true(physical_equal(screen_sess(src_gen, at1.station, at1.screen), s_b), msg="core reconnect must reuse same ScreenSess")
+  @ui.run_let_go()
+}
+
+///|
+test "real workspaces JSON snapshot revokes on A->B owner change and on workspace disappearance while A stays online" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_a : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a))
+  let opens = Ref(0)
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let s_a = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_a.open(src)
+  assert_eq(opens.val, 1)
+  s_a.copied.push(CopiedText("a-secret", None))
+  // (a) Real JSON snapshot moves ws-1 from acct-a to acct-b: s_a revoked, clipboard cleared, 0 clipboard writes.
+  let snap_b : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b))
+  assert_true(s_a.revoked, msg="JSON snapshot A->B must revoke acct-a session")
+  assert_true(s_a.copied.is_empty(), msg="JSON snapshot A->B must clear clipboard queue")
+  let s_b = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_b.open(src)
+  assert_eq(opens.val, 2)
+  assert_eq(s_b.account, "acct-b")
+  // (b) ws-1 disappears from ALL signed-in accounts' snapshot while acct-a and acct-b remain online!
+  let snap_gone : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_gone))
+  assert_true(s_b.revoked, msg="disappearing workspace must synchronously revoke old session")
+  assert_false(s_b.is_active_principal(), msg="revoked workspace session must not remain active")
+  assert_true(@sfbase.workspace_is_revoked("ws-1"), msg="disappearing workspace must be marked revoked")
+  assert_not_eq(@sfbase.workspace_owner_of("ws-1"), "acct-a", msg="revoked workspace must never fall back to first signed-in account")
+  // Attempting to reopen a screen in the revoked workspace must be refused (0 new opens).
+  let s_refused = screen_sess(src, "ws-1/st-1", "browser:snap-1")
+  s_refused.open(src)
+  assert_eq(opens.val, 2, msg="revoked workspace must refuse to reopen screen.view")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey survives pair flip and side-panel <-> fullscreen handoff, cancels on last host close and workspace switch with 0 leaks" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-pk"])
+  @sfbase.workspace_owner_set("ws-1", "acct-pk")
+  let ready = Ref(false)
+  let opens = Ref(0)
+  let cancelled : Array[Int] = []
+  let inputs : Array[Json] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, _params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        view_cbs.push(on_val)
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:pk-full", title: "PK", until_gone: false }
+  let show_side = @signals.signal(true)
+  let show_full = @signals.signal(false)
+  let pair_flip = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { show_side.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      root.show(at_once=true, fn() { show_full.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+      // Simulates `pair` layout flip rebuilding passkey_sign_node while ScreenSess stays alive.
+      root.pick(at_once=true, fn() { pair_flip.get() }, fn(slot, _flipped) {
+        match screens_open.get(screen_key(at.station, at.screen)) {
+          Some(s) => passkey_sign_node(slot, s)
+          None => ()
+        }
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  @ui.fake_passkey_asks.clear()
+  @ui.fake_passkey.val = Some(fn(_rp, _client, _uv, _ids) {
+    if ready.val { "0\u{1f}0909\u{1f}abcdef\u{1f}070707\u{1f}05\u{1f}\u{1f}" } else { "" }
+  })
+  (view_cbs[0])(
+    {
+      "state": {
+        "phase": "live",
+        "control": true,
+        "may": true,
+        "others": [],
+        "passkey": {
+          "id": "pk-2",
+          "host": "github.com",
+          "rpId": "github.com",
+          "clientData": "{\"type\":\"webauthn.get\"}",
+          "allow": ["0909"],
+          "userVerification": "required",
+        },
+      },
+    },
+    None,
+  )
+  t.draw()
+  let s = screens_open.get(screen_key(at.station, at.screen)).unwrap()
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  // (a) `pair` layout flip rebuild does NOT cancel in-flight passkey.
+  pair_flip.set(true)
+  t.draw()
+  assert_true(s.passkey_run is Some(_), msg="pair layout flip must not cancel in-flight passkey")
+  // (b) side-panel -> fullscreen handoff does NOT cancel in-flight passkey or pause stream.
+  show_side.set(false)
+  show_full.set(true)
+  t.draw()
+  t.draw()
+  assert_true(s.passkey_run is Some(_), msg="side-panel -> fullscreen handoff must not cancel passkey")
+  assert_eq(cancelled.length(), 0, msg="handoff must keep stream alive")
+  // Complete passkey and confirm signed input delivered.
+  ready.val = true
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="passkey must deliver signed input after pair flip and handoff")
+  assert_true(s.passkey_run is None)
+  // (c) Start another passkey, then workspace switch away from ws-1 -> cancels passkey immediately.
+  ready.val = false
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  (@sfbase.on_workspace_switched.val)("ws-1", "ws-2")
+  assert_true(s.passkey_run is None, msg="workspace switch must cancel in-flight passkey on left workspace")
+  assert_eq(s.passkey_keepalive_key, "", msg="workspace switch must release passkey keepalive")
+  // (d) Start another passkey, then permanently destroy the last real UI host -> cancels passkey & pauses stream (0 leak!).
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  show_full.set(false)
+  t.draw()
+  t.draw()
+  assert_true(s.passkey_run is None, msg="permanent close of last UI host must cancel in-flight passkey")
+  assert_eq(s.passkey_keepalive_key, "", msg="permanent close of last UI host must release passkey keepalive")
+  assert_eq(cancelled.length(), 1, msg="permanent close of last UI host must pause/close stream with 0 leak")
+  assert_true(screen_leases.is_empty(), msg="screen_leases must be empty after last host permanent close")
+  @ui.fake_passkey.val = None
+  @ui.run_let_go()
+}
+
+///|
+test "screen lease table preserves equivalence without remote_shelf_pause_node across Nav shelf, narrow cover, tape hide, and layout switch" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-eq"])
+  @sfbase.workspace_owner_set("ws-1", "acct-eq")
+  let opens = Ref(0)
+  let cancelled : Array[Int] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:eq-1", title: "EQ", until_gone: false }
+  let shelf_on = @signals.signal(true)
+  let narrow_top = @signals.signal(true)
+  let tape_visible = @signals.signal(false)
+  let wide_mode = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      // 1. Place("remote") shelf parked via pick_kept (Nav shelf equivalent)
+      root.pick_kept(at_once=true, fn() { shelf_on.get() }, fn(p, on) {
+        if on {
+          p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+        }
+      })
+      // 2. Narrow stack page covered via shown=narrow_top (on_top equivalent)
+      root.show(at_once=true, fn() { !wide_mode.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, shown=fn() { narrow_top.get() })
+      })
+      // 3. Tape / wide side-panel hidden via shown=tape_visible
+      root.show(at_once=true, fn() { wide_mode.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true, shown=fn() { tape_visible.get() })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 1)
+  assert_eq(cancelled.length(), 0)
+  // Park Place("remote") shelf while narrow stack is still on top -> stream stays live (0 cancels).
+  shelf_on.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="parking Place(remote) while narrow stack is visible must not pause")
+  // Cover narrow stack (on_top = false) -> last visible holder gone -> pauses!
+  narrow_top.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 1, msg="covering last visible holder must pause stream")
+  // Switch narrow -> wide layout with tape side-panel visible -> resumes!
+  wide_mode.set(true)
+  tape_visible.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 2, msg="switching to wide with visible tape side-panel must resume stream")
+  // Hide tape side-panel -> pauses!
+  tape_visible.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 2, msg="hiding tape side-panel must pause stream")
+  // Wake Place("remote") shelf -> resumes!
+  shelf_on.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 3, msg="waking Place(remote) shelf must resume stream")
   @ui.run_let_go()
 }

@@ -12,6 +12,7 @@ let reset_by_hand : Ref[Bool] = Ref(false)
 /// Every Tester starts from the app as at the start (mbui's on_reset), whatever ran before it in the process: what is
 /// kept here from one Tester to the next would be an input the test does not give.
 fn init {
+  @sfcore.on_accounts_told.val = @sfbase.accounts_subs_sync
   // ＋'s Station 文件 (a composer's, sfpages): the station files' picker (sfdesk's station_pick.mbt). Said once, as the
   // app starts (reset runs only as a Tester starts: a wire set there is never set in the app)
   station_files_asked.val = @sfpages.station_files_pick

@@ -35,6 +35,7 @@ pub fn gamepads_follow(
   let told : Map[Int, (@hostapi.Gamepad, Double)] = Map([])
   let ticking : Ref[(() -> Unit)?] = Ref(None)
   let active = Ref(false)
+  let running = Ref(false)
   let stop_tick = fn() {
     match ticking.val {
       Some(stop) => {
@@ -46,7 +47,7 @@ pub fn gamepads_follow(
   }
   fn look(at : Double) -> Unit {
     ticking.val = None
-    if !active.val || !v.alive() {
+    if !running.val || !v.alive() {
       return
     }
     let now = if at > v.cause_at() { at } else { v.cause_at() }
@@ -66,25 +67,27 @@ pub fn gamepads_follow(
     let next = now + (if pads.is_empty() { gamepads_looked_ms } else { gamepad_ms })
     ticking.val = Some(v.at_moment_active(next, fn() { look(next) }, later=true, while_covered=true))
   }
+  let sync = fn() {
+    let want = active.val && @signals.untracked(on)
+    if want == running.val {
+      return
+    }
+    running.val = want
+    stop_tick()
+    told.clear()
+    if want {
+      look(v.cause_at())
+    }
+  }
 
   v.when_active(while_covered=true, fn() {
     active.val = true
-    told.clear()
-    if @signals.untracked(on) {
-      look(v.cause_at())
-    }
+    sync()
     fn() {
       active.val = false
-      stop_tick()
-      told.clear()
+      sync()
     }
   })
   |> ignore
-  v.reacts(on, fn(now) {
-    stop_tick()
-    told.clear()
-    if now && active.val {
-      look(v.cause_at())
-    }
-  })
+  v.reacts(on, fn(_) { sync() })
 }

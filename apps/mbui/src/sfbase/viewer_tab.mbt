@@ -216,12 +216,20 @@ fn tab_viewer_id(chat : String, tab : String) -> String {
 }
 
 ///|
+/// Bumped whenever any tab viewer is revoked so mounted `viewer_tab_node` subtrees unmount cleanly.
+// kept across runs: put back by tab_viewers_reset
+let tab_viewer_revokes : @signals.Signal[Int] = @signals.signal(0)
+
+///|
 fn tab_viewers_revoke_matching(pred : (TabViewer) -> Bool) -> Unit {
   let drop : Array[String] = []
   for id, t in tab_viewers {
     if pred(t) {
       drop.push(id)
     }
+  }
+  if drop.is_empty() {
+    return
   }
   for id in drop {
     match tab_viewers.get(id) {
@@ -235,6 +243,7 @@ fn tab_viewers_revoke_matching(pred : (TabViewer) -> Bool) -> Unit {
     }
     tab_gone.remove(id)
   }
+  tab_viewer_revokes.set(tab_viewer_revokes.untracked() + 1)
 }
 
 ///|
@@ -362,6 +371,7 @@ fn tab_viewers_reset() -> Unit {
   tab_moved.each(fn(_, m) { m.release() })
   tab_moved.clear()
   tab_facts.clear()
+  tab_viewer_revokes.set(0)
 }
 
 ///|
@@ -604,6 +614,11 @@ pub fn viewer_tab_node(
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
+  q.show(at_once=true, fn() {
+    tab_viewer_revokes.get() |> ignore
+    tab_viewers.contains(id)
+  }, fn(q) {
+    q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
   let leave_active = fn() {
     // (its tab no longer shown or parked: what it plays paused, played again only from its play key; not where it is
     // shown elsewhere now, or is to be as it moves between the panel and the whole window)
@@ -770,6 +785,7 @@ pub fn viewer_tab_node(
   |> ignore
   // (its tips over all of it)
   tips_at.val = Some(q.box(fn(l) { l.over(Is(true)) |> ignore }))
+  })
 }
 
 ///|

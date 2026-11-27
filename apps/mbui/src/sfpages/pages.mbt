@@ -11,6 +11,7 @@ fn init {
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
   @sfbase.on_account_revoked(screen_revoke_account)
   @sfbase.on_workspace_owner_change(screen_revoke_workspace_owner)
+  @sfbase.on_workspace_switched.val = screen_workspace_switched
 }
 
 ///|

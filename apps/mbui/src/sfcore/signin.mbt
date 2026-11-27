@@ -281,12 +281,15 @@ fn accounts_told(list : Json) -> Unit {
     _ => []
   }
   let who = if subs.is_empty() { list.stringify() } else { subs.join("\u{1}") }
+  let changed = signed_in.val != Some(who)
   match signed_in.val {
     Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
     _ => ()
   }
   signed_in.val = Some(who)
-  (on_accounts_told.val)(subs)
+  if changed {
+    (on_accounts_told.val)(subs)
+  }
 }
 
 /// The first account answer decides the web's entry. Later sign-outs can use the normal retry page.
