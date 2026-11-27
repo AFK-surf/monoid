@@ -135,12 +135,27 @@ test("liveProfileOf uses a primary-key seek and liveWitnessesOnProfiles checks m
     seen.length = 0;
     const witnesses = store.liveWitnessesOnProfiles(["borrowed-a", "borrowed-b", "borrowed-c", "borrowed-empty"]);
     assert.equal(seen.length, 1, "single SQL query checks all requested profiles at once");
+    for (const s of seen) {
+      assert.deepEqual(scans(db, s.sql, s.args), [], `liveWitnessesOnProfiles must not scan: ${s.sql}`);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${s.sql}`).all(...s.args) as { detail: string }[]).map((r) => String(r.detail)).join("\n");
+      assert.match(plan, /SEARCH s USING (?:COVERING )?INDEX sessions_live_profile \(profile=\?\)/, plan);
+    }
     assert.equal(witnesses.size, 1);
     assert.equal(witnesses.get("borrowed-a"), "chat:c-0000");
     assert.equal(witnesses.has("borrowed-b"), false);
     assert.equal(witnesses.has("borrowed-c"), false);
     assert.equal(witnesses.has("borrowed-empty"), false);
     assert.equal(store.liveWitnessesOnProfiles([]).size, 0);
+
+    seen.length = 0;
+    assert.deepEqual(store.liveSessionsOn("borrowed-a", 1), ["chat:c-0000"]);
+    assert.deepEqual(store.liveSessionsOn("borrowed-b", 1), []);
+    assert.deepEqual(store.liveSessionsOn("borrowed-c", 1), []);
+    for (const s of seen) {
+      assert.deepEqual(scans(db, s.sql, s.args), [], `liveSessionsOn must not scan: ${s.sql}`);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${s.sql}`).all(...s.args) as { detail: string }[]).map((r) => String(r.detail)).join("\n");
+      assert.match(plan, /SEARCH sessions USING (?:COVERING )?INDEX sessions_live_profile \(profile=\?\)/, plan);
+    }
   } finally {
     store.close();
   }

@@ -1407,3 +1407,28 @@ test("borrowed-login liveness tracks a witness key via O(1) PK lookup instead of
   assert.equal(b.rig.raw.profiles.some((p: Json) => p.share?.id === share), false, "borrowed login returned once last live chat archived");
   assert.equal(present(a, "max").share, undefined);
 });
+
+test("borrowed-login witness self-heals when the witness session is archived directly without emitting a store event", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+  await quiet();
+  const share = present(a, "max").share.id as string;
+  const borrowedId = ofShare(b, share).id as string;
+
+  const [mine] = await newSession(b.rig.hub, { runtime: "claude", profile: borrowedId, createdBy: "p@x" });
+  const [other] = await newSession(b.rig.hub, { runtime: "codex", profile: "bx", createdBy: "p@x" });
+  await quiet();
+  await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+  await quiet();
+  assert.equal(ofShare(b, share)?.share.borrowed, true);
+
+  // Archive the witness session via raw SQL without firing store.subscribe.
+  b.rig.store.db.prepare("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?").run(Date.now(), "raw-sql", mine);
+  // Any subsequent unrelated session event re-validates the witness via O(1) PK seek and returns the borrowed login.
+  b.rig.store.setTitle(other, "trigger-self-heal");
+  await quiet();
+  assert.equal(b.rig.raw.profiles.some((p: Json) => p.share?.id === share), false, "borrowed login self-healed and returned");
+  assert.equal(present(a, "max").share, undefined);
+});

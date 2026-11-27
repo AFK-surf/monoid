@@ -5230,14 +5230,14 @@ export class Store {
     return (this.#all(LIVE_ON_PROFILE, pid, most) as { key: string }[]).map((r) => r.key);
   }
 
-  /// One live, non-handed-over witness session key for each profile in `pids` that is currently in use here, in a
-  /// single pass over `sessions_live` (move/station.ts `#usesMayEnd` and `move.uses`).
+  /// One live, non-handed-over witness session key for each profile in `pids` that is currently in use here, via
+  /// `sessions_live_profile` covering-index seeks (move/station.ts `#usesMayEnd` and `move.uses`).
   liveWitnessesOnProfiles(pids: readonly string[]): Map<string, string> {
     const out = new Map<string, string>();
     if (pids.length === 0) return out;
     const unique = [...new Set(pids)];
-    for (const r of this.#all(LIVE_WITNESSES_ON_PROFILES, JSON.stringify(unique), unique.length) as { profile: string; key: string }[]) {
-      out.set(r.profile, r.key);
+    for (const r of this.#all(LIVE_WITNESSES_ON_PROFILES, JSON.stringify(unique)) as { profile: string; key: string | null }[]) {
+      if (typeof r.key === "string" && r.key !== "") out.set(r.profile, r.key);
     }
     return out;
   }

@@ -217,6 +217,7 @@ export class Moves {
     // seek + witness key so routine message/turn/job updates never scan `sessions_live`)
     d.store.subscribe?.((c) => {
       if (c.type === "session") {
+        // Only Store.markDelivered emits `pending` (updates deliveries/letter_deliveries only, never archived_at/profile/handed_over).
         if (c.pending !== undefined) return;
         this.#usesMayEnd(c.key);
       } else if (c.type === "sessionRemoved" || c.type === "moved") {
@@ -425,8 +426,10 @@ export class Moves {
       const store = this.#d.store;
       if (typeof store.liveProfileOf === "function" && typeof store.liveWitnessesOnProfiles === "function") {
         const recheck = new Set<string>();
+        const checked = new Set<string>();
         for (const pid of borrowed.keys()) if (!this.#borrowedWitness.has(pid)) recheck.add(pid);
         for (const k of dirty) {
+          checked.add(k);
           const nowPid = store.liveProfileOf(k);
           if (nowPid !== null && borrowed.has(nowPid)) {
             this.#borrowedWitness.set(nowPid, k);
@@ -435,6 +438,12 @@ export class Moves {
           for (const [pid, witness] of this.#borrowedWitness) {
             if (witness === k && nowPid !== pid) recheck.add(pid);
           }
+        }
+        // Self-heal: verify each tracked witness via O(1) PK seek so a session archived/moved/deleted without emitting
+        // a store event (e.g. direct SQL, bulk archive, backfill, or future write path) still releases its borrowed login.
+        for (const [pid, witness] of this.#borrowedWitness) {
+          if (witness === null || recheck.has(pid) || checked.has(witness)) continue;
+          if (store.liveProfileOf(witness) !== pid) recheck.add(pid);
         }
         if (recheck.size > 0) {
           const pids = [...recheck];
