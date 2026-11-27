@@ -1558,6 +1558,7 @@ export function syncWorkspaceAuth(inner: Inner, ws: string): void {
       // Preserve an unconfirmed cloud downgrade across a lock-only upgrade and re-fetch under the new gen.
       inner.pendingAuthConfirm.set(ws, { gen: inner.store.authGen.workspaceAuthGen(ws), confirmedKeys: new Set<string>() });
       inner.cloudSync?.refreshWorkspace(ws);
+      inner.stations?.refreshWorkspace(ws);
     } else {
       inner.pendingAuthConfirm.delete(ws);
     }
