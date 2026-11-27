@@ -65,8 +65,9 @@ import type { Owner } from "../core/routing.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import { type Entry, Signer, entryHash } from "../lock.ts";
+import { keep } from "../lock-keep.ts";
 import { OTHERS_MS, answersOf, askPerson, baseOf, tookOrRefused, deviceText, deviceVerifyCode, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, reopenedIn, view as workspaceView, nameOf as workspaceName, KEYS_SHOWN, signerKnown, signerOf, signerShown, stateOf } from "./lock.ts";
-import { checkChain, crypto as personCrypto } from "../personal-lock.ts";
+import { checkChain, crypto as personCrypto, personRules } from "../personal-lock.ts";
 import * as prefs from "../prefs.ts";
 import { workspaceIds } from "./marks.ts";
 import { AuthCapability, type AuthScopeCapability, VaultCapability, WorkspaceCapability } from "../auth-gen.ts";
@@ -187,11 +188,14 @@ type Mem = {
   browseRead: Set<string>;
   /// Request ids already settled in this run so an in-flight `readStation` cannot resurrect them.
   settledRequests: Set<string>;
+  /// Per-station pagination cursors for `/vault/joins` dismisses and cancelled tombstones so >8-page stations keep advancing across syncs.
+  dismissCursors: Map<string, { vault: string; sub: string }>;
+  cancelledCursors: Map<string, { vault: string; at: number; sub: string }>;
 };
 const mems = new WeakMap<Inner, Mem>();
 const mem = (inner: Inner): Mem => {
   let m = mems.get(inner);
-  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), certLocks: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set(), settledRequests: new Set() }));
+  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), certLocks: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set(), settledRequests: new Set(), dismissCursors: new Map(), cancelledCursors: new Map() }));
   return m;
 };
 
@@ -397,23 +401,68 @@ function personalLockOf(inner: Inner, ws: string): Checked | CoreError {
   return lock;
 }
 
-/// Monotonically selects the newer valid personal lock chain for teammate `sub` so a lagging station's `/vault/boxes`
-/// response can never regress a teammate's chain back to a pre-revocation prefix.
-function mergeMemberChain(existing: readonly Entry[] | undefined, incoming: readonly Entry[], sub: string): Entry[] | null {
+/// Merges a teammate's personal lock chain `incoming` into `existing` (outside security mode):
+/// - Same genesis: applies the exact rules fork choice (`rules.person_chain_js` via `lock-keep.ts` `keep` +
+///   `personRules`, one vote per device with `device.remove` semantics) so a revoked device's longer fork can NEVER
+///   override the removal branch.
+/// - Different genesis (e.g. teammate reopened their personal lock): mirrors `station/src/cloud/vault-lock.ts`
+///   `chosen` (active vault owned by `sub` -> newest valid `BoxCert` -> tail `at` timestamp -> genesis hash).
+function mergeMemberChain(
+  existing: readonly Entry[] | undefined,
+  incoming: readonly Entry[],
+  sub: string,
+  ws: string,
+  vaults: Record<string, Vault>,
+  boxes: readonly BoxCert[],
+): Entry[] | null {
   if (incoming.length === 0) return null;
   try {
     const incOut = timed("vault.personal", () => rules.person_fold_js(incoming, sub, personCrypto)) as J;
     if ("error" in incOut) return null;
-    if (existing && existing.length > 0) {
-      const curOut = timed("vault.personal", () => rules.person_fold_js(existing, sub, personCrypto)) as J;
-      if (!("error" in curOut)) {
-        const curSeq = existing[existing.length - 1]!.seq;
-        const incSeq = incoming[incoming.length - 1]!.seq;
-        if (incSeq < curSeq) return null;
-        if (incSeq === curSeq && String(incOut.head ?? "") <= String(curOut.head ?? "")) return null;
-      }
+    if (!existing || existing.length === 0) return [...incoming];
+    const curOut = timed("vault.personal", () => rules.person_fold_js(existing, sub, personCrypto)) as J;
+    if ("error" in curOut) return [...incoming];
+    const curRoot = entryHash(existing[0]!);
+    const incRoot = entryHash(incoming[0]!);
+    if (curRoot === incRoot) {
+      const merged = keep({ entries: [...existing], aside: [] }, incoming, personRules(sub, curRoot));
+      return merged.kept.entries;
     }
-    return [...incoming];
+    const devicesOf = (out: J) => (Array.isArray(out.devices) ? (out.devices as { id: string; sign_key?: string; sign_keys?: string[] }[]) : []);
+    const curDevs = devicesOf(curOut);
+    const incDevs = devicesOf(incOut);
+    const matchesKey = (devs: { sign_key?: string; sign_keys?: string[] }[], key: string | undefined) =>
+      typeof key === "string" && devs.some((d) => d.sign_key === key || (Array.isArray(d.sign_keys) && d.sign_keys.includes(key)));
+    for (const v of Object.values(vaults)) {
+      if (v.owner !== sub || v.deleted) continue;
+      const curHit = matchesKey(curDevs, v.sig?.key);
+      const incHit = matchesKey(incDevs, v.sig?.key);
+      if (curHit !== incHit) return incHit ? [...incoming] : [...existing];
+    }
+    const lockFor = (devs: { id: string; sign_key?: string; sign_keys?: string[] }[]): Checked => {
+      const dMap = new Map<string, LockDevice>();
+      const sMap = new Map<string, string[]>();
+      for (const d of devs) {
+        dMap.set(d.id, { id: d.id, sub, kind: "app" as const, ...(typeof d.sign_key === "string" ? { sign_key: d.sign_key } : {}), own: true });
+        sMap.set(d.id, Array.isArray(d.sign_keys) ? d.sign_keys : []);
+      }
+      return {
+        ws, head: "", genesis: "", members: new Map([[sub, "member"]]), devices: dMap, passkeys: new Map(),
+        signed: new Set([sub]), signKeys: sMap, origins: [], rp_id: "", disabled: false, cloudKeys: null,
+      };
+    };
+    const curLock = lockFor(curDevs);
+    const incLock = lockFor(incDevs);
+    const sortedBoxes = [...boxes].sort((a, b) => b.at - a.at);
+    for (const cert of sortedBoxes) {
+      const curHit = curLock.devices.has(cert.device) && rules.cert_ok_js(curLock, cert, false, rulesCrypto) === null;
+      const incHit = incLock.devices.has(cert.device) && rules.cert_ok_js(incLock, cert, false, rulesCrypto) === null;
+      if (curHit !== incHit) return incHit ? [...incoming] : [...existing];
+    }
+    const curAt = typeof existing[existing.length - 1]?.at === "number" ? existing[existing.length - 1]!.at : 0;
+    const incAt = typeof incoming[incoming.length - 1]?.at === "number" ? incoming[incoming.length - 1]!.at : 0;
+    if (incAt !== curAt) return incAt > curAt ? [...incoming] : [...existing];
+    return incRoot > curRoot ? [...incoming] : [...existing];
   } catch {
     return null;
   }
@@ -1012,33 +1061,7 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
       boxes = arr(get(boxesRes, "boxes")) as BoxCert[];
       // Older stations without `/vault/asks` or `/vault/joins` answer 404: treat as none.
       keyAsks = yield* Effect.orElseSucceed(Effect.map(ask(inner, address, "GET", "/vault/asks"), (r) => arr(get(r, "asks")) as KeyAsk[]), () => [] as KeyAsk[]);
-      joinsRes = yield* Effect.orElseSucceed(
-        Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => {
-          const cur = get(r, "nextDismissCursor");
-          const nextDismissCursor = isObject(cur) && typeof cur.vault === "string" && typeof cur.sub === "string"
-            ? { vault: cur.vault, sub: cur.sub }
-            : undefined;
-          return {
-            joins: arr(get(r, "joins")) as JoinAsk[],
-            dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
-            ...(nextDismissCursor !== undefined ? { nextDismissCursor } : {}),
-          };
-        }),
-        () => null,
-      );
-      if (joinsRes !== null && joinsRes.nextDismissCursor !== undefined) {
-        let cursor: { vault: string; sub: string } | undefined = joinsRes.nextDismissCursor;
-        for (let page = 0; page < 7 && cursor !== undefined; page++) {
-          const nextPath = `/vault/joins?dismissAfterVault=${encodeURIComponent(cursor.vault)}&dismissAfterSub=${encodeURIComponent(cursor.sub)}`;
-          const more = yield* Effect.orElseSucceed(ask(inner, address, "GET", nextPath), () => null);
-          if (more === null) break;
-          joinsRes.dismisses.push(...(arr(get(more, "dismisses")) as JoinDismiss[]));
-          const nextCur = get(more, "nextDismissCursor");
-          cursor = isObject(nextCur) && typeof nextCur.vault === "string" && typeof nextCur.sub === "string"
-            ? { vault: nextCur.vault, sub: nextCur.sub }
-            : undefined;
-        }
-      }
+      joinsRes = yield* readJoinsPages(inner, address);
       const ownerSub = inner.workspaces.owner(ws);
       const rawChains = get(boxesRes, "chains");
       if (isObject(rawChains)) {
@@ -1060,9 +1083,10 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
     if (Object.keys(incomingChains).length > 0 || Object.keys(incomingRoles).length > 0) {
       change(inner, ws, (h) => {
         if (Object.keys(incomingChains).length > 0) {
+          const allBoxes = [...Object.values(h.boxes), ...boxes];
           const nextChains: Record<string, Entry[]> = { ...(h.memberChains ?? {}) };
           for (const [mSub, mChain] of Object.entries(incomingChains)) {
-            const chosen = mergeMemberChain(nextChains[mSub], mChain, mSub);
+            const chosen = mergeMemberChain(nextChains[mSub], mChain, mSub, ws, h.vaults, allBoxes);
             if (chosen !== null) nextChains[mSub] = chosen;
           }
           h.memberChains = nextChains;
@@ -1230,6 +1254,66 @@ function backfillJoins(
   });
 }
 
+const MAX_JOIN_PAGES_PER_SYNC = 8;
+const JOIN_WRITE_MS = 10_000;
+
+/// Shared bounded `/vault/joins` reader for both `readStationChecked` and `readJoins`: always fetches page 1 and
+/// resumes any persisted per-station `dismiss` / `cancelled` cursors across syncs (capped at `MAX_JOIN_PAGES_PER_SYNC`
+/// extra pages per sync), ensuring >8-page stations keep advancing rather than truncating forever.
+function readJoinsPages(
+  inner: Inner,
+  address: string,
+  guard?: () => boolean,
+): Effect.Effect<{ joins: JoinAsk[]; dismisses: JoinDismiss[] } | null> {
+  return Effect.gen(function* () {
+    const first = yield* Effect.orElseSucceed(ask(inner, address, "GET", "/vault/joins", null, null, guard), () => null);
+    if (first === null || (guard && !guard())) return null;
+    const joins = arr(get(first, "joins")) as JoinAsk[];
+    const dismisses = arr(get(first, "dismisses")) as JoinDismiss[];
+    const parseDismissCur = (raw: unknown): { vault: string; sub: string } | undefined =>
+      isObject(raw) && typeof raw.vault === "string" && typeof raw.sub === "string"
+        ? { vault: raw.vault, sub: raw.sub }
+        : undefined;
+    const parseCancelledCur = (raw: unknown): { vault: string; at: number; sub: string } | undefined =>
+      isObject(raw) && typeof raw.vault === "string" && typeof raw.at === "number" && Number.isSafeInteger(raw.at) && typeof raw.sub === "string"
+        ? { vault: raw.vault, at: raw.at, sub: raw.sub }
+        : undefined;
+    const m = mem(inner);
+    let dCur = m.dismissCursors.get(address) ?? parseDismissCur(get(first, "nextDismissCursor"));
+    let cCur = m.cancelledCursors.get(address) ?? parseCancelledCur(get(first, "nextCancelledCursor"));
+    let pages = 0;
+    while ((dCur !== undefined || cCur !== undefined) && pages < MAX_JOIN_PAGES_PER_SYNC && (!guard || guard())) {
+      const qs: string[] = [];
+      if (dCur !== undefined) {
+        qs.push(`dismissAfterVault=${encodeURIComponent(dCur.vault)}`, `dismissAfterSub=${encodeURIComponent(dCur.sub)}`);
+      }
+      if (cCur !== undefined) {
+        qs.push(
+          `cancelledAfterVault=${encodeURIComponent(cCur.vault)}`,
+          `cancelledAfterAt=${cCur.at}`,
+          `cancelledAfterSub=${encodeURIComponent(cCur.sub)}`,
+        );
+      }
+      const more = yield* Effect.orElseSucceed(ask(inner, address, "GET", `/vault/joins?${qs.join("&")}`, null, null, guard), () => null);
+      if (more === null) break;
+      pages++;
+      if (dCur !== undefined) {
+        dismisses.push(...(arr(get(more, "dismisses")) as JoinDismiss[]));
+        dCur = parseDismissCur(get(more, "nextDismissCursor"));
+      }
+      if (cCur !== undefined) {
+        joins.push(...(arr(get(more, "joins")) as JoinAsk[]));
+        cCur = parseCancelledCur(get(more, "nextCancelledCursor"));
+      }
+    }
+    if (dCur !== undefined) m.dismissCursors.set(address, dCur);
+    else m.dismissCursors.delete(address);
+    if (cCur !== undefined) m.cancelledCursors.set(address, cCur);
+    else m.cancelledCursors.delete(address);
+    return { joins, dismisses };
+  });
+}
+
 /// Re-read `/vault/joins` from `address` under live auth & current role (triggered by zero-payload `vault-joins-changed`).
 /// Outside safe mode, if any returned join or dismissal fails verification against the currently cached personal chains
 /// (e.g. an applicant opened their personal lock for the first time), fetches `/vault/boxes` on `address` first to merge
@@ -1239,26 +1323,9 @@ function readJoins(inner: Inner, address: string): Effect.Effect<void> {
   return Effect.gen(function* () {
     const cap = inner.store.authGen.workspaceCapability(ws);
     const guard = () => cap.isValid();
-    const first = yield* Effect.orElseSucceed(ask(inner, address, "GET", "/vault/joins", null, null, guard), () => null);
-    if (first === null || !cap.isValid()) return;
-    const joins = arr(get(first, "joins")) as JoinAsk[];
-    const dismisses = arr(get(first, "dismisses")) as JoinDismiss[];
-    const cur0 = get(first, "nextDismissCursor");
-    let cursor: { vault: string; sub: string } | undefined =
-      isObject(cur0) && typeof cur0.vault === "string" && typeof cur0.sub === "string"
-        ? { vault: cur0.vault, sub: cur0.sub }
-        : undefined;
-    for (let page = 0; page < 7 && cursor !== undefined && cap.isValid(); page++) {
-      const nextPath = `/vault/joins?dismissAfterVault=${encodeURIComponent(cursor.vault)}&dismissAfterSub=${encodeURIComponent(cursor.sub)}`;
-      const more = yield* Effect.orElseSucceed(ask(inner, address, "GET", nextPath, null, null, guard), () => null);
-      if (more === null) break;
-      dismisses.push(...(arr(get(more, "dismisses")) as JoinDismiss[]));
-      const nextCur = get(more, "nextDismissCursor");
-      cursor = isObject(nextCur) && typeof nextCur.vault === "string" && typeof nextCur.sub === "string"
-        ? { vault: nextCur.vault, sub: nextCur.sub }
-        : undefined;
-    }
-    if (!cap.isValid()) return;
+    const paged = yield* readJoinsPages(inner, address, guard);
+    if (paged === null || !cap.isValid()) return;
+    const { joins, dismisses } = paged;
     let fit = fits(inner, ws);
     let refreshedBoxes: BoxCert[] = [];
     if (!safeMode(inner, ws) && (joins.some((j) => !fit.join(j)) || dismisses.some((d) => !fit.joinDismiss(d)))) {
@@ -1284,9 +1351,10 @@ function readJoins(inner: Inner, address: string): Effect.Effect<void> {
           cap.commit(() => {
             change(inner, ws, (h) => {
               if (Object.keys(incomingChains).length > 0) {
+                const allBoxes = [...Object.values(h.boxes), ...refreshedBoxes];
                 const nextChains: Record<string, Entry[]> = { ...(h.memberChains ?? {}) };
                 for (const [mSub, mChain] of Object.entries(incomingChains)) {
-                  const chosen = mergeMemberChain(nextChains[mSub], mChain, mSub);
+                  const chosen = mergeMemberChain(nextChains[mSub], mChain, mSub, ws, h.vaults, allBoxes);
                   if (chosen !== null) nextChains[mSub] = chosen;
                 }
                 h.memberChains = nextChains;
@@ -1452,6 +1520,18 @@ function holds(h: Held, v: Vault, station: string, items: Item[] | null, fit: Fi
 /// `vault_waiting` naming it.
 function hostOf(inner: Inner, ws: string, id: string): string {
   return writeHosts(inner, ws, id)[0] ?? "";
+}
+
+/// Deterministic authoritative station for serialized workspace-vault join operations (approval vs request/withdrawal):
+/// always the lowest station id among current workspace stations holding `id` (never reordered by local link
+/// reachability, so admin approval and applicant request/cancel always serialize on the exact same station).
+function canonicalVaultHost(inner: Inner, ws: string, id: string): string {
+  const h = held(inner, ws);
+  const listed = new Set(stationsOf(inner, ws).map((s) => s.id));
+  const named = stateOf(inner, ws).stations;
+  const there = Object.keys(h.on[id] ?? {}).filter((s) => listed.has(s) && (named.size === 0 || named.has(s))).sort();
+  if (there.length > 0) return there[0]!;
+  return h.at[id] ?? "";
 }
 
 /// The stations vault `id` may be written on, in the order tried (`#putVault`, `#putItem`): those holding it that the
@@ -1659,7 +1739,35 @@ export function spread(inner: Inner, address: string, opts?: { cap?: AuthScopeCa
       }
       const guard = () => cap.isValid();
       if (want.vault !== null) {
-        const said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault, null, guard));
+        let said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", want.vault, null, guard));
+        if (
+          said._tag === "Failure"
+          && want.vault.scope === "workspace"
+          && (said.failure.code === "vault_not_admin" || said.failure.code === "vault_unknown")
+          && cap.isValid()
+        ) {
+          // Lagging replica needs the cryptographic membership-change trail anchored at its older `prev` to verify a
+          // skipped-seq copy signed by a newly-added admin. Fetch the trail from an up-to-date peer station and retry.
+          const peers = Object.entries(held(inner, ws).on[want.id] ?? {})
+            .filter(([sid, at]) => sid !== station && at.seq >= want.vault!.seq)
+            .map(([sid]) => sid)
+            .sort();
+          for (const peer of peers) {
+            if (!cap.isValid()) break;
+            const peerAddr = `${ws}/${peer}`;
+            if (!inner.stations.link(peerAddr) || !inner.stations.reachable(peerAddr)) continue;
+            const trailRes = yield* Effect.orElseSucceed(
+              ask(inner, peerAddr, "GET", `/vault/vaults/trail?vault=${encodeURIComponent(want.id)}`, null, null, guard),
+              () => null,
+            );
+            const rawTrail = trailRes !== null ? (arr(get(trailRes, "trail")) as Vault[]) : [];
+            const trail = rawTrail.filter((t) => t.id === want.id && t.seq < want.vault!.seq);
+            if (trail.length > 0 && cap.isValid()) {
+              said = yield* Effect.result(ask(inner, address, "PUT", "/vault/vaults?copy=1", { vault: want.vault, trail }, null, guard));
+              break;
+            }
+          }
+        }
         if (said._tag === "Failure") continue;
         const raw = get(said.success, "vault") as Vault | undefined;
         const v = raw && raw.ws === ws && raw.id === want.vault.id ? raw : want.vault;
@@ -2943,6 +3051,7 @@ export function vaultsView(inner: Inner, ws: string): J {
                   deviceText: deviceText(dev),
                   deviceCode: deviceVerifyCode(j.device),
                   box: j.box,
+                  sig: j.sig.sig,
                   at: j.at,
                   atText: str(stamp(shownAt * 1000, clock).ago) ?? "",
                 },
@@ -3255,6 +3364,7 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         ...(askAt !== undefined ? { askAt } : {}),
         ...(str(c.params.askDevice) ? { askDevice: str(c.params.askDevice)! } : {}),
         ...(str(c.params.askBox) ? { askBox: str(c.params.askBox)! } : {}),
+        ...(str(c.params.askSig) ? { askSig: str(c.params.askSig)! } : {}),
       });
     }
     case "removeMember":
@@ -4424,20 +4534,28 @@ class Vaults {
   /// by `cancelJoin`), the lowest-id station that did not answer `404 vault_unknown` (holding the vault or unreachable)
   /// must confirm the write before succeeding, and its returned verified record determines `finalState` even on equal
   /// timestamps.
+  /// Publish a signed `JoinAsk` (`pending` or `cancelled`):
+  /// 1. Resolves the vault's single deterministic authoritative station by walking current workspace stations (filtered
+  ///    by the lock's named stations when non-empty) in sorted station-id order until the first station that does NOT
+  ///    answer `404 vault_unknown`. Any offline/timeout/5xx/unverifiable failure on a lower-id station fails the write
+  ///    immediately instead of skipping ahead to a replica, so applicant (`requestJoin`/`cancelJoin`) and admin
+  ///    (`addMember` via `canonicalVaultHost`) always serialize on the exact same station.
+  /// 2. Only AFTER the authoritative station confirms (and its returned record passes `fit.join` or `alreadyMember`),
+  ///    replicates best-effort in parallel (preserving station IDs and never letting a replica override the
+  ///    authoritative outcome) to the remaining stations.
   #publishJoin(
     record: JoinAsk,
-    preferred: readonly string[],
     cap: WorkspaceCapability,
-    opts?: { boxCert?: BoxCert; strictAuthoritativeHost?: boolean },
+    opts?: { boxCert?: BoxCert },
   ): Effect.Effect<{ stations: string[]; alreadyMember: boolean; finalState: "pending" | "cancelled"; maxReturnedAt: number; superseded: boolean }, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const allStations = stationsOf(inner, self.ws).map((s) => s.id).sort();
-      const sortedPreferred = [...new Set(preferred)].filter((id) => allStations.includes(id)).sort();
-      const ordered = opts?.strictAuthoritativeHost
-        ? allStations
-        : [...new Set([...sortedPreferred, ...allStations])];
+      const named = stateOf(inner, self.ws).stations;
+      const ordered = stationsOf(inner, self.ws)
+        .map((s) => s.id)
+        .filter((id) => named.size === 0 || named.has(id))
+        .sort();
       if (ordered.length === 0) return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
       const boxCert = opts?.boxCert;
       const sendOne = (sid: string) =>
@@ -4452,67 +4570,75 @@ class Vaults {
           }),
           Effect.map((res) => ({
             id: sid,
-            join: (get(res, "join") as JoinAsk | undefined) ?? record,
+            join: get(res, "join") as JoinAsk | undefined,
             alreadyMember: get(res, "alreadyMember") === true,
             superseded: get(res, "superseded") === true,
           })),
         );
-      const published = yield* answersOf(inner, ordered.map(sendOne), tookOrRefused);
-      const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
-      const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
-      if (ok.length === 0) {
-        const stale = errs.find((e) => e.code === "auth_stale");
-        if (stale !== undefined) return yield* Effect.fail(stale);
-        if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
-          return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
-        }
-        if (errs.length > 0 && errs.every((e) => e.code === "vault_box_missing")) {
-          return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
-        }
-        return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
-      }
-      const already = ok.find((item) => item.alreadyMember);
-      if (already !== undefined) {
-        const addr = `${self.ws}/${already.id}`;
-        inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr, { force: true }));
-        return { stations: ok.map((item) => item.id), alreadyMember: true, finalState: record.state, maxReturnedAt: record.at, superseded: false };
-      }
-      let authoritative: { id: string; join: JoinAsk; alreadyMember: boolean; superseded: boolean } | undefined;
-      if (opts?.strictAuthoritativeHost) {
-        // Among all workspace stations in sorted id order, the first station that did NOT answer `404 vault_unknown`
-        // is the vault's authoritative host (`hostOf = sort()[0]`, or an unreachable lower-id station that may host it).
-        for (let i = 0; i < ordered.length; i++) {
-          const outcome = published[i]!;
-          if (outcome._tag === "Failure") {
-            if (outcome.failure.code === "vault_unknown") continue;
-            if (outcome.failure.code === "auth_stale") return yield* Effect.fail(outcome.failure);
-            return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
-          }
-          authoritative = outcome.success;
-          break;
-        }
-        if (authoritative === undefined) return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
-      }
+      type PublishedJoin = { id: string; join: JoinAsk | undefined; alreadyMember: boolean; superseded: boolean };
       const fit = fits(inner, self.ws);
-      let committed: JoinAsk | null = authoritative !== undefined && fit.join(authoritative.join) ? authoritative.join : null;
-      for (const item of ok) {
-        if (!fit.join(item.join)) continue;
-        if (
-          committed === null
-          || item.join.at > committed.at
-          || (item.join.at === committed.at && committed.state === "cancelled" && item.join.state === "pending")
-        ) {
-          committed = item.join;
+      let authoritative: PublishedJoin | undefined;
+      let authIdx = -1;
+      for (let i = 0; i < ordered.length; i++) {
+        const sid = ordered[i]!;
+        const timedRes = yield* Effect.timeoutOption(Effect.result(sendOne(sid)), JOIN_WRITE_MS);
+        if (Option.isNone(timedRes)) {
+          return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
         }
+        const outcome = timedRes.value;
+        if (outcome._tag === "Failure") {
+          const e = outcome.failure;
+          if (e.code === "vault_unknown") continue;
+          if (e.code === "auth_stale") return yield* Effect.fail(e);
+          if (e.status === 404) return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
+          if (e.code === "vault_box_missing") return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
+          return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+        }
+        authoritative = outcome.success;
+        authIdx = i;
+        break;
       }
-      const effective = committed ?? record;
-      const superseded = ok.some((item) => item.superseded);
+      if (authoritative === undefined) {
+        return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+      }
+      if (authoritative.alreadyMember) {
+        const addr = `${self.ws}/${authoritative.id}`;
+        inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr, { force: true }));
+        return { stations: [authoritative.id], alreadyMember: true, finalState: record.state, maxReturnedAt: record.at, superseded: false };
+      }
+      if (authoritative.join === undefined || !fit.join(authoritative.join)) {
+        return yield* fail("vault_invalid", t("core-misc.vault.joinNoStation"));
+      }
+      const authJoin = authoritative.join;
       cap.commit(() => {
         change(inner, self.ws, (h) => {
-          for (const item of ok) mergeJoin(h, item.join, fit);
+          mergeJoin(h, authJoin, fit);
         });
       });
-      return { stations: ok.map((item) => item.id), alreadyMember: false, finalState: effective.state, maxReturnedAt: effective.at, superseded };
+      const rest = ordered.slice(authIdx + 1);
+      const confirmedStations = [authoritative.id];
+      if (rest.length > 0 && cap.isValid()) {
+        const replicaResults = yield* Effect.all(
+          rest.map((sid) =>
+            Effect.timeoutOption(Effect.result(sendOne(sid)), OTHERS_MS).pipe(
+              Effect.map((opt) => ({ id: sid, opt })),
+            ),
+          ),
+          { concurrency: "unbounded" },
+        );
+        for (const r of replicaResults) {
+          if (Option.isSome(r.opt) && r.opt.value._tag === "Success") {
+            confirmedStations.push(r.id);
+          }
+        }
+      }
+      return {
+        stations: confirmedStations,
+        alreadyMember: false,
+        finalState: authJoin.state,
+        maxReturnedAt: authJoin.at,
+        superseded: authoritative.superseded,
+      };
     });
   }
 
@@ -4607,7 +4733,7 @@ class Vaults {
         TAG.join,
         signer,
       );
-      const res0 = yield* self.#publishJoin(record, disc.from, wsCap, { boxCert });
+      const res0 = yield* self.#publishJoin(record, wsCap, { boxCert });
       if (!res0.alreadyMember && (res0.maxReturnedAt > at || res0.superseded) && res0.maxReturnedAt < Number.MAX_SAFE_INTEGER) {
         // Station returned a verified higher-clock or admission-superseded own ask; bump strictly past it once so
         // the new pending request supersedes the old watermark.
@@ -4616,7 +4742,7 @@ class Vaults {
           TAG.join,
           signer,
         );
-        const res2 = yield* self.#publishJoin(record2, disc.from, wsCap, { boxCert });
+        const res2 = yield* self.#publishJoin(record2, wsCap, { boxCert });
         return { asked: res2.alreadyMember ? 0 : res2.stations.length, alreadyMember: res2.alreadyMember };
       }
       return { asked: res0.alreadyMember ? 0 : res0.stations.length, alreadyMember: res0.alreadyMember };
@@ -4644,8 +4770,7 @@ class Vaults {
         TAG.join,
         signer,
       );
-      const preferred = [...(cur.discoverable?.[vaultId]?.from ?? [])].sort();
-      const res = yield* self.#publishJoin(record, preferred, wsCap, { strictAuthoritativeHost: true });
+      const res = yield* self.#publishJoin(record, wsCap);
       if (res.alreadyMember) return { cancelled: false, alreadyMember: true };
       return { cancelled: res.finalState === "cancelled", alreadyMember: false };
     }));
@@ -4683,7 +4808,7 @@ class Vaults {
   addMember(
     vaultId: string,
     memberSub: string,
-    opts?: { askAt?: number; askDevice?: string; askBox?: string },
+    opts?: { askAt?: number; askDevice?: string; askBox?: string; askSig?: string },
   ): Effect.Effect<unknown, CoreError> {
     const self = this;
     if (vaultId === "" || memberSub === "") return Effect.fail(CoreError.invalid("vault and sub"));
@@ -4701,21 +4826,42 @@ class Vaults {
           const keyedDevices = v.keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
           return { id: v.id, members: v.members, added: false, keyedDevices };
         }
-        const host = hostOf(inner, self.ws, v.id);
+        // Explicit join approval ALWAYS targets the deterministic authoritative station (`canonicalVaultHost`, never
+        // reordered by local reachability) so approve vs request/cancel serialize on the exact same station.
+        const host = opts?.askAt !== undefined ? canonicalVaultHost(inner, self.ws, v.id) : hostOf(inner, self.ws, v.id);
         let askDevice = opts?.askDevice;
         let askBox = opts?.askBox;
-        if (opts?.askAt !== undefined && (!askDevice || !askBox)) {
+        let askSig = opts?.askSig;
+        const resolveExactAsk = (lk: Checked) => {
+          if (opts?.askAt === undefined || (askDevice && askBox && askSig)) return;
           const cachedAsk = held(inner, self.ws).joins?.[vaultId]?.[memberSub];
-          if (cachedAsk !== undefined && cachedAsk.at === opts.askAt && cachedAsk.state === "pending" && joinAskOk(lock, cachedAsk) === null) {
+          if (
+            cachedAsk !== undefined
+            && cachedAsk.at === opts.askAt
+            && cachedAsk.state === "pending"
+            && (!askDevice || cachedAsk.device === askDevice)
+            && (!askBox || cachedAsk.box === askBox)
+            && (!askSig || cachedAsk.sig?.sig === askSig)
+            && joinAskOk(lk, cachedAsk) === null
+          ) {
             askDevice = cachedAsk.device;
             askBox = cachedAsk.box;
+            askSig = cachedAsk.sig.sig;
           }
+        };
+        resolveExactAsk(lock);
+        if (attempt === 0 && opts?.askAt !== undefined && host !== "" && (!askDevice || !askBox || !askSig)) {
+          yield* Effect.ignore(readJoins(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault joins refresh before addMember" });
+          yield* cap.assertValid();
+          ({ lock, signer, self: who } = yield* self.#ready());
+          resolveExactAsk(lock);
+        }
+        if (opts?.askAt !== undefined && (!askDevice || !askBox || !askSig)) {
+          return yield* fail("join_cancelled", t("core-misc.vault.joinCancelled"));
         }
         if (attempt === 0 && opts?.askAt !== undefined && host !== "") {
           const allCerts0 = certs(inner, self.ws, lock);
-          const hasTargetCert = askDevice && askBox
-            ? allCerts0.some((c) => c.sub === memberSub && c.device === askDevice && c.box === askBox)
-            : allCerts0.some((c) => c.sub === memberSub);
+          const hasTargetCert = allCerts0.some((c) => c.sub === memberSub && c.device === askDevice && c.box === askBox);
           if (!hasTargetCert) {
             yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`, { force: true }), { log: "Unhandled", message: "vault station refresh before addMember" });
             yield* cap.assertValid();
@@ -4746,14 +4892,14 @@ class Vaults {
           addDevices.add(cert.device);
         }
         const keys = [...kept.filter((k) => !addDevices.has(k.cert.device)), ...wrappedAdd];
-        if (opts?.askAt !== undefined && askDevice && askBox && !keys.some((k) => k.cert.device === askDevice && k.cert.box === askBox)) {
+        if (opts?.askAt !== undefined && !keys.some((k) => k.cert.device === askDevice && k.cert.box === askBox)) {
           return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
         }
         const keyedDevices = keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
         const { sig: _, ...rest } = v;
         const next = sign({ ...rest, seq: v.seq + 1, members: nextMembers, keys, at: nowS(inner) }, TAG.vault, signer);
         const query = opts?.askAt !== undefined
-          ? `approveJoinSub=${encodeURIComponent(memberSub)}&approveJoinAt=${opts.askAt}${askDevice && askBox ? `&approveJoinDevice=${encodeURIComponent(askDevice)}&approveJoinBox=${encodeURIComponent(askBox)}` : ""}`
+          ? `approveJoinSub=${encodeURIComponent(memberSub)}&approveJoinAt=${opts.askAt}&approveJoinDevice=${encodeURIComponent(askDevice!)}&approveJoinBox=${encodeURIComponent(askBox!)}&approveJoinSig=${encodeURIComponent(askSig!)}`
           : undefined;
         const put = yield* Effect.result(
           self.#putVault(next, host, cap, query ? { query, allowLocalFallback: false, onlyHost: true } : undefined),

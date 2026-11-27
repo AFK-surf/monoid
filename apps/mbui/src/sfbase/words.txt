@@ -3397,6 +3397,7 @@ web-pages.vault.discover.pendingNoteNoAt
 web-pages.vault.discover.cancel
 web-pages.vault.discover.cancelWhat
 web-pages.vault.discover.cancelled
+web-pages.vault.discover.cancelStale
 web-pages.vault.alreadyKeyed
 web-pages.vault.editor.saveTo
 web-pages.vault.thisDeviceCodeLabel

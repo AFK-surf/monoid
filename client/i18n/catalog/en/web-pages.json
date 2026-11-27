@@ -3003,6 +3003,7 @@
   "web-pages.vault.discover.cancel": "Cancel request",
   "web-pages.vault.discover.cancelWhat": "cancel join request",
   "web-pages.vault.discover.cancelled": "Join request cancelled",
+  "web-pages.vault.discover.cancelStale": "Join request changed; refresh and try again",
   "web-pages.vault.editor.saveTo": "Save to",
   "web-pages.appearance.fonts.localFilter.latin": "Latin only",
   "web-pages.projects.title": "Projects & Tags",

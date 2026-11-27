@@ -372,6 +372,8 @@ fn vault_discover_node(b : @view.View, core : Core, ws : () -> String, id : Stri
                       (core.say)(@sf.t("web-pages.vault.discover.alreadyMember"))
                     } else if flag(Some(said), "cancelled") {
                       (core.say)(@sf.t("web-pages.vault.discover.cancelled"))
+                    } else {
+                      (core.say)(@sf.t("web-pages.vault.discover.cancelStale"))
                     }
                   },
                 )

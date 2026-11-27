@@ -70,6 +70,7 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["deviceText", "String", { said: true }],
     ["deviceCode", "String"],
     ["box", "String"],
+    ["sig", opt("String")],
     ["at", "i64", { client: "I54" }],
     ["atText", "String", { said: true }],
   ], { doc: "An unjoined workspace member's active request to join a shared workspace vault." }),

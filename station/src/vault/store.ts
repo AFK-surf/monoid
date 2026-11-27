@@ -63,6 +63,21 @@ CREATE TABLE IF NOT EXISTS vault_joins (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS vault_joins_vault_at ON vault_joins (ws, vault, state, at DESC, sub);
 CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss ON vault_joins (ws, vault, sub) WHERE dismiss_body IS NOT NULL;
+-- Signed membership-changing snapshots for workspace vaults (for skipped-seq ?copy=1 authorization chains and /latest).
+CREATE TABLE IF NOT EXISTS vault_member_trail (
+  ws TEXT NOT NULL,
+  vault TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (ws, vault, seq)
+) WITHOUT ROWID;
+-- Historical membership log recorded whenever a vault version is accepted (for /vault/vaults/latest even after signer demotion).
+CREATE TABLE IF NOT EXISTS vault_member_history (
+  ws TEXT NOT NULL,
+  vault TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  PRIMARY KEY (ws, vault, sub)
+) WITHOUT ROWID;
 -- A previous station can have validated a write before this station commits a deletion. These checks also apply to
 -- its already-prepared UPSERT statements when it resumes, without scanning old rows during installation.
 CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items
@@ -103,6 +118,9 @@ CREATE TRIGGER IF NOT EXISTS vault_deleted_joins_update AFTER UPDATE OF body ON 
   WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
   BEGIN DELETE FROM vault_joins WHERE ws = NEW.ws AND vault = NEW.id; END;
 `;
+
+const sameMembers = (a: Vault, b: Vault): boolean =>
+  Array.isArray(a.members) && Array.isArray(b.members) && a.members.length === b.members.length && a.members.every((m, i) => m === b.members[i]);
 
 const parse = <T>(rows: unknown[]): T[] => rows.map((r) => JSON.parse((r as { body: string }).body) as T);
 
@@ -210,26 +228,63 @@ export class VaultStore {
     return row ? { value: JSON.parse(row.body) as Vault, body: row.body } : null;
   }
 
+  /// Whether `sub` was ever recorded as a member of an accepted version of `(ws, vault)` on this station.
+  wasVaultMember(ws: string, vault: string, sub: string): boolean {
+    return this.#db.prepare("SELECT 1 FROM vault_member_history WHERE ws = ? AND vault = ? AND sub = ?").get(ws, vault, sub) !== undefined;
+  }
+
+  /// Whether this station previously accepted a workspace-vault membership snapshot at `(ws, vault, seq)` with exact `sig`.
+  hasAcceptedTrailSig(ws: string, vault: string, seq: number, sig: string): boolean {
+    const row = this.#db.prepare("SELECT body FROM vault_member_trail WHERE ws = ? AND vault = ? AND seq = ?").get(ws, vault, seq) as { body: string } | undefined;
+    if (!row) return false;
+    try {
+      return (JSON.parse(row.body) as Vault).sig?.sig === sig;
+    } catch {
+      return false;
+    }
+  }
+
+  /// Signed membership-changing snapshots of `(ws, vault)` with `seq > afterSeq`, oldest first (bounded by `limit`).
+  memberTrail(ws: string, vault: string, afterSeq = -1, limit = 32): Vault[] {
+    if (limit <= 0) return [];
+    const cap = Math.min(limit, 32);
+    return parse(
+      this.#db.prepare("SELECT body FROM vault_member_trail WHERE ws = ? AND vault = ? AND seq > ? ORDER BY seq ASC LIMIT ?").all(ws, vault, afterSeq, cap),
+    );
+  }
+
+  #recordHistory(v: Vault, recordTrail: boolean): void {
+    const insHist = this.#db.prepare("INSERT OR IGNORE INTO vault_member_history (ws, vault, sub) VALUES (?, ?, ?)");
+    if (Array.isArray(v.members)) {
+      for (const m of v.members) {
+        if (typeof m === "string" && m !== "") insHist.run(v.ws, v.id, m);
+      }
+    }
+    if (recordTrail && v.scope === "workspace") {
+      this.#db.prepare("INSERT OR REPLACE INTO vault_member_trail (ws, vault, seq, body) VALUES (?, ?, ?, ?)").run(v.ws, v.id, v.seq, JSON.stringify(v));
+    }
+  }
+
   /// A vault's new version, in place of the one before (checked to follow it). Deleted, its items go with it: sealed
   /// under a key no one holds any more.
   putVault(v: Vault): void {
     this.#version++;
+    const prev = this.vault(v.ws, v.id);
     const save = this.#db.prepare("INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET seq = excluded.seq, body = excluded.body");
-    if (!v.deleted) {
-      save.run(v.ws, v.id, v.seq, JSON.stringify(v));
-      return;
-    }
-    // A failure or interruption while deleting the items must not leave the deleted version beside its old items.
-    // A savepoint also works when the caller is already in a transaction.
-    this.#db.exec("SAVEPOINT vault_delete");
+    // A savepoint works whether or not the caller is already in a transaction.
+    this.#db.exec("SAVEPOINT vault_put");
     try {
+      if (prev !== null) this.#recordHistory(prev, prev.scope === "workspace" && !this.hasAcceptedTrailSig(prev.ws, prev.id, prev.seq, prev.sig?.sig ?? ""));
       save.run(v.ws, v.id, v.seq, JSON.stringify(v));
-      this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-      this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-      this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
-      this.#db.exec("RELEASE vault_delete");
+      this.#recordHistory(v, prev === null || !sameMembers(prev, v) || Boolean(v.deleted));
+      if (v.deleted) {
+        this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+        this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+        this.#db.prepare("DELETE FROM vault_joins WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      }
+      this.#db.exec("RELEASE vault_put");
     } catch (error) {
-      try { this.#db.exec("ROLLBACK TO vault_delete; RELEASE vault_delete"); } catch { /* SQLite may already have rolled back. */ }
+      try { this.#db.exec("ROLLBACK TO vault_put; RELEASE vault_put"); } catch { /* SQLite may already have rolled back. */ }
       throw error;
     }
   }
@@ -239,32 +294,30 @@ export class VaultStore {
     return this.putVaultChecked(v, previous) === "saved";
   }
 
-  /// Atomic vault CAS write with optional join-request approval precondition (`approveJoin`) and newly-added member
-  /// `vault_joins` admission watermark update (`joined_up_to = MAX(joined_up_to, vault_joins.at)` using the applicant's
-  /// own ask clock, kept separate from signed admin `dismiss_body`/`dismiss_up_to` so a later removal cannot resurrect
-  /// the pre-join request even if the approving admin is later demoted).
+  /// Atomic vault CAS write with optional join-request approval precondition (`approveJoin`, requiring exact
+  /// `(sub, at, device, box, sig)` match + wrapped key for the stored ask's `(device, box)`), newly-added member
+  /// `vault_joins` admission watermark update (`joined_up_to`), and atomic `vault_member_trail` / `vault_member_history`
+  /// updates.
   putVaultChecked(
     v: Vault,
     previous: string | null,
     opts?: {
+      prevVault?: Vault | null;
+      trail?: readonly Vault[];
       addedSubs?: readonly string[];
-      approveJoin?: { sub: string; at: number; device?: string; box?: string };
+      approveJoin?: { sub: string; at: number; device: string; box: string; sig: string };
       isValidAsk?: (a: JoinAsk) => boolean;
       isActiveDismiss?: (d: JoinDismiss) => boolean;
     },
   ): "saved" | "conflict" | "join_cancelled" {
     const body = JSON.stringify(v);
+    const prevVault = opts?.prevVault !== undefined ? opts.prevVault : (previous !== null ? (JSON.parse(previous) as Vault) : null);
     const save = () => previous === null
       ? this.#db.prepare(`INSERT INTO vaults (ws, id, seq, body)
           SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ?)`)
         .run(v.ws, v.id, v.seq, body, v.ws, v.id).changes > 0
       : this.#db.prepare("UPDATE vaults SET seq = ?, body = ? WHERE ws = ? AND id = ? AND body = ?")
         .run(v.seq, body, v.ws, v.id, previous).changes > 0;
-    const needsTx = Boolean(v.deleted) || opts?.approveJoin !== undefined || (opts?.addedSubs !== undefined && opts.addedSubs.length > 0);
-    if (!needsTx) {
-      this.#version++;
-      return save() ? "saved" : "conflict";
-    }
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       if (opts?.approveJoin !== undefined) {
@@ -276,10 +329,12 @@ export class VaultStore {
         let askOkNow = false;
         if (row !== undefined && row.body !== null && row.body !== "") {
           const ask = JSON.parse(row.body) as JoinAsk;
-          const matchesDevice = opts.approveJoin.device === undefined || ask.device === opts.approveJoin.device;
-          const matchesBox = opts.approveJoin.box === undefined || ask.box === opts.approveJoin.box;
+          const matchesAsk = ask.device === opts.approveJoin.device
+            && ask.box === opts.approveJoin.box
+            && ask.sig?.sig === opts.approveJoin.sig;
+          const hasWrappedKey = Array.isArray(v.keys) && v.keys.some((k) => k.cert.device === ask.device && k.cert.box === ask.box);
           const valid = opts.isValidAsk ? opts.isValidAsk(ask) : true;
-          askOkNow = matchesDevice && matchesBox && valid;
+          askOkNow = matchesAsk && hasWrappedKey && valid;
         }
         let dismissed = false;
         if (askOkNow && row !== undefined && row.dismiss_body !== null && row.dismiss_body !== "" && row.at <= row.dismiss_up_to) {
@@ -297,6 +352,13 @@ export class VaultStore {
         this.#db.exec("ROLLBACK");
         return "conflict";
       }
+      if (prevVault !== null) {
+        this.#recordHistory(prevVault, prevVault.scope === "workspace" && !this.hasAcceptedTrailSig(prevVault.ws, prevVault.id, prevVault.seq, prevVault.sig?.sig ?? ""));
+      }
+      if (opts?.trail && opts.trail.length > 0) {
+        for (const hop of opts.trail) this.#recordHistory(hop, true);
+      }
+      this.#recordHistory(v, prevVault === null || !sameMembers(prevVault, v) || Boolean(v.deleted));
       if (v.deleted) {
         this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
         this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
@@ -407,14 +469,14 @@ export class VaultStore {
   }
 
   /// Explicit per-vault key asks for these vaults, newest first per vault.
-  /// When a bounded set of active lock devices (`<= 256`) is supplied, probes the PRIMARY KEY `(ws, vault, device)`
-  /// directly so thousands of historical revoked-device asks cost O(activeDevices * log N) instead of scanning them;
-  /// otherwise falls back to a split-range keyset cursor on `vault_asks_vault_at` (`at = ? AND device > ?`, then `at < ?`).
+  /// When active lock devices are supplied (any count), probes the PRIMARY KEY `(ws, vault, device)` in bounded
+  /// batches of 256 so thousands of historical revoked-device asks are never scanned (O(activeDevices * log N),
+  /// independent of revoked history). When `devices` is omitted, uses a split-range keyset cursor on `vault_asks_vault_at`.
   asksForVaults(
     ws: string,
     vaultIds: readonly string[],
     limit: number,
-    opts?: { devices?: readonly string[]; perVault?: number; perVaultScan?: number; maxScan?: number; accept?: (a: KeyAsk) => boolean },
+    opts?: { devices?: readonly string[]; perVault?: number; perVaultScan?: number; maxScan?: number; maxDevices?: number; accept?: (a: KeyAsk) => boolean },
   ): KeyAsk[] {
     if (vaultIds.length === 0 || limit <= 0) return [];
     const devices = opts?.devices;
@@ -424,22 +486,37 @@ export class VaultStore {
     const maxScan = Math.max(perVaultScan, opts?.maxScan ?? 512);
     const accept = opts?.accept;
     const out: KeyAsk[] = [];
-    if (devices !== undefined && devices.length <= 256) {
-      // Direct PK point-lookup per active device: O(activeDevices * log N), completely bypassing revoked-device rows.
+    if (devices !== undefined) {
+      // Batched PK point-lookup per active device: O(activeDevices * log N), completely bypassing revoked-device rows
+      // at any active-device count (no cliff at 257+ active devices).
       const pkStmt = this.#db.prepare(
         "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?))",
       );
-      const devicesJson = JSON.stringify(devices);
+      const maxDevices = Math.max(256, opts?.maxDevices ?? 2048);
+      const cappedDevices = devices.length > maxDevices ? devices.slice(0, maxDevices) : devices;
+      const chunks: string[] = [];
+      for (let i = 0; i < cappedDevices.length; i += 256) {
+        chunks.push(JSON.stringify(cappedDevices.slice(i, i + 256)));
+      }
       let totalScanned = 0;
       for (const vault of vaultIds) {
         if (out.length >= limit || totalScanned >= maxScan) break;
         const want = Math.min(perVault, limit - out.length);
-        const rows = pkStmt.all(ws, vault, devicesJson) as { at: number; device: string; body: string }[];
-        if (rows.length === 0) continue;
-        totalScanned += rows.length;
-        rows.sort((a, b) => (b.at - a.at) || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
+        const matched: { at: number; device: string; body: string }[] = [];
+        let vaultScanned = 0;
+        for (const chunkJson of chunks) {
+          if (vaultScanned >= perVaultScan || totalScanned >= maxScan) break;
+          const rows = pkStmt.all(ws, vault, chunkJson) as { at: number; device: string; body: string }[];
+          if (rows.length === 0) continue;
+          const takeRows = Math.min(rows.length, perVaultScan - vaultScanned, maxScan - totalScanned);
+          for (let i = 0; i < takeRows; i++) matched.push(rows[i]!);
+          vaultScanned += takeRows;
+          totalScanned += takeRows;
+        }
+        if (matched.length === 0) continue;
+        matched.sort((a, b) => (b.at - a.at) || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
         let taken = 0;
-        for (const r of rows) {
+        for (const r of matched) {
           const a = JSON.parse(r.body) as KeyAsk;
           if (accept !== undefined && !accept(a)) continue;
           out.push(a);
@@ -449,28 +526,15 @@ export class VaultStore {
       }
       return out;
     }
-    const devicesJson = devices !== undefined ? JSON.stringify(devices) : null;
-    const firstStmt = devicesJson !== null
-      ? this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?)) ORDER BY at DESC, device ASC LIMIT ?",
-      )
-      : this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
-      );
-    const sameAtStmt = devicesJson !== null
-      ? this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? AND device IN (SELECT value FROM json_each(?)) ORDER BY at DESC, device ASC LIMIT ?",
-      )
-      : this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT ?",
-      );
-    const olderStmt = devicesJson !== null
-      ? this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? AND device IN (SELECT value FROM json_each(?)) ORDER BY at DESC, device ASC LIMIT ?",
-      )
-      : this.#db.prepare(
-        "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT ?",
-      );
+    const firstStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
+    const sameAtStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
+    const olderStmt = this.#db.prepare(
+      "SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT ?",
+    );
     let totalScanned = 0;
     for (const vault of vaultIds) {
       if (out.length >= limit || totalScanned >= maxScan) break;
@@ -484,16 +548,12 @@ export class VaultStore {
         if (batch <= 0) break;
         let rows: { at: number; device: string; body: string }[];
         if (cursorAt === null) {
-          rows = (devicesJson !== null ? firstStmt.all(ws, vault, devicesJson, batch) : firstStmt.all(ws, vault, batch)) as { at: number; device: string; body: string }[];
+          rows = firstStmt.all(ws, vault, batch) as { at: number; device: string; body: string }[];
         } else {
-          const sameRows = (devicesJson !== null
-            ? sameAtStmt.all(ws, vault, cursorAt, cursorDev, devicesJson, batch)
-            : sameAtStmt.all(ws, vault, cursorAt, cursorDev, batch)) as { at: number; device: string; body: string }[];
+          const sameRows = sameAtStmt.all(ws, vault, cursorAt, cursorDev, batch) as { at: number; device: string; body: string }[];
           if (sameRows.length < batch) {
             const rem = batch - sameRows.length;
-            const olderRows = (devicesJson !== null
-              ? olderStmt.all(ws, vault, cursorAt, devicesJson, rem)
-              : olderStmt.all(ws, vault, cursorAt, rem)) as { at: number; device: string; body: string }[];
+            const olderRows = olderStmt.all(ws, vault, cursorAt, rem) as { at: number; device: string; body: string }[];
             rows = sameRows.length === 0 ? olderRows : [...sameRows, ...olderRows];
           } else {
             rows = sameRows;
@@ -596,9 +656,10 @@ export class VaultStore {
       .run(dismiss.upTo, body, dismiss.ws, dismiss.vault, dismiss.sub, previousDismissUpTo, dismiss.upTo, dismiss.ws, dismiss.vault, vaultBody).changes > 0;
   }
 
-  /// Signed workspace-vault join records (`pending` and `cancelled`) for managing admins, queried with separate
-  /// per-state quotas on `vault_joins_vault_at (ws, vault, state, at DESC, sub)` so newer `cancelled` tombstones
-  /// never starve older `pending` requests.
+  /// Signed workspace-vault join records (`pending` and `cancelled`) for managing admins, queried with completely
+  /// independent per-state quotas AND scan budgets on `vault_joins_vault_at (ws, vault, state, at DESC, sub)` so
+  /// filtered `pending` rows can never starve `cancelled` tombstones (nor vice versa), with resumable keyset cursor
+  /// for `cancelled` tombstones.
   joinsForVaults(
     ws: string,
     vaultIds: readonly string[],
@@ -606,16 +667,23 @@ export class VaultStore {
     opts?: {
       perVault?: number;
       perVaultCancelled?: number;
+      cancelledLimit?: number;
       perVaultScan?: number;
       maxScan?: number;
+      cancelledMaxScan?: number;
+      cancelledAfterVault?: string;
+      cancelledAfterAt?: number;
+      cancelledAfterSub?: string;
       accept?: (a: JoinAsk, joinedUpTo: number, dismiss: JoinDismiss | null) => boolean;
     },
-  ): JoinAsk[] {
-    if (vaultIds.length === 0 || limit <= 0) return [];
+  ): { joins: JoinAsk[]; nextCancelledCursor?: { vault: string; at: number; sub: string } } {
+    if (vaultIds.length === 0 || limit <= 0) return { joins: [] };
     const perVault = Math.min(opts?.perVault ?? 64, limit);
-    const perVaultCancelled = Math.min(opts?.perVaultCancelled ?? 64, limit);
+    const cancelledLimit = opts?.cancelledLimit ?? 64;
+    const perVaultCancelled = Math.min(opts?.perVaultCancelled ?? 64, cancelledLimit);
     const perVaultScan = Math.max(perVault, opts?.perVaultScan ?? 128);
     const maxScan = Math.max(perVaultScan, opts?.maxScan ?? 512);
+    const cancelledMaxScan = Math.max(perVaultScan, opts?.cancelledMaxScan ?? maxScan);
     const accept = opts?.accept;
     const out: JoinAsk[] = [];
     const firstStmt = this.#db.prepare(
@@ -627,18 +695,37 @@ export class VaultStore {
     const olderStmt = this.#db.prepare(
       "SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = ? AND at < ? ORDER BY at DESC, sub ASC LIMIT ?",
     );
-    let totalScanned = 0;
-    const scanState = (state: "pending" | "cancelled", perVaultCap: number, totalLimit: number) => {
-      for (const vault of vaultIds) {
-        if (out.length >= totalLimit || totalScanned >= maxScan) break;
-        const want = Math.min(perVaultCap, totalLimit - out.length);
+    const scanState = (
+      state: "pending" | "cancelled",
+      perVaultCap: number,
+      stateLimit: number,
+      stateMaxScan: number,
+      after?: { vault: string; at: number; sub: string },
+    ): { vault: string; at: number; sub: string } | undefined => {
+      let stateEmitted = 0;
+      let stateScanned = 0;
+      let nextCursor: { vault: string; at: number; sub: string } | undefined;
+      let lastVisited: { vault: string; at: number; sub: string } | null = null;
+      let exhausted = false;
+      const startIdx = after ? Math.max(0, vaultIds.indexOf(after.vault)) : 0;
+      for (let vi = startIdx; vi < vaultIds.length; vi++) {
+        const vault = vaultIds[vi]!;
+        if (stateEmitted >= stateLimit) break;
+        if (stateScanned >= stateMaxScan) {
+          exhausted = true;
+          break;
+        }
+        const want = Math.min(perVaultCap, stateLimit - stateEmitted);
         let taken = 0;
         let vaultScanned = 0;
-        let cursorAt: number | null = null;
-        let cursorSub = "";
-        while (taken < want && vaultScanned < perVaultScan && totalScanned < maxScan) {
-          const batch = Math.min(want - taken, perVaultScan - vaultScanned, maxScan - totalScanned);
-          if (batch <= 0) break;
+        let cursorAt: number | null = vi === startIdx && after && after.vault === vault ? after.at : null;
+        let cursorSub = vi === startIdx && after && after.vault === vault ? after.sub : "";
+        while (taken < want && vaultScanned < perVaultScan && stateScanned < stateMaxScan) {
+          const batch = Math.min(want - taken + 1, perVaultScan - vaultScanned, stateMaxScan - stateScanned);
+          if (batch <= 0) {
+            exhausted = true;
+            break;
+          }
           let rows: { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
           if (cursorAt === null) {
             rows = firstStmt.all(ws, vault, state, batch) as { at: number; sub: string; body: string | null; joined_up_to: number; dismiss_body: string | null }[];
@@ -652,28 +739,52 @@ export class VaultStore {
             }
           }
           if (rows.length === 0) break;
-          vaultScanned += rows.length;
-          totalScanned += rows.length;
-          const last = rows[rows.length - 1]!;
-          cursorAt = last.at;
-          cursorSub = last.sub;
-          for (const r of rows) {
+          let hitVaultCap = false;
+          for (let i = 0; i < rows.length; i++) {
+            const r = rows[i]!;
+            vaultScanned++;
+            stateScanned++;
+            cursorAt = r.at;
+            cursorSub = r.sub;
+            lastVisited = { vault, at: r.at, sub: r.sub };
             if (r.body === null || r.body === "") continue;
             const a = JSON.parse(r.body) as JoinAsk;
             const d = r.dismiss_body !== null && r.dismiss_body !== "" ? (JSON.parse(r.dismiss_body) as JoinDismiss) : null;
             if (accept !== undefined && !accept(a, r.joined_up_to, d)) continue;
             out.push(a);
             taken++;
-            if (taken >= want || out.length >= totalLimit) break;
+            stateEmitted++;
+            if (stateEmitted >= stateLimit) {
+              if (i + 1 < rows.length || vi + 1 < vaultIds.length) {
+                nextCursor = { vault, at: r.at, sub: r.sub };
+              }
+              break;
+            }
+            if (taken >= want) {
+              hitVaultCap = true;
+              break;
+            }
           }
+          if (nextCursor !== undefined || hitVaultCap) break;
           if (rows.length < batch) break;
         }
+        if (nextCursor !== undefined) break;
+        if (stateScanned >= stateMaxScan) {
+          exhausted = true;
+          break;
+        }
       }
+      if (nextCursor === undefined && exhausted && lastVisited !== null) {
+        nextCursor = lastVisited;
+      }
+      return nextCursor;
     };
-    // Scan pending asks first with full `limit`, then cancelled tombstones with an independent bounded allowance.
-    scanState("pending", perVault, limit);
-    scanState("cancelled", perVaultCancelled, limit + perVaultCancelled);
-    return out;
+    scanState("pending", perVault, limit, maxScan);
+    const cancelledAfter = opts?.cancelledAfterVault !== undefined && opts.cancelledAfterAt !== undefined && opts.cancelledAfterSub !== undefined
+      ? { vault: opts.cancelledAfterVault, at: opts.cancelledAfterAt, sub: opts.cancelledAfterSub }
+      : undefined;
+    const nextCancelledCursor = scanState("cancelled", perVaultCancelled, cancelledLimit, cancelledMaxScan, cancelledAfter);
+    return nextCancelledCursor !== undefined ? { joins: out, nextCancelledCursor } : { joins: out };
   }
 
   /// Signed admin join-dismiss records for these workspace vaults via partial index `vault_joins_vault_dismiss`,

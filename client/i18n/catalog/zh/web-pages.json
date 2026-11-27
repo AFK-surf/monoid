@@ -2949,6 +2949,7 @@
   "web-pages.vault.discover.cancel": "取消申请",
   "web-pages.vault.discover.cancelWhat": "取消加入申请",
   "web-pages.vault.discover.cancelled": "已取消加入申请",
+  "web-pages.vault.discover.cancelStale": "申请状态已更新，请刷新后重试",
   "web-pages.vault.editor.saveTo": "保存到",
   "web-pages.appearance.fonts.localFilter.latin": "仅西文",
   "web-pages.projects.title": "项目与标签",

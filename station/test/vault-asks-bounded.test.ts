@@ -153,6 +153,36 @@ test("GET /vault/asks scans only the viewer's vaults via vault_asks_vault_at ind
     ).all(f.myAsk.ws, thirdVaultId, 9000) as { detail: string }[];
     assert.ok(planOlder.some((p) => p.detail.includes("USING INDEX vault_asks_vault_at") && p.detail.includes("at<?")), `expected older-at index seek: ${JSON.stringify(planOlder)}`);
     assert.ok(!planOlder.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planOlder)}`);
+
+    // Above 256 active devices (e.g. 300 active devices), batched PK probes must STILL ignore thousands of revoked
+    // historical asks (no cliff back to scanning revoked rows on vault_asks_vault_at).
+    const bigVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZ4";
+    f.vaults.putVault({
+      v: 1, ws: f.myAsk.ws, id: bigVaultId, seq: 0, owner: "alice", name: "Big", members: ["alice"], epoch: 0,
+      keys: [], at: 1000, sig: f.myAsk.sig,
+    });
+    for (let i = 0; i < 2000; i++) {
+      f.vaults.putAsk(f.signAsk(bigVaultId, `d${i.toString(16).padStart(63, "0")}`, 20000 + i));
+    }
+    const bigAsk = f.signAsk(bigVaultId, f.myAsk.device, 1200);
+    f.vaults.putAsk(bigAsk);
+    const active300 = [f.myAsk.device];
+    for (let i = 0; i < 299; i++) active300.push(`c${i.toString(16).padStart(63, "0")}`);
+    const before200 = f.vaults.asksForVaults(f.myAsk.ws, [bigVaultId], 64, { devices: active300.slice(0, 200) });
+    assert.deepEqual(before200, [bigAsk]);
+    const above256 = f.vaults.asksForVaults(f.myAsk.ws, [bigVaultId], 64, { devices: active300 });
+    assert.deepEqual(above256, [bigAsk]);
+    // Verify via GET /vault/asks with 300 active devices in LockState that inspected rows stays strictly bounded (0 revoked rows scanned).
+    for (const id of active300) {
+      if (!f.state.devices.has(id)) {
+        f.state.devices.set(id, { id, sub: "alice", kind: "app", label: id.slice(0, 8), own: true, sign_key: f.myAsk.sig.key });
+      }
+    }
+    const answerBig = await f.read();
+    assert.equal(answerBig.status, 200);
+    assert.ok(answerBig.body.asks.some((a: KeyAsk) => a.vault === bigVaultId && a.device === f.myAsk.device));
+    // Total inspected rows across ALL vaults (1 + 5 + 69 + 1 = 76) — NONE of the 2,500 revoked asks were touched!
+    assert.ok(answerBig.inspected < 100, `expected batched PK probes to skip all 2,500 revoked asks, but inspected ${answerBig.inspected} rows`);
   } finally {
     f.db.close();
   }

@@ -3451,6 +3451,7 @@ let en : Map[String, String] = {
   "web-pages.vault.discover.cancel": "Cancel request",
   "web-pages.vault.discover.cancelWhat": "cancel join request",
   "web-pages.vault.discover.cancelled": "Join request cancelled",
+  "web-pages.vault.discover.cancelStale": "Join request changed; refresh and try again",
   "web-pages.vault.alreadyKeyed": "This device already holds the key to this vault",
   "web-pages.vault.editor.saveTo": "Save to",
   "web-pages.vault.thisDeviceCodeLabel": "This device code: ",

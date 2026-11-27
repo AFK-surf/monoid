@@ -174,6 +174,15 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     assert.equal(probeCarolLatest.status, 200);
     assert.deepEqual(probeCarolLatest.body.vaults, [], "unjoined admin forged witness must not read workspace vault via /latest");
 
+    // Third-party unjoined admin Carol signing a fake witness for Bob (`signer.sub !== r.viewer.sub`) must be rejected!
+    const carolThirdPartyLatest = r.unjoinedAdmin.doSign(
+      { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 0, owner: "carol", name: "Fake", scope: "workspace" as const, members: ["carol", "bob"], epoch: 0, keys: [], at: 100 },
+      TAG.vault,
+    );
+    const probeThirdPartyLatest = await r.call("POST", "/vault/vaults/latest", "bob", r.bob.deviceId, { held: [carolThirdPartyLatest] });
+    assert.equal(probeThirdPartyLatest.status, 200);
+    assert.deepEqual(probeThirdPartyLatest.body.vaults, [], "third-party unjoined admin witness must not read workspace vault via /latest");
+
     // Cross-scope witness (personal witness claiming wsVaultId) must be rejected by /latest.
     const crossScopeWitness = r.admin.doSign(
       { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 0, owner: "alice", name: "Fake Personal", members: ["alice", "bob"], epoch: 0, keys: [], at: 100 },
@@ -183,19 +192,25 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     assert.equal(probeCrossScope.status, 200);
     assert.deepEqual(probeCrossScope.body.vaults, [], "personal witness must not return a workspace vault via /latest");
 
-    // Lagging station catchup: if Carol was added at seq 1 elsewhere and signed seq 2, a station lagging at seq 0
-    // MUST accept `?copy=1` at seq 2 (while still rejecting contiguous seq 1 self-insertion from unjoined Carol above).
+    // Lagging station catchup (skipped-seq ?copy=1):
+    // - Without a verified authorization trail anchored at seq 0, Carol (unjoined in seq 0) is REJECTED!
+    // - With a verified trail [aliceSeq1AddingCarol], the lagging station verifies every hop and catches up to seq 2!
     const lagDb = new DatabaseSync(":memory:");
     try {
       const lagVaults = new VaultStore(lagDb);
       lagVaults.putVault(r.wsVault);
       const lagRoutes = routes({ vaults: lagVaults, lock: () => r.state });
       const putRoute = lagRoutes.find((x) => x.method === "PUT" && x.pattern.test("/vault/vaults"))!;
+      const trailRoute = lagRoutes.find((x) => x.method === "GET" && x.pattern.test("/vault/vaults/trail"))!;
+      const aliceSeq1AddingCarol: Vault = r.admin.doSign(
+        { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const, members: ["alice", "carol"], epoch: 0, keys: [], at: 110 },
+        TAG.vault,
+      );
       const carolSeq2: Vault = r.unjoinedAdmin.doSign(
         { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 2, owner: "alice", name: "Team Vault", scope: "workspace" as const, members: ["alice", "carol", "bob"], epoch: 0, keys: [], at: 120 },
         TAG.vault,
       );
-      const lagRes = await putRoute.handle(
+      const noTrailRes = await putRoute.handle(
         {
           method: "PUT", path: "/vault/vaults", query: [["copy", "1"]], headers: {},
           body: Buffer.from(JSON.stringify(carolSeq2), "utf8"),
@@ -204,8 +219,47 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
         },
         [],
       );
-      assert.equal(lagRes.status, 200, "lagging station must catch up on skipped-seq ?copy=1 signed by newly-added admin");
+      assert.equal(noTrailRes.status, 404, "skipped-seq ?copy=1 without authorization trail must be rejected");
+      assert.equal(lagVaults.vault(r.ws, r.wsVaultId)!.seq, 0);
+
+      const forgedHop: Vault = r.unjoinedAdmin.doSign(
+        { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 1, owner: "carol", name: "Team Vault", scope: "workspace" as const, members: ["alice", "carol"], epoch: 0, keys: [], at: 110 },
+        TAG.vault,
+      );
+      const badTrailRes = await putRoute.handle(
+        {
+          method: "PUT", path: "/vault/vaults", query: [["copy", "1"]], headers: {},
+          body: Buffer.from(JSON.stringify({ vault: carolSeq2, trail: [forgedHop] }), "utf8"),
+          viewer: { sub: "carol", workspace: r.ws, email: "carol@x.test", name: "carol", role: "admin", device: r.unjoinedAdmin.deviceId },
+          lang: "en",
+        },
+        [],
+      );
+      assert.equal(badTrailRes.status, 404, "forged trail not signed by an existing member-admin must be rejected");
+      assert.equal(lagVaults.vault(r.ws, r.wsVaultId)!.seq, 0);
+
+      const goodTrailRes = await putRoute.handle(
+        {
+          method: "PUT", path: "/vault/vaults", query: [["copy", "1"]], headers: {},
+          body: Buffer.from(JSON.stringify({ vault: carolSeq2, trail: [aliceSeq1AddingCarol] }), "utf8"),
+          viewer: { sub: "bob", workspace: r.ws, email: "bob@x.test", name: "bob", role: "member", device: r.bob.deviceId },
+          lang: "en",
+        },
+        [],
+      );
+      assert.equal(goodTrailRes.status, 200, "lagging station must catch up on skipped-seq ?copy=1 with verified trail");
       assert.equal(lagVaults.vault(r.ws, r.wsVaultId)!.seq, 2);
+      const trailGet = await trailRoute.handle(
+        {
+          method: "GET", path: "/vault/vaults/trail", query: [["vault", r.wsVaultId]], headers: {},
+          body: Buffer.alloc(0),
+          viewer: { sub: "bob", workspace: r.ws, email: "bob@x.test", name: "bob", role: "member", device: r.bob.deviceId },
+          lang: "en",
+        },
+        [],
+      );
+      assert.equal(trailGet.status, 200);
+      assert.deepEqual(JSON.parse((trailGet.body as Buffer).toString()).trail.map((v: Vault) => v.seq), [0, 1, 2]);
     } finally {
       lagDb.close();
     }
@@ -272,21 +326,11 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
       { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const, members: ["alice", "bob"], epoch: 0, keys: [], at: 150 },
       TAG.vault,
     );
-    const staleApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [["approveJoinSub", "bob"], ["approveJoinAt", "200"]]);
-    assert.equal(staleApprove.status, 409);
-    assert.equal(staleApprove.body.code, "join_cancelled");
+    // Partial approveJoin params (without device/box/sig) must be rejected with 400 vault_invalid (no fallback!).
+    const partialApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [["approveJoinSub", "bob"], ["approveJoinAt", "200"]]);
+    assert.equal(partialApprove.status, 400, "partial approveJoin params without device/box/sig must fail with 400");
+    assert.equal(partialApprove.body.code, "vault_invalid");
 
-    // 6. Bob re-applies with a faster client clock (at=999999 > vault.at=150); explicit approval with approveJoinDevice/Box
-    //    must reject a vault missing Bob's wrapped key (400), and succeed once Bob's key is wrapped -> joined_up_to = 999999!
-    const bobJoinFast: JoinAsk = r.bob.doSign(
-      { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", device: r.bob.deviceId, box: r.bob.box.pub, state: "pending" as const, at: 999999 },
-      TAG.join,
-    );
-    assert.equal((await r.call("PUT", "/vault/joins", "bob", r.bob.deviceId, bobJoinFast)).status, 200);
-    const missingKeyApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [
-      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub],
-    ]);
-    assert.equal(missingKeyApprove.status, 400, "explicit device/box approval must require next.keys to wrap that device and box");
     const addBobKeyedV1: Vault = r.admin.doSign(
       {
         v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const,
@@ -294,8 +338,30 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
       },
       TAG.vault,
     );
+    const staleApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobKeyedV1, [
+      ["approveJoinSub", "bob"], ["approveJoinAt", "200"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub], ["approveJoinSig", bobJoin1.sig.sig],
+    ]);
+    assert.equal(staleApprove.status, 409);
+    assert.equal(staleApprove.body.code, "join_cancelled");
+
+    // 6. Bob re-applies with a faster client clock (at=999999 > vault.at=150); explicit approval must reject missing
+    //    keys (400), reject mismatched sig (409 join_cancelled), and succeed with exact 5-param binding + wrapped key!
+    const bobJoinFast: JoinAsk = r.bob.doSign(
+      { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", device: r.bob.deviceId, box: r.bob.box.pub, state: "pending" as const, at: 999999 },
+      TAG.join,
+    );
+    assert.equal((await r.call("PUT", "/vault/joins", "bob", r.bob.deviceId, bobJoinFast)).status, 200);
+    const missingKeyApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [
+      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub], ["approveJoinSig", bobJoinFast.sig.sig],
+    ]);
+    assert.equal(missingKeyApprove.status, 400, "explicit device/box approval must require next.keys to wrap that device and box");
+    const wrongSigApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobKeyedV1, [
+      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub], ["approveJoinSig", bobJoin1.sig.sig],
+    ]);
+    assert.equal(wrongSigApprove.status, 409, "mismatched approveJoinSig must fail with 409 join_cancelled");
+    assert.equal(wrongSigApprove.body.code, "join_cancelled");
     const okApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobKeyedV1, [
-      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub],
+      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub], ["approveJoinSig", bobJoinFast.sig.sig],
     ]);
     assert.equal(okApprove.status, 200);
 
@@ -306,12 +372,14 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     );
     r.emitted.length = 0;
     assert.equal((await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, removeBobV2)).status, 200);
-    // Double-removal offline Bob test: even if Carol removes Alice too (vault members = ["carol"]), Bob presenting
-    // Alice's earlier signed witness (`addBobKeyedV1`) STILL receives the latest vault proving Bob was removed!
-    const bobLatestValid = await r.call("POST", "/vault/vaults/latest", "bob", r.bob.deviceId, { held: [addBobKeyedV1] });
-    assert.equal(bobLatestValid.status, 200);
-    assert.equal(bobLatestValid.body.vaults.length, 1);
-    assert.equal(bobLatestValid.body.vaults[0].seq, 2);
+    // Double-removal + historical-signer demotion test: even after Alice is demoted to ordinary "member", Bob
+    // presenting Alice's genuinely accepted `addBobKeyedV1` STILL receives the latest vault proving Bob was removed!
+    r.state.members.set("alice", { sub: "alice", email: "alice@x.test", role: "member" });
+    const bobLatestAfterDemotion = await r.call("POST", "/vault/vaults/latest", "bob", r.bob.deviceId, { held: [addBobKeyedV1] });
+    assert.equal(bobLatestAfterDemotion.status, 200);
+    assert.equal(bobLatestAfterDemotion.body.vaults.length, 1, "historical accepted witness must still verify removal even after signer is demoted");
+    assert.equal(bobLatestAfterDemotion.body.vaults[0].seq, 2);
+    r.state.members.set("alice", { sub: "alice", email: "alice@x.test", role: "owner" });
     // Verify vault-discover is emitted AFTER vault-gone!
     const goneIdx = r.emitted.findIndex((e) => e.event === "vault-gone");
     const discIdx = r.emitted.findIndex((e) => e.event === "vault-discover");
@@ -418,6 +486,64 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     });
     assert.equal(scanBudget.dismisses.length, 0);
     assert.ok(scanBudget.nextCursor !== undefined, "exhausting maxScan on filtered rows must still return nextCursor");
+
+    // 10c. Pending scan budget exhaustion across 4 vaults MUST NOT starve cancelled tombstones (independent budgets + cursor)!
+    const starvDb = new DatabaseSync(":memory:");
+    try {
+      const starvStore = new VaultStore(starvDb);
+      const vIds = [0, 1, 2, 3].map((n) => `v_01JSTARVE0000000000000000${n}`);
+      for (const vid of vIds) {
+        const sv: Vault = r.admin.doSign(
+          { v: 1 as const, ws: r.ws, id: vid, seq: 0, owner: "alice", name: `V${vid}`, scope: "workspace" as const, members: ["alice"], epoch: 0, keys: [], at: 100 },
+          TAG.vault,
+        );
+        starvStore.putVault(sv);
+        const body = JSON.stringify(sv);
+        for (let i = 0; i < 128; i++) {
+          const pAsk: JoinAsk = r.bob.doSign(
+            { v: 1 as const, ws: r.ws, vault: vid, sub: `pend_${i}`, device: r.bob.deviceId, box: r.bob.box.pub, state: "pending" as const, at: 5000 + i },
+            TAG.join,
+          );
+          starvStore.putJoinIf(pAsk, body, null, false);
+        }
+      }
+      // Put 3 valid cancelled tombstones on vault 0.
+      const v0Body = JSON.stringify(starvStore.vault(r.ws, vIds[0]!)!);
+      for (let i = 0; i < 3; i++) {
+        const cAsk: JoinAsk = r.bob.doSign(
+          { v: 1 as const, ws: r.ws, vault: vIds[0]!, sub: `canc_ok_${i}`, device: r.bob.deviceId, box: r.bob.box.pub, state: "cancelled" as const, at: 8000 + i },
+          TAG.join,
+        );
+        starvStore.putJoinIf(cAsk, v0Body, null, false);
+      }
+      const res1 = starvStore.joinsForVaults(r.ws, vIds, 128, {
+        perVault: 64,
+        perVaultCancelled: 64,
+        cancelledLimit: 2,
+        perVaultScan: 128,
+        maxScan: 512,
+        cancelledMaxScan: 512,
+        accept: (a) => a.state === "cancelled",
+      });
+      assert.equal(res1.joins.length, 2, "exhausted pending maxScan (4*128=512) must NEVER starve cancelled tombstones");
+      assert.ok(res1.nextCancelledCursor !== undefined, "cancelled pagination must return nextCancelledCursor when more cancelled rows remain");
+      const res2 = starvStore.joinsForVaults(r.ws, vIds, 128, {
+        perVault: 64,
+        perVaultCancelled: 64,
+        cancelledLimit: 2,
+        perVaultScan: 128,
+        maxScan: 512,
+        cancelledMaxScan: 512,
+        cancelledAfterVault: res1.nextCancelledCursor.vault,
+        cancelledAfterAt: res1.nextCancelledCursor.at,
+        cancelledAfterSub: res1.nextCancelledCursor.sub,
+        accept: (a) => a.state === "cancelled",
+      });
+      assert.equal(res2.joins.length, 1, "second cancelled page must deliver the remaining 3rd cancelled tombstone");
+      assert.equal(res2.nextCancelledCursor, undefined);
+    } finally {
+      starvDb.close();
+    }
 
     // 11. Query plan checks: 0 TEMP B-TREE across workspace discovery, join cursor seeks, and dismiss partial index.
     const planDisc = r.db.prepare(

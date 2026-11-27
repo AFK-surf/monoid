@@ -3422,6 +3422,7 @@ let zh : Map[String, String] = {
   "web-pages.vault.discover.cancel": "取消申请",
   "web-pages.vault.discover.cancelWhat": "取消加入申请",
   "web-pages.vault.discover.cancelled": "已取消加入申请",
+  "web-pages.vault.discover.cancelStale": "申请状态已更新，请刷新后重试",
   "web-pages.vault.alreadyKeyed": "此设备已获该密钥库的钥匙，无需重复申请",
   "web-pages.vault.editor.saveTo": "保存到",
   "web-pages.vault.thisDeviceCodeLabel": "本机核对码：",

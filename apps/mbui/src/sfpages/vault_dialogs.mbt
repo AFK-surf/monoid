@@ -795,6 +795,10 @@ pub fn vault_members_dialog(core : Core, here : Here, vault_id : String) -> Unit
                 ("askDevice", str(text(cur, "device"))),
                 ("askBox", str(text(cur, "box"))),
               ]
+              let ask_sig = text(cur, "sig")
+              if ask_sig != "" {
+                params.push(("askSig", str(ask_sig)))
+              }
               vault_act(
                 core,
                 ws,
