@@ -659,3 +659,78 @@ test "TuiBridgeMachine matches JS semantics for null line, missing text, and non
     _ => assert(false, "parse")
   }
 }
+
+test "run mode fails closed when random_uuid returns empty key without listening or spawning" {
+  let env : Map[String, String] = Map::new()
+  let stderr : Array[String] = []
+  let mut listened = false
+  let mut spawned = false
+  let io = ClaudeTuiIo::{
+    env_get: fn(k : String) -> Option[String] { env.get(k) },
+    random_uuid: fn() -> String { "" },
+    read_stdin_all: fn() -> String { "" },
+    write_stdout: fn(_s : String) -> Unit {},
+    write_stderr: fn(s : String) -> Unit { stderr.push(s) },
+    notify_local_hook: fn(_p : Int, _b : String) -> HookNotifyResult { HookNotifyResult::Ok("ok\n") },
+    mcp_http_start: fn(_k : String, _u : String, _t : String, _b : String) -> Unit {},
+    mcp_http_abort: fn(_k : String) -> Unit {},
+    next_mcp_event: fn() -> Option[McpEvent] { None },
+    listen_local_hook: fn() -> Result[Int, String] {
+      listened = true
+      Ok(41234)
+    },
+    close_local_hook: fn() -> Unit {},
+    reply_hook_conn: fn(_id : Int, _ok : Bool) -> Unit {},
+    spawn_pty_relay: fn(_r : String, _a : Array[String], _e : Array[(String, String)]) -> Result[Unit, String] {
+      spawned = true
+      Ok(())
+    },
+    pty_write: fn(_b : Bytes) -> Unit {},
+    pty_close_stdin: fn() -> Unit {},
+    arm_deadline: fn(_g : Int, _ms : Int) -> Unit {},
+    clear_deadline: fn() -> Unit {},
+    next_run_event: fn() -> Option[TuiRunEvent] { None },
+  }
+  let rc = run_claude_tui(
+    io,
+    [
+      "bin",
+      "claude-tui",
+      "bin",
+      "runner",
+      "claude",
+      "--settings",
+      "{\"hooks\":{}}",
+      "--mcp-config",
+      "{\"mcpServers\":{\"stillfail\":{\"url\":\"http://127.0.0.1:9999/mcp\"}}}",
+    ],
+  )
+  assert(rc == 1, "empty CSPRNG key must exit 1")
+  assert(!listened, "must not bind listener when CSPRNG fails")
+  assert(!spawned, "must not spawn relay when CSPRNG fails")
+  assert(stderr.length() == 1 && str_contains(stderr[0], "CSPRNG"), "must report CSPRNG failure on stderr")
+}
+
+test "mcp mode exits 1 on invalid JSON and keeps no-id notifications alive across StdinEof" {
+  let env : Map[String, String] = Map::new()
+  env.set("STILLFAIL_MCP_TOKEN", "tok-p24")
+
+  // 1. Invalid JSON line writes stderr and exits 1 (matching claude-tui.mjs:71).
+  let stderr_bad : Array[String] = []
+  let io_bad = mock_tui_io(env, "", [McpEvent::StdinLine("{broken json")], [], [], stderr_bad, [], [], [])
+  assert(run_claude_tui(io_bad, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 1, "invalid JSON exits 1")
+  assert(stderr_bad.length() == 1, "invalid JSON writes stderr")
+
+  // 2. StdinEof aborts in-flight requests with id, but keeps no-id notifications running until HttpDone.
+  let aborted : Array[String] = []
+  let evs = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::StdinEof,
+    McpEvent::HttpDone("7", McpHttpResult::Aborted),
+    McpEvent::HttpDone("__notif_1", McpHttpResult::Response(202, "")),
+  ]
+  let io_notif = mock_tui_io(env, "", evs, [], [], [], [], [], aborted)
+  assert(run_claude_tui(io_notif, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 0, "notif + eof exits 0")
+  assert(aborted.length() == 1 && aborted[0] == "7", "only id-bearing request aborted on EOF; notification kept alive")
+}

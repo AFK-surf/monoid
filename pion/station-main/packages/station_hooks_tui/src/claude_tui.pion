@@ -903,8 +903,24 @@ fn run_mcp_mode(io : ClaudeTuiIo, url : String) -> Int {
         let request = match base_codec::json_parse(line) {
           base_codec::JsonParseResult::Ok(v) => v
           base_codec::JsonParseResult::Err(e) => {
+            for i in 0..<active_keys.length() {
+              let k = active_keys[i]
+              match in_flight.get(k) {
+                Some(entry) =>
+                if !entry.aborted {
+                  match entry.id_opt {
+                    Some(_) => {
+                      entry.aborted = true
+                      (io.mcp_http_abort)(k)
+                    }
+                    None => ()
+                  }
+                }
+                None => ()
+              }
+            }
             (io.write_stderr)(e + "\n")
-            continue
+            return 1
           }
         }
         let method = json_str_field(request, "method")
@@ -1025,8 +1041,13 @@ fn run_mcp_mode(io : ClaudeTuiIo, url : String) -> Int {
           match in_flight.get(k) {
             Some(entry) =>
             if !entry.aborted {
-              entry.aborted = true
-              (io.mcp_http_abort)(k)
+              match entry.id_opt {
+                Some(_) => {
+                  entry.aborted = true
+                  (io.mcp_http_abort)(k)
+                }
+                None => ()
+              }
             }
             None => ()
           }
@@ -1071,6 +1092,11 @@ fn run_bridge_mode(
       return 1
     }
   }
+  let key = (io.random_uuid)()
+  if key.length() == 0 {
+    (io.write_stderr)("claude-tui: failed to generate session key from OS CSPRNG\n")
+    return 1
+  }
   let port = match (io.listen_local_hook)() {
     Ok(p) =>
     if p > 0 {
@@ -1085,7 +1111,6 @@ fn run_bridge_mode(
       return 1
     }
   }
-  let key = (io.random_uuid)()
   let relay_args : Array[String] = ["--relay-pty", claude]
   for i in 0..<rewritten.length() {
     relay_args.push(rewritten[i])

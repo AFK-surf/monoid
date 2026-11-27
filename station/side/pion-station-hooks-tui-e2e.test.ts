@@ -15,7 +15,7 @@
 //    byte-for-byte stdout lifecycle frame parity, clean exit, and zero orphan processes.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -310,6 +310,20 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
   const pa2 = runSyncWithInput(bin, ["repo-rules-hook"], agyPostInv(agyPion), {}, repo);
   assert.equal(pa2.status, 0);
   assert.equal(pa2.stdout, na2.stdout, "Antigravity PostInvocation injectSteps must match Node byte-for-byte");
+
+  // (j) State file respects process umask (umask 077 -> 0600, matching Node 1:1)
+  if (process.platform !== "win32") {
+    const sidUmaskNode = `e2e-rr-umask-n-${stamp}`;
+    const sidUmaskPion = `e2e-rr-umask-p-${stamp}`;
+    const stUmaskNode = trackRuleState(`${sidUmaskNode}-main`);
+    const stUmaskPion = trackRuleState(`${sidUmaskPion}-main`);
+    const nu = runSyncWithInput("sh", ["-c", 'umask 077 && exec "$@"', "_", process.execPath, repoRulesMjs], payload(sidUmaskNode, targetFile), {}, repo);
+    const pu = runSyncWithInput("sh", ["-c", 'umask 077 && exec "$@"', "_", bin, "repo-rules-hook"], payload(sidUmaskPion, targetFile), {}, repo);
+    assert.equal(nu.status, 0, nu.stderr);
+    assert.equal(pu.status, 0, pu.stderr);
+    assert.equal(statSync(stUmaskNode).mode & 0o777, 0o600, "Node state file under umask 077 must be 0600");
+    assert.equal(statSync(stUmaskPion).mode & 0o777, 0o600, "Pion state file under umask 077 must be 0600");
+  }
 });
 
 test("2. subagent-hook: byte-for-byte Node parity across speaking tools, slack_api writes/reads, main agent, and invalid JSON", () => {
@@ -438,11 +452,12 @@ test("3. claude-tui hook: byte-for-byte Node parity on SessionStart, UserPromptS
   assert.ok(pBad.stderr.includes("Claude TUI bridge refused its hook"));
 });
 
-test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HTTP 500 error frame, and cancellation parity", async () => {
+test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed, HTTP 500, cancel, invalid JSON exit 1, no-id notif on EOF, and 17 MiB line", async () => {
   const bin = resolvePionBinary();
   const hookSrv = await startHookTcpServer("ok\n");
   const seenAuth: string[] = [];
   const seenContentType: string[] = [];
+  let completedNotifs = 0;
 
   const mcpSrv = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
     seenAuth.push(String(req.headers.authorization ?? ""));
@@ -450,7 +465,8 @@ test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HT
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: unknown; method?: string };
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const body = JSON.parse(raw) as { id?: unknown; method?: string; params?: { blob?: string } };
       if (body.method === "tools/list") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "chat_post" }] } }));
@@ -458,10 +474,18 @@ test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HT
         res.writeHead(500, { "content-type": "text/plain" });
         res.end("boom");
       } else if (body.method === "tools/slow") {
-        // Hold until aborted by notifications/cancelled
         req.on("close", () => {
           if (!res.writableEnded) res.end();
         });
+      } else if (body.method === "notifications/initialized") {
+        setTimeout(() => {
+          completedNotifs += 1;
+          res.writeHead(202, { "content-type": "application/json" });
+          res.end("");
+        }, 40);
+      } else if (body.method === "tools/big") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { len: body.params?.blob?.length ?? 0 } }));
       } else {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { ok: true } }));
@@ -485,9 +509,8 @@ test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HT
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 3 } }),
   ].join("\n") + "\n";
 
-  // Keep stdin open until both expected responses (id 1 and id 2) arrive, since stdin EOF
-  // aborts in-flight MCP HTTP requests (matching Claude Code's stdio MCP lifecycle).
-  function runMcpSession(cmd: string, args: string[]): Promise<AsyncRunResult> {
+  // Keep stdin open until expected reply count arrives, since stdin EOF aborts in-flight id requests.
+  function runMcpSession(cmd: string, args: string[], payload: string, expectLines: number): Promise<AsyncRunResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(cmd, args, {
         cwd: root,
@@ -500,7 +523,237 @@ test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HT
       let ended = false;
       const timer = setTimeout(() => {
         try { child.kill("SIGKILL"); } catch {}
-        reject(new Error(`mcp session timed out: ${cmd} ${args.join(" ")} (stdout=${stdout})`));
+        reject(new Error(`mcp session timed out: ${cmd} ${args.join(" ")} (stdout_len=${stdout.length})`));
+      }, 30_000);
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        stdout += chunk;
+        const lines = stdout.split("\n").filter((l) => l.length > 0);
+        if (!ended && lines.length >= expectLines) {
+          ended = true;
+          child.stdin?.end();
+        }
+      });
+      child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ status: code, signal, stdout, stderr });
+      });
+      if (expectLines === 0) {
+        child.stdin?.end(payload);
+      } else {
+        child.stdin?.write(payload);
+      }
+    });
+  }
+
+  const hooksBeforeNode = hookSrv.received.length;
+  const nRes = await runMcpSession(process.execPath, [claudeTuiMjs, "mcp", mcpUrl], stdinLines, 2);
+  const nodeHookNotify = hookSrv.received.slice(hooksBeforeNode);
+
+  const hooksBeforePion = hookSrv.received.length;
+  const pRes = await runMcpSession(bin, ["claude-tui", "mcp", mcpUrl], stdinLines, 2);
+  const pionHookNotify = hookSrv.received.slice(hooksBeforePion);
+
+  assert.equal(nRes.status, 0, nRes.stderr);
+  assert.equal(pRes.status, 0, pRes.stderr);
+  const sortById = (s: string) =>
+    s.trim().split("\n").map((l) => JSON.parse(l) as { id: number }).sort((a, b) => a.id - b.id);
+  assert.deepEqual(sortById(pRes.stdout), sortById(nRes.stdout), "MCP stdout JSON-RPC frames must match Node");
+  assert.deepEqual(pionHookNotify, nodeHookNotify, "ToolsListed local hook notification must match Node byte-for-byte");
+  assert.equal(pionHookNotify.length, 1);
+  assert.deepEqual(JSON.parse(pionHookNotify[0]!), { key: "tui-mcp-key", event: "ToolsListed" });
+  assert.ok(seenAuth.every((a) => a === "Bearer tok-mcp-secret"), "every MCP request must send Bearer token");
+  assert.ok(seenContentType.every((c) => c === "application/json"), "every MCP request must send application/json");
+
+  // Invalid JSON line -> both Node and Pion exit 1 with stderr output
+  const nBad = await runAsyncWithInput(process.execPath, [claudeTuiMjs, "mcp", mcpUrl], "{broken\n", env);
+  const pBad = await runAsyncWithInput(bin, ["claude-tui", "mcp", mcpUrl], "{broken\n", env);
+  assert.equal(nBad.status, 1, "Node mcp invalid JSON must exit 1");
+  assert.equal(pBad.status, 1, "Pion mcp invalid JSON must exit 1");
+  assert.ok(pBad.stderr.length > 0, "Pion mcp invalid JSON must write stderr");
+
+  // No-id notification survives immediate stdin EOF until server responds (202)
+  const notifLine = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n";
+  const beforeNotifs = completedNotifs;
+  const nNotif = await runMcpSession(process.execPath, [claudeTuiMjs, "mcp", mcpUrl], notifLine, 0);
+  const pNotif = await runMcpSession(bin, ["claude-tui", "mcp", mcpUrl], notifLine, 0);
+  assert.equal(nNotif.status, 0, nNotif.stderr);
+  assert.equal(pNotif.status, 0, pNotif.stderr);
+  assert.equal(completedNotifs, beforeNotifs + 2, "both Node and Pion must complete no-id notifications across stdin EOF");
+
+  // 17 MiB single-line MCP frame (>16 MiB) passes cleanly in both Node and Pion
+  const bigLen = 17 * 1024 * 1024;
+  const bigLine = JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/big", params: { blob: "A".repeat(bigLen) } }) + "\n";
+  const nBig = await runMcpSession(process.execPath, [claudeTuiMjs, "mcp", mcpUrl], bigLine, 1);
+  const pBig = await runMcpSession(bin, ["claude-tui", "mcp", mcpUrl], bigLine, 1);
+  assert.equal(nBig.status, 0, nBig.stderr);
+  assert.equal(pBig.status, 0, pBig.stderr);
+  assert.equal(pBig.stdout, nBig.stdout, "17 MiB single-line MCP response must match Node byte-for-byte");
+  assert.deepEqual(JSON.parse(pBig.stdout.trim()), { jsonrpc: "2.0", id: 99, result: { len: bigLen } });
+});
+
+test("5. claude-tui bridge (run mode): real Node argv + empty cwd (native & .mjs), causal Stop & StopFailure, stderr passthrough, zero orphans", async () => {
+  const bin = resolvePionBinary();
+  const dir = freshDir("tui-bridge");
+  const emptyCwd = freshDir("tui-empty-cwd");
+
+  // Real local HTTP MCP server returning tools/list.
+  const mcpSrv = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: unknown };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "chat_post" }] } }));
+    });
+  });
+  servers.push(mcpSrv);
+  await new Promise<void>((resolve, reject) => mcpSrv.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const mcpUrl = `http://127.0.0.1:${(mcpSrv.address() as AddressInfo).port}/mcp`;
+
+  // Fake runner script:
+  // - Emits a stderr probe line (verifying relay stderr passthrough)
+  // - Calls the rewritten stdio MCP command keeping stdin open until tools/list reply arrives (ensuring ToolsListed)
+  // - Calls the rewritten SessionStart hook
+  // - Reads the bracketed paste, records exact pasted content, calls UserPromptSubmit + Stop (or StopFailure)
+  // - Waits for stdin EOF before exiting 0
+  const fakeRunner = join(dir, "fake-runner.mjs");
+  writeFileSync(
+    fakeRunner,
+    `#!${process.execPath}
+import { spawn, spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+
+process.stderr.write("relay-stderr-probe\\n");
+const args = process.argv.slice(2);
+const reportFile = process.env.FAKE_REPORT_FILE;
+const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+const mcpConfig = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+const hookCmd = settings.hooks.SessionStart[0].hooks[0];
+const mcpCmd = mcpConfig.mcpServers.stillfail;
+const report = {
+  pid: process.pid,
+  argv0: args[0],
+  argv1: args[1],
+  settings,
+  mcpConfig,
+  pasted: "",
+  steps: [],
+};
+function save() {
+  writeFileSync(reportFile, JSON.stringify(report));
+}
+save();
+
+function runHook(payload) {
+  const r = spawnSync(hookCmd.command, hookCmd.args, {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: process.env,
+    timeout: 10000,
+  });
+  if (r.status !== 0) {
+    process.stderr.write("hook failed (" + r.status + "): " + r.stderr + "\\n");
+    process.exit(11);
+  }
+}
+
+function callToolsList() {
+  return new Promise((resolve, reject) => {
+    const p = spawn(mcpCmd.command, mcpCmd.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+    });
+    let out = "";
+    let err = "";
+    let closed = false;
+    p.stdout.setEncoding("utf8");
+    p.stderr.setEncoding("utf8");
+    p.stdout.on("data", (c) => {
+      out += c;
+      if (!closed && out.includes("\\n")) {
+        closed = true;
+        // Wait briefly for ToolsListed local hook write, then close MCP stdin cleanly
+        setTimeout(() => p.stdin.end(), 20);
+      }
+    });
+    p.stderr.on("data", (c) => { err += c; });
+    p.on("error", reject);
+    p.on("close", (code) => {
+      if (code !== 0) reject(new Error("mcp failed (" + code + "): " + err));
+      else resolve(out);
+    });
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\\n");
+  });
+}
+
+await callToolsList();
+report.steps.push("tools_listed");
+runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "SessionStart" });
+report.steps.push("session_start");
+save();
+
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  const start = buf.indexOf("\\x1b[200~");
+  const end = buf.indexOf("\\x1b[201~\\r");
+  if (start >= 0 && end > start) {
+    const pasted = buf.slice(start + 6, end);
+    buf = buf.slice(end + 7);
+    report.pasted = pasted;
+    runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "UserPromptSubmit", prompt: pasted });
+    report.steps.push("user_prompt_submit");
+    if (process.env.FAKE_STOP_FAILURE === "1") {
+      runHook({
+        session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID,
+        hook_event_name: "StopFailure",
+        error_details: "simulated API rate limit",
+      });
+      report.steps.push("stop_failure");
+    } else {
+      runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "Stop" });
+      report.steps.push("stop");
+    }
+    save();
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`,
+  );
+  chmodSync(fakeRunner, 0o755);
+
+  const initialSettings = JSON.stringify({ hooks: {} });
+  const initialMcp = JSON.stringify({ mcpServers: { stillfail: { type: "http", url: mcpUrl } } });
+  const baseEnv = {
+    STILLFAIL_RUNTIME_SESSION_ID: "tui-e2e-sess-1",
+    STILLFAIL_MCP_TOKEN: "tok-bridge-1",
+  };
+  const turnInput = JSON.stringify({ type: "user", message: { content: [{ text: "hello pion tui" }] } }) + "\n";
+
+  // Keep bridge stdin OPEN until BOTH init AND result frames arrive on stdout (proving result came
+  // from Stop / StopFailure hook, never from early stdin EOF close()), then end stdin for clean exit.
+  function runBridgeTurn(cmd: string, args: string[], extraEnv: Record<string, string>): Promise<AsyncRunResult> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(cmd, args, {
+        cwd: emptyCwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, ...baseEnv, ...extraEnv },
+      });
+      children.push(child);
+      let stdout = "";
+      let stderr = "";
+      let ended = false;
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+        reject(new Error(`bridge timed out: ${cmd} ${args.join(" ")} (stdout=${stdout}, stderr=${stderr})`));
       }, 20_000);
       child.stdout?.setEncoding("utf8");
       child.stderr?.setEncoding("utf8");
@@ -521,169 +774,100 @@ test("4. claude-tui mcp: HTTP headers/body, tools/list -> ToolsListed notify, HT
         clearTimeout(timer);
         resolve({ status: code, signal, stdout, stderr });
       });
-      child.stdin?.write(stdinLines);
+      child.stdin?.write(turnInput);
     });
   }
 
-  const hooksBeforeNode = hookSrv.received.length;
-  const nRes = await runMcpSession(process.execPath, [claudeTuiMjs, "mcp", mcpUrl]);
-  const nodeHookNotify = hookSrv.received.slice(hooksBeforeNode);
-
-  const hooksBeforePion = hookSrv.received.length;
-  const pRes = await runMcpSession(bin, ["claude-tui", "mcp", mcpUrl]);
-  const pionHookNotify = hookSrv.received.slice(hooksBeforePion);
-
-  assert.equal(nRes.status, 0, nRes.stderr);
-  assert.equal(pRes.status, 0, pRes.stderr);
-  const sortById = (s: string) =>
-    s.trim().split("\n").map((l) => JSON.parse(l) as { id: number }).sort((a, b) => a.id - b.id);
-  assert.deepEqual(sortById(pRes.stdout), sortById(nRes.stdout), "MCP stdout JSON-RPC frames must match Node");
-  assert.deepEqual(pionHookNotify, nodeHookNotify, "ToolsListed local hook notification must match Node byte-for-byte");
-  assert.equal(pionHookNotify.length, 1);
-  assert.deepEqual(JSON.parse(pionHookNotify[0]!), { key: "tui-mcp-key", event: "ToolsListed" });
-  assert.ok(seenAuth.every((a) => a === "Bearer tok-mcp-secret"), "every MCP request must send Bearer token");
-  assert.ok(seenContentType.every((c) => c === "application/json"), "every MCP request must send application/json");
-});
-
-test("5. claude-tui bridge (run mode): arg rewrite, full turn over real HTTP MCP + hooks, clean exit, and zero orphan processes", async () => {
-  const bin = resolvePionBinary();
-  const dir = freshDir("tui-bridge");
-
-  // Real local HTTP MCP server returning tools/list.
-  const mcpSrv = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: unknown };
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "chat_post" }] } }));
-    });
-  });
-  servers.push(mcpSrv);
-  await new Promise<void>((resolve, reject) => mcpSrv.once("error", reject).listen(0, "127.0.0.1", resolve));
-  const mcpUrl = `http://127.0.0.1:${(mcpSrv.address() as AddressInfo).port}/mcp`;
-
-  // Fake runner script: verifies --relay-pty, records rewritten settings/mcp-config & its own PID,
-  // runs the rewritten `mcp` and `hook` commands against the live bridge, reads the bracketed paste,
-  // sends UserPromptSubmit + Stop hooks, then exits cleanly on stdin EOF.
-  const fakeRunner = join(dir, "fake-runner.mjs");
-  writeFileSync(
-    fakeRunner,
-    `#!${process.execPath}
-import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
-
-const args = process.argv.slice(2);
-const reportFile = process.env.FAKE_REPORT_FILE;
-const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-const mcpConfig = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
-writeFileSync(reportFile, JSON.stringify({ pid: process.pid, argv0: args[0], argv1: args[1], settings, mcpConfig }));
-
-const hookCmd = settings.hooks.SessionStart[0].hooks[0];
-const mcpCmd = mcpConfig.mcpServers.stillfail;
-
-function runHook(payload) {
-  const r = spawnSync(hookCmd.command, hookCmd.args, {
-    input: JSON.stringify(payload),
-    encoding: "utf8",
-    env: process.env,
-    timeout: 10000,
-  });
-  if (r.status !== 0) {
-    process.stderr.write("hook failed: " + r.stderr + "\\n");
-    process.exit(11);
-  }
-}
-
-// 1. Trigger ToolsListed via the rewritten stdio MCP bridge
-const mcpRes = spawnSync(mcpCmd.command, mcpCmd.args, {
-  input: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\\n",
-  encoding: "utf8",
-  env: process.env,
-  timeout: 10000,
-});
-if (mcpRes.status !== 0) {
-  process.stderr.write("mcp failed: " + mcpRes.stderr + "\\n");
-  process.exit(12);
-}
-
-// 2. Trigger SessionStart hook
-runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "SessionStart" });
-
-// 3. Read bracketed paste from stdin, acknowledge UserPromptSubmit + Stop, then wait for EOF
-let buf = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
-  buf += chunk;
-  const start = buf.indexOf("\\x1b[200~");
-  const end = buf.indexOf("\\x1b[201~\\r");
-  if (start >= 0 && end > start) {
-    const pasted = buf.slice(start + 6, end);
-    buf = buf.slice(end + 7);
-    runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "UserPromptSubmit", prompt: pasted });
-    runHook({ session_id: process.env.STILLFAIL_RUNTIME_SESSION_ID, hook_event_name: "Stop" });
-  }
-});
-process.stdin.on("end", () => process.exit(0));
-`,
-  );
-  chmodSync(fakeRunner, 0o755);
-
-  const initialSettings = JSON.stringify({ hooks: {} });
-  const initialMcp = JSON.stringify({ mcpServers: { stillfail: { type: "http", url: mcpUrl } } });
-  const baseEnv = {
-    STILLFAIL_RUNTIME_SESSION_ID: "tui-e2e-sess-1",
-    STILLFAIL_MCP_TOKEN: "tok-bridge-1",
-  };
-  const turnInput = JSON.stringify({ type: "user", message: { content: [{ text: "hello pion tui" }] } }) + "\n";
-
-  const nodeReport = join(dir, "node-report.json");
-  const pionReport = join(dir, "pion-report.json");
-
-  const nRes = await runAsyncWithInput(
-    process.execPath,
-    [claudeTuiMjs, process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
-    turnInput,
-    { ...baseEnv, FAKE_REPORT_FILE: nodeReport },
-  );
-  const pRes = await runAsyncWithInput(
-    bin,
-    ["claude-tui", bin, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
-    turnInput,
-    { ...baseEnv, FAKE_REPORT_FILE: pionReport },
-  );
-
-  assert.equal(nRes.status, 0, `Node bridge stderr: ${nRes.stderr}`);
-  assert.equal(pRes.status, 0, `Pion bridge stderr: ${pRes.stderr}`);
-  assert.equal(pRes.stdout, nRes.stdout, "TUI bridge stdout lifecycle frames must match Node byte-for-byte");
-  assert.equal(
-    pRes.stdout,
-    '{"type":"system","subtype":"init"}\n{"type":"result","is_error":false,"result":""}\n',
-  );
-
-  const nr = JSON.parse(readFileSync(nodeReport, "utf8")) as {
+  interface RunnerReport {
     pid: number;
     argv0: string;
     argv1: string;
-    settings: { skipDangerousModePermissionPrompt: boolean; hooks: Record<string, unknown[]> };
+    pasted: string;
+    steps: string[];
+    settings: { skipDangerousModePermissionPrompt: boolean; hooks: Record<string, Array<{ hooks: Array<{ command: string; args: string[] }> }>> };
     mcpConfig: { mcpServers: { stillfail: { type: string; command: string; args: string[] } } };
-  };
-  const pr = JSON.parse(readFileSync(pionReport, "utf8")) as typeof nr;
+  }
+
+  // (a) Normal Stop turn: Node vs Pion native (`claude-tui` with REAL process.execPath Node) vs Pion `.mjs` path
+  const nodeReport = join(dir, "node-report.json");
+  const pionNativeReport = join(dir, "pion-native-report.json");
+  const pionMjsReport = join(dir, "pion-mjs-report.json");
+
+  const nRes = await runBridgeTurn(
+    process.execPath,
+    [claudeTuiMjs, process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: nodeReport },
+  );
+  const pNativeRes = await runBridgeTurn(
+    bin,
+    ["claude-tui", process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: pionNativeReport },
+  );
+  const pMjsRes = await runBridgeTurn(
+    bin,
+    [claudeTuiMjs, process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: pionMjsReport },
+  );
+
+  assert.equal(nRes.status, 0, `Node bridge stderr: ${nRes.stderr}`);
+  assert.equal(pNativeRes.status, 0, `Pion native bridge stderr: ${pNativeRes.stderr}`);
+  assert.equal(pMjsRes.status, 0, `Pion .mjs bridge stderr: ${pMjsRes.stderr}`);
+  assert.equal(pNativeRes.stdout, nRes.stdout, "Pion native TUI bridge stdout must match Node byte-for-byte");
+  assert.equal(pMjsRes.stdout, nRes.stdout, "Pion .mjs TUI bridge stdout must match Node byte-for-byte");
+  assert.equal(
+    pNativeRes.stdout,
+    '{"type":"system","subtype":"init"}\n{"type":"result","is_error":false,"result":""}\n',
+  );
+  assert.ok(pNativeRes.stderr.includes("relay-stderr-probe"), "Pion bridge must forward relay stderr");
+
+  const nr = JSON.parse(readFileSync(nodeReport, "utf8")) as RunnerReport;
+  const pr = JSON.parse(readFileSync(pionNativeReport, "utf8")) as RunnerReport;
+  const pm = JSON.parse(readFileSync(pionMjsReport, "utf8")) as RunnerReport;
 
   assert.equal(pr.argv0, "--relay-pty");
   assert.equal(pr.argv1, "/usr/bin/fake-claude");
   assert.equal(pr.settings.skipDangerousModePermissionPrompt, true);
   assert.deepEqual(Object.keys(pr.settings.hooks).sort(), Object.keys(nr.settings.hooks).sort());
+  assert.equal(pr.pasted, nr.pasted, "exact pasted <station_message> must match Node byte-for-byte");
+  assert.equal(pr.pasted, "<station_message>\nhello pion tui\n</station_message>");
+  assert.deepEqual(pr.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop"]);
+  assert.deepEqual(pm.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop"]);
   assert.equal(pr.mcpConfig.mcpServers.stillfail.type, "stdio");
-  assert.equal(pr.mcpConfig.mcpServers.stillfail.command, bin);
   assert.deepEqual(pr.mcpConfig.mcpServers.stillfail.args, ["claude-tui", "mcp", mcpUrl]);
+  assert.equal(pm.mcpConfig.mcpServers.stillfail.command, process.execPath);
+  assert.deepEqual(pm.mcpConfig.mcpServers.stillfail.args, [claudeTuiMjs, "mcp", mcpUrl]);
 
-  // Verify zero orphan processes: fake runner child PID must already be gone.
-  let pionChildAlive = true;
-  try {
-    process.kill(pr.pid, 0);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ESRCH") pionChildAlive = false;
+  // (b) StopFailure turn: Node vs Pion native must emit identical `is_error: true` result frame
+  const nodeFailReport = join(dir, "node-fail-report.json");
+  const pionFailReport = join(dir, "pion-fail-report.json");
+  const nFailRes = await runBridgeTurn(
+    process.execPath,
+    [claudeTuiMjs, process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: nodeFailReport, FAKE_STOP_FAILURE: "1" },
+  );
+  const pFailRes = await runBridgeTurn(
+    bin,
+    ["claude-tui", process.execPath, fakeRunner, "/usr/bin/fake-claude", "--settings", initialSettings, "--mcp-config", initialMcp],
+    { FAKE_REPORT_FILE: pionFailReport, FAKE_STOP_FAILURE: "1" },
+  );
+  assert.equal(nFailRes.status, 0, nFailRes.stderr);
+  assert.equal(pFailRes.status, 0, pFailRes.stderr);
+  assert.equal(pFailRes.stdout, nFailRes.stdout, "StopFailure result frame must match Node byte-for-byte");
+  assert.equal(
+    pFailRes.stdout,
+    '{"type":"system","subtype":"init"}\n{"type":"result","is_error":true,"result":"simulated API rate limit"}\n',
+  );
+  const pfr = JSON.parse(readFileSync(pionFailReport, "utf8")) as RunnerReport;
+  assert.deepEqual(pfr.steps, ["tools_listed", "session_start", "user_prompt_submit", "stop_failure"]);
+
+  // Verify zero orphan processes across all Pion runs.
+  for (const pid of [pr.pid, pm.pid, pfr.pid]) {
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") alive = false;
+    }
+    assert.equal(alive, false, `fake runner PID ${pid} must not remain as an orphan process`);
   }
-  assert.equal(pionChildAlive, false, `fake runner PID ${pr.pid} must not remain as an orphan process`);
 });

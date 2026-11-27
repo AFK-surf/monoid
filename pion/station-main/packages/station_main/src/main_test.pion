@@ -595,3 +595,67 @@ test "hooks_tui_main parses stat_raw, formats RFC 4122 UUID v4, and merges env o
   assert_str_eq(merged[2], "STILLFAIL_TUI_PORT=4321")
   assert_str_eq(merged[3], "MCP_DISCOVERY_CACHE=0")
 }
+
+test "hooks_tui_main resolves self executable path and rewrites native claude-tui node arg" {
+  // Linux prefers /proc/self/exe
+  match resolve_self_executable_with(
+    "stillfail-station-pion",
+    "/empty",
+    Some("/usr/local/bin"),
+    "/",
+    "linux",
+    fn(p : String) -> Option[String] {
+      if p == "/proc/self/exe" { Some("/opt/stillfail/stillfail-station-pion") } else { None }
+    },
+    fn(_p : String) -> Bool { false },
+  ) {
+    Some(p) => assert_str_eq(p, "/opt/stillfail/stillfail-station-pion")
+    None => panic("expected /proc/self/exe resolution on linux")
+  }
+
+  // Relative argv0 resolves against cwd on darwin
+  match resolve_self_executable_with(
+    "./bin/stillfail-station-pion",
+    "/work",
+    None,
+    "/",
+    "darwin",
+    fn(p : String) -> Option[String] {
+      if p == "/work/bin/stillfail-station-pion" { Some("/real/bin/stillfail-station-pion") } else { None }
+    },
+    fn(_p : String) -> Bool { false },
+  ) {
+    Some(p) => assert_str_eq(p, "/real/bin/stillfail-station-pion")
+    None => panic("expected relative argv0 resolution")
+  }
+
+  // Native `claude-tui <real-node> <runner> <claude>` rewrites argv[2] to self_exe
+  match rewrite_native_claude_tui_argv(
+    ["stillfail-station-pion", "claude-tui", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+    Some("/opt/stillfail/stillfail-station-pion"),
+  ) {
+    Ok(a) => {
+      assert_str_eq(a[1], "claude-tui")
+      assert_str_eq(a[2], "/opt/stillfail/stillfail-station-pion")
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Missing self_exe fails closed in native mode
+  assert_true(
+    rewrite_native_claude_tui_argv(
+      ["stillfail-station-pion", "claude-tui", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+      None,
+    ) is Err(_),
+    "missing self_exe must fail closed",
+  )
+
+  // Absolute .mjs path mode keeps caller's node binary intact
+  match rewrite_native_claude_tui_argv(
+    ["stillfail-station-pion", "/opt/assets/claude-tui.mjs", "/usr/local/bin/node", "/bin/runner", "/bin/claude"],
+    Some("/opt/stillfail/stillfail-station-pion"),
+  ) {
+    Ok(a) => assert_str_eq(a[2], "/usr/local/bin/node")
+    Err(e) => panic("unexpected error: " + e)
+  }
+}

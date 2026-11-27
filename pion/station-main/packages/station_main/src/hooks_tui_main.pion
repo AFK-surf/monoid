@@ -147,6 +147,89 @@ pub fn merge_env_overrides(
   out
 }
 
+/// Resolve an absolute path to the current executable from `argv0`, `cwd`, and `PATH`
+/// (pure helper with injectable `realpath` / `is_exec` for unit testing).
+pub fn resolve_self_executable_with(
+  argv0 : String,
+  cwd : String,
+  path_env : Option[String],
+  sep : String,
+  os_name : String,
+  realpath_fn : (String) -> Option[String],
+  is_exec_fn : (String) -> Bool,
+) -> Option[String] {
+  if os_name == "linux" {
+    match realpath_fn("/proc/self/exe") {
+      Some(p) => if p.length() > 0 { return Some(p) }
+      None => ()
+    }
+  }
+  if argv0.length() == 0 {
+    return None
+  }
+  let has_sep = argv0.contains("/") || argv0.contains("\\")
+  if has_sep {
+    let candidate = if nodepath::is_absolute(sep, argv0) {
+      nodepath::join(sep, [argv0])
+    } else {
+      nodepath::join(sep, [cwd, argv0])
+    }
+    match realpath_fn(candidate) {
+      Some(r) => return Some(r)
+      None => if is_exec_fn(candidate) { return Some(candidate) } else { return None }
+    }
+  }
+  let path_delim = if os_name == "win32" { ";" } else { ":" }
+  match path_env {
+    Some(p) => {
+      let dirs = p.split(path_delim)
+      for i in 0..<dirs.length() {
+        let d = dirs[i]
+        if d.length() == 0 {
+          continue
+        }
+        let cand = nodepath::join(sep, [d, argv0])
+        if is_exec_fn(cand) {
+          match realpath_fn(cand) {
+            Some(r) => return Some(r)
+            None => return Some(cand)
+          }
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+/// When invoked in native `claude-tui <node> <runner> <claude> ...` mode (where `argv[1] == "claude-tui"`),
+/// replace `argv[2]` with the resolved absolute path of `stillfail-station-pion` so rewritten hook/MCP
+/// self-callbacks (`<abs-bin> claude-tui hook|mcp`) succeed from any working directory even when the caller
+/// passed a real Node binary as `argv[2]`. Absolute `.mjs` path invocations are left untouched.
+pub fn rewrite_native_claude_tui_argv(
+  argv : Array[String],
+  self_exe : Option[String],
+) -> Result[Array[String], String] {
+  if argv.length() >= 5 && argv[1] == "claude-tui" && argv[2] != "hook" && argv[2] != "mcp" {
+    let exe = match self_exe {
+      Some(p) => if p.length() > 0 { p } else {
+        return Err("claude-tui: failed to resolve absolute path of current executable")
+      }
+      None => return Err("claude-tui: failed to resolve absolute path of current executable")
+    }
+    let out : Array[String] = []
+    for i in 0..<argv.length() {
+      if i == 2 {
+        out.push(exe)
+      } else {
+        out.push(argv[i])
+      }
+    }
+    return Ok(out)
+  }
+  Ok(argv)
+}
+
 fn hooks_bytes_to_string(b : Bytes) -> String {
   let sb = StringBuilder::new()
   for i in 0..<b.length() {
@@ -238,7 +321,7 @@ fn run_repo_rules_hook_os() -> Int {
       if dir != "" && dir != "." && dir != path {
         let _ = station_sys::mkdir_p(dir)
       }
-      station_sys::write_file_atomic(path, content.to_bytes(), 420)
+      station_sys::write_file_atomic(path, content.to_bytes(), -1)
     },
     remove_file: fn(path : String) -> Unit {
       let _ = station_sys::unlink(path)
@@ -282,6 +365,10 @@ let TUI_TOK_HOOK_LISTEN_CLOSE : Int = 6116
 
 let TUI_PTY_EVENT_ID : Int64 = 7101L
 let TUI_SIG_EVENT_ID : Int64 = 7102L
+/// 256 MiB single-line ceiling for stdio MCP / TUI runner framing (matching Node readline).
+let TUI_MAX_STDIN_LINE_BYTES : Int = 268435456
+/// Bounded grace period (ms) after SIGHUP/SIGINT/SIGTERM before force-killing the relay group.
+let TUI_TERM_GRACE_MS : Int64 = 2000L
 
 struct HookConnBuf {
   buf : Array[Byte]
@@ -301,6 +388,7 @@ struct TuiDriver {
   http_client : station_http::HttpClient
   line_reader : host_shim::LineReader
   mut stdin_eof_seen : Bool
+  mut stdin_fatal_err : Bool
   mut stdin_raw : Array[Byte]
   mut collect_raw_stdin : Bool
   // MCP mode state
@@ -320,10 +408,12 @@ struct TuiDriver {
   mut hook_closed : Bool
   hook_conns : Map[Int, HookConnBuf]
   mut hook_pending_writes : Int
-  // Run mode PTY relay + deadline + event queue
+  // Run mode PTY relay + signal grace + deadline + event queue
   mut pty_child : Option[station_sys::ChildProcess]
   mut pty_exited : Bool
   mut sig_watching : Bool
+  mut term_signal : Int
+  mut term_grace_deadline_ms : Int64
   mut deadline_active : Bool
   mut deadline_gen : Int
   mut deadline_at_ms : Int64
@@ -614,7 +704,15 @@ fn TuiDriver::handle_shell_done(
             }
             self.start_hook_accept()
           }
-          _ => ()
+          _ => {
+            // Re-arm accept on transient errors (e.g. ECONNABORTED/EMFILE) unless listener is closed.
+            if !self.hook_closed &&
+            self.hook_listen_id >= 0 &&
+            !done.error.contains("closed") &&
+            !done.error.contains("no handle") {
+              self.start_hook_accept()
+            }
+          }
         }
       } else if kind == TUI_TOK_HOOK_READ {
         let conn = match self.hook_conns.get(owner_id) {
@@ -685,7 +783,17 @@ fn TuiDriver::handle_host_event(
                 self.push_run(station_hooks_tui::TuiRunEvent::StdinLine(line))
               }
             }
-            host_shim::LineItem::TooLong(_) => ()
+            host_shim::LineItem::TooLong(limit) => {
+              self.stdin_fatal_err = true
+              let _ = host_shim::write_stderr(
+                ("claude-tui: stdin line exceeded max length (" + limit.to_string() + " bytes)\n").to_bytes(),
+              )
+              if is_mcp_mode {
+                self.push_mcp(station_hooks_tui::McpEvent::StdinEof)
+              } else {
+                self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+              }
+            }
           }
         }
       }
@@ -701,7 +809,13 @@ fn TuiDriver::handle_host_event(
               self.push_run(station_hooks_tui::TuiRunEvent::StdinLine(line))
             }
           }
-          _ => ()
+          Some(host_shim::LineItem::TooLong(limit)) => {
+            self.stdin_fatal_err = true
+            let _ = host_shim::write_stderr(
+              ("claude-tui: stdin line exceeded max length (" + limit.to_string() + " bytes)\n").to_bytes(),
+            )
+          }
+          None => ()
         }
         if is_mcp_mode {
           self.push_mcp(station_hooks_tui::McpEvent::StdinEof)
@@ -718,6 +832,9 @@ fn TuiDriver::handle_host_event(
     host_shim::HostEvent::Sys(id, payload) => {
       if id == TUI_PTY_EVENT_ID {
         match station_sys::decode_sys_event(payload) {
+          Some(station_sys::SysEvent::ProcStderr(b)) => {
+            let _ = host_shim::write_stderr(b)
+          }
           Some(station_sys::SysEvent::ProcExit(st)) => {
             self.pty_exited = true
             let (code_opt, sig_opt) = if st.signal != 0 {
@@ -737,8 +854,15 @@ fn TuiDriver::handle_host_event(
       } else if id == TUI_SIG_EVENT_ID {
         match station_sys::decode_sys_event(payload) {
           Some(station_sys::SysEvent::Signal(sig, _)) => {
-            if sig == station_sys::SIG_INT || sig == station_sys::SIG_TERM {
-              self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+            if sig == station_sys::SIG_HUP ||
+            sig == station_sys::SIG_INT ||
+            sig == station_sys::SIG_TERM {
+              if self.term_signal == 0 {
+                self.term_signal = sig
+                // timer: bounded graceful shutdown grace period after termination signal (2s)
+                self.term_grace_deadline_ms = host_shim::now_ms() + TUI_TERM_GRACE_MS
+                self.push_run(station_hooks_tui::TuiRunEvent::StdinEof)
+              }
             }
           }
           _ => ()
@@ -821,7 +945,30 @@ fn TuiDriver::notify_local_hook_blocking(
 }
 
 fn run_claude_tui_os(argv : Array[String]) -> Int {
-  let mode_opt = station_hooks_tui::claude_tui_mode(argv)
+  let os_name = station_sys::os_name()
+  let sep = if os_name == "win32" { "\\" } else { "/" }
+  let cur_cwd = match station_sys::getcwd() {
+    Some(c) => c
+    None => "."
+  }
+  let argv0 = if argv.length() > 0 { argv[0] } else { "" }
+  let self_exe = resolve_self_executable_with(
+    argv0,
+    cur_cwd,
+    station_sys::env_get("PATH"),
+    sep,
+    os_name,
+    station_sys::realpath,
+    station_sys::is_executable,
+  )
+  let effective_argv = match rewrite_native_claude_tui_argv(argv, self_exe) {
+    Ok(a) => a
+    Err(e) => {
+      let _ = host_shim::write_stderr((e + "\n").to_bytes())
+      return 1
+    }
+  }
+  let mode_opt = station_hooks_tui::claude_tui_mode(effective_argv)
   let (is_hook_mode, is_mcp_mode, is_run_mode) = match mode_opt {
     Some(station_hooks_tui::ClaudeTuiMode::Hook) => (true, false, false)
     Some(station_hooks_tui::ClaudeTuiMode::Mcp(_)) => (false, true, false)
@@ -873,8 +1020,9 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
   let drv = TuiDriver::{
     mux: mux,
     http_client: station_http::HttpClient::new(mux),
-    line_reader: host_shim::LineReader::new(),
+    line_reader: host_shim::LineReader::new(TUI_MAX_STDIN_LINE_BYTES),
     stdin_eof_seen: false,
+    stdin_fatal_err: false,
     stdin_raw: [],
     collect_raw_stdin: is_hook_mode,
     next_mcp_req_id: 1,
@@ -901,6 +1049,8 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
     pty_child: None,
     pty_exited: false,
     sig_watching: false,
+    term_signal: 0,
+    term_grace_deadline_ms: 0L,
     deadline_active: false,
     deadline_gen: 0,
     deadline_at_ms: 0L,
@@ -1046,7 +1196,7 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
         strip_malloc_space_efficient: true,
         pipe_stdin: true,
         pipe_stdout: true,
-        pipe_stderr: false,
+        pipe_stderr: true,
       }
       match station_sys::proc_spawn(TUI_PTY_EVENT_ID, opts) {
         Ok(child) => {
@@ -1087,15 +1237,26 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
           Some(ev) => return Some(ev)
           None => ()
         }
-        if drv.deadline_active && host_shim::now_ms() >= drv.deadline_at_ms {
+        let now = host_shim::now_ms()
+        if drv.term_signal != 0 && now >= drv.term_grace_deadline_ms {
+          return None
+        }
+        if drv.deadline_active && now >= drv.deadline_at_ms {
           drv.deadline_active = false
           return Some(station_hooks_tui::TuiRunEvent::DeadlineFired(drv.deadline_gen))
         }
-        let wait_ms = if drv.deadline_active {
-          let rem = drv.deadline_at_ms - host_shim::now_ms()
-          if rem <= 1L { 1L } else if rem < 50L { rem } else { 50L }
-        } else {
-          50L
+        let mut wait_ms = 50L
+        if drv.deadline_active {
+          let rem = drv.deadline_at_ms - now
+          if rem < wait_ms {
+            wait_ms = if rem <= 1L { 1L } else { rem }
+          }
+        }
+        if drv.term_signal != 0 {
+          let rem = drv.term_grace_deadline_ms - now
+          if rem < wait_ms {
+            wait_ms = if rem <= 1L { 1L } else { rem }
+          }
         }
         drv.step_once(wait_ms, false)
       }
@@ -1103,14 +1264,15 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
     },
   }
 
-  let rc = station_hooks_tui::run_claude_tui(io, argv)
+  let base_rc = station_hooks_tui::run_claude_tui(io, effective_argv)
 
   // Clean up child process handle, signal watcher, shell runtime, and temporary shell dir.
   match drv.pty_child {
     Some(child) => {
       if !drv.pty_exited {
         let _ = child.close_stdin()
-        let _ = child.kill(station_sys::SIG_TERM, true)
+        let sig_to_send = if drv.term_signal != 0 { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
+        let _ = child.kill(sig_to_send, true)
       }
       let _ = child.close()
       drv.pty_child = None
@@ -1124,7 +1286,13 @@ fn run_claude_tui_os(argv : Array[String]) -> Int {
   driver_box[0] = None
   host_shim::stop()
   let _ = station_sys::rmdir(shell_dir)
-  rc
+  if drv.term_signal != 0 {
+    return 128 + drv.term_signal
+  }
+  if drv.stdin_fatal_err && base_rc == 0 {
+    return 1
+  }
+  base_rc
 }
 
 /// Dispatch one of the 3 native `.mjs` helper commands (`repo-rules-hook`, `subagent-hook`, `claude-tui`).
