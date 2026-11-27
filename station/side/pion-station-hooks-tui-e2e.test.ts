@@ -408,7 +408,8 @@ test("1. repo-rules-hook: byte-for-byte Node parity across nested rules, dedup, 
   mkdirSync(join(negRepo, ".git"), { recursive: true });
   const negRule = join(negRepo, "AGENTS.md");
   writeFileSync(negRule, "# Pre-1970 Rules\nNegative mtime must still inject.\n");
-  utimesSync(negRule, -0.5, -0.5);
+  utimesSync(negRule, new Date(-500), new Date(-500));
+  assert.equal(statSync(negRule).mtimeMs, -500, "utimesSync with Date(-500) must set real pre-1970 mtimeMs = -500");
   const negTarget = join(negRepo, "index.ts");
   writeFileSync(negTarget, "export const neg = true;\n");
 
