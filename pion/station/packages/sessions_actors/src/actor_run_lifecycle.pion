@@ -58,6 +58,9 @@ pub fn ActorsGen::on_timer_k(
     ActorTimerAction::FireMidWait(wait, turn_id, seconds) => {
       self.fire_mid_wait_k(a, wait, turn_id, seconds, k)
     }
+    ActorTimerAction::FireSteerSilent(silent, turn_id) => {
+      self.fire_steer_silent_k(a, silent, turn_id, k)
+    }
     ActorTimerAction::FireRefill(refill) => self.fire_refill_k(a, refill, k)
     ActorTimerAction::FireToolsRetry(id) => self.fire_tools_retry_k(a, id, k)
     ActorTimerAction::OpenTimeout(_) => k(effect::Exit::Succeeded(()))
@@ -238,7 +241,7 @@ pub fn ActorsGen::stop_k(
   a.deferred_end = None
   a.warm = false
   self.cancel_tools_retry(a)
-  self.cancel_mid_wait(a)
+  self.cancel_mid_wait_timer(a)
   a.tools_restarts = 0
   a.paused_cap = false
   a.cap_wait_notified = false
@@ -988,6 +991,12 @@ pub fn ActorsGen::release_k(
       if is_some(a.mid_waiting) && a.mid_waiting_until <= self.gen.counters.now {
         match a.turn {
           Some(t) => self.arm_mid_wait(a, t.id, a.mid_waiting_seconds, 0.0)
+          None => ()
+        }
+      }
+      if is_some(a.steer_silent) && a.steer_silent_until <= self.gen.counters.now {
+        match a.turn {
+          Some(t) => self.arm_steer_silent(a, t.id, a.steer_silent_since, 0.0)
           None => ()
         }
       }
@@ -2004,6 +2013,10 @@ pub fn ActorsGen::snapshot(self : ActorsGen, a : Actor) -> base_codec::Json {
         Some(ab) => ab
         None => base_codec::json_null()
       }
+      let open_j : Array[base_codec::Json] = []
+      for i in 0..<t.open_tools.length() {
+        open_j.push(sessions_core::jstr(t.open_tools[i]))
+      }
       base_codec::json_obj([
         ("id", sessions_core::jstr(t.id)),
         ("authRetried", sessions_core::jbool(t.auth_retried)),
@@ -2013,6 +2026,7 @@ pub fn ActorsGen::snapshot(self : ActorsGen, a : Actor) -> base_codec::Json {
         ("declared", decl_j),
         ("wait", wait_j),
         ("askedBefore", asked_j),
+        ("openTools", base_codec::json_arr(open_j)),
       ])
     }
     None => base_codec::json_null()
@@ -2048,6 +2062,16 @@ pub fn ActorsGen::snapshot(self : ActorsGen, a : Actor) -> base_codec::Json {
     sessions_core::jnum(max0(a.mid_waiting_until - now))
   } else {
     base_codec::json_null()
+  }
+  let steer_silent_ms = match a.turn {
+    Some(t) => {
+      if is_some(a.steer_silent) {
+        sessions_core::jnum(self.steer_silent_left(t, a.steer_silent_since))
+      } else {
+        base_codec::json_null()
+      }
+    }
+    None => base_codec::json_null()
   }
   let silent_waiting_ms = match a.silent_waiting_since {
     Some(s) => sessions_core::jnum(max0(now - s))
@@ -2086,6 +2110,7 @@ pub fn ActorsGen::snapshot(self : ActorsGen, a : Actor) -> base_codec::Json {
     ("waitingSeconds", sessions_core::jnum(a.waiting_seconds)),
     ("midWaitingMs", mid_waiting_ms),
     ("midWaitingSeconds", sessions_core::jnum(a.mid_waiting_seconds)),
+    ("steerSilentMs", steer_silent_ms),
     ("silentWaitingMs", silent_waiting_ms),
     ("progressRemindedMs", progress_reminded_ms),
     ("nudges", sessions_core::jint(a.nudges)),
@@ -2162,6 +2187,18 @@ pub fn ActorsGen::adopt(
         Some(bv) => bv
         None => turn_for_nobody()
       }
+      let open_tools : Array[String] = []
+      match sessions_core::jget(t, "openTools") {
+        Some(base_codec::Json::Arr(ids)) => {
+          for i in 0..<ids.length() {
+            match sessions_core::str_of(Some(ids[i])) {
+              Some(s) => open_tools.push(s)
+              None => ()
+            }
+          }
+        }
+        _ => ()
+      }
       Some(Turn::{
         id: str_or(sessions_core::str_of(sessions_core::jget(t, "id")), ""),
         auth_retried: is_opt_json_true(sessions_core::jget(t, "authRetried")),
@@ -2175,6 +2212,8 @@ pub fn ActorsGen::adopt(
         tools_count: 0,
         last_tool_at: now,
         wait_watch: false,
+        last_live_at: now,
+        open_tools: open_tools,
       })
     }
     _ => None
@@ -2270,6 +2309,19 @@ pub fn ActorsGen::adopt(
           }
           self.arm_mid_wait(a, t.id, secs, ms)
         }
+      }
+      match sessions_core::num_of(sessions_core::jget(snap, "steerSilentMs")) {
+        Some(ms) => {
+          if !is_some(t.declared) {
+            // (silent as long before it was handed over: counted on from there, not from the handover)
+            let ms = steer_silent_clamp(ms)
+            let since = now - (STEERED_SILENT_MS - ms)
+            t.last_live_at = since
+            a.steer_silent_steered = 0
+            self.arm_steer_silent(a, t.id, since, ms)
+          }
+        }
+        None => ()
       }
     }
     None => ()
