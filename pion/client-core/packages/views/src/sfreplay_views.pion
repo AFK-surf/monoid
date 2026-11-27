@@ -1,0 +1,684 @@
+// Real sfreplay Phase 1 view projections and pure link resolver aligned 1:1 with `client/core-ts`:
+// - `project_chat_row` (`views/views.ts` `#wholeRow` / `#chatRow` / `#rowMenu`)
+// - `parse_link_target` (`asks.ts` `linkTarget` + `linkNow` with replaced-station `copies.formerly` + multi-hop `moved`)
+
+import "base_codec"
+import "sql"
+import "store"
+
+// ---------------------------------------------------------------------------
+// 1. `chatRow` (`client/core-ts/src/views/views.ts` `#wholeRow` / `#chatRow` / `#rowMenu`)
+// ---------------------------------------------------------------------------
+
+/// Project a single whole `ChatItem` row (`chatRow` topic) by indexed `(station, session)` lookup.
+/// Applies local `changing` overlays (rename/pin/archive) and aligns menu permissions 1:1 with
+/// `client/core-ts/src/views/views.ts:3663-3757`. Returns `null` when absent, archived, or being archived.
+pub fn project_chat_row(
+  db : sql::Sql,
+  station : String,
+  session : String,
+  briefs : Array[StationBrief],
+  marks : ViewerMarks,
+  now_ms : Int64,
+  lang : String = "zh",
+) -> sql::SqlResult[base_codec::Json] {
+  // Follow moved-chat pointer if present.
+  let mut cur_st = station
+  let mut cur_sess = session
+  match store::resolve_chat_now(db, cur_st, cur_sess) {
+    sql::SqlResult::Ok(Some(loc)) => {
+      cur_st = loc.station
+      if loc.session.length() > 0 {
+        cur_sess = loc.session
+      }
+    }
+    _ => ()
+  }
+  let rec_opt = match store::get_chat_by_session(db, cur_st, cur_sess) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(r)) => Some(r)
+    sql::SqlResult::Ok(None) => match store::get_chat_by_key(db, cur_st, 0, cur_sess) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(r_opt) => r_opt
+    }
+  }
+  let rec = match rec_opt {
+    None => return sql::SqlResult::Ok(base_codec::json_null())
+    Some(r) => r
+  }
+  let raw = parse_json_or_null(rec.json)
+  if j_bool(raw, "archived") {
+    return sql::SqlResult::Ok(base_codec::json_null())
+  }
+  // Load and apply local `changing` overlays (rename / pin / archive) just like `project_chats`.
+  let changing_rows = match store::list_changing_for_station(db, cur_st) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(cs) => cs
+  }
+  let (cid_map, cth_map) = collect_changing_overlays(changing_rows)
+  let mut overlay = empty_change_overlay()
+  match cid_map.get(rec.id) {
+    Some(ov) => { overlay = merge_overlays(overlay, ov) }
+    None => ()
+  }
+  if cur_sess != rec.id {
+    match cid_map.get(cur_sess) {
+      Some(ov) => { overlay = merge_overlays(overlay, ov) }
+      None => ()
+    }
+  }
+  let thread_opt = j_opt_int(raw, "thread")
+  match thread_opt {
+    Some(th) => match cth_map.get(th) {
+      Some(ov) => { overlay = merge_overlays(overlay, ov) }
+      None => ()
+    }
+    None => ()
+  }
+  match overlay.archive_override {
+    Some(true) => return sql::SqlResult::Ok(base_codec::json_null())
+    _ => ()
+  }
+
+  let mut brief = StationBrief::{
+    address: cur_st,
+    id: cur_st,
+    name: cur_st,
+    emoji: None,
+    icon: None,
+    online: true,
+    updating: false,
+    offline_text: None,
+    reconnecting_text: None,
+    running: 0,
+  }
+  for i in 0..<briefs.length() {
+    if briefs[i].address == cur_st {
+      brief = briefs[i]
+      break
+    }
+  }
+  let has_draft = match store::get_draft(db, cur_st, cur_sess) {
+    sql::SqlResult::Ok(Some(d)) => d.json.length() > 2
+    _ => false
+  }
+  let db_pinned = j_opt_int64(raw, "pinned")
+  let db_last = match j_opt_int64(raw, "lastActive") { Some(v) => v; None => now_ms }
+  let (row_j, _, _, eff_archived, _) = build_listed_chat(
+    brief,
+    briefs.length() > 1,
+    rec.id,
+    raw,
+    db_pinned,
+    db_last,
+    overlay,
+    has_draft,
+    marks,
+    now_ms=now_ms,
+    lang=lang,
+  )
+  if eff_archived {
+    return sql::SqlResult::Ok(base_codec::json_null())
+  }
+  // Enrich with whole-row menu flags strictly aligned with `views.ts:3637,3731-3743` (`#rowMenu`):
+  // - `mayShare`: viewer has at least one other workspace AND (starter || owner || admin)
+  // - `mayPublish`: chat has a numeric `thread` AND viewer role != "viewer"
+  // - `mayMove`: viewer role is "owner" or "admin"
+  // - `swipeArchive`: true when row is not pending
+  let ws_id = match cur_st.index_of("/") {
+    idx if idx > 0 => cur_st.slice(0, idx)
+    _ => ""
+  }
+  let mut ws_role = "member"
+  let mut has_other_workspace = false
+  match store::list_workspaces(db) {
+    sql::SqlResult::Ok(wrows) => {
+      for wi in 0..<wrows.length() {
+        let wr = wrows[wi]
+        if wr.id == ws_id {
+          let wj = parse_json_or_null(wr.json)
+          match j_opt_str(wj, "role") {
+            Some(r) => { ws_role = r }
+            None => ()
+          }
+        } else if ws_id.length() > 0 && wr.id.length() > 0 {
+          has_other_workspace = true
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let is_admin = ws_role == "owner" || ws_role == "admin"
+  let starter = if marks.me.length() > 0 {
+    match base_codec::json_get(raw, "creator") {
+      Some(cj) => j_str(cj, "id") == marks.me || j_str(cj, "email") == marks.me
+      None => false
+    }
+  } else {
+    false
+  }
+  let is_pending = j_bool(raw, "pending") || j_bool(row_j, "pending")
+  let extra : Array[(String, base_codec::Json)] = match row_j {
+    base_codec::Json::Obj(fs) => {
+      let copy : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        copy.push(fs[i])
+      }
+      copy
+    }
+    _ => []
+  }
+  if !is_pending {
+    extra.push(("swipeArchive", base_codec::json_bool(true)))
+    if has_other_workspace && (starter || is_admin) {
+      extra.push(("mayShare", base_codec::json_bool(true)))
+    }
+    if thread_opt.is_some() && ws_role != "viewer" {
+      extra.push(("mayPublish", base_codec::json_bool(true)))
+    }
+    if is_admin {
+      extra.push(("mayMove", base_codec::json_bool(true)))
+    }
+  }
+  match base_codec::json_get(raw, "watch") {
+    Some(w) => extra.push(("watch", w))
+    None => ()
+  }
+  sql::SqlResult::Ok(base_codec::json_obj(extra))
+}
+
+// ---------------------------------------------------------------------------
+// 2. `link.parse` (`client/core-ts/src/asks.ts` `linkTarget` + `linkNow` + `views.ts` `stationNow`)
+// ---------------------------------------------------------------------------
+
+fn is_cloud_host(h : String) -> Bool {
+  h == "app.still.fail" ||
+  h == "app.youdid.wtf" ||
+  h == "ember.3720.org" ||
+  h == "app.monoid.build" ||
+  h == "app.monoid.zone"
+}
+
+fn ascii_lower_str(s : String) -> String {
+  let bs = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    let c = bs[i].to_int()
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(bs[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn hex_val_lp(b : Int) -> Int {
+  if b >= 48 && b <= 57 {
+    b - 48
+  } else if b >= 65 && b <= 70 {
+    b - 55
+  } else if b >= 97 && b <= 102 {
+    b - 87
+  } else {
+    -1
+  }
+}
+
+fn percent_decode(s : String) -> String {
+  let bs = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < bs.length() {
+    if bs[i].to_int() == 37 && i + 2 < bs.length() {
+      let a = hex_val_lp(bs[i + 1].to_int())
+      let b = hex_val_lp(bs[i + 2].to_int())
+      if a >= 0 && b >= 0 {
+        sb.write_byte((a * 16 + b) as Byte)
+        i += 3
+        continue
+      }
+    }
+    sb.write_byte(bs[i])
+    i += 1
+  }
+  sb.to_string()
+}
+
+fn replace_plus_with_space(s : String) -> String {
+  let bs = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    if bs[i].to_int() == 43 {
+      sb.write_byte(32 as Byte)
+    } else {
+      sb.write_byte(bs[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn is_digits_range(s : String, min_len : Int, max_len : Int, nonzero_first : Bool) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() < min_len || bs.length() > max_len {
+    return false
+  }
+  for i in 0..<bs.length() {
+    let c = bs[i].to_int()
+    if c < 48 || c > 57 {
+      return false
+    }
+    if i == 0 && nonzero_first && c == 48 {
+      return false
+    }
+  }
+  true
+}
+
+fn split_by_char(s : String, sep : Byte) -> Array[String] {
+  let bs = s.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<bs.length() {
+    if bs[i] == sep {
+      out.push(s.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(s.slice(start, bs.length()))
+  out
+}
+
+fn query_param(query : String, name : String) -> Option[String] {
+  if query.length() == 0 {
+    return None
+  }
+  let parts = split_by_char(query, 38 as Byte)
+  for i in 0..<parts.length() {
+    let kv = parts[i]
+    match kv.index_of("=") {
+      idx if idx >= 0 => {
+        if kv.slice(0, idx) == name {
+          return Some(percent_decode(replace_plus_with_space(kv.slice(idx + 1, kv.length()))))
+        }
+      }
+      _ => ()
+    }
+  }
+  None
+}
+
+struct ParsedUrl {
+  scheme : String
+  host : String
+  port : Option[String]
+  segments : Array[String]
+  query : String
+  fragment : String
+}
+
+fn cut_once(s : String, sep : String) -> (String, String) {
+  match s.index_of(sep) {
+    idx if idx >= 0 => (s.slice(0, idx), s.slice(idx + sep.length(), s.length()))
+    _ => (s, "")
+  }
+}
+
+fn last_index_of_byte(s : String, ch : Byte) -> Int {
+  let bs = s.to_bytes()
+  let mut i = bs.length() - 1
+  while i >= 0 {
+    if bs[i] == ch {
+      return i
+    }
+    i -= 1
+  }
+  -1
+}
+
+fn split_url(url : String) -> Option[ParsedUrl] {
+  let at = url.index_of("://")
+  if at < 0 {
+    return None
+  }
+  let scheme = ascii_lower_str(url.slice(0, at))
+  let rest0 = url.slice(at + 3, url.length())
+  let (rest1, frag_raw) = cut_once(rest0, "#")
+  let (rest2, query) = cut_once(rest1, "?")
+  let (auth_all, path) = cut_once(rest2, "/")
+  let at_sign = last_index_of_byte(auth_all, 64 as Byte)
+  let authority = if at_sign >= 0 { auth_all.slice(at_sign + 1, auth_all.length()) } else { auth_all }
+  let colon = last_index_of_byte(authority, 58 as Byte)
+  let mut host = authority
+  let mut port : Option[String] = None
+  if colon >= 0 {
+    let p = authority.slice(colon + 1, authority.length())
+    if p.length() > 0 && is_digits_range(p, 1, 10, false) {
+      host = authority.slice(0, colon)
+      port = Some(p)
+    }
+  }
+  let raw_segs = split_by_char(path, 47 as Byte)
+  let segs : Array[String] = []
+  for i in 0..<raw_segs.length() {
+    if raw_segs[i].length() > 0 {
+      segs.push(percent_decode(raw_segs[i]))
+    }
+  }
+  Some(ParsedUrl::{
+    scheme: scheme,
+    host: ascii_lower_str(host),
+    port: port,
+    segments: segs,
+    query: query,
+    fragment: percent_decode(frag_raw),
+  })
+}
+
+fn append_history_and_message(fields : Array[(String, base_codec::Json)], query : String) -> Unit {
+  match query_param(query, "history") {
+    Some(h) => if h.length() > 0 {
+      fields.push(("history", base_codec::json_str(h)))
+      match query_param(query, "entry") {
+        Some(es) => if is_digits_range(es, 1, 15, false) {
+          match base_codec::parse_int64_str(es) {
+            Some(v) => fields.push(("entry", base_codec::json_int64(v)))
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match query_param(query, "message") {
+    Some(ms) => if is_digits_range(ms, 1, 15, true) {
+      match base_codec::parse_int64_str(ms) {
+        Some(v) => fields.push(("message", base_codec::json_int64(v)))
+        None => ()
+      }
+    }
+    None => ()
+  }
+}
+
+fn trim_trailing_slashes(s : String) -> String {
+  let bs = s.to_bytes()
+  let mut end = bs.length()
+  while end > 0 && bs[end - 1].to_int() == 47 {
+    end -= 1
+  }
+  s.slice(0, end)
+}
+
+/// Resolve a replaced station address (`views.ts:1951` `stationNow`):
+/// if another station in the same workspace declares `copies.formerly` containing `id`,
+/// follow to that replacement station's address.
+pub fn resolve_station_now(db : sql::Sql, address : String) -> String {
+  let slash = last_index_of_byte(address, 47 as Byte)
+  if slash <= 0 {
+    return address
+  }
+  let ws_prefix = address.slice(0, slash + 1)
+  let sid = address.slice(slash + 1, address.length())
+  if sid.length() == 0 {
+    return address
+  }
+  match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        if !r.address.starts_with(ws_prefix) || r.address == address {
+          continue
+        }
+        let doc = parse_json_or_null(r.json)
+        let ov = match base_codec::json_get(doc, "overview") {
+          Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+          _ => doc
+        }
+        match base_codec::json_get(ov, "copies") {
+          Some(copies_j) => {
+            let formerly = j_arr(copies_j, "formerly")
+            for fi in 0..<formerly.length() {
+              match formerly[fi] {
+                base_codec::Json::Str(old_id) => if old_id == sid {
+                  return r.address
+                }
+                _ => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  address
+}
+
+/// Parse an in-app `still.fail` / `monoid` link into its structured destination and follow
+/// both replaced stations (`copies.formerly` via `resolve_station_now`) and multi-hop moved chats
+/// (`store::resolve_chat_now`), matching `asks.ts:461-525` (`linkTarget` + `linkNow`) 1:1.
+pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> base_codec::Json {
+  if url.starts_with("?") {
+    let (q, _) = cut_once(url.slice(1, url.length()), "#")
+    match query_param(q, "history") {
+      Some(h) => if h.length() > 0 {
+        let fs : Array[(String, base_codec::Json)] = [
+          ("opens", base_codec::json_str("history")),
+          ("history", base_codec::json_str(h)),
+        ]
+        match query_param(q, "entry") {
+          Some(es) => if is_digits_range(es, 1, 15, false) {
+            match base_codec::parse_int64_str(es) {
+              Some(v) => fs.push(("entry", base_codec::json_int64(v)))
+              None => ()
+            }
+          }
+          None => ()
+        }
+        return base_codec::json_obj(fs)
+      }
+      None => ()
+    }
+    return base_codec::json_null()
+  }
+  let full_url = if url.starts_with("/") && !url.starts_with("//") {
+    trim_trailing_slashes(cloud_origin) + url
+  } else {
+    url
+  }
+  let u = match split_url(full_url) {
+    Some(v) => v
+    None => return base_codec::json_null()
+  }
+  let o = match split_url(cloud_origin) {
+    Some(v) => v
+    None => return base_codec::json_null()
+  }
+  let same_port = match (u.port, o.port) {
+    (None, None) => true
+    (Some(a), Some(b)) => a == b
+    _ => false
+  }
+  let same = u.scheme == o.scheme && u.host == o.host && same_port
+  let same_cloud = u.scheme == "https" && u.port.is_none() && is_cloud_host(o.host) && is_cloud_host(u.host)
+  if !same && !same_cloud {
+    return base_codec::json_null()
+  }
+  let s = u.segments
+  if s.length() == 1 && s[0] == "invite" && u.fragment.length() > 0 {
+    return base_codec::json_obj([
+      ("opens", base_codec::json_str("invite")),
+      ("token", base_codec::json_str(u.fragment)),
+    ])
+  }
+  let mut target_opt : Option[base_codec::Json] = None
+  if s.length() == 6 && s[0] == "w" && s[2] == "s" && s[4] == "chats" {
+    let fs : Array[(String, base_codec::Json)] = [
+      ("opens", base_codec::json_str("chat")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+      ("chat", base_codec::json_str(s[5])),
+    ]
+    append_history_and_message(fs, u.query)
+    target_opt = Some(base_codec::json_obj(fs))
+  } else if s.length() == 5 && s[0] == "w" && s[2] == "s" && s[4] == "adb" {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("adbShare")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+    ]))
+  } else if s.length() == 5 && s[0] == "w" && s[2] == "s" && s[4] == "profiles" {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("profiles")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+    ]))
+  } else if s.length() == 6 && s[0] == "w" && s[2] == "s" && s[4] == "services" && s[5].length() > 0 {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("service")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+      ("service", base_codec::json_str(s[5])),
+    ]))
+  } else if s.length() == 6 && s[0] == "w" && s[2] == "s" && s[4] == "screen" && s[5].length() > 0 {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("screen")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+      ("screen", base_codec::json_str(s[5])),
+    ]))
+  } else if s.length() == 6 && s[0] == "w" && s[2] == "s" && s[4] == "terminal" && s[5].length() > 0 {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("terminal")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+      ("terminal", base_codec::json_str(s[5])),
+    ]))
+  } else if s.length() == 6 && s[0] == "w" && s[2] == "s" && s[4] == "login" && s[5].length() > 0 {
+    target_opt = Some(base_codec::json_obj([
+      ("opens", base_codec::json_str("login")),
+      ("workspace", base_codec::json_str(s[1])),
+      ("station", base_codec::json_str(s[3])),
+      ("login", base_codec::json_str(s[5])),
+    ]))
+  } else if s.length() == 4 && s[0] == "o" {
+    if s[3].starts_with("profile:") || s[3].starts_with("billed:") {
+      target_opt = Some(base_codec::json_obj([
+        ("opens", base_codec::json_str("profiles")),
+        ("workspace", base_codec::json_str(s[1])),
+        ("station", base_codec::json_str(s[2])),
+      ]))
+    } else {
+      let svc = match query_param(u.query, "service") {
+        Some(v) => if v.length() > 0 { base_codec::json_str(v) } else { base_codec::json_null() }
+        None => base_codec::json_null()
+      }
+      let fs : Array[(String, base_codec::Json)] = [
+        ("opens", base_codec::json_str("item")),
+        ("workspace", base_codec::json_str(s[1])),
+        ("station", base_codec::json_str(s[2])),
+        ("session", base_codec::json_str(s[3])),
+        ("service", svc),
+      ]
+      append_history_and_message(fs, u.query)
+      target_opt = Some(base_codec::json_obj(fs))
+    }
+  }
+  let target = match target_opt {
+    Some(t) => t
+    None => return base_codec::json_null()
+  }
+  // Follow replaced stations (`stationNow`) and moved-chat pointers (`linkNow`, up to 16 hops)
+  let ws = j_str(target, "workspace")
+  let orig_st = j_str(target, "station")
+  if ws.length() == 0 || orig_st.length() == 0 {
+    return target
+  }
+  let opens = j_str(target, "opens")
+  let orig_chat_opt : Option[String] = if opens == "chat" {
+    j_opt_str(target, "chat")
+  } else if opens == "item" {
+    j_opt_str(target, "session")
+  } else {
+    None
+  }
+  let mut addr = ws + "/" + orig_st
+  let mut named_opt = orig_chat_opt
+  let seen : Map[String, Bool] = Map::new()
+  for _ in 0..<16 {
+    // 1. Follow replaced station (`copies.formerly`)
+    addr = resolve_station_now(db, addr)
+    if seen.get(addr).is_some() {
+      return target
+    }
+    seen.set(addr, true)
+    // 2. Follow moved chat if target names a chat/item
+    match named_opt {
+      None => break
+      Some(named) => {
+        let moved_opt = match store::resolve_chat_now(db, addr, named) {
+          sql::SqlResult::Ok(Some(loc)) => Some(loc)
+          _ => if is_digits_range(named, 1, 12, false) {
+            match base_codec::parse_int64_str(named) {
+              Some(th) => match store::resolve_chat_now_by_thread(db, addr, th.to_int()) {
+                sql::SqlResult::Ok(Some(loc)) => Some(loc)
+                _ => None
+              }
+              None => None
+            }
+          } else {
+            None
+          }
+        }
+        match moved_opt {
+          None => break
+          Some(loc) => {
+            if seen.get(loc.station).is_some() {
+              return target
+            }
+            if named != loc.session {
+              match loc.thread {
+                Some(th) => { named_opt = Some(th.to_string()) }
+                None => ()
+              }
+            }
+            addr = loc.station
+          }
+        }
+      }
+    }
+  }
+  let sl = last_index_of_byte(addr, 47 as Byte)
+  let final_st = if sl >= 0 { addr.slice(sl + 1, addr.length()) } else { addr }
+  let same_chat = match (orig_chat_opt, named_opt) {
+    (None, None) => true
+    (Some(a), Some(b)) => a == b
+    _ => false
+  }
+  if final_st == orig_st && same_chat {
+    return target
+  }
+  match target {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "station" {
+          out.push(("station", base_codec::json_str(final_st)))
+        } else if k == "chat" && opens == "chat" {
+          match named_opt {
+            Some(nm) => out.push(("chat", base_codec::json_str(nm)))
+            None => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => target
+  }
+}

@@ -7,14 +7,30 @@ import "base_codec"
 import "sql"
 import "store"
 
-/// Project the `workspaces` list topic (`workspace` table).
+fn account_view_obj(sub : String, email : String, name : String, picture : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("sub", base_codec::json_str(sub)),
+    ("email", base_codec::json_str(email)),
+    ("name", base_codec::json_str(if name.length() > 0 { name } else { email })),
+    ("picture", base_codec::json_str(picture)),
+  ])
+}
+
+/// Project the `workspaces` list topic (`workspace` table) as an account-grouped array
+/// `[{ account, workspaces, invitations, loaded }]` matching `apps/mbui/src/sfbase/model.mbt:654`
+/// (`AccountWorkspaces`) and `app_frame.mbt:458`.
 /// Strips internal fields (`cloud_keys`, `lock_chain`, full `members`, `secrets`).
-pub fn project_workspaces(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
+pub fn project_workspaces(
+  db : sql::Sql,
+  accounts : Array[StoredAccount] = [],
+  viewer_sub : String = "",
+  viewer_email : String = "",
+) -> sql::SqlResult[base_codec::Json] {
   let rows = match store::list_workspaces(db) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }
-  let out : Array[base_codec::Json] = []
+  let ws_items : Array[base_codec::Json] = []
   for i in 0..<rows.length() {
     let r = rows[i]
     let j = parse_json_or_null(r.json)
@@ -36,9 +52,51 @@ pub fn project_workspaces(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
     push_opt_str(item, "emoji", j_opt_str(j, "emoji"))
     push_opt_str(item, "icon", j_opt_str(j, "icon"))
     push_opt_bool(item, "locked", j_opt_bool(j, "locked"))
-    out.push(base_codec::json_obj(item))
+    ws_items.push(base_codec::json_obj(item))
   }
-  sql::SqlResult::Ok(base_codec::json_obj([("workspaces", base_codec::json_arr(out))]))
+  if accounts.length() > 0 {
+    let grouped : Array[base_codec::Json] = []
+    for i in 0..<accounts.length() {
+      let a = accounts[i]
+      let wss = if i == 0 { ws_items } else { [] }
+      grouped.push(base_codec::json_obj([
+        ("account", account_view_obj(a.sub, a.email, a.name, a.picture)),
+        ("workspaces", base_codec::json_arr(wss)),
+        ("invitations", base_codec::json_arr([])),
+        ("loaded", base_codec::json_bool(true)),
+      ]))
+    }
+    return sql::SqlResult::Ok(base_codec::json_arr(grouped))
+  }
+  // Fallback when `AccountStore` is empty: read stored account summaries if present, or synthesize single viewer group.
+  let stored_accts = match project_accounts(db) {
+    sql::SqlResult::Ok(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  if stored_accts.length() > 0 {
+    let grouped : Array[base_codec::Json] = []
+    for i in 0..<stored_accts.length() {
+      let wss = if i == 0 { ws_items } else { [] }
+      grouped.push(base_codec::json_obj([
+        ("account", stored_accts[i]),
+        ("workspaces", base_codec::json_arr(wss)),
+        ("invitations", base_codec::json_arr([])),
+        ("loaded", base_codec::json_bool(true)),
+      ]))
+    }
+    return sql::SqlResult::Ok(base_codec::json_arr(grouped))
+  }
+  if ws_items.length() == 0 {
+    return sql::SqlResult::Ok(base_codec::json_arr([]))
+  }
+  sql::SqlResult::Ok(base_codec::json_arr([
+    base_codec::json_obj([
+      ("account", account_view_obj(viewer_sub, viewer_email, viewer_email, "")),
+      ("workspaces", base_codec::json_arr(ws_items)),
+      ("invitations", base_codec::json_arr([])),
+      ("loaded", base_codec::json_bool(true)),
+    ]),
+  ]))
 }
 
 /// Project one workspace detail topic (`workspace`).
@@ -197,26 +255,13 @@ pub fn project_stations(db : sql::Sql, workspace_id : String) -> sql::SqlResult[
   sql::SqlResult::Ok(base_codec::json_arr(out))
 }
 
-/// Project `accounts` topic from `account_doc`, strictly stripping tokens/secrets.
+/// Project `accounts` topic from `account_doc` as a JSON array `[{ sub, email, name, picture }]`
+/// matching `apps/mbui/src/sfbase/source.mbt` and `client/core-ts`, strictly stripping tokens/secrets.
 pub fn project_accounts(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
   let raw_accounts = match store::get_account_doc(db, "accounts") {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(Some(s)) => parse_json_or_null(s)
     sql::SqlResult::Ok(None) => base_codec::json_null()
-  }
-  let active_id = match store::get_account_doc(db, "active_account") {
-    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-    sql::SqlResult::Ok(Some(s)) => {
-      let aj = parse_json_or_null(s)
-      match aj {
-        base_codec::Json::Str(id) => id
-        _ => match j_opt_str(aj, "id") {
-          Some(id) => id
-          None => s
-        }
-      }
-    }
-    sql::SqlResult::Ok(None) => j_str(raw_accounts, "active")
   }
   let items = match raw_accounts {
     base_codec::Json::Arr(xs) => xs
@@ -226,30 +271,19 @@ pub fn project_accounts(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
   let out : Array[base_codec::Json] = []
   for i in 0..<items.length() {
     let a = items[i]
-    let id = j_str(a, "id")
+    let sub = match j_opt_str(a, "sub") {
+      Some(s) => s
+      None => j_str(a, "id")
+    }
     let email = j_str(a, "email")
     let name = match j_opt_str(a, "name") {
       Some(n) => n
       None => email
     }
-    let provider = match j_opt_str(a, "provider") {
-      Some(p) => p
-      None => "stillfail"
-    }
-    let af : Array[(String, base_codec::Json)] = [
-      ("id", base_codec::json_str(id)),
-      ("email", base_codec::json_str(email)),
-      ("name", base_codec::json_str(name)),
-      ("provider", base_codec::json_str(provider)),
-      ("active", base_codec::json_bool(id == active_id && active_id.length() > 0)),
-    ]
-    push_opt_str(af, "picture", j_opt_str(a, "picture"))
-    out.push(base_codec::json_obj(af))
+    let picture = j_str(a, "picture")
+    out.push(account_view_obj(sub, email, name, picture))
   }
-  sql::SqlResult::Ok(base_codec::json_obj([
-    ("accounts", base_codec::json_arr(out)),
-    ("active", base_codec::json_str(active_id)),
-  ]))
+  sql::SqlResult::Ok(base_codec::json_arr(out))
 }
 
 /// Project `vaults` topic (`VaultsView`, strictly conforming to `shapes/vault.ts` and Law C).
