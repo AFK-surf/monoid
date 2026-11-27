@@ -141,7 +141,7 @@ fn BarState::rested_at(self : BarState, b : ScrollBar, v : View) -> Unit {
     let phase = if phase == 1 && self.in_at.get() < -1.0e8 { 0 } else { phase }
     self.phase.set(phase)
     match next {
-      Some(at) => self.rest_off = v.at_moment(at, fn() { self.rested_at(b, v) })
+      Some(at) => self.rest_off = v.at_moment_active(at, fn() { self.rested_at(b, v) })
       None => ()
     }
   })

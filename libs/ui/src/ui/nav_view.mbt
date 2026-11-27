@@ -226,7 +226,12 @@ pub fn[P] nav_view(
       |> ignore
     }
     if keeps_made {
-      nav.shelves = Some(fn(p) { made(p) is Some(_) })
+      nav.shelves = Some(fn(p) {
+        match made(p) {
+          Some((kind, _)) => nav_shelf_kind_allows(nav.said, kind)
+          None => false
+        }
+      })
       // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
       s.owns(fn() {
         nav.shelves = None

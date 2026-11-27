@@ -2801,8 +2801,7 @@ fn Tree::node_visible(self : Tree, at : Int, allow_self_alpha_zero~ : Bool) -> B
   if chain.is_empty() || (!lifted && top != 0) {
     return false
   }
-  let (has_covered, has_deep) = self.effective_sleep(at)
-  if has_covered || has_deep {
+  if self.effective_frozen(at) {
     return false
   }
   if self.last_w <= 0.0 || self.last_h <= 0.0 {
@@ -10279,6 +10278,7 @@ priv struct SleepScope {
   gen : Int
   mut covered : Int
   mut deep : Int
+  mut frozen : Int
   mut sleep_gen : Int
   mut disposed : Bool
 }
@@ -10319,6 +10319,27 @@ fn Tree::effective_sleep(self : Tree, at : Int) -> (Bool, Bool) {
     i = n.parent
   }
   (has_covered, has_deep)
+}
+
+///|
+/// Whether any active `SleepScope` on `at` or its ancestors currently freezes reactive bindings (`freeze_bindings=true`).
+fn Tree::effective_frozen(self : Tree, at : Int) -> Bool {
+  guard self.rest_book_opt() is Some(book) && book.roots.length() > 0 else { return false }
+  let mut i = at
+  while i >= 0 && i < self.nodes.length() {
+    let n = self.nodes[i]
+    if !n.live {
+      break
+    }
+    if rest_bit_has(book.root_bits, i) {
+      match book.roots.get(i) {
+        Some(scope) if scope.gen == n.gen && !scope.disposed && scope.frozen > 0 => return true
+        _ => ()
+      }
+    }
+    i = n.parent
+  }
+  false
 }
 
 ///|
@@ -10482,6 +10503,72 @@ pub fn View::on_rest(
 ) -> View {
   let _ = self.on_rest_hook(f, wake, while_covered)
   self
+}
+
+///|
+/// Create a child box that starts in `covered` rest (`drop_holds=false`) if `covered()` is already true BEFORE
+/// `make(target)` runs, and toggles `covered` rest whenever `covered()` changes.
+/// This ensures `when_active(while_covered=true)` registered inside `make(target)` never fires a spurious initial
+/// `enter` when constructed while already covered (e.g. Medium Tape `Page` built while `Side` is foreground).
+pub fn View::covered_box(self : View, covered : () -> Bool, make : (View) -> Unit) -> View {
+  let wake : Ref[(() -> Unit)?] = Ref(None)
+  let release = fn() {
+    match wake.val {
+      Some(w) => {
+        wake.val = None
+        w()
+      }
+      None => ()
+    }
+  }
+  let target = self.box(fn(target) {
+    if @signals.untracked(covered) && target.alive() {
+      wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false, freeze_bindings=false))
+    }
+    make(target)
+  })
+  self.reacts(
+    covered,
+    fn(on) {
+      if on {
+        if wake.val is None && target.alive() {
+          wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false, freeze_bindings=false))
+        }
+      } else {
+        release()
+      }
+    },
+    at_start=true,
+  )
+  self.owns(release) |> ignore
+  target
+}
+
+///|
+/// Put child `target` into `covered` rest (`drop_holds=false`, without freezing visible reactive bindings) whenever
+/// `covered()` is true, and wake it when `covered()` becomes false. The reactive watcher is owned by `self` (outside
+/// `target`'s sleep subtree) so it never freezes itself while `target` is covered.
+pub fn View::cover_child_while(self : View, target : View, covered : () -> Bool) -> Unit {
+  let wake : Ref[(() -> Unit)?] = Ref(None)
+  let release = fn() {
+    match wake.val {
+      Some(w) => {
+        wake.val = None
+        w()
+      }
+      None => ()
+    }
+  }
+  self.reacts(covered, fn(on) {
+    if on {
+      if wake.val is None && target.alive() {
+        wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false, freeze_bindings=false))
+      }
+    } else {
+      release()
+    }
+  })
+  self.owns(release) |> ignore
 }
 
 ///|
@@ -11374,7 +11461,12 @@ fn View::rests(self : View) -> () -> Unit {
 /// 4. Post-order invocation of `at`'s `rest_hooks` in LIFO order (descendants before ancestors, nested pools before outer).
 /// Returns a one-shot release closure that reverses this sleep reason and wakes the subtree in pre-order (ancestors
 /// before descendants, FIFO on the same node) once the last blocking reason clears.
-fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> Unit {
+fn Tree::rest_begin(
+  self : Tree,
+  at : Int,
+  drop_holds? : Bool = true,
+  freeze_bindings? : Bool = true,
+) -> () -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return fn() {  } }
   let book = self.rest_book()
   let n = self.nodes[at]
@@ -11386,6 +11478,9 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
       } else {
         s.covered = s.covered + 1
       }
+      if freeze_bindings {
+        s.frozen = s.frozen + 1
+      }
       s
     }
     _ => {
@@ -11394,6 +11489,7 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
         gen: node_gen,
         covered: if drop_holds { 0 } else { 1 },
         deep: if drop_holds { 1 } else { 0 },
+        frozen: if freeze_bindings { 1 } else { 0 },
         sleep_gen: book.sleep_gen,
         disposed: false,
       }
@@ -11409,7 +11505,18 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
   let touched : Array[(Int, Int)] = []
   let has_inner_root = Ref(false)
   let (parent_covered, parent_deep) = self.effective_sleep(n.parent)
-  self.rest_subtree_dfs(book, at, true, drop_holds, parent_covered, parent_deep, nested_releases, touched, has_inner_root)
+  self.rest_subtree_dfs(
+    book,
+    at,
+    true,
+    drop_holds,
+    freeze_bindings,
+    parent_covered,
+    parent_deep,
+    nested_releases,
+    touched,
+    has_inner_root,
+  )
   let reg_ver = book.asleep_reg_ver
   let roots_ver = book.roots_added_ver
   let inner_root = has_inner_root.val
@@ -11419,7 +11526,18 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
       return
     }
     done.val = true
-    self.rest_end(at, node_gen, my_gen, drop_holds, nested_releases, touched, reg_ver, roots_ver, inner_root)
+    self.rest_end(
+      at,
+      node_gen,
+      my_gen,
+      drop_holds,
+      freeze_bindings,
+      nested_releases,
+      touched,
+      reg_ver,
+      roots_ver,
+      inner_root,
+    )
   }
 }
 
@@ -11430,6 +11548,7 @@ fn Tree::rest_subtree_dfs(
   at : Int,
   is_root : Bool,
   drop_holds : Bool,
+  freeze_bindings : Bool,
   parent_covered : Bool,
   parent_deep : Bool,
   nested_releases : Array[() -> Unit],
@@ -11459,20 +11578,22 @@ fn Tree::rest_subtree_dfs(
   }
   let has_hook = rest_bit_has(book.hook_bits, at)
   let mut node_touched = has_hook
-  // 1. Pre-order freeze of reactive bindings on `at`.
-  match n.owner {
-    Some(o) => {
-      node_touched = true
-      let w = @signals.rest(o, drop_holds~)
-      match book.signal_wakes.get(at) {
-        Some((g, ws)) if g == node_gen => ws.push(w)
-        _ => {
-          book.signal_wakes[at] = (node_gen, [w])
-          rest_bit_set(book.sig_bits, at)
+  // 1. Pre-order freeze of reactive bindings on `at` (skipped for visible `covered` panes with `freeze_bindings=false`).
+  if freeze_bindings {
+    match n.owner {
+      Some(o) => {
+        node_touched = true
+        let w = @signals.rest(o, drop_holds~)
+        match book.signal_wakes.get(at) {
+          Some((g, ws)) if g == node_gen => ws.push(w)
+          _ => {
+            book.signal_wakes[at] = (node_gen, [w])
+            rest_bit_set(book.sig_bits, at)
+          }
         }
       }
+      None => ()
     }
-    None => ()
   }
   if node_touched {
     touched.push((at, node_gen))
@@ -11508,7 +11629,18 @@ fn Tree::rest_subtree_dfs(
   while i < self.nodes[at].kids.length() {
     let k = self.nodes[at].kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_subtree_dfs(book, k, false, drop_holds, has_covered, has_deep, nested_releases, touched, has_inner_root)
+      self.rest_subtree_dfs(
+        book,
+        k,
+        false,
+        drop_holds,
+        freeze_bindings,
+        has_covered,
+        has_deep,
+        nested_releases,
+        touched,
+        has_inner_root,
+      )
       guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
       if book.epoch != epoch {
         let (c, d) = self.effective_sleep(at)
@@ -11557,6 +11689,7 @@ fn Tree::rest_end(
   node_gen : Int,
   my_gen : Int,
   drop_holds : Bool,
+  freeze_bindings : Bool,
   nested_releases : Array[() -> Unit],
   touched : Array[(Int, Int)],
   reg_ver : Int,
@@ -11577,9 +11710,13 @@ fn Tree::rest_end(
   } else if scope.covered > 0 {
     scope.covered = scope.covered - 1
   }
+  if freeze_bindings && scope.frozen > 0 {
+    scope.frozen = scope.frozen - 1
+  }
   if scope.covered <= 0 && scope.deep <= 0 {
     scope.covered = 0
     scope.deep = 0
+    scope.frozen = 0
     book.sleep_gen = book.sleep_gen + 1
     scope.sleep_gen = book.sleep_gen
     book.roots.remove(at)
@@ -11658,7 +11795,7 @@ fn Tree::rest_end(
               hd = d
               epoch = book.epoch
             }
-            if !hc && !hd && rest_bit_has(book.sig_bits, nat) {
+            if rest_bit_has(book.sig_bits, nat) && !self.effective_frozen(nat) {
               match book.signal_wakes.get(nat) {
                 Some((g, ws)) if g == ngen => {
                   book.signal_wakes.remove(nat)
@@ -11758,8 +11895,8 @@ fn Tree::wake_subtree_preorder(self : Tree, book : RestBook, at : Int, parent_co
       return
     }
   }
-  // 2. Wake reactive bindings on this node once neither covered nor deep blocks it.
-  if !has_covered && !has_deep && rest_bit_has(book.sig_bits, at) {
+  // 2. Wake reactive bindings on this node once no active scope freezes bindings on it.
+  if rest_bit_has(book.sig_bits, at) && !self.effective_frozen(at) {
     match book.signal_wakes.get(at) {
       Some((g, ws)) if g == node_gen => {
         book.signal_wakes.remove(at)
