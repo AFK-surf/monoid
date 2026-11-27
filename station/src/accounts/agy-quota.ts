@@ -251,8 +251,9 @@ async function agyQuotaProject(home: string, base: string) {
   if (token === "") return null;
   const loaded = await agyPost(base, "/v1internal:loadCodeAssist", token, { metadata: { ideType: "ANTIGRAVITY" } });
   if (!isObject(loaded)) return null;
-  const tier = isObject(loaded.paidTier) ? loaded.paidTier : loaded.currentTier;
-  if (!isObject(tier)) return null;
+  // Neither a paid nor a current tier: Google sees no Google AI plan on the account (its free tier may be offered
+  // nothing where it is, but that is not why).
+  const tier = isObject(loaded.paidTier) ? loaded.paidTier : isObject(loaded.currentTier) ? loaded.currentTier : null;
   const project = typeof loaded.cloudaicompanionProject === "string" && loaded.cloudaicompanionProject !== "" ? loaded.cloudaicompanionProject : null;
   const payload = project !== null ? { project } : {};
   return { token, tier, payload };
@@ -273,6 +274,7 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
   const project = await agyQuotaProject(home, base);
   if (project === null) return null;
   const { token, tier, payload } = project;
+  if (tier === null) return { state: "blocked", windows: [], detail: tr(lang, "station.quota.agyNoPlan"), checkedAt: 0 };
   const [summary, models] = await Promise.all([
     agyPost(base, AGY_QUOTA_SUMMARY, token, payload),
     agyPost(base, "/v1internal:fetchAvailableModels", token, payload),
@@ -406,7 +408,7 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
       const daily = agyBase(urls, AGY_CLOUD_CODE_URL);
       const production = agyProductionBase(urls);
       const project = await agyQuotaProject(home, daily);
-      if (project !== null) {
+      if (project !== null && project.tier !== null) {
         // Only fall back to production when daily answered cleanly and omitted the weekly window.
         const summary = await agyPost(daily, AGY_QUOTA_SUMMARY, project.token, project.payload);
         if (isObject(summary)) {
@@ -437,6 +439,9 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
     const read = await agyDirectQuota(home, urls, lang);
     if (read !== null) return read;
   }
+  // Google's words are of the account's free tier alone and come for paid accounts too, so they would send people
+  // to the wrong cause: said as what they mean and where to look.
+  if (/not currently available in your location|unsupported_location/i.test(said)) throw new Said(tr(lang, "station.quota.agyLocation"));
   const detail = clipKeepingLinks(said, 300);
   if (authFailure(detail)) {
     throw new RenewRefused(401, tr(lang, "station.quota.signInExpired"));

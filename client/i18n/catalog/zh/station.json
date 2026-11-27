@@ -699,6 +699,8 @@
   "station.quota.agyUnsupported": "Antigravity CLI 不向 station 提供套餐用量",
   "station.quota.agyPayAsYouGo": "这个企业账号按用量计费，没有固定额度",
   "station.quota.agyNoWindows": "Antigravity CLI 没有返回额度信息",
+  "station.quota.agyLocation": "Antigravity CLI 查不了额度：Google 说这个账号的免费档在当前地区不可用。付费账号也会收到这句话，所以未必是地区的问题。请到 https://one.google.com 看这个账号的 Google AI 订阅是否还在，再到 https://policies.google.com/terms 看它的服务条款归属哪个国家或地区",
+  "station.quota.agyNoPlan": "Google 没看到这个账号有 Google AI 订阅，Antigravity 用不了它。请到 https://one.google.com 看订阅是否还在，续上后再重新查询额度",
   "station.quota.agyVerify": "Google 要求先验证这个账号才能用 Antigravity：用这个 Google 账号登录 accounts.google.com，按提示完成验证，再重新查询额度",
   "station.quota.agyVerifyAt": "Google 要求先验证这个账号才能用 Antigravity。用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度\n{url}",
   "station.updates.devinElsewhere": "安装在 {path}，不是用 Devin 的安装脚本装的，需在该机器上手动更新",

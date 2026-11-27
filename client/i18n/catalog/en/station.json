@@ -711,6 +711,8 @@
   "station.quota.agyUnsupported": "Antigravity CLI doesn't report plan usage to the station",
   "station.quota.agyPayAsYouGo": "This company account pays as it goes, with no fixed allowance",
   "station.quota.agyNoWindows": "Antigravity CLI didn't return quota windows",
+  "station.quota.agyLocation": "Antigravity CLI could not read the quota: Google says this account's free tier is not available where it is. Paid accounts get the same words, so the region may not be the cause. Check that the account still has its Google AI plan at https://one.google.com, and which country its terms of service belong to at https://policies.google.com/terms",
+  "station.quota.agyNoPlan": "Google sees no Google AI plan on this account, so Antigravity cannot use it. Check the plan at https://one.google.com, then check the quota again once it is back",
   "station.quota.agyVerify": "Google needs this account verified before it can use Antigravity: sign in to accounts.google.com with this Google account, follow the prompts to verify it, then check the quota again",
   "station.quota.agyVerifyAt": "Google needs this account verified before it can use Antigravity. Open the link below in a browser signed in to this Google account, verify it, then check the quota again\n{url}",
   "station.updates.devinElsewhere": "Installed at {path}, not by Devin's installer; update it manually on that machine",
