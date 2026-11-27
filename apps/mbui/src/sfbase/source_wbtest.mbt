@@ -525,5 +525,141 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
   assert_false(workspace_is_pending("ws-1"))
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="single account B must Match offline once Core confirms ownedWorkspaces")
+  // r14 two-pass order independence & two-step explicit_loss preservation:
+  // (1) [B(loaded=false, ownedWorkspaces=["ws-1"]), A(loaded=true, workspaces=[], ownedWorkspaces=[])] (B precedes A)
+  //     after A owned ws-1: A is immediately revoked, ws-1 enters Pending (explicit_loss), B Waits until loaded=true!
+  reset()
+  accounts_subs_sync(["acct-b", "acct-a"])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"))
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="B preceding A must still detect A's explicit loss in 2-pass sync")
+  assert_true(workspace_is_pending("ws-1"))
+  set_startup_window_owner(Some("acct-a"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied)
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="B must Wait until loaded=true after A's loss")
+  // (2) Two-step transition: A(Owned) -> Step 1 (A lost, both ownedWorkspaces=[]) -> Step 2 (B still loaded=false, ownedWorkspaces=["ws-1"]):
+  //     explicit_loss MUST survive Step 1 -> Step 2 so B stays Waiting until Step 3 (B loaded=true)!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  // Step 1: A loses ws-1, Core hasn't assigned B yet (both ownedWorkspaces=[])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), None)
+  assert_true(workspace_is_pending("ws-1"))
+  // Step 2: Core offline-assigns ws-1 to B, but B is STILL loaded=false -> explicit_loss MUST keep ws-1 Pending!
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="explicit_loss must survive Step 1 -> Step 2 while B is still loaded=false")
+  assert_true(workspace_is_pending("ws-1"))
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting)
+  // Step 3: B finishes /v1/me (loaded=true, ownedWorkspaces=["ws-1"]) -> Owned(B)/Matched!
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_false(workspace_is_pending("ws-1"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched)
   reset()
 }
