@@ -193,12 +193,11 @@ pub struct SeenMember {
   pub exp_unix : Int64
 }
 
-pub fn seen_member_session_key(sid_claim : String, conn_id : Int64) -> String {
-  if sid_claim.length() > 0 {
-    "sid:" + sid_claim
-  } else {
-    "conn:" + conn_id.to_string()
-  }
+/// Always key per Mesh connection (`conn:<conn_id>`, aligned 1:1 with `station_mesh/src/serve.pion:182`)
+/// so kicking an older connection never deletes a newer connection sharing the same `sid_claim`;
+/// `SeenMember.sid_claim` is still retained for cloud `sid` revocation filtering.
+pub fn seen_member_session_key(_sid_claim : String, conn_id : Int64) -> String {
+  "conn:" + conn_id.to_string()
 }
 
 fn seen_role_rank(r : String) -> Int {

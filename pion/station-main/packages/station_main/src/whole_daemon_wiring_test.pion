@@ -484,6 +484,38 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
   if !(form::json_field(Some(chains_revoked), "u-owner") is None) {
     panic("revoked member u-owner must disappear from GET /vault/boxes chains")
   }
+
+  // 4b. Same `sid-shared` across 2 distinct Mesh connections (conn_id=101 old, conn_id=102 new):
+  // kicking conn_id=101 MUST keep conn_id=102 active; cloud `sid` revocation filters BOTH!
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L), "owner@a.test", "owner", 1700000000L, "sid-shared", 1700000200L)
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 102L), "owner@a.test", "owner", 1700000010L, "sid-shared", 1700005000L)
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L))
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => if !ls.members.contains("u-owner") || !ls.persons.contains("u-owner") {
+      panic("kicking conn_id=101 must NOT evict conn_id=102 sharing sid-shared")
+    }
+    None => panic("expected conn_id=102 sharing sid-shared to stay in personal_vault_lock")
+  }
+  let chains_shared_kept = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if form::json_field(Some(chains_shared_kept), "u-owner") is None {
+    panic("kicking conn_id=101 must keep conn_id=102 in GET /vault/boxes")
+  }
+  // Cloud `sid` revocation on `sid-shared` with `iat <= r.at` filters BOTH conn_id=101 and conn_id=102
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L), "owner@a.test", "owner", 1700000000L, "sid-shared", 1700005000L)
+  match cloud.state {
+    Some(st_cloud) => {
+      st_cloud.revocations = [station_cloud::Revocation::{ kind: "sid", id: "sid-shared", at: 1700000050L }]
+    }
+    None => ()
+  }
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
+    panic("cloud sid revocation on sid-shared must filter all connections sharing sid-shared")
+  }
+  let chains_sid_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if !(form::json_field(Some(chains_sid_rev), "u-owner") is None) {
+    panic("cloud sid revocation on sid-shared must filter GET /vault/boxes")
+  }
+
   // Also verify cloud `sub` revocation list filters even if still present in seen_members
   record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L), "owner@a.test", "owner", 1700000010L, "sid-owner-2", 1700005000L)
   match cloud.state {
