@@ -163,13 +163,13 @@ fn sheet_ask_node(
   say : (String) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  let words = fn() { line.text().trim(chars=" \t\n").to_owned() }
+  let words = fn() { line.composed_said().trim(chars=" \t\n").to_owned() }
   let can = fn() { ask_can(words(), value, empty) }
   let said = Ref(false)
   let go = fn() {
     if !said.val && @signals.untracked(can) {
       said.val = true
-      say(@signals.untracked(words))
+      say(line.commit_composing().trim(chars=" \t\n").to_owned())
     }
   }
   col.box(made_for=loc, fn(b) {

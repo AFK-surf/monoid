@@ -1017,7 +1017,7 @@ fn composer_box_node(
   // (and while anything is written in it; kept a box a moment after the cursor left it, while it holds no quote and no
   // file, to be let go to a capsule)
   let has_extras = fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }
-  let hint_hidden = fn() { hint_away() || w.text.get() != "" || (!status_hint() && held() && !has_extras()) }
+  let hint_hidden = fn() { hint_away() || w.text.get() != "" || w.field.composing() || (!status_hint() && held() && !has_extras()) }
   let narrow_fresh = over_in is Some(_) && from_at is None
   let hint_in = @motion.NodeWay::new(
     if from_at is Some(_) || narrow_fresh || @signals.untracked(fn() { hint_hidden() }) {
@@ -1948,7 +1948,7 @@ fn composer_box_node(
   let quiet_was = Ref(@signals.untracked(fn() { composing_node.quiet_n.get() }))
   let first = Ref(true)
   // (whether anything is in it: what is written, what waits to go)
-  let held_in = fn() { w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0 }
+  let held_in = fn() { w.text.get() != "" || w.field.composing() || w.files.get().length() > 0 || w.quotes.get().length() > 0 }
   // (roomy as the window's width has it: crossed by the window resized, its shape there at once, no motion)
   let roomy_was = Ref(@signals.untracked(roomy))
   foot.reacts(fn() { (multiline(), composing_node.quiet_n.get(), roomy()) }, fn(now) {
@@ -2342,7 +2342,7 @@ fn composer_field_node(
     guard w.field.focused() && spec.chat && k.mods == 0 && (k.code == @ui.key_code_up || k.code == @ui.key_code_down) else {
       return false
     }
-    guard w.text.get() == "" && !(@sfbase.neighbour_held.val)() else { return false }
+    guard w.text.get() == "" && !w.field.composing() && !(@sfbase.neighbour_held.val)() else { return false }
     match @sfbase.workspace_in_view(src).0 {
       Some(ws) => (@sfbase.neighbour_go.val)(src, ws, if k.code == @ui.key_code_up { -1 } else { 1 })
       None => ()

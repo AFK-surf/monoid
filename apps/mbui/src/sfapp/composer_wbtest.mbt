@@ -1092,3 +1092,60 @@ test "the composer made as nodes: what a hand puts in or takes out goes its way;
     None => fail("the next tile gone")
   }
 }
+
+///|
+test "Android IME underlined English word is committed and sent on tap send, both after committed words and alone" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=2)
+  let src = made.val.unwrap()
+  let w = @sfbase.writings.get("ws1/st1:s-c1").unwrap()
+  t.tap_text("发消息")
+  assert_true(t.ime().0)
+  // committed prefix plus underlined English composing span (e.g. Doubao IME)
+  for ch in "hello " {
+    t.type_text(ch.to_string())
+  }
+  t.ime_state("hello world", 11, 11, ca=6, cb=11)
+  assert_eq(w.field.text(), "hello ")
+  assert_true(w.field.composing())
+  assert_eq(t.ime_let_go(), 0)
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "text"), "hello world")
+  assert_eq(w.field.text(), "")
+  assert_false(w.field.composing())
+  assert_eq(t.ime(), (true, "", 0, 0))
+  assert_eq(t.ime_let_go(), 1)
+  t.run_for(flight_wait_ms + @ui.move_most_ms)
+  t.run_for(@sfpages.sending_shows_ms)
+  // underlined English word alone in an empty composer: send is enabled and sends it whole
+  t.ime_state("ab", 2, 2, ca=0, cb=2)
+  assert_eq(w.field.text(), "")
+  assert_true(w.field.composing())
+  assert_false(t.get(Button, label=@sf.t("web-main.composer.send")).disabled)
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 2)
+  assert_eq(text(Some(sent[1].params), "text"), "ab")
+  assert_eq(w.field.text(), "")
+  assert_false(w.field.composing())
+  assert_eq(t.ime(), (true, "", 0, 0))
+  assert_eq(t.ime_let_go(), 2)
+  t.run_for(flight_wait_ms + @ui.move_most_ms)
+  t.run_for(@sfpages.sending_shows_ms)
+  // quote comment composing an underlined English word when tapping send
+  @sfbase.writing_quote(src, w, { "author": "Ana", "text": "签名已经核对完了", "ts": "ts8" })
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.ime_state("hello world", 11, 11, ca=6, cb=11)
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 3)
+  let qs = items(Some(sent[2].params), "quotes")
+  assert_eq(qs.length(), 1)
+  assert_eq(text(Some(qs[0]), "comment"), "hello world")
+  t.run_for(flight_wait_ms + @ui.move_most_ms)
+  t.run_for(@sfpages.sending_shows_ms)
+  t.assert_idle()
+}

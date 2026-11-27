@@ -2309,20 +2309,30 @@ pub fn Field::pick(self : Field, from : Int, to : Int) -> Unit {
 }
 
 ///|
-/// Its words given up (sent): what the input method was composing put in first, then none left in it.
-pub fn Field::take(self : Field) -> String {
+/// What the input method is composing put in as words (and the input method told it was let go); its words now.
+pub fn Field::commit_composing(self : Field) -> String {
   let st = self.st
-  // (one edit: what was composed put in and all of it taken, told once as it is left)
-  @signals.start_batch()
   if st.marked.length() > 0 {
+    @signals.start_batch()
     // (the input method still composing it: told it is let go, or it goes on composing into words gone and puts its
     // result in after them, a dictation's sentence back in the field it was sent from)
     st.let_go = true
     // (when: its blinking starts again as it is next built)
     st.text_input(2, "", 0, 0, 0.0)
     st.blink_again = true
+    st.written.set(st.written.untracked() + 1)
+    field_written()
+    @signals.end_batch()
   }
-  let t = st.text
+  st.text
+}
+
+///|
+/// Its words given up (sent): what the input method was composing put in first, then none left in it.
+pub fn Field::take(self : Field) -> String {
+  // (one edit: what was composed put in and all of it taken, told once as it is left)
+  @signals.start_batch()
+  let t = self.commit_composing()
   self.set("")
   @signals.end_batch()
   t

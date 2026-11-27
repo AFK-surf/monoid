@@ -238,11 +238,8 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
       }
       InvitePaste => {
         lead(fn() { fill("android-misc.invite.pasteLink", [("app", @sf.product())]) })
-        let words = @signals.signal(invite.field.text())
         // (the link pasted in a rectangle with rounded corners (invite_corner), two lines of it at most, not a capsule)
-        @sf.textarea_node(p, invite.field, rows=1, most=2, corner=invite_corner, placeholder="https://app.still.fail/invite#…", edited=fn(w) {
-          words.set(w)
-        })
+        @sf.textarea_node(p, invite.field, rows=1, most=2, corner=invite_corner, placeholder="https://app.still.fail/invite#…")
         |> ignore
         buttons(fn(b) {
           @sf.button_node(b, fn() { tr("common.cancel") }, fn() {
@@ -254,12 +251,11 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
             b,
             fn() { tr("android-misc.invite.view") },
             fn() {
-              let token = invitation_token(words.untracked())
-              invite.field.take() |> ignore
+              let token = invitation_token(invite.field.take())
               invite.token.set(token)
             },
             tone=Primary,
-            disabled=fn() { invitation_token(words.get()) is None },
+            disabled=fn() { invitation_token(invite.field.composed_said()) is None },
           )
           |> ignore
         })
