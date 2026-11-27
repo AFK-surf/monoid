@@ -1028,7 +1028,7 @@ fn chats_pane_node(
           line.height(By(fn() {
             let base = (frame.foot)() + @sf.list_foot_in(frame.at)
             if pane_grouped && frame.at == Whole {
-              Some(dmax(base, (frame.section_chrome_bottom)() + 52.0))
+              Some(dmax(base, (frame.section_chrome_bottom)() + whole_group_pill_min_h + whole_group_pill_foot_gap))
             } else {
               Some(base)
             }
@@ -1495,13 +1495,20 @@ fn sticky_heading_rules_node(
 }
 
 ///|
+let whole_group_pill_min_h : Double = 44.0
+
+///|
+let whole_group_pill_foot_gap : Double = 8.0
+
+///|
 /// List-owned overlay chrome for grouped sticky sections:
 /// - `Side | Tape`: opaque `[0, top_edge]` top-band mask when top headings are docked (prevents rows from peeking
 ///   behind the sidebar top band while leaving `scroll = 0` and tucked search untouched), and publishes boundary heading
 ///   keys for crisp 0.5pt sticky-row hairlines (zero floating pills over chat rows).
-/// - `Whole`: Apple iOS 26 Liquid Glass floating group indicator pill left-aligned cleanly above the bottom tab bar
-///   once the active group's in-flow heading scrolls past `frame.under`, keeping a full >=44pt touch target so taps
-///   never fall through to chat rows underneath; tapping opens the native group-jump sheet/menu.
+/// - `Whole`: persistent bottom-left Apple iOS 26 Liquid Glass floating group switcher pill above the bottom tab bar,
+///   always visible while grouped (including at `scroll = 0` and continuously across scrolls) and suppressed only by
+///   shell overlays (`frame.section_chrome_suppress()`), with a full >=44pt touch target; tapping opens the native
+///   group-jump sheet/menu.
 fn section_chrome_node(
   host : @view.View,
   read_chrome : () -> @view.SectionChrome[String],
@@ -1544,54 +1551,20 @@ fn section_chrome_node(
       |> ignore
     }
     Whole => {
-      // Geometry constants for the bottom-left Liquid Glass floating group indicator pill:
+      // Geometry constants for the persistent bottom-left Liquid Glass floating group switcher pill:
       // aligned flush with the bottom Liquid Glass tab bar's left inset (`22pt`), sitting cleanly above the tab bar
       // (`frame.section_chrome_bottom()`), with a single-layer `>= 44pt` Liquid Glass capsule directly on the button
       // so `Tree::covered_under` holds across row seams (zero `apart:` faults) and every touch gets a full 44pt target.
       let pill_left_inset = 22.0
-      let pill_min_h = 44.0
+      let pill_min_h = whole_group_pill_min_h
       let pill_vpad = 8.0
-      let pill_line_h_1x = 19.0
-      let pill_fade_in_px = 20.0
-      let pill_head_gap = 8.0
-      let pill_head_fade = 16.0
       let menu_serial : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
       let own_menu_drawn = fn() {
         let s = menu_serial.get()
         s != 0 && @sf.presented_drawn_of(s)
       }
-      let pill_vis = @signals.computed(fn(_) {
-        if !is_grouped() || ((frame.section_chrome_suppress)() && !own_menu_drawn()) {
-          return 0.0
-        }
-        let c = read_chrome()
-        guard c.active is Some(_) else { return 0.0 }
-        let enter = clamp01((c.top_edge - c.active_bottom) / pill_fade_in_px)
-        let exit = if c.next_top.is_inf() {
-          1.0
-        } else {
-          clamp01((c.next_top - c.top_edge - 12.0) / pill_fade_in_px)
-        }
-        let mut head_clear = 1.0
-        if c.viewport_h > 0.0 && !c.visible_heads.is_empty() {
-          let pill_h = dmax(pill_min_h, (pill_line_h_1x * host.words_scale()).ceil() + pill_vpad * 2.0)
-          let pill_bot = c.viewport_h - dmax(0.0, (frame.section_chrome_bottom)())
-          let pill_top = pill_bot - pill_h
-          let band_top = pill_top - pill_head_gap
-          let band_bot = pill_bot + pill_head_gap
-          for h in c.visible_heads {
-            let (hy0, hy1) = h
-            let dist = if hy1 <= band_top {
-              band_top - hy1
-            } else if hy0 >= band_bot {
-              hy0 - band_bot
-            } else {
-              0.0
-            }
-            head_clear = dmin(head_clear, clamp01(dist / pill_head_fade))
-          }
-        }
-        dmin(dmin(enter, exit), head_clear)
+      let pill_live = @signals.computed(fn(_) {
+        is_grouped() && !days().is_empty() && !(frame.section_chrome_suppress)()
       })
       host
       .lies_along(Is(End))
@@ -1600,26 +1573,39 @@ fn section_chrome_node(
         (pill_left_inset, 0.0, pill_left_inset, dmax(0.0, (frame.section_chrome_bottom)()))
       }))
       |> ignore
-      host.show(fn() { pill_vis.get() > 0.02 || own_menu_drawn() }, at_once=true, fn(slot) {
+      host.show(fn() { pill_live.get() || own_menu_drawn() }, at_once=true, fn(slot) {
         slot
-        .alpha(By(fn() { pill_vis.get() }))
+        .alpha(By(fn() { if pill_live.get() { 1.0 } else { 0.0 } }))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        let last_key = Ref("")
         let active_day = fn() -> ChatDay? {
-          let gk = match read_chrome().active {
-            Some(k) if k.has_prefix("h/") => {
-              let s = k.exact_view(start=2).to_owned()
-              last_key.val = s
-              s
-            }
-            _ => last_key.val
+          let ds = days()
+          if ds.is_empty() {
+            return None
           }
-          if gk == "" {
-            None
-          } else {
-            days().iter().find_first(fn(d) { d.key == gk })
+          let c = read_chrome()
+          match c.active {
+            Some(k) if k.has_prefix("h/") => {
+              let gk = k.exact_view(start=2).to_owned()
+              let mut found = -1
+              for i, d in ds {
+                if d.key == gk {
+                  found = i
+                  break
+                }
+              }
+              if found >= 0 {
+                if found + 1 < ds.length() && !c.next_top.is_inf() && c.next_top <= c.top_edge + 4.0 {
+                  Some(ds[found + 1])
+                } else {
+                  Some(ds[found])
+                }
+              } else {
+                Some(ds[0])
+              }
+            }
+            _ => Some(ds[0])
           }
         }
         let name_label = fn() { active_day().map_or("", fn(d) { d.label }) }
@@ -1635,7 +1621,7 @@ fn section_chrome_node(
           fn(anchor) {
             let cur_days = @signals.untracked(days)
             guard !cur_days.is_empty() else { return }
-            let cur_active = @signals.untracked(fn() { read_chrome().active })
+            let cur_key = @signals.untracked(fn() { active_day().map(fn(d) { d.key }) })
             let items : Array[@sf.MenuItem?] = cur_days.map(fn(d) {
               let hk = "h/" + d.key
               let item_label = d.label + "  " + d.chat_count.to_string()
@@ -1643,7 +1629,7 @@ fn section_chrome_node(
                 @sf.menu_item_of(
                   item_label,
                   fn() { list_place.bring_section(hk, glide=true) },
-                  chosen=cur_active == Some(hk),
+                  chosen=cur_key == Some(d.key),
                 ),
               )
             })
@@ -1673,8 +1659,8 @@ fn section_chrome_node(
           },
         )
         btn
-        .presses(By(fn() { pill_vis.get() > 0.5 }))
-        .hides(By(fn() { pill_vis.get() <= 0.5 }))
+        .presses(By(fn() { pill_live.get() }))
+        .hides(By(fn() { !pill_live.get() }))
         |> ignore
       })
     }

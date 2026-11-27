@@ -169,13 +169,14 @@ test "short desktop window (h<720): degrades bottom stack to 2+1 with zero overl
 }
 
 ///|
-test "small screen (Whole 390x844): bottom-left Liquid Glass group pill above tab bar, >=44pt hit target, native sheet jump with zero overshoot" {
+test "small screen (Whole 390x844): persistent bottom-left Liquid Glass group pill above tab bar, >=44pt hit target, native sheet jump with zero overshoot" {
   let t = sticky_tester("projects-sticky", 390.0, 844.0, 2)
-  // At scroll = 0: zero floating group pill at top or bottom while the first group's in-flow heading is visible
-  assert_true(sticky_find_floating_pill(t, "未归类") is None, msg="no floating pill at scroll=0 while in-flow heading is visible")
+  // At scroll = 0: persistent bottom-left group pill is immediately visible showing the topmost group ("未归类")
+  let top_pill = sticky_find_floating_pill(t, "未归类")
+  assert_true(top_pill is Some(_), msg="expected persistent bottom-left group pill at scroll=0 showing topmost group")
   assert_eq(t.audit(), [])
 
-  // Scroll deep into "board" so its in-flow heading scrolls cleanly past the Liquid Glass top bar
+  // Scroll deep into "board"
   sticky_scroll_by(t, 195.0, 400.0, 360.0)
   // Zero bottom stacked headers
   let bot_group_heads = t.semantics().filter(fn(s) {
@@ -195,12 +196,8 @@ test "small screen (Whole 390x844): bottom-left Liquid Glass group pill above ta
   )
   assert_eq(t.audit(), [])
 
-  // Sweep scrolling through subsequent groups: whenever an in-flow group heading crosses the bottom-left pill band
-  // `[pill_top - 8, pill_bot + 8]`, the floating pill must fade out so two group headings never collide visually.
-  let pill_band_top = pr.1 - 8.0
-  let pill_band_bot = pr.1 + pr.3 + 8.0
-  let mut saw_crossing = false
-  let mut saw_visible_between = false
+  // Sweep scrolling through subsequent groups: the persistent bottom-left pill must stay continuously visible
+  // on every scroll step (never flickering on/off mid-scroll) while tracking active groups.
   for _ in 0..<24 {
     sticky_scroll_by(t, 195.0, 400.0, 45.0)
     let any_pill = t.semantics().iter().find_first(fn(s) {
@@ -213,25 +210,8 @@ test "small screen (Whole 390x844): bottom-left Liquid Glass group pill above ta
       s.rect.2 <= 230.0 &&
       s.label.contains(" ")
     })
-    let mut heading_in_band = false
-    for s in t.semantics() {
-      if !s.hidden && s.role is Button && s.expanded is Some(_) {
-        let hy0 = s.rect.1
-        let hy1 = hy0 + s.rect.3
-        if hy1 > pill_band_top && hy0 < pill_band_bot {
-          heading_in_band = true
-        }
-      }
-    }
-    if heading_in_band {
-      saw_crossing = true
-      assert_true(any_pill is None, msg="bottom-left pill must hide while an in-flow group heading crosses its vertical band")
-    } else if any_pill is Some(_) {
-      saw_visible_between = true
-    }
+    assert_true(any_pill is Some(_), msg="persistent bottom-left pill must remain continuously visible while scrolling")
   }
-  assert_true(saw_crossing, msg="expected sweep to exercise >= 1 in-flow heading crossing the bottom-left pill band")
-  assert_true(saw_visible_between, msg="expected bottom-left pill to reappear cleanly between heading crossings")
 
   // Scroll back to "board" for touch & jump assertions
   sticky_scroll_by(t, 195.0, 400.0, -2000.0)
@@ -271,11 +251,12 @@ test "small screen (Whole 390x844): bottom-left Liquid Glass group pill above ta
       )
     None => fail("first chat row of release-qa must be visible after jump")
   }
-  // Once release-qa's inline heading lands at top_edge, no stale previous-group pill may linger at bottom-left.
+  // Once release-qa lands at top_edge, the persistent bottom-left pill stays visible and immediately reports release-qa
+  // (never lingering on the previous group infra-ops).
   assert_true(
-    sticky_find_floating_pill(t, "infra-ops") is None &&
-    sticky_find_floating_pill(t, "release-qa") is None,
-    msg="floating pill must hide once target group's inline heading is visible below top bar",
+    sticky_find_floating_pill(t, "release-qa") is Some(_) &&
+    sticky_find_floating_pill(t, "infra-ops") is None,
+    msg="persistent bottom-left pill must immediately display target group 'release-qa' after jump",
   )
   assert_eq(t.audit(), [])
   t.assert_idle()
