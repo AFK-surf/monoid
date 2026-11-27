@@ -1250,7 +1250,12 @@ fn evaluate_runtime_topic(
         break
       }
     }
-    let (at_opt, at_off_opt, rows_lim) = sess.core.chat_sub_snapshot_for(id, resolved_st, resolved_th, sess_param)
+    let rows_lim = sess.core.chat_sub_window_rows_for(id, resolved_st, resolved_th, sess_param)
+    // Do not anchor `project_chat_by_params` at a persisted `chat.place` (`at` / `at_offset`) in Part 1:
+    // `views/chat_view.pion` currently hardcodes `newer: false` and Pion has not yet implemented
+    // `chat.newer` / `chat.latest` window extension, so opening mid-thread would hide newer tail
+    // messages with no way to load them. Wire place-anchored opening together with live `newer`
+    // computation and `chat.newer` / `chat.latest` as one cohesive abstraction in a follow-up PR.
     match views::project_chat_by_params(
       sess.db,
       st,
@@ -1260,8 +1265,8 @@ fn evaluate_runtime_topic(
       sess_viewer_email(sess),
       now_ms,
       rows=rows_lim,
-      at=at_opt,
-      at_offset=at_off_opt,
+      at=None,
+      at_offset=None,
       utc_offset_min=utc_offset_min,
       lang=lang,
       online=online,

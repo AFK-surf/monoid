@@ -616,19 +616,42 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     ("seq", base_codec::json_int(4)),
     ("offset", base_codec::json_num(12.5)),
   ]))
+  // Even with persisted `chat.place(seq=4, offset=12.5)`, Part 1 opens `chat` at the tail window
+  // (`at` omitted) so newer tail messages are never hidden while `newer` / `chat.newer` / `chat.latest`
+  // are not yet wired. Seed 50 entries on thread 10 to prove the tail entry (seq=50) stays visible!
+  for en in 1..<51 {
+    let ejson = "{\"kind\":\"message\",\"n\":" + en.to_string() + ",\"at\":" + (1730000000000L + en.to_int64() * 1000L).to_string() + ",\"author\":\"alice\",\"text\":\"msg-" + en.to_string() + "\"}"
+    let _ = db.run(
+      sql_entry_put(),
+      params=[
+        base_codec::json_str("ws-1/st-1"),
+        base_codec::json_int(10),
+        base_codec::json_int(en),
+        base_codec::json_str(ejson),
+      ],
+    )
+  }
+  let _ = sf_call_ok(core, 4099L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(6)),
+  ]))
   let ch_view = sf_sub_val(core, 41L, "chat", [
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
   ])
-  sf_expect_int(ch_view, "at", 4)
-  match base_codec::json_get(ch_view, "atOffset") {
-    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 12.5, "expected atOffset 12.5 before restart")
-    _ => debug_assert(false, "missing atOffset before restart")
+  debug_assert(base_codec::json_get(ch_view, "at").is_none(), "Part 1 chat open must not anchor at persisted place before chat.newer exists")
+  debug_assert(base_codec::json_get(ch_view, "atOffset").is_none(), "Part 1 chat open must not emit atOffset before chat.newer exists")
+  debug_assert(base_codec::json_stringify(ch_view).contains("msg-50"), "tail entry msg-50 must be visible on chat open even with chat.place(seq=4)")
+  let init_msg_count = match base_codec::json_get(ch_view, "messages") {
+    Some(base_codec::Json::Arr(ms)) => ms.length()
+    _ => 0
   }
+  debug_assert(init_msg_count > 0 && init_msg_count <= 6, "chat.window(rows=6) must bound opening window")
 
-  // P1-2 snapshot invariance: while sub #41 is active (opened at seq=4, offset=12.5), calling `chat.place(seq=2)`
-  // and `chat.window(rows=5)` then injecting a new message + triggering `refresh_topic("chat")` MUST keep sub #41
-  // pinned to its opening snapshot (at=4, atOffset=12.5), never jumping to seq=2!
+  // Subscription-period `chat.window` snapshot invariance: while sub #41 is active (opened with rows=6),
+  // calling `chat.place(seq=2)` and `chat.window(rows=50)` then triggering a refresh via `chat.send` MUST
+  // keep sub #41 pinned to its opening `rows=6` snapshot (not expanding to 50) and keep `at` absent!
   let _ = sf_call_ok(core, 4101L, "chat.place", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
@@ -638,7 +661,7 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
   let _ = sf_call_ok(core, 4102L, "chat.window", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
-    ("rows", base_codec::json_int(5)),
+    ("rows", base_codec::json_int(50)),
   ]))
   let _ = sf_call_ok(core, 4103L, "chat.send", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
@@ -651,21 +674,10 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
   debug_assert(refresh_evs.length() == 1, "expected 1 live refresh event for active chat sub #41")
   let (ref_wire, _) = protocol::encode_core_event(refresh_evs[0])
   debug_assert(ref_wire.contains("new msg during active sub"), "live refresh must include new message: " + ref_wire)
-  debug_assert(!ref_wire.contains("\"at\":2") && !ref_wire.contains("7.5"), "active sub refresh must NOT yank at/atOffset to mid-sub chat.place: " + ref_wire)
+  debug_assert(!ref_wire.contains("msg-1\"") && !ref_wire.contains("\"at\""), "active sub refresh must keep opening rows=6 snapshot and omit at: " + ref_wire)
   // Unsubscribing #41 removes snapshot AND reclaims `chat_windows` entry (`views.ts:1453`).
   let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(41L, true, false))
   debug_assert(core.chat_windows.get("ws-1/st-1:t:10").is_none(), "unsubscribe must reclaim chat_windows entry")
-  // Re-subscribing now picks up the updated persisted place (seq=2, offset=7.5).
-  let ch_resub = sf_sub_val(core, 4104L, "chat", [
-    ("station", base_codec::json_str("ws-1/st-1")),
-    ("thread", base_codec::json_int(10)),
-  ])
-  sf_expect_int(ch_resub, "at", 2)
-  match base_codec::json_get(ch_resub, "atOffset") {
-    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 7.5, "re-sub must pick up updated atOffset 7.5")
-    _ => debug_assert(false, "missing updated atOffset after re-sub")
-  }
-  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(4104L, true, false))
   // Restore (seq=4, offset=12.5) for restart recovery check below.
   let _ = sf_call_ok(core, 4105L, "chat.place", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
@@ -674,17 +686,20 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     ("offset", base_codec::json_num(12.5)),
   ]))
 
-  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover BOTH `at: 4` AND `atOffset: 12.5`!
+  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover BOTH `at: Some(4)` AND `atOffset: Some(12.5)`
+  // via `chat_place_for`, while subscribing to `chat` still opens at the tail window so msg-50 stays visible!
   let core_restarted = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let (rec_seq, rec_off) = core_restarted.chat_place_for("ws-1/st-1", Some(10))
+  match (rec_seq, rec_off) {
+    (Some(4), Some(off)) => debug_assert(off == 12.5, "expected recovered atOffset 12.5 after restart")
+    _ => debug_assert(false, "fresh ClientCore must recover (Some(4), Some(12.5)) from workspace_pref")
+  }
   let ch_after_restart = sf_sub_val(core_restarted, 411L, "chat", [
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
   ])
-  sf_expect_int(ch_after_restart, "at", 4)
-  match base_codec::json_get(ch_after_restart, "atOffset") {
-    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 12.5, "expected atOffset 12.5 after restart")
-    _ => debug_assert(false, "missing atOffset after restart")
-  }
+  debug_assert(base_codec::json_get(ch_after_restart, "at").is_none(), "restarted chat sub must still open at tail window")
+  debug_assert(base_codec::json_stringify(ch_after_restart).contains("msg-50"), "restarted chat sub must keep tail entry msg-50 visible")
   // Unimplemented `chats` filter/groupBy params MUST return explicit `unsupported` error (never unfiltered list!)
   let unsupported_chats_cases : Array[Array[(String, base_codec::Json)]] = [
     [("scope", base_codec::json_str("ws-1")), ("project", base_codec::json_str("proj-alpha"))],

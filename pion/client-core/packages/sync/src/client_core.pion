@@ -1365,40 +1365,35 @@ struct ChatSubSnapshot {
   station : String
   thread : Option[Int]
   session : Option[String]
-  at : Option[Int]
-  at_offset : Option[Double]
   rows : Int
 }
 
-/// Drop any stale per-subscription chat open snapshot when starting a fresh subscription on `id`.
+/// Drop any stale per-subscription chat window snapshot when starting a fresh subscription on `id`.
 pub fn ClientCore::drop_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
   self.chat_sub_snapshots.remove(id)
 }
 
-/// Snapshot `(at, atOffset, rows)` once when a `chat` subscription opens and reuse it for every
-/// refresh (`EntryAdded` / `ConnectionChanged` / `chat.send`) on that subscription (`topics.ts:710-760`,
-/// `views.ts:1453`), so mid-subscription `chat.place` / `chat.window` calls never yank the active view.
-pub fn ClientCore::chat_sub_snapshot_for(
+/// Snapshot `rows` (`chat.window`) once when a `chat` subscription opens and reuse it for every
+/// refresh (`EntryAdded` / `ConnectionChanged` / `chat.send`) on that subscription (`views.ts:1453`),
+/// so mid-subscription `chat.window` calls never reshape the active view.
+pub fn ClientCore::chat_sub_window_rows_for(
   self : ClientCore,
   id : Int64,
   station : String,
   thread : Option[Int],
   session : Option[String],
-) -> (Option[Int], Option[Double], Int) {
+) -> Int {
   match self.chat_sub_snapshots.get(id) {
-    Some(snap) => (snap.at, snap.at_offset, snap.rows)
+    Some(snap) => snap.rows
     None => {
       let rows = self.chat_window_for(station, thread, session)
-      let (at_opt, at_off_opt) = self.chat_place_for(station, thread)
       self.chat_sub_snapshots.set(id, ChatSubSnapshot::{
         station: station,
         thread: thread,
         session: session,
-        at: at_opt,
-        at_offset: at_off_opt,
         rows: rows,
       })
-      (at_opt, at_off_opt, rows)
+      rows
     }
   }
 }
@@ -1731,7 +1726,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let (at_opt, at_off_opt, rows_lim) = self.chat_sub_snapshot_for(id, st, th_opt, sess_opt)
+    let rows_lim = self.chat_sub_window_rows_for(id, st, th_opt, sess_opt)
+    // Do not anchor `project_chat_by_params` at a persisted `chat.place` (`at` / `at_offset`) in Part 1:
+    // `views/chat_view.pion` currently hardcodes `newer: false` and Pion has not yet implemented
+    // `chat.newer` / `chat.latest` window extension, so opening mid-thread would hide newer tail
+    // messages with no way to load them. Wire place-anchored opening together with live `newer`
+    // computation and `chat.newer` / `chat.latest` as one cohesive abstraction in a follow-up PR.
     match views::project_chat_by_params(
       self.db,
       st,
@@ -1741,8 +1741,8 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       self.viewer_marks.me,
       self.rt.now(),
       rows=rows_lim,
-      at=at_opt,
-      at_offset=at_off_opt,
+      at=None,
+      at_offset=None,
       utc_offset_min=self.utc_offset_min,
       lang=self.lang,
     ) {
