@@ -64,6 +64,9 @@ const USAGE_EVERY_MS = 60_000;
 /// Background overview changes (process state, profile checks, backup progress, decision checks) coalesce so bursts
 /// emit one full overview at most this often; direct `overviewChanged()` calls remain immediate.
 const OVERVIEW_SOON_MS = 10_000;
+/// Legacy streams (without `overviewPatch=1`) receive full ~168 KB overviews; when only `counts` changes, coalesce
+/// full pushes per device to at most once every 30s until clients upgrade to incremental patches.
+export const OVERVIEW_COUNTS_ONLY_LEGACY_MS = 30_000;
 /// Low-disk warning threshold matching client/core-ts/src/views/models.ts (`<= 10 GiB` or `<= 10%` of totalBytes).
 const LOW_DISK_BYTES = 10 * 1024 * 1024 * 1024;
 /// Bucket size for free-disk bytes when truly low (`<= 10 GiB`): matches whole-GB display without per-write churn.
@@ -663,6 +666,12 @@ export class Events {
   /// Latest `EventLog` sequence number sent as an `overview` per `overviewKey`, so resuming streams catch missed
   /// overviews without pinning ~160 KB snapshots per device inside `EventLog.#kept`.
   private overviewToldSeq = new Map<string, number>();
+  /// Last timestamp a full `overview` was actually emitted per `overviewKey` (never updated on suppressed compares).
+  private overviewFullSentAt = new Map<string, number>();
+  /// Earliest due timestamp per deferred legacy `counts`-only `overviewKey`, driven by one shared trailing timer so
+  /// co-scheduled devices flush together in a single `OverviewRound`.
+  private overviewCountsDue = new Map<string, number>();
+  private overviewCountsTimer: { at: number; stop: () => void } | null = null;
   private deps: EventsDeps;
   /// What changed since the last round: sessions (their events), the overview, and the sessions and threads whose rows
   /// of the shared chat list to read again (`items`), or all of it (`whole`).
@@ -769,6 +778,8 @@ export class Events {
           this.overviewToldTakenAt = handed.at;
           this.overviewMemo.clear();
           this.overviewToldSeq = new Map<string, number>(Array.isArray(handed.overviewSeqs) ? handed.overviewSeqs : []);
+          this.overviewFullSentAt.clear();
+          this.clearOverviewCountsLater();
           this.last = handed.last;
           if (handed.last?.lang) this.langs.add(handed.last.lang);
           if (Array.isArray(handed.langs)) for (const l of handed.langs) if (l === "zh" || l === "en") this.langs.add(l);
@@ -815,6 +826,7 @@ export class Events {
       this.overviewLater = null;
       this.overviewChanged("handover");
     }
+    this.clearOverviewCountsLater();
     for (;;) {
       const telling = [...this.reading, ...(this.flushing ? [this.flushing] : [])];
       if (telling.length === 0) break;
@@ -1019,6 +1031,8 @@ export class Events {
       this.overviewTold.clear();
       this.overviewMemo.clear();
       this.overviewToldSeq.clear();
+      this.overviewFullSentAt.clear();
+      this.clearOverviewCountsLater();
       this.langs.clear();
     });
   }
@@ -1102,6 +1116,8 @@ export class Events {
       this.overviewTold.delete(ok);
       this.overviewMemo.delete(ok);
       this.overviewToldSeq.delete(ok);
+      this.overviewFullSentAt.delete(ok);
+      this.clearOverviewCountsLater(ok);
     }
     // The sessions at work its viewer sees, as each is now: from here on what each does comes as it does it (heldTold).
     if (follows && this.deps.heldNow !== undefined) {
@@ -1177,6 +1193,7 @@ export class Events {
       carried?.ended();
       this.clients = this.clients.filter((c) => c !== client);
       client.stops.forEach((stop) => stop());
+      if (!this.clients.some((c) => overviewKey(c.viewer, c.lang) === ok)) this.clearOverviewCountsLater(ok);
       if (this.clients.length > 0) return;
       this.stopTimers();
       this.linger();
@@ -1295,6 +1312,67 @@ export class Events {
     for (const stop of this.timers) stop();
     this.timers = [];
     this.lastHost = "";
+    this.clearOverviewCountsLater();
+  }
+
+  private clearOverviewCountsLater(ok?: string) {
+    if (ok !== undefined) {
+      if (!this.overviewCountsDue.delete(ok)) return;
+      this.scheduleOverviewCountsTimer();
+      return;
+    }
+    this.overviewCountsDue.clear();
+    if (this.overviewCountsTimer !== null) {
+      this.overviewCountsTimer.stop();
+      this.overviewCountsTimer = null;
+    }
+  }
+
+  private deferLegacyCounts(ok: string, dueAt: number) {
+    const existing = this.overviewCountsDue.get(ok);
+    if (existing !== undefined && existing <= dueAt) return;
+    this.overviewCountsDue.set(ok, dueAt);
+    this.scheduleOverviewCountsTimer();
+  }
+
+  private scheduleOverviewCountsTimer() {
+    let earliest = Infinity;
+    for (const at of this.overviewCountsDue.values()) if (at < earliest) earliest = at;
+    if (!Number.isFinite(earliest)) {
+      if (this.overviewCountsTimer !== null) {
+        this.overviewCountsTimer.stop();
+        this.overviewCountsTimer = null;
+      }
+      return;
+    }
+    if (this.overviewCountsTimer !== null) {
+      if (this.overviewCountsTimer.at === earliest) return;
+      this.overviewCountsTimer.stop();
+      this.overviewCountsTimer = null;
+    }
+    const wait = Math.max(0, earliest - this.time.now());
+    const stop = this.time.after(wait, () => { // timer: burst debouncing for legacy full-overview counts-only updates
+      this.overviewCountsTimer = null;
+      if (!this.listening()) {
+        this.overviewCountsDue.clear();
+        return;
+      }
+      const now = this.time.now();
+      let woke = false;
+      for (const [k, at] of this.overviewCountsDue) {
+        if (at <= now) {
+          this.overviewCountsDue.delete(k);
+          this.dirty.overviewOf.add(k);
+          woke = true;
+        }
+      }
+      if (woke) {
+        this.dirty.overviewReasons.add("countsLegacy");
+        this.wake();
+      }
+      this.scheduleOverviewCountsTimer();
+    });
+    this.overviewCountsTimer = { at: earliest, stop };
   }
 
   /// Tells everyone `to` says: one id for all of them, kept for a stream that takes over from one of them or comes
@@ -1319,6 +1397,7 @@ export class Events {
     ok: string,
     vk: string,
     device: string,
+    roundNow: number,
     missed?: readonly Client[],
   ): { bytes: number; patched: boolean } {
     if (!this.listening()) return { bytes: 0, patched: false };
@@ -1343,6 +1422,7 @@ export class Events {
         for (const c of patchClients) c.raw(patchSse);
         bytes += Buffer.byteLength(patchJson);
         patched = true;
+        this.clearOverviewCountsLater(ok);
       } else {
         for (const c of patchClients) fullClients.push(c);
       }
@@ -1352,6 +1432,8 @@ export class Events {
       const fullSse = `id: ${this.log.run}.${n}\nevent: overview\ndata: ${rawJson}\n\n`;
       for (const c of fullClients) c.raw(fullSse);
       bytes += Buffer.byteLength(rawJson);
+      this.overviewFullSentAt.set(ok, roundNow);
+      this.clearOverviewCountsLater(ok);
     }
     return { bytes, patched };
   }
@@ -1625,6 +1707,7 @@ export class Events {
               if (unchanged) {
                 this.overviewMemo.set(ok, next);
                 this.overviewTold.delete(ok);
+                this.clearOverviewCountsLater(ok);
                 suppressed++;
                 const missed = dirty.overviewMissed.get(ok);
                 const toldSeq = this.overviewToldSeq.get(ok);
@@ -1637,20 +1720,40 @@ export class Events {
                     const rawJson = serializeRawOverview(value, next, jsonCache);
                     const sse = `id: ${this.log.run}.${n}\nevent: overview\ndata: ${rawJson}\n\n`;
                     for (const c of active) c.raw(sse);
+                    this.overviewFullSentAt.set(ok, now);
                   }
                 }
                 return;
               }
+              const missed = dirty.overviewMissed.get(ok);
               let deviceChangedKeys: string[] | null = null;
               if (prevMemo === undefined && prevText === undefined) initial++;
               else {
-                const keys = prevMemo !== undefined ? changedKeysFromKeyMemos(prevMemo, next) : overviewChangedKeys(prevText!, nextText ?? memoToText(next));
-                deviceChangedKeys = keys;
-                for (const key of keys) changedKeys.add(key);
+                deviceChangedKeys = prevMemo !== undefined ? changedKeysFromKeyMemos(prevMemo, next) : overviewChangedKeys(prevText!, nextText ?? memoToText(next));
               }
+              if (
+                deviceChangedKeys !== null &&
+                deviceChangedKeys.length === 1 &&
+                deviceChangedKeys[0] === "counts" &&
+                (missed === undefined || missed.length === 0)
+              ) {
+                const to: To = { viewer: vk, device: viewer.device };
+                const matching = this.clients.filter((c) => isFor(to, c, this.deps));
+                const hasPatch = matching.some((c) => c.overviewPatch);
+                const lastFull = this.overviewFullSentAt.get(ok);
+                if (matching.length > 0 && !hasPatch && lastFull !== undefined) {
+                  const dueAt = lastFull + OVERVIEW_COUNTS_ONLY_LEGACY_MS;
+                  if (dueAt > this.time.now()) {
+                    this.deferLegacyCounts(ok, dueAt);
+                    suppressed++;
+                    return;
+                  }
+                }
+              }
+              if (deviceChangedKeys !== null) for (const key of deviceChangedKeys) changedKeys.add(key);
               this.overviewMemo.set(ok, next);
               this.overviewTold.delete(ok);
-              const delivered = this.emitOverview(value, prevMemo, next, deviceChangedKeys, jsonCache, ok, vk, viewer.device, dirty.overviewMissed.get(ok));
+              const delivered = this.emitOverview(value, prevMemo, next, deviceChangedKeys, jsonCache, ok, vk, viewer.device, now, missed);
               pushed++;
               if (delivered.patched) patched++;
               totalBytes += delivered.bytes;
