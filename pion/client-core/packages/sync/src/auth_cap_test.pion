@@ -1586,5 +1586,99 @@ test "auth_cap 12: SSE event:lock {workspace, head} retries on transient 500 & S
   debug_assert(!core.sync.has_pending_lock_refresh(), "set_transport cleared pending_lock_refresh immediately")
   rt.advance(5000)
   debug_assert(lock_http_calls[0] == calls_before_3 + 1 && new_tr_calls[0] == 0, "prior retry loop stopped completely after transport swap")
+
+  // 12d. Strict transient whitelist: forged/invalid lock chain AND corrupt JSON MUST stop after 1 attempt (0 retries)!
+  let forged_calls = [0]
+  let forged_body = [base_codec::json_stringify(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(3)), ("hash", base_codec::json_str("forged-h3")), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([
+      form_to_codec(g0),
+      base_codec::json_obj([
+        ("v", base_codec::json_int(1)),
+        ("ws", base_codec::json_str("ws-lret")),
+        ("seq", base_codec::json_int(1)),
+        ("prev", base_codec::json_str(root)),
+        ("at", base_codec::json_int(1790000099)),
+        ("kind", base_codec::json_str("station")),
+        ("body", base_codec::json_obj([("key", base_codec::json_str(hex_64("e"))), ("name", base_codec::json_str("Forged"))])),
+        ("sig", base_codec::json_str("not-a-valid-signature")),
+      ]),
+    ])),
+  ]))]
+  let tr_forged = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        forged_calls[0] = forged_calls[0] + 1
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: forged_body[0].to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_forged)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(forged_calls[0] == 1, "forged/invalid lock chain attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "forged/invalid lock chain halted immediately with 0 retries")
+  rt.advance(60000)
+  debug_assert(forged_calls[0] == 1, "forged/invalid lock chain never triggered retry polling over 60s")
+
+  // Corrupt/truncated JSON (even if parser mentions 'eof') MUST also stop after 1 attempt (0 retries)!
+  forged_body[0] = "{\"entries\":[{\"v\":1"
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(forged_calls[0] == 2, "corrupt JSON lock response attempted exactly once")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "corrupt JSON lock response halted immediately with 0 retries")
+  rt.advance(60000)
+  debug_assert(forged_calls[0] == 2, "corrupt JSON never triggered retry polling over 60s")
+
+  // 12e. Bounded exponential backoff cap: persistent HTTP 503 runs at most 1 initial + 5 retries = 6 calls
+  //      (100ms, 500ms, 2000ms, 8000ms, 30000ms), then stops cleanly instead of polling forever!
+  let cap_calls = [0]
+  let tr_cap = StationTransport::{
+    request_k: fn(method_s : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if method_s == "GET" && path == "/lock" {
+        cap_calls[0] = cap_calls[0] + 1
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 503, headers: [], body: "unavailable".to_bytes() }))
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: base_st.transport().stream_k,
+  }
+  core.sync.set_transport(tr_cap)
+  core.sync.schedule_lock_refresh(rt)
+  let _ = rt.run_ready()
+  debug_assert(cap_calls[0] == 1, "initial 503 attempt = 1")
+  rt.advance(100)
+  debug_assert(cap_calls[0] == 2, "retry #1 at 100ms")
+  rt.advance(500)
+  debug_assert(cap_calls[0] == 3, "retry #2 at 500ms")
+  rt.advance(2000)
+  debug_assert(cap_calls[0] == 4, "retry #3 at 2000ms")
+  rt.advance(8000)
+  debug_assert(cap_calls[0] == 5, "retry #4 at 8000ms")
+  rt.advance(30000)
+  debug_assert(cap_calls[0] == 6, "retry #5 at 30000ms")
+  debug_assert(!core.sync.has_pending_lock_refresh(), "bounded backoff stopped cleanly after 5 retries")
+  rt.advance(120000)
+  debug_assert(cap_calls[0] == 6, "0 extra retries after bounded backoff cap exhausted")
+
+  // 12f. Safe-integer `parse_conn_seq_raw` & `next_monotonic_conn_seq` bounds (reject decimals & overflow)
+  debug_assert(store::parse_conn_seq_raw("42") == 42L, "plain integer parsed")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740990}") == 9007199254740990L, "max stored safe int accepted")
+  debug_assert(store::parse_conn_seq_raw("12.5") == 0L, "decimal string rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.5}") == 0L, "decimal JSON connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":12.0}") == 0L, "float-formatted JSON connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":0}") == 0L, "zero connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":-7}") == 0L, "negative connSeq rejected")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9007199254740991}") == 0L, "MAX_SAFE_CONN_SEQ rejected as stored value")
+  debug_assert(store::parse_conn_seq_raw("{\"connSeq\":9223372036854775807}") == 0L, "Int64::MAX rejected as stored value")
+  debug_assert(store::parse_conn_seq_raw("9223372036854775807") == 0L, "raw Int64::MAX rejected")
+  let safe_from_ovf = store::next_monotonic_conn_seq(9223372036854775807L, now_ms=1790000000000L, floor=10L)
+  debug_assert(safe_from_ovf >= 1790000000000000L && safe_from_ovf <= store::MAX_SAFE_CONN_SEQ, "next_monotonic_conn_seq never overflows on Int64::MAX")
+  let safe_from_max = store::next_monotonic_conn_seq(9007199254740990L, now_ms=0L, floor=0L)
+  debug_assert(safe_from_max == 9007199254740991L, "max stored safe int increments to MAX_SAFE_CONN_SEQ without overflow")
   core.stop()
 }

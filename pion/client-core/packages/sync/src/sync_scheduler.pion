@@ -90,37 +90,56 @@ pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTra
   self.transport = transport
 }
 
+let MAX_LOCK_RETRY_ATTEMPTS : Int = 5
+
 fn lock_retry_backoff_ms(attempt : Int) -> Int {
   if attempt <= 0 {
     100
   } else if attempt == 1 {
     500
-  } else {
+  } else if attempt == 2 {
     2000
+  } else if attempt == 3 {
+    8000
+  } else {
+    30000
   }
 }
 
 fn is_transient_lock_error(e : effect::EffectError) -> Bool {
   match e {
     effect::EffectError::Custom(msg) => {
-      if msg == "transport_epoch_changed" {
+      if msg == "transport_epoch_changed" || msg.starts_with("lock json parse failed:") {
         return false
       }
-      if msg.starts_with("lock fetch status 4") {
-        return false
+      // Errors from lock verification / SQLite application: ONLY whitelist transient SQLite
+      // read/persist failures; never retry cryptographic, signature, rule, or root rejections.
+      if msg.starts_with("lock apply failed:") {
+        return msg.contains("failed to persist lock state") ||
+        msg.contains("persisted lock state unreadable")
       }
-      if msg.contains("lock root mismatch") ||
-      msg.contains("lock rollback rejected") ||
-      msg.contains("corrupt persisted lock state") ||
-      msg.contains("incoming lock entries rejected") ||
-      msg.contains("lock workspace mismatch") ||
-      msg.contains("lock genesis mismatch") ||
-      msg.contains("empty lock chain") {
-        return false
+      // HTTP status whitelist: 5xx and 429 only.
+      if msg.starts_with("lock fetch status ") {
+        return msg.starts_with("lock fetch status 5") || msg == "lock fetch status 429"
       }
-      true
+      // Transport / network / timeout whitelist (case-insensitive).
+      let low = ascii_lower(msg)
+      low.contains("network") ||
+      low.contains("timeout") ||
+      low.contains("timed out") ||
+      low.contains("connection") ||
+      low.contains("reset") ||
+      low.contains("eof") ||
+      low.contains("closed") ||
+      low.contains("refused") ||
+      low.contains("dial") ||
+      low.contains("stream") ||
+      low.contains("broken pipe") ||
+      low.contains("unreachable") ||
+      low.contains("unavailable") ||
+      low.contains("offline")
     }
-    _ => true
+    _ => false
   }
 }
 
@@ -160,7 +179,7 @@ fn SyncScheduler::run_lock_refresh_loop_k(
         k(effect::Exit::Interrupted)
       }
       effect::Exit::Failed(err) => {
-        if !is_transient_lock_error(err) {
+        if !is_transient_lock_error(err) || attempt >= MAX_LOCK_RETRY_ATTEMPTS {
           if self.pending_lock_refresh {
             self.run_lock_refresh_loop_k(rt, enqueue_epoch, 0, k)
           } else {
@@ -171,7 +190,7 @@ fn SyncScheduler::run_lock_refresh_loop_k(
         }
         self.pending_lock_refresh = true
         let delay = lock_retry_backoff_ms(attempt)
-        // timer: failure retry backoff on transient GET /lock or SQLite lock persist failure.
+        // timer: bounded exponential backoff retry on whitelisted transient GET /lock or SQLite persist failure.
         effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             k(effect::Exit::Succeeded(()))
@@ -190,8 +209,10 @@ fn SyncScheduler::run_lock_refresh_loop_k(
   })
 }
 
-/// Coalesced, ungated `GET /lock` refresh loop with capped backoff (`100ms -> 500ms -> 2000ms`)
-/// on transient HTTP 5xx / network / SQLite persist failures, halting immediately on `bump_epoch` / `set_transport`.
+/// Coalesced, ungated `GET /lock` refresh loop with bounded exponential backoff
+/// (`100ms -> 500ms -> 2000ms -> 8000ms -> 30000ms`, max 5 retries) on whitelisted
+/// transient network/5xx/429/SQLite failures, halting immediately on permanent rejections
+/// or `bump_epoch` / `set_transport` (offline recovery resumes via `on_connected`).
 pub fn SyncScheduler::schedule_lock_refresh(self : SyncScheduler, rt : effect::Runtime) -> Unit {
   self.pending_lock_refresh = true
   if self.lock_refresh_running {
@@ -259,7 +280,7 @@ pub fn SyncScheduler::fetch_lock_k(
               return
             }
             match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom("lock json parse failed: " + e)))
               base_codec::JsonParseResult::Ok(j) => {
                 if self.transport_epoch != enqueue_epoch {
                   tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))

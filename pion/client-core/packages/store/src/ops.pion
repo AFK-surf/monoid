@@ -272,59 +272,90 @@ pub fn search_chats(
 
 /// Compute the next strictly monotonic `conn_seq`:
 /// `max(persisted + 1, floor + 1, now_ms * 1000)` when `now_ms > 0`, or `max(persisted + 1, floor + 1)`
-/// in deterministic virtual-clock tests (`now_ms == 0`), guaranteeing strict monotonicity even across
-/// same-millisecond consecutive allocations or read-only storage (`core.ts:406-414`).
+/// Maximum JSON-safe integer (`Number.MAX_SAFE_INTEGER = 2^53 - 1`).
+/// Any persisted `connSeq >= MAX_SAFE_CONN_SEQ` (including `Int64::MAX`) is rejected as corrupt
+/// so `next_monotonic_conn_seq` never overflows `Int64` and always stays within JSON-safe integer range.
+pub let MAX_SAFE_CONN_SEQ : Int64 = 9007199254740991L
+
+let MAX_STORED_CONN_SEQ : Int64 = 9007199254740990L
+
+let MAX_SAFE_NOW_MS : Int64 = 9007199254740L
+
+fn sanitize_conn_base(v : Int64) -> Int64 {
+  if v >= 1L && v <= MAX_STORED_CONN_SEQ { v } else { 0L }
+}
+
+/// Compute strictly monotonic next `conn_seq` within JSON-safe integer bounds `[1, MAX_SAFE_CONN_SEQ]`:
+/// `max(sanitize(persisted) + 1, sanitize(floor) + 1, now_ms * 1000)` with zero `Int64` overflow.
+/// When `now_ms <= 0` (e.g. deterministic virtual-clock tests), falls back to `max(persisted, floor) + 1`,
+/// guaranteeing strict monotonicity across same-millisecond allocations or read-only storage (`core.ts:406-414`).
 pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L, floor : Int64 = 0L) -> Int64 {
-  let base_p = if persisted > 0L { persisted } else { 0L }
-  let base_f = if floor > 0L { floor } else { 0L }
+  let base_p = sanitize_conn_base(persisted)
+  let base_f = sanitize_conn_base(floor)
   let base = if base_p > base_f { base_p } else { base_f }
   let next_seq = base + 1L
-  let time_floor = if now_ms > 0L { now_ms * 1000L } else { 0L }
+  let time_floor = if now_ms > 0L && now_ms <= MAX_SAFE_NOW_MS { now_ms * 1000L } else { 0L }
   if time_floor > next_seq { time_floor } else { next_seq }
 }
 
+/// Parse a strict positive decimal integer string in `[1, MAX_STORED_CONN_SEQ]`.
+/// Rejects decimals (`12.5`, `12.0`), signs, exponents, non-positive values, and `>= MAX_SAFE_CONN_SEQ`.
+fn parse_safe_conn_digits(raw : String) -> Int64 {
+  let s = raw.trim()
+  let bs = s.to_bytes()
+  if bs.length() == 0 {
+    return 0L
+  }
+  let mut acc : Int64 = 0L
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    if b < 48 || b > 57 {
+      return 0L
+    }
+    let digit = (b - 48).to_int64()
+    if acc > (MAX_STORED_CONN_SEQ - digit) / 10L {
+      return 0L
+    }
+    acc = acc * 10L + digit
+  }
+  if acc >= 1L && acc <= MAX_STORED_CONN_SEQ { acc } else { 0L }
+}
+
+fn parse_safe_conn_json_num(n : Double, repr : String) -> Int64 {
+  if repr.length() > 0 {
+    return parse_safe_conn_digits(repr)
+  }
+  if !(n >= 1.0 && n <= 9007199254740990.0) {
+    return 0L
+  }
+  let iv = n.to_int64()
+  if iv.to_double() != n {
+    return 0L
+  }
+  if iv >= 1L && iv <= MAX_STORED_CONN_SEQ { iv } else { 0L }
+}
+
 /// Parse a stored `conn_seq` JSON/integer string (`"42"`, `{"connSeq": 42}`, or `{"conn": 42}`).
+/// Strictly rejects decimals, non-positive numbers, and values `>= MAX_SAFE_CONN_SEQ` (returns `0L`).
 pub fn parse_conn_seq_raw(raw : String) -> Int64 {
   let trimmed = raw.trim()
-  match base_codec::parse_int64_str(trimmed) {
-    Some(v) => if v > 0L { v } else { 0L }
-    None =>
-    match base_codec::json_parse(trimmed) {
-      base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => {
-        if repr.length() > 0 {
-          match base_codec::parse_int64_str(repr) {
-            Some(v) => if v > 0L { v } else { 0L }
-            None => if n > 0.0 { n.to_int64() } else { 0L }
-          }
-        } else if n > 0.0 {
-          n.to_int64()
-        } else {
-          0L
-        }
+  let direct = parse_safe_conn_digits(trimmed)
+  if direct > 0L {
+    return direct
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => parse_safe_conn_json_num(n, repr)
+    base_codec::JsonParseResult::Ok(j) => {
+      let num_field = match base_codec::json_get(j, "connSeq") {
+        Some(v) => Some(v)
+        None => base_codec::json_get(j, "conn")
       }
-      base_codec::JsonParseResult::Ok(j) => {
-        let num_field = match base_codec::json_get(j, "connSeq") {
-          Some(v) => Some(v)
-          None => base_codec::json_get(j, "conn")
-        }
-        match num_field {
-          Some(base_codec::Json::Num(n, repr)) => {
-            if repr.length() > 0 {
-              match base_codec::parse_int64_str(repr) {
-                Some(v) => if v > 0L { v } else { 0L }
-                None => if n > 0.0 { n.to_int64() } else { 0L }
-              }
-            } else if n > 0.0 {
-              n.to_int64()
-            } else {
-              0L
-            }
-          }
-          _ => 0L
-        }
+      match num_field {
+        Some(base_codec::Json::Num(n, repr)) => parse_safe_conn_json_num(n, repr)
+        _ => 0L
       }
-      _ => 0L
     }
+    _ => 0L
   }
 }
 

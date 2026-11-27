@@ -628,9 +628,10 @@ int main(void) {
     assert(conn4 > conn3);
     mb_core_stop();
 
-    // 9. Cold directory (NO `device/conn_seq_floor`) with corrupt `device/auth` MUST fail-closed:
-    //    emits a `fatal` frame (NO auth handshake), preserves `device/auth` byte-for-byte,
-    //    and MUST NOT create `device/conn_seq_floor` with a regressed connSeq!
+    // 9. Fail-open connSeq recovery aligned with TS `core.ts:406-414` + safe-integer overflow protection:
+    //    9a. Cold directory (NO `device/conn_seq_floor`) with corrupt `device/auth` MUST preserve
+    //        `device/auth` byte-for-byte untouched AND start normally (no fatal brick!), writing a
+    //        valid safe integer to `device/conn_seq_floor`.
     char cold_dir[160];
     snprintf(cold_dir, sizeof(cold_dir), "%s_cold", data_dir);
     assert(mkdir(cold_dir, 0700) == 0);
@@ -645,10 +646,12 @@ int main(void) {
     atomic_store(&g_ctx.stopped, 0);
     mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #9 cold corrupt device/auth -> %s\n", m->json);
-    assert(strstr(m->json, "\"fatal\"") != NULL);
-    assert(strstr(m->json, "\"auth\":{") == NULL);
-    // Verify `device/auth` is preserved byte-for-byte and `device/conn_seq_floor` was NOT created.
+    printf("[core_runtime_e2e] #9a cold corrupt device/auth fail-open -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_cold = extract_conn_seq(m->json);
+    assert(conn_cold > conn4 && conn_cold <= 9007199254740991LL);
+    // Verify `device/auth` is preserved byte-for-byte and `device/conn_seq_floor` was written with `conn_cold`.
     {
         FILE *f = fopen(cold_auth_path, "r");
         assert(f != NULL);
@@ -660,7 +663,74 @@ int main(void) {
     }
     char cold_floor_path[256];
     snprintf(cold_floor_path, sizeof(cold_floor_path), "%s/device%%2Fconn_seq_floor", cold_dir);
-    assert(fopen(cold_floor_path, "r") == NULL);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char cold_kv[64];
+        snprintf(cold_kv, sizeof(cold_kv), "\"connSeq\":%lld", conn_cold);
+        assert(strstr(fbuf, cold_kv) != NULL);
+    }
+    mb_core_stop();
+
+    //    9b. Corrupt `device/conn_seq_floor` containing a decimal (`12.5`) MUST be rejected,
+    //        overwritten/repaired with a valid safe integer, and emit a valid `auth` handshake.
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":12.5}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9b decimal floor repair -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_dec = extract_conn_seq(m->json);
+    assert(conn_dec > conn_cold && conn_dec <= 9007199254740991LL);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char dec_kv[64];
+        snprintf(dec_kv, sizeof(dec_kv), "\"connSeq\":%lld", conn_dec);
+        assert(strstr(fbuf, dec_kv) != NULL);
+    }
+    mb_core_stop();
+
+    //    9c. Corrupt `device/conn_seq_floor` containing `Int64::MAX` (`9223372036854775807`) MUST be
+    //        rejected without overflow wraparound, overwritten/repaired with a valid safe integer,
+    //        and emit a valid `auth` handshake.
+    {
+        FILE *f = fopen(cold_floor_path, "w");
+        assert(f != NULL);
+        fputs("{\"connSeq\":9223372036854775807}", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(cold_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #9c Int64::MAX overflow floor repair -> %s\n", m->json);
+    assert(strstr(m->json, "\"fatal\"") == NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn_ovf = extract_conn_seq(m->json);
+    assert(conn_ovf > conn_dec && conn_ovf <= 9007199254740991LL);
+    {
+        FILE *f = fopen(cold_floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char ovf_kv[64];
+        snprintf(ovf_kv, sizeof(ovf_kv), "\"connSeq\":%lld", conn_ovf);
+        assert(strstr(fbuf, ovf_kv) != NULL);
+    }
     mb_core_stop();
 
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",
