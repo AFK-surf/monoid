@@ -1002,8 +1002,10 @@ pub struct DaemonRoleHooks {
   pub on_tick : (DaemonCtx, Int64, Int64) -> Unit
   /// Notify role when `cloud.json` / presence roster changes (`wall_sec`, `wall_ms`, `connected`).
   pub on_cloud_changed : (DaemonCtx, Int64, Int64, Bool) -> Unit
+  /// Called when the launcher delivers a `carried` payload from the predecessor (`control.on_carried`).
+  pub on_carried : (DaemonCtx, base_codec::Json) -> Unit
   /// Called when the launcher requests a graceful handover (`control.on("handover")`).
-  /// Returning `Err(msg)` reports failure to the launcher control channel and marks handover failed.
+  /// Returning `Err(msg)` carries `handoverFailed` to the successor, reports failure, and marks handover failed.
   pub on_handover_start : (DaemonCtx) -> Result[Unit, String]
   /// Called during graceful shutdown before closing launcher control, `hub.json`, and `host_shim`.
   pub on_shutdown : (DaemonCtx) -> Unit
@@ -1022,6 +1024,50 @@ fn parse_v2_header_has_bytes(line : String) -> Bool {
 }
 
 /// Run a station daemon role using the shared transport and lifecycle core.
+fn make_daemon_cloud_fs(sep : String) -> station_cloud::CloudFs {
+  station_cloud::CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match station_sys::read_file_strict(p) {
+        Ok(b) => Ok(Some(b.to_string()))
+        Err(station_sys::StrictReadErr::NotFound) => Ok(None)
+        Err(_) => Err("read_file_strict failed: " + p)
+      }
+    },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      let dir = nodepath::dirname(sep, p)
+      if dir.length() > 0 && dir != "." && dir != p {
+        let _ = station_sys::mkdir_p(dir)
+      }
+      if station_sys::write_file_atomic(p, text.to_bytes(), 384) {
+        Ok(())
+      } else {
+        Err("write_file_atomic failed: " + p)
+      }
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      let _ = station_sys::unlink(p)
+      Ok(())
+    },
+    rename_file: fn(from : String, to : String) -> Result[Unit, String] {
+      if station_sys::rename(from, to) {
+        Ok(())
+      } else {
+        Err("rename failed: " + from)
+      }
+    },
+    mkdir_p: fn(p : String) -> Result[Unit, String] {
+      if station_sys::mkdir_p(p) {
+        Ok(())
+      } else {
+        Err("mkdir_p failed: " + p)
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      station_sys::stat_raw(p) is Some(_)
+    },
+  }
+}
+
 pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
   let home = station_sys::homedir()
@@ -1119,7 +1165,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
 
   // Open `cloud.json` and let the role validate mode compatibility.
   let shell_client = builders_core::ShellClient::new()
-  let cloud = station_cloud::CloudStore::open_with_shell(data, shell_client, sep=sep)
+  // Build `CloudFs` on direct `station_sys` C11 primitives (NEVER `ShellClient::write_atomic` /
+  // `shell_call_wait`, which would drain & drop in-flight `ShellMux` events on `daemon_core`'s loop!).
+  let cloud = station_cloud::CloudStore::open(
+    data,
+    make_daemon_cloud_fs(sep),
+    sep=sep,
+    verify_fn=Some(station_cloud::shell_verifier_of_client(shell_client)),
+  )
   let now_secs = (host_shim::wall_ms() / 1000L).to_double()
   match (hooks.validate_mode)(data, ops_fs, cloud, now_secs, sep) {
     Ok(_) => ()
@@ -1959,6 +2012,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     let _ = control.drained("idle")
   })
   control.on("stop", fn() -> Unit { stopping = true })
+  control.on_carried(fn(v : base_codec::Json) -> Unit {
+    (hooks.on_carried)(ctx, v)
+  })
   control.on("handover", fn() -> Unit {
     handover_stopping = true
     match (hooks.on_handover_start)(ctx) {
@@ -1966,6 +2022,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       Err(msg) => {
         log("handover start failed: " + msg)
         handover_failed = true
+        let _ = control.carry(base_codec::json_obj([("handoverFailed", base_codec::json_str(msg))]))
         let _ = control.failed("handover start failed: " + msg)
       }
     }

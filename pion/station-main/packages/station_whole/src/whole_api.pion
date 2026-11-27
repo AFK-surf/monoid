@@ -238,6 +238,11 @@ pub struct WholeApi {
   pub drive : station_screens::Drive
   pub drive_roots : Array[String]
   pub workspace_drive_roots : Map[String, Array[String]]
+  workspace_drives : Map[String, station_screens::Drive]
+  drive_fs_opt : Option[station_screens::DriveFs]
+  drive_protected_paths : Array[String]
+  drive_trash_root : String
+  drive_is_win : Bool
   pub mut thumb_port : Option[station_screens::ThumbPort]
   pub screens : station_screens::ScreenHub
   pub events : station_api::EventsHub
@@ -261,12 +266,19 @@ pub fn WholeApi::new_with_ports(
   let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
   let ws_roots : Map[String, Array[String]] = Map::new()
   ws_roots.set(auth_policy.home_workspace, drive_roots)
+  let ws_drives : Map[String, station_screens::Drive] = Map::new()
+  ws_drives.set(auth_policy.home_workspace, drive)
   WholeApi::{
     auth_policy: auth_policy,
     admin: admin,
     drive: drive,
     drive_roots: drive_roots,
     workspace_drive_roots: ws_roots,
+    workspace_drives: ws_drives,
+    drive_fs_opt: None,
+    drive_protected_paths: [],
+    drive_trash_root: "",
+    drive_is_win: false,
     thumb_port: thumb_port,
     screens: screens,
     events: events,
@@ -1165,12 +1177,19 @@ pub fn WholeApi::new(
     dev_enabled: false,
   }
   let admin = station_api::AdminApi::new(api_host, seen_store, auth_policy.station_build)
+  let ws_drives : Map[String, station_screens::Drive] = Map::new()
+  ws_drives.set(auth_policy.home_workspace, drive)
   WholeApi::{
     auth_policy: auth_policy,
     admin: admin,
     drive: drive,
     drive_roots: drive_roots,
     workspace_drive_roots: ws_roots,
+    workspace_drives: ws_drives,
+    drive_fs_opt: Some(effective_fs),
+    drive_protected_paths: protected,
+    drive_trash_root: trash_root,
+    drive_is_win: station_sys::os_name() == "win32",
     thumb_port: thumb_port,
     screens: screens,
     events: events,
@@ -1188,6 +1207,54 @@ pub fn WholeApi::set_workspace_drive_roots(
   roots : Array[String],
 ) -> Unit {
   self.workspace_drive_roots.set(workspace, roots)
+  match self.drive_fs_opt {
+    Some(fs) => {
+      let tr = if roots.length() > 0 { roots[0] } else { self.drive_trash_root }
+      let d = station_screens::Drive::new(
+        fs,
+        roots,
+        self.drive_protected_paths,
+        self.drive_is_win,
+        tr,
+        station_screens::TrashKind::Freedesktop,
+      )
+      self.workspace_drives.set(workspace, d)
+    }
+    None => ()
+  }
+}
+
+/// Return the workspace-scoped `Drive` instance bound strictly to `workspace`'s configured roots
+/// (never sharing home roots with joined workspaces and never falling back to `$HOME`).
+pub fn WholeApi::drive_for_workspace(
+  self : WholeApi,
+  workspace : String,
+) -> station_screens::Drive {
+  match self.workspace_drives.get(workspace) {
+    Some(d) => d
+    None => {
+      let roots = match self.workspace_drive_roots.get(workspace) {
+        Some(r) => r
+        None => []
+      }
+      match self.drive_fs_opt {
+        Some(fs) => {
+          let tr = if roots.length() > 0 { roots[0] } else { self.drive_trash_root }
+          let d = station_screens::Drive::new(
+            fs,
+            roots,
+            self.drive_protected_paths,
+            self.drive_is_win,
+            tr,
+            station_screens::TrashKind::Freedesktop,
+          )
+          self.workspace_drives.set(workspace, d)
+          d
+        }
+        None => self.drive
+      }
+    }
+  }
 }
 
 fn WholeApi::resolve_drive_root_for_viewer(
@@ -1449,7 +1516,8 @@ pub fn WholeApi::handle_authenticated_api_with_status(
       Some(v) => v == "1"
       None => false
     }
-    match self.drive.upload(root, rel, up_id, offset, total, body, replace, false, now_ms) {
+    let ws_drive = self.drive_for_workspace(viewer.workspace)
+    match ws_drive.upload(root, rel, up_id, offset, total, body, replace, false, now_ms) {
       Ok(res) => {
         let entry_j = match res.entry {
           Some(e) => drive_entry_to_json(e)
@@ -1502,7 +1570,8 @@ pub fn WholeApi::handle_authenticated_api_with_status(
         None => 65536
       }
     }
-    match self.drive.read(root, rel, offset, length, false) {
+    let ws_drive = self.drive_for_workspace(viewer.workspace)
+    match ws_drive.read(root, rel, offset, length, false) {
       Ok((bytes, total, mtime, mime)) => {
         let ct = if mime.length() > 0 { mime } else { "application/octet-stream" }
         let resp = station_http::HttpResponse::{

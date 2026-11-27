@@ -1022,10 +1022,32 @@ exec ${JSON.stringify(bin)} "$@"
       assert.equal((await hr3.line()).status, 403);
 
       // `socket: true` WebSocket forwarding over `front.sock` (`preview.ts` 5-byte `[kind: u8][len: u32be][payload]` framing)
+      // with `sec-websocket-protocol` negotiation (`r3.echo`), text+binary echo, close frame, AND 48x1MiB backpressure!
       const wsUpstreamHttp = createHttpServer((_req, res) => { res.writeHead(404); res.end(); });
-      const wsUpstream = new WebSocketServer({ server: wsUpstreamHttp });
+      const wsUpstream = new WebSocketServer({
+        server: wsUpstreamHttp,
+        handleProtocols: (protos) => (protos.has("r3.echo") ? "r3.echo" : false),
+      });
       servers.push(wsUpstreamHttp, wsUpstream);
-      wsUpstream.on("connection", (sock) => {
+      wsUpstream.on("connection", (sock, req) => {
+        if (req.url === "/bulk48") {
+          const oneMb = Buffer.alloc(1024 * 1024, 0x5a);
+          let idx = 0;
+          const sendNext = () => {
+            if (idx >= 48) {
+              sock.close(1000, "bulk-done");
+              return;
+            }
+            const frame = Buffer.from(oneMb);
+            frame[0] = idx & 0xff;
+            idx++;
+            sock.send(frame, { binary: true }, (err) => {
+              if (!err) setImmediate(sendNext);
+            });
+          };
+          sendNext();
+          return;
+        }
         sock.on("message", (data, isBinary) => {
           if (isBinary) {
             sock.send(Buffer.concat([Buffer.from([0xaa]), Buffer.from(data as Buffer)]), { binary: true });
@@ -1038,42 +1060,93 @@ exec ${JSON.stringify(bin)} "$@"
       const wsUpPort = (wsUpstreamHttp.address() as { port: number }).port;
 
       const wsStream = await frontHttpConn.openBi();
-      await writeLine(wsStream, { workspace: ws, port: wsUpPort, path: "/ws", headers: [], socket: true });
+      await writeLine(wsStream, {
+        workspace: ws,
+        port: wsUpPort,
+        path: "/ws",
+        headers: [["sec-websocket-protocol", "r3.echo"]],
+        socket: true,
+      });
       const wsReader = new Reader(wsStream);
       const wsHead = await wsReader.line();
       assert.equal(wsHead.status, 101, `expected 101 for socket:true WS proxy, got ${JSON.stringify(wsHead)}`);
+      const wsProtoHdr = (wsHead.headers as [string, string][]).find(([k]) => k.toLowerCase() === "sec-websocket-protocol");
+      assert.equal(wsProtoHdr?.[1], "r3.echo", `expected sec-websocket-protocol=r3.echo, got ${JSON.stringify(wsHead.headers)}`);
       const encodeWsFrame = (kind: number, payload: Buffer) => {
         const hdr = Buffer.allocUnsafe(5);
         hdr[0] = kind;
         hdr.writeUInt32BE(payload.length, 1);
         return Buffer.concat([hdr, payload]);
       };
-      await wsStream.write(encodeWsFrame(1, Buffer.from("hello-ws-r3", "utf8")));
+      await wsStream.write(encodeWsFrame(1, Buffer.from("hello-ws-r4", "utf8")));
+      await wsStream.write(encodeWsFrame(2, Buffer.from([1, 2, 3, 4])));
       let wsRaw = wsReader.carry;
-      const readWsFrame = async (): Promise<{ kind: number; payload: Buffer }> => {
-        while (wsRaw.length < 5) {
-          const c = await wsStream.read();
-          assert.notEqual(c, null, "ws proxy stream ended before frame header");
-          wsRaw = Buffer.concat([wsRaw, c!]);
+      const readWsFrameFrom = async (s: typeof wsStream, state: { buf: Buffer }): Promise<{ kind: number; payload: Buffer } | null> => {
+        while (state.buf.length < 5) {
+          const c = await s.read();
+          if (c === null) return null;
+          state.buf = Buffer.concat([state.buf, c]);
         }
-        const kind = wsRaw[0]!;
-        const len = wsRaw.readUInt32BE(1);
-        while (wsRaw.length < 5 + len) {
-          const c = await wsStream.read();
-          assert.notEqual(c, null, "ws proxy stream ended before frame payload");
-          wsRaw = Buffer.concat([wsRaw, c!]);
+        const kind = state.buf[0]!;
+        const len = state.buf.readUInt32BE(1);
+        while (state.buf.length < 5 + len) {
+          const c = await s.read();
+          if (c === null) return null;
+          state.buf = Buffer.concat([state.buf, c]);
         }
-        const payload = wsRaw.subarray(5, 5 + len);
-        wsRaw = wsRaw.subarray(5 + len);
+        const payload = state.buf.subarray(5, 5 + len);
+        state.buf = state.buf.subarray(5 + len);
         return { kind, payload };
       };
-      const f1 = await readWsFrame();
-      assert.equal(f1.kind, 1);
-      assert.equal(f1.payload.toString("utf8"), "WS-ECHO:hello-ws-r3");
+      const wsState = { buf: wsRaw };
+      const f1 = await readWsFrameFrom(wsStream, wsState);
+      assert.ok(f1);
+      assert.equal(f1!.kind, 1);
+      assert.equal(f1!.payload.toString("utf8"), "WS-ECHO:hello-ws-r4");
+      const f2 = await readWsFrameFrom(wsStream, wsState);
+      assert.ok(f2);
+      assert.equal(f2!.kind, 2);
+      assert.deepEqual(f2!.payload, Buffer.from([0xaa, 1, 2, 3, 4]));
       const closePayload = Buffer.allocUnsafe(2);
       closePayload.writeUInt16BE(1000, 0);
       await wsStream.write(encodeWsFrame(8, closePayload));
       await wsStream.finish();
+
+      // R4 Item 4b: 48 x 1 MiB WS binary flood + 3s client read pause -> 100% SHA-256 intact, 0 reset!
+      const expWsSha = createHash("sha256");
+      const baseMb = Buffer.alloc(1024 * 1024, 0x5a);
+      for (let i = 0; i < 48; i++) {
+        const f = Buffer.from(baseMb);
+        f[0] = i & 0xff;
+        expWsSha.update(f);
+      }
+      const expWsDigest = expWsSha.digest("hex");
+      const wsBulkStream = await frontHttpConn.openBi();
+      await writeLine(wsBulkStream, { workspace: ws, port: wsUpPort, path: "/bulk48", headers: [], socket: true });
+      const wsBulkReader = new Reader(wsBulkStream);
+      const wsBulkHead = await wsBulkReader.line();
+      assert.equal(wsBulkHead.status, 101);
+      // Pause reading for 3 seconds to force downlink WS backpressure!
+      await new Promise((r) => setTimeout(r, 3000));
+      const bulkState = { buf: wsBulkReader.carry };
+      const actWsSha = createHash("sha256");
+      let wsMsgs = 0;
+      let wsBytes = 0;
+      for (;;) {
+        const fr = await readWsFrameFrom(wsBulkStream, bulkState);
+        if (!fr) break;
+        if (fr.kind === 2) {
+          actWsSha.update(fr.payload);
+          wsMsgs++;
+          wsBytes += fr.payload.length;
+        } else if (fr.kind === 8) {
+          break;
+        }
+      }
+      assert.equal(wsMsgs, 48, `expected all 48 x 1MiB WS messages without reset, got ${wsMsgs}`);
+      assert.equal(wsBytes, 48 * 1024 * 1024);
+      assert.equal(actWsSha.digest("hex"), expWsDigest, "48 MiB backpressured WS SHA-256 mismatch");
+      await wsBulkStream.finish();
 
       // 16 MiB `tcp: true` backpressure test over `front.sock`: client pauses reading for 2.5s ->
       // MUST receive 100% of 16 MiB bytes with matching SHA-256 and zero stream reset!
@@ -1205,15 +1278,50 @@ exec ${JSON.stringify(bin)} "$@"
   extraPids.push(liveJobPid);
   assert.equal(isAlive(liveJobPid), true, `job pid ${liveJobPid} should be alive before SIGUSR2`);
 
-  // Seed a real native `stillfail-runner` descriptor (`"runner": <livePid>`) before `SIGUSR2` handover
-  // to verify R3 Item 4 (live runner adoption via native `"runner"` field)!
+  // R4 Item 7: Seed a real `stillfail-runner` protocol Unix socket + complete valid descriptor
+  // (`id`, `runner`, `pid`, `pgid`, `startedAt`, `socket`) before `SIGUSR2` handover and assert the
+  // successor actively connects, sends `{"op":"attach"}`, receives post-handover output, and sends `{"op":"ack"}`!
   const liveRunnerProc = spawn("sleep", ["30"], { stdio: "ignore" });
   children.push(liveRunnerProc);
   assert.ok(liveRunnerProc.pid && liveRunnerProc.pid > 1);
   mkdirSync(join(data, "run", "runners"), { recursive: true });
+  const runnerSockPath = join(data, "run", "runners", "claude-sess-unicode-1.sock");
+  let runnerAttached = false;
+  let runnerAckOut = 0;
+  const runnerSrv = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) {
+          const msg = JSON.parse(line);
+          if (msg.op === "attach") {
+            runnerAttached = true;
+            const postLine = Buffer.from("post-handover-runner-output\n", "utf8");
+            sock.write(JSON.stringify({ op: "out", stream: "out", at: 0, data: postLine.toString("base64") }) + "\n");
+          } else if (msg.op === "ack" && typeof msg.out === "number") {
+            runnerAckOut = msg.out;
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    });
+  });
+  servers.push(runnerSrv);
+  await new Promise<void>((r) => runnerSrv.listen(runnerSockPath, () => r()));
   writeFileSync(
     join(data, "run", "runners", "claude-sess-unicode-1.json"),
-    JSON.stringify({ runner: liveRunnerProc.pid, session: "sess-unicode-1", kind: "claude", sock: join(data, "run", "runners", "claude-sess-unicode-1.sock") }) + "\n",
+    JSON.stringify({
+      id: "claude-sess-unicode-1",
+      runner: liveRunnerProc.pid,
+      pid: liveRunnerProc.pid,
+      pgid: liveRunnerProc.pid,
+      startedAt: Date.now(),
+      socket: runnerSockPath,
+    }) + "\n",
   );
 
   // ── Part H: Real Rust Launcher `SIGUSR2` Hot Handover (`Pion Whole -> Pion Whole`) ──
@@ -1226,9 +1334,11 @@ exec ${JSON.stringify(bin)} "$@"
   await until("old whole_daemon pid1 exited cleanly", () => !isAlive(pid1), 15_000);
   assert.notEqual(pid2, pid1);
 
-  // CRITICAL: job & native runner started before `SIGUSR2` MUST STILL BE ALIVE!
+  // CRITICAL: job & native runner started before `SIGUSR2` MUST STILL BE ALIVE,
+  // and successor MUST reconnect to runner Unix socket (`attach` -> `out` -> `ack`)!
   assert.equal(isAlive(liveJobPid), true, `running job pid ${liveJobPid} was killed during SIGUSR2 handover!`);
   assert.equal(isAlive(liveRunnerProc.pid), true, `native runner pid ${liveRunnerProc.pid} was killed during SIGUSR2 handover!`);
+  await until("successor reconnected to adopted runner socket and acked post-handover output", () => runnerAttached && runnerAckOut >= 28, 10_000);
   liveRunnerProc.kill("SIGKILL");
 
   await until("new whole_daemon MCP ready after handover", async () => {
@@ -1397,9 +1507,30 @@ test("W16B.8: Control stream 1 idle exemption + live revocation kicks active sti
   const st1 = await adminCall(adminConn, "GET", "/status");
   assert.equal(st1.status, 200);
 
-  // R3 Item 2: Sleep 1600ms (> 1000ms idle sweep) with control stream 1 completely idle,
-  // then renew credential on the SAME control stream 1 -> MUST succeed (not reset)!
+  // R4 Item 6: Unauthenticated stream 1 (incomplete/no valid `hello`) MUST be closed by the 1000ms idle sweep,
+  // while authenticated stream 1 is exempt and survives 1600ms idle + renewal!
+  const unauthConn = await memberEp.connect({ id: stationId, relays: [], ips: [meshAddr] }, ADMIN_ALPN);
+  const unauthCtrl = await unauthConn.openBi();
+  // Write 1 partial byte so QUIC transmits the stream open frame to the server without completing hello.
+  await unauthCtrl.write(Buffer.from("{"));
+
+  // Sleep 1600ms (> 1000ms idle sweep) with BOTH streams idle:
   await new Promise((r) => setTimeout(r, 1600));
+
+  // Unauthenticated stream 1 MUST have been closed/reset by idle sweep!
+  let unauthClosed = false;
+  try {
+    const c = await Promise.race([
+      unauthCtrl.read(),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 1500)),
+    ]);
+    unauthClosed = c === null;
+  } catch {
+    unauthClosed = true;
+  }
+  assert.equal(unauthClosed, true, "unauthenticated stream 1 must be reaped by idle sweep");
+  try { await unauthConn.close(0, "done"); } catch {}
+
   const jwt2 = signMemberJwt({
     ws,
     device: memberEp.id(),
@@ -1472,15 +1603,24 @@ test("W16B.9: Real personal lock (onPersonalLock) rejects app device removed fro
 
   // Build personal lock chain for u-alice: genesis(firstDev) -> add(removedDev) -> device.remove(removedDev)
   const personalChain: Entry[] = [];
-  const pushP = (kind: string, body: unknown, by: ReturnType<typeof edKey>) => {
-    const last = personalChain[personalChain.length - 1];
-    personalChain.push(
-      signEntry({ v: 1, ws: "person:u-alice", seq: personalChain.length, prev: last ? entryHash(last) : null, at: 1000, kind, body }, by),
+  const pushP = (arr: Entry[], kind: string, body: unknown, by: ReturnType<typeof edKey>) => {
+    const last = arr[arr.length - 1];
+    arr.push(
+      signEntry({ v: 1, ws: "person:u-alice", seq: arr.length, prev: last ? entryHash(last) : null, at: 1000, kind, body }, by),
     );
   };
-  pushP("genesis", { sub: "u-alice", device: { key: firstDev.pkey.id, id: firstDev.base.hex, label: "first" } }, firstDev.pkey);
-  pushP("device", { key: removedDev.pkey.id, id: removedDev.base.hex, label: "removed" }, firstDev.pkey);
-  pushP("device.remove", { key: removedDev.pkey.id }, firstDev.pkey);
+  pushP(personalChain, "genesis", { sub: "u-alice", device: { key: firstDev.pkey.id, id: firstDev.base.hex, label: "first" } }, firstDev.pkey);
+  pushP(personalChain, "device", { key: removedDev.pkey.id, id: removedDev.base.hex, label: "removed" }, firstDev.pkey);
+  // R4 Item 1a: Fork BEFORE `device.remove` with 5 entries (longer than the 3-entry kept chain!) signed by removedDev:
+  // `lock::person_chain` removal rule MUST beat the longer pre-removal fork!
+  const longerFork: Entry[] = [...personalChain];
+  for (let fi = 0; fi < 3; fi++) {
+    const dummy = edKey();
+    pushP(longerFork, "device", { key: dummy.id, id: edKey().hex, label: `fork-${fi}` }, removedDev.pkey);
+  }
+  assert.equal(longerFork.length, 5);
+  pushP(personalChain, "device.remove", { key: removedDev.pkey.id }, firstDev.pkey);
+  assert.equal(personalChain.length, 3);
   const personGenesis = entryHash(personalChain[0]!);
 
   // Build workspace lock chain with BOTH firstDev and removedDev in workspace lock, AND bind u-alice -> personGenesis
@@ -1526,16 +1666,17 @@ test("W16B.9: Real personal lock (onPersonalLock) rejects app device removed fro
   await until("ready", () => wd.messages.find((m) => m.ready === true));
   const meshAddr = await until("mesh bound", () => wd.meshAddr());
 
-  // 1. removedDev is still on workspace lock, but REMOVED from u-alice's personal lock -> MUST BE REFUSED!
+  // 1a. removedDev brings a LONGER 5-entry pre-removal fork -> MUST BE REFUSED at hello (`lock::person_chain`)!
   const jwtRemoved = signMemberJwt({ ws, device: epRemoved.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
-  const badRes = await openAdminConn(epRemoved, stationId, meshAddr, jwtRemoved, {
+  const badForkRes = await openAdminConn(epRemoved, stationId, meshAddr, jwtRemoved, {
     device: removedDev.base.hex,
     proof: removedDev.base.sign(endpointBytes(ws, epRemoved.id())),
+    person: longerFork,
   });
-  assert.ok(badRes.helloReply?.error, `device removed from personal lock MUST be refused, got: ${JSON.stringify(badRes.helloReply)}`);
-  await badRes.conn.close(0, "done");
+  assert.ok(badForkRes.helloReply?.error, `removed device with longer 5-entry fork MUST be refused at hello, got: ${JSON.stringify(badForkRes.helloReply)}`);
+  await badForkRes.conn.close(0, "done");
 
-  // 2. firstDev is on BOTH workspace lock AND personal lock -> MUST BE ADMITTED!
+  // 1b. firstDev is on BOTH workspace lock AND personal lock -> MUST BE ADMITTED!
   const jwtGood = signMemberJwt({ ws, device: epGood.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
   const goodRes = await openAdminConn(epGood, stationId, meshAddr, jwtGood, {
     device: firstDev.base.hex,
@@ -1548,31 +1689,60 @@ test("W16B.9: Real personal lock (onPersonalLock) rejects app device removed fro
 
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+
+  // R4 Item 1b: Fresh station with NO cached `person-chains.json` yet!
+  // Valid app device brings signed `hello.lock.person` -> hello `ok: true`, immediate `GET /status -> 200`,
+  // AND chain is persisted to `<data>/mesh/person-chains.json`!
+  const data2 = freshDir("person-lock-uncached");
+  seedWholeDataDir(data2, stSeed, stationId, epGood.id(), drive, ws, grantKeys);
+  writeFileSync(join(data2, "mesh/lock.json"), JSON.stringify({ entries: [wsGen, wsBind] }), { mode: 0o600 });
+  assert.equal(existsSync(join(data2, "mesh/person-chains.json")), false);
+
+  const wd2 = startWholeDaemon(bin, data2);
+  await until("ready uncached", () => wd2.messages.find((m) => m.ready === true));
+  const meshAddr2 = await until("mesh bound uncached", () => wd2.meshAddr());
+
+  const firstBring = await openAdminConn(epGood, stationId, meshAddr2, jwtGood, {
+    device: firstDev.base.hex,
+    proof: firstDev.base.sign(endpointBytes(ws, epGood.id())),
+    person: personalChain,
+  });
+  assert.equal(firstBring.helloReply?.ok, true, `uncached personal lock hello failed: ${JSON.stringify(firstBring.helloReply)}`);
+  const stUncached = await adminCall(firstBring.conn, "GET", "/status");
+  assert.equal(stUncached.status, 200, "immediate GET /status after bringing uncached personal lock must return 200");
+  assert.equal(existsSync(join(data2, "mesh/person-chains.json")), true, "personal lock chain must be persisted to person-chains.json");
+  await firstBring.conn.close(0, "done");
+
+  wd2.sendCtrl({ op: "stop" });
+  assert.equal(await wd2.waitExit(), 0, wd2.stderr());
 });
 
-test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallback) + Drive Content-Length mismatch atomic protection + corrupt whole-handover.json preserved", { skip: process.platform === "win32" }, async () => {
+test("W16B.10: Per-workspace Drive isolation (joined workspace own root 200, empty 403, relative path rejected) + Drive upload atomic protection (fixed CL & no-CL overflow)", { skip: process.platform === "win32" }, async () => {
   const addon = resolveMeshAddon();
   const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
   const data = freshDir("drive-iso-data");
   const homeDrive = freshDir("drive-iso-home");
+  const joinedOwnDrive = freshDir("drive-iso-joined-own");
   const stSeed = randomBytes(32);
   const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
   const stationId = probe.id();
   await probe.close();
 
   const epHome = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
-  const epJoined = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
-  endpoints.push(epHome, epJoined);
+  const epJoinedEmpty = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const epJoinedOwn = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epHome, epJoinedEmpty, epJoinedOwn);
 
   const wsHome = "ws-home-drive";
-  const wsJoined = "ws-joined-empty";
+  const wsJoinedEmpty = "ws-joined-empty";
+  const wsJoinedOwn = "ws-joined-own";
   mkdirSync(join(data, "mesh"), { recursive: true });
   mkdirSync(join(data, "run"), { recursive: true });
   mkdirSync(homeDrive, { recursive: true });
+  mkdirSync(joinedOwnDrive, { recursive: true });
   writeFileSync(join(homeDrive, "secret.txt"), "HOME-SECRET-ONLY");
   writeFileSync(join(homeDrive, "existing.bin"), "ORIGINAL-DATA-MUST-STAY");
-  // R3 Item 5: Seed corrupt whole-handover.json -> startup MUST preserve (not delete) it!
-  writeFileSync(join(data, "run/whole-handover.json"), "{corrupt-handover-json");
+  writeFileSync(join(joinedOwnDrive, "own.txt"), "JOINED8!");
 
   writeFileSync(join(data, "mesh/secret.key"), stSeed, { mode: 0o600 });
   writeFileSync(
@@ -1590,8 +1760,16 @@ test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallba
       revocations: [],
       joined: [
         {
-          workspace: wsJoined,
+          workspace: wsJoinedEmpty,
           workspace_name: "Joined Empty Drive WS",
+          name: "pion-drive-iso",
+          grant_keys: grantKeys,
+          peers: [],
+          revocations: [],
+        },
+        {
+          workspace: wsJoinedOwn,
+          workspace_name: "Joined Own Drive WS",
           name: "pion-drive-iso",
           grant_keys: grantKeys,
           peers: [],
@@ -1603,20 +1781,37 @@ test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallba
   );
   writeFileSync(
     join(data, "config.json"),
-    JSON.stringify({ engine: "pion", drive: { roots: [homeDrive], workspaces: { [wsJoined]: [] } } }) + "\n",
+    JSON.stringify({
+      engine: "pion",
+      drive: {
+        roots: [homeDrive, "relative/ignored-root"],
+        workspaces: {
+          [wsJoinedEmpty]: [],
+          [wsJoinedOwn]: [joinedOwnDrive, "relative/joined-ignored"],
+        },
+      },
+    }) + "\n",
   );
 
   const wd = startWholeDaemon(bin, data);
   await until("ready", () => wd.messages.find((m) => m.ready === true));
   const meshAddr = await until("mesh bound", () => wd.meshAddr());
-
-  // Wait until DB is open (on_predecessor_gone completed) -> corrupt whole-handover.json MUST still exist!
   await until("DB open", () => existsSync(join(data, "stillfail.db")), 10_000);
-  assert.equal(existsSync(join(data, "run/whole-handover.json")), true, "corrupt whole-handover.json must be preserved on disk");
 
-  // 1. Joined workspace with empty drive.workspaces[wsJoined] = [] MUST get 403 for homeDrive, $HOME, and empty root!
-  const jwtJoined = signMemberJwt({ ws: wsJoined, device: epJoined.id(), sub: "u-bob", email: "bob@example.com", name: "Bob", role: "owner" });
-  const jConn = await openAdminConn(epJoined, stationId, meshAddr, jwtJoined);
+  // 1a. Joined workspace `wsJoinedOwn` with its OWN root (NOT in home `drive.roots`) MUST read its 8-byte file with 200!
+  const jwtJoinedOwn = signMemberJwt({ ws: wsJoinedOwn, device: epJoinedOwn.id(), sub: "u-carol", email: "carol@example.com", name: "Carol", role: "owner" });
+  const jOwnConn = await openAdminConn(epJoinedOwn, stationId, meshAddr, jwtJoinedOwn);
+  assert.equal(jOwnConn.helloReply?.ok, true, JSON.stringify(jOwnConn.helloReply));
+  const rOwnOk = await adminCall(jOwnConn.conn, "GET", `/drive/read?root=${encodeURIComponent(joinedOwnDrive)}&path=own.txt&offset=0&length=64`);
+  assert.equal(rOwnOk.status, 200, `joined ws own root must return 200, got ${rOwnOk.status}: ${rOwnOk.body.toString("utf8")}`);
+  assert.equal(rOwnOk.body.toString("utf8"), "JOINED8!");
+  const rOwnRel = await adminCall(jOwnConn.conn, "GET", `/drive/read?root=${encodeURIComponent("relative/joined-ignored")}&path=own.txt&offset=0&length=64`);
+  assert.equal(rOwnRel.status, 403, `relative drive root must be rejected with 403, got ${rOwnRel.status}`);
+  await jOwnConn.conn.close(0, "done");
+
+  // 1b. Joined workspace with empty drive.workspaces[wsJoinedEmpty] = [] MUST get 403 for homeDrive, $HOME, and empty root!
+  const jwtJoined = signMemberJwt({ ws: wsJoinedEmpty, device: epJoinedEmpty.id(), sub: "u-bob", email: "bob@example.com", name: "Bob", role: "owner" });
+  const jConn = await openAdminConn(epJoinedEmpty, stationId, meshAddr, jwtJoined);
   assert.equal(jConn.helloReply?.ok, true, JSON.stringify(jConn.helloReply));
   const rHomeRoot = await adminCall(jConn.conn, "GET", `/drive/read?root=${encodeURIComponent(homeDrive)}&path=secret.txt&offset=0&length=64`);
   assert.equal(rHomeRoot.status, 403, `joined ws must NOT read home drive root, got ${rHomeRoot.status}`);
@@ -1626,7 +1821,7 @@ test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallba
   assert.equal(rEmptyRoot.status, 403, `joined ws with empty roots must refuse empty root, got ${rEmptyRoot.status}`);
   await jConn.conn.close(0, "done");
 
-  // 2. Home workspace member CAN read homeDrive, and Content-Length mismatch uploads MUST return 400 WITHOUT overwriting existing.bin!
+  // 2. Home workspace member CAN read homeDrive, and both fixed-CL AND no-CL overflow uploads return 400 WITHOUT overwriting existing.bin!
   const jwtHome = signMemberJwt({ ws: wsHome, device: epHome.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
   const hConn = await openAdminConn(epHome, stationId, meshAddr, jwtHome);
   assert.equal(hConn.helloReply?.ok, true, JSON.stringify(hConn.helloReply));
@@ -1668,7 +1863,239 @@ test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallba
   assert.equal(upOob.status, 400, `offset+content-length>total must return 400, got ${upOob.status}`);
   assert.equal(readFileSync(join(homeDrive, "existing.bin"), "utf8"), "ORIGINAL-DATA-MUST-STAY");
 
+  // R4 Item 8: NO `Content-Length` upload sending `total + 2` (12 bytes for total=10) -> 400, existing.bin untouched!
+  const upNoClOver = await adminCall(
+    hConn.conn,
+    "PUT",
+    `/drive/upload?root=${encodeURIComponent(homeDrive)}&path=existing.bin&id=up-nocl-over&offset=0&total=10&replace=1`,
+    { "content-type": "application/octet-stream" },
+    Buffer.from("0123456789XX"),
+  );
+  assert.equal(upNoClOver.status, 400, `no-CL upload sending total+2 bytes must return 400, got ${upNoClOver.status}`);
+  assert.equal(readFileSync(join(homeDrive, "existing.bin"), "utf8"), "ORIGINAL-DATA-MUST-STAY");
+
   await hConn.conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W16B.11: Corrupt snapshot fails takeover while preserved on disk + real launcher snapshot write failure produces handoff-failed", { skip: process.platform === "win32" }, async () => {
+  const launcher = resolveLauncherBinary();
+  const readerBin = resolveReaderBinary();
+  const addon = resolveMeshAddon();
+  const { grantKeys } = makeGrantKeysAndSigner();
+
+  // Part A: Corrupt `run/whole-handover.json` -> daemon emits `failed`, does NOT open DB, preserves corrupt file!
+  const dataCorrupt = freshDir("ho-corrupt-data");
+  const driveCorrupt = freshDir("ho-corrupt-drive");
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  seedWholeDataDir(dataCorrupt, stSeed, stationId, stationId, driveCorrupt, "ws-corrupt", grantKeys);
+  mkdirSync(join(dataCorrupt, "run"), { recursive: true });
+  writeFileSync(join(dataCorrupt, "run/whole-handover.json"), "{corrupt-handover-json");
+
+  const wdCorrupt = startWholeDaemon(bin, dataCorrupt);
+  await until("failed message emitted for corrupt snapshot", () => wdCorrupt.messages.find((m) => typeof m.failed === "string"), 10_000);
+  await wdCorrupt.waitExit(10_000);
+  assert.equal(existsSync(join(dataCorrupt, "run/whole-handover.json")), true, "corrupt whole-handover.json must be preserved on disk");
+  assert.equal(existsSync(join(dataCorrupt, "stillfail.db")), false, "SQLite DB must not open on corrupt handover snapshot");
+
+  // Part B: Real Rust Launcher `SIGUSR2` handover where `run/whole-handover.json` is blocked (pre-created directory)
+  // -> predecessor carries `handoverFailed` -> successor emits `failed` before `taken` -> launcher writes `handoff-failed`!
+  const app = freshDir("ho-fail-app");
+  const data = freshDir("ho-fail-data");
+  const drive = freshDir("ho-fail-drive");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(readerBin, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  writeFileSync(join(app, "station", "main.js"), "process.exit(99);\n");
+  writeFileSync(join(app, "BUILD"), "9916\n");
+  const wrapperPath = join(app, "station", "stillfail-station-pion");
+  writeFileSync(
+    wrapperPath,
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo 'stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin'
+  exit 0
+fi
+export STILLFAIL_PION_WHOLE_DAEMON=1
+exec ${JSON.stringify(bin)} "$@"
+`,
+  );
+  chmodSync(wrapperPath, 0o755);
+
+  const frontPort = await pickFreeUdpPort();
+  seedWholeDataDir(data, stSeed, stationId, stationId, drive, "ws-ho-fail", grantKeys);
+  let logs = "";
+  const lc = spawn(launcher, ["run", "--app", app, "--data", data], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      STILLFAIL_NODE: process.execPath,
+      STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
+      STILLFAIL_STATION_PION: wrapperPath,
+      STILLFAIL_STATION_ENGINE: "pion",
+      STILLFAIL_STATION_ENGINE_STRICT: "1",
+      STILLFAIL_NO_DISCOVERY: "1",
+      STILLFAIL_NO_DHT: "1",
+      STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${frontPort}`,
+    },
+  });
+  children.push(lc);
+  lc.stdout?.on("data", (d) => { logs += d.toString("utf8"); });
+  lc.stderr?.on("data", (d) => { logs += d.toString("utf8"); });
+
+  const readHubPid = () => {
+    try {
+      const j = JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8"));
+      return typeof j.pid === "number" && j.pid > 0 ? j.pid : null;
+    } catch { return null; }
+  };
+  const pid1 = await until("pid1 ready", () => readHubPid(), 15_000);
+  await until("DB open before blocking handover path", () => existsSync(join(data, "stillfail.db")), 10_000);
+
+  // Block `run/whole-handover.json` by creating a directory at that exact path so `write_private` fails!
+  mkdirSync(join(data, "run/whole-handover.json"), { recursive: true });
+  process.kill(lc.pid!, "SIGUSR2");
+
+  await until("launcher writes run/handoff-failed", () => existsSync(join(data, "run/handoff-failed")), 15_000);
+  const takenMatches = logs.match(/has taken over/g) ?? [];
+  assert.equal(takenMatches.length, 1, `successor MUST NOT take over (only initial pid1 should have taken over)! logs:\n${logs}`);
+  assert.ok(logs.includes("did not take over"), `expected launcher 'did not take over' log; logs:\n${logs}`);
+
+  lc.kill("SIGTERM");
+  await new Promise((r) => lc.once("exit", () => r(undefined)));
+  await until("pid1 exited", () => !isAlive(pid1), 10_000);
+});
+
+test("W16B.12: Live connection role downgrade via signed workspace lock takes effect immediately (POST -> 403, GET -> 200)", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const data = freshDir("role-down-data");
+  const drive = freshDir("role-down-drive");
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epBob = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epBob);
+
+  const ws = "ws-role-down";
+  const edKey = () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const hex = (publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex");
+    return { hex, id: `ed25519:${hex}`, sign: (b: Buffer) => cryptoSign(null, b, privateKey).toString("hex") };
+  };
+  const signEntry = (e: Omit<Entry, "sig">, k: ReturnType<typeof edKey>): Entry =>
+    ({ ...e, sig: { key: k.id, alg: "Ed25519", sig: k.sign(signedBytes(entryHash(e as Entry))) } }) as Entry;
+
+  const alice = { signer: edKey(), base: edKey() };
+  const bob = { signer: edKey(), base: edKey() };
+
+  const wsGen = signEntry(
+    {
+      v: 1,
+      ws,
+      seq: 0,
+      prev: null,
+      at: 1000,
+      kind: "genesis",
+      body: {
+        owner: "u-alice",
+        origins: ["https://app.still.fail"],
+        rp_id: "app.still.fail",
+        cloud_keys: grantKeys,
+        members: [
+          { sub: "u-alice", email: "alice@example.com", role: "owner" },
+          { sub: "u-bob", email: "bob@example.com", role: "admin" },
+        ],
+        devices: [
+          { id: alice.base.hex, sub: "u-alice", kind: "app", label: "alice", sign_key: alice.signer.id },
+          { id: bob.base.hex, sub: "u-bob", kind: "app", label: "bob", sign_key: bob.signer.id },
+        ],
+        passkeys: [],
+        stations: [{ key: stationId, name: "pion-role-down" }],
+        gateways: [],
+      },
+    },
+    alice.signer,
+  );
+  const wsState0 = lockGenesis(wsGen);
+  const wsDowngrade = signEntry(
+    {
+      v: 1,
+      ws,
+      seq: 1,
+      prev: wsState0.head,
+      at: 1001,
+      kind: "member",
+      body: { sub: "u-bob", email: "bob@example.com", role: "viewer" },
+    },
+    alice.signer,
+  );
+  const wsState1 = lockApply(wsState0, wsDowngrade, 2000);
+  assert.equal(wsState1.members.get("u-bob")?.role, "viewer");
+
+  let liveWsSock: import("ws").WebSocket | null = null;
+  const wsHttp = createHttpServer((_req, res) => { res.writeHead(404); res.end(); });
+  const wss = new WebSocketServer({ server: wsHttp });
+  servers.push(wsHttp, wss);
+  wss.on("connection", (sock) => { liveWsSock = sock; });
+  await new Promise<void>((r) => wsHttp.listen(0, "127.0.0.1", () => r()));
+  const wsPort = (wsHttp.address() as { port: number }).port;
+
+  seedWholeDataDir(data, stSeed, stationId, epBob.id(), drive, ws, grantKeys, `http://127.0.0.1:${wsPort}`);
+  writeFileSync(join(data, "mesh/lock.json"), JSON.stringify({ entries: [wsGen] }), { mode: 0o600 });
+
+  const wd = startWholeDaemon(bin, data);
+  await until("ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("mesh bound", () => wd.meshAddr());
+  await until("presence WS connected", () => liveWsSock !== null, 10_000);
+
+  // Bob connects as `admin` and creates a session -> 200!
+  const jwtBob = signMemberJwt({ ws, device: epBob.id(), sub: "u-bob", email: "bob@example.com", name: "Bob", role: "admin" });
+  const { conn: bobConn, helloReply } = await openAdminConn(epBob, stationId, meshAddr, jwtBob, {
+    device: bob.base.hex,
+    proof: bob.base.sign(endpointBytes(ws, epBob.id())),
+  });
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+  assert.equal(helloReply?.role, "admin");
+
+  const writeBefore = await adminCall(
+    bobConn,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "before-downgrade", title: "Allowed" })),
+  );
+  assert.equal(writeBefore.status, 200, `admin write before downgrade must succeed, got ${writeBefore.status}`);
+
+  // Push signed lock update downgrading Bob -> `viewer` via live presence WS!
+  liveWsSock!.send(JSON.stringify({ type: "lock", entries: [wsGen, wsDowngrade] }));
+
+  // Immediately on the SAME live connection: POST /sessions MUST return 403 while GET /status returns 200!
+  await until("live connection downgraded to viewer (POST /sessions -> 403)", async () => {
+    const r = await adminCall(
+      bobConn,
+      "POST",
+      "/sessions",
+      { "content-type": "application/json" },
+      Buffer.from(JSON.stringify({ key: "after-downgrade", title: "Denied" })),
+      2_000,
+    );
+    return r.status === 403;
+  }, 8_000).catch((e) => {
+    throw new Error(`${(e as Error).message}\nstderr:\n${wd.stderr()}`);
+  });
+
+  const readAfter = await adminCall(bobConn, "GET", "/status");
+  assert.equal(readAfter.status, 200, `viewer GET /status must still return 200, got ${readAfter.status}`);
+
+  await bobConn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
 });
