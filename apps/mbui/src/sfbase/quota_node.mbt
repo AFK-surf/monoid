@@ -305,43 +305,68 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
 /// Shared per-text-environment cache for quota chip and pool label measurements across all calls to
 /// `nav_quota_room_node` / `nav_quota_line_node` / `nav_quota_label_w`, so opening Profiles with dozens of accounts
 /// measures each distinct mark/figure/label once instead of re-measuring per account.
+/// Invalidated whenever font scale, `words_redone` (tracks font family/metrics/DPR reloads), tabular-numerals toggle,
+/// target pixel size, or UI language (`@sf.language()`) changes, and cleared on `@ui.on_reset`.
 priv struct QuotaMeasCache {
-  mut env : (Double, Int, Bool, Double)
+  mut chip_env : (Double, Int, Bool, Double, String)
+  mut label_env : (Double, Int, Bool, Double, String)
   fig : Map[String, Double]
   mark : Map[String, Double]
   refill_mark : Map[String, Double]
   label : Map[String, Double]
+  mut hits : Int
+  mut misses : Int
 }
 
 ///|
-// kept across runs: cleared on reset via init and automatically invalidated when text scale/font/tabular changes
+// kept across runs: cleared on reset via init and automatically invalidated when text scale/font/tabular/language changes
 let quota_meas_cache : QuotaMeasCache = {
-  env: (0.0, -1, false, 0.0),
+  chip_env: (0.0, -1, false, 0.0, ""),
+  label_env: (0.0, -1, false, 0.0, ""),
   fig: Map([]),
   mark: Map([]),
   refill_mark: Map([]),
   label: Map([]),
+  hits: 0,
+  misses: 0,
 }
 
 ///|
 fn init {
   @ui.on_reset(fn() {
-    quota_meas_cache.env = (0.0, -1, false, 0.0)
+    quota_meas_cache.chip_env = (0.0, -1, false, 0.0, "")
+    quota_meas_cache.label_env = (0.0, -1, false, 0.0, "")
     quota_meas_cache.fig.clear()
     quota_meas_cache.mark.clear()
     quota_meas_cache.refill_mark.clear()
     quota_meas_cache.label.clear()
+    quota_meas_cache.hits = 0
+    quota_meas_cache.misses = 0
   })
 }
 
 ///|
-fn quota_meas_sync(v : @view.View, size : Double) -> Unit {
-  let next = (v.words_scale(), v.words_redone(), @ui.tree_theme().tabular, size)
-  if quota_meas_cache.env != next {
-    quota_meas_cache.env = next
+/// Return `(hits, misses)` of `quota_meas_cache` in the current run (for budget/regression tests).
+pub fn quota_meas_cache_stats() -> (Int, Int) {
+  (quota_meas_cache.hits, quota_meas_cache.misses)
+}
+
+///|
+fn quota_meas_sync_chip(v : @view.View, size : Double) -> Unit {
+  let next = (v.words_scale(), v.words_redone(), @ui.tree_theme().tabular, size, @sf.language())
+  if quota_meas_cache.chip_env != next {
+    quota_meas_cache.chip_env = next
     quota_meas_cache.fig.clear()
     quota_meas_cache.mark.clear()
     quota_meas_cache.refill_mark.clear()
+  }
+}
+
+///|
+fn quota_meas_sync_label(v : @view.View, size : Double) -> Unit {
+  let next = (v.words_scale(), v.words_redone(), @ui.tree_theme().tabular, size, @sf.language())
+  if quota_meas_cache.label_env != next {
+    quota_meas_cache.label_env = next
     quota_meas_cache.label.clear()
   }
 }
@@ -354,7 +379,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
   let label_look = @ui.style_words(@sf.chip_label_text)
   let refill_label_look = @ui.style_words(@sf.chip_refill_label_text)
   let size = @sf.node_sp(v, look.size)
-  quota_meas_sync(v, size)
+  quota_meas_sync_chip(v, size)
   let fig_cache = quota_meas_cache.fig
   let mark_cache = quota_meas_cache.mark
   let refill_mark_cache = quota_meas_cache.refill_mark
@@ -363,8 +388,12 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       0.0
     } else {
       match fig_cache.get(s) {
-        Some(w) => w
+        Some(w) => {
+          quota_meas_cache.hits += 1
+          w
+        }
         None => {
+          quota_meas_cache.misses += 1
           let w = @sf.node_words_w(s, size, weight=look.weight)
           if fig_cache.length() >= 256 {
             fig_cache.clear()
@@ -380,8 +409,12 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       0.0
     } else {
       match mark_cache.get(s) {
-        Some(w) => w
+        Some(w) => {
+          quota_meas_cache.hits += 1
+          w
+        }
         None => {
+          quota_meas_cache.misses += 1
           let w = @sf.node_words_w(s, size, weight=label_look.weight)
           if mark_cache.length() >= 256 {
             mark_cache.clear()
@@ -397,8 +430,12 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       0.0
     } else {
       match refill_mark_cache.get(s) {
-        Some(w) => w
+        Some(w) => {
+          quota_meas_cache.hits += 1
+          w
+        }
         None => {
+          quota_meas_cache.misses += 1
           let w = @sf.node_words_w(s, size, weight=refill_label_look.weight)
           if refill_mark_cache.length() >= 256 {
             refill_mark_cache.clear()
@@ -487,15 +524,19 @@ fn nav_quota_label_w(v : @view.View, parts : Array[(String, Array[Json])]) -> Do
   }
   let look = @ui.style_words(nav_quota_group)
   let size = @sf.node_sp(v, look.size)
-  quota_meas_sync(v, @sf.node_sp(v, @ui.style_words(@sf.chip_text).size))
+  quota_meas_sync_label(v, size)
   let cache = quota_meas_cache.label
   parts.fold(init=0.0, fn(m, p) {
     if p.0 == "" {
       m
     } else {
       let w = match cache.get(p.0) {
-        Some(cached) => cached
+        Some(cached) => {
+          quota_meas_cache.hits += 1
+          cached
+        }
         None => {
+          quota_meas_cache.misses += 1
           let measured = @sf.node_words_w(p.0, size, weight=look.weight).ceil()
           if cache.length() >= 128 {
             cache.clear()

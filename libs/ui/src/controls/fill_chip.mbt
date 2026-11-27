@@ -54,9 +54,9 @@ let chip_fill_share : Double = 0.28
 pub let chip_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
 
 ///|
-/// The chip: on the neutral ground, round by the ladder's small corner (fill_chip_corner), its words in its middle.
+/// The chip: on the neutral ground, round by the ladder's small corner (fill_chip_corner), its words at its start.
 // kept across runs: a value (no field of it changes)
-let chip_box : @ui.Style = @ui.style(h=Fixed(fill_chip_h), radius=rounded(fill_chip_corner), bg=Neutral, justify=JCenter)
+let chip_box : @ui.Style = @ui.style(h=Fixed(fill_chip_h), radius=rounded(fill_chip_corner), bg=Neutral, justify=JStart)
 
 ///|
 // kept across runs: a value (no field of it changes)

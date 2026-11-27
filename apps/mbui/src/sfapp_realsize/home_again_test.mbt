@@ -190,8 +190,8 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         // pick between them two nodes more; slimmed fill_chip_node with on-demand refresh icon and single-branch pooled
         // quota brings profiles down to made=591, laid=457 (+1 made/+1 laid for place_top_bar_glass wrapping settings
         // in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node); +22 made/+11 laid: the bar's 多选 and each
-        // account row's pick between its row and 多选's)
-        assert_eq(home_again_peak.val, if place == "profiles" { (616, 0, 470) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
+        // account row's pick between its row and 多选's; PR-B4 fill_chip_node + quota_chips_node flattening: -28 made/-28 laid)
+        assert_eq(home_again_peak.val, if place == "profiles" { (588, 0, 442) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -367,9 +367,10 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       // (Profile's list or 概览 one page, the pick between them two nodes more; slimmed fill_chip_node with on-demand
       // refresh icon and single-branch pooled quota brings tall profiles down to made=731, laid=565; +1 made/+1 laid
       // for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node;
-      // +26 made/+13 laid: the bar's 多选 and each account row's pick between its row and 多选's)
+      // +26 made/+13 laid: the bar's 多选 and each account row's pick between its row and 多选's;
+      // PR-B4 fill_chip_node + quota_chips_node flattening: -36 made/-36 laid)
       let first = if place == "profiles" {
-        (760, 0, 580)
+        (724, 0, 544)
       } else if place == "connects" {
         // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it)
         (440, 0, 308)

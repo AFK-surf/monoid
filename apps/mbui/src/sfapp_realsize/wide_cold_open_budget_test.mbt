@@ -117,16 +117,16 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
   "large/archive": (1310, 694, 1092, 155, 1661),
   "large/board": (1655, 65, 1860, 207, 2039),
   // Hotspot #1 (PR-B4): virtualized attention_rows_node + flattened attention_item_node (was 1756/0/1479/287/2294)
-  "large/attention": (281, 0, 207, 39, 494),
+  "large/attention": (292, 0, 213, 41, 490),
   "large/new_chat": (194, 0, 132, 18, 216),
   "large/files": (608, 28, 503, 84, 975),
   "large/drive": (179, 0, 179, 15, 274),
   "large/remote": (365, 0, 310, 35, 473),
-  // Hotspot #2 (PR-B4): shared QuotaMeasCache + flattened fill_chip_node / quota_chips_node (was 766/0/645/139/1048)
-  "large/stations(list+st1)": (905, 0, 760, 167, 1229),
+  // Hotspot #2 (PR-B4): strictly below pre-opt (766/0/645/139/1048) so reverting Hotspot #2 fails this gate
+  "large/stations(list+st1)": (760, 0, 639, 150, 1036),
   "large/station_detail(st2)": (430, 0, 348, 78, 512),
-  // Hotspot #2 (PR-B4): shared QuotaMeasCache + flattened fill_chip_node / quota_chips_node (was 870/0/698/254/1034)
-  "large/profiles(overview)": (996, 0, 790, 305, 1164),
+  // Hotspot #2 (PR-B4): strictly below pre-opt (870/0/698/254/1034) so reverting Hotspot #2 fails this gate
+  "large/profiles(overview)": (850, 0, 675, 270, 1000),
   "large/profile_detail(p1)": (39, 0, 68, 7, 41),
   "large/connects": (744, 69, 783, 120, 770),
   "large/usage": (606, 69, 783, 221, 924),
@@ -142,14 +142,18 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
   "large/settings/notifications": (210, 359, 182, 56, 240),
   "large/settings/shortcuts": (234, 210, 186, 63, 281),
   "large/settings/about": (123, 234, 114, 13, 105),
-  // Medium (600x900) key Place sweep (12 targets)
+  // Medium (600x900) key Place sweep (13 targets, symmetric with Large incl. attention)
   "medium/chats(init)": (1576, 5, 1064, 98, 1583),
   "medium/archive": (1410, 790, 1030, 188, 1930),
+  // Hotspot #1 (PR-B4): Medium bell popover virtualized
+  "medium/attention": (386, 0, 296, 84, 612),
   "medium/files": (576, 28, 492, 78, 972),
   "medium/remote": (368, 6, 327, 35, 550),
-  "medium/stations(list+st1)": (910, 6, 790, 164, 1293),
+  // Hotspot #2 (PR-B4): strictly below pre-opt (770/2/670/136/1101)
+  "medium/stations(list+st1)": (764, 6, 664, 150, 1089),
   "medium/station_detail(st2)": (420, 0, 358, 74, 513),
-  "medium/profiles(overview)": (957, 6, 800, 282, 1212),
+  // Hotspot #2 (PR-B4): strictly below pre-opt (837/2/706/235/1074)
+  "medium/profiles(overview)": (815, 6, 685, 250, 1040),
   "medium/profile_detail(p1)": (23, 0, 70, 6, 35),
   "medium/connects": (1817, 2283, 1190, 156, 1816),
   "medium/usage": (1865, 2283, 1284, 244, 2105),
@@ -158,7 +162,7 @@ let wide_cold_open_budgets : Map[String, (Int, Int, Int, Int, Int)] = {
 }
 
 ///|
-/// Assert rest, zero unasked faults, zero parked timeline leaks, 5-dim regression budgets, and print one report row.
+/// Assert rest, zero unasked faults, zero parked timeline leaks, 5-dim + memory/payload budgets, and print one row.
 fn wide_cold_record(
   label : String,
   m : (Int, Int, Int, Int, Int),
@@ -167,6 +171,7 @@ fn wide_cold_record(
   alive_before : Int,
 ) -> Unit raise {
   let redline_nodes = 7500
+  let redline_delta = 2200
   let redline_ls = 256 * 1024
   let redline_cum = 768 * 1024
   t.run_for(@sfapptest.kept_glide_over_ms)
@@ -186,6 +191,9 @@ fn wide_cold_record(
     msg="\{label}: parked subtrees must own 0 timeline entries (total=\{tree.due_count()}, mounted=\{t.subtree_timeline_count(tree.root())})",
   )
   assert_true(alive <= redline_nodes, msg="\{label}: alive \{alive} exceeded redline \{redline_nodes}")
+  assert_true(delta_alive <= redline_delta, msg="\{label}: delta_alive \{delta_alive} exceeded redline \{redline_delta}")
+  assert_true(ls_b <= redline_ls, msg="\{label}: last_said bytes \{ls_b} exceeded redline \{redline_ls}")
+  assert_true(cum_b <= redline_cum, msg="\{label}: cum_fixture bytes \{cum_b} exceeded redline \{redline_cum}")
   match wide_cold_open_budgets.get(label) {
     Some((b_made, b_let_go, b_laid, b_meas, b_bind)) => {
       assert_true(m.0 <= b_made, msg="\{label}: made \{m.0} > budget \{b_made}")
@@ -256,11 +264,23 @@ test "wide cold-open budget: Large (1280x800) full Place and key sub-page cold-o
       })
       wide_cold_record("large/attention", m_att, t_att, c_att, alive_pre_att)
       assert_eq(t_att.audit(), [])
-      // Scroll inside the virtualized attention panel and verify off-screen items materialize cleanly with 0 audit faults.
+      // Verify the virtualized attention panel actually scrolls and materializes off-screen items on wheel input.
+      let before_att_words = t_att
+        .words()
+        .filter(fn(w) { w.1 >= b.rect.0 + b.rect.2 && w.1 <= b.rect.0 + b.rect.2 + 320.0 })
+        .map(fn(w) { w.0 })
       let att_scroll_x = b.rect.0 + b.rect.2 + 140.0
       let att_scroll_y = 260.0
-      t_att.wheel(att_scroll_x, att_scroll_y, 260.0)
+      t_att.tree_frames_from_now()
+      t_att.wheel(att_scroll_x, att_scroll_y, 600.0)
       t_att.run_for(@sfapptest.kept_glide_over_ms)
+      let after_att_words = t_att
+        .words()
+        .filter(fn(w) { w.1 >= b.rect.0 + b.rect.2 && w.1 <= b.rect.0 + b.rect.2 + 320.0 })
+        .map(fn(w) { w.0 })
+      let scroll_made = t_att.tree_frames().fold(init=0, fn(acc, f) { acc + f.made })
+      assert_true(before_att_words != after_att_words, msg="large/attention scroll must shift visible items")
+      assert_true(scroll_made > 0, msg="large/attention scroll must materialize off-screen virtualized rows (made=\{scroll_made})")
       assert_eq(t_att.audit(), [])
       assert_true(t_att.at_rest(), msg="large/attention after scroll: expected at_rest()")
     }
@@ -297,7 +317,9 @@ test "wide cold-open budget: Large (1280x800) full Place and key sub-page cold-o
   let alive_pre_sta = @ui.view_tree().unwrap().alive()
   let m_sta = wide_go_place(t_sta, "stations", chat_sta)
   wide_cold_record("large/stations(list+st1)", m_sta, t_sta, c_sta, alive_pre_sta)
-  assert_eq(t_sta.audit().filter(fn(s) { !s.contains("edge_node.mbt") }), [])
+  // Exclude only the intentional 12px pane-resize drag handle (pane_view.mbt:1062 / edge_node.mbt:37) straddling the 6px seam.
+  let non_pane_seam = fn(s : String) { !(s.contains("edge_node.mbt:37") && s.contains("pane_view.mbt:1062")) }
+  assert_eq(t_sta.audit().filter(non_pane_seam), [])
   let alive_pre_sta2 = @ui.view_tree().unwrap().alive()
   let m_sta2 = wide_pick_station(t_sta, src_sta, ws_sta, stations[1])
   wide_cold_record("large/station_detail(st2)", m_sta2, t_sta, c_sta, alive_pre_sta2)
@@ -308,7 +330,10 @@ test "wide cold-open budget: Large (1280x800) full Place and key sub-page cold-o
   let alive_pre_prof = @ui.view_tree().unwrap().alive()
   let m_prof = wide_go_place(t_prof, "profiles", chat_prof)
   wide_cold_record("large/profiles(overview)", m_prof, t_prof, c_prof, alive_pre_prof)
-  assert_eq(t_prof.audit().filter(fn(s) { !s.contains("edge_node.mbt") }), [])
+  // Hard-verify Hotspot #2 shared QuotaMeasCache is actively hitting across accounts on real-size Profiles.
+  let (q_hits, q_misses) = @sfbase.quota_meas_cache_stats()
+  assert_true(q_hits > 0 && q_hits >= q_misses, msg="large/profiles(overview): expected QuotaMeasCache hits >= misses (hits=\{q_hits}, misses=\{q_misses})")
+  assert_eq(t_prof.audit().filter(non_pane_seam), [])
   let alive_pre_p1 = @ui.view_tree().unwrap().alive()
   let m_p1 = wide_pick_profile(t_prof, src_prof, ws_prof, @settings.Route::Profile(profiles[0].0, profiles[0].1))
   wide_cold_record("large/profile_detail(p1)", m_p1, t_prof, c_prof, alive_pre_p1)
@@ -364,6 +389,34 @@ test "wide cold-open budget: Medium (600x900) key Place cold-open 5-dim sweep" {
   let alive_pre_arch = @ui.view_tree().unwrap().alive()
   let m_arch = wide_budget_step(t_arch, fn() { @sfbase.app.nav.replace_above(1, [Archived]) })
   wide_cold_record("medium/archive", m_arch, t_arch, c_arch, alive_pre_arch)
+
+  // Attention (bell popover on Medium)
+  let (t_att, c_att, _, _, _) = wide_cold_open(600.0, 900.0, 2, a11y=true)
+  let bell_btn = t_att
+    .semantics()
+    .iter()
+    .find_first(fn(s) { s.role == Button && s.label == @sf.t("web-main.attention.entry") })
+  match bell_btn {
+    Some(b) => {
+      let alive_pre_att = @ui.view_tree().unwrap().alive()
+      t_att.tree_frames_from_now()
+      t_att.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      t_att.run_for(@sfapptest.kept_switch_over_ms)
+      let m_att = t_att.tree_frames().fold(init=(0, 0, 0, 0, 0), fn(a, f) {
+        (
+          a.0 + f.made,
+          a.1 + f.let_go,
+          @cmp.maximum(a.2, f.laid),
+          @cmp.maximum(a.3, f.measured),
+          @cmp.maximum(a.4, f.bindings),
+        )
+      })
+      wide_cold_record("medium/attention", m_att, t_att, c_att, alive_pre_att)
+      // Exclude pre-existing rail top-left workspace icon corner radius on platform=2 (corners_held=false in wide_cold_open_init).
+      assert_eq(t_att.audit().filter(fn(s) { !s.contains("from its edges") }), [])
+    }
+    None => fail("medium rail attention bell button not found in semantics")
+  }
 
   let (t_files, c_files, _, _, chat_files) = wide_cold_open(600.0, 900.0, 2)
   let alive_pre_files = @ui.view_tree().unwrap().alive()

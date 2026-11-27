@@ -198,3 +198,40 @@ test "a failed trouble clear does not retry on every frame and a new core can cl
   t.frame()
   assert_eq(calls.length(), 2, msg="an old core's pending clearing does not suppress the new core")
 }
+
+///|
+test "virtualized attention panel exposes visible rows to a11y and navigates on click" {
+  let src : Ref[Source?] = Ref(None)
+  let made = fn() {
+    match src.val {
+      Some(s) => s
+      None => {
+        let s = fixture_app("home-attention")
+        src.val = Some(s)
+        s
+      }
+    }
+  }
+  let t = @ui.Tester::new(
+    fn(c) { view(c, made()) },
+    tree=fn(root) { app_tree(made())(root) },
+    w=1280.0,
+    h=800.0,
+    env=[("MBUI_REDUCE_MOTION", "1")],
+  )
+  t.set_a11y(true)
+  t.run_for(squeeze_opening)
+  t.frame()
+  // Both station trouble and waiting chat rows must be discoverable as a11y Buttons inside the virtualized list.
+  let buttons = t.semantics().filter(fn(s) { s.role == Button })
+  let chat_btn = buttons.iter().find_first(fn(s) { s.label == "夜里的备份" })
+  assert_true(buttons.iter().any(fn(s) { s.label == "Maple 离线" }), msg="trouble row missing from a11y semantics")
+  match chat_btn {
+    Some(b) => {
+      t.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      t.run_for(@ui.move_most_ms)
+      assert_true(t.find("选一个发布的时间") is None, msg="tapping attention row should close the panel")
+    }
+    None => fail("chat attention row '夜里的备份' missing from a11y semantics")
+  }
+}

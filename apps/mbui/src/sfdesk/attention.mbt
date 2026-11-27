@@ -191,9 +191,18 @@ fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
 /// what was let go here) as that changes. As it opens, what it shows of the stations' trouble and of what is left up
 /// long is looked at, as the panel beside the bell's (kept: no longer lighting the bell), listed while it is open.
 pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> Unit {
-  attention_present(src, w, from, @sf.t("web-main.attention.entry"), true, fn(close) { close }, grows=true, gone=fn() {
-    attention.trouble_seen = None
-  })
+  attention_present(
+    src,
+    w,
+    from,
+    @sf.t("web-main.attention.entry"),
+    true,
+    fn(close) { close },
+    tall=0.92,
+    hugs=true,
+    grows=true,
+    gone=fn() { attention.trouble_seen = None },
+  )
 }
 
 ///|
@@ -213,6 +222,8 @@ fn attention_present(
   side? : @ui.Side = Bottom,
   along? : @ui.Along = Start,
   offset? : Double = @sf.panel_offset,
+  tall? : Double = 0.98,
+  hugs? : Bool = true,
   grows? : Bool = false,
   foot_style? : @ui.Style = att_foot,
   gone? : () -> Unit = fn() {  },
@@ -230,18 +241,14 @@ fn attention_present(
   trouble_forget(src, w)
   @sf.panel_nodes(
     title,
-    fn(v, close) {
-      v.box(fn(b) {
-        @sf.style_node(b, fn() { att_sheet })
-        attention_rows_node(b, src, w, railed, closes(close))
-      })
-      |> ignore
-    },
+    fn(v, close) { attention_rows_node(v, src, w, railed, closes(close)) },
     from~,
     w=width,
     side~,
     along~,
     offset~,
+    tall~,
+    hugs~,
     grows~,
     foot=fn(v, close) {
       // (across the foot's row, its words at its start as the old foot's were)
@@ -406,21 +413,17 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
       let (ws_id, ws_name, items) = g
       names[ws_id] = ws_name
       if sev {
-        let hk = AttGroupHead(ws_id)
-        keys.push(hk)
-        if gi == 0 && tr != "" {
-          top_gap[hk] = S1_5
-        }
+        // (panel_label_at already carries pt=S1_5 (6px) and pb=S0_5 (2px), matching the original panel_group_node)
+        keys.push(AttGroupHead(ws_id))
       }
       for ii, it in items {
         let ik = attention_key(it)
         let bk = AttChatItem(ws_id, ik)
         keys.push(bk)
         by_key[(ws_id, ik)] = it
+        // (6px under trouble only when chats have no group heading of their own; items within a group sit flush)
         if !sev && gi == 0 && ii == 0 && tr != "" {
           top_gap[bk] = S1_5
-        } else if ii > 0 || sev {
-          top_gap[bk] = S0_5
         }
       }
     }
@@ -441,51 +444,86 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
       })
       |> ignore
     } else {
+      slot.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       @sf.panel_list_node(
         slot,
         fn() { keys.get() },
         est=att_row_est,
-        most=fn() { dmax(120.0, v.window_h() - 96.0) },
         fn(row, k) {
-          let gap = fn() { plan.get().3.get(k) }
+          let last_gap : Ref[@ui.Space?] = Ref(@signals.untracked(fn() { plan.get().3.get(k) }))
+          let gap = fn() {
+            let p = plan.get()
+            let present = match k {
+              AttTrouble => p.4 != ""
+              AttGroupHead(ws_id) => p.1.contains(ws_id)
+              AttChatItem(ws_id, ik) => p.2.contains((ws_id, ik))
+              AttOpenJobs => p.0.contains(AttOpenJobs)
+            }
+            if present {
+              let g = p.3.get(k)
+              last_gap.val = g
+              g
+            } else {
+              last_gap.val
+            }
+          }
           match k {
-            AttTrouble =>
+            AttTrouble => {
+              let last_tr : Ref[String] = Ref(@signals.untracked(fn() { plan.get().4 }))
+              let tr_now = fn() {
+                let s = plan.get().4
+                if s != "" {
+                  last_tr.val = s
+                  s
+                } else {
+                  last_tr.val
+                }
+              }
               @sf.panel_group_node(row, fn() { "Station" }, fn(rows) {
-                attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(plan.get().4) } }, fn() {
+                attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(tr_now()) } }, fn() {
                   close()
                   @sfbase.go_place("stations", kept=true) |> ignore
                 })
               })
+            }
             AttGroupHead(ws_id) => {
               let first_item = fn() { attention_mark(src, ws_id) }
-              let ws_name = fn() { plan.get().1.get(ws_id).unwrap_or("") }
-              row.box(fn(g) {
-                g.margin(By(fn() {
-                  match gap() {
-                    Some(sp) => (0.0, sp.px(), 0.0, 0.0)
-                    None => (0.0, 0.0, 0.0, 0.0)
+              let last_name : Ref[String] = Ref(@signals.untracked(fn() { plan.get().1.get(ws_id).unwrap_or("") }))
+              let ws_name = fn() {
+                match plan.get().1.get(ws_id) {
+                  Some(n) => {
+                    last_name.val = n
+                    n
                   }
-                }))
-                |> ignore
-                @sf.panel_group_node(
-                  g,
-                  ws_name,
-                  lead=fn(l) {
-                    @sf.workspace_badge_node(
-                      l,
-                      ws_name,
-                      fn() { text(first_item(), "workspaceEmoji") },
-                      fn() { text(first_item(), "workspaceIcon") },
-                      att_ws_mark,
-                    )
-                  },
-                  fn(_) {  },
-                )
-              })
-              |> ignore
+                  None => last_name.val
+                }
+              }
+              @sf.panel_group_node(
+                row,
+                ws_name,
+                lead=fn(l) {
+                  @sf.workspace_badge_node(
+                    l,
+                    ws_name,
+                    fn() { text(first_item(), "workspaceEmoji") },
+                    fn() { text(first_item(), "workspaceIcon") },
+                    att_ws_mark,
+                  )
+                },
+                fn(_) {  },
+              )
             }
             AttChatItem(ws_id, ik) => {
-              let item_sig = @signals.computed(fn(_) { plan.get().2.get((ws_id, ik)).unwrap_or(Json::object(Map([]))) })
+              let last_item : Ref[Json] = Ref(@signals.untracked(fn() { plan.get().2.get((ws_id, ik)).unwrap_or(Json::object(Map([]))) }))
+              let item_sig = @signals.computed(fn(_) {
+                match plan.get().2.get((ws_id, ik)) {
+                  Some(it) => {
+                    last_item.val = it
+                    it
+                  }
+                  None => last_item.val
+                }
+              })
               attention_item_node(row, src, fn() { item_sig.get() }, top_gap=gap, fn() {
                 attention_go(src, w, ws_id, @signals.untracked(fn() { item_sig.get() }), close)
               })
@@ -599,8 +637,8 @@ fn attention_item_node(
     })
     |> ignore
     r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(u) {
-      // (16 dot column + 10 gap = 26: the line starts where the title does, without redundant wrapper boxes)
-      u.padding(Is((26.0, 0.0, 0.0, 0.0))) |> ignore
+      // (att_mark width S4 + att_head gap S2_5: the line starts where the title does, without redundant wrapper boxes)
+      u.padding(Is((@ui.Space::S4.px() + @ui.Space::S2_5.px(), 0.0, 0.0, 0.0))) |> ignore
       @sf.words_node(u, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
     })
   })
