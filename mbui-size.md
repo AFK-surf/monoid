@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0973b9321](https://github.com/AFK-surf/monoid/commit/0973b9321389c2506ab5590eae4d3d9a2dd5f1f2) fix(ci): update mbui-ci test package prefixes from | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 101.86 | 127.14 |
 | [225e586cc](https://github.com/AFK-surf/monoid/commit/225e586ccf866d08902958d74e855d99ced9ab01) feat(station-main): wire native hooks and claude-t | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 101.86 | 127.14 |
 | [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 | [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9d89a5167](https://github.com/AFK-surf/monoid/commit/9d89a5167fc31fc98cb86e10417e0b684067e54b) perf(station): tell many viewers the overview with | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.48 | 130.27 |
 | [13045bc24](https://github.com/AFK-surf/monoid/commit/13045bc2458349f5a57a7bcb19335c969b994954) feat(ui): complete rest/wake state machine, park-a | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.48 | 130.27 |
 | [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.79 | 129.3 |
-| [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.65 | 131.48 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0973b9321](https://github.com/AFK-surf/monoid/commit/0973b9321389c2506ab5590eae4d3d9a2dd5f1f2) fix(ci): update mbui-ci test package prefixes from | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [225e586cc](https://github.com/AFK-surf/monoid/commit/225e586ccf866d08902958d74e855d99ced9ab01) feat(station-main): wire native hooks and claude-t | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.62 |
 | [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9d89a5167](https://github.com/AFK-surf/monoid/commit/9d89a5167fc31fc98cb86e10417e0b684067e54b) perf(station): tell many viewers the overview with | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.38 |
 | [13045bc24](https://github.com/AFK-surf/monoid/commit/13045bc2458349f5a57a7bcb19335c969b994954) feat(ui): complete rest/wake state machine, park-a | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.75 |
 | [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.67 |
-| [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.48 |
