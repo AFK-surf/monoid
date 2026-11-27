@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 | [6dfc70c60](https://github.com/AFK-surf/monoid/commit/6dfc70c60e598dd23c945bfee1153f829d9203c0) feat(core,mbui): PR-B2b topic policy evolution, MB | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.52 | 111.06 |
 | [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 2.7 | 3.66 | 15.2 | 38.26 | 58.91 | 33.51 | 68.53 | 103.3 | 126.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [0ca3ccb00](https://github.com/AFK-surf/monoid/commit/0ca3ccb00dba73acf87c7aad0b71ac6fd7ebdd6b) perf(mbui): virtualize attention panel, optimize q | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
-| [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 102.94 | 118.89 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.77 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 58.31 |
 | [6dfc70c60](https://github.com/AFK-surf/monoid/commit/6dfc70c60e598dd23c945bfee1153f829d9203c0) feat(core,mbui): PR-B2b topic policy evolution, MB | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.98 |
 | [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.41 |
 | [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
 | [0ca3ccb00](https://github.com/AFK-surf/monoid/commit/0ca3ccb00dba73acf87c7aad0b71ac6fd7ebdd6b) perf(mbui): virtualize attention panel, optimize q | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.23 |
-| [136bba585](https://github.com/AFK-surf/monoid/commit/136bba5854eb3da36bd7feef8e2f5dd946d6ff0c) perf(station): rank relays by lowest measured RTT  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.85 |
