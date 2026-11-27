@@ -178,9 +178,10 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
 }
 
 ///|
-test "drivePlace kept state (version < 0) displays retained place but suppresses drive.place writes until fresh (version >= 0)" {
-  let place_ver : Ref[Int] = Ref(-1)
+test "drivePlace kept state (version -2/-3) displays retained place and keep_place saves progress without extra topic read" {
+  let place_ver : Ref[Int] = Ref(-2)
   let place_val : Ref[Json?] = Ref(Some({ "at": 42.0, "of": 100.0 }))
+  let topic_reads : Ref[Int] = Ref(0)
   let calls : Array[(String, Json)] = []
   let base = made_source(call=fn(name, params, done) {
     calls.push((name, params))
@@ -190,6 +191,7 @@ test "drivePlace kept state (version < 0) displays retained place but suppresses
     ..base,
     topic_read: fn(name, _params) {
       if name == "drivePlace" {
+        topic_reads.val += 1
         { value: place_val.val, error: None, version: place_ver.val }
       } else {
         { value: None, error: None, version: 0 }
@@ -199,7 +201,7 @@ test "drivePlace kept state (version < 0) displays retained place but suppresses
   let at : DriveAt = { station: "w1/s1", root: Some("home"), path: "book.txt" }
   let vf = drive_viewer_file(src, at)
 
-  // While drivePlace is retained (version = -1), read-only place() still renders the retained position.
+  // While drivePlace is retained (version = -2, Client::show_kept), read-only place() renders the retained position.
   match (vf.place)() {
     LeftAt(at_pos, of_pos) => {
       assert_eq(at_pos, 42.0)
@@ -207,21 +209,51 @@ test "drivePlace kept state (version < 0) displays retained place but suppresses
     }
     _ => fail("expected LeftAt(42.0, 100.0) while retained")
   }
+  let reads_before_keep = topic_reads.val
 
-  // Writing drive.place while retained must be suppressed (0 calls).
+  // Writing drive.place on exit must NOT trigger an extra drivePlace subscription and must NOT drop progress.
   (vf.keep_place)(55.0, 100.0)
-  assert_eq(calls.length(), 0)
-
-  // Also test LastSaid version (< -1).
-  place_ver.val = -3
-  (vf.keep_place)(58.0, 100.0)
-  assert_eq(calls.length(), 0)
-
-  // Once the core answers with a fresh version (>= 0), drive.place write-back resumes normally.
-  place_ver.val = 1
-  (vf.keep_place)(60.0, 100.0)
+  assert_eq(topic_reads.val, reads_before_keep)
   assert_eq(calls.length(), 1)
   assert_eq(calls[0].0, "drive.place")
-  assert_eq(number(Some(calls[0].1), "at"), 60.0)
+  assert_eq(number(Some(calls[0].1), "at"), 55.0)
   assert_eq(number(Some(calls[0].1), "of"), 100.0)
+
+  // LastSaid version (-3) also preserves progress write-back without extra reads.
+  place_ver.val = -3
+  (vf.keep_place)(60.0, 100.0)
+  assert_eq(topic_reads.val, reads_before_keep)
+  assert_eq(calls.length(), 2)
+  assert_eq(number(Some(calls[1].1), "at"), 60.0)
+}
+
+///|
+test "topic_kept and topic_shown_kept_params follow topic_policy_enabled while sensitive ceiling stays unconditional" {
+  let prev = topic_policy_enabled.val
+  defer { topic_policy_enabled.val = prev }
+  let empty = Json::object({})
+  topic_policy_enabled.val = fn() { false }
+  assert_eq(topic_kept("workspaces", empty), 0)
+  assert_eq(topic_kept("jobLog", empty), 0)
+  assert_false(topic_shown_kept_params("otherPresets", empty))
+  assert_eq(topic_kept("vaults", empty), 0)
+  assert_false(topic_shown_kept_params("vaults", empty))
+
+  topic_policy_enabled.val = fn() { true }
+  assert_eq(topic_kept("workspaces", empty), 64)
+  assert_eq(topic_kept("jobLog", empty), 8)
+  assert_true(topic_shown_kept_params("otherPresets", empty))
+  assert_eq(topic_kept("vaults", empty), 0)
+  assert_false(topic_shown_kept_params("vaults", empty))
+}
+
+///|
+test "TopicState::is_retained distinguishes unconfirmed (<0) from fresh (>=0) for press_wait gating" {
+  let retained_show : TopicState = { value: Some({ "terminals": [] }), error: None, version: -2, waiting: false }
+  let retained_last : TopicState = { value: Some({ "terminals": [] }), error: None, version: -3, waiting: false }
+  let fresh : TopicState = { value: Some({ "terminals": [] }), error: None, version: 0, waiting: false }
+  assert_true(opens_answered(retained_show) && retained_show.is_retained())
+  assert_true(opens_answered(retained_last) && retained_last.is_retained())
+  assert_false(opens_answered(retained_show) && !retained_show.is_retained())
+  assert_true(opens_answered(fresh) && !fresh.is_retained())
 }

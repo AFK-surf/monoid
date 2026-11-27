@@ -90,11 +90,27 @@ pub fn remote_close_tab_clean(src : Source, ws : String, key : String) -> Unit {
 }
 
 ///|
+/// Whether `screens` for `station` is currently unconfirmed/retained (`version < 0`).
+fn remote_screens_retained(src : Source, station : String) -> Bool {
+  @signals.untracked(fn() { src.topic("screens", { "station": Json::string(station) }).get().is_retained() })
+}
+
+///|
+/// Whether `terminals` for `station` is currently unconfirmed/retained (`version < 0`).
+fn remote_terminals_retained(src : Source, station : String) -> Bool {
+  @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(station) }).get().is_retained() })
+}
+
+///|
 /// Open a browser tab on `station` into workspace `ws`'s remote workbench (reusing last seen or creating a new tab).
 pub fn remote_open_station_browser_tab(src : Source, ws : String, station : String) -> Unit {
-  let sval = @signals.untracked(fn() {
-    src.topic("screens", { "station": Json::string(station) }).get().value
+  let sr = @signals.untracked(fn() {
+    src.topic("screens", { "station": Json::string(station) }).get()
   })
+  if sr.is_retained() {
+    return
+  }
+  let sval = sr.value
   let listed = items(sval, "screens")
     .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
     .map(fn(sc) { text(Some(sc), "id") })
@@ -406,6 +422,13 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
 /// Row `r` opened: across the whole screen its own page (a screen's, a terminal's); in a side column a tab of the
 /// workbench beside it, brought to the front.
 fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) -> Unit {
+  if r.kind == "terminal" {
+    if remote_terminals_retained(src, r.station) {
+      return
+    }
+  } else if remote_screens_retained(src, r.station) {
+    return
+  }
   match (at, r.kind) {
     (Whole, "terminal") => @sfbase.open_terminal(r.station, r.id, r.cwd, "", watch=r.watch)
     (Whole, _) => @sfbase.open_screen(r.station, r.id, Some(r.title))
@@ -416,6 +439,13 @@ fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) ->
 ///|
 /// Row `r` closed (its tab of the browser closed, its terminal ended), with the workbench's tabs showing it.
 fn remote_row_close(src : Source, ws : String, r : RemoteRow) -> Unit {
+  if r.kind == "terminal" {
+    if remote_terminals_retained(src, r.station) {
+      return
+    }
+  } else if remote_screens_retained(src, r.station) {
+    return
+  }
   let on : Map[String, Json] = { "station": Json::string(r.station) }
   if r.kind == "terminal" {
     on["terminal"] = Json::string(r.id)
@@ -825,7 +855,11 @@ fn remote_terminal_stations(src : Source, ws : String) -> Array[(String, String)
 /// only to look at) the one last seen or its last; across the whole screen (`at` Whole) its page, in a side column a tab
 /// of workspace `ws`'s workbench brought to the front.
 fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address : String) -> Unit {
-  let sv = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(address) }).get().value })
+  let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(address) }).get() })
+  if sr.is_retained() {
+    return
+  }
+  let sv = sr.value
   let listed = items(sv, "screens")
     .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
     .map(fn(sc) { text(Some(sc), "id") })

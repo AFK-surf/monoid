@@ -45,10 +45,10 @@ pub fn TopicState::kept(self : TopicState) -> Bool {
 }
 
 ///|
-/// Whether the topic state is a retained/unconfirmed value (`LastSaid` or `Client::show_kept`, `version < 0`)
-/// rather than a fresh answer confirmed by the core (`version >= 0`).
+/// Whether the topic state is unconfirmed (`version < 0`: `-1` unheld workspace_switch placeholder,
+/// `-2` `Client::show_kept`, or `<= -3` `LastSaid`) rather than a fresh answer confirmed by the core (`version >= 0`).
 pub fn TopicState::is_retained(self : TopicState) -> Bool {
-  self.kept() || self.version < 0
+  self.version < 0
 }
 
 ///|
@@ -393,14 +393,14 @@ pub fn home_lasting_of(name : String) -> Bool {
 /// core's client keeps as they are let go of, to ask them again with their version (@core.Client::keep: the core
 /// answers `same` where one has not changed, what changed from it where it has); 0, none.
 pub fn topic_kept(name : String, params : Json) -> Int {
-  topic_kept_by(name, params, true)
+  topic_policy_keep_by(name, params, true, (topic_policy_enabled.val)())
 }
 
 ///|
 /// topic_kept, with the views' own (`views_kept`, a chat's last 8) where `views` (MBUI_SWR_VIEWS): a replay of a run
 /// from before it keeps what that run's app did.
 pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
-  topic_policy_keep(name, params, views)
+  topic_policy_keep_by(name, params, views, (topic_policy_enabled.val)())
 }
 
 ///|
@@ -409,13 +409,13 @@ pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
 /// nor the lists the places open on (`lasting`: shown again by the source that read them, last_said, never to what names
 /// a station by them, station_marks).
 pub fn topic_shown_kept(name : String) -> Bool {
-  topic_policy_show_kept(name, empty_topic_params, true)
+  topic_policy_show_kept_by(name, empty_topic_params, true, (topic_policy_enabled.val)())
 }
 
 ///|
 /// Parameter-aware `topic_shown_kept` (handles `byParam` topics such as `stationPart` and unconditional `sensitive` ceiling).
 pub fn topic_shown_kept_params(name : String, params : Json) -> Bool {
-  topic_policy_show_kept(name, params, true)
+  topic_policy_show_kept_by(name, params, true, (topic_policy_enabled.val)())
 }
 
 ///|

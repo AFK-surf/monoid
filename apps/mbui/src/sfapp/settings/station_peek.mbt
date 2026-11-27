@@ -316,10 +316,7 @@ fn peek_screen_items(
           })))
         }
         if can_term {
-          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", disabled=terms_retained, fn() {
-            if terms_retained {
-              return
-            }
+          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", fn() {
             close()
             (open_terminal_of.val)(address, "new", "")
           })))

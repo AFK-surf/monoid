@@ -1732,9 +1732,10 @@ test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, dele
 ///|
 test "screens and terminals kept state (version < 0) show read-only list but disable actions until fresh (version >= 0)" {
   let prev_terminals_here = terminals_here_kept.val
+  defer { terminals_here_kept.val = prev_terminals_here }
   terminals_here_kept.val = Some(true)
-  let screens_ver : @signals.Signal[Int] = @signals.signal(-2)
-  let terms_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
   let calls : Array[(String, Json)] = []
   let screens_topic : Json = {
     "known": true,
@@ -1836,5 +1837,86 @@ test "screens and terminals kept state (version < 0) show read-only list but dis
   t.tap_text("打开终端")
   t.draw()
   assert_true(@sfbase.app.nav.pages().length() > nav_before)
-  terminals_here_kept.val = prev_terminals_here
+}
+
+///|
+test "remote_node guards close and browser open while screens/terminals are retained (version -3) and recovers when fresh" {
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let screens_val : Json = {
+    "known": true,
+    "outdated": false,
+    "browser": true,
+    "control": true,
+    "screens": [
+      { "id": "browser:u_1", "kind": "browser", "userTab": true, "closable": true, "title": "Docs" },
+    ],
+  }
+  let terms_val : Json = {
+    "known": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      { "id": "term-1", "cwd": "/work/proj", "ended": false },
+    ],
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let term_row : RemoteRow = {
+    key: "t/ws1/st1/term-1",
+    station: "ws1/st1",
+    kind: "terminal",
+    id: "term-1",
+    icon: "terminal",
+    title: "proj",
+    under: "/work/proj",
+    agent: false,
+    closable: true,
+    cwd: "/work/proj",
+    watch: false,
+    last: true,
+  }
+  let tab_row : RemoteRow = {
+    key: "s/ws1/st1/browser:u_1",
+    station: "ws1/st1",
+    kind: "browser",
+    id: "browser:u_1",
+    icon: "web",
+    title: "Docs",
+    under: "",
+    agent: false,
+    closable: true,
+    cwd: "",
+    watch: false,
+    last: true,
+  }
+  // Retained (-3): closing rows or opening browser tab from retained screens triggers 0 calls.
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // Fresh (1): closing rows sends terminal.end and screen.close normally.
+  screens_ver.set(1)
+  terms_ver.set(1)
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_true(calls.iter().any(fn(c) { c.0 == "terminal.end" }))
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.close" }))
 }

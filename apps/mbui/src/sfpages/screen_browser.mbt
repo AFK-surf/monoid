@@ -72,10 +72,19 @@ priv enum TabAct {
 }
 
 ///|
+/// Whether `screens` for this viewer's station is currently unconfirmed/retained (`version < 0`).
+fn browser_screens_retained(s : ScreenSess) -> Bool {
+  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_retained() })
+}
+
+///|
 /// Tab action `act` done (in a press's handler): `close` closes the viewer where its last tab closes.
 fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Unit {
   match act {
-    Show(id, title) => if id != s.screen { switch_screen_to(s, u, id, title, false) }
+    Show(id, title) =>
+      if id != s.screen && !browser_screens_retained(s) {
+        switch_screen_to(s, u, id, title, false)
+      }
     Window(window) => {
       let p : Map[String, Json] = { "t": Json::string("window") }
       match window {
@@ -568,7 +577,7 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
 /// Tab `id` closed (its ×, ⌘W): where it is the one shown, the one after it is shown in its place (else the one
 /// before; none left, the viewer closes), as a browser does.
 fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], close : () -> Unit) -> Unit {
-  if !s.is_active_principal() {
+  if !s.is_active_principal() || browser_screens_retained(s) {
     return
   }
   let p : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(id) }

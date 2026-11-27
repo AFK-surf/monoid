@@ -19,8 +19,8 @@ pub impl Eq for Read with equal(a, b) {
 }
 
 ///|
-/// Whether this read is a retained/unconfirmed value (`version < 0`: `LastSaid` or `Client::show_kept`)
-/// rather than a fresh value confirmed by the core (`version >= 0`).
+/// Whether this read is unconfirmed (`version < 0`: `-1` unheld placeholder, `-2` `Client::show_kept`,
+/// or `<= -3` `LastSaid`) rather than a fresh value confirmed by the core (`version >= 0`).
 pub fn Read::is_retained(self : Read) -> Bool {
   self.version < 0
 }

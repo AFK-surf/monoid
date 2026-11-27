@@ -967,9 +967,6 @@ pub fn terminal_pane_node(
               )
             })
             let open_new_browser = fn() {
-              if @signals.untracked(screens_retained) {
-                return
-              }
               let ids = @signals.untracked(user_browser_ids)
               let target = @settings.new_browser_tab(
                 src.call,
@@ -986,11 +983,7 @@ pub fn terminal_pane_node(
               may,
               can_browser,
               done,
-              fn() {
-                if !@signals.untracked(terms_retained) {
-                  go_terminal("new", false, @signals.untracked(cwd))
-                }
-              },
+              fn() { go_terminal("new", false, @signals.untracked(cwd)) },
               open_new_browser,
             )
           })

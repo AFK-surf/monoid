@@ -105,10 +105,6 @@ pub fn drive_viewer_file(src : Source, at : DriveAt) -> @sf.ViewerFile {
       }
     },
     keep_place: fn(left, of) {
-      let cur = @signals.untracked(fn() { src.topic("drivePlace", drive_params(at.station, root, at.path)).get() })
-      if cur.is_retained() {
-        return
-      }
       let p = drive_params(at.station, root, at.path)
       p["at"] = Json::number(left)
       p["of"] = Json::number(of)

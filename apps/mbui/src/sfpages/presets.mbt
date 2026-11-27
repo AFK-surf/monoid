@@ -993,7 +993,7 @@ fn preset_others_open(
   let let_go = fn() { lease.cancel() }
   let ready = fn() {
     match lease.follow() {
-      Some(t) => t.error is Some(_) || (t.value is Some(_) && !flag(t.value, "reading"))
+      Some(t) => !t.is_retained() && (t.error is Some(_) || (t.value is Some(_) && !flag(t.value, "reading")))
       // (let go of: nothing to wait for)
       None => true
     }

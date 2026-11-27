@@ -177,10 +177,8 @@ fn chat_remote_menu_show(
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openTerminal"), heading=true, fn() { })))
     }
     if term_ok {
-      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", disabled=terms_retained, fn() {
-        if !terms_retained {
-          open_terminal(r.station, "new", "", r.session)
-        }
+      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
+        open_terminal(r.station, "new", "", r.session)
       })))
     }
     for t in open_terms {
@@ -230,7 +228,10 @@ pub fn chat_remote_open(
   let ask_params : Map[String, Json] = { "station": Json::string(r.station) }
   let sub = hold(src, scope, "terminals", ask_params)
   press_wait(
-    fn() { opens_answered(sub.get()) },
+    fn() {
+      let st = sub.get()
+      opens_answered(st) && !st.is_retained()
+    },
     fn() {
       let st = @signals.untracked(fn() { sub.get() })
       let_go(src, scope)
