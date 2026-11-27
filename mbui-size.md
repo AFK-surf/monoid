@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [fd3ebabc5](https://github.com/AFK-surf/monoid/commit/fd3ebabc587450382c37abfbd790c18432779085) fix(mbui): put the desktop sign-in page in the mid | 2.66 | 3.59 | 14.9 | 37.87 | 57.95 | 33.19 | 67.75 | 101.89 | 94.32 |
 | [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.93 | 135.89 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [a2b167ca1](https://github.com/AFK-surf/monoid/commit/a2b167ca11cb804f0887aac92e6caa9cdea8151f) feat(station-pion): add station_replica package (W | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
-| [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.4 | 132.81 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [353fa03f1](https://github.com/AFK-surf/monoid/commit/353fa03f1a611ad4ec25fe83fce504475a9c3103) feat(mbui,core): read basic Markdown marks in a pe | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.44 |
 | [fd3ebabc5](https://github.com/AFK-surf/monoid/commit/fd3ebabc587450382c37abfbd790c18432779085) fix(mbui): put the desktop sign-in page in the mid | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.92 |
 | [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.8 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
 | [a2b167ca1](https://github.com/AFK-surf/monoid/commit/a2b167ca11cb804f0887aac92e6caa9cdea8151f) feat(station-pion): add station_replica package (W | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.54 |
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.49 |
-| [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.41 |
