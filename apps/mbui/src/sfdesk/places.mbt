@@ -282,6 +282,8 @@ fn profiles_place_node(
     pin=fn(k) { k == Some(("", "")) },
     on_take=fn(_, k) {
       match k {
+        // Overview shares `profile_shown_at("", "")` with `places_side_node.mbt` so any overview ahead-read is released too.
+        Some(("", "")) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at("", "")) })
         Some((a, id)) => @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
         None => ()
       }

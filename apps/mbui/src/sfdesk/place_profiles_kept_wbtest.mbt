@@ -63,6 +63,7 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
   @sf.set_words(@sfbase.fill)
   let ws_id = "ws-sta-kept"
   let ws : @sfbase.Workspace = { id: ws_id, name: "W", emoji: "", icon: "", email: "" }
+  let ws_sig : @signals.Signal[String] = @signals.signal(ws_id)
   let rows : @signals.Signal[Json?] = @signals.signal(None)
   let src = @sfbase.made_source(
     topic=fn(name, params) {
@@ -73,12 +74,15 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
               {
                 "loaded": Json::boolean(true),
                 "account": { "email": "me@x.com" },
-                "workspaces": [{ "id": Json::string(ws_id), "name": "W", "emoji": "", "icon": "" }],
+                "workspaces": [
+                  { "id": Json::string(ws_id), "name": "W", "emoji": "", "icon": "" },
+                  { "id": "ws-other", "name": "W2", "emoji": "", "icon": "" },
+                ],
               },
             ]),
           )
-        "prefs" => Some({ "workspace": Json::string(ws_id) })
-        "stations" => rows.get()
+        "prefs" => Some({ "workspace": Json::string(ws_sig.get()) })
+        "stations" => if ws_sig.get() == ws_id { rows.get() } else { Some(Json::array([])) }
         "station" =>
           match params.get("station") {
             Some(String(a)) => {
@@ -87,24 +91,24 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
             }
             _ => None
           }
-        "workspace" => Some({ "id": Json::string(ws_id), "name": "W", "rigs": [] })
+        "workspace" => Some({ "id": Json::string(ws_sig.get()), "name": "W", "rigs": [] })
         _ => None
       }
     },
   )
   let core = settings_core(src, ws)
-  let here = fn() { @settings.here_of(core, ws_id, "W") }
+  let here = fn() { @settings.here_of(core, ws_sig.get(), "W") }
   let place_root : Ref[@view.View?] = Ref(None)
   let t = @ui.Tester::tree(
     fn(root) {
       @ui.set_tree_theme(@sf.ui_theme_now)
       @sf.look_lent(root, @sf.look_for(1280.0))
-      root.box(fn(box) {
+      // Outer switch_by keyed by workspace (mirroring pane_view/nav shelf clear on workspace switch).
+      root.switch_by(fn() { ws_sig.get() }, fn(box, _) {
         box.width(Is(Some(900.0))).height(Is(Some(700.0))) |> ignore
         place_root.val = Some(box)
         stations_place_node(box, src, core, here, fn() { 0 }, fn() { @sf.no_frame }, fn() { 900.0 })
       })
-      |> ignore
     },
     w=1280.0,
     h=800.0,
@@ -178,11 +182,17 @@ test "stations_place_node parks up to 4 stations via pick_kept, zeroes parked po
   t.draw()
   let rebuild_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   assert_true(rebuild_made > 0, msg="evicted st2 must rebuild on revisit")
-  // 7. Disposing the place (as on workspace switch) releases all parked station branches and leaves 0 timers.
-  t.tree_frames_from_now()
+  // 7. Returning to Reading parks the current station without leaking timers.
   rows.set(None)
   t.draw()
-  assert_eq(tree.due_count(), 0, msg="no timers remain after returning to Reading")
+  assert_eq(tree.due_count(), 0, msg="no timers remain while on Reading")
+  // 8. Switching workspace disposes the entire stations_place_node and releases all parked station branches.
+  t.tree_frames_from_now()
+  ws_sig.set("ws-other")
+  t.draw()
+  let ws_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  assert_true(ws_let_go > 0, msg="workspace switch must dispose all parked station branches (let_go=\{ws_let_go})")
+  assert_eq(tree.due_count(), 0, msg="no timers remain after workspace switch disposal")
   @sfbase.place_pick.remove(@sfbase.place_key(ws_id, "stations"))
   @ui.run_let_go()
 }

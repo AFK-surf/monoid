@@ -404,6 +404,12 @@ test "wide switch budget (dim 1 & 2): rail hot switches build 0 nodes within lay
   tm.run_for(@sfapptest.kept_glide_over_ms)
   assert_true(tm.at_rest(), msg="medium-600x900 at_rest")
   assert_eq(tm.unasked_faults(), [], msg="medium-600x900 unasked faults")
+  let med_tree = @ui.view_tree().unwrap()
+  assert_eq(
+    med_tree.due_count(),
+    tm.subtree_timeline_count(med_tree.root()),
+    msg="medium-600x900 parked subtrees must own 0 timeline entries",
+  )
   println(
     "wide-budget medium-600x900: hot_conn=\{Repr(med_hot_conn)} hot_use=\{Repr(med_hot_use)} hot_ov=\{Repr(med_hot_ov)} hot_p1=\{Repr(med_hot_p1)} hot_s1=\{Repr(med_hot_s1)}",
   )
@@ -593,11 +599,13 @@ test "wide switch budget (dim 5): stations hot-returns within 4 quota, evicts 5t
 }
 
 ///|
-/// Dimension 6: Live node count and live client retained bytes redline after full wide rotation + eviction.
+/// Dimension 6: Live node count and lasting-lists `last_said` cache bytes redline after full wide rotation + eviction.
+/// Note: `last_said_stats()` measures only the client's lasting lists `last_said` cache (places SWR lists);
+/// parked pages release their own station/profile topic holds via `rest(drop_holds=true)` and are outside this cache.
 /// Budgets tightened to ~1.3x measured peak (60/120/24/7 fps identical).
 test "wide switch budget (dim 6): full wide rotation stays within live node and retained payload byte budgets" {
   let wide_alive_nodes_budget = 7500
-  let wide_last_said_bytes_budget = 256 * 1024 // 256.00 KB (0.250 MB) live client last_said ceiling
+  let wide_last_said_bytes_budget = 256 * 1024 // 256.00 KB (0.250 MB) lasting lists last_said cache ceiling
   let wide_fixture_cum_bytes_budget = 768 * 1024 // 768.00 KB (0.750 MB) cumulative fixture reference ceiling
   let (t, c, src, ws, chat_ref) = wide_budget_open(1280.0, 800.0, 0)
   let tree = @ui.view_tree().unwrap()
@@ -636,9 +644,9 @@ test "wide switch budget (dim 6): full wide rotation stays within live node and 
   let (ls_evict_n, ls_evict_b) = @sfbase.last_said_stats()
   let (ways_evict, cum_evict) = wide_cumulative_fixture_bytes(c)
   let img_bytes = t.host_image_bytes_most()
-  println("wide-budget dim6 memory & retained bytes table:")
+  println("wide-budget dim6 memory & lasting lists last_said cache table:")
   println(
-    "  init:         alive=\{alive_init} (\{wide_fmt_pct(alive_init, wide_alive_nodes_budget)} of \{wide_alive_nodes_budget}), live_last_said=\{ls_init_n} entries / \{wide_fmt_kb_mb(ls_init_b)} (\{wide_fmt_pct(ls_init_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_init} topics / \{wide_fmt_kb_mb(cum_init)} (\{wide_fmt_pct(cum_init, wide_fixture_cum_bytes_budget)})",
+    "  init:         alive=\{alive_init} (\{wide_fmt_pct(alive_init, wide_alive_nodes_budget)} of \{wide_alive_nodes_budget}), lasting_last_said=\{ls_init_n} entries / \{wide_fmt_kb_mb(ls_init_b)} (\{wide_fmt_pct(ls_init_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_init} topics / \{wide_fmt_kb_mb(cum_init)} (\{wide_fmt_pct(cum_init, wide_fixture_cum_bytes_budget)})",
   )
   println(
     "  after_4prof:  alive=\{alive_after_profiles} (\{wide_fmt_pct(alive_after_profiles, wide_alive_nodes_budget)})",
@@ -647,10 +655,10 @@ test "wide switch budget (dim 6): full wide rotation stays within live node and 
     "  after_4sta:   alive=\{alive_after_stations} (\{wide_fmt_pct(alive_after_stations, wide_alive_nodes_budget)})",
   )
   println(
-    "  full_peak:    alive=\{alive_peak} (\{wide_fmt_pct(alive_peak, wide_alive_nodes_budget)}), live_last_said=\{ls_peak_n} entries / \{wide_fmt_kb_mb(ls_peak_b)} (\{wide_fmt_pct(ls_peak_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_peak} topics / \{wide_fmt_kb_mb(cum_peak)} (\{wide_fmt_pct(cum_peak, wide_fixture_cum_bytes_budget)})",
+    "  full_peak:    alive=\{alive_peak} (\{wide_fmt_pct(alive_peak, wide_alive_nodes_budget)}), lasting_last_said=\{ls_peak_n} entries / \{wide_fmt_kb_mb(ls_peak_b)} (\{wide_fmt_pct(ls_peak_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_peak} topics / \{wide_fmt_kb_mb(cum_peak)} (\{wide_fmt_pct(cum_peak, wide_fixture_cum_bytes_budget)})",
   )
   println(
-    "  after_evict:  alive=\{alive_after_evict} (\{wide_fmt_pct(alive_after_evict, wide_alive_nodes_budget)}), live_last_said=\{ls_evict_n} entries / \{wide_fmt_kb_mb(ls_evict_b)} (\{wide_fmt_pct(ls_evict_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_evict} topics / \{wide_fmt_kb_mb(cum_evict)} (\{wide_fmt_pct(cum_evict, wide_fixture_cum_bytes_budget)}), host_img_peak=\{wide_fmt_kb_mb(img_bytes)}",
+    "  after_evict:  alive=\{alive_after_evict} (\{wide_fmt_pct(alive_after_evict, wide_alive_nodes_budget)}), lasting_last_said=\{ls_evict_n} entries / \{wide_fmt_kb_mb(ls_evict_b)} (\{wide_fmt_pct(ls_evict_b, wide_last_said_bytes_budget)}), cum_fixture=\{ways_evict} topics / \{wide_fmt_kb_mb(cum_evict)} (\{wide_fmt_pct(cum_evict, wide_fixture_cum_bytes_budget)}), host_img_peak=\{wide_fmt_kb_mb(img_bytes)}",
   )
   assert_true(
     alive_peak <= wide_alive_nodes_budget,
@@ -667,7 +675,7 @@ test "wide switch budget (dim 6): full wide rotation stays within live node and 
   )
   assert_true(
     ls_evict_b <= wide_last_said_bytes_budget,
-    msg="live client last_said bytes \{wide_fmt_kb_mb(ls_evict_b)} exceeded budget \{wide_fmt_kb_mb(wide_last_said_bytes_budget)}",
+    msg="lasting lists last_said cache bytes \{wide_fmt_kb_mb(ls_evict_b)} exceeded budget \{wide_fmt_kb_mb(wide_last_said_bytes_budget)}",
   )
   assert_true(
     cum_evict <= wide_fixture_cum_bytes_budget,

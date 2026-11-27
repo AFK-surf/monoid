@@ -421,7 +421,8 @@ priv struct LastSaid {
 let last_said : Ref[Array[LastSaid]] = Ref([])
 
 ///|
-/// Live count and serialized UTF-8 byte size of retained `last_said` topic values currently held by the client.
+/// Live count and serialized UTF-8 byte size of the client's lasting lists `last_said` cache
+/// (places SWR lists only; parked pages release their own topic holds via `rest(drop_holds=true)` and are not in this cache).
 pub fn last_said_stats() -> (Int, Int) {
   let mut bytes = 0
   for entry in last_said.val {
