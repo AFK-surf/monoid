@@ -220,6 +220,8 @@ priv struct ScreenSess {
   mut passkey_keepalive_key : String
   /// silently muted while kept alive solely by passkey_keepalive with no visible UI holder
   mut passkey_muted : Bool
+  /// last sequence number passed to `ScreenSess::route` (used to refresh native audio routing on mute change)
+  mut route_seq : Double
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
 }
@@ -379,6 +381,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_owner_principal: "",
         passkey_keepalive_key: "",
         passkey_muted: false,
+        route_seq: 0.0,
         child_screen: None,
       }
       screens_open[key] = s
@@ -1606,8 +1609,29 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
     _ => ()
   }
   match seq {
-    Some(n) => self.route(n)
+    Some(n) => {
+      self.route_seq = n
+      self.route(n)
+    }
     None => ()
+  }
+}
+
+///|
+/// Set or clear silent passkey keepalive mute, flushing any buffered audio and refreshing native direct audio routing.
+fn ScreenSess::set_passkey_muted(self : ScreenSess, on : Bool) -> Unit {
+  if self.passkey_muted == on {
+    return
+  }
+  self.passkey_muted = on
+  if on {
+    match self.stream {
+      Some(st) => st.audio(Bytes::make(0, b'\x00'))
+      None => ()
+    }
+  }
+  if self.call != 0 {
+    self.route(self.route_seq)
   }
 }
 
@@ -1626,7 +1650,7 @@ fn ScreenSess::route(self : ScreenSess, after : Double) -> Unit {
     shown is Some(_) &&
     self.parts.last().map(fn(p) { p.1 }) == shown
   let to_whole = !self.parting && shown is None
-  let audio = @signals.untracked(fn() { self.audio_ready.get() && !self.audio_muted.get() })
+  let audio = !self.passkey_muted && @signals.untracked(fn() { self.audio_ready.get() && !self.audio_muted.get() })
   match self.stream {
     Some(st) => st.route(self.call, after, video=to_whole, audio~)
     None => ()

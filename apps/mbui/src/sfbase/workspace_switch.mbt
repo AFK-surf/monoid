@@ -223,12 +223,8 @@ pub let on_workspace_switched : Ref[(String, String) -> Unit] = Ref(fn(_, _) {  
 ///|
 /// What a switch does once done, as one act (history_act: an entry for where it left from, whenever it is done).
 fn switch_picked(src : Source, ws : String) -> Unit {
-  let prev_ws = app.picked.untracked()
   history_act(fn() {
     app.picked.set(ws)
-    if prev_ws != "" && prev_ws != ws {
-      (on_workspace_switched.val)(prev_ws, ws)
-    }
     (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), answer_unread)
     // (what was open, in hand or being written on the board of the workspace left: none in the one come to)
     board_transient_reset()

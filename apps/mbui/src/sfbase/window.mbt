@@ -130,6 +130,7 @@ pub fn window_text(p : Page) -> String? {
             "station": Json::string(at.station),
             "screen": Json::string(at.screen),
             "title": Json::string(at.title),
+            "owner": Json::string(window_page_owner(p)),
           },
         },
         window_title(p),
@@ -171,6 +172,13 @@ pub fn window_text(p : Page) -> String? {
 }
 
 ///|
+/// Creation owner parsed from `MBUI_WINDOW` for a child-process standalone screen window (`Run(what)`).
+/// `None` for the normal primary app window; `Some(owner)` (possibly `""` if missing) for a child-process screen
+/// window, evaluated fail-closed by `window_here_owner_matches`.
+// kept across runs: put back by pages.mbt's reset
+let startup_window_owner : Ref[String?] = Ref(None)
+
+///|
 /// The page a window of its own was started to show (window_text's), None when it names none.
 pub fn window_page(s : String) -> Page? {
   let v = @json.parse(s) catch { _ => return None }
@@ -183,6 +191,11 @@ pub fn window_page(s : String) -> Page? {
         Some(String(t)) => t
         _ => ""
       }
+      let owner = match at.get("owner") {
+        Some(String(o)) => o
+        _ => ""
+      }
+      startup_window_owner.val = Some(owner)
       Some(Screen({ station, screen, title, until_gone: false }))
     }
     _ =>
@@ -249,6 +262,8 @@ pub fn open_window(p : Page) -> Bool {
           windows_here_told(p, wid)
           (window_page_given.val)(p, wid, owner)
           return true
+        } else if p is SideTab(f) {
+          tab_viewer_moves_cancel(f.chat.station + ":" + f.chat.session, f.tab)
         }
       }
       if p is SideTab(_) {
@@ -432,21 +447,27 @@ pub fn window_has_screen_for_owner(owner : String, station : String, screen : St
 }
 
 ///|
-/// Whether standalone window `wid`'s creation owner still matches `station`'s current active workspace owner.
-/// Returns `true` for the primary window (`wid <= 0`).
+/// Whether standalone window `wid`'s creation owner still matches `station`'s current active workspace owner
+/// (fail-closed):
+/// - `wid > 0` (secondary in-process window): requires recorded `windows_here_owner[wid]` matching active owner;
+/// - `wid <= 0` with `startup_window_owner` set (`Run(what)` child-process screen window): requires non-empty owner
+///   matching active owner;
+/// - normal primary app window (`wid <= 0`, `startup_window_owner == None`): returns `true`.
 pub fn window_here_owner_matches(wid : Int, station : String) -> Bool {
-  if wid <= 0 {
-    return true
+  let ws = match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
   }
-  match windows_here_owner.get(wid) {
-    Some(owner) => {
-      let ws = match station.find("/") {
-        Some(i) => station.exact_view(end=i).to_owned()
-        None => ""
-      }
-      !workspace_is_revoked(ws) && workspace_owner_of(ws) == owner
+  if wid > 0 {
+    match windows_here_owner.get(wid) {
+      Some(owner) => !workspace_is_revoked(ws) && owner != "" && workspace_owner_of(ws) == owner
+      None => false
     }
-    None => true
+  } else {
+    match startup_window_owner.val {
+      Some(owner) => !workspace_is_revoked(ws) && owner != "" && workspace_owner_of(ws) == owner
+      None => true
+    }
   }
 }
 

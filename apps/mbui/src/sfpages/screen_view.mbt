@@ -1170,7 +1170,7 @@ fn screen_leases_settle() -> Unit {
     if keep_alive {
       if visible || held_by_window {
         match screens_open.get(key) {
-          Some(s) => s.passkey_muted = false
+          Some(s) => s.set_passkey_muted(false)
           None => ()
         }
         if visible {
@@ -1181,22 +1181,15 @@ fn screen_leases_settle() -> Unit {
         }
       } else if lease.passkey_keepalive {
         // Covered/hidden while kept alive solely by passkey keepalive: keep WebAuthn/control alive, but mute audio
-        // so background audio never leaks while the screen is out of sight.
+        // (both software PCM and native direct audio routing) so background audio never leaks out of sight.
         match screens_open.get(key) {
-          Some(s) =>
-            if !s.passkey_muted {
-              s.passkey_muted = true
-              match s.stream {
-                Some(st) => st.audio(Bytes::make(0, b'\x00'))
-                None => ()
-              }
-            }
+          Some(s) => s.set_passkey_muted(true)
           None => ()
         }
       }
     } else if !held_by_window {
       match screens_open.get(key) {
-        Some(s) => s.passkey_muted = false
+        Some(s) => s.set_passkey_muted(false)
         None => ()
       }
       screen_lease_apply_hidden(lease.src, key)

@@ -1736,6 +1736,7 @@ pub fn reset() -> Unit {
   windows_open.clear()
   windows_here_show.clear()
   windows_here_owner.clear()
+  startup_window_owner.val = None
   tab_windows.clear()
 }
 

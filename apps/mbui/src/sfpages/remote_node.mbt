@@ -1039,7 +1039,11 @@ pub fn remote_workbench_node(
               })
             if !kept {
               let key = captured_screen_keys.get((old_at.station, old_at.screen)).unwrap_or_else(fn() { screen_key(old_at.station, old_at.screen) })
-              screen_left_key(src, key, old_at.station, old_at.screen, leaving_holder_released=true)
+              // Defer until after_drawn_frame so `v.pick` has already disposed the old tab node and released its
+              // holder: closes cleanly when no other visible holder exists, and stays open if another holder remains.
+              @ui.after_drawn_frame(fn() {
+                screen_left_key(src, key, old_at.station, old_at.screen, leaving_holder_released=true)
+              })
             }
           }
         }

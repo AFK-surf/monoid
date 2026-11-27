@@ -3005,6 +3005,7 @@ test "multi-account workspace owner switch revokes only affected workspace, clea
   @settings.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
   @sfbase.accounts_subs_sync(["acct-a", "acct-b", "acct-c"])
   @sfbase.workspace_owner_set("ws-1", "acct-a")
   @sfbase.workspace_owner_set("ws-2", "acct-c")
@@ -3013,7 +3014,6 @@ test "multi-account workspace owner switch revokes only affected workspace, clea
   let cancelled : Array[Int] = []
   let rpcs : Array[String] = []
   let next_call = Ref(0)
-  let base = @sffixture.fixture("settings")
   let src : Source = {
     ..base,
     call: fn(name, _params, done) {
@@ -3092,6 +3092,7 @@ test "real workspaces JSON snapshot revokes on A->B owner change and on workspac
   @settings.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
   @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
   let snap_a : Json = Json::array([
     Json::object({
@@ -3105,7 +3106,6 @@ test "real workspaces JSON snapshot revokes on A->B owner change and on workspac
   ])
   @sfbase.workspace_owners_sync_json(Some(snap_a))
   let opens = Ref(0)
-  let base = @sffixture.fixture("settings")
   let src : Source = {
     ..base,
     stream: fn(name, _params, _bytes, _on_val, _done) {
@@ -3190,6 +3190,7 @@ test "passkey survives pair flip and side-panel <-> fullscreen handoff, cancels 
   @settings.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
   @sfbase.accounts_subs_sync(["acct-pk"])
   @sfbase.workspace_owner_set("ws-1", "acct-pk")
   let ready = Ref(false)
@@ -3197,7 +3198,6 @@ test "passkey survives pair flip and side-panel <-> fullscreen handoff, cancels 
   let cancelled : Array[Int] = []
   let inputs : Array[Json] = []
   let view_cbs : Array[(Json, Bytes?) -> Unit] = []
-  let base = @sffixture.fixture("settings")
   let src : Source = {
     ..base,
     call: fn(name, params, done) {
@@ -3321,11 +3321,11 @@ test "screen lease table preserves equivalence without remote_shelf_pause_node a
   @settings.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
   @sfbase.accounts_subs_sync(["acct-eq"])
   @sfbase.workspace_owner_set("ws-1", "acct-eq")
   let opens = Ref(0)
   let cancelled : Array[Int] = []
-  let base = @sffixture.fixture("settings")
   let src : Source = {
     ..base,
     stream: fn(name, _params, _bytes, _on_val, _done) {
@@ -3399,5 +3399,107 @@ test "screen lease table preserves equivalence without remote_shelf_pause_node a
   t.draw()
   t.draw()
   assert_eq(opens.val, 3, msg="waking Place(remote) shelf must resume stream")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey_muted revokes native Stream::route audio and suppresses audio packets during keepalive-only cover" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-mute"])
+  @sfbase.workspace_owner_set("ws-1", "acct-mute")
+  let s = screen_sess(base, "ws-1/st-1", "browser:mute-1")
+  let t = @ui.Tester::tree(fn(_) {  }, w=400.0, h=300.0)
+  t.draw()
+  s.own_stream()
+  s.call = 7
+  s.heard = true
+  // Deliver audioConfig + sequenced audio packet while unmuted -> audio_ready=true, audio routed.
+  s.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+  s.take({ "audio": { "n": 10.0 } }, Some(Bytes::make(16, b'\x01')))
+  assert_true(s.audio_ready.untracked())
+  assert_false(s.passkey_muted)
+  // Enable passkey keepalive mute -> sets passkey_muted=true, refreshes route(audio=false), and subsequent sequenced
+  // packets keep passkey_muted=true without routing or delivering audio.
+  s.set_passkey_muted(true)
+  assert_true(s.passkey_muted)
+  let views_before = t.views().length()
+  s.take({ "audio": { "n": 11.0 } }, Some(Bytes::make(16, b'\x02')))
+  assert_true(s.passkey_muted)
+  assert_eq(s.route_seq, 11.0)
+  // No audio frames queued to host while passkey_muted is true (route refreshed with audio=false).
+  assert_true(t.views().length() >= views_before)
+  s.set_passkey_muted(false)
+  assert_false(s.passkey_muted)
+  @ui.run_let_go()
+}
+
+///|
+test "deferred screen_left_key after_drawn_frame closes when sole holder unmounts and stays open when another visible holder remains" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-rem"])
+  @sfbase.workspace_owner_set("ws-1", "acct-rem")
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:rem-1", title: "Rem", until_gone: false }
+  let show_remote = @signals.signal(true)
+  let show_other = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.show(at_once=true, fn() { show_remote.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      root.show(at_once=true, fn() { show_other.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key = screen_key(at.station, at.screen)
+  assert_true(screens_open.contains(key))
+  // (a) Remove remote tab while another visible holder (`show_other`) remains -> stays open!
+  show_remote.set(false)
+  @ui.after_drawn_frame(fn() {
+    screen_left_key(src, key, at.station, at.screen, leaving_holder_released=true)
+  })
+  t.draw()
+  t.draw()
+  assert_true(screens_open.contains(key), msg="screen must stay open when another visible holder remains")
+  // (b) Remove the last visible holder -> deferred screen_left_key closes cleanly!
+  show_other.set(false)
+  @ui.after_drawn_frame(fn() {
+    screen_left_key(src, key, at.station, at.screen, leaving_holder_released=true)
+  })
+  t.draw()
+  t.draw()
+  assert_false(screens_open.contains(key), msg="screen must close cleanly when sole holder is removed")
   @ui.run_let_go()
 }

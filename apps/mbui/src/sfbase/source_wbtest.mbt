@@ -109,3 +109,25 @@ test "Source::owned_by auto-parks on deep park, faults on parked Raw read, and n
   @view.fault_told.val = prev_told
   @ui.run_let_go()
 }
+
+///|
+test "window_text -> window_page round-trip preserves owner and child-process screen window fails closed on owner mismatch or missing owner" {
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owner_set("ws-1", "acct-a")
+  let page = Page::Screen({ station: "ws-1/st-1", screen: "browser:win-1", title: "Win", until_gone: false })
+  let encoded = window_text(page).unwrap()
+  assert_true(encoded.contains("\"owner\":\"acct-a\""), msg="window_text must serialize creation owner")
+  assert_true(window_page(encoded) == Some(page))
+  assert_true(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window matches active owner acct-a")
+  // Workspace switches to acct-b -> child-process screen window fails closed.
+  workspace_owner_set("ws-1", "acct-b")
+  assert_false(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window must reject mismatched owner")
+  // Missing owner field in MBUI_WINDOW payload -> fails closed.
+  let no_owner = "{\"screen\":{\"station\":\"ws-1/st-1\",\"screen\":\"browser:win-1\",\"title\":\"Win\"}}"
+  assert_true(window_page(no_owner) is Some(_))
+  assert_false(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window with missing owner must fail closed")
+  // Unknown secondary window id (`wid > 0`) -> fails closed.
+  assert_false(window_here_owner_matches(999, "ws-1/st-1"), msg="unknown secondary window id must fail closed")
+  reset()
+}

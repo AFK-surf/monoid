@@ -179,6 +179,14 @@ test "tab_viewer revokes on workspace owner change and tab_full_close does not s
     msg="after_drawn_frame fallback must pause player when no node took over",
   )
   tv_a.drawn = 1
+  // Failed handoff where original node stays mounted (`drawn > 0`) through frame end:
+  // `goes_on` must unconditionally expire at after_drawn_frame so a subsequent park/hide pauses playback!
+  assert_true(t.view_said("{\"info\":{\"view\":\{vid_a},\"state\":3,\"at\":[2500,10000,1,0,0,0,640,360,300,0]}}"))
+  t.draw()
+  tab_viewer_moves(chat, tab)
+  assert_true(tv_a.goes_on)
+  t.draw()
+  assert_false(tv_a.goes_on, msg="unconsumed goes_on must unconditionally expire at frame end even when drawn > 0")
   // Workspace owner revocation synchronously pauses & releases old TabViewer AND unmounts mounted viewer_tab_node.
   assert_true(t.find("clip.mp4") is Some(_), msg="viewer_tab_node should be mounted before revocation")
   workspace_owner_set("ws1", "acct-b")

@@ -79,7 +79,7 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
 ///|
 /// Release the request-level keepalive flag if active.
 fn ScreenSess::passkey_release_keepalive(self : ScreenSess) -> Unit {
-  self.passkey_muted = false
+  self.set_passkey_muted(false)
   if self.passkey_keepalive_key != "" {
     let key = self.passkey_keepalive_key
     self.passkey_keepalive_key = ""

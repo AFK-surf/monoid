@@ -329,18 +329,29 @@ fn tab_viewer_moves(chat : String, tab : String) -> Unit {
   match tab_viewers.get(id) {
     Some(t) => {
       t.goes_on = true
-      // End-of-frame fallback: if no side-panel/fullscreen node actually takes over playback by the end of the
-      // navigation/layout frame (e.g. layout change tears down fullscreen layer), pause so audio never leaks.
+      // End-of-frame expiry + fallback: unconditionally expire `goes_on` at the end of the navigation/layout frame
+      // so a failed handoff never leaves stale `goes_on` behind, and pause playback if no node took over (`drawn <= 0`).
       @ui.after_drawn_frame(fn() {
         match tab_viewers.get(id) {
-          Some(cur) if cur.goes_on && cur.drawn <= 0 => {
+          Some(cur) if cur.goes_on => {
             cur.goes_on = false
-            cur.viewer.pause_player()
+            if cur.drawn <= 0 {
+              cur.viewer.pause_player()
+            }
           }
           _ => ()
         }
       })
     }
+    None => ()
+  }
+}
+
+///|
+/// Immediately cancel a pending `tab_viewer_moves` mark when the target window failed to open.
+fn tab_viewer_moves_cancel(chat : String, tab : String) -> Unit {
+  match tab_viewers.get(tab_viewer_id(chat, tab)) {
+    Some(t) => t.goes_on = false
     None => ()
   }
 }
