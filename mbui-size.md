@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 2.73 | 3.69 | 15.31 | 38.44 | 59.31 | 33.68 | 68.88 | 103.68 | 134.43 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.64 | 68.76 | 103.47 | 133.05 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
 | [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
-| [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.15 | 154.34 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.56 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.62 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
 | [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.43 |
 | [87ddbc239](https://github.com/AFK-surf/monoid/commit/87ddbc2398952eaccee54590777881c4b8a84687) fix(mbui): narrow loading image breathing amplitud | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.74 |
-| [50f121136](https://github.com/AFK-surf/monoid/commit/50f12113609f1b16914c1c2ea59ebe6ea2c6deed) fix(core): batch personal-signer and extraKeys int | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
