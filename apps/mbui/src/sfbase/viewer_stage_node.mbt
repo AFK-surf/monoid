@@ -517,7 +517,10 @@ fn lines_stage_node(
           let words = line(k)
           sb.write_string(words)
           match colored(k) {
-            Some(l) => runs.push_iter(l.iter())
+            Some(l) =>
+              for span in l {
+                runs.push(span)
+              }
             None => {
               inked = inked && words == ""
               runs.push(@ui.span(words, mono=true))

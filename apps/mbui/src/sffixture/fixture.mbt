@@ -1310,9 +1310,11 @@ let long_states : Array[(String, String, String)] = [
 ///|
 /// Made-up chat `c<n>` of the days after the first ones (n from 11; long_days): the `k`th of six on day `d`.
 fn long_row(n : Int) -> Json {
-  let d = (n - 11) / 6
-  let k = (n - 11) % 6
-  let (said, lead, rest) = long_states[(d + k) % 6]
+  let m : Int = n - 11
+  let d : Int = m / 6
+  let k : Int = m % 6
+  let dk : Int = d + k
+  let (said, lead, rest) = long_states[dk % 6]
   let state : Map[String, Json] = { "stateText": Json::string(said) }
   if lead != "" {
     state["stateLead"] = Json::string(lead)
@@ -1483,7 +1485,14 @@ fn fixture_days_head(f : Fixture) -> Array[Json] {
       f.archived["c8"] = true
     }
     if f.step >= 4 {
-      let i = today.search_by(fn(r) { text(Some(r), "id") == "c4" }).unwrap()
+      let mut idx = -1
+      for j, r in today {
+        if text(Some(r), "id") == "c4" {
+          idx = j
+          break
+        }
+      }
+      let i = idx
       today[i] = row("c4", "给设置页加一个深色模式开关", "ws1/st1", "刚刚", {
         "unread": true,
         "tone": "alert",
@@ -1670,7 +1679,15 @@ pub fn listed_chats(v : Json) -> Json {
 ///|
 /// A made-up chat's row cut to what a row of the `chats` list carries.
 pub fn listed_row(row : Json) -> Json {
-  guard row is Object(o) && whole_only.iter().any(fn(k) { o.contains(k) }) else { return row }
+  guard row is Object(o) else { return row }
+  let mut has_whole = false
+  for k in whole_only {
+    if o.contains(k) {
+      has_whole = true
+      break
+    }
+  }
+  guard has_whole else { return row }
   let out = o.copy()
   for k in whole_only {
     out.remove(k)
@@ -1710,7 +1727,16 @@ pub fn fixture_chats(f : Fixture, params : Map[String, Json]) -> Json? {
           Some(Array(a)) =>
             a.filter(fn(r) {
               match field(Some(r), "people") {
-                Some(Array(ps)) => ps.iter().any(fn(p) { flag(field(Some(p), "shown"), "mine") })
+                Some(Array(ps)) => {
+                  let mut has_mine = false
+                  for p in ps {
+                    if flag(field(Some(p), "shown"), "mine") {
+                      has_mine = true
+                      break
+                    }
+                  }
+                  has_mine
+                }
                 _ => true
               }
             })
@@ -1730,23 +1756,33 @@ pub fn fixture_chats(f : Fixture, params : Map[String, Json]) -> Json? {
   }
   let hidden = params.get("hidden") is Some(True)
   let days = if f.mode == "home-hide" {
-    days.filter_map(fn(d) {
+    let filtered : Array[Json] = []
+    for d in days {
       match d {
         Object(m) => {
           let v = m.copy()
           let found = items(Some(d), "items").filter(fn(r) { flag(Some(r), "hidden") == hidden })
           v["items"] = Json::array(found)
-          if found.is_empty() { None } else { Some(Json::object(v)) }
+          if !found.is_empty() {
+            filtered.push(Json::object(v))
+          }
         }
-        _ => None
+        _ => ()
       }
-    })
+    }
+    filtered
   } else if hidden {
     []
   } else {
     days
   }
-  let empty = days.iter().all(fn(d) { items(Some(d), "items").length() == 0 })
+  let mut empty = true
+  for d in days {
+    if items(Some(d), "items").length() != 0 {
+      empty = false
+      break
+    }
+  }
   // (its first `limit` rows and how many more it has, as the core's firstRows gives them)
   let (days, more) = if f.mode == "long-paged" {
     first_rows(days, f.windows.get(fixture_window_key(params)).unwrap_or(fixture_window_untold))
@@ -1999,11 +2035,19 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
           _ => "子会话执行日志：已完成回归验证与构建检查"
         }
         let body_low = body.to_lower()
-        if words.iter().all(fn(w) { title_low.contains(w) }) {
+        let all_in = fn(s : String) -> Bool {
+          for w in words {
+            if !s.contains(w) {
+              return false
+            }
+          }
+          true
+        }
+        if all_in(title_low) {
           titled.push(item)
-        } else if words.iter().all(fn(w) { state_low.contains(w) }) {
+        } else if all_in(state_low) {
           body_hits.push(item)
-        } else if words.iter().all(fn(w) { body_low.contains(w) }) {
+        } else if all_in(body_low) {
           match item {
             Object(m) => {
               let out = m.copy()
@@ -2914,7 +2958,7 @@ pub fn failed_topics(base : Source, failed : Array[String], why : String) -> Sou
       if failed.contains(name) {
         { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
       } else if name == "drive" && (fail_sub || fail_sub_stale) {
-        let t = base.topic(name, params).get().snapshot()
+        let t : @sfbase.Topic = base.topic(name, params).get().snapshot()
         match params.get("path") {
           Some(String(p)) if p != "" =>
             if fail_sub_stale {
@@ -3165,7 +3209,9 @@ pub fn fixture(mode : String) -> Source {
   paged_rows.clear()
   if mode == "newchat-preset-many" {
     new_fix.presets.clear()
-    new_fix.presets.push_iter(fix_preset_many().iter())
+    for p in fix_preset_many() {
+      new_fix.presets.push(p)
+    }
     new_fix.preset = "p-arch"
   }
   if mode == "newchat-station-many" {
@@ -3184,9 +3230,11 @@ pub fn fixture(mode : String) -> Source {
     })
     fix_later(3600.0, fn() {
       let a = fix_folder(fix_docs, "")
-      match a.search_by(fn(e) { text(Some(e), "name") == "发布清单.md" }) {
-        Some(i) => a.remove(i) |> ignore
-        None => ()
+      for i, e in a {
+        if text(Some(e), "name") == "发布清单.md" {
+          a.remove(i) |> ignore
+          break
+        }
       }
       @settings.fixture_changed()
     })
@@ -3967,8 +4015,8 @@ pub fn fixture_fleet(f : Fixture) -> Json {
   }
   // each day's chats archived (57 in all, 12 today; 58 and 13 once one more is), as a share of the most on a day
   let counts = [5, 7, 4, 10, 8, 11, if step >= 2 { 13 } else { 12 }]
-  let most = counts[6].to_double()
-  let shares = counts.map(fn(n) { n.to_double() / most })
+  let most : Double = counts[6].to_double()
+  let shares = counts.map(fn(n : Int) { n.to_double() / most })
   let gpt : Array[Json] = [
     { "name": "GPT-5.5 Codex", "tokens": 47000000, "tokensText": "4700 万", "costText": "$262", "lineText": "4700 万 · $262", "of": "token，折合 $262" },
   ]
@@ -4213,7 +4261,13 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
     }
   }
   let n = listed.filter(fn(i) { text(Some(i), "state") != "updating" }).length()
-  let any_stale = listed.iter().any(fn(i) { text(Some(i), "state") != "updating" && flag(Some(i), "stale") })
+  let mut any_stale = false
+  for i in listed {
+    if text(Some(i), "state") != "updating" && flag(Some(i), "stale") {
+      any_stale = true
+      break
+    }
+  }
   {
     "items": Json::array(listed),
     "offered": Json::number(n.to_double()),

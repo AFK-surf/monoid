@@ -181,7 +181,14 @@ pub fn core_failed_of(src : Source, of : (Json) -> Bool) -> String? {
 
 ///|
 fn doing_of(d : Json, calls : Array[String], on : Array[(String, String)]) -> Bool {
-  calls.contains(text(Some(d), "call")) && on.iter().all(fn(kv) { text(field(Some(d), "params"), kv.0) == kv.1 })
+  guard calls.contains(text(Some(d), "call")) else { return false }
+  let params = field(Some(d), "params")
+  for kv in on {
+    if text(params, kv.0) != kv.1 {
+      return false
+    }
+  }
+  true
 }
 
 ///|

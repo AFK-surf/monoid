@@ -118,13 +118,17 @@ fn outline_long() -> Array[(Int, String, String, String)] {
   let out : Array[(Int, String, String, String)] = []
   for d in 0..<outline_long_days.length() {
     for j in 0..<25 {
-      let n = d * 25 + j
-      let minutes = 9 * 60 + j * 28
-      let clock = "\{(minutes / 60 / 10)}\{(minutes / 60 % 10)}:\{(minutes % 60 / 10)}\{(minutes % 10)}"
+      let n : Int = d * 25 + j
+      let minutes : Int = 9 * 60 + j * 28
+      let h : Int = minutes / 60
+      let m : Int = minutes % 60
+      let clock = "\{h / 10}\{h % 10}:\{m / 10}\{m % 10}"
       if j % 5 == 1 {
-        out.push((d, "Claude", clock, agents[n % agents.length()].3))
+        let len : Int = agents.length()
+        out.push((d, "Claude", clock, agents[n % len].3))
       } else {
-        out.push((d, if j % 2 == 0 { "林" } else { "Ana" }, clock, people[n % people.length()].3))
+        let len : Int = people.length()
+        out.push((d, if j % 2 == 0 { "林" } else { "Ana" }, clock, people[n % len].3))
       }
     }
   }
@@ -370,7 +374,16 @@ pub fn fixture_outline_call(f : Fixture, name : String, params : Json) -> Result
     }
     let rows = asked.filter_map(fn(q) {
       match q {
-        Number(seq, ..) => all.iter().find_first(fn(dm) { number(Some(dm.1), "seq") == seq }).map(fn(dm) { outline_item_of(dm.1, None) })
+        Number(seq, ..) => {
+          let mut found : Json? = None
+          for dm in all {
+            if number(Some(dm.1), "seq") == seq {
+              found = Some(outline_item_of(dm.1, None))
+              break
+            }
+          }
+          found
+        }
         _ => None
       }
     })

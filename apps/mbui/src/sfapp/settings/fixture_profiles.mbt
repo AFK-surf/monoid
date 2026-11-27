@@ -76,14 +76,26 @@ pub fn profile_said(all : Json?, params : Map[String, Json]) -> Json? {
   let key = opt_text(p, "key")
   let station = text(p, "station")
   let id = text(p, "id")
-  let found = items(all, "items")
-    .iter()
-    .find_first(fn(e) {
-      match key {
-        Some(k) => text(Some(e), "key") == k
-        None => items(Some(e), "members").iter().any(fn(m) { text(Some(m), "station") == station && text(Some(m), "profileId") == id })
+  let mut found : Json? = None
+  for e in items(all, "items") {
+    let matched = match key {
+      Some(k) => text(Some(e), "key") == k
+      None => {
+        let mut has_member = false
+        for m in items(Some(e), "members") {
+          if text(Some(m), "station") == station && text(Some(m), "profileId") == id {
+            has_member = true
+            break
+          }
+        }
+        has_member
       }
-    })
+    }
+    if matched {
+      found = Some(e)
+      break
+    }
+  }
   match found {
     Some(e) => Some(e)
     None => Some(Json::null())

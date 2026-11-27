@@ -722,7 +722,10 @@ fn narrow_made_as(
           src,
           w.id,
           fn() { at },
-          frame=fn() { { ..frame(), back: under.map(fn(u) { drive_back_label(src, w, u) }) } },
+          frame=fn() {
+            let f : PageFrame = frame()
+            { ..f, back: under.map(fn(u) { drive_back_label(src, w, u) }) }
+          },
           width=fn() { p.window_w() },
           on_back=fn() { @sfbase.go_back() |> ignore },
           go=drive_go_back_to,

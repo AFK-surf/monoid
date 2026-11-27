@@ -216,11 +216,16 @@ pub fn service_card_of(src : Source, to : @sf.LinkTo) -> (String, String, Bool) 
     None => station
   }
   let at = match dv_stations(src, ws).0 {
-    Some(list) =>
-      match list.iter().find_first(fn(s) { s.station == station }) {
-        Some(s) => s.name
-        None => @settings.station_name(station)
+    Some(list) => {
+      let mut name = @settings.station_name(station)
+      for s in list {
+        if s.station == station {
+          name = s.name
+          break
+        }
       }
+      name
+    }
     None => @settings.station_name(station)
   }
   let port = number(j, "port").to_int()

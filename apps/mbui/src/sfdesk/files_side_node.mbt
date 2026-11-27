@@ -75,7 +75,7 @@ fn files_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
             }
           },
           fn() { update_pressed(src) },
-          offered=fn() { update_now() is Offered(_, ..) },
+          offered=fn() { update_now() is Offered(_, waiting=_) },
         )
       })
       // (no update offered: its room kept, as 新建对话's band keeps its filter's, so its row ends where it does, clear of

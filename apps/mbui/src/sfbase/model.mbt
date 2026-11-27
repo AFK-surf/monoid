@@ -668,7 +668,14 @@ fn workspaces_read(v : Json?) -> (Array[Workspace], Bool, Bool) {
         let email = text(field(s, "account"), "email")
         for w in items(s, "workspaces") {
           let id = text(Some(w), "id")
-          if id != "" && !all.iter().any(fn(x) { x.id == id }) {
+          let mut seen_ws = false
+          for x in all {
+            if x.id == id {
+              seen_ws = true
+              break
+            }
+          }
+          if id != "" && !seen_ws {
             all.push({
               id,
               name: text(Some(w), "name"),
@@ -720,7 +727,8 @@ pub fn this_machine() -> String {
   match machine_here.val {
     Some(h) => h
     None => {
-      let v = @json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() }
+      let raw = @hostapi.app_said("local_station")
+      let v = @json.parse(raw) catch { _ => Json::null() }
       let ws = field(Some(v), "workspace")
       // (not one taken away from here, its data kept, nor one that only runs tasks: the settings' local_station_id)
       let gone = flag(Some(v), "uninstalled") || flag(ws, "removed") || flag(ws, "rig")

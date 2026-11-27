@@ -3147,7 +3147,14 @@ fn fx_archive(q? : String = "") -> Json {
       ("how", str("手动归档")),
       ("deletable", Json::boolean(a.5)),
     ])
-    match days.iter().find_first(fn(d) { d.0 == a.4 }) {
+    let mut found_day : (String, Array[Json])? = None
+    for d in days {
+      if d.0 == a.4 {
+        found_day = Some(d)
+        break
+      }
+    }
+    match found_day {
       Some(d) => d.1.push(row)
       None => days.push((a.4, [row]))
     }
@@ -3312,7 +3319,16 @@ fn fx_usage(days : Int, split? : String = "people", only? : String = "", day? : 
     _ => [("lin@example.com", "林", "$80"), ("ana@example.com", "Ana", "$31"), ("", "其他", "$7.20")]
   }
   // The core ranks the filtered rows too: the selected split then contains only the chosen part.
-  let series = if only != "" && series.iter().any(fn(s) { s.0 == only }) { series.filter(fn(s) { s.0 == only }) } else { series }
+  let mut has_only = false
+  if only != "" {
+    for s in series {
+      if s.0 == only {
+        has_only = true
+        break
+      }
+    }
+  }
+  let series = if has_only { series.filter(fn(s) { s.0 == only }) } else { series }
   let lists = [
     (
       "people",
@@ -3358,18 +3374,30 @@ fn fx_usage(days : Int, split? : String = "people", only? : String = "", day? : 
   // (the day's name as the core says it: 10/5 for 2026-10-05)
   let dd = if day.length() >= 10 { day[8:].to_owned() } else { "" }
   // (its cost, as its bar says it)
-  let day_cost = match daily.search_by(fn(d) { day != "" && text(Some(d), "day") == day }) {
-    Some(i) => text(Some(daily[i]), "costText")
-    None => ""
+  let mut day_cost = ""
+  if day != "" {
+    for d in daily {
+      if text(Some(d), "day") == day {
+        day_cost = text(Some(d), "costText")
+        break
+      }
+    }
   }
   let day_name = if day == "" { "" } else { "10/" + (if dd.has_prefix("0") { dd[1:].to_owned() } else { dd }) }
-  let only_shown = match lists.search_by(fn(l) { l.2.search_by(fn(it) { it.0 == only }) is Some(_) }) {
-    Some(k) if only != "" => {
-      let (_, _, its) = lists[k]
-      let it = its[its.search_by(fn(it) { it.0 == only }).unwrap()]
-      obj([("title", str(it.1))])
+  let mut only_shown = Json::null()
+  if only != "" {
+    for l in lists {
+      let (_, _, its) = l
+      for it in its {
+        if it.0 == only {
+          only_shown = obj([("title", str(it.1))])
+          break
+        }
+      }
+      if !(only_shown is Null) {
+        break
+      }
     }
-    _ => Json::null()
   }
   obj([
     ("split", str(split)),
@@ -4748,7 +4776,14 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     // a failed pending change read, dropped (a waiting one stays)
     "lock.pendingDismiss" => {
       let id = text(p, "id")
-      if fx_pending_rows().iter().any(fn(r) { text(Some(r), "id") == id && text(Some(r), "state") == "failed" }) {
+      let mut is_failed = false
+      for r in fx_pending_rows() {
+        if text(Some(r), "id") == id && text(Some(r), "state") == "failed" {
+          is_failed = true
+          break
+        }
+      }
+      if is_failed {
         fx.pending.retain(fn(x) { x != id })
         fx_changed()
       }

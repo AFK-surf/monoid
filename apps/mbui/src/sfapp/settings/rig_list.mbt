@@ -14,7 +14,12 @@ pub fn rigs_listed(core : Core, here : Here) -> Array[Json] {
 ///|
 /// The one at `address` (its workspace, a slash, its id), if it is one of them.
 pub fn rig_at(core : Core, here : Here, address : String) -> Json? {
-  rigs_listed(core, here).iter().find_first(fn(r) { here.workspace + "/" + text(Some(r), "id") == address })
+  for r in rigs_listed(core, here) {
+    if here.workspace + "/" + text(Some(r), "id") == address {
+      return Some(r)
+    }
+  }
+  None
 }
 
 ///|

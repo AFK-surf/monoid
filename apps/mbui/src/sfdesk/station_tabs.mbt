@@ -89,11 +89,11 @@ pub fn station_page_beside(src : Source, r : ChatRef, p : Page) -> Bool {
     Terminal(at) => {
       let existing_tabs = side_now(src, r).0
       if !at.terminal.has_prefix("new") {
-        if existing_tabs.iter().find_first(fn(t) {
-          station_tab(t) == Some(("terminal", at.station, at.terminal))
-        }) is Some(found) {
-          side_change(src, r, "open", Some(found))
-          return true
+        for t in existing_tabs {
+          if station_tab(t) == Some(("terminal", at.station, at.terminal)) {
+            side_change(src, r, "open", Some(t))
+            return true
+          }
         }
       }
       let mut term_id = if at.terminal == "" { "new" } else { @sfbase.terminal_base_id(at.terminal) }

@@ -11,7 +11,12 @@
 ///|
 /// A request as the core has it (`adbShare`'s `grants`): whose it is, and what stands in its way.
 fn phone_row(core : Core, request : String) -> Json? {
-  items((core.topic)("adbShare", Map([])).get().value, "grants").iter().find_first(fn(g) { text(Some(g), "id") == request })
+  for g in items((core.topic)("adbShare", Map([])).get().value, "grants") {
+    if text(Some(g), "id") == request {
+      return Some(g)
+    }
+  }
+  None
 }
 
 ///|

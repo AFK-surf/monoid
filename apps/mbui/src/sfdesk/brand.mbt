@@ -10,7 +10,7 @@ fn update_shown() -> Bool {
     return true
   }
   match update_now() {
-    Offered(_, ..) | Coming(_, _) | Checking | Failed(_, _) => true
+    Offered(_, waiting=_) | Coming(_, _) | Checking | Failed(_, _) => true
     _ => update_wants_you()
   }
 }
@@ -38,7 +38,7 @@ fn update_key_of(parent : @view.View, src : Source, tips : @sf.TipLayer) -> Unit
     },
     fn() { update_pressed(src) },
     offered=fn() {
-      update_now() is Offered(_, ..) || (@sfbase.stale_build_now() && !(update_now() is (Coming(_, _) | Installing(_))))
+      update_now() is Offered(_, waiting=_) || (@sfbase.stale_build_now() && !(update_now() is (Coming(_, _) | Installing(_))))
     },
   )
 }
@@ -91,7 +91,7 @@ fn update_said() -> (String, String, Bool) {
       let checking = @sf.t("android-misc.updates.checking")
       (checking, checking, true)
     }
-    Offered(_, ..) | Coming(_, _) | Failed(_, _) => {
+    Offered(_, waiting=_) | Coming(_, _) | Failed(_, _) => {
       let stands = @sfbase.update_stands()
       (stands.label, stands.label + (if stands.note == "" { "" } else { " · " + stands.note }), false)
     }
@@ -102,7 +102,7 @@ fn update_said() -> (String, String, Bool) {
         true,
       )
     // (that it is downloaded said too: 重启以更新到 alone read as one still to come, 2026-11-03)
-    Ready(_, ..) => {
+    Ready(_, away=_) => {
       let stands = @sfbase.update_stands()
       (@sf.t("desktop.update.restart"), stands.label + " · " + stands.note, false)
     }
