@@ -431,10 +431,19 @@ export function outflowMessages(s: Store, thread: number, after: number, limit: 
         const closed = choice !== null || s.db.prepare("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?").get(thread, e.n) !== undefined;
         if (closed) card = { ...card, closed: true, ...(choice !== null ? { choice } : {}) };
       }
+      const files = e.kind === "message" && Array.isArray(e.attachments) && e.attachments.length > 0
+        ? e.attachments.map((a) => ({
+            name: a.name,
+            size: a.size,
+            ...(a.width !== undefined ? { width: a.width } : {}),
+            ...(a.height !== undefined ? { height: a.height } : {}),
+          }))
+        : null;
       return {
         n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: outflowText(e.text, e.quotes), at: e.at,
         ...(e.authorKind === "person" && typeof e.author === "string" ? { person: named(e.author) } : {}),
         ...(card !== null ? { card } : {}),
+        ...(files !== null ? { files } : {}),
       };
     }),
     last: store.lastEntry(s, thread),

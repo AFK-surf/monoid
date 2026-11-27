@@ -359,10 +359,11 @@ export type CommaSurfaceOptions = {
 
 export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
 
-/// The chats of the Task index (a ref: stats.ts chatRef), as the Router reads one (`task.read`) and writes in it as
-/// itself (`task.say`, once per key).
+/// The chats of the Task index (a ref: stats.ts chatRef), as the Router reads one (`task.read`), reads an attached file
+/// (`task.read_file`), and writes in it as itself (`task.say`, once per key).
 export type CommaChats = {
   read(ref: string, after: number, limit: number): Promise<Json>;
+  readFile?(ref: string, seq: number, file: string, offset: number): Promise<Json>;
   say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number, requesterEmail?: string): Promise<Json>;
 };
 
@@ -630,7 +631,7 @@ export class CommaSurface extends ConnectedSurface {
       tasks: TASKS_VERSION,
       task_models: models,
       ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }),
-      ...(this.chats === null ? {} : { task_say_cas: 1 }),
+      ...(this.chats === null ? {} : { task_say_cas: 1, ...(this.chats.readFile ? { task_read_file: 1 } : {}) }),
       ...(this.ownerEmail === null ? {} : { stillfail_owner_email: this.ownerEmail }),
       ...(activeAt === null ? {} : { stillfail_owner_active_at: activeAt }),
       ...(meta === null ? {} : { stillfail_workspace: meta }),
@@ -758,6 +759,18 @@ export class CommaSurface extends ConnectedSurface {
         const after = typeof params?.after === "number" && params.after >= 0 ? params.after : 0;
         const limit = typeof params?.limit === "number" && params.limit > 0 ? Math.min(params.limit, 100) : 100;
         const result = await this.chats.read(text(params, "task"), after, limit);
+        if (!this.inScope()) throw new Error("the workspace changed while reading");
+        return result;
+      }
+      case "task.read_file": {
+        if (this.chats === null || !this.chats.readFile || !this.inScope()) throw new Error("task.read_file is not something this station does in this workspace");
+        const seq = params?.seq;
+        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq <= 0) throw new Error("seq must be a positive integer");
+        const file = text(params, "file");
+        if (file.trim() === "") throw new Error("file is required");
+        const offset = params?.offset === undefined || params?.offset === null ? 0 : params.offset;
+        if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
+        const result = await this.chats.readFile(text(params, "task"), seq, file, offset);
         if (!this.inScope()) throw new Error("the workspace changed while reading");
         return result;
       }

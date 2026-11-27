@@ -14,6 +14,8 @@ export const READ = "outflow.read";
 const OPS = ["outflowUsage", "outflowChats", "outflowMessages"];
 /// The Router of the Comma connect on another station of the workspace writing in one of this station's chats.
 export const SAY = "comma.say";
+/// The Router of the Comma connect on another station of the workspace reading one attachment part from this station.
+export const READ_FILE = "comma.read_file";
 /// Another station of the workspace telling that one of its chats moved, so a Comma connect rebuilds its Task index soon.
 export const CHANGED = "comma.changed";
 /// An answer of another station's read, at most.
