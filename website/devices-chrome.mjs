@@ -3,7 +3,7 @@
 //   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
 //   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
 //   - desk:    Apple MacBook Air 15" (2940x1908 @3x = 980x636; seamless macOS full-screen notch band)
-//   - web:     Windows 11 27" 4K Display (4320x2430 @3x = 1440x810; Edge/Chrome bar + Windows 11 taskbar)
+//   - web:     Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; browser window on the desktop + taskbar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -92,14 +92,20 @@ function makeHtml(key) {
     };
   }
 
-  // web: Windows 11 Workstation 27" 4K Display running Edge/Chrome app.monoid.build
-  // Exact 1440x810 @3x = 4320x2430 (exact 16:9): 40px browser bar + 730px apps/mbui + 40px Windows 11 taskbar
+  // web: a Windows 11 laptop desktop (3:2, 1440x960 @3x = 4320x2880): the browser window (40px bar + 730px apps/mbui)
+  // floats on a wallpaper above the 40px taskbar, scaled to 1392px wide so the desktop shows around it
   const searchLabel = isZh ? "搜索" : "Search";
   const timeStr = "09:41";
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
   return {
-    w: 1440, h: 810, dpr: 3,
-    html: `<!doctype html><html><body style="margin:0;width:1440px;height:810px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+    w: 1440, h: 960, dpr: 3,
+    html: `<!doctype html><html><body style="margin:0;width:1440px;height:960px;overflow:hidden;position:relative;font-family:${font};background:#0d2b5c;">
+      <div style="position:absolute;inset:0;background:
+        radial-gradient(ellipse 60% 55% at 62% 58%, rgba(120,170,255,0.95) 0%, rgba(60,110,220,0.55) 35%, rgba(20,50,120,0) 70%),
+        radial-gradient(ellipse 45% 40% at 30% 30%, rgba(90,200,255,0.55) 0%, rgba(40,90,200,0) 70%),
+        radial-gradient(ellipse 80% 70% at 80% 100%, rgba(150,110,255,0.45) 0%, rgba(40,30,120,0) 70%),
+        linear-gradient(160deg,#0d2b5c 0%,#1a4a9a 45%,#0e2350 100%);"></div>
+      <div style="position:absolute;left:24px;top:86px;width:1440px;height:770px;transform:scale(0.966667);transform-origin:0 0;border-radius:8.3px;overflow:hidden;background:#F5F3EF;box-shadow:0 18px 50px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.25);">
       <div style="height:40px;background:#EBE8E1;border-bottom:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 16px;position:relative;">
         <div style="display:flex;align-items:center;gap:14px;color:rgba(28,27,26,0.55);">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5 6 8l4.5 4.5"/></svg>
@@ -117,7 +123,8 @@ function makeHtml(key) {
         </div>
       </div>
       <img src="${imgUrl}" style="display:block;width:1440px;height:730px;">
-      <div style="height:40px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;position:relative;padding:0 16px;">
+      </div>
+      <div style="position:absolute;left:0;right:0;bottom:0;height:40px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">

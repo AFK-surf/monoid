@@ -7,7 +7,7 @@ python3 -m http.server -d website 4173      # or any static server: the folder w
 node website/build.mjs                      # → dist/website: monoid.build (a page per language + assets + sitemap.xml, robots.txt, _headers)
 node website/build.mjs --site still.fail --out dist/site   # classic single-page still.fail (youdid.wtf: --site youdid.wtf --out dist/site-beta)
 bash website/stillfail/shots.sh             # recapture real apps/mbui offscreen WebP screenshots for still.fail / youdid.wtf
-bash website/devices.sh                     # capture apps/mbui 3x screens + render official 3D device shots via Blender Cycles (EN + ZH)
+bash website/devices.sh                     # capture apps/mbui 3x screens + render the 3D device shots via Blender Cycles (EN + ZH)
 node website/og.mjs [site…]                 # the share cards again (Chrome, playwright-core)
 node website/build.mjs --check              # translations: missing, extra, stale, markup, glyphs (exit 1 on any)
 ```
@@ -15,7 +15,9 @@ node website/build.mjs --check              # translations: missing, extra, stal
 Device showcase renders (`website/assets/shots/{duo,android,desk,web}-{en,zh}{,-1x}.webp`) ship in English and Chinese,
 matching `apps/mbui`'s two UI locales (`en` and `zh-CN`): `zh-CN` and `zh-TW` pages receive `-zh` renders, while `en`,
 `ja`, and `ko` pages receive `-en` renders. Size metadata is tracked in `website/shots-sizes.txt` (excluded from CDN output).
-Regenerating them with `bash website/devices.sh` requires Blender 4.2+, `ffmpeg`, `node`, `curl`, and Chromium
+The four slots show an iPhone, a Galaxy S25+, a MacBook Air (the desktop app) and a Windows laptop (the web app in a
+browser); the Windows laptop is "Modern Slim Laptop" by Mraz3D under CC BY 4.0, credited in the page footer, so keep that
+credit while the model is used. Regenerating them with `bash website/devices.sh` requires Blender 4.2+, `ffmpeg`, `node`, `curl`, and Chromium
 (`CHROMIUM_BIN`, with CJK system fonts such as PingFang SC or Noto Sans CJK SC installed for `-zh` OS chrome).
 
 ## Changing the copy
