@@ -4627,12 +4627,15 @@ class Vaults {
   }
 
   /// The person's own vaults' items opened (their plaintext and listing), for security mode turned off.
-  unsealOwn(reason?: string, asked?: () => void): Effect.Effect<{ plain: Plain; listing: Listing | null }[], CoreError> {
+  unsealOwn(reason?: string, asked?: () => void, entryCap?: WorkspaceCapability): Effect.Effect<{ plain: Plain; listing: Listing | null }[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const wsCap = entryCap ?? self.#wsCap(true);
+      yield* wsCap.assertValid();
       if (!able(inner) || lockOf(inner, self.ws) instanceof CoreError) return [];
       const ready = yield* Effect.result(self.#ready());
+      yield* wsCap.assertValid();
       if (ready._tag === "Failure") return [];
       const { lock, self: who } = ready.success;
       const out: { plain: Plain; listing: Listing | null }[] = [];
@@ -4640,13 +4643,19 @@ class Vaults {
         // (read: one waiting to be keyed anew too, its items checked against the lock that took it; personal vaults only)
         const as = readAs(inner, self.ws, lock, v, who);
         if (as === null || v.scope === "workspace" || v.owner !== who.sub || !v.keys.some((k) => k.cert.device === who.device)) continue;
-        const cap = self.#vaultCap(v.id);
+        const cap = wsCap.narrowVault(v.id);
+        yield* cap.assertValid();
         const why = reason ?? t("core-misc.vault.reason.unlock", { name: v.name });
         // (those left under an earlier key carried on first: none of them is lost as the lock goes)
-        if (underEarlier(inner, self.ws, v).length > 0) yield* self.carryOn(v.id, why, undefined, { asked: () => asked?.() }, cap);
+        if (underEarlier(inner, self.ws, v).length > 0) {
+          yield* cap.assertValid();
+          yield* self.carryOn(v.id, why, undefined, { asked: () => asked?.() }, cap);
+        }
         const all = Object.values(items(inner, self.ws, v.id)).filter((i) => !i.deleted && i.epoch === v.epoch);
         if (all.length === 0) continue;
+        yield* cap.assertValid();
         const key = yield* self.#key(v, who, false, why, true, () => asked?.(), cap);
+        yield* cap.assertValid();
         for (const item of all) {
           const bytes = yield* Effect.result(self.#plain(as, v, item, key));
           if (bytes._tag === "Success") out.push({ plain: plainOf(JSON.parse(new TextDecoder().decode(bytes.success))), listing: item.listing ?? null });
@@ -4676,7 +4685,7 @@ class Vaults {
       const ownCap = wsCap.narrowVault(own.id);
       yield* ownCap.assertValid();
       const same = (p: Plain) => JSON.stringify([p.kind, p.name, p.fields]);
-      const had = new Set((yield* self.unsealOwn()).map((s) => same(s.plain)));
+      const had = new Set((yield* self.unsealOwn(undefined, undefined, wsCap)).map((s) => same(s.plain)));
       yield* ownCap.assertValid();
       let moved = 0;
       let left = 0;

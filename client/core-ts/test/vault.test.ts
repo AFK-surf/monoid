@@ -5149,6 +5149,13 @@ test("Direction 2A R4 P1-3: migrate() re-checks ownCap after spread and never ca
   const r = await rig();
   r.putLock();
   const { made: ownId } = await r.ask("vault.setup", {});
+  // Pre-populate the exact same secret in ownId so migrate() hits `had.has(sig)` and skips putItem,
+  // ensuring the intercepted `?copy=1` PUT comes strictly from migrate()'s own spread() call.
+  await r.ask("vault.putItem", {
+    vault: ownId,
+    plain: { kind: "token", name: "PlainTok", fields: { value: "plain_val" } },
+    listing: { name: "plain_tok", kind: "token", modes: ["proxy"], hosts: ["p.example.com"] },
+  });
   const plainId = "i_01JAPLAIN000000000000MIG1";
   r.st.plain.set(plainId, {
     id: plainId,
@@ -5177,7 +5184,12 @@ test("Direction 2A R4 P1-3: migrate() re-checks ownCap after spread and never ca
   const enteredSpread = Deferred.makeUnsafe<void>();
   const releaseSpread = Deferred.makeUnsafe<void>();
   let plainDeletes = 0;
+  let itemPuts = 0;
   stationLater(r.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/items") && !req.url.includes("?copy=1")) {
+      itemPuts++;
+      return undefined;
+    }
     if (req.method === "PUT" && req.url.includes("/vault/plain")) {
       const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { deleted?: boolean };
       if (body.deleted) plainDeletes++;
@@ -5192,12 +5204,82 @@ test("Direction 2A R4 P1-3: migrate() re-checks ownCap after spread and never ca
 
   const migratePromise = r.ask("vault.migrate", {});
   await Effect.runPromise(Deferred.await(enteredSpread));
-  // Revoke ownCap while spread() is in flight.
+  // Revoke ownCap while migrate()'s own spread() is in flight.
   r.core.inner.store.authGen.bumpVault("ws", ownId);
   Effect.runSync(Deferred.succeed(releaseSpread, undefined));
 
   await fails(migratePromise, "auth_stale");
+  assert.equal(itemPuts, 0, "putItem must have been skipped via dedup so ?copy=1 came strictly from migrate()'s spread()");
   assert.equal(plainDeletes, 0, "migrate() must NOT call deletePlain after ownCap becomes stale during spread()");
+  assert.equal(r.st.plain.get(plainId).deleted, undefined, "plain item on station must remain undeleted");
+  r.core.close();
+});
+
+test("Direction 2A R5: migrate() threads entry snapshot into unsealOwn so mid-unseal revocation fails auth_stale with 0 key caching or writes", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: ownId } = await r.ask("vault.setup", {});
+  await r.ask("vault.putItem", {
+    vault: ownId,
+    plain: { kind: "token", name: "Existing", fields: { value: "existing_val" } },
+    listing: { name: "existing", kind: "token", modes: ["proxy"], hosts: ["e.example.com"] },
+  });
+  const plainId = "i_01JAPLAIN000000000000MIG2";
+  r.st.plain.set(plainId, {
+    id: plainId,
+    version: 0,
+    kind: "token",
+    name: "PlainTwo",
+    fields: { value: "plain_val_2" },
+    notes: "",
+    listing: { name: "plain_two", kind: "token", modes: ["proxy"], hosts: ["p2.example.com"] },
+    at: 1000,
+    owner: "a@x.com",
+  });
+  // Restart so mem.keys is cold and unsealOwn must read BOX_KEY via secureGet.
+  await r.restart();
+  await r.core.inner.runner.run(readStation(r.core.inner, "ws/st"));
+  await r.host.time.pass(200);
+  r.take();
+
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, "vault starts locked after restart");
+
+  const enteredBoxKey = Deferred.makeUnsafe<void>();
+  const releaseBoxKey = Deferred.makeUnsafe<void>();
+  const origSecGet = r.host.secureGet!.bind(r.host);
+  r.host.secureGet = (k, reason) => {
+    if (k === BOX_KEY) {
+      return Effect.gen(function* () {
+        yield* Deferred.succeed(enteredBoxKey, undefined);
+        yield* Deferred.await(releaseBoxKey);
+        return yield* origSecGet(k, reason);
+      });
+    }
+    return origSecGet(k, reason);
+  };
+
+  let itemWrites = 0;
+  let plainDeletes = 0;
+  stationReplies(r.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/items")) itemWrites++;
+    if (req.method === "PUT" && req.url.includes("/vault/plain")) {
+      const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { deleted?: boolean };
+      if (body.deleted) plainDeletes++;
+    }
+    return r.st.reply(req);
+  });
+
+  const migratePromise = r.ask("vault.migrate", {});
+  await Effect.runPromise(Deferred.await(enteredBoxKey));
+  // Revoke vault capability while unsealOwn is awaiting BOX_KEY.
+  r.core.inner.store.authGen.bumpVault("ws", ownId);
+  Effect.runSync(Deferred.succeed(releaseBoxKey, undefined));
+
+  await fails(migratePromise, "auth_stale");
+  assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, "stale unsealOwn must NOT populate mem.keys via #keep");
+  assert.equal(itemWrites, 0, "stale unsealOwn must perform 0 item/carryOn writes");
+  assert.equal(plainDeletes, 0, "stale unsealOwn must perform 0 deletePlain writes");
   assert.equal(r.st.plain.get(plainId).deleted, undefined, "plain item on station must remain undeleted");
   r.core.close();
 });
