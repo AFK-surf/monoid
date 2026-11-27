@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
 | [65c90e3d0](https://github.com/AFK-surf/monoid/commit/65c90e3d052ca3e3e269e01353a7ca4c543f5283) feat(mbui): park passive side-panel tabs via pick_ | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.33 | 68.02 | 103.14 | 138.02 |
 | [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.14 | 137.95 |
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.37 | 141.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.93 | 135.89 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
-| [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 2.65 | 3.59 | 14.9 | 37.87 | 57.94 | 33.18 | 67.75 | 101.94 | 124.02 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 58.31 |
 | [65c90e3d0](https://github.com/AFK-surf/monoid/commit/65c90e3d052ca3e3e269e01353a7ca4c543f5283) feat(mbui): park passive side-panel tabs via pick_ | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.18 |
 | [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [18522df13](https://github.com/AFK-surf/monoid/commit/18522df1332910f049465b2433e3f03f2865e22e) feat(mbui): redesign Profiles with three-tier layo | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9317c90cd](https://github.com/AFK-surf/monoid/commit/9317c90cd555e7fc587a5737dff0cd737183ed56) fix(mbui): ease the tab bar width as its panel ope | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.8 |
 | [2658f9d9c](https://github.com/AFK-surf/monoid/commit/2658f9d9c307b0ba39b50d3078ccf5500708526a) refactor(station-main): extract shared daemon_core | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.64 |
 | [e6ec6ddce](https://github.com/AFK-surf/monoid/commit/e6ec6ddce6d21578ca69f00ba64a2df164e86162) perf(station): join screen helper frame pieces onc | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.79 |
-| [4064a47f9](https://github.com/AFK-surf/monoid/commit/4064a47f9b0a4977981de67ac39d6a024b13b308) perf(ui): stop waking idle frames for parked or hi | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.26 | 57.77 |
