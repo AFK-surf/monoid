@@ -43,7 +43,7 @@ test "building a large nested subtree deduplicates inputs_in to the subtree root
 }
 
 ///|
-test "subtree build with takes_input readers walks each new node at most once and stays exact across pressless, park, take_in, and modals" {
+test "subtree build with takes_input readers walks each new node at most once and stays exact across pressless, modals, and slot reuse" {
   let shown = @signals.signal(false, same=fn(a, b) { a == b })
   let inert = @signals.signal(false, same=fn(a, b) { a == b })
   let modal = @signals.signal(false, same=fn(a, b) { a == b })
@@ -175,4 +175,106 @@ test "single_flex_kid matches flex_kids length == 1 across 0, 1, 2, and nested-s
   assert_eq(fk3.length(), 1)
   assert_eq(t.single_flex_kid(b.at), fk3[0])
   t.dispose()
+}
+
+///|
+test "park + take_in across parents after ancestor dedup and retire_parked keep takes_input exact" {
+  let parent_a : Ref[View?] = Ref(None)
+  let parent_b : Ref[View?] = Ref(None)
+  let child_ref : Ref[View?] = Ref(None)
+  let leaf_ref : Ref[View?] = Ref(None)
+  let t = Tree::new(
+    fn(root) {
+      root.box(fn(a) {
+        parent_a.val = Some(a)
+        a.box(fn(child) {
+          child_ref.val = Some(child)
+          child.box(fn(leaf) {
+            leaf_ref.val = Some(leaf)
+            @signals.untracked(fn() { leaf.takes_input() }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(b) {
+        b.presses(Is(false)) |> ignore
+        parent_b.val = Some(b)
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(390.0, 844.0) |> ignore
+  let a = parent_a.val.unwrap()
+  let b = parent_b.val.unwrap()
+  let child = child_ref.val.unwrap()
+  let leaf = leaf_ref.val.unwrap()
+  assert_true(@signals.untracked(fn() { leaf.takes_input() }))
+
+  // Mark ancestor `a`, then attempt to mark `child` (subsumed by ancestor `a`), then park & move `child` under inert `b`.
+  t.inputs_marked(a.at)
+  t.inputs_marked(child.at)
+  let wake = a.park(child)
+  b.take_in(child)
+  wake()
+  t.frame(390.0, 844.0) |> ignore
+  assert_false(@signals.untracked(fn() { leaf.takes_input() }))
+  assert_eq(t.kept_inputs_said(), None)
+
+  // Park and retire_parked the moved subtree; verify live flags, leaf teardown, and inputs_at hygiene.
+  let _ = b.park(child)
+  child.retire_parked()
+  assert_false(t.nodes[child.at].live)
+  assert_false(t.nodes[leaf.at].live)
+  t.frame(390.0, 844.0) |> ignore
+  assert_eq(t.kept_inputs_said(), None)
+  t.dispose()
+}
+
+///|
+test "multi-Tree InputsAux isolation and Tree::dispose releases removed entries" {
+  let base_len = tree_inputs_auxs.length()
+  let s1 = @signals.signal(false, same=fn(a, b) { a == b })
+  let s2 = @signals.signal(false, same=fn(a, b) { a == b })
+  let leaf2 : Ref[View?] = Ref(None)
+  let t1 = Tree::new(
+    fn(root) {
+      root.box(fn(h) {
+        h.presses(By(fn() { !s1.get() })) |> ignore
+        h.box(fn(l) { @signals.untracked(fn() { l.takes_input() }) |> ignore }) |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  let t2 = Tree::new(
+    fn(root) {
+      root.box(fn(h) {
+        h.presses(By(fn() { !s2.get() })) |> ignore
+        h.box(fn(l) {
+          leaf2.val = Some(l)
+          @signals.untracked(fn() { l.takes_input() }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t1.frame(390.0, 844.0) |> ignore
+  t2.frame(390.0, 844.0) |> ignore
+  assert_eq(tree_inputs_auxs.length(), base_len + 2)
+
+  // Disposing t1 removes its entry cleanly while t2 stays fully functional.
+  t1.dispose()
+  assert_eq(tree_inputs_auxs.length(), base_len + 1)
+  s2.set(true)
+  t2.frame(390.0, 844.0) |> ignore
+  assert_false(@signals.untracked(fn() { leaf2.val.unwrap().takes_input() }))
+  assert_eq(t2.kept_inputs_said(), None)
+
+  t2.dispose()
+  assert_eq(tree_inputs_auxs.length(), base_len)
 }

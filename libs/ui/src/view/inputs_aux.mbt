@@ -1,5 +1,6 @@
-// Per-Tree bitsets mirroring `Tree::inputs_in` and `Tree::inputs_at` for O(1) membership and ancestor deduplication
-// without changing `Tree`'s C struct layout, plus zero-allocation direct-flex-child lookup for `structure_row_sync`.
+// Per-Tree bitsets mirroring `Tree::inputs_in` and `Tree::inputs_at` for O(1) membership and O(depth) ancestor
+// deduplication without changing `Tree`'s C struct layout, plus zero-allocation direct-flex-child lookup for
+// `structure_row_sync`.
 
 ///|
 priv struct InputsAux {
@@ -55,17 +56,18 @@ fn Tree::inputs_aux_clear(self : Tree) -> Unit {
       let (_, aux) = tree_inputs_auxs.remove(i)
       aux.in_bits.clear()
       aux.at_bits.clear()
-      if tree_inputs_auxs.is_empty() {
-        tree_inputs_auxs.shrink_to_fit()
-      }
+      aux.in_bits.shrink_to_fit()
+      aux.at_bits.shrink_to_fit()
+      // Release the removed (Tree, InputsAux) slot past the array end even while other Trees remain live.
+      tree_inputs_auxs.shrink_to_fit()
     }
     None => ()
   }
 }
 
 ///|
-/// Register `within` in `self.inputs_in` with O(1) bitset dedup and ancestor subsumption (skipping descendants of an
-/// already-marked subtree root).
+/// Register `within` in `self.inputs_in` with O(1) bitset membership check and O(depth) ancestor subsumption
+/// (skipping descendants of an already-marked subtree root).
 fn Tree::inputs_mark_within(self : Tree, within : Int) -> Unit {
   if within < 0 || within >= self.nodes.length() {
     return
