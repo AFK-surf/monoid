@@ -1752,10 +1752,7 @@ fn WholeAgents::build_domain_handlers(
       sql_params.push(like_params[pi])
     }
     let lim_param_idx = 3 + like_params.length()
-    // When non-ASCII terms are present, fetch a bounded window (1001) so downstream Unicode-aware
-    // `station_api::has_all_terms` (via `jscase::lower`) performs full Unicode case-insensitive matching.
-    let sql_fetch_limit = if has_non_ascii_term(words) { 1001 } else { limit }
-    sql_params.push(base_codec::json_int(sql_fetch_limit))
+    sql_params.push(base_codec::json_int(limit))
     let arch_clause = match mcp_arg_bool(args, "archived") {
       Some(true) => ""
       _ => " AND t.archived_at IS NULL"

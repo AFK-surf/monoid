@@ -871,9 +871,7 @@ pub fn WholeApi::new(
       return Ok(station_api::SearchResult::{ groups: [], building: false })
     }
     let window_lim = if eff_lim < max_window - eff_off { eff_lim } else { max_window - eff_off }
-    let sql_limit = if has_non_ascii_term(words) {
-      max_window + 1
-    } else if eff_off + window_lim + 1 > max_window + 1 {
+    let sql_limit = if eff_off + window_lim + 1 > max_window + 1 {
       max_window + 1
     } else {
       eff_off + window_lim + 1

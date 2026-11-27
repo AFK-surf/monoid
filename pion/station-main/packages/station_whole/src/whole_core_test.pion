@@ -820,12 +820,13 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
   wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
 
-  // 6. R6: Non-ASCII terms bypass SQLite ASCII-only `lower()` pushdown (deferred to Unicode `jscase`).
+  // 6. R7: ALL non-ASCII terms push down into SQL `LIKE ... ESCAPE '\'` (CJK single pattern, cased non-ASCII OR union).
   wc_assert(is_ascii_only("hello_100%"), "ASCII term detected")
   wc_assert(!is_ascii_only("ärger"), "non-ASCII term detected")
-  wc_assert(has_non_ascii_term(["abc", "ärger"]), "has_non_ascii_term detects non-ASCII")
+  let (cjk_sql, cjk_params) = build_like_clauses("e.text", ["工资"], 3)
+  wc_assert(cjk_sql.contains("LIKE ?3 ESCAPE '\\'") && cjk_params.length() == 1, "CJK term must push down 1 SQL LIKE clause")
   let (uni_sql, uni_params) = build_like_clauses("e.text", ["ärger"], 3)
-  wc_assert(uni_sql.length() == 0 && uni_params.length() == 0, "non-ASCII term must not emit SQLite ASCII lower() LIKE")
+  wc_assert(uni_sql.contains("LIKE ?3 ESCAPE '\\'") && uni_sql.contains(" OR ") && uni_params.length() == 2, "cased non-ASCII term must push down OR union SQL LIKE")
 
   core.shutdown_pre_handover()
 }

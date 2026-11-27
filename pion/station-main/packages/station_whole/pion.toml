@@ -9,6 +9,7 @@ crypto = { workspace = true }
 form = { workspace = true }
 host_shim = { workspace = true }
 http1 = { workspace = true }
+jscase = { workspace = true }
 nodepath = { workspace = true }
 sql_db = { workspace = true }
 station_api = { workspace = true }
