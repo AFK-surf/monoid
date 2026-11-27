@@ -37,10 +37,11 @@ pub let MUX_TAG_DOOR : Int64 = 1L
 pub let MUX_TAG_MESH : Int64 = 2L
 pub let MUX_TAG_ROLE : Int64 = 3L
 
-// Fixed `station_sys` event IDs owned by `daemon_core`.
+// Fixed `station_sys` event IDs owned by `daemon_core` / `whole_daemon`.
 pub let EV_CTRL : Int64 = 10L
 pub let EV_SIG : Int64 = 11L
 pub let EV_RUN_WATCH : Int64 = 12L
+pub let EV_CONFIG_WATCH : Int64 = 13L
 
 // Mesh/iroh & front.sock `MuxToken::Tagged` kinds on `mux_mesh`.
 let MESH_TOK_BIND : Int = 4001

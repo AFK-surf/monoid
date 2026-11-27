@@ -1125,13 +1125,23 @@ test "wave17b3 E2E: disabledRuntimes ConfigFile load, hot-reload, PUT /runtimes,
   )
   wc_assert(wc_response_status(ok_act) == 200, "POST /sessions must succeed once runtime re-enabled")
 
-  // 7. P1-B hot reload: external edit to config.json updates agents.disabled_runtimes via ConfigFile::listen
+  // 7. P1-B hot reload: external edit to config.json updates agents.disabled_runtimes via fs_watch + ConfigFile::listen
+  let cfg_file = match core.config_file {
+    Some(c) => c
+    None => panic("expected core.config_file to be initialized")
+  }
+  cfg_file.enable_virtual_watch()
   let _ = mem_cfg.put_text(cfg_path, "{\n  \"otherKey\": 123,\n  \"disabledRuntimes\": [\n    \"codex\"\n  ]\n}\n", 384)
-  let reloaded = core.reload_config()
+  // Unrelated filename event must NOT trigger reload
+  let ignored = cfg_file.on_fs_event(station_sys::FsChangeKind::Change, "other.json")
+  wc_assert(!ignored, "unrelated filename event must not trigger config reload")
   wc_assert(
-    reloaded.length() == 1 && reloaded[0] == "codex",
-    "reload_config must hot-reload disabledRuntimes=[codex]",
+    core.agents.disabled_runtimes.length() == 0,
+    "unrelated filename event must leave agents.disabled_runtimes untouched",
   )
+  // Matching config.json change event must hot-reload via ConfigFile::listen
+  let triggered = cfg_file.on_fs_event(station_sys::FsChangeKind::Change, "config.json")
+  wc_assert(triggered, "config.json Change event must trigger reload")
   wc_assert(
     core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "codex",
     "ConfigFile::listen must sync agents.disabled_runtimes to [codex]",

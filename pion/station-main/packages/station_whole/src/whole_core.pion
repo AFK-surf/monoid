@@ -616,6 +616,10 @@ pub fn WholeCore::shutdown_pre_handover(self : WholeCore) -> Unit {
   self.shut_down = true
   self.ready = false
   self.api.read_only_handover = true
+  match self.config_file {
+    Some(cfg_file) => cfg_file.unwatch()
+    None => ()
+  }
   self.rig.close()
   self.agents.clear_runtime_state_on_shutdown()
   self.store.close_pre_handover()
@@ -1270,6 +1274,10 @@ pub fn WholeCore::shutdown(self : WholeCore) -> Unit {
   self.shut_down = true
   self.ready = false
   self.api.read_only_handover = true
+  match self.config_file {
+    Some(cfg_file) => cfg_file.unwatch()
+    None => ()
+  }
   self.rig.close()
   self.agents.clear_runtime_state_on_shutdown()
   self.agents.close_adopted_db()

@@ -1,9 +1,12 @@
 import "base_codec"
 import "station_jobs"
 import "station_mesh"
+import "station_ops"
 import "station_rig"
+import "station_screens"
 import "station_sys"
 import "station_vault"
+import "station_whole"
 
 fn test_noop_fs() -> station_jobs::FsPort {
   station_jobs::FsPort::{
@@ -898,4 +901,101 @@ test "enabled_external_connects_in_config aligns 1:1 with Node config.ts:174 and
     Some(d) => assert_str_eq(d, "/opt/app2")
     None => panic("expected --app= value")
   }
+}
+
+test "whole_daemon EV_CONFIG_WATCH routes FsChange to ConfigFile::on_fs_event and hot-reloads disabledRuntimes" {
+  let data_dir = "/tmp/stillfail-w17b3-daemon-watch"
+  let drive_dir = "/tmp/stillfail-w17b3-daemon-drive"
+  let cfg_path = data_dir + "/config.json"
+  let mem_cfg = station_ops::MemFs::new()
+  let _ = mem_cfg.put_text(cfg_path, "{\n  \"disabledRuntimes\": [\n    \"agy\"\n  ]\n}\n", 384)
+  let mem_drive = station_screens::MemDriveFs::new()
+  mem_drive.put_dir(data_dir)
+  mem_drive.put_dir(drive_dir)
+  let cfg = station_whole::WholeCoreConfig::{
+    station_id: "st-w17b3-watch",
+    station_build: "0.1.0-w17b3",
+    data_dir: data_dir,
+    drive_roots: [drive_dir],
+    drive_protected: [data_dir],
+    assets_dir: data_dir + "/assets",
+    runner_bin: data_dir + "/runner",
+    mcp_port: 4312,
+    home_workspace: "ws-home",
+    allowed_workspaces: ["ws-home"],
+    rig_workspaces: [],
+    rig_owner_email: "owner@example.com",
+    rig_owner_name: "Owner",
+    rig_person_lock_id: "lock-1",
+  }
+  let core = station_whole::WholeCore::init_pre_handover_with_deps(
+    cfg,
+    mem_drive.fs(),
+    None,
+    test_noop_fs(),
+    test_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] { Ok(Bytes::new(n)) },
+    None,
+    fn() -> Int64 { 1700000000000L },
+    held_rig=false,
+    config_fs=Some(mem_cfg.ops()),
+  )
+  assert_true(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "initial load reads [agy]",
+  )
+  let cfg_file = match core.config_file {
+    Some(c) => c
+    None => panic("expected core.config_file")
+  }
+  cfg_file.enable_virtual_watch()
+
+  // External edit on disk
+  let _ = mem_cfg.put_text(cfg_path, "{\n  \"disabledRuntimes\": [\n    \"claude\"\n  ]\n}\n", 384)
+
+  // Non-EV_CONFIG_WATCH event must not be consumed
+  assert_true(
+    !route_whole_config_fs_event(
+      core,
+      EV_RUN_WATCH,
+      station_sys::SysEvent::FsChange(station_sys::FsChangeKind::Change, "config.json"),
+    ),
+    "EV_RUN_WATCH must not match EV_CONFIG_WATCH",
+  )
+  assert_true(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "non-matching ev_id must not reload",
+  )
+
+  // Unrelated filename on EV_CONFIG_WATCH is consumed but does NOT reload
+  assert_true(
+    route_whole_config_fs_event(
+      core,
+      EV_CONFIG_WATCH,
+      station_sys::SysEvent::FsChange(station_sys::FsChangeKind::Change, "other.json"),
+    ),
+    "EV_CONFIG_WATCH must consume event",
+  )
+  assert_true(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "agy",
+    "unrelated filename must not trigger hot-reload",
+  )
+
+  // Matching config.json event hot-reloads disabledRuntimes automatically via ConfigFile::listen
+  assert_true(
+    route_whole_config_fs_event(
+      core,
+      EV_CONFIG_WATCH,
+      station_sys::SysEvent::FsChange(station_sys::FsChangeKind::Change, "config.json"),
+    ),
+    "EV_CONFIG_WATCH config.json must be handled",
+  )
+  assert_true(
+    core.agents.disabled_runtimes.length() == 1 && core.agents.disabled_runtimes[0] == "claude",
+    "EV_CONFIG_WATCH FsChange must hot-reload agents.disabled_runtimes to [claude]",
+  )
+
+  // Shutdown unwatch clears watching flag
+  core.shutdown_pre_handover()
+  assert_true(!cfg_file.watching, "shutdown must unwatch config_file")
 }

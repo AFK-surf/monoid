@@ -418,6 +418,25 @@ pub fn decide_connect_inbound(
   }
 }
 
+/// Route `EV_CONFIG_WATCH` `FsChange` events to `core.config_file.on_fs_event(kind, name)`
+/// so external edits to `config.json` hot-reload `agents.disabled_runtimes` in production.
+pub fn route_whole_config_fs_event(
+  core : station_whole::WholeCore,
+  ev_id : Int64,
+  sev : station_sys::SysEvent,
+) -> Bool {
+  if ev_id != EV_CONFIG_WATCH {
+    return false
+  }
+  match (core.config_file, sev) {
+    (Some(cfg), station_sys::SysEvent::FsChange(kind, name)) => {
+      let _ = cfg.on_fs_event(kind, name)
+      true
+    }
+    _ => true
+  }
+}
+
 struct WholeRuntimeState {
   core : station_whole::WholeCore
   replica : station_whole::ReplicaOsRuntime
@@ -4200,6 +4219,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         thumb_port=thumb_port,
         verify_fn=verify_fn,
       )
+      // Watch `config.json` directory so external edits hot-reload `disabledRuntimes` via `ConfigFile::listen`.
+      match core.config_file {
+        Some(cfg_file) => {
+          let _ = cfg_file.watch(EV_CONFIG_WATCH)
+        }
+        None => ()
+      }
       // Strict per-workspace Drive root isolation (`drive.roots` for home, `drive.workspaces[ws]` for joined; NEVER `$HOME`).
       for wi in 0..<cfg.allowed_workspaces.length() {
         let ws = cfg.allowed_workspaces[wi]
@@ -5332,6 +5358,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     on_sys_event: fn(ctx : DaemonCtx, ev_id : Int64, sev : station_sys::SysEvent) -> Unit {
       match state_opt {
         Some(st) => {
+          if route_whole_config_fs_event(st.core, ev_id, sev) {
+            return
+          }
           match sev {
             station_sys::SysEvent::DnsResolved(rc, ip) => {
               match st.dns_streams.get(ev_id) {
@@ -5772,6 +5801,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
             let _ = st.core.agents.jobs.poll_followed(w_end)
             let _ = st.core.agents.jobs.tick_stops(w_end)
+          }
+          match st.core.config_file {
+            Some(cfg_file) => cfg_file.unwatch()
+            None => ()
           }
           st.core.shutdown()
         }
