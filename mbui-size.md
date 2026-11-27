@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [466583200](https://github.com/AFK-surf/monoid/commit/466583200a8a7779268e0506cf2af3efbc35cc63) fix(mbui): take folders only from the chosen stati | 2.66 | 3.59 | 14.9 | 37.86 | 57.94 | 33.19 | 67.75 | 101.84 | 120.34 |
 | [3b815d77d](https://github.com/AFK-surf/monoid/commit/3b815d77d93bb5255bea32599be7f116c8716304) fix(ci): deduplicate cache-prune listings and pagi | 2.65 | 3.59 | 14.9 | 37.86 | 57.94 | 33.19 | 67.75 | 102.25 | 127.34 |
 | [686a170c1](https://github.com/AFK-surf/monoid/commit/686a170c1ea9b0e400a6e0ea4bc637c5a46472a9) fix(ui): measure list bands from the rows they fol | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 125.46 |
 | [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 2.65 | 3.59 | 14.89 | 37.8 | 57.93 | 33.12 | 67.74 | 101.53 | 123.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7f34800d8](https://github.com/AFK-surf/monoid/commit/7f34800d8f77bbec297192588ca9c16105be43ae) feat(ui,mbui): unify all switches to liquid glass  | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [9d95440e1](https://github.com/AFK-surf/monoid/commit/9d95440e142fed381c38041c9ad0772c894721a2) feat(station-main): add pure Pion station_rig doma | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [126000642](https://github.com/AFK-surf/monoid/commit/126000642071195ca01cc911b221cfdb80bdd9da) fix(station,core): move uploads across disks and s | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
-| [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [466583200](https://github.com/AFK-surf/monoid/commit/466583200a8a7779268e0506cf2af3efbc35cc63) fix(mbui): take folders only from the chosen stati | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
 | [3b815d77d](https://github.com/AFK-surf/monoid/commit/3b815d77d93bb5255bea32599be7f116c8716304) fix(ci): deduplicate cache-prune listings and pagi | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
 | [686a170c1](https://github.com/AFK-surf/monoid/commit/686a170c1ea9b0e400a6e0ea4bc637c5a46472a9) fix(ui): measure list bands from the rows they fol | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.56 |
 | [9b2df4375](https://github.com/AFK-surf/monoid/commit/9b2df437584c5f79c9778d2e3578bfc652a87a68) perf(station): name the session in a slow history  | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.66 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7f34800d8](https://github.com/AFK-surf/monoid/commit/7f34800d8f77bbec297192588ca9c16105be43ae) feat(ui,mbui): unify all switches to liquid glass  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
 | [9d95440e1](https://github.com/AFK-surf/monoid/commit/9d95440e142fed381c38041c9ad0772c894721a2) feat(station-main): add pure Pion station_rig doma | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.72 |
 | [126000642](https://github.com/AFK-surf/monoid/commit/126000642071195ca01cc911b221cfdb80bdd9da) fix(station,core): move uploads across disks and s | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.44 |
-| [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.66 |
